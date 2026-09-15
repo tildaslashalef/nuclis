@@ -365,7 +365,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => tokenize.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate).think, options.generation, options.json, out, sty),
         .agent => if (options.printing)
-            agent.print_mode.run(alloc, io, environ, path, config.resolve(&loaded, options.model, options.flags, .agent), options.print, out)
+            agent.print_mode.run(alloc, io, environ, path, config.resolve(&loaded, options.model, options.flags, .agent), options.print, out, diag)
         else
             agent.run(alloc, io, environ, path, root, config.resolve(&loaded, options.model, options.flags, .agent), options.generation.seed, options.resume_id, out),
         .inspect, .validate => blk: {

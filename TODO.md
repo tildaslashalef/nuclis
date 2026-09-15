@@ -44,19 +44,25 @@ five times an 8K window and larger than a 32K one. `dropOldestTurn` only
 drops whole earlier turns, so a single long turn cannot be rescued, and the
 overflow is discovered by the engine after the prompt was built.
 
-**Session 1 — bounded results and an honest failure.**
-- A context-relative result budget: each tool result is capped at
-  `ctx_size / 8` tokens (1,024 at 8K, 4,096 at 32K), counted with the
-  model's tokenizer through the completion seam, with the host constants as
-  absolute ceilings. The cut tells the model how to continue (`truncated
-  after line 240; call read_file with offset=240`). `read_file`'s default
-  `count` drops to 200 lines.
-- When nothing fits, the transcript names the window and the flag to raise
-  (`context window full (8192 tokens): raise --ctx-size or start a new
-  session`); the status bar keeps the numbers from the moment of overflow
-  instead of resetting to `ctx 0`.
-- Fix the status bar's prefill rate, which shows `—` during agent turns
-  although every step prefills.
+**Session 1 — done (2026-09-15, uncommitted evidence below; the unit closes
+with session 2).** `loop.resultBudget(capacity)` = `capacity / 8`, never
+below 256 tokens; `Agent.fit` counts a result through the new `Model.count`
+seam (the engine's tokenizer; the test stub uses four bytes per token),
+scales the byte cut by the measured density, backs up to a line boundary
+(or a code-point boundary when one line is over budget), and appends
+`[truncated to fit the context: A of B lines shown; continue with read_file
+offset=N]` (other tools: `narrow the request for the rest`). The detail row
+gains `· cut to A lines for the context`. `read_file` defaults to 200 lines.
+`Completer.overflow` records what did not fit; the surface says `context
+window full: the step needed N tokens (prompt plus output budget) of C;
+raise it with /ctx <n> (or --ctx-size), or start over with /new`, print mode
+puts the same in the error diagnostic. The status bar's prefill rate is
+measured per step from the step's first beat and kept beside the decode
+rate. Evidence: 373 tests; live on the playground at 8K, a 400-line read of
+`data/measurements.txt` was cut to 45 lines (1,440 bytes) with `offset=46`,
+and the model reported exactly that; at `--ctx-size 1024` the same turn
+ended with `the step needed 2907 tokens (prompt plus output budget) of
+1024`.
 
 **Session 2 — in-turn elision.** Before each step, estimate the prompt from
 the last measured `prompt_tokens` plus the tokens appended since. If it

@@ -116,6 +116,12 @@ const Ui = struct {
     stats: Stats = .{},
     turn_started: std.Io.Timestamp,
     first_token: ?std.Io.Timestamp = null,
+    /// The step's prefill as the beats report it: when its first beat arrived
+    /// and at what position, and the rate measured from there. The rate
+    /// outlives the prefill so the bar shows it beside the decode rate.
+    prefill_started: ?std.Io.Timestamp = null,
+    prefill_base: usize = 0,
+    prefill_rate: ?f64 = null,
     submit: bool = false,
     /// Spinner frame, advanced on every paint while a turn runs.
     frame: usize = 0,
@@ -691,15 +697,26 @@ const Ui = struct {
     /// per call. The position here is measured, not counted.
     fn onProgress(context: *anyopaque, value: inference.observer.Progress) !void {
         const self: *Ui = @ptrCast(@alignCast(context));
+        const now = std.Io.Clock.awake.now(self.io);
         if (value.phase == .decode) {
-            if (self.first_token == null) self.first_token = std.Io.Clock.awake.now(self.io);
+            if (self.first_token == null) self.first_token = now;
+            self.prefill_started = null;
             self.status = "generating";
             self.stats.generated = value.position;
             self.bar.generated = value.position;
         } else {
             // A step's prefill target is the prompt it is consuming; the bar
-            // counts down from it until the first token arrives.
+            // counts down from it until the first token arrives. The rate is
+            // measured from the step's first beat, not the turn's start, so a
+            // later step's prefill is not diluted by the decode before it.
             self.stats.prompt_tokens = value.target;
+            if (self.prefill_started) |started| {
+                const elapsed = seconds(started, now);
+                if (value.position > self.prefill_base and elapsed > 0) self.prefill_rate = @as(f64, @floatFromInt(value.position - self.prefill_base)) / elapsed;
+            } else {
+                self.prefill_started = now;
+                self.prefill_base = value.position;
+            }
         }
         self.bar.apply(.{ .status = .{
             .phase = switch (value.phase) {
@@ -720,13 +737,10 @@ const Ui = struct {
     /// measured values replace these when the turn ends (`turn_end`).
     fn liveRates(self: *Ui) tui.event.Rates {
         const now = std.Io.Clock.awake.now(self.io);
-        var rates: tui.event.Rates = .{};
+        var rates: tui.event.Rates = .{ .prefill = self.prefill_rate };
         if (self.first_token) |first| {
             const elapsed = seconds(first, now);
             if (self.stats.generated > 1 and elapsed > 0) rates.decode = @as(f64, @floatFromInt(self.stats.generated - 1)) / elapsed;
-        } else {
-            const elapsed = seconds(self.turn_started, now);
-            if (self.bar.position > 0 and elapsed > 0) rates.prefill = @as(f64, @floatFromInt(self.bar.position)) / elapsed;
         }
         return rates;
     }
@@ -762,6 +776,8 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8) !voi
     ui.busy = true;
     ui.cancel_pending = false;
     ui.first_token = null;
+    ui.prefill_started = null;
+    ui.prefill_rate = null;
     ui.turn_started = std.Io.Clock.awake.now(ui.io);
     ui.stats = .{};
     ui.bar = .{ .phase = .prefill };
@@ -1036,6 +1052,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     };
     completer.observer = trace.observer();
     agent = try loop.Agent.init(alloc, io, workspace, completer.model(), ui.events(), loop.budget_default);
+    agent.result_budget = loop.resultBudget(capacity);
     defer agent.deinit();
     {
         defer term.deinit();
@@ -1082,6 +1099,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     ui.eng = &eng;
                     ui.completer.reset();
                     ui.tokens_seen.reset(); // same artifact, same vocabulary; a fresh session
+                    ui.agent.result_budget = loop.resultBudget(newcap);
                     ui.stats = .{};
                     ui.status = "ctx resized";
                     ui.record(.{ .context = .{ .ctx_size = newcap } });
@@ -1154,12 +1172,19 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 ui.tokens_seen.reset();
                 ui.completer.reset();
                 interrupt.clear();
-                ui.status = @errorName(err);
                 // The prompt is already in the transcript; say why nothing
                 // followed it, and close the turn so the next one starts on
-                // its own line.
-                var note: [96]u8 = undefined;
-                ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {s}", .{@errorName(err)}) catch "  — failed" }) catch {};
+                // its own line. A full window says how full, and what to do.
+                var note: [160]u8 = undefined;
+                const text = if (err == error.ContextFull) blk: {
+                    ui.status = "context full";
+                    const overflow = ui.completer.overflow orelse loop.Overflow{ .needed = 0, .capacity = ui.eng.model.session().capacity };
+                    break :blk std.fmt.bufPrint(&note, "  — context window full: the step needed {d} tokens (prompt plus output budget) of {d}; raise it with /ctx <n> (or --ctx-size), or start over with /new", .{ overflow.needed, overflow.capacity }) catch "  — context window full";
+                } else blk: {
+                    ui.status = @errorName(err);
+                    break :blk std.fmt.bufPrint(&note, "  — {s}", .{@errorName(err)}) catch "  — failed";
+                };
+                ui.emit(.{ .notice = text }) catch {};
                 ui.emit(.{ .turn_end = .{ .stop = .failure } }) catch {};
             };
         }

@@ -73,6 +73,7 @@ pub fn run(
     settings: config.Resolved,
     options: Options,
     out: *std.Io.Writer,
+    diag: *config.Diagnostic,
 ) !void {
     const prompt = try engine.readPrompt(alloc, io, options.prompt, options.prompt_file);
     defer alloc.free(prompt);
@@ -138,6 +139,7 @@ pub fn run(
     const workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
     var agent = try loop.Agent.init(alloc, io, workspace, completer.model(), turn.events(), loop.budget_default);
     defer agent.deinit();
+    agent.result_budget = loop.resultBudget(capacity);
 
     // `--resume <id>`: replay the saved conversation before this turn, so a
     // print run can continue a session. The fresh turn is recorded under
@@ -155,7 +157,13 @@ pub fn run(
         try agent.restore(built);
     }
 
-    const stop = try agent.turn(prompt);
+    const stop = agent.turn(prompt) catch |err| {
+        if (err == error.ContextFull) {
+            const overflow = completer.overflow orelse loop.Overflow{ .needed = 0, .capacity = capacity };
+            diag.set("context window full: the step needed {d} tokens (prompt plus output budget) of {d}; raise --ctx-size or shorten the conversation", .{ overflow.needed, overflow.capacity });
+        }
+        return err;
+    };
     if (!options.json and printer.wrote) try out.writeByte('\n');
     try out.flush();
     // A turn can end with no answer at all — the budget spent on reasoning,

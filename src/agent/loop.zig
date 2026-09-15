@@ -103,7 +103,22 @@ pub const Reply = struct {
 pub const Model = struct {
     context: *anyopaque,
     run: *const fn (*anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, sink: *stream.Sink) anyerror!Reply,
+    /// Tokens `text` costs in the model's vocabulary; what the result budget
+    /// is measured in.
+    count: *const fn (*anyopaque, text: []const u8) anyerror!usize,
 };
+
+/// Tokens one tool result may occupy: a fixed share of the context window,
+/// never below `min_result_budget`. The tools' own byte and line limits stay
+/// as absolute ceilings; this is the bound that scales with the window.
+pub fn resultBudget(capacity: usize) usize {
+    return @max(capacity / 8, min_result_budget);
+}
+pub const min_result_budget: usize = 256;
+
+/// What did not fit when a completion reported `ContextFull`: the tokens the
+/// step needed against the window. For the message the user reads.
+pub const Overflow = struct { needed: usize, capacity: usize };
 
 /// One history message, owned by the loop. `reasoning` is empty except on an
 /// assistant step. `tool_calls` are the calls the assistant requested (with
@@ -131,6 +146,9 @@ pub const Agent = struct {
     tool_defs: []Profile.ToolDefinition,
     history: std.ArrayList(Item) = .empty,
     budget: usize,
+    /// Tokens one tool result may occupy before the loop cuts it
+    /// (`resultBudget`); the caller sets it from the window it opened.
+    result_budget: usize = resultBudget(8192),
     next_id: u32 = 1,
     /// Model completions completed in the turn in progress; the status bar
     /// shows it against `budget`. Reset at the start of every turn.
@@ -362,11 +380,28 @@ pub const Agent = struct {
                 model_text = joined.?;
             }
 
-            const summary = result.summary orelse "";
+            // The tool's own bounds are host ceilings; this cut is the one
+            // that scales with the window, so one result cannot fill it.
+            var fitted = try self.fit(call, model_text);
+            defer if (fitted) |*f| f.deinit(self.alloc);
+            var truncated = result.truncated;
+            var summary: []const u8 = result.summary orelse "";
+            var cut_summary: ?[]u8 = null;
+            defer if (cut_summary) |s| self.alloc.free(s);
+            if (fitted) |f| {
+                model_text = f.text;
+                truncated = true;
+                cut_summary = if (summary.len > 0)
+                    try std.fmt.allocPrint(self.alloc, "{s} · cut to {d} lines for the context", .{ summary, f.kept_lines })
+                else
+                    try std.fmt.allocPrint(self.alloc, "cut to {d} of {d} lines for the context", .{ f.kept_lines, f.total_lines });
+                summary = cut_summary.?;
+            }
+
             try self.events.send(self.events.context, .{ .tool_result = .{
                 .id = id,
-                .text = result.text,
-                .truncated = result.truncated,
+                .text = model_text,
+                .truncated = truncated,
                 .is_error = result.is_error,
                 .summary = summary,
             } });
@@ -374,12 +409,58 @@ pub const Agent = struct {
                 .call = id,
                 .name = call.name,
                 .text = model_text,
-                .truncated = result.truncated,
+                .truncated = truncated,
                 .is_error = result.is_error,
                 .summary = summary,
             } });
             try self.appendItem(.tool, model_text, "", &.{}, id);
         }
+    }
+
+    /// A result cut to the budget: the kept prefix plus a note that says what
+    /// was left out and how to ask for it.
+    const Fitted = struct {
+        text: []u8,
+        kept_lines: usize,
+        total_lines: usize,
+
+        fn deinit(self: *Fitted, alloc: Allocator) void {
+            alloc.free(self.text);
+            self.* = undefined;
+        }
+    };
+
+    /// Null when `text` fits `result_budget`; otherwise the longest prefix at a
+    /// line boundary that does, found by scaling the byte cut with the
+    /// measured token density and recounting, plus the continuation note.
+    fn fit(self: *Agent, call: Profile.ToolCall, text: []const u8) !?Fitted {
+        var tokens = try self.model.count(self.model.context, text);
+        if (tokens <= self.result_budget) return null;
+        const total_lines = countLines(text);
+        var keep = text.len;
+        var rounds: usize = 0;
+        while (tokens > self.result_budget and keep > 0) : (rounds += 1) {
+            const density = @as(f64, @floatFromInt(keep)) / @as(f64, @floatFromInt(tokens));
+            var target: usize = @intFromFloat(@as(f64, @floatFromInt(self.result_budget)) * density * 0.9);
+            if (target >= keep) target = keep - 1;
+            // Back up to a line boundary, or, when the first line alone is too
+            // long (or the estimate keeps missing), to a UTF-8 boundary.
+            const newline = std.mem.lastIndexOfScalar(u8, text[0..target], '\n');
+            keep = if (newline != null and newline.? > 0 and rounds < 8) newline.? else utf8Boundary(text, target);
+            tokens = try self.model.count(self.model.context, text[0..keep]);
+        }
+        const kept_lines = countLines(text[0..keep]);
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(self.alloc);
+        try out.appendSlice(self.alloc, text[0..keep]);
+        try out.print(self.alloc, "\n[truncated to fit the context: {d} of {d} lines shown", .{ kept_lines, total_lines });
+        if (std.mem.eql(u8, call.name, "read_file")) {
+            try out.print(self.alloc, "; continue with read_file offset={d}", .{readOffset(self.alloc, call.arguments) + kept_lines});
+        } else {
+            try out.appendSlice(self.alloc, "; narrow the request for the rest");
+        }
+        try out.appendSlice(self.alloc, "]");
+        return .{ .text = try out.toOwnedSlice(self.alloc), .kept_lines = kept_lines, .total_lines = total_lines };
     }
 
     /// Looks up a registered tool and runs it. An unknown name is a typed
@@ -564,6 +645,27 @@ pub fn increment(seen: []const u8, full: []const u8) ?[]const u8 {
     return full[seen.len..];
 }
 
+fn countLines(text: []const u8) usize {
+    if (text.len == 0) return 0;
+    const trailing: usize = if (text[text.len - 1] == '\n') 1 else 0;
+    return std.mem.count(u8, text, "\n") + 1 - trailing;
+}
+
+/// `at` moved back to the start of the code point it falls in.
+fn utf8Boundary(text: []const u8, at: usize) usize {
+    var i = at;
+    while (i > 0 and i < text.len and (text[i] & 0xC0) == 0x80) i -= 1;
+    return i;
+}
+
+/// The 1-based `offset` a `read_file` call asked for, 1 when absent or
+/// unreadable: the continuation note counts from it.
+fn readOffset(alloc: Allocator, arguments: []const u8) usize {
+    const parsed = std.json.parseFromSlice(struct { offset: ?usize = null }, alloc, arguments, .{ .ignore_unknown_fields = true }) catch return 1;
+    defer parsed.deinit();
+    return parsed.value.offset orelse 1;
+}
+
 fn seconds(duration: std.Io.Duration) f64 {
     return @as(f64, @floatFromInt(duration.nanoseconds)) / std.time.ns_per_s;
 }
@@ -584,9 +686,18 @@ pub const Completer = struct {
     /// Rendered prompt plus generated text the session has consumed. Empty
     /// after a reset, which is what makes the next render replay.
     seen: std.ArrayList(u8) = .empty,
+    /// Set when `run` last reported `ContextFull`, for the caller's message.
+    overflow: ?Overflow = null,
 
     pub fn model(self: *Completer) Model {
-        return .{ .context = self, .run = run };
+        return .{ .context = self, .run = run, .count = count };
+    }
+
+    fn count(context: *anyopaque, text: []const u8) anyerror!usize {
+        const self: *Completer = @ptrCast(@alignCast(context));
+        const tokens = try self.eng.encode(text);
+        defer self.alloc.free(tokens);
+        return tokens.len;
     }
 
     /// Forgets what the session consumed, so the next step renders from an
@@ -616,7 +727,11 @@ pub const Completer = struct {
         defer self.alloc.free(tokens);
         const session = self.eng.model.session();
         if (session.position + tokens.len > session.capacity or
-            self.buffers.generated.len > session.capacity - session.position - tokens.len) return error.ContextFull;
+            self.buffers.generated.len > session.capacity - session.position - tokens.len)
+        {
+            self.overflow = .{ .needed = session.position + tokens.len + self.buffers.generated.len, .capacity = session.capacity };
+            return error.ContextFull;
+        }
         const outcome = try inference.engine.complete(
             self.eng,
             tokens,
@@ -658,7 +773,11 @@ const Stub = struct {
     context_full_at: ?usize = null,
 
     fn model(self: *Stub) Model {
-        return .{ .context = self, .run = run };
+        return .{ .context = self, .run = run, .count = count };
+    }
+    /// Four bytes per token: a fixed density the budget tests can compute.
+    fn count(_: *anyopaque, text: []const u8) anyerror!usize {
+        return (text.len + 3) / 4;
     }
     fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, sink: *stream.Sink) anyerror!Reply {
         _ = messages;
@@ -819,6 +938,63 @@ test "a mutation sends a diff event and the model reads the unified change" {
     try testing.expectEqualStrings("hello", contents);
 }
 
+test "a result over the context budget is cut at a line and told how to continue" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    // 100 lines of 10 bytes: 1,000 bytes, 250 stub tokens.
+    var content: std.Io.Writer.Allocating = .init(alloc);
+    defer content.deinit();
+    for (1..101) |i| try content.writer.print("line {d:0>4}\n", .{i});
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "long.txt", .data = content.written() });
+    var stub: Stub = .{
+        .answers = &.{ "", "ok" },
+        .calls = &.{&.{.{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"long.txt\",\"offset\":11}" }}},
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    defer agent.deinit();
+    agent.result_budget = 50; // 200 bytes: 20 lines of the 90 the read returns
+
+    try testing.expectEqual(Stop.done, try agent.turn("read it"));
+    const shown = capture.results.items[0];
+    // The kept prefix ends on a line boundary and fits the budget.
+    const note_at = std.mem.indexOf(u8, shown, "\n[truncated to fit the context: ") orelse return error.TestUnexpectedResult;
+    try testing.expect(Stub.count(undefined, shown[0..note_at]) catch unreachable <= 50);
+    try testing.expect(shown[note_at - 1] != '\n');
+    try testing.expect(std.mem.startsWith(u8, shown, "line 0011\n"));
+    // The note counts from the call's own offset.
+    const kept = countLines(shown[0..note_at]);
+    var expected: [64]u8 = undefined;
+    const hint = try std.fmt.bufPrint(&expected, "{d} of 90 lines shown; continue with read_file offset={d}]", .{ kept, 11 + kept });
+    try testing.expect(std.mem.indexOf(u8, shown, hint) != null);
+    // The model reads the cut text, not the whole file.
+    try testing.expectEqualStrings(shown, agent.history.items[2].content);
+
+    // A result that fits is left alone.
+    try testing.expect((try agent.fit(read_a, "short")) == null);
+}
+
+test "a single line over the budget is cut inside the line at a code point" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{ .answers = &.{"x"} };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    defer agent.deinit();
+    agent.result_budget = 4;
+    // 40 bytes of two-byte code points on one line: 10 stub tokens.
+    var fitted = (try agent.fit(read_a, "éééééééééééééééééééé")).?;
+    defer fitted.deinit(alloc);
+    const note_at = std.mem.indexOf(u8, fitted.text, "\n[truncated").?;
+    try testing.expect(note_at > 0 and note_at <= 16);
+    try testing.expect(std.unicode.utf8ValidateSlice(fitted.text[0..note_at]));
+    try testing.expectEqual(@as(usize, 1), fitted.total_lines);
+}
+
 test "the step budget stops a model that keeps calling" {
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
@@ -933,10 +1109,11 @@ test "the tools block the profile renders is pinned to its measured size" {
     const with_tools = try Profile.qwen38.render(a, &messages, defs, .low, .{});
     const without = try Profile.qwen38.render(a, &messages, &.{}, .low, .{});
     // Measured on the pinned Qwen artifact (2026-09-14): the six-tool block
-    // adds 720 prompt tokens / 2,896 bytes to the system prompt, ~9% of an
-    // 8,192-token context before any conversation. Pinned so a tool
-    // description edit cannot grow the context silently.
-    try testing.expectEqual(@as(usize, 2896), with_tools.len - without.len);
+    // added 720 prompt tokens / 2,896 bytes to the system prompt, ~9% of an
+    // 8,192-token context before any conversation; `read_file`'s description
+    // grew it to 2,959 bytes on 2026-09-15. Pinned so a tool description
+    // edit cannot grow the context silently.
+    try testing.expectEqual(@as(usize, 2959), with_tools.len - without.len);
 }
 
 test "compaction drops a whole prior turn, tool response included" {

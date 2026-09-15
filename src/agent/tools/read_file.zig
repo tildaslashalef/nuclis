@@ -10,7 +10,7 @@ const root = @import("root.zig");
 
 pub const tool: root.Tool = .{
     .name = "read_file",
-    .description = "Read a bounded region of a UTF-8 text file in the workspace. `offset` is a 1-based line, `count` the number of lines.",
+    .description = "Read a bounded region of a UTF-8 text file in the workspace. `offset` is a 1-based line, `count` the number of lines (default 200, at most 2000); the result says where to continue.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"path\"]}",
     .label = "Reading",
     .subject = "path",
@@ -18,6 +18,8 @@ pub const tool: root.Tool = .{
 };
 
 const max_lines: usize = 2000;
+/// A page the model asks past, rather than a whole file it did not need.
+const default_lines: usize = 200;
 const max_bytes: usize = 1024 * 1024;
 
 const Args = struct {
@@ -32,7 +34,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     };
     defer parsed.deinit();
     const offset = parsed.value.offset orelse 1;
-    const count = @min(parsed.value.count orelse max_lines, max_lines);
+    const count = @min(parsed.value.count orelse default_lines, max_lines);
     if (offset == 0) return root.fail(alloc, "read_file: offset is 1-based", .{});
 
     const abs = workspace.resolve(alloc, parsed.value.path) catch |err| switch (err) {

@@ -586,7 +586,15 @@ editor, compaction, sessions) and adds a tool layer under it.
    product would use, so prompts and transcripts transfer.
 3. **Bounded everything.** Output sizes, result counts, execution time, and
    step count are host constants. Truncation is always marked. Exceeding a
-   limit is a typed tool result the model can respond to, not an abort.
+   limit is a typed tool result the model can respond to, not an abort. On
+   top of the tools' ceilings, one result may not exceed an eighth of the
+   context window in tokens (never below 256): the loop counts it with the
+   model's tokenizer, cuts it at a line boundary, and appends a note that
+   says how many lines were shown and how to ask for the rest (`read_file`
+   gets the offset to continue from). `read_file` reads 200 lines unless
+   asked for more, so a whole file is a choice, not a default. When a step
+   still cannot fit, the turn ends with a message that names the tokens
+   needed and the window, and the flag or command that raises it.
 4. **Failures are results.** Unknown tool, invalid arguments, timeout, and
    ordinary tool failure return structured errors to the model. Only
    inference-transport failure ends the turn.
