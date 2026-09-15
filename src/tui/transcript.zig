@@ -46,8 +46,8 @@ pub const Block = union(enum) {
     user: []u8,
     thinking: Thinking,
     answer: Answer,
-    tool_call: struct { id: event_mod.Id, name: []u8, summary: []u8, running: bool = true },
-    tool_result: struct { id: event_mod.Id, text: []u8, truncated: bool, is_error: bool },
+    tool_call: struct { id: event_mod.Id, name: []u8, summary: []u8, detail: ?[]u8 = null, running: bool = true },
+    tool_result: struct { id: event_mod.Id, text: []u8, truncated: bool, is_error: bool, summary: []u8 },
     diff: Diff,
     notice: []u8,
     /// A command's answer, at the terminal's own foreground.
@@ -83,8 +83,12 @@ pub const Block = union(enum) {
             .tool_call => |c| {
                 alloc.free(c.name);
                 alloc.free(c.summary);
+                if (c.detail) |detail| alloc.free(detail);
             },
-            .tool_result => |r| alloc.free(r.text),
+            .tool_result => |r| {
+                alloc.free(r.text);
+                alloc.free(r.summary);
+            },
             .diff => |d| {
                 alloc.free(d.path);
                 diff.freeRows(alloc, d.rows);
@@ -196,7 +200,9 @@ pub const Transcript = struct {
                 errdefer self.alloc.free(name);
                 const summary = try self.alloc.dupe(u8, call.summary);
                 errdefer self.alloc.free(summary);
-                try self.blocks.append(self.alloc, .{ .tool_call = .{ .id = call.id, .name = name, .summary = summary } });
+                const detail: ?[]u8 = if (call.detail) |detail| try self.alloc.dupe(u8, detail) else null;
+                errdefer if (detail) |d| self.alloc.free(d);
+                try self.blocks.append(self.alloc, .{ .tool_call = .{ .id = call.id, .name = name, .summary = summary, .detail = detail } });
             },
             .tool_result => |result| {
                 // The call this result answers is settled now: its line stops
@@ -206,7 +212,9 @@ pub const Transcript = struct {
                 }
                 const text = try self.alloc.dupe(u8, result.text);
                 errdefer self.alloc.free(text);
-                try self.blocks.append(self.alloc, .{ .tool_result = .{ .id = result.id, .text = text, .truncated = result.truncated, .is_error = result.is_error } });
+                const summary = try self.alloc.dupe(u8, result.summary);
+                errdefer self.alloc.free(summary);
+                try self.blocks.append(self.alloc, .{ .tool_result = .{ .id = result.id, .text = text, .truncated = result.truncated, .is_error = result.is_error, .summary = summary } });
             },
             .diff => |d| {
                 const path = try self.alloc.dupe(u8, d.path);
@@ -315,8 +323,10 @@ pub const Transcript = struct {
                     // A running call keeps its spinner here, in the region,
                     // until the result settles it into the scrollback.
                     if (call.running) {
-                        const lead = if (options.spinner.len > 0) options.spinner else options.th.glyphs().call;
+                        const gl = options.th.glyphs();
+                        const lead = if (options.spinner.len > 0) options.spinner else gl.done;
                         try produced.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {s}", .{ lead, call.summary }), .style = .tool_call });
+                        if (call.detail) |detail| try pushDetail(a, &produced, gl, detail, options.width, .tool_result);
                     } else try self.render(a, &produced, block, shape, .remainder);
                 },
                 else => try self.render(a, &produced, block, shape, .remainder),
@@ -375,17 +385,28 @@ pub const Transcript = struct {
                 .written => ans.text.items[0..ans.flushed],
             }, options),
             .tool_call => |call| {
-                const text = try std.fmt.allocPrint(a, "{s} {s}", .{ gl.call, call.summary });
+                const text = try std.fmt.allocPrint(a, "{s} {s}", .{ gl.done, call.summary });
                 try out.append(a, .{ .text = text, .style = .tool_call });
+                if (call.detail) |detail| try pushDetail(a, out, gl, detail, options.width, .tool_result);
             },
             .tool_result => |result| {
-                const style: theme.Style = if (result.is_error) .error_text else .tool_result;
-                var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, result.text, "\n"), '\n');
-                while (lines.next()) |line| {
-                    const text = try std.fmt.allocPrint(a, "  {s}", .{line});
-                    try pushWrapped(a, out, text, options.width, style);
+                // The result text is the model's; the reader gets one row
+                // (the tool's summary), or the message when the call failed.
+                if (result.is_error) {
+                    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, result.text, "\n"), '\n');
+                    var shown: usize = 0;
+                    while (lines.next()) |line| : (shown += 1) {
+                        if (shown == max_error_rows) {
+                            try out.append(a, .{ .text = try std.fmt.allocPrint(a, "  {s}", .{gl.ellipsis}), .style = .dim });
+                            break;
+                        }
+                        if (shown == 0) try pushDetail(a, out, gl, line, options.width, .error_text) else try pushWrapped(a, out, try std.fmt.allocPrint(a, "  {s}", .{line}), options.width, .error_text);
+                    }
+                } else if (result.summary.len > 0) {
+                    try pushDetail(a, out, gl, result.summary, options.width, .tool_result);
+                } else if (result.truncated) {
+                    try pushDetail(a, out, gl, "truncated", options.width, .dim);
                 }
-                if (result.truncated) try out.append(a, .{ .text = "  — truncated", .style = .dim });
             },
             .diff => |d| try self.renderDiff(a, out, d, options),
             .notice => |text| try pushWrapped(a, out, text, options.width, .dim),
@@ -579,6 +600,15 @@ fn foldLabel(a: Allocator, t: Block.Thinking, expanded: bool, th: theme.Theme) !
     return std.fmt.allocPrint(a, "{s} thinking ({s})", .{ arrow, hint });
 }
 
+/// The rows of an error result are bounded; the message's head is what the
+/// reader needs, the rest is in the session file.
+const max_error_rows: usize = 3;
+
+/// One detail row under a tool call: the corner glyph and the text.
+fn pushDetail(a: Allocator, out: *std.ArrayList(Row), gl: theme.Glyphs, text: []const u8, width: usize, style: ?theme.Style) !void {
+    try pushWrapped(a, out, try std.fmt.allocPrint(a, "{s} {s}", .{ gl.detail, text }), width, style);
+}
+
 fn pushWrapped(a: Allocator, out: *std.ArrayList(Row), text: []const u8, width: usize, style: ?theme.Style) !void {
     for (try view.lines(a, text, width, .word)) |line| try out.append(a, .{ .text = line, .style = style });
 }
@@ -742,8 +772,8 @@ test "every block kind renders, including the ones phase 2 produces" {
         .{ .new_line = 2, .kind = .add, .text = "new" },
     };
     try tr.apply(.{ .user = "edit it" });
-    try tr.apply(.{ .tool_call = .{ .id = 7, .name = "read_file", .summary = "Read src/main.zig:1-40" } });
-    try tr.apply(.{ .tool_result = .{ .id = 7, .text = "line one\nline two\n", .truncated = true, .is_error = false } });
+    try tr.apply(.{ .tool_call = .{ .id = 7, .name = "read_file", .summary = "Reading src/main.zig" } });
+    try tr.apply(.{ .tool_result = .{ .id = 7, .text = "line one\nline two\n", .truncated = true, .is_error = false, .summary = "lines 1 to 2 of 9 · truncated, continue with offset=3" } });
     try tr.apply(.{ .diff = .{ .path = "src/main.zig", .rows = &changed } });
     try tr.apply(.{ .tool_result = .{ .id = 8, .text = "no such file", .truncated = false, .is_error = true } });
     try tr.apply(.{ .notice = "older turns dropped from context to fit" });
@@ -752,13 +782,14 @@ test "every block kind renders, including the ones phase 2 produces" {
     try tr.apply(.{ .turn_end = .{ .stop = .token_budget } });
     const rows = try tr.takeClosed(a, options);
     const s = try texts(a, rows);
-    try testing.expect(std.mem.indexOf(u8, s, "→ Read src/main.zig:1-40") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "  line one") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "  — truncated") != null);
+    try testing.expect(std.mem.indexOf(u8, s, "● Reading src/main.zig") != null);
+    // The result's text is the model's; the reader sees the tool's one row.
+    try testing.expect(std.mem.indexOf(u8, s, "line one") == null);
+    try testing.expect(std.mem.indexOf(u8, s, "└ lines 1 to 2 of 9 · truncated, continue with offset=3") != null);
     try testing.expect(std.mem.indexOf(u8, s, "▾ src/main.zig") != null);
     try testing.expect(std.mem.indexOf(u8, s, "-old") != null);
     try testing.expect(std.mem.indexOf(u8, s, "+new") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "no such file") != null);
+    try testing.expect(std.mem.indexOf(u8, s, "└ no such file") != null);
     try testing.expect(std.mem.indexOf(u8, s, "older turns dropped") != null);
     // A command's answer is content: it carries no style at all, so it is
     // painted at the terminal's own foreground rather than dimmed.
@@ -776,23 +807,60 @@ test "every block kind renders, including the ones phase 2 produces" {
     try testing.expect(std.mem.indexOfScalar(theme.Style, styles.items, .error_text) != null);
 }
 
-test "a tool call keeps a spinner while running and settles to the call glyph" {
+test "a tool call keeps a spinner while running and settles to the done glyph" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var tr = transcript();
     defer tr.deinit();
     const options: Render = .{ .width = 80, .th = .{ .kind = .plain } };
-    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "read_file", .summary = "Read TODO.md [limit=24, offset=126]" } });
-    // Running: the live region shows the spinner frame, not the settled glyph.
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "bash", .summary = "Running command", .detail = "$ make test" } });
+    // Running: the live region shows the spinner frame, not the settled
+    // glyph, and the command is already under it.
     const live = try tr.liveRows(a, .{ .width = 80, .th = options.th, .budget = 10, .spinner = "⠋" });
-    try testing.expectEqualStrings("⠋ Read TODO.md [limit=24, offset=126]", live[0].text);
+    try testing.expectEqualStrings("⠋ Running command", live[0].text);
+    try testing.expectEqualStrings("└ $ make test", live[1].text);
     // Nothing has closed: the line is still in flight.
     try testing.expectEqual(@as(usize, 0), (try tr.takeClosed(a, options)).len);
-    // The result with the same id settles it, and it is written once.
-    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "…", .truncated = false, .is_error = false } });
+    // The result with the same id settles it, and it is written once. A
+    // clean run adds no row of its own.
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "ok\n", .truncated = false, .is_error = false } });
     const closed = try tr.takeClosed(a, options);
-    try testing.expectEqualStrings("→ Read TODO.md [limit=24, offset=126]", closed[0].text);
+    try testing.expectEqual(@as(usize, 2), closed.len);
+    try testing.expectEqualStrings("● Running command", closed[0].text);
+    try testing.expectEqualStrings("└ $ make test", closed[1].text);
+}
+
+test "a failed tool shows its message under the call, bounded to three rows" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 80, .th = .{ .kind = .plain } };
+    try tr.apply(.{ .tool_call = .{ .id = 2, .name = "bash", .summary = "Running command", .detail = "$ zig build" } });
+    try tr.apply(.{ .tool_result = .{ .id = 2, .text = "error: one\nerror: two\nerror: three\nerror: four\n[bash: exit code 1]", .truncated = false, .is_error = true, .summary = "exit 1 · 4 lines" } });
+    const closed = try tr.takeClosed(a, options);
+    try testing.expectEqual(@as(usize, 6), closed.len);
+    try testing.expectEqualStrings("└ error: one", closed[2].text);
+    try testing.expectEqual(theme.Style.error_text, closed[2].style.?);
+    try testing.expectEqualStrings("  error: two", closed[3].text);
+    try testing.expectEqualStrings("  error: three", closed[4].text);
+    try testing.expectEqualStrings("  …", closed[5].text);
+}
+
+test "an empty result row is skipped unless the result was truncated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 80, .th = .{ .kind = .plain } };
+    try tr.apply(.{ .tool_call = .{ .id = 3, .name = "glob", .summary = "Listing **/*.zig" } });
+    try tr.apply(.{ .tool_result = .{ .id = 3, .text = "a.zig\nb.zig", .truncated = true, .is_error = false } });
+    const closed = try tr.takeClosed(a, options);
+    try testing.expectEqual(@as(usize, 2), closed.len);
+    try testing.expectEqualStrings("└ truncated", closed[1].text);
 }
 
 test "a diff renders side by side when wide and unified when narrow" {

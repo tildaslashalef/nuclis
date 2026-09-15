@@ -97,6 +97,9 @@ pub const Entry = union(enum) {
         text: []const u8,
         truncated: bool = false,
         is_error: bool = false,
+        /// The transcript's detail row; absent in files written before it
+        /// existed, which load as empty.
+        summary: []const u8 = "",
     },
     effort: struct { effort: []const u8 },
     context: struct { ctx_size: usize },
@@ -450,6 +453,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
             .text = try text(a, object, "text"),
             .truncated = boolean(object.get("truncated")),
             .is_error = boolean(object.get("is_error")),
+            .summary = try text(a, object, "summary"),
         } };
         if (std.mem.eql(u8, kind, "effort")) break :blk .{ .effort = .{ .effort = try text(a, object, "effort") } };
         if (std.mem.eql(u8, kind, "context")) break :blk .{ .context = .{ .ctx_size = @intCast(integer(object.get("ctx_size")) orelse 0) } };
@@ -561,7 +565,7 @@ pub fn exportMarkdown(loaded: Loaded, out: *std.Io.Writer) !void {
                 if (!std.mem.eql(u8, assistant.stop, "eos")) try out.print("_stopped: {s}_\n\n", .{assistant.stop});
             },
             .tool_result => |result| {
-                try out.print("_tool result {s}_\n", .{result.call});
+                if (result.summary.len > 0) try out.print("_tool result {s} — {s}_\n", .{ result.call, result.summary }) else try out.print("_tool result {s}_\n", .{result.call});
                 try out.print("```\n{s}\n```\n", .{result.text});
                 if (result.truncated) try out.writeAll("_truncated_\n");
                 try out.writeByte('\n');
@@ -627,7 +631,7 @@ test "a session round trips through the file, chained by id and parent" {
         .stop = "eos",
         .stats = .{ .generated = 3, .decode_seconds = 0.25 },
     } }, "t2");
-    try s.append(.{ .tool_result = .{ .call = "7", .text = "hello", .truncated = false, .is_error = false } }, "t3");
+    try s.append(.{ .tool_result = .{ .call = "7", .text = "hello", .truncated = false, .is_error = false, .summary = "lines 1 to 1 of 1" } }, "t3");
     try s.append(.{ .effort = .{ .effort = "medium" } }, "t4");
     try s.append(.{ .notice = .{ .text = "older turns dropped" } }, "t5");
 
@@ -651,6 +655,7 @@ test "a session round trips through the file, chained by id and parent" {
     try testing.expectEqualStrings("{\"path\":\"a.txt\"}", loaded.records[1].entry.assistant.tool_calls[0].arguments);
     try testing.expectEqualStrings("7", loaded.records[2].entry.tool_result.call);
     try testing.expectEqualStrings("hello", loaded.records[2].entry.tool_result.text);
+    try testing.expectEqualStrings("lines 1 to 1 of 1", loaded.records[2].entry.tool_result.summary);
     // Every entry names the one before it, so a branch is representable later.
     for (loaded.records, 1..) |record, expected| {
         try testing.expectEqual(@as(u32, @intCast(expected)), record.id);
@@ -710,7 +715,7 @@ test "the markdown export is derived from the entries, not from a second format"
         "{\"type\":\"user\",\"id\":1,\"parent\":null,\"time\":\"t1\",\"text\":\"why?\"}\n" ++
         "{\"type\":\"assistant\",\"id\":2,\"parent\":1,\"time\":\"t2\",\"thinking\":\"because\",\"answer\":\"**42**\"," ++
         "\"tool_calls\":[{\"id\":4,\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}],\"stop\":\"token_budget\",\"stats\":{\"generated\":3}}\n" ++
-        "{\"type\":\"tool_result\",\"id\":3,\"parent\":2,\"time\":\"t3\",\"call\":\"4\",\"text\":\"hello\",\"truncated\":false,\"is_error\":false}\n" ++
+        "{\"type\":\"tool_result\",\"id\":3,\"parent\":2,\"time\":\"t3\",\"call\":\"4\",\"text\":\"hello\",\"truncated\":false,\"is_error\":false,\"summary\":\"lines 1 to 1 of 1\"}\n" ++
         "{\"type\":\"notice\",\"id\":4,\"parent\":3,\"time\":\"t4\",\"text\":\"older turns dropped\"}\n";
     const loaded = try parseText(alloc, text_form, null);
     defer loaded.deinit();
@@ -729,7 +734,7 @@ test "the markdown export is derived from the entries, not from a second format"
     // both rendered, so the export reads like what the model saw.
     try testing.expect(std.mem.indexOf(u8, document, "_tool call_ `read_file`:") != null);
     try testing.expect(std.mem.indexOf(u8, document, "\"path\":\"a.txt\"") != null);
-    try testing.expect(std.mem.indexOf(u8, document, "_tool result 4_") != null);
+    try testing.expect(std.mem.indexOf(u8, document, "_tool result 4 — lines 1 to 1 of 1_") != null);
     try testing.expect(std.mem.indexOf(u8, document, "hello") != null);
     try testing.expect(std.mem.indexOf(u8, document, "_older turns dropped_") != null);
     // No escape sequence ever reaches the file.

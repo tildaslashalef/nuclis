@@ -261,8 +261,8 @@ pub const Event = union(enum) {
     user: Text,                       // a committed prompt
     thinking_delta: Text,
     answer_delta: Text,
-    tool_call: struct { id: Id, name: []const u8, summary: []const u8 },
-    tool_result: struct { id: Id, text: []const u8, truncated: bool, is_error: bool },
+    tool_call: struct { id: Id, name: []const u8, summary: []const u8, detail: ?[]const u8 },
+    tool_result: struct { id: Id, text: []const u8, truncated: bool, is_error: bool, summary: []const u8 },
     diff: struct { path: []const u8, unified: []const u8 },
     status: struct { phase: Phase, position: usize, target: usize, rates: Rates, elapsed_ns: u64 },
     turn_end: struct { stop: StopReason, stats: TurnStats },
@@ -502,7 +502,7 @@ The first line is a header; every later line is an entry:
 {"type":"session","version":1,"id":"…","time":"2026-09-09T10:12:03Z","cwd":"/Users/…/nuclis","model":{"path":"…","sha256":"…"},"effort":"low","ctx_size":8192}
 {"type":"user","id":1,"parent":null,"time":"…","text":"…"}
 {"type":"assistant","id":2,"parent":1,"time":"…","thinking":"…","answer":"…","tool_calls":[],"stop":"eos","stats":{…}}
-{"type":"tool_result","id":3,"parent":2,"call":"…","text":"…","truncated":false,"is_error":false}
+{"type":"tool_result","id":3,"parent":2,"call":"…","text":"…","truncated":false,"is_error":false,"summary":"lines 1 to 40 of 96"}
 {"type":"effort","id":4,"parent":3,"effort":"medium"}
 {"type":"context","id":5,"parent":4,"ctx_size":16384}
 {"type":"compaction","id":6,"parent":5,"first_kept":2,"reason":"context_full"}
@@ -672,12 +672,19 @@ the response:
 5. Stop on cancellation, an unrecoverable failure, or the step budget
    (default 16); publish the stop reason to the transcript.
 
-A running tool call renders as one scannable line — a display verb, the tool's
-primary argument, and the remaining parameters in brackets (`→ Read TODO.md
-[limit=24, offset=126]`) — with a spinner advanced by an optional tick, so a
-long command stays cancellable from the keyboard. The bounded result follows,
-and, for `write_file`/`edit_file`, a diff derived by a pure function before
-execution. Edit arguments are validated (exact, unique, nonempty replacement)
+A tool call renders as two rows and its result text never reaches the
+transcript: the call row is a gerund and the tool's subject (`● Reading
+TODO.md`; `● Running command`, whose command is a detail row of its own,
+`└ $ make test`), and the detail row is one sentence the tool supplies with
+its result (`└ lines 1 to 40 of 96 · truncated, continue with offset=41`,
+`└ 16 files`, `└ 3 matches in 2 files`, `└ +12 −3`; a clean `bash` run adds
+nothing). A failed call shows its message in error style, bounded to three
+rows. While the call runs the row carries a spinner advanced by an optional
+tick, so a long command stays cancellable from the keyboard. The result text
+goes to the model and the session file, whose `tool_result` entries keep the
+summary so a resumed session renders the same rows (TERM-05). For
+`write_file`/`edit_file` a diff derived by a pure function before execution
+follows. Edit arguments are validated (exact, unique, nonempty replacement)
 before anything is touched. The transcript renders the diff width-adaptively:
 side-by-side (old | new, line numbers, changed span highlighted) when the
 terminal is wide enough and the unified single-column form below that, with

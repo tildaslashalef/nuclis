@@ -12,9 +12,8 @@ pub const tool: root.Tool = .{
     .name = "glob",
     .description = "List workspace-relative file paths matching one glob pattern (`*`, `?`, `[...]`, `**`). Hidden entries are excluded unless the pattern names them.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}",
-    .verb = "Glob",
+    .label = "Listing",
     .subject = "pattern",
-    .params = &.{"pattern"},
     .run = run,
 };
 
@@ -45,7 +44,23 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         if (i != 0) try out.append(alloc, '\n');
         try out.appendSlice(alloc, path);
     }
-    return .{ .text = try out.toOwnedSlice(alloc), .truncated = found.items.len == max_results };
+    const truncated = found.items.len == max_results;
+    const summary = try summarize(alloc, found.items.len, truncated);
+    errdefer alloc.free(summary);
+    return .{ .text = try out.toOwnedSlice(alloc), .truncated = truncated, .summary = summary };
+}
+
+/// The detail row: how many paths, and whether the bound cut the list.
+fn summarize(alloc: std.mem.Allocator, count: usize, truncated: bool) std.mem.Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    switch (count) {
+        0 => try out.appendSlice(alloc, "no files"),
+        1 => try out.appendSlice(alloc, "1 file"),
+        else => try out.print(alloc, "{d} files", .{count}),
+    }
+    if (truncated) try out.print(alloc, " · first {d} only", .{max_results});
+    return out.toOwnedSlice(alloc);
 }
 
 fn lessThan(_: void, a: []u8, b: []u8) bool {
@@ -215,16 +230,16 @@ test "glob lists matching files, sorted and bounded" {
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "sub/c.zig", .data = "" });
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "sub/notes.txt", .data = "" });
 
-    const result = try run(ws, testing.allocator, "{\"pattern\":\"**/*.zig\"}");
-    defer testing.allocator.free(result.text);
+    var result = try run(ws, testing.allocator, "{\"pattern\":\"**/*.zig\"}");
+    defer result.deinit(testing.allocator);
     try testing.expectEqualStrings("a.zig\nb.zig\nsub/c.zig", result.text);
     try testing.expect(!result.truncated);
 
-    const hidden = try run(ws, testing.allocator, "{\"pattern\":\".*.zig\"}");
-    defer testing.allocator.free(hidden.text);
+    var hidden = try run(ws, testing.allocator, "{\"pattern\":\".*.zig\"}");
+    defer hidden.deinit(testing.allocator);
     try testing.expectEqualStrings(".hidden.zig", hidden.text);
 
-    const bad = try run(ws, testing.allocator, "{}");
-    defer testing.allocator.free(bad.text);
+    var bad = try run(ws, testing.allocator, "{}");
+    defer bad.deinit(testing.allocator);
     try testing.expect(bad.is_error);
 }

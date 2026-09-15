@@ -388,6 +388,7 @@ const Ui = struct {
                 .text = result.text,
                 .truncated = result.truncated,
                 .is_error = result.is_error,
+                .summary = result.summary,
             } },
         };
         self.record(mapped);

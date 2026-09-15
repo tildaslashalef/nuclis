@@ -19,9 +19,8 @@ pub const tool: root.Tool = .{
     .name = "write_file",
     .description = "Create or replace a UTF-8 text file in the workspace, giving the whole content at once. The write is atomic.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
-    .verb = "Write",
+    .label = "Writing",
     .subject = "path",
-    .params = &.{ "path", "content" },
     .run = run,
 };
 
@@ -86,8 +85,17 @@ fn commit(workspace: root.Workspace, alloc: std.mem.Allocator, display: []const 
     };
 
     const text = try std.fmt.allocPrint(alloc, "{s} {s} ({d} bytes)", .{ if (existed) "replaced" else "created", display, content.len });
+    errdefer alloc.free(text);
+    const summary = if (existed) blk: {
+        const counts = try root.changeSummary(alloc, change.diff.rows);
+        defer alloc.free(counts);
+        break :blk try std.fmt.allocPrint(alloc, "replaced, {s}", .{counts});
+    } else blk: {
+        const lines = std.mem.count(u8, content, "\n") + @intFromBool(content.len > 0 and content[content.len - 1] != '\n');
+        break :blk try std.fmt.allocPrint(alloc, "new file, {d} line{s}", .{ lines, if (lines == 1) "" else "s" });
+    };
     keep = true;
-    return .{ .text = text, .change = change };
+    return .{ .text = text, .change = change, .summary = summary };
 }
 
 // ----- tests -----
@@ -120,6 +128,7 @@ test "write_file creates a file and returns its diff" {
     try testing.expect(std.mem.indexOf(u8, result.text, "created note.txt") != null);
     try testing.expect(result.change != null);
     try testing.expect(std.mem.indexOf(u8, result.change.?.diff.unified, "+hello") != null);
+    try testing.expectEqualStrings("new file, 2 lines", result.summary.?);
     const contents = try fixture.tmp.dir.readFileAlloc(testing.io, "note.txt", alloc, .limited(1024));
     defer alloc.free(contents);
     try testing.expectEqualStrings("hello\nworld\n", contents);
@@ -136,6 +145,7 @@ test "write_file replaces an existing file and diffs the change" {
     try testing.expect(std.mem.indexOf(u8, result.text, "replaced note.txt") != null);
     try testing.expect(std.mem.indexOf(u8, result.change.?.diff.unified, "-old") != null);
     try testing.expect(std.mem.indexOf(u8, result.change.?.diff.unified, "+new") != null);
+    try testing.expectEqualStrings("replaced, +1 −1", result.summary.?);
     const contents = try fixture.tmp.dir.readFileAlloc(testing.io, "note.txt", alloc, .limited(1024));
     defer alloc.free(contents);
     try testing.expectEqualStrings("new\n", contents);

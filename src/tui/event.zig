@@ -61,8 +61,13 @@ pub const Event = union(enum) {
     thinking_end: f64,
     /// Answer text, as it arrives.
     answer_delta: []const u8,
-    tool_call: struct { id: Id, name: []const u8, summary: []const u8 },
-    tool_result: struct { id: Id, text: []const u8, truncated: bool, is_error: bool },
+    /// `summary` is the call row (`Reading TODO.md`); `detail` is a row of
+    /// its own known at call time (`$ make test`), null for most tools.
+    tool_call: struct { id: Id, name: []const u8, summary: []const u8, detail: ?[]const u8 = null },
+    /// `text` is what the model reads and the session stores; `summary` is
+    /// the one detail row the transcript shows instead, empty when there is
+    /// nothing to say.
+    tool_result: struct { id: Id, text: []const u8, truncated: bool, is_error: bool, summary: []const u8 = "" },
     /// A mutation's change, as structured rows. The renderer needs no parser:
     /// it lays the rows out (side by side when there is width, unified when
     /// there is not), and the unified text the model and session record comes
@@ -166,8 +171,11 @@ test "every event kind has a JSON line, with its own fields beside the type" {
     try std.testing.expect(std.mem.indexOf(u8, buffer.written(), "\"stop\":\"token_budget\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.written(), "\"generated\":400") != null);
     buffer.clearRetainingCapacity();
-    try (Event{ .tool_call = .{ .id = 3, .name = "grep", .summary = "needle" } }).writeJson(&buffer.writer);
-    try std.testing.expectEqualStrings("{\"type\":\"tool_call\",\"id\":3,\"name\":\"grep\",\"summary\":\"needle\"}\n", buffer.written());
+    try (Event{ .tool_call = .{ .id = 3, .name = "grep", .summary = "Searching needle" } }).writeJson(&buffer.writer);
+    try std.testing.expectEqualStrings("{\"type\":\"tool_call\",\"id\":3,\"name\":\"grep\",\"summary\":\"Searching needle\",\"detail\":null}\n", buffer.written());
+    buffer.clearRetainingCapacity();
+    try (Event{ .tool_result = .{ .id = 3, .text = "a:1: needle", .truncated = false, .is_error = false, .summary = "1 match in 1 file" } }).writeJson(&buffer.writer);
+    try std.testing.expectEqualStrings("{\"type\":\"tool_result\",\"id\":3,\"text\":\"a:1: needle\",\"truncated\":false,\"is_error\":false,\"summary\":\"1 match in 1 file\"}\n", buffer.written());
     buffer.clearRetainingCapacity();
     const rows = [_]diff.Row{
         .{ .old_line = 1, .new_line = 1, .kind = .context, .text = "keep" },

@@ -21,9 +21,9 @@ pub const tool: root.Tool = .{
     .name = "bash",
     .description = "Run one shell command in the workspace. Combined stdout and stderr is bounded and the exit status is reported.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}",
-    .verb = "Bash",
+    .label = "Running command",
     .subject = "command",
-    .params = &.{"command"},
+    .detail_prefix = "$ ",
     .run = run,
 };
 
@@ -139,36 +139,56 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         if (text.items.len > 0) try text.append(alloc, '\n');
         try text.appendSlice(alloc, stderr_owned);
     }
+    const lines = countLines(text.items);
+    // The detail row says only what went wrong; a clean run shows nothing
+    // beyond its command.
+    var summary: std.ArrayList(u8) = .empty;
+    errdefer summary.deinit(alloc);
     var is_error = false;
     switch (outcome) {
         .cancelled => {
             is_error = true;
             try text.appendSlice(alloc, "\n[bash: cancelled]");
+            try summary.appendSlice(alloc, "cancelled");
         },
         .timed_out => {
             is_error = true;
             try text.appendSlice(alloc, "\n[bash: timed out after 300 s]");
+            try summary.appendSlice(alloc, "timed out after 300 s");
         },
         .read_failed => {
             is_error = true;
             try text.appendSlice(alloc, "\n[bash: could not read the command's output]");
+            try summary.appendSlice(alloc, "could not read the output");
         },
-        .completed, .truncated => {},
+        .truncated => try summary.print(alloc, "output truncated at {d} bytes", .{max_output}),
+        .completed => {},
     }
     switch (term) {
         .exited => |code| if (code != 0) {
             is_error = true;
             var note: [32]u8 = undefined;
             try text.appendSlice(alloc, std.fmt.bufPrint(&note, "\n[bash: exit code {d}]", .{code}) catch "\n[bash: non-zero exit]");
+            try summary.print(alloc, "exit {d}", .{code});
         },
         .signal => |sig| {
             is_error = true;
             var note: [40]u8 = undefined;
             try text.appendSlice(alloc, std.fmt.bufPrint(&note, "\n[bash: killed by signal {d}]", .{sig}) catch "\n[bash: killed by a signal]");
+            try summary.print(alloc, "killed by signal {d}", .{sig});
         },
         else => {},
     }
-    return .{ .text = try text.toOwnedSlice(alloc), .truncated = outcome == .truncated, .is_error = is_error };
+    if (summary.items.len > 0) try summary.print(alloc, " · {d} line{s}", .{ lines, if (lines == 1) "" else "s" });
+    const owned_summary: ?[]u8 = if (summary.items.len > 0) try summary.toOwnedSlice(alloc) else null;
+    errdefer if (owned_summary) |s| alloc.free(s);
+    return .{ .text = try text.toOwnedSlice(alloc), .truncated = outcome == .truncated, .is_error = is_error, .summary = owned_summary };
+}
+
+fn countLines(text: []const u8) usize {
+    if (text.len == 0) return 0;
+    const trailing: usize = if (text[text.len - 1] == '\n') 1 else 0;
+    return std.mem.count(u8, text, "\n") + 1 - trailing;
 }
 
 fn capture(alloc: std.mem.Allocator, reader: *std.Io.Reader) std.mem.Allocator.Error![]u8 {
@@ -200,19 +220,21 @@ test "bash runs a command in the workspace and reports its output" {
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
-    const result = try run(fixture.ws, alloc, "{\"command\":\"echo hello\"}");
-    defer alloc.free(result.text);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"echo hello\"}");
+    defer result.deinit(alloc);
     try testing.expectEqualStrings("hello\n", result.text);
     try testing.expect(!result.is_error);
     try testing.expect(!result.truncated);
+    // A clean run has nothing to add under its command.
+    try testing.expect(result.summary == null);
 }
 
 test "bash folds stderr into stdout, in order" {
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
-    const result = try run(fixture.ws, alloc, "{\"command\":\"echo out; echo err >&2; echo done\"}");
-    defer alloc.free(result.text);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"echo out; echo err >&2; echo done\"}");
+    defer result.deinit(alloc);
     try testing.expectEqualStrings("out\nerr\ndone\n", result.text);
     try testing.expect(!result.is_error);
 }
@@ -221,10 +243,11 @@ test "bash reports a non-zero exit as an error result" {
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
-    const result = try run(fixture.ws, alloc, "{\"command\":\"exit 7\"}");
-    defer alloc.free(result.text);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"exit 7\"}");
+    defer result.deinit(alloc);
     try testing.expect(result.is_error);
     try testing.expect(std.mem.indexOf(u8, result.text, "exit code 7") != null);
+    try testing.expectEqualStrings("exit 7 · 0 lines", result.summary.?);
 }
 
 test "bash runs in the workspace directory" {
@@ -232,8 +255,8 @@ test "bash runs in the workspace directory" {
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
     try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "here.txt", .data = "x" });
-    const result = try run(fixture.ws, alloc, "{\"command\":\"ls\"}");
-    defer alloc.free(result.text);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"ls\"}");
+    defer result.deinit(alloc);
     try testing.expect(std.mem.indexOf(u8, result.text, "here.txt") != null);
 }
 
@@ -242,21 +265,22 @@ test "bash bounds the output and marks it truncated" {
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
     // `yes` writes without end; the cap stops the read and the child is killed.
-    const result = try run(fixture.ws, alloc, "{\"command\":\"yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}");
-    defer alloc.free(result.text);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}");
+    defer result.deinit(alloc);
     try testing.expect(result.truncated);
     try testing.expect(result.text.len <= max_output);
+    try testing.expect(std.mem.startsWith(u8, result.summary.?, "output truncated at "));
 }
 
 test "bash rejects an empty or oversized command as a result" {
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
-    const empty = try run(fixture.ws, alloc, "{\"command\":\"\"}");
-    defer alloc.free(empty.text);
+    var empty = try run(fixture.ws, alloc, "{\"command\":\"\"}");
+    defer empty.deinit(alloc);
     try testing.expect(empty.is_error);
-    const bad = try run(fixture.ws, alloc, "not json");
-    defer alloc.free(bad.text);
+    var bad = try run(fixture.ws, alloc, "not json");
+    defer bad.deinit(alloc);
     try testing.expect(bad.is_error);
 }
 
@@ -267,8 +291,8 @@ test "a requested cancellation stops the command and reaps the child" {
     defer interrupt.clear();
     interrupt.request();
     const started = std.Io.Clock.awake.now(testing.io);
-    const result = try run(fixture.ws, alloc, "{\"command\":\"sleep 30\"}");
-    defer alloc.free(result.text);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"sleep 30\"}");
+    defer result.deinit(alloc);
     const elapsed_ns = started.durationTo(std.Io.Clock.awake.now(testing.io)).nanoseconds;
     try testing.expect(result.is_error);
     try testing.expect(std.mem.indexOf(u8, result.text, "cancelled") != null);
@@ -293,8 +317,8 @@ test "the tick can request cancellation mid-command" {
     var ws = fixture.ws;
     ws.tick = .{ .context = &ticker, .call = Ticker.tick };
     const started = std.Io.Clock.awake.now(testing.io);
-    const result = try run(ws, alloc, "{\"command\":\"sleep 30\"}");
-    defer alloc.free(result.text);
+    var result = try run(ws, alloc, "{\"command\":\"sleep 30\"}");
+    defer result.deinit(alloc);
     const elapsed_ns = started.durationTo(std.Io.Clock.awake.now(testing.io)).nanoseconds;
     // The tool reached back into the driver while the command ran…
     try testing.expect(ticker.calls > 0);

@@ -55,6 +55,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-06 | Tool-call decoding and the profile-driven loop | 2026-09-14 |
 | REPO-04 | Comment and identifier hygiene | 2026-09-14 |
 | AGNT-07 | Polish, resume, and the agent plan closed | 2026-09-14 |
+| TERM-05 | Two-row tool lines: call and detail | 2026-09-15 |
 
 ## Context
 
@@ -1409,3 +1410,44 @@ model the spec asks for before the seam is called stable is still owed. Session
 files written by reusing a `--session` path append to the existing file, which
 can duplicate the first user entry; a resume seeds a fresh file, so this only
 affects reusing one print-mode path across runs.
+
+### TERM-05 — Two-row tool lines: call and detail (2026-09-15)
+
+**Outcome.** A tool call renders as two rows and its result text no longer
+reaches the transcript. The call row is a gerund and the subject (`● Reading
+README.md`, `● Listing docs/**/*.md`; `● Running command` with the command on
+a detail row of its own, `└ $ git log --oneline -1`), settled from the spinner
+by the result. The detail row is one sentence each tool supplies from the
+numbers it already has (`Result.summary`): `lines 1 to 12 of 153 · truncated,
+continue with offset=13`, `16 files`, `3 matches in 3 files`, `exit 7 · 0
+lines`, `+1 −1`, `new file, 2 lines`; a clean `bash` run adds nothing. A
+failed call shows its message in error style, bounded to three rows. The
+`k=v` bracket list and the `params` table left the registry; `describe`
+returns the call row and the optional detail. The `tool_call` event carries
+`detail`, the `tool_result` event and the session's `tool_result` entry carry
+`summary` (absent in older files, loaded as empty), so `--resume` and the
+markdown export render the same rows. Theme glyphs `done` (`●`/`*`) and
+`detail` (`└`/`\`) replace the call arrow.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: **371 default
+tests** (registry: subject-first schema and the two-row `describe`; each
+tool's summary; transcript: the two rows, a running bash call with its
+command, a failed call bounded to three rows, an empty row skipped unless
+truncated; session round trip and markdown export of `summary`; resume
+replay). Live on the pinned Qwen3.8-27B (Metal, context 8192, `agent --model
+qwen3.8-27b -p … --json --session`): a turn that globbed `docs/reference/*.md`
+(16 files), read `README.md` lines 1 to 12 of 153, and ran `git log
+--oneline -1` produced the three call/result pairs above with the expected
+`summary` and `detail` fields, and the session file stored the summaries;
+1,161 prompt tokens, 230 generated, prefill 24.3 s, decode 25.7 s. The
+interactive surface was not driven on a real TTY in this session; the
+transcript tests pin its rows.
+
+**Files.** `src/agent/tools/{root,read_file,glob,grep,bash,edit_file,write_file}.zig`,
+`src/agent/{loop,print,resume,root,session}.zig`,
+`src/tui/{event,theme,transcript}.zig`, `docs/agent-spec.md`,
+`docs/llm-guide.md`.
+
+**Remaining.** The tool bounds are still host constants unrelated to the
+context window, and a long turn still ends in a bare `ContextFull`; that is
+AGNT-08 in `TODO.md`.

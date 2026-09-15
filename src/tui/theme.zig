@@ -211,9 +211,9 @@ pub const Glyphs = struct {
     /// Fold arrows for the thinking block.
     fold_open: []const u8,
     fold_closed: []const u8,
-    /// Before a settled tool call: the arrow that marks it as the agent
-    /// reaching for a tool.
-    call: []const u8,
+    /// Before a settled tool call, and before the detail row under it.
+    done: []const u8,
+    detail: []const u8,
     /// Status-bar decorations: the idle marker, the labels of context,
     /// token counts, prefill, decode, and reasoning effort.
     idle: []const u8,
@@ -241,7 +241,8 @@ pub const unicode_glyphs: Glyphs = .{
     .ellipsis = "…",
     .fold_open = "▾",
     .fold_closed = "▸",
-    .call = "→",
+    .done = "●",
+    .detail = "└",
     .idle = "◆",
     .context = "▤",
     .tokens = "⇅",
@@ -265,7 +266,8 @@ pub const ascii_glyphs: Glyphs = .{
     .ellipsis = "...",
     .fold_open = "v",
     .fold_closed = ">",
-    .call = "->",
+    .done = "*",
+    .detail = "\\",
     .idle = "*",
     .context = "#",
     .tokens = "=",

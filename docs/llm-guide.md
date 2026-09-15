@@ -2057,3 +2057,35 @@ Read: `inference/src/quant/decode.zig` (the `2 =>` arm and its test),
 `inference/src/backends/metal/root.zig`,
 [reference/gemma4.md § Q4_0 path](reference/gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12),
 and [reference/quantization.md](reference/quantization.md).
+
+## 48. An error set is a contract: the writer that hides the allocator
+
+The tool registry promises one thing about every tool's `run`: its only Zig
+error is `Allocator.Error`. Everything else a tool can go wrong on (a missing
+file, a bad argument, a killed child) is a *result* with `is_error`, because
+the model is meant to read it. The signature says so, and the compiler holds
+the tools to it.
+
+The first draft of the detail row (`lines 1 to 12 of 153 · truncated, …`)
+was built with `std.Io.Writer.Allocating`, the growable in-memory writer, and
+did not compile: `expected 'error{OutOfMemory}!Result', found
+'error{WriteFailed}'`. `Writer` is an interface with one error, `WriteFailed`,
+because a writer over a socket, a file, or a buffer cannot promise anything
+more specific; the allocating writer folds its out-of-memory into that same
+name. A `try` through it widens the function's error set, and `run` is not
+allowed to widen. The fix in `read_file.zig`'s `summarize` and in `bash.zig`
+is `std.ArrayList(u8)` with `print(alloc, …)` and `appendSlice(alloc, …)`,
+whose errors are exactly `Allocator.Error`. Same bytes, same growth strategy,
+different contract at the seam.
+
+Two smaller things in the same change. `Result.summary` is `?[]u8`: null is
+"nothing to say" (a clean `bash` run, every `fail`), and an owned slice is a
+row to show; `Result.deinit` frees it when present, and a test that took
+`result.text` and freed it by hand had to become `result.deinit(alloc)` or the
+testing allocator reports the leak. And `describe` returns a small struct
+(`Described{ summary, detail }`) with its own `deinit` rather than two
+slices, so every caller (the loop, the resume replay) has one thing to free.
+
+Read: `Result` and `Described` in `src/agent/tools/root.zig`, `summarize` in
+`src/agent/tools/read_file.zig`, the summary block at the end of `run` in
+`src/agent/tools/bash.zig`.

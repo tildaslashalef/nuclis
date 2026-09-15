@@ -12,9 +12,8 @@ pub const tool: root.Tool = .{
     .name = "read_file",
     .description = "Read a bounded region of a UTF-8 text file in the workspace. `offset` is a 1-based line, `count` the number of lines.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"path\"]}",
-    .verb = "Read",
+    .label = "Reading",
     .subject = "path",
-    .params = &.{ "path", "offset", "count" },
     .run = run,
 };
 
@@ -74,7 +73,25 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         taken += 1;
         line += 1;
     }
-    return .{ .text = try out.toOwnedSlice(alloc), .truncated = byte_truncated or line_truncated };
+    const total = std.mem.count(u8, content, "\n") + 1;
+    const summary = try summarize(alloc, offset, taken, total, line_truncated, byte_truncated);
+    errdefer alloc.free(summary);
+    return .{ .text = try out.toOwnedSlice(alloc), .truncated = byte_truncated or line_truncated, .summary = summary };
+}
+
+/// The detail row: the range shown, the file's length, and, when the read
+/// stopped early, the offset that continues it.
+fn summarize(alloc: std.mem.Allocator, offset: usize, taken: usize, total: usize, line_truncated: bool, byte_truncated: bool) std.mem.Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    if (taken == 0) {
+        try out.print(alloc, "no lines at offset {d}; the file has {d}", .{ offset, total });
+    } else {
+        try out.print(alloc, "lines {d} to {d} of {d}", .{ offset, offset + taken - 1, total });
+    }
+    if (line_truncated) try out.print(alloc, " · truncated, continue with offset={d}", .{offset + taken});
+    if (byte_truncated) try out.print(alloc, " · first {d} bytes only", .{max_bytes});
+    return out.toOwnedSlice(alloc);
 }
 
 // ----- tests -----
@@ -93,16 +110,23 @@ test "read_file returns the addressed lines and marks truncation" {
     defer testing.allocator.free(w.root_path);
     try w.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\nthree\nfour" });
 
-    const all = try run(w.ws, testing.allocator, "{\"path\":\"a.txt\"}");
-    defer testing.allocator.free(all.text);
+    var all = try run(w.ws, testing.allocator, "{\"path\":\"a.txt\"}");
+    defer all.deinit(testing.allocator);
     try testing.expectEqualStrings("one\ntwo\nthree\nfour", all.text);
     try testing.expect(!all.truncated);
     try testing.expect(!all.is_error);
+    try testing.expectEqualStrings("lines 1 to 4 of 4", all.summary.?);
 
-    const middle = try run(w.ws, testing.allocator, "{\"path\":\"a.txt\",\"offset\":2,\"count\":2}");
-    defer testing.allocator.free(middle.text);
+    var middle = try run(w.ws, testing.allocator, "{\"path\":\"a.txt\",\"offset\":2,\"count\":2}");
+    defer middle.deinit(testing.allocator);
     try testing.expectEqualStrings("two\nthree", middle.text);
     try testing.expect(middle.truncated); // "four" was not shown
+    try testing.expectEqualStrings("lines 2 to 3 of 4 · truncated, continue with offset=4", middle.summary.?);
+
+    var past = try run(w.ws, testing.allocator, "{\"path\":\"a.txt\",\"offset\":9}");
+    defer past.deinit(testing.allocator);
+    try testing.expectEqualStrings("", past.text);
+    try testing.expectEqualStrings("no lines at offset 9; the file has 4", past.summary.?);
 
     try testing.expectError(error.OutsideWorkspace, @as(root.Workspace, w.ws).resolve(testing.allocator, "/"));
 }
@@ -113,20 +137,21 @@ test "read_file reports bad arguments, missing files, and non-UTF-8 as results" 
     defer testing.allocator.free(w.root_path);
     try w.tmp.dir.writeFile(testing.io, .{ .sub_path = "bin", .data = "\xff\xfe" });
 
-    const bad = try run(w.ws, testing.allocator, "not json");
-    defer testing.allocator.free(bad.text);
+    var bad = try run(w.ws, testing.allocator, "not json");
+    defer bad.deinit(testing.allocator);
     try testing.expect(bad.is_error);
+    try testing.expect(bad.summary == null);
 
-    const missing = try run(w.ws, testing.allocator, "{\"path\":\"nope.txt\"}");
-    defer testing.allocator.free(missing.text);
+    var missing = try run(w.ws, testing.allocator, "{\"path\":\"nope.txt\"}");
+    defer missing.deinit(testing.allocator);
     try testing.expect(missing.is_error);
 
-    const binary = try run(w.ws, testing.allocator, "{\"path\":\"bin\"}");
-    defer testing.allocator.free(binary.text);
+    var binary = try run(w.ws, testing.allocator, "{\"path\":\"bin\"}");
+    defer binary.deinit(testing.allocator);
     try testing.expect(binary.is_error);
     try testing.expect(std.mem.indexOf(u8, binary.text, "UTF-8") != null);
 
-    const zero = try run(w.ws, testing.allocator, "{\"path\":\"bin\",\"offset\":0}");
-    defer testing.allocator.free(zero.text);
+    var zero = try run(w.ws, testing.allocator, "{\"path\":\"bin\",\"offset\":0}");
+    defer zero.deinit(testing.allocator);
     try testing.expect(zero.is_error);
 }

@@ -18,9 +18,8 @@ pub const tool: root.Tool = .{
     .name = "grep",
     .description = "Search workspace files for a literal, case-sensitive string. Returns matching lines as `path:line: text`; bounded and sorted.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}",
-    .verb = "Grep",
+    .label = "Searching",
     .subject = "pattern",
-    .params = &.{"pattern"},
     .run = run,
 };
 
@@ -60,7 +59,31 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         try out.appendSlice(alloc, std.fmt.bufPrint(&number, "{d}: ", .{match.line}) catch unreachable);
         try out.appendSlice(alloc, match.text);
     }
-    return .{ .text = try out.toOwnedSlice(alloc), .truncated = walker.truncated };
+    const summary = try summarize(alloc, walker.matches.items, walker.truncated);
+    errdefer alloc.free(summary);
+    return .{ .text = try out.toOwnedSlice(alloc), .truncated = walker.truncated, .summary = summary };
+}
+
+/// The detail row: matches and the files they fall in. `matches` is sorted
+/// by path, so a file boundary is a path change.
+fn summarize(alloc: std.mem.Allocator, matches: []const Match, truncated: bool) std.mem.Allocator.Error![]u8 {
+    var files: usize = 0;
+    for (matches, 0..) |match, i| {
+        if (i == 0 or !std.mem.eql(u8, matches[i - 1].path, match.path)) files += 1;
+    }
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    if (matches.len == 0) {
+        try out.appendSlice(alloc, "no matches");
+    } else {
+        try out.print(alloc, "{d} match{s} in {d} file{s}", .{ matches.len, plural(matches.len, "es"), files, plural(files, "s") });
+    }
+    if (truncated) try out.appendSlice(alloc, " · truncated");
+    return out.toOwnedSlice(alloc);
+}
+
+fn plural(count: usize, suffix: []const u8) []const u8 {
+    return if (count == 1) "" else suffix;
 }
 
 const Match = struct {
@@ -196,22 +219,27 @@ test "grep finds literal matches as path:line: text, sorted, and skips hidden an
     try dir.writeFile(testing.io, .{ .sub_path = "sub/c.txt", .data = "line\nneedle three\n" });
     try dir.writeFile(testing.io, .{ .sub_path = "binary.bin", .data = "needle\x00\x01" });
 
-    const result = try run(fixture.ws, alloc, "{\"pattern\":\"needle\"}");
-    defer alloc.free(result.text);
+    var result = try run(fixture.ws, alloc, "{\"pattern\":\"needle\"}");
+    defer result.deinit(alloc);
     try testing.expectEqualStrings("a.txt:1: needle one\nb.txt:2: needle two\nsub/c.txt:2: needle three", result.text);
     try testing.expect(!result.truncated);
     try testing.expect(!result.is_error);
+    try testing.expectEqualStrings("3 matches in 3 files", result.summary.?);
+
+    var none = try run(fixture.ws, alloc, "{\"pattern\":\"absent\"}");
+    defer none.deinit(alloc);
+    try testing.expectEqualStrings("no matches", none.summary.?);
 }
 
 test "grep reports bad arguments and an empty pattern as results" {
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
-    const bad = try run(fixture.ws, alloc, "not json");
-    defer alloc.free(bad.text);
+    var bad = try run(fixture.ws, alloc, "not json");
+    defer bad.deinit(alloc);
     try testing.expect(bad.is_error);
-    const empty = try run(fixture.ws, alloc, "{\"pattern\":\"\"}");
-    defer alloc.free(empty.text);
+    var empty = try run(fixture.ws, alloc, "{\"pattern\":\"\"}");
+    defer empty.deinit(alloc);
     try testing.expect(empty.is_error);
 }
 
@@ -225,11 +253,12 @@ test "grep marks the line and byte bounds as truncated" {
     for (0..250) |i| try content.writer.print("needle {d}\n", .{i});
     try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "many.txt", .data = content.written() });
 
-    const result = try run(fixture.ws, alloc, "{\"pattern\":\"needle\"}");
-    defer alloc.free(result.text);
+    var result = try run(fixture.ws, alloc, "{\"pattern\":\"needle\"}");
+    defer result.deinit(alloc);
     try testing.expect(result.truncated);
     var count: usize = 0;
     var lines = std.mem.splitScalar(u8, result.text, '\n');
     while (lines.next()) |line| : (count += 1) try testing.expect(std.mem.indexOf(u8, line, "needle") != null);
     try testing.expectEqual(max_matches, count);
+    try testing.expectEqualStrings("200 matches in 1 file · truncated", result.summary.?);
 }

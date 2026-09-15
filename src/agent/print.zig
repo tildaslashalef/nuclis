@@ -221,6 +221,7 @@ const Turn = struct {
                 .text = result.text,
                 .truncated = result.truncated,
                 .is_error = result.is_error,
+                .summary = result.summary,
             } },
         };
         try self.log.append(mapped, now);

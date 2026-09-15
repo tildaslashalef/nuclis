@@ -85,6 +85,8 @@ pub const Result = struct {
     text: []const u8,
     truncated: bool = false,
     is_error: bool = false,
+    /// The transcript's detail row, kept so a resumed session shows it.
+    summary: []const u8 = "",
 };
 
 /// What one completion step reported. `outcome` is the engine's; `replayed`
@@ -344,10 +346,10 @@ pub const Agent = struct {
     fn execute(self: *Agent, calls: []const Profile.ToolCall) !void {
         for (calls) |call| {
             const id = call.id;
-            // The model names the tools; the transcript shows a humanized line.
-            const summary = try tools.describe(self.alloc, call.name, call.arguments);
-            defer self.alloc.free(summary);
-            try self.events.send(self.events.context, .{ .tool_call = .{ .id = id, .name = call.name, .summary = summary } });
+            // The model names the tools; the transcript shows a humanized row.
+            var described = try tools.describe(self.alloc, call.name, call.arguments);
+            defer described.deinit(self.alloc);
+            try self.events.send(self.events.context, .{ .tool_call = .{ .id = id, .name = call.name, .summary = described.summary, .detail = described.detail } });
 
             var result = try self.runTool(call);
             defer result.deinit(self.alloc);
@@ -360,11 +362,13 @@ pub const Agent = struct {
                 model_text = joined.?;
             }
 
+            const summary = result.summary orelse "";
             try self.events.send(self.events.context, .{ .tool_result = .{
                 .id = id,
                 .text = result.text,
                 .truncated = result.truncated,
                 .is_error = result.is_error,
+                .summary = summary,
             } });
             try self.events.record(self.events.context, .{ .tool_result = .{
                 .call = id,
@@ -372,6 +376,7 @@ pub const Agent = struct {
                 .text = model_text,
                 .truncated = result.truncated,
                 .is_error = result.is_error,
+                .summary = summary,
             } });
             try self.appendItem(.tool, model_text, "", &.{}, id);
         }

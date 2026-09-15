@@ -121,16 +121,34 @@ pub const Change = struct {
     }
 };
 
+/// The detail row of a mutation: added and removed line counts from the
+/// structured diff (`+12 −3`).
+pub fn changeSummary(alloc: Allocator, rows: []const tui.diff.Row) ![]u8 {
+    var added: usize = 0;
+    var removed: usize = 0;
+    for (rows) |row| switch (row.kind) {
+        .add => added += 1,
+        .remove => removed += 1,
+        .context => {},
+    };
+    return std.fmt.allocPrint(alloc, "+{d} −{d}", .{ added, removed });
+}
+
 pub const Result = struct {
-    /// Owned by the caller.
+    /// What the model reads. Owned by the caller.
     text: []u8,
     truncated: bool = false,
     is_error: bool = false,
+    /// One sentence for the transcript's detail row (`lines 1 to 40 of 96`),
+    /// owned; null when there is nothing to say (a clean `bash` run) and on
+    /// every `fail`, whose `text` is the message.
+    summary: ?[]u8 = null,
     /// Set by a mutation tool; null for reads.
     change: ?Change = null,
 
     pub fn deinit(self: *Result, alloc: Allocator) void {
         alloc.free(self.text);
+        if (self.summary) |summary| alloc.free(summary);
         if (self.change) |*change| change.deinit(alloc);
         self.* = undefined;
     }
@@ -141,14 +159,15 @@ pub const Tool = struct {
     description: []const u8,
     /// A JSON object: the parameter schema the model is shown.
     parameters: []const u8,
-    /// The display verb the transcript puts before the subject (`Read`,
-    /// `Write`, `Bash`, …). Presentation only; the model still sees `name`.
-    verb: []const u8,
-    /// The primary parameter, shown right after the verb.
+    /// The gerund the call row starts with (`Reading`, `Running`, …).
+    /// Presentation only; the model still sees `name`.
+    label: []const u8,
+    /// The primary parameter: the first property of `parameters`, shown
+    /// after the label, or on the detail row when `detail_prefix` is set.
     subject: []const u8,
-    /// Parameter names in schema order, for the `k=v` list. Pinned against
-    /// `parameters` by a test.
-    params: []const []const u8,
+    /// When set, the subject moves to its own detail row behind this prefix
+    /// (`bash`: `$ `), so a command never crowds the call row.
+    detail_prefix: ?[]const u8 = null,
     run: *const fn (workspace: Workspace, alloc: Allocator, arguments: []const u8) Allocator.Error!Result,
 };
 
@@ -164,40 +183,50 @@ pub fn fail(alloc: Allocator, comptime format: []const u8, args: anytype) Alloca
     return .{ .text = try std.fmt.allocPrint(alloc, format, args), .is_error = true };
 }
 
-/// One tool call as a humanized line for the transcript: the verb, the
-/// primary subject, then the remaining arguments as `k=v` in schema order,
-/// defaults and unset fields omitted — `Read TODO.md [offset=126, count=24]`.
-/// The model-facing name and raw JSON are untouched; this is display only.
-/// Anything unparseable falls back to `verb <raw arguments>`.
-pub fn describe(alloc: Allocator, name: []const u8, arguments: []const u8) ![]u8 {
-    const tool = find(name) orelse return std.fmt.allocPrint(alloc, "{s} {s}", .{ name, arguments });
+/// A tool call as the transcript shows it: the call row (`Reading TODO.md`)
+/// and, for a tool with a `detail_prefix`, the detail row (`$ make test`).
+/// Both owned.
+pub const Described = struct {
+    summary: []u8,
+    detail: ?[]u8 = null,
+
+    pub fn deinit(self: *Described, alloc: Allocator) void {
+        alloc.free(self.summary);
+        if (self.detail) |detail| alloc.free(detail);
+        self.* = undefined;
+    }
+};
+
+/// Humanizes one call for the transcript: the label and the subject, the
+/// other arguments left to the result's detail row. The model-facing name
+/// and raw JSON are untouched. Anything unparseable falls back to
+/// `label <raw arguments>`.
+pub fn describe(alloc: Allocator, name: []const u8, arguments: []const u8) !Described {
+    const tool = find(name) orelse return .{ .summary = try std.fmt.allocPrint(alloc, "{s} {s}", .{ name, arguments }) };
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, arguments, .{}) catch
-        return std.fmt.allocPrint(alloc, "{s} {s}", .{ tool.verb, arguments });
+        return .{ .summary = try std.fmt.allocPrint(alloc, "{s} {s}", .{ tool.label, arguments }) };
     defer parsed.deinit();
-    if (parsed.value != .object) return std.fmt.allocPrint(alloc, "{s} {s}", .{ tool.verb, arguments });
-    const object = parsed.value.object;
+    if (parsed.value != .object) return .{ .summary = try std.fmt.allocPrint(alloc, "{s} {s}", .{ tool.label, arguments }) };
+    const subject = parsed.value.object.get(tool.subject);
 
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    try out.writer.writeAll(tool.verb);
-    if (object.get(tool.subject)) |value| {
+    try out.writer.writeAll(tool.label);
+    if (tool.detail_prefix) |prefix| {
+        const summary = try out.toOwnedSlice();
+        errdefer alloc.free(summary);
+        const value = subject orelse return .{ .summary = summary };
+        var detail: std.Io.Writer.Allocating = .init(alloc);
+        errdefer detail.deinit();
+        try detail.writer.writeAll(prefix);
+        try writeDisplayValue(&detail.writer, value);
+        return .{ .summary = summary, .detail = try detail.toOwnedSlice() };
+    }
+    if (subject) |value| {
         try out.writer.writeByte(' ');
         try writeDisplayValue(&out.writer, value);
     }
-    var first = true;
-    for (tool.params) |param| {
-        if (std.mem.eql(u8, param, tool.subject)) continue;
-        const value = object.get(param) orelse continue;
-        if (first) {
-            try out.writer.writeAll(" [");
-            first = false;
-        } else try out.writer.writeAll(", ");
-        try out.writer.writeAll(param);
-        try out.writer.writeByte('=');
-        try writeDisplayValue(&out.writer, value);
-    }
-    if (!first) try out.writer.writeByte(']');
-    return out.toOwnedSlice();
+    return .{ .summary = try out.toOwnedSlice() };
 }
 
 /// A parameter value on the one-line display: strings are literal, everything
@@ -229,47 +258,42 @@ test "the registry finds tools by name" {
     try std.testing.expect(find("nonexistent") == null);
 }
 
-test "every tool's display parameters match its schema, in order" {
+test "every tool's subject is the first property of its schema" {
     const alloc = std.testing.allocator;
     for (all) |tool| {
         const parsed = try std.json.parseFromSlice(std.json.Value, alloc, tool.parameters, .{});
         defer parsed.deinit();
         const properties = parsed.value.object.get("properties").?.object;
-        var i: usize = 0;
         var it = properties.iterator();
-        while (it.next()) |entry| : (i += 1) {
-            try std.testing.expect(i < tool.params.len);
-            try std.testing.expectEqualStrings(entry.key_ptr.*, tool.params[i]);
-        }
-        try std.testing.expectEqual(tool.params.len, i);
-        // The subject is a real parameter and is named first in the schema.
-        try std.testing.expect(tool.params.len > 0);
-        try std.testing.expectEqualStrings(tool.params[0], tool.subject);
+        const first = it.next() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(first.key_ptr.*, tool.subject);
     }
 }
 
-test "describe humanizes a call, omitting defaults and ordering by schema" {
+test "describe humanizes a call: label and subject, a command on its own row" {
     const alloc = std.testing.allocator;
-    const read = try describe(alloc, "read_file", "{\"path\":\"TODO.md\",\"count\":24,\"offset\":126}");
-    defer alloc.free(read);
-    try std.testing.expectEqualStrings("Read TODO.md [offset=126, count=24]", read);
+    var read = try describe(alloc, "read_file", "{\"path\":\"TODO.md\",\"count\":24,\"offset\":126}");
+    defer read.deinit(alloc);
+    try std.testing.expectEqualStrings("Reading TODO.md", read.summary);
+    try std.testing.expect(read.detail == null);
 
-    const bash_line = try describe(alloc, "bash", "{\"command\":\"ls -la\"}");
-    defer alloc.free(bash_line);
-    try std.testing.expectEqualStrings("Bash ls -la", bash_line);
+    var bash_line = try describe(alloc, "bash", "{\"command\":\"ls -la\"}");
+    defer bash_line.deinit(alloc);
+    try std.testing.expectEqualStrings("Running command", bash_line.summary);
+    try std.testing.expectEqualStrings("$ ls -la", bash_line.detail.?);
 
-    // A multi-line command stays on one display line.
-    const multiline = try describe(alloc, "bash", "{\"command\":\"echo a\\necho b\"}");
-    defer alloc.free(multiline);
-    try std.testing.expectEqualStrings("Bash echo a echo b", multiline);
+    // A multi-line command stays on one display row.
+    var multiline = try describe(alloc, "bash", "{\"command\":\"echo a\\necho b\"}");
+    defer multiline.deinit(alloc);
+    try std.testing.expectEqualStrings("$ echo a echo b", multiline.detail.?);
 
-    const bad = try describe(alloc, "read_file", "not json");
-    defer alloc.free(bad);
-    try std.testing.expectEqualStrings("Read not json", bad);
+    var bad = try describe(alloc, "read_file", "not json");
+    defer bad.deinit(alloc);
+    try std.testing.expectEqualStrings("Reading not json", bad.summary);
 
-    const unknown = try describe(alloc, "nope", "{\"x\":1}");
-    defer alloc.free(unknown);
-    try std.testing.expectEqualStrings("nope {\"x\":1}", unknown);
+    var unknown = try describe(alloc, "nope", "{\"x\":1}");
+    defer unknown.deinit(alloc);
+    try std.testing.expectEqualStrings("nope {\"x\":1}", unknown.summary);
 }
 
 test "resolve accepts inside the workspace and refuses escapes" {

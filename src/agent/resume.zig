@@ -166,9 +166,9 @@ pub fn replay(alloc: Allocator, tr: *transcript.Transcript, loaded: session.Load
                 }
                 if (a.answer.len > 0) try tr.apply(.{ .answer_delta = a.answer });
                 for (a.tool_calls) |call| {
-                    const summary = try tools.describe(alloc, call.name, call.arguments);
-                    defer alloc.free(summary);
-                    try tr.apply(.{ .tool_call = .{ .id = call.id, .name = call.name, .summary = summary } });
+                    var described = try tools.describe(alloc, call.name, call.arguments);
+                    defer described.deinit(alloc);
+                    try tr.apply(.{ .tool_call = .{ .id = call.id, .name = call.name, .summary = described.summary, .detail = described.detail } });
                 }
                 tr.closeOpen();
                 open_turn = true;
@@ -178,6 +178,7 @@ pub fn replay(alloc: Allocator, tr: *transcript.Transcript, loaded: session.Load
                 .text = r.text,
                 .truncated = r.truncated,
                 .is_error = r.is_error,
+                .summary = r.summary,
             } }),
             else => {},
         }
@@ -197,7 +198,7 @@ fn sampleSession(alloc: Allocator) !session.Loaded {
         "{\"type\":\"user\",\"id\":1,\"parent\":null,\"time\":\"t1\",\"text\":\"add a greeting\"}\n" ++
         "{\"type\":\"assistant\",\"id\":2,\"parent\":1,\"time\":\"t2\",\"thinking\":\"read it first\",\"answer\":\"Let me look.\\n\"," ++
         "\"tool_calls\":[{\"id\":4,\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"main.zig\\\"}\"}],\"stop\":\"eos\",\"stats\":{\"generated\":5}}\n" ++
-        "{\"type\":\"tool_result\",\"id\":3,\"parent\":2,\"time\":\"t3\",\"call\":\"4\",\"text\":\"pub fn main() {}\",\"truncated\":false,\"is_error\":false}\n" ++
+        "{\"type\":\"tool_result\",\"id\":3,\"parent\":2,\"time\":\"t3\",\"call\":\"4\",\"text\":\"pub fn main() {}\",\"truncated\":false,\"is_error\":false,\"summary\":\"lines 1 to 1 of 1\"}\n" ++
         "{\"type\":\"assistant\",\"id\":4,\"parent\":3,\"time\":\"t4\",\"answer\":\"Added it.\\n\",\"stop\":\"eos\",\"stats\":{\"generated\":3}}\n";
     return session.parseText(alloc, text, null);
 }
@@ -238,13 +239,15 @@ test "the replay renders the saved conversation, tool call and result included" 
     const s = text.items;
     try testing.expect(std.mem.indexOf(u8, s, "add a greeting") != null);
     try testing.expect(std.mem.indexOf(u8, s, "Let me look.") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "Read main.zig") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "pub fn main() {}") != null);
+    try testing.expect(std.mem.indexOf(u8, s, "Reading main.zig") != null);
+    // The result's text stays in the file; the transcript shows its summary.
+    try testing.expect(std.mem.indexOf(u8, s, "pub fn main() {}") == null);
+    try testing.expect(std.mem.indexOf(u8, s, "lines 1 to 1 of 1") != null);
     try testing.expect(std.mem.indexOf(u8, s, "Added it.") != null);
     // The tool result follows the call it answers.
     const answer_at = std.mem.indexOf(u8, s, "Let me look.") orelse return error.TestUnexpectedResult;
-    const call_at = std.mem.indexOf(u8, s, "Read main.zig") orelse return error.TestUnexpectedResult;
-    const result_at = std.mem.indexOf(u8, s, "pub fn main() {}") orelse return error.TestUnexpectedResult;
+    const call_at = std.mem.indexOf(u8, s, "Reading main.zig") orelse return error.TestUnexpectedResult;
+    const result_at = std.mem.indexOf(u8, s, "lines 1 to 1 of 1") orelse return error.TestUnexpectedResult;
     try testing.expect(answer_at < call_at);
     try testing.expect(call_at < result_at);
 }
