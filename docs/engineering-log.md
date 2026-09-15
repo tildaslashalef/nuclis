@@ -58,6 +58,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | TERM-05 | Two-row tool lines: call and detail | 2026-09-15 |
 | AGNT-08 | Context budget: bounded results, in-turn elision, honest failure | 2026-09-15 |
 | TERM-06 | Per-step thinking blocks with their own duration | 2026-09-15 |
+| ENGN-09 | Primed sessions: prefill the prefix at startup, restore it on new | 2026-09-15 |
 
 ## Context
 
@@ -1532,3 +1533,50 @@ alone.
 
 **Remaining.** The interactive fold label was not driven on a real TTY in this
 session; the transcript's label logic is pinned by its tests.
+
+### ENGN-09 — Primed sessions: prefill the prefix at startup, restore it on new (2026-09-15)
+
+**Outcome.** The wait after the first Enter was the prefill of the system
+block and tools (about 850 tokens) plus the cold first pass, paid again on
+every new session. Each profile now exposes `prefix`: the bytes every
+rendering that starts with the same leading system messages (and tools)
+begins with, without a generation prompt — Qwen's system block, Gemma's
+`<bos>` and system turn — pinned by tests as a byte prefix of `render` that
+ends at a turn boundary, so the remainder encodes as the whole would.
+`Completer.prime` renders it, encodes, prefills through the engine (the
+existing progress observer makes it visible), observes the tokens into the
+sampler history, records it as consumed, and keeps a `Session` snapshot
+(ENGN-06). `Completer.run` starts from that snapshot (`restorePrimed`)
+whenever the session holds nothing usable and the rendering begins with the
+prefix: the first turn, a new session, a resume, and the replay after
+elision; only a rendering that does not start with it falls back to a full
+replay. The interactive surface primes at startup under a "warming up" bar
+(Enter queues), after a `/ctx` re-open (the snapshot is bound to the
+engine's capacity and layout), and after `/think` (the effort is part of the
+system block); print mode primes before its turn. A window that cannot hold
+the prefix plus the output budget is a startup notice, or print mode's
+error diagnostic, instead of a `ContextFull` on the first Enter.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: **379 default
+tests** (the Qwen and Gemma prefixes are byte prefixes of their renderings for
+every effort with and without tools; the agent's own system prompt and tool
+definitions render as an increment over the prefix, never a replay). Live on
+the pinned Qwen3.8-27B (Metal, context 8192, the playground), the same
+two-step turn as TERM-06's check: the first step's prompt went from **876 to
+35 tokens** and its prefill from **10.4 s to 0.8 s** (the 841-token prefix
+was consumed at startup instead); the second step was unchanged (437 tokens,
+5.9 s). The 3K elision scenario of AGNT-08, replayed after its cut, prefilled
+**1,366 tokens instead of 2,207** on the restored snapshot and gave the
+identical answer, which is the restore's correctness check. `--ctx-size
+1024` now ends at startup with `context window too small for the system
+prompt and tools: 2889 tokens (prefix plus output budget) of 1024`.
+
+**Files.** `inference/src/profiles/{root,qwen38,gemma4}.zig`,
+`inference/src/engine.zig`, `src/agent/loop.zig`, `src/agent/root.zig`,
+`src/agent/print.zig`, `docs/agent-spec.md`, `docs/reference/session.md`.
+
+**Remaining.** The interactive warm-up bar, Enter queueing during it, and the
+`/new` restore were not driven on a real TTY in this session; print mode
+exercised the same completer paths. The primed snapshot holds the prefix's
+cache (about 64 KiB per token with F16, some 50 MB here) for the life of the
+engine.

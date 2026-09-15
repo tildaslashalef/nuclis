@@ -42,6 +42,24 @@ pub const stream_markers: profiles.StreamMarkers = .{ .open = "<|channel>", .clo
 /// user. Assistant reasoning is accepted separately and dropped (see the
 /// module comment); assistant content carrying the channel markers is rejected
 /// rather than stripped as the template would.
+/// The bytes every rendering that starts with these system messages starts
+/// with: `<bos>` and the system turn. Pinned as a byte prefix of `render`.
+pub fn prefix(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
+    if (tools.len != 0) return error.ToolsUnsupported;
+    const prefix_count = profiles.leadingSystemCount(messages);
+    const thinking = effort != .off;
+    var builder: Builder = .{ .alloc = alloc, .limit = limits.output_bytes };
+    errdefer builder.bytes.deinit(alloc);
+    try builder.add("<bos>");
+    if (thinking or prefix_count > 0) {
+        try builder.add("<|turn>system\n");
+        if (thinking) try builder.add("<|think|>\n");
+        if (prefix_count > 0) try builder.add(trim(messages[0].content));
+        try builder.add("<turn|>\n");
+    }
+    return builder.bytes.toOwnedSlice(alloc);
+}
+
 pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
     try profiles.validate(alloc, messages, tools, limits);
     // The deliberate position recorded in the module comment: a structurally
@@ -222,4 +240,20 @@ fn allocationCase(alloc: std.mem.Allocator) !void {
 
 test "prompt rendering cleans up every allocation failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{});
+}
+
+test "the prefix is a byte prefix of every rendering that starts with its system message" {
+    const alloc = std.testing.allocator;
+    const system: Message = .{ .role = .system, .content = "You are terse." };
+    const user: Message = .{ .role = .user, .content = "hello" };
+    inline for (.{ .off, .low }) |effort| {
+        for ([_][]const Message{ &.{ system, user }, &.{user} }) |messages| {
+            const head = try prefix(alloc, messages[0 .. messages.len - 1], &.{}, effort, .{});
+            defer alloc.free(head);
+            const full = try render(alloc, messages, &.{}, effort, .{});
+            defer alloc.free(full);
+            try std.testing.expect(std.mem.startsWith(u8, full, head));
+            try std.testing.expect(std.mem.startsWith(u8, full[head.len..], "<|turn>user\n"));
+        }
+    }
 }

@@ -767,9 +767,84 @@ pub const Completer = struct {
     seen: std.ArrayList(u8) = .empty,
     /// Set when `run` last reported `ContextFull`, for the caller's message.
     overflow: ?Overflow = null,
+    /// The system block and tools already consumed: restored instead of
+    /// re-prefilled whenever a conversation starts from that prefix.
+    primed: ?Primed = null,
+
+    const Primed = struct {
+        text: []u8,
+        tokens: []u32,
+        snapshot: inference.session.Snapshot,
+
+        fn deinit(self: *Primed, alloc: Allocator) void {
+            alloc.free(self.text);
+            alloc.free(self.tokens);
+            self.snapshot.deinit();
+            self.* = undefined;
+        }
+    };
 
     pub fn model(self: *Completer) Model {
         return .{ .context = self, .run = run, .count = count };
+    }
+
+    /// Prefills the system block and tools now, so the first turn — and every
+    /// session that starts from the same prefix — pays only its own message.
+    /// Replaces any earlier priming. On failure the session is reset and
+    /// nothing is primed; `ContextFull` (with `overflow` set) means the window
+    /// cannot hold the prefix plus the output budget. Returns the tokens
+    /// consumed, 0 when the profile has no prefix to prime.
+    pub fn prime(self: *Completer, system: []const u8, definitions: []const Profile.ToolDefinition) !usize {
+        self.dropPrimed();
+        const text = try self.eng.prefix(&.{.{ .role = .system, .content = system }}, definitions, self.effort);
+        errdefer self.alloc.free(text);
+        if (text.len == 0) {
+            self.alloc.free(text);
+            return 0;
+        }
+        const tokens = try self.eng.encode(text);
+        errdefer self.alloc.free(tokens);
+        const session = self.eng.model.session();
+        if (tokens.len + self.buffers.generated.len > session.capacity) {
+            self.overflow = .{ .needed = tokens.len + self.buffers.generated.len, .capacity = session.capacity };
+            return error.ContextFull;
+        }
+        self.eng.model.reset();
+        if (self.history) |h| h.reset();
+        self.seen.clearRetainingCapacity();
+        self.eng.model.prefill(tokens, self.buffers.logits, null, null, self.observer) catch |err| {
+            self.eng.model.reset();
+            return err;
+        };
+        if (self.history) |h| for (tokens) |token| try h.observe(token);
+        const snapshot = try self.eng.model.snapshot(self.alloc);
+        self.primed = .{ .text = text, .tokens = tokens, .snapshot = snapshot };
+        try self.seen.appendSlice(self.alloc, text);
+        return tokens.len;
+    }
+
+    /// Forgets the primed prefix (a re-opened engine cannot restore it).
+    pub fn dropPrimed(self: *Completer) void {
+        if (self.primed) |*p| p.deinit(self.alloc);
+        self.primed = null;
+    }
+
+    /// When `full` starts with the primed prefix, puts the session back to
+    /// the primed state and returns what remains to prefill; null otherwise.
+    fn restorePrimed(self: *Completer, full: []const u8) !?[]const u8 {
+        const p = &(self.primed orelse return null);
+        if (!std.mem.startsWith(u8, full, p.text)) return null;
+        // A reset first: `restore` needs a ready session, and a cancelled
+        // step leaves a failed one.
+        self.eng.model.reset();
+        try self.eng.model.restore(&p.snapshot);
+        if (self.history) |h| {
+            h.reset();
+            for (p.tokens) |token| try h.observe(token);
+        }
+        self.seen.clearRetainingCapacity();
+        try self.seen.appendSlice(self.alloc, p.text);
+        return full[p.text.len..];
     }
 
     fn count(context: *anyopaque, text: []const u8) anyerror!usize {
@@ -787,6 +862,7 @@ pub const Completer = struct {
     }
 
     pub fn deinit(self: *Completer) void {
+        self.dropPrimed();
         self.seen.deinit(self.alloc);
     }
 
@@ -795,11 +871,16 @@ pub const Completer = struct {
         var replayed = false;
         const full = try self.eng.render(messages, definitions, self.effort);
         defer self.alloc.free(full);
-        const remainder = increment(self.seen.items, full) orelse blk: {
+        const remainder = blk: {
+            if (self.seen.items.len > 0) if (increment(self.seen.items, full)) |rest| break :blk rest;
+            // Nothing usable in the session: start from the primed prefix
+            // when the conversation begins with it, else from empty. Only a
+            // conversation that was in the session counts as a replay.
+            replayed = self.seen.items.len > 0;
+            if (try self.restorePrimed(full)) |rest| break :blk rest;
             self.eng.model.reset();
             if (self.history) |h| h.reset();
             self.seen.clearRetainingCapacity();
-            replayed = true;
             break :blk full;
         };
         const tokens = try self.eng.encode(remainder);
@@ -1281,6 +1362,21 @@ test "with nothing left to elide, a full window is the caller's error" {
     defer agent.deinit();
     try testing.expectError(error.ContextFull, agent.turn("hello"));
     try testing.expectEqual(@as(usize, 0), capture.compactions);
+}
+
+test "the primed prefix is what the first turn's rendering starts with" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const defs = try toolDefs(a);
+    const sys = try systemPrompt(a, "/w");
+    inline for (.{ .off, .low, .xhigh }) |effort| {
+        const head = try Profile.qwen38.prefix(a, &.{.{ .role = .system, .content = sys }}, defs, effort, .{});
+        const full = try Profile.qwen38.render(a, &.{ .{ .role = .system, .content = sys }, .{ .role = .user, .content = "hello" } }, defs, effort, .{});
+        // The first turn is an increment over the primed text, never a replay.
+        try testing.expect(increment(head, full) != null);
+        try testing.expect(head.len > 2000);
+    }
 }
 
 test "compaction drops a whole prior turn, tool response included" {

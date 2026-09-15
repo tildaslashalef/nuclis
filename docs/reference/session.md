@@ -58,6 +58,13 @@ anything else is `SnapshotMismatch` with the session untouched. Rows past
 the restored position are not cleared, and nothing reads them: attention
 sees `[0, position + 1)` after its own write, recurrent state is whole.
 
+The agent uses one snapshot as its **primed prefix** (ENGN-09): at startup
+the completer prefills the system block and tool definitions, snapshots
+the session, and whenever a conversation must start from that prefix again
+— a new session, a `/resume`, a replay after elision — restores it and
+prefills only what follows. A re-opened engine (a `/ctx` change) primes
+anew, since the snapshot is bound to its capacity and layout.
+
 Why copy instead of rewind: 48 of the 64 layers are recurrent, and their
 matrix after token *n* is a function of every token before it. Truncating a
 KV length would leave those matrices at token *n* while attention believed

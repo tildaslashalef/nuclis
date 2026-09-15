@@ -748,6 +748,37 @@ const Ui = struct {
     }
 };
 
+/// Prefills the system block and tools so the first turn pays only its own
+/// message, shown as a warm-up in the bar (Enter queues meanwhile). A cancel
+/// or a window too small leaves the session unprimed with a notice; the
+/// turn itself then reports what does not fit.
+fn primeSession(ui: *Ui) void {
+    ui.completer.effort = ui.effort;
+    ui.busy = true;
+    ui.status = "warming up";
+    ui.turn_started = std.Io.Clock.awake.now(ui.io);
+    ui.first_token = null;
+    ui.prefill_started = null;
+    ui.prefill_rate = null;
+    ui.bar = .{ .phase = .prefill };
+    ui.draw() catch {};
+    defer {
+        ui.busy = false;
+        ui.status = "ready";
+        ui.bar = .{};
+        ui.stats = .{};
+        interrupt.clear();
+    }
+    _ = ui.completer.prime(ui.agent.system, ui.agent.tool_defs) catch |err| {
+        var note: [192]u8 = undefined;
+        const text = if (err == error.ContextFull) blk: {
+            const overflow = ui.completer.overflow orelse loop.Overflow{ .needed = 0, .capacity = ui.eng.model.session().capacity };
+            break :blk std.fmt.bufPrint(&note, "  — context window too small for the system prompt and tools: {d} tokens (prefix plus output budget) of {d}; raise it with /ctx <n>", .{ overflow.needed, overflow.capacity }) catch "  — context window too small for the system prompt and tools";
+        } else std.fmt.bufPrint(&note, "  — warm-up skipped: {s}", .{@errorName(err)}) catch "  — warm-up skipped";
+        ui.emit(.{ .notice = text }) catch {};
+    };
+}
+
 fn seconds(from: std.Io.Timestamp, to: std.Io.Timestamp) f64 {
     return @as(f64, @floatFromInt(from.durationTo(to).nanoseconds)) / std.time.ns_per_s;
 }
@@ -827,6 +858,8 @@ fn runCommand(ui: *Ui, parsed: commands.Result, root_dir: ?[]const u8, cwd: []co
                     ui.effort = effort;
                     ui.record(.{ .effort = .{ .effort = @tagName(effort) } });
                     try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — think {s}", .{@tagName(effort)}) });
+                    // The effort is part of the system block: prime it again.
+                    primeSession(ui);
                 } else {
                     try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s} is not an effort; known: off, low, medium, xhigh", .{name}) });
                 }
@@ -1072,6 +1105,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         try header.writer.print(" nuclis agent · {s} · {s}", .{ eng.name, @tagName(eng.backend) });
         try scr.insertAbove(&.{.{ .text = header.written(), .style = .header }});
         try scr.anchor(min_editor_rows + 3);
+        primeSession(&ui);
         // `--resume <id>`: locate the session and replay it before the first
         // prompt. A missing id is a notice, not a startup failure.
         if (resume_id) |id| {
@@ -1102,9 +1136,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     ui.completer.reset();
                     ui.tokens_seen.reset(); // same artifact, same vocabulary; a fresh session
                     ui.agent.result_budget = loop.resultBudget(newcap);
-                    ui.stats = .{};
-                    ui.status = "ctx resized";
                     ui.record(.{ .context = .{ .ctx_size = newcap } });
+                    // The old snapshot belongs to the old engine; prime anew.
+                    ui.completer.dropPrimed();
+                    primeSession(&ui);
+                    ui.status = "ctx resized";
                 } else |err| {
                     // Fall back to the previous size rather than lose the
                     // session over an allocation failure.

@@ -117,6 +117,20 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
     return builder.bytes.toOwnedSlice(alloc);
 }
 
+/// The bytes every rendering of a conversation with these leading system
+/// messages and tools starts with: the system block alone, without the
+/// generation prompt `render` ends with. What a session primes with before
+/// its first user message; pinned as a byte prefix of `render` by a test.
+pub fn prefix(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
+    const prefix_count = profiles.leadingSystemCount(messages);
+    const merged = try mergeSystem(alloc, messages[0..prefix_count]);
+    defer alloc.free(merged);
+    var builder: Builder = .{ .alloc = alloc, .limit = limits.output_bytes };
+    errdefer builder.bytes.deinit(alloc);
+    try renderSystem(&builder, alloc, tools, instructionFor(effort), merged);
+    return builder.bytes.toOwnedSlice(alloc);
+}
+
 /// The leading system block. With tool definitions the tools text comes first
 /// and the merged system messages follow it; without them the layout is the
 /// text-only one. Both are the pinned template's.
@@ -163,10 +177,10 @@ fn instructionFor(effort: Effort) []const u8 {
 
 /// The leading system/developer messages merged as the template does: trimmed,
 /// empty parts dropped, joined with `\n`.
-fn mergeSystem(alloc: std.mem.Allocator, prefix: []const Message) Error![]u8 {
+fn mergeSystem(alloc: std.mem.Allocator, leading: []const Message) Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
-    for (prefix) |message| {
+    for (leading) |message| {
         const content = trim(message.content);
         if (content.len == 0) continue;
         if (out.items.len != 0) try out.append(alloc, '\n');
@@ -361,6 +375,30 @@ const Builder = struct {
         try self.bytes.appendSlice(self.alloc, text);
     }
 };
+
+test "the prefix is a byte prefix of every rendering that starts with its system messages" {
+    const alloc = std.testing.allocator;
+    const tool: profiles.ToolDefinition = .{ .name = "read_file", .description = "Read a file.", .parameters = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}" };
+    const system: Message = .{ .role = .system, .content = "You are terse." };
+    const user: Message = .{ .role = .user, .content = "hello" };
+    inline for (.{ .off, .low, .xhigh }) |effort| {
+        for ([_][]const profiles.ToolDefinition{ &.{}, &.{tool} }) |tools| {
+            const head = try prefix(alloc, &.{system}, tools, effort, .{});
+            defer alloc.free(head);
+            const full = try render(alloc, &.{ system, user }, tools, effort, .{});
+            defer alloc.free(full);
+            try std.testing.expect(head.len > 0);
+            try std.testing.expect(std.mem.startsWith(u8, full, head));
+            // The prefix ends at a turn boundary, so the remainder encodes on
+            // its own the way the whole would.
+            try std.testing.expect(std.mem.startsWith(u8, full[head.len..], "<|im_start|>user\n"));
+        }
+    }
+    // No system message and no tools: nothing to prime with.
+    const empty = try prefix(alloc, &.{}, &.{}, .off, .{});
+    defer alloc.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
 
 test "text prompts match pinned reference fixtures in every reasoning mode" {
     const Fixture = struct {

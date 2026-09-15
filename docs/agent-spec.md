@@ -709,6 +709,19 @@ long diffs folded; the unified text is what the model and session record
 (AGNT-04). A queued steering message is inserted as the next user message when the
 current step ends.
 
+The session is **primed** before the first prompt (ENGN-09): the completer
+renders the profile's prefix — the system block with the tool definitions,
+without a generation prompt, pinned as a byte prefix of every rendering by
+each profile — prefills it, records it as consumed, and keeps a snapshot of
+the session. The first turn then prefills only its own message; a new
+session, a resume, and the replay after elision restore the snapshot instead
+of prefilling the prefix again. The bar shows the warm-up (`warming up
+256/841`), Enter queues meanwhile, and a window too small for the prefix
+plus the output budget is a notice at startup (an error diagnostic in print
+mode), not a `ContextFull` on the first Enter. A `/ctx` change re-opens the
+engine and primes again; a `/think` change alters the system block and
+primes again.
+
 *Implemented (AGNT-02; profile decode in AGNT-06)* as `src/agent/loop.zig`, with the
 engine completion in `loop.Completer`. Decode lives in the profile now: the
 loop consumes typed `tool_call` events and keeps native history (assistant

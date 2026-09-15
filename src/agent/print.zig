@@ -140,6 +140,13 @@ pub fn run(
     var agent = try loop.Agent.init(alloc, io, workspace, completer.model(), turn.events(), loop.budget_default);
     defer agent.deinit();
     agent.result_budget = loop.resultBudget(capacity);
+    _ = completer.prime(agent.system, agent.tool_defs) catch |err| {
+        if (err == error.ContextFull) {
+            const overflow = completer.overflow orelse loop.Overflow{ .needed = 0, .capacity = capacity };
+            diag.set("context window too small for the system prompt and tools: {d} tokens (prefix plus output budget) of {d}; raise --ctx-size", .{ overflow.needed, overflow.capacity });
+        }
+        return err;
+    };
 
     // `--resume <id>`: replay the saved conversation before this turn, so a
     // print run can continue a session. The fresh turn is recorded under

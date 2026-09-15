@@ -347,6 +347,13 @@ pub const Engine = struct {
         return profile.render(self.alloc, messages, tools, effort, .{});
     }
 
+    /// The system block every rendering of these leading messages and tools
+    /// starts with (`profiles.Profile.prefix`). Caller owns the result.
+    pub fn prefix(self: *const Engine, messages: []const profiles.Message, tools: []const profiles.ToolDefinition, effort: profiles.Effort) ![]u8 {
+        const profile = self.profile orelse return error.UnsupportedPromptTemplate;
+        return profile.prefix(self.alloc, messages, tools, effort, .{});
+    }
+
     /// Encodes text with special-token markers recognized. Caller owns the IDs.
     pub fn encode(self: *Engine, text: []const u8) ![]u32 {
         const tokens = try self.encoder.encode(self.alloc, text, true, .{});

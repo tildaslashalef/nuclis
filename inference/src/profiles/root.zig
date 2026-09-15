@@ -151,6 +151,16 @@ pub const Profile = enum {
         };
     }
 
+    /// The bytes every rendering of a conversation that starts with these
+    /// system messages (and tools) begins with, without a generation prompt:
+    /// what a session primes with before the first user message. Each
+    /// profile pins it as a byte prefix of its `render`.
+    pub fn prefix(self: Profile, alloc: std.mem.Allocator, messages: []const Message, tools: []const ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
+        return switch (self) {
+            inline else => |p| p.module().prefix(alloc, messages, tools, effort, limits),
+        };
+    }
+
     /// The checkpoint's official sampler settings for a reasoning mode.
     pub fn samplingDefaults(self: Profile, effort: Effort) sampling.Options {
         return switch (self) {
