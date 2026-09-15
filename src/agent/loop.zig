@@ -707,7 +707,9 @@ fn systemPrompt(alloc: Allocator, root: []const u8) ![]u8 {
             "make one change at a time, and say what you did when you are finished. " ++
             "Never invent a tool result: wait for the output before you continue. " ++
             "Your context is small and a long file arrives in pages: for a question about a whole file " ++
-            "prefer one shell command (grep, sort, awk, wc) over reading it page by page, and say when you saw only part of it.\n",
+            "prefer one shell command (grep, sort, awk, wc) over reading it page by page, and say when you saw only part of it. " ++
+            "Quote file contents only from tool output you received in this turn; never reconstruct a file from memory. " ++
+            "When a request needs more than the context can hold, say so and offer a summary or a command instead.\n",
         .{root},
     );
     return out.toOwnedSlice();
