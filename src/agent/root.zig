@@ -825,6 +825,11 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8) !voi
     interrupt.clear();
     defer ui.busy = false;
     const stop = try ui.agent.turn(user);
+    ui.status = switch (stop) {
+        .done => "ready",
+        .budget => "step budget",
+        .cancelled => "cancelled",
+    };
     if (terminal.shouldNotify(ui.focused, ui.notify, stop != .cancelled)) {
         try ui.term.notify("nuclis: response ready");
     }

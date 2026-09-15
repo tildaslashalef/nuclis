@@ -540,7 +540,7 @@ pub const Agent = struct {
         try out.appendSlice(self.alloc, text[0..keep]);
         try out.print(self.alloc, "\n[truncated to fit the context: {d} of {d} lines shown", .{ kept_lines, total_lines });
         if (std.mem.eql(u8, call.name, "read_file")) {
-            try out.print(self.alloc, "; continue with read_file offset={d}", .{readOffset(self.alloc, call.arguments) + kept_lines});
+            try out.print(self.alloc, "; continue with read_file offset={d}, or answer a question about the whole file with one bash command (grep, sort, awk, wc) instead of paging", .{readOffset(self.alloc, call.arguments) + kept_lines});
         } else {
             try out.appendSlice(self.alloc, "; narrow the request for the rest");
         }
@@ -705,7 +705,9 @@ fn systemPrompt(alloc: Allocator, root: []const u8) ![]u8 {
         "You are nuclis, a coding agent working in {s}. " ++
             "Complete the user's task with the available tools. Read a file before you change it, " ++
             "make one change at a time, and say what you did when you are finished. " ++
-            "Never invent a tool result: wait for the output before you continue.\n",
+            "Never invent a tool result: wait for the output before you continue. " ++
+            "Your context is small and a long file arrives in pages: for a question about a whole file " ++
+            "prefer one shell command (grep, sort, awk, wc) over reading it page by page, and say when you saw only part of it.\n",
         .{root},
     );
     return out.toOwnedSlice();
@@ -1144,7 +1146,7 @@ test "a result over the context budget is cut at a line and told how to continue
     // The note counts from the call's own offset.
     const kept = countLines(shown[0..note_at]);
     var expected: [64]u8 = undefined;
-    const hint = try std.fmt.bufPrint(&expected, "{d} of 90 lines shown; continue with read_file offset={d}]", .{ kept, 11 + kept });
+    const hint = try std.fmt.bufPrint(&expected, "{d} of 90 lines shown; continue with read_file offset={d},", .{ kept, 11 + kept });
     try testing.expect(std.mem.indexOf(u8, shown, hint) != null);
     // The model reads the cut text, not the whole file.
     try testing.expectEqualStrings(shown, agent.history.items[2].content);
