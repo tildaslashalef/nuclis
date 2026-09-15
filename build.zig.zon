@@ -3,7 +3,7 @@
     // Fingerprint carried over from the origin monorepo; only meaningful in
     // the package registry, which this project does not use.
     .fingerprint = 0xa7633af726a975c4,
-    .version = "0.1.0-dev",
+    .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .inference = .{ .path = "inference" },
