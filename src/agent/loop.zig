@@ -472,7 +472,11 @@ pub const Agent = struct {
             if (fitted) |f| {
                 model_text = f.text;
                 truncated = true;
-                cut_summary = if (summary.len > 0)
+                // The row states what the model actually saw, and the same
+                // continuation the note inside the text gives it.
+                cut_summary = if (result.lines) |range|
+                    try std.fmt.allocPrint(self.alloc, "lines {d} to {d} of {d} · cut to fit the context, continue with offset={d}", .{ range.first, range.first + f.kept_lines - 1, range.total, range.first + f.kept_lines })
+                else if (summary.len > 0)
                     try std.fmt.allocPrint(self.alloc, "{s} · cut to {d} lines for the context", .{ summary, f.kept_lines })
                 else
                     try std.fmt.allocPrint(self.alloc, "cut to {d} of {d} lines for the context", .{ f.kept_lines, f.total_lines });

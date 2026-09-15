@@ -716,8 +716,12 @@ const Ui = struct {
                 const elapsed = seconds(started, now);
                 if (value.position > self.prefill_base and elapsed > 0) self.prefill_rate = @as(f64, @floatFromInt(value.position - self.prefill_base)) / elapsed;
             } else {
+                // A new step: its decode rate starts from its own first
+                // token, and the word on the left says what is happening.
                 self.prefill_started = now;
                 self.prefill_base = value.position;
+                self.first_token = null;
+                self.status = "prefill";
             }
         }
         self.bar.apply(.{ .status = .{

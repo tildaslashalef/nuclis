@@ -81,7 +81,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     const total = if (content.len == 0) 0 else std.mem.count(u8, body, "\n") + 1;
     const summary = try summarize(alloc, offset, taken, total, line_truncated, byte_truncated);
     errdefer alloc.free(summary);
-    return .{ .text = try out.toOwnedSlice(alloc), .truncated = byte_truncated or line_truncated, .summary = summary };
+    return .{ .text = try out.toOwnedSlice(alloc), .truncated = byte_truncated or line_truncated, .summary = summary, .lines = .{ .first = offset, .total = total } };
 }
 
 /// The detail row: the range shown, the file's length, and, when the read

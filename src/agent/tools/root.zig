@@ -143,6 +143,9 @@ pub const Result = struct {
     /// owned; null when there is nothing to say (a clean `bash` run) and on
     /// every `fail`, whose `text` is the message.
     summary: ?[]u8 = null,
+    /// A line-addressed read: where its text starts in the file and how long
+    /// the file is, so a later cut can restate the range it actually kept.
+    lines: ?LineRange = null,
     /// Set by a mutation tool; null for reads.
     change: ?Change = null,
 
@@ -153,6 +156,8 @@ pub const Result = struct {
         self.* = undefined;
     }
 };
+
+pub const LineRange = struct { first: usize, total: usize };
 
 pub const Tool = struct {
     name: []const u8,
