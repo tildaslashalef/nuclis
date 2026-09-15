@@ -58,9 +58,9 @@ pub const Block = union(enum) {
 
     pub const Thinking = struct {
         text: std.ArrayList(u8) = .empty,
-        /// Measured seconds from the turn's start to the first answer token;
-        /// null while the block is open, and after a turn that never got
-        /// there (a cancelled turn keeps the bare label).
+        /// The step's reasoning time, from its start to the end of the
+        /// channel; null while the block is open and after a cancelled turn
+        /// (the bare label). Zero when a replayed session never kept it.
         seconds: ?f64 = null,
         closed: bool = false,
     };
@@ -596,7 +596,10 @@ fn foldLabel(a: Allocator, t: Block.Thinking, expanded: bool, th: theme.Theme) !
     const gl = th.glyphs();
     const arrow = if (expanded) gl.fold_open else gl.fold_closed;
     const hint = if (expanded) "Tab to fold" else "Tab to unfold";
-    if (t.seconds) |seconds| return std.fmt.allocPrint(a, "{s} Thought for {d:.1}s ({s})", .{ arrow, seconds, hint });
+    if (t.seconds) |seconds| {
+        if (seconds > 0) return std.fmt.allocPrint(a, "{s} Thought for {d:.1}s ({s})", .{ arrow, seconds, hint });
+        return std.fmt.allocPrint(a, "{s} Thought ({s})", .{ arrow, hint });
+    }
     return std.fmt.allocPrint(a, "{s} thinking ({s})", .{ arrow, hint });
 }
 

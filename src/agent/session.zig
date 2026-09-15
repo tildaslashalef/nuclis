@@ -74,6 +74,8 @@ pub const Stats = struct {
     generated: usize = 0,
     prefill_seconds: f64 = 0,
     decode_seconds: f64 = 0,
+    /// The step's reasoning time; 0 in files written before it was kept.
+    thinking_seconds: f64 = 0,
     replayed: bool = false,
 };
 
@@ -498,6 +500,7 @@ fn readStats(value: ?std.json.Value) Stats {
         .generated = @intCast(integer(object.get("generated")) orelse 0),
         .prefill_seconds = number(object.get("prefill_seconds")),
         .decode_seconds = number(object.get("decode_seconds")),
+        .thinking_seconds = number(object.get("thinking_seconds")),
         .replayed = boolean(object.get("replayed")),
     };
 }

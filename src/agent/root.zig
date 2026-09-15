@@ -386,6 +386,7 @@ const Ui = struct {
                     .generated = step.generated,
                     .prefill_seconds = step.prefill_seconds,
                     .decode_seconds = step.decode_seconds,
+                    .thinking_seconds = step.thinking_seconds,
                     .replayed = step.replayed,
                 },
             } },

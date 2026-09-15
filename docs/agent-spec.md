@@ -150,8 +150,12 @@ holds the APPS-02 outcome.
 - Thinking folds and unfolds without leaving the model conversation; the
   active turn re-renders as it streams, the last printed turn is replayed
   with the toggled state, older turns keep the state they were printed
-  with. While a turn runs the fold label animates ("⠙ thinking… 3s"); after
-  completion it shows the time to first token ("Thought for 3.4s").
+  with. While a step runs the fold label animates ("⠙ thinking… 3s"); a
+  step's block closes when its reasoning ends (the first answer byte, or
+  the step ending in tool calls) with that step's own time from its start
+  ("Thought for 3.4s"), so a turn with two tool calls shows three timed
+  blocks whose sum is below the turn's elapsed time; the time is kept in
+  the session's step stats so a resumed session shows it (TERM-06).
 - Completed answers render as small markdown (headings, emphasis, inline
   code, `[label](http(s)://…)` links as OSC 8 hyperlinks, quotes, lists with task boxes,
   fenced code with a heuristic highlighter, rules, pipe tables) into

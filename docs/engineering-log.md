@@ -57,6 +57,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-07 | Polish, resume, and the agent plan closed | 2026-09-14 |
 | TERM-05 | Two-row tool lines: call and detail | 2026-09-15 |
 | AGNT-08 | Context budget: bounded results, in-turn elision, honest failure | 2026-09-15 |
+| TERM-06 | Per-step thinking blocks with their own duration | 2026-09-15 |
 
 ## Context
 
@@ -1501,3 +1502,33 @@ the first stub), which at 50–90 tok/s is the visible cost of the cut; a
 primed prefix (ENGN-09) removes the system-and-tools part of that replay.
 Elision reads a stub's prefix to tell it from a verbatim result; a tool
 result that happens to start with that text would be miscounted.
+
+### TERM-06 — Per-step thinking blocks with their own duration (2026-09-15)
+
+**Outcome.** Each completion step times its reasoning from its own start
+(`Agent.step_started`, set in `beginStep`) and closes the block once, at the
+first of: the first answer byte, or the end of a step that produced tool
+calls or stopped without an answer (`endThinking`); a cancelled step keeps
+the bare label, and a step without reasoning sends nothing. Before, only an
+answer closed a block, so a tool-call step's header stayed at "thinking" and
+the last block's time ran from the turn's start, tool runs included. The
+seconds are kept as `thinking_seconds` in the session's step stats, so a
+resumed session labels its blocks; older files load it as zero, which the
+label renders as "Thought" without a time.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: **376 default
+tests** (a scripted turn of two tool-call steps and an answer step sends three
+`thinking_end` events; a step without reasoning sends none). Live on the
+pinned Qwen3.8-27B (Metal, context 8192, the playground): a turn that batched
+a search and a read into one step, then answered, closed two blocks at
+**22.3 s** and **13.5 s**, both stored in the session file; their sum
+(35.8 s) is below the turn's prefill plus decode (41.2 s). A step's time
+starts at its prefill, so the label is the wait the user saw, not decode
+alone.
+
+**Files.** `src/agent/loop.zig`, `src/agent/root.zig`, `src/agent/print.zig`,
+`src/agent/session.zig`, `src/agent/resume.zig`, `src/tui/transcript.zig`,
+`docs/agent-spec.md`.
+
+**Remaining.** The interactive fold label was not driven on a real TTY in this
+session; the transcript's label logic is pinned by its tests.

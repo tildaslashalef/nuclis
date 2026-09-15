@@ -162,7 +162,7 @@ pub fn replay(alloc: Allocator, tr: *transcript.Transcript, loaded: session.Load
             .assistant => |a| {
                 if (a.thinking.len > 0) {
                     try tr.apply(.{ .thinking_delta = a.thinking });
-                    try tr.apply(.{ .thinking_end = 0 });
+                    try tr.apply(.{ .thinking_end = a.stats.thinking_seconds });
                 }
                 if (a.answer.len > 0) try tr.apply(.{ .answer_delta = a.answer });
                 for (a.tool_calls) |call| {

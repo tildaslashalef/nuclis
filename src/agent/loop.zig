@@ -84,6 +84,8 @@ pub const Step = struct {
     generated: usize = 0,
     prefill_seconds: f64 = 0,
     decode_seconds: f64 = 0,
+    /// From the step's start to the end of its reasoning; 0 when it had none.
+    thinking_seconds: f64 = 0,
     /// The session had to be replayed for this step (compaction or a reset).
     replayed: bool = false,
 };
@@ -177,7 +179,12 @@ pub const Agent = struct {
     calls: std.ArrayList(Profile.ToolCall) = .empty,
     thinking_open: bool = false,
     thinking_ended: bool = false,
+    /// Seconds the step's reasoning took, once it ended.
+    thinking_seconds: f64 = 0,
     turn_started: std.Io.Timestamp,
+    /// Each step's reasoning is timed from here, not from the turn's start:
+    /// a later step's block must not carry the tool runs before it.
+    step_started: std.Io.Timestamp,
 
     agg_prompt_tokens: usize = 0,
     agg_generated: usize = 0,
@@ -201,6 +208,7 @@ pub const Agent = struct {
             .thinking = .init(alloc),
             .answer = .init(alloc),
             .turn_started = std.Io.Clock.awake.now(io),
+            .step_started = std.Io.Clock.awake.now(io),
         };
         errdefer agent.thinking.deinit();
         errdefer agent.answer.deinit();
@@ -298,6 +306,9 @@ pub const Agent = struct {
             // are not recorded, because a session cannot load an assistant
             // tool call whose result never followed.
             const cancelled = reply.outcome.stop == .cancelled;
+            // A step that ends in calls, or stops without an answer, closes
+            // its reasoning here; a cancelled one keeps the bare label.
+            if (!cancelled and self.thinking_open and !self.thinking_ended) try self.endThinking();
             // The assistant turn is the answer content plus the calls the
             // profile decoded; assign their host ids first, so the session
             // records the same correlation ids the history carries.
@@ -315,6 +326,7 @@ pub const Agent = struct {
                 .generated = reply.outcome.timing.generated_tokens,
                 .prefill_seconds = seconds(reply.outcome.timing.prefill),
                 .decode_seconds = seconds(reply.outcome.timing.decode),
+                .thinking_seconds = self.thinking_seconds,
                 .replayed = reply.replayed,
             } });
             if (cancelled) return .cancelled;
@@ -399,6 +411,15 @@ pub const Agent = struct {
         self.answer.clearRetainingCapacity();
         self.thinking_open = false;
         self.thinking_ended = false;
+        self.thinking_seconds = 0;
+        self.step_started = std.Io.Clock.awake.now(self.io);
+    }
+
+    /// Closes the step's reasoning block once, with its own duration.
+    fn endThinking(self: *Agent) !void {
+        self.thinking_ended = true;
+        self.thinking_seconds = seconds(self.step_started.durationTo(std.Io.Clock.awake.now(self.io)));
+        try self.events.send(self.events.context, .{ .thinking_end = self.thinking_seconds });
     }
 
     fn buildMessages(self: *Agent) ![]const Profile.Message {
@@ -635,10 +656,7 @@ pub const Agent = struct {
                 try self.events.send(self.events.context, .{ .thinking_delta = text });
             },
             .answer => |text| {
-                if (self.thinking_open and !self.thinking_ended) {
-                    self.thinking_ended = true;
-                    try self.events.send(self.events.context, .{ .thinking_end = seconds(self.turn_started.durationTo(std.Io.Clock.awake.now(self.io))) });
-                }
+                if (self.thinking_open and !self.thinking_ended) try self.endThinking();
                 try self.answer.writer.writeAll(text);
                 try self.events.send(self.events.context, .{ .answer_delta = text });
             },
@@ -827,6 +845,9 @@ const Stub = struct {
     answers: []const []const u8,
     /// One entry per step that produced calls; missing steps produce none.
     calls: []const []const Profile.ToolCall = &.{},
+    /// Reasoning text per step, sent before the answer; missing steps think
+    /// nothing.
+    thinking: []const []const u8 = &.{},
     stops: []const engine.StopReason = &.{},
     index: usize = 0,
     /// When set, the run at this answer index reports `ContextFull` once
@@ -854,6 +875,7 @@ const Stub = struct {
         const i = self.index;
         self.index += 1;
         const text = self.answers[i];
+        if (i < self.thinking.len and self.thinking[i].len > 0) try sink.send(.{ .thinking = self.thinking[i] });
         // Feed in two pieces: the sink must survive a split piece.
         if (text.len > 0) {
             const half = text.len / 2;
@@ -879,6 +901,7 @@ const Capture = struct {
     recorded_calls: usize = 0,
     compactions: usize = 0,
     notices: usize = 0,
+    thinking_ends: usize = 0,
     answers: std.Io.Writer.Allocating,
     results: std.ArrayList([]u8) = .empty,
     calls: usize = 0,
@@ -905,6 +928,7 @@ const Capture = struct {
             .diff => self.diffs += 1,
             .turn_end => self.turn_end += 1,
             .notice => self.notices += 1,
+            .thinking_end => self.thinking_ends += 1,
             else => {},
         }
     }
@@ -1182,6 +1206,36 @@ test "the tools block the profile renders is pinned to its measured size" {
     // grew it to 2,959 bytes on 2026-09-15. Pinned so a tool description
     // edit cannot grow the context silently.
     try testing.expectEqual(@as(usize, 2959), with_tools.len - without.len);
+}
+
+test "every step that reasoned closes its own thinking block" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "a" });
+    // Two tool-call steps with reasoning, one answer step with reasoning,
+    // and the answer step's thinking must close on the answer, not later.
+    var stub: Stub = .{
+        .answers = &.{ "", "", "done" },
+        .calls = &.{ &.{read_a}, &.{read_a} },
+        .thinking = &.{ "look", "look again", "answer" },
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    defer agent.deinit();
+    try testing.expectEqual(Stop.done, try agent.turn("go"));
+    try testing.expectEqual(@as(usize, 3), capture.thinking_ends);
+    try testing.expectEqual(@as(usize, 3), capture.assistant_records);
+
+    // A step without reasoning sends no end at all.
+    var silent: Stub = .{ .answers = &.{"hi"} };
+    var quiet = Capture.init(alloc);
+    defer quiet.deinit();
+    var plain = try Agent.init(alloc, testing.io, fixture.ws, silent.model(), quiet.eventsSeam(), budget_default);
+    defer plain.deinit();
+    try testing.expectEqual(Stop.done, try plain.turn("hello"));
+    try testing.expectEqual(@as(usize, 0), quiet.thinking_ends);
 }
 
 test "a full window first elides the turn's older tool results, keeping the last two" {
