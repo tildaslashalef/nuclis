@@ -981,12 +981,18 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // records what the conversation ran against — the working directory, the
     // model and the digest its sidecar verified, the context window, the
     // effort — so a file read a year later says what produced it.
-    const cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc) catch try alloc.dupe(u8, ".");
+    // `realPathFileAlloc` returns a sentinel-terminated slice; the fallback
+    // must too, or the coerced `[]u8` frees one byte short of the allocation.
+    const cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc) catch try alloc.dupeZ(u8, ".");
     defer alloc.free(cwd);
     const digest: ?[]const u8 = blk: {
-        const sidecar_path = model.sidecarPath(alloc, model_path) catch break :blk null;
-        defer alloc.free(sidecar_path);
-        const sidecar = model.readSidecar(alloc, io, .cwd(), sidecar_path) catch break :blk null;
+        // The sidecar's strings live in the allocator it is read with; only
+        // the digest outlives this block.
+        var arena = std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const sidecar_path = model.sidecarPath(a, model_path) catch break :blk null;
+        const sidecar = model.readSidecar(a, io, .cwd(), sidecar_path) catch break :blk null;
         break :blk if (sidecar) |record| try alloc.dupe(u8, record.sha256) else null;
     };
     defer if (digest) |d| alloc.free(d);
