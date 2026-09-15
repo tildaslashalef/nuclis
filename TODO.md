@@ -15,68 +15,20 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-TERM-05 closed on 2026-09-15: a tool call is two rows (call and detail) and
-the result text stays with the model and the session file. What remains is
-the failure that started both units: a live `nuclis agent` turn at context
-8192 read a few documents and ended in a bare `ContextFull`. AGNT-08 makes
-the loop survive that; its first session bounds results by the window and
-fixes the failure message, its second adds in-turn elision. The measured
-sizes it relies on are in the engineering log (AGNT-07: about 20 tokens per
-source line, a 720-token tools block). Two more
-units were opened on 2026-09-15 from the first playground turns: the wait
-after Enter is the first turn's prefill of the system prompt and tools block
-(ENGN-09), and a step that ends in a tool call never closes its thinking
-block while the last one reports the whole turn's time (TERM-06).
+AGNT-08 closed on 2026-09-15: a tool result is bounded to an eighth of the
+window, a full window elides the turn's older results before dropping
+earlier turns, and the failure names the numbers. Two units remain from the
+first playground turns: a step that ends in a tool call never closes its
+thinking block while the last one reports the whole turn's time (TERM-06),
+and the wait after Enter is the first turn's prefill of the system prompt
+and tools block (ENGN-09). Start with TERM-06.
 
-Order: AGNT-08 (two sessions), TERM-06, ENGN-09.
+Order: TERM-06, ENGN-09.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| AGNT-08 | Context budget: bounded results, in-turn elision, honest failure | 2 |
 | TERM-06 | Per-step thinking blocks with their own duration | 1 |
 | ENGN-09 | Primed sessions: prefill the prefix at startup, restore it on new | 1 |
-
-## AGNT-08 — Context budget: bounded results, in-turn elision, honest failure
-
-**Why.** `read_file` allows 2000 lines / 1 MiB and `bash` 1 MiB: about
-40,000 tokens for one full read (log, AGNT-07: ~20 tokens per source line),
-five times an 8K window and larger than a 32K one. `dropOldestTurn` only
-drops whole earlier turns, so a single long turn cannot be rescued, and the
-overflow is discovered by the engine after the prompt was built.
-
-**Session 1 — done (2026-09-15, uncommitted evidence below; the unit closes
-with session 2).** `loop.resultBudget(capacity)` = `capacity / 8`, never
-below 256 tokens; `Agent.fit` counts a result through the new `Model.count`
-seam (the engine's tokenizer; the test stub uses four bytes per token),
-scales the byte cut by the measured density, backs up to a line boundary
-(or a code-point boundary when one line is over budget), and appends
-`[truncated to fit the context: A of B lines shown; continue with read_file
-offset=N]` (other tools: `narrow the request for the rest`). The detail row
-gains `· cut to A lines for the context`. `read_file` defaults to 200 lines.
-`Completer.overflow` records what did not fit; the surface says `context
-window full: the step needed N tokens (prompt plus output budget) of C;
-raise it with /ctx <n> (or --ctx-size), or start over with /new`, print mode
-puts the same in the error diagnostic. The status bar's prefill rate is
-measured per step from the step's first beat and kept beside the decode
-rate. Evidence: 373 tests; live on the playground at 8K, a 400-line read of
-`data/measurements.txt` was cut to 45 lines (1,440 bytes) with `offset=46`,
-and the model reported exactly that; at `--ctx-size 1024` the same turn
-ended with `the step needed 2907 tokens (prompt plus output budget) of
-1024`.
-
-**Session 2 — in-turn elision.** Before each step, estimate the prompt from
-the last measured `prompt_tokens` plus the tokens appended since. If it
-would exceed `ctx_size` minus a reserve for generation, replace the oldest
-tool results of the current turn with one-line stubs naming the call and
-its size, keeping the user's task message and the last two results verbatim;
-only when nothing is left to elide fall back to `dropOldestTurn`. Elision
-invalidates the prefix KV cache from that point and re-prefills the turn
-(50–90 tok/s on the bench), so it cuts once per turn in one large step,
-never one item at a time. Record the elision as a `compaction` entry.
-
-**Acceptance.** Fake-model tests for the budget cut, the failure message,
-and the elision order; a live 8K turn that reads three reference documents
-completes instead of ending in `ContextFull`.
 
 ## TERM-06 — Per-step thinking blocks with their own duration
 

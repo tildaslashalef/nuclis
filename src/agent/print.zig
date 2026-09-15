@@ -224,6 +224,7 @@ const Turn = struct {
                     .replayed = step.replayed,
                 },
             } },
+            .compaction => |c| .{ .compaction = .{ .first_kept = c.first_kept, .reason = c.reason } },
             .tool_result => |result| .{ .tool_result = .{
                 .call = std.fmt.bufPrint(&call, "{d}", .{result.call}) catch "?",
                 .text = result.text,

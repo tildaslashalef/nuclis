@@ -506,7 +506,8 @@ The first line is a header; every later line is an entry:
 {"type":"effort","id":4,"parent":3,"effort":"medium"}
 {"type":"context","id":5,"parent":4,"ctx_size":16384}
 {"type":"compaction","id":6,"parent":5,"first_kept":2,"reason":"context_full"}
-{"type":"notice","id":7,"parent":6,"text":"…"}
+{"type":"compaction","id":7,"parent":6,"first_kept":8,"reason":"results_elided"}
+{"type":"notice","id":8,"parent":7,"text":"…"}
 ```
 
 Rules:
@@ -593,8 +594,12 @@ editor, compaction, sessions) and adds a tool layer under it.
    says how many lines were shown and how to ask for the rest (`read_file`
    gets the offset to continue from). `read_file` reads 200 lines unless
    asked for more, so a whole file is a choice, not a default. When a step
-   still cannot fit, the turn ends with a message that names the tokens
-   needed and the window, and the flag or command that raises it.
+   still does not fit, the loop first replaces the turn's older tool
+   results (all but the last two) with one-line stubs naming the call and
+   its size, then drops whole earlier turns, each recorded as a
+   `compaction` entry; only then does the turn end, with a message that
+   names the tokens needed and the window, and the flag or command that
+   raises it (AGNT-08).
 4. **Failures are results.** Unknown tool, invalid arguments, timeout, and
    ordinary tool failure return structured errors to the model. Only
    inference-transport failure ends the turn.

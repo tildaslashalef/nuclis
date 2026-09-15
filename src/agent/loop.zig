@@ -59,6 +59,16 @@ pub const Record = union(enum) {
     user: []const u8,
     assistant: Step,
     tool_result: Result,
+    /// The model's view of the conversation shrank to fit the window.
+    compaction: Compaction,
+};
+
+pub const Compaction = struct {
+    /// History index of the first item kept as it was.
+    first_kept: usize,
+    /// `context_full` for a dropped earlier turn, `results_elided` for tool
+    /// results of the turn in progress replaced by stubs.
+    reason: []const u8,
 };
 
 /// One completed assistant step. All slices borrow only for the call.
@@ -315,7 +325,10 @@ pub const Agent = struct {
     }
 
     /// One completion step, compacting and retrying when the conversation no
-    /// longer fits. `ContextFull` with nothing left to drop is the caller's.
+    /// longer fits: first the turn's own older tool results become stubs,
+    /// then whole earlier turns go. The completion checks the fit before it
+    /// feeds anything, so a retry costs a render, not a prefill. `ContextFull`
+    /// with nothing left to give is the caller's.
     fn runStep(self: *Agent) !Reply {
         while (true) {
             self.beginStep();
@@ -323,7 +336,8 @@ pub const Agent = struct {
             var sink = self.engineSink();
             const reply = self.model.run(self.model.context, messages, self.tool_defs, &sink) catch |err| switch (err) {
                 error.ContextFull => {
-                    if (!self.dropOldestTurn()) return err;
+                    if (try self.elideResults()) continue;
+                    if (!try self.dropOldestTurn()) return err;
                     try self.events.send(self.events.context, .{ .notice = "  — older turns dropped from context to fit" });
                     continue;
                 },
@@ -331,6 +345,52 @@ pub const Agent = struct {
             };
             return reply;
         }
+    }
+
+    /// Tool results of the turn in progress kept verbatim when the rest are
+    /// elided: the freshest are what the next step reads.
+    const keep_results: usize = 2;
+    const elided_prefix = "[result elided to fit the context: ";
+
+    /// Replaces every tool result of the turn in progress but the last
+    /// `keep_results` with a one-line stub naming the call and its size, in
+    /// one cut: the rendering changes from the first stub on, so the session
+    /// replays from there, and one large cut is paid once. Returns false
+    /// when there is nothing left to elide.
+    fn elideResults(self: *Agent) !bool {
+        var verbatim: usize = 0;
+        for (self.history.items[self.turn_start..]) |item| {
+            if (item.role == .tool and !std.mem.startsWith(u8, item.content, elided_prefix)) verbatim += 1;
+        }
+        if (verbatim <= keep_results) return false;
+        var to_elide = verbatim - keep_results;
+        var first_kept: usize = self.history.items.len;
+        for (self.history.items[self.turn_start..], self.turn_start..) |*item, index| {
+            if (item.role != .tool or std.mem.startsWith(u8, item.content, elided_prefix)) continue;
+            if (to_elide == 0) {
+                first_kept = index;
+                break;
+            }
+            const name = self.callName(item.tool_call_id) orelse "tool";
+            const stub = try std.fmt.allocPrint(self.alloc, "{s}{s}, {d} lines]", .{ elided_prefix, name, countLines(item.content) });
+            self.alloc.free(item.content);
+            item.content = stub;
+            to_elide -= 1;
+        }
+        var note: [96]u8 = undefined;
+        try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — {d} earlier tool results of this turn elided from context to fit", .{verbatim - keep_results}) catch "  — earlier tool results elided from context to fit" });
+        try self.events.record(self.events.context, .{ .compaction = .{ .first_kept = first_kept, .reason = "results_elided" } });
+        return true;
+    }
+
+    /// The tool a result answered, from the assistant call that carries its
+    /// id; null when the history does not hold it.
+    fn callName(self: *const Agent, id: ?u32) ?[]const u8 {
+        const wanted = id orelse return null;
+        for (self.history.items) |item| {
+            for (item.tool_calls) |call| if (call.id == wanted) return call.name;
+        }
+        return null;
     }
 
     fn beginStep(self: *Agent) void {
@@ -475,7 +535,7 @@ pub const Agent = struct {
     /// only the turn in progress remains. A turn boundary is the next user
     /// message, so a turn's calls and results are dropped together and the
     /// history stays valid.
-    fn dropOldestTurn(self: *Agent) bool {
+    fn dropOldestTurn(self: *Agent) !bool {
         if (self.turn_start == 0) return false;
         var end = self.turn_start;
         var i: usize = 1;
@@ -490,6 +550,7 @@ pub const Agent = struct {
         std.mem.copyForwards(Item, self.history.items[0..remaining], self.history.items[end..]);
         self.history.shrinkRetainingCapacity(remaining);
         self.turn_start -= end;
+        try self.events.record(self.events.context, .{ .compaction = .{ .first_kept = end, .reason = "context_full" } });
         return true;
     }
 
@@ -816,6 +877,8 @@ const Capture = struct {
     /// Calls carried by recorded assistant entries: the session must see the
     /// same host ids the history does.
     recorded_calls: usize = 0,
+    compactions: usize = 0,
+    notices: usize = 0,
     answers: std.Io.Writer.Allocating,
     results: std.ArrayList([]u8) = .empty,
     calls: usize = 0,
@@ -841,15 +904,20 @@ const Capture = struct {
             .tool_result => |result| try self.results.append(self.alloc, try self.alloc.dupe(u8, result.text)),
             .diff => self.diffs += 1,
             .turn_end => self.turn_end += 1,
+            .notice => self.notices += 1,
             else => {},
         }
     }
     fn record(context: *anyopaque, entry: Record) anyerror!void {
         const self: *Capture = @ptrCast(@alignCast(context));
         self.records += 1;
-        if (entry == .assistant) {
-            self.assistant_records += 1;
-            self.recorded_calls += entry.assistant.calls.len;
+        switch (entry) {
+            .assistant => |step| {
+                self.assistant_records += 1;
+                self.recorded_calls += step.calls.len;
+            },
+            .compaction => self.compactions += 1,
+            else => {},
         }
     }
 };
@@ -1116,6 +1184,51 @@ test "the tools block the profile renders is pinned to its measured size" {
     try testing.expectEqual(@as(usize, 2959), with_tools.len - without.len);
 }
 
+test "a full window first elides the turn's older tool results, keeping the last two" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\nthree" });
+    // Four read steps, then the window is full at the fifth completion.
+    var stub: Stub = .{
+        .answers = &.{ "", "", "", "", "done" },
+        .calls = &.{ &.{read_a}, &.{read_a}, &.{read_a}, &.{read_a} },
+        .context_full_at = 4,
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("read it four times"));
+    // [user, (assistant, tool) x4, assistant]: the two oldest results are
+    // stubs, the two newest are what the tool returned.
+    try testing.expectEqual(@as(usize, 10), agent.history.items.len);
+    try testing.expectEqualStrings("[result elided to fit the context: read_file, 3 lines]", agent.history.items[2].content);
+    try testing.expectEqualStrings("[result elided to fit the context: read_file, 3 lines]", agent.history.items[4].content);
+    try testing.expectEqualStrings("one\ntwo\nthree", agent.history.items[6].content);
+    try testing.expectEqualStrings("one\ntwo\nthree", agent.history.items[8].content);
+    // The stubs keep answering their calls.
+    try testing.expectEqual(agent.history.items[1].tool_calls[0].id, agent.history.items[2].tool_call_id.?);
+    try testing.expectEqual(@as(usize, 1), capture.compactions);
+    try testing.expectEqual(@as(usize, 1), capture.notices);
+    // No earlier turn existed to drop; the turn's own results were enough.
+    try testing.expectEqual(@as(usize, 0), agent.turn_start);
+}
+
+test "with nothing left to elide, a full window is the caller's error" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{ .answers = &.{"never"}, .context_full_at = 0 };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    defer agent.deinit();
+    try testing.expectError(error.ContextFull, agent.turn("hello"));
+    try testing.expectEqual(@as(usize, 0), capture.compactions);
+}
+
 test "compaction drops a whole prior turn, tool response included" {
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
@@ -1143,4 +1256,6 @@ test "compaction drops a whole prior turn, tool response included" {
     try testing.expectEqualStrings("two", agent.history.items[0].content);
     try testing.expectEqual(Profile.Role.user, agent.history.items[0].role);
     try testing.expectEqualStrings("second", agent.history.items[1].content);
+    // The drop is in the session file, not only on the screen.
+    try testing.expectEqual(@as(usize, 1), capture.compactions);
 }

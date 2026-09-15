@@ -56,6 +56,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-04 | Comment and identifier hygiene | 2026-09-14 |
 | AGNT-07 | Polish, resume, and the agent plan closed | 2026-09-14 |
 | TERM-05 | Two-row tool lines: call and detail | 2026-09-15 |
+| AGNT-08 | Context budget: bounded results, in-turn elision, honest failure | 2026-09-15 |
 
 ## Context
 
@@ -1450,3 +1451,53 @@ transcript tests pin its rows.
 **Remaining.** The tool bounds are still host constants unrelated to the
 context window, and a long turn still ends in a bare `ContextFull`; that is
 AGNT-08 in `TODO.md`.
+
+### AGNT-08 — Context budget: bounded results, in-turn elision, honest failure (2026-09-15)
+
+**Outcome.** The loop now survives a window that is too small for its
+results. Three layers. *Budget:* one tool result may not exceed
+`resultBudget(capacity)` = an eighth of the window, never below 256 tokens;
+`Agent.fit` counts it through the new `Model.count` seam (the engine's
+tokenizer; the test stub uses four bytes per token), scales the byte cut by
+the measured density, backs up to a line boundary (a code-point boundary when
+one line is over budget), and appends `[truncated to fit the context: A of B
+lines shown; continue with read_file offset=N]` (other tools: `narrow the
+request for the rest`); the detail row gains `· cut to A lines for the
+context`, and `read_file` reads 200 lines unless asked for more. *Elision:*
+when a completion reports `ContextFull` (the check runs before anything is
+fed, so a retry costs a render), `elideResults` replaces every tool result of
+the turn in progress but the last two with `[result elided to fit the
+context: <tool>, N lines]` in one cut, recorded as a `compaction` entry with
+reason `results_elided`; only then does `dropOldestTurn` remove earlier turns
+(now also recorded, reason `context_full`), and only then is the error the
+caller's. *Failure:* `Completer.overflow` carries what did not fit; the
+surface says `context window full: the step needed N tokens (prompt plus
+output budget) of C; raise it with /ctx <n> (or --ctx-size), or start over
+with /new`, and print mode puts the same in the error diagnostic. The status
+bar's prefill rate is measured per step from the step's first beat and kept
+beside the decode rate. The plan's estimate-before-each-step was not built:
+the completion's own pre-feed check plus retry is exact and costs no prefill.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: **375 default
+tests** (budget cut at a line with the offset hint; a single over-budget line
+cut at a code point; elision keeps the last two results and records one
+compaction; nothing to elide is the caller's error; a dropped turn records
+its compaction). Live on the pinned Qwen3.8-27B (Metal, the playground
+repository): at 8K, a 400-line read of `data/measurements.txt` was cut to
+**45 lines** (1,440 bytes) with `offset=46`, and the model reported exactly
+that; at `--ctx-size 1024` the same turn ended with `the step needed 2907
+tokens (prompt plus output budget) of 1024`; at `--ctx-size 3072
+--max-tokens 256`, five 80-line pages were each cut to 16–17 lines, the sixth
+step overflowed, **3 results were elided**, the session replayed, and the
+turn answered correctly (4,638 prompt tokens over the turn including the
+replay, 476 generated). The tools block grew from 2,896 to **2,959 bytes**
+with `read_file`'s new description; the pin was updated.
+
+**Files.** `src/agent/loop.zig`, `src/agent/root.zig`, `src/agent/print.zig`,
+`src/cli.zig`, `src/agent/tools/read_file.zig`, `docs/agent-spec.md`.
+
+**Remaining.** Elision replays the whole conversation (the prefix changes at
+the first stub), which at 50–90 tok/s is the visible cost of the cut; a
+primed prefix (ENGN-09) removes the system-and-tools part of that replay.
+Elision reads a stub's prefix to tell it from a verbatim result; a tool
+result that happens to start with that text would be miscounted.
