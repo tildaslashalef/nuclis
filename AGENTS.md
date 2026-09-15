@@ -30,7 +30,7 @@ GGUF, prompt profile) live under [docs/reference/](docs/reference/).
 - `TODO.md` holds unfinished work only. Closing a unit means, in the same
   commit: append its outcome and evidence to
   [docs/engineering-log.md](docs/engineering-log.md),
-  update the documents it changed (architecture, reference docs, llm-guide),
+  update the documents it changed (architecture, reference docs),
   delete its section and table row from `TODO.md`, and refresh *Where we are*
   so a fresh session can hand off from it. When the last unit closes, empty
   `TODO.md` back to its header.
@@ -59,13 +59,17 @@ confirmation. Respect requests to discuss or draft before implementation.
 This project is also the user's way to understand Zig deeply. Write clear but
 terse module docs and comments (see *Code comments*): ownership, invariants,
 and non-obvious constructs, not prose. Keep documentation current with each
-completed increment. Teach in chat and in [docs/llm-guide.md](docs/llm-guide.md),
-not in code comments; the agent is authorized to write complete code, without a
-lesson or exercise workflow. Periodically explain the component being built and
-its role in the inference stack in chat, building on previous explanations.
-Append new concepts to the guide, keeping examples grounded in actual
-implementation status. Read that guide before repeating or extending an
-explanation.
+completed increment. Teach in chat, not in code comments; the agent is
+authorized to write complete code, without a lesson or exercise workflow.
+Periodically explain the component being built and its role in the inference
+stack in chat, building on previous explanations.
+
+[docs/llm-guide.md](docs/llm-guide.md) is the user's companion on the
+inference stack itself (kernels, quantization, the runtime, model
+architectures), not on the application or the agent. **Extend it only when
+the user asks**, never as a routine part of closing a unit; when they do,
+keep examples grounded in actual implementation status, and read the guide
+before repeating or extending an explanation.
 
 Use [docs/spec.md](docs/spec.md) to control scope. Distinguish accepted
 decisions, proposed targets, and measured results. Resolve routine choices

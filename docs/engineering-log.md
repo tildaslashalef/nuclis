@@ -1445,8 +1445,7 @@ transcript tests pin its rows.
 
 **Files.** `src/agent/tools/{root,read_file,glob,grep,bash,edit_file,write_file}.zig`,
 `src/agent/{loop,print,resume,root,session}.zig`,
-`src/tui/{event,theme,transcript}.zig`, `docs/agent-spec.md`,
-`docs/llm-guide.md`.
+`src/tui/{event,theme,transcript}.zig`, `docs/agent-spec.md`.
 
 **Remaining.** The tool bounds are still host constants unrelated to the
 context window, and a long turn still ends in a bare `ContextFull`; that is
