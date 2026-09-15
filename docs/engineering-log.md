@@ -59,6 +59,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-08 | Context budget: bounded results, in-turn elision, honest failure | 2026-09-15 |
 | TERM-06 | Per-step thinking blocks with their own duration | 2026-09-15 |
 | ENGN-09 | Primed sessions: prefill the prefix at startup, restore it on new | 2026-09-15 |
+| APPS-06 | `nuclis agent ls` and `--resume` to the newest session | 2026-09-16 |
 
 ## Context
 
@@ -1580,3 +1581,23 @@ prompt and tools: 2889 tokens (prefix plus output budget) of 1024`.
 exercised the same completer paths. The primed snapshot holds the prefix's
 cache (about 64 KiB per token with F16, some 50 MB here) for the life of the
 engine.
+
+### APPS-06 — `nuclis agent ls` and `--resume` to the newest session (2026-09-16)
+
+**Outcome.** `--resume` no longer needs the 32-digit id: alone (or as
+`--resume latest`) it continues the workspace's newest session, and a
+following flag is parsed as itself rather than taken for an id. `nuclis
+agent ls [--json]` lists the workspace's sessions newest first — short id,
+time, effort, window, and the first prompt's first line — from one
+`Listing` type that renders both forms; the `/resume` picker shows the same
+first prompt in its detail row instead of the directory name. A missing
+session names the listing command in its diagnostic.
+
+**Evidence.** Zig 0.16.0. `zig build test`: **379 default tests** (the parse
+of a bare `--resume`, of `--resume -p …`, and of `agent ls --json`). Live:
+`nuclis agent ls` in the playground printed its two sessions with their
+first prompts, and the JSON form the same fields; in a workspace without
+sessions it says so.
+
+**Files.** `src/agent/resume.zig`, `src/agent/root.zig`, `src/cli.zig`,
+`src/help.zig`, `docs/agent-spec.md`.

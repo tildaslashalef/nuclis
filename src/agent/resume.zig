@@ -13,6 +13,7 @@ const paths = @import("../paths.zig");
 const tui = @import("../tui/root.zig");
 const session = @import("session.zig");
 const tools = @import("tools/root.zig");
+const style = @import("../tui/style.zig");
 
 const Allocator = std.mem.Allocator;
 const Profile = inference.profiles;
@@ -21,6 +22,11 @@ const screen = tui.screen;
 
 /// One saved conversation, as a picker sees it: the header's facts plus the
 /// path to load. Owned strings.
+/// The id `find` resolves to the newest session of the workspace, for
+/// `--resume` with no id. A real id is 32 hex digits, so the word cannot
+/// collide.
+pub const latest = "latest";
+
 pub const Summary = struct {
     id: []u8,
     time: []u8,
@@ -28,6 +34,9 @@ pub const Summary = struct {
     effort: []u8,
     ctx_size: usize,
     path: []u8,
+    /// The first prompt's first line, at most `prompt_preview` bytes; empty
+    /// when nothing was said.
+    first_prompt: []u8,
 
     pub fn deinit(self: Summary, alloc: Allocator) void {
         alloc.free(self.id);
@@ -35,8 +44,46 @@ pub const Summary = struct {
         alloc.free(self.cwd);
         alloc.free(self.effort);
         alloc.free(self.path);
+        alloc.free(self.first_prompt);
     }
 };
+
+const prompt_preview: usize = 72;
+
+/// The workspace's sessions as `nuclis agent ls` prints them: one form for
+/// the terminal, the same fields as JSON.
+pub const Listing = struct {
+    schema_version: u32 = 1,
+    cwd: []const u8,
+    sessions: []const Summary,
+
+    pub fn render(self: Listing, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+        if (json) {
+            try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
+            return out.writeByte('\n');
+        }
+        const off = sty.off();
+        if (self.sessions.len == 0) {
+            try out.print("{s}no saved sessions for{s} {s}{s}{s}\n", .{ sty.on(.label), off, sty.on(.code), self.cwd, off });
+            return;
+        }
+        try out.print("{s}sessions for{s} {s}{s}{s} {s}(newest first; `nuclis agent --resume [<id>]` continues the newest or the named one){s}\n", .{ sty.on(.label), off, sty.on(.code), self.cwd, off, sty.on(.dim), off });
+        for (self.sessions) |s| {
+            const short = if (s.id.len > 8) s.id[0..8] else s.id;
+            try out.print("  {s}{s}{s}  {s}  {s}{s:<6}{s} ctx {s}{d:<5}{s}", .{ sty.on(.keyword), short, off, s.time, sty.on(.number), s.effort, off, sty.on(.number), s.ctx_size, off });
+            if (s.first_prompt.len > 0) try out.print("  {s}{s}{s}", .{ sty.on(.dim), s.first_prompt, off });
+            try out.writeByte('\n');
+        }
+    }
+};
+
+/// `nuclis agent ls`: the sessions recorded for `cwd`.
+pub fn ls(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8, json: bool, out: *std.Io.Writer, sty: style.Style) !void {
+    const sessions = try list(alloc, io, root_dir, cwd);
+    defer freeList(alloc, sessions);
+    const listing: Listing = .{ .cwd = cwd, .sessions = sessions };
+    try listing.render(out, json, sty);
+}
 
 pub fn freeList(alloc: Allocator, items: []Summary) void {
     for (items) |item| item.deinit(alloc);
@@ -67,6 +114,8 @@ pub fn list(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8)
         defer header.deinit(alloc);
         const path = try std.fs.path.join(alloc, &.{ dir_path, entry.name });
         errdefer alloc.free(path);
+        const first_prompt = try firstPrompt(alloc, bytes);
+        errdefer alloc.free(first_prompt);
         try out.append(alloc, .{
             .id = try alloc.dupe(u8, header.id),
             .time = try alloc.dupe(u8, header.time),
@@ -74,10 +123,30 @@ pub fn list(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8)
             .effort = try alloc.dupe(u8, header.effort),
             .ctx_size = header.ctx_size,
             .path = path,
+            .first_prompt = first_prompt,
         });
     }
     std.mem.sort(Summary, out.items, {}, newerFirst);
     return out.toOwnedSlice(alloc);
+}
+
+/// The first line of the first user entry, cut to the preview length at a
+/// code point; empty when the second line is not a user entry.
+fn firstPrompt(alloc: Allocator, bytes: []const u8) ![]u8 {
+    const start = (std.mem.indexOfScalar(u8, bytes, '\n') orelse return alloc.dupe(u8, "")) + 1;
+    const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+    const parsed = std.json.parseFromSlice(struct { type: []const u8, text: []const u8 = "" }, alloc, bytes[start..end], .{ .ignore_unknown_fields = true }) catch return alloc.dupe(u8, "");
+    defer parsed.deinit();
+    if (!std.mem.eql(u8, parsed.value.type, "user")) return alloc.dupe(u8, "");
+    var line = parsed.value.text;
+    if (std.mem.indexOfScalar(u8, line, '\n')) |nl| line = line[0..nl];
+    line = std.mem.trim(u8, line, " \t\r");
+    if (line.len > prompt_preview) {
+        var cut = prompt_preview;
+        while (cut > 0 and (line[cut] & 0xC0) == 0x80) cut -= 1;
+        return std.fmt.allocPrint(alloc, "{s}…", .{line[0..cut]});
+    }
+    return alloc.dupe(u8, line);
 }
 
 fn newerFirst(_: void, a: Summary, b: Summary) bool {
@@ -93,6 +162,12 @@ pub fn find(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8,
     if (std.mem.indexOfScalar(u8, id, '/') != null or std.mem.endsWith(u8, id, ".jsonl")) {
         std.Io.Dir.cwd().access(io, id, .{}) catch return null;
         return try alloc.dupe(u8, id);
+    }
+    if (std.mem.eql(u8, id, latest)) {
+        const sessions = try list(alloc, io, root_dir, cwd);
+        defer freeList(alloc, sessions);
+        if (sessions.len == 0) return null;
+        return try alloc.dupe(u8, sessions[0].path);
     }
     const dir_path = try sessionsPath(alloc, root_dir, cwd);
     defer alloc.free(dir_path);

@@ -35,8 +35,11 @@ pub const Options = struct {
     /// `agent --print`: one turn without a terminal.
     print: agent.print_mode.Options = .{},
     printing: bool = false,
-    /// `agent --resume <id>`: replay a saved session before the first turn.
+    /// `agent --resume [<id>]`: replay a saved session before the first turn;
+    /// `resume.latest` when no id followed the flag.
     resume_id: ?[]const u8 = null,
+    /// `agent ls` lists the workspace's sessions instead of running one.
+    agent_action: enum { run, ls } = .run,
     model: ?[]const u8 = null,
     json: bool = false,
 };
@@ -73,6 +76,10 @@ pub fn parseArgs(args: []const []const u8) !Options {
     if (command == .model) return parseModelArgs(args[1..]);
     var options: Options = .{ .command = command };
     var i: usize = 1;
+    if (command == .agent and args.len >= 2 and std.mem.eql(u8, args[1], "ls")) {
+        options.agent_action = .ls;
+        i = 2;
+    }
     if (command == .config) {
         // The action is positional and required: `config init` | `config show`.
         if (args.len < 2) return error.MissingConfigAction;
@@ -98,9 +105,13 @@ pub fn parseArgs(args: []const []const u8) !Options {
             options.printing = true;
         } else if (command == .agent and std.mem.eql(u8, args[i], "--resume")) {
             if (options.resume_id != null) return error.DuplicateOption;
-            i += 1;
-            if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--")) return error.MissingOptionValue;
-            options.resume_id = args[i];
+            // The id is optional: alone, the flag means the newest session.
+            if (i + 1 == args.len or args[i + 1].len == 0 or std.mem.startsWith(u8, args[i + 1], "-")) {
+                options.resume_id = agent.resume_mod.latest;
+            } else {
+                i += 1;
+                options.resume_id = args[i];
+            }
         } else if (command == .agent and (std.mem.eql(u8, args[i], "-p") or std.mem.eql(u8, args[i], "--prompt") or std.mem.eql(u8, args[i], "--prompt-file") or std.mem.eql(u8, args[i], "--session"))) {
             const flag = args[i];
             i += 1;
@@ -207,7 +218,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
     if (command == .agent) {
         // A terminal surface has no JSON form, and a printed turn needs
         // something to print.
-        if (options.json and !options.printing) return error.UnknownOption;
+        if (options.json and !options.printing and options.agent_action != .ls) return error.UnknownOption;
         if (options.printing and options.print.prompt == null and options.print.prompt_file == null) return error.MissingPrompt;
         if (options.print.session != null and !options.printing) return error.UnknownOption;
         options.print.json = options.json;
@@ -327,6 +338,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             },
         }
     }
+    if (options.command == .agent and options.agent_action == .ls) {
+        const dir = root orelse return error.MissingHome;
+        const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
+        defer alloc.free(cwd);
+        return agent.resume_mod.ls(alloc, io, dir, cwd, options.json, out, sty);
+    }
     if (options.command == .config) {
         const file = config_path orelse return error.MissingHome;
         switch (options.config_action) {
@@ -392,7 +409,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             return err;
         },
         error.SessionNotFound => {
-            diag.set("no saved session {s} for this workspace (`nuclis agent` and /resume list the sessions under {s})", .{ options.resume_id orelse "", root orelse "~/.nuclis" });
+            if (std.mem.eql(u8, options.resume_id orelse "", agent.resume_mod.latest))
+                diag.set("no saved session for this workspace yet (`nuclis agent ls` lists them under {s})", .{root orelse "~/.nuclis"})
+            else
+                diag.set("no saved session {s} for this workspace (`nuclis agent ls` and /resume list the sessions under {s})", .{ options.resume_id orelse "", root orelse "~/.nuclis" });
             return err;
         },
         else => return err,
@@ -480,8 +500,18 @@ test "agent print mode takes a prompt, JSON lines, and a session file" {
     const print_resume = try parseArgs(&.{ "agent", "-p", "hi", "--resume", "abcdef" });
     try std.testing.expectEqualStrings("abcdef", print_resume.print.resume_id.?);
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "agent", "--resume", "a", "--resume", "b" }));
-    try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "agent", "--resume" }));
-    try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "agent", "--resume", "--print" }));
+    // Alone, `--resume` is the newest session; a following flag is not an id.
+    try std.testing.expectEqualStrings(agent.resume_mod.latest, (try parseArgs(&.{ "agent", "--resume" })).resume_id.?);
+    const latest_print = try parseArgs(&.{ "agent", "--resume", "-p", "hi" });
+    try std.testing.expectEqualStrings(agent.resume_mod.latest, latest_print.print.resume_id.?);
+    try std.testing.expectEqualStrings("hi", latest_print.print.prompt.?);
+    // `agent ls` lists sessions; `--json` applies.
+    const listing = try parseArgs(&.{ "agent", "ls", "--json" });
+    try std.testing.expect(listing.agent_action == .ls);
+    try std.testing.expect(listing.json);
+    try std.testing.expect((try parseArgs(&.{"agent"})).agent_action == .run);
+    // A flag after a bare `--resume` is parsed as itself: print mode still wants its prompt.
+    try std.testing.expectError(error.MissingPrompt, parseArgs(&.{ "agent", "--resume", "--print" }));
 }
 
 test "agent parses sampling and effort flags without a prompt" {

@@ -30,7 +30,7 @@ const tui = @import("../tui/root.zig");
 const prompt_history = @import("history.zig");
 const session_log = @import("session.zig");
 const commands = @import("commands.zig");
-const resume_mod = @import("resume.zig");
+pub const resume_mod = @import("resume.zig");
 pub const print_mode = @import("print.zig");
 pub const tools = @import("tools/root.zig");
 pub const loop = @import("loop.zig");
@@ -601,7 +601,10 @@ const Ui = struct {
             const short = if (summary.id.len > 8) summary.id[0..8] else summary.id;
             try items.append(a, .{
                 .label = try std.fmt.allocPrint(a, "{s}  {s}", .{ short, summary.time }),
-                .detail = try std.fmt.allocPrint(a, "{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, std.fs.path.basename(summary.cwd) }),
+                .detail = if (summary.first_prompt.len > 0)
+                    try std.fmt.allocPrint(a, "{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, summary.first_prompt })
+                else
+                    try std.fmt.allocPrint(a, "{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, std.fs.path.basename(summary.cwd) }),
             });
         }
         try self.comp.set(items.items);

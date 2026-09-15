@@ -398,9 +398,11 @@ proposal left open:
   size, directory); Up/Down move, Enter or Tab picks, Ctrl-C closes. The
   chosen conversation is replayed into a **fresh session** — loader, then
   `loop.Agent.restore`, then a transcript replay — and the fresh file is
-  seeded with the saved entries. `--resume <id>` does the same before the
-  first prompt; an argument that is a path is used as given, which is how
-  print mode scripts a specific file.
+  seeded with the saved entries. `--resume [<id>]` does the same before the
+  first prompt — alone it continues the workspace's newest session — and an
+  argument that is a path is used as given, which is how print mode scripts
+  a specific file. `nuclis agent ls [--json]` lists the workspace's sessions
+  (id, time, effort, window, first prompt), the same rows the picker shows.
 
 #### Print mode (proposed)
 
@@ -530,7 +532,7 @@ Rules:
   `tool_result` entries answer (`AGNT-07`); a cancelled step records none, because
   a call without its result would not load.
 - Resuming (implemented by `AGNT-07` as `src/agent/resume.zig`: `/resume` and
-  `--resume <id>`) replays the kept conversation through the profile into a
+  `--resume [<id>]`) replays the kept conversation through the profile into a
   fresh session — the loader rebuilds the message list, `Agent.restore`
   continues the host ids, and the fresh file is seeded with the saved entries.
   It is a prefill, not a state restore. ENGN-06's in-memory snapshot is the other

@@ -125,9 +125,10 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
 
 fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "nuclis agent — the interactive surface");
-    try usage(out, sty, "nuclis agent [<common options>]");
-    try usage(out, sty, "nuclis agent -p <text> [--json] [--session <path>]");
+    try usage(out, sty, "nuclis agent [<common options>] [--resume [<id>]]");
+    try usage(out, sty, "nuclis agent -p <text> [--json] [--session <path>] [--resume [<id>]]");
     try usage(out, sty, "nuclis agent --print --prompt-file <path> [--json] [--session <path>]");
+    try usage(out, sty, "nuclis agent ls [--json]");
 
     try heading(out, sty, "keys");
     try row(out, sty, "Enter", "send; while a turn runs, queue it for the next one");
