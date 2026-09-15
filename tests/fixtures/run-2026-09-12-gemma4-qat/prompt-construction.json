@@ -1,0 +1,30 @@
+{
+  "family": "gemma4",
+  "template": "<bos><|turn>user\nNUCLIS_BENCH_CONTENT<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+  "corpus_sha256": "77586bea137e1cb3a75155315ac0ca7eb9046f476ef087ce3a49ffb02b97d846",
+  "prefix_tokens": [
+    2,
+    105,
+    2364,
+    107
+  ],
+  "suffix_tokens": [
+    107,
+    2717,
+    108,
+    46762,
+    822,
+    3540,
+    236761,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    100,
+    45518,
+    107,
+    101
+  ],
+  "method": "prefix + truncated synthetic-code token sequence + suffix"
+}

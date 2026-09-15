@@ -1,0 +1,544 @@
+{
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "/Users/alef/.nuclis/models/Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "build_mode": "ReleaseSafe",
+  "context": 2048,
+  "max_tokens": 64,
+  "sampling": "greedy",
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 85.3715,
+  "samples": [
+    {
+      "warmup": true,
+      "prompt_tokens": 22,
+      "generated_tokens": 64,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2520.868959,
+      "first_token_milliseconds": 2520.870875,
+      "decode_milliseconds": 7334.908834,
+      "prefill_tokens_per_second": 8.727149390870023,
+      "decode_tokens_per_second": 8.589063807851549,
+      "gpu_busy_milliseconds": 9248.93916673318
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 22,
+      "generated_tokens": 64,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2446.787958,
+      "first_token_milliseconds": 2446.788083,
+      "decode_milliseconds": 7253.550625,
+      "prefill_tokens_per_second": 8.99137987338419,
+      "decode_tokens_per_second": 8.685401571868121,
+      "gpu_busy_milliseconds": 9256.95358341909
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 22,
+      "generated_tokens": 64,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2438.237125,
+      "first_token_milliseconds": 2438.237375,
+      "decode_milliseconds": 7292.704,
+      "prefill_tokens_per_second": 9.022912404387247,
+      "decode_tokens_per_second": 8.638771023751959,
+      "gpu_busy_milliseconds": 9268.786250017001
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 22,
+      "generated_tokens": 64,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2443.011875,
+      "first_token_milliseconds": 2443.012125,
+      "decode_milliseconds": 7276.883625,
+      "prefill_tokens_per_second": 9.00527755314329,
+      "decode_tokens_per_second": 8.657552222432304,
+      "gpu_busy_milliseconds": 9257.732291691354
+    }
+  ],
+  "mean_prefill_tokens_per_second": 9.006523276971576,
+  "mean_decode_tokens_per_second": 8.660574939350795,
+  "mean_first_token_milliseconds": 2442.6791943333333,
+  "profile": {
+    "steps": 255,
+    "dispatches_per_step": 1236.0117647058823,
+    "attributed_milliseconds_per_step": 104.83891973725483,
+    "gpu_milliseconds_per_step": 108.9547926475586,
+    "unsampled_dispatches": 0,
+    "kernels": [
+      {
+        "kernel": "matvec_iq4_xs",
+        "encoding": "IQ4_XS",
+        "rows": 17408,
+        "columns": 5120,
+        "dispatches_per_step": 61,
+        "milliseconds_per_step": 17.077171121568636,
+        "share": 0.16288961355541529,
+        "gigabytes_per_second": 169.13429861647305
+      },
+      {
+        "kernel": "matvec_q5_k",
+        "encoding": "Q5_K",
+        "rows": 17408,
+        "columns": 5120,
+        "dispatches_per_step": 28,
+        "milliseconds_per_step": 8.91007710588233,
+        "share": 0.08498825749266194,
+        "gigabytes_per_second": 192.56090150637343
+      },
+      {
+        "kernel": "matvec_q4_k",
+        "encoding": "Q4_K",
+        "rows": 17408,
+        "columns": 5120,
+        "dispatches_per_step": 28,
+        "milliseconds_per_step": 8.858990596078423,
+        "share": 0.08450097176011205,
+        "gigabytes_per_second": 158.45835987470252
+      },
+      {
+        "kernel": "matvec_q5_k",
+        "encoding": "Q5_K",
+        "rows": 5120,
+        "columns": 17408,
+        "dispatches_per_step": 22,
+        "milliseconds_per_step": 7.19418052941175,
+        "share": 0.0686212767876821,
+        "gigabytes_per_second": 187.38416620054275
+      },
+      {
+        "kernel": "matvec_iq4_xs",
+        "encoding": "IQ4_XS",
+        "rows": 5120,
+        "columns": 17408,
+        "dispatches_per_step": 24,
+        "milliseconds_per_step": 6.663042298039196,
+        "share": 0.06355504534707128,
+        "gigabytes_per_second": 170.5518574202086
+      },
+      {
+        "kernel": "matvec_q5_k",
+        "encoding": "Q5_K",
+        "rows": 5120,
+        "columns": 6144,
+        "dispatches_per_step": 44,
+        "milliseconds_per_step": 5.956915215686302,
+        "share": 0.05681969282605547,
+        "gigabytes_per_second": 159.74421081136154
+      },
+      {
+        "kernel": "matvec_q4_k",
+        "encoding": "Q4_K",
+        "rows": 10240,
+        "columns": 5120,
+        "dispatches_per_step": 29,
+        "milliseconds_per_step": 5.64970720784312,
+        "share": 0.053889406930196365,
+        "gigabytes_per_second": 151.37860574663398
+      },
+      {
+        "kernel": "matvec",
+        "encoding": "Q3_K",
+        "rows": 17408,
+        "columns": 5120,
+        "dispatches_per_step": 6,
+        "milliseconds_per_step": 5.2956716784313755,
+        "share": 0.050512459415866566,
+        "gigabytes_per_second": 43.39120964312963
+      },
+      {
+        "kernel": "matvec_q4_k",
+        "encoding": "Q4_K",
+        "rows": 5120,
+        "columns": 17408,
+        "dispatches_per_step": 10,
+        "milliseconds_per_step": 3.5670204901960814,
+        "share": 0.03402381958089301,
+        "gigabytes_per_second": 140.5515895907961
+      },
+      {
+        "kernel": "matvec_q6_k",
+        "encoding": "Q6_K",
+        "rows": 248320,
+        "columns": 5120,
+        "dispatches_per_step": 0.7529411764705882,
+        "milliseconds_per_step": 3.2596364588235303,
+        "share": 0.03109185469473327,
+        "gigabytes_per_second": 240.90891492739135
+      },
+      {
+        "kernel": "matvec_q4_k",
+        "encoding": "Q4_K",
+        "rows": 6144,
+        "columns": 5120,
+        "dispatches_per_step": 24,
+        "milliseconds_per_step": 2.9946577764705817,
+        "share": 0.028564370788784668,
+        "gigabytes_per_second": 141.81028741805275
+      },
+      {
+        "kernel": "matvec",
+        "encoding": "IQ3_S",
+        "rows": 5120,
+        "columns": 17408,
+        "dispatches_per_step": 3,
+        "milliseconds_per_step": 2.9215908823529433,
+        "share": 0.027867426425939677,
+        "gigabytes_per_second": 39.32542393049553
+      },
+      {
+        "kernel": "rmsnorm",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 208.75294117647059,
+        "milliseconds_per_step": 2.540870290196045,
+        "share": 0.02423594497696011
+      },
+      {
+        "kernel": "matvec_q5_k",
+        "encoding": "Q5_K",
+        "rows": 10240,
+        "columns": 5120,
+        "dispatches_per_step": 12,
+        "milliseconds_per_step": 2.42077643921569,
+        "share": 0.023090436693573253,
+        "gigabytes_per_second": 178.67721818217066
+      },
+      {
+        "kernel": "matvec_q5_k",
+        "encoding": "Q5_K",
+        "rows": 6144,
+        "columns": 5120,
+        "dispatches_per_step": 12,
+        "milliseconds_per_step": 1.6835311607843129,
+        "share": 0.01605826505083746,
+        "gigabytes_per_second": 154.15370148485715
+      },
+      {
+        "kernel": "matvec_iq4_xs",
+        "encoding": "IQ4_XS",
+        "rows": 12288,
+        "columns": 5120,
+        "dispatches_per_step": 8,
+        "milliseconds_per_step": 1.5376641254901973,
+        "share": 0.014666920732718917,
+        "gigabytes_per_second": 173.8916032230113
+      },
+      {
+        "kernel": "matvec",
+        "encoding": "Q8_0",
+        "rows": 48,
+        "columns": 5120,
+        "dispatches_per_step": 96,
+        "milliseconds_per_step": 1.4005800666666772,
+        "share": 0.013359352330000946,
+        "gigabytes_per_second": 17.897955708922563
+      },
+      {
+        "kernel": "matvec",
+        "encoding": "IQ4_NL",
+        "rows": 5120,
+        "columns": 17408,
+        "dispatches_per_step": 3,
+        "milliseconds_per_step": 1.390713545098039,
+        "share": 0.01326524108206587,
+        "gigabytes_per_second": 108.14960458977706
+      },
+      {
+        "kernel": "matvec_q4_k",
+        "encoding": "Q4_K",
+        "rows": 12288,
+        "columns": 5120,
+        "dispatches_per_step": 6,
+        "milliseconds_per_step": 1.3777809294117656,
+        "share": 0.013141884071914632,
+        "gigabytes_per_second": 154.11495069151212
+      },
+      {
+        "kernel": "matvec",
+        "encoding": "IQ4_NL",
+        "rows": 17408,
+        "columns": 5120,
+        "dispatches_per_step": 3,
+        "milliseconds_per_step": 1.3455748588235308,
+        "share": 0.012834688321815824,
+        "gigabytes_per_second": 111.77759380217826
+      },
+      {
+        "kernel": "delta",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 48,
+        "milliseconds_per_step": 1.3052529490196096,
+        "share": 0.012450080106613156
+      },
+      {
+        "kernel": "matvec_iq4_xs",
+        "encoding": "IQ4_XS",
+        "rows": 6144,
+        "columns": 5120,
+        "dispatches_per_step": 12,
+        "milliseconds_per_step": 1.2167101137254888,
+        "share": 0.011605519369855996,
+        "gigabytes_per_second": 164.8216430008614
+      },
+      {
+        "kernel": "matvec_q6_k",
+        "encoding": "Q6_K",
+        "rows": 5120,
+        "columns": 6144,
+        "dispatches_per_step": 9,
+        "milliseconds_per_step": 1.1151372431372546,
+        "share": 0.010636672391626974,
+        "gigabytes_per_second": 208.26423064000812
+      },
+      {
+        "kernel": "matvec_iq4_xs",
+        "encoding": "IQ4_XS",
+        "rows": 10240,
+        "columns": 5120,
+        "dispatches_per_step": 6,
+        "milliseconds_per_step": 0.9681068705882363,
+        "share": 0.009234231648079608,
+        "gigabytes_per_second": 172.62226421186054
+      },
+      {
+        "kernel": "matvec",
+        "encoding": "IQ3_S",
+        "rows": 17408,
+        "columns": 5120,
+        "dispatches_per_step": 1,
+        "milliseconds_per_step": 0.9498539333333336,
+        "share": 0.009060127056954024,
+        "gigabytes_per_second": 40.31946245208648
+      },
+      {
+        "kernel": "matvec",
+        "encoding": "Q3_K",
+        "rows": 5120,
+        "columns": 17408,
+        "dispatches_per_step": 1,
+        "milliseconds_per_step": 0.8896328313725482,
+        "share": 0.008485711543023603,
+        "gigabytes_per_second": 43.0487709642117
+      },
+      {
+        "kernel": "add",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 128,
+        "milliseconds_per_step": 0.7155778862744845,
+        "share": 0.006825498470108729
+      },
+      {
+        "kernel": "matvec_q4_k",
+        "encoding": "Q4_K",
+        "rows": 5120,
+        "columns": 6144,
+        "dispatches_per_step": 5,
+        "milliseconds_per_step": 0.6443335568627454,
+        "share": 0.0061459385357800446,
+        "gigabytes_per_second": 137.3102472433334
+      },
+      {
+        "kernel": "matvec_iq4_xs",
+        "encoding": "IQ4_XS",
+        "rows": 5120,
+        "columns": 6144,
+        "dispatches_per_step": 6,
+        "milliseconds_per_step": 0.6398669803921581,
+        "share": 0.00610333435327052,
+        "gigabytes_per_second": 156.70456996944435
+      },
+      {
+        "kernel": "matvec_q5_k",
+        "encoding": "Q5_K",
+        "rows": 12288,
+        "columns": 5120,
+        "dispatches_per_step": 2,
+        "milliseconds_per_step": 0.4657401294117647,
+        "share": 0.004442435410236896,
+        "gigabytes_per_second": 185.74203624939946
+      },
+      {
+        "kernel": "silu_mul",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 64,
+        "milliseconds_per_step": 0.36198159999999596,
+        "share": 0.003452740651155
+      },
+      {
+        "kernel": "attention_values",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 16,
+        "milliseconds_per_step": 0.35243898823529357,
+        "share": 0.0033617189982362372
+      },
+      {
+        "kernel": "matvec_q5_k",
+        "encoding": "Q5_K",
+        "rows": 1024,
+        "columns": 5120,
+        "dispatches_per_step": 11,
+        "milliseconds_per_step": 0.3287052117647054,
+        "share": 0.0031353357378013794,
+        "gigabytes_per_second": 120.62260828520675
+      },
+      {
+        "kernel": "matvec_q6_k",
+        "encoding": "Q6_K",
+        "rows": 1024,
+        "columns": 5120,
+        "dispatches_per_step": 12,
+        "milliseconds_per_step": 0.32867045098039155,
+        "share": 0.003135004174061491,
+        "gigabytes_per_second": 157.0253725153985
+      },
+      {
+        "kernel": "matvec_q6_k",
+        "encoding": "Q6_K",
+        "rows": 5120,
+        "columns": 17408,
+        "dispatches_per_step": 1,
+        "milliseconds_per_step": 0.3188848156862746,
+        "share": 0.0030416644551990546,
+        "gigabytes_per_second": 229.27902616702409
+      },
+      {
+        "kernel": "matvec_q6_k",
+        "encoding": "Q6_K",
+        "rows": 17408,
+        "columns": 5120,
+        "dispatches_per_step": 1,
+        "milliseconds_per_step": 0.3129011098039215,
+        "share": 0.002984589221141423,
+        "gigabytes_per_second": 233.66360076452398
+      },
+      {
+        "kernel": "matvec",
+        "encoding": "Q8_0",
+        "rows": 1024,
+        "columns": 5120,
+        "dispatches_per_step": 8,
+        "milliseconds_per_step": 0.30034766274509844,
+        "share": 0.002864848889113162,
+        "gigabytes_per_second": 148.37631694114881
+      },
+      {
+        "kernel": "delta_gates",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 48,
+        "milliseconds_per_step": 0.2903673372549001,
+        "share": 0.002769652129024344
+      },
+      {
+        "kernel": "matvec",
+        "encoding": "IQ4_NL",
+        "rows": 10240,
+        "columns": 5120,
+        "dispatches_per_step": 1,
+        "milliseconds_per_step": 0.26871125490196074,
+        "share": 0.0025630868343111454,
+        "gigabytes_per_second": 109.75052016619053
+      },
+      {
+        "kernel": "convolution",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 48,
+        "milliseconds_per_step": 0.22567479215686184,
+        "share": 0.0021525860121645994
+      },
+      {
+        "kernel": "rope",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 32,
+        "milliseconds_per_step": 0.20738644313725496,
+        "share": 0.0019781436479601533
+      },
+      {
+        "kernel": "l2norm",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 48,
+        "milliseconds_per_step": 0.1474903568627446,
+        "share": 0.0014068282774410679
+      },
+      {
+        "kernel": "silu_inplace",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 48,
+        "milliseconds_per_step": 0.13590438431372442,
+        "share": 0.001296316145323943
+      },
+      {
+        "kernel": "attention_scores",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 16,
+        "milliseconds_per_step": 0.12329961960784286,
+        "share": 0.0011760863228737369
+      },
+      {
+        "kernel": "attention_softmax",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 16,
+        "milliseconds_per_step": 0.05481093333333318,
+        "share": 0.0005228109319582769
+      },
+      {
+        "kernel": "sigmoid_gate",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 16,
+        "milliseconds_per_step": 0.05431159215686252,
+        "share": 0.000518047994895189
+      },
+      {
+        "kernel": "argmax_final",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 0.7529411764705882,
+        "milliseconds_per_step": 0.027387286274509808,
+        "share": 0.0002612320533552546
+      },
+      {
+        "kernel": "matvec_q4_k",
+        "encoding": "Q4_K",
+        "rows": 1024,
+        "columns": 5120,
+        "dispatches_per_step": 1,
+        "milliseconds_per_step": 0.026273537254901974,
+        "share": 0.00025060862245383856,
+        "gigabytes_per_second": 112.24678167191853
+      },
+      {
+        "kernel": "embed",
+        "encoding": "Q4_K",
+        "rows": 1,
+        "columns": 5120,
+        "dispatches_per_step": 1,
+        "milliseconds_per_step": 0.009651345098039216,
+        "share": 0.00009205879955866792,
+        "gigabytes_per_second": 0.29840400179920057
+      },
+      {
+        "kernel": "argmax_partial",
+        "rows": 0,
+        "columns": 0,
+        "dispatches_per_step": 0.7529411764705882,
+        "milliseconds_per_step": 0.007355745098039217,
+        "share": 0.00007016235112374332
+      }
+    ]
+  }
+}

@@ -1,0 +1,132 @@
+{
+  "date": "2026-09-06",
+  "started_at": "2026-09-06T16:35:04.949203+00:00",
+  "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "model_sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+  "hardware": "Apple M4 Pro\n51539607552\n12",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+  "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22020195)\t100%; charged; 0:00 remaining present: true",
+  "build": "Pinned llama.cpp Release with Metal MTL0; pre-relocation build, same server flags as reference-baseline.md. Future reference builds live under .zig-cache/reference/llama.cpp/build.",
+  "context": 32768,
+  "prompt_tokens": 32639,
+  "output_tokens": 128,
+  "boundary_margin_tokens": 1,
+  "accepted": true,
+  "acceptance_scope": "Reference token-count and no-truncation boundary check only; not nuclis execution or zero-swap memory acceptance.",
+  "methodology": "One warmup plus one measured request; reasoning off, greedy, seed 1, F16 KV, one slot, GPU offload, no context shift or prefix reuse. Synthetic prompt from scripts/reference-baseline.py. Ordinary development activity (including Zig builds during warmup) continued; not an isolated throughput experiment.",
+  "memory_limitation": "Before/after system snapshots and process RSS only, not continuous peak memory. System swap was already nonzero when the harness started.",
+  "initial_memory": {
+    "timestamp": "2026-09-06T16:35:04.972895+00:00",
+    "swap": "total = 1024.00M  used = 247.81M  free = 776.19M  (encrypted)",
+    "server_rss_kib": 17921216,
+    "vm_page_size_bytes": 16384,
+    "swapins_pages": 145735,
+    "swapouts_pages": 180352
+  },
+  "harness_sha256": "74afebe1f26fa5044562b45776876504a8076068f1de3dcee9c25b616feec634",
+  "prompt_file_sha256": "6f3ea62a995d7fd78d8bd927c913e6e371f7645fff70decbd1842a19f6c45cab",
+  "server_props_sha256": "6197f1f1eadbe9150a366b383638c2ae90c307126e158ff347b099fdaa601b6e",
+  "summary": {
+    "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+    "context": 32768,
+    "generate": 128,
+    "results": [
+      {
+        "prompt_tokens": 32639,
+        "phase": "warm",
+        "samples": 1,
+        "prompt_per_second": {
+          "mean": 67.27708419703073,
+          "sample_stdev": null
+        },
+        "predicted_per_second": {
+          "mean": 6.706220341476516,
+          "sample_stdev": null
+        }
+      }
+    ]
+  },
+  "samples": [
+    {
+      "phase": "warmup",
+      "repetition": 0,
+      "prompt_tokens": 32639,
+      "output_tokens": 128,
+      "wall_seconds": 455.17148775,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 32639,
+        "prompt_ms": 437749.026,
+        "prompt_per_token_ms": 13.411839394589295,
+        "prompt_per_second": 74.5609882864708,
+        "predicted_n": 128,
+        "predicted_ms": 17430.0,
+        "predicted_per_token_ms": 137.24409448818898,
+        "predicted_per_second": 7.286288009179576
+      },
+      "truncated": false,
+      "tokens_evaluated": 32639,
+      "tokens_predicted": 128,
+      "stop_type": "limit",
+      "memory_before": {
+        "timestamp": "2026-09-06T16:35:07.625915+00:00",
+        "swap": "total = 1024.00M  used = 247.81M  free = 776.19M  (encrypted)",
+        "server_rss_kib": 18086272,
+        "vm_page_size_bytes": 16384,
+        "swapins_pages": 145735,
+        "swapouts_pages": 180352
+      },
+      "memory_after": {
+        "timestamp": "2026-09-06T16:42:42.836273+00:00",
+        "swap": "total = 1024.00M  used = 239.81M  free = 784.19M  (encrypted)",
+        "server_rss_kib": 18328832,
+        "vm_page_size_bytes": 16384,
+        "swapins_pages": 145867,
+        "swapouts_pages": 180352
+      },
+      "raw_response_sha256": "04edcde6d0988eace5697852dcb63c990b5471cb4fb4603df197ffb08a72cad7"
+    },
+    {
+      "phase": "warm",
+      "repetition": 1,
+      "prompt_tokens": 32639,
+      "output_tokens": 128,
+      "wall_seconds": 504.090419292,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 32639,
+        "prompt_ms": 485142.904,
+        "prompt_per_token_ms": 14.863902202886118,
+        "prompt_per_second": 67.27708419703073,
+        "predicted_n": 128,
+        "predicted_ms": 18937.642,
+        "predicted_per_token_ms": 149.11529133858267,
+        "predicted_per_second": 6.706220341476516
+      },
+      "truncated": false,
+      "tokens_evaluated": 32639,
+      "tokens_predicted": 128,
+      "stop_type": "limit",
+      "memory_before": {
+        "timestamp": "2026-09-06T16:42:42.856955+00:00",
+        "swap": "total = 1024.00M  used = 239.81M  free = 784.19M  (encrypted)",
+        "server_rss_kib": 18328832,
+        "vm_page_size_bytes": 16384,
+        "swapins_pages": 145867,
+        "swapouts_pages": 180352
+      },
+      "memory_after": {
+        "timestamp": "2026-09-06T16:51:06.965292+00:00",
+        "swap": "total = 1024.00M  used = 239.81M  free = 784.19M  (encrypted)",
+        "server_rss_kib": 18328896,
+        "vm_page_size_bytes": 16384,
+        "swapins_pages": 146156,
+        "swapouts_pages": 180352
+      },
+      "raw_response_sha256": "822a8819e2a042b5d506e8c476d0fbc642be2024b99e20259d32b90884023c61"
+    }
+  ],
+  "raw_local_directory": ".zig-cache/reference/boundary-2026-09-06/",
+  "server_log": ".zig-cache/reference/server-boundary-2026-09-06.log",
+  "model_hash_verification": "Full-file SHA-256 reverified after the capacity run, before the relocated-build smoke check."
+}

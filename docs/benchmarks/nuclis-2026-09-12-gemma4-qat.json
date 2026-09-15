@@ -1,0 +1,610 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-12",
+  "label": "warm",
+  "purged_before_first_run": false,
+  "started_at": "2026-09-12T09:35:20+00:00",
+  "finished_at": "2026-09-12T10:05:33+00:00",
+  "methodology": "See ../reference/bench.md#acceptance-runs and ../reference/reference-baseline.md. Each run feeds the reference harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident model pages).",
+  "nuclis_version": "nuclis 0.1.0-dev",
+  "build_mode": "ReleaseSafe",
+  "zig_version": "0.16.0",
+  "hardware": {
+    "cpu": "Apple M4 Pro",
+    "memory_bytes": 51539607552,
+    "cpu_cores": 12,
+    "gpu": "Graphics/Displays:\n\n    Apple M4 Pro:\n\n      Chipset Model: Apple M4 Pro\n      Type: GPU\n      Bus: Built-In\n      Total Number of Cores: 16\n      Vendor: Apple (0x106b)\n      Metal Support: Metal 4\n      Displays:\n        Color LCD:\n          Display Type: Built-in Liquid Retina XDR Display\n          Resolution: 3024 x 1964 Retina\n          Main Display: Yes\n          Mirror: Off\n          Online: Yes\n          Automatically Adjust Brightness: Yes\n          Connection Type: Internal"
+  },
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+  "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=22020195)\t58%; discharging; 0:44 remaining present: true",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+  "model_sha256": "90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370",
+  "backend": "metal",
+  "kv_precision": "f16",
+  "context": 32768,
+  "output_tokens": 128,
+  "warmup_runs": 1,
+  "repetitions": 3,
+  "boundary_repetitions": 1,
+  "prompts": [
+    {
+      "prompt_tokens": 512,
+      "corpus_tokens": 492,
+      "text_file": ".zig-cache/prompts/reference-gemma4-qat/prompt-512.txt",
+      "text_sha256": "ab45a0a4302314590f660e90845a0d3f236c458d7e73d779775fb9cef11287af",
+      "text_bytes": 1256,
+      "text_tokens": 512,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-12-gemma4-qat/prompt-512.json",
+      "reference_fixture_sha256": "9d8393206c4e135aa8ffa3020b3276092a39037d8f0ef63264c9e852078743ca"
+    },
+    {
+      "prompt_tokens": 4096,
+      "corpus_tokens": 4076,
+      "text_file": ".zig-cache/prompts/reference-gemma4-qat/prompt-4096.txt",
+      "text_sha256": "b818c395683851ad828262034001de45448e34a47a87b45d0a0b98a4f1e6f3fb",
+      "text_bytes": 9255,
+      "text_tokens": 4096,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-12-gemma4-qat/prompt-4096.json",
+      "reference_fixture_sha256": "093e1db776497f1560dab2bfb07440aa4a61877860409db870ceb489d444b66e"
+    },
+    {
+      "prompt_tokens": 16384,
+      "corpus_tokens": 16364,
+      "text_file": ".zig-cache/prompts/reference-gemma4-qat/prompt-16384.txt",
+      "text_sha256": "7d5f95b1279daddd6d4455cfc6838c0263256ad1d5ca3177f6cbe995c90ef183",
+      "text_bytes": 36679,
+      "text_tokens": 16384,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-12-gemma4-qat/prompt-16384.json",
+      "reference_fixture_sha256": "2dcd9fc4459c9ee0d30f829b1131bf5ea5f7d925467c6a40a0877622a0d0e61f"
+    },
+    {
+      "prompt_tokens": 32639,
+      "corpus_tokens": 32619,
+      "text_file": ".zig-cache/prompts/reference-gemma4-qat/prompt-32639.txt",
+      "text_sha256": "e5cf76115f3d7939b93849b8fd2f1854af4c9adc77c7019e85ea1343fc3a669a",
+      "text_bytes": 72940,
+      "text_tokens": 32639,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-12-gemma4-qat/prompt-32639.json",
+      "reference_fixture_sha256": "be47a8fbfc744f5465aae3022e02073381d67fac11f9b2fb6df9e39a779c49b0"
+    }
+  ],
+  "summary": [
+    {
+      "prompt_tokens": 512,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 179.44752995893387,
+        "sample_stdev": 19.322511442336868
+      },
+      "decode_tokens_per_second": {
+        "mean": 23.957038311281874,
+        "sample_stdev": 0.9683516957442887
+      },
+      "first_token_milliseconds": {
+        "mean": 2874.4467913333333,
+        "sample_stdev": 296.208600314885
+      },
+      "session_bytes": 11274289152,
+      "peak_resident_bytes": 11541446656
+    },
+    {
+      "prompt_tokens": 4096,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 143.25288878428182,
+        "sample_stdev": 1.8970678744278344
+      },
+      "decode_tokens_per_second": {
+        "mean": 20.712031122954986,
+        "sample_stdev": 1.3409107870854051
+      },
+      "first_token_milliseconds": {
+        "mean": 28596.128931,
+        "sample_stdev": 377.99820064714106
+      },
+      "session_bytes": 11274289152,
+      "peak_resident_bytes": 11541430272
+    },
+    {
+      "prompt_tokens": 16384,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 98.66920295733618,
+        "sample_stdev": 1.0603588469896652
+      },
+      "decode_tokens_per_second": {
+        "mean": 17.866232324118066,
+        "sample_stdev": 0.564789328009391
+      },
+      "first_token_milliseconds": {
+        "mean": 166062.546014,
+        "sample_stdev": 1781.0878041462897
+      },
+      "session_bytes": 11274289152,
+      "peak_resident_bytes": 11541708800
+    },
+    {
+      "prompt_tokens": 32639,
+      "samples": 1,
+      "prefill_tokens_per_second": {
+        "mean": 73.03983793763109,
+        "sample_stdev": null
+      },
+      "decode_tokens_per_second": {
+        "mean": 16.235149998483713,
+        "sample_stdev": null
+      },
+      "first_token_milliseconds": {
+        "mean": 446865.723417,
+        "sample_stdev": null
+      },
+      "session_bytes": 11274289152,
+      "peak_resident_bytes": 11541331968
+    }
+  ],
+  "family": "gemma4",
+  "reference": {
+    "revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+    "run": "run-2026-09-12-gemma4-qat",
+    "rows": [
+      {
+        "prompt_tokens": 512,
+        "samples": 3,
+        "source": "reference-2026-09-12-gemma4-qat.json",
+        "prefill_tokens_per_second": 224.4625641126683,
+        "decode_tokens_per_second": 27.69340175691564
+      },
+      {
+        "prompt_tokens": 4096,
+        "samples": 3,
+        "source": "reference-2026-09-12-gemma4-qat.json",
+        "prefill_tokens_per_second": 216.82255848390406,
+        "decode_tokens_per_second": 25.693053176151086
+      },
+      {
+        "prompt_tokens": 16384,
+        "samples": 3,
+        "source": "reference-2026-09-12-gemma4-qat.json",
+        "prefill_tokens_per_second": 158.7785572471424,
+        "decode_tokens_per_second": 22.097803351806334
+      },
+      {
+        "prompt_tokens": 32639,
+        "samples": 3,
+        "source": "reference-2026-09-12-gemma4-qat.json",
+        "prefill_tokens_per_second": 143.71727691363157,
+        "decode_tokens_per_second": 20.941634359751696
+      }
+    ]
+  },
+  "runs": [
+    {
+      "prompt_tokens": 512,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-12-gemma4-qat/prompt-512.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 11541446656,
+      "peak_footprint_bytes": 11765575392,
+      "memory_before": {
+        "timestamp": "2026-09-12T09:35:20+00:00",
+        "swap": "total = 4096.00M  used = 2513.38M  free = 1582.62M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-12T09:36:00+00:00",
+        "swap": "total = 4096.00M  used = 2513.38M  free = 1582.62M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 11274289152,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 4012.484916,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 2730.898917,
+            "first_token_milliseconds": 2730.899458,
+            "decode_milliseconds": 4895.368125,
+            "prefill_tokens_per_second": 187.48405399144255,
+            "decode_tokens_per_second": 25.94289065850385,
+            "gpu_busy_milliseconds": 7387.735125084873
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 2545.316041,
+            "first_token_milliseconds": 2545.316458,
+            "decode_milliseconds": 5065.839792,
+            "prefill_tokens_per_second": 201.1538024169471,
+            "decode_tokens_per_second": 25.069880851849884,
+            "gpu_busy_milliseconds": 7549.876333505381
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 2958.423291,
+            "first_token_milliseconds": 2958.423791,
+            "decode_milliseconds": 5449.164709,
+            "prefill_tokens_per_second": 173.0651599308275,
+            "decode_tokens_per_second": 23.306324323477153,
+            "gpu_busy_milliseconds": 8343.842999602202
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 3119.599583,
+            "first_token_milliseconds": 3119.600125,
+            "decode_milliseconds": 5405.426167,
+            "prefill_tokens_per_second": 164.12362752902703,
+            "decode_tokens_per_second": 23.494909758518585,
+            "gpu_busy_milliseconds": 8462.192332895938
+          }
+        ],
+        "mean_prefill_tokens_per_second": 179.44752995893387,
+        "mean_decode_tokens_per_second": 23.957038311281874,
+        "mean_first_token_milliseconds": 2874.4467913333333
+      }
+    },
+    {
+      "prompt_tokens": 4096,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-12-gemma4-qat/prompt-4096.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 11541430272,
+      "peak_footprint_bytes": 11765559008,
+      "memory_before": {
+        "timestamp": "2026-09-12T09:36:00+00:00",
+        "swap": "total = 4096.00M  used = 2513.38M  free = 1582.62M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-12T09:38:24+00:00",
+        "swap": "total = 4096.00M  used = 2513.38M  free = 1582.62M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 11274289152,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 3853.641459,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 26743.637875,
+            "first_token_milliseconds": 26743.638417,
+            "decode_milliseconds": 5805.27575,
+            "prefill_tokens_per_second": 153.15792186331345,
+            "decode_tokens_per_second": 21.87665245703445,
+            "gpu_busy_milliseconds": 32287.01754147187
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 28629.780334,
+            "first_token_milliseconds": 28629.780459,
+            "decode_milliseconds": 5861.458833,
+            "prefill_tokens_per_second": 143.06781093726013,
+            "decode_tokens_per_second": 21.666961010625936,
+            "gpu_busy_milliseconds": 34403.22733332869
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 28202.429917,
+            "first_token_milliseconds": 28202.430084,
+            "decode_milliseconds": 5965.217625,
+            "prefill_tokens_per_second": 145.23571238558395,
+            "decode_tokens_per_second": 21.290086629488222,
+            "gpu_busy_milliseconds": 34081.21287537506
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 28956.175875,
+            "first_token_milliseconds": 28956.17625,
+            "decode_milliseconds": 6621.810167,
+            "prefill_tokens_per_second": 141.45514303000138,
+            "decode_tokens_per_second": 19.179045728750804,
+            "gpu_busy_milliseconds": 35486.829416360706
+          }
+        ],
+        "mean_prefill_tokens_per_second": 143.25288878428182,
+        "mean_decode_tokens_per_second": 20.712031122954986,
+        "mean_first_token_milliseconds": 28596.128931
+      }
+    },
+    {
+      "prompt_tokens": 16384,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-12-gemma4-qat/prompt-16384.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 11541708800,
+      "peak_footprint_bytes": 11790986952,
+      "memory_before": {
+        "timestamp": "2026-09-12T09:38:24+00:00",
+        "swap": "total = 4096.00M  used = 2513.38M  free = 1582.62M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-12T09:50:06+00:00",
+        "swap": "total = 4096.00M  used = 2489.38M  free = 1606.62M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 11274289152,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 3950.627333,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 168614.169875,
+            "first_token_milliseconds": 168614.170084,
+            "decode_milliseconds": 7263.523333,
+            "prefill_tokens_per_second": 97.16858323441069,
+            "decode_tokens_per_second": 17.484627525460997,
+            "gpu_busy_milliseconds": 175487.77895752573
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 167725.885667,
+            "first_token_milliseconds": 167725.885792,
+            "decode_milliseconds": 7202.050208,
+            "prefill_tokens_per_second": 97.68319263806723,
+            "decode_tokens_per_second": 17.633867625489344,
+            "gpu_busy_milliseconds": 174723.36754167918
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 166278.372791,
+            "first_token_milliseconds": 166278.372833,
+            "decode_milliseconds": 6861.104958,
+            "prefill_tokens_per_second": 98.53355986706408,
+            "decode_tokens_per_second": 18.510138057561544,
+            "gpu_busy_milliseconds": 172936.79320818046
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 164183.379084,
+            "first_token_milliseconds": 164183.379417,
+            "decode_milliseconds": 7275.980875,
+            "prefill_tokens_per_second": 99.79085636687724,
+            "decode_tokens_per_second": 17.454691289303312,
+            "gpu_busy_milliseconds": 171256.53362472076
+          }
+        ],
+        "mean_prefill_tokens_per_second": 98.66920295733617,
+        "mean_decode_tokens_per_second": 17.86623232411807,
+        "mean_first_token_milliseconds": 166062.546014
+      }
+    },
+    {
+      "prompt_tokens": 32639,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-12-gemma4-qat/prompt-32639.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "1",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 11541331968,
+      "peak_footprint_bytes": 11809631968,
+      "memory_before": {
+        "timestamp": "2026-09-12T09:50:06+00:00",
+        "swap": "total = 4096.00M  used = 2489.38M  free = 1606.62M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-12T10:05:33+00:00",
+        "swap": "total = 2048.00M  used = 1021.75M  free = 1026.25M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 11274289152,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 1,
+        "load_milliseconds": 3891.778125,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 457202.531334,
+            "first_token_milliseconds": 457202.531542,
+            "decode_milliseconds": 7881.629958,
+            "prefill_tokens_per_second": 71.38849363928006,
+            "decode_tokens_per_second": 16.11341824936765,
+            "gpu_busy_milliseconds": 464466.0624168464
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 446865.723167,
+            "first_token_milliseconds": 446865.723417,
+            "decode_milliseconds": 7822.533208,
+            "prefill_tokens_per_second": 73.03983793763109,
+            "decode_tokens_per_second": 16.235149998483713,
+            "gpu_busy_milliseconds": 454240.9112085006
+          }
+        ],
+        "mean_prefill_tokens_per_second": 73.03983793763109,
+        "mean_decode_tokens_per_second": 16.235149998483713,
+        "mean_first_token_milliseconds": 446865.723417
+      }
+    }
+  ]
+}

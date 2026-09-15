@@ -1,0 +1,20 @@
+{
+  "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "context": 32768,
+  "generate": 128,
+  "results": [
+    {
+      "prompt_tokens": 32639,
+      "phase": "warm",
+      "samples": 1,
+      "prompt_per_second": {
+        "mean": 67.27708419703073,
+        "sample_stdev": null
+      },
+      "predicted_per_second": {
+        "mean": 6.706220341476516,
+        "sample_stdev": null
+      }
+    }
+  ]
+}

@@ -1,0 +1,841 @@
+{
+  "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "model_sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+  "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+  "add_special": false,
+  "preserve_thinking": true,
+  "cases": [
+    {
+      "name": "tools_only",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a then run it"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nread a then run it<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    },
+    {
+      "name": "tools_only",
+      "effort": "low",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a then run it"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nread a then run it<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "tools_only",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a then run it"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nread a then run it<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "tools_only",
+      "effort": "xhigh",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a then run it"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nread a then run it<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "one_call",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "Reading now.",
+          "reasoning_content": "I should read it.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "line one\nline two",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "now what?"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nread a<|im_end|>\n<|im_start|>assistant\n<think>\nI should read it.\n</think>\n\nReading now.\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na.zig\n</parameter>\n<parameter=offset>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nline one\nline two\n</tool_response><|im_end|>\n<|im_start|>user\nnow what?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    },
+    {
+      "name": "one_call",
+      "effort": "low",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "Reading now.",
+          "reasoning_content": "I should read it.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "line one\nline two",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "now what?"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nread a<|im_end|>\n<|im_start|>assistant\n<think>\nI should read it.\n</think>\n\nReading now.\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na.zig\n</parameter>\n<parameter=offset>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nline one\nline two\n</tool_response><|im_end|>\n<|im_start|>user\nnow what?<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "one_call",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "Reading now.",
+          "reasoning_content": "I should read it.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "line one\nline two",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "now what?"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nread a<|im_end|>\n<|im_start|>assistant\n<think>\nI should read it.\n</think>\n\nReading now.\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na.zig\n</parameter>\n<parameter=offset>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nline one\nline two\n</tool_response><|im_end|>\n<|im_start|>user\nnow what?<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "one_call",
+      "effort": "xhigh",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "Reading now.",
+          "reasoning_content": "I should read it.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "line one\nline two",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "now what?"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nread a<|im_end|>\n<|im_start|>assistant\n<think>\nI should read it.\n</think>\n\nReading now.\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na.zig\n</parameter>\n<parameter=offset>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nline one\nline two\n</tool_response><|im_end|>\n<|im_start|>user\nnow what?<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "two_calls",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "do both"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan both calls.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            },
+            {
+              "id": 2,
+              "name": "bash",
+              "arguments": "{\"command\":\"zig build test\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "file body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "tool",
+          "content": "ok",
+          "tool_call_id": 2
+        },
+        {
+          "role": "user",
+          "content": "next"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\ndo both<|im_end|>\n<|im_start|>assistant\n<think>\nPlan both calls.\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na.zig\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\nzig build test\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nfile body\n</tool_response>\n<tool_response>\nok\n</tool_response><|im_end|>\n<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    },
+    {
+      "name": "two_calls",
+      "effort": "low",
+      "messages": [
+        {
+          "role": "user",
+          "content": "do both"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan both calls.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            },
+            {
+              "id": 2,
+              "name": "bash",
+              "arguments": "{\"command\":\"zig build test\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "file body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "tool",
+          "content": "ok",
+          "tool_call_id": 2
+        },
+        {
+          "role": "user",
+          "content": "next"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\ndo both<|im_end|>\n<|im_start|>assistant\n<think>\nPlan both calls.\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na.zig\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\nzig build test\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nfile body\n</tool_response>\n<tool_response>\nok\n</tool_response><|im_end|>\n<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "two_calls",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "do both"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan both calls.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            },
+            {
+              "id": 2,
+              "name": "bash",
+              "arguments": "{\"command\":\"zig build test\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "file body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "tool",
+          "content": "ok",
+          "tool_call_id": 2
+        },
+        {
+          "role": "user",
+          "content": "next"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\ndo both<|im_end|>\n<|im_start|>assistant\n<think>\nPlan both calls.\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na.zig\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\nzig build test\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nfile body\n</tool_response>\n<tool_response>\nok\n</tool_response><|im_end|>\n<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "two_calls",
+      "effort": "xhigh",
+      "messages": [
+        {
+          "role": "user",
+          "content": "do both"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan both calls.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            },
+            {
+              "id": 2,
+              "name": "bash",
+              "arguments": "{\"command\":\"zig build test\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "file body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "tool",
+          "content": "ok",
+          "tool_call_id": 2
+        },
+        {
+          "role": "user",
+          "content": "next"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\ndo both<|im_end|>\n<|im_start|>assistant\n<think>\nPlan both calls.\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na.zig\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=bash>\n<parameter=command>\nzig build test\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nfile body\n</tool_response>\n<tool_response>\nok\n</tool_response><|im_end|>\n<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "empty_args_call",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": 7,
+              "name": "bash",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "done",
+          "tool_call_id": 7
+        },
+        {
+          "role": "user",
+          "content": "again"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=bash>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\ndone\n</tool_response><|im_end|>\n<|im_start|>user\nagain<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    },
+    {
+      "name": "empty_args_call",
+      "effort": "low",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": 7,
+              "name": "bash",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "done",
+          "tool_call_id": 7
+        },
+        {
+          "role": "user",
+          "content": "again"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=bash>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\ndone\n</tool_response><|im_end|>\n<|im_start|>user\nagain<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "empty_args_call",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": 7,
+              "name": "bash",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "done",
+          "tool_call_id": 7
+        },
+        {
+          "role": "user",
+          "content": "again"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=bash>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\ndone\n</tool_response><|im_end|>\n<|im_start|>user\nagain<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "empty_args_call",
+      "effort": "xhigh",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": 7,
+              "name": "bash",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "done",
+          "tool_call_id": 7
+        },
+        {
+          "role": "user",
+          "content": "again"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=bash>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\ndone\n</tool_response><|im_end|>\n<|im_start|>user\nagain<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "nested_value_call",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "one call"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Check the shape.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a\\nb\\\"c\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "thanks"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\none call<|im_end|>\n<|im_start|>assistant\n<think>\nCheck the shape.\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na\nb\"c\n</parameter>\n<parameter=offset>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nbody\n</tool_response><|im_end|>\n<|im_start|>user\nthanks<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    },
+    {
+      "name": "nested_value_call",
+      "effort": "low",
+      "messages": [
+        {
+          "role": "user",
+          "content": "one call"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Check the shape.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a\\nb\\\"c\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "thanks"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\none call<|im_end|>\n<|im_start|>assistant\n<think>\nCheck the shape.\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na\nb\"c\n</parameter>\n<parameter=offset>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nbody\n</tool_response><|im_end|>\n<|im_start|>user\nthanks<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "nested_value_call",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "one call"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Check the shape.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a\\nb\\\"c\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "thanks"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\none call<|im_end|>\n<|im_start|>assistant\n<think>\nCheck the shape.\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na\nb\"c\n</parameter>\n<parameter=offset>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nbody\n</tool_response><|im_end|>\n<|im_start|>user\nthanks<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "nested_value_call",
+      "effort": "xhigh",
+      "messages": [
+        {
+          "role": "user",
+          "content": "one call"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Check the shape.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a\\nb\\\"c\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "thanks"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        }
+      ],
+      "prompt": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read_file\", \"description\": \"Read a bounded region of a UTF-8 text file in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\"}}, \"required\": [\"path\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"bash\", \"description\": \"Run one shell command in the workspace.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}}, \"required\": [\"command\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\none call<|im_end|>\n<|im_start|>assistant\n<think>\nCheck the shape.\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na\nb\"c\n</parameter>\n<parameter=offset>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nbody\n</tool_response><|im_end|>\n<|im_start|>user\nthanks<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    }
+  ]
+}

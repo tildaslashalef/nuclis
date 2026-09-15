@@ -1,0 +1,28 @@
+{
+  "template": "<|im_start|>user\nNUCLIS_BENCH_CONTENT<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+  "corpus_sha256": "77586bea137e1cb3a75155315ac0ca7eb9046f476ef087ce3a49ffb02b97d846",
+  "prefix_tokens": [
+    248045,
+    846,
+    198
+  ],
+  "suffix_tokens": [
+    198,
+    71093,
+    271,
+    33963,
+    678,
+    3286,
+    13,
+    248046,
+    198,
+    248045,
+    74455,
+    198,
+    248068,
+    271,
+    248069,
+    271
+  ],
+  "method": "prefix + truncated synthetic-code token sequence + suffix"
+}

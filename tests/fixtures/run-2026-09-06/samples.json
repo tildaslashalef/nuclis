@@ -1,0 +1,362 @@
+[
+  {
+    "phase": "warmup",
+    "prompt_tokens": 512,
+    "repetition": 0,
+    "output_tokens": 128,
+    "wall_seconds": 19.552359708,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 512,
+      "prompt_ms": 5878.522,
+      "prompt_per_token_ms": 11.48148828125,
+      "prompt_per_second": 87.09672261156801,
+      "predicted_n": 128,
+      "predicted_ms": 13670.86,
+      "predicted_per_token_ms": 107.64456692913386,
+      "predicted_per_second": 9.289832534310204
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:18:37.166487+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   385404.\nPages active:                                 574753.\nPages inactive:                               616898.\nPages speculative:                            221454.\nPages throttled:                                   0.\nPages wired down:                            1304491.\nPages purgeable:                               50424.\n\"Translation faults\":                       20643732.\nPages copy-on-write:                          807992.\nPages zero filled:                          25915643.\nPages reactivated:                              5080.\nPages purged:                                 175571.\nFile-backed pages:                            826716.\nAnonymous pages:                              586389.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786269.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18086448"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:18:56.735989+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   383356.\nPages active:                                 585217.\nPages inactive:                               616256.\nPages speculative:                            221485.\nPages throttled:                                   0.\nPages wired down:                            1296531.\nPages purgeable:                               52375.\n\"Translation faults\":                       20669401.\nPages copy-on-write:                          808816.\nPages zero filled:                          25948519.\nPages reactivated:                              5080.\nPages purged:                                 175573.\nFile-backed pages:                            826758.\nAnonymous pages:                              596200.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786288.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18107408"
+    }
+  },
+  {
+    "phase": "warm",
+    "prompt_tokens": 512,
+    "repetition": 1,
+    "output_tokens": 128,
+    "wall_seconds": 18.931496833000004,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 512,
+      "prompt_ms": 5737.566,
+      "prompt_per_token_ms": 11.20618359375,
+      "prompt_per_second": 89.23644625613022,
+      "predicted_n": 128,
+      "predicted_ms": 13192.651,
+      "predicted_per_token_ms": 103.87914173228346,
+      "predicted_per_second": 9.626571642045258
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:18:56.751668+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   383285.\nPages active:                                 585219.\nPages inactive:                               616256.\nPages speculative:                            221488.\nPages throttled:                                   0.\nPages wired down:                            1296531.\nPages purgeable:                               52375.\n\"Translation faults\":                       20671014.\nPages copy-on-write:                          809317.\nPages zero filled:                          25948675.\nPages reactivated:                              5080.\nPages purged:                                 175573.\nFile-backed pages:                            826761.\nAnonymous pages:                              596202.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786291.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18107408"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:19:15.693387+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   390796.\nPages active:                                 576454.\nPages inactive:                               616292.\nPages speculative:                            221499.\nPages throttled:                                   0.\nPages wired down:                            1298028.\nPages purgeable:                               45980.\n\"Translation faults\":                       20693782.\nPages copy-on-write:                          810139.\nPages zero filled:                          25957384.\nPages reactivated:                              5102.\nPages purged:                                 176525.\nFile-backed pages:                            826827.\nAnonymous pages:                              587418.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786306.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18107472"
+    }
+  },
+  {
+    "phase": "warm",
+    "prompt_tokens": 512,
+    "repetition": 2,
+    "output_tokens": 128,
+    "wall_seconds": 18.776959624999996,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 512,
+      "prompt_ms": 5737.682,
+      "prompt_per_token_ms": 11.20641015625,
+      "prompt_per_second": 89.23464214294205,
+      "predicted_n": 128,
+      "predicted_ms": 13037.331,
+      "predicted_per_token_ms": 102.65614960629921,
+      "predicted_per_second": 9.741257623972269
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:19:15.700876+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   390970.\nPages active:                                 576452.\nPages inactive:                               616292.\nPages speculative:                            221499.\nPages throttled:                                   0.\nPages wired down:                            1298028.\nPages purgeable:                               45980.\n\"Translation faults\":                       20695415.\nPages copy-on-write:                          810642.\nPages zero filled:                          25957534.\nPages reactivated:                              5102.\nPages purged:                                 176525.\nFile-backed pages:                            826827.\nAnonymous pages:                              587416.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786309.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18107472"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:19:34.485363+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   390906.\nPages active:                                 576145.\nPages inactive:                               616297.\nPages speculative:                            221522.\nPages throttled:                                   0.\nPages wired down:                            1297956.\nPages purgeable:                               45975.\n\"Translation faults\":                       20714629.\nPages copy-on-write:                          811138.\nPages zero filled:                          25966475.\nPages reactivated:                              5124.\nPages purged:                                 177357.\nFile-backed pages:                            826855.\nAnonymous pages:                              587109.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786312.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18107536"
+    }
+  },
+  {
+    "phase": "warm",
+    "prompt_tokens": 512,
+    "repetition": 3,
+    "output_tokens": 128,
+    "wall_seconds": 18.969512874999992,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 512,
+      "prompt_ms": 5746.93,
+      "prompt_per_token_ms": 11.22447265625,
+      "prompt_per_second": 89.0910451319226,
+      "predicted_n": 128,
+      "predicted_ms": 13220.367,
+      "predicted_per_token_ms": 104.0973779527559,
+      "predicted_per_second": 9.606389898253203
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:19:34.502514+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   391096.\nPages active:                                 576145.\nPages inactive:                               616297.\nPages speculative:                            221522.\nPages throttled:                                   0.\nPages wired down:                            1297958.\nPages purgeable:                               45975.\n\"Translation faults\":                       20716244.\nPages copy-on-write:                          811639.\nPages zero filled:                          25966636.\nPages reactivated:                              5124.\nPages purged:                                 177357.\nFile-backed pages:                            826855.\nAnonymous pages:                              587109.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786315.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18107536"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:19:53.482735+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   390795.\nPages active:                                 577978.\nPages inactive:                               616263.\nPages speculative:                            221525.\nPages throttled:                                   0.\nPages wired down:                            1296525.\nPages purgeable:                               45975.\n\"Translation faults\":                       20737741.\nPages copy-on-write:                          812247.\nPages zero filled:                          25976177.\nPages reactivated:                              5135.\nPages purged:                                 178210.\nFile-backed pages:                            826889.\nAnonymous pages:                              588877.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786329.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18107536"
+    }
+  },
+  {
+    "phase": "warmup",
+    "prompt_tokens": 4096,
+    "repetition": 0,
+    "output_tokens": 128,
+    "wall_seconds": 59.71123999999999,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 4096,
+      "prompt_ms": 46315.144,
+      "prompt_per_token_ms": 11.307408203125,
+      "prompt_per_second": 88.4375961348625,
+      "predicted_n": 128,
+      "predicted_ms": 13393.749,
+      "predicted_per_token_ms": 105.4625905511811,
+      "predicted_per_second": 9.482035238976033
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:19:53.501546+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   390714.\nPages active:                                 578009.\nPages inactive:                               616263.\nPages speculative:                            221527.\nPages throttled:                                   0.\nPages wired down:                            1296525.\nPages purgeable:                               45975.\n\"Translation faults\":                       20739418.\nPages copy-on-write:                          812746.\nPages zero filled:                          25976351.\nPages reactivated:                              5135.\nPages purged:                                 178210.\nFile-backed pages:                            826891.\nAnonymous pages:                              588908.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786332.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18107536"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:20:53.222313+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   381343.\nPages active:                                 586918.\nPages inactive:                               615479.\nPages speculative:                            221425.\nPages throttled:                                   0.\nPages wired down:                            1297973.\nPages purgeable:                               46024.\n\"Translation faults\":                       20832807.\nPages copy-on-write:                          814269.\nPages zero filled:                          26033648.\nPages reactivated:                              5174.\nPages purged:                                 179057.\nFile-backed pages:                            826972.\nAnonymous pages:                              596850.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786424.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18270272"
+    }
+  },
+  {
+    "phase": "warm",
+    "prompt_tokens": 4096,
+    "repetition": 1,
+    "output_tokens": 128,
+    "wall_seconds": 58.862865166999995,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 4096,
+      "prompt_ms": 45396.174,
+      "prompt_per_token_ms": 11.08305029296875,
+      "prompt_per_second": 90.22786810183608,
+      "predicted_n": 128,
+      "predicted_ms": 13464.641,
+      "predicted_per_token_ms": 106.02079527559054,
+      "predicted_per_second": 9.432111855043146
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:20:53.231866+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   381253.\nPages active:                                 586918.\nPages inactive:                               615478.\nPages speculative:                            221427.\nPages throttled:                                   0.\nPages wired down:                            1297973.\nPages purgeable:                               46024.\n\"Translation faults\":                       20834426.\nPages copy-on-write:                          814765.\nPages zero filled:                          26033800.\nPages reactivated:                              5174.\nPages purged:                                 179057.\nFile-backed pages:                            826973.\nAnonymous pages:                              596850.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786427.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18270272"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:21:52.102241+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   373764.\nPages active:                                 592839.\nPages inactive:                               616400.\nPages speculative:                            222160.\nPages throttled:                                   0.\nPages wired down:                            1298129.\nPages purgeable:                               46622.\n\"Translation faults\":                       20967992.\nPages copy-on-write:                          820690.\nPages zero filled:                          26098281.\nPages reactivated:                              5231.\nPages purged:                                 179891.\nFile-backed pages:                            829111.\nAnonymous pages:                              602288.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786916.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18270336"
+    }
+  },
+  {
+    "phase": "warm",
+    "prompt_tokens": 4096,
+    "repetition": 2,
+    "output_tokens": 128,
+    "wall_seconds": 59.464965707999994,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 4096,
+      "prompt_ms": 45720.381,
+      "prompt_per_token_ms": 11.162202392578125,
+      "prompt_per_second": 89.58805483270142,
+      "predicted_n": 128,
+      "predicted_ms": 13742.598,
+      "predicted_per_token_ms": 108.20943307086614,
+      "predicted_per_second": 9.241338500915184
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:21:52.110047+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   373677.\nPages active:                                 592838.\nPages inactive:                               616400.\nPages speculative:                            222160.\nPages throttled:                                   0.\nPages wired down:                            1298129.\nPages purgeable:                               46622.\n\"Translation faults\":                       20969621.\nPages copy-on-write:                          821186.\nPages zero filled:                          26098431.\nPages reactivated:                              5231.\nPages purged:                                 179891.\nFile-backed pages:                            829111.\nAnonymous pages:                              602287.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1786919.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18270336"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:22:51.581484+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   375733.\nPages active:                                 592399.\nPages inactive:                               616390.\nPages speculative:                            222031.\nPages throttled:                                   0.\nPages wired down:                            1296634.\nPages purgeable:                               46094.\n\"Translation faults\":                       21054410.\nPages copy-on-write:                          822085.\nPages zero filled:                          26146396.\nPages reactivated:                              5322.\nPages purged:                                 180743.\nFile-backed pages:                            829116.\nAnonymous pages:                              601704.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1787006.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18270336"
+    }
+  },
+  {
+    "phase": "warm",
+    "prompt_tokens": 4096,
+    "repetition": 3,
+    "output_tokens": 128,
+    "wall_seconds": 60.76829691700004,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 4096,
+      "prompt_ms": 46566.928,
+      "prompt_per_token_ms": 11.36887890625,
+      "prompt_per_second": 87.95942047111203,
+      "predicted_n": 128,
+      "predicted_ms": 14198.506,
+      "predicted_per_token_ms": 111.79925984251967,
+      "predicted_per_second": 8.944603044855564
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:22:51.592681+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   375412.\nPages active:                                 592394.\nPages inactive:                               616390.\nPages speculative:                            222031.\nPages throttled:                                   0.\nPages wired down:                            1296643.\nPages purgeable:                               46094.\n\"Translation faults\":                       21056047.\nPages copy-on-write:                          822579.\nPages zero filled:                          26146564.\nPages reactivated:                              5322.\nPages purged:                                 180743.\nFile-backed pages:                            829116.\nAnonymous pages:                              601699.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1787009.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18270336"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:23:52.370526+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   375354.\nPages active:                                 590888.\nPages inactive:                               616431.\nPages speculative:                            222092.\nPages throttled:                                   0.\nPages wired down:                            1298029.\nPages purgeable:                               46055.\n\"Translation faults\":                       21135254.\nPages copy-on-write:                          823545.\nPages zero filled:                          26193940.\nPages reactivated:                              5388.\nPages purged:                                 181650.\nFile-backed pages:                            829230.\nAnonymous pages:                              600181.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1787043.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18270336"
+    }
+  },
+  {
+    "phase": "warmup",
+    "prompt_tokens": 16384,
+    "repetition": 0,
+    "output_tokens": 128,
+    "wall_seconds": 227.41495133300003,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 16384,
+      "prompt_ms": 211221.279,
+      "prompt_per_token_ms": 12.891923767089844,
+      "prompt_per_second": 77.56794238519879,
+      "predicted_n": 128,
+      "predicted_ms": 16188.385,
+      "predicted_per_token_ms": 127.46759842519685,
+      "predicted_per_second": 7.845130938015126
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:23:52.391604+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   375318.\nPages active:                                 590890.\nPages inactive:                               616429.\nPages speculative:                            222101.\nPages throttled:                                   0.\nPages wired down:                            1298030.\nPages purgeable:                               46055.\n\"Translation faults\":                       21136998.\nPages copy-on-write:                          824035.\nPages zero filled:                          26194140.\nPages reactivated:                              5388.\nPages purged:                                 181650.\nFile-backed pages:                            829237.\nAnonymous pages:                              600183.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1787046.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18270336"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:27:39.815582+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   367006.\nPages active:                                 594169.\nPages inactive:                               616159.\nPages speculative:                            222225.\nPages throttled:                                   0.\nPages wired down:                            1303759.\nPages purgeable:                               46070.\n\"Translation faults\":                       21479394.\nPages copy-on-write:                          826144.\nPages zero filled:                          26425435.\nPages reactivated:                              5601.\nPages purged:                                 182534.\nFile-backed pages:                            829580.\nAnonymous pages:                              602973.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1787175.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18293360"
+    }
+  },
+  {
+    "phase": "warm",
+    "prompt_tokens": 16384,
+    "repetition": 1,
+    "output_tokens": 128,
+    "wall_seconds": 237.21143295900004,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 16384,
+      "prompt_ms": 219129.182,
+      "prompt_per_token_ms": 13.374583862304688,
+      "prompt_per_second": 74.7686814255529,
+      "predicted_n": 128,
+      "predicted_ms": 18078.209,
+      "predicted_per_token_ms": 142.3481023622047,
+      "predicted_per_second": 7.02503218100864
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:27:39.823859+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   366657.\nPages active:                                 594162.\nPages inactive:                               616157.\nPages speculative:                            222227.\nPages throttled:                                   0.\nPages wired down:                            1303759.\nPages purgeable:                               46070.\n\"Translation faults\":                       21481008.\nPages copy-on-write:                          826630.\nPages zero filled:                          26425586.\nPages reactivated:                              5601.\nPages purged:                                 182534.\nFile-backed pages:                            829580.\nAnonymous pages:                              602966.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1787178.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18293360"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:31:37.041317+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   369152.\nPages active:                                 599107.\nPages inactive:                               617980.\nPages speculative:                            219769.\nPages throttled:                                   0.\nPages wired down:                            1296817.\nPages purgeable:                               46868.\n\"Translation faults\":                       21998802.\nPages copy-on-write:                          832379.\nPages zero filled:                          26759550.\nPages reactivated:                              5966.\nPages purged:                                 183722.\nFile-backed pages:                            830093.\nAnonymous pages:                              606763.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1790029.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18287312"
+    }
+  },
+  {
+    "phase": "warm",
+    "prompt_tokens": 16384,
+    "repetition": 2,
+    "output_tokens": 128,
+    "wall_seconds": 238.43403362499998,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 16384,
+      "prompt_ms": 221457.655,
+      "prompt_per_token_ms": 13.516702575683594,
+      "prompt_per_second": 73.98254081576002,
+      "predicted_n": 128,
+      "predicted_ms": 16998.911,
+      "predicted_per_token_ms": 133.84969291338584,
+      "predicted_per_second": 7.4710668230453114
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:31:37.049119+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   369313.\nPages active:                                 599103.\nPages inactive:                               617978.\nPages speculative:                            219772.\nPages throttled:                                   0.\nPages wired down:                            1296817.\nPages purgeable:                               46868.\n\"Translation faults\":                       22000423.\nPages copy-on-write:                          832865.\nPages zero filled:                          26759701.\nPages reactivated:                              5966.\nPages purged:                                 183722.\nFile-backed pages:                            830094.\nAnonymous pages:                              606759.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1790032.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18287312"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:35:35.515801+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   371052.\nPages active:                                 597363.\nPages inactive:                               618064.\nPages speculative:                            219982.\nPages throttled:                                   0.\nPages wired down:                            1296547.\nPages purgeable:                               46070.\n\"Translation faults\":                       22420187.\nPages copy-on-write:                          834856.\nPages zero filled:                          26989494.\nPages reactivated:                              6171.\nPages purged:                                 184688.\nFile-backed pages:                            830394.\nAnonymous pages:                              605015.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1790106.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18287328"
+    }
+  },
+  {
+    "phase": "warm",
+    "prompt_tokens": 16384,
+    "repetition": 3,
+    "output_tokens": 128,
+    "wall_seconds": 240.10220225,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 16384,
+      "prompt_ms": 223054.448,
+      "prompt_per_token_ms": 13.6141630859375,
+      "prompt_per_second": 73.45291764816095,
+      "predicted_n": 128,
+      "predicted_ms": 17045.415,
+      "predicted_per_token_ms": 134.21586614173228,
+      "predicted_per_second": 7.450683952253436
+    },
+    "memory_before": {
+      "timestamp": "2026-09-06T11:35:35.523360+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   371483.\nPages active:                                 597358.\nPages inactive:                               618061.\nPages speculative:                            219985.\nPages throttled:                                   0.\nPages wired down:                            1296547.\nPages purgeable:                               46070.\n\"Translation faults\":                       22421825.\nPages copy-on-write:                          835337.\nPages zero filled:                          26989661.\nPages reactivated:                              6171.\nPages purged:                                 184688.\nFile-backed pages:                            830394.\nAnonymous pages:                              605010.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1790109.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18287328"
+    },
+    "memory_after": {
+      "timestamp": "2026-09-06T11:39:35.633778+00:00",
+      "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+      "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   369084.\nPages active:                                 597892.\nPages inactive:                               617838.\nPages speculative:                            219953.\nPages throttled:                                   0.\nPages wired down:                            1298109.\nPages purgeable:                               46147.\n\"Translation faults\":                       22881518.\nPages copy-on-write:                          840222.\nPages zero filled:                          27256259.\nPages reactivated:                              6416.\nPages purged:                                 185659.\nFile-backed pages:                            830338.\nAnonymous pages:                              605345.\nPages stored in compressor:                        0.\nPages occupied by compressor:                      0.\nDecompressions:                                    0.\nCompressions:                                      0.\nPageins:                                     1790299.\nPageouts:                                          0.\nSwapins:                                           0.\nSwapouts:                                          0.",
+      "server_rss_kib": "18287328"
+    }
+  }
+]

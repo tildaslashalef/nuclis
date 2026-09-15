@@ -1,0 +1,21 @@
+{
+  "started_at": "2026-09-06T16:35:04.949203+00:00",
+  "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "context": 32768,
+  "prompt_lengths": [
+    32639
+  ],
+  "generate": 128,
+  "repetitions": 1,
+  "capacity_check": false,
+  "hardware": "Apple M4 Pro\n51539607552\n12",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+  "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22020195)\t100%; charged; 0:00 remaining present: true",
+  "power_settings": "Battery Power:\n Sleep On Power Button 1\n powermode            0\n standby              1\n ttyskeepawake        1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n displaysleep         2\n womp                 0\n networkoversleep     0\n sleep                1\n lessbright           1\n tcpkeepalive         1\n disksleep            10\nAC Power:\n Sleep On Power Button 1\n powermode            0\n standby              1\n ttyskeepawake        1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n displaysleep         10\n womp                 1\n networkoversleep     0\n sleep                1\n tcpkeepalive         1\n disksleep            10",
+  "memory": {
+    "timestamp": "2026-09-06T16:35:04.972895+00:00",
+    "swap": "total = 1024.00M  used = 247.81M  free = 776.19M  (encrypted)",
+    "vm_stat": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   926822.\nPages active:                                 331845.\nPages inactive:                               422301.\nPages speculative:                             46440.\nPages throttled:                                   0.\nPages wired down:                            1320302.\nPages purgeable:                               26173.\n\"Translation faults\":                       38381146.\nPages copy-on-write:                         1314784.\nPages zero filled:                          80423186.\nPages reactivated:                            506970.\nPages purged:                                1161063.\nFile-backed pages:                            587566.\nAnonymous pages:                              213020.\nPages stored in compressor:                   201901.\nPages occupied by compressor:                  55295.\nDecompressions:                              8458063.\nCompressions:                               10056522.\nPageins:                                    12829661.\nPageouts:                                       3156.\nSwapins:                                      145735.\nSwapouts:                                     180352.",
+    "server_rss_kib": "17921216"
+  }
+}

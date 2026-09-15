@@ -1,0 +1,963 @@
+{
+  "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "model_sha256": "90fd944d227e9d9b68e7e2c7d5b57b79d4c66ed521b0919fbbd932cf834f6f8e",
+  "template_sha256": "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b",
+  "add_special": false,
+  "preserve_thinking": false,
+  "prompt_cases": [
+    {
+      "name": "single_off",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "prompt": "<|turn>user\nHello<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+      "tokens": [
+        105,
+        2364,
+        107,
+        9259,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        100,
+        45518,
+        107,
+        101
+      ]
+    },
+    {
+      "name": "single_medium",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hello"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n",
+      "tokens": [
+        105,
+        9731,
+        107,
+        98,
+        107,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        9259,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ]
+    },
+    {
+      "name": "system_off",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be precise."
+        },
+        {
+          "role": "user",
+          "content": "Explain slices."
+        }
+      ],
+      "prompt": "<|turn>system\nBe precise.<turn|>\n<|turn>user\nExplain slices.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+      "tokens": [
+        105,
+        9731,
+        107,
+        3912,
+        18997,
+        236761,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        155122,
+        32892,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        100,
+        45518,
+        107,
+        101
+      ]
+    },
+    {
+      "name": "system_medium",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be precise."
+        },
+        {
+          "role": "user",
+          "content": "Explain slices."
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\nBe precise.<turn|>\n<|turn>user\nExplain slices.<turn|>\n<|turn>model\n",
+      "tokens": [
+        105,
+        9731,
+        107,
+        98,
+        107,
+        3912,
+        18997,
+        236761,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        155122,
+        32892,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ]
+    },
+    {
+      "name": "merged_system_off",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "system",
+          "content": "  Be precise.\n"
+        },
+        {
+          "role": "developer",
+          "content": "\tUse Zig.  "
+        },
+        {
+          "role": "system",
+          "content": " \n"
+        },
+        {
+          "role": "user",
+          "content": " Explain slices. "
+        }
+      ],
+      "prompt": "<|turn>system\nBe precise.<turn|>\n<|turn>system\nUse Zig.<turn|>\n<|turn>system\n<turn|>\n<|turn>user\nExplain slices.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+      "tokens": [
+        105,
+        9731,
+        107,
+        3912,
+        18997,
+        236761,
+        106,
+        107,
+        105,
+        9731,
+        107,
+        10896,
+        97177,
+        236761,
+        106,
+        107,
+        105,
+        9731,
+        107,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        155122,
+        32892,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        100,
+        45518,
+        107,
+        101
+      ]
+    },
+    {
+      "name": "merged_system_medium",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "system",
+          "content": "  Be precise.\n"
+        },
+        {
+          "role": "developer",
+          "content": "\tUse Zig.  "
+        },
+        {
+          "role": "system",
+          "content": " \n"
+        },
+        {
+          "role": "user",
+          "content": " Explain slices. "
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\nBe precise.<turn|>\n<|turn>system\nUse Zig.<turn|>\n<|turn>system\n<turn|>\n<|turn>user\nExplain slices.<turn|>\n<|turn>model\n",
+      "tokens": [
+        105,
+        9731,
+        107,
+        98,
+        107,
+        3912,
+        18997,
+        236761,
+        106,
+        107,
+        105,
+        9731,
+        107,
+        10896,
+        97177,
+        236761,
+        106,
+        107,
+        105,
+        9731,
+        107,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        155122,
+        32892,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ]
+    },
+    {
+      "name": "history_off",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Compute 1+1."
+        },
+        {
+          "role": "assistant",
+          "content": " 2 ",
+          "reasoning_content": " Add the integers. "
+        },
+        {
+          "role": "user",
+          "content": "Now double it."
+        },
+        {
+          "role": "assistant",
+          "content": "4"
+        },
+        {
+          "role": "user",
+          "content": "Why?"
+        }
+      ],
+      "prompt": "<|turn>user\nCompute 1+1.<turn|>\n<|turn>model\n2<turn|>\n<|turn>user\nNow double it.<turn|>\n<|turn>model\n4<turn|>\n<|turn>user\nWhy?<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+      "tokens": [
+        105,
+        2364,
+        107,
+        55822,
+        236743,
+        236770,
+        236862,
+        236770,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        236778,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        6445,
+        3972,
+        625,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        236812,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        11355,
+        236881,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        100,
+        45518,
+        107,
+        101
+      ]
+    },
+    {
+      "name": "history_medium",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Compute 1+1."
+        },
+        {
+          "role": "assistant",
+          "content": " 2 ",
+          "reasoning_content": " Add the integers. "
+        },
+        {
+          "role": "user",
+          "content": "Now double it."
+        },
+        {
+          "role": "assistant",
+          "content": "4"
+        },
+        {
+          "role": "user",
+          "content": "Why?"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<turn|>\n<|turn>user\nCompute 1+1.<turn|>\n<|turn>model\n2<turn|>\n<|turn>user\nNow double it.<turn|>\n<|turn>model\n4<turn|>\n<|turn>user\nWhy?<turn|>\n<|turn>model\n",
+      "tokens": [
+        105,
+        9731,
+        107,
+        98,
+        107,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        55822,
+        236743,
+        236770,
+        236862,
+        236770,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        236778,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        6445,
+        3972,
+        625,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        236812,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        11355,
+        236881,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ]
+    },
+    {
+      "name": "continued_off",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Count."
+        },
+        {
+          "role": "assistant",
+          "content": "one"
+        },
+        {
+          "role": "assistant",
+          "content": " two"
+        },
+        {
+          "role": "user",
+          "content": "Go on."
+        }
+      ],
+      "prompt": "<|turn>user\nCount.<turn|>\n<|turn>model\nonetwo<turn|>\n<|turn>user\nGo on.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+      "tokens": [
+        105,
+        2364,
+        107,
+        4377,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        90002,
+        1014,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        5988,
+        580,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        100,
+        45518,
+        107,
+        101
+      ]
+    },
+    {
+      "name": "continued_medium",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Count."
+        },
+        {
+          "role": "assistant",
+          "content": "one"
+        },
+        {
+          "role": "assistant",
+          "content": " two"
+        },
+        {
+          "role": "user",
+          "content": "Go on."
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<turn|>\n<|turn>user\nCount.<turn|>\n<|turn>model\nonetwo<turn|>\n<|turn>user\nGo on.<turn|>\n<|turn>model\n",
+      "tokens": [
+        105,
+        9731,
+        107,
+        98,
+        107,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        4377,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        90002,
+        1014,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        5988,
+        580,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ]
+    },
+    {
+      "name": "unicode_off",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Grüße 世界 🙂 é  "
+        }
+      ],
+      "prompt": "<|turn>user\n Grüße 世界 🙂 é <turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+      "tokens": [
+        105,
+        2364,
+        107,
+        432,
+        398,
+        9322,
+        236959,
+        16756,
+        84679,
+        57235,
+        545,
+        238288,
+        432,
+        398,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        100,
+        45518,
+        107,
+        101
+      ]
+    },
+    {
+      "name": "unicode_medium",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Grüße 世界 🙂 é  "
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<turn|>\n<|turn>user\n Grüße 世界 🙂 é <turn|>\n<|turn>model\n",
+      "tokens": [
+        105,
+        9731,
+        107,
+        98,
+        107,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        432,
+        398,
+        9322,
+        236959,
+        16756,
+        84679,
+        57235,
+        545,
+        238288,
+        432,
+        398,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ]
+    },
+    {
+      "name": "empty_off",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": " \t\r\n\u000b\f"
+        }
+      ],
+      "prompt": "<|turn>user\n<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+      "tokens": [
+        105,
+        2364,
+        107,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        100,
+        45518,
+        107,
+        101
+      ]
+    },
+    {
+      "name": "empty_medium",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": " \t\r\n\u000b\f"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<turn|>\n<|turn>user\n<turn|>\n<|turn>model\n",
+      "tokens": [
+        105,
+        9731,
+        107,
+        98,
+        107,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ]
+    }
+  ],
+  "token_cases": [
+    {
+      "text": "",
+      "parse_special": false,
+      "tokens": [],
+      "detokenized": ""
+    },
+    {
+      "text": "",
+      "parse_special": true,
+      "tokens": [],
+      "detokenized": ""
+    },
+    {
+      "text": "hello",
+      "parse_special": false,
+      "tokens": [
+        23391
+      ],
+      "detokenized": "hello"
+    },
+    {
+      "text": "hello",
+      "parse_special": true,
+      "tokens": [
+        23391
+      ],
+      "detokenized": "hello"
+    },
+    {
+      "text": " hello",
+      "parse_special": false,
+      "tokens": [
+        29104
+      ],
+      "detokenized": " hello"
+    },
+    {
+      "text": " hello",
+      "parse_special": true,
+      "tokens": [
+        29104
+      ],
+      "detokenized": " hello"
+    },
+    {
+      "text": "Hello\nworld",
+      "parse_special": false,
+      "tokens": [
+        9259,
+        107,
+        12392
+      ],
+      "detokenized": "Hello\nworld"
+    },
+    {
+      "text": "Hello\nworld",
+      "parse_special": true,
+      "tokens": [
+        9259,
+        107,
+        12392
+      ],
+      "detokenized": "Hello\nworld"
+    },
+    {
+      "text": "\t  a\r\nb\n",
+      "parse_special": false,
+      "tokens": [
+        255968,
+        138,
+        236746,
+        251,
+        107,
+        236763,
+        107
+      ],
+      "detokenized": "\t  a\r\nb\n"
+    },
+    {
+      "text": "\t  a\r\nb\n",
+      "parse_special": true,
+      "tokens": [
+        255968,
+        138,
+        236746,
+        251,
+        107,
+        236763,
+        107
+      ],
+      "detokenized": "\t  a\r\nb\n"
+    },
+    {
+      "text": "pub fn add(a: i32, b: i32) i32 { return a + b; }",
+      "parse_special": false,
+      "tokens": [
+        9430,
+        12751,
+        1138,
+        236769,
+        236746,
+        236787,
+        858,
+        236800,
+        236778,
+        236764,
+        518,
+        236787,
+        858,
+        236800,
+        236778,
+        236768,
+        858,
+        236800,
+        236778,
+        642,
+        994,
+        496,
+        900,
+        518,
+        236793,
+        682
+      ],
+      "detokenized": "pub fn add(a: i32, b: i32) i32 { return a + b; }"
+    },
+    {
+      "text": "pub fn add(a: i32, b: i32) i32 { return a + b; }",
+      "parse_special": true,
+      "tokens": [
+        9430,
+        12751,
+        1138,
+        236769,
+        236746,
+        236787,
+        858,
+        236800,
+        236778,
+        236764,
+        518,
+        236787,
+        858,
+        236800,
+        236778,
+        236768,
+        858,
+        236800,
+        236778,
+        642,
+        994,
+        496,
+        900,
+        518,
+        236793,
+        682
+      ],
+      "detokenized": "pub fn add(a: i32, b: i32) i32 { return a + b; }"
+    },
+    {
+      "text": "1234567890 3.14159",
+      "parse_special": false,
+      "tokens": [
+        236770,
+        236778,
+        236800,
+        236812,
+        236810,
+        236825,
+        236832,
+        236828,
+        236819,
+        236771,
+        236743,
+        236800,
+        236761,
+        236770,
+        236812,
+        236770,
+        236810,
+        236819
+      ],
+      "detokenized": "1234567890 3.14159"
+    },
+    {
+      "text": "1234567890 3.14159",
+      "parse_special": true,
+      "tokens": [
+        236770,
+        236778,
+        236800,
+        236812,
+        236810,
+        236825,
+        236832,
+        236828,
+        236819,
+        236771,
+        236743,
+        236800,
+        236761,
+        236770,
+        236812,
+        236770,
+        236810,
+        236819
+      ],
+      "detokenized": "1234567890 3.14159"
+    },
+    {
+      "text": "don't I'M we're",
+      "parse_special": false,
+      "tokens": [
+        13246,
+        236789,
+        236745,
+        564,
+        236789,
+        236792,
+        692,
+        236789,
+        500
+      ],
+      "detokenized": "don't I'M we're"
+    },
+    {
+      "text": "don't I'M we're",
+      "parse_special": true,
+      "tokens": [
+        13246,
+        236789,
+        236745,
+        564,
+        236789,
+        236792,
+        692,
+        236789,
+        500
+      ],
+      "detokenized": "don't I'M we're"
+    },
+    {
+      "text": "Grüße 世界 🙂 é",
+      "parse_special": false,
+      "tokens": [
+        9322,
+        236959,
+        16756,
+        84679,
+        57235,
+        545,
+        238288
+      ],
+      "detokenized": "Grüße 世界 🙂 é"
+    },
+    {
+      "text": "Grüße 世界 🙂 é",
+      "parse_special": true,
+      "tokens": [
+        9322,
+        236959,
+        16756,
+        84679,
+        57235,
+        545,
+        238288
+      ],
+      "detokenized": "Grüße 世界 🙂 é"
+    },
+    {
+      "text": "<|turn>model\n<|channel>thought\n<channel|>Hi<turn|>",
+      "parse_special": false,
+      "tokens": [
+        236820,
+        236909,
+        887,
+        236813,
+        4368,
+        107,
+        100,
+        45518,
+        107,
+        101,
+        10979,
+        236820,
+        887,
+        111038
+      ],
+      "detokenized": "<|turn>model\n<|channel>thought\n<channel|>Hi<turn|>"
+    },
+    {
+      "text": "<|turn>model\n<|channel>thought\n<channel|>Hi<turn|>",
+      "parse_special": true,
+      "tokens": [
+        105,
+        4368,
+        107,
+        100,
+        45518,
+        107,
+        101,
+        10979,
+        106
+      ],
+      "detokenized": "<|turn>model\n<|channel>thought\n<channel|>Hi<turn|>"
+    }
+  ]
+}

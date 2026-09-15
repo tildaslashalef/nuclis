@@ -1,0 +1,136 @@
+# A `v*` tag publishes a release: the same checks as CI, a ReleaseSafe build
+# with the Metal backend, one binary tarball and one source tarball, and a
+# `SHA256SUMS` that covers both.
+#
+# The tag is the trigger and `build.zig.zon` is the truth: the job refuses a
+# malformed tag, a tag that disagrees with the manifest, or a release whose
+# section is missing from CHANGELOG.md — all before it builds anything. The
+# notes are the tag's own section of CHANGELOG.md plus a fixed footer, both
+# assembled by `.github/release-notes.sh`, so there is nothing to write twice.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The existing tag to build and publish
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The tag is semver and the manifest agrees
+        id: version
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "refusing to publish: $tag is not vMAJOR.MINOR.PATCH[-prerelease]" >&2
+            exit 1
+          fi
+          manifest=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon)
+          echo "tag $tag, manifest $manifest"
+          if [ "$tag" != "v$manifest" ]; then
+            echo "refusing to publish: the tag says $tag and build.zig.zon says $manifest" >&2
+            echo "(was the -dev suffix stripped in the release commit?)" >&2
+            exit 1
+          fi
+          echo "version=$manifest" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Zig
+        run: ./.github/install-zig.sh "$HOME/.local/zig"
+
+      - run: echo "$HOME/.local/zig" >> "$GITHUB_PATH"
+
+      - name: The compiler is the manifest's
+        run: |
+          manifest=$(sed -n 's/.*\.minimum_zig_version = "\([^"]*\)".*/\1/p' build.zig.zon)
+          installed=$(zig version)
+          echo "manifest $manifest, installed $installed"
+          [ "$manifest" = "$installed" ] || {
+            echo "refusing to publish: toolchain $installed != minimum_zig_version $manifest" >&2
+            exit 1
+          }
+
+      - name: The gate, minus what needs a GPU or a model
+        run: |
+          zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/
+          zig build test --summary all
+
+      - name: The release notes exist before anything is built
+        run: |
+          mkdir -p dist
+          ./.github/release-notes.sh "${{ steps.version.outputs.tag }}" > dist/notes.md
+
+      - name: Build
+        run: zig build -Dmetal=true -Doptimize=ReleaseSafe
+
+      - name: Package
+        id: package
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          tag="${{ steps.version.outputs.tag }}"
+          name="nuclis-$tag-aarch64-macos"
+          mkdir -p "dist/$name"
+          cp zig-out/bin/nuclis "dist/$name/"
+          cp README.md THIRD_PARTY_NOTICES.md CHANGELOG.md "dist/$name/"
+          # A licence is the owner's decision, not this workflow's: ship one
+          # when the tree has one, and say so plainly when it does not rather
+          # than failing the release over a file that was never written.
+          if [ -f LICENSE ]; then
+            cp LICENSE "dist/$name/"
+          else
+            echo "::warning::no LICENSE file in the tree; the archive ships without one"
+          fi
+          # The binary must report the version it is released as. It prints
+          # its own name too (`nuclis X.Y.Z`), so compare the full string.
+          reported=$(./zig-out/bin/nuclis --version)
+          [ "$reported" = "nuclis $version" ] || {
+            echo "refusing to publish: the binary reports $reported, not nuclis $version" >&2
+            exit 1
+          }
+          # Both archives are rooted in their own directory so unpacking is
+          # always additive.
+          ( cd dist && tar -czf "$name.tar.gz" "$name" )
+          git archive --format=tar.gz --prefix="nuclis-$tag-src/" \
+            -o "dist/nuclis-$tag-src.tar.gz" "$tag"
+          # One digest file covers both, so `shasum -a 256 -c SHA256SUMS` works
+          # in whatever directory it was downloaded to.
+          ( cd dist && shasum -a 256 ./*.tar.gz > SHA256SUMS && cat SHA256SUMS )
+          echo "archive=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A pre-release is one whose version carries a suffix — 0.2.0-rc1,
+          # 0.3.0-dev. A 0.x release is not a pre-release, it is an early
+          # one, and marking it as such hides it from the repository sidebar,
+          # which only ever shows the latest *full* release.
+          case "${{ steps.version.outputs.version }}" in
+            *-*) kind="--prerelease" ;;
+            *) kind="--latest" ;;
+          esac
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "nuclis ${{ steps.version.outputs.tag }}" \
+            --notes-file dist/notes.md \
+            $kind \
+            dist/"nuclis-${{ steps.version.outputs.tag }}-aarch64-macos.tar.gz" \
+            dist/"nuclis-${{ steps.version.outputs.tag }}-src.tar.gz" \
+            dist/SHA256SUMS
