@@ -53,13 +53,16 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         return root.fail(alloc, "read_file: {s} is not valid UTF-8 text", .{parsed.value.path});
     }
 
+    // A trailing newline ends the last line; it is not an empty line after it.
+    const body = if (content.len > 0 and content[content.len - 1] == '\n') content[0 .. content.len - 1] else content;
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
     var line: usize = 1;
     var taken: usize = 0;
     var line_truncated = false;
-    var it = std.mem.splitScalar(u8, content, '\n');
+    var it = std.mem.splitScalar(u8, body, '\n');
     while (it.next()) |text| {
+        if (content.len == 0) break;
         if (line < offset) {
             line += 1;
             continue;
@@ -73,7 +76,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         taken += 1;
         line += 1;
     }
-    const total = std.mem.count(u8, content, "\n") + 1;
+    const total = if (content.len == 0) 0 else std.mem.count(u8, body, "\n") + 1;
     const summary = try summarize(alloc, offset, taken, total, line_truncated, byte_truncated);
     errdefer alloc.free(summary);
     return .{ .text = try out.toOwnedSlice(alloc), .truncated = byte_truncated or line_truncated, .summary = summary };
@@ -109,6 +112,8 @@ test "read_file returns the addressed lines and marks truncation" {
     defer w.tmp.cleanup();
     defer testing.allocator.free(w.root_path);
     try w.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\nthree\nfour" });
+    try w.tmp.dir.writeFile(testing.io, .{ .sub_path = "b.txt", .data = "one\ntwo\n" });
+    try w.tmp.dir.writeFile(testing.io, .{ .sub_path = "empty.txt", .data = "" });
 
     var all = try run(w.ws, testing.allocator, "{\"path\":\"a.txt\"}");
     defer all.deinit(testing.allocator);
@@ -127,6 +132,19 @@ test "read_file returns the addressed lines and marks truncation" {
     defer past.deinit(testing.allocator);
     try testing.expectEqualStrings("", past.text);
     try testing.expectEqualStrings("no lines at offset 9; the file has 4", past.summary.?);
+
+    // A trailing newline is the end of the last line, not a line of its own:
+    // an exact read of the whole file is complete, not truncated.
+    var exact = try run(w.ws, testing.allocator, "{\"path\":\"b.txt\",\"count\":2}");
+    defer exact.deinit(testing.allocator);
+    try testing.expectEqualStrings("one\ntwo", exact.text);
+    try testing.expect(!exact.truncated);
+    try testing.expectEqualStrings("lines 1 to 2 of 2", exact.summary.?);
+
+    var empty = try run(w.ws, testing.allocator, "{\"path\":\"empty.txt\"}");
+    defer empty.deinit(testing.allocator);
+    try testing.expectEqualStrings("", empty.text);
+    try testing.expectEqualStrings("no lines at offset 1; the file has 0", empty.summary.?);
 
     try testing.expectError(error.OutsideWorkspace, @as(root.Workspace, w.ws).resolve(testing.allocator, "/"));
 }
