@@ -31,11 +31,12 @@ License: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0.txt).
 
 #### Gemma 4 — as licensed by the artifact
 
-`inference/src/profiles/gemma4.zig` reimplements, in Zig, the text-only
-subset (system, user, assistant; thinking switch; no tools or media) of the
-chat template embedded in `gemma-4-12b-it-UD-Q4_K_XL.gguf` (Google / Unsloth;
-the QAT file carries the same template). The template text is not in the
-tree; the pinned fixtures in `inference/src/profiles/fixtures/gemma4-text.json`
+`inference/src/profiles/gemma4.zig` reimplements, in Zig, the text and
+tool-calling subset (system, user, assistant; thinking switch; tool
+declarations, calls, and responses; no media) of the chat template embedded
+in `gemma-4-12b-it-UD-Q4_K_XL.gguf` (Google / Unsloth; the QAT file carries
+the same template). The template text is not in the tree; the pinned fixtures
+in `inference/src/profiles/fixtures/gemma4-text.json` and `gemma4-tools.json`
 were rendered from it by the reference server. Source:
 <https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/tree/fc034cfff751157913579611efad8462ac1be606>,
 model SHA-256 `90fd944d227e9d9b68e7e2c7d5b57b79d4c66ed521b0919fbbd932cf834f6f8e`,

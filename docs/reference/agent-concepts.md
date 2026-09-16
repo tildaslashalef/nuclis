@@ -134,9 +134,9 @@ the decoder and the history cannot drift.
 Validation is deliberately separate from support. `profiles.validate` accepts
 a structurally valid tools input; it does not decide whether a profile can
 render it. Each profile asks that second question. Qwen answered yes once its
-template was pinned; Gemma still answers no with `error.ToolsUnsupported`
-until its distinct grammar and result handoff get their own fixtures. That
-ordering is the point: the loop was built and tested against the shared
+template was pinned; Gemma answered no with `error.ToolsUnsupported` for two
+days, until its distinct grammar and result handoff got their own fixtures.
+That ordering is the point: the loop was built and tested against the shared
 contract while the profile refused to guess at a wire format it had no
 fixtures for — the same rule that keeps a mismatched template from being
 rendered at all.
@@ -368,9 +368,11 @@ The lesson is where the difference is allowed to live. The loop sees only
 `ToolDefinition`; it never reads a marker or a body. What varies per checkpoint
 — the bracket texts, the body grammar, the result framing, whether the
 reasoning channel can reopen — is a `StreamMarkers`/`parse` pair and a render
-function in the profile module. Gemma contributes no pair, so it returns
-`error.ToolsUnsupported` rather than guessing at a format its model was never
-trained on; a second format is a second fixture set, not a branch in the loop.
+function in the profile module. Gemma's pair arrived with its own fixture set
+and no change to the loop: a second format is a second fixture set, not a
+branch in the loop. Its handoff is even a different mechanism — the model
+emits `<|tool_response>` after its calls, so that token is simply one more
+stop token in the profile's set.
 This is the same trade as [§43 of the inference companion](../llm-guide.md#43-a-registry-built-from-a-table-the-seam-before-the-second-model): the variation is named once, at the
 seam, and the code above the seam stays single.
 

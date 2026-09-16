@@ -191,9 +191,12 @@ stripped of thinking with `strip_thinking`. Tool calls use
 The template text is extracted from the file at capture time, never
 embedded in the tree (18,922 bytes ending in a newline, the digest above).
 
-`inference/src/profiles/gemma4.zig` implements the text-only subset
-(system/developer, user, assistant; no tools, images, or prefill) and is
-registered as `profiles.Profile.gemma4`, selected by the template digest.
+`inference/src/profiles/gemma4.zig` implements the text and tool-calling
+subset (system/developer, user, assistant, tool declarations, calls, and
+responses; no images or prefill) and is registered as
+`profiles.Profile.gemma4`, selected by the template digest. The tool path is
+in [prompt-profile.md § Gemma 4](prompt-profile.md#gemma-4-gemma4) and
+[tool-calling.md](tool-calling.md).
 What the reference's own rendering established, each with a fixture case
 (`inference/src/profiles/fixtures/gemma4-text.json`, 14 prompts and 20
 token strings captured from `llama-server 7620399` on the K-quant file,

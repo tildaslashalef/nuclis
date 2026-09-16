@@ -143,8 +143,8 @@ pub const Profile = enum {
 
     /// Renders a completion-ready conversation (ending with a user message or
     /// a completed tool-result group) with optional tool definitions. Caller
-    /// owns the result. Profiles that cannot render tools yet return
-    /// `error.ToolsUnsupported` for a structurally valid tool input.
+    /// owns the result. A profile whose template defines no tool syntax
+    /// returns `error.ToolsUnsupported` for a structurally valid tool input.
     pub fn render(self: Profile, alloc: std.mem.Allocator, messages: []const Message, tools: []const ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
         return switch (self) {
             inline else => |p| p.module().render(alloc, messages, tools, effort, limits),
@@ -377,6 +377,7 @@ test "every profile names at least one stop token and both reasoning markers" {
     }
     try std.testing.expectEqualStrings("<|im_end|>", Profile.qwen38.stopTokens()[0]);
     try std.testing.expectEqualStrings("<turn|>", Profile.gemma4.stopTokens()[0]);
+    try std.testing.expectEqualStrings("<|tool_response>", Profile.gemma4.stopTokens()[2]);
     try std.testing.expectEqualStrings("</think>", Profile.qwen38.reasoning().close);
     try std.testing.expectEqualStrings("<channel|>", Profile.gemma4.reasoning().close);
 }
@@ -384,7 +385,7 @@ test "every profile names at least one stop token and both reasoning markers" {
 const user_message: Message = .{ .role = .user, .content = "hi" };
 const read_call: ToolCall = .{ .id = 7, .name = "read_file", .arguments = "{\"path\":\"a\"}" };
 
-test "structurally valid tool history validates; qwen renders it, gemma rejects" {
+test "structurally valid tool history validates and both profiles render it natively" {
     const alloc = std.testing.allocator;
     const history = [_]Message{
         .{ .role = .user, .content = "read a" },
@@ -396,7 +397,9 @@ test "structurally valid tool history validates; qwen renders it, gemma rejects"
     const qwen = try qwen38.render(alloc, &history, &.{}, .off, .{});
     defer alloc.free(qwen);
     try std.testing.expect(std.mem.indexOf(u8, qwen, "<function=read_file>") != null);
-    try std.testing.expectError(error.ToolsUnsupported, gemma4.render(alloc, &history, &.{}, .medium, .{}));
+    const gemma = try gemma4.render(alloc, &history, &.{}, .medium, .{});
+    defer alloc.free(gemma);
+    try std.testing.expect(std.mem.indexOf(u8, gemma, "<|tool_call>call:read_file{path:<|\"|>a<|\"|>}<tool_call|>") != null);
 
     const tool = ToolDefinition{ .name = "read_file", .description = "Read a file.", .parameters = "{\"type\":\"object\"}" };
     try validate(alloc, &.{user_message}, &.{tool}, .{});
@@ -404,7 +407,9 @@ test "structurally valid tool history validates; qwen renders it, gemma rejects"
     const qwen_tools = try qwen38.render(alloc, &.{user_message}, &.{tool}, .off, .{});
     defer alloc.free(qwen_tools);
     try std.testing.expect(std.mem.indexOf(u8, qwen_tools, "<tools>") != null);
-    try std.testing.expectError(error.ToolsUnsupported, gemma4.render(alloc, &.{user_message}, &.{tool}, .medium, .{}));
+    const gemma_tools = try gemma4.render(alloc, &.{user_message}, &.{tool}, .medium, .{});
+    defer alloc.free(gemma_tools);
+    try std.testing.expect(std.mem.indexOf(u8, gemma_tools, "<|tool>declaration:read_file{") != null);
 
     try std.testing.expect(!usesToolFeatures(&.{user_message}, &.{}));
 }

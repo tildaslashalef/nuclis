@@ -1,0 +1,1137 @@
+{
+  "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "model_sha256": "90fd944d227e9d9b68e7e2c7d5b57b79d4c66ed521b0919fbbd932cf834f6f8e",
+  "template_sha256": "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b",
+  "add_special": false,
+  "preserve_thinking": true,
+  "cases": [
+    {
+      "name": "tools_only",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a then run it"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a then run it<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "tools_only",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a then run it"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a then run it<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "one_call",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "Reading now.",
+          "reasoning_content": "I should read it.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "line one\nline two",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "now what?"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|channel>thought\nI should read it.\n<channel|><|tool_call>call:read_file{offset:3,path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>line one\nline two<|\"|>}<tool_response|>Reading now.<turn|>\n<|turn>user\nnow what?<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "one_call",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "Reading now.",
+          "reasoning_content": "I should read it.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "line one\nline two",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "now what?"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|channel>thought\nI should read it.\n<channel|><|tool_call>call:read_file{offset:3,path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>line one\nline two<|\"|>}<tool_response|>Reading now.<turn|>\n<|turn>user\nnow what?<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "two_calls",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "do both"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan both calls.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            },
+            {
+              "id": 2,
+              "name": "bash",
+              "arguments": "{\"command\":\"zig build test\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "file body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "tool",
+          "content": "ok",
+          "tool_call_id": 2
+        },
+        {
+          "role": "user",
+          "content": "next"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\ndo both<turn|>\n<|turn>model\n<|channel>thought\nPlan both calls.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_call>call:bash{command:<|\"|>zig build test<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>file body<|\"|>}<tool_response|><|tool_response>response:bash{value:<|\"|>ok<|\"|>}<tool_response|><turn|>\n<|turn>user\nnext<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "two_calls",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "do both"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan both calls.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            },
+            {
+              "id": 2,
+              "name": "bash",
+              "arguments": "{\"command\":\"zig build test\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "file body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "tool",
+          "content": "ok",
+          "tool_call_id": 2
+        },
+        {
+          "role": "user",
+          "content": "next"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\ndo both<turn|>\n<|turn>model\n<|channel>thought\nPlan both calls.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_call>call:bash{command:<|\"|>zig build test<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>file body<|\"|>}<tool_response|><|tool_response>response:bash{value:<|\"|>ok<|\"|>}<tool_response|><turn|>\n<|turn>user\nnext<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "empty_args_call",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": 7,
+              "name": "bash",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "done",
+          "tool_call_id": 7
+        },
+        {
+          "role": "user",
+          "content": "again"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\ngo<turn|>\n<|turn>model\n<|tool_call>call:bash{}<tool_call|><|tool_response>response:bash{value:<|\"|>done<|\"|>}<tool_response|><turn|>\n<|turn>user\nagain<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "empty_args_call",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": 7,
+              "name": "bash",
+              "arguments": "{}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "done",
+          "tool_call_id": 7
+        },
+        {
+          "role": "user",
+          "content": "again"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\ngo<turn|>\n<|turn>model\n<|tool_call>call:bash{}<tool_call|><|tool_response>response:bash{value:<|\"|>done<|\"|>}<tool_response|><turn|>\n<|turn>user\nagain<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "nested_value_call",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "one call"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Check the shape.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a\\nb\\\"c\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "thanks"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\none call<turn|>\n<|turn>model\n<|channel>thought\nCheck the shape.\n<channel|><|tool_call>call:read_file{offset:3,path:<|\"|>a\nb\"c<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>body<|\"|>}<tool_response|><turn|>\n<|turn>user\nthanks<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "nested_value_call",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "one call"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Check the shape.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a\\nb\\\"c\",\"offset\":3}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "thanks"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\none call<turn|>\n<|turn>model\n<|channel>thought\nCheck the shape.\n<channel|><|tool_call>call:read_file{offset:3,path:<|\"|>a\nb\"c<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>body<|\"|>}<tool_response|><turn|>\n<|turn>user\nthanks<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "system_and_tools",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be terse."
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\nBe terse.<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "system_and_tools",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be terse."
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\nBe terse.<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "nested_args_call",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "search"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Shape check.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "search",
+              "arguments": "{\"query\":\"a\\\"b\",\"limit\":3,\"regex\":true,\"ratio\":1.5,\"mode\":\"files\",\"paths\":[\"x\",\"y\"],\"options\":{\"case_sensitive\":false},\"nothing\":null}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "none",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "ok"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nsearch<turn|>\n<|turn>model\n<|channel>thought\nShape check.\n<channel|><|tool_call>call:search{limit:3,mode:<|\"|>files<|\"|>,nothing:null,options:{case_sensitive:false},paths:[<|\"|>x<|\"|>,<|\"|>y<|\"|>],query:<|\"|>a\"b<|\"|>,ratio:1.5,regex:true}<tool_call|><|tool_response>response:search{value:<|\"|>none<|\"|>}<tool_response|><turn|>\n<|turn>user\nok<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "nested_args_call",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "search"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Shape check.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "search",
+              "arguments": "{\"query\":\"a\\\"b\",\"limit\":3,\"regex\":true,\"ratio\":1.5,\"mode\":\"files\",\"paths\":[\"x\",\"y\"],\"options\":{\"case_sensitive\":false},\"nothing\":null}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "none",
+          "tool_call_id": 1
+        },
+        {
+          "role": "user",
+          "content": "ok"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nsearch<turn|>\n<|turn>model\n<|channel>thought\nShape check.\n<channel|><|tool_call>call:search{limit:3,mode:<|\"|>files<|\"|>,nothing:null,options:{case_sensitive:false},paths:[<|\"|>x<|\"|>,<|\"|>y<|\"|>],query:<|\"|>a\"b<|\"|>,ratio:1.5,regex:true}<tool_call|><|tool_response>response:search{value:<|\"|>none<|\"|>}<tool_response|><turn|>\n<|turn>user\nok<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "ends_on_results",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "line one\nline two",
+          "tool_call_id": 1
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|channel>thought\nPlan.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>line one\nline two<|\"|>}<tool_response|>"
+    },
+    {
+      "name": "ends_on_results",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "line one\nline two",
+          "tool_call_id": 1
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|channel>thought\nPlan.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>line one\nline two<|\"|>}<tool_response|><|channel>thought\n"
+    },
+    {
+      "name": "ends_on_results_no_reasoning",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>body<|\"|>}<tool_response|>"
+    },
+    {
+      "name": "ends_on_results_no_reasoning",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>body<|\"|>}<tool_response|><|channel>thought\n"
+    },
+    {
+      "name": "ends_on_results_with_content",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "Reading now.",
+          "reasoning_content": "Plan.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|channel>thought\nPlan.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>body<|\"|>}<tool_response|>Reading now.<turn|>\n<|turn>model\n"
+    },
+    {
+      "name": "ends_on_results_with_content",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "Reading now.",
+          "reasoning_content": "Plan.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|channel>thought\nPlan.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>body<|\"|>}<tool_response|>Reading now.<turn|>\n<|channel>thought\n"
+    },
+    {
+      "name": "two_steps",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "do both"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "First.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "file body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Second.",
+          "tool_calls": [
+            {
+              "id": 2,
+              "name": "bash",
+              "arguments": "{\"command\":\"zig build test\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "ok",
+          "tool_call_id": 2
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\ndo both<turn|>\n<|turn>model\n<|channel>thought\nFirst.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>file body<|\"|>}<tool_response|><|channel>thought\nSecond.\n<channel|><|tool_call>call:bash{command:<|\"|>zig build test<|\"|>}<tool_call|><|tool_response>response:bash{value:<|\"|>ok<|\"|>}<tool_response|>"
+    },
+    {
+      "name": "two_steps",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "do both"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "First.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "file body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Second.",
+          "tool_calls": [
+            {
+              "id": 2,
+              "name": "bash",
+              "arguments": "{\"command\":\"zig build test\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "ok",
+          "tool_call_id": 2
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\ndo both<turn|>\n<|turn>model\n<|channel>thought\nFirst.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>file body<|\"|>}<tool_response|><|channel>thought\nSecond.\n<channel|><|tool_call>call:bash{command:<|\"|>zig build test<|\"|>}<tool_call|><|tool_response>response:bash{value:<|\"|>ok<|\"|>}<tool_response|><|channel>thought\n"
+    },
+    {
+      "name": "answer_after_results",
+      "effort": "off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "assistant",
+          "content": "Done.",
+          "reasoning_content": "Afterthought."
+        },
+        {
+          "role": "user",
+          "content": "thanks"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|channel>thought\nPlan.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>body<|\"|>}<tool_response|>Done.<turn|>\n<|turn>user\nthanks<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+    },
+    {
+      "name": "answer_after_results",
+      "effort": "medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "read a"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Plan.",
+          "tool_calls": [
+            {
+              "id": 1,
+              "name": "read_file",
+              "arguments": "{\"path\":\"a.zig\"}"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "body",
+          "tool_call_id": 1
+        },
+        {
+          "role": "assistant",
+          "content": "Done.",
+          "reasoning_content": "Afterthought."
+        },
+        {
+          "role": "user",
+          "content": "thanks"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a bounded region of a UTF-8 text file in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"}},\"required\":[\"path\"]}"
+        },
+        {
+          "name": "bash",
+          "description": "Run one shell command in the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}"
+        },
+        {
+          "name": "search",
+          "description": "Search the workspace.",
+          "parameters": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Text to find.\"},\"limit\":{\"type\":\"integer\"},\"regex\":{\"type\":\"boolean\"},\"mode\":{\"type\":\"string\",\"enum\":[\"files\",\"content\"]},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"options\":{\"type\":\"object\",\"properties\":{\"case_sensitive\":{\"type\":\"boolean\"}},\"required\":[\"case_sensitive\"]}},\"required\":[\"query\"]}"
+        }
+      ],
+      "prompt": "<|turn>system\n<|think|>\n<|tool>declaration:read_file{description:<|\"|>Read a bounded region of a UTF-8 text file in the workspace.<|\"|>,parameters:{properties:{offset:{type:<|\"|>INTEGER<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:bash{description:<|\"|>Run one shell command in the workspace.<|\"|>,parameters:{properties:{command:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>command<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:search{description:<|\"|>Search the workspace.<|\"|>,parameters:{properties:{limit:{type:<|\"|>INTEGER<|\"|>},mode:{enum:[<|\"|>files<|\"|>,<|\"|>content<|\"|>],type:<|\"|>STRING<|\"|>},options:{properties:{case_sensitive:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>case_sensitive<|\"|>],type:<|\"|>OBJECT<|\"|>},paths:{items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>},query:{description:<|\"|>Text to find.<|\"|>,type:<|\"|>STRING<|\"|>},regex:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nread a<turn|>\n<|turn>model\n<|channel>thought\nPlan.\n<channel|><|tool_call>call:read_file{path:<|\"|>a.zig<|\"|>}<tool_call|><|tool_response>response:read_file{value:<|\"|>body<|\"|>}<tool_response|>Done.<turn|>\n<|turn>user\nthanks<turn|>\n<|turn>model\n"
+    }
+  ]
+}

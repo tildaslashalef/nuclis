@@ -180,9 +180,10 @@ edit to the parser, the sampler, or the generation loop; the starter
 guide is [reference/new-model-guide.md](reference/new-model-guide.md);
 typed thinking/answer/stop completion events landed in AGNT-01 session 1, and
 the shared tool definitions/history, their validation, and explicit
-`ToolsUnsupported` landed in session 2; tool calls are reserved in the union
-(no decoder emits them yet), with native production still planned for the
-agent ([agent-spec § Format boundary](agent-spec.md#format-boundary--inference-side-agnt-01)).
+`ToolsUnsupported` landed in session 2; both profiles now render and decode
+their native tool syntax against pinned fixtures (Qwen in AGNT-05/06, Gemma in
+AGNT-09), so the agent's tool loop is model knowledge end to end
+([agent-spec § Format boundary](agent-spec.md#format-boundary--inference-side-agnt-01)).
 
 Internally, separate three seams:
 

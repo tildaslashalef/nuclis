@@ -1601,3 +1601,60 @@ sessions it says so.
 
 **Files.** `src/agent/resume.zig`, `src/agent/root.zig`, `src/cli.zig`,
 `src/help.zig`, `docs/agent-spec.md`.
+
+### AGNT-09 — Gemma 4 native tool calling (2026-09-16)
+
+**Outcome.** The Gemma 4 profile renders and decodes its own tool path, so
+`nuclis agent` on `gemma-4-12b` warms up with the tools block and runs the
+same loop as on Qwen. Declarations render into the system turn as
+`<|tool>declaration:NAME{…}<tool|>` from the JSON-Schema subset the
+template's macro understands (anything outside it is
+`error.UnsupportedContent`, never approximated); an assistant call is
+`<|tool_call>call:NAME{key:value,…}<tool_call|>` in the template's DSL, its
+results follow inside the same model turn as
+`<|tool_response>response:NAME{value:<|"|>…<|"|>}<tool_response|>`, and the
+turn stays open when the conversation ends on results. Reasoning renders where
+the template's gate passes (after the last user message, or on any
+call-bearing message, the reference server's default). The reference's own
+repair — a fresh `<|turn>model\n` when results followed by content close the
+turn — is reproduced because its `/apply-template` renders through the same
+layer. `gemma4.parseTool` is a bounded recursive-descent reader of the DSL
+behind the shared stream decoder, and the handoff needed no new mechanism:
+the model emits `<|tool_response>` after the last call of a step, which the
+reference marks end-of-generation and Google calls an additional stop
+sequence, so it is the profile's third stop token. Two departures are pinned
+by tests: reasoning is trimmed before rendering and numbers keep their JSON
+text. `scripts/profile-tools-fixtures.py` takes `--profile`. The one shared
+fix: both profiles now report an allocation failure during JSON parsing as
+`OutOfMemory` rather than `InvalidConversation`.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: **385 default
+tests** (up from 379: the fixture test asserts all **24 Gemma tool prompts**
+byte for byte; the parser round-trips nested values and refuses 13 malformed
+or truncated bodies; the stream decoder drives the Gemma grammar with two
+calls in one step; the reasoning-trim pin; marker and schema rejections; the
+registry test now expects both profiles to render). `make fmt-check` clean.
+`make test-vocabulary MODEL=<gemma-4-12b>` resolves the seven tool tokens
+(46–52). Fixtures captured with llama.cpp `7620399` on the K-quant 12B
+(template digest and full checksum verified). Live, Metal, context 8192,
+`--think medium`, `--print --json`: "create greeting.txt with hello world, then
+read it back" issued `write_file` then `read_file` in three steps and answered
+with the contents; the file on disk was `hello world`. Turn stats: 225 prompt
+tokens, 168 generated, prefill 1.91 s, decode 8.50 s, `replayed: true` —
+the model closed its first thought without a newline, so the second step
+replayed from the primed prefix rather than incrementing (the third step
+incremented).
+
+**Files.** `inference/src/profiles/gemma4.zig`,
+`inference/src/profiles/qwen38.zig`, `inference/src/profiles/root.zig`,
+`inference/src/profiles/fixtures/gemma4-tools.json`,
+`inference/vocabulary-check.zig`, `scripts/profile-tools-fixtures.py`,
+`docs/reference/prompt-profile.md`, `docs/reference/tool-calling.md`,
+`docs/reference/gemma4.md`, `docs/reference/agent-concepts.md`,
+`docs/architecture.md`, `docs/agent-spec.md`, `docs/spec.md`,
+`THIRD_PARTY_NOTICES.md`.
+
+**Remaining.** The incremental prefill misses a step whenever Gemma closes
+its thought channel without the newline the template renders before
+`<channel|>`; the cost is a replay from the primed prefix. The 26B-A4B
+artifact's tool tokens are unverified until that unit pulls it.

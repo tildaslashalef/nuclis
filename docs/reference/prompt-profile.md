@@ -13,7 +13,7 @@ fixtures did not verify. Two profiles exist:
 | Profile | Module | Template SHA-256 | Stop tokens | Reasoning markers |
 | --- | --- | --- | --- | --- |
 | `qwen38` | [qwen38.zig](../../inference/src/profiles/qwen38.zig) | `12827f24…` | `<|im_end|>`, `<|endoftext|>` | `<think>` … `</think>` |
-| `gemma4` | [gemma4.zig](../../inference/src/profiles/gemma4.zig) | `845f1ee4…` | `<turn|>`, `<eos>` | `<|channel>thought\n` … `<channel|>` |
+| `gemma4` | [gemma4.zig](../../inference/src/profiles/gemma4.zig) | `845f1ee4…` | `<turn|>`, `<eos>`, `<|tool_response>` | `<|channel>thought\n` … `<channel|>` |
 
 Every module exposes the same surface: `template_sha256`, `render`,
 `samplingDefaults`, `stop_tokens`, `reasoning`, and `stream_markers`. The engine resolves the stop
@@ -62,10 +62,11 @@ buffer may reserve more.
 The effort argument is the shared `Effort` (`off`, `low`, `medium`,
 `xhigh`), named after Qwen3.8's levels because it came first; a profile
 with fewer levels collapses them. Validation is separate from support: a
-structurally valid tools input still passes `validate`, and both profiles
-reject it with `error.ToolsUnsupported` until AGNT-05–AGNT-06 pin the native tools block,
-call grammar, and result role. Neither profile implements native tools,
-multimodal content, assistant prefill, or a general Jinja interpreter.
+structurally valid tools input still passes `validate`, and a profile whose
+template defined no tool grammar would reject it with
+`error.ToolsUnsupported`; both profiles now render and decode their native
+tool path against pinned fixtures. Neither implements multimodal content,
+assistant prefill, or a general Jinja interpreter.
 
 ## Qwen3.8 (`qwen38`)
 
@@ -92,9 +93,8 @@ consecutive tool results fold into one `<|im_start|>user` turn of
 `<tool_response>` blocks, exactly as the template does. Assistant content
 carrying a control marker is rejected so structure cannot be smuggled into the
 answer. Gemma's native tool grammar is a different shape and its result
-handoff resumes the model turn; it is deliberately rendered as
-`error.ToolsUnsupported` rather than approximated (see
-[tool-calling.md](tool-calling.md)).
+handoff resumes the model turn; see its section below and
+[tool-calling.md](tool-calling.md).
 
 ## Gemma 4 (`gemma4`)
 
@@ -112,19 +112,66 @@ empty thought channel in the generation prompt
 directly; any other effort puts `<|think|>\n` at the top of the system
 turn (which then exists even without a system message) and ends the prompt
 at `<|turn>model\n`, after which the model opens its own channel. Assistant
-reasoning is never rendered in history (the template's gate only passes
-for turns after the last user message, and a conversation always ends with
-one): `reasoning_content` is accepted and dropped. Two assistant messages
-in a row continue one `model` turn (contents trimmed and concatenated, no
-marker between them). Assistant content carrying `<|channel>` or
-`<channel|>` is rejected rather than stripped as the template would.
+reasoning renders as `<|channel>thought\n…\n<channel|>` only where the
+template's gate passes: on a message after the last user message (the
+current tool loop) or on any message that calls tools (the reference server
+preserves reasoning by default for this template, and the fixtures were
+captured with that default); everywhere else `reasoning_content` is
+accepted and dropped. The profile trims the reasoning first, the one
+departure from the template (which does not): the model writes at most one
+newline before `<channel|>`, so trimmed text plus the template's own
+`\n<channel|>` reproduces the model's bytes when it wrote that newline and the
+session's incremental prefill hits; when the model closes the channel with no
+newline the next step replays from the primed prefix instead (measured on
+the first step of the live check in the engineering log). Two assistant
+messages in a row continue one `model` turn (contents trimmed and
+concatenated, no marker between them). Assistant content or reasoning
+carrying any control marker (`<|channel>`, `<channel|>`, the six tool
+markers, or the `<|"|>` delimiter) is rejected rather than stripped as the
+template would.
+
+**Tools.** Declarations go into the system turn after the system text with
+no separator, one `<|tool>declaration:NAME{…}<tool|>` each: the description,
+then `parameters:{properties:{…},required:[…],type:<|"|>OBJECT<|"|>}` for a
+nonempty schema. The profile renders the JSON-Schema subset the template's
+macro understands — object schemas with `properties` (keys in byte order,
+as the reference's case-sensitive `dictsort`), `required`, a mandatory
+string `type` (uppercased), and per property an optional `description`,
+`enum` on strings, `items` on arrays, nested `properties`/`required` on
+objects, and `nullable` — and rejects anything else with
+`error.UnsupportedContent` rather than approximating (a schema without a
+type would leave the template's braces unclosed). An assistant call is
+`<|tool_call>call:NAME{key:value,…}<tool_call|>`, keys in byte order, values
+in the template's DSL: strings literal between `<|"|>` delimiters (there is
+no escape, so a string containing the delimiter or any marker is rejected),
+numbers as their JSON text, `true`/`false`/`null`, nested objects with bare
+keys, and arrays. The results that answer the calls follow inside the same
+model turn as `<|tool_response>response:NAME{value:<|"|>CONTENT<|"|>}<tool_response|>`
+(the content untrimmed), then the message's content; `<turn|>\n` closes the
+turn unless it continues into the next assistant message or the conversation
+ends on results with no content, in which case the turn stays open and the
+generation prompt adds only `<|channel>thought\n` when thinking is on. When
+results are followed by content at the end of the conversation the template
+closes the turn and adds no model turn; the reference's chat layer then
+appends `<|turn>model\n`, and the profile reproduces that (its
+`/apply-template` renders through the same layer, so the fixtures pin it).
+Decoding uses the `<|tool_call>` / `<tool_call|>` control tokens (48/49)
+through the shared stream decoder and `gemma4.parseTool`, a bounded
+recursive-descent reader of the DSL (nesting depth 16, whitespace where the
+reference grammar allows it) that writes the JSON object the agent consumes;
+a malformed or truncated body is released as text. The model hands off by
+emitting `<|tool_response>` after its calls — Google's guide calls it an
+additional stop sequence and the reference marks it end-of-generation by
+name — so it is the profile's third stop token and several calls in one step
+all arrive before it.
 
 Sampling defaults are the file's own hint, the same in both modes
 (`general.sampling.temp` 1.0, `top_p` 0.95, `top_k` 64; no penalties, no
 `min_p`), recorded as the file's claim: no published per-mode table was
 pinned for Gemma 4, unlike Qwen3.8's. The stop set is `<turn|>` (106, the
-K-quant file's `eos_token_id`) and `<eos>` (1, the QAT file's); both files
-carry both tokens and the same template.
+K-quant file's `eos_token_id`), `<eos>` (1, the QAT file's), and
+`<|tool_response>` (50, the tool handoff); both files carry all three tokens
+and the same template.
 
 ## Evidence and reproduction
 
@@ -155,6 +202,15 @@ string argument contains a newline and a quote. Each carries the same tools
 and, where present, the assistant/reasoning/tool-result history, so the tools
 block, the rendered calls, and the folded `<tool_response>` user turn are all
 pinned byte for byte through the same `render` path.
+[gemma4-tools.json](../../inference/src/profiles/fixtures/gemma4-tools.json)
+(`--profile gemma4`, captured 2026-09-16 on the K-quant 12B) adds 24 Gemma
+cases across `off` and `medium`: the same five shapes with a third,
+schema-rich declaration (description, integer, boolean, enum, array of
+strings, nested object); a system message with tools; a call with nested
+object, array, float, boolean, and null arguments; a loop ending on results
+with and without reasoning and with content (the reference's reopened turn);
+two steps in one loop; and a final answer after results followed by a user
+turn. The Zig test prepends `<bos>` as the text test does.
 
 `make test-vocabulary` (`inference/vocabulary-check.zig`; `MODEL=<path>`
 for the Gemma file) is the opt-in check against the real artifact: it
@@ -181,7 +237,7 @@ In another terminal:
 
 ```sh
 python3 scripts/tokenizer-fixtures.py --profile gemma4   # or --profile qwen38
-python3 scripts/profile-tools-fixtures.py                # Qwen native tool prompts
+python3 scripts/profile-tools-fixtures.py --profile gemma4   # or --profile qwen38 (default)
 zig build test --global-cache-dir .zig-cache/global
 ```
 
@@ -223,7 +279,8 @@ decoder produces these: the shared `profiles/stream.zig` recognizes the
 body as ordinary pieces, and hands it to `qwen38.parseTool`, which emits one
 call when the closing token arrives. A call still open at EOS, a budget stop,
 or a cancellation — and a body the parser refuses — is released as answer text
-and never executed. Gemma declares no tool grammar and keeps rejecting tool
-inputs with `error.ToolsUnsupported`. See [tool-calling.md](tool-calling.md)
-for the model-card and pinned-template evidence, including Gemma's distinct
-handoff.
+and never executed. The Gemma decoder is the same machinery with its own
+brackets (`<|tool_call>` / `<tool_call|>`) and `gemma4.parseTool`; its
+handoff is the `<|tool_response>` stop token. See
+[tool-calling.md](tool-calling.md) for the model-card and pinned-template
+evidence.

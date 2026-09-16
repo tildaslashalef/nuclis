@@ -473,9 +473,12 @@ decoder that turns generated output into typed calls at token boundaries.
 That work is per **template digest**, not per architecture — two files of the
 same family with different chat templates are two profiles — and it changes
 nothing above it: the loop, registry, events, and transcript consume typed
-calls and never parse the wire format. A template with no tool grammar rejects
-structurally valid tool inputs with `error.ToolsUnsupported` and needs no
-decoder. The conversation types
+calls and never parse the wire format. Both profiles render and decode their
+native tool syntax (Qwen's XML-like calls with results in a user turn;
+Gemma's `call:NAME{…}` DSL with results inside the model turn and a
+`<|tool_response>` stop token as the handoff); a template with no tool grammar
+would reject structurally valid tool inputs with `error.ToolsUnsupported` and
+need no decoder. The conversation types
 (`Message`, `Role`, `ToolCall`, `ToolDefinition`, `Limits`) and the
 profile-independent conversation validation, including tool-call/result
 correlation, are shared there too (AGNT-01 session 2).

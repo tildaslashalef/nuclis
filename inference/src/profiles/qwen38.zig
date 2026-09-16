@@ -201,7 +201,7 @@ fn addToolDefinition(builder: *Builder, alloc: std.mem.Allocator, tool: profiles
     writeJsonString(&w.writer, tool.description) catch return error.OutOfMemory;
     writeJsonRaw(&w.writer, ", \"parameters\": ") catch return error.OutOfMemory;
     // `validate` already proved this is a JSON object.
-    const parsed = std.json.parseFromSlice(std.json.Value, alloc, tool.parameters, .{}) catch return error.InvalidConversation;
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, tool.parameters, .{}) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.InvalidConversation;
     defer parsed.deinit();
     writeJsonValue(&w.writer, parsed.value) catch return error.OutOfMemory;
     writeJsonRaw(&w.writer, "}}") catch return error.OutOfMemory;
@@ -215,7 +215,7 @@ fn renderCall(builder: *Builder, alloc: std.mem.Allocator, call: profiles.ToolCa
     try builder.add(call.name);
     try builder.add(">\n");
     // `validate` already proved these arguments are a JSON object.
-    const parsed = std.json.parseFromSlice(std.json.Value, alloc, call.arguments, .{}) catch return error.InvalidConversation;
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, call.arguments, .{}) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.InvalidConversation;
     defer parsed.deinit();
     var it = parsed.value.object.iterator();
     while (it.next()) |entry| {

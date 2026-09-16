@@ -1,7 +1,8 @@
 # Tool calling: model evidence and the engine seam
 
-Research checked 2026-09-13 for AGNT-01. These are format findings and design
-constraints, not a claim that native tool calling is implemented.
+Research checked 2026-09-13 for AGNT-01, extended 2026-09-16 for AGNT-09.
+These are format findings and design constraints; both profiles now implement
+their native path ([prompt-profile.md](prompt-profile.md)).
 
 ## Model cards and artifact identity
 
@@ -63,8 +64,28 @@ The cached template matching the pinned 12B digest
 `845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b`
 confirms these structural rules. Direct inspection of the pinned 12B vocabulary
 found call markers 48/49, response markers 50/51, string delimiter 52, and
-channel markers 100/101. These IDs are **12B evidence**; they have not been
-verified on the requested 26B QAT artifact. Tool fixtures are still required.
+channel markers 100/101 (all user-defined tokens, rendered as text by the
+decoder, so the body between the call brackets carries its own string
+delimiters). These IDs are **12B evidence**; they have not been verified on
+the requested 26B QAT artifact. The 12B tool fixtures are pinned
+(`gemma4-tools.json`).
+
+Three facts from the pinned reference (`7620399`) shaped the Gemma
+implementation. Its vocabulary loader marks `<|tool_response>` end-of-generation
+by name, matching Google's "additional stop sequence": the model emits every
+call of a step and then that token, so the profile lists it as a stop token
+and the shared decoder needs no handoff state. Its chat layer appends
+`<|turn>model\n` whenever the template leaves the prompt at a closed turn,
+which happens when results are followed by content at the end of the
+conversation; `/apply-template` renders through that layer, so the fixtures
+include the repair and the profile reproduces it. And its server enables
+reasoning preservation by default for templates that support it, so a
+call-bearing assistant message keeps its `<|channel>thought` at any age while
+a plain answer keeps it only after the last user message. Two deliberate
+departures, both pinned by tests: reasoning is trimmed before rendering so the
+model's own bytes are reproduced for the incremental prefill, and numbers are
+rendered as their JSON text where the reference reformats floats
+(`1e10` → `10000000000.0`).
 
 ## Consequences for implementation
 
@@ -87,10 +108,11 @@ Qwen rendering and decoding are both pinned
 `<tool_response>` user turn match the artifact's template byte for byte, and
 the shared streaming decoder reads the outer control tokens from the
 artifact's vocabulary, parses the body with the profile's grammar, and releases
-a truncated or malformed call as text rather than executing it. Gemma still
-requires its own grammar and a profile-owned handoff condition distinct from
-ordinary end-of-turn stopping; stopping at the first call would lose additional
-calls, so its tools stay explicitly unsupported until its own fixtures pass.
+a truncated or malformed call as text rather than executing it. Gemma's grammar
+(`fixtures/gemma4-tools.json`, `gemma4.parseTool`) rides the same decoder;
+its handoff turned out to need no new mechanism, because the model's own
+`<|tool_response>` token after the last call of a step is a stop token, so
+several calls in one step all arrive before generation ends.
 
 The application can validate call IDs, pending result order, schemas, and
 execution limits without knowing either wire format. The profile alone decides

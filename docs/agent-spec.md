@@ -645,9 +645,10 @@ handoff. Neither is a generic Hermes JSON payload.
   [architecture § 9](architecture.md#9-adding-a-model)). The executable keeps presentation
   only: `generate` writes text, `bench` aggregates timings, the agent
   renders and executes. As of AGNT-01 session 2, `tools` are the shared
-  `profiles.ToolDefinition` list. `profiles/qwen38.zig` now renders the
-  native tool path (AGNT-05); `gemma4` still rejects a nonempty list, or any tool
-  history, with `error.ToolsUnsupported` and the reason recorded.
+  `profiles.ToolDefinition` list. `profiles/qwen38.zig` renders the
+  native tool path (AGNT-05) and `profiles/gemma4.zig` its own (AGNT-09:
+  the `<|tool>` declarations, `call:NAME{…}` calls, results inside the model
+  turn, and `<|tool_response>` as the handoff stop token).
 - **Encode.** `profiles.validate` (shared) enforces the conversation rules
   before any profile renders: system/developer only lead, reasoning only on
   the assistant, and tool results answer the pending assistant calls in
@@ -813,7 +814,8 @@ One unit each, after AGNT-01:
 4. **AGNT-05 Tool rendering** (closed 2026-09-14). `profiles/qwen38.zig` renders
    the artifact's tools block, native assistant calls, and folded tool
    results, pinned by `qwen38-tools.json` captured from the reference; Gemma
-   records its `ToolsUnsupported` position. See the
+   recorded its `ToolsUnsupported` position until AGNT-09 (2026-09-16) gave it
+   the same treatment with `gemma4-tools.json`. See the
    [engineering log](engineering-log.md#agnt-05--qwen-tool-rendering-and-pinned-fixtures-2026-09-14).
 5. **AGNT-06 Tool decoding and the loop** (closed 2026-09-14). The profile
    decoder parses generated calls at token boundaries; the agent loop consumes
