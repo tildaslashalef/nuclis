@@ -16,32 +16,163 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-AGNT-09 closed on 2026-09-16 (Gemma 4 tool calling). The next family is
-Meta's **Muse Glimmer 30B** (`unsloth/Muse-Glimmer-30B-GGUF`), a dense
-30B agentic model with vision and a DFlash drafter, planned as four units
-that mirror the Gemma bring-up (MODL-05..07) plus one for its tool protocol.
-Nothing is pulled or coded yet; the facts below were read on 2026-09-16 from
-the model card, the base repository's `config.json`, the remote GGUF header
-(`nuclis model inspect`, no weights), and the pinned llama.cpp `7620399`,
-which already implements the architecture (`src/models/muse-glimmer.cpp`)
-and its chat format (`common_chat_params_init_muse_glimmer`), so the oracle
-exists without a reference upgrade.
+AGNT-09 closed on 2026-09-16 (Gemma 4 tool calling). Two families are
+planned, in this order: **Gemma 4 26B-A4B** (the first mixture of experts;
+one new kernel family, everything else reused) and then Meta's **Muse
+Glimmer 30B** (a dense agentic model with a new tokenizer splitter and a
+new chat-protocol decoder). Nothing is pulled or coded yet. The 26B-A4B
+facts were read on 2026-09-16 from the remote QAT header (`nuclis model
+inspect`, no weights) and the pinned llama.cpp `7620399`
+(`src/models/gemma4.cpp`); the Muse facts from its model card, the base
+repository's `config.json`, the remote GGUF header, and the same reference,
+which already implements both architectures and chat formats, so the
+oracles exist without a reference upgrade.
 
-Order: MODL-09 → MODL-10 → MODL-11 → AGNT-10.
+Order: KERN-09 → MODL-09 → MODL-10 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-09 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2 |
-| MODL-10 | Muse Glimmer 30B: Metal plan | 1 |
-| MODL-11 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 1 |
+| KERN-09 | Expert routing and gathered expert kernels (decode and prefill) | 2 |
+| MODL-09 | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2 |
+| MODL-10 | Gemma 4 26B-A4B: catalogue, acceptance record, agent check | 1 |
+| MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2 |
+| MODL-12 | Muse Glimmer 30B: Metal plan | 1 |
+| MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 1 |
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 1 |
 
-## The artifact (decided 2026-09-16)
+## Gemma 4 26B-A4B — the artifact and its facts (read 2026-09-16)
+
+**`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf`** from
+`unsloth/gemma-4-26B-A4B-it-qat-GGUF` at commit
+`7b92b5b28818151e8669af2e45e88d6086f490dd`, 14,249,047,104 B, SHA-256
+`a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891`
+(verified by the pull in MODL-09). Architecture `gemma4`, 30 blocks,
+embedding 2816, context 262144, 658 tensors: 392 F32 and 266 Q4_0 — the
+Q4_0 path from MODL-08 executes every weight. The K-quant sibling
+(`unsloth/gemma-4-26B-A4B-it-GGUF`, 17.0 GB) stores its expert
+down-projections as Q5_1, which the engine does not have, so the QAT file
+is the only target. Verdict today: *not runnable: the gemma4 adapter
+rejects the file (UnsupportedConfiguration)* — the expert tensors.
+
+- **Template digest `845f1ee4…`, the 12B's**: the Gemma profile, its
+  fixtures, and the tool calling from AGNT-09 apply unchanged. Sampling
+  hint in the header: temperature 1.0, top-p 0.95, top-k 64 (the 12B's).
+- **Attention** is the 12B's period-6 pattern (five sliding layers, window
+  1024, head 256, 8 KV heads, RoPE base 1e4; one global layer, head 512,
+  base 1e6) with two differences to read carefully: the global layers have
+  **2 KV heads** (`head_count_kv` array alternates 8 and 2; the 12B had
+  one), and `rope.dimension_count` is 512 for global layers (the 12B
+  rotated 128 of 512 with `rope_freqs` factors) — whether factors exist
+  here is read from the full inventory when the unit starts. Shapes: 16
+  query heads; sliding `attn_q` 2816×4096, `attn_k`/`attn_v` 2816×2048;
+  global `attn_q` 2816×8192, `attn_k` 2816×1024. Logits soft-capped at 30,
+  `layer_output_scale` per layer, tied embeddings (262144 × 2816).
+- **Every layer is an expert layer** (`expert_count` 128, `expert_used_count`
+  8, `expert_feed_forward_length` 704) with a shared dense FFN
+  (`feed_forward_length` 2112) beside it. Per layer: `ffn_gate_inp.weight`
+  2816×128 (F32) with `ffn_gate_inp.scale` [2816]; fused
+  `ffn_gate_up_exps.weight` [2816, 1408, 128] and `ffn_down_exps.weight`
+  [704, 2816, 128] (Q4_0) with `ffn_down_exps.scale` [128]; the dense
+  `ffn_gate`/`ffn_up`/`ffn_down`; norms `ffn_norm`, `post_ffw_norm_1`,
+  `pre_ffw_norm_2`, `post_ffw_norm_2`, `post_ffw_norm`, `attn_norm`,
+  `post_attention_norm`, and the per-head q/k norms.
+- **The reference's FFN block on an expert layer** (`gemma4.cpp`):
+  shared branch `post_ffw_norm_1(GELU-FFN(ffn_norm(x)))`; expert branch:
+  router logits = `ffn_gate_inp · (rms_norm(x, eps) / sqrt(2816) ⊙ gate_inp.scale)`
+  over the *pre-norm* attention output, softmax over 128, top-8 with the
+  selected weights renormalized to sum 1 (`norm_w`), each expert a
+  gated-GELU FFN over `pre_ffw_norm_2(x)` with the fused gate-up rows and
+  the per-expert down scale, weighted sum, then `post_ffw_norm_2`; the
+  layer adds both branches and continues as the 12B (post norm, residual,
+  output scale).
+- **Active bytes per token**: about 3.8B parameters (8 experts × 30
+  layers ≈ 1.4B, shared FFNs ≈ 0.5B, attention ≈ 1.1B, the tied head
+  ≈ 0.7B) ≈ 2.1 GB at Q4_0, against 16 GB for the dense 27B — the reason
+  this family comes first.
+
+## KERN-09 — Expert routing and gathered expert kernels
+
+**Why.** The one thing the 26B-A4B needs that the tree lacks: selecting
+experts per token and running the selected experts' quantized weights
+without touching the other 120.
+
+**Design.**
+- **Router** (CPU reference + Metal): logits from the scaled/normed input
+  (the exact chain above is the adapter's, the kernel takes an input
+  vector and the router matrix), softmax over `expert_count`, top-k
+  indices and renormalized weights. One dispatch per token on decode; a
+  batched form for prefill rows.
+- **Gathered expert matvec** (decode): for each of the k selected experts,
+  a Q4_0 matvec over that expert's slice of a 3-D tensor
+  (`[n_embd, 2·n_ff_exp, n_expert]` and `[n_ff_exp, n_embd, n_expert]`),
+  gated GELU between them, the per-expert down scale, and the weighted
+  accumulation into one output row — built from the Q4_0 matvec kernel
+  of MODL-08 with an expert-offset argument, so a selected expert costs
+  the same bytes as a dense matrix of its size. Q4_K/Q6_K variants can
+  follow the same shape later for other families; only Q4_0 is in scope.
+- **Gathered expert matmul** (prefill): the chunked prefill sorts a chunk's
+  rows by expert (an index list per expert on the host or a counting pass
+  on the GPU), runs the batched Q4_0 tile per expert over its rows, and
+  scatters weighted results back. Rows per expert are bounded by the
+  chunk (256), so scratch is `k × chunk` rows.
+- Fixtures against an F64 reference: router selection and weights on
+  random logits including ties; gathered matvec against a per-expert
+  dense matvec; the prefill path against the decode path row by row; NaN
+  poisoning for unselected experts; the Metal fixture suite gains them.
+
+**Acceptance.** Kernel fixtures exact (routing) and within the Q4_0
+matvec tolerance (experts); a kernel benchmark of achieved GB/s over the
+selected experts recorded in bench.md; `make check` and `test-metal`.
+
+## MODL-09 — Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan
+
+**Design.**
+- Session 1: pull the QAT file and the companions it ships
+  (`nuclis model pull unsloth/gemma-4-26B-A4B-it-qat-GGUF --file …`,
+  digests into [artifacts.md](docs/reference/artifacts.md)); confirm the
+  reference runs it; extend `docs/reference/gemma4.md` with the 26B-A4B
+  section (inventory, layer pattern, the expert block, the global-layer
+  KV/rope differences). Adapter: `models/gemma4.zig` accepts the expert
+  configuration (validation of the 3-D expert tensors, the scales, the
+  extra norms, 2 KV heads on global layers, the rope dimension count),
+  keeps the 12B's validation exact, and binds both layouts; the CPU
+  runtime gains the expert FFN block (router chain, top-8, gathered
+  experts from KERN-09's CPU reference, shared branch, the two post norms
+  and their sum); `<bos>Hello,` traces from the reference at three
+  positions under `tests/fixtures/gemma4-26b-a4b-hello-comma/` and
+  `make compare-gemma4-26b-a4b-cpu` at the bring-up thresholds.
+- Session 2: the Metal plan (`gemma4_metal.zig` extended, not forked):
+  the expert FFN block on decode and in the chunked prefill from KERN-09,
+  the global attention with 2 KV heads, memory plan with all experts
+  resident (14.2 GB) and no paging. `make compare-gemma4-26b-a4b`
+  (CPU, F32, F16) and `make test-generation-gemma4-26b-a4b-metal`.
+
+**Acceptance.** Traces match the oracle at the thresholds with the same
+greedy token; the 12B and QAT-12B comparisons unchanged; `make bench` on
+Qwen unchanged; first decode/prefill numbers recorded.
+
+## MODL-10 — Gemma 4 26B-A4B: catalogue, acceptance record, agent check
+
+**Design.** Catalogue entry `gemma-4-26b-a4b` (the QAT file, its
+`mmproj`/`mtp` companions if the repository ships them, profile `gemma4`);
+`nuclis --help`; the acceptance record (`scripts/reference-baseline.py
+--family gemma4-26b-a4b`, token arrays under `tests/fixtures/run-<date>-gemma4-26b-a4b/`,
+`make baseline-gemma4-26b-a4b`, the table in bench.md); the ring layout
+for windowed caches stays a roadmap follow-up. Live: `nuclis agent
+--model gemma-4-26b-a4b` runs the AGNT-09 write-then-read check, and the
+decode rate against the 12B and the 27B is recorded in the log.
+
+**Acceptance.** The record's four prompt lengths at 32K on the token
+budget; the live tool turn; documents updated (gemma4.md, bench.md,
+artifacts.md, architecture.md § adding a model, the roadmap's 26B-A4B
+section removed).
+
+## Muse Glimmer 30B — the artifact (decided 2026-09-16)
 
 **`Muse-Glimmer-30B-UD-Q4_K_XL.gguf`** at commit
 `faa5b025c584459c13febfa5c59883516710ae39`, 15,878,222,368 B, SHA-256
 `82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38` (from
-the listing; verified by the pull in MODL-09). Header: architecture
+the listing; verified by the pull in MODL-11). Header: architecture
 `muse-glimmer`, 52 blocks, embedding 6656, context 131072, 731 tensors:
 313 F32, 410 Q4_K, 8 Q5_K (`output.weight` among them). Verdict today:
 *not runnable: no adapter* — every encoding already has CPU and Metal
@@ -60,11 +191,11 @@ check its encodings by `inspect` first), `Q8_0` 29.6 GB (too tight beside
 the cache and companions).
 
 Companions in the repository, sizes from the listing, digests to be read
-by `inspect` in MODL-09: `mmproj-kquant.gguf` 1,400,328,928 B,
+by `inspect` in MODL-11: `mmproj-kquant.gguf` 1,400,328,928 B,
 `mmproj-Muse-Glimmer-30B-BF16.gguf` 3,849,173,728 B,
 `dflash-kquant.gguf` 1,631,205,312 B.
 
-## MODL-09 — Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference
+## MODL-11 — Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference
 
 **Facts read so far** (to be re-read from the pulled file with
 `scripts/gguf-inventory.py` and recorded in `docs/reference/muse-glimmer.md`
@@ -132,7 +263,7 @@ the tokenizer matches the reference's `/tokenize` on the captured strings
 and prompts; the CPU reference matches the oracle traces at the thresholds
 with the same greedy token; `make check` and `test-metal` unchanged.
 
-## MODL-10 — Muse Glimmer 30B: Metal plan
+## MODL-12 — Muse Glimmer 30B: Metal plan
 
 **Design.** `muse_glimmer_metal.zig` composing existing kernels: Q4_K/Q5_K
 matvec and the batched prefill tiles, RMS norm (a weightless variant for
@@ -149,7 +280,7 @@ sliding layers (the ring layout remains the roadmap follow-up; 1.7 GB at
 their tolerances) on the pinned traces; `make test-generation-muse-glimmer-metal`;
 `make bench` on Qwen unchanged; a first decode/prefill number recorded.
 
-## MODL-11 — Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance
+## MODL-13 — Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance
 
 **Design.**
 - `profiles/muse_glimmer.zig` pinned to the GGUF template digest. The
@@ -218,7 +349,7 @@ and treats `<|eot|>` as the end of the call step.
 **Design.** Rendering in the profile from the shared `ToolDefinition` and
 history; `parseTool` for the ATEM body (the inverse of the renderer: a
 value that parses as JSON keeps its type, anything else is a literal
-string — Qwen's rule); the header decoder from MODL-11 routes
+string — Qwen's rule); the header decoder from MODL-13 routes
 `assistant to=NAME` bodies to it, and `<|eot|>` after a call ends the
 step (several calls arrive as `<|eom|>`-separated messages before it).
 `scripts/profile-tools-fixtures.py --profile muse_glimmer` captures the
