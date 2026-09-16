@@ -161,10 +161,10 @@ their tolerances) on the pinned traces; `make test-generation-muse-glimmer-metal
   and namespaces come in between — AGNT-10). Without a system message the
   template synthesizes one ("You are a helpful AI assistant.", the
   knowledge cutoff 2026-01-04, and a current-date line when the engine
-  defines `strftime_now`): decide in the unit — recommendation: the
-  profile renders that default without the date line (it takes no clock),
-  documented as a deviation and pinned with a fixture captured with
-  `current_date` unset; the agent always sends a system message anyway.
+  defines `strftime_now`): **decided 2026-09-16** — the profile renders
+  that default without the date line (it takes no clock), documented as a
+  deviation and pinned with a fixture captured with `current_date` unset;
+  the agent always sends a system message anyway.
   Assistant history: `reasoning_content` renders as
   `<|start|>assistant to=self<|message|>…<|eom|>` (kept everywhere the
   template keeps it — the template has no last-user gate), then the
