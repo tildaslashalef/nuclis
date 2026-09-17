@@ -67,6 +67,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-08 | `model pull`: a leaked path per file and a leading slash in the sidecar's file name | 2026-09-17 |
 | APPS-09 | `config set`, `model pull --register`, registry names in `model ls` | 2026-09-17 |
 | AGNT-11 | A truncated tool call no longer bricks the session; reopened thought channels; copied bracket pieces | 2026-09-17 |
+| APPS-10 | `model ls` as one aligned grid | 2026-09-17 |
 
 ## Context
 
@@ -1904,3 +1905,27 @@ rendered, ran `bash`, and answered.
 **Remaining.** The strip is not pinned by a reference fixture (the fixture
 scripts synthesize clean cases); a truncated call is still text the model
 sees as its own broken output next turn, which is the honest history.
+
+### APPS-10 — `model ls` as one aligned grid (2026-09-17)
+
+**Outcome.** The catalogue section padded names to a fixed width but let
+the status word and the path start wherever the name ended, printed
+companions with their own narrower columns, and put a main file's size
+under its name; sizes were left-aligned. The listing is now one grid: the
+name column fits the widest catalogue name (a companion's role sits two
+cells in), the status column the widest status word, the path column the
+widest main or companion path, and every size is right-aligned after it;
+a main file's detail row (size, encoding, commit, digest) and its
+`registered as` line start at the path column; the "other files" and
+"missing entries" sections align their own columns the same way. The
+JSON form is unchanged.
+
+**Evidence.** `zig build test` (396; the `ls` test now derives the
+expected column positions from `catalog.name_width`); `nuclis model ls`
+on the user's five catalogue entries and two other files.
+
+**Files.** `src/model.zig`.
+
+**Remaining.** Rows are wide (a companion row runs past 150 columns with
+today's paths); wrapping to the terminal width would be a next step if it
+bothers anyone.

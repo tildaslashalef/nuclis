@@ -659,25 +659,37 @@ pub const Listing = struct {
         const number = sty.on(.number);
         const hash = sty.on(.comment);
         try out.print("{s}models directory:{s} {s}{s}{s}\n\n{s}catalogue{s} {s}(supported artifacts; `nuclis model pull <name> [--all]`){s}\n", .{ sty.on(.label), off, path, self.models_dir, off, sty.on(.header), off, sty.on(.dim), off });
+        // One grid for the catalogue: the name column fits the widest name
+        // (a companion's role sits two cells in), the status column the
+        // widest status word, the path column the widest path of a main
+        // file or a companion; sizes are right-aligned after it.
+        var name_w: usize = catalog.name_width;
+        var path_w: usize = 0;
         for (self.catalog) |row| {
-            var name_buffer: [64]u8 = undefined;
-            try out.print("  {s}{s}{s} {s}{s:<10}{s} {s}{s}{s}\n    {s}{d}{s} bytes, {s} {s}, commit {s}{s}{s}, sha256 {s}{s}{s}\n", .{
-                sty.on(.keyword),                catalog.padName(&name_buffer, row.name), off,
-                sty.on(statusStyle(row.status)), @tagName(row.status),                    off,
-                path,                            row.path,                                off,
-                number,                          row.size,                                off,
-                row.architecture,                row.quantization,                        hash,
-                row.revision[0..12],             off,                                     hash,
-                row.sha256,                      off,
-            });
-            if (row.registered) |r| try renderRegistered(out, r, sty);
-            for (row.companions) |c| try out.print("    {s}{s:<10}{s} {s}{s:<10}{s} {s}{s}{s}  {s}({d} bytes; not loaded yet: {s}){s}\n", .{
-                number,                        @tagName(c.role),   off,
-                sty.on(statusStyle(c.status)), @tagName(c.status), off,
-                path,                          c.path,             off,
-                sty.on(.dim),                  c.size,             c.loaded_by,
-                off,
-            });
+            name_w = @max(name_w, row.name.len);
+            path_w = @max(path_w, row.path.len);
+            for (row.companions) |c| path_w = @max(path_w, c.path.len);
+        }
+        const status_w: usize = 10;
+        for (self.catalog) |row| {
+            try out.writeAll("  ");
+            try column(out, sty.on(.keyword), row.name, off, name_w);
+            try column(out, sty.on(statusStyle(row.status)), @tagName(row.status), off, status_w);
+            try column(out, path, row.path, off, 0);
+            try out.writeByte('\n');
+            try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
+            try out.print("{s}{d:>13}{s} bytes  {s} {s}  commit {s}{s}{s}  sha256 {s}{s}{s}\n", .{ number, row.size, off, row.architecture, row.quantization, hash, row.revision[0..12], off, hash, row.sha256, off });
+            if (row.registered) |r| {
+                try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
+                try renderRegistered(out, r, sty);
+            }
+            for (row.companions) |c| {
+                try out.writeAll("    ");
+                try column(out, number, @tagName(c.role), off, name_w - 2);
+                try column(out, sty.on(statusStyle(c.status)), @tagName(c.status), off, status_w);
+                try column(out, path, c.path, off, path_w);
+                try out.print(" {s}{d:>13}{s} bytes  {s}not loaded yet: {s}{s}\n", .{ number, c.size, off, sty.on(.dim), c.loaded_by, off });
+            }
         }
         if (self.other.len > 0) {
             try out.print("\n{s}other GGUF files in the layout{s} {s}(not in the catalogue; runnable only if their architecture has an adapter){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
@@ -692,19 +704,35 @@ pub const Listing = struct {
                     if (s.size != f.size) try out.print("  {s}(size differs from the sidecar){s}", .{ sty.on(.warning), off });
                 } else try out.print("{s}(no sidecar: not verified by nuclis){s}", .{ sty.on(.warning), off });
                 try out.writeByte('\n');
-                if (f.registered) |r| try renderRegistered(out, r, sty);
+                if (f.registered) |r| {
+                    try out.writeAll("    ");
+                    try renderRegistered(out, r, sty);
+                }
             }
         }
         if (self.missing.len > 0) {
             try out.print("\n{s}registry entries without a file{s} {s}(`nuclis model pull <name>` fetches an entry with repo and file){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
-            for (self.missing) |m| try out.print("  {s}{s}{s} {s}{s}{s}\n", .{ sty.on(.keyword), m.name, off, path, m.path, off });
+            var width: usize = 0;
+            for (self.missing) |m| width = @max(width, m.name.len);
+            for (self.missing) |m| {
+                try out.writeAll("  ");
+                try column(out, sty.on(.keyword), m.name, off, width);
+                try out.print("{s}{s}{s}\n", .{ path, m.path, off });
+            }
         }
         if (self.outside_layout > 0) try out.print("\n{s}{d} GGUF file(s) outside the <owner>/<repo>/ layout are not listed{s}\n", .{ sty.on(.warning), self.outside_layout, off });
     }
 };
 
+/// One grid cell: styled text padded to `width` (plus one separating
+/// space); a width of 0 pads nothing, for the last cell of a row.
+fn column(out: *std.Io.Writer, on: []const u8, text: []const u8, off: []const u8, width: usize) !void {
+    try out.print("{s}{s}{s}", .{ on, text, off });
+    if (width > 0) try out.splatByteAll(' ', (width -| text.len) + 1);
+}
+
 fn renderRegistered(out: *std.Io.Writer, r: RegisteredAs, sty: style.Style) !void {
-    try out.print("    {s}registered as{s} {s}{s}{s}", .{ sty.on(.dim), sty.off(), sty.on(.keyword), r.name, sty.off() });
+    try out.print("{s}registered as{s} {s}{s}{s}", .{ sty.on(.dim), sty.off(), sty.on(.keyword), r.name, sty.off() });
     if (r.profile) |p| try out.print(" {s}(profile {s} forced){s}", .{ sty.on(.dim), @tagName(p), sty.off() });
     try out.writeByte('\n');
 }
@@ -1236,15 +1264,28 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     // assertion is on the two parts rather than the spacing between them.
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "qwen3.8-27b ") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), " present") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "mtp        mismatch") != null);
+    // The role, status, and path columns line up under the main row's:
+    // the role cell is the name column less its two-cell indent, and the
+    // detail rows start at the path column.
+    const indent = try alloc.alloc(u8, 2 + catalog.name_width + 1 + 10 + 1);
+    defer alloc.free(indent);
+    @memset(indent, ' ');
+    const role_row = try std.fmt.allocPrint(alloc, "    mtp{s}mismatch   unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .{indent[0 .. catalog.name_width - 2 - 3 + 1]});
+    defer alloc.free(role_row);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), role_row) != null);
+    const detail = try std.fmt.allocPrint(alloc, "\n{s}  16464440224 bytes  qwen35 UD-Q4_K_M  commit 4ca720788d1e", .{indent});
+    defer alloc.free(detail);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), detail) != null);
+    const big = try std.fmt.allocPrint(alloc, "\n{s}registered as big\n", .{indent});
+    defer alloc.free(big);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), big) != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "not loaded yet: the vision unit") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "no sidecar") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "main     0123456789ab  322e194f") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "2 GGUF file(s) outside") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "registered as big\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "registered as repo (profile gemma4 forced)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n    registered as repo (profile gemma4 forced)\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "registry entries without a file") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "gone unsloth/Gone-GGUF/gone.gguf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "  gone unsloth/Gone-GGUF/gone.gguf\n") != null);
     out.clearRetainingCapacity();
     try listing.render(&out.writer, true, .none);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
