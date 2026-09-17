@@ -1,11 +1,10 @@
-//! GPU-resident execution of the pinned Gemma 4 12B text schedule (the
-//! 26B-A4B's expert block has no GPU path yet: `init` refuses an expert
-//! configuration, and the CPU runtime serves those files).
-//! One command buffer per token (`step`) or per prompt chunk (`prefill`):
-//! the CPU supplies token ids and reads back logits, a greedy token, or a
-//! partial top-k; every activation, norm, gate, and cache write stays on the
-//! GPU. The schedule is `gemma4_runtime.zig`'s, which remains the CPU
-//! reference these results are compared against (docs/reference/gemma4.md).
+//! GPU-resident execution of the pinned Gemma 4 text schedules, the dense
+//! 12B and the 26B-A4B mixture of experts. One command buffer per token
+//! (`step`) or per prompt chunk (`prefill`): the CPU supplies token ids and
+//! reads back logits, a greedy token, or a partial top-k; every activation,
+//! norm, gate, routing decision, and cache write stays on the GPU. The
+//! schedule is `gemma4_runtime.zig`'s, which remains the CPU reference these
+//! results are compared against (docs/reference/gemma4.md).
 //!
 //! What this plan asks of the backend beyond the Qwen plan, all of it
 //! decided by the forward pass rather than by this file: the tanh-GELU gate
@@ -13,16 +12,20 @@
 //! scale as scalar epilogues (`scale`, `addScale`), the final logit soft-cap
 //! (`softcap`), RoPE tables with the checkpoint's frequency factors, the
 //! sliding window (a cache-row slice on decode, a `window` mask on prefill
-//! chunks), and the wide attention geometry of the global layers (16 query
-//! heads of 512 channels over one KV head: the decode kernel's wide
-//! instantiation, the chunk kernel's value-column splits).
+//! chunks), the wide attention geometry of the global layers (16 query heads
+//! of 512 channels over one or two KV heads: the decode kernel's wide
+//! instantiation, the chunk kernel's value-column splits), and on the expert
+//! configuration the gathered kernels (`route`, `matvecExperts`, and for
+//! chunks `expertLists` + `matmulExperts`; docs/reference/metal-backend.md
+//! § Gathered expert kernels). Every expert matrix is wrapped resident; a
+//! token's dispatches read only its selected experts' bytes.
 //!
 //! Ownership: the plan borrows the mapped weights and the `Backend`; it owns
 //! the session and the GPU buffers it creates. Session memory is wrapped once
 //! as a shared buffer, so `reset()` is a CPU memset that is only valid after
 //! `commit()` — which the synchronous backend guarantees. Every attention
 //! cache is allocated for the full capacity, sliding layers included (the
-//! reference does the same); a ring layout for the 40 windowed layers is a
+//! reference does the same); a ring layout for the windowed layers is a
 //! session-layout unit of its own (roadmap).
 const std = @import("std");
 const model = @import("gemma4.zig");
@@ -30,6 +33,7 @@ const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
 const sampling = @import("../sampling/root.zig");
 const metal = @import("../backends/metal/root.zig");
+const cpu = @import("../backends/cpu/root.zig");
 const Tensor = @import("../formats/gguf.zig").Tensor;
 const Buffer = metal.Buffer;
 
@@ -42,6 +46,16 @@ const q_width = model.Kind.global.queryWidth(); // 16 × 512
 const kv_width = model.max_kv_width; // 8 × 256
 const head_max = model.Kind.global.headSize();
 
+/// The expert block's small F32 weights, one buffer each.
+const ExpertConstants = struct {
+    router_scale: Buffer,
+    /// One factor per expert on its down projection (`combineExperts`).
+    down_scale: Buffer,
+    post_ffn_norm_1: Buffer,
+    pre_ffn_norm_2: Buffer,
+    post_ffn_norm_2: Buffer,
+};
+
 const LayerConstants = struct {
     attention_norm: Buffer,
     post_attention_norm: Buffer,
@@ -51,10 +65,35 @@ const LayerConstants = struct {
     key_norm: Buffer,
     /// The scalar multiplying the layer's whole new residual stream.
     output_scale: f32,
+    experts: ?ExpertConstants,
+};
+
+/// GPU workspace of the expert block: one token's `k` slots for `step`, and
+/// the chunk's `padded · k` slot rows (token `t`, slot `s` at row `t · k + s`,
+/// the order `route` writes) for `prefill`.
+const ExpertBuffers = struct {
+    router_logits: Buffer, // experts
+    indices: Buffer, // k u32
+    route_weights: Buffer, // k
+    gate_up: Buffer, // k × 2·ff (gate half, then up half, per slot)
+    hidden: Buffer, // k × ff
+    down: Buffer, // k × hidden
+    out: Buffer, // hidden
+    router_logits_c: Buffer, // padded × experts
+    indices_c: Buffer, // padded·k u32
+    route_weights_c: Buffer, // padded·k
+    /// The slot rows grouped by expert (`expertListsLayout`), rebuilt per chunk.
+    lists: Buffer,
+    gate_up_c: Buffer, // padded·k × 2·ff
+    hidden_c: Buffer, // padded·k × ff
+    down_c: Buffer, // padded·k × hidden
+    out_c: Buffer, // padded × hidden
 };
 
 /// A weight matrix ready for dispatch: its GPU range and CPU-side descriptor.
-const Weight = struct { buffer: Buffer, matrix: @import("../backends/cpu/root.zig").Matrix };
+const Weight = struct { buffer: Buffer, matrix: cpu.Matrix };
+/// A 3-D expert tensor ready for the gathered kernels.
+const ExpertWeight = struct { buffer: Buffer, tensor: cpu.ExpertMatrix };
 
 pub const Plan = struct {
     alloc: std.mem.Allocator,
@@ -107,14 +146,25 @@ pub const Plan = struct {
     /// Half copy of `q_c` for the F16 chunk attention (its operands share one type).
     q_c_h: Buffer, // padded × q_width halves
     mixed_out_c: Buffer, // padded × q_width
+    /// Present on the expert configuration only.
+    experts: ?ExpertBuffers,
+
+    /// The prompt chunk the engine should ask for: `default` on the dense
+    /// configuration; 512 on the expert one, where a chunk's slot rows fill
+    /// the gathered 32-row tiles better (measured 10–14 % faster prefill
+    /// than 256, and 1,024 buys 6 % more only on long prompts for twice the
+    /// workspace; gemma4.md § 26B-A4B).
+    pub fn preferredChunk(binding: model.Binding, default: usize) usize {
+        return if (binding.config.experts != null) 512 else default;
+    }
 
     /// `chunk` bounds the tokens one `prefill` command buffer processes (and
-    /// sizes its activation buffers: about 0.3 MB per token). `kv` is the
-    /// attention cache precision of every layer.
+    /// sizes its activation buffers: about 0.3 MB per token, plus 0.16 MB per
+    /// token of expert slot rows on the 26B-A4B). `kv` is the attention
+    /// cache precision of every layer.
     pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision) !Plan {
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
         const config = binding.config;
-        if (config.experts != null) return error.UnsupportedConfiguration;
         const hidden = config.embedding;
         const ffn = config.feed_forward;
         var layouts: [model.max_layers]session.Layout = undefined;
@@ -143,6 +193,13 @@ pub const Plan = struct {
                 .query_norm = try self.constant(layer.query_norm),
                 .key_norm = try self.constant(layer.key_norm),
                 .output_scale = try view.scalar(layer.output_scale, 0),
+                .experts = if (layer.experts) |e| .{
+                    .router_scale = try self.constant(e.router_scale),
+                    .down_scale = try self.constant(e.down_scale),
+                    .post_ffn_norm_1 = try self.constant(e.post_ffn_norm_1),
+                    .pre_ffn_norm_2 = try self.constant(e.pre_ffn_norm_2),
+                    .post_ffn_norm_2 = try self.constant(e.post_ffn_norm_2),
+                } else null,
             };
             if (!std.math.isFinite(c.output_scale)) return error.InvalidShape;
         }
@@ -185,7 +242,32 @@ pub const Plan = struct {
         self.v_c = try backend.create(n * kv_width * 4);
         self.q_c_h = try backend.create(n * q_width * 2);
         self.mixed_out_c = try backend.create(n * q_width * 4);
+        self.experts = if (config.experts) |spec| try self.expertBuffers(spec) else null;
         return self;
+    }
+    fn expertBuffers(self: *Plan, spec: model.Experts) !ExpertBuffers {
+        const b = self.backend;
+        const hidden = self.binding.config.embedding;
+        const k = spec.used;
+        const ff = spec.feed_forward;
+        const n = self.padded * k;
+        return .{
+            .router_logits = try b.create(spec.count * 4),
+            .indices = try b.create(k * 4),
+            .route_weights = try b.create(k * 4),
+            .gate_up = try b.create(k * 2 * ff * 4),
+            .hidden = try b.create(k * ff * 4),
+            .down = try b.create(k * hidden * 4),
+            .out = try b.create(hidden * 4),
+            .router_logits_c = try b.create(self.padded * spec.count * 4),
+            .indices_c = try b.create(n * 4),
+            .route_weights_c = try b.create(n * 4),
+            .lists = try b.create(metal.Backend.expertListsLayout(n, spec.count).words * 4),
+            .gate_up_c = try b.create(n * 2 * ff * 4),
+            .hidden_c = try b.create(n * ff * 4),
+            .down_c = try b.create(n * hidden * 4),
+            .out_c = try b.create(self.padded * hidden * 4),
+        };
     }
     pub fn deinit(self: *Plan) void {
         // GPU buffers are released with the backend; the session and the
@@ -212,6 +294,12 @@ pub const Plan = struct {
     fn weight(self: *Plan, tensor: *const Tensor) !Weight {
         const matrix = try self.view.matrix(tensor);
         return .{ .buffer = try self.backend.wrap(matrix.bytes), .matrix = matrix };
+    }
+    /// The whole 3-D tensor is wrapped (no copy); the kernels read the
+    /// selected experts' ranges of it.
+    fn expertWeight(self: *Plan, tensor: *const Tensor) !ExpertWeight {
+        const matrix = try self.view.expertMatrix(tensor);
+        return .{ .buffer = try self.backend.wrap(matrix.bytes), .tensor = matrix };
     }
     /// The GPU range of one session region (a byte range of the wrapped block).
     fn stateSlice(self: *Plan, region: []const u8) Buffer {
@@ -285,10 +373,7 @@ pub const Plan = struct {
             try self.attention(layer, c, il);
             try b.rmsNorm(self.projected, c.post_attention_norm, self.projected, norm);
             try b.add(self.x, self.projected, hidden);
-            try b.rmsNorm(self.x, c.ffn_norm, self.normalized, norm);
-            try self.projections(&.{ layer.ffn_gate, layer.ffn_up }, &.{ self.gate, self.up }, .gelu_mul_pair);
-            try self.mm(layer.ffn_down, self.gate, self.projected);
-            try b.rmsNorm(self.projected, c.post_ffn_norm, self.projected, norm);
+            try self.feedForward(layer, c);
             try b.addScale(self.x, self.projected, hidden, c.output_scale);
             if (observer) |o| {
                 if (o.check) |check| try check(o.context);
@@ -307,6 +392,84 @@ pub const Plan = struct {
         try b.commit();
         try self.readOutputs(logits, greedy, topk);
         try self.state.commit();
+    }
+
+    /// The feed-forward block over the residual `x` (the attention output
+    /// already added) into `projected`, post-normed and ready for the
+    /// scaled add: the CPU reference's `feedForward`. On an expert layer the
+    /// dense FFN is the shared branch, and the router input is `rms(x)`
+    /// weighted by `router_scale` then scaled by 1/sqrt(width); the
+    /// reference applies the two factors in the other order, one F32
+    /// rounding apart.
+    fn feedForward(self: *Plan, layer: model.Layer, c: LayerConstants) !void {
+        const b = self.backend;
+        const hidden = self.binding.config.embedding;
+        const norm: metal.Backend.Norm = .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden };
+        try b.rmsNorm(self.x, c.ffn_norm, self.normalized, norm);
+        try self.projections(&.{ layer.ffn_gate, layer.ffn_up }, &.{ self.gate, self.up }, .gelu_mul_pair);
+        try self.mm(layer.ffn_down, self.gate, self.projected);
+        if (layer.experts) |experts| {
+            const ec = c.experts orelse return error.InvalidShape;
+            const e = self.experts orelse return error.InvalidShape;
+            const spec = self.binding.config.experts orelse return error.InvalidShape;
+            const k = spec.used;
+            const ff = spec.feed_forward;
+            try b.rmsNorm(self.projected, ec.post_ffn_norm_1, self.projected, norm);
+            try b.rmsNorm(self.x, ec.router_scale, self.normalized, norm);
+            try b.scale(self.normalized, hidden, 1.0 / self.binding.config.embeddingScale());
+            try self.mm(experts.router, self.normalized, e.router_logits);
+            try b.route(e.router_logits, spec.count, k, 1, spec.count, e.indices, e.route_weights);
+            try b.rmsNorm(self.x, ec.pre_ffn_norm_2, self.normalized, norm);
+            const gate_up = try self.expertWeight(experts.gate_up);
+            const down = try self.expertWeight(experts.down);
+            try b.matvecExperts(gate_up.buffer, gate_up.tensor, e.indices, k, self.normalized, 0, e.gate_up, 2 * ff);
+            try b.geluMulRows(e.gate_up, e.gate_up.slice(ff * 4, e.gate_up.len - ff * 4), e.hidden, ff, k, 2 * ff, 2 * ff, ff);
+            try b.matvecExperts(down.buffer, down.tensor, e.indices, k, e.hidden, ff, e.down, hidden);
+            try b.combineExperts(e.down, e.route_weights, e.indices, ec.down_scale, e.out, .{ .columns = hidden, .slots = k, .rows = 1, .experts = spec.count, .in_stride = hidden, .out_stride = hidden });
+            try b.rmsNorm(e.out, ec.post_ffn_norm_2, e.out, norm);
+            try b.add(self.projected, e.out, hidden);
+        }
+        try b.rmsNorm(self.projected, c.post_ffn_norm, self.projected, norm);
+    }
+
+    /// `feedForward` over the chunk's `count` rows of `x_c` into
+    /// `projected_c`. The expert branch routes every row, groups the
+    /// `count · k` slot rows by expert, and runs the gathered tiles once per
+    /// group instead of the decode matvec once per slot.
+    fn feedForwardChunk(self: *Plan, layer: model.Layer, c: LayerConstants, count: usize) !void {
+        const b = self.backend;
+        const hidden = self.binding.config.embedding;
+        const ffn = self.binding.config.feed_forward;
+        const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
+        try b.rmsNorm(self.x_c, c.ffn_norm, self.normalized_c, norm);
+        try self.mmRows(layer.ffn_gate, self.normalized_c, hidden, self.gate_c, ffn, count);
+        try self.mmRows(layer.ffn_up, self.normalized_c, hidden, self.up_c, ffn, count);
+        try b.geluMul(self.gate_c, self.up_c, count * ffn);
+        try self.mmRows(layer.ffn_down, self.gate_c, ffn, self.projected_c, hidden, count);
+        if (layer.experts) |experts| {
+            const ec = c.experts orelse return error.InvalidShape;
+            const e = self.experts orelse return error.InvalidShape;
+            const spec = self.binding.config.experts orelse return error.InvalidShape;
+            const k = spec.used;
+            const ff = spec.feed_forward;
+            const n = count * k;
+            try b.rmsNorm(self.projected_c, ec.post_ffn_norm_1, self.projected_c, norm);
+            try b.rmsNorm(self.x_c, ec.router_scale, self.normalized_c, norm);
+            try b.scale(self.normalized_c, count * hidden, 1.0 / self.binding.config.embeddingScale());
+            try self.mmRows(experts.router, self.normalized_c, hidden, e.router_logits_c, spec.count, count);
+            try b.route(e.router_logits_c, spec.count, k, count, spec.count, e.indices_c, e.route_weights_c);
+            try b.rmsNorm(self.x_c, ec.pre_ffn_norm_2, self.normalized_c, norm);
+            try b.expertLists(e.indices_c, count, k, spec.count, e.lists);
+            const gate_up = try self.expertWeight(experts.gate_up);
+            const down = try self.expertWeight(experts.down);
+            try b.matmulExperts(gate_up.buffer, gate_up.tensor, e.lists, count, k, self.normalized_c, hidden, k, e.gate_up_c, 2 * ff);
+            try b.geluMulRows(e.gate_up_c, e.gate_up_c.slice(ff * 4, e.gate_up_c.len - ff * 4), e.hidden_c, ff, n, 2 * ff, 2 * ff, ff);
+            try b.matmulExperts(down.buffer, down.tensor, e.lists, count, k, e.hidden_c, ff, 1, e.down_c, hidden);
+            try b.combineExperts(e.down_c, e.route_weights_c, e.indices_c, ec.down_scale, e.out_c, .{ .columns = hidden, .slots = k, .rows = count, .experts = spec.count, .in_stride = hidden, .out_stride = hidden });
+            try b.rmsNorm(e.out_c, ec.post_ffn_norm_2, e.out_c, norm);
+            try b.add(self.projected_c, e.out_c, count * hidden);
+        }
+        try b.rmsNorm(self.projected_c, c.post_ffn_norm, self.projected_c, norm);
     }
 
     /// Records the tied output head for the normalized last-token row in
@@ -394,8 +557,8 @@ pub const Plan = struct {
     /// Chunked prefill: consumes `tokens` in chunks of at most `chunk`,
     /// one command buffer per chunk, with the projections and feed-forward
     /// batched through the matmul kernel and attention as one causal tiled
-    /// dispatch per layer, with the sliding window on the 40 windowed
-    /// layers). Readbacks refer to the last token, as in `step`. The
+    /// dispatch per layer, with the window mask on sliding layers).
+    /// Readbacks refer to the last token, as in `step`. The
     /// observer's `check` runs between layers of every chunk; its `layer`
     /// callback is per token by contract and is not supported here
     /// (`error.InvalidShape`): trace through `step`. Arithmetic order differs
@@ -432,7 +595,6 @@ pub const Plan = struct {
         errdefer if (b.recording) b.commit() catch {};
         const embedding = try self.weight(self.binding.token_embedding);
         const hidden = self.binding.config.embedding;
-        const ffn = self.binding.config.feed_forward;
         for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
         try b.scale(self.x_c, count * hidden, self.binding.config.embeddingScale());
         const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
@@ -441,12 +603,7 @@ pub const Plan = struct {
             try self.attentionChunk(layer, c, il, count);
             try b.rmsNorm(self.projected_c, c.post_attention_norm, self.projected_c, norm);
             try b.add(self.x_c, self.projected_c, count * hidden);
-            try b.rmsNorm(self.x_c, c.ffn_norm, self.normalized_c, norm);
-            try self.mmRows(layer.ffn_gate, self.normalized_c, hidden, self.gate_c, ffn, count);
-            try self.mmRows(layer.ffn_up, self.normalized_c, hidden, self.up_c, ffn, count);
-            try b.geluMul(self.gate_c, self.up_c, count * ffn);
-            try self.mmRows(layer.ffn_down, self.gate_c, ffn, self.projected_c, hidden, count);
-            try b.rmsNorm(self.projected_c, c.post_ffn_norm, self.projected_c, norm);
+            try self.feedForwardChunk(layer, c, count);
             try b.addScale(self.x_c, self.projected_c, count * hidden, c.output_scale);
             if (observer) |o| if (o.check) |check| try check(o.context);
         }

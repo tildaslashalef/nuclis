@@ -36,7 +36,7 @@ sequenceDiagram
     CLI->>Eng: Engine.open(model path, backend, capacity)
     Eng->>Eng: mmap GGUF, bind Qwen tensors, load vocabulary, allocate session
     CLI->>Tok: render chat template, encode -> token IDs
-    CLI->>Model: prefill(prompt tokens, logits for the last) — chunks of 256 on the GPU
+    CLI->>Model: prefill(prompt tokens, logits for the last) — chunks of 256 on the GPU (512 on the expert configuration)
     Note over Model: the CPU reference and --trace-dir step token by token
     loop decode: until EOS / budget / context / Ctrl-C
         CLI->>Samp: select(logits, history) — or GPU argmax/top-k when no penalty is active

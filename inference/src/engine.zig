@@ -214,8 +214,13 @@ pub const Model = struct {
 
 /// Prompt tokens per prefill command buffer on the GPU plan. Bounds the
 /// chunk activation buffers (~0.4 MB per token) and the work between
-/// cancellation checks; the plan clamps it to the session capacity.
+/// cancellation checks; the plan clamps it to the session capacity. A
+/// family whose plan declares `preferredChunk` chooses per binding (the
+/// expert configuration fills its gathered tiles better with longer chunks).
 pub const prefill_chunk = 256;
+fn chunkFor(comptime Family: type, binding: Family.Binding) usize {
+    return if (@hasDecl(Family.Plan, "preferredChunk")) Family.Plan.preferredChunk(binding, prefill_chunk) else prefill_chunk;
+}
 
 /// Builds one family's executor for the backend. Heap-allocates the Metal
 /// backend so the plan's pointer stays valid when the Engine value is
@@ -236,7 +241,7 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference
                 return err;
             };
             errdefer gpu.deinit();
-            const plan = try Family.Plan.init(alloc, gpu, view, binding, capacity, @min(prefill_chunk, capacity), kv);
+            const plan = try Family.Plan.init(alloc, gpu, view, binding, capacity, @min(chunkFor(Family, binding), capacity), kv);
             break :blk .{ .metal = .{ .backend = gpu, .plan = plan } };
         },
     };

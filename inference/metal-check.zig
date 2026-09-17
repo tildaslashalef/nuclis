@@ -897,22 +897,23 @@ fn checkSegments(alloc: std.mem.Allocator) !void {
 }
 
 /// The attention geometry Gemma 4 adds — the sliding window on prefill
-/// chunks (`window`), 16 query heads of 512 channels over one KV head
-/// (the wide decode instantiation and the chunk kernel's value-column
-/// splits) — against the F64 CPU reference per query row, both cache
-/// precisions (F16 over the rounded operands, as in 8d). Scores are
-/// unscaled as in the model. For the window, the reference sees only the
-/// cache rows `[pos + 1 − window, pos]` of each row.
+/// chunks (`window`), 16 query heads of 512 channels over one KV head (the
+/// 12B) or two (the 26B-A4B): the wide decode instantiation and the chunk
+/// kernel's value-column splits — against the F64 CPU reference per query
+/// row, both cache precisions (F16 over the rounded operands, as in 8d).
+/// Scores are unscaled as in the model. For the window, the reference sees
+/// only the cache rows `[pos + 1 − window, pos]` of each row.
 fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     var prng = std.Random.DefaultPrng.init(0x6e44a);
     const random = prng.random();
     const Geometry = struct { qh: usize, kvh: usize, hd: usize };
     const sliding: Geometry = .{ .qh = 16, .kvh = 8, .hd = 256 };
     const global: Geometry = .{ .qh = 16, .kvh = 1, .hd = 512 };
+    const global_two: Geometry = .{ .qh = 16, .kvh = 2, .hd = 512 };
     const Case = struct { g: Geometry, position: usize, count: usize, window: usize, half: bool };
     // Chunk cases: a window entirely before the chunk, a window opening
     // inside the chunk, a tiny window with fully hidden key tiles (the −∞
-    // guard), and the wide geometry without a window (two value splits).
+    // guard), and the wide geometries without a window (two value splits).
     const cases = [_]Case{
         .{ .g = sliding, .position = 1023, .count = 256, .window = 1024, .half = false },
         .{ .g = sliding, .position = 900, .count = 300, .window = 1024, .half = false },
@@ -921,6 +922,8 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend) !void {
         .{ .g = sliding, .position = 1023, .count = 64, .window = 1024, .half = true },
         .{ .g = global, .position = 5, .count = 37, .window = 0, .half = false },
         .{ .g = global, .position = 300, .count = 40, .window = 0, .half = true },
+        .{ .g = global_two, .position = 7, .count = 41, .window = 0, .half = false },
+        .{ .g = global_two, .position = 300, .count = 40, .window = 0, .half = true },
     };
     var worst_f32: f32 = 0;
     var worst_f16: f32 = 0;
@@ -977,12 +980,13 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend) !void {
         }
     }
     std.debug.print("Windowed and wide chunk attention vs CPU F64 per row: F32 max abs {e:.3} (bound 1e-5), F16 over the rounded operands {e:.3} (bound 2e-3)\n", .{ worst_f32, worst_f16 });
-    // Decode: the wide instantiation (16 heads of 512 over one KV head, two
-    // head groups per split) and the sliding geometry (groups of 2), F32 and
-    // F16 (over the rounded rows), at 257 (two splits) and 1,021 visible.
+    // Decode: the wide instantiation (16 heads of 512 over one KV head, four
+    // head groups per split; over two, two groups per KV head) and the
+    // sliding geometry (groups of 2), F32 and F16 (over the rounded rows),
+    // at 257 (two splits) and 1,021 visible.
     const partials = try b.create(Backend.attentionDecodePartials(16, 512) * 4);
     var worst_decode: f32 = 0;
-    for ([_]Geometry{ global, sliding }) |g| for ([_]usize{ 257, 1021 }) |visible| {
+    for ([_]Geometry{ global, global_two, sliding }) |g| for ([_]usize{ 257, 1021 }) |visible| {
         const qw = g.qh * g.hd;
         const kvw = g.kvh * g.hd;
         const keys = try b.create(visible * kvw * 4);

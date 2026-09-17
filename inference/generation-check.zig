@@ -12,10 +12,7 @@ const Observer = inference.observer.Observer;
 /// tokens (a word, then a comma: the second exercises a nonzero position),
 /// and the tolerances of the chunked-prefill and F16-cache comparisons
 /// against the stepped F32 logits, recorded per family (metal-backend.md).
-const Spec = struct {
-    Family: type,
-    vocabulary: usize,
-    tokens: [2]u32,
+const Bounds = struct {
     /// Chunked prefill (half matmul tiles) vs per-token F32 steps.
     chunk_max_abs: f64,
     chunk_rel_rms: f64,
@@ -23,15 +20,40 @@ const Spec = struct {
     half_max_abs: f64,
     half_rel_rms: f64,
 };
-const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabulary = inference.models.qwen35_metal.vocabulary, .tokens = .{ 9419, 11 }, .chunk_max_abs = 2e-2, .chunk_rel_rms = 1e-3, .half_max_abs = 2e-2, .half_rel_rms = 1e-3 };
+const Spec = struct {
+    Family: type,
+    vocabulary: usize,
+    tokens: [2]u32,
+    bounds: Bounds,
+    /// The bounds of a mixture-of-experts configuration of the family, when
+    /// it has one: discrete routing amplifies the tiles' rounding.
+    expert_bounds: ?Bounds = null,
+};
+const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabulary = inference.models.qwen35_metal.vocabulary, .tokens = .{ 9419, 11 }, .bounds = .{ .chunk_max_abs = 2e-2, .chunk_rel_rms = 1e-3, .half_max_abs = 2e-2, .half_rel_rms = 1e-3 } };
 // Gemma's F16 tolerance is the model's own sensitivity to rounding keys
 // (unscaled attention scores; gemma4.md), not the kernels': the same
 // kernels are within 2e-4 of the CPU over the rounded operands (test-metal).
-// The chunk tolerance covers both pinned files' half-operand tile rounding
-// the K-quant file at 8.6e-2 / 2.5e-3, the QAT file at
-// 4.4e-1 / 1.4e-2; the F32-tile comparison below, at its own
-// unchanged bound, is what proves the schedule (gemma4.md § Q4_0 path).
-const gemma4_spec: Spec = .{ .Family = inference.models.gemma4.family, .vocabulary = inference.models.gemma4.vocabulary, .tokens = .{ 9259, 236764 }, .chunk_max_abs = 6e-1, .chunk_rel_rms = 2e-2, .half_max_abs = 2.0, .half_rel_rms = 6e-2 };
+// The chunk tolerance covers both pinned 12B files' half-operand tile
+// rounding: the K-quant file at 8.6e-2 / 2.5e-3, the QAT file at
+// 4.4e-1 / 1.4e-2. On the 26B-A4B the same rounding moves router logits
+// past near-ties and swaps whole experts for a token, so its chunked
+// logits sit at 1.1e1 / 3.5e-1 (gemma4.md § 26B-A4B). The F32-tile
+// comparison below, at its own unchanged bound, is what proves the schedule.
+const gemma4_spec: Spec = .{
+    .Family = inference.models.gemma4.family,
+    .vocabulary = inference.models.gemma4.vocabulary,
+    .tokens = .{ 9259, 236764 },
+    .bounds = .{ .chunk_max_abs = 6e-1, .chunk_rel_rms = 2e-2, .half_max_abs = 2.0, .half_rel_rms = 6e-2 },
+    .expert_bounds = .{ .chunk_max_abs = 2e1, .chunk_rel_rms = 5e-1, .half_max_abs = 2e1, .half_rel_rms = 5e-1 },
+};
+/// The bounds of the bound configuration: the expert ones when the family
+/// declares them and the file is an expert configuration.
+fn boundsOf(comptime spec: Spec, binding: spec.Family.Binding) Bounds {
+    if (spec.expert_bounds) |expert| {
+        if (binding.config.experts != null) return expert;
+    }
+    return spec.bounds;
+}
 
 /// Trace-style cancellation: after layer 3's values are available (the GPU
 /// plan has committed that layer).
@@ -204,6 +226,7 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         seed = seed *% 1664525 +% 1013904223;
         t.* = seed % 150000;
     }
+    const bounds = boundsOf(spec, binding);
     var stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32);
     defer stepped.deinit();
     for (tokens, 0..) |t, i| try stepped.step(t, if (i + 1 == tokens.len) expected else null, null, null, null);
@@ -211,13 +234,13 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         var big = try Plan.init(alloc, b, view, binding, 128, chunk, .f32);
         defer big.deinit();
         try big.prefill(&tokens, actual, null, null, null);
-        try compareChunked("chunk", chunk, expected, actual, spec.chunk_max_abs, spec.chunk_rel_rms);
+        try compareChunked("chunk", chunk, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
     }
     var chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32);
     defer chunked.deinit();
     try chunked.prefill(&tokens, actual, null, null, null);
     if (chunked.state.position != tokens.len or stepped.state.position != tokens.len) return error.PositionMismatch;
-    try compareChunked("chunk", 32, expected, actual, spec.chunk_max_abs, spec.chunk_rel_rms);
+    try compareChunked("chunk", 32, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
     // The same comparison through the generic F32 tiles and matvecs
     // (`generic_only`): what remains is summation order alone, so this
     // separates the half-operand rounding of the specialized tiles (the
@@ -241,11 +264,11 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
     defer half_stepped.deinit();
     if (half_stepped.state.bytes() >= stepped.state.bytes()) return error.HalfCacheNotSmaller;
     for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null);
-    try compareChunked("F16 KV stepped", 1, expected, actual, spec.half_max_abs, spec.half_rel_rms);
+    try compareChunked("F16 KV stepped", 1, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
     var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16);
     defer half_chunked.deinit();
     try half_chunked.prefill(&tokens, actual, null, null, null);
-    try compareChunked("F16 KV chunk", 32, expected, actual, spec.half_max_abs, spec.half_rel_rms);
+    try compareChunked("F16 KV chunk", 32, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
     // 60 more tokens do not fit the remaining 58 positions: refused before any work.
     if (chunked.prefill(tokens[0..60], null, null, null, null)) |_| return error.ExpectedContextFull else |err| if (err != error.ContextFull) return err;
     if (chunked.state.position != tokens.len) return error.PositionMismatch;

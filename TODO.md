@@ -16,24 +16,25 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-MODL-09 session 1 done on 2026-09-18: the Gemma adapter binds two pinned
-configurations (`gemma4.Config`: the 12B and the 26B-A4B, selected by
-`block_count`), the CPU runtime executes the expert layer, and
-`make compare-gemma4-26b-a4b-cpu` matches the pinned reference traces
-(91 files, max abs 5.8e-5, relative RMS 3.1e-6, greedy token and top-5
-equal; [gemma4.md § 26B-A4B](docs/reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
-Session 2 is the Metal plan (below): `Plan.init` refuses the expert
-configuration today, so the file runs on `--backend cpu` only. Two
-families are planned, in this order: **Gemma 4 26B-A4B** (the first
-mixture of experts; the kernels and the CPU reference exist) and then
-Meta's **Muse Glimmer 30B** (a dense agentic model with a new tokenizer
-splitter and a new chat-protocol decoder). The Muse facts were read on
-2026-09-16 from its model card, the base repository's `config.json`, the
-remote GGUF header, and the pinned llama.cpp `7620399`, which already
-implements both architectures and chat formats, so the oracles exist
-without a reference upgrade.
+MODL-09 closed on 2026-09-18: the Gemma 4 26B-A4B (the first mixture of
+experts) runs on the CPU reference and the Metal plan, matches its pinned
+traces on every path (CPU 5.8e-5, Metal F32 7.7e-5, Metal F16 1.9e-2 max
+abs; the same greedy token and top-5), passes the generation check with
+its own recorded chunk bounds (the half-tile rounding is amplified by the
+discrete routing; the F32-tile comparison at 2.8e-4 proves the schedule),
+and prefills at 526 tok/s and decodes at 55 tok/s on the 512-token array
+with the family's chunk of 512
+([gemma4.md § 26B-A4B](docs/reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
+Next is MODL-10: the catalogue verdict, the acceptance record against
+the reference harness (where the chunked-prefill rounding on real prompts
+gets measured), and the agent check. Then Meta's **Muse Glimmer 30B** (a
+dense agentic model with a new tokenizer splitter and a new chat-protocol
+decoder). The Muse facts were read on 2026-09-16 from its model card, the
+base repository's `config.json`, the remote GGUF header, and the pinned
+llama.cpp `7620399`, which already implements both architectures and
+chat formats, so the oracles exist without a reference upgrade.
 
-Order: MODL-09 → MODL-10 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
+Order: MODL-10 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 All four files of both families are pulled and verified under
 `~/.nuclis/models` (2026-09-17) and both have catalogue entries ahead of
 their adapters; after AGNT-10 the roadmap continues with speculative
@@ -42,60 +43,11 @@ decoding across the families, then performance, then vision
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-09 | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2 |
 | MODL-10 | Gemma 4 26B-A4B: catalogue, acceptance record, agent check | 1 |
 | MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2 |
 | MODL-12 | Muse Glimmer 30B: Metal plan | 1 |
 | MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 1 |
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 1 |
-
-## MODL-09 — Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan
-
-**Session 1 (done 2026-09-18).** The file's facts, the expert forward
-pass, and the CPU comparison are in
-[gemma4.md § 26B-A4B](docs/reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09):
-`models/gemma4.zig` carries a `Config` per pinned checkpoint (widths,
-layer count, the global layers' KV heads, the expert block) with the
-inventory fixture `fixtures/gemma4-26b-a4b.json` and mutation tests on
-both; `Layer` carries its KV heads and geometry; `Binding.active()` is
-the bound layers; `weights.View.expertMatrix` views the 3-D tensors;
-`gemma4_runtime.zig` sizes from the config and `feedForward` runs the
-shared branch, the router over the pre-norm residual, the gathered
-experts, and the three extra norms; the traces are pinned under
-`tests/fixtures/gemma4-26b-a4b-hello-comma/` (provenance recorded) and
-`make compare-gemma4-26b-a4b-cpu` passes at the bring-up thresholds.
-`gemma4_metal.zig` compiles against the new binding (sizes from the
-config, `layer.kvWidth()`) and refuses an expert configuration at
-`Plan.init`.
-
-**Session 2: the Metal plan** (`gemma4_metal.zig` extended, not forked).
-- Decode: per expert layer, after the dense FFN, `rmsNorm` of the
-  residual with `router_scale` as its weight then `scale` by
-  `1/sqrt(2816)` (the reference multiplies in the other order; one F32
-  rounding apart), the router matvec (F32 128 × 2816), `route`,
-  `rmsNorm` with `pre_ffn_norm_2`,
-  `matvecExperts` gate-up (shared input) → `geluMulRows` → `matvecExperts`
-  down → `combineExperts` with the down scale, `rmsNorm` with
-  `post_ffn_norm_2`, `add` into the shared branch after its
-  `post_ffn_norm_1`, then the ordinary post norm and `addScale`.
-- Prefill: the same with `route` over the chunk's rows, `expertLists`,
-  `matmulExperts` (gate-up `in_group` k, down `in_group` 1), and
-  `combineExperts` with `rows = count`; scratch of `k × chunk` rows of
-  1408, 704, and 2816 floats (23 MB at 256 tokens).
-- Global attention with 2 KV heads: the wide decode instantiation and the
-  chunk kernel already take `kv_heads`; check the wide kernel's KV-head
-  assumptions (the 12B had one).
-- Memory plan: all experts resident (14.2 GB wrapped), no paging.
-- `make compare-gemma4-26b-a4b` (CPU, F32, F16 at the family's
-  tolerances) and `make test-generation-gemma4-26b-a4b-metal`; the
-  12B and QAT-12B comparisons and `make bench` on Qwen unchanged; first
-  decode/prefill numbers recorded; the chunk size for this family decided
-  from the tile-fill measurement in
-  [metal-backend.md § Gathered expert kernels](docs/reference/metal-backend.md#gathered-expert-kernels-kern-09).
-
-**Acceptance.** Traces match the oracle at the thresholds with the same
-greedy token; the 12B and QAT-12B comparisons unchanged; `make bench` on
-Qwen unchanged; first decode/prefill numbers recorded.
 
 ## MODL-10 — Gemma 4 26B-A4B: catalogue, acceptance record, agent check
 

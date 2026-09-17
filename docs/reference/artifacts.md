@@ -66,8 +66,9 @@ values MODL-03's catalogue and the Gemma 4 12B records cite:
 
 The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
 the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
-ahead of their adapters (the 26B-A4B's expert layers are MODL-09, the Muse
-adapter MODL-11; until then `inspect` says *not runnable*). The 26B-A4B
+ahead of their adapters (the 26B-A4B's expert layers landed in MODL-09 on
+both backends; the Muse adapter is MODL-11, and until then `inspect` says
+*not runnable* for it). The 26B-A4B
 repository also lists `mmproj-F16.gguf` (1,193,058,784 B), `mmproj-F32.gguf`
 (2,291,200,480 B), `MTP/mtp-gemma-4-26B-A4B-it-{BF16,F16}.gguf`
 (855,247,360 B each), `MTP/…-Q8_0.gguf` (461,785,600 B), and a root-level

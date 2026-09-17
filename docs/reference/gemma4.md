@@ -587,7 +587,97 @@ renormalized weights, the per-expert down scale, and the three extra
 norms are the reference's. Greedy continuation on the CPU: ` hello!
 *waves`; a step is about 3 s (ReleaseSafe, M4 Pro; the 12B's is 11 s:
 a token touches 8 experts of 704 and a 2,112-wide shared FFN instead of
-a 15,360-wide FFN). The Metal plan refuses this configuration until
-session 2 (`Plan.init` → `UnsupportedConfiguration`); `nuclis validate`
-already reports the binding (`gemma4_26b_a4b`, 25 sliding and 5 global
-layers, 658 tensors).
+a 15,360-wide FFN). `nuclis validate` reports the binding
+(`gemma4_26b_a4b`, 25 sliding and 5 global layers, 658 tensors).
+
+**Metal plan (session 2, 2026-09-18).** `gemma4_metal.zig` runs both
+configurations from one schedule: `feedForward` (decode) and
+`feedForwardChunk` (prefill) mirror the CPU reference's `feedForward`,
+and the expert branch is the gathered kernels of
+[metal-backend.md § Gathered expert kernels](metal-backend.md#gathered-expert-kernels-kern-09):
+
+| Operation | Decode (`step`) | Prefill (`prefill`, per chunk of `count` rows) |
+| --- | --- | --- |
+| Shared branch post norm | `rmsNorm` with `post_ffw_norm_1` | same over `count` rows |
+| Router input `rms(a) · (1/√2816) ⊙ scale` | `rmsNorm` with `ffn_gate_inp.scale` as its weight, then `scale` by 1/√2816 (the reference multiplies in the other order: one F32 rounding apart) | same over `count` rows |
+| Router logits (F32 128 × 2,816) | generic `nu_matvec` | generic F32 `nu_matmul` tile |
+| Selection | `route` (1 row) | `route` over `count` rows, then `expertLists` |
+| Expert input | `rmsNorm` with `pre_ffw_norm_2` | same |
+| Gate-up (Q4_0, 1,408 × 2,816 per expert) | `matvecExperts`, shared input | `matmulExperts`, `in_group` 8 |
+| Gate | `geluMulRows` over 8 slot rows | over `count · 8` rows |
+| Down (Q4_0, 2,816 × 704 per expert) | `matvecExperts`, one hidden row per slot | `matmulExperts`, `in_group` 1 |
+| Weighted sum with the per-expert down scale | `combineExperts` | `combineExperts`, `rows = count` |
+| Expert post norm, add to the shared branch, ordinary post norm | `rmsNorm` with `post_ffw_norm_2`, `add`, `rmsNorm` | same |
+| Global attention, 16 heads of 512 over **two** KV heads | `nu_attention_decode_w` / `_wh` (two head groups per KV head) | `nu_attention_chunk` / `_h` |
+
+The three expert tensors are wrapped whole and stay resident (14.2 GB of
+weights, no paging); a token reads its eight experts' bytes. The
+decode workspace is 8 slot rows; the chunk workspace holds `chunk · 8`
+slot rows of 1,408, 704, and 2,816 floats plus the routing buffers
+(40 MB at 256 tokens). The wide decode kernel and the chunk kernel index
+the KV head generically; `test-metal` now runs the 16-over-2, width-512
+geometry through both (F32 3.0e-6, F16 over rounded operands 1.9e-4;
+decode 2.4e-7). The session at 32,768 tokens is 7.4 GB in F16
+(25 × 2 × 2,048 + 5 × 2 × 1,024 halves per position).
+
+**Against the pinned traces** (`make compare-gemma4-26b-a4b`, three
+positions of `<bos>Hello,`, 91 files, 2026-09-18):
+
+| Path | Max absolute | Max relative RMS | Threshold | Greedy / top-5 |
+| --- | --- | --- | --- | --- |
+| CPU reference | 5.8e-5 | 3.1e-6 | 2e-3 / 1e-4 | 29104; 26352, 1852, 8349, 144673 |
+| Metal, F32 cache | 7.7e-5 | 3.1e-6 | 2e-3 / 1e-4 | identical |
+| Metal, F16 cache | 1.9e-2 | 1.0e-3 | 1.0 / 5e-2 (the family's) | identical |
+
+The F16 cache is far less sensitive here than on the 12B (0.73 / 3.2e-2):
+30 layers instead of 48, and two global KV heads instead of one.
+
+**Generation check** (`make test-generation-gemma4-26b-a4b-metal`,
+2026-09-18): sessions bit-identical, cancellation and reset,
+snapshot/restore bit-exact (450,560 bytes at position 1). Chunked prefill
+vs per-token steps on the 70-random-token prompt: chunks of 64 / 48 / 32
+at 1.11e1 / 1.08e1 / 1.10e1 max abs and 3.46e-1 / 3.40e-1 / 3.45e-1
+relative RMS, the same greedy token in every case; the F16 cache stepped
+at 6.8e-1 / 2.4e-2 and chunked at 1.0e1 / 3.4e-1. Through the generic F32
+tiles the chunked run is **2.8e-4 / 1.2e-5** (bound 5e-3 / 2e-4
+unchanged), so the chunk schedule is exact and the gap is the
+specialized tiles' half-operand rounding amplified by the discrete
+routing: a perturbed router logit swaps a token's eighth expert. With
+the expert projections alone through per-token F32 matvecs the gap is
+still 1.1e-1 relative RMS, because the dense tiles' rounding already
+moves the router. The check records the expert configuration's own
+bounds (2e1 / 5e-1) beside the 12B's; how this shows against the
+reference harness on real prompts is what the acceptance record (MODL-10)
+measures.
+
+**First-look rates** (`nuclis bench`, Metal, greedy, `--kv f16`, three
+measured runs; Apple M4 Pro 48 GB, macOS 26.6.2, Zig 0.16.0 ReleaseSafe,
+2026-09-18; not the acceptance record, which MODL-10 takes against the
+reference harness):
+
+| Workload | Chunk | Prefill tok/s | Decode tok/s | First token |
+| --- | ---: | ---: | ---: | ---: |
+| 22-token text prompt, 64 out, context 2,048 | 256 | 122.6 | 57.9 | 179 ms |
+| 512-token array (`tests/fixtures/run-2026-09-06/prompt-512.json`), 128 out, context 2,048 | 256 | 463.3 | 54.1 | 1,105 ms |
+| same | **512** | 525.9 | 55.3 | 974 ms |
+| same | 1,024 | 515.8 | 54.4 | 993 ms |
+| 4,096-token array (`prompt-4096.json`), 32 out, context 4,608 | 256 | 329.0 | 48.5 | 12,452 ms |
+| same | **512** | 361.0 | 49.6 | 11,346 ms |
+| same | 1,024 | 382.5 | 49.9 | 10,709 ms |
+
+**The chunk for this family is 512** (`Plan.preferredChunk`; the engine's
+default stays 256 for the dense configurations): 10–14 % more prefill
+than 256 because a chunk's 4,096 slot rows fill the gathered 32-row
+tiles better ([metal-backend.md](metal-backend.md#gathered-expert-kernels-kern-09):
+69 % against 50 %), for 80 MB of expert workspace and 0.15 GB of chunk
+activations; 1,024 buys 6 % more only on long prompts for twice that
+again and a coarser cancellation grain (about a second per chunk), and
+stays a follow-up beside the 64-token expert tile. Decode is 55 tok/s
+against the 12B's 20.2 and the Qwen3.8-27B's 10.7 on the same machine:
+a token touches eight experts of 704 and a 2,112-wide shared FFN instead
+of a 15,360-wide FFN, about 2.2 GB of Q4_0 weights with the tied head
+(an estimate from the tensor shapes, not a measurement), so the
+effective rate is roughly 120 GB/s against the 12B's 148: the down
+projection's idle lanes and the six extra dispatches per layer are the
+follow-ups the profile will rank in MODL-10. The Qwen `make bench` is
+unchanged the same day (40.05 / 10.67 tok/s against 40.27 / 10.80).

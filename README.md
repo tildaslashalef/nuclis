@@ -72,9 +72,10 @@ loaded by later units). The two 12B Gemma entries are the same model in
 two quantizations: the plain K-quant release, and Google's
 quantization-aware-trained checkpoint, whose every weight matrix is Q4_0
 — the encoding it was trained for, which is why it is smaller *and*
-decodes faster. The last two entries are pinned ahead of their adapters:
-`nuclis model inspect` reports them *not runnable* until the 26B-A4B's
-expert layers and the Muse architecture are implemented.
+decodes faster. The 26B-A4B mixture of experts runs on both backends (its
+acceptance record is the next unit); the Muse entry is pinned ahead of its
+adapter, and `nuclis model inspect` reports it *not runnable* until the
+architecture is implemented.
 
 ```sh
 nuclis model ls                       # the catalogue and what is present

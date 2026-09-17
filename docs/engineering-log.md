@@ -70,6 +70,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-10 | `model ls` as one aligned grid | 2026-09-17 |
 | TERM-08 | The welcome: ASCII wordmark and session facts; the model's name on the status bar | 2026-09-17 |
 | KERN-09 | Expert routing and gathered expert kernels (decode and prefill) | 2026-09-17 / 2026-09-18 |
+| MODL-09 | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2026-09-18 (two sessions) |
 
 ## Context
 
@@ -2019,3 +2020,66 @@ at decode; a 16-row or 64-row token tile for chunks whose experts are far
 from 32 rows; Q4_K / Q6_K gathered tile instantiations for other
 families (the segment bodies already serve them at decode); the order of
 rows within an expert is atomic, not deterministic (the outputs are).
+
+### MODL-09 — Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan (2026-09-18, two sessions)
+
+**Outcome.** The first mixture of experts runs on both backends. The
+Gemma adapter binds two pinned configurations selected by `block_count`
+(`gemma4.Config`: the 12B and the 26B-A4B with its expert block — 128
+experts, 8 used, 704 wide — and the global layers' KV heads, one or
+two), validated against a committed inventory fixture with mutation
+tests on both; `Layer` carries its KV heads, `weights.View.expertMatrix`
+views the 3-D tensors. The CPU runtime executes the expert layer
+(`feedForward`: the shared branch with its own post norm, the router
+over the unweighted RMS norm of the residual scaled by 1/√2816 and the
+router scale, the gathered experts over `pre_ffw_norm_2`, their post
+norm, the sum's post norm). The Metal plan runs the same schedule from
+the gathered kernels of KERN-09: at decode `route` → `matvecExperts`
+(gate-up, shared input) → `geluMulRows` → `matvecExperts` (down) →
+`combineExperts` with the per-expert down scale; per prefill chunk the
+router through the generic F32 tile, `route` over the rows,
+`expertLists`, `matmulExperts` twice, `combineExperts` with the chunk's
+rows. Every expert tensor is wrapped whole and resident (14.2 GB); the
+wide attention kernels index two KV heads without change. The chunk for
+the family is 512 (`Plan.preferredChunk`, an engine override per binding).
+Facts, the forward pass, and the artifact's provenance are in
+[gemma4.md § 26B-A4B](reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09).
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB, `make check`, `test-metal`
+(the 16-over-2, width-512 geometry added: chunk 3.0e-6 / 1.9e-4 F16,
+decode 2.4e-7). `make compare-gemma4-26b-a4b` on the pinned `<bos>Hello,`
+traces (91 files, three positions): CPU 5.8e-5 / 3.1e-6, Metal F32
+7.7e-5 / 3.1e-6 (bring-up thresholds 2e-3 / 1e-4), Metal F16 1.9e-2 /
+1.0e-3 (the family's 1.0 / 5e-2), greedy token 29104 and the same top-5
+on every path. `make test-generation-gemma4-26b-a4b-metal`: sessions
+bit-identical, snapshot/restore bit-exact; chunked prefill vs steps
+2.8e-4 / 1.2e-5 through the generic F32 tiles (the schedule is exact)
+and 1.1e1 / 3.5e-1 through the specialized half tiles, with the same
+greedy token — the rounding class of the dense tiles amplified by the
+discrete routing (a perturbed router logit swaps a token's eighth
+expert), recorded as the expert configuration's own bounds beside the
+12B's. The 12B and QAT comparisons and their generation check unchanged
+to the digit; Qwen `make bench` unchanged (40.05 / 10.67). First-look
+rates (`--kv f16`): 22-token prompt 122.6 / 57.9 tok/s; 512-token array
+525.9 / 55.3 at chunk 512 (463.3 at 256); 4,096-token array 361.0 / 49.6
+(329.0 at 256, 382.5 at 1,024).
+
+**Files.** `inference/src/models/gemma4.zig`,
+`inference/src/models/gemma4_runtime.zig`,
+`inference/src/models/gemma4_metal.zig`,
+`inference/src/models/fixtures/gemma4-26b-a4b.json`,
+`inference/src/runtime/weights.zig`, `inference/src/engine.zig`,
+`inference/metal-check.zig`, `inference/generation-check.zig`,
+`tests/fixtures/gemma4-26b-a4b-hello-comma/`, `Makefile`, `README.md`,
+`docs/reference/gemma4.md`, `docs/reference/metal-backend.md`,
+`docs/reference/artifacts.md`, `docs/architecture.md`,
+`docs/development.md`.
+
+**Remaining.** The chunked prefill's half-tile rounding on a routed model
+(3.5e-1 relative RMS on random tokens): how it shows on real prompts is
+what MODL-10's acceptance record measures against the reference; the
+options if it matters are an F32-activation tile variant or the
+generic tile for the router's input path. The down projection's idle
+lanes at decode and the 64-token expert tile at prefill (KERN-09's
+follow-ups); the ring layout for windowed caches; the catalogue verdict,
+acceptance record, and agent check are MODL-10.

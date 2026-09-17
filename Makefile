@@ -22,8 +22,9 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
         test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
-        compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 compare-gemma4-26b-a4b-cpu \
-        test-generation-gemma4 test-generation-gemma4-metal test-generation-gemma4-qat-metal clean distclean hf-downloader test-hf changelog release
+        compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
+        compare-gemma4-26b-a4b compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 \
+        test-generation-gemma4 test-generation-gemma4-metal test-generation-gemma4-qat-metal test-generation-gemma4-26b-a4b-metal clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -65,6 +66,9 @@ test-generation-gemma4-metal: ## The generation check on gemma-4-12b, Metal plan
 
 test-generation-gemma4-qat-metal: ## The same on gemma-4-12b-qat, whose Q4_0 path amplifies the half-operand rounding (MODL-08)
 	$(ZIG) build test-generation $(METAL) -- "$(GEMMA_QAT_MODEL)" --metal
+
+test-generation-gemma4-26b-a4b-metal: ## The generation check on gemma-4-26b-a4b (mixture of experts), Metal plan (MODL-09)
+	$(ZIG) build test-generation $(METAL) -- "$(GEMMA_26B_A4B_MODEL)" --metal
 
 test-vocabulary: ## Tokenizer check against the real artifact
 	$(ZIG) build test-vocabulary -Doptimize=$(OPT) $(CACHE) -- "$(MODEL)"
@@ -172,8 +176,16 @@ define compare_gemma4_run
 	  --max-absolute $(5) --max-relative-rms $(6) \
 	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("gemma4 $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
 endef
-compare-gemma4-26b-a4b-cpu: metal ## The Gemma CPU reference on the 26B-A4B (expert) file vs its pinned traces at the bring-up thresholds (MODL-09)
+compare-gemma4-26b-a4b: compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 ## gemma-4-26b-a4b (mixture of experts) vs its pinned traces: CPU reference, Metal F32 and F16 caches (MODL-09, docs/reference/gemma4.md)
+
+compare-gemma4-26b-a4b-cpu: metal ## The Gemma CPU reference on the 26B-A4B (expert) file vs its pinned traces at the bring-up thresholds
 	$(call compare_gemma4_run,26b-a4b-cpu,$(GEMMA_26B_A4B_MODEL),tests/fixtures/gemma4-26b-a4b-hello-comma,--backend cpu,0.002,0.0001,2816,30)
+
+compare-gemma4-26b-a4b-f32: metal ## The Gemma Metal plan on the 26B-A4B file with the F32 cache at the bring-up thresholds
+	$(call compare_gemma4_run,26b-a4b-f32,$(GEMMA_26B_A4B_MODEL),tests/fixtures/gemma4-26b-a4b-hello-comma,--backend metal --kv f32,0.002,0.0001,2816,30)
+
+compare-gemma4-26b-a4b-f16: metal ## The Gemma Metal plan on the 26B-A4B file with the F16 cache at the family's tolerance
+	$(call compare_gemma4_run,26b-a4b-f16,$(GEMMA_26B_A4B_MODEL),tests/fixtures/gemma4-26b-a4b-hello-comma,--backend metal --kv f16,1.0,0.05,2816,30)
 
 compare-gemma4-qat: compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 ## gemma-4-12b-qat vs its pinned llama.cpp traces (`<bos>Hello,`, three positions): CPU reference, Metal F32 and F16 caches (MODL-08, docs/reference/gemma4.md)
 

@@ -576,7 +576,8 @@ is the **fill**: with 2,048 slot rows over 128 experts an expert averages
 is half the executed one. Larger chunks fill the tiles (the third column
 is `n / (32 · tiles)`), which is why the per-token cost falls with the
 chunk while the GB/s does not move; the adapter's chunk size for this
-family is a memory/latency trade the Metal plan decides. Against the
+family is a memory/latency trade the Metal plan decides (512, measured in
+[gemma4.md § 26B-A4B](gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)). Against the
 alternative of looping the decode kernels over the chunk (2,048 × 3.3 MB
 = 6.8 GB per layer at the decode rate, about 40 ms), the tiles are four
 times faster at 256 tokens and six at 1,024. Follow-ups, not in scope: a
@@ -584,6 +585,30 @@ times faster at 256 tokens and six at 1,024. Follow-ups, not in scope: a
 the token width, so the gain is unclear), a 64-token tile for chunks
 where experts exceed 32 rows, and Q4_K / Q6_K instantiations for other
 families.
+
+**In the adapter** (MODL-09, 2026-09-18). `gemma4_metal.zig` records the
+decode chain after the dense FFN of every 26B-A4B layer and the prefill
+chain over each chunk's rows, both from the same `feedForward` shape as
+the CPU reference ([gemma4.md § 26B-A4B](gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
+The three expert tensors are wrapped whole (no copy, 14.2 GB resident)
+and the router, an F32 128 × 2,816 matrix, is the first F32 matrix a plan
+dispatches: the generic matvec and the generic F32 tile decode it
+exactly. One property of the model surfaced through the generation
+check: a mixture of experts routes **discretely**, so the half-operand
+rounding of the specialized tiles, which moves a dense model's chunked
+logits by percents, here moves router logits past near-ties and swaps a
+token's eighth expert for another, replacing that token's whole expert
+output. On the 70-random-token prompt the chunked prefill sits at
+1.1e1 / 3.5e-1 (max abs / relative RMS) from the per-token steps with the
+specialized tiles, 1.1e-1 relative RMS with the expert projections
+alone through F32 matvecs (the dense tiles' rounding still routes), and
+**2.8e-4 / 1.2e-5** with every tile generic: the chunk schedule (row
+routing, lists, gathered tiles, combine) is exact, and the gap is the
+rounding class shared with the dense tiles, amplified by routing. The
+greedy token agreed in every comparison. The check records the expert
+configuration's own bounds (2e1 / 5e-1) beside the 12B's and keeps the
+F32-tile bound (5e-3 / 2e-4) unchanged, which is the one that proves the
+schedule.
 
 ### KERN-05 — per-block cost research (2026-09-08, closed without a kernel change)
 
