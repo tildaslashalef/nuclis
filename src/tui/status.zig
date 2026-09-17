@@ -54,6 +54,9 @@ pub const Status = struct {
     /// Reasoning effort, as its name: the surface does not know the engine's
     /// enum, and does not need to.
     effort: []const u8 = "off",
+    /// The model's short name (the registry or catalogue name, else the
+    /// artifact's own), last on the bar so a narrow terminal loses it first.
+    model: []const u8 = "",
     /// The agent loop's step in progress (1-based) against its budget, while a
     /// turn runs. `budget == 0` means the surface has no loop to report.
     step: usize = 0,
@@ -117,6 +120,7 @@ pub const Status = struct {
         try rate(&w.writer, self.rates.decode);
         try w.writer.print(" t/s {s} {s} think {s}{s}{s}", .{ gl.table_bar, gl.effort, th.paint(.accent), self.effort, theme.fg_default });
         if (self.replayed) try w.writer.print(" {s} replayed", .{gl.table_bar});
+        if (self.model.len != 0) try w.writer.print(" {s} {s}", .{ gl.table_bar, self.model });
         const wrapped = try view.wrapStyled(a, w.written(), options.width, .character);
         const pad = options.width -| view.styledWidth(wrapped[0]);
         return std.mem.concat(a, u8, &.{ wrapped[0], spaces[0..@min(pad, spaces.len)] });
@@ -165,6 +169,11 @@ test "an idle bar states the settings and no rate it did not measure" {
     try testing.expect(std.mem.indexOf(u8, row, "pp — t/s") != null);
     try testing.expect(std.mem.indexOf(u8, row, "tg — t/s") != null);
     try testing.expect(std.mem.indexOf(u8, row, "think low") != null);
+    var named = status;
+    named.model = "hauhau";
+    const with_model = try named.paint(a, .{ .width = 120, .th = .{ .kind = .plain }, .frame = 0, .elapsed_seconds = 0 });
+    try testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, with_model, " "), " hauhau"));
+    try testing.expect(std.mem.indexOf(u8, with_model, "think low") != null);
     try testing.expect(std.mem.indexOf(u8, row, "replayed") == null);
     // The row is exactly as wide as the bar, so its background spans it.
     try testing.expectEqual(@as(usize, 100), view.styledWidth(try status.paint(a, .{ .width = 100, .th = .{ .kind = .plain } })));

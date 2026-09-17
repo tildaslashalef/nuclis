@@ -68,6 +68,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-09 | `config set`, `model pull --register`, registry names in `model ls` | 2026-09-17 |
 | AGNT-11 | A truncated tool call no longer bricks the session; reopened thought channels; copied bracket pieces | 2026-09-17 |
 | APPS-10 | `model ls` as one aligned grid | 2026-09-17 |
+| TERM-08 | The welcome: ASCII wordmark and session facts; the model's name on the status bar | 2026-09-17 |
 
 ## Context
 
@@ -1931,3 +1932,31 @@ two other files.
 **Remaining.** Rows are wide (a companion row runs past 150 columns with
 today's paths); wrapping to the terminal width would be a next step if it
 bothers anyone.
+
+### TERM-08 — The welcome: ASCII wordmark and session facts; the model's name on the status bar (2026-09-17)
+
+**Outcome.** The agent's one-line header (`nuclis agent · <name> · metal`)
+became a welcome (`src/tui/banner.zig`): the six-row ASCII `NUCLIS`
+wordmark the user chose when the terminal is 60 columns or wider, then
+`nuclis agent <version>`, a model line (the registry or catalogue name
+the model was reached through when it was one, the artifact's own
+`general.name`, the backend, the profile and `(forced)` when a flag or
+the entry forced it), and a settings line (context, effort, the workspace
+with `$HOME` shortened to `~`); below that width the one-line header
+stays. It is transcript, so it scrolls away with the conversation (the
+rendering model has no title bar), which is why the status bar now ends
+with the model's short name. The rows are plain ASCII: no glyph-set
+fallback is needed.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: **400 default
+tests** (the wordmark's shape and width; wide and narrow renderings with
+and without a registry name and a forced profile; the tilde rule at a
+path boundary; the bar's last segment). Seen by the user on their
+terminal on the default model.
+
+**Files.** `src/tui/banner.zig`, `src/tui/root.zig`, `src/tui/status.zig`,
+`src/agent/root.zig`, `docs/agent-spec.md`.
+
+**Remaining.** The hint row still sits under the editor as before; the
+startup notice for a forced profile is printed in addition to the
+welcome's `(forced)`.

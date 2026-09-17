@@ -115,9 +115,15 @@ holds the APPS-02 outcome.
   sampling overrides, and initial thinking fold from `nuclis.json`; shares
   the generation flags (`--backend`, `--ctx-size`, `--max-tokens`,
   sampling, `--seed`, `--think`), which override the file. Requires a TTY.
-  Startup clears the visible screen (scrollback preserved), prints a header,
-  and anchors the live region (active turn, input box, hint, separator,
-  status bar) at the bottom.
+  Startup clears the visible screen (scrollback preserved), prints the
+  welcome (`tui/banner.zig`: the ASCII wordmark when the terminal is at
+  least 60 columns wide, then the version, the model reached through its
+  registry or catalogue name with the artifact's own name, backend, profile
+  and whether it was forced, context, effort, and the workspace with the
+  home directory as `~`; a one-line header below that width), and anchors
+  the live region (active turn, input box, hint, separator, status bar) at
+  the bottom. The welcome scrolls away like any transcript row; the status
+  bar carries the model's short name as its last segment.
 - Multi-turn without replay: the process keeps the text the session has
   consumed (rendered prompt plus generated tokens except the final
   stop/budget token). Each turn renders the whole conversation with the

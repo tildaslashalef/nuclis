@@ -23,6 +23,8 @@ const inference = @import("inference");
 const engine = @import("../engine.zig");
 const generate = @import("../generate.zig");
 const config = @import("../config.zig");
+const catalog = @import("../catalog.zig");
+const version = @import("build_options").version;
 const paths = @import("../paths.zig");
 const model = @import("../model.zig");
 const interrupt = @import("../interrupt.zig");
@@ -106,6 +108,9 @@ const Ui = struct {
     tokens_seen: *inference.sampling.History,
     /// The instrumented bar, fed by the turn's status events.
     bar: status_bar.Status = .{},
+    /// The model's short name for the bar: the name it was reached through,
+    /// else the artifact's own.
+    model_label: []const u8 = "",
     busy: bool = false,
     quit: bool = false,
     /// Whether the terminal has focus; a turn that ends unfocused notifies.
@@ -153,6 +158,7 @@ const Ui = struct {
         for (self.resume_paths.items) |path| self.alloc.free(path);
         self.resume_paths.deinit(self.alloc);
         if (self.resume_request) |path| self.alloc.free(path);
+        if (self.model_label.len != 0) self.alloc.free(self.model_label);
     }
     fn newSession(self: *Ui) void {
         // The log is replaced by the main loop, which owns its storage.
@@ -198,6 +204,7 @@ const Ui = struct {
         bar.context_used = session.position;
         bar.context_capacity = session.capacity;
         bar.effort = @tagName(self.effort);
+        bar.model = self.model_label;
         if (self.busy) {
             bar.prompt_tokens = self.stats.prompt_tokens;
             bar.generated = self.stats.generated;
@@ -1112,10 +1119,27 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         // anchors at the bottom — which is also what lets insertion above it
         // scroll everything in between.
         try scr.clear();
-        var header: std.Io.Writer.Allocating = .init(alloc);
-        defer header.deinit();
-        try header.writer.print(" nuclis agent · {s} · {s}", .{ eng.name, @tagName(eng.backend) });
-        try scr.insertAbove(&.{.{ .text = header.written(), .style = .header }});
+        {
+            // The welcome: the wordmark when it fits, and what this session
+            // runs with. Transcript, like everything above the region.
+            var arena = std.heap.ArenaAllocator.init(alloc);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const named = settings.entry != null or catalog.find(settings.model) != null;
+            ui.model_label = try alloc.dupe(u8, if (named) settings.model else eng.name);
+            const welcome = try tui.banner.rows(a, .{
+                .version = version,
+                .name = if (named) settings.model else null,
+                .model = eng.name,
+                .backend = @tagName(eng.backend),
+                .profile = @tagName(profile),
+                .forced = eng.profile_forced,
+                .ctx_size = capacity,
+                .effort = @tagName(settings.think),
+                .workspace = try tui.banner.shortened(a, cwd, environ.get("HOME")),
+            }, term.size().columns);
+            try scr.insertAbove(welcome);
+        }
         try scr.anchor(min_editor_rows + 3);
         primeSession(&ui);
         // A forced profile renders the pinned protocol onto a file whose own

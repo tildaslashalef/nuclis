@@ -48,6 +48,7 @@ pub const highlight = @import("highlight.zig");
 pub const diff = @import("diff.zig");
 pub const theme = @import("theme.zig");
 pub const style = @import("style.zig");
+pub const banner = @import("banner.zig");
 
 test {
     _ = terminal;
@@ -65,4 +66,5 @@ test {
     _ = diff;
     _ = theme;
     _ = style;
+    _ = banner;
 }
