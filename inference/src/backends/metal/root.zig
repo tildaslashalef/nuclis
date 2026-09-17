@@ -49,17 +49,18 @@ const iq3_grid_source = blk: {
 const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ iq3_grid_source ++ @embedFile("dequant.metal") ++ "\n" ++ @embedFile("kernels.metal");
 
 const kernel_names = [_][:0]const u8{
-    "nu_matvec",            "nu_matvec_q4_k",         "nu_matvec_q5_k",      "nu_matvec_q6_k",        "nu_matvec_iq4_xs",       "nu_embed",
-    "nu_rmsnorm",           "nu_l2norm",              "nu_rope",             "nu_add",                "nu_silu_mul",            "nu_silu_inplace",
-    "nu_delta_gates",       "nu_sigmoid_gate",        "nu_delta",            "nu_convolution",        "nu_attention_scores",    "nu_attention_softmax",
-    "nu_attention_values",  "nu_argmax_partial",      "nu_argmax_final",     "nu_matvec_q3_k",        "nu_matvec_iq3_s",        "nu_matvec_segments",
-    "nu_topk_partial",      "nu_topk_final",          "nu_expsum_partial",   "nu_matmul",             "nu_rope_rows",           "nu_copy",
-    "nu_convolution_rows",  "nu_convolution_history", "nu_attention_chunk",  "nu_delta_chunk",        "nu_matmul_q3_k",         "nu_matmul_q4_k",
-    "nu_matmul_q5_k",       "nu_matmul_q6_k",         "nu_matmul_iq3_s",     "nu_matmul_iq4_xs",      "nu_matmul_q3_k_32",      "nu_matmul_q4_k_32",
-    "nu_matmul_q5_k_32",    "nu_matmul_q6_k_32",      "nu_matmul_iq3_s_32",  "nu_matmul_iq4_xs_32",   "nu_attention_scores_h",  "nu_attention_values_h",
-    "nu_attention_chunk_h", "nu_pack_half",           "nu_attention_decode", "nu_attention_decode_h", "nu_attention_merge",     "nu_gelu_mul",
-    "nu_scale",             "nu_add_scale",           "nu_softcap",          "nu_attention_decode_w", "nu_attention_decode_wh", "nu_matvec_q4_0",
-    "nu_matmul_q4_0",       "nu_matmul_q4_0_32",      "nu_matvec_experts",   "nu_route",              "nu_combine_experts",     "nu_gelu_mul_rows",
+    "nu_matvec",            "nu_matvec_q4_k",         "nu_matvec_q5_k",         "nu_matvec_q6_k",        "nu_matvec_iq4_xs",       "nu_embed",
+    "nu_rmsnorm",           "nu_l2norm",              "nu_rope",                "nu_add",                "nu_silu_mul",            "nu_silu_inplace",
+    "nu_delta_gates",       "nu_sigmoid_gate",        "nu_delta",               "nu_convolution",        "nu_attention_scores",    "nu_attention_softmax",
+    "nu_attention_values",  "nu_argmax_partial",      "nu_argmax_final",        "nu_matvec_q3_k",        "nu_matvec_iq3_s",        "nu_matvec_segments",
+    "nu_topk_partial",      "nu_topk_final",          "nu_expsum_partial",      "nu_matmul",             "nu_rope_rows",           "nu_copy",
+    "nu_convolution_rows",  "nu_convolution_history", "nu_attention_chunk",     "nu_delta_chunk",        "nu_matmul_q3_k",         "nu_matmul_q4_k",
+    "nu_matmul_q5_k",       "nu_matmul_q6_k",         "nu_matmul_iq3_s",        "nu_matmul_iq4_xs",      "nu_matmul_q3_k_32",      "nu_matmul_q4_k_32",
+    "nu_matmul_q5_k_32",    "nu_matmul_q6_k_32",      "nu_matmul_iq3_s_32",     "nu_matmul_iq4_xs_32",   "nu_attention_scores_h",  "nu_attention_values_h",
+    "nu_attention_chunk_h", "nu_pack_half",           "nu_attention_decode",    "nu_attention_decode_h", "nu_attention_merge",     "nu_gelu_mul",
+    "nu_scale",             "nu_add_scale",           "nu_softcap",             "nu_attention_decode_w", "nu_attention_decode_wh", "nu_matvec_q4_0",
+    "nu_matmul_q4_0",       "nu_matmul_q4_0_32",      "nu_matvec_experts",      "nu_route",              "nu_combine_experts",     "nu_gelu_mul_rows",
+    "nu_expert_lists",      "nu_matmul_experts",      "nu_matmul_experts_q4_0",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -128,6 +129,9 @@ pub const Kernel = enum(u32) {
     route,
     combine_experts,
     gelu_mul_rows,
+    expert_lists,
+    matmul_experts,
+    matmul_experts_q4_0,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -618,6 +622,85 @@ pub const Backend = struct {
         if (overlaps(output, out_len, gate, ((rows - 1) * gate_stride + width) * 4) or overlaps(output, out_len, up, ((rows - 1) * up_stride + width) * 4)) return error.InvalidShape;
         const p: GeluRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .gate_stride = @intCast(gate_stride), .up_stride = @intCast(up_stride), .out_stride = @intCast(out_stride) };
         try self.dispatch(.gelu_mul_rows, &.{ gate, up, output }, p, perElement(width * rows), 256, .{});
+    }
+
+    // Prefill: the chunk's slot rows grouped by expert, then gathered tiles.
+
+    pub const ExpertListsParams = extern struct { experts: u32, n: u32, max_tiles: u32 };
+    /// Slot rows per gathered tile; the tile bound below counts them.
+    pub const expert_tile = 32;
+    /// Tiles the lists of `n` slot rows over `experts` can hold at most:
+    /// Σ ceil(count/32) ≤ n/32 + experts. This bounds the gathered matmul
+    /// grid before the counts are known.
+    pub fn expertTileBound(n: usize, experts: usize) usize {
+        return (n + expert_tile - 1) / expert_tile + experts;
+    }
+    /// Words of the lists buffer, in order: the tile count, `n`, the
+    /// `experts + 1` exclusive prefix offsets, `expertTileBound` tiles of
+    /// (expert, first, count), and the `n` row list.
+    pub const ExpertListsLayout = struct { tiles_at: usize, rows_at: usize, words: usize };
+    pub fn expertListsLayout(n: usize, experts: usize) ExpertListsLayout {
+        const tiles_at = experts + 3;
+        const rows_at = tiles_at + 3 * expertTileBound(n, experts);
+        return .{ .tiles_at = tiles_at, .rows_at = rows_at, .words = rows_at + n };
+    }
+    /// Groups the `rows · k` slot rows of `indices` (`[row][k]`, as `route`
+    /// writes them) by expert into `lists` (`expertListsLayout(rows · k,
+    /// experts).words` u32, layout above) for `matmulExperts`. One
+    /// threadgroup; at most 256 experts.
+    pub fn expertLists(self: *Backend, indices: Buffer, rows: usize, k: usize, experts: usize, lists: Buffer) !void {
+        if (rows == 0 or k == 0 or experts == 0 or experts > route_max_experts) return error.InvalidShape;
+        const n = std.math.mul(usize, rows, k) catch return error.InvalidShape;
+        if (n > std.math.maxInt(u32) / 4) return error.InvalidShape;
+        const layout = expertListsLayout(n, experts);
+        if (indices.len < n * 4 or indices.offset % 4 != 0 or lists.len < layout.words * 4 or lists.offset % 4 != 0) return error.InvalidShape;
+        const p: ExpertListsParams = .{ .experts = @intCast(experts), .n = @intCast(n), .max_tiles = @intCast(expertTileBound(n, experts)) };
+        try self.dispatch(.expert_lists, &.{ indices, lists }, p, 1, 256, .{});
+    }
+
+    pub const MatmulExpertsParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32, in_stride: u32, out_stride: u32, row_tiles: u32, experts: u32, in_group: u32, tiles_at: u32, rows_at: u32 };
+    /// Gathered projection over the row lists: for each slot row `s` of the
+    /// chunk (`rows · k` of them, expert `e_s` per the lists),
+    /// `output[s·out_stride + r] = W[e_s][r] · input[(s / in_group)·in_stride]`.
+    /// `in_group` = k shares a token's input across its slots (gate-up);
+    /// 1 reads one input row per slot (down). Weights are read once per
+    /// 32-row tile of an expert's slot rows; no padding rows are written,
+    /// so `output` holds exactly `rows · k` rows. Same shape rules as
+    /// `matmul` (columns % 64, rows % 8, float4-aligned input). Q4_0 takes
+    /// the half tile under the matvec alignment rules, everything else the
+    /// generic F32 tile. The profile attributes no bytes: the volume read
+    /// depends on the routing.
+    pub fn matmulExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, lists: Buffer, rows: usize, k: usize, input: Buffer, in_stride: usize, in_group: usize, output: Buffer, out_stride: usize) !void {
+        const per_expert = tensor.expertBytes() catch return error.InvalidShape;
+        const stride = per_expert / tensor.rows;
+        if (tensor.rows % 8 != 0 or tensor.columns % 64 != 0 or tensor.rows > std.math.maxInt(u32) / 4 or tensor.experts > route_max_experts) return error.InvalidShape;
+        if (rows == 0 or k == 0 or in_group == 0 or in_stride < tensor.columns or out_stride < tensor.rows) return error.InvalidShape;
+        const n = std.math.mul(usize, rows, k) catch return error.InvalidShape;
+        if (n > std.math.maxInt(u32) / 4) return error.InvalidShape;
+        const layout = expertListsLayout(n, tensor.experts);
+        const input_rows = (n + in_group - 1) / in_group;
+        if (weights.len < tensor.bytes.len or lists.len < layout.words * 4 or lists.offset % 4 != 0) return error.InvalidShape;
+        if (input.len < ((input_rows - 1) * in_stride + tensor.columns) * 4 or input.offset % 16 != 0 or in_stride % 4 != 0) return error.InvalidShape;
+        if (output.len < ((n - 1) * out_stride + tensor.rows) * 4 or output.offset % 4 != 0) return error.InvalidShape;
+        const specialized = !self.generic_only and tensor.encoding == 2 and blockAligned(tensor.encoding, weights.offset, stride);
+        const kernel: Kernel = if (specialized) .matmul_experts_q4_0 else .matmul_experts;
+        const tile_rows: usize = if (specialized) 64 else 32;
+        const row_tiles = (tensor.rows + tile_rows - 1) / tile_rows;
+        const p: MatmulExpertsParams = .{
+            .columns = @intCast(tensor.columns),
+            .encoding = tensor.encoding,
+            .stride = std.math.cast(u32, stride) orelse return error.InvalidShape,
+            .rows = @intCast(tensor.rows),
+            .in_stride = std.math.cast(u32, in_stride) orelse return error.InvalidShape,
+            .out_stride = std.math.cast(u32, out_stride) orelse return error.InvalidShape,
+            .row_tiles = @intCast(row_tiles),
+            .experts = @intCast(tensor.experts),
+            .in_group = std.math.cast(u32, in_group) orelse return error.InvalidShape,
+            .tiles_at = @intCast(layout.tiles_at),
+            .rows_at = @intCast(layout.rows_at),
+        };
+        const groups = std.math.cast(u32, row_tiles * expertTileBound(n, tensor.experts)) orelse return error.InvalidShape;
+        try self.dispatch(kernel, &.{ weights, input, output, lists }, p, groups, 128, .{ .encoding = tensor.encoding, .rows = @intCast(tensor.rows), .columns = @intCast(tensor.columns) });
     }
 
     pub const EmbedParams = extern struct { columns: u32, encoding: u32, stride: u32, token: u32 };

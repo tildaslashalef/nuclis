@@ -258,8 +258,10 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
 /// ties and lanes past the expert count (indices exact), the gathered matvec
 /// on both kernel paths with shared and per-slot inputs and NaN in every
 /// unselected expert, the strided GELU pair and the weighted combine, the
-/// whole decode chain over three tokens against the F64 reference, and the
-/// contract rejections.
+/// whole decode chain over three tokens against the F64 reference, the
+/// prefill lists and gathered tiles over a skewed chunk on both tile
+/// kernels against the reference and the decode path, and the contract
+/// rejections.
 fn checkExperts(alloc: std.mem.Allocator, b: *Backend) !void {
     var prng = std.Random.DefaultPrng.init(0xe8e8);
     const random = prng.random();
@@ -497,15 +499,163 @@ fn checkExperts(alloc: std.mem.Allocator, b: *Backend) !void {
         if (b.combineExperts(y, weights.slice(0, 8), indices, null, out, .{ .columns = width, .slots = k, .rows = tokens, .experts = experts, .in_stride = width, .out_stride = width })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         if (b.combineExperts(y, weights, indices, scales.slice(0, 8), out, .{ .columns = width, .slots = k, .rows = tokens, .experts = experts, .in_stride = width, .out_stride = width })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
     }
+    // The prefill path: route, expert lists, gathered gate-up tiles, gelu
+    // rows, gathered down tiles, combine, over a chunk of 45 tokens (135
+    // slot rows: not a multiple of 32), six experts, k 3, expert 0 taking
+    // every token (two tiles, one partial) and expert 5 none; both tile
+    // kernels against `cpu.experts.ffn` per token and against the decode
+    // path row by row; then a chunk of one token; then the contracts.
+    {
+        const experts: usize = 6;
+        const k: usize = 3;
+        const width: usize = 256;
+        const ff: usize = 704;
+        const chunk: usize = 45;
+        const n = chunk * k;
+        const gu_region = try tiledMatrix(alloc, sample_bytes, 2, experts * 2 * ff, width);
+        defer alloc.free(gu_region);
+        const down_region = try tiledMatrix(alloc, sample_bytes, 2, experts * width, ff);
+        defer alloc.free(down_region);
+        tameScales(gu_region, 2);
+        tameScales(down_region, 2);
+        const gate_up: inference.cpu.ExpertMatrix = .{ .encoding = 2, .experts = experts, .rows = 2 * ff, .columns = width, .bytes = gu_region };
+        const down: inference.cpu.ExpertMatrix = .{ .encoding = 2, .experts = experts, .rows = width, .columns = ff, .bytes = down_region };
+        const gu_weights = try uploadBytes(b, gu_region);
+        const down_weights = try uploadBytes(b, down_region);
+        const scales = try b.create(experts * 4);
+        for (scales.floats()) |*v| v.* = random.float(f32) + 0.5;
+        const logits = try b.create(chunk * experts * 4);
+        for (0..chunk) |t| for (0..experts) |e| {
+            logits.floats()[t * experts + e] = if (e == 0) 8 else if (e == 5) -50 else random.floatNorm(f32);
+        };
+        const x = try b.create(chunk * width * 4);
+        for (x.floats()) |*v| v.* = random.floatNorm(f32);
+        const layout = Backend.expertListsLayout(n, experts);
+        const indices = try b.create(n * 4);
+        const weights = try b.create(n * 4);
+        const lists = try b.create(layout.words * 4);
+        const gu_out = try b.create(n * 2 * ff * 4);
+        const hidden = try b.create(n * ff * 4);
+        const y = try b.create(n * width * 4);
+        const out = try b.create(chunk * width * 4);
+        const decode_out = try b.create(chunk * width * 4);
+        const scratch = try alloc.alloc(f32, (inference.cpu.experts.Ffn{ .gate_up = gate_up, .down = down }).scratchLen());
+        defer alloc.free(scratch);
+        const acc = try alloc.alloc(f64, width);
+        defer alloc.free(acc);
+        const expected = try alloc.alloc(f32, chunk * width);
+        defer alloc.free(expected);
+        // The decode path on the same chunk: the tiles must agree with it row by row.
+        try b.begin();
+        try b.route(logits, experts, k, chunk, experts, indices, weights);
+        for (0..chunk) |t| try b.matvecExperts(gu_weights, gate_up, indices.slice(t * k * 4, k * 4), k, x.slice(t * width * 4, width * 4), 0, gu_out.slice(t * k * 2 * ff * 4, k * 2 * ff * 4), 2 * ff);
+        try b.geluMulRows(gu_out, gu_out.slice(ff * 4, gu_out.len - ff * 4), hidden, ff, n, 2 * ff, 2 * ff, ff);
+        for (0..chunk) |t| try b.matvecExperts(down_weights, down, indices.slice(t * k * 4, k * 4), k, hidden.slice(t * k * ff * 4, k * ff * 4), ff, y.slice(t * k * width * 4, k * width * 4), width);
+        try b.combineExperts(y, weights, indices, scales, decode_out, .{ .columns = width, .slots = k, .rows = chunk, .experts = experts, .in_stride = width, .out_stride = width });
+        try b.commit();
+        const idx = @as([*]const u32, @ptrCast(@alignCast(indices.host)))[0..n];
+        var chunk_max: f64 = 0;
+        {
+            var cpu_indices: [3]u32 = undefined;
+            var cpu_weights: [3]f32 = undefined;
+            for (0..chunk) |t| {
+                try inference.cpu.experts.route(logits.floats()[t * experts ..][0..experts], &cpu_indices, &cpu_weights);
+                try std.testing.expectEqualSlices(u32, &cpu_indices, idx[t * k ..][0..k]);
+                try inference.cpu.experts.ffn(.{ .gate_up = gate_up, .down = down, .down_scale = scales.floats() }, x.floats()[t * width ..][0..width], &cpu_indices, &cpu_weights, expected[t * width ..][0..width], scratch, acc);
+            }
+            for (expected) |v| chunk_max = @max(chunk_max, @abs(v));
+        }
+        const words = @as([*]u32, @ptrCast(@alignCast(lists.host)))[0..layout.words];
+        var worst_cpu: [2]f64 = .{ 0, 0 };
+        var worst_decode: [2]f64 = .{ 0, 0 };
+        for ([_]bool{ false, true }, 0..) |generic, which| {
+            b.generic_only = generic;
+            for (out.floats()) |*v| v.* = std.math.nan(f32);
+            @memset(words, 0xffffffff);
+            try b.begin();
+            try b.expertLists(indices, chunk, k, experts, lists);
+            try b.matmulExperts(gu_weights, gate_up, lists, chunk, k, x, width, k, gu_out, 2 * ff);
+            try b.geluMulRows(gu_out, gu_out.slice(ff * 4, gu_out.len - ff * 4), hidden, ff, n, 2 * ff, 2 * ff, ff);
+            try b.matmulExperts(down_weights, down, lists, chunk, k, hidden, ff, 1, y, width);
+            try b.combineExperts(y, weights, indices, scales, out, .{ .columns = width, .slots = k, .rows = chunk, .experts = experts, .in_stride = width, .out_stride = width });
+            try b.commit();
+            b.generic_only = false;
+            // The lists: the skew, the offsets, every tile's (expert, first,
+            // count), and the row list as a permutation grouped by expert.
+            var counts: [experts]usize = @splat(0);
+            for (idx) |e| counts[e] += 1;
+            if (counts[0] != chunk or counts[5] != 0) return error.SkewNotProduced;
+            var offset: usize = 0;
+            var tiles: usize = 0;
+            for (0..experts) |e| {
+                if (words[2 + e] != offset) return error.ListsMismatch;
+                var t: usize = 0;
+                while (t < counts[e]) : (t += 32) {
+                    const entry = words[layout.tiles_at + 3 * tiles ..][0..3];
+                    if (entry[0] != e or entry[1] != offset + t or entry[2] != @min(32, counts[e] - t)) return error.ListsMismatch;
+                    tiles += 1;
+                }
+                for (words[layout.rows_at + offset ..][0..counts[e]]) |s| if (s >= n or idx[s] != e) return error.ListsMismatch;
+                offset += counts[e];
+            }
+            if (words[0] != tiles or words[1] != n or words[2 + experts] != n) return error.ListsMismatch;
+            const seen = try alloc.alloc(bool, n);
+            defer alloc.free(seen);
+            @memset(seen, false);
+            for (words[layout.rows_at..][0..n]) |s| {
+                if (seen[s]) return error.ListsMismatch;
+                seen[s] = true;
+            }
+            // Outputs: the F32 tiles differ from the CPU by rounding order;
+            // the half tiles round both operands of both projections.
+            const bound: f64 = if (generic) 2e-5 else 2e-3;
+            for (out.floats(), expected, decode_out.floats(), 0..) |got, want, dec, i| {
+                worst_cpu[which] = @max(worst_cpu[which], @abs(@as(f64, got) - want) / chunk_max);
+                worst_decode[which] = @max(worst_decode[which], @abs(@as(f64, got) - dec) / chunk_max);
+                expectClose(if (generic) "expert prefill (generic tile)" else "expert prefill (half tile)", got, want, @floatCast(bound * chunk_max)) catch |err| {
+                    std.debug.print("  token {d}, column {d}\n", .{ i / width, i % width });
+                    return err;
+                };
+            }
+        }
+        std.debug.print("Expert prefill chain (lists, gathered gate-up and down tiles) over 45 tokens vs CPU F64: worst |difference| / max|y| F32 tile {e:.3} (bound 2e-5), half tile {e:.3} (bound 2e-3); vs the decode path {e:.3} and {e:.3}\n", .{ worst_cpu[1], worst_cpu[0], worst_decode[1], worst_decode[0] });
+        // A chunk of one token: three slot rows, every tile partial; the
+        // same token as row 0 of the chunk above.
+        {
+            for (out.floats()) |*v| v.* = std.math.nan(f32);
+            try b.begin();
+            try b.route(logits, experts, k, 1, experts, indices, weights);
+            try b.expertLists(indices, 1, k, experts, lists);
+            try b.matmulExperts(gu_weights, gate_up, lists, 1, k, x, width, k, gu_out, 2 * ff);
+            try b.geluMulRows(gu_out, gu_out.slice(ff * 4, gu_out.len - ff * 4), hidden, ff, k, 2 * ff, 2 * ff, ff);
+            try b.matmulExperts(down_weights, down, lists, 1, k, hidden, ff, 1, y, width);
+            try b.combineExperts(y, weights, indices, scales, out, .{ .columns = width, .slots = k, .rows = 1, .experts = experts, .in_stride = width, .out_stride = width });
+            try b.commit();
+            if (words[0] != k) return error.ListsMismatch;
+            for (out.floats()[0..width], expected[0..width]) |got, want| try expectClose("expert prefill (one token)", got, want, @floatCast(2e-3 * chunk_max));
+        }
+        // Contracts: rows not a multiple of 8, a short lists buffer, an
+        // unaligned input row stride, a zero input group, too many experts.
+        var bad = gate_up;
+        bad.rows = 2 * ff - 4;
+        bad.bytes = gu_region[0 .. gu_region.len / (2 * ff) * (2 * ff - 4)];
+        if (b.matmulExperts(gu_weights, bad, lists, chunk, k, x, width, k, gu_out, 2 * ff)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.matmulExperts(gu_weights, gate_up, lists.slice(0, layout.words * 4 - 4), chunk, k, x, width, k, gu_out, 2 * ff)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.matmulExperts(gu_weights, gate_up, lists, chunk, k, x, width + 2, k, gu_out, 2 * ff)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.matmulExperts(gu_weights, gate_up, lists, chunk, k, x, width, 0, gu_out, 2 * ff)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.expertLists(indices, chunk, k, 257, lists)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.expertLists(indices, chunk, k, experts, lists.slice(0, layout.words * 4 - 4))) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    }
 }
 
-/// `--experts-bench`: achieved bandwidth of the gathered expert kernels on
-/// the 26B-A4B shape (128 experts, 8 selected; gate-up 1,408 × 2,816 and
-/// down 2,816 × 704 per expert, Q4_0): GB/s of the **selected** experts'
-/// bytes per dispatch, 64 dispatches per command buffer, best and mean of
-/// five, beside a dense matvec over the same byte count (the rate a
-/// gathered kernel could at most reach).
-fn expertsBench(alloc: std.mem.Allocator) !void {
+/// `--experts-bench [CHUNK]`: achieved bandwidth of the gathered expert
+/// kernels on the 26B-A4B shape (128 experts, 8 selected; gate-up 1,408 ×
+/// 2,816 and down 2,816 × 704 per expert, Q4_0): GB/s of the **selected**
+/// experts' bytes per dispatch, 64 dispatches per command buffer, best and
+/// mean of five, beside a dense matvec over the same byte count (the rate a
+/// gathered kernel could at most reach); then the prefill tiles over a
+/// chunk of CHUNK tokens (256 by default), the bytes counted once per tile.
+fn expertsBench(alloc: std.mem.Allocator, chunk: usize) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
     const b = &backend;
@@ -547,20 +697,51 @@ fn expertsBench(alloc: std.mem.Allocator) !void {
     const dense_x = try b.create(k * ff * 4);
     for (dense_x.floats(), 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const dense_out = try b.create(k * 2 * ff * 4);
-    const Case = struct { name: []const u8, bytes: f64, which: enum { gate_up, down, chain, dense_gate_up, dense_down } };
+    // Prefill: a chunk routed by the router over random logits (at 256
+    // tokens 2,048 slot rows, every expert touched, 16 rows per expert on
+    // average), the lists built once; the bytes are what the tiles read,
+    // one expert matrix per tile.
+    if (chunk == 0 or chunk > 4096) return error.InvalidChunk;
+    const n = chunk * k;
+    const layout = Backend.expertListsLayout(n, experts);
+    const logits = try b.create(chunk * experts * 4);
+    var prng = std.Random.DefaultPrng.init(0x26b);
+    for (logits.floats()) |*v| v.* = prng.random().floatNorm(f32);
+    const chunk_indices = try b.create(n * 4);
+    const chunk_weights = try b.create(n * 4);
+    const lists = try b.create(layout.words * 4);
+    const chunk_x = try b.create(chunk * width * 4);
+    for (chunk_x.floats(), 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
+    const chunk_gu_out = try b.create(n * 2 * ff * 4);
+    const chunk_hidden = try b.create(n * ff * 4);
+    const chunk_y = try b.create(n * width * 4);
+    const chunk_out = try b.create(chunk * width * 4);
+    try b.begin();
+    try b.route(logits, experts, k, chunk, experts, chunk_indices, chunk_weights);
+    try b.expertLists(chunk_indices, chunk, k, experts, lists);
+    try b.commit();
+    const tiles = @as([*]const u32, @ptrCast(@alignCast(lists.host)))[0];
+    const tile_gu_bytes = @as(f64, @floatFromInt(gu_region.len / experts)) * @as(f64, @floatFromInt(tiles));
+    const tile_down_bytes = @as(f64, @floatFromInt(down_region.len / experts)) * @as(f64, @floatFromInt(tiles));
+    const Case = struct { name: []const u8, bytes: f64, which: enum { gate_up, down, chain, dense_gate_up, dense_down, prefill_gate_up, prefill_down, prefill_chain }, tokens: usize = 0 };
     const cases = [_]Case{
         .{ .name = "gathered gate-up 8 × (1408×2816)", .bytes = gu_bytes, .which = .gate_up },
         .{ .name = "gathered down 8 × (2816×704)", .bytes = down_bytes, .which = .down },
         .{ .name = "expert chain (gate-up, gelu, down, combine)", .bytes = gu_bytes + down_bytes, .which = .chain },
         .{ .name = "dense 11264×2816 (same bytes as gate-up)", .bytes = gu_bytes, .which = .dense_gate_up },
         .{ .name = "dense 2816×5632 (same bytes as down)", .bytes = down_bytes, .which = .dense_down },
+        .{ .name = "prefill gate-up tiles", .bytes = tile_gu_bytes, .which = .prefill_gate_up, .tokens = chunk },
+        .{ .name = "prefill down tiles", .bytes = tile_down_bytes, .which = .prefill_down, .tokens = chunk },
+        .{ .name = "prefill chain (lists, tiles, gelu, combine)", .bytes = tile_gu_bytes + tile_down_bytes, .which = .prefill_chain, .tokens = chunk },
     };
     const rounds = 5;
     const repeats = 64;
+    std.debug.print("prefill chunk of {d} tokens: {d} slot rows in {d} tiles of 32 over {d} experts\n", .{ chunk, n, tiles, experts });
     std.debug.print("{s:<46} {s:>7} {s:>9} {s:>9}  rounds (GB/s of the selected experts' bytes)\n", .{ "case", "MB", "best", "mean" });
     for (cases) |case| {
         var best: f64 = 0;
         var total: f64 = 0;
+        var best_seconds: f64 = std.math.inf(f64);
         var samples: [rounds]f64 = undefined;
         for (0..rounds + 2) |i| {
             const before = b.gpuSeconds();
@@ -576,16 +757,28 @@ fn expertsBench(alloc: std.mem.Allocator) !void {
                 },
                 .dense_gate_up => try b.matvec(gu_weights, dense_gu, x, dense_out),
                 .dense_down => try b.matvec(down_weights, dense_down, dense_x, dense_out),
+                .prefill_gate_up => try b.matmulExperts(gu_weights, gate_up, lists, chunk, k, chunk_x, width, k, chunk_gu_out, 2 * ff),
+                .prefill_down => try b.matmulExperts(down_weights, down, lists, chunk, k, chunk_hidden, ff, 1, chunk_y, width),
+                .prefill_chain => {
+                    try b.expertLists(chunk_indices, chunk, k, experts, lists);
+                    try b.matmulExperts(gu_weights, gate_up, lists, chunk, k, chunk_x, width, k, chunk_gu_out, 2 * ff);
+                    try b.geluMulRows(chunk_gu_out, chunk_gu_out.slice(ff * 4, chunk_gu_out.len - ff * 4), chunk_hidden, ff, n, 2 * ff, 2 * ff, ff);
+                    try b.matmulExperts(down_weights, down, lists, chunk, k, chunk_hidden, ff, 1, chunk_y, width);
+                    try b.combineExperts(chunk_y, chunk_weights, chunk_indices, null, chunk_out, .{ .columns = width, .slots = k, .rows = chunk, .experts = experts, .in_stride = width, .out_stride = width });
+                },
             };
             try b.commit();
-            const rate = case.bytes / 1e9 / ((b.gpuSeconds() - before) / @as(f64, @floatFromInt(repeats)));
+            const seconds = (b.gpuSeconds() - before) / @as(f64, @floatFromInt(repeats));
+            const rate = case.bytes / 1e9 / seconds;
             if (i < 2) continue; // warm-up
             samples[i - 2] = rate;
             best = @max(best, rate);
+            best_seconds = @min(best_seconds, seconds);
             total += rate;
         }
         std.debug.print("{s:<46} {d:>7.1} {d:>9.1} {d:>9.1} ", .{ case.name, case.bytes / 1e6, best, total / rounds });
         for (samples) |r| std.debug.print(" {d:.0}", .{r});
+        if (case.tokens != 0) std.debug.print("  ({d:.0} us per chunk; {d:.0} tok/s if 30 such layers were the whole cost)", .{ best_seconds * 1e6, @as(f64, @floatFromInt(case.tokens)) / (best_seconds * 30) });
         std.debug.print("\n", .{});
     }
 }
@@ -843,7 +1036,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-bench")) return matvecBench(alloc, if (args.len > 2) args[2] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matmul-bench")) return matmulBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
-    if (args.len == 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc);
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len != 1) return error.UnknownOption;
     try checkSegments(alloc);
 
@@ -2021,5 +2214,5 @@ pub fn main(init: std.process.Init) !void {
         if (p.command_buffers != 0) return error.ProfileCountedEmptyPass;
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, repeated bridge lifetimes, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, and per-dispatch profiling with capacity overflow.\n", .{});
 }

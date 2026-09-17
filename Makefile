@@ -113,8 +113,8 @@ bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, 
 bench-matmul: ## Throughput of the batched prefill matmul on model shapes, 256 tokens or ARGS=<tokens> (no model)
 	$(ZIG) build bench-matmul $(METAL) $(if $(ARGS),-- $(ARGS))
 
-bench-experts: ## GB/s of the gathered expert kernels on the 26B-A4B shape, 8 of 128 experts (no model)
-	$(ZIG) build bench-experts $(METAL)
+bench-experts: ## GB/s of the gathered expert kernels on the 26B-A4B shape, 8 of 128 experts; prefill tiles over ARGS tokens (no model)
+	$(ZIG) build bench-experts $(METAL) $(if $(ARGS),-- $(ARGS))
 
 agent: metal ## Interactive agent surface on the engine (Metal by default; ARGS="--think low")
 	$(BIN) agent --backend $(BACKEND) --model "$(MODEL)" $(ARGS)

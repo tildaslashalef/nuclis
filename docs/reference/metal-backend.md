@@ -304,7 +304,11 @@ memory, and leave the rest to the grid.
   tensor, any encoding through the segment bodies), `nu_gelu_mul_rows`
   (the gated GELU over strided rows, the up half of a fused gate-up row
   bound at its offset), and `nu_combine_experts` (the weighted sum of the
-  slots' down projections with an optional per-expert scale).
+  slots' down projections with an optional per-expert scale). Prefill
+  adds `nu_expert_lists` (the chunk's slot rows grouped by expert, with
+  the 32-row tile list) and `nu_matmul_experts` / `nu_matmul_experts_q4_0`
+  (the matmul body gathering its activation rows through the lists and
+  scattering the results back).
 - `nu_topk_partial` + `nu_topk_final` + `nu_expsum_partial` (KERN-06): the best
   256 logits by (value desc, index asc) and Σ exp((l − max) / T) as 64 F32
   partials with non-finite flags. The partial pass keeps 16 register-resident
@@ -500,6 +504,86 @@ pass (before the block walk it fell back to the generic decoder at
 splitting a block) is the follow-up if the per-token profile puts the
 down projection above its floor: at 8 selected experts × 30 layers the
 chain reads about 0.8 GB per token, roughly 5 ms at this rate.
+
+**Prefill.** A chunk of `chunk` tokens has `n = k · chunk` slot rows
+(token `t`, slot `s` is slot row `t · k + s`, the order `route` writes),
+and the point of the batched path is to read each expert's weights once
+per group of its rows instead of once per row. Two kernels, no host
+round trip inside the chunk:
+
+- `Backend.expertLists`: one 256-thread group turns `indices` into the
+  *lists* buffer (`expertListsLayout`): a threadgroup histogram over the
+  experts (atomics), the exclusive prefix sum, a serial pass by one
+  thread that writes the per-expert offsets and the **tile list** — for
+  each expert, one entry (expert, first, count) per 32 of its rows — and
+  a scatter that writes the **row list**, each expert's slot rows
+  contiguous from its offset. Σ ceil(count / 32) ≤ n / 32 + experts
+  (`expertTileBound`), so the host sizes the matmul grid before the
+  counts exist and tiles past the count exit at their first instruction.
+  The order within an expert comes from the atomics and is not
+  deterministic; every row's result is computed on its own, so the output
+  is. Indices are clamped as in the decode kernel.
+- `Backend.matmulExperts`: `nu_matmul_body`, the dense tile's body with a
+  `GATHER` flag. Threadgroup `g` serves tile `g / row_tiles` and row tile
+  `g % row_tiles` of that tile's expert (bytes at `expert · rows · stride`).
+  The tile's 32 activation rows are the slot rows `row_list[first ..
+  first + count]`, read from input row `slot_row / in_group` (`in_group`
+  = k on the gate-up projection, where a token's k slots share its
+  input; 1 on the down projection, one hidden row per slot); rows past
+  `count` stage zeros. The accumulators go through threadgroup memory
+  (`tile` reused: 32 × 64 F32 is exactly 64 × 64 half) and each valid
+  row is scattered to output row `slot_row`; nothing is written past the
+  count, so the scratch holds exactly `n` rows and needs no padding. Two
+  instantiations: 64 × 32 with half operands for Q4_0 under the matvec
+  alignment rules, the generic F32 32 × 32 tile for every other encoding
+  or alignment. The dense `nu_matmul` instantiations are the same body
+  with the flag off. The profile attributes no bytes to this kernel: what
+  it reads depends on the routing.
+
+The chain per layer is then `route` → `expertLists` → `matmulExperts`
+(gate-up, `in_group` k) → `geluMulRows` over `n` rows → `matmulExperts`
+(down, `in_group` 1) → `combineExperts` with `rows = chunk`.
+
+Evidence (`test-metal`): over a chunk of 45 tokens (135 slot rows, not a
+multiple of 32) with six experts and k 3, expert 0 forced onto every
+token (two tiles, one partial) and expert 5 onto none: the lists checked
+on the host (the skew, the offsets, every tile's expert / first / count,
+the row list a permutation of the slot rows grouped by expert); the
+outputs against `cpu.experts.ffn` per token and against the decode path
+row by row — the generic F32 tile within **1.1e-6** of max|y| (bound
+2e-5), the half tile **4.4e-4** (bound 2e-3: both operands of both
+projections rounded to half); a chunk of one token (three one-row tiles);
+rows not a multiple of 8, a short lists buffer, an unaligned input
+stride, a zero input group, and 257 experts refused before dispatch.
+
+`make bench-experts ARGS=<chunk>` (ReleaseSafe, M4 Pro, 2026-09-18), the same
+26B-A4B shape, the router over random logits (every expert touched), GB/s
+of the bytes the tiles read (one expert matrix per tile) and the time per
+chunk, 64 chains per command buffer, best of five:
+
+| Chunk | Slot rows | Tiles | Fill | gate-up GB/s | down GB/s | chain per chunk | tok/s if 30 layers were the whole cost |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 256 | 2,048 | 128 | 50 % | 41.8 | 41.1 | 10.5 ms | 809 |
+| 512 | 4,096 | 186 | 69 % | 42.0 | 41.2 | 15.9 ms | 1,074 |
+| 1024 | 8,192 | 315 | 81 % | 40.7 | 39.9 | 27.0 ms | 1,264 |
+
+The rate per tile byte is the dense tile's: at 256 tokens the gate-up
+tiles execute 32.5 GFLOP in 6.8 ms, 4.8 TFLOP/s, against 5.0 TFLOP/s for
+the dense 64 × 64 Q4_0 tile (`make bench-matmul`); the tile is
+compute-bound, not bandwidth-bound, at 32 tokens. What the number hides
+is the **fill**: with 2,048 slot rows over 128 experts an expert averages
+16 rows, so half of a 32-row tile multiplies zeros, and the useful rate
+is half the executed one. Larger chunks fill the tiles (the third column
+is `n / (32 · tiles)`), which is why the per-token cost falls with the
+chunk while the GB/s does not move; the adapter's chunk size for this
+family is a memory/latency trade the Metal plan decides. Against the
+alternative of looping the decode kernels over the chunk (2,048 × 3.3 MB
+= 6.8 GB per layer at the decode rate, about 40 ms), the tiles are four
+times faster at 256 tokens and six at 1,024. Follow-ups, not in scope: a
+16-row token tile for sparse chunks (the dense tile's rate falls with
+the token width, so the gain is unclear), a 64-token tile for chunks
+where experts exceed 32 rows, and Q4_K / Q6_K instantiations for other
+families.
 
 ### KERN-05 — per-block cost research (2026-09-08, closed without a kernel change)
 

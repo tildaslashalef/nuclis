@@ -746,8 +746,12 @@ gate-up 1,408 × 2,816 and down 2,816 × 704 per expert, Q4_0): GB/s of the
 selected experts' bytes for the gathered gate-up, the gathered down, and
 the whole decode chain (gate-up, gelu rows, down, combine), beside a dense
 matvec over the same byte count — the rate a gathered kernel can at most
-reach. Same methodology as `bench-kernels` (64 dispatches per command
-buffer, best and mean of five). Results and the reading of them are in
+reach; then the prefill tiles over a chunk of `ARGS=<chunk>` tokens (256
+by default) routed over random logits: GB/s of the bytes the tiles read
+(one expert matrix per 32-row tile), the time per chunk, and the tok/s
+that time alone would allow over 30 layers. Same methodology as
+`bench-kernels` (64 dispatches per command buffer, best and mean of
+five). Results and the reading of them are in
 [metal-backend.md § Gathered expert kernels](metal-backend.md#gathered-expert-kernels-kern-09).
 `bench-kernels` takes an optional encoding name (`ARGS=Q4_0`) to measure
 one kernel alone; a full run heats the GPU progressively (the encodings

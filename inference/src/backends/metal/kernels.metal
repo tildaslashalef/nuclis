@@ -587,6 +587,58 @@ kernel void nu_gelu_mul_rows(device const float * gate [[buffer(0)]],
     output[ulong(row) * p.out_stride + i] = nu_gelu(gate[ulong(row) * p.gate_stride + i]) * up[ulong(row) * p.up_stride + i];
 }
 
+// Row lists for the prefill path: one 256-thread group turns the routing of
+// a chunk (`n` = tokens · k slot rows, `indices[i]` the expert of slot row
+// i) into the `lists` buffer of u32 words the gathered matmul reads:
+//   [0] tile count, [1] n,
+//   [2 .. 2 + experts] exclusive prefix sum of the per-expert counts,
+//   [experts + 3 ..) `max_tiles` tiles of (expert, first, count): the 32-row
+//       tiles of each expert's rows, `first` an index into the row list,
+//   [experts + 3 + 3 · max_tiles ..) the row list: the slot rows grouped by
+//       expert (count[e] of them from offset[e]).
+// Sum of ceil(count/32) is at most n/32 + experts, which is how the host
+// bounds the matmul grid before the counts exist; tiles past the count exit.
+// The order of rows within an expert comes from atomics and is not
+// deterministic, but every row's result is computed independently, so the
+// output is. Indices are clamped so a corrupt routing buffer stays in bounds.
+#define NU_LISTS_MAX_EXPERTS 256
+struct ExpertListsParams { uint experts, n, max_tiles; };
+kernel void nu_expert_lists(device const uint * indices [[buffer(0)]],
+                            device uint * lists [[buffer(1)]],
+                            constant ExpertListsParams & p [[buffer(7)]],
+                            uint tid [[thread_position_in_threadgroup]]) {
+    threadgroup atomic_uint cursor[NU_LISTS_MAX_EXPERTS];
+    threadgroup uint offset[NU_LISTS_MAX_EXPERTS];
+    for (uint e = tid; e < p.experts; e += 256) atomic_store_explicit(&cursor[e], 0u, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = tid; i < p.n; i += 256) atomic_fetch_add_explicit(&cursor[min(indices[i], p.experts - 1)], 1u, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        device uint * tile = lists + p.experts + 3;
+        uint start = 0, tiles = 0;
+        for (uint e = 0; e < p.experts; ++e) {
+            uint count = atomic_load_explicit(&cursor[e], memory_order_relaxed);
+            offset[e] = start;
+            lists[2 + e] = start;
+            for (uint t = 0; t < count && tiles < p.max_tiles; t += 32, ++tiles) {
+                tile[3 * tiles] = e; tile[3 * tiles + 1] = start + t; tile[3 * tiles + 2] = min(32u, count - t);
+            }
+            start += count;
+        }
+        lists[2 + p.experts] = start;
+        lists[0] = tiles;
+        lists[1] = start;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint e = tid; e < p.experts; e += 256) atomic_store_explicit(&cursor[e], 0u, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    device uint * rows = lists + p.experts + 3 + 3 * p.max_tiles;
+    for (uint i = tid; i < p.n; i += 256) {
+        uint e = min(indices[i], p.experts - 1);
+        rows[offset[e] + atomic_fetch_add_explicit(&cursor[e], 1u, memory_order_relaxed)] = i;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Batched matrix product for prefill: out[t][r] = Σ_k W[r][k] · X[t][k]
 // over a chunk of tokens. A 128-thread group (four SIMD groups) owns a 32-row
@@ -755,24 +807,28 @@ inline void nu_tile_segment(device const uchar * row, uint encoding, uint segmen
 // tiles); otherwise load B blocks straight from device memory as F32
 // (transposed), which keeps the small tile at 4 KB of threadgroup memory
 // so more groups fit per core — what a one-token-tile chunk needs.
-template <uint ENC, uint TR, uint TT, typename TW, typename TX, bool STAGE>
-kernel void nu_matmul_t(device const uchar * weights [[buffer(0)]],
-                        device const float * input [[buffer(1)]],
-                        device float * output [[buffer(2)]],
-                        constant MatmulParams & p [[buffer(7)]],
-                        uint group [[threadgroup_position_in_grid]],
-                        uint tid [[thread_position_in_threadgroup]],
-                        uint sg [[simdgroup_index_in_threadgroup]]) {
+// GATHER (the expert tiles, one 32-row token tile): the tile's activation
+// rows are the `valid` slot rows `row_list[j]`, read from input row
+// `row_list[j] / in_group` (the gate-up projection shares a token's input
+// across its k slots; the down projection reads one hidden row per slot),
+// rows past `valid` stage zeros, and the result goes through threadgroup
+// memory (reusing `tile`, which holds TT × TR floats exactly) to scatter
+// each valid row to output row `row_list[j]`; no padding rows are written.
+template <uint ENC, uint TR, uint TT, typename TW, typename TX, bool STAGE, bool GATHER>
+inline void nu_matmul_body(device const uchar * weights, device const float * input, device float * output, MatmulParams p,
+                           uint row0, uint token0, device const uint * row_list, uint valid, uint in_group,
+                           threadgroup TW * tile, threadgroup TX * xt, uint tid, uint sg) {
     const uint RI = TR / 16, RJ = TT / 16, NR = TR / 32, NT = TT / 32;
-    threadgroup TW tile[TR * 64];
-    threadgroup TX xt[STAGE ? 64 * TT : 1];
-    const uint row0 = (group % p.row_tiles) * TR, token0 = (group / p.row_tiles) * TT;
+    static_assert(!GATHER || (STAGE && TT == 32 && TT * TR * sizeof(float) <= TR * 64 * sizeof(TW)), "gathered tiles stage one 32-row token tile and scatter through `tile`");
     const uint sub_row = (sg & 1) * (TR / 2), sub_token = (sg >> 1) * (TT / 2);
     simdgroup_float8x8 acc[RI][RJ];
     for (uint i = 0; i < RI; ++i) for (uint j = 0; j < RJ; ++j) acc[i][j] = simdgroup_float8x8(0.0f);
     const uint r = tid >> 2, seg = tid & 3;
     device const uchar * rows[NR];
     for (uint i = 0; i < NR; ++i) rows[i] = weights + ulong(min(row0 + r + 32 * i, p.rows - 1)) * p.stride;
+    // The activation row this thread stages for tile row `r` (NT == 1 when gathering).
+    const bool gathered = GATHER && r < valid;
+    const uint source = GATHER ? (gathered ? row_list[r] / in_group : 0u) : token0 + r;
     for (uint k0 = 0; k0 < p.columns; k0 += 64) {
         for (uint i = 0; i < NR; ++i) {
             float4 q[4];
@@ -781,9 +837,9 @@ kernel void nu_matmul_t(device const uchar * weights [[buffer(0)]],
             for (uint c = 0; c < 4; ++c) slot[c] = vec<TW, 4>(q[c]);
         }
         if (STAGE) for (uint t = 0; t < NT; ++t) {
-            device const float4 * xrow = (device const float4 *)(input + ulong(token0 + r + 32 * t) * p.in_stride + k0 + seg * 16);
+            device const float4 * xrow = (device const float4 *)(input + ulong(source + 32 * t) * p.in_stride + k0 + seg * 16);
             for (uint c = 0; c < 4; ++c) {
-                float4 x = xrow[c];
+                float4 x = (GATHER && !gathered) ? float4(0.0f) : xrow[c];
                 threadgroup TX * column = xt + (seg * 16 + 4 * c) * TT + r + 32 * t;
                 column[0] = TX(x.x); column[TT] = TX(x.y); column[2 * TT] = TX(x.z); column[3 * TT] = TX(x.w);
             }
@@ -804,11 +860,61 @@ kernel void nu_matmul_t(device const uchar * weights [[buffer(0)]],
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
+    if (GATHER) {
+        threadgroup float * staged = (threadgroup float *)tile; // [token][row], free after the last barrier
+        for (uint i = 0; i < RI; ++i) for (uint j = 0; j < RJ; ++j)
+            simdgroup_store(acc[i][j], staged + (sub_token + 8 * j) * TR + sub_row + 8 * i, TR, ulong2(0, 0), true);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // Thread: tile row tid / 4, a quarter of its TR outputs.
+        const uint j = tid >> 2, c0 = (tid & 3) * (TR / 4);
+        if (j < valid) {
+            device float * out = output + ulong(row_list[j]) * p.out_stride + row0;
+            for (uint c = c0; c < c0 + TR / 4; ++c) if (row0 + c < p.rows) out[c] = staged[j * TR + c];
+        }
+        return;
+    }
     for (uint i = 0; i < RI; ++i) {
         if (row0 + sub_row + 8 * i + 8 > p.rows) continue;
         for (uint j = 0; j < RJ; ++j)
             simdgroup_store(acc[i][j], output + ulong(token0 + sub_token + 8 * j) * p.out_stride + row0 + sub_row + 8 * i, p.out_stride, ulong2(0, 0), true);
     }
+}
+template <uint ENC, uint TR, uint TT, typename TW, typename TX, bool STAGE>
+kernel void nu_matmul_t(device const uchar * weights [[buffer(0)]],
+                        device const float * input [[buffer(1)]],
+                        device float * output [[buffer(2)]],
+                        constant MatmulParams & p [[buffer(7)]],
+                        uint group [[threadgroup_position_in_grid]],
+                        uint tid [[thread_position_in_threadgroup]],
+                        uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup TW tile[TR * 64];
+    threadgroup TX xt[STAGE ? 64 * TT : 1];
+    const uint row0 = (group % p.row_tiles) * TR, token0 = (group / p.row_tiles) * TT;
+    nu_matmul_body<ENC, TR, TT, TW, TX, STAGE, false>(weights, input, output, p, row0, token0, nullptr, 0, 1, tile, xt, tid, sg);
+}
+// Gathered expert matmul over the row lists of `nu_expert_lists`: threadgroup
+// `group` serves tile `group / row_tiles` of the list (exiting past the tile
+// count) and row tile `group % row_tiles` of that tile's expert, whose bytes
+// start at expert · rows · stride.
+struct MatmulExpertsParams { uint columns, encoding, stride, rows, in_stride, out_stride, row_tiles, experts, in_group, tiles_at, rows_at; };
+template <uint ENC, uint TR, typename TW, typename TX>
+kernel void nu_matmul_experts_t(device const uchar * weights [[buffer(0)]],
+                                device const float * input [[buffer(1)]],
+                                device float * output [[buffer(2)]],
+                                device const uint * lists [[buffer(3)]],
+                                constant MatmulExpertsParams & p [[buffer(7)]],
+                                uint group [[threadgroup_position_in_grid]],
+                                uint tid [[thread_position_in_threadgroup]],
+                                uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup TW tile[TR * 64];
+    threadgroup TX xt[64 * 32];
+    const uint index = group / p.row_tiles;
+    if (index >= lists[0]) return;
+    device const uint * tile_entry = lists + p.tiles_at + 3 * index;
+    const uint expert = min(tile_entry[0], p.experts - 1);
+    MatmulParams shape = { p.columns, p.encoding, p.stride, p.rows, 32, p.in_stride, p.out_stride, p.row_tiles };
+    nu_matmul_body<ENC, TR, 32, TW, TX, true, true>(weights + ulong(expert) * ulong(p.rows) * ulong(p.stride), input, output, shape,
+                                                    (group % p.row_tiles) * TR, 0, lists + p.rows_at + tile_entry[1], tile_entry[2], p.in_group, tile, xt, tid, sg);
 }
 // Host-visible instantiations; names and tile shapes must match `kernel_names`
 // and `matmulGeometry` in root.zig. The generic tile keeps F32 operands
@@ -832,6 +938,13 @@ template [[host_name("nu_matmul_q6_k_32")]] kernel void nu_matmul_t<14, 32, 32, 
 template [[host_name("nu_matmul_iq3_s_32")]] kernel void nu_matmul_t<21, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq4_xs_32")]] kernel void nu_matmul_t<23, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q4_0_32")]] kernel void nu_matmul_t<2, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+// Gathered expert tiles: 64 rows × 32 slot rows with half operands for Q4_0
+// (an expert averages k · chunk / experts slot rows per chunk, 16 on the
+// 26B-A4B at 256 tokens, so one token tile covers most experts), and the
+// generic F32 32 × 32 tile for every other encoding or alignment.
+#define NU_MATMUL_EXPERTS_ARGS device const uchar *, device const float *, device float *, device const uint *, constant MatmulExpertsParams &, uint, uint, uint
+template [[host_name("nu_matmul_experts")]] kernel void nu_matmul_experts_t<NU_TILE_GENERIC, 32, float, float>(NU_MATMUL_EXPERTS_ARGS);
+template [[host_name("nu_matmul_experts_q4_0")]] kernel void nu_matmul_experts_t<2, 64, half, half>(NU_MATMUL_EXPERTS_ARGS);
 
 // Embedding lookup: dequantize row `token` into `output`; one thread per segment.
 struct EmbedParams { uint columns; uint encoding; uint stride; uint token; };

@@ -86,7 +86,8 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   array untokenized, as `bench` does. `make bench-kernels` ranks matvec kernel variants without a model,
   `make bench-matmul` the prefill tile per encoding (generic and specialized;
   `ARGS=<tokens>` for a chunk other than 256), `make bench-experts` the
-  gathered expert kernels on the 26B-A4B shape;
+  gathered expert kernels on the 26B-A4B shape (decode, then the prefill
+  tiles over `ARGS=<chunk>` tokens, 256 by default);
   `make bench-profile` times every dispatch inside real tokens (diagnostic,
   ~8 % perturbation); `make trace` records a Metal System Trace;
   `make baseline` runs the reference workload on the committed token arrays

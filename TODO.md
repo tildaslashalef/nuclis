@@ -16,24 +16,25 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-KERN-09 session 1 done on 2026-09-17: the decode side of the expert
-kernels exists and is checked (`cpu.experts` reference; `nu_route`,
-`nu_matvec_experts`, `nu_gelu_mul_rows`, `nu_combine_experts`; fixtures in
-`test-metal`; `make bench-experts`), and the Q4_0 matvec now walks
-32-value blocks so the 704-column expert down projection takes the
-specialized kernel. Session 2 is the prefill path (below). Two families are
-planned, in this order: **Gemma 4 26B-A4B** (the first mixture of experts;
-one new kernel family, everything else reused) and then Meta's **Muse
-Glimmer 30B** (a dense agentic model with a new tokenizer splitter and a
-new chat-protocol decoder). The 26B-A4B
-facts were read on 2026-09-16 from the remote QAT header (`nuclis model
-inspect`, no weights) and the pinned llama.cpp `7620399`
-(`src/models/gemma4.cpp`); the Muse facts from its model card, the base
-repository's `config.json`, the remote GGUF header, and the same reference,
-which already implements both architectures and chat formats, so the
-oracles exist without a reference upgrade.
+KERN-09 closed on 2026-09-18: the expert kernels exist on both paths
+(`cpu.experts` reference; decode `route`, `matvecExperts`, `geluMulRows`,
+`combineExperts`; prefill `expertLists` and the gathered `matmulExperts`
+tiles), checked in `test-metal` and measured by `make bench-experts`
+([metal-backend.md § Gathered expert kernels](docs/reference/metal-backend.md#gathered-expert-kernels-kern-09)).
+Next is MODL-09 session 1: the 26B-A4B adapter and CPU reference (the
+file is already pulled and verified; its facts are below). Two families
+are planned, in this order: **Gemma 4 26B-A4B** (the first mixture of
+experts; the kernels now exist, everything else reused) and then Meta's
+**Muse Glimmer 30B** (a dense agentic model with a new tokenizer splitter
+and a new chat-protocol decoder). The 26B-A4B facts were read on
+2026-09-16 from the remote QAT header (`nuclis model inspect`, no
+weights) and the pinned llama.cpp `7620399` (`src/models/gemma4.cpp`);
+the Muse facts from its model card, the base repository's `config.json`,
+the remote GGUF header, and the same reference, which already implements
+both architectures and chat formats, so the oracles exist without a
+reference upgrade.
 
-Order: KERN-09 → MODL-09 → MODL-10 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
+Order: MODL-09 → MODL-10 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 All four files of both families are pulled and verified under
 `~/.nuclis/models` (2026-09-17) and both have catalogue entries ahead of
 their adapters; after AGNT-10 the roadmap continues with speculative
@@ -42,7 +43,6 @@ decoding across the families, then performance, then vision
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-09 | Expert routing and gathered expert kernels (decode and prefill) | 2 |
 | MODL-09 | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2 |
 | MODL-10 | Gemma 4 26B-A4B: catalogue, acceptance record, agent check | 1 |
 | MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2 |
@@ -99,62 +99,6 @@ rejects the file (UnsupportedConfiguration)* — the expert tensors.
   layers ≈ 1.4B, shared FFNs ≈ 0.5B, attention ≈ 1.1B, the tied head
   ≈ 0.7B) ≈ 2.1 GB at Q4_0, against 16 GB for the dense 27B — the reason
   this family comes first.
-
-## KERN-09 — Expert routing and gathered expert kernels
-
-**Why.** The one thing the 26B-A4B needs that the tree lacks: selecting
-experts per token and running the selected experts' quantized weights
-without touching the other 120.
-
-**Session 1 (done 2026-09-17).** `cpu.experts` (`ExpertMatrix`, `route`,
-`ffn`; [cpu-reference.md](docs/reference/cpu-reference.md#mixture-of-experts-routing-and-the-gathered-ffn));
-`Backend.route` (one 256-thread group per logit row, selection by logit,
-weights renormalized with the F16-normal floor), `Backend.matvecExperts`
-(the segment bodies over an expert slice, any encoding, shared or
-per-slot inputs, indices clamped), `Backend.geluMulRows`,
-`Backend.combineExperts`; `test-metal` checks (router with ties exact,
-gathered matvec on both paths with NaN in the unselected experts, the
-three-token decode chain against F64 at 1.5e-8); `make bench-experts`
-(gate-up 215 GB/s = dense, down 154 GB/s: a 22-block row leaves 10 of
-32 lanes idle) — all in
-[metal-backend.md § Gathered expert kernels](docs/reference/metal-backend.md#gathered-expert-kernels-kern-09).
-The Q4_0 matvec body walks 32-value blocks (`lane + 32·i`, the same
-order as before for whole strides), so `specializedMatvec` no longer
-requires a multiple of 144 B; the QAT F32 comparison is unchanged
-(7.7e-5 / 3.2e-6).
-
-**Session 2: the prefill path.**
-- **Row lists on the GPU** (no host round trip inside a chunk): after
-  `route` over the chunk's rows, a counting pass (`atomic` histogram over
-  `experts`), an exclusive prefix sum, and a scatter that writes for each
-  expert the list of its (token, slot) pairs; then a tile list — the
-  (expert, first row) pairs of every 32-row tile, at most
-  `k·chunk/32 + experts` (192 for 8 × 256 over 128 experts) — so the
-  matmul grid is bounded before the counts are known and empty tiles
-  exit. Order within an expert is nondeterministic (atomics) but each
-  row's result is computed independently, so the output is not.
-- **Gathered matmul**: an instantiation of `nu_matmul_t` whose activation
-  rows are gathered through the row list into the staged tile and whose
-  output rows are scattered back through it (a `simdgroup_store` to
-  threadgroup memory, then per-row stores); 64 rows × 32 tokens (an
-  expert averages `k·chunk/experts` = 16 rows per 256-token chunk), the
-  Q4_0 half tile; gate-up then `geluMulRows` over `k·chunk` rows then
-  down, and `combineExperts` with `rows = chunk`. Scratch: `k × chunk`
-  rows of `2·ff` and of `ff`, and `k × chunk × n_embd` for the down
-  outputs (8 × 256 × 2816 × 4 = 23 MB).
-- Fixtures: the prefill path against the decode path row by row (both
-  against `cpu.experts.ffn`), a chunk where one expert takes most rows
-  and one none, a chunk of one row, a count that is not a multiple of
-  32; `bench-experts` gains the prefill case (GB/s of the selected
-  experts' bytes per token tile and the tok/s ceiling).
-- Follow-ups noted, not in scope: a short-row lane mapping for the
-  22-block down projection; Q4_K/Q6_K gathered variants for other
-  families (the segment bodies already serve them at decode).
-
-**Acceptance.** Kernel fixtures exact (routing) and within the Q4_0
-matvec tolerance (experts); a kernel benchmark of achieved GB/s over the
-selected experts recorded (decode done; prefill to add); `make check` and
-`test-metal`.
 
 ## MODL-09 — Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan
 

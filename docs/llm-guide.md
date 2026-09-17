@@ -2058,3 +2058,129 @@ Read: `inference/src/quant/decode.zig` (the `2 =>` arm and its test),
 `inference/src/backends/metal/root.zig`,
 [reference/gemma4.md § Q4_0 path](reference/gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12),
 and [reference/quantization.md](reference/quantization.md).
+
+## 48. Mixture of experts: sparsity is a gift at decode and a bill at prefill
+
+KERN-09 built the kernels for the first sparse model in the tree, Gemma 4
+26B-A4B, before its adapter exists. The name says the whole idea: 26
+billion parameters stored, about 4 billion *active* per token. Every
+layer's feed-forward block is replaced by 128 small ones (the "experts",
+each a gated-GELU FFN of width 704 instead of one of width 2,112 beside
+them) and a router that picks 8 per token. § 6 said decode is bound by
+the bytes read per token; a token here reads 8 of 128 expert matrices, so
+the expert bytes per token are one sixteenth of what a dense model of the
+same size would read. That arithmetic is why this family comes before the
+dense 30B in the plan: 2.1 GB per token at Q4_0 against 16 GB for the
+dense 27B, on the same memory bus.
+
+**Routing is a softmax you never finish.** The router is a small matrix
+(2,816 × 128) whose output is a logit per expert. The reference takes the
+softmax, keeps the 8 largest probabilities, and renormalizes them to sum
+one. Two details carry over from § 30's sampler. Selection compares the
+*logits*, not the probabilities: softmax is monotone, so the order is the
+same, but `exp` rounds, and two logits that are equal (ties happen; the
+fixture has three at the top) or a hair apart could swap order in a
+kernel that rounds differently from the reference — comparing the raw
+values with a lowest-index tie-break makes the indices exact, bit for
+bit, and only the weights carry rounding. And the renormalizing sum is
+clamped below at the smallest F16 normal (`weight_sum_floor`, about
+6.1e-5): a token whose selected probabilities all underflow would divide
+by zero, and the reference's floor is part of the contract, not a
+kernel's choice. The GPU kernel is one 256-thread group per token, one
+logit per thread, and `k` rounds of "best untaken" — the shuffle
+reduction § 30 used for top-k sampling, on 128 values instead of 248,320.
+
+**A 3-D tensor is a row of matrices.** GGUF stores the experts of one
+projection as a single tensor `[experts][rows][columns]`, the experts
+contiguous. `cpu.ExpertMatrix.expert(e)` is a slice: `bytes[e ·
+per_expert ..]` viewed as the dense `Matrix` of § 11. That is the whole
+reason the decode kernels were cheap. `nu_matvec_experts` is
+`nu_segment_sums` — the same lane arithmetic as the merged projections of
+§ 28, specialized or generic by encoding — with the weight pointer
+offset by `expert · rows · stride` before the loop; a selected expert
+costs exactly the bytes of a dense matrix of its size, and the other 120
+are never touched. `test-metal` proves the "never" by writing NaN into
+every scale of the unselected experts and checking the outputs are
+bit-identical. One rule is new: the expert index comes from a buffer the
+GPU wrote a moment earlier, so the kernel clamps it to the tensor. A
+corrupt routing buffer then yields a wrong answer, which the comparison
+catches, instead of a read past the tensor, which nothing would.
+
+**Decode: four dispatches and one geometry lesson.** Route, gathered
+gate-up (all 8 slots share the token's input), the gated GELU over the 8
+hidden rows, gathered down (each slot its own hidden row), then a
+weighted sum of the 8 projections with the routing weights and the
+per-expert down scale the checkpoint carries. Measured on the 26B-A4B
+shape, the gathered gate-up runs at 215 GB/s of selected bytes — the
+dense matvec's rate over the same byte count, so gathering costs
+nothing. The down projection runs at 154. Its row is 704 values, 22 Q4_0
+blocks, and § 47's kernel gives one block per lane: 10 of 32 lanes idle
+in its single pass. Nothing about sparsity; the row is short. The lane
+mapping for short rows is a follow-up because at 8 experts × 30 layers
+the whole chain reads 0.8 GB per token, about 5 ms, and the profile of
+a real token decides whether that 25 % matters.
+
+**Prefill: the same problem as § 31, harder.** A dense prefill reads
+each weight once per tile of 32 or 64 tokens; that is the entire gain of
+chunking. In a sparse layer each token wants its own 8 experts, so "the
+tokens that use expert 17" are scattered through the chunk, and a tile
+of consecutive tokens would need 8 × 32 different matrices. The rows
+have to be regrouped by expert first — a sort by key — and it has to
+happen on the GPU, because a host round trip per layer per chunk (30 of
+them per 256 tokens) would cost more than the matmul. `nu_expert_lists`
+is that sort in one threadgroup: a histogram over the experts with
+threadgroup atomics, an exclusive prefix sum, a scatter of each slot row
+(token, slot) into its expert's segment. It also writes the *tile list*:
+one entry per 32 rows of each expert. Here is the constraint a CPU
+programmer does not have: the matmul's grid must be sized when it is
+*recorded*, before the counts exist. So the host dispatches a bound —
+Σ ceil(count / 32) ≤ n / 32 + experts, 192 tiles for 2,048 rows over 128
+experts — and tiles past the real count exit at their first instruction.
+The bound is the price of never reading the counts back. Atomics make
+the order of rows within an expert nondeterministic; that is harmless
+here because each row's result is computed on its own (a reduction
+across rows would not be, which is why the router avoids atomics).
+
+**The gathered tile is the dense tile with two indirections.** The
+prefill kernel is § 37's `nu_matmul_t` body with a `GATHER` flag: the
+weight base is the tile's expert, the 32 activation rows are read
+through the row list (`row / k` for the gate-up projection, since a
+token's 8 slots share its input; the row itself for the down
+projection), rows past the tile's count stage zeros, and the result goes
+through threadgroup memory — the 64 × 64 half tile is exactly 32 × 64
+floats, so the buffer is reused — to be scattered to each row's slot in
+the output. Nothing is written past the count, which is why the scratch
+holds exactly `k · chunk` rows with no padding. The dense instantiations
+are the same body with the flag off, so the refactor could not change
+them silently: `test-metal` runs the dense tiles against the CPU before
+it runs the gathered ones.
+
+**What the measurement said, and what it means for sparse models.** The
+gathered gate-up tiles run at 4.8 TFLOP/s executed, against 5.0 for the
+dense 64 × 64 Q4_0 tile: per executed multiply, the gathered tile is the
+dense tile. But at 256 tokens the 2,048 slot rows spread over 128
+experts give 16 rows per expert, and a 32-row tile is half zeros; the
+useful rate is half the executed one. The chunk fills the tiles: 50 % at
+256 tokens, 69 % at 512, 81 % at 1,024, and the per-token cost falls
+accordingly (10.5 → 27.0 ms per layer-chunk for 4× the tokens) while the
+GB/s of tile bytes stays at 41. Read that beside § 31 and § 37. At
+decode, sparsity is pure gain: fewer bytes, same rate. At prefill, the
+tile's economics depend on how many *rows share a matrix*, and sparsity
+divides that number by `experts / k` — sixteen here. A sparse model's
+prefill is compute-bound at a lower fill than a dense one's, and the
+chunk size becomes a lever it was not before (a 1,024-token chunk needs
+92 MB of down-projection scratch, the memory/latency trade the adapter's
+Metal plan makes). The alternative — looping the decode kernels over the
+chunk — would read 6.8 GB per layer at 256 tokens; the tiles are four
+times faster there and six at 1,024, which is the gain that justifies
+the sort.
+
+Read: `inference/src/backends/cpu/experts.zig` (`route`, `Ffn`, `ffn`),
+`inference/src/backends/metal/kernels.metal` (`nu_route`,
+`nu_matvec_experts`, `nu_expert_lists`, `nu_matmul_body` and
+`nu_matmul_experts_t`), the encoders `route`, `matvecExperts`,
+`expertLists`, and `matmulExperts` in
+`inference/src/backends/metal/root.zig`, `checkExperts` and
+`expertsBench` in `inference/metal-check.zig`,
+[reference/cpu-reference.md § Mixture of experts](reference/cpu-reference.md#mixture-of-experts-routing-and-the-gathered-ffn),
+and [reference/metal-backend.md § Gathered expert kernels](reference/metal-backend.md#gathered-expert-kernels-kern-09).

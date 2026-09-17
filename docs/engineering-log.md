@@ -69,6 +69,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-11 | A truncated tool call no longer bricks the session; reopened thought channels; copied bracket pieces | 2026-09-17 |
 | APPS-10 | `model ls` as one aligned grid | 2026-09-17 |
 | TERM-08 | The welcome: ASCII wordmark and session facts; the model's name on the status bar | 2026-09-17 |
+| KERN-09 | Expert routing and gathered expert kernels (decode and prefill) | 2026-09-17 / 2026-09-18 |
 
 ## Context
 
@@ -1960,3 +1961,61 @@ terminal on the default model.
 **Remaining.** The hint row still sits under the editor as before; the
 startup notice for a forced profile is printed in addition to the
 welcome's `(forced)`.
+
+### KERN-09 — Expert routing and gathered expert kernels (decode and prefill) (2026-09-17 / 2026-09-18)
+
+**Outcome.** The one thing the Gemma 4 26B-A4B needs that the tree
+lacked: selecting experts per token and running the selected experts'
+quantized weights without touching the other 120. The CPU reference
+`cpu.experts` (`ExpertMatrix` over a 3-D tensor of contiguous expert
+matrices, `route` with softmax, top-k by logit and renormalized weights
+under the F16-normal floor, the gathered gated-GELU `ffn` in F64). On
+Metal, the decode path in four dispatches per layer — `route` (one
+256-thread group per logit row), `matvecExperts` (the segment bodies over
+a selected expert's slice, any encoding, shared or per-slot inputs,
+indices clamped), `geluMulRows`, `combineExperts` (optional per-expert
+down scale) — and the prefill path in two more: `expertLists` (one
+threadgroup groups the chunk's slot rows by expert and writes the 32-row
+tile list, bounded by n / 32 + experts before the counts exist) and
+`matmulExperts` (the dense tile body with a gather flag: activation rows
+gathered through the row list, results scattered back through
+threadgroup memory, no padding rows; a 64 × 32 half tile for Q4_0 and
+the generic F32 32 × 32 tile otherwise). Along the way the Q4_0 matvec
+body walks 32-value blocks rather than 256-value strides, so a
+704-column row (22 blocks) takes the specialized kernel.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB, `make check` (`zig build test`
+400, `test-metal`). Router vs the F64 reference on 128 experts (k 8, ties
+at the top and the k boundary, an all-equal row, a 40× spread) and 37
+experts (k 5): indices exact, weights within 1.5e-8. Gathered Q4_0 matvec
+on both kernel paths with NaN in every unselected expert: selected
+outputs bit-identical. Decode chain over three tokens vs `cpu.experts.ffn`:
+1.5e-8 of (1 + max|y|). Prefill chain over a skewed 45-token chunk (135
+slot rows; one expert on every token, one on none) vs the reference and
+vs the decode path row by row: F32 tile 1.1e-6 of max|y|, half tile
+4.4e-4; the lists checked on the host; a one-token chunk; the contract
+rejections. `make bench-experts` (ReleaseSafe, 2026-09-17/18): decode
+gate-up 215 GB/s (= dense), down 154 GB/s (22-block rows leave 10 of 32
+lanes idle), chain 172 GB/s of the selected experts' bytes; prefill
+tiles at the dense tile's compute rate (4.8 TFLOP/s executed against
+5.0 for the dense 64 × 64 Q4_0 tile), 41 GB/s of tile bytes at every
+chunk, with the useful rate set by the tile fill — 50 % at 256 tokens
+(10.5 ms per layer-chunk), 69 % at 512, 81 % at 1,024 (27.0 ms) — four
+to six times faster than looping the decode kernels over the chunk.
+Details and the tables in
+[metal-backend.md § Gathered expert kernels](reference/metal-backend.md#gathered-expert-kernels-kern-09).
+
+**Files.** `inference/src/backends/cpu/experts.zig`,
+`inference/src/backends/cpu/root.zig`,
+`inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
+`inference/build.zig`, `build.zig`, `Makefile`,
+`docs/reference/cpu-reference.md`, `docs/reference/metal-backend.md`,
+`docs/reference/bench.md`, `docs/development.md`, `docs/llm-guide.md`
+(§ 48).
+
+**Remaining.** A short-row lane mapping for the 22-block down projection
+at decode; a 16-row or 64-row token tile for chunks whose experts are far
+from 32 rows; Q4_K / Q6_K gathered tile instantiations for other
+families (the segment bodies already serve them at decode); the order of
+rows within an expert is atomic, not deterministic (the outputs are).
