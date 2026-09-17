@@ -1917,12 +1917,14 @@ cells in), the status column the widest status word, the path column the
 widest main or companion path, and every size is right-aligned after it;
 a main file's detail row (size, encoding, commit, digest) and its
 `registered as` line start at the path column; the "other files" and
-"missing entries" sections align their own columns the same way. The
-JSON form is unchanged.
+"missing entries" sections align their own columns the same way. Sizes
+read in decimal units (`16.46 GB`, `931.1 MB`); the JSON form and the pull
+report keep exact bytes.
 
-**Evidence.** `zig build test` (396; the `ls` test now derives the
-expected column positions from `catalog.name_width`); `nuclis model ls`
-on the user's five catalogue entries and two other files.
+**Evidence.** `zig build test` (397; the `ls` test now derives the
+expected column positions from `catalog.name_width`; the unit formatter
+has its own); `nuclis model ls` on the user's five catalogue entries and
+two other files.
 
 **Files.** `src/model.zig`.
 

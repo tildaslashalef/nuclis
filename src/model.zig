@@ -678,7 +678,8 @@ pub const Listing = struct {
             try column(out, path, row.path, off, 0);
             try out.writeByte('\n');
             try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
-            try out.print("{s}{d:>13}{s} bytes  {s} {s}  commit {s}{s}{s}  sha256 {s}{s}{s}\n", .{ number, row.size, off, row.architecture, row.quantization, hash, row.revision[0..12], off, hash, row.sha256, off });
+            var size_buffer: [16]u8 = undefined;
+            try out.print("{s}{s:>9}{s}  {s} {s}  commit {s}{s}{s}  sha256 {s}{s}{s}\n", .{ number, humanSize(&size_buffer, row.size), off, row.architecture, row.quantization, hash, row.revision[0..12], off, hash, row.sha256, off });
             if (row.registered) |r| {
                 try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
                 try renderRegistered(out, r, sty);
@@ -688,7 +689,8 @@ pub const Listing = struct {
                 try column(out, number, @tagName(c.role), off, name_w - 2);
                 try column(out, sty.on(statusStyle(c.status)), @tagName(c.status), off, status_w);
                 try column(out, path, c.path, off, path_w);
-                try out.print(" {s}{d:>13}{s} bytes  {s}not loaded yet: {s}{s}\n", .{ number, c.size, off, sty.on(.dim), c.loaded_by, off });
+                var companion_size: [16]u8 = undefined;
+                try out.print(" {s}{s:>9}{s}  {s}not loaded yet: {s}{s}\n", .{ number, humanSize(&companion_size, c.size), off, sty.on(.dim), c.loaded_by, off });
             }
         }
         if (self.other.len > 0) {
@@ -698,7 +700,8 @@ pub const Listing = struct {
             for (self.other) |f| {
                 try out.print("  {s}{s}{s}", .{ path, f.path, off });
                 try out.splatByteAll(' ', width - f.path.len + 2);
-                try out.print("{s}{d:>13}{s}  ", .{ number, f.size, off });
+                var size_buffer: [16]u8 = undefined;
+                try out.print("{s}{s:>9}{s}  ", .{ number, humanSize(&size_buffer, f.size), off });
                 if (f.sidecar) |s| {
                     try out.print("{s}{s:<7}{s}  {s}{s}  {s}{s}", .{ number, @tagName(s.role), off, hash, s.revision[0..12], s.sha256, off });
                     if (s.size != f.size) try out.print("  {s}(size differs from the sidecar){s}", .{ sty.on(.warning), off });
@@ -723,6 +726,21 @@ pub const Listing = struct {
         if (self.outside_layout > 0) try out.print("\n{s}{d} GGUF file(s) outside the <owner>/<repo>/ layout are not listed{s}\n", .{ sty.on(.warning), self.outside_layout, off });
     }
 };
+
+/// A size for reading: decimal units, two decimals from a gigabyte up,
+/// one below (`16.46 GB`, `931.1 MB`, `12.0 KB`, `512 B`). The JSON form
+/// and the pull report keep exact bytes.
+fn humanSize(buffer: []u8, bytes: u64) []const u8 {
+    const b: f64 = @floatFromInt(bytes);
+    return if (bytes >= 1_000_000_000)
+        std.fmt.bufPrint(buffer, "{d:.2} GB", .{b / 1e9}) catch "?"
+    else if (bytes >= 1_000_000)
+        std.fmt.bufPrint(buffer, "{d:.1} MB", .{b / 1e6}) catch "?"
+    else if (bytes >= 1_000)
+        std.fmt.bufPrint(buffer, "{d:.1} KB", .{b / 1e3}) catch "?"
+    else
+        std.fmt.bufPrint(buffer, "{d} B", .{bytes}) catch "?";
+}
 
 /// One grid cell: styled text padded to `width` (plus one separating
 /// space); a width of 0 pads nothing, for the last cell of a row.
@@ -1093,6 +1111,14 @@ fn renderInspect(out: *std.Io.Writer, report: InspectReport, json: bool, sty: st
     try out.print("{s}Directory read: {d} bytes in {d} request(s); no weights downloaded.{s}\n", .{ sty.on(.dim), report.bytes_read, report.requests, sty.off() });
 }
 
+test "sizes read in decimal units, exact bytes below a kilobyte" {
+    var buffer: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("16.46 GB", humanSize(&buffer, 16464440224));
+    try std.testing.expectEqualStrings("931.1 MB", humanSize(&buffer, 931146432));
+    try std.testing.expectEqualStrings("12.0 KB", humanSize(&buffer, 12000));
+    try std.testing.expectEqualStrings("512 B", humanSize(&buffer, 512));
+}
+
 test "rfc3339 renders UTC from Unix seconds" {
     var buffer: [20]u8 = undefined;
     try std.testing.expectEqualStrings("1970-01-01T00:00:00Z", rfc3339(&buffer, 0));
@@ -1273,7 +1299,7 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     const role_row = try std.fmt.allocPrint(alloc, "    mtp{s}mismatch   unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .{indent[0 .. catalog.name_width - 2 - 3 + 1]});
     defer alloc.free(role_row);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), role_row) != null);
-    const detail = try std.fmt.allocPrint(alloc, "\n{s}  16464440224 bytes  qwen35 UD-Q4_K_M  commit 4ca720788d1e", .{indent});
+    const detail = try std.fmt.allocPrint(alloc, "\n{s} 16.46 GB  qwen35 UD-Q4_K_M  commit 4ca720788d1e", .{indent});
     defer alloc.free(detail);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), detail) != null);
     const big = try std.fmt.allocPrint(alloc, "\n{s}registered as big\n", .{indent});
