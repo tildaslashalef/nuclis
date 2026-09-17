@@ -25,7 +25,7 @@ specialized kernel. Session 2 is the prefill path (below). Two families are
 planned, in this order: **Gemma 4 26B-A4B** (the first mixture of experts;
 one new kernel family, everything else reused) and then Meta's **Muse
 Glimmer 30B** (a dense agentic model with a new tokenizer splitter and a
-new chat-protocol decoder). Nothing is pulled yet. The 26B-A4B
+new chat-protocol decoder). The 26B-A4B
 facts were read on 2026-09-16 from the remote QAT header (`nuclis model
 inspect`, no weights) and the pinned llama.cpp `7620399`
 (`src/models/gemma4.cpp`); the Muse facts from its model card, the base
@@ -34,6 +34,11 @@ which already implements both architectures and chat formats, so the
 oracles exist without a reference upgrade.
 
 Order: KERN-09 → MODL-09 → MODL-10 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
+All four files of both families are pulled and verified under
+`~/.nuclis/models` (2026-09-17) and both have catalogue entries ahead of
+their adapters; after AGNT-10 the roadmap continues with speculative
+decoding across the families, then performance, then vision
+([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
@@ -180,9 +185,10 @@ Qwen unchanged; first decode/prefill numbers recorded.
 
 ## MODL-10 — Gemma 4 26B-A4B: catalogue, acceptance record, agent check
 
-**Design.** Catalogue entry `gemma-4-26b-a4b` (the QAT file, its
-`mmproj`/`mtp` companions if the repository ships them, profile `gemma4`);
-`nuclis --help`; the acceptance record (`scripts/reference-baseline.py
+**Design.** The catalogue entry `gemma-4-26b-a4b` exists since 2026-09-17
+(the QAT file with its `mmproj-BF16.gguf` and `MTP/…-Q4_0.gguf` companions,
+profile `gemma4`, all pulled and verified); what remains is its verdict
+turning *supported* once the adapter binds, `nuclis --help`, the acceptance record (`scripts/reference-baseline.py
 --family gemma4-26b-a4b`, token arrays under `tests/fixtures/run-<date>-gemma4-26b-a4b/`,
 `make baseline-gemma4-26b-a4b`, the table in bench.md); the ring layout
 for windowed caches stays a roadmap follow-up. Live: `nuclis agent
@@ -191,8 +197,7 @@ decode rate against the 12B and the 27B is recorded in the log.
 
 **Acceptance.** The record's four prompt lengths at 32K on the token
 budget; the live tool turn; documents updated (gemma4.md, bench.md,
-artifacts.md, architecture.md § adding a model, the roadmap's 26B-A4B
-section removed).
+artifacts.md, architecture.md § adding a model).
 
 ## Muse Glimmer 30B — the artifact (decided 2026-09-16)
 
@@ -346,9 +351,12 @@ their tolerances) on the pinned traces; `make test-generation-muse-glimmer-metal
   point as the Gemma header test does.
 - Stop tokens `<|eot|>`, `<|end_of_text|>`; sampling defaults from the
   card; `stream_markers` for the reasoning header.
-- Catalogue entry `muse-glimmer-30b` with the companions (`mmproj`,
-  and a new `dflash` role or the existing `mtp` role — decide: the
-  companion table names what loads it); `nuclis --help`; the acceptance
+- The catalogue entry `muse-glimmer-30b` exists since 2026-09-17 with
+  `mmproj-kquant.gguf` and `dflash-kquant.gguf` under the `mtp` role
+  (decided: the role names the draft source the speculative-decoding unit
+  loads, whatever its mechanism) and a `null` profile: this unit fills the
+  profile in (`profile = .muse_glimmer`, and `catalog.Entry.profile` may
+  become non-optional again); `nuclis --help`; the acceptance
   record (`scripts/reference-baseline.py --family muse-glimmer`,
   `make baseline-muse-glimmer`, the table in bench.md).
 

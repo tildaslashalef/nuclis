@@ -533,11 +533,12 @@ pub const Resolved = struct {
 
 /// The sampling profile belongs to the checkpoint. The catalogue records it
 /// per entry so `config show` can name it without opening the file; a
-/// registry entry or a bare path takes the first profile, since the file
-/// is not read here. The engine selects the artifact's own profile from its
-/// template digest at load (`inference.profiles.forDocument`).
+/// registry entry, a bare path, or a catalogue entry whose profile unit is
+/// pending takes the first profile, since the file is not read here. The
+/// engine selects the artifact's own profile from its template digest at
+/// load (`inference.profiles.forDocument`).
 fn profileFor(model: []const u8) Profile {
-    return if (catalog.find(model)) |entry| entry.profile else .qwen38;
+    return if (catalog.find(model)) |entry| entry.profile orelse .qwen38 else .qwen38;
 }
 
 /// Applies defaults < profile < file < entry < flags for one command. The

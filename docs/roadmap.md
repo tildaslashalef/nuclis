@@ -7,22 +7,35 @@ What a unit must satisfy lives in the [spec](spec.md), and the spec's
 [deferred list](spec.md#local-serving-and-deferred-work) remains the scope
 boundary.
 
-Themes, in order:
+Themes, in order (reordered 2026-09-17, once the third family was planned;
+the Gemma 4 26B-A4B and Muse Glimmer 30B units themselves are in
+[../TODO.md](../TODO.md)):
 
-1. **Speculative decoding** — MTP drafts verified by the main model.
-2. **The second model family** — Gemma 4 26B-A4B and vision, after the dense
-   12B.
-3. **Agent expansion** — HTTP serving on the closed agent loop.
-4. **Performance follow-ups** — measured experiments, not assumptions.
+1. **Speculative decoding across the families** — draft tokens from each
+   model's own draft source (Qwen's MTP head, Gemma's MTP companion, Muse's
+   DFlash drafter) verified by the main model under one recovery contract.
+2. **Performance follow-ups** — measured experiments on text generation,
+   not assumptions; text decoding and prefill are finished before vision
+   starts.
+3. **Vision through the companion projectors** — one contract, three
+   projectors, its own milestone.
+4. **Agent expansion** — HTTP serving on the closed agent loop.
 
-## Speculative decoding (MTP)
+## Speculative decoding across the families
 
-MTP is a source of cheap draft tokens; speculative decoding is the protocol
+A draft source proposes cheap tokens; speculative decoding is the protocol
 that verifies those drafts with the main model and commits only accepted
-state. Its gains complement kernel specialization but depend on acceptance
-rate, verification cost, and recovery cost; no speedup is assumed. The spec
-lists MTP and speculation as
-[deferred from v0.1](spec.md#local-serving-and-deferred-work).
+state. The two are separable: the draft source is model-specific (an MTP
+head predicts the next few tokens from the main model's hidden state; a
+DFlash drafter is a small block-diffusion model that proposes a block at
+once), the verification and recovery protocol is not. Its gains complement
+kernel specialization but depend on acceptance rate, verification cost, and
+recovery cost; no speedup is assumed and each family is measured on its
+own. The spec lists MTP and speculation as
+[deferred from v0.1](spec.md#local-serving-and-deferred-work). Every family
+in the catalogue now has its draft companion pulled and pinned
+([reference/artifacts.md](reference/artifacts.md)); the `mtp` companion
+role names the draft source the unit loads, whatever its mechanism.
 
 The pinned main GGUF already contains 15 auxiliary prediction tensors (one
 block, 351,008,768 stored bytes), validated but not executed. The upstream
@@ -59,10 +72,11 @@ weight mapping, hidden-state inputs, token inputs, positional handling, and
 state layout from authoritative architecture sources and pinned reference
 traces. Implement the CPU reference first, with fixtures for each operation,
 then the Metal prediction path. Keep MTP architecture semantics in the Qwen
-adapter; expose draft candidates through a model-independent runtime contract.
+adapter; expose draft candidates through a model-independent runtime contract
+that the Gemma companion head and the Muse drafter (below) implement in turn.
 Any external artifact becomes a pinned, explicitly requested dependency only
 if inspection proves the embedded weights insufficient (for Gemma 4 the
-companion file is the only source; see below).
+companion file is the only source).
 
 **Acceptance.** CPU and GPU draft logits match the pinned reference with stated
 tolerances at several positions. Tests cover draft state reset and recovery.
@@ -91,75 +105,42 @@ contexts, reporting draft length, acceptance rate, verification/recovery cost,
 memory, and end-to-end tok/s. Ship enabled by default only if measured gains
 justify it; record negative results.
 
+### Draft sources of the other families
+
+The draft contract becomes "draft candidates from a source the adapter
+chooses": Qwen3.8's embedded tensors (or its companion head), Gemma 4's
+companion head (`MTP/mtp-*.gguf`, the 12B and the 26B-A4B alike), and Muse
+Glimmer's `dflash-kquant.gguf`, whose facts (architecture, inputs, block
+size, how the reference drives it) are read from the file before the
+contract is declared shared — a block-diffusion drafter proposes several
+positions at once and may need a different acceptance loop than a
+next-token head. Each companion is a pinned, explicitly configured
+dependency (`models.<name>.mtp`), never an implicit download. Speculation
+ships enabled per family only where its measured acceptance rate pays for
+verification; negative results are recorded.
+
 **Where the detail goes.** Update the runtime, Metal, and generation reference
 documents, the benchmark records, the engineering log, and
 [llm-guide.md](llm-guide.md) as each concept is implemented.
 
-## The second model family: Gemma 4
+## Vision through the companion projectors
 
-The dense 12B is through the seam; [reference/gemma4.md](reference/gemma4.md)
-records its artifact facts, forward pass, tokenizer, CPU reference, Metal plan,
-and profile. What follows is the 26B-A4B mixture of experts and vision.
-Artifact facts, companion files (vision projector, MTP head), and the Unsloth
-quantization conventions are in [reference/artifacts.md](reference/artifacts.md).
-The seam is selection by contract: the adapter by declared architecture, the
-profile by template digest.
-
-Why Gemma 4 and why in this order: it is the first family that exercises the
-adapter seam the spec requires before the seam is called stable, with a
-different template, a different official sampling profile (temperature 1.0,
-top_p 0.95, top_k 64), vision as a companion GGUF, and an MTP head shipped as a
-separate file rather than embedded. The 12B is dense, so it proves the seam
-without new kernels; the 26B-A4B then adds exactly one new kernel family
-(expert routing and gathered expert matvecs). Both fit in 48 GB at four bits.
-Text first; vision is its own unit.
-
-### Gemma 4 26B-A4B mixture of experts
-
-**Decided 2026-09-11.** The unit takes the same two-checkpoint choice as the
-12B: the post-training-quantized
-[unsloth/gemma-4-26B-A4B-it-GGUF](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF)
-brings the adapter up on encodings the kernels already execute, and the
-quantization-aware-trained
-[unsloth/gemma-4-26B-A4B-it-qat-GGUF](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF)
-is the catalogue's target. The QAT file, inspected remotely
-(`nuclis model inspect`, no weights downloaded):
-`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` at commit
-`7b92b5b28818151e8669af2e45e88d6086f490dd`, 14,249,047,104 B, SHA-256
-`a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891` (from the
-listing, not yet verified by a pull); architecture `gemma4`, 30 blocks,
-embedding 2816, context 262144, 658 tensors: 392 F32 and 266 Q4_0, nothing
-else. So the encoding side is entirely the existing Q4_0 path, and the unit's
-own work is the expert family below plus the adapter's expert FFN in both
-schedules; whether the 26B-A4B has a shared expert is read from the full tensor
-listing when the unit starts, not assumed.
-
-**Design.** Router (top-k expert selection per token), gathered expert
-matvec/matmul over the selected experts' quantized weights, and the shared
-expert path if the architecture has one; decode first, then the chunked
-batched prefill. Memory plan: all experts resident (about 17 GB at four bits),
-no paging.
-
-**Acceptance.** As the 12B, plus a router fixture (selection and weights vs an
-F64 reference) and a measured decode/prefill record.
-
-### Vision through the companion projector
+Every catalogue entry carries its projector, pulled and pinned: Qwen3.8's
+`mmproj-BF16.gguf` (`clip`, `qwen3vl_merger`), the Gemma 4 12B and 26B-A4B
+`mmproj-BF16.gguf`, and Muse Glimmer's `mmproj-kquant.gguf`. Vision is its
+own milestone after text generation is finished and sped up; the agent gets
+no image tool in it.
 
 **Design.** Load `mmproj-*.gguf` as a second GGUF (its own architecture,
 validated separately), image preprocessing bounded by host constants, the
 vision encoder and projector on Metal, and image tokens spliced into the
-prompt by the Gemma profile. CLI: an image argument on `generate` and a chat
-attachment; the agent gets no image tool in this unit.
+prompt by the model's profile: one loading and splicing contract, three
+projector architectures brought up in turn (Gemma first, whose text path
+is the most exercised). CLI: an image argument on `generate` and a chat
+attachment.
 
-**Acceptance.** Projector output vs a pinned reference trace; one end-to-end
-captioning fixture; memory recorded.
-
-### MTP head for Gemma
-
-The MTP contract becomes "draft head from embedded tensors (Qwen3.8) or from a
-companion file (Gemma 4, `MTP/mtp-*.gguf`), chosen by the adapter"; the
-companion becomes a pinned, explicitly configured dependency
-(`models.<name>.mtp`), never an implicit download.
+**Acceptance.** Projector output vs a pinned reference trace per family; one
+end-to-end captioning fixture each; memory recorded.
 
 ## Agent expansion
 

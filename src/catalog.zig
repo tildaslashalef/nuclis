@@ -47,7 +47,9 @@ pub const Entry = struct {
     quantization: []const u8,
     /// `general.architecture` of the main file.
     architecture: []const u8,
-    profile: Profile,
+    /// The checkpoint's prompt profile; `null` while its profile unit is
+    /// pending, when configuration falls back as it does for a bare path.
+    profile: ?Profile,
     companions: []const Companion,
 
     pub fn companion(self: *const Entry, role: Role) ?*const Companion {
@@ -110,6 +112,44 @@ pub const entries = [_]Entry{
         .companions = &.{
             .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 175_115_840, .sha256 = "dcb8103adad042b1bf99df767aaf34eb37c5a73a4a2f0417e4d7ba557e91664f", .loaded_by = "the vision unit" },
             .{ .role = .mtp, .file = "mtp-gemma-4-12B-it.gguf", .size = 253_708_800, .sha256 = "fcb35dea42c71333db904cee11baac525c9ef872818ee3753f6cb156f3c6f4f6", .loaded_by = "the MTP unit" },
+        },
+    },
+    // The mixture-of-experts sibling, QAT file only: the K-quant release
+    // stores expert down-projections as Q5_1, which no kernel executes.
+    // Pinned 2026-09-17 by the pull; runnable once the adapter binds the
+    // expert tensors (MODL-09), supported with its acceptance record (MODL-10).
+    .{
+        .name = "gemma-4-26b-a4b",
+        .repo = "unsloth/gemma-4-26B-A4B-it-qat-GGUF",
+        .file = "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+        .revision = "7b92b5b28818151e8669af2e45e88d6086f490dd",
+        .sha256 = "a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891",
+        .size = 14_249_047_104,
+        .quantization = "Q4_0 (QAT)",
+        .architecture = "gemma4",
+        .profile = .gemma4,
+        .companions = &.{
+            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 1_194_828_256, .sha256 = "7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744", .loaded_by = "the vision unit" },
+            .{ .role = .mtp, .file = "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", .size = 251_939_328, .sha256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a", .loaded_by = "the MTP unit" },
+        },
+    },
+    // Meta's dense agentic model. Its draft companion is a DFlash drafter,
+    // not an MTP head; it takes the `mtp` role because that role means
+    // "the draft source the speculative-decoding unit loads", whatever
+    // its mechanism (decided 2026-09-17). The profile arrives with MODL-13.
+    .{
+        .name = "muse-glimmer-30b",
+        .repo = "unsloth/Muse-Glimmer-30B-GGUF",
+        .file = "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        .revision = "faa5b025c584459c13febfa5c59883516710ae39",
+        .sha256 = "82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38",
+        .size = 15_878_222_368,
+        .quantization = "UD-Q4_K_XL",
+        .architecture = "muse-glimmer",
+        .profile = null,
+        .companions = &.{
+            .{ .role = .mmproj, .file = "mmproj-kquant.gguf", .size = 1_400_328_928, .sha256 = "f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6", .loaded_by = "the vision unit" },
+            .{ .role = .mtp, .file = "dflash-kquant.gguf", .size = 1_631_205_312, .sha256 = "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc", .loaded_by = "the speculative-decoding unit (a DFlash drafter)" },
         },
     },
 };
@@ -199,8 +239,12 @@ test "the table is well formed: unique names, 40-character commits, 64-character
         for (entries[i + 1 ..]) |other| try std.testing.expect(!std.mem.eql(u8, e.name, other.name));
     }
     try std.testing.expectEqualStrings("unsloth/Qwen3.8-27B-GGUF", find("qwen3.8-27b").?.repo);
-    try std.testing.expectEqual(Profile.gemma4, find("gemma-4-12b").?.profile);
+    try std.testing.expectEqual(@as(?Profile, .gemma4), find("gemma-4-12b").?.profile);
     try std.testing.expectEqualStrings("gemma4", find("gemma-4-12b").?.architecture);
+    try std.testing.expectEqual(@as(?Profile, .gemma4), find("gemma-4-26b-a4b").?.profile);
+    try std.testing.expectEqual(@as(?Profile, null), find("muse-glimmer-30b").?.profile);
+    try std.testing.expectEqualStrings("muse-glimmer", find("muse-glimmer-30b").?.architecture);
+    try std.testing.expectEqual(Role.mtp, findFile("unsloth/Muse-Glimmer-30B-GGUF", "dflash-kquant.gguf").?.role);
     try std.testing.expectEqual(Role.mtp, findFile("unsloth/gemma-4-12B-it-qat-GGUF", "mtp-gemma-4-12B-it.gguf").?.role);
     try std.testing.expect(find("qwen") == null);
     try std.testing.expect(find("qwen/Qwen3.8-27B-UD-Q4_K_M.gguf") == null);

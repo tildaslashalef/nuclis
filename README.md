@@ -63,14 +63,18 @@ adapter — `nuclis model inspect` says which of the two it is.
 | `qwen3.8-27b` | qwen35 | `unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf` | 16.5 GB |
 | `gemma-4-12b` | gemma4 | `unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf` | 7.37 GB |
 | `gemma-4-12b-qat` | gemma4 | `unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` | 6.72 GB |
+| `gemma-4-26b-a4b` | gemma4 (mixture of experts) | `unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` | 14.2 GB |
+| `muse-glimmer-30b` | muse-glimmer | `unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf` | 15.9 GB |
 
-Each entry carries the vision projector and the multi-token-prediction
-head of its repository as companions (`--all` fetches them; they are
-verified now and loaded by later units). The two Gemma entries are the
-same model in two quantizations: the plain K-quant release, and Google's
+Each entry carries the vision projector and the draft head of its
+repository as companions (`--all` fetches them; they are verified now and
+loaded by later units). The two 12B Gemma entries are the same model in
+two quantizations: the plain K-quant release, and Google's
 quantization-aware-trained checkpoint, whose every weight matrix is Q4_0
 — the encoding it was trained for, which is why it is smaller *and*
-decodes faster.
+decodes faster. The last two entries are pinned ahead of their adapters:
+`nuclis model inspect` reports them *not runnable* until the 26B-A4B's
+expert layers and the Muse architecture are implemented.
 
 ```sh
 nuclis model ls                       # the catalogue and what is present

@@ -57,6 +57,26 @@ values MODL-03's catalogue and the Gemma 4 12B records cite:
 | | | `imatrix_unsloth.gguf` | 13,642,656 | `0ee5b10bd0c2fa2127c6f4b43dbfe1efd71e383b63217af9dade1de36599f1c1` |
 | `unsloth/gemma-4-12b-it-GGUF` | `fc034cfff751157913579611efad8462ac1be606` | `gemma-4-12b-it-UD-Q4_K_XL.gguf` | 7,366,423,360 | `90fd944d227e9d9b68e7e2c7d5b57b79d4c66ed521b0919fbbd932cf834f6f8e` |
 | `unsloth/gemma-4-12B-it-qat-GGUF` | `980b060c40a8539ac159e0501a3e0f66a6365af3` | `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` | 6,716,356,800 | `90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370` |
+| `unsloth/gemma-4-26B-A4B-it-qat-GGUF` | `7b92b5b28818151e8669af2e45e88d6086f490dd` | `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` | 14,249,047,104 | `a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891` |
+| | | `mmproj-BF16.gguf` | 1,194,828,256 | `7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744` |
+| | | `MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf` | 251,939,328 | `7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a` |
+| `unsloth/Muse-Glimmer-30B-GGUF` | `faa5b025c584459c13febfa5c59883516710ae39` | `Muse-Glimmer-30B-UD-Q4_K_XL.gguf` | 15,878,222,368 | `82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38` |
+| | | `mmproj-kquant.gguf` | 1,400,328,928 | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
+| | | `dflash-kquant.gguf` | 1,631,205,312 | `27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc` |
+
+The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
+the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
+ahead of their adapters (the 26B-A4B's expert layers are MODL-09, the Muse
+adapter MODL-11; until then `inspect` says *not runnable*). The 26B-A4B
+repository also lists `mmproj-F16.gguf` (1,193,058,784 B), `mmproj-F32.gguf`
+(2,291,200,480 B), `MTP/mtp-gemma-4-26B-A4B-it-{BF16,F16}.gguf`
+(855,247,360 B each), `MTP/…-Q8_0.gguf` (461,785,600 B), and a root-level
+`mtp-gemma-4-26B-A4B-it.gguf` of the Q4_0 head's size. The Muse repository
+lists sixteen quantizations from `UD-IQ2_XXS` to `Q8_0` and a two-part
+`BF16/`, `mmproj-Muse-Glimmer-30B-{BF16,Q8_0}.gguf` (3,849,173,728 and
+2,051,685,088 B), and `dflash-kquant.gguf`: a DFlash drafter, not an MTP
+head, carried under the `mtp` companion role because that role names the
+draft source the speculative-decoding unit loads, whatever its mechanism.
 
 The Gemma rows are two different checkpoints, read remotely with
 `nuclis model inspect` on 2026-09-11; both digests were then verified by
