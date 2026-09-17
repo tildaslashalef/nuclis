@@ -119,6 +119,36 @@ dependency (`models.<name>.mtp`), never an implicit download. Speculation
 ships enabled per family only where its measured acceptance rate pays for
 verification; negative results are recorded.
 
+### Configuration (accepted 2026-09-17)
+
+Three knobs, because they answer three different questions:
+
+- **The file**: `models.<name>.mtp` in `~/.nuclis/nuclis.json`, one draft
+  companion per registry entry (`config init` fills it from the
+  catalogue). Resolved and verified at load, never an implicit download; a
+  missing or mismatched file is a typed load error, not a silent fallback.
+  Loading the drafter is a load-time decision because its weights and the
+  checkpoint scratch of the recovery contract belong to the memory plan.
+- **The switch**: a generation setting, `generate.speculative` in the
+  configuration and `--speculative on|off` on `generate`, `agent`, and
+  `bench`, layered like `think` and sampling (defaults, then the entry,
+  then the flag). Per command rather than per load: it changes nothing in
+  the model's state layout, and `bench` must measure the same loaded model
+  both ways in one process, which is how a speedup claim is made. The
+  default is on only for a family whose measured acceptance rate pays;
+  the catalogue entry carries that verdict, not the user.
+- **The draft length** (positions proposed per step): a second generation
+  setting with a per-family default from the same measurement, capped by
+  a host constant. Its best value depends on the prompt mix, so it sits
+  beside the switch, not in the load plan.
+
+Not exposed: the acceptance rule (greedy or sampled follows from whether
+sampling is on) and the recovery scheme (an internal correctness contract).
+Engine seam: load options gain an optional draft-source path and the
+session its checkpoint scratch; the generation loop is what asks the
+drafter, so a drafter loaded but switched off costs memory only, as
+`think` already works for reasoning.
+
 **Where the detail goes.** Update the runtime, Metal, and generation reference
 documents, the benchmark records, the engineering log, and
 [llm-guide.md](llm-guide.md) as each concept is implemented.
