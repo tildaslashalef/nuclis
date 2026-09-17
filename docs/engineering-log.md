@@ -1726,9 +1726,8 @@ fallback rewrite and `finish` walk over the slack). Live on
 `gemma-4-12b` (Metal, context 4096) under a pseudo-terminal of 30 × 100:
 the escape stream after a settled tool call (a two-row shrink) shows the
 thought label written with `ESC[row;1H` onto the released row instead of
-a scroll. A check on the user's own terminal is pending.
+a scroll; confirmed by the user on their own terminal the same day.
 
 **Files.** `src/tui/screen.zig`, `docs/agent-spec.md`.
 
-**Remaining.** Not driven on a real terminal in this session (the user is
-doing that); the escape stream is pinned by the tests.
+**Remaining.** None known.
