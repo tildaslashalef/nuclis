@@ -191,6 +191,9 @@ pub const Agent = struct {
     agg_prefill_seconds: f64 = 0,
     agg_decode_seconds: f64 = 0,
     agg_replayed: bool = false,
+    /// The last completed step's stop, so a turn that ended because its
+    /// step ran out of output budget says so.
+    last_stop: inference.engine.StopReason = .eos,
 
     /// Reusable `Profile.Message` scratch for one step.
     messages: std.ArrayList(Profile.Message) = .empty,
@@ -300,6 +303,7 @@ pub const Agent = struct {
             self.agg_prefill_seconds += seconds(reply.outcome.timing.prefill);
             self.agg_decode_seconds += seconds(reply.outcome.timing.decode);
             self.agg_replayed = self.agg_replayed or reply.replayed;
+            self.last_stop = reply.outcome.stop;
 
             // A cancelled step is display-only: the model never saw its end,
             // so it is left out of what the next step renders — and its calls
@@ -678,20 +682,24 @@ pub const Agent = struct {
     }
 
     fn emitTurnEnd(self: *Agent, stop: Stop) !void {
-        try self.events.send(self.events.context, .{ .turn_end = .{
-            .stop = switch (stop) {
-                .done => .eos,
-                .budget => .token_budget,
-                .cancelled => .cancelled,
+        try self.events.send(self.events.context, .{
+            .turn_end = .{
+                // The step budget already announced itself with a notice; the
+                // output budget is the step's own stop.
+                .stop = switch (stop) {
+                    .done => if (self.last_stop == .token_budget) .token_budget else .eos,
+                    .budget => .eos,
+                    .cancelled => .cancelled,
+                },
+                .stats = .{
+                    .prompt_tokens = self.agg_prompt_tokens,
+                    .generated = self.agg_generated,
+                    .prefill_seconds = self.agg_prefill_seconds,
+                    .decode_seconds = self.agg_decode_seconds,
+                    .replayed = self.agg_replayed,
+                },
             },
-            .stats = .{
-                .prompt_tokens = self.agg_prompt_tokens,
-                .generated = self.agg_generated,
-                .prefill_seconds = self.agg_prefill_seconds,
-                .decode_seconds = self.agg_decode_seconds,
-                .replayed = self.agg_replayed,
-            },
-        } });
+        });
     }
 };
 
@@ -996,6 +1004,7 @@ const Capture = struct {
     calls: usize = 0,
     diffs: usize = 0,
     turn_end: usize = 0,
+    last_turn_stop: ?tui.event.StopReason = null,
 
     fn init(alloc: Allocator) Capture {
         return .{ .alloc = alloc, .answers = .init(alloc) };
@@ -1015,7 +1024,10 @@ const Capture = struct {
             .tool_call => self.calls += 1,
             .tool_result => |result| try self.results.append(self.alloc, try self.alloc.dupe(u8, result.text)),
             .diff => self.diffs += 1,
-            .turn_end => self.turn_end += 1,
+            .turn_end => |end| {
+                self.turn_end += 1;
+                self.last_turn_stop = end.stop;
+            },
             .notice => self.notices += 1,
             .thinking_end => self.thinking_ends += 1,
             else => {},
@@ -1316,6 +1328,17 @@ test "every step that reasoned closes its own thinking block" {
     try testing.expectEqual(Stop.done, try agent.turn("go"));
     try testing.expectEqual(@as(usize, 3), capture.thinking_ends);
     try testing.expectEqual(@as(usize, 3), capture.assistant_records);
+
+    // The turn's stop is the answering step's: a step that ran out of
+    // output budget says so at the end of the turn.
+    try testing.expectEqual(tui.event.StopReason.eos, capture.last_turn_stop.?);
+    var cut: Stub = .{ .answers = &.{"partial"}, .stops = &.{.token_budget} };
+    var cut_capture = Capture.init(alloc);
+    defer cut_capture.deinit();
+    var cut_agent = try Agent.init(alloc, testing.io, fixture.ws, cut.model(), cut_capture.eventsSeam(), budget_default);
+    defer cut_agent.deinit();
+    try testing.expectEqual(Stop.done, try cut_agent.turn("go"));
+    try testing.expectEqual(tui.event.StopReason.token_budget, cut_capture.last_turn_stop.?);
 
     // A step without reasoning sends no end at all.
     var silent: Stub = .{ .answers = &.{"hi"} };

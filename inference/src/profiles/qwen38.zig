@@ -61,15 +61,6 @@ const tools_format = "\n\nIf you choose to call a function ONLY reply in the fol
 /// folding of consecutive tool results into one user turn.
 pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
     try profiles.validate(alloc, messages, tools, limits);
-    // Assistant content is rendered before its calls; an embedded delimiter
-    // would smuggle structure past the profile, so the server's narrower API
-    // rejects that ambiguous representation.
-    for (messages) |message| {
-        if (message.role != .assistant) continue;
-        inline for (.{ "<think>", "</think>", "<tool_call>", "</tool_call>" }) |marker| {
-            if (std.mem.indexOf(u8, message.content, marker) != null) return error.UnsupportedContent;
-        }
-    }
     const prefix_count = profiles.leadingSystemCount(messages);
     const instruction = instructionFor(effort);
     const merged = try mergeSystem(alloc, messages[0..prefix_count]);
@@ -91,11 +82,19 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
                 try builder.add("<|im_end|>\n");
             },
             .assistant => {
+                // The model's own past text may carry marker text (a call
+                // released as text when its close never came): re-encoding
+                // it would turn text into control tokens, so the markers
+                // are removed.
+                const own_reasoning = try stripMarkers(alloc, message.reasoning_content);
+                defer alloc.free(own_reasoning);
+                const own_content = try stripMarkers(alloc, message.content);
+                defer alloc.free(own_content);
                 try builder.add("<|im_start|>assistant\n<think>\n");
-                try builder.add(trim(message.reasoning_content));
+                try builder.add(trim(own_reasoning));
                 try builder.add("\n</think>\n\n");
-                try builder.add(trim(message.content));
-                const content = trim(message.content);
+                const content = trim(own_content);
+                try builder.add(content);
                 for (message.tool_calls, 0..) |call, c| {
                     if (c == 0) {
                         if (content.len != 0) try builder.add("\n\n");
@@ -176,6 +175,25 @@ fn instructionFor(effort: Effort) []const u8 {
         .low => "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.",
         .xhigh => "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.",
     };
+}
+
+/// Every delimiter the template spells inside a turn.
+const markers = [_][]const u8{ "<think>", "</think>", "<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>", "<|im_start|>", "<|im_end|>" };
+
+/// `text` without any control marker; owned by `alloc`.
+fn stripMarkers(alloc: std.mem.Allocator, text: []const u8) Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var i: usize = 0;
+    scan: while (i < text.len) {
+        for (markers) |marker| if (std.mem.startsWith(u8, text[i..], marker)) {
+            i += marker.len;
+            continue :scan;
+        };
+        try out.append(alloc, text[i]);
+        i += 1;
+    }
+    return out.toOwnedSlice(alloc);
 }
 
 /// The leading system/developer messages merged as the template does: trimmed,
@@ -481,7 +499,9 @@ test "invalid conversations and bounded rendering return typed errors" {
     try std.testing.expectError(error.InvalidConversation, render(alloc, &.{ user, .{ .role = .system, .content = "x" }, user }, &.{}, .off, .{}));
     try std.testing.expectError(error.InvalidUtf8, render(alloc, &.{.{ .role = .user, .content = "\xff" }}, &.{}, .off, .{}));
     try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{.{ .role = .user, .content = "x", .reasoning_content = "y" }}, &.{}, .off, .{}));
-    try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{ .{ .role = .assistant, .content = "<think>x</think>y" }, user }, &.{}, .off, .{}));
+    const stripped = try render(alloc, &.{ user, .{ .role = .assistant, .content = "<think>x</think>y<tool_call>z" }, user }, &.{}, .off, .{});
+    defer alloc.free(stripped);
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "<|im_start|>assistant\n<think>\n\n</think>\n\nxyz<|im_end|>") != null);
     try std.testing.expectError(error.LimitExceeded, render(alloc, &.{user}, &.{}, .off, .{ .messages = 0 }));
     try std.testing.expectError(error.LimitExceeded, render(alloc, &.{user}, &.{}, .off, .{ .input_bytes = 1 }));
     try std.testing.expectError(error.LimitExceeded, render(alloc, &.{user}, &.{}, .off, .{ .output_bytes = 8 }));

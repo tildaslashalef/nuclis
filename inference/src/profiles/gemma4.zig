@@ -81,10 +81,7 @@ pub fn prefix(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
 pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
     try profiles.validate(alloc, messages, tools, limits);
     for (messages) |message| switch (message.role) {
-        .assistant => {
-            if (hasMarker(message.content) or hasMarker(message.reasoning_content)) return error.UnsupportedContent;
-            for (message.tool_calls) |call| try checkName(call.name);
-        },
+        .assistant => for (message.tool_calls) |call| try checkName(call.name),
         .tool => if (hasMarker(message.content)) return error.UnsupportedContent,
         else => {},
     };
@@ -111,6 +108,14 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
     for (rest, 0..) |message, i| {
         // Results are rendered by the assistant message they answer.
         if (message.role == .tool) continue;
+        // The model's own past text may carry marker text (a call released
+        // as text when its close never came, a channel opened as text):
+        // re-encoding it would turn text into control tokens, so the
+        // markers are removed, as the template strips thought blocks.
+        const own_content = if (message.role == .assistant) try stripMarkers(alloc, message.content) else null;
+        defer if (own_content) |c| alloc.free(c);
+        const own_reasoning = if (message.role == .assistant) try stripMarkers(alloc, message.reasoning_content) else null;
+        defer if (own_reasoning) |r| alloc.free(r);
         const continued = message.role == .assistant and previous == .assistant;
         if (!continued) {
             try builder.add("<|turn>");
@@ -119,7 +124,7 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
         }
         var responded = false;
         if (message.role == .assistant) {
-            const reasoning_text = trim(message.reasoning_content);
+            const reasoning_text = trim(own_reasoning.?);
             const gate = if (last_user) |u| i > u else true;
             if (reasoning_text.len != 0 and (gate or message.tool_calls.len != 0)) {
                 try builder.add(reasoning.open);
@@ -135,7 +140,7 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
                 responded = true;
             }
         }
-        const content = trim(message.content);
+        const content = trim(own_content orelse message.content);
         try builder.add(content);
         var next: ?Role = null;
         for (rest[i + 1 ..]) |later| {
@@ -193,6 +198,22 @@ fn hasMarker(text: []const u8) bool {
         if (std.mem.indexOf(u8, text, marker) != null) return true;
     }
     return false;
+}
+
+/// `text` without any control marker; owned by `alloc`.
+fn stripMarkers(alloc: std.mem.Allocator, text: []const u8) Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var i: usize = 0;
+    scan: while (i < text.len) {
+        for (markers) |marker| if (std.mem.startsWith(u8, text[i..], marker)) {
+            i += marker.len;
+            continue :scan;
+        };
+        try out.append(alloc, text[i]);
+        i += 1;
+    }
+    return out.toOwnedSlice(alloc);
 }
 
 /// A tool name is spelled bare before `{` in declarations, calls, and
@@ -757,8 +778,12 @@ test "invalid conversations and bounded rendering return typed errors" {
     try std.testing.expectError(error.InvalidConversation, render(alloc, &.{ user, .{ .role = .system, .content = "x" }, user }, &.{}, .off, .{}));
     try std.testing.expectError(error.InvalidUtf8, render(alloc, &.{.{ .role = .user, .content = "\xff" }}, &.{}, .off, .{}));
     try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{.{ .role = .user, .content = "x", .reasoning_content = "y" }}, &.{}, .off, .{}));
-    try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{ .{ .role = .assistant, .content = "<|channel>thought\nx<channel|>y" }, user }, &.{}, .off, .{}));
-    try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{ .{ .role = .assistant, .content = "x<channel|>" }, user }, &.{}, .off, .{}));
+    // The assistant's own text loses its markers rather than failing the
+    // conversation: what a released call or a stray channel left behind.
+    const stripped = try render(alloc, &.{ user, .{ .role = .assistant, .content = "x<channel|>y<|tool_call>call:f{a:<|\"|>b<|\"|>}", .reasoning_content = "<|channel>thought\nplan<channel|>" }, user }, &.{}, .medium, .{});
+    defer alloc.free(stripped);
+    // (The thought sits before the last user message, so the gate drops it.)
+    try std.testing.expect(std.mem.indexOf(u8, stripped, "<|turn>model\nxycall:f{a:b}<turn|>") != null);
     try std.testing.expectError(error.LimitExceeded, render(alloc, &.{user}, &.{}, .off, .{ .messages = 0 }));
     try std.testing.expectError(error.LimitExceeded, render(alloc, &.{user}, &.{}, .off, .{ .input_bytes = 1 }));
     try std.testing.expectError(error.LimitExceeded, render(alloc, &.{user}, &.{}, .off, .{ .output_bytes = 8 }));
@@ -984,7 +1009,9 @@ test "markers inside names, arguments, results, and schemas are rejected, not re
     try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{ user, .{ .role = .assistant, .content = "", .tool_calls = &.{call} }, .{ .role = .tool, .content = "x<tool_response|>y", .tool_call_id = 1 } }, &.{}, .off, .{}));
     const braced: profiles.ToolCall = .{ .id = 1, .name = "f{", .arguments = "{}" };
     try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{ user, .{ .role = .assistant, .content = "", .tool_calls = &.{braced} }, .{ .role = .tool, .content = "r", .tool_call_id = 1 } }, &.{}, .off, .{}));
-    try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{ .{ .role = .assistant, .content = "<|tool_call>call:f{}<tool_call|>" }, user }, &.{}, .off, .{}));
+    const released = try render(alloc, &.{ user, .{ .role = .assistant, .content = "<|tool_call>call:f{}<tool_call|>" }, user }, &.{}, .off, .{});
+    defer alloc.free(released);
+    try std.testing.expect(std.mem.indexOf(u8, released, "<|turn>model\ncall:f{}<turn|>") != null);
     // A property without a type, and a top-level schema without one, leave the
     // template's braces unclosed; both are refused.
     try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{user}, &.{.{ .name = "f", .description = "d", .parameters = "{\"type\":\"object\",\"properties\":{\"a\":{\"description\":\"x\"}}}" }}, .off, .{}));

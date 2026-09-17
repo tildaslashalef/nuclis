@@ -51,10 +51,11 @@ pub const Decoder = struct {
     in_tool: bool = false,
     /// The body of the call being collected, ordinary pieces only.
     tool_buf: std.ArrayList(u8) = .empty,
-    /// The decoded text of the bracket tokens, kept so a malformed or
-    /// truncated call can be released exactly as the model wrote it.
-    tool_open_text: []const u8 = "",
-    tool_close_text: []const u8 = "",
+    /// The decoded text of the bracket tokens, copied (a piece is the
+    /// caller's per-token buffer), kept so a malformed or truncated call can
+    /// be released exactly as the model wrote it.
+    tool_open_text: std.ArrayList(u8) = .empty,
+    tool_close_text: std.ArrayList(u8) = .empty,
 
     pub fn init(alloc: std.mem.Allocator, markers: Markers, thinking: bool) Decoder {
         return .{ .alloc = alloc, .markers = markers, .thinking = thinking, .scratch = .init(alloc) };
@@ -63,6 +64,8 @@ pub const Decoder = struct {
     pub fn deinit(self: *Decoder) void {
         self.scratch.deinit();
         self.tool_buf.deinit(self.alloc);
+        self.tool_open_text.deinit(self.alloc);
+        self.tool_close_text.deinit(self.alloc);
         self.* = undefined;
     }
 
@@ -82,13 +85,15 @@ pub const Decoder = struct {
                 try self.finish(sink);
                 self.in_tool = true;
                 self.tool_buf.clearRetainingCapacity();
-                self.tool_open_text = piece;
-                self.tool_close_text = "";
+                self.tool_open_text.clearRetainingCapacity();
+                try self.tool_open_text.appendSlice(self.alloc, piece);
+                self.tool_close_text.clearRetainingCapacity();
                 return;
             }
             if (self.in_tool and token == tool.close) {
                 self.in_tool = false;
-                self.tool_close_text = piece;
+                self.tool_close_text.clearRetainingCapacity();
+                try self.tool_close_text.appendSlice(self.alloc, piece);
                 try self.finishTool(sink);
                 return;
             }
@@ -109,6 +114,20 @@ pub const Decoder = struct {
         if (self.initial and self.thinking and token == self.markers.open) {
             self.initial = false;
             self.header = self.markers.open_suffix.len != 0;
+            return;
+        }
+        // The channel opened (again) while answering: thinking from here,
+        // whatever the effort — a model with thinking off still opens an
+        // empty channel after a tool result. The transcript shows a block;
+        // the alternative, the marker as answer text, would be re-encoded
+        // as a control token next turn.
+        if (!self.thinking and token == self.markers.open) {
+            try self.finish(sink);
+            self.thinking = true;
+            self.initial = false;
+            self.header = self.markers.open_suffix.len != 0;
+            self.matched = 0;
+            self.trim_answer = false;
             return;
         }
         self.initial = false;
@@ -149,9 +168,9 @@ pub const Decoder = struct {
             }
             try sink.send(.{ .tool_call = call });
         } else {
-            try self.text(self.tool_open_text, sink);
+            try self.text(self.tool_open_text.items, sink);
             try self.text(self.tool_buf.items, sink);
-            try self.text(self.tool_close_text, sink);
+            try self.text(self.tool_close_text.items, sink);
         }
         self.tool_buf.clearRetainingCapacity();
     }
@@ -175,7 +194,7 @@ pub const Decoder = struct {
     pub fn finish(self: *Decoder, sink: anytype) !void {
         if (self.in_tool) {
             self.in_tool = false;
-            try self.text(self.tool_open_text, sink);
+            try self.text(self.tool_open_text.items, sink);
             try self.text(self.tool_buf.items, sink);
             self.tool_buf.clearRetainingCapacity();
         }
@@ -373,6 +392,67 @@ test "a bracketed call is collected across pieces and emitted once" {
     try std.testing.expectEqual(@as(usize, 1), r.calls);
     try std.testing.expectEqualStrings("read_file", r.name.written());
     try std.testing.expectEqualStrings("{\"path\":\"a\"}", r.arguments.written());
+}
+
+test "a channel opened while answering is thinking again, whatever the effort" {
+    var r = Recorder.init(std.testing.allocator);
+    defer r.deinit();
+    var d = Decoder.init(std.testing.allocator, .{ .open = 1, .close = 2, .open_suffix = "thought\n" }, true);
+    defer d.deinit();
+    try d.feed(1, "<|channel>", &r);
+    try d.feed(3, "thought\nplan", &r);
+    try d.feed(2, "<channel|>", &r);
+    try d.feed(3, "\nreply", &r);
+    try d.feed(1, "<|channel>", &r);
+    try d.feed(3, "thought\nmore", &r);
+    try d.feed(2, "<channel|>", &r);
+    try d.feed(3, "\nend", &r);
+    try d.finish(&r);
+    try std.testing.expectEqualStrings("planmore", r.thinking.written());
+    try std.testing.expectEqualStrings("replyend", r.answer.written());
+    // An empty reopened channel adds nothing anywhere.
+    var e = Recorder.init(std.testing.allocator);
+    defer e.deinit();
+    var empty = Decoder.init(std.testing.allocator, .{ .open = 1, .close = 2, .open_suffix = "thought\n" }, true);
+    defer empty.deinit();
+    try empty.feed(2, "<channel|>", &e);
+    try empty.feed(3, "a", &e);
+    try empty.feed(1, "<|channel>", &e);
+    try empty.feed(3, "thought\n", &e);
+    try empty.feed(2, "<channel|>", &e);
+    try empty.feed(3, "b", &e);
+    try empty.finish(&e);
+    try std.testing.expectEqualStrings("", e.thinking.written());
+    try std.testing.expectEqualStrings("ab", e.answer.written());
+    // With reasoning off for the turn an opening token still opens a
+    // channel (a close without one stays literal: the test above).
+    var o = Recorder.init(std.testing.allocator);
+    defer o.deinit();
+    var off = Decoder.init(std.testing.allocator, .{ .open = 1, .close = 2, .open_suffix = "thought\n" }, false);
+    defer off.deinit();
+    try off.feed(3, "a", &o);
+    try off.feed(1, "<|channel>", &o);
+    try off.feed(3, "thought\n", &o);
+    try off.feed(2, "<channel|>", &o);
+    try off.feed(3, "b", &o);
+    try off.finish(&o);
+    try std.testing.expectEqualStrings("", o.thinking.written());
+    try std.testing.expectEqualStrings("ab", o.answer.written());
+}
+
+test "the bracket pieces are copied, so a released call shows the marker the model wrote" {
+    var r = ToolSink.init(std.testing.allocator);
+    defer r.deinit();
+    var d = toolDecoder();
+    defer d.deinit();
+    // The caller reuses one buffer per token: after the open bracket it
+    // holds the body's bytes.
+    var buffer: [11]u8 = "<tool_call>".*;
+    try d.feed(3, &buffer, &r);
+    @memset(&buffer, 0xff);
+    try d.feed(11, "BO", &r);
+    try d.finish(&r);
+    try std.testing.expectEqualStrings("<tool_call>BO", r.answer.written());
 }
 
 test "a call still open at finish, or rejecting its body, is released as text" {

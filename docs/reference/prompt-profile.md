@@ -39,7 +39,13 @@ are system, developer, user, assistant, and tool. A completion-ready
 conversation ends with a user message or a fully answered tool-result group;
 system/developer messages are allowed only at the beginning. All strings
 must be valid UTF-8; reasoning on a non-assistant message is
-`UnsupportedContent`.
+`UnsupportedContent`. A control marker spelled as text is refused in user
+and tool content and in tool names (structure smuggled past the profile)
+but **removed** from the assistant's own content and reasoning: that text
+is the model's past output (a call released as text when its closing token
+never came, a channel opened as text), and re-encoding it would turn the
+marker into a control token, while refusing it would end every later turn
+of the session. The template's own `strip_thinking` is the same idea.
 
 Tool inputs are shared types, not profile syntax. `ToolDefinition` carries a
 name, a description, and a parameter schema as a JSON object;
@@ -298,7 +304,11 @@ decoder produces these: the shared `profiles/stream.zig` recognizes the
 body as ordinary pieces, and hands it to `qwen38.parseTool`, which emits one
 call when the closing token arrives. A call still open at EOS, a budget stop,
 or a cancellation — and a body the parser refuses — is released as answer text
-and never executed. The Gemma decoder is the same machinery with its own
+and never executed, bracket text included (copied when the bracket arrives:
+a piece is the caller's per-token buffer). A reasoning channel the model
+opens while answering is thinking from there, shown as a further block,
+whatever the effort (with thinking off, Gemma still opens an empty channel
+after a tool result); a closing token with no channel open stays literal. The Gemma decoder is the same machinery with its own
 brackets (`<|tool_call>` / `<tool_call|>`) and `gemma4.parseTool`; its
 handoff is the `<|tool_response>` stop token. See
 [tool-calling.md](tool-calling.md) for the model-card and pinned-template

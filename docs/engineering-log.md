@@ -66,6 +66,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-07 | `--prompt-profile` and the registry's `profile`; the template-alias gate | 2026-09-17 |
 | APPS-08 | `model pull`: a leaked path per file and a leading slash in the sidecar's file name | 2026-09-17 |
 | APPS-09 | `config set`, `model pull --register`, registry names in `model ls` | 2026-09-17 |
+| AGNT-11 | A truncated tool call no longer bricks the session; reopened thought channels; copied bracket pieces | 2026-09-17 |
 
 ## Context
 
@@ -1857,3 +1858,49 @@ are a text edit or a `--register` away. The registration happens after
 the sidecars, so a pull that fails only at registration (a conflict
 introduced by a hand edit during the download) keeps its verified files
 and reports the conflict.
+
+### AGNT-11 — A truncated tool call no longer bricks the session; reopened thought channels; copied bracket pieces (2026-09-17)
+
+**Outcome.** A session on the Gemma 4 finetune (`hauhau`, APPS-07) showed
+a turn whose `write_file` call, carrying a long body after 87 s of
+thinking, hit the 2048-token output budget before its closing bracket;
+the decoder released it as answer text, as designed, but three things
+went wrong around that. The released opening bracket was printed from
+stale bytes (twelve U+FFFD where `<|tool_call>` belonged): the decoder
+kept the bracket's *piece* as a borrowed slice into the caller's
+per-token buffer, which later tokens overwrote; both bracket texts are now
+copied. The model had also reopened `<|channel>thought` twice after the
+answer began, and the decoder consumed only the first opening, so the
+later markers landed in the answer as text. And once the stored answer
+carried marker text (the released body's `<|"|>` quotes alone would do
+it), every later turn's render refused the history with
+`UnsupportedContent`, so the two following prompts of the session got no
+assistant record at all. Now a channel opened while answering is thinking again (a
+further block in the transcript) whatever the effort — with thinking off
+the model still opens an empty channel after a tool result — and both
+profiles remove control markers from the assistant's own content and
+reasoning instead of refusing them; user and tool content and tool names
+are still refused (the template's `strip_thinking` is the model for the
+rule, [prompt-profile.md § Shared contract](reference/prompt-profile.md#shared-contract)).
+The output budget itself is a setting: `--max-tokens` and
+`generate.max_tokens` go to 4096, and a long file body inside a call
+needs it. Related: the turn's end reported `eos` when its step had run out
+of output budget (and `token_budget` for the *step* budget, which already
+has its own notice); the turn now ends with the last step's stop.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: **396 default
+tests** (a reopened channel with the effort on and off, an empty reopened
+channel; the bracket copied out of a buffer the test overwrites; Gemma
+and Qwen render assistant text with markers removed and still refuse them
+elsewhere). Live on `hauhau` (Metal, context 4096, print mode): a
+`write_file` call truncated by `--max-tokens 48` was released as text
+with its bracket intact, and the next turn on the same session file
+rendered, ran `bash`, and answered.
+
+**Files.** `inference/src/profiles/stream.zig`,
+`inference/src/profiles/gemma4.zig`, `inference/src/profiles/qwen38.zig`,
+`src/agent/loop.zig`, `docs/reference/prompt-profile.md`.
+
+**Remaining.** The strip is not pinned by a reference fixture (the fixture
+scripts synthesize clean cases); a truncated call is still text the model
+sees as its own broken output next turn, which is the honest history.
