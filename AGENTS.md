@@ -13,38 +13,49 @@ task abilities; it is not a second product.
 Read [docs/architecture.md](docs/architecture.md) for the stack overview and
 [docs/spec.md](docs/spec.md) for scope and acceptance criteria. Shared
 workflow and toolchain conventions live in
-[docs/development.md](docs/development.md). [TODO.md](TODO.md) at the root
-is the active plan and the only progress tracker: unfinished units only.
-Closed units are recorded in
-[docs/engineering-log.md](docs/engineering-log.md);
-detailed reference documents (benchmarks, Metal backend, CPU reference,
-GGUF, prompt profile) live under [docs/reference/](docs/reference/).
+[docs/development.md](docs/development.md); detailed reference documents
+(benchmarks, Metal backend, CPU reference, GGUF, prompt profile) live under
+[docs/reference/](docs/reference/). The plan, the log, and the roadmap are
+described in the session protocol below.
 
-## Session start and progress tracking
+## The session protocol
 
-- **Read [TODO.md](TODO.md) first, every session.** If it lists work,
-  summarize its *Where we are* note and the next unit, and ask the user how
-  they want to continue before changing code. If it is empty, nothing is in
-  progress: ask what to work on today and, once agreed, write the plan into
-  `TODO.md` in its format (where-we-are note, order, unit table, unit designs).
-- `TODO.md` holds unfinished work only. Closing a unit means, in the same
-  commit: append its outcome and evidence to
-  [docs/engineering-log.md](docs/engineering-log.md) **and** add its row to
-  the log's table (both, every time),
-  update the documents it changed (architecture, reference docs),
-  delete its section and table row from `TODO.md`, and refresh *Where we are*
-  so a fresh session can hand off from it. When the last unit closes, empty
-  `TODO.md` back to its header.
-- A unit the plan marks as several sessions closes once, at its end: a
-  session boundary updates the unit's section in `TODO.md` (what the
-  session delivered, what remains) and *Where we are*, not the log.
-- Work that lands outside any planned unit (a catalogue entry, a roadmap
-  decision, a side fix with its own evidence) is still a unit: give it the
-  next identifier of its area and log it in the commit that lands it. The
-  log is the only record besides git history; nothing closes silently.
-- Durable knowledge never lives only in `TODO.md`: requirements go to
-  `docs/spec.md`, environment facts to `docs/development.md`, designs that
-  outlive a unit to a reference document, future ideas to `docs/roadmap.md`.
+Three files carry the project's state, and every session starts from them:
+
+| File | Holds | Changes when |
+| --- | --- | --- |
+| [TODO.md](TODO.md) | the active plan: unfinished units only, with a *Where we are* hand-off note | a plan is written, a session ends, a unit closes |
+| [docs/engineering-log.md](docs/engineering-log.md) | the durable, append-only record of every unit ever closed, with its evidence | a unit closes (entry **and** table row, together) |
+| [docs/roadmap.md](docs/roadmap.md) | accepted themes not yet planned | a theme is accepted, or moves into `TODO.md` |
+
+**A fresh session is in one of two states.** Read `TODO.md` first; it
+tells you which.
+
+1. **It lists work.** Summarize *Where we are* and the next unit, ask how
+   the user wants to continue, then continue that unit. Do not replan.
+2. **It is empty.** Nothing is in progress. Ask what to work on, take the
+   next theme from the roadmap if the user agrees, and write the plan into
+   `TODO.md` in its format (where-we-are note, order, unit table, unit
+   designs) before touching code.
+
+**Ending a session** leaves `TODO.md` able to restart the next one on
+its own: the current unit's section says what the session delivered and
+what remains, *Where we are* says where to pick up. A unit the plan marks
+as several sessions closes once, at its end.
+
+**Closing a unit** happens in one commit: append its outcome, evidence,
+files, and remaining limitations to the engineering log and add its row to
+the log's table; update the documents it changed; delete its section and
+row from `TODO.md`; refresh *Where we are*. When the last unit closes,
+empty `TODO.md` back to its header.
+
+**Nothing closes silently.** Work that lands outside a planned unit (a
+catalogue entry, a roadmap decision, a side fix) is still a unit: give it
+the next identifier of its area and log it in the commit that lands it.
+
+**Durable knowledge never lives only in `TODO.md`**: requirements go to
+`docs/spec.md`, environment facts to `docs/development.md`, designs that
+outlive a unit to a reference document, future ideas to `docs/roadmap.md`.
 
 ## Session hygiene
 
