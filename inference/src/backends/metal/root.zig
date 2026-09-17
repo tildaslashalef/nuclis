@@ -59,7 +59,7 @@ const kernel_names = [_][:0]const u8{
     "nu_matmul_q5_k_32",    "nu_matmul_q6_k_32",      "nu_matmul_iq3_s_32",  "nu_matmul_iq4_xs_32",   "nu_attention_scores_h",  "nu_attention_values_h",
     "nu_attention_chunk_h", "nu_pack_half",           "nu_attention_decode", "nu_attention_decode_h", "nu_attention_merge",     "nu_gelu_mul",
     "nu_scale",             "nu_add_scale",           "nu_softcap",          "nu_attention_decode_w", "nu_attention_decode_wh", "nu_matvec_q4_0",
-    "nu_matmul_q4_0",       "nu_matmul_q4_0_32",
+    "nu_matmul_q4_0",       "nu_matmul_q4_0_32",      "nu_matvec_experts",   "nu_route",              "nu_combine_experts",     "nu_gelu_mul_rows",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -124,6 +124,10 @@ pub const Kernel = enum(u32) {
     matvec_q4_0,
     matmul_q4_0,
     matmul_q4_0_32,
+    matvec_experts,
+    route,
+    combine_experts,
+    gelu_mul_rows,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -419,12 +423,10 @@ pub const Backend = struct {
     }
     /// Picks a specialized matvec when its vector loads are aligned
     /// (`blockAligned`) and the input vector is float4-aligned. Otherwise
-    /// `null`: generic path. The matvec kernels walk 256-value strides, so
-    /// Q4_0 (32-value blocks) also needs a row of whole strides: a stride of
-    /// eight 18-byte blocks, 144 bytes (the matmul tile has no such rule).
+    /// `null`: generic path. The K-quant kernels walk 256-value strides;
+    /// the Q4_0 kernel walks 32-value blocks, so any Q4_0 row serves.
     pub fn specializedMatvec(encoding: u32, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
         if (input_offset % 16 != 0 or !blockAligned(encoding, weight_offset, stride)) return null;
-        if (encoding == 2 and stride % 144 != 0) return null;
         return switch (encoding) {
             2 => .matvec_q4_0,
             11 => .matvec_q3_k,
@@ -536,6 +538,86 @@ pub const Backend = struct {
         // declares all seven. No dispatch is recorded before all validation passes.
         const groups = if (mode == .plain) total_rows / 16 else p.segments[0].rows / 8;
         try self.dispatch(.matvec_segments, &bindings, p, groups, 128, .{ .rows = total_rows, .columns = p.columns, .bytes = bytes });
+    }
+
+    // ----- Mixture of experts: routing, gathered projections, combine. -----
+
+    pub const RouteParams = extern struct { experts: u32, k: u32, rows: u32, in_stride: u32 };
+    /// Bounds of `route`: one logit per thread of the 256-thread group, and
+    /// the selected-probability scratch (`NU_ROUTE_MAX_K`).
+    pub const route_max_experts = 256;
+    pub const route_max_k = 64;
+    /// For each of `rows` logit rows (`[row][in_stride]`), the `k` experts
+    /// with the largest logits by (value desc, index asc) into `indices`
+    /// (`[row][k]` u32) and their softmax probabilities renormalized to sum
+    /// one into `weights` (`[row][k]` f32): `cpu.experts.route` per row.
+    pub fn route(self: *Backend, logits: Buffer, experts: usize, k: usize, rows: usize, in_stride: usize, indices: Buffer, weights: Buffer) !void {
+        if (experts == 0 or experts > route_max_experts or k == 0 or k > experts or k > route_max_k or rows == 0 or in_stride < experts) return error.InvalidShape;
+        if (logits.len < ((rows - 1) * in_stride + experts) * 4 or indices.len < rows * k * 4 or weights.len < rows * k * 4 or indices.offset % 4 != 0 or weights.offset % 4 != 0) return error.InvalidShape;
+        const p: RouteParams = .{ .experts = @intCast(experts), .k = @intCast(k), .rows = @intCast(rows), .in_stride = @intCast(in_stride) };
+        try self.dispatch(.route, &.{ logits, indices, weights }, p, @intCast(rows), 256, .{});
+    }
+
+    pub const ExpertMatvecParams = extern struct { columns: u32, stride: u32, rows: u32, blocks: u32, encoding: u32, experts: u32, slots: u32, in_stride: u32, out_stride: u32, row_groups: u32 };
+    /// Gathered projection: for each slot `s < slots`,
+    /// `output[s·out_stride + r] = W[indices[s]][r] · input[s·in_stride]`
+    /// over the expert matrices of `tensor` (`cpu.ExpertMatrix`, experts
+    /// contiguous). `in_stride` 0 shares one input across the slots.
+    /// Specialized bodies apply under `matvec`'s alignment rules (the input
+    /// stride must keep every slot float4-aligned); otherwise the generic
+    /// decoder. Reads only the selected experts' bytes.
+    pub fn matvecExperts(self: *Backend, weights: Buffer, tensor: cpu.ExpertMatrix, indices: Buffer, slots: usize, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize) !void {
+        const per_expert = tensor.expertBytes() catch return error.InvalidShape;
+        const stride = per_expert / tensor.rows;
+        if (tensor.columns % 16 != 0 or tensor.rows > std.math.maxInt(u32) / 4 or tensor.experts > std.math.maxInt(u32)) return error.InvalidShape;
+        if (slots == 0 or slots > std.math.maxInt(u16) or out_stride < tensor.rows or (in_stride != 0 and in_stride < tensor.columns) or in_stride % 4 != 0) return error.InvalidShape;
+        if (weights.len < tensor.bytes.len or indices.len < slots * 4 or indices.offset % 4 != 0) return error.InvalidShape;
+        if (input.len < ((slots - 1) * in_stride + tensor.columns) * 4 or output.len < ((slots - 1) * out_stride + tensor.rows) * 4 or output.offset % 4 != 0) return error.InvalidShape;
+        const specialized = !self.generic_only and specializedMatvec(tensor.encoding, weights.offset, stride, input.offset) != null;
+        const row_groups = (tensor.rows + 15) / 16;
+        const p: ExpertMatvecParams = .{
+            .columns = @intCast(tensor.columns),
+            .stride = std.math.cast(u32, stride) orelse return error.InvalidShape,
+            .rows = @intCast(tensor.rows),
+            .blocks = @intCast(tensor.columns / 256),
+            .encoding = tensor.encoding | (if (specialized) @as(u32, 0) else 0x80000000),
+            .experts = @intCast(tensor.experts),
+            .slots = @intCast(slots),
+            .in_stride = @intCast(in_stride),
+            .out_stride = std.math.cast(u32, out_stride) orelse return error.InvalidShape,
+            .row_groups = @intCast(row_groups),
+        };
+        // The bytes that bound the dispatch are the selected experts', read once each.
+        const shape: Shape = .{ .encoding = tensor.encoding, .rows = @intCast(tensor.rows * slots), .columns = @intCast(tensor.columns), .bytes = @as(u64, per_expert) * slots };
+        try self.dispatch(.matvec_experts, &.{ weights, input, output, indices }, p, @intCast(slots * row_groups), 32 * simdgroups_per_matvec_group, shape);
+    }
+
+    pub const CombineParams = extern struct { columns: u32, slots: u32, rows: u32, in_stride: u32, out_stride: u32, experts: u32, flags: u32 };
+    pub const CombineShape = struct { columns: usize, slots: usize, rows: usize = 1, experts: usize, in_stride: usize, out_stride: usize };
+    /// `output[row][c] = Σ_s weights[row][s] · scale[indices[row][s]] · values[row·slots + s][c]`
+    /// (the scale factor only when `scales` is given): the weighted sum of
+    /// the slots' down projections into one row per token.
+    pub fn combineExperts(self: *Backend, values: Buffer, weights: Buffer, indices: Buffer, scales: ?Buffer, output: Buffer, s: CombineShape) !void {
+        if (s.columns == 0 or s.slots == 0 or s.rows == 0 or s.experts == 0 or s.in_stride < s.columns or s.out_stride < s.columns) return error.InvalidShape;
+        const slot_rows = s.rows * s.slots;
+        if (values.len < ((slot_rows - 1) * s.in_stride + s.columns) * 4 or weights.len < slot_rows * 4 or indices.len < slot_rows * 4 or indices.offset % 4 != 0) return error.InvalidShape;
+        if (output.len < ((s.rows - 1) * s.out_stride + s.columns) * 4) return error.InvalidShape;
+        if (scales) |sc| if (sc.len < s.experts * 4) return error.InvalidShape;
+        const p: CombineParams = .{ .columns = @intCast(s.columns), .slots = @intCast(s.slots), .rows = @intCast(s.rows), .in_stride = @intCast(s.in_stride), .out_stride = @intCast(s.out_stride), .experts = @intCast(s.experts), .flags = if (scales != null) 1 else 0 };
+        try self.dispatch(.combine_experts, &.{ values, weights, indices, scales orelse weights, output }, p, perElement(s.columns * s.rows), 256, .{});
+    }
+
+    pub const GeluRowsParams = extern struct { width: u32, rows: u32, gate_stride: u32, up_stride: u32, out_stride: u32 };
+    /// `output[r][i] = gelu(gate[r][i]) · up[r][i]` over `rows` strided rows
+    /// of `width`; with a fused gate-up row, `up` is the gate buffer sliced
+    /// at the up half. The output must not overlap the inputs.
+    pub fn geluMulRows(self: *Backend, gate: Buffer, up: Buffer, output: Buffer, width: usize, rows: usize, gate_stride: usize, up_stride: usize, out_stride: usize) !void {
+        if (width == 0 or rows == 0 or gate_stride < width or up_stride < width or out_stride < width) return error.InvalidShape;
+        if (gate.len < ((rows - 1) * gate_stride + width) * 4 or up.len < ((rows - 1) * up_stride + width) * 4 or output.len < ((rows - 1) * out_stride + width) * 4) return error.InvalidShape;
+        const out_len = ((rows - 1) * out_stride + width) * 4;
+        if (overlaps(output, out_len, gate, ((rows - 1) * gate_stride + width) * 4) or overlaps(output, out_len, up, ((rows - 1) * up_stride + width) * 4)) return error.InvalidShape;
+        const p: GeluRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .gate_stride = @intCast(gate_stride), .up_stride = @intCast(up_stride), .out_stride = @intCast(out_stride) };
+        try self.dispatch(.gelu_mul_rows, &.{ gate, up, output }, p, perElement(width * rows), 256, .{});
     }
 
     pub const EmbedParams = extern struct { columns: u32, encoding: u32, stride: u32, token: u32 };

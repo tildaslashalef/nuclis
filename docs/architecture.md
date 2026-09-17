@@ -536,7 +536,7 @@ the file it names.
   the only place that knows kernel names and argument order.
 - `Backend.matvec` picks a specialized kernel per encoding when
   `specializedMatvec` accepts the alignment (Q4_K/Q5_K 16 B, IQ4_XS 8 B, Q3_K/Q6_K/IQ3_S/Q4_0
-  2 B, Q4_0 also whole 144 B strides, input float4); `rows_per_simdgroup` and `simdgroups_per_matvec_group`
+  2 B, input float4); `rows_per_simdgroup` and `simdgroups_per_matvec_group`
   must match the template instantiations and `NU_MATVEC_SIMDGROUPS` in
   `kernels.metal`. `matvecSegments` uses the same bodies and alignment selection:
   input at slot 0, distinct weight/output buffers at 1–6, byte offsets per slice.

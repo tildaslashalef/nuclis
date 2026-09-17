@@ -64,4 +64,7 @@ pub fn build(b: *std.Build) void {
     const matmul_bench = b.addRunArtifact(metal_check);
     matmul_bench.addArg("--matmul-bench");
     b.step("bench-matmul", "Throughput of the batched prefill matmul on model shapes (-Dmetal=true)").dependOn(&matmul_bench.step);
+    const experts_bench = b.addRunArtifact(metal_check);
+    experts_bench.addArg("--experts-bench");
+    b.step("bench-experts", "Bandwidth of the gathered expert kernels on the 26B-A4B shape (-Dmetal=true)").dependOn(&experts_bench.step);
 }

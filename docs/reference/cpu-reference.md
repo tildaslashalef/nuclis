@@ -3,7 +3,8 @@
 The inference library exposes `cpu.Matrix` and `cpu.matvec(matrix, input,
 output, scratch)` from [the CPU module](../../inference/src/backends/cpu/root.zig).
 It also exposes `rmsNorm`, `l2Norm`, `softmax`, `sigmoid`, `silu`, `softplus`, and
-`rope.apply`, `attention.apply`, and `recurrent.convolution`/`recurrent.delta`. These
+`rope.apply`, `attention.apply`, `recurrent.convolution`/`recurrent.delta`, and
+`experts.route`/`experts.ffn` over `cpu.ExpertMatrix`. These
 references do not load a model, run layers, or provide an optimized CPU inference
 backend. Model composition and session/cache orchestration remain pending.
 
@@ -310,6 +311,39 @@ matrices along with attention KV and token position. The next implementation
 work is computational weight access and model/session composition, followed by
 full-layer and logit comparisons and a minimal token loop. These primitive tests
 do not yet generate text.
+
+## Mixture-of-experts routing and the gathered FFN
+
+[experts.zig](../../inference/src/backends/cpu/experts.zig) is the reference
+for a mixture-of-experts layer's routing and expert projections; the chain
+a model applies before the router logits (norms, scales) and after the sum
+(post norms) belongs to its adapter (Gemma 4 26B-A4B's is in
+[gemma4.md](gemma4.md)).
+
+`ExpertMatrix` is a borrowed 3-D encoded tensor `[experts][rows][columns]`
+(GGUF dimension 2 is the expert): `experts` contiguous `rows × columns`
+matrices of equal byte length. `expert(index)` returns one as a `Matrix`
+after validating that the bytes divide into whole rows of whole blocks.
+
+`route(logits, indices, weights)` selects `indices.len` experts for one
+token: the largest **logits** by (value desc, index asc), then their
+softmax probabilities (F64) renormalized to sum one, with the sum clamped
+below at the smallest F16 normal (`weight_sum_floor`, the reference's
+clamp against a zero denominator). Selection compares the logits rather
+than the probabilities because softmax is monotone, so a kernel that
+rounds `exp` differently still selects the same set — the GPU router's
+indices are checked exact against this. Logits must be finite; at most
+`max_experts` (1,024).
+
+`ffn(spec, input, indices, weights, output, scratch, accumulator)` is the
+gathered gated-GELU FFN of one token: for each slot `s`, `gate_up[e_s] ·
+input` (the expert's gate rows followed by its up rows, the reference's
+fused layout), `gelu(gate) ⊙ up`, `down[e_s] ·` that, times the optional
+per-expert `down_scale[e_s]`, times `weights[s]`, summed over the slots
+in F64. Scratch is `Ffn.scratchLen()` floats plus one F64 per output. The
+Metal decode chain (`route`, `matvecExperts`, `geluMulRows`,
+`matvecExperts`, `combineExperts`) is checked against it in `test-metal`
+([metal-backend.md § Gathered expert kernels](metal-backend.md#gathered-expert-kernels-kern-09)).
 
 ## Validation and limits
 

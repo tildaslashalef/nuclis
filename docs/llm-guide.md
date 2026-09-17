@@ -2005,10 +2005,11 @@ row bit for bit against `quant.row`. The generic matvec, the embedding
 kernel, and the generic matmul tile all go through it, so at this point
 the QAT file would already *run* on Metal, slowly.
 
-**Layer 4, the specialized kernels, by reuse.** The specialized matvecs
-walk 256 values per lane octet, one lane per 32-value slice. Eight Q4_0
-blocks are exactly one such stride (144 bytes), so lane `g` takes block
-`8·kb + g` the way IQ4_XS's lanes take a group. Two things carried over
+**Layer 4, the specialized kernels, by reuse.** The K-quant matvecs
+walk 256 values per lane octet, one lane per 32-value slice. A Q4_0
+block is exactly one such slice, so lane `l` takes blocks `l`, `l + 32`,
+… of the row the way IQ4_XS's lanes take a group (the loop walks blocks
+rather than 256-value strides, so a row of any block count serves). Two things carried over
 from neighbours: the loads are `packed_ushort4` because an 18-byte block
 is only 2-byte aligned (Q6_K's problem; a `uint` load at an odd-word
 address is undefined on the GPU, which shows up as garbage in a few

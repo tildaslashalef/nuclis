@@ -740,5 +740,19 @@ GFLOP/token model would reach if that were its only cost — a ceiling for
 ENGN-02, not a prediction. Results are in
 [metal-backend.md § Kernels](metal-backend.md#kernels).
 
+`make bench-experts` (`metal-check --experts-bench`) measures the gathered
+expert kernels on the Gemma 4 26B-A4B shape (128 experts, 8 selected;
+gate-up 1,408 × 2,816 and down 2,816 × 704 per expert, Q4_0): GB/s of the
+selected experts' bytes for the gathered gate-up, the gathered down, and
+the whole decode chain (gate-up, gelu rows, down, combine), beside a dense
+matvec over the same byte count — the rate a gathered kernel can at most
+reach. Same methodology as `bench-kernels` (64 dispatches per command
+buffer, best and mean of five). Results and the reading of them are in
+[metal-backend.md § Gathered expert kernels](metal-backend.md#gathered-expert-kernels-kern-09).
+`bench-kernels` takes an optional encoding name (`ARGS=Q4_0`) to measure
+one kernel alone; a full run heats the GPU progressively (the encodings
+measured last come out 15–30 % below their rested rates), so re-measure a
+changed kernel alone on a rested machine before comparing with a record.
+
 On the CPU reference backend, each step takes roughly 18–19 s; `bench` runs
 there only with small budgets and is useful for definitions, not for speed.

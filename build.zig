@@ -69,9 +69,13 @@ pub fn build(b: *std.Build) void {
     b.step("test-metal", "Explicit Metal fixture checks (-Dmetal=true)").dependOn(&b.addRunArtifact(inference.artifact("metal-check")).step);
     const matvec_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matvec_bench.addArg("--matvec-bench");
+    if (b.args) |args| matvec_bench.addArgs(args);
     b.step("bench-kernels", "Achieved weight bandwidth of the matvec kernels (-Dmetal=true)").dependOn(&matvec_bench.step);
     const matmul_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matmul_bench.addArg("--matmul-bench");
     if (b.args) |args| matmul_bench.addArgs(args);
     b.step("bench-matmul", "Throughput of the batched prefill matmul on model shapes (-Dmetal=true)").dependOn(&matmul_bench.step);
+    const experts_bench = b.addRunArtifact(inference.artifact("metal-check"));
+    experts_bench.addArg("--experts-bench");
+    b.step("bench-experts", "Bandwidth of the gathered expert kernels on the 26B-A4B shape (-Dmetal=true)").dependOn(&experts_bench.step);
 }

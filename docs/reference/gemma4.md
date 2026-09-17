@@ -422,9 +422,8 @@ tree gained, each pinned by the reference's own fixture:
   2-byte aligned) give four words, `nu_low_nibbles`/`nu_high_nibbles`
   the codes, and the bias folds into the input sum as Q6_K's does:
   `Σ d·(q−8)·x = d·(Σq·x − 8·Σx)`, exact for a one-hot input. Selected
-  by `specializedMatvec` when the row offset and stride are even and the
-  stride holds whole 256-value strides (a multiple of 144 B; every Gemma
-  matrix does: 3840, 4096, 8192, and 15360 columns), also inside
+  by `specializedMatvec` when the row offset and stride are even (the
+  body walks 32-value blocks, so any whole-block row serves), also inside
   `nu_matvec_segments`.
 - `nu_tile_q4_0` and the `nu_matmul_q4_0` / `_32` instantiations: the
   tile template's segment addressing learned that a block can hold two

@@ -61,7 +61,8 @@ kernel void nu_matvec(device const uchar * weights [[buffer(0)]],
 // (144/176 B) are 16-byte aligned, IQ4_XS (136 B) 8-byte, Q6_K (210 B) and
 // Q4_0 (18 B) only 2-byte. The Zig encoder verifies row offset/stride
 // alignment before choosing a specialized kernel and otherwise records
-// nu_matvec. `blocks` counts 256-value strides: eight Q4_0 blocks each.
+// nu_matvec. `blocks` counts 256-value strides; the Q4_0 body walks its own
+// 32-value blocks from `columns` instead.
 struct MatvecBlockParams { uint columns; uint stride; uint rows; uint blocks; };
 #define NU_MATVEC_SIMDGROUPS 4 // must match simdgroups_per_matvec_group in root.zig
 
@@ -270,23 +271,23 @@ kernel void nu_matvec_iq4_xs(device const uchar * weights [[buffer(0)]], device 
 }
 
 
-// Q4_0. Eight 18-byte blocks make one 256-value stride (144 B); lane
-// slice: block `g` of the stride, its sixteen nibble bytes (low nibbles values
-// 0-15, high nibbles 16-31) as four words from two packed_ushort4 loads, the
-// code itself as the value. The bias of eight folds into the input sum like
-// Q6_K's 32: Σ d·(q−8)·x = d·(Σq·x − 8·Σx), which with a one-hot input is the
-// CPU decoder's `d * (q - 8)` exactly.
+// Q4_0. Lane slice: whole 18-byte blocks of 32 values, block `lane + 32·i`
+// (the row is walked in blocks, not 256-value strides, so any block count
+// serves — the expert down projection has 22): its sixteen nibble bytes
+// (low nibbles values 0-15, high nibbles 16-31) as four words from two
+// packed_ushort4 loads, the code itself as the value. The bias of eight
+// folds into the input sum like Q6_K's 32: Σ d·(q−8)·x = d·(Σq·x − 8·Σx),
+// which with a one-hot input is the CPU decoder's `d * (q - 8)` exactly.
 template <uint ROWS>
 inline void nu_matvec_q4_0_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
     uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
     if (row0 >= p.rows) return;
-    uint g = lane & 7;
     for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
-    for (uint kb = lane >> 3; kb < p.blocks; kb += 4) {
-        device const float4 * x = (device const float4 *)(input + kb * 256 + g * 32);
+    for (uint block = lane; block < p.columns / 32; block += 32) {
+        device const float4 * x = (device const float4 *)(input + block * 32);
         float4 x0 = x[0], x1 = x[1], x2 = x[2], x3 = x[3], x4 = x[4], x5 = x[5], x6 = x[6], x7 = x[7];
         float sx = nu_sum4(((x0 + x1) + (x2 + x3)) + ((x4 + x5) + (x6 + x7)));
-        uint base = kb * 144 + g * 18;
+        uint base = block * 18;
         for (uint r = 0; r < ROWS; ++r) {
             device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + base;
             float d = float(as_type<half>(*(device const ushort *)b));
@@ -397,7 +398,7 @@ inline void nu_segment_sums(device const uchar * w, device const float * x, Matv
             for (uint r = 0; r < 4; ++r) {
                 float sum = 0, values[16];
                 for (uint segment = lane; segment < p.columns / 16; segment += 32) {
-                    nu_segment(w + ulong(row0 + r) * p.stride, encoding & 0x7fffffffu, segment, values);
+                    nu_segment(w + ulong(min(row0 + r, p.rows - 1)) * p.stride, encoding & 0x7fffffffu, segment, values);
                     for (uint j = 0; j < 16; ++j) sum += values[j] * x[segment * 16 + j];
                 }
                 acc[r] = sum;
@@ -454,6 +455,137 @@ template [[host_name("nu_matvec_q5_k")]] kernel void nu_matvec_q5_k<4>(NU_MATVEC
 template [[host_name("nu_matvec_q6_k")]] kernel void nu_matvec_q6_k<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_iq4_xs")]] kernel void nu_matvec_iq4_xs<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_q4_0")]] kernel void nu_matvec_q4_0<4>(NU_MATVEC_ARGS);
+
+// ---------------------------------------------------------------------------
+// Mixture of experts. A 3-D tensor holds `experts` contiguous row-major
+// matrices; a token reads only the `slots` experts its router selected.
+//
+// Gathered matvec: threadgroup `group` serves slot `group / row_groups` and
+// the 16-row block `group % row_groups` of that slot's expert, whose bytes
+// start at expert · rows · stride. The lane arithmetic is the segment
+// kernel's (`nu_segment_sums`: the specialized body of the encoding, or the
+// generic decoder when bit 31 asks for it), so a selected expert costs the
+// bytes of a dense matrix of its size. `in_stride` 0 shares one input
+// vector across the slots (the gate-up projection); the down projection
+// gives each slot its own hidden row. Expert indices are clamped so a
+// corrupt routing buffer can never read past the tensor.
+struct ExpertMatvecParams { uint columns, stride, rows, blocks, encoding, experts, slots, in_stride, out_stride, row_groups; };
+kernel void nu_matvec_experts(device const uchar * weights [[buffer(0)]],
+                              device const float * input [[buffer(1)]],
+                              device float * output [[buffer(2)]],
+                              device const uint * indices [[buffer(3)]],
+                              constant ExpertMatvecParams & p [[buffer(7)]],
+                              uint group [[threadgroup_position_in_grid]],
+                              uint sg [[simdgroup_index_in_threadgroup]],
+                              uint lane [[thread_index_in_simdgroup]]) {
+    uint slot = group / p.row_groups, local = group % p.row_groups;
+    uint expert = min(indices[slot], p.experts - 1);
+    device const uchar * w = weights + ulong(expert) * ulong(p.rows) * ulong(p.stride);
+    device const float * x = input + ulong(slot) * p.in_stride;
+    device float * out = output + ulong(slot) * p.out_stride;
+    MatvecBlockParams shape = { p.columns, p.stride, p.rows, p.blocks };
+    float a[4];
+    nu_segment_sums(w, x, shape, p.encoding, local, sg, lane, a);
+    uint row0 = (local * NU_MATVEC_SIMDGROUPS + sg) * 4;
+    if (row0 < p.rows) nu_store_rows<4>(a, out, row0, p.rows, lane);
+}
+
+// Router: one 256-thread group per row of logits selects `k` experts by
+// (logit desc, index asc) — the comparison is on the logits, not the
+// probabilities, so rounding in `exp` cannot reorder near-ties — and writes
+// their softmax probabilities renormalized to sum one, the sum clamped
+// below at the smallest F16 normal as the CPU reference does. `experts`
+// is at most 256 (one logit per thread) and `k` at most NU_ROUTE_MAX_K.
+#define NU_ROUTE_MAX_K 64
+struct RouteParams { uint experts, k, rows, in_stride; };
+kernel void nu_route(device const float * logits [[buffer(0)]],
+                     device uint * indices [[buffer(1)]],
+                     device float * weights [[buffer(2)]],
+                     constant RouteParams & p [[buffer(7)]],
+                     uint row [[threadgroup_position_in_grid]],
+                     uint tid [[thread_position_in_threadgroup]],
+                     uint lane [[thread_index_in_simdgroup]],
+                     uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float partial[8];
+    threadgroup uint partial_index[8];
+    threadgroup float selected[NU_ROUTE_MAX_K];
+    const bool live = tid < p.experts;
+    device const float * x = logits + ulong(row) * p.in_stride;
+    float logit = live ? x[tid] : -INFINITY;
+    float m = simd_max(logit);
+    if (lane == 0) partial[sg] = m;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = 0; i < 8; ++i) m = max(m, partial[i]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float e = live ? exp(logit - m) : 0.0f;
+    float total = simd_sum(e);
+    if (lane == 0) partial[sg] = total;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    total = 0.0f;
+    for (uint i = 0; i < 8; ++i) total += partial[i];
+    const float probability = e / total;
+    bool taken = !live;
+    float sum = 0.0f;
+    for (uint r = 0; r < p.k; ++r) {
+        threadgroup_barrier(mem_flags::mem_threadgroup); // partials free for reuse
+        float v = taken ? -INFINITY : logit; uint idx = taken ? 0xffffffffu : tid;
+        for (uint offset = 16; offset > 0; offset >>= 1) {
+            float ov = simd_shuffle_down(v, offset); uint oi = simd_shuffle_down(idx, offset);
+            if (ov > v || (ov == v && oi < idx)) { v = ov; idx = oi; }
+        }
+        if (lane == 0) { partial[sg] = v; partial_index[sg] = idx; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        v = partial[0]; idx = partial_index[0];
+        for (uint i = 1; i < 8; ++i) if (partial[i] > v || (partial[i] == v && partial_index[i] < idx)) { v = partial[i]; idx = partial_index[i]; }
+        if (tid == idx) { taken = true; selected[r] = probability; indices[ulong(row) * p.k + r] = idx; }
+        sum += (tid == idx) ? probability : 0.0f;
+    }
+    // Every thread adds the same winners in the same order once summed
+    // across the group: reduce the per-thread contributions (at most one
+    // nonzero per selected expert) so the total matches a serial sum.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float group_sum = simd_sum(sum);
+    if (lane == 0) partial[sg] = group_sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    group_sum = 0.0f;
+    for (uint i = 0; i < 8; ++i) group_sum += partial[i];
+    if (tid < p.k) weights[ulong(row) * p.k + tid] = selected[tid] / max(group_sum, 6.103515625e-5f);
+}
+
+// Weighted sum of the slots' projections: out[row][c] = Σ_s w[row][s] ·
+// scale[e_s] · y[row·slots + s][c], the per-expert scale only with flag 1.
+struct CombineParams { uint columns, slots, rows, in_stride, out_stride, experts, flags; };
+kernel void nu_combine_experts(device const float * values [[buffer(0)]],
+                               device const float * weights [[buffer(1)]],
+                               device const uint * indices [[buffer(2)]],
+                               device const float * scales [[buffer(3)]],
+                               device float * output [[buffer(4)]],
+                               constant CombineParams & p [[buffer(7)]],
+                               uint id [[thread_position_in_grid]]) {
+    if (id >= p.columns * p.rows) return;
+    uint row = id / p.columns, c = id % p.columns;
+    float acc = 0.0f;
+    for (uint s = 0; s < p.slots; ++s) {
+        uint slot = row * p.slots + s;
+        float w = weights[slot];
+        if (p.flags & 1) w *= scales[min(indices[slot], p.experts - 1)];
+        acc = fma(w, values[ulong(slot) * p.in_stride + c], acc);
+    }
+    output[ulong(row) * p.out_stride + c] = acc;
+}
+
+// Gated GELU over `rows` strided rows: out[r][i] = gelu(gate[r][i]) · up[r][i]
+// (the up half of a fused gate-up row is `up` bound at its offset).
+struct GeluRowsParams { uint width, rows, gate_stride, up_stride, out_stride; };
+kernel void nu_gelu_mul_rows(device const float * gate [[buffer(0)]],
+                             device const float * up [[buffer(1)]],
+                             device float * output [[buffer(2)]],
+                             constant GeluRowsParams & p [[buffer(7)]],
+                             uint id [[thread_position_in_grid]]) {
+    if (id >= p.width * p.rows) return;
+    uint row = id / p.width, i = id % p.width;
+    output[ulong(row) * p.out_stride + i] = nu_gelu(gate[ulong(row) * p.gate_stride + i]) * up[ulong(row) * p.up_stride + i];
+}
 
 // ---------------------------------------------------------------------------
 // Batched matrix product for prefill: out[t][r] = Σ_k W[r][k] · X[t][k]

@@ -19,7 +19,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
-        test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul \
+        test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
         compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
@@ -107,11 +107,14 @@ baseline-gemma4: metal ## The same on gemma-4-12b (the K-quant entry) (tests/fix
 	python3 scripts/nuclis-baseline.py --model "$(GEMMA_MODEL)" --nuclis $(BIN) --run run-2026-09-12-gemma4 \
 	  --reference-records reference-2026-09-12-gemma4.json --output docs/benchmarks/nuclis-$$(date +%F)-gemma4.json $(ARGS)
 
-bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices (no model)
-	$(ZIG) build bench-kernels $(METAL)
+bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, or one with ARGS=<ENCODING> (no model)
+	$(ZIG) build bench-kernels $(METAL) $(if $(ARGS),-- $(ARGS))
 
 bench-matmul: ## Throughput of the batched prefill matmul on model shapes, 256 tokens or ARGS=<tokens> (no model)
 	$(ZIG) build bench-matmul $(METAL) $(if $(ARGS),-- $(ARGS))
+
+bench-experts: ## GB/s of the gathered expert kernels on the 26B-A4B shape, 8 of 128 experts (no model)
+	$(ZIG) build bench-experts $(METAL)
 
 agent: metal ## Interactive agent surface on the engine (Metal by default; ARGS="--think low")
 	$(BIN) agent --backend $(BACKEND) --model "$(MODEL)" $(ARGS)

@@ -118,6 +118,8 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_matvec` (generic) | 32 | one output row | the row: lanes stride 16-value segments | `simd_sum` | none |
 | `nu_matvec_*` (specialized) | 128 | 16 output rows | 4 rows; 8 lanes per 256-value block | `simd_sum` | none |
 | `nu_matvec_segments` plain / pair | 128 | 16 rows of one segment / 8 gate+up pairs | 4 rows | `simd_sum`; pairs share 16 floats | 64 B (pair mode) |
+| `nu_matvec_experts` (KERN-09) | 128 | 16 rows of one slot's expert (the segment bodies) | 4 rows | `simd_sum` | none |
+| `nu_route` (KERN-09) | 256 | one row of ≤ 256 router logits | 32 logits; k rounds of "best untaken" | `simd_max`, `simd_sum`, `simd_shuffle_down`, 8-way threadgroup pick | 8 + 8 + 64 entries |
 | `nu_matmul_*` (specialized, ENGN-05) | 128 | 64-row × 64-token output tile (32×32 for chunks of ≤ 32 tokens) | a 32×32 quarter as 4×4 `simdgroup_float8x8` (2×2 in the small tile) | matrix loads and MACs | 8 KB half weight tile + 8 KB half activation tile (small tile: 4 KB, activations from device), `threadgroup_barrier` |
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
@@ -132,7 +134,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_argmax_partial`, `nu_topk_partial`, `nu_expsum_partial` | 256 | a strided slice of the vocabulary | its 32 values | `simd_shuffle_down` reduction, 8-way threadgroup pick | 8–16 entries |
 | `nu_argmax_final` | 32 | the partials | all of them | `simd_shuffle_down` | none |
 | `nu_topk_final` | 256 | the 64 sorted lists | cursors | k-way merge on plain threads | list cursors |
-| elementwise (`nu_add`, `nu_silu_*`, `nu_gelu_mul`, `nu_scale`, `nu_add_scale`, `nu_softcap`, `nu_rope*`, `nu_convolution*`, `nu_copy`, `nu_pack_half`, `nu_sigmoid_gate`, `nu_delta_gates`, `nu_embed`) | 256 | 256 elements | 32 elements, one per lane | none | none |
+| elementwise (`nu_add`, `nu_silu_*`, `nu_gelu_mul`, `nu_gelu_mul_rows`, `nu_combine_experts`, `nu_scale`, `nu_add_scale`, `nu_softcap`, `nu_rope*`, `nu_convolution*`, `nu_copy`, `nu_pack_half`, `nu_sigmoid_gate`, `nu_delta_gates`, `nu_embed`) | 256 | 256 elements | 32 elements, one per lane | none | none |
 
 Three patterns cover the table: a *reduction* kernel gives a SIMD group one
 output and reduces with `simd_sum`; a *tile* kernel gives a threadgroup a
@@ -296,6 +298,13 @@ memory, and leave the rest to the grid.
   traffic (one token tile, too few threadgroups, a latency-bound K loop),
   hence the 32×32 set for short chunks; short prompts remain far from the
   weight-bandwidth floor (a follow-up, see roadmap).
+- Mixture of experts (KERN-09; see [§ Gathered expert kernels](#gathered-expert-kernels-kern-09)):
+  `nu_route` (softmax and top-k with renormalized weights per logit row),
+  `nu_matvec_experts` (a matvec over the selected experts' slices of a 3-D
+  tensor, any encoding through the segment bodies), `nu_gelu_mul_rows`
+  (the gated GELU over strided rows, the up half of a fused gate-up row
+  bound at its offset), and `nu_combine_experts` (the weighted sum of the
+  slots' down projections with an optional per-expert scale).
 - `nu_topk_partial` + `nu_topk_final` + `nu_expsum_partial` (KERN-06): the best
   256 logits by (value desc, index asc) and Σ exp((l − max) / T) as 64 F32
   partials with non-finite flags. The partial pass keeps 16 register-resident
@@ -333,10 +342,10 @@ needs no function constants):
   (110 B), Q6_K (210 B), and Q4_0 (18 B) use `packed_ushort4`. `Backend.specializedMatvec` requires the row offset and
   stride to be multiples of 16/8/2 respectively and the input to be
   float4-aligned; otherwise the generic kernel is recorded. Every tensor of the
-  pinned artifacts qualifies. Q4_0's matvec additionally needs whole
-  256-value strides (a row stride that is a multiple of 144 B, eight
-  blocks), because every specialized matvec walks 256 values per lane
-  octet; the matmul tile has no such rule.
+  pinned artifacts qualifies. The K-quant and IQ matvecs walk 256-value
+  strides per lane octet; the Q4_0 matvec walks 32-value blocks (lane
+  `l` takes blocks `l`, `l + 32`, …), so any whole-block Q4_0 row serves,
+  including the 704-column expert down projection of Gemma 4 26B-A4B.
 - Scale decoding for Q4_K/Q5_K group pairs is written with selects: half of
   each SIMD group's lanes need the "direct" form and half the "split" form, so
   a branch would execute both.
@@ -386,17 +395,22 @@ best GB/s (generic column is the 248,320×5,120 case):
 | IQ3_S | 122.6 | 121.0 | 119.0 | 42.5 |
 
 MODL-08 (2026-09-12) adds Q4_0, the only weight encoding of the catalogue's
-Gemma 4 12B file, with the same geometry: eight 18-byte blocks make one
-256-value stride (144 B), lane `g` of an octet takes block `8·kb + g` as
-IQ4_XS's lanes take a group, two `packed_ushort4` loads (2-byte
-alignment) give the four nibble words, and the bias of eight folds into
-the per-block input sum exactly as Q6_K's 32 does
-(`Σ d·(q−8)·x = d·(Σq·x − 8·Σx)`). Because every specialized matvec walks
-256 values per octet, `specializedMatvec` also requires a Q4_0 row
-stride that is a multiple of 144 B (every Gemma matrix is; a row of,
-say, 42 blocks falls back to `nu_matvec`), a rule the matmul tile does
-not need. The one-hot fixture columns are exact through it, the
-randomized rows within 4e-6 of the F64 reference through both kernels.
+Gemma 4 12B file, with the same 128-thread geometry: lane `l` of a SIMD
+group takes the 18-byte blocks `l`, `l + 32`, … of its rows (the same
+block order as an octet taking block `8·kb + g` of stride `kb`, which is
+how it was first written; KERN-09 made the loop walk blocks so a row of
+22 blocks — the 26B-A4B's expert down projection — no longer falls back
+to `nu_matvec`), two `packed_ushort4` loads (2-byte alignment) give the
+four nibble words, and the bias of eight folds into the per-block input
+sum exactly as Q6_K's 32 does (`Σ d·(q−8)·x = d·(Σq·x − 8·Σx)`). The
+one-hot fixture columns are exact through it, the randomized rows
+(including a 22-block row) within 4e-6 of the F64 reference through
+both kernels. The block walk costs nothing on whole-stride rows: on
+2026-09-17 the 5,120 × 17,408 shape alternated stride loop / block loop /
+stride / block at 173 / 182 / 199 / 206 GB/s as the GPU warmed (each pair
+at or above its predecessor), the three larger shapes at 230 / 211 / 229
+against the 2026-09-12 record above, and the QAT F32 comparison was
+unchanged (max abs 7.7e-5, relative RMS 3.2e-6).
 
 2026-09-12, the same micro-benchmark, hardware, and build mode (the other
 encodings re-measured in the same run: Q4_K 179 / 158 / 180 / 149, Q6_K
@@ -412,6 +426,80 @@ values with one scale and no group coefficients to unpack: 0.9 ns per
 256-value stride is 144 bytes here against 176 for Q5_K), and the
 generic kernel on Q4_0 is also the fastest generic case for the same
 reason. In the QAT Gemma file every matrix takes this kernel.
+
+### Gathered expert kernels (KERN-09)
+
+A mixture-of-experts layer stores each expert projection as a 3-D tensor
+`[experts][rows][columns]` (GGUF dimension 2 is the expert), the experts
+contiguous, and a token reads only the `k` experts its router selected.
+The decode path is four dispatches per layer, every one a parameter of an
+existing contract:
+
+- `Backend.route`: one 256-thread group per row of logits. The row's max
+  and exp-sum come from `simd_max`/`simd_sum` and an 8-way threadgroup
+  combine; then `k` rounds of "best untaken" select by **logit** (value
+  desc, index asc; the comparison is on the logits, not the
+  probabilities, so `exp` rounding cannot reorder near-ties and the
+  indices match the F64 reference exactly), the winner records its
+  probability, and the selected probabilities are divided by their sum
+  clamped below at the smallest F16 normal, as the reference does. At
+  most 256 experts (one logit per thread) and 64 selected.
+- `Backend.matvecExperts`: threadgroup `g` serves slot `g / row_groups`
+  and 16-row block `g % row_groups` of that slot's expert, whose bytes
+  start at `expert · rows · stride`; the lane arithmetic is
+  `nu_segment_sums` (the specialized body of the encoding under the
+  matvec alignment rules, otherwise the generic decoder), so a selected
+  expert costs the bytes of a dense matrix of its size and nothing of
+  the other experts is read. `in_stride` 0 shares one input across the
+  slots (gate-up); the down projection gives each slot its own hidden
+  row. Expert indices are clamped to the tensor so a corrupt routing
+  buffer cannot read past it.
+- `Backend.geluMulRows`: `gelu(gate[r][i]) · up[r][i]` over strided rows;
+  with the reference's fused gate-up rows (gate rows first, then up rows,
+  per expert) `up` is the gate buffer sliced at the up half.
+- `Backend.combineExperts`: `out[row][c] = Σ_s w[row][s] · scale[e_s] ·
+  y[row·k + s][c]`, the per-expert down scale optional; F32 `fma` over
+  the slots.
+
+Evidence (`test-metal`): the router on 128 experts (k 8, six strided rows
+with ties at the top and at the k boundary, an all-equal row, a row of
+40× spread) and on 37 experts (k 5): indices exact, weights within
+**1.5e-8** (bound 1e-6). The gathered Q4_0 matvec on six experts of
+40 × 1,280 with slots `[5, 0, 5, 2]`, shared and per-slot inputs, both
+kernel paths, within the dense matvec tolerance (4e-6 of Σ|w·x|); with
+NaN written into every scale of the unselected experts the selected
+outputs are bit-identical. A dense F32 tensor of 3 × 8 rows takes the
+generic branch (rows below one group). The whole decode chain over three
+tokens (six experts, width 256, ff 704, k 3, with and without the down
+scale) against `cpu.experts.ffn` in F64: worst **1.5e-8** of
+(1 + max|y|), bound 2e-5. Contract violations (k > experts, more than
+256 experts, unaligned indices, a slot input stride that is not a
+multiple of four floats, zero slots, an expert count that does not
+divide the tensor, the pair output aliasing its inputs, short weight
+or scale buffers) are refused before dispatch.
+
+`make bench-experts` (`metal-check --experts-bench`, ReleaseSafe, M4 Pro,
+2026-09-17): the 26B-A4B shape — 128 experts, 8 selected, gate-up
+1,408 × 2,816 and down 2,816 × 704 per expert, Q4_0 — 64 dispatches per
+command buffer, best / mean of five, GB/s of the **selected** experts'
+bytes, beside a dense matvec over the same byte count:
+
+| Case | MB read | best | mean |
+| --- | ---: | ---: | ---: |
+| gathered gate-up, 8 × (1,408 × 2,816) | 17.8 | 215.1 | 203.5 |
+| gathered down, 8 × (2,816 × 704) | 8.9 | 154.2 | 151.5 |
+| chain: gate-up, gelu rows, down, combine | 26.8 | 171.5 | 171.2 |
+| dense 11,264 × 2,816 (the gate-up bytes) | 17.8 | 216.6 | 214.4 |
+| dense 2,816 × 5,632 (the down bytes) | 8.9 | 206.7 | 203.3 |
+
+The gathered gate-up runs at the dense rate. The down projection is at
+three quarters of it because a 704-column row is 22 blocks: the Q4_0
+body gives one block per lane, so 10 of 32 lanes idle in its single
+pass (before the block walk it fell back to the generic decoder at
+74 GB/s). A lane mapping for short rows (two rows per octet, or lanes
+splitting a block) is the follow-up if the per-token profile puts the
+down projection above its floor: at 8 selected experts × 30 layers the
+chain reads about 0.8 GB per token, roughly 5 ms at this rate.
 
 ### KERN-05 — per-block cost research (2026-09-08, closed without a kernel change)
 
