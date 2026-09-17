@@ -24,7 +24,10 @@ pub const Options = struct {
     command: enum { help, version, inspect, validate, generate, bench, tokenize, agent, config, model },
     /// Which command's page `--help` asked for; null is the overview.
     help_topic: ?help_text.Topic = null,
-    config_action: enum { init, show } = .show,
+    config_action: enum { init, show, set } = .show,
+    /// `config set <key> <value>`.
+    set_key: []const u8 = "",
+    set_value: []const u8 = "",
     model_action: enum { pull, ls, inspect } = .ls,
     pull: model.PullOptions = .{},
     /// The command-line layer of the configuration: only what was stated,
@@ -85,6 +88,14 @@ pub fn parseArgs(args: []const []const u8) !Options {
         if (args.len < 2) return error.MissingConfigAction;
         options.config_action = std.meta.stringToEnum(@FieldType(Options, "config_action"), args[1]) orelse return error.UnknownConfigAction;
         i = 2;
+        if (options.config_action == .set) {
+            // Two positionals, the key and its value; a value may look like
+            // anything, so it is never mistaken for a flag.
+            if (args.len < 4) return error.MissingSetArguments;
+            options.set_key = args[2];
+            options.set_value = args[3];
+            i = 4;
+        }
     }
     const generates = command == .generate or command == .bench or command == .agent;
     const samples = command == .generate or command == .agent;
@@ -92,7 +103,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--json")) {
             if (options.json) return error.DuplicateOption;
-            if (command == .config and options.config_action == .init) return error.UnknownOption;
+            if (command == .config and options.config_action != .show) return error.UnknownOption;
             options.json = true;
         } else if (command != .config and std.mem.eql(u8, args[i], "--model")) {
             if (options.model != null) return error.DuplicateOption;
@@ -284,6 +295,13 @@ fn parseModelArgs(args: []const []const u8) !Options {
         } else if (pulls and std.mem.eql(u8, flag, "--role")) {
             if (p.role != null) return error.DuplicateOption;
             p.role = std.meta.stringToEnum(model.Role, value) orelse return error.UnknownRole;
+        } else if (pulls and std.mem.eql(u8, flag, "--register")) {
+            if (p.register != null) return error.DuplicateOption;
+            if (value.len == 0 or std.mem.startsWith(u8, value, "--")) return error.MissingOptionValue;
+            p.register = value;
+        } else if (pulls and std.mem.eql(u8, flag, "--profile")) {
+            if (p.profile != null) return error.DuplicateOption;
+            p.profile = std.meta.stringToEnum(config.Profile, value) orelse return error.UnknownPromptProfile;
         } else if (pulls and std.mem.eql(u8, flag, "--with")) {
             if (p.with.count() != 0) return error.DuplicateOption;
             var roles = std.mem.splitScalar(u8, value, ',');
@@ -295,6 +313,7 @@ fn parseModelArgs(args: []const []const u8) !Options {
             if (p.with.count() == 0) return error.MissingOptionValue;
         } else return error.UnknownOption;
     }
+    if (p.profile != null and p.register == null) return error.ConflictingOptions;
     return options;
 }
 
@@ -323,13 +342,27 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         // only the file can resolve.
         const dir = root orelse return error.MissingHome;
         switch (options.model_action) {
-            .ls => return model.ls(alloc, io, dir, options.json, out, sty),
+            .ls => {
+                // The registry names what is listed; a file that fails to
+                // load leaves the listing unannotated rather than blocked.
+                var loaded: ?config.Loaded = config.load(alloc, io, .cwd(), config_path, diag) catch |err| blk: {
+                    try out.print("{s}{s}: {s} ({s}); listing without registry names{s}\n", .{ sty.on(.warning), config_path.?, diag.message(), @errorName(err), sty.off() });
+                    break :blk null;
+                };
+                defer if (loaded) |*l| l.deinit();
+                return model.ls(alloc, io, dir, if (loaded) |l| l.config.models else .{}, options.json, out, sty);
+            },
             .inspect => return model.inspect(alloc, io, environ, options.pull, options.json, out, sty, diag),
             .pull => {
                 var pull_options = options.pull;
+                pull_options.config_path = config_path;
                 var loaded: ?config.Loaded = null;
                 defer if (loaded) |*l| l.deinit();
                 if (model.isRegistryName(options.pull.repo)) {
+                    if (options.pull.register != null) {
+                        diag.set("{s} is a registry entry already; --register names a new one for an owner/repo pull", .{options.pull.repo});
+                        return error.ConflictingOptions;
+                    }
                     loaded = try config.load(alloc, io, .cwd(), config_path, diag);
                     const entry = loaded.?.config.models.find(options.pull.repo) orelse {
                         diag.set("{s} is not a catalogue name, an entry of the models registry in {s}, or an owner/repo id", .{ options.pull.repo, config_path.? });
@@ -361,6 +394,28 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 var loaded = try config.load(alloc, io, .cwd(), file, diag);
                 defer loaded.deinit();
                 try config.show(&loaded, out, options.json, sty);
+            },
+            .set => {
+                const current = try config.readText(alloc, io, .cwd(), file, diag);
+                defer if (current) |c| alloc.free(c);
+                var edit = try config.set(alloc, current, file, options.set_key, options.set_value, diag);
+                defer edit.deinit(alloc);
+                // The schema accepted the value; the model must also be
+                // reachable, or the next command fails on it.
+                if (std.mem.eql(u8, options.set_key, "engine.model")) {
+                    var loaded = try config.fromText(alloc, edit.text, file, diag);
+                    defer loaded.deinit();
+                    const path = try paths.modelPath(alloc, null, loaded.config.engine.model, root, loaded.config.models);
+                    defer alloc.free(path);
+                    std.Io.Dir.cwd().access(io, path, .{}) catch {
+                        diag.set("engine.model {s}: no file at {s} (a registry entry, a catalogue name, or a path; `nuclis model ls` shows what is present)", .{ options.set_value, path });
+                        return error.UnknownModel;
+                    };
+                }
+                try config.write(io, .cwd(), file, edit.text);
+                try out.print("{s}set{s} {s}{s}{s} = {s}{s}{s} in {s}{s}{s}", .{ sty.on(.success), sty.off(), sty.on(.label), options.set_key, sty.off(), sty.on(.keyword), options.set_value, sty.off(), sty.on(.code), file, sty.off() });
+                if (edit.previous) |p| try out.print(" {s}(was {s}){s}", .{ sty.on(.dim), p, sty.off() });
+                try out.writeByte('\n');
             },
         }
         return;
@@ -579,6 +634,12 @@ test "config parses its positional action and rejects the model and generation f
     try std.testing.expect(show.json);
     try std.testing.expectError(error.MissingConfigAction, parseArgs(&.{"config"}));
     try std.testing.expectError(error.UnknownConfigAction, parseArgs(&.{ "config", "reset" }));
+    const set = try parseArgs(&.{ "config", "set", "engine.model", "hauhau" });
+    try std.testing.expectEqual(.set, set.config_action);
+    try std.testing.expectEqualStrings("engine.model", set.set_key);
+    try std.testing.expectEqualStrings("hauhau", set.set_value);
+    try std.testing.expectError(error.MissingSetArguments, parseArgs(&.{ "config", "set", "engine.model" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "set", "engine.model", "x", "--json" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "init", "--json" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "show", "--model", "m.gguf" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "show", "--ctx-size", "16" }));
@@ -654,6 +715,13 @@ test "model parses its action, the positional repository, and its own flags only
     const with = try parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mmproj,mtp" });
     try std.testing.expect(with.pull.with.contains(.mmproj) and with.pull.with.contains(.mtp) and !with.pull.with.contains(.imatrix));
     try std.testing.expect((try parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--all" })).pull.all);
+    const registered = try parseArgs(&.{ "model", "pull", "HauhauCS/Gemma4", "--file", "g.gguf", "--register", "hauhau", "--profile", "gemma4" });
+    try std.testing.expectEqualStrings("hauhau", registered.pull.register.?);
+    try std.testing.expectEqual(.gemma4, registered.pull.profile.?);
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "pull", "HauhauCS/Gemma4", "--file", "g.gguf", "--profile", "gemma4" }));
+    try std.testing.expectError(error.UnknownPromptProfile, parseArgs(&.{ "model", "pull", "a/b", "--register", "x", "--profile", "llama" }));
+    try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "model", "pull", "a/b", "--register", "--json" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "inspect", "a/b", "--register", "x" }));
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "main" }));
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mmproj,draft" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mtp", "--with", "mmproj" }));

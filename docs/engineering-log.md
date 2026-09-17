@@ -65,6 +65,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | TERM-07 | Rows released by a shrinking live region are reused, not left as gaps | 2026-09-17 |
 | APPS-07 | `--prompt-profile` and the registry's `profile`; the template-alias gate | 2026-09-17 |
 | APPS-08 | `model pull`: a leaked path per file and a leading slash in the sidecar's file name | 2026-09-17 |
+| APPS-09 | `config set`, `model pull --register`, registry names in `model ls` | 2026-09-17 |
 
 ## Context
 
@@ -1806,3 +1807,53 @@ existing 7.4 GB file in 23.8 s with no leak report and wrote
 
 **Remaining.** Pull has no offline test that exercises the loop, so the
 leak was caught by a live run, not by the suite.
+
+### APPS-09 — `config set`, `model pull --register`, registry names in `model ls` (2026-09-17)
+
+**Outcome.** The registry was reachable only by editing JSON, which a
+hand-pulled finetune made visible. `nuclis config set <key> <value>`
+edits one key of the file's own JSON tree (stated keys and their order
+survive; a missing file starts from what `init` writes), checks the
+dotted key against the schema at run time (`engine.model`,
+`generate.sampling.temperature`, `models.<name>.profile`; sections are
+created, `schema_version` and `models` itself are refused, an unknown
+entry name points at `--register`), takes the value as JSON when it
+parses as JSON and as a string otherwise, and runs the result through
+`fromText` before writing, so a refused value leaves the file untouched
+with the key named; `engine.model` must also resolve to a file that
+exists. `nuclis model pull <owner/repo> --file … --register <name>
+[--profile <p>]` writes the entry (`repo`, `file`, the resolved commit,
+companions by role, the forced profile) once every file is verified; the
+same repository's entry gains a companion or a profile, other content
+under the name is refused, and a registry-entry pull refuses the flag.
+`model ls` says `registered as <name>` (with the profile when forced)
+under every file an entry locates and lists entries whose file is absent;
+a configuration that fails to load leaves the listing unannotated with a
+warning. The live check found a hole the design had not stated: a pull
+registered under a **catalogue name** succeeded and would have shadowed
+the catalogue (the registry resolves first). Now `registrable` refuses a
+catalogue name before any transfer unless it names the catalogue's own
+file, and the loader rejects such an entry however it got into the file.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: **394 default
+tests** (set on a missing file, JSON versus string values, `null`
+clearing, registry keys and sections, every refusal with the file
+unchanged; register new, companion, no file, three conflicts, the
+catalogue-name rule in both `register` and `validate`; `ls` naming
+entries and listing a missing one in both forms; the pull report line;
+the flags). Live on the user's file: `config set engine.model hauhau`
+(reported the previous value), `engine.ctx_size 99999`, `engine.model
+nope`, and `models.hauhau.speed 1` refused with the key named; `model
+ls` shows the finetune `registered as hauhau (profile gemma4 forced)`; a
+`--register hauhau --profile gemma4` re-pull verified the 7.4 GB file
+and rewrote the entry; `--register gemma-4-12b` refused before the
+transfer.
+
+**Files.** `src/config.zig`, `src/model.zig`, `src/cli.zig`,
+`src/help.zig`, `docs/development.md`, `docs/spec.md`, `TODO.md`.
+
+**Remaining.** `set` cannot remove a registry entry or create one; both
+are a text edit or a `--register` away. The registration happens after
+the sidecars, so a pull that fails only at registration (a conflict
+introduced by a hand edit during the download) keeps its verified files
+and reports the conflict.

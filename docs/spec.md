@@ -258,8 +258,9 @@ specified in [agent-spec.md](agent-spec.md); `config` reads and writes the engin
 configuration file described in
 [development.md § Configuration file](development.md#configuration-file)
 (precedence: built-in defaults < profile < file < registry entry < flags);
-`model pull`, `model ls`, and `model inspect` download, list, and judge
-artifacts as described in
+`config set` changes one key of it in place; `model pull`, `model ls`, and
+`model inspect` download (and, with `--register`, name in the file), list,
+and judge artifacts as described in
 [development.md § Model download](development.md#model-download); `eval`
 describes the target interface:
 

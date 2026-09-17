@@ -469,6 +469,16 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
             diag.set("{s}: path excludes repo, file, and revision", .{prefix});
             return error.InvalidConfigValue;
         }
+        // An entry named as a catalogue entry shadows it (`paths.modelPath`
+        // tries the registry first), so it may only restate the catalogue's
+        // location; another file wants another name.
+        if (catalog.find(named.name)) |c| {
+            const same = e.path == null and e.repo != null and e.file != null and std.mem.eql(u8, e.repo.?, c.repo) and std.mem.eql(u8, e.file.?, c.file);
+            if (!same) {
+                diag.set("{s}: {s} is a catalogue name pinned to {s}/{s}; an entry under it may not locate another file (choose another name)", .{ prefix, named.name, c.repo, c.file });
+                return error.InvalidConfigValue;
+            }
+        }
         if (e.path == null and (e.repo == null or e.file == null)) {
             diag.set("{s}: needs path, or repo and file", .{prefix});
             return error.InvalidConfigValue;
@@ -648,6 +658,231 @@ pub fn init(io: std.Io, dir: std.Io.Dir, path: []const u8) !InitResult {
 pub fn writeInitial(out: *std.Io.Writer) !void {
     try std.json.Stringify.value(initial(), .{ .whitespace = .indent_2 }, out);
     try out.writeByte('\n');
+}
+
+// ----- editing the file: `config set`, `model pull --register` -----
+
+/// Whether the dotted `path` names a key of `T` (a leaf, never a section or
+/// the registry), resolved at run time against the compile-time schema.
+fn isKey(comptime T: type, path: []const u8) bool {
+    const dot = std.mem.indexOfScalar(u8, path, '.');
+    const head = if (dot) |d| path[0..d] else path;
+    inline for (@typeInfo(T).@"struct".fields) |field| {
+        if (std.mem.eql(u8, field.name, head)) {
+            if (field.type == Models) return false;
+            if (comptime isSection(field.type)) return if (dot) |d| isKey(field.type, path[d + 1 ..]) else false;
+            return dot == null;
+        }
+    }
+    return false;
+}
+
+/// The file's JSON tree, edited in place and written back as it was found
+/// (stated keys only, the file's own order) so an edit changes one thing.
+/// A missing file starts from what `init` writes. Everything lives in the
+/// arena; `text` is the result after `finish` validated it.
+const Document = struct {
+    arena: std.heap.ArenaAllocator,
+    root: std.json.Value,
+
+    fn open(gpa: Allocator, current: ?[]const u8, path: []const u8, diag: *Diagnostic) !Document {
+        var doc: Document = .{ .arena = .init(gpa), .root = .null };
+        errdefer doc.arena.deinit();
+        const arena = doc.arena.allocator();
+        const text = current orelse blk: {
+            var w: std.Io.Writer.Allocating = .init(arena);
+            try writeInitial(&w.writer);
+            break :blk w.written();
+        };
+        doc.root = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+            diag.set("{s}: not valid JSON ({s})", .{ path, @errorName(err) });
+            return error.InvalidConfigJson;
+        };
+        if (doc.root != .object) {
+            diag.set("{s}: the document must be a JSON object", .{path});
+            return error.InvalidConfigValue;
+        }
+        return doc;
+    }
+
+    fn deinit(self: *Document) void {
+        self.arena.deinit();
+    }
+
+    /// The object at `keys`, creating the missing levels (the caller has
+    /// checked they are schema sections). A level that is not an object
+    /// is reported by name.
+    fn objectAt(self: *Document, keys: []const []const u8, diag: *Diagnostic) !*std.json.ObjectMap {
+        const arena = self.arena.allocator();
+        var object = &self.root.object;
+        for (keys, 0..) |key, i| {
+            if (object.getPtr(key)) |child| {
+                if (child.* != .object) {
+                    diag.set("{s} must be an object", .{try joinKeys(arena, keys[0 .. i + 1])});
+                    return error.InvalidConfigValue;
+                }
+                object = &child.object;
+            } else {
+                try object.put(arena, try arena.dupe(u8, key), .{ .object = .empty });
+                object = &object.getPtr(key).?.object;
+            }
+        }
+        return object;
+    }
+
+    /// The value text as JSON when it parses as JSON (`0.7`, `null`,
+    /// `true`, `"quoted"`), else as a string: what a shell argument means.
+    fn literal(self: *Document, text: []const u8) !std.json.Value {
+        const arena = self.arena.allocator();
+        return std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch .{ .string = try arena.dupe(u8, text) };
+    }
+
+    /// Serializes and validates through the same loader every command
+    /// runs, so the text returned is one `load` accepts. Owned by `gpa`.
+    fn finish(self: *Document, gpa: Allocator, path: []const u8, diag: *Diagnostic) ![]u8 {
+        const text = try std.json.Stringify.valueAlloc(gpa, self.root, .{ .whitespace = .indent_2 });
+        errdefer gpa.free(text);
+        var loaded = try fromText(gpa, text, path, diag);
+        loaded.deinit();
+        const with_newline = try gpa.realloc(text, text.len + 1);
+        with_newline[text.len] = '\n';
+        return with_newline;
+    }
+};
+
+fn joinKeys(arena: Allocator, keys: []const []const u8) ![]u8 {
+    return std.mem.join(arena, ".", keys);
+}
+
+/// The result of an edit: the new document and, for the report, the
+/// previous value of the key (`null` when the file did not state it).
+pub const Edit = struct {
+    text: []u8,
+    previous: ?[]u8,
+
+    pub fn deinit(self: *Edit, gpa: Allocator) void {
+        gpa.free(self.text);
+        if (self.previous) |p| gpa.free(p);
+    }
+};
+
+/// `config set <key> <value>` over the file's current text (`null`: no
+/// file yet). The key is a global key (`engine.model`) or a registry key
+/// (`models.<name>.profile`) of an entry that exists; `schema_version`
+/// and `models` itself are not settings. A value the schema refuses
+/// leaves nothing changed: the caller writes `Edit.text` only on success.
+pub fn set(gpa: Allocator, current: ?[]const u8, path: []const u8, key: []const u8, value: []const u8, diag: *Diagnostic) !Edit {
+    var doc = try Document.open(gpa, current, path, diag);
+    defer doc.deinit();
+    const arena = doc.arena.allocator();
+    var parts: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, key, '.');
+    while (it.next()) |part| try parts.append(arena, part);
+    const keys = parts.items;
+    if (std.mem.eql(u8, key, "schema_version")) {
+        diag.set("schema_version is the file's format, not a setting", .{});
+        return error.UnknownConfigKey;
+    }
+    const entry_key = keys.len >= 1 and std.mem.eql(u8, keys[0], "models");
+    if (entry_key) {
+        if (keys.len < 3) {
+            diag.set("{s}: a registry key is models.<name>.<key> (`nuclis model pull --register <name>` creates an entry)", .{key});
+            return error.UnknownConfigKey;
+        }
+        const rest = key[keys[0].len + keys[1].len + 2 ..];
+        if (!isKey(ModelEntry, rest)) {
+            diag.set("unknown key {s}", .{key});
+            return error.UnknownConfigKey;
+        }
+        const models = try doc.objectAt(&.{"models"}, diag);
+        if (models.get(keys[1]) == null) {
+            diag.set("no registry entry named {s} (`nuclis model pull <owner/repo> --file <name> --register {s}` creates one)", .{ keys[1], keys[1] });
+            return error.NoSuchEntry;
+        }
+    } else if (!isKey(Config, key)) {
+        diag.set("unknown key {s}", .{key});
+        return error.UnknownConfigKey;
+    }
+    const parent = try doc.objectAt(keys[0 .. keys.len - 1], diag);
+    const leaf = keys[keys.len - 1];
+    const previous: ?[]u8 = if (parent.get(leaf)) |old| try std.json.Stringify.valueAlloc(gpa, old, .{}) else null;
+    errdefer if (previous) |p| gpa.free(p);
+    try parent.put(arena, try arena.dupe(u8, leaf), try doc.literal(value));
+    return .{ .text = try doc.finish(gpa, path, diag), .previous = previous };
+}
+
+/// What `model pull --register` records: the pulled repository at its
+/// resolved commit, the main file or a companion, and an optional forced
+/// profile.
+pub const Registration = struct {
+    repo: []const u8,
+    revision: []const u8,
+    /// The main file's Hub name, or null when only companions were pulled.
+    file: ?[]const u8,
+    /// Companion Hub names, filling the entry's keys of the same name.
+    mmproj: ?[]const u8 = null,
+    mtp: ?[]const u8 = null,
+    profile: ?Profile = null,
+};
+
+/// Writes `name` into the registry of the file's current text (`null`: no
+/// file yet): a new entry, or the same repository's entry gaining a
+/// companion or a profile. A name that locates other content (another
+/// repository, another main file, or a `path`) is refused.
+pub fn register(gpa: Allocator, current: ?[]const u8, path: []const u8, name: []const u8, reg: Registration, diag: *Diagnostic) ![]u8 {
+    try registrable(name, reg.repo, reg.file, diag);
+    var doc = try Document.open(gpa, current, path, diag);
+    defer doc.deinit();
+    const arena = doc.arena.allocator();
+    const entry = try doc.objectAt(&.{ "models", name }, diag);
+    if (entry.get("path")) |p| if (p != .null) {
+        diag.set("{s} names a local path; choose another name", .{name});
+        return error.RegistryConflict;
+    };
+    if (entry.get("repo")) |r| if (r != .string or !std.mem.eql(u8, r.string, reg.repo)) {
+        diag.set("{s} already names another repository; choose another name", .{name});
+        return error.RegistryConflict;
+    };
+    if (reg.file) |file| if (entry.get("file")) |f| if (f != .string or !std.mem.eql(u8, f.string, file)) {
+        diag.set("{s} already names another file of {s}; choose another name", .{ name, reg.repo });
+        return error.RegistryConflict;
+    };
+    try entry.put(arena, "repo", .{ .string = try arena.dupe(u8, reg.repo) });
+    if (reg.file) |file| try entry.put(arena, "file", .{ .string = try arena.dupe(u8, file) });
+    try entry.put(arena, "revision", .{ .string = try arena.dupe(u8, reg.revision) });
+    if (reg.mmproj) |file| try entry.put(arena, "mmproj", .{ .string = try arena.dupe(u8, file) });
+    if (reg.mtp) |file| try entry.put(arena, "mtp", .{ .string = try arena.dupe(u8, file) });
+    if (reg.profile) |profile| try entry.put(arena, "profile", .{ .string = @tagName(profile) });
+    return doc.finish(gpa, path, diag);
+}
+
+/// Whether `name` may register `repo`/`file`: a catalogue name resolves
+/// through the registry first, so an entry under it may only say what the
+/// catalogue says. Checked before a transfer as well, so a wrong name
+/// costs no download.
+pub fn registrable(name: []const u8, repo: []const u8, file: ?[]const u8, diag: *Diagnostic) !void {
+    if (catalog.find(name)) |c| if (!std.mem.eql(u8, c.repo, repo) or (file != null and !std.mem.eql(u8, c.file, file.?))) {
+        diag.set("{s} is a catalogue name pinned to {s}/{s}; choose another name", .{ name, c.repo, c.file });
+        return error.RegistryConflict;
+    };
+}
+
+/// Writes an edited document over the file, creating its directories.
+pub fn write(io: std.Io, dir: std.Io.Dir, path: []const u8, text: []const u8) !void {
+    if (std.fs.path.dirname(path)) |parent| try dir.createDirPath(io, parent);
+    try dir.writeFile(io, .{ .sub_path = path, .data = text });
+}
+
+/// The file's text for an edit, or null when there is none yet.
+pub fn readText(gpa: Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8, diag: *Diagnostic) !?[]u8 {
+    return dir.readFileAlloc(io, path, gpa, .limited(max_file_bytes + 1)) catch |err| switch (err) {
+        error.FileNotFound => null,
+        error.StreamTooLong => {
+            diag.set("{s}: larger than {d} bytes", .{ path, max_file_bytes });
+            return error.ConfigTooLarge;
+        },
+        else => return err,
+    };
 }
 
 /// Visits every key of `T` in walk order with its dotted path and value,
@@ -1117,6 +1352,113 @@ fn expectRow(text: []const u8, key: []const u8, value: []const u8, source: []con
     }
     std.debug.print("no row for {s} in:\n{s}", .{ key, text });
     return error.TestUnexpectedResult;
+}
+
+test "set edits one key of the file's own text, validates it, and reports the previous value" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    // No file yet: the edit starts from what `init` writes.
+    var first = try set(alloc, null, "t.json", "engine.model", "gemma-4-12b", &diag);
+    defer first.deinit(alloc);
+    try std.testing.expect(first.previous != null);
+    try std.testing.expectEqualStrings("\"qwen3.8-27b\"", first.previous.?);
+    try std.testing.expect(std.mem.indexOf(u8, first.text, "\"model\": \"gemma-4-12b\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.text, "\"qwen3.8-27b\": {") != null);
+    // A value is JSON when it parses as JSON, a string otherwise; a stated
+    // key is replaced in place and an unstated section is created.
+    const text =
+        \\{ "schema_version": 1, "engine": { "ctx_size": 4096 },
+        \\  "models": { "local": { "path": "/scratch/x.gguf" } } }
+    ;
+    var num = try set(alloc, text, "t.json", "generate.sampling.temperature", "0.7", &diag);
+    defer num.deinit(alloc);
+    try std.testing.expect(num.previous == null);
+    try std.testing.expect(std.mem.indexOf(u8, num.text, "\"temperature\": 0.7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, num.text, "\"ctx_size\": 4096") != null);
+    var cleared = try set(alloc, num.text, "t.json", "generate.sampling.temperature", "null", &diag);
+    defer cleared.deinit(alloc);
+    try std.testing.expectEqualStrings("0.7", cleared.previous.?);
+    try std.testing.expect(std.mem.indexOf(u8, cleared.text, "\"temperature\": null") != null);
+    var entry = try set(alloc, text, "t.json", "models.local.profile", "gemma4", &diag);
+    defer entry.deinit(alloc);
+    try std.testing.expect(std.mem.indexOf(u8, entry.text, "\"profile\": \"gemma4\"") != null);
+    var think = try set(alloc, text, "t.json", "models.local.agent.think", "medium", &diag);
+    defer think.deinit(alloc);
+    try std.testing.expect(std.mem.indexOf(u8, think.text, "\"think\": \"medium\"") != null);
+    // Refusals name the key; a rejected value produces no text at all.
+    try std.testing.expectError(error.UnknownConfigKey, set(alloc, text, "t.json", "engine.speed", "1", &diag));
+    try std.testing.expectError(error.UnknownConfigKey, set(alloc, text, "t.json", "engine", "1", &diag));
+    try std.testing.expectError(error.UnknownConfigKey, set(alloc, text, "t.json", "schema_version", "2", &diag));
+    try std.testing.expectError(error.UnknownConfigKey, set(alloc, text, "t.json", "models", "{}", &diag));
+    try std.testing.expectError(error.UnknownConfigKey, set(alloc, text, "t.json", "models.local.speed", "1", &diag));
+    try std.testing.expectError(error.NoSuchEntry, set(alloc, text, "t.json", "models.other.profile", "gemma4", &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "--register other") != null);
+    try std.testing.expectError(error.InvalidConfigValue, set(alloc, text, "t.json", "engine.ctx_size", "99999", &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "engine.ctx_size") != null);
+    try std.testing.expectError(error.InvalidConfigValue, set(alloc, text, "t.json", "engine.model", "null", &diag));
+    try std.testing.expectError(error.InvalidConfigValue, set(alloc, text, "t.json", "agent.theme", "neon", &diag));
+    try std.testing.expectError(error.InvalidConfigValue, set(alloc, text, "t.json", "engine.model", "123", &diag));
+}
+
+test "register writes a new entry, fills a companion or a profile, and refuses another content" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    const text =
+        \\{ "schema_version": 1, "models": { "local": { "path": "/scratch/x.gguf" },
+        \\  "q": { "repo": "a/b", "file": "q.gguf", "revision": "0000000000000000000000000000000000000000" } } }
+    ;
+    const fresh = try register(alloc, text, "t.json", "hauhau", .{ .repo = "HauhauCS/Gemma4", .revision = "ae8045ac2bd216293ca49a3065da2c942dde4b68", .file = "g.gguf", .profile = .gemma4 }, &diag);
+    defer alloc.free(fresh);
+    var loaded = try fromText(alloc, fresh, "t.json", &diag);
+    defer loaded.deinit();
+    const entry = loaded.config.models.find("hauhau").?;
+    try std.testing.expectEqualStrings("HauhauCS/Gemma4", entry.repo.?);
+    try std.testing.expectEqualStrings("g.gguf", entry.file.?);
+    try std.testing.expectEqualStrings("ae8045ac2bd216293ca49a3065da2c942dde4b68", entry.revision.?);
+    try std.testing.expectEqual(.gemma4, entry.profile.?);
+    try std.testing.expect(entry.mmproj == null and entry.ctx_size == null);
+    try std.testing.expect(loaded.config.models.find("local") != null and loaded.config.models.find("q") != null);
+    // A companion of the same repository fills the entry; the file stays.
+    const with_mmproj = try register(alloc, fresh, "t.json", "hauhau", .{ .repo = "HauhauCS/Gemma4", .revision = "ae8045ac2bd216293ca49a3065da2c942dde4b68", .file = null, .mmproj = "mmproj.gguf" }, &diag);
+    defer alloc.free(with_mmproj);
+    var again = try fromText(alloc, with_mmproj, "t.json", &diag);
+    defer again.deinit();
+    try std.testing.expectEqualStrings("mmproj.gguf", again.config.models.find("hauhau").?.mmproj.?);
+    try std.testing.expectEqualStrings("g.gguf", again.config.models.find("hauhau").?.file.?);
+    // No file at all starts from the initial document.
+    const first = try register(alloc, null, "t.json", "x", .{ .repo = "a/b", .revision = "0000000000000000000000000000000000000000", .file = "f.gguf" }, &diag);
+    defer alloc.free(first);
+    try std.testing.expect(std.mem.indexOf(u8, first, "\"qwen3.8-27b\": {") != null);
+    // Other content under the name is a conflict, never an overwrite.
+    try std.testing.expectError(error.RegistryConflict, register(alloc, text, "t.json", "local", .{ .repo = "a/b", .revision = "0000000000000000000000000000000000000000", .file = "f.gguf" }, &diag));
+    try std.testing.expectError(error.RegistryConflict, register(alloc, text, "t.json", "q", .{ .repo = "c/d", .revision = "0000000000000000000000000000000000000000", .file = "q.gguf" }, &diag));
+    try std.testing.expectError(error.RegistryConflict, register(alloc, text, "t.json", "q", .{ .repo = "a/b", .revision = "0000000000000000000000000000000000000000", .file = "other.gguf" }, &diag));
+    // The result always passes the loader: a name the schema refuses fails here.
+    try std.testing.expectError(error.InvalidConfigValue, register(alloc, text, "t.json", "bad/name", .{ .repo = "a/b", .revision = "0000000000000000000000000000000000000000", .file = "f.gguf" }, &diag));
+    // A catalogue name may only be registered with the catalogue's own file.
+    const qwen = catalog.find("qwen3.8-27b").?;
+    try std.testing.expectError(error.RegistryConflict, register(alloc, text, "t.json", "qwen3.8-27b", .{ .repo = "a/b", .revision = qwen.revision, .file = "f.gguf" }, &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "catalogue name") != null);
+    const own = try register(alloc, text, "t.json", "qwen3.8-27b", .{ .repo = qwen.repo, .revision = qwen.revision, .file = qwen.file }, &diag);
+    defer alloc.free(own);
+    try std.testing.expect(std.mem.indexOf(u8, own, "\"qwen3.8-27b\": {") != null);
+}
+
+test "an entry named as a catalogue entry may not locate another file" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    try std.testing.expectError(error.InvalidConfigValue, fromText(alloc,
+        \\{ "schema_version": 1, "models": { "qwen3.8-27b": { "repo": "a/b", "file": "f.gguf" } } }
+    , "t.json", &diag));
+    try std.testing.expect(std.mem.indexOf(u8, diag.message(), "models.qwen3.8-27b: qwen3.8-27b is a catalogue name") != null);
+    try std.testing.expectError(error.InvalidConfigValue, fromText(alloc,
+        \\{ "schema_version": 1, "models": { "qwen3.8-27b": { "path": "/x.gguf" } } }
+    , "t.json", &diag));
+    // The catalogue's own location, as `init` writes it, is fine.
+    var ok = try fromText(alloc,
+        \\{ "schema_version": 1, "models": { "qwen3.8-27b": { "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf", "ctx_size": 4096 } } }
+    , "t.json", &diag);
+    ok.deinit();
 }
 
 test "show prints the effective value of every key with its source in both forms" {

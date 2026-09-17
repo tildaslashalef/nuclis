@@ -69,6 +69,12 @@ pub const PullOptions = struct {
     /// `--with`/`--all`.
     mmproj: ?[]const u8 = null,
     mtp: ?[]const u8 = null,
+    /// `--register <name>`: write the pulled files as a registry entry of
+    /// `config_path` once they are verified; `profile` forces the entry's
+    /// prompt profile (`--profile`, meaningful only with `--register`).
+    register: ?[]const u8 = null,
+    profile: ?config.Profile = null,
+    config_path: ?[]const u8 = null,
 };
 
 /// A name that is neither a catalogue entry nor an `owner/repo` id can
@@ -216,6 +222,8 @@ const PullReport = struct {
     requested_revision: []const u8,
     revision: []const u8,
     files: []const PulledFile,
+    /// The registry entry `--register` wrote, and the file it lives in.
+    registered: ?struct { name: []const u8, config: []const u8 } = null,
 };
 
 const SelectionReport = struct {
@@ -300,6 +308,13 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     }
     const revision: []const u8 = &pinned;
     request.revision = revision;
+    if (options.register) |name| {
+        if (options.config_path == null) return error.MissingHome;
+        const main_file = for (jobs.items) |job| {
+            if (job.role == null or job.role == .main) break job.name;
+        } else null;
+        try config.registrable(name, request.repo_id, main_file, diag);
+    }
     if (!json) try renderHeader(out, sty, if (entry) |e| e.name else options.name, request.repo_id, if (entry != null) null else options.revision orelse "main", revision);
     try out.flush();
 
@@ -334,6 +349,8 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     //    verified, so an interrupted multi-file pull keeps the sidecars of
     //    what it finished.
     var report: std.ArrayList(PulledFile) = .empty;
+    // What `--register` records: filled per verified file by its role.
+    var registration: config.Registration = .{ .repo = request.repo_id, .revision = revision, .file = null, .profile = options.profile };
     var stamp: [20]u8 = undefined;
     const downloaded_at = rfc3339(&stamp, std.Io.Timestamp.now(io, .real).toSeconds());
     for (jobs.items) |job| {
@@ -384,9 +401,27 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
                 .nuclis_version = version,
             });
             try report.append(arena, .{ .path = try arena.dupe(u8, file.path), .size = file.size, .sha256 = digest, .transport = @tagName(file.transport), .role = role, .sidecar = sidecar });
+            switch (role) {
+                .main => registration.file = job.name,
+                .mmproj => registration.mmproj = job.name,
+                .mtp => registration.mtp = job.name,
+                .imatrix => {},
+            }
         }
     }
-    try renderPull(out, .{ .name = if (entry) |e| e.name else options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else "main"), .revision = revision, .files = report.items }, json, sty);
+    // 5. The registry entry, only once every file above is verified, so a
+    //    failed pull registers nothing.
+    var registered: ?@FieldType(PullReport, "registered") = null;
+    if (options.register) |name| {
+        const config_path = options.config_path orelse return error.MissingHome;
+        const current = try config.readText(gpa, io, .cwd(), config_path, diag);
+        defer if (current) |c| gpa.free(c);
+        const text = try config.register(gpa, current, config_path, name, registration, diag);
+        defer gpa.free(text);
+        try config.write(io, .cwd(), config_path, text);
+        registered = .{ .name = name, .config = config_path };
+    }
+    try renderPull(out, .{ .name = if (entry) |e| e.name else options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else "main"), .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
 }
 
 /// `name = repo @ requested: commit <40 hex>`; the name and the requested
@@ -441,6 +476,7 @@ fn renderPull(out: *std.Io.Writer, report: PullReport, json: bool, sty: style.St
             sty.off(),
         });
     }
+    if (report.registered) |r| try out.print("{s}registered{s} as {s}{s}{s} in {s}{s}{s} {s}(`nuclis config set engine.model {s}` makes it the default){s}\n", .{ sty.on(.success), sty.off(), sty.on(.keyword), r.name, sty.off(), sty.on(.code), r.config, sty.off(), sty.on(.dim), r.name, sty.off() });
 }
 
 fn deleteIfPresent(io: std.Io, path: []const u8) !void {
@@ -566,7 +602,16 @@ pub const Listed = struct {
     path: []const u8,
     size: u64,
     sidecar: ?Sidecar,
+    /// The registry entry that locates this file, when one does.
+    registered: ?RegisteredAs = null,
 };
+
+/// How a file is named in `nuclis.json`: the entry and, when the entry
+/// forces one, its prompt profile.
+pub const RegisteredAs = struct { name: []const u8, profile: ?config.Profile };
+
+/// A registry entry whose file is not on disk.
+pub const MissingEntry = struct { name: []const u8, path: []const u8 };
 
 pub const CompanionRow = struct {
     role: Role,
@@ -586,10 +631,13 @@ pub const CatalogRow = struct {
     revision: []const u8,
     sha256: []const u8,
     companions: []const CompanionRow,
+    /// A registry entry under another name than the catalogue's, or one
+    /// forcing a profile (the catalogue's own name is not repeated).
+    registered: ?RegisteredAs = null,
 };
 
 pub const Listing = struct {
-    schema_version: u32 = 2,
+    schema_version: u32 = 3,
     models_dir: []const u8,
     /// Every catalogue entry with its local status, companions beneath.
     catalog: []const CatalogRow,
@@ -598,6 +646,8 @@ pub const Listing = struct {
     /// GGUF files found above the `<owner>/<repo>/` level; they are not
     /// listed because nothing can say which repository they came from.
     outside_layout: usize,
+    /// Registry entries whose file is absent.
+    missing: []const MissingEntry = &.{},
 
     pub fn render(self: Listing, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
         if (json) {
@@ -620,6 +670,7 @@ pub const Listing = struct {
                 row.revision[0..12],             off,                                     hash,
                 row.sha256,                      off,
             });
+            if (row.registered) |r| try renderRegistered(out, r, sty);
             for (row.companions) |c| try out.print("    {s}{s:<10}{s} {s}{s:<10}{s} {s}{s}{s}  {s}({d} bytes; not loaded yet: {s}){s}\n", .{
                 number,                        @tagName(c.role),   off,
                 sty.on(statusStyle(c.status)), @tagName(c.status), off,
@@ -641,11 +692,22 @@ pub const Listing = struct {
                     if (s.size != f.size) try out.print("  {s}(size differs from the sidecar){s}", .{ sty.on(.warning), off });
                 } else try out.print("{s}(no sidecar: not verified by nuclis){s}", .{ sty.on(.warning), off });
                 try out.writeByte('\n');
+                if (f.registered) |r| try renderRegistered(out, r, sty);
             }
+        }
+        if (self.missing.len > 0) {
+            try out.print("\n{s}registry entries without a file{s} {s}(`nuclis model pull <name>` fetches an entry with repo and file){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
+            for (self.missing) |m| try out.print("  {s}{s}{s} {s}{s}{s}\n", .{ sty.on(.keyword), m.name, off, path, m.path, off });
         }
         if (self.outside_layout > 0) try out.print("\n{s}{d} GGUF file(s) outside the <owner>/<repo>/ layout are not listed{s}\n", .{ sty.on(.warning), self.outside_layout, off });
     }
 };
+
+fn renderRegistered(out: *std.Io.Writer, r: RegisteredAs, sty: style.Style) !void {
+    try out.print("    {s}registered as{s} {s}{s}{s}", .{ sty.on(.dim), sty.off(), sty.on(.keyword), r.name, sty.off() });
+    if (r.profile) |p| try out.print(" {s}(profile {s} forced){s}", .{ sty.on(.dim), @tagName(p), sty.off() });
+    try out.writeByte('\n');
+}
 
 /// Status words by how good the news is.
 pub fn statusStyle(status: catalog.Status) style.Kind {
@@ -661,7 +723,7 @@ pub fn statusStyle(status: catalog.Status) style.Kind {
 /// the layout only: owner directories, repository directories, then files
 /// (with subdirectories such as `MTP/`). Nothing is created; a missing
 /// directory lists the catalogue as absent.
-pub fn list(arena: Allocator, io: std.Io, root: []const u8) !Listing {
+pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models) !Listing {
     const models = try modelsDir(arena, root);
     const rows = try arena.alloc(CatalogRow, catalog.entries.len);
     for (&catalog.entries, rows) |*e, *row| {
@@ -675,12 +737,14 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8) !Listing {
     }
     var files: std.ArrayList(Listed) = .empty;
     var outside: usize = 0;
-    var dir = std.Io.Dir.cwd().openDir(io, models, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound => return .{ .models_dir = models, .catalog = rows, .other = &.{}, .outside_layout = 0 },
+    if (std.Io.Dir.cwd().openDir(io, models, .{ .iterate = true })) |dir| {
+        var d = dir;
+        defer d.close(io);
+        try collect(arena, io, d, "", 0, &files, &outside);
+    } else |err| switch (err) {
+        error.FileNotFound => {},
         else => return err,
-    };
-    defer dir.close(io);
-    try collect(arena, io, dir, "", 0, &files, &outside);
+    }
     // Files the catalogue names are reported under their entry, not twice.
     var other: std.ArrayList(Listed) = .empty;
     scan: for (files.items) |f| {
@@ -695,7 +759,32 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8) !Listing {
             return std.mem.lessThan(u8, a.path, b.path);
         }
     }.less);
-    return .{ .models_dir = models, .catalog = rows, .other = other.items, .outside_layout = outside };
+    // The registry's view: each entry's location relative to the models
+    // directory names a row, or the entry is missing its file.
+    var missing: std.ArrayList(MissingEntry) = .empty;
+    for (registry.entries) |named| {
+        const e = named.entry;
+        const as: RegisteredAs = .{ .name = named.name, .profile = e.profile };
+        const relative: ?[]const u8 = if (e.path) |p| blk: {
+            if (!std.fs.path.isAbsolute(p)) break :blk p;
+            if (std.mem.startsWith(u8, p, models) and p.len > models.len + 1 and p[models.len] == '/') break :blk p[models.len + 1 ..];
+            // Outside the layout: only its existence can be checked.
+            std.Io.Dir.cwd().access(io, p, .{}) catch try missing.append(arena, .{ .name = named.name, .path = p });
+            continue;
+        } else if (e.repo != null and e.file != null) try std.fs.path.join(arena, &.{ e.repo.?, e.file.? }) else null;
+        const location = relative orelse continue;
+        var found = false;
+        for (rows) |*row| if (std.mem.eql(u8, row.path, location)) {
+            found = row.status != .absent;
+            if (found and (!std.mem.eql(u8, row.name, named.name) or e.profile != null)) row.registered = as;
+        };
+        for (other.items) |*f| if (std.mem.eql(u8, f.path, location)) {
+            f.registered = as;
+            found = true;
+        };
+        if (!found) try missing.append(arena, .{ .name = named.name, .path = location });
+    }
+    return .{ .models_dir = models, .catalog = rows, .other = other.items, .outside_layout = outside, .missing = missing.items };
 }
 
 fn collect(arena: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []const u8, depth: u8, files: *std.ArrayList(Listed), outside: *usize) !void {
@@ -730,10 +819,10 @@ fn collect(arena: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []const u8, de
     }
 }
 
-pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, json: bool, out: *std.Io.Writer, sty: style.Style) !void {
+pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models, json: bool, out: *std.Io.Writer, sty: style.Style) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    const listing = try list(arena_state.allocator(), io, root);
+    const listing = try list(arena_state.allocator(), io, root, registry);
     try listing.render(out, json, sty);
 }
 
@@ -1053,6 +1142,12 @@ test "selection and pull reports render the same values in both forms" {
     const pulled: PullReport = .{ .name = null, .repo = "a/b", .requested_revision = "main", .revision = selection.revision, .files = &.{.{ .path = "/m/a/b/Q4.gguf", .size = 4, .sha256 = "ab", .transport = "verified_local", .role = .main, .sidecar = "/m/a/b/Q4.gguf.nuclis.json" }} };
     try renderPull(&out.writer, pulled, false, .none);
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "verified /m/a/b/Q4.gguf\n  4 bytes, sha256 ab, role main; provenance in Q4.gguf.nuclis.json\n"));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "registered") == null);
+    out.clearRetainingCapacity();
+    var named = pulled;
+    named.registered = .{ .name = "q", .config = "/r/nuclis.json" };
+    try renderPull(&out.writer, named, false, .none);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "registered as q in /r/nuclis.json (`nuclis config set engine.model q` makes it the default)\n") != null);
     out.clearRetainingCapacity();
     try renderPull(&out.writer, pulled, true, .none);
     const parsed_pull = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
@@ -1071,7 +1166,7 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     // Absent directory: the catalogue is absent, nothing else, nothing created.
-    const empty = try list(arena, io, root);
+    const empty = try list(arena, io, root, .{});
     try std.testing.expectEqual(catalog.entries.len, empty.catalog.len);
     try std.testing.expectEqual(catalog.Status.absent, empty.catalog[0].status);
     try std.testing.expectEqual(@as(usize, 0), empty.other.len);
@@ -1101,7 +1196,25 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
         .downloaded_at = "2026-09-11T00:00:00Z",
         .nuclis_version = version,
     });
-    const listing = try list(arena, io, root);
+    // The registry: an entry naming the other repository's file with a
+    // forced profile, the catalogue's own name (not repeated), a second
+    // name for the catalogue file, one whose file is absent, and a path.
+    const entries = [_]config.NamedModel{
+        .{ .name = "repo", .entry = .{ .repo = "unsloth/Repo-GGUF", .file = "Repo-Q4.gguf", .profile = .gemma4 } },
+        .{ .name = "qwen3.8-27b", .entry = .{ .repo = qwen.repo, .file = qwen.file } },
+        .{ .name = "big", .entry = .{ .repo = qwen.repo, .file = qwen.file } },
+        .{ .name = "gone", .entry = .{ .repo = "unsloth/Gone-GGUF", .file = "gone.gguf" } },
+        .{ .name = "local", .entry = .{ .path = "unsloth/Repo-GGUF/MTP/mtp-Repo.gguf" } },
+    };
+    const listing = try list(arena, io, root, .{ .entries = &entries });
+    try std.testing.expectEqualStrings("big", listing.catalog[0].registered.?.name);
+    try std.testing.expect(listing.catalog[0].registered.?.profile == null);
+    try std.testing.expectEqualStrings("local", listing.other[0].registered.?.name);
+    try std.testing.expectEqualStrings("repo", listing.other[1].registered.?.name);
+    try std.testing.expectEqual(.gemma4, listing.other[1].registered.?.profile.?);
+    try std.testing.expectEqual(@as(usize, 1), listing.missing.len);
+    try std.testing.expectEqualStrings("gone", listing.missing[0].name);
+    try std.testing.expectEqualStrings("unsloth/Gone-GGUF/gone.gguf", listing.missing[0].path);
     const row = listing.catalog[0];
     try std.testing.expectEqualStrings("qwen3.8-27b", row.name);
     try std.testing.expectEqual(catalog.Status.present, row.status);
@@ -1128,6 +1241,10 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "no sidecar") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "main     0123456789ab  322e194f") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "2 GGUF file(s) outside") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "registered as big\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "registered as repo (profile gemma4 forced)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "registry entries without a file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "gone unsloth/Gone-GGUF/gone.gguf") != null);
     out.clearRetainingCapacity();
     try listing.render(&out.writer, true, .none);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
@@ -1140,6 +1257,8 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     try std.testing.expect(files[0].object.get("sidecar").? == .null);
     try std.testing.expectEqualStrings("main", files[1].object.get("sidecar").?.object.get("role").?.string);
     try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("outside_layout").?.integer);
+    try std.testing.expectEqualStrings("repo", files[1].object.get("registered").?.object.get("name").?.string);
+    try std.testing.expectEqualStrings("gone", parsed.value.object.get("missing").?.array.items[0].object.get("name").?.string);
 }
 
 /// Test double for `readRange`: serves a directory image in `chunk`-sized

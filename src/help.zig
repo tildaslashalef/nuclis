@@ -97,7 +97,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "inspect", "an artifact's identity, dimensions, and tensor encodings");
     try row(out, sty, "validate", "check a file against its architecture's adapter");
     try row(out, sty, "model", "pull, list, and judge artifacts from the Hugging Face Hub");
-    try row(out, sty, "config", "write or show ~/.nuclis/nuclis.json");
+    try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
 
     try heading(out, sty, "common options");
     try row(out, sty, "--model <name|path>", "a catalogue name, a registry entry, or a path");
@@ -251,6 +251,7 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try usage(out, sty, "nuclis model ls [--json]");
     try usage(out, sty, "nuclis model pull <name> [--with mmproj,mtp | --all] [--force] [--json]");
     try usage(out, sty, "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <role>]");
+    try usage(out, sty, "                  [--register <name> [--profile <p>]]");
     try usage(out, sty, "nuclis model inspect (<name> | <owner/repo> --file <name>) [--revision <rev>]");
 
     try heading(out, sty, "options");
@@ -258,10 +259,14 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--all", "every companion the entry names");
     try row(out, sty, "--force", "replace a file whose sidecar records other content");
     try row(out, sty, "--role <role>", "main, mmproj, mtp, imatrix (with owner/repo)");
+    try row(out, sty, "--register <name>", "once verified, write the pull as a registry entry of");
+    try out.print("{s}nuclis.json (repo, file, commit); a companion fills an entry\n", .{continuation});
+    try row(out, sty, "--profile <p>", "qwen38 or gemma4, forced on the registered entry's file");
 
     try heading(out, sty, "behaviour");
     try plain(out, "A catalogue name pins repository, file, commit, and SHA-256; `model ls`");
-    try plain(out, "lists them with their local status. Downloads go over Xet, verify the");
+    try plain(out, "lists them with their local status and names the registry entry of every");
+    try plain(out, "file one locates. Downloads go over Xet, verify the");
     try plain(out, "digest, publish atomically, and leave a <file>.nuclis.json sidecar beside");
     try plain(out, "the file. `model inspect` reads only the remote head (at most 64 MiB, no");
     try plain(out, "weights) and ends with a verdict: supported, runnable, or not runnable.");
@@ -275,13 +280,19 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "nuclis config — the file every command reads");
     try usage(out, sty, "nuclis config init");
     try usage(out, sty, "nuclis config show [--json]");
+    try usage(out, sty, "nuclis config set <key> <value>");
 
     try heading(out, sty, "behaviour");
     try plain(out, "`init` writes ~/.nuclis/nuclis.json with the defaults and every catalogue");
     try plain(out, "model registered, then says what to pull next; it never overwrites an");
     try plain(out, "existing file. `show` prints the effective value of every key with the");
     try plain(out, "layer it came from — default, profile, file, model entry, or flag.");
-    try plain(out, "An unknown key or an out-of-range value is an error naming the key.");
+    try plain(out, "`set` changes one key by its dotted name (engine.model hauhau,");
+    try plain(out, "generate.sampling.temperature 0.7, models.<name>.profile gemma4; null");
+    try plain(out, "clears an override) and validates the file before writing it; a missing");
+    try plain(out, "file is created as `init` would. Entries are created by `model pull");
+    try plain(out, "--register <name>`, never by `set`. An unknown key or an out-of-range");
+    try plain(out, "value is an error naming the key, and the file is left as it was.");
 
     try heading(out, sty, "sections");
     try row(out, sty, "engine", "model, backend, ctx_size, kv_precision");

@@ -220,9 +220,22 @@ with each entry's local status from its sidecar alone (`present`,
 and its companions beneath with a "not loaded yet" note, then the other
 GGUF files in the layout with their sidecar facts (runnable only if their
 architecture has an adapter); files above `<owner>/<repo>/` are counted,
-not listed. `make model-ls` wraps it. `--model` and `engine.model` accept
-a registry entry, a catalogue name, or a path; a missing file fails before
-anything opens, naming the resolved path.
+not listed; every listed file that a registry entry locates (`path`, or
+`repo` and `file`) says `registered as <name>`, with the profile when the
+entry forces one, and entries whose file is absent are listed last (a
+`nuclis.json` that fails to load leaves the listing unannotated with one
+warning line). `make model-ls` wraps it. `nuclis model pull <owner/repo>
+--file <name> --register <name> [--profile <p>]` also writes the pull as a
+registry entry (`repo`, `file`, the resolved commit, and the forced
+profile) once every file is verified, so `--model <name>` and `config set
+engine.model <name>` work from then on; a companion role fills the same
+entry's `mmproj`/`mtp`, a name that locates other content is refused, a
+catalogue name is refused before the transfer unless it names the
+catalogue's own file (the registry resolves first, so such an entry would
+shadow the catalogue; the loader rejects one however it got there), and a
+registry-entry pull refuses `--register`. `--model` and `engine.model`
+accept a registry entry, a catalogue name, or a path; a missing file
+fails before anything opens, naming the resolved path.
 
 `nuclis model inspect (<name> | <owner/repo> --file <name>) [--revision <rev>]
 [--json]` answers "will this quantization load" before a download. It lists
@@ -295,7 +308,15 @@ and the `nuclis model pull <name>` to run next:
   `UnsupportedPromptTemplate`; the agent prints a notice at startup, and
   the rendering is the pinned protocol's, not necessarily the file's own
   ([prompt-profile.md § Evidence](reference/prompt-profile.md#evidence-and-reproduction)).
-  The JSON form
+  `nuclis config set <key> <value>` changes one key by its dotted name
+  (`engine.model hauhau`, `generate.sampling.temperature 0.7`,
+  `models.<name>.profile gemma4`; `null` clears an override): the file's
+  own text is edited so stated keys and their order survive, the result
+  goes through the same loader before it is written (a refused value
+  leaves the file untouched and names the key), `engine.model` must
+  resolve to a file that exists, and a missing file is created as `init`
+  writes it. Entries are created by `model pull --register`, never by
+  `set` (`models.<name>.<key>` on an unknown name says so). The JSON form
   carries the file as loaded (`config`, the registry as a map), the
   `effective` view, and the `sources` map. The flag layer is visible in each
   command's own report (`generate --json`, the `bench` report's `config`
