@@ -64,6 +64,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-14 | Catalogue entries ahead of their adapters; roadmap reordered around speculation | 2026-09-17 |
 | TERM-07 | Rows released by a shrinking live region are reused, not left as gaps | 2026-09-17 |
 | APPS-07 | `--prompt-profile` and the registry's `profile`; the template-alias gate | 2026-09-17 |
+| APPS-08 | `model pull`: a leaked path per file and a leading slash in the sidecar's file name | 2026-09-17 |
 
 ## Context
 
@@ -1780,3 +1781,28 @@ whose template is a genuinely different protocol produces prompts its
 model was not trained on; the flag is the user's statement that it is the
 same one. `config show` names the forced profile but not that it is
 forced. Print mode prints no notice.
+
+### APPS-08 — `model pull`: a leaked path per file and a leading slash in the sidecar's file name (2026-09-17)
+
+**Outcome.** Two defects in `src/model.zig`'s pull, both seen on a pull of
+a non-catalogue repository. The destination check allocated each job's
+local path from the package client's allocator and never freed it, which
+the debug allocator reported on exit after every pull. And every sidecar
+since APPS-04 recorded `file` with a leading `/`
+(`"/Qwen3.8-27B-UD-Q4_K_M.gguf"`): the repository directory was joined
+with a trailing empty component, which `std.fs.path.join` does not turn
+into a separator, so slicing the path below it kept the slash. Nothing
+read the field strictly, so no behaviour depended on it; the path is now
+freed on every exit of the loop and the separator is trimmed. Existing
+sidecars keep their slash until a re-pull rewrites them (a verified reuse,
+no download).
+
+**Evidence.** `zig build test` (391); a re-pull of
+`HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced` verified the
+existing 7.4 GB file in 23.8 s with no leak report and wrote
+`"file": "Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf"`.
+
+**Files.** `src/model.zig`.
+
+**Remaining.** Pull has no offline test that exercises the loop, so the
+leak was caught by a live run, not by the suite.

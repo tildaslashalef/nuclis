@@ -308,6 +308,7 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     //    to the package's verification unless forced.
     for (jobs.items) |job| {
         const path = try client.localPath(request, job.name);
+        defer gpa.free(path);
         const sidecar = try sidecarPath(arena, path);
         const recorded = readSidecar(arena, io, .cwd(), sidecar) catch |err| switch (err) {
             error.InvalidSidecar => null,
@@ -369,11 +370,12 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
             };
             const sidecar = try sidecarPath(arena, file.path);
             // The Hub name of a published file (a shard set returns
-            // several): the path below the repository directory.
-            const repo_dir = try std.fs.path.join(arena, &.{ models, request.repo_id, "" });
+            // several): the path below the repository directory, without
+            // the separator `join` leaves in front of it.
+            const repo_dir = try std.fs.path.join(arena, &.{ models, request.repo_id });
             try writeSidecar(arena, io, .cwd(), sidecar, .{
                 .repo = request.repo_id,
-                .file = if (std.mem.startsWith(u8, file.path, repo_dir)) file.path[repo_dir.len..] else job.name,
+                .file = if (std.mem.startsWith(u8, file.path, repo_dir)) std.mem.trimStart(u8, file.path[repo_dir.len..], "/") else job.name,
                 .revision = revision,
                 .sha256 = digest,
                 .size = file.size,
