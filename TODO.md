@@ -16,23 +16,22 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-KERN-09 closed on 2026-09-18: the expert kernels exist on both paths
-(`cpu.experts` reference; decode `route`, `matvecExperts`, `geluMulRows`,
-`combineExperts`; prefill `expertLists` and the gathered `matmulExperts`
-tiles), checked in `test-metal` and measured by `make bench-experts`
-([metal-backend.md § Gathered expert kernels](docs/reference/metal-backend.md#gathered-expert-kernels-kern-09)).
-Next is MODL-09 session 1: the 26B-A4B adapter and CPU reference (the
-file is already pulled and verified; its facts are below). Two families
-are planned, in this order: **Gemma 4 26B-A4B** (the first mixture of
-experts; the kernels now exist, everything else reused) and then Meta's
-**Muse Glimmer 30B** (a dense agentic model with a new tokenizer splitter
-and a new chat-protocol decoder). The 26B-A4B facts were read on
-2026-09-16 from the remote QAT header (`nuclis model inspect`, no
-weights) and the pinned llama.cpp `7620399` (`src/models/gemma4.cpp`);
-the Muse facts from its model card, the base repository's `config.json`,
-the remote GGUF header, and the same reference, which already implements
-both architectures and chat formats, so the oracles exist without a
-reference upgrade.
+MODL-09 session 1 done on 2026-09-18: the Gemma adapter binds two pinned
+configurations (`gemma4.Config`: the 12B and the 26B-A4B, selected by
+`block_count`), the CPU runtime executes the expert layer, and
+`make compare-gemma4-26b-a4b-cpu` matches the pinned reference traces
+(91 files, max abs 5.8e-5, relative RMS 3.1e-6, greedy token and top-5
+equal; [gemma4.md § 26B-A4B](docs/reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
+Session 2 is the Metal plan (below): `Plan.init` refuses the expert
+configuration today, so the file runs on `--backend cpu` only. Two
+families are planned, in this order: **Gemma 4 26B-A4B** (the first
+mixture of experts; the kernels and the CPU reference exist) and then
+Meta's **Muse Glimmer 30B** (a dense agentic model with a new tokenizer
+splitter and a new chat-protocol decoder). The Muse facts were read on
+2026-09-16 from its model card, the base repository's `config.json`, the
+remote GGUF header, and the pinned llama.cpp `7620399`, which already
+implements both architectures and chat formats, so the oracles exist
+without a reference upgrade.
 
 Order: MODL-09 → MODL-10 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 All four files of both families are pulled and verified under
@@ -50,78 +49,49 @@ decoding across the families, then performance, then vision
 | MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 1 |
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 1 |
 
-## Gemma 4 26B-A4B — the artifact and its facts (read 2026-09-16)
-
-**`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf`** from
-`unsloth/gemma-4-26B-A4B-it-qat-GGUF` at commit
-`7b92b5b28818151e8669af2e45e88d6086f490dd`, 14,249,047,104 B, SHA-256
-`a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891`
-(verified by the pull in MODL-09). Architecture `gemma4`, 30 blocks,
-embedding 2816, context 262144, 658 tensors: 392 F32 and 266 Q4_0 — the
-Q4_0 path from MODL-08 executes every weight. The K-quant sibling
-(`unsloth/gemma-4-26B-A4B-it-GGUF`, 17.0 GB) stores its expert
-down-projections as Q5_1, which the engine does not have, so the QAT file
-is the only target. Verdict today: *not runnable: the gemma4 adapter
-rejects the file (UnsupportedConfiguration)* — the expert tensors.
-
-- **Template digest `845f1ee4…`, the 12B's**: the Gemma profile, its
-  fixtures, and the tool calling from AGNT-09 apply unchanged. Sampling
-  hint in the header: temperature 1.0, top-p 0.95, top-k 64 (the 12B's).
-- **Attention** is the 12B's period-6 pattern (five sliding layers, window
-  1024, head 256, 8 KV heads, RoPE base 1e4; one global layer, head 512,
-  base 1e6) with two differences to read carefully: the global layers have
-  **2 KV heads** (`head_count_kv` array alternates 8 and 2; the 12B had
-  one), and `rope.dimension_count` is 512 for global layers (the 12B
-  rotated 128 of 512 with `rope_freqs` factors) — whether factors exist
-  here is read from the full inventory when the unit starts. Shapes: 16
-  query heads; sliding `attn_q` 2816×4096, `attn_k`/`attn_v` 2816×2048;
-  global `attn_q` 2816×8192, `attn_k` 2816×1024. Logits soft-capped at 30,
-  `layer_output_scale` per layer, tied embeddings (262144 × 2816).
-- **Every layer is an expert layer** (`expert_count` 128, `expert_used_count`
-  8, `expert_feed_forward_length` 704) with a shared dense FFN
-  (`feed_forward_length` 2112) beside it. Per layer: `ffn_gate_inp.weight`
-  2816×128 (F32) with `ffn_gate_inp.scale` [2816]; fused
-  `ffn_gate_up_exps.weight` [2816, 1408, 128] and `ffn_down_exps.weight`
-  [704, 2816, 128] (Q4_0) with `ffn_down_exps.scale` [128]; the dense
-  `ffn_gate`/`ffn_up`/`ffn_down`; norms `ffn_norm`, `post_ffw_norm_1`,
-  `pre_ffw_norm_2`, `post_ffw_norm_2`, `post_ffw_norm`, `attn_norm`,
-  `post_attention_norm`, and the per-head q/k norms.
-- **The reference's FFN block on an expert layer** (`gemma4.cpp`):
-  shared branch `post_ffw_norm_1(GELU-FFN(ffn_norm(x)))`; expert branch:
-  router logits = `ffn_gate_inp · (rms_norm(x, eps) / sqrt(2816) ⊙ gate_inp.scale)`
-  over the *pre-norm* attention output, softmax over 128, top-8 with the
-  selected weights renormalized to sum 1 (`norm_w`), each expert a
-  gated-GELU FFN over `pre_ffw_norm_2(x)` with the fused gate-up rows and
-  the per-expert down scale, weighted sum, then `post_ffw_norm_2`; the
-  layer adds both branches and continues as the 12B (post norm, residual,
-  output scale).
-- **Active bytes per token**: about 3.8B parameters (8 experts × 30
-  layers ≈ 1.4B, shared FFNs ≈ 0.5B, attention ≈ 1.1B, the tied head
-  ≈ 0.7B) ≈ 2.1 GB at Q4_0, against 16 GB for the dense 27B — the reason
-  this family comes first.
-
 ## MODL-09 — Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan
 
-**Design.**
-- Session 1: pull the QAT file and the companions it ships
-  (`nuclis model pull unsloth/gemma-4-26B-A4B-it-qat-GGUF --file …`,
-  digests into [artifacts.md](docs/reference/artifacts.md)); confirm the
-  reference runs it; extend `docs/reference/gemma4.md` with the 26B-A4B
-  section (inventory, layer pattern, the expert block, the global-layer
-  KV/rope differences). Adapter: `models/gemma4.zig` accepts the expert
-  configuration (validation of the 3-D expert tensors, the scales, the
-  extra norms, 2 KV heads on global layers, the rope dimension count),
-  keeps the 12B's validation exact, and binds both layouts; the CPU
-  runtime gains the expert FFN block (router chain, top-8, gathered
-  experts from KERN-09's CPU reference, shared branch, the two post norms
-  and their sum); `<bos>Hello,` traces from the reference at three
-  positions under `tests/fixtures/gemma4-26b-a4b-hello-comma/` and
-  `make compare-gemma4-26b-a4b-cpu` at the bring-up thresholds.
-- Session 2: the Metal plan (`gemma4_metal.zig` extended, not forked):
-  the expert FFN block on decode and in the chunked prefill from KERN-09,
-  the global attention with 2 KV heads, memory plan with all experts
-  resident (14.2 GB) and no paging. `make compare-gemma4-26b-a4b`
-  (CPU, F32, F16) and `make test-generation-gemma4-26b-a4b-metal`.
+**Session 1 (done 2026-09-18).** The file's facts, the expert forward
+pass, and the CPU comparison are in
+[gemma4.md § 26B-A4B](docs/reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09):
+`models/gemma4.zig` carries a `Config` per pinned checkpoint (widths,
+layer count, the global layers' KV heads, the expert block) with the
+inventory fixture `fixtures/gemma4-26b-a4b.json` and mutation tests on
+both; `Layer` carries its KV heads and geometry; `Binding.active()` is
+the bound layers; `weights.View.expertMatrix` views the 3-D tensors;
+`gemma4_runtime.zig` sizes from the config and `feedForward` runs the
+shared branch, the router over the pre-norm residual, the gathered
+experts, and the three extra norms; the traces are pinned under
+`tests/fixtures/gemma4-26b-a4b-hello-comma/` (provenance recorded) and
+`make compare-gemma4-26b-a4b-cpu` passes at the bring-up thresholds.
+`gemma4_metal.zig` compiles against the new binding (sizes from the
+config, `layer.kvWidth()`) and refuses an expert configuration at
+`Plan.init`.
+
+**Session 2: the Metal plan** (`gemma4_metal.zig` extended, not forked).
+- Decode: per expert layer, after the dense FFN, `rmsNorm` of the
+  residual with `router_scale` as its weight then `scale` by
+  `1/sqrt(2816)` (the reference multiplies in the other order; one F32
+  rounding apart), the router matvec (F32 128 × 2816), `route`,
+  `rmsNorm` with `pre_ffn_norm_2`,
+  `matvecExperts` gate-up (shared input) → `geluMulRows` → `matvecExperts`
+  down → `combineExperts` with the down scale, `rmsNorm` with
+  `post_ffn_norm_2`, `add` into the shared branch after its
+  `post_ffn_norm_1`, then the ordinary post norm and `addScale`.
+- Prefill: the same with `route` over the chunk's rows, `expertLists`,
+  `matmulExperts` (gate-up `in_group` k, down `in_group` 1), and
+  `combineExperts` with `rows = count`; scratch of `k × chunk` rows of
+  1408, 704, and 2816 floats (23 MB at 256 tokens).
+- Global attention with 2 KV heads: the wide decode instantiation and the
+  chunk kernel already take `kv_heads`; check the wide kernel's KV-head
+  assumptions (the 12B had one).
+- Memory plan: all experts resident (14.2 GB wrapped), no paging.
+- `make compare-gemma4-26b-a4b` (CPU, F32, F16 at the family's
+  tolerances) and `make test-generation-gemma4-26b-a4b-metal`; the
+  12B and QAT-12B comparisons and `make bench` on Qwen unchanged; first
+  decode/prefill numbers recorded; the chunk size for this family decided
+  from the tile-fill measurement in
+  [metal-backend.md § Gathered expert kernels](docs/reference/metal-backend.md#gathered-expert-kernels-kern-09).
 
 **Acceptance.** Traces match the oracle at the thresholds with the same
 greedy token; the 12B and QAT-12B comparisons unchanged; `make bench` on

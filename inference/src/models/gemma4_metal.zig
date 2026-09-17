@@ -1,4 +1,6 @@
-//! GPU-resident execution of the pinned Gemma 4 12B text schedule.
+//! GPU-resident execution of the pinned Gemma 4 12B text schedule (the
+//! 26B-A4B's expert block has no GPU path yet: `init` refuses an expert
+//! configuration, and the CPU runtime serves those files).
 //! One command buffer per token (`step`) or per prompt chunk (`prefill`):
 //! the CPU supplies token ids and reads back logits, a greedy token, or a
 //! partial top-k; every activation, norm, gate, and cache write stays on the
@@ -34,13 +36,10 @@ const Buffer = metal.Buffer;
 pub const Observer = @import("../runtime/observer.zig").Observer;
 
 pub const vocabulary = model.vocabulary;
-const hidden = model.embedding;
-const ffn = model.feed_forward;
 const heads = model.heads;
-const embedding_scale: f32 = @sqrt(@as(f32, hidden));
 /// The widest per-layer geometry; sliding layers use a prefix of each buffer.
 const q_width = model.Kind.global.queryWidth(); // 16 × 512
-const kv_width = model.Kind.sliding.kvWidth(); // 8 × 256
+const kv_width = model.max_kv_width; // 8 × 256
 const head_max = model.Kind.global.headSize();
 
 const LayerConstants = struct {
@@ -114,14 +113,18 @@ pub const Plan = struct {
     /// attention cache precision of every layer.
     pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision) !Plan {
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
-        var layouts: [model.layer_count]session.Layout = undefined;
-        for (binding.layers, &layouts) |layer, *layout| {
-            const width = layer.kind.kvWidth();
+        const config = binding.config;
+        if (config.experts != null) return error.UnsupportedConfiguration;
+        const hidden = config.embedding;
+        const ffn = config.feed_forward;
+        var layouts: [model.max_layers]session.Layout = undefined;
+        for (binding.active(), layouts[0..config.layer_count]) |layer, *layout| {
+            const width = layer.kvWidth();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width, .precision = kv } };
         }
-        var state = try session.Session.init(alloc, &layouts, capacity);
+        var state = try session.Session.init(alloc, layouts[0..config.layer_count], capacity);
         errdefer state.deinit();
-        const constants = try alloc.alloc(LayerConstants, binding.layers.len);
+        const constants = try alloc.alloc(LayerConstants, config.layer_count);
         errdefer alloc.free(constants);
         var self: Plan = undefined;
         self.alloc = alloc;
@@ -131,7 +134,7 @@ pub const Plan = struct {
         self.state = state;
         self.constants = constants;
         self.state_buffer = try backend.wrap(state.memory);
-        for (binding.layers, constants) |layer, *c| {
+        for (binding.active(), constants) |layer, *c| {
             c.* = .{
                 .attention_norm = try self.constant(layer.attention_norm),
                 .post_attention_norm = try self.constant(layer.post_attention_norm),
@@ -273,10 +276,11 @@ pub const Plan = struct {
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
         const embedding = try self.weight(self.binding.token_embedding);
+        const hidden = self.binding.config.embedding;
         try b.embed(embedding.buffer, embedding.matrix, token, self.x);
-        try b.scale(self.x, hidden, embedding_scale);
+        try b.scale(self.x, hidden, self.binding.config.embeddingScale());
         const norm: metal.Backend.Norm = .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden };
-        for (self.binding.layers, self.constants, 0..) |layer, c, il| {
+        for (self.binding.active(), self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, norm);
             try self.attention(layer, c, il);
             try b.rmsNorm(self.projected, c.post_attention_norm, self.projected, norm);
@@ -351,10 +355,10 @@ pub const Plan = struct {
     fn attention(self: *Plan, layer: model.Layer, c: LayerConstants, il: usize) !void {
         const b = self.backend;
         const kind = layer.kind;
-        const hd = kind.headSize();
-        const kv_heads = kind.kvHeads();
-        const qw = kind.queryWidth();
-        const kvw = kind.kvWidth();
+        const hd = layer.headSize();
+        const kv_heads = layer.kv_heads;
+        const qw = layer.queryWidth();
+        const kvw = layer.kvWidth();
         const cache = self.state.layers[il].attention;
         const position = self.state.position;
         const precision = cache.keys.precision;
@@ -427,10 +431,12 @@ pub const Plan = struct {
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
         const embedding = try self.weight(self.binding.token_embedding);
+        const hidden = self.binding.config.embedding;
+        const ffn = self.binding.config.feed_forward;
         for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
-        try b.scale(self.x_c, count * hidden, embedding_scale);
+        try b.scale(self.x_c, count * hidden, self.binding.config.embeddingScale());
         const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
-        for (self.binding.layers, self.constants, 0..) |layer, c, il| {
+        for (self.binding.active(), self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x_c, c.attention_norm, self.normalized_c, norm);
             try self.attentionChunk(layer, c, il, count);
             try b.rmsNorm(self.projected_c, c.post_attention_norm, self.projected_c, norm);
@@ -457,10 +463,11 @@ pub const Plan = struct {
     fn attentionChunk(self: *Plan, layer: model.Layer, c: LayerConstants, il: usize, count: usize) !void {
         const b = self.backend;
         const kind = layer.kind;
-        const hd = kind.headSize();
-        const kv_heads = kind.kvHeads();
-        const qw = kind.queryWidth();
-        const kvw = kind.kvWidth();
+        const hd = layer.headSize();
+        const kv_heads = layer.kv_heads;
+        const qw = layer.queryWidth();
+        const kvw = layer.kvWidth();
+        const hidden = self.binding.config.embedding;
         const cache = self.state.layers[il].attention;
         const position = self.state.position;
         try self.mmRows(layer.query, self.normalized_c, hidden, self.q_c, qw, count);

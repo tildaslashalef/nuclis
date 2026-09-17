@@ -17,6 +17,18 @@ pub const View = struct {
         if (tensor.dimensions.len != 2) return error.InvalidShape;
         return .{ .columns = std.math.cast(usize, tensor.dimensions[0]) orelse return error.Overflow, .rows = std.math.cast(usize, tensor.dimensions[1]) orelse return error.Overflow, .encoding = tensor.encoding_id, .bytes = try self.bytes(tensor) };
     }
+    /// A 3-D tensor `[experts][rows][columns]` (GGUF dimensions
+    /// `[columns, rows, experts]`) as contiguous expert matrices.
+    pub fn expertMatrix(self: View, tensor: *const gguf.Tensor) !cpu.ExpertMatrix {
+        if (tensor.dimensions.len != 3) return error.InvalidShape;
+        return .{
+            .columns = std.math.cast(usize, tensor.dimensions[0]) orelse return error.Overflow,
+            .rows = std.math.cast(usize, tensor.dimensions[1]) orelse return error.Overflow,
+            .experts = std.math.cast(usize, tensor.dimensions[2]) orelse return error.Overflow,
+            .encoding = tensor.encoding_id,
+            .bytes = try self.bytes(tensor),
+        };
+    }
     pub fn row(self: View, tensor: *const gguf.Tensor, index: usize, output: []f32) !void {
         const m = try self.matrix(tensor);
         if (index >= m.rows or output.len != m.columns or m.rows == 0 or m.bytes.len % m.rows != 0) return error.InvalidShape;

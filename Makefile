@@ -22,7 +22,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
         test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
-        compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
+        compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 compare-gemma4-26b-a4b-cpu \
         test-generation-gemma4 test-generation-gemma4-metal test-generation-gemma4-qat-metal clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
@@ -160,15 +160,21 @@ compare-f16: metal ## The F16 cache at its own tolerance (max abs 3e-2, relative
 # quantization-aware-trained checkpoint. Each has its own pinned traces.
 GEMMA_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf
 GEMMA_QAT_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf
-# $(1) label, $(2) model file, $(3) fixture directory, $(4) backend flags, $(5) max absolute, $(6) max relative RMS per trace file.
+# `gemma-4-26b-a4b` is the QAT mixture of experts (MODL-09), with its own traces.
+GEMMA_26B_A4B_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
+# $(1) label, $(2) model file, $(3) fixture directory, $(4) backend flags, $(5) max absolute, $(6) max relative RMS per trace file,
+# $(7) embedding width and $(8) layer count of the traces (3840 and 48 for the 12B files).
 define compare_gemma4_run
 	rm -rf "$(TRACE)-gemma4-$(1)" && mkdir -p "$(TRACE)-gemma4-$(1)"
 	$(BIN) generate $(4) --model "$(2)" --prompt-tokens $(3)/prompt-tokens.json \
 	  --max-tokens 1 --ctx-size 8 --temperature 0 --logits "$(TRACE)-gemma4-$(1)/logits.f32" --trace-dir "$(TRACE)-gemma4-$(1)" $(ARGS) > /dev/null
-	python3 scripts/compare-generation.py "$(TRACE)-gemma4-$(1)" $(3) --positions 3 --embedding 3840 --layers 48 --vocab 262144 \
+	python3 scripts/compare-generation.py "$(TRACE)-gemma4-$(1)" $(3) --positions 3 --embedding $(or $(7),3840) --layers $(or $(8),48) --vocab 262144 \
 	  --max-absolute $(5) --max-relative-rms $(6) \
 	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("gemma4 $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
 endef
+compare-gemma4-26b-a4b-cpu: metal ## The Gemma CPU reference on the 26B-A4B (expert) file vs its pinned traces at the bring-up thresholds (MODL-09)
+	$(call compare_gemma4_run,26b-a4b-cpu,$(GEMMA_26B_A4B_MODEL),tests/fixtures/gemma4-26b-a4b-hello-comma,--backend cpu,0.002,0.0001,2816,30)
+
 compare-gemma4-qat: compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 ## gemma-4-12b-qat vs its pinned llama.cpp traces (`<bos>Hello,`, three positions): CPU reference, Metal F32 and F16 caches (MODL-08, docs/reference/gemma4.md)
 
 compare-gemma4-qat-cpu: metal ## The Gemma CPU reference on the QAT file at the bring-up thresholds (max abs 2e-3, relative RMS 1e-4)

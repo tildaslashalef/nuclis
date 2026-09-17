@@ -1,6 +1,9 @@
-# Gemma 4 12B: facts from the artifact and the reference
+# Gemma 4: facts from the artifacts and the reference
 
-The second architecture through the adapter seam (MODL-04–MODL-08). Everything here was
+The second architecture through the adapter seam (MODL-04–MODL-08), and
+since MODL-09 also the 26B-A4B mixture of experts
+([§ Gemma 4 26B-A4B](#gemma-4-26b-a4b-the-expert-configuration-modl-09)),
+bound by the same adapter as a second pinned configuration. Everything here was
 read on 2026-09-11 from the pinned files with `scripts/gguf-inventory.py`
 (an independent header reader, no weights), from `nuclis model inspect`,
 and from the pinned llama.cpp reference `7620399` (`src/models/gemma4.cpp`,
@@ -482,3 +485,109 @@ and `model ls` lists the K-quant directory in its second group. The
 profile fixtures apply unchanged (same template digest). The acceptance
 record on the QAT file is in
 [bench.md](bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12).
+
+## Gemma 4 26B-A4B: the expert configuration (MODL-09)
+
+Read on 2026-09-18 from the pulled file with `scripts/gguf-inventory.py`
+(the fixture `inference/src/models/fixtures/gemma4-26b-a4b.json`) and from
+the pinned reference's `src/models/gemma4.cpp` and the `build_moe_ffn`
+helper of `src/llama-graph.cpp`.
+
+**Artifact.** `unsloth/gemma-4-26B-A4B-it-qat-GGUF` at commit
+`7b92b5b28818151e8669af2e45e88d6086f490dd`,
+`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf`, 14,249,047,104 B, SHA-256
+`a7c5bc71…` ([artifacts.md](artifacts.md)); `general.name` `Gemma-4 26B-A4B
+IT (smart Q4_0, QAT-lossless)`; 658 tensors, F32 392 and Q4_0 266 (every
+matrix, the expert tensors included). The same vocabulary (262,144), the
+same chat template digest (`845f1ee4…`), and the same sampling hint as
+the 12B files; `tokenizer.ggml.add_bos_token` is `false` here (the 12B's
+is `true`), which changes nothing: the encoder never adds BOS and the
+profile writes it. The catalogue entry `gemma-4-26b-a4b` and its
+companions (`mmproj-BF16.gguf`, `MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf`)
+were pinned ahead of this unit (MODL-14).
+
+**Metadata against the 12B.** Shared and identical: `context_length`,
+`attention.head_count` 16, `sliding_window` 1024, `key_length` /
+`value_length` 512 and the `_swa` pair 256, `rope.dimension_count` 512 /
+`_swa` 256, both `freq_base`s, the epsilon, the soft-cap, `shared_kv_layers`
+0, `embedding_length_per_layer_input` 0. Different:
+
+| Key | 12B | 26B-A4B |
+| --- | --- | --- |
+| `block_count` | 48 | 30 |
+| `embedding_length` | 3840 | 2816 |
+| `feed_forward_length` | 15360 | 2112 (the shared dense FFN) |
+| `attention.head_count_kv` | 8 / **1** | 8 / **2** (global layers) |
+| `expert_count` / `expert_used_count` / `expert_feed_forward_length` | absent | 128 / 8 / 704 |
+
+The layer pattern is the same period 6 (`kindOf`): layers 5, 11, 17, 23,
+29 are global, the other 25 sliding. `rope_freqs.weight` [256] is present
+as on the 12B, and the global layers' `rope.dimension_count` is 512 with
+the same factors, so the global RoPE is the 12B's (128 of 512 dimensions
+rotate). The adapter selects the configuration by `block_count`
+(`gemma4.configs`), validates every key against it, and treats the three
+expert keys as known only to the expert configuration.
+
+**Tensors.** Non-block as the 12B at width 2816. Per block, the 12B's set
+(global layers: `attn_k` [2816, 1024] = 2 × 512, no `attn_v`,
+`attn_output` [8192, 2816]) plus the expert block on **every** layer:
+
+| Tensor | Shape (GGUF order) | Encoding |
+| --- | --- | --- |
+| `ffn_gate_inp.weight` | [2816, 128] | F32 |
+| `ffn_gate_inp.scale` | [2816] | F32 |
+| `ffn_gate_up_exps.weight` | [2816, 1408, 128] | Q4_0 |
+| `ffn_down_exps.weight` | [704, 2816, 128] | Q4_0 |
+| `ffn_down_exps.scale` | [128] | F32 |
+| `post_ffw_norm_1.weight`, `pre_ffw_norm_2.weight`, `post_ffw_norm_2.weight` | [2816] | F32 |
+
+The 3-D tensors are `[experts][rows][columns]` with the experts
+contiguous (`cpu.ExpertMatrix`; `weights.View.expertMatrix`); the fused
+gate-up rows are the gate rows then the up rows of one expert.
+
+**The expert layer's FFN (from the reference graph).** With `a` the
+residual after the attention add (`attn_out`):
+
+1. Shared branch: `m = post_ffw_norm_1(Wdown · (gelu(Wgate · ffn_norm(a)) ⊙ (Wup · ffn_norm(a))))`,
+   the 12B's FFN followed by its own post norm.
+2. Router: `t = rms(a) · (1 / sqrt(2816)) ⊙ ffn_gate_inp.scale` — the
+   *unweighted* RMS norm of the residual, scaled in that order — and
+   `logits = ffn_gate_inp · t` (128). Softmax, the 8 largest, the selected
+   probabilities renormalized to sum one with the sum clamped below at the
+   smallest F16 normal (`norm_w`; `cpu.experts.route`).
+3. Experts: over `pre_ffw_norm_2(a)`, each selected expert `e` computes
+   `scale[e] · Wdown[e] · (gelu(gate) ⊙ up)` with `(gate, up)` the halves
+   of `Wgate_up[e]` · input, and the outputs sum weighted by the routing
+   weights (`cpu.experts.ffn`); then `x = post_ffw_norm_2(Σ)`.
+4. `f = post_ffw_norm(m + x)`; `h = (f + a) · layer_output_scale`, as the 12B.
+
+Everything else in the layer is the 12B's forward pass above.
+
+**Reference oracle status.** The pinned llama.cpp `7620399` runs the file
+on Metal; the trace harness captured `<bos>Hello,` (tokens `[2, 9259,
+236764]`) on 2026-09-18 with greedy token 29104 (` hello`); the traces
+are pinned under `tests/fixtures/gemma4-26b-a4b-hello-comma/` (90 layer
+files of 2,816 floats and the 262,144 logits).
+
+**CPU reference against the oracle (session 1, 2026-09-18).**
+`gemma4_runtime.zig` runs both configurations from one schedule; the
+expert layer is `Runtime.feedForward`. `make compare-gemma4-26b-a4b-cpu`
+(`--positions 3 --embedding 2816 --layers 30`):
+
+| Comparison | Measured | Threshold |
+| --- | --- | --- |
+| 90 layer files, max absolute | 4.6e-5 (layer 10, position 2) | 2e-3 |
+| 90 layer files, max relative RMS | 1.8e-6 (layer 28, position 2) | 1e-4 |
+| Logits, max absolute / relative RMS | 5.8e-5 / 3.1e-6 | 2e-3 / 1e-4 |
+| Greedy token and top-5 | 29104, 26352, 1852, 8349, 144673 on both sides, logits equal to four decimals | equal |
+
+Layer 0 at position 0 agrees to 4.0e-5, and the error does not grow
+through the 30 expert layers, so the router input, the selection, the
+renormalized weights, the per-expert down scale, and the three extra
+norms are the reference's. Greedy continuation on the CPU: ` hello!
+*waves`; a step is about 3 s (ReleaseSafe, M4 Pro; the 12B's is 11 s:
+a token touches 8 experts of 704 and a 2,112-wide shared FFN instead of
+a 15,360-wide FFN). The Metal plan refuses this configuration until
+session 2 (`Plan.init` → `UnsupportedConfiguration`); `nuclis validate`
+already reports the binding (`gemma4_26b_a4b`, 25 sliding and 5 global
+layers, 658 tensors).

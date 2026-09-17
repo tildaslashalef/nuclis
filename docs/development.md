@@ -73,7 +73,9 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   tolerance 1.0 / 0.05, [gemma4.md](reference/gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12);
   `GEMMA_MODEL` overrides the file's path) and `make compare-gemma4-qat`
   (the same three on `gemma-4-12b-qat` and its own traces,
-  `GEMMA_QAT_MODEL`) when the second adapter or shared math changed,
+  `GEMMA_QAT_MODEL`) and `make compare-gemma4-26b-a4b-cpu` (the CPU
+  reference on the expert configuration `gemma-4-26b-a4b` against its
+  traces, `GEMMA_26B_A4B_MODEL`) when the second adapter or shared math changed,
   and `make test-generation-gemma4-metal`
   (the generation check on the Gemma plan; `-qat-metal` runs it on the QAT
   entry, whose Q4_0 path amplifies the chunk rounding, and

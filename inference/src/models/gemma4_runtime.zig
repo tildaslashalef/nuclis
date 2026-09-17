@@ -1,12 +1,13 @@
-//! CPU execution of the pinned Gemma 4 12B text schedule: the
-//! numerical reference `gemma4_metal.zig` is compared against, written from
-//! the forward pass recorded in docs/reference/gemma4.md. Immutable weight
-//! views and the binding borrow the loaded model; this runtime owns the
-//! session (one attention cache per layer, F32) and its workspace. A failed
-//! step poisons the session. Text only: no vision, no MTP head.
+//! CPU execution of the pinned Gemma 4 text schedules (the dense 12B and
+//! the 26B-A4B mixture of experts): the numerical reference
+//! `gemma4_metal.zig` is compared against, written from the forward pass
+//! recorded in docs/reference/gemma4.md. Immutable weight views and the
+//! binding borrow the loaded model; this runtime owns the session (one
+//! attention cache per layer, F32) and its workspace. A failed step poisons
+//! the session. Text only: no vision, no MTP head.
 //!
 //! What differs from the Qwen runtime, operation by operation:
-//! - the embedding row is scaled by sqrt(3840) after decoding;
+//! - the embedding row is scaled by sqrt(width) after decoding;
 //! - every layer has four residual-stream norms (pre/post attention,
 //!   pre/post FFN) whose weights are stored raw (`rms(x) * w`);
 //! - queries and keys are RMS-normed per head with a weight, values RMS-normed
@@ -19,6 +20,9 @@
 //!   cache rows rather than masking;
 //! - the FFN gate is tanh-GELU, and each layer's new residual is multiplied
 //!   by its scalar output scale;
+//! - on an expert layer the dense FFN is a shared branch: its output and the
+//!   routed experts' sum each get their own post norm before they are added
+//!   and the ordinary post-FFN norm applies to the sum (`feedForward`);
 //! - logits come from the embedding matrix and are soft-capped at 30.
 const std = @import("std");
 const model = @import("gemma4.zig");
@@ -29,8 +33,14 @@ const Tensor = @import("../formats/gguf.zig").Tensor;
 
 pub const Observer = @import("../runtime/observer.zig").Observer;
 
-const embedding = model.embedding;
-const embedding_scale: f32 = @sqrt(@as(f32, embedding));
+/// Small F32 weights of the expert block decoded once per layer at init.
+const ExpertConstants = struct {
+    router_scale: []f32,
+    down_scale: []f32,
+    post_ffn_norm_1: []f32,
+    pre_ffn_norm_2: []f32,
+    post_ffn_norm_2: []f32,
+};
 
 /// Small F32 weights decoded once per layer at init.
 const LayerConstants = struct {
@@ -41,6 +51,7 @@ const LayerConstants = struct {
     query_norm: []f32,
     key_norm: []f32,
     output_scale: f32,
+    experts: ?ExpertConstants,
 };
 
 pub const Runtime = struct {
@@ -62,14 +73,22 @@ pub const Runtime = struct {
     v: []f32,
     mixed_out: []f32,
     attention_scratch: []f64,
+    // The expert block's workspace; empty on the dense configuration.
+    router_logits: []f32,
+    indices: []u32,
+    route_weights: []f32,
+    expert_out: []f32,
+    expert_scratch: []f32,
+    accumulator: []f64,
 
     pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize) !Runtime {
-        var layouts: [model.layer_count]session.Layout = undefined;
-        for (binding.layers, &layouts) |layer, *layout| {
-            const width = layer.kind.kvWidth();
+        const config = binding.config;
+        var layouts: [model.max_layers]session.Layout = undefined;
+        for (binding.active(), layouts[0..config.layer_count]) |layer, *layout| {
+            const width = layer.kvWidth();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width } };
         }
-        var state = try session.Session.init(gpa, &layouts, capacity);
+        var state = try session.Session.init(gpa, layouts[0..config.layer_count], capacity);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -77,18 +96,28 @@ pub const Runtime = struct {
         // Finish allocations before transferring the arena, whose internal
         // linked-list head can change on each allocation.
         var result: Runtime = undefined;
-        inline for (.{ "x", "normalized", "projected" }) |field| @field(result, field) = try a.alloc(f32, embedding);
-        inline for (.{ "gate", "up", "row" }) |field| @field(result, field) = try a.alloc(f32, model.feed_forward);
+        inline for (.{ "x", "normalized", "projected", "expert_out" }) |field| @field(result, field) = try a.alloc(f32, config.embedding);
+        inline for (.{ "gate", "up" }) |field| @field(result, field) = try a.alloc(f32, config.feed_forward);
         // Sized for the wider (global) geometry; sliding layers use a prefix.
         result.q = try a.alloc(f32, model.Kind.global.queryWidth());
         result.mixed_out = try a.alloc(f32, model.Kind.global.queryWidth());
-        result.k = try a.alloc(f32, model.Kind.sliding.kvWidth());
-        result.v = try a.alloc(f32, model.Kind.sliding.kvWidth());
+        result.k = try a.alloc(f32, model.max_kv_width);
+        result.v = try a.alloc(f32, model.max_kv_width);
         result.attention_scratch = try a.alloc(f64, capacity);
+        const experts = config.experts orelse model.Experts{ .count = 0, .used = 0, .feed_forward = 0 };
+        result.router_logits = try a.alloc(f32, experts.count);
+        result.indices = try a.alloc(u32, experts.used);
+        result.route_weights = try a.alloc(f32, experts.used);
+        // The matvec decode row must hold the widest row any projection
+        // decodes: the global attention output's 16 × 512 columns, the FFN
+        // down projection's, or the embedding width (the expert router).
+        result.row = try a.alloc(f32, @max(@max(config.feed_forward, config.embedding), model.Kind.global.queryWidth()));
+        result.expert_scratch = try a.alloc(f32, 2 * experts.feed_forward + experts.feed_forward + config.embedding + @max(config.embedding, experts.feed_forward));
+        result.accumulator = try a.alloc(f64, config.embedding);
         result.output_norm = try view.vector(a, binding.output_norm);
         result.rope_factors = try view.vector(a, binding.rope_factors);
-        result.constants = try a.alloc(LayerConstants, binding.layers.len);
-        for (binding.layers, result.constants) |layer, *constants| {
+        result.constants = try a.alloc(LayerConstants, config.layer_count);
+        for (binding.active(), result.constants) |layer, *constants| {
             constants.* = .{
                 .attention_norm = try view.vector(a, layer.attention_norm),
                 .post_attention_norm = try view.vector(a, layer.post_attention_norm),
@@ -97,6 +126,13 @@ pub const Runtime = struct {
                 .query_norm = try view.vector(a, layer.query_norm),
                 .key_norm = try view.vector(a, layer.key_norm),
                 .output_scale = try view.scalar(layer.output_scale, 0),
+                .experts = if (layer.experts) |e| .{
+                    .router_scale = try view.vector(a, e.router_scale),
+                    .down_scale = try view.vector(a, e.down_scale),
+                    .post_ffn_norm_1 = try view.vector(a, e.post_ffn_norm_1),
+                    .pre_ffn_norm_2 = try view.vector(a, e.pre_ffn_norm_2),
+                    .post_ffn_norm_2 = try view.vector(a, e.post_ffn_norm_2),
+                } else null,
             };
         }
         result.storage = storage;
@@ -136,18 +172,14 @@ pub const Runtime = struct {
         try self.state.begin();
         errdefer self.state.fail();
         try self.view.row(self.binding.token_embedding, token, self.x);
+        const embedding_scale = self.binding.config.embeddingScale();
         for (self.x) |*x| x.* *= embedding_scale;
-        for (self.binding.layers, self.constants, 0..) |layer, constants, il| {
+        for (self.binding.active(), self.constants, 0..) |layer, constants, il| {
             try norm(self.x, self.normalized, constants.attention_norm);
             try self.attention(layer, constants, il);
             try norm(self.projected, self.projected, constants.post_attention_norm);
             for (self.x, self.projected) |*x, contribution| x.* += contribution;
-            try norm(self.x, self.normalized, constants.ffn_norm);
-            try self.mm(layer.ffn_gate, self.normalized, self.gate);
-            try self.mm(layer.ffn_up, self.normalized, self.up);
-            for (self.gate, self.up) |*g, u| g.* = cpu.gelu(g.*) * u;
-            try self.mm(layer.ffn_down, self.gate, self.projected);
-            try norm(self.projected, self.projected, constants.post_ffn_norm);
+            try self.feedForward(layer, constants);
             for (self.x, self.projected) |*x, contribution| {
                 x.* = (x.* + contribution) * constants.output_scale;
                 if (!std.math.isFinite(x.*)) return error.NonFiniteResult;
@@ -168,13 +200,48 @@ pub const Runtime = struct {
         try self.state.commit();
     }
 
+    /// The feed-forward block over the residual `x` (the attention output
+    /// already added) into `projected`, post-normed and ready to add. On
+    /// an expert layer the dense FFN is the shared branch: `post_ffn_norm_1`
+    /// on its output, the router over `rms(x) / sqrt(width) ⊙ router_scale`
+    /// (the pre-norm residual, not a normed copy), the gathered experts over
+    /// `pre_ffn_norm_2(x)`, `post_ffn_norm_2` on their weighted sum, then
+    /// the two branches add and the ordinary post norm applies to the sum.
+    fn feedForward(self: *Runtime, layer: model.Layer, constants: LayerConstants) !void {
+        try norm(self.x, self.normalized, constants.ffn_norm);
+        try self.mm(layer.ffn_gate, self.normalized, self.gate);
+        try self.mm(layer.ffn_up, self.normalized, self.up);
+        for (self.gate, self.up) |*g, u| g.* = cpu.gelu(g.*) * u;
+        try self.mm(layer.ffn_down, self.gate, self.projected);
+        if (layer.experts) |experts| {
+            const ec = constants.experts orelse return error.InvalidShape;
+            try norm(self.projected, self.projected, ec.post_ffn_norm_1);
+            try cpu.rmsNorm(self.x, self.normalized, model.rms_epsilon);
+            // The reference scales by 1/sqrt(width) first, then by the vector.
+            const inverse_root: f32 = 1.0 / self.binding.config.embeddingScale();
+            for (self.normalized, ec.router_scale) |*t, s| t.* = (t.* * inverse_root) * s;
+            try self.mm(experts.router, self.normalized, self.router_logits);
+            try cpu.experts.route(self.router_logits, self.indices, self.route_weights);
+            try norm(self.x, self.normalized, ec.pre_ffn_norm_2);
+            const spec: cpu.experts.Ffn = .{
+                .gate_up = try self.view.expertMatrix(experts.gate_up),
+                .down = try self.view.expertMatrix(experts.down),
+                .down_scale = ec.down_scale,
+            };
+            try cpu.experts.ffn(spec, self.normalized, self.indices, self.route_weights, self.expert_out, self.expert_scratch, self.accumulator);
+            try norm(self.expert_out, self.expert_out, ec.post_ffn_norm_2);
+            for (self.projected, self.expert_out) |*p, e| p.* += e;
+        }
+        try norm(self.projected, self.projected, constants.post_ffn_norm);
+    }
+
     fn attention(self: *Runtime, layer: model.Layer, constants: LayerConstants, il: usize) !void {
         const kind = layer.kind;
-        const hd = kind.headSize();
-        const kv_heads = kind.kvHeads();
-        const q = self.q[0..kind.queryWidth()];
-        const k = self.k[0..kind.kvWidth()];
-        const v = self.v[0..kind.kvWidth()];
+        const hd = layer.headSize();
+        const kv_heads = layer.kv_heads;
+        const q = self.q[0..layer.queryWidth()];
+        const k = self.k[0..layer.kvWidth()];
+        const v = self.v[0..layer.kvWidth()];
         const position = self.state.position;
         const rope: cpu.rope.Options = .{
             .dimensions = hd,
@@ -207,7 +274,7 @@ pub const Runtime = struct {
         // current one; the visible rows are a contiguous suffix of the cache.
         const first = if (kind == .sliding and position + 1 > model.window) position + 1 - model.window else 0;
         const visible = position + 1 - first;
-        const out = self.mixed_out[0..kind.queryWidth()];
+        const out = self.mixed_out[0..layer.queryWidth()];
         try cpu.attention.apply(.{
             .query_heads = model.heads,
             .kv_heads = kv_heads,
@@ -224,46 +291,63 @@ pub const Runtime = struct {
     }
 };
 
-test "runtime workspace cleanup and invalid steps preserve session admission" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
-        fn check(alloc: std.mem.Allocator) !void {
-            // The binding only supplies layer kinds and small-weight tensors
-            // during preparation. Empty tensors make every weight read fail
-            // after admission, which is what the invalid-step checks need.
-            const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
-            // The per-layer output scale is read at init, so it needs one
-            // real F32: the four-byte "file" below holds it.
-            const scalar: Tensor = .{ .name = "scale", .dimensions = &.{1}, .encoding_id = 0, .offset = 0, .elements = 1, .bytes = 4 };
-            const file = [_]u8{ 0, 0, 0, 0 };
-            var layers: [model.layer_count]model.Layer = undefined;
-            for (&layers, 0..) |*layer, i| layer.* = .{ .kind = model.kindOf(i), .attention_norm = &tensor, .post_attention_norm = &tensor, .ffn_norm = &tensor, .post_ffn_norm = &tensor, .query = &tensor, .key = &tensor, .value = if (model.kindOf(i) == .sliding) &tensor else null, .output = &tensor, .query_norm = &tensor, .key_norm = &tensor, .ffn_gate = &tensor, .ffn_up = &tensor, .ffn_down = &tensor, .output_scale = &scalar };
-            const binding: model.Binding = .{ .token_embedding = &tensor, .output_norm = &tensor, .rope_factors = &tensor, .layers = layers, .summary = .{ .profile = "test", .decoder_layers = 48, .layer_kinds = &.{}, .text_tensors = 0, .auxiliary_tensors = 0, .text_tensor_bytes = 0, .auxiliary_tensor_bytes = 0 } };
-            var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, binding, 1);
-            defer runtime.deinit();
-            try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
-            try std.testing.expectEqual(.ready, runtime.state.status);
-            try std.testing.expectError(error.InvalidShape, runtime.step(0, &.{}, null));
-            try std.testing.expectEqual(.ready, runtime.state.status);
-            try std.testing.expect(runtime.step(0, null, null) != error.InvalidTokenId);
-            try std.testing.expectEqual(.failed, runtime.state.status);
-            runtime.reset();
-            try std.testing.expectEqual(.ready, runtime.state.status);
-        }
-    }.check, .{});
+/// A binding over empty tensors for the workspace tests: every weight read
+/// fails after admission, which is what the invalid-step checks need. The
+/// per-layer output scale is read at init, so it points at `scale`.
+fn emptyBinding(config: *const model.Config, tensor: *const Tensor, scalar: *const Tensor) model.Binding {
+    var binding: model.Binding = undefined;
+    binding.config = config;
+    binding.token_embedding = tensor;
+    binding.output_norm = tensor;
+    binding.rope_factors = tensor;
+    for (binding.layers[0..config.layer_count], 0..) |*layer, i| {
+        const kind = model.kindOf(i);
+        layer.* = .{ .kind = kind, .kv_heads = model.kvHeadsOf(config, kind), .attention_norm = tensor, .post_attention_norm = tensor, .ffn_norm = tensor, .post_ffn_norm = tensor, .query = tensor, .key = tensor, .value = if (kind == .sliding) tensor else null, .output = tensor, .query_norm = tensor, .key_norm = tensor, .ffn_gate = tensor, .ffn_up = tensor, .ffn_down = tensor, .output_scale = scalar, .experts = if (config.experts != null) .{ .router = tensor, .router_scale = tensor, .gate_up = tensor, .down = tensor, .down_scale = tensor, .post_ffn_norm_1 = tensor, .pre_ffn_norm_2 = tensor, .post_ffn_norm_2 = tensor } else null };
+    }
+    binding.summary = .{ .profile = config.profile, .decoder_layers = @intCast(config.layer_count), .layer_kinds = &.{}, .text_tensors = 0, .auxiliary_tensors = 0, .text_tensor_bytes = 0, .auxiliary_tensor_bytes = 0 };
+    return binding;
 }
 
-test "session layouts follow the layer kinds" {
-    // Not runnable without weights; the layout is checked through the
-    // session's byte size: 40 sliding layers of 2 × 2048 F32 rows and 8
-    // global layers of 2 × 512 rows per position.
-    const per_position = 40 * 2 * 2048 * 4 + 8 * 2 * 512 * 4;
-    var layouts: [model.layer_count]session.Layout = undefined;
-    for (&layouts, 0..) |*layout, i| {
-        const width = model.kindOf(i).kvWidth();
-        layout.* = .{ .attention = .{ .key_row = width, .value_row = width } };
+test "runtime workspace cleanup and invalid steps preserve session admission" {
+    inline for (.{ &model.config_12b, &model.config_26b_a4b }) |config| {
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+            fn check(alloc: std.mem.Allocator, cfg: *const model.Config) !void {
+                const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
+                const scalar: Tensor = .{ .name = "scale", .dimensions = &.{1}, .encoding_id = 0, .offset = 0, .elements = 1, .bytes = 4 };
+                const file = [_]u8{ 0, 0, 0, 0 };
+                var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, emptyBinding(cfg, &tensor, &scalar), 1);
+                defer runtime.deinit();
+                try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
+                try std.testing.expectEqual(.ready, runtime.state.status);
+                try std.testing.expectError(error.InvalidShape, runtime.step(0, &.{}, null));
+                try std.testing.expectEqual(.ready, runtime.state.status);
+                try std.testing.expect(runtime.step(0, null, null) != error.InvalidTokenId);
+                try std.testing.expectEqual(.failed, runtime.state.status);
+                runtime.reset();
+                try std.testing.expectEqual(.ready, runtime.state.status);
+            }
+        }.check, .{config});
     }
-    var state = try session.Session.init(std.testing.allocator, &layouts, 4);
-    defer state.deinit();
-    try std.testing.expect(state.bytes() >= per_position * 4);
-    try std.testing.expect(state.bytes() < per_position * 4 + 48 * 2 * 16);
+}
+
+test "session layouts follow the layer kinds and the configuration's KV heads" {
+    // Not runnable without weights; the layout is checked through the
+    // session's byte size. 12B: 40 sliding layers of 2 × 2048 F32 rows and
+    // 8 global layers of 2 × 512 per position; 26B-A4B: 25 × 2 × 2048 and
+    // 5 global layers of 2 × 1024 (two KV heads of 512).
+    const cases = [_]struct { config: *const model.Config, per_position: usize }{
+        .{ .config = &model.config_12b, .per_position = 40 * 2 * 2048 * 4 + 8 * 2 * 512 * 4 },
+        .{ .config = &model.config_26b_a4b, .per_position = 25 * 2 * 2048 * 4 + 5 * 2 * 1024 * 4 },
+    };
+    for (cases) |case| {
+        var layouts: [model.max_layers]session.Layout = undefined;
+        for (layouts[0..case.config.layer_count], 0..) |*layout, i| {
+            const width = model.kvHeadsOf(case.config, model.kindOf(i)) * model.kindOf(i).headSize();
+            layout.* = .{ .attention = .{ .key_row = width, .value_row = width } };
+        }
+        var state = try session.Session.init(std.testing.allocator, layouts[0..case.config.layer_count], 4);
+        defer state.deinit();
+        try std.testing.expect(state.bytes() >= case.per_position * 4);
+        try std.testing.expect(state.bytes() < case.per_position * 4 + case.config.layer_count * 2 * 16);
+    }
 }
