@@ -199,7 +199,10 @@ during a 15 s prefill.
   `NUCLIS_NO_SCROLL_REGION=1` selects the fallback. TERM-01 added one rule the
   proposal did not state: the region's **bottom** is the anchor, so a
   region that shrinks releases rows above the editor instead of leaving
-  blank rows under it.
+  blank rows under it. Those released rows are slack, not transcript: the
+  next growth takes them back and the next insertion fills them before it
+  scrolls, so a settled tool call or a folded thinking block never leaves
+  a gap in the scrollback (TERM-07).
 - **Resize.** The live region recomputes its layout; the last printed turn
   is replayed at the new width; older turns are left as printed.
   *Implemented*, replacing APPS-02's clear-and-reprint-everything. Known

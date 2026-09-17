@@ -24,9 +24,12 @@
 //! Geometry. `region_top` is the absolute row of the region's first line and
 //! `region_rows` its height; every operation updates them, which is what lets
 //! `insertAbove` name an absolute bottom margin without asking the terminal
-//! where the cursor is. The region's **bottom** is the anchor. The one input
-//! the model cannot survive is a terminal reflowing rows under it, which is
-//! what `resized` reports.
+//! where the cursor is. The region's **bottom** is the anchor: a region that
+//! shrinks moves its top down and the rows it released stay blank above it
+//! as `slack`, which the next growth takes back and the next insertion fills
+//! before it scrolls, so the transcript never keeps a gap. The one input the
+//! model cannot survive is a terminal reflowing rows under it, which is what
+//! `resized` reports.
 //!
 //! `Screen` writes to a plain `std.Io.Writer` and never allocates, so its
 //! tests capture the exact escape stream with no TTY in sight.
@@ -81,6 +84,9 @@ pub const Screen = struct {
     /// Absolute row of the live region's first line; 0 when none is painted.
     region_top: usize = 0,
     region_rows: usize = 0,
+    /// Blank rows directly above the region, released by a shrink and not
+    /// yet reused. The transcript ends `slack + 1` rows above `region_top`.
+    slack: usize = 0,
     /// Cursor offset inside the region after the last paint, and the
     /// absolute column it was placed at.
     cursor_row: usize = 0,
@@ -95,6 +101,7 @@ pub const Screen = struct {
         try self.out.writeAll("\x1b[H\x1b[2J");
         self.region_top = 0;
         self.region_rows = 0;
+        self.slack = 0;
         self.at = 1;
     }
 
@@ -118,17 +125,26 @@ pub const Screen = struct {
             try out.print("\x1b[{d}A\r", .{self.cursor_row});
             self.at -|= self.cursor_row;
         } else try out.writeAll("\r");
-        // The region's *bottom* is the anchor, not its top. A taller region
-        // (a turn starts streaming) is written from the same top and pushes
-        // the transcript up, into the scrollback; a shorter one (the turn
-        // ends) would otherwise leave blank rows under the editor, so the
-        // rows it no longer needs are erased and released above it. Only the
+        // The region's *bottom* is the anchor, not its top. A shorter region
+        // (the turn ends, a tool call settles) would otherwise leave blank
+        // rows under the editor, so the rows it no longer needs are erased
+        // and released above it, where `insertAbove` fills them before it
+        // scrolls. A taller one grows back into that slack first and only
+        // then pushes the transcript up, into the scrollback. Only the
         // shrinking case erases, so the common frame still overwrites in
         // place and a terminal without synchronized output does not flicker.
         const released = self.region_rows -| rows.len;
         if (released > 0) {
             try out.writeAll("\x1b[0J");
             for (0..released) |_| try self.newline();
+            self.slack += released;
+        } else if (self.region_rows > 0) {
+            const reclaimed = @min(rows.len - self.region_rows, self.slack);
+            if (reclaimed > 0) {
+                try out.print("\x1b[{d}A", .{reclaimed});
+                self.at -= reclaimed;
+                self.slack -= reclaimed;
+            }
         }
         const top = self.at;
         for (rows, 0..) |row, i| {
@@ -171,17 +187,28 @@ pub const Screen = struct {
         const bottom = self.region_top - 1;
         try self.beginFrame();
         try out.writeAll("\x1b[?25l");
-        // Top margin at row 1: the condition for scrolled-off rows to reach
-        // the scrollback. The live region sits below `bottom` and is not
-        // touched by the scrolling below.
-        try out.print("\x1b[1;{d}r\x1b[{d};1H", .{ bottom, bottom });
-        for (rows) |row| {
-            // One line feed on the bottom margin scrolls the area above the
-            // region up by one and frees this row for the next line.
-            try out.writeAll("\n");
+        // Rows released by a shrink sit blank between the transcript and the
+        // region: they are filled first, so the transcript stays contiguous
+        // and nothing scrolls until the slack is gone.
+        const fill = @min(self.slack, rows.len);
+        for (rows[0..fill], 0..) |row, i| {
+            try out.print("\x1b[{d};1H", .{self.region_top - self.slack + i});
             try self.writeRow(row);
         }
-        try out.writeAll("\x1b[r");
+        self.slack -= fill;
+        if (fill < rows.len) {
+            // Top margin at row 1: the condition for scrolled-off rows to
+            // reach the scrollback. The live region sits below `bottom` and
+            // is not touched by the scrolling below.
+            try out.print("\x1b[1;{d}r\x1b[{d};1H", .{ bottom, bottom });
+            for (rows[fill..]) |row| {
+                // One line feed on the bottom margin scrolls the area above
+                // the region up by one and frees this row for the next line.
+                try out.writeAll("\n");
+                try self.writeRow(row);
+            }
+            try out.writeAll("\x1b[r");
+        }
         // The region did not move; put the cursor back where the last paint
         // left it so the next one can rewrite in place.
         try out.print("\x1b[{d};{d}H", .{ self.region_top + self.cursor_row, self.cursor_col });
@@ -211,11 +238,14 @@ pub const Screen = struct {
     /// region is erased, the scrolling region reset, the cursor shown.
     pub fn finish(self: *Screen) !void {
         const out = self.out;
-        if (self.cursor_row > 0) try out.print("\x1b[{d}A", .{self.cursor_row});
+        // The slack goes with the region: the transcript ends where it ends.
+        const up = @min(self.cursor_row + self.slack, self.at -| 1);
+        if (up > 0) try out.print("\x1b[{d}A", .{up});
         try out.writeAll("\r\x1b[0J\x1b[r\x1b[?25h");
-        self.at -|= self.cursor_row;
+        self.at -= up;
         self.region_rows = 0;
         self.region_top = 0;
+        self.slack = 0;
         self.cursor_row = 0;
         try out.flush();
     }
@@ -224,12 +254,14 @@ pub const Screen = struct {
 
     /// Writes rows starting at the top of the live region (or at the cursor
     /// when no region is pending), then clears whatever remains below: the
-    /// next paint starts right after the written rows. `extra` moves the
-    /// start further up, over rows that are being replaced.
+    /// next paint starts right after the written rows. The walk crosses the
+    /// slack above the region as well, so the rows land right after the
+    /// transcript; `extra` moves the start further up, over rows that are
+    /// being replaced.
     fn rewriteAbove(self: *Screen, rows: []const Row, extra: usize) !void {
         const out = self.out;
         try self.beginFrame();
-        const up = @min(self.cursor_row + extra, self.at -| 1);
+        const up = @min(self.cursor_row + self.slack + extra, self.at -| 1);
         if (up > 0) try out.print("\x1b[{d}A", .{up});
         try out.writeAll("\r");
         self.at -= up;
@@ -240,6 +272,7 @@ pub const Screen = struct {
         try out.writeAll("\x1b[0J");
         self.region_rows = 0;
         self.region_top = 0;
+        self.slack = 0;
         self.cursor_row = 0;
         self.cursor_col = 1;
         try self.endFrame();
@@ -327,15 +360,83 @@ test "a shorter region keeps its bottom and releases the rows above it" {
     try testing.expectEqual(@as(usize, 8), screen.region_top);
     try testing.expectEqual(@as(usize, 2), screen.region_rows);
     try testing.expectEqual(@as(usize, 9), screen.at);
+    try testing.expectEqual(@as(usize, 2), screen.slack);
 
-    // Growing writes from the same top and runs past the last row, so the
-    // screen scrolls and the region ends anchored at the bottom. Nothing is
-    // erased first: a growing frame overwrites in place.
+    // Growing takes the released rows back first: the region is written
+    // from row 6 again and nothing scrolls. Nothing is erased first: a
+    // growing frame overwrites in place.
     buffer.clearRetainingCapacity();
     try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" }, .{ .text = "c" }, .{ .text = "d" } }, .{ .row = 3, .column = 1 });
-    try testing.expectEqual(@as(usize, 10), screen.at);
-    try testing.expectEqual(@as(usize, 7), screen.region_top);
+    try testing.expect(std.mem.startsWith(u8, buffer.written(), "\x1b[?2026h\x1b[?25l\x1b[1A\r\x1b[2A\x1b[2K\ra"));
+    try testing.expectEqual(@as(usize, 9), screen.at);
+    try testing.expectEqual(@as(usize, 6), screen.region_top);
+    try testing.expectEqual(@as(usize, 0), screen.slack);
     try testing.expect(std.mem.indexOf(u8, buffer.written(), "\x1b[0J\r\n") == null);
+
+    // Past the slack, growth runs past the last row and the screen scrolls,
+    // so the region ends anchored at the bottom.
+    buffer.clearRetainingCapacity();
+    try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" }, .{ .text = "c" }, .{ .text = "d" }, .{ .text = "e" } }, .{ .row = 4, .column = 1 });
+    try testing.expectEqual(@as(usize, 10), screen.at);
+    try testing.expectEqual(@as(usize, 6), screen.region_top);
+}
+
+test "insertion fills the rows a shrink released before it scrolls" {
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
+    var screen = testScreen(&buffer.writer, .{});
+    screen.at = 6;
+    try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" }, .{ .text = "c" }, .{ .text = "d" } }, .{ .row = 3, .column = 1 });
+    // The region shrinks to rows 8..9; rows 6 and 7 are blank slack.
+    try screen.paint(&.{ .{ .text = "x" }, .{ .text = "y" } }, .{ .row = 1, .column = 2 });
+    try testing.expectEqual(@as(usize, 2), screen.slack);
+    buffer.clearRetainingCapacity();
+
+    // One row lands on row 6, in place: no scrolling region, no line feed,
+    // and the cursor goes back into the region.
+    try screen.insertAbove(&.{.{ .text = "one" }});
+    try testing.expectEqualStrings(
+        "\x1b[?2026h\x1b[?25l\x1b[6;1H\x1b[2K\rone\x1b[9;2H\x1b[?2026l",
+        buffer.written(),
+    );
+    try testing.expectEqual(@as(usize, 1), screen.slack);
+    try testing.expectEqual(@as(usize, 8), screen.region_top);
+    buffer.clearRetainingCapacity();
+
+    // Two more: the first fills row 7, the second scrolls rows 1..7 as
+    // every insertion did before the slack existed.
+    try screen.insertAbove(&.{ .{ .text = "two" }, .{ .text = "three" } });
+    try testing.expectEqualStrings(
+        "\x1b[?2026h\x1b[?25l\x1b[7;1H\x1b[2K\rtwo\x1b[1;7r\x1b[7;1H\n\x1b[2K\rthree\x1b[r\x1b[9;2H\x1b[?2026l",
+        buffer.written(),
+    );
+    try testing.expectEqual(@as(usize, 0), screen.slack);
+    try testing.expectEqual(@as(usize, 8), screen.region_top);
+}
+
+test "finish and the rewrite fallback walk over the slack as well" {
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
+    var screen = testScreen(&buffer.writer, .{ .scroll_region = false });
+    screen.at = 6;
+    try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" }, .{ .text = "c" }, .{ .text = "d" } }, .{ .row = 3, .column = 1 });
+    try screen.paint(&.{ .{ .text = "x" }, .{ .text = "y" } }, .{ .row = 1, .column = 1 });
+    buffer.clearRetainingCapacity();
+    // One region row above the cursor plus two rows of slack: the inserted
+    // row lands on row 6, right after the transcript.
+    try screen.insertAbove(&.{.{ .text = "turn" }});
+    try testing.expect(std.mem.startsWith(u8, buffer.written(), "\x1b[?2026h\x1b[3A\r\x1b[2K\rturn\r\n\x1b[0J"));
+    try testing.expectEqual(@as(usize, 0), screen.slack);
+    try testing.expectEqual(@as(usize, 7), screen.at);
+
+    // The same walk on exit leaves the cursor right after the transcript.
+    try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" }, .{ .text = "c" } }, .{ .row = 2, .column = 1 });
+    try screen.paint(&.{.{ .text = "x" }}, .{ .row = 0, .column = 1 });
+    try testing.expectEqual(@as(usize, 2), screen.slack);
+    buffer.clearRetainingCapacity();
+    try screen.finish();
+    try testing.expectEqualStrings("\x1b[2A\r\x1b[0J\x1b[r\x1b[?25h", buffer.written());
+    try testing.expectEqual(@as(usize, 7), screen.at);
 }
 
 test "a frame painted while busy leaves the cursor hidden at the last row" {

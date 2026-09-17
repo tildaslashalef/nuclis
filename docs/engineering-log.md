@@ -62,6 +62,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-06 | `nuclis agent ls` and `--resume` to the newest session | 2026-09-16 |
 | AGNT-09 | Gemma 4 native tool calling | 2026-09-16 |
 | MODL-14 | Catalogue entries ahead of their adapters; roadmap reordered around speculation | 2026-09-17 |
+| TERM-07 | Rows released by a shrinking live region are reused, not left as gaps | 2026-09-17 |
 
 ## Context
 
@@ -1698,3 +1699,36 @@ MODL-13 fills the Muse profile in and may make the profile field required
 again. Whether `mtp` should be renamed to a mechanism-neutral `draft`
 (sidecars, `--with`, docs) is for the speculative-decoding unit to decide
 when it loads the first companion.
+
+### TERM-07 — Rows released by a shrinking live region are reused, not left as gaps (2026-09-17)
+
+**Outcome.** Every turn with a tool call, and every thinking block folded
+or closed while the region showed its text, left blank rows in the
+scrollback between the tool line and the next label: two after a settled
+call, up to half the region's budget after a fold. The live region is
+bottom-anchored, so a frame shorter than the previous one erased the rows
+it no longer needed and moved its top down, leaving them blank *above*
+itself; the next `insertAbove` scrolled the area above the region, blanks
+included, and wrote below them, so the gap became permanent. `Screen`
+now counts those rows as `slack`: a growing frame takes them back before
+it pushes the transcript up, and an insertion fills them with absolute
+cursor moves (`CSI row;1 H`) before it falls back to the scrolling
+region, so the transcript stays contiguous; the rewrite fallback and
+`finish` walk over the slack as well, leaving the cursor right after the
+transcript on exit. The bottom anchor is unchanged: the editor and the
+status bar never move away from the last row.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: **391 default
+tests** (the shrink-then-grow sequence now stays on the same rows; an
+insertion after a two-row shrink writes `ESC[6;1H` in place with no
+scrolling region, and a longer one fills the slack then scrolls; the
+fallback rewrite and `finish` walk over the slack). Live on
+`gemma-4-12b` (Metal, context 4096) under a pseudo-terminal of 30 × 100:
+the escape stream after a settled tool call (a two-row shrink) shows the
+thought label written with `ESC[row;1H` onto the released row instead of
+a scroll. A check on the user's own terminal is pending.
+
+**Files.** `src/tui/screen.zig`, `docs/agent-spec.md`.
+
+**Remaining.** Not driven on a real terminal in this session (the user is
+doing that); the escape stream is pinned by the tests.
