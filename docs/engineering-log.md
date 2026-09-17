@@ -60,6 +60,8 @@ never rewritten, and numbers are as measured on the stated workload (see
 | TERM-06 | Per-step thinking blocks with their own duration | 2026-09-15 |
 | ENGN-09 | Primed sessions: prefill the prefix at startup, restore it on new | 2026-09-15 |
 | APPS-06 | `nuclis agent ls` and `--resume` to the newest session | 2026-09-16 |
+| AGNT-09 | Gemma 4 native tool calling | 2026-09-16 |
+| MODL-14 | Catalogue entries ahead of their adapters; roadmap reordered around speculation | 2026-09-17 |
 
 ## Context
 
@@ -1658,3 +1660,41 @@ incremented).
 its thought channel without the newline the template renders before
 `<channel|>`; the cost is a replay from the primed prefix. The 26B-A4B
 artifact's tool tokens are unverified until that unit pulls it.
+
+### MODL-14 — Catalogue entries ahead of their adapters; roadmap reordered around speculation (2026-09-17)
+
+**Outcome.** Both planned families are pinned and registered before their
+adapters exist: `gemma-4-26b-a4b` (the QAT file with `mmproj-BF16.gguf` and
+`MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf`, profile `gemma4`) and
+`muse-glimmer-30b` (`Muse-Glimmer-30B-UD-Q4_K_XL.gguf` with
+`mmproj-kquant.gguf` and `dflash-kquant.gguf`). Two decisions: the
+catalogue entry's profile is optional (`null` until MODL-13; configuration
+falls back as for a bare path), and a draft companion of any mechanism
+takes the `mtp` role, which now means "the draft source the
+speculative-decoding unit loads" (Muse's is a DFlash block-diffusion
+drafter, not an MTP head). The roadmap's order after Muse Glimmer became
+speculative decoding across the families, performance follow-ups, vision
+through the companion projectors, agent expansion, with the accepted
+configuration of speculation (the file per registry entry, a per-command
+`--speculative` switch and `generate.speculative` key, a draft-length
+setting; acceptance rule and recovery scheme not exposed). The roadmap's
+own 26B-A4B section, superseded by the plan in `TODO.md`, was removed.
+
+**Evidence.** Every file pulled and verified by `nuclis model pull --file`
+on 2026-09-17 (digests in
+[artifacts.md](reference/artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11));
+`nuclis model ls` lists both entries and their companions *present*;
+`nuclis model inspect` says *not runnable: the gemma4 adapter rejects the
+file: UnsupportedConfiguration* for the 26B-A4B and *no adapter for
+architecture "muse-glimmer"* for Muse; `zig build test` (the catalogue's
+well-formedness test extended to the new entries, the null profile, and
+the drafter's role). No kernel or engine code changed.
+
+**Files.** `src/catalog.zig`, `src/config.zig`, `README.md`,
+`docs/reference/artifacts.md`, `docs/roadmap.md`, `TODO.md`.
+
+**Remaining.** The entries turn *supported* when MODL-10 and MODL-13 close;
+MODL-13 fills the Muse profile in and may make the profile field required
+again. Whether `mtp` should be renamed to a mechanism-neutral `draft`
+(sidecars, `--with`, docs) is for the speculative-decoding unit to decide
+when it loads the first companion.

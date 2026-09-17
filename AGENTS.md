@@ -29,11 +29,19 @@ GGUF, prompt profile) live under [docs/reference/](docs/reference/).
   `TODO.md` in its format (where-we-are note, order, unit table, unit designs).
 - `TODO.md` holds unfinished work only. Closing a unit means, in the same
   commit: append its outcome and evidence to
-  [docs/engineering-log.md](docs/engineering-log.md),
+  [docs/engineering-log.md](docs/engineering-log.md) **and** add its row to
+  the log's table (both, every time),
   update the documents it changed (architecture, reference docs),
   delete its section and table row from `TODO.md`, and refresh *Where we are*
   so a fresh session can hand off from it. When the last unit closes, empty
   `TODO.md` back to its header.
+- A unit the plan marks as several sessions closes once, at its end: a
+  session boundary updates the unit's section in `TODO.md` (what the
+  session delivered, what remains) and *Where we are*, not the log.
+- Work that lands outside any planned unit (a catalogue entry, a roadmap
+  decision, a side fix with its own evidence) is still a unit: give it the
+  next identifier of its area and log it in the commit that lands it. The
+  log is the only record besides git history; nothing closes silently.
 - Durable knowledge never lives only in `TODO.md`: requirements go to
   `docs/spec.md`, environment facts to `docs/development.md`, designs that
   outlive a unit to a reference document, future ideas to `docs/roadmap.md`.
