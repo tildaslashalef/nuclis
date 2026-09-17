@@ -106,6 +106,8 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "--max-tokens <n>", "output budget, default 2048");
     try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU, default f16");
     try row(out, sty, "--think <effort>", "off, low, medium, xhigh — what the profile supports");
+    try row(out, sty, "--prompt-profile <p>", "qwen38 or gemma4: force the prompt profile on a file whose");
+    try out.print("{s}chat template is not the pinned one (a finetune); default: by digest\n", .{continuation});
     try row(out, sty, "--seed <n>", "sampler seed, default 0");
     try row(out, sty, "--json", "machine-readable output instead of a text report");
     try row(out, sty, "sampling", "--temperature --top-k --top-p --min-p");
@@ -212,7 +214,7 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
 fn tokenize(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "nuclis tokenize — the prompt as the model receives it");
     try usage(out, sty, "nuclis tokenize (--prompt <text> | --prompt-file <path>) [--raw] [--think <effort>]");
-    try usage(out, sty, "                [--model <name|path>] [--json]");
+    try usage(out, sty, "                [--prompt-profile <p>] [--model <name|path>] [--json]");
     try heading(out, sty, "behaviour");
     try plain(out, "Renders the prompt exactly as generate and bench would — raw, or one user");
     try plain(out, "turn at the given effort — and prints its token ids with the byte offset of");

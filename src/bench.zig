@@ -228,7 +228,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     const repeat = options.repeat orelse 3;
     const warmup = options.warmup orelse 1;
     if (limit == 0 or limit > config.max_output_tokens or capacity == 0 or capacity > config.max_context or repeat == 0 or repeat > 100 or warmup > 100) return error.InvalidGenerationBudget;
-    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision);
+    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile);
     defer eng.deinit();
     const gpu: ?*inference.metal.Backend = eng.model.gpu();
     if (options.profile) {

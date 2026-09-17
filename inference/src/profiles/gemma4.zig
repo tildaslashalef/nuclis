@@ -17,6 +17,12 @@ const sampling = @import("../sampling/root.zig");
 /// 18,922 bytes ending in a newline); `profiles.forDocument` selects the
 /// profile by this digest, never by architecture.
 pub const template_sha256 = "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b";
+/// Other revisions of the same template that render every fixture case
+/// byte for byte like the pinned one, so a file carrying one of them takes
+/// this profile; `scripts/profile-alias-check.py` is the gate. None so far:
+/// the 17,530-byte revision Gemma 4 finetunes ship differs on history
+/// (prompt-profile.md § Evidence), so such a file needs `--prompt-profile`.
+pub const template_aliases = [_][]const u8{};
 
 const profiles = @import("root.zig");
 pub const Role = profiles.Role;

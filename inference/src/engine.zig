@@ -255,8 +255,13 @@ pub const Engine = struct {
     model: Model,
     /// The profile pinned to the artifact's chat template, or null when no
     /// profile implements that exact template (`render` then refuses; raw
-    /// prompts still run).
+    /// prompts still run). A caller may force one instead (`open`'s
+    /// `forced`), which `profile_forced` records.
     profile: ?profiles.Profile,
+    /// The profile was the caller's choice, not the template digest's: the
+    /// file's own template is not the pinned one, so what the profile renders
+    /// is the pinned protocol, not necessarily what this file's template says.
+    profile_forced: bool,
     /// The ids that end generation: the profile's stop tokens resolved in
     /// this vocabulary, or the file's `eos_token_id` alone without a profile.
     stop_ids: [max_stop_tokens]u32,
@@ -273,8 +278,9 @@ pub const Engine = struct {
     /// vocabulary, and prepares a session of `capacity` tokens with an
     /// attention cache of `kv` precision (GPU only; the CPU reference stays
     /// F32). An architecture without an adapter is `UnknownArchitecture`;
-    /// `models.known` names the ones the tree has.
-    pub fn open(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, backend: Backend, capacity: usize, kv: KvPrecision) !Engine {
+    /// `models.known` names the ones the tree has. `forced` selects the
+    /// prompt profile regardless of the file's template digest.
+    pub fn open(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, backend: Backend, capacity: usize, kv: KvPrecision, forced: ?profiles.Profile) !Engine {
         const started = std.Io.Clock.awake.now(io);
         if (capacity == 0 or capacity > 32768) return error.InvalidGenerationBudget;
         var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
@@ -282,7 +288,8 @@ pub const Engine = struct {
         const adapter = try models.select(mapped.document.string("general.architecture") orelse "");
         var vocab = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
         errdefer vocab.deinit();
-        const profile = profiles.forDocument(mapped.document);
+        const detected = profiles.forDocument(mapped.document);
+        const profile = forced orelse detected;
         var stop_ids: [max_stop_tokens]u32 = undefined;
         var stop_count: usize = 0;
         if (profile) |p| {
@@ -315,6 +322,7 @@ pub const Engine = struct {
             .encoder = encoder,
             .model = model,
             .profile = profile,
+            .profile_forced = forced != null and forced != detected,
             .stop_ids = stop_ids,
             .stop_count = stop_count,
             .kv_precision = if (backend == .cpu) .f32 else kv,

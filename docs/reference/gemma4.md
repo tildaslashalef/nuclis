@@ -190,6 +190,10 @@ stripped of thinking with `strip_thinking`. Tool calls use
 `<|tool_call>…<tool_call|>` and responses `<|tool_response>…<tool_response|>`.
 The template text is extracted from the file at capture time, never
 embedded in the tree (18,922 bytes ending in a newline, the digest above).
+Finetunes converted with the earlier 17,530-byte revision (digest
+`dc311bb0…`) render history differently and are refused; they run under
+`--prompt-profile gemma4`
+([prompt-profile.md § Evidence](prompt-profile.md#evidence-and-reproduction)).
 
 `inference/src/profiles/gemma4.zig` implements the text and tool-calling
 subset (system/developer, user, assistant, tool declarations, calls, and

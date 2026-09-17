@@ -16,6 +16,9 @@ const sampling = @import("../sampling/root.zig");
 /// Exact GGUF template this profile implements; future loading must check it
 /// before selecting this profile instead of guessing from architecture alone.
 pub const template_sha256 = "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce";
+/// Other template revisions proven to render every fixture case identically
+/// (`scripts/profile-alias-check.py`); none so far.
+pub const template_aliases = [_][]const u8{};
 
 /// The conversation types are the registry's (`profiles/root.zig`), shared
 /// with every profile; re-exported so this module reads on its own.

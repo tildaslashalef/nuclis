@@ -105,6 +105,10 @@ pub const ModelEntry = struct {
     revision: ?[]const u8 = null,
     mmproj: ?[]const u8 = null,
     mtp: ?[]const u8 = null,
+    /// Forces the prompt profile on a file whose template is not pinned (a
+    /// finetune converted with another template revision); null selects by
+    /// the file's template digest.
+    profile: ?Profile = null,
     ctx_size: ?usize = null,
     generate: Generate = .{},
     agent: Agent = .{},
@@ -489,6 +493,8 @@ pub const Flags = struct {
     kv: ?KvPrecision = null,
     max_tokens: ?usize = null,
     think: ?Effort = null,
+    /// `--prompt-profile`: see `ModelEntry.profile`.
+    prompt_profile: ?Profile = null,
     sampling: Overrides = .{},
 };
 
@@ -502,8 +508,12 @@ pub const Resolved = struct {
     model: []const u8,
     /// The registry entry `model` names, if any.
     entry: ?*const ModelEntry,
-    /// The sampling profile the model runs with (see `profileFor`).
+    /// The sampling profile the model runs with (see `profileFor`), or the
+    /// forced one.
     profile: Profile,
+    /// A profile the flag or the registry entry forces on the file at open,
+    /// whatever its template digest; null selects by digest.
+    forced_profile: ?Profile,
     backend: Backend,
     ctx_size: usize,
     kv_precision: KvPrecision,
@@ -554,7 +564,8 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     var r: Resolved = .{
         .model = name,
         .entry = entry,
-        .profile = profileFor(name),
+        .profile = flags.prompt_profile orelse e.profile orelse profileFor(name),
+        .forced_profile = flags.prompt_profile orelse e.profile,
         .backend = flags.backend orelse cfg.engine.backend,
         .ctx_size = flags.ctx_size orelse e.ctx_size orelse cfg.engine.ctx_size,
         .kv_precision = flags.kv orelse cfg.engine.kv_precision,
@@ -882,7 +893,7 @@ test "registry entries parse by name with their overrides and companions" {
         \\               "revision": "fc034cfff751157913579611efad8462ac1be606", "mmproj": "mmproj-F16.gguf",
         \\               "ctx_size": 4096, "generate": { "think": "off", "sampling": { "top_k": 64 } },
         \\               "agent": { "fold_thinking": false } },
-        \\    "local": { "path": "/scratch/x.gguf" } } }
+        \\    "local": { "path": "/scratch/x.gguf", "profile": "gemma4" } } }
     , "t.json", &diag);
     defer loaded.deinit();
     try std.testing.expectEqual(@as(usize, 2), loaded.config.models.entries.len);
@@ -898,6 +909,17 @@ test "registry entries parse by name with their overrides and companions" {
     try std.testing.expect(gemma.generate.sampling.temperature == null and gemma.generate.max_tokens == null);
     try std.testing.expect(!gemma.agent.fold_thinking.? and gemma.agent.think == null);
     try std.testing.expectEqualStrings("/scratch/x.gguf", loaded.config.models.find("local").?.path.?);
+    try std.testing.expectEqual(.gemma4, loaded.config.models.find("local").?.profile.?);
+    try std.testing.expect(gemma.profile == null);
+    // The entry's profile is forced at open and names the sampling defaults;
+    // the flag wins over it.
+    const local = resolve(&loaded, "local", .{}, .generate);
+    try std.testing.expectEqual(.gemma4, local.forced_profile.?);
+    try std.testing.expectEqual(.gemma4, local.profile);
+    const flagged = resolve(&loaded, "local", .{ .prompt_profile = .qwen38 }, .agent);
+    try std.testing.expectEqual(.qwen38, flagged.forced_profile.?);
+    try std.testing.expectEqual(.qwen38, flagged.profile);
+    try std.testing.expect(resolve(&loaded, "gemma", .{}, .generate).forced_profile == null);
     try std.testing.expect(loaded.config.models.find("qwen3.8-27b") == null);
     // The registry has no origin slots; the global keys are untouched
     // (the version is a key of the file like any other).

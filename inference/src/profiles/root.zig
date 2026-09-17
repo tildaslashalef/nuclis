@@ -141,6 +141,14 @@ pub const Profile = enum {
         };
     }
 
+    /// Digests of other template revisions the profile accepts, each proven
+    /// to render the pinned fixtures identically (`fixtures/<profile>-aliases.json`).
+    pub fn templateAliases(self: Profile) []const []const u8 {
+        return switch (self) {
+            inline else => |p| &p.module().template_aliases,
+        };
+    }
+
     /// Renders a completion-ready conversation (ending with a user message or
     /// a completed tool-result group) with optional tool definitions. Caller
     /// owns the result. A profile whose template defines no tool syntax
@@ -193,6 +201,7 @@ pub const Profile = enum {
 pub fn forTemplate(sha256_hex: []const u8) ?Profile {
     inline for (comptime std.enums.values(Profile)) |p| {
         if (std.mem.eql(u8, sha256_hex, p.templateSha256())) return p;
+        for (p.templateAliases()) |alias| if (std.mem.eql(u8, sha256_hex, alias)) return p;
     }
     return null;
 }
@@ -358,6 +367,9 @@ test "profiles are selected by template digest" {
     try std.testing.expect(forTemplate("") == null);
     try std.testing.expect(forTemplate("0000000000000000000000000000000000000000000000000000000000000000") == null);
     try std.testing.expectEqualStrings(qwen38.template_sha256, Profile.qwen38.templateSha256());
+    // An alias selects the profile as the pinned digest does.
+    for (gemma4.template_aliases) |alias| try std.testing.expectEqual(Profile.gemma4, forTemplate(alias).?);
+    try std.testing.expectEqual(@as(usize, 0), Profile.qwen38.templateAliases().len);
 }
 
 test "profile dispatch reaches the module's defaults and renderer" {

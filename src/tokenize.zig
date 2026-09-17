@@ -64,7 +64,7 @@ pub fn tokenOffsets(alloc: std.mem.Allocator, vocab: *const inference.vocabulary
     return offsets;
 }
 
-pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, effort: inference.profiles.Effort, options: generate.Options, json: bool, writer: *std.Io.Writer, sty: style.Style) !void {
+pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, effort: inference.profiles.Effort, forced: ?inference.profiles.Profile, options: generate.Options, json: bool, writer: *std.Io.Writer, sty: style.Style) !void {
     const user = try engine.readPrompt(alloc, io, options.prompt, options.prompt_file);
     defer alloc.free(user);
     var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
@@ -72,9 +72,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, effort:
     var vocab = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
     defer vocab.deinit();
     // The same two paths as `Engine.prompt`: the text unchanged, or one user
-    // turn through the pinned renderer (refused when the template differs).
+    // turn through the pinned renderer (refused when the template differs,
+    // unless a profile is forced).
     const prompt = if (options.raw) try alloc.dupe(u8, user) else blk: {
-        const profile = inference.profiles.forDocument(mapped.document) orelse return error.UnsupportedPromptTemplate;
+        const profile = forced orelse inference.profiles.forDocument(mapped.document) orelse return error.UnsupportedPromptTemplate;
         break :blk try profile.render(alloc, &.{.{ .role = .user, .content = user }}, &.{}, effort, .{});
     };
     defer alloc.free(prompt);

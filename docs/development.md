@@ -269,7 +269,7 @@ and the `nuclis model pull <name>` to run next:
                                  "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
                                  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
                                  "mmproj": "mmproj-BF16.gguf", "mtp": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
-                                 "ctx_size": null,
+                                 "profile": null, "ctx_size": null,
                                  "generate": { "max_tokens": null, "think": null, "sampling": { "…": null } },
                                  "agent": { "think": null, "fold_thinking": null } } }
 }
@@ -288,7 +288,14 @@ and the `nuclis model pull <name>` to run next:
   or an unknown registry name), chosen without opening the file; a run
   samples with the opened file's own profile, selected by its template
   digest, so a Gemma file reached through a path still gets Gemma's
-  defaults (MODL-07). The JSON form
+  defaults (MODL-07). An entry's `profile` (`qwen38`, `gemma4`) or the
+  `--prompt-profile` flag forces that profile on the file whatever its
+  template digest — the way to run a finetune converted with another
+  revision of the template, which the engine would otherwise refuse as
+  `UnsupportedPromptTemplate`; the agent prints a notice at startup, and
+  the rendering is the pinned protocol's, not necessarily the file's own
+  ([prompt-profile.md § Evidence](reference/prompt-profile.md#evidence-and-reproduction)).
+  The JSON form
   carries the file as loaded (`config`, the registry as a map), the
   `effective` view, and the `sources` map. The flag layer is visible in each
   command's own report (`generate --json`, the `bench` report's `config`

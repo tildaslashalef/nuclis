@@ -147,7 +147,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
             const f = &options.flags;
             // Tokenize takes only the prompt and the rendering effort: no
             // backend, budget, or sampling can change what it reports.
-            const tokenizes = command == .tokenize and !std.mem.eql(u8, flag, "--prompt") and !std.mem.eql(u8, flag, "--prompt-file") and !std.mem.eql(u8, flag, "--think");
+            const tokenizes = command == .tokenize and !std.mem.eql(u8, flag, "--prompt") and !std.mem.eql(u8, flag, "--prompt-file") and !std.mem.eql(u8, flag, "--think") and !std.mem.eql(u8, flag, "--prompt-profile");
             if (tokenizes) return error.UnknownOption;
             if (std.mem.eql(u8, flag, "--backend")) {
                 if (f.backend != null) return error.DuplicateOption;
@@ -181,6 +181,9 @@ pub fn parseArgs(args: []const []const u8) !Options {
             } else if (command == .bench and std.mem.eql(u8, flag, "--warmup")) {
                 if (b.warmup != null) return error.DuplicateOption;
                 b.warmup = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
+            } else if (std.mem.eql(u8, flag, "--prompt-profile")) {
+                if (f.prompt_profile != null) return error.DuplicateOption;
+                f.prompt_profile = std.meta.stringToEnum(inference.profiles.Profile, value) orelse return error.UnknownPromptProfile;
             } else if ((samples or command == .tokenize) and std.mem.eql(u8, flag, "--think")) {
                 if (f.think != null) return error.DuplicateOption;
                 f.think = std.meta.stringToEnum(inference.profiles.Effort, value) orelse return error.InvalidNumber;
@@ -380,7 +383,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .help, .version, .config, .model => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
-        .tokenize => tokenize.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate).think, options.generation, options.json, out, sty),
+        .tokenize => blk: {
+            const resolved = config.resolve(&loaded, options.model, options.flags, .generate);
+            break :blk tokenize.run(alloc, io, path, resolved.think, resolved.forced_profile, options.generation, options.json, out, sty);
+        },
         .agent => if (options.printing)
             agent.print_mode.run(alloc, io, environ, path, config.resolve(&loaded, options.model, options.flags, .agent), options.print, out, diag)
         else
@@ -522,6 +528,12 @@ test "agent parses sampling and effort flags without a prompt" {
     try std.testing.expectEqual(@as(usize, 8), options.flags.max_tokens.?);
     try std.testing.expect(options.flags.ctx_size == null);
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "agent", "--think", "loud" }));
+    // A forced prompt profile is a common option of every command that renders.
+    try std.testing.expectEqual(.gemma4, (try parseArgs(&.{ "agent", "--prompt-profile", "gemma4" })).flags.prompt_profile.?);
+    try std.testing.expectEqual(.gemma4, (try parseArgs(&.{ "tokenize", "--prompt", "a", "--prompt-profile", "gemma4" })).flags.prompt_profile.?);
+    try std.testing.expectEqual(.qwen38, (try parseArgs(&.{ "bench", "--prompt", "a", "--prompt-profile", "qwen38" })).flags.prompt_profile.?);
+    try std.testing.expectError(error.UnknownPromptProfile, parseArgs(&.{ "generate", "--prompt", "a", "--prompt-profile", "llama" }));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "generate", "--prompt", "a", "--prompt-profile", "gemma4", "--prompt-profile", "gemma4" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "agent", "--raw", "--think", "low" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "bench", "--prompt", "a", "--think", "low" }));
     const sampled = try parseArgs(&.{ "bench", "--prompt", "a", "--temperature", "0.7", "--top-k", "40", "--top-p", "0.95", "--seed", "3" });

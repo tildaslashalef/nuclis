@@ -63,6 +63,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-09 | Gemma 4 native tool calling | 2026-09-16 |
 | MODL-14 | Catalogue entries ahead of their adapters; roadmap reordered around speculation | 2026-09-17 |
 | TERM-07 | Rows released by a shrinking live region are reused, not left as gaps | 2026-09-17 |
+| APPS-07 | `--prompt-profile` and the registry's `profile`; the template-alias gate | 2026-09-17 |
 
 ## Context
 
@@ -1731,3 +1732,51 @@ a scroll; confirmed by the user on their own terminal the same day.
 **Files.** `src/tui/screen.zig`, `docs/agent-spec.md`.
 
 **Remaining.** None known.
+
+### APPS-07 — `--prompt-profile` and the registry's `profile`; the template-alias gate (2026-09-17)
+
+**Outcome.** A Gemma 4 finetune
+(`Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf`, Q4_K/Q6_K, the
+12B structure, accepted by `validate`) was refused as
+`UnsupportedPromptTemplate`: it ships the earlier 17,530-byte revision of
+the Gemma 4 template (`dc311bb0…`), not the pinned one. The plan was to
+accept that revision as a second digest of the `gemma4` profile once
+proven equivalent. `scripts/profile-alias-check.py` is that proof: with
+the reference server holding the file, it replays every pinned text, tool,
+and token fixture case and requires byte-identical output before writing
+`fixtures/<profile>-aliases.json`; profiles carry a `template_aliases` list
+that `profiles.forTemplate` accepts. The proof **failed** (18 of 38 cases:
+a thought on an earlier call step dropped, consecutive assistant messages
+split into two turns, a result group before a user turn left without its
+`<turn|>`), so both alias lists are empty and the finetune is not aliased.
+What lets it run is explicit: `--prompt-profile <qwen38|gemma4>` on
+`generate`, `bench`, `tokenize`, and `agent`, and a registry entry's
+`profile` key, force the profile at `Engine.open` (`forced`;
+`Engine.profile_forced` records that the digest did not select it), the
+forced profile also names the sampling defaults, and the agent prints a
+startup notice. `--model <path>` already loaded the file; no new file flag
+was needed.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB. `zig build test`: 391 default
+tests (the flag on every rendering command and its errors; a registry
+entry's `profile` and the flag over it in `resolve`; aliases resolve
+through `forTemplate`). The alias check on the finetune under llama.cpp
+`7620399`: 18 of 38 cases differ, the diffs classified above.
+`nuclis tokenize` on the file: refused without the flag, 14 tokens with
+`--prompt-profile gemma4` (the same ids as the 12B renders). Live:
+`nuclis agent -p … --prompt-profile gemma4` on the file ran the `bash`
+tool and answered (Metal, context 4096).
+
+**Files.** `inference/src/engine.zig`, `inference/src/profiles/root.zig`,
+`inference/src/profiles/gemma4.zig`, `inference/src/profiles/qwen38.zig`,
+`scripts/profile-alias-check.py`, `src/config.zig`, `src/cli.zig`,
+`src/help.zig`, `src/tokenize.zig`, `src/generate.zig`, `src/bench.zig`,
+`src/agent/root.zig`, `src/agent/print.zig`, `docs/spec.md`,
+`docs/development.md`, `docs/reference/prompt-profile.md`,
+`docs/reference/gemma4.md`.
+
+**Remaining.** A forced profile renders the pinned protocol, so a file
+whose template is a genuinely different protocol produces prompts its
+model was not trained on; the flag is the user's statement that it is the
+same one. `config show` names the forced profile but not that it is
+forced. Print mode prints no notice.

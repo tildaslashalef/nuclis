@@ -258,6 +258,25 @@ conversations), Gemma 4 on 2026-09-12, both with llama.cpp
 The templates are adapted, not copied; their origins and licenses are in
 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
 
+**Other template revisions.** A file converted with another revision of a
+profile's template (a finetune, an older converter) carries another
+digest and is refused. `scripts/profile-alias-check.py --profile <p>`
+is the gate for accepting one: with the reference server holding that
+file, it replays every pinned text, tool, and token case through
+`/apply-template` and `/tokenize` and, only when every prompt and token
+stream is byte-identical, records the digest with the file's identity in
+`fixtures/<profile>-aliases.json`; the profile's `template_aliases` lists
+the same digests and `profiles.forTemplate` accepts them. Checked on
+2026-09-17 for the 17,530-byte Gemma 4 revision that finetunes such as
+`Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf` ship
+(`dc311bb0…`): **18 of 38 cases differ**, all in history rendering — a
+thought on an earlier tool-call step is dropped (the pinned template keeps
+it), two consecutive assistant messages become two turns, and a tool-result
+group before a user turn is left without its `<turn|>` — so it is not an
+alias, and both profiles' alias lists are empty. Such a file runs with
+`--prompt-profile <p>` (or a registry entry's `profile`), which renders the
+pinned protocol onto it; the agent says so at startup.
+
 ## Completion events (AGNT-01 session 1)
 
 `engine.complete` wraps `runLoop` with profile decoding. Its caller supplies

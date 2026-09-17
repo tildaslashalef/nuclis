@@ -77,7 +77,9 @@ Use the shared user root and `NUCLIS_HOME` override documented in
 [development.md](development.md#user-directories). `--model` (a registry
 entry, a catalogue name, or a path) takes precedence over the configured
 model, which defaults to the catalogue entry under that root's `models/`
-directory.
+directory. The prompt profile is selected by the file's chat-template
+digest; `--prompt-profile <p>` or a registry entry's `profile` forces one
+on a file whose template is not pinned, with a notice.
 
 The [published configuration](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/blob/main/config.json)
 uses the Qwen3.5 architecture family despite the Qwen3.8 model name. It describes
