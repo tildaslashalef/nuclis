@@ -102,7 +102,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try heading(out, sty, "common options");
     try row(out, sty, "--model <name|path>", "a catalogue name, a registry entry, or a path");
     try row(out, sty, "--backend cpu|metal", "default metal (needs a Metal build)");
-    try row(out, sty, "--ctx-size <n>", "context window in tokens, default 8192");
+    try row(out, sty, "--ctx-size <n>", "context window in tokens, default 16384");
     try row(out, sty, "--max-tokens <n>", "output budget, default 2048");
     try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU, default f16");
     try row(out, sty, "--think <effort>", "off, low, medium, xhigh — what the profile supports");

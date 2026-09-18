@@ -296,7 +296,7 @@ and the `nuclis model pull <name>` to run next:
 ```json
 {
   "schema_version": 1,
-  "engine":   { "model": "qwen3.8-27b", "backend": "metal", "ctx_size": 8192,
+  "engine":   { "model": "qwen3.8-27b", "backend": "metal", "ctx_size": 16384,
                 "kv_precision": "f16" },
   "generate": { "max_tokens": 2048, "think": "off",
                 "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,

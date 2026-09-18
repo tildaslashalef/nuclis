@@ -79,6 +79,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-05 | README for a public repository: project status, contributions, disclosure | 2026-09-18 |
 | MODL-17 | Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance | 2026-09-18 |
 | AGNT-12 | An empty tool result no longer aborts the turn | 2026-09-18 |
+| APPS-12 | The default context window is 16K | 2026-09-18 |
 
 ## Context
 
@@ -2472,3 +2473,20 @@ answer, stop `eos`, 331 generated tokens.
 **Remaining.** The model reads an empty `<tool_response>` as ambiguous
 and retried the pattern twice; a tool text that says "no files match
 `*.rs`" would save those steps (the summary row already says it).
+
+### APPS-12 — The default context window is 16K (2026-09-18)
+
+**Outcome.** `engine.ctx_size` defaults to 16,384 instead of 8,192 for
+every command (the agent runs on the engine defaults): an agent turn's
+system prompt, tool definitions, and a few results on top of the prompt
+ran out of 8K in ordinary use. A `ctx_size` in `nuclis.json` or
+`--ctx-size` still wins, so a file written by an earlier `config init`
+keeps its 8,192 until edited. The cost is the session block: Qwen3.8 and
+Bonsai about 1.1 GiB at 16K with the F16 cache, Gemma 4 12B about 5.6 GB
+(its sliding caches are allocated for the full capacity, the ring layout
+being a roadmap item).
+
+**Evidence.** The resolution tests assert the new default (414 tests);
+`nuclis --help` and the `config init` example in development.md say 16384.
+
+**Files.** `src/config.zig`, `src/help.zig`, `docs/development.md`.

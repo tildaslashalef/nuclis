@@ -68,7 +68,9 @@ pub const Config = struct {
         /// (`paths.modelPath`).
         model: []const u8 = "qwen3.8-27b",
         backend: Backend = if (inference.metal.enabled) .metal else .cpu,
-        ctx_size: usize = 8192,
+        /// 16K: room for an agent turn's system prompt, tools, and a few
+        /// results on top of the prompt (8K ran out in ordinary use).
+        ctx_size: usize = 16384,
         /// Attention cache precision on the GPU; the CPU reference
         /// always keeps F32 and reports it.
         kv_precision: KvPrecision = .f16,
@@ -1280,7 +1282,7 @@ test "resolve applies defaults < file < flags per command and records the source
     defer none.deinit();
     const plain = resolve(&none, null, .{}, .generate);
     try std.testing.expectEqual((Config.Engine{}).backend, plain.backend);
-    try std.testing.expectEqual(@as(usize, 8192), plain.ctx_size);
+    try std.testing.expectEqual(@as(usize, 16384), plain.ctx_size);
     try std.testing.expectEqual(@as(usize, 2048), plain.max_tokens);
     try std.testing.expectEqual(.off, plain.think);
     try std.testing.expectEqual(.qwen38, plain.profile);
@@ -1554,5 +1556,5 @@ test "the written initial file parses back exactly and shows the entry shape" {
     const gen = resolve(&loaded, null, .{}, .generate);
     try std.testing.expect(gen.entry != null);
     try std.testing.expectEqual(.qwen38, gen.profile);
-    try std.testing.expectEqual(@as(usize, 8192), gen.ctx_size);
+    try std.testing.expectEqual(@as(usize, 16384), gen.ctx_size);
 }
