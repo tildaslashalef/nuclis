@@ -160,8 +160,6 @@ test "invalid matrix descriptors and buffers leave writable slices untouched" {
     bad.bytes = bytes[0..34];
     try std.testing.expectError(error.InvalidRowLength, matvec(bad, input[0..16], &output, &scratch));
     bad = valid;
-    bad.encoding = 30; // inspected layout without a numerical decoder
-    try std.testing.expectError(error.UnsupportedEncoding, matvec(bad, input[0..32], &output, &scratch));
     bad.encoding = 999;
     try std.testing.expectError(error.UnsupportedEncoding, matvec(bad, input[0..32], &output, &scratch));
     bad = valid;

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Regenerate small CPU decoder fixtures from a locally built pinned llama.cpp.
 
-Usage: python3 scripts/quant-fixtures.py [reference-checkout]
-Defaults to .zig-cache/reference/llama.cpp under the repository root.
-Requires that checkout's matching Release build; no model or GPU is used.
-Writes fixtures under inference/src/quant/fixtures/ and the attributed
-IQ3_S table in inference/src/quant/iq3-grid.zig.
+Usage: python3 scripts/quant-fixtures.py [reference-checkout] [--prism-checkout DIR]
+Defaults to .zig-cache/reference/llama.cpp under the repository root, and
+.zig-cache/reference/prism-llama.cpp for the PrismML fork that defines the
+ternary encodings (PQ2_0, PTQ1_0; docs/reference/bonsai.md). Each checkout
+must sit at its pinned revision with its Release build; no model or GPU is
+used. Writes fixtures under inference/src/quant/fixtures/ (`ternary.json`
+from the fork, the rest from mainline) and the attributed IQ3_S table in
+inference/src/quant/iq3-grid.zig.
 """
 
 import argparse
@@ -18,6 +21,9 @@ import subprocess
 
 
 REVISION = "7620399f58aebfd2196b74021f9581bcf7218cb9"
+# The PrismML fork at release prism-b10687-5d80cff: the only decoder of the
+# Prism-private ternary encodings (docs/reference/reference-baseline.md).
+PRISM_REVISION = "5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6"
 
 
 def main():
@@ -25,28 +31,61 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkout", nargs="?", type=pathlib.Path,
                         default=root / ".zig-cache/reference/llama.cpp")
-    checkout = parser.parse_args().checkout.resolve()
-    revision = subprocess.check_output(
-        ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
-    ).strip()
-    if revision != REVISION:
-        raise SystemExit("reference checkout must match the pinned revision")
-    library = ctypes.CDLL(str(checkout / "build/bin/libggml-base.dylib"))
+    parser.add_argument("--prism-checkout", type=pathlib.Path,
+                        default=root / ".zig-cache/reference/prism-llama.cpp")
+    args = parser.parse_args()
 
-    def reference(encoding, name, blocks, elements):
+    def pinned_library(checkout, expected):
+        checkout = checkout.resolve()
+        revision = subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+        ).strip()
+        if revision != expected:
+            raise SystemExit(f"{checkout} must sit at the pinned revision {expected}")
+        return ctypes.CDLL(str(checkout / "build/bin/libggml-base.dylib"))
+
+    library = pinned_library(args.checkout, REVISION)
+    checkout = args.checkout.resolve()
+
+    def reference(encoding, name, blocks, elements, source_library=None):
         encoded = b"".join(blocks)
         source = ctypes.create_string_buffer(encoded)
         output = (ctypes.c_float * (elements * len(blocks)))()
-        decode = getattr(library, "dequantize_row_" + name)
+        decode = getattr(source_library or library, "dequantize_row_" + name)
         decode.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int64]
         decode.restype = None
         decode(source, output, len(output))
         return {"encoding": encoding, "bytes": list(encoded), "values": list(output)}
 
-    def save(name, rows):
+    def save(name, rows, revision=REVISION):
         target = root / "inference/src/quant/fixtures" / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps({"revision": REVISION, "rows": rows}, indent=2) + "\n")
+        target.write_text(json.dumps({"revision": revision, "rows": rows}, indent=2) + "\n")
+
+    # The fork's group-128 ternary blocks. Arbitrary payload bytes exercise
+    # the fixed-point trit extraction on non-canonical codes too, since the
+    # decoder must reproduce the reference arithmetic, not only valid packings.
+    prism = pinned_library(args.prism_checkout, PRISM_REVISION)
+    scales = [0.5, -2, 0, 1.5, 2**-24, 65504, -0.125, 8]
+    fixtures = []
+    blocks = [struct.pack("<e", scale) + bytes((block * 32 + j) * 73 % 256 for j in range(32))
+              for block, scale in enumerate(scales)]
+    blocks.append(struct.pack("<e", 1) + bytes([0b11100100] * 32))  # every 2-bit code, in order
+    blocks.append(struct.pack("<e", 1) + bytes([0xff] * 32))
+    fixtures.append(reference(142, "pq2_0", blocks, 128, prism))
+    blocks = [bytes((block * 26 + j) * 73 % 256 for j in range(26)) + struct.pack("<e", scale)
+              for block, scale in enumerate(scales)]
+    blocks.append(bytes([0] * 26) + struct.pack("<e", 1))
+    blocks.append(bytes([0xff] * 26) + struct.pack("<e", 1))
+    # Canonical packings: five trits per byte scaled by 256/243 (rounded up)
+    # and the four-trit tail bytes, so the fixture also holds valid codes.
+    def pack(trits, scale):
+        return (sum(t * 3 ** (4 - i) for i, t in enumerate(trits)) * 256 + 242) // 243
+    canonical = bytes(pack([(j + k) % 3 for k in range(5)], 5) for j in range(24))
+    canonical += bytes((sum(((j + k) % 3) * 3 ** (3 - k) for k in range(4)) * 256 + 242) // 243 for j in range(2))
+    blocks.append(canonical + struct.pack("<e", 0.5))
+    fixtures.append(reference(143, "ptq1_0", blocks, 128, prism))
+    save("ternary.json", fixtures, PRISM_REVISION)
 
     fixtures = []
     for encoding, name, width in [(8, "q8_0", 32), (20, "iq4_nl", 16), (2, "q4_0", 16)]:

@@ -69,6 +69,13 @@ retained with the ggml copyright notice as a conservative attribution:
 Copyright (c) 2023-2026 The ggml authors, MIT License,
 [llama.cpp LICENSE](https://github.com/ggml-org/llama.cpp/blob/master/LICENSE).
 
+The group-128 ternary encodings PQ2_0 and PTQ1_0 (ids 142, 143) are defined
+by the PrismML fork of llama.cpp (`PrismML-Eng/llama.cpp`, MIT, revision
+`5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6`), read as a format contract and
+used as the numerical oracle for the committed
+[`ternary.json`](inference/src/quant/fixtures/ternary.json) fixture; no
+table or code from it is present in the tree.
+
 #### GPT-2 byte-level alphabet — format fact
 
 `inference/src/tokenizer/bpe.zig` maps the 256 byte values onto Unicode

@@ -78,13 +78,25 @@ data, not learned model weights. The attributed
 [table](../../inference/src/quant/iq3-grid.zig) is regenerated from the pinned
 reference header; integer shifts extract components without host-endian aliasing.
 
+PQ2_0 and PTQ1_0 (ids 142 and 143) are the PrismML fork's group-128 ternary
+blocks for Bonsai 2 27B: `w = d * t` with `t` in {-1, 0, +1} and one F16
+scale per 128 weights. PQ2_0 stores the scale then 32 bytes of four two-bit
+codes each, low bits first, value `d * (q - 1)` (code 3 decodes to +2 as
+the reference does). PTQ1_0 stores 24 base-3 bytes, two four-trit tail
+bytes, then the scale: digit `n` of a byte is `((byte * 3^n mod 256) * 3)
+>> 8`, the 24 bytes are runs of 16 and 8 emitted digit-major, and the tail
+bytes hold four trits at the leading positions. BF16 (id 30) widens the
+high half of a single. The contracts, the fork's revision, and the
+rotation these files also need are in [bonsai.md](bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc).
+
 The block layouts and equations are facts of the GGML storage formats, learned
 from the pinned llama.cpp
 [decoder source](https://github.com/ggml-org/llama.cpp/blob/7620399f58aebfd2196b74021f9581bcf7218cb9/ggml/src/ggml-quants.c)
 and [block definitions](https://github.com/ggml-org/llama.cpp/blob/7620399f58aebfd2196b74021f9581bcf7218cb9/ggml/src/ggml-common.h)
-and implemented independently here. The two lookup tables (IQ3_S codebook,
-IQ4_NL values) are format constants whose provenance is recorded in
-[THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
+and implemented independently here; the ternary blocks from the PrismML
+fork's at `5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6` the same way. The two
+lookup tables (IQ3_S codebook, IQ4_NL values) are format constants whose
+provenance is recorded in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
 
 Colocated tests cover hand-calculated blocks, signed extremes, every IQ4 lookup
 index, half-row ordering, independent block scales, F16 subnormals/signed zero/
@@ -118,6 +130,17 @@ has five varied blocks. Both match pinned CPU outputs exactly. Hand-calculated
 tests isolate IQ3_S component/sign ordering and odd scales, and IQ4_XS six-bit
 scales and half-row order. All fixture comparisons use deliberately offset byte
 slices to exercise unaligned input; invalid-size tests cover both new encodings.
+
+The [ternary fixture](../../inference/src/quant/fixtures/ternary.json) is
+produced by the fork's own `dequantize_row_pq2_0` and `dequantize_row_ptq1_0`
+(`scripts/quant-fixtures.py --prism-checkout`, its `revision` the fork's
+pin): eight blocks of each with arbitrary payload bytes and the eight scales
+above, so non-canonical codes reproduce the reference's fixed-point
+arithmetic too, plus all-zero and all-one blocks, an every-code PQ2_0 block,
+and a canonically packed PTQ1_0 block. Hand-calculated tests cover PQ2_0's
+code order within bytes and the +2 code, PTQ1_0's digit-major runs and
+four-trit tail from a canonical packing, and BF16's widening of a subnormal,
+signed zero, infinity, and NaN.
 
 Default tests consume only the committed fixtures and need no external checkout or model:
 

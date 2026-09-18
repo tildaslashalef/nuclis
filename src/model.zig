@@ -1442,7 +1442,7 @@ test "a verified file whose encoding this build does not store still gets its ro
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(io, ".", arena);
     const path = try std.fs.path.join(arena, &.{ root, "ternary.gguf" });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = try serializeDirectory(arena, inventory, .{ .encoding = .{ .tensor = "output.weight", .id = 142 } }) });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = try serializeDirectory(arena, inventory, .{ .encoding = .{ .tensor = "output.weight", .id = 34 } }) });
     try std.testing.expectEqual(@as(?Role, null), try roleFromHeader(gpa, io, path));
     try std.testing.expectEqual(Role.main, try resolveRole(try roleFromHeader(gpa, io, path), null));
     try std.testing.expectEqual(Role.mmproj, try resolveRole(try roleFromHeader(gpa, io, path), .mmproj));

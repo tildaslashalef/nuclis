@@ -1,6 +1,8 @@
 //! GGML storage layouts, independent of any model architecture.
 //! These describe on-disk block sizes, not available numerical kernels.
-//! Source: ggml-org/llama.cpp, ggml/src/ggml-common.h (see docs/gguf-inspection.md).
+//! Source: ggml-org/llama.cpp, ggml/src/ggml-common.h (see docs/gguf-inspection.md);
+//! ids 142 and 143 are the PrismML fork's group-128 ternary blocks
+//! (docs/reference/bonsai.md).
 const std = @import("std");
 
 pub const Layout = struct {
@@ -38,6 +40,8 @@ pub fn layout(id: u32) ?Layout {
         21 => .{ .name = "IQ3_S", .elements_per_block = 256, .bytes_per_block = 110 },
         23 => .{ .name = "IQ4_XS", .elements_per_block = 256, .bytes_per_block = 136 },
         30 => .{ .name = "BF16", .elements_per_block = 1, .bytes_per_block = 2 },
+        142 => .{ .name = "PQ2_0", .elements_per_block = 128, .bytes_per_block = 34 },
+        143 => .{ .name = "PTQ1_0", .elements_per_block = 128, .bytes_per_block = 28 },
         else => null,
     };
 }
@@ -49,5 +53,8 @@ test "quantized rows must contain whole blocks" {
     try std.testing.expectEqual(@as(u64, 18), try layout(20).?.byteCount(&.{32}));
     try std.testing.expectError(error.InvalidShape, layout(0).?.byteCount(&.{ 4, 0 }));
     try std.testing.expectError(error.Overflow, layout(0).?.byteCount(&.{std.math.maxInt(u64)}));
+    try std.testing.expectEqual(@as(u64, 34 * 40), try layout(142).?.byteCount(&.{5120}));
+    try std.testing.expectEqual(@as(u64, 28 * 40), try layout(143).?.byteCount(&.{5120}));
+    try std.testing.expectError(error.InvalidShape, layout(143).?.byteCount(&.{64}));
     try std.testing.expect(layout(999) == null);
 }

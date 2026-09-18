@@ -7,7 +7,9 @@
 //! independent and verified against pinned fixtures. The IQ4_NL value table and
 //! the IQ3_S codebook are format constants; see THIRD_PARTY_NOTICES.md. Q4_0
 //! shares IQ4_NL's 18-byte block and nibble order with a linear code
-//! (`q - 8`) in place of the table.
+//! (`q - 8`) in place of the table. PQ2_0 and PTQ1_0 are the PrismML fork's
+//! group-128 ternary blocks (`w = d * t`, `t` in {-1, 0, +1}), verified against
+//! the fork's own decoder (docs/reference/bonsai.md).
 const std = @import("std");
 const encoding = @import("../tensor/encoding.zig");
 const iq3_grid = @import("iq3-grid.zig").values;
@@ -67,6 +69,20 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
             },
             21 => iq3Block(block, output[out..][0..256]),
             23 => iq4XsBlock(block, output[out..][0..256]),
+            // BF16 is the high half of an IEEE single: widen, never round.
+            30 => output[out] = @bitCast(@as(u32, std.mem.readInt(u16, block[0..2], .little)) << 16),
+            142 => {
+                const scale = half(block[0..2]);
+                // Four codes per byte, low bits first; code 3 decodes to +2
+                // as the reference does, though a ternary file never stores it.
+                for (block[2..], 0..) |encoded, j| {
+                    inline for (0..4) |k| {
+                        const code: i32 = (encoded >> (2 * k)) & 3;
+                        output[out + 4 * j + k] = scale * @as(f32, @floatFromInt(code - 1));
+                    }
+                }
+            },
+            143 => ptq1Block(block, output[out..][0..128]),
             else => unreachable, // The supported IDs were checked above.
         }
     }
@@ -77,7 +93,7 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
 /// block-size rules remain centralized in the quantization module.
 pub fn validateRow(id: u32, byte_count: usize, element_count: usize) Error!void {
     switch (id) {
-        0, 1, 2, 8, 11, 12, 13, 14, 20, 21, 23 => {},
+        0, 1, 2, 8, 11, 12, 13, 14, 20, 21, 23, 30, 142, 143 => {},
         else => return error.UnsupportedEncoding,
     }
     const layout = encoding.layout(id).?;
@@ -202,6 +218,36 @@ fn iq3Block(block: []const u8, output: []f32) void {
     }
 }
 
+/// PTQ1_0 packs five trits per byte in base 3 (scaled so the leading digit
+/// sits in the top bits), in two runs of 16 and 8 bytes, then four trits per
+/// byte in two tail bytes; the scale closes the block. Digit `n` of a byte is
+/// `((byte * 3^n mod 256) * 3) >> 8`, and every digit of a run is emitted
+/// before the next digit, so the order is digit-major within each run.
+fn ptq1Block(block: []const u8, output: []f32) void {
+    const d = half(block[26..28]);
+    const pow3 = [_]u8{ 1, 3, 9, 27, 81 };
+    var out: usize = 0;
+    for ([_]usize{ 16, 8 }, [_]usize{ 0, 16 }) |run, start| {
+        for (pow3) |power| {
+            for (block[start..][0..run]) |byte| {
+                output[out] = d * trit(byte, power);
+                out += 1;
+            }
+        }
+    }
+    for (pow3[0..4]) |power| {
+        for (block[24..26]) |byte| {
+            output[out] = d * trit(byte, power);
+            out += 1;
+        }
+    }
+}
+
+fn trit(byte: u8, power: u8) f32 {
+    const q: u16 = byte *% power;
+    return @floatFromInt(@as(i32, (q * 3) >> 8) - 1);
+}
+
 fn half(bytes: *const [2]u8) f32 {
     const value: f16 = @bitCast(std.mem.readInt(u16, bytes, .little));
     return @floatCast(value);
@@ -281,7 +327,7 @@ test "Q4_0 all codes, half-row ordering, and successive scales" {
 test "invalid encodings and row sizes leave caller output untouched" {
     var output = [_]f32{123} ** 512;
     const bytes = [_]u8{0} ** 420;
-    for ([_]u32{ 0, 1, 2, 8, 11, 12, 13, 14, 20, 21, 23 }) |id| {
+    for ([_]u32{ 0, 1, 2, 8, 11, 12, 13, 14, 20, 21, 23, 30, 142, 143 }) |id| {
         const layout = encoding.layout(id).?;
         const n = layout.elements_per_block;
         const size = layout.bytes_per_block;
@@ -294,17 +340,82 @@ test "invalid encodings and row sizes leave caller output untouched" {
     }
     try std.testing.expectError(error.InvalidRowLength, row(8, bytes[0..34], output[0..31]));
     try std.testing.expectError(error.InvalidRowLength, row(20, bytes[0..18], output[0..33]));
-    try std.testing.expectError(error.UnsupportedEncoding, row(30, &.{}, &output)); // BF16: stored, not decoded
     try std.testing.expectError(error.UnsupportedEncoding, row(999, &.{}, &output));
+    try std.testing.expectError(error.UnsupportedEncoding, row(34, &.{}, &output)); // mainline TQ1_0: group 256, not stored
     for (output) |value| try std.testing.expectEqual(@as(f32, 123), value);
 }
 
 test "packed rows match pinned llama.cpp CPU decoder fixtures exactly" {
-    try checkFixture(@embedFile("fixtures/simple.json"));
-    try checkFixture(@embedFile("fixtures/k-affine.json"));
-    try checkFixture(@embedFile("fixtures/k-signed.json"));
-    try checkFixture(@embedFile("fixtures/iq.json"));
+    try checkFixture(@embedFile("fixtures/simple.json"), mainline_revision);
+    try checkFixture(@embedFile("fixtures/k-affine.json"), mainline_revision);
+    try checkFixture(@embedFile("fixtures/k-signed.json"), mainline_revision);
+    try checkFixture(@embedFile("fixtures/iq.json"), mainline_revision);
 }
+
+test "ternary rows match the PrismML fork's decoder fixtures exactly" {
+    try checkFixture(@embedFile("fixtures/ternary.json"), prism_revision);
+}
+
+test "BF16 widens the high half of a single without rounding" {
+    var output: [5]f32 = undefined;
+    // Deliberate leading byte: unaligned little-endian storage.
+    const bytes = [_]u8{ 7, 0xc0, 0x3f, 0x00, 0x80, 0x01, 0x00, 0x80, 0x7f, 0xc0, 0x7f };
+    try row(30, bytes[1..], &output);
+    try std.testing.expectEqual(@as(f32, 1.5), output[0]);
+    try std.testing.expectEqual(@as(u32, 0x80000000), @as(u32, @bitCast(output[1])));
+    try std.testing.expectEqual(@as(f32, 0x1p-133), output[2]);
+    try std.testing.expect(std.math.isPositiveInf(output[3]));
+    try std.testing.expect(std.math.isNan(output[4]));
+}
+
+test "PQ2_0 code order within bytes, the +2 code, and successive scales" {
+    var bytes = [_]u8{0} ** 68;
+    @memcpy(bytes[0..2], &[_]u8{ 0, 0x38 }); // d=0.5
+    @memset(bytes[2..34], 0b11_10_01_00); // codes 0,1,2,3 low bits first
+    @memcpy(bytes[34..36], &[_]u8{ 0, 0xc0 }); // d=-2
+    @memset(bytes[36..68], 0b00_00_00_10); // code 2 then zeros
+    var output: [256]f32 = undefined;
+    try row(142, &bytes, &output);
+    for (output[0..128], 0..) |value, j| try std.testing.expectEqual(0.5 * @as(f32, @floatFromInt(@as(i32, @intCast(j % 4)) - 1)), value);
+    for (output[128..], 0..) |value, j| try std.testing.expectEqual(@as(f32, if (j % 4 == 0) -2 else 2), value);
+}
+
+test "PTQ1_0 canonical packing decodes digit-major per run and the four-trit tail" {
+    // Byte j of the 24 base-3 bytes holds the trits (j+k) mod 3 for k in
+    // 0..5, the two tail bytes hold (j+k) mod 3 for k in 0..4 at the same
+    // leading positions (the value times three); each packed as
+    // ceil(value * 256 / 243). d = 0.5.
+    var bytes: [28]u8 = undefined;
+    for (bytes[0..24], 0..) |*byte, j| {
+        var value: u32 = 0;
+        for (0..5) |k| value = value * 3 + @as(u32, @intCast((j + k) % 3));
+        byte.* = @intCast((value * 256 + 242) / 243);
+    }
+    for (bytes[24..26], 0..) |*byte, j| {
+        var value: u32 = 0;
+        for (0..4) |k| value = value * 3 + @as(u32, @intCast((j + k) % 3));
+        byte.* = @intCast((value * 3 * 256 + 242) / 243);
+    }
+    @memcpy(bytes[26..28], &[_]u8{ 0, 0x38 });
+    var output: [128]f32 = undefined;
+    try row(143, &bytes, &output);
+    var expected: [128]f32 = undefined;
+    var out: usize = 0;
+    for ([_]usize{ 16, 8 }, [_]usize{ 0, 16 }) |run, start| {
+        for (0..5) |k| for (0..run) |m| {
+            expected[out] = 0.5 * @as(f32, @floatFromInt(@as(i32, @intCast((start + m + k) % 3)) - 1));
+            out += 1;
+        };
+    }
+    for (0..4) |k| for (0..2) |h| {
+        expected[out] = 0.5 * @as(f32, @floatFromInt(@as(i32, @intCast((h + k) % 3)) - 1));
+        out += 1;
+    };
+    try std.testing.expectEqualSlices(f32, &expected, &output);
+}
+
+const mainline_revision = "7620399f58aebfd2196b74021f9581bcf7218cb9";
+const prism_revision = "5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6";
 
 test "Q3_K biased scales retain all packed bits" {
     var bytes = [_]u8{0xff} ** 110;
@@ -345,7 +456,7 @@ test "Q6_K signed scale extremes and low/high quarter order" {
     }
 }
 
-fn checkFixture(json: []const u8) !void {
+fn checkFixture(json: []const u8, revision: []const u8) !void {
     const Fixture = struct {
         revision: []const u8,
         rows: []const struct { encoding: u32, bytes: []const u8, values: []const f32 },
@@ -353,7 +464,7 @@ fn checkFixture(json: []const u8) !void {
     const alloc = std.testing.allocator;
     const fixture = try std.json.parseFromSlice(Fixture, alloc, json, .{});
     defer fixture.deinit();
-    try std.testing.expectEqualStrings("7620399f58aebfd2196b74021f9581bcf7218cb9", fixture.value.revision);
+    try std.testing.expectEqualStrings(revision, fixture.value.revision);
     for (fixture.value.rows) |sample| {
         const output = try alloc.alloc(f32, sample.values.len);
         defer alloc.free(output);
