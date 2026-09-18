@@ -35,6 +35,43 @@ with Command Line Tools even though `xcrun --find metal` found no standalone
 compiler. Initial shader compilation and subsequent driver-cache hits can have
 different startup costs. No system toolchain changes are required for this path.
 
+## The second oracle: the PrismML fork (MODL-16, 2026-09-18)
+
+Bonsai 2 27B ([bonsai.md](bonsai.md)) is stored in two encodings the
+mainline reference rejects, so its oracle is the PrismML fork of llama.cpp
+(`github.com/PrismML-Eng/llama.cpp`, MIT, tracks mainline) at its release
+tag `prism-b10687-5d80cff`, commit
+`5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6` (2026-09-17). Two pins, never one
+moving one: the mainline revision above stays the oracle for every other
+family, and every script that checks a served build's revision takes the
+fork's as a parameter (`profile-alias-check.py --reference-revision`) or a
+second constant (`quant-fixtures.py`'s `PRISM_REVISION`). The same recipe,
+in its own checkout:
+
+```sh
+git clone https://github.com/PrismML-Eng/llama.cpp .zig-cache/reference/prism-llama.cpp
+git -C .zig-cache/reference/prism-llama.cpp checkout --detach 5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6
+
+cmake -S .zig-cache/reference/prism-llama.cpp -B .zig-cache/reference/prism-llama.cpp/build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
+  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF \
+  -DLLAMA_USE_PREBUILT_UI=OFF
+
+cmake --build .zig-cache/reference/prism-llama.cpp/build \
+  --target llama-server llama-bench llama-completion --parallel 8
+```
+
+The trace harness (`scripts/reference-generation.cpp`, public C API only)
+builds against this checkout unchanged with its include and library paths
+in place of the mainline ones, into
+`.zig-cache/generation/prism-reference-generation`
+([generation.md](generation.md#numerical-traces)). The fork's server takes
+the same flags as the mainline one below; `--jinja` renders the Bonsai
+template, while the fork's `llama-completion --jinja` aborts at its own
+start-up template self-test on that template (see bonsai.md). The Bonsai
+acceptance run (MODL-17) records the fork's revision as its reference side.
+
 ## Run the workload
 
 Start one reference server in a separate terminal:

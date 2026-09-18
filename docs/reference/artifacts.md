@@ -77,13 +77,13 @@ traces, acceptance record, and agent check (MODL-10;
 The Muse adapter is MODL-11, and until then `inspect` says *not runnable*
 for it. The Bonsai rows were read by `model inspect` on 2026-09-18 and the
 PQ2_0 file and its Q8_0 projector verified by the pull the same day;
-`bonsai-2-27b` entered the catalogue then, ahead of its encodings: the
-file is Qwen3.8-27B's architecture with every matrix in Prism ML's
-ternary packings (ids 142 and 143, which `inspect` reports as not stored)
-in a Hadamard-rotated basis, so it becomes runnable when the encodings
-and the transform land (MODL-16, KERN-10, MODL-17), never through the
-Qwen entry. The repository also lists `Ternary-Bonsai-2-27B-F16.gguf`
-(53,808,408,928 B). The 26B-A4B
+`bonsai-2-27b` entered the catalogue then: the file is Qwen3.8-27B's
+architecture with every matrix in Prism ML's ternary packings (ids 142
+and 143) in a Hadamard-rotated basis ([bonsai.md](bonsai.md)). Since
+MODL-16 session 1 the Qwen adapter binds it and `inspect` says
+*supported*; the runtimes refuse the rotation until they apply it (session
+2 on the CPU, KERN-10 and MODL-17 on Metal). The repository also lists
+`Ternary-Bonsai-2-27B-F16.gguf` (53,808,408,928 B). The 26B-A4B
 repository also lists `mmproj-F16.gguf` (1,193,058,784 B), `mmproj-F32.gguf`
 (2,291,200,480 B), `MTP/mtp-gemma-4-26B-A4B-it-{BF16,F16}.gguf`
 (855,247,360 B each), `MTP/…-Q8_0.gguf` (461,785,600 B), and a root-level

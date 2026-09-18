@@ -281,7 +281,16 @@ it), two consecutive assistant messages become two turns, and a tool-result
 group before a user turn is left without its `<turn|>` — so it is not an
 alias, and both profiles' alias lists are empty. Such a file runs with
 `--prompt-profile <p>` (or a registry entry's `profile`), which renders the
-pinned protocol onto it; the agent says so at startup.
+pinned protocol onto it; the agent says so at startup. Checked on
+2026-09-18 for Bonsai 2 27B's template (`c3cf9e34…`, 8,952 bytes: the
+upstream Qwen3.8 template without Unsloth's fixes) on the PrismML fork's
+server (`--reference-revision 5d80cff0…`; the script reports a template's
+`raise_exception` as a mismatch rather than crashing): **4 of 68 cases
+differ**, the `merged_system_*` histories, which that template refuses
+(`System message must be at the beginning.`) where the pinned one merges
+them; every other prompt and token stream is byte-identical
+([bonsai.md § Chat template](bonsai.md#chat-template)). Not an alias
+either; MODL-17 chooses the entry's profile from that evidence.
 
 ## Completion events (AGNT-01 session 1)
 

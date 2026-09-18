@@ -22,6 +22,7 @@ import hashlib
 import importlib.util
 import json
 import pathlib
+import re
 import struct
 import urllib.parse
 import urllib.request
@@ -89,7 +90,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:18087")
     parser.add_argument("--profile", choices=sorted(TOOLS.PROFILES), required=True)
+    parser.add_argument("--reference-revision", default=TOOLS.REVISION,
+                        help="the served build's llama.cpp commit; the mainline pin by default, "
+                             "a second pinned oracle (the PrismML fork) when it serves the file")
     args = parser.parse_args()
+    if not re.fullmatch(r"[0-9a-f]{40}", args.reference_revision):
+        parser.error("--reference-revision must be a full commit hash")
     address = urllib.parse.urlparse(args.url)
     if (address.scheme != "http" or address.hostname != "127.0.0.1"
             or address.username or address.password or address.path not in ("", "/")
@@ -104,8 +110,22 @@ def main():
         with opener.open(req, timeout=60) as response:
             return json.load(response)
 
+    class Rendering(Exception):
+        """The served template refused a case (a Jinja raise); a mismatch, not a crash."""
+
+    def render(body):
+        try:
+            return request("/apply-template", body)["prompt"]
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode(errors="replace")
+            try:
+                detail = json.loads(detail)["error"]["message"]
+            except (ValueError, KeyError, TypeError):
+                pass
+            raise Rendering(f"HTTP {error.code}: {detail}") from None
+
     props = request("/props")
-    if TOOLS.REVISION[:7] not in props["build_info"]:
+    if args.reference_revision[:7] not in props["build_info"]:
         raise RuntimeError("expected pinned reference revision")
     model = pathlib.Path(props["model_path"])
     header = header_strings(model, {"tokenizer.chat_template", "general.name"})
@@ -129,9 +149,12 @@ def main():
 
     mismatches = []
     for case in text["prompt_cases"]:
-        prompt = request("/apply-template", {
-            "messages": case["messages"],
-            "chat_template_kwargs": TEXT.PROFILES[args.profile]["kwargs"](case["effort"])})["prompt"]
+        try:
+            prompt = render({"messages": case["messages"],
+                             "chat_template_kwargs": TEXT.PROFILES[args.profile]["kwargs"](case["effort"])})
+        except Rendering as refused:
+            mismatches.append(("text", case["name"], case["prompt"], str(refused)))
+            continue
         if prompt != case["prompt"]:
             mismatches.append(("text", case["name"], case["prompt"], prompt))
         elif tokens(prompt, True) != case["tokens"]:
@@ -141,14 +164,18 @@ def main():
                 "chat_template_kwargs": TOOLS.PROFILES[args.profile]["kwargs"](case["effort"])}
         if case.get("tools"):
             body["tools"] = TOOLS.request_tools(case["tools"])
-        prompt = request("/apply-template", body)["prompt"]
+        try:
+            prompt = render(body)
+        except Rendering as refused:
+            mismatches.append(("tools", case["name"], case["prompt"], str(refused)))
+            continue
         if prompt != case["prompt"]:
             mismatches.append(("tools", case["name"], case["prompt"], prompt))
     for case in text["token_cases"]:
         if tokens(case["text"], case["parse_special"]) != case["tokens"]:
             mismatches.append(("token_case", case["text"], case["tokens"], "differs"))
     if mismatches:
-        for kind, name, expected, got in mismatches[:5]:
+        for kind, name, expected, got in mismatches:
             print(f"--- {kind} {name!r}\n{expected!r}\n+++\n{got!r}\n")
         raise SystemExit(f"{len(mismatches)} case(s) differ: {digest} is not an alias of {pinned}")
 
@@ -162,7 +189,7 @@ def main():
         "template_bytes": len(template),
         "source": {"name": header.get("general.name", b"").decode(), "file": model.name,
                    "size": size, "sha256": file_digest.hexdigest()},
-        "reference_revision": TOOLS.REVISION,
+        "reference_revision": args.reference_revision,
         "checked": datetime.date.today().isoformat(),
         "prompt_cases": len(text["prompt_cases"]),
         "tool_cases": len(tools["cases"]),

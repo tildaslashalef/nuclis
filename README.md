@@ -98,11 +98,12 @@ two quantizations: the plain K-quant release, and Google's
 quantization-aware-trained checkpoint, whose every weight matrix is Q4_0
 — the encoding it was trained for, which is why it is smaller *and*
 decodes faster. The 26B-A4B mixture of experts runs on both backends with
-its own acceptance record. The Muse and Bonsai entries are pinned ahead
-of the code that runs them, and `nuclis model inspect` reports them *not
-runnable* until it lands: Muse needs its architecture, Bonsai (Qwen3.8-27B
-re-encoded ternary by Prism ML) its two weight encodings and the Hadamard
-transform of activations they require.
+its own acceptance record. The Muse entry is pinned ahead of its
+architecture, and `nuclis model inspect` reports it *not runnable* until
+that lands. Bonsai (Qwen3.8-27B re-encoded ternary by Prism ML) validates
+and binds through the Qwen adapter, its two weight encodings decode on the
+CPU, and `generate` refuses it until the Hadamard transform of activations
+its weights require is applied (in progress).
 
 ```sh
 nuclis model ls                       # the catalogue and what is present

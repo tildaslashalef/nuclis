@@ -2184,3 +2184,149 @@ Read: `inference/src/backends/cpu/experts.zig` (`route`, `Ffn`, `ffn`),
 `expertsBench` in `inference/metal-check.zig`,
 [reference/cpu-reference.md § Mixture of experts](reference/cpu-reference.md#mixture-of-experts-routing-and-the-gathered-ffn),
 and [reference/metal-backend.md § Gathered expert kernels](reference/metal-backend.md#gathered-expert-kernels-kern-09).
+
+## 49. Ternary weights and a rotated basis: what Bonsai 2 27B stores
+
+Bonsai 2 27B is Qwen3.8-27B again — the same 64 layers, the same DeltaNet
+and attention mixers, the same tokenizer, the same adapter binding the
+same 851 text tensors — at 7.2 GB instead of 16.5. MODL-16's first session
+put its two weight encodings through the CPU decoder, pinned its numerical
+oracle, and read its one new idea into the binding without yet executing
+it. The idea is that the *cheapest* weights are only usable after a change
+of basis, and this section is about why.
+
+**Ternary is a quantization, not a compression.** A ternary weight is one
+of three values, `{−1, 0, +1}`, times a scale shared by a group of 128:
+`w = d · t`. Information-theoretically a trit is log₂ 3 ≈ 1.58 bits, so a
+model "at 1.58 bits" is one whose matrices were *trained or re-trained* to
+survive that rounding; Prism ML calls the file `folded` and the process
+distillation. Nothing in nuclis decides whether that worked. As with the
+QAT file of § 47, the engine's job is to reproduce the arithmetic the file
+implies, bit for bit against the reference, and leave quality to the
+benchmarks. The two files differ only in how the trits are packed:
+
+- **PQ2_0** spends a whole two-bit slot per trit (`q − 1`, so the fourth
+  code, +2, exists but is never stored): 32 bytes plus the F16 scale per
+  128 weights, 2.125 bits per weight. Four codes per byte, low bits first —
+  the nibble path of § 47 with a smaller nibble, which is why it is the
+  bring-up file.
+- **PTQ1_0** packs five trits per byte in base 3, because 3⁵ = 243 ≤ 256:
+  24 bytes hold 120 trits, two more bytes hold the last 8, 28 bytes per
+  128, 1.75 bits per weight — 17 % fewer bytes to read than PQ2_0. The
+  price is that extracting a digit is no longer a shift and a mask. The
+  format scales the packed number by 256/243 so that the *leading* digit
+  is what `(byte · 3) >> 8` returns, and multiplying the byte by 3 (mod
+  256) discards that digit and promotes the next: five multiplies, five
+  shifts, no division. It is mainline llama.cpp's TQ1_0 trick at group
+  128 instead of 256. The values also come out digit-major — all first
+  digits of a run of bytes, then all second digits — so element `j` of a
+  block is *not* in byte `j / 5`. Our decoder reproduces the order and the
+  fixed-point arithmetic exactly; the fixture from the fork's own
+  decoder feeds it arbitrary bytes on purpose, so non-canonical codes
+  (which a valid file never contains) match too. Matching on those is
+  what proves the arithmetic rather than the packing.
+
+Why one scale per 128 rather than per 256 or per row? A ternary group has
+only three levels, so the scale is the entire dynamic range; a smaller
+group tracks local magnitude better at the cost of two bytes per 128
+weights. The fork's comment explains PTQ1_0's existence with exactly this:
+a 256-wide scale "has to discard one of the two group scales it
+straddles", so a group-128 checkpoint cannot be stored losslessly in
+TQ1_0.
+
+**Why a rotation.** Rounding to three levels is brutal on a matrix whose
+columns have a few large entries and many small ones: the scale follows
+the outliers, and everything else rounds to zero. Activations have the
+same shape — a handful of channels carry most of the energy. The remedy
+in Bonsai (and in QuaRot, SpinQuant, and their relatives) is to multiply
+by an **orthogonal** matrix before quantizing. For a projection `W · x`
+and any orthogonal `R`, `W · x = (W Rᵀ) · (R x)`: rotate the weight's
+input axis, rotate the activation the same way, and the product is
+unchanged. If `R` mixes every coordinate into every other, the outliers
+are spread thin, both `W Rᵀ` and `R x` look Gaussian, and ternary
+rounding of `W Rᵀ` loses far less. The converter did the weight half once
+(`W' = W Rᵀ`, then quantized), which is what "folded" means; the engine
+must do the activation half on every token.
+
+**Why this rotation.** A dense random orthogonal matrix on a 17,408-wide
+input would cost more than the projection it protects. Bonsai's `R` is
+`(1/√1024) · H₁₀₂₄ · S`: `S` a diagonal of ±1 signs, `H` the Sylvester
+Walsh-Hadamard matrix, `H[r][c] = (−1)^popcount(r & c)`, applied
+independently to each block of 1024 consecutive elements (5120, 6144, and
+17408 are all multiples of 1024; the power of two is Sylvester's
+requirement). The Hadamard matrix has two gifts: it needs no storage (a
+bit-parity rule), and `H · v` costs 10 butterfly stages of 512 additions
+each — the fast Walsh-Hadamard transform — instead of a million multiplies.
+The sign flip is what makes it a *random* rotation rather than a fixed
+one: `H` alone is a known matrix, and a known matrix can be defeated by an
+adversarial or merely structured input (a constant activation is an
+eigenvector of `H`); a random ±1 per coordinate first, and every input
+looks generic to `H`. The signs are three vectors in the header, one per
+input width, 28,672 numbers in all. Because `H` is symmetric and
+orthonormal, `H⁻¹ = H`, which is why the embedding table can be stored in
+the rotated basis and undone after lookup by the same transform in the
+opposite order: `h = S · (H · z)`.
+
+**What it costs.** Count the distinct activations that meet a rotated
+weight per layer: the residual before the mixer (shared by `attn_qkv` and
+`attn_gate`, or by `q`, `k`, `v`), the mixer output before `ssm_out` or
+`attn_output`, the residual before the FFN (shared by `gate` and `up`),
+and the FFN hidden before `down` — four transforms of 5120, 6144, 5120,
+and 17,408 elements. The fork memoizes exactly this (one transform per
+activation, however many folded weights read it). Over 64 layers plus the
+output head that is about 2.2 million elements × 10 stages per token:
+tens of millions of additions against the 27 billion multiply-adds of the
+matvecs, negligible as arithmetic. Prism nevertheless calls it "one of
+the larger non-matmul costs of a decode step" on Metal, and § 24 and § 28
+taught why: at batch 1 the cost of a small kernel is its launch and its
+dependency, not its FLOPs, and this is 258 more small dependent kernels
+per token. Whether the sign flip and the transform fuse into the matvec's
+input load, as Prism fuses the sign flip, is what KERN-10 measures.
+
+**The bytes are the point.** Decode is memory-bound (§ 6): at 2.125 bits
+per weight the language model is 7.2 GB against the 16.5 GB of the
+`Q4_K_M` file, so the same M4 Pro that reads Qwen3.8's weights at 10
+tokens/s should read these at two to three times that. The fork's smoke
+run on our machine gave 17 tokens/s on a 16-token completion, before any
+of our own work; the transform is the tax on that gain.
+
+**Two things the binding had to learn.** First, this file has 64 blocks
+and no auxiliary prediction layer: the Qwen release's 65th block (the
+draft head of § 43's registry summary) was not re-encoded, so the adapter
+now accepts both declarations and reports which it found. Second, the
+`ssm_alpha` and `ssm_beta` projections of every DeltaNet layer are *not*
+in the rotated list and are stored as BF16, not ternary: they are tiny
+(5120 × 48) and feed the gating scalars of § 19, where a rounding error
+compounds across the recurrence. The converter left them in the original
+basis at high precision; our schedule must feed them the untransformed
+activation while every neighbour takes the rotated one. A rotation
+contract is a list of *which* inputs rotate, and the adapter pins the
+list rather than trusting the file's: 401 names, one slot each, the
+embedding inverse and nothing else.
+
+**And one convention.** The value part of DeltaNet's output enters
+`ssm_out` as 48 heads of 128, and the fork records that the fold was
+computed with those heads in a *grouped* order (the three value heads of
+a key group adjacent) while its mixer produces them *tiled* (the sixteen
+groups adjacent), so it permutes the activation before the transform. The
+two orders are the same numbers in a different sequence, and a
+Hadamard transform over blocks of 1024 is not invariant to that
+sequence, so the permutation is part of the contract. Whether nuclis's
+mixer already produces the grouped order or the tiled one is a fact of
+`qwen35_runtime.zig` that session 2 reads before it applies anything.
+
+**Where it stands.** `quant.row` decodes ids 142, 143, and 30 against the
+fork's fixture; the parser retains the rotation arrays; the adapter
+validates the contract and hands a `Rotation` to the runtimes; the fork's
+traces for `Hello,` are committed (greedy token ` I`, the same as
+Qwen3.8's); and both runtimes refuse a rotated binding with a typed error
+until they apply the transform, because a model in the wrong basis
+produces fluent nonsense, not a crash. The CPU transform and the trace
+comparison are session 2; the Metal kernels and the plan are KERN-10 and
+MODL-17.
+
+Read: `inference/src/quant/decode.zig` (the `142 =>` arm, `ptq1Block`,
+`trit`), `inference/src/models/qwen35.zig` (`Rotation`,
+`validateRotation`, `rotatedSlot`), `gguf.retained_key_prefixes` in
+`inference/src/formats/gguf.zig`, and
+[reference/bonsai.md](reference/bonsai.md).

@@ -16,18 +16,33 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-MODL-15 closed on 2026-09-18: Bonsai 2 27B is accepted and planned
-ahead of Muse Glimmer. It is Prism ML's ternary re-encoding of
-Qwen3.8-27B (`general.architecture = qwen35`, the pinned adapter,
-tokenizer, and runtime apply unchanged), so the work is below the
-adapter: two weight encodings (PQ2_0 id 142, PTQ1_0 id 143), a
-Hadamard rotation of activations before each rotated projection, BF16
-rows, and the PrismML llama.cpp fork as a second pinned oracle. The
-catalogue entry `bonsai-2-27b` pins the PQ2_0 file with its Q8_0
-projector (pulled 2026-09-18). Next is MODL-16 session 1: the fork as
-an oracle, the facts document, the encodings and the transform on the
-CPU. Muse Glimmer follows the three Bonsai units; its facts were read
-on 2026-09-16 and its files are pulled.
+MODL-16 session 1 closed its work on 2026-09-18 (the unit stays open for
+session 2): the PrismML fork is pinned at `prism-b10687-5d80cff`
+(`5d80cff0…`) and built under `.zig-cache/reference/prism-llama.cpp`
+as the second oracle; it runs the pulled PQ2_0 file on Metal; its
+`Hello,` traces are committed (`tests/fixtures/bonsai-hello-comma/`,
+greedy token 353 as Qwen3.8's); `docs/reference/bonsai.md` records the
+artifact, header, both block layouts, and the rotation contract as the
+fork's loader implements it (`gdn_v_grouped` = a tiled→grouped
+permutation of the 6144-wide `ssm_out` input before the transform);
+`quant.row` decodes ids 142, 143, 30 bit-identically to the fork's
+decoders (`fixtures/ternary.json`); the GGUF parser retains
+`prism.hadamard.*` arrays whole; the Qwen adapter accepts 64 blocks
+without the auxiliary layer, lists the three encodings as executable,
+validates the rotation against a pinned contract, and carries it in
+`Binding.rotation`; `validate` and `inspect` bind the file (*supported*);
+both runtimes refuse a rotated binding with `error.UnsupportedRotation`
+until they apply it. The alias gate says the Bonsai template is **not**
+an alias of `qwen38`: 4 of 68 cases differ, all the `merged_system_*`
+histories the upstream template refuses; every other prompt and token
+stream is byte-identical (MODL-17 decides the profile; recommendation:
+the entry's `profile = .qwen38` with the deviation recorded).
+
+Next is MODL-16 session 2: `cpu.hadamard` and the runtime transform, then
+`make compare-bonsai-cpu`. Read `qwen35_runtime.zig`'s DeltaNet output
+order before deciding whether `value_grouped` is a gather or a no-op.
+Muse Glimmer follows the three Bonsai units; its facts were read on
+2026-09-16 and its files are pulled.
 
 Order: MODL-16 → KERN-10 → MODL-17 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 After AGNT-10 the roadmap continues with speculative decoding across the
@@ -76,97 +91,62 @@ of the FP16 average over 14 thinking-mode benchmarks, measured through
 vLLM on H100) are Prism's; nuclis proves equivalence to the fork, not
 quality.
 
-**Facts read on 2026-09-18** from the PTQ1_0 header (first 16 MiB by
-range request, parsed directly), the model card, the whitepaper, and the
-fork's `prism-v7` headers; to be re-read from the pulled file with
-`scripts/gguf-inventory.py` and recorded in `docs/reference/bonsai.md`
-with provenance:
-- Header: 851 tensors (PTQ1_0 file): 402 ternary (every matrix: the
-  embedding `token_embd.weight` [5120, 248320], the untied head
-  `output.weight`, `attn_qkv`, `attn_gate`, `ssm_out`, `ffn_gate`,
-  `ffn_up`, `ffn_down`, and the attention layers' projections), 353 F32
-  (norms, `ssm_a`, `ssm_conv1d`, `ssm_dt.bias`, …), 96 **BF16** (id 30:
-  `ssm_alpha.weight` and `ssm_beta.weight` [5120, 48] on the 48 DeltaNet
-  layers — stored today, not decoded; the Qwen3.8 file holds them in
-  another encoding). `general.file_type` 143; `general.name` "Hf",
-  `general.version` "v5", `general.basename` "folded".
-- Every `qwen35.*` key equals the pinned Qwen3.8-27B's (64 blocks, 5120,
-  FFN 17408, 24 / 4 heads, key and value length 256, rope sections
-  [11, 11, 10, 0], θ 1e7, epsilon 1e-6, `full_attention_interval` 4,
-  ssm conv 4 / state 128 / groups 16 / rank 48 / inner 6144, context
-  262,144). Sampling hints `general.sampling.temp` 1.0, `top_p` 0.95,
-  `top_k` 20 (the card adds instruct-mode 0.7 / 0.80 / 20 with presence
-  penalty 1.5; reasoning effort `xhigh` by default, `medium` supported,
-  `low` behaves like `xhigh`).
-- Tokenizer identical in kind: `gpt2` / `pre = qwen35`, 248,320 tokens,
-  247,587 merges, BOS = PAD 248044, EOS 248046, `add_bos_token` false.
-  Template SHA-256 `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041`
-  (8,952 bytes) — **not** the pinned `qwen38` digest (`12827f24…`): the
-  alias gate proves it on every fixture or MODL-17 writes a variant.
-- **Encodings** (fork `ggml-common.h`, branch `prism-v7`): `PQ2_0` id
-  142, block 128: `ggml_half d; uint8_t qs[32]` (2 bits per element, 34
-  B, 2.125 bpw). `PTQ1_0` id 143, block 128: `uint8_t qs[24]` (5 trits
-  per byte, base-3, 120 values), `uint8_t qh[2]` (4 trits per byte, 8
-  values), `ggml_half d` (28 B, 1.75 bpw) — the trit packing of
-  mainline's `TQ1_0` (id 34, group 256) at group 128, so the unpacking
-  contract is mainline's. Both: `w = d · t`, `t ∈ {−1, 0, +1}`; the
-  fork's file types `MOSTLY_PQ2_0` 128 / `MOSTLY_PTQ1_0` 129. The fork
-  also carries `GGML_HINT_SRC0_IS_HADAMARD` and `fwht` kernels (CUDA,
-  Vulkan, SYCL; the Metal one lives inside its Metal backend sources).
-- **Rotation** (`prism.hadamard.*`): `version` 1, `block_size` 1024,
-  `transform` `normalized-sylvester-walsh-hadamard`, `axis`
-  `input-last-dimension`, `sign_mode` `explicit`, `sign_widths`
-  [5120, 6144, 17408] with `sign_values` (28,672 = 5120 + 6144 + 17408
-  entries of ±1: one sign vector per input width), `weight_names` (401
-  tensors: `output.weight` and per block `attn_qkv`, `attn_gate`,
-  `ssm_out`, `ffn_down`, …), `inverse_weight_names` [`token_embd.weight`],
-  `gdn_v_grouped` true. Per the whitepaper: `R = (1/√n) · Hₙ · S` with
-  n = 1024 and S the diagonal of signs, folded into the stored weights;
-  inference computes `W · (R x)` — a sign flip then a blockwise fast
-  Walsh-Hadamard transform of the activation before each rotated
-  projection, and the inverse on the embedding row after lookup. At
-  batch 1 Prism calls the transform "one of the larger non-matmul costs
-  of a decode step" on Metal and fuses the sign flip into its load
-  path. What `gdn_v_grouped` changes (the value part of the DeltaNet
-  `attn_qkv` rotated per group?) is read from the fork's loader in
-  MODL-16, never guessed.
-- Prism's Apple numbers (pre-rotation build, "pending re-measurement"):
-  M4 Pro 18.0 tg128 / 125 pp512 at 7.2 GB; M5 Pro 28.7 / 393; M5 Max
-  47.0 / 765; current build M5 Pro PQ2_0 27.7 / 397, PTQ1_0 27.1 / 369.
+**Facts** live in [docs/reference/bonsai.md](docs/reference/bonsai.md)
+since session 1 (read from the pulled PQ2_0 file and the fork's loader):
+header and tensors, both block layouts, the rotation contract including
+`gdn_v_grouped`, the template evidence, and the oracle recipe. Two things
+the earlier header read had wrong: the PQ2_0 file's `qwen35.block_count`
+is 64 with no `nextn` key (the Qwen release says 65 + 1), and its
+`general.file_type` is 141. Prism's Apple numbers (pre-rotation build,
+"pending re-measurement"): M4 Pro 18.0 tg128 / 125 pp512 at 7.2 GB; M5
+Pro 28.7 / 393; M5 Max 47.0 / 765; current build M5 Pro PQ2_0 27.7 / 397,
+PTQ1_0 27.1 / 369.
 
 ## MODL-16 — Bonsai 2 27B: oracle, facts, ternary encodings, Hadamard transform, CPU reference
 
-**Design.**
-- Session 1: the fork as the second oracle — clone at the release tag
-  into `.zig-cache/reference/prism-llama.cpp`, build as the mainline
-  recipe does, record the recipe and revision in
-  `docs/reference/reference-baseline.md` beside the mainline pin (the
-  trace harness and `reference-baseline.py` take the revision as a
-  parameter or a second constant; two pins, never one moving one);
-  confirm it runs the pulled file (`llama-completion -ngl 99`, then
-  `--jinja`); `scripts/gguf-inventory.py` on the file into a committed
-  fixture; write `docs/reference/bonsai.md` (artifact, header, the two
-  block layouts from the format contract, the rotation contract as the
-  fork's loader implements it — `gdn_v_grouped` included — with the
-  whitepaper as the mathematical source); capture `Hello,` traces from
-  the fork (`tests/fixtures/bonsai-hello-comma/`). `quant.row` arms for
-  ids 142 and 143 with dequantization fixtures produced by the fork's
-  own dequantize (pinned rows, as Q4_0's), `quant.row` for BF16 (id 30)
-  and `executableEncoding` for all three in `qwen35`; the digest
-  comparison of the chat template through the alias gate.
-- Session 2: `cpu.hadamard` (sign flip and normalized blockwise FWHT of
+**Session 1 delivered (2026-09-18).** The fork pinned, built, and run;
+`docs/reference/bonsai.md`; the inventory fixture
+(`models/fixtures/bonsai-2-27b.json`, rotation arrays included);
+`quant.row` arms for 142 / 143 / 30 with the fork's fixture and hand
+tests; `gguf.retained_key_prefixes`; the adapter's `Rotation`,
+`validateRotation`, the optional auxiliary block, `executableEncoding`;
+`Summary.rotated_basis` shown by `validate`; the traces; the alias-gate
+evidence (`profile-alias-check.py --reference-revision`, template refusals
+reported as mismatches); the guide's § 49. Session-1 state to be aware
+of: `inspect` says *supported* and `validate` prints the rotated basis,
+while `generate` on either backend returns `UnsupportedRotation`.
+
+**Session 2 design.**
+- `cpu.hadamard`: the sign flip and the normalized blockwise FWHT of
   block 1024, in place over an activation of width 5120 / 6144 / 17408,
-  against an F64 reference and a fixture from the fork), the inverse on
-  the embedding row; `qwen35_runtime.zig` applies the transform before
-  every rotated projection as the metadata names them (the adapter
-  validates the `prism.hadamard.*` keys against a pinned contract and
-  refuses unknown versions, sign modes, or names); `make
-  compare-bonsai-cpu` at the bring-up thresholds (2e-3 / 1e-4) with the
-  same greedy token.
+  against an F64 reference and a fixture from the fork (a `Hello,` layer-0
+  input through the fork's transform, or the embedding inverse checked
+  against `token-0-layer-0` minus the layer's own contribution — decide
+  by what the harness can observe); the inverse on the embedding row
+  (`h = signs ⊙ (H z)`, the reverse order).
+- `qwen35_runtime.zig` applies the forward transform to the four
+  activations per layer that meet rotated weights (the residual before the
+  mixer, the mixer output before `ssm_out` / `attn_output`, the residual
+  before the FFN, the FFN hidden before `ffn_down`) and the output-head
+  input, once per activation; `ssm_alpha` / `ssm_beta` (BF16, unrotated)
+  take the untransformed residual. `value_grouped`: the fork permutes the
+  `ssm_out` input from tiled `[hd=128, nk=16, rep=3]` to grouped
+  `[hd, rep, nk]` (value head `rep·16+nk` → `nk·3+rep`) before the signs
+  and the transform; apply the same permutation only if the mixer's
+  output order is the tiled one (read it, do not assume).
+- `make compare-bonsai-cpu` at the bring-up thresholds (2e-3 / 1e-4)
+  against `tests/fixtures/bonsai-hello-comma` (`--positions 2`, Qwen's
+  geometry) with the same greedy token (353); drop the runtime's
+  `UnsupportedRotation` for the CPU (the Metal plan keeps it until
+  MODL-17).
+- KERN-10 note: the Metal plan also needs BF16 rows (`ssm_alpha` /
+  `ssm_beta`) — a `nu_dequant_bf16` for the generic path or a BF16 matvec —
+  which the KERN-10 design below did not list.
 
 **Acceptance.** The file validates (851 tensors, three encodings in the
-executable set); the fork's traces match on the CPU at the thresholds;
-`make check`, `compare` (Qwen unchanged), `test-metal` unchanged.
+executable set — done); the fork's traces match on the CPU at the
+thresholds; `make check`, `compare` (Qwen unchanged), `test-metal`
+unchanged.
 
 ## KERN-10 — Ternary matvec and matmul tiles, the Walsh-Hadamard kernel
 

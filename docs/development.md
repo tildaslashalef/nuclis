@@ -51,8 +51,12 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   ([reference/artifacts.md](reference/artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11),
   [reference/gguf-inspection.md](reference/gguf-inspection.md#companion-files-in-modelsqwen-2026-09-08)).
 - Reference llama.cpp `7620399` builds on demand under
-  `.zig-cache/reference/llama.cpp` (vanishes with `make distclean`). The
-  reference oracle itself is committed under `tests/fixtures/`
+  `.zig-cache/reference/llama.cpp` (vanishes with `make distclean`); the
+  PrismML fork `5d80cff` (release `prism-b10687-5d80cff`), the only decoder
+  of Bonsai 2 27B's ternary encodings, beside it under
+  `.zig-cache/reference/prism-llama.cpp` with the same recipe
+  ([reference-baseline.md § The second oracle](reference/reference-baseline.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
+  The reference oracle itself is committed under `tests/fixtures/`
   ([provenance](../tests/fixtures/provenance.md)); `make compare` reads
   `tests/fixtures/reference-hello-comma`. Accepted reference warm rates
   (prefill/decode tok/s): 512 in = 89.19/9.66; 4K = 89.26/9.21;
