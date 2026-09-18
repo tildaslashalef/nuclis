@@ -16,34 +16,32 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-KERN-10 session 1 closed its work on 2026-09-18 (the unit stays open for
-session 2): `dequant.metal` decodes PQ2_0, PTQ1_0, and BF16;
-`nu_matvec_pq2_0` / `nu_matvec_ptq1_0` (four lanes per 128-value block,
-uniform lane work, `d · (Σt·x − Σx)`) and the prefill tiles with their
-`_32` instantiations are registered, selected by `specializedMatvec` /
-`specializedMatmul` (PQ2_0 two-byte, PTQ1_0 four-byte alignment, any
-whole-block row), and pass `test-metal` (exact fixture decode through the
-matvec and the embedding, randomized rows through both paths, tiles
-against the generic F32 tile). Measured (`bench-kernels`, output head):
-PQ2_0 118.7 GB/s, PTQ1_0 88.5 GB/s — below the design's 200 GB/s
-target, and at the set's multiply rate (448 / 405 G values/s against
-Q4_0's 410): the byte rate halves with density; recorded in
-metal-backend.md with the reasoning. Prefill tiles match Q4_0's GFLOP/s.
-Next is KERN-10 session 2: `nu_fwht_signed` (one threadgroup per
-1024-block, signs on load, in place; a rows variant for chunks), the
-inverse for the embedding, `metal-check` entries against the CPU
-transform, and the fusion measurement. MODL-16 closed earlier the same
-day (CPU reference matches the fork's traces). Muse Glimmer follows the
-two remaining Bonsai units.
+KERN-10 closed on 2026-09-18 (MODL-16 the same day): the Metal backend
+decodes PQ2_0, PTQ1_0, and BF16, runs the ternary matvecs and prefill
+tiles (PQ2_0 119 GB/s, PTQ1_0 88 GB/s on the output head: at the kernel
+set's multiply rate, half Q4_0's byte rate by density — the 200 GB/s
+target is not met, the reasoning is in metal-backend.md), and has
+`nu_hadamard` (1.3–2.2 ms per token as 258 dispatches, launch overhead;
+no fusion attempted). The CPU reference runs Bonsai against the fork's
+traces. Next is MODL-17: `qwen35_metal.zig` dispatches the inverse after
+the embedding gather and the forward transform before each rotated
+projection (the four activations per layer and the output-head input,
+the value-head regathering before `ssm_out` — see `rotate` /
+`rotateGrouped` in `qwen35_runtime.zig` for the exact set), the sign
+vectors uploaded at plan init, `make compare-bonsai` (F32, F16) and
+`test-generation-bonsai-metal`, the profile decision (recommendation:
+the entry's `profile = .qwen38`; the file's template refuses merged
+system messages, 4 of 68 alias cases), the catalogue entry filled,
+the acceptance record against the fork's server, PTQ1_0 measured, `make
+bench` on Qwen unchanged. Muse Glimmer follows.
 
-Order: KERN-10 → MODL-17 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
+Order: MODL-17 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 After AGNT-10 the roadmap continues with speculative decoding across the
 families, then performance, then vision
 ([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-10 | Ternary matvec and matmul tiles, the Walsh-Hadamard kernel | 2 |
 | MODL-17 | Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance | 1–2 |
 | MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2 |
 | MODL-12 | Muse Glimmer 30B: Metal plan | 1 |
@@ -92,46 +90,6 @@ is 64 with no `nextn` key (the Qwen release says 65 + 1), and its
 "pending re-measurement"): M4 Pro 18.0 tg128 / 125 pp512 at 7.2 GB; M5
 Pro 28.7 / 393; M5 Max 47.0 / 765; current build M5 Pro PQ2_0 27.7 / 397,
 PTQ1_0 27.1 / 369.
-
-## KERN-10 — Ternary matvec and matmul tiles, the Walsh-Hadamard kernel
-
-**Session 1 delivered (2026-09-18).** The decoders, matvecs, tiles,
-selection rules, `metal-check` entries, and bench rows
-([metal-backend.md § Ternary](docs/reference/metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18)).
-The 200 GB/s target is not met and is explained there: the kernels sit
-at the set's multiply rate; a faster ternary matvec needs different
-arithmetic (packed integer products or decoded-value sharing), a
-follow-up measured against the model rate, not opened here.
-
-**Session 2 design.** `nu_fwht_signed` (one threadgroup per 1024-block,
-signs applied on load, in place; a rows variant for chunks) and the
-inverse for the embedding (transform, then signs), bit-comparable to
-`cpu.hadamard` at F32 exactness in `metal-check`; then the fusion
-measurement: the sign flip and transform folded into the ternary
-matvec's input load, kept only on a measured gain against the separate
-kernel on the model's shapes.
-
-**Original design (for reference).** `dequant.metal` gains `nu_dequant_pq2_0`,
-`nu_dequant_ptq1_0`, and `nu_dequant_bf16` (the 96 `ssm_alpha` /
-`ssm_beta` rows, [5120, 48], which the generic matvec and the embedding
-path must decode too) bit-identical to `quant.row`; `kernels.metal` gains
-`nu_matvec_pq2_0` / `nu_matvec_ptq1_0` derived from the Q4_0 kernel (a
-32-byte 2-bit block per 128 values; the base-3 unpack by the fixed-point
-multiply of mainline's contract) with the bandwidth target of the Q4_0
-set (≥ 200 GB/s on the model's shapes: 10240 × 5120, 6144 × 5120,
-17408 × 5120, 5120 × 17408, 248320 × 5120), `nu_tile_*` and the
-`nu_matmul_*` / `_32` instantiations for prefill; `nu_fwht_signed` (one
-threadgroup per 1024-block, signs applied on load, in place; a rows
-variant for chunks) and the inverse for the embedding; `metal-check`
-entries (exact decode of the fixture rows, randomized rows through the
-specialized and generic kernels, tiles against the generic F32 tile, the
-transform against the CPU at F32 exactness); `make bench-kernels` and
-`bench-matmul` rows for both encodings. Fusing the transform into the
-matvec's input load is measured as a second step, not assumed.
-
-**Acceptance.** `test-metal` with the new entries; `bench-kernels`
-numbers for both encodings recorded in metal-backend.md; the existing
-kernels' numbers unchanged.
 
 ## MODL-17 — Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance
 

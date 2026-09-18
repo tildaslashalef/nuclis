@@ -908,6 +908,104 @@ fn checkSegments(alloc: std.mem.Allocator) !void {
 /// row, both cache precisions (F16 over the rounded operands, as in 8d).
 /// Scores are unscaled as in the model. For the window, the reference sees
 /// only the cache rows `[pos + 1 − window, pos]` of each row.
+/// `--hadamard-bench`: GPU time of the transforms one Bonsai token needs
+/// at batch 1 — per layer the four rotated activations (5,120, 6,144,
+/// 5,120, 17,408) over 64 layers plus the embedding inverse and the
+/// output-head input — as 258 dispatches in one command buffer, best and
+/// mean of five after two warm-ups; and the time per 1,024-block from a
+/// 17,408-wide, 64-row dispatch. What the separate kernel costs a token,
+/// against which any fusion is judged.
+fn hadamardBench(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const data = try b.create(17408 * 64 * 4);
+    for (data.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
+    const signs = try b.create(17408 * 4);
+    for (signs.floats(), 0..) |*s, i| s.* = if (i % 3 == 0) -1 else 1;
+    const rounds = 5;
+    var best: f64 = 1e9;
+    var total: f64 = 0;
+    for (0..rounds + 2) |i| {
+        const before = b.gpuSeconds();
+        try b.begin();
+        try b.hadamard(data, signs, 5120, 1, 5120, true);
+        for (0..64) |_| {
+            for ([_]usize{ 5120, 6144, 5120, 17408 }) |width| try b.hadamard(data, signs, width, 1, width, false);
+        }
+        try b.hadamard(data, signs, 5120, 1, 5120, false);
+        try b.commit();
+        const ms = (b.gpuSeconds() - before) * 1e3;
+        if (i < 2) continue;
+        best = @min(best, ms);
+        total += ms;
+    }
+    var block_best: f64 = 1e9;
+    for (0..rounds + 2) |i| {
+        const before = b.gpuSeconds();
+        try b.begin();
+        for (0..8) |_| try b.hadamard(data, signs, 17408, 64, 17408, false);
+        try b.commit();
+        const us = (b.gpuSeconds() - before) * 1e6 / (8 * 64 * 17);
+        if (i < 2) continue;
+        block_best = @min(block_best, us);
+    }
+    std.debug.print("hadamard: one token's 258 transforms (64 x {{5120, 6144, 5120, 17408}} + 2 x 5120, 2,197,504 elements) best {d:.3} ms, mean {d:.3} ms over {d} command buffers; {d:.3} us per 1,024-block in a 64-row 17,408-wide dispatch\n", .{ best, total / rounds, rounds, block_best });
+}
+
+/// The Hadamard transform against `cpu.hadamard` on the model's three widths
+/// over strided rows, forward and inverse, and the round trip; F32
+/// butterflies against the F64 reference within rounding.
+fn checkHadamard(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    var prng = std.Random.DefaultPrng.init(0x4ada);
+    const random = prng.random();
+    const rows: usize = 3;
+    var worst: f64 = 0;
+    for ([_]usize{ 5120, 6144, 17408 }) |width| {
+        const stride = width + 64;
+        const signs = try alloc.alloc(f32, width);
+        defer alloc.free(signs);
+        for (signs) |*s| s.* = if (random.boolean()) 1 else -1;
+        const original = try alloc.alloc(f32, rows * stride);
+        defer alloc.free(original);
+        for (original) |*x| x.* = random.float(f32) * 4 - 2;
+        const expected = try alloc.dupe(f32, original);
+        defer alloc.free(expected);
+        for (0..rows) |r| try inference.cpu.hadamard.forward(expected[r * stride ..][0..width], signs, Backend.hadamard_block);
+        const data = try upload(b, original);
+        const sign_buffer = try upload(b, signs);
+        try b.begin();
+        try b.hadamard(data, sign_buffer, width, rows, stride, false);
+        try b.commit();
+        for (0..rows) |r| for (0..stride) |c| {
+            const got = data.floats()[r * stride + c];
+            const want = expected[r * stride + c];
+            // Ten F32 butterfly stages over values up to 2 in magnitude, against F64.
+            if (c < width) worst = @max(worst, @abs(@as(f64, got) - want));
+            try expectClose("hadamard forward", got, want, 3e-5);
+        };
+        try b.begin();
+        try b.hadamard(data, sign_buffer, width, rows, stride, true);
+        try b.commit();
+        for (data.floats(), original) |got, want| try expectClose("hadamard round trip", got, want, 3e-5);
+        // The inverse alone against the CPU (the embedding path).
+        @memcpy(data.floats(), original);
+        for (0..rows) |r| try inference.cpu.hadamard.inverse(expected[r * stride ..][0..width], signs, Backend.hadamard_block);
+        @memcpy(expected[0..], original);
+        for (0..rows) |r| try inference.cpu.hadamard.inverse(expected[r * stride ..][0..width], signs, Backend.hadamard_block);
+        try b.begin();
+        try b.hadamard(data, sign_buffer, width, rows, stride, true);
+        try b.commit();
+        for (data.floats(), expected) |got, want| try expectClose("hadamard inverse", got, want, 3e-5);
+        if (b.hadamard(data, sign_buffer, width - 64, rows, stride, false)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.hadamard(data.slice(4, data.len - 4), sign_buffer, width, rows, stride, false)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    }
+    std.debug.print("Hadamard transform vs cpu.hadamard on 5,120 / 6,144 / 17,408 over strided rows, forward, inverse, and the round trip: max abs {e:.3} (bound 3e-5)\n", .{worst});
+}
+
 fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     var prng = std.Random.DefaultPrng.init(0x6e44a);
     const random = prng.random();
@@ -1045,9 +1143,11 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-bench")) return matvecBench(alloc, if (args.len > 2) args[2] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matmul-bench")) return matmulBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--hadamard-bench")) return hadamardBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len != 1) return error.UnknownOption;
     try checkSegments(alloc);
+    try checkHadamard(alloc);
 
     // 1. Every quantized fixture column through the GPU matvec, exact. The
     // backend is recreated per fixture file to exercise object cleanup.
@@ -2227,5 +2327,5 @@ pub fn main(init: std.process.Init) !void {
         if (p.command_buffers != 0) return error.ProfileCountedEmptyPass;
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
 }

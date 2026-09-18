@@ -75,6 +75,9 @@ pub fn build(b: *std.Build) void {
     matmul_bench.addArg("--matmul-bench");
     if (b.args) |args| matmul_bench.addArgs(args);
     b.step("bench-matmul", "Throughput of the batched prefill matmul on model shapes (-Dmetal=true)").dependOn(&matmul_bench.step);
+    const hadamard_bench = b.addRunArtifact(inference.artifact("metal-check"));
+    hadamard_bench.addArg("--hadamard-bench");
+    b.step("bench-hadamard", "GPU time of one token's Hadamard transforms on the Bonsai schedule (-Dmetal=true)").dependOn(&hadamard_bench.step);
     const experts_bench = b.addRunArtifact(inference.artifact("metal-check"));
     experts_bench.addArg("--experts-bench");
     if (b.args) |args| experts_bench.addArgs(args);

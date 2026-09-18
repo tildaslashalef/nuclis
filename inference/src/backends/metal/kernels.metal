@@ -1102,6 +1102,47 @@ kernel void nu_embed(device const uchar * weights [[buffer(0)]],
 }
 
 // ---------------------------------------------------------------------------
+// The activation side of a folded Hadamard rotation (cpu/hadamard.zig,
+// docs/reference/bonsai.md): per block of 1,024 consecutive elements,
+// forward x = H (s ⊙ x) and inverse x = s ⊙ (H x), H the normalized
+// Sylvester Walsh-Hadamard matrix (scale 1/32 exactly). One 256-thread group
+// per block of one row; each thread owns four consecutive values, does the
+// first two butterfly stages in registers and the other eight through
+// threadgroup memory, two pairs per stage. The signs are the width's vector.
+struct HadamardParams { uint width; uint stride; uint rows; uint blocks; uint inverse; };
+#define NU_HADAMARD_BLOCK 1024
+kernel void nu_hadamard(device float * data [[buffer(0)]],
+                        device const float * signs [[buffer(1)]],
+                        constant HadamardParams & p [[buffer(7)]],
+                        uint group [[threadgroup_position_in_grid]],
+                        uint tid [[thread_index_in_threadgroup]]) {
+    threadgroup float v[NU_HADAMARD_BLOCK];
+    const uint row = group / p.blocks, block = group % p.blocks;
+    if (row >= p.rows) return;
+    device float * x = data + ulong(row) * p.stride + block * NU_HADAMARD_BLOCK;
+    device const float * s = signs + block * NU_HADAMARD_BLOCK;
+    const uint i = tid * 4;
+    float4 a = *(device float4 *)(x + i);
+    if (!p.inverse) a *= *(device const float4 *)(s + i);
+    float4 b = float4(a.x + a.y, a.x - a.y, a.z + a.w, a.z - a.w);
+    a = float4(b.x + b.z, b.y + b.w, b.x - b.z, b.y - b.w);
+    v[i] = a.x; v[i + 1] = a.y; v[i + 2] = a.z; v[i + 3] = a.w;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint span = 4; span < NU_HADAMARD_BLOCK; span *= 2) {
+        for (uint j = tid; j < NU_HADAMARD_BLOCK / 2; j += 256) {
+            uint lo = (j / span) * 2 * span + (j % span), hi = lo + span;
+            float u = v[lo], w = v[hi];
+            v[lo] = u + w;
+            v[hi] = u - w;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float4 out = float4(v[i], v[i + 1], v[i + 2], v[i + 3]) * (1.0f / 32.0f);
+    if (p.inverse) out *= *(device const float4 *)(s + i);
+    *(device float4 *)(x + i) = out;
+}
+
+// ---------------------------------------------------------------------------
 // RMSNorm with learned weight: y = x * rsqrt(mean(x^2) + eps) * w, optionally
 // multiplied by silu(multiplier) (flags & 1). One 256-thread group per row.
 struct NormParams { uint width; uint in_stride; uint out_stride; uint mult_stride; float eps; uint flags; };

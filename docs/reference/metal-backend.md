@@ -489,6 +489,40 @@ PTQ1_0 9.69 / 4,711 and 10.78 / 4,234, Q4_0 in the same run 9.66 / 4,724
 and 10.05 / 4,540: the prefill tiles are compute-bound and the ternary
 tiles match the set.
 
+### The Hadamard transform kernel (KERN-10 session 2, 2026-09-18)
+
+`nu_hadamard` is the activation side of the folded rotation
+(`cpu.hadamard`, [bonsai.md § Rotation](bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it)):
+in place over `rows` rows of `width` floats at a stride, per 1,024-block,
+forward `x = H (signs ⊙ x)` or inverse `x = signs ⊙ (H x)`, scale 1/32
+exactly. One 256-thread group per block of one row; each thread owns four
+consecutive values, does the first two butterfly stages in registers and
+the other eight through 4 KB of threadgroup memory, two pairs per stage
+with a barrier between stages. `Backend.hadamard(data, signs, width,
+rows, stride, inverse)` requires a float4-aligned data and sign buffer
+and a width that is a multiple of the block. `metal-check` compares it
+with `cpu.hadamard` (F64 butterflies) on 5,120 / 6,144 / 17,408 over
+strided rows, forward, inverse alone, and the round trip: max abs
+7.2e-7 (bound 3e-5).
+
+`make bench-hadamard` (`metal-check --hadamard-bench`) issues one
+Bonsai token's transforms at batch 1 — per layer the four rotated
+activations (5,120, 6,144, 5,120, 17,408) over 64 layers, plus the
+embedding inverse and the output-head input: 258 dispatches, 2,197,504
+elements — in one command buffer. 2026-09-18, M4 Pro, ReleaseSafe, best
+/ mean of five: **1.34 / 2.20 ms per token**, against 0.051 µs per
+1,024-block inside a 64-row 17,408-wide dispatch (0.11 ms of arithmetic
+for the whole token). The cost is launch and dependency, about 5 µs per
+dispatch, and at the ternary matvecs' rate it is 2–3 % of a token. The
+fusion the plan asked to measure — the sign flip and transform inside
+the matvec's input load — is decided by that arithmetic: every SIMD
+group of a matvec would recompute its block's transform (thousands of
+times per projection against once), so it is not attempted. What a
+fusion can save is launches, by folding the transform into the norm
+that precedes two of the four activations per layer; whether the 2–3 %
+justifies it is read from MODL-17's per-kernel profile of the whole
+token, not from this number.
+
 ### Gathered expert kernels (KERN-09)
 
 A mixture-of-experts layer stores each expert projection as a 3-D tensor

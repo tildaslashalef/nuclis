@@ -19,7 +19,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
-        test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-experts \
+        test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-hadamard bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
         compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
@@ -120,6 +120,9 @@ bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, 
 
 bench-matmul: ## Throughput of the batched prefill matmul on model shapes, 256 tokens or ARGS=<tokens> (no model)
 	$(ZIG) build bench-matmul $(METAL) $(if $(ARGS),-- $(ARGS))
+
+bench-hadamard: ## GPU time of one token's 258 Hadamard transforms on the Bonsai schedule, and per block (no model; docs/reference/metal-backend.md)
+	$(ZIG) build bench-hadamard $(METAL)
 
 bench-experts: ## GB/s of the gathered expert kernels on the 26B-A4B shape, 8 of 128 experts; prefill tiles over ARGS tokens (no model)
 	$(ZIG) build bench-experts $(METAL) $(if $(ARGS),-- $(ARGS))

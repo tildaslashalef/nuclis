@@ -74,6 +74,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-10 | Gemma 4 26B-A4B: catalogue verdict, acceptance record, agent check | 2026-09-18 |
 | MODL-15 | Bonsai 2 27B accepted ahead of Muse: artifact pinned, facts read, three units planned | 2026-09-18 |
 | MODL-16 | Bonsai 2 27B: oracle, facts, ternary encodings, Hadamard transform, CPU reference | 2026-09-18 |
+| KERN-10 | Ternary matvec and matmul tiles, the Walsh-Hadamard kernel | 2026-09-18 |
 | APPS-11 | `model pull`: a verified file whose encoding this build does not store keeps its sidecar | 2026-09-18 |
 | REPO-05 | README for a public repository: project status, contributions, disclosure | 2026-09-18 |
 
@@ -2319,4 +2320,55 @@ PTQ1_0 is decoded but no file of it is pulled or traced. The fork's
 `llama-completion --jinja` aborts on the Bonsai template's start-up
 self-test (its server renders it). The CPU rotation copies each rotated
 activation into scratch; the reference favours clarity over the copy.
+
+### KERN-10 — Ternary matvec and matmul tiles, the Walsh-Hadamard kernel (2026-09-18)
+
+**Outcome.** The Metal backend executes Bonsai 2 27B's three encodings
+and its rotation. `dequant.metal` decodes PQ2_0, PTQ1_0, and BF16 in the
+CPU decoder's order; `nu_matvec_pq2_0` / `nu_matvec_ptq1_0` keep the
+set's geometry with four lanes per 128-value block and uniform lane work
+(a PTQ1_0 quarter is four bytes of the 16-byte run, two of the 8-byte
+run, one digit of the tail, in the digit-major layout's strided order),
+factoring `w = d · t` as `d · (Σt·x − Σx)`; two-bit fields are masked
+four bytes at once and paired with the inputs by a free register
+re-labelling, trits come out of 16-bit slots two bytes at a time. The
+prefill tiles `nu_matmul_pq2_0` / `nu_matmul_ptq1_0` and their `_32`
+forms decode eight segments per block with the generic expression.
+`specializedMatvec` / `specializedMatmul` accept any whole-block row at
+two-byte (PQ2_0) and four-byte (PTQ1_0) alignment. `nu_hadamard` is the
+signed blockwise transform, forward and inverse, one 256-thread group per
+1,024-block with two register stages and eight threadgroup stages;
+`Backend.hadamard` validates alignment and width. `make bench-hadamard`
+is the per-token cost of the separate kernel.
+
+**Evidence.** `test-metal`: the ternary fixture rows decoded exactly
+through the matvec (one-hot columns) and the embedding kernel; randomized
+1,280 / 5,120 / 17,408-column rows through the specialized and generic
+paths against the F64 CPU; the half tiles against the generic F32 tile
+within the set's bound; the selection rules; `nu_hadamard` against
+`cpu.hadamard` on the three rotated widths over strided rows, forward,
+inverse, and round trip at max abs 7.2e-7. `make bench-kernels` (output
+head, best GB/s): PQ2_0 118.7, PTQ1_0 88.5, Q4_0 230.7 in the same run —
+**the design's 200 GB/s target is not met**: the kernels are at the
+set's multiply rate (448 / 405 G values/s against Q4_0's 410) and a
+ternary byte carries twice the values, so the byte rate halves; the
+extraction rewrite took PQ2_0 from 105 to 119. `make bench-matmul`
+(256 tokens): the ternary tiles at Q4_0's GFLOP/s (4,971 / 4,711 against
+4,724). `make bench-hadamard`: 1.34 ms best, 2.20 ms mean per token for
+258 dispatches, 0.051 µs per block of arithmetic — launch overhead, 2–3 %
+of a projected token; fusion into the matvec input load is ruled out by
+arithmetic (each SIMD group would recompute the block), a norm-fused
+variant is left to MODL-17's profile. `make check`.
+
+**Files.** `inference/src/backends/metal/dequant.metal`, `kernels.metal`,
+`root.zig`, `inference/metal-check.zig`, `build.zig`, `Makefile`,
+`docs/reference/metal-backend.md`, `docs/reference/bonsai.md`,
+`docs/development.md`.
+
+**Remaining.** The Metal plan does not yet dispatch the transform or run
+a rotated binding (MODL-17). A faster ternary matvec needs different
+arithmetic (packed integer products, decoded-value sharing across
+inputs) and is judged against MODL-17's model rate; PTQ1_0 decodes 25 %
+slower per byte than PQ2_0 here. No BF16 matvec beyond the generic path
+(96 rows of 5,120 × 48 per token: negligible).
 

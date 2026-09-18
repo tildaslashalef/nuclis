@@ -85,7 +85,9 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   compare-bonsai-cpu` (the Qwen CPU reference on `bonsai-2-27b`'s
   ternary, Hadamard-rotated file against the PrismML fork's traces,
   `BONSAI_MODEL`; [bonsai.md](reference/bonsai.md)) when the ternary
-  decoders, the transform, or the Qwen runtime changed, and
+  decoders, the transform, or the Qwen runtime changed, `make test-metal`
+  (with `bench-kernels`, `bench-matmul`, and `bench-hadamard` for the
+  numbers in metal-backend.md) when a kernel changed, and
   `make test-generation-gemma4-metal`
   (the generation check on the Gemma plan; `-qat-metal` runs it on the QAT
   entry, whose Q4_0 path amplifies the chunk rounding, `-26b-a4b-metal` on

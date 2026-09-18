@@ -61,7 +61,7 @@ const kernel_names = [_][:0]const u8{
     "nu_scale",             "nu_add_scale",           "nu_softcap",             "nu_attention_decode_w", "nu_attention_decode_wh", "nu_matvec_q4_0",
     "nu_matmul_q4_0",       "nu_matmul_q4_0_32",      "nu_matvec_experts",      "nu_route",              "nu_combine_experts",     "nu_gelu_mul_rows",
     "nu_expert_lists",      "nu_matmul_experts",      "nu_matmul_experts_q4_0", "nu_matvec_pq2_0",       "nu_matvec_ptq1_0",       "nu_matmul_pq2_0",
-    "nu_matmul_ptq1_0",     "nu_matmul_pq2_0_32",     "nu_matmul_ptq1_0_32",
+    "nu_matmul_ptq1_0",     "nu_matmul_pq2_0_32",     "nu_matmul_ptq1_0_32",    "nu_hadamard",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -139,6 +139,7 @@ pub const Kernel = enum(u32) {
     matmul_ptq1_0,
     matmul_pq2_0_32,
     matmul_ptq1_0_32,
+    hadamard,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -754,6 +755,21 @@ pub const Backend = struct {
         }
         const p: NormParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .mult_stride = @intCast(mult_stride), .eps = spec.eps, .flags = flags };
         try self.dispatch(.rmsnorm, &.{ input, weight, output, mult }, p, @intCast(spec.rows), 256, .{});
+    }
+    pub const HadamardParams = extern struct { width: u32, stride: u32, rows: u32, blocks: u32, inverse: u32 };
+    /// The block the transform is written for (`cpu.hadamard`'s contract).
+    pub const hadamard_block = 1024;
+    /// In place over `rows` rows of `width` floats at `stride`: per 1,024-block,
+    /// forward `x = H (signs ⊙ x)`, inverse `x = signs ⊙ (H x)`
+    /// (`cpu.hadamard.forward` / `.inverse`). `signs` holds `width` floats of
+    /// ±1; data and signs must be float4-aligned, `width` a multiple of the block.
+    pub fn hadamard(self: *Backend, data: Buffer, signs: Buffer, width: usize, rows: usize, stride: usize, inverse: bool) !void {
+        if (rows == 0 or width == 0 or width % hadamard_block != 0 or stride < width or stride % 4 != 0) return error.InvalidShape;
+        if (data.offset % 16 != 0 or signs.offset % 16 != 0 or signs.len < width * 4 or data.len < ((rows - 1) * stride + width) * 4) return error.InvalidShape;
+        const blocks = width / hadamard_block;
+        if (rows * blocks > std.math.maxInt(u32)) return error.InvalidShape;
+        const p: HadamardParams = .{ .width = @intCast(width), .stride = @intCast(stride), .rows = @intCast(rows), .blocks = @intCast(blocks), .inverse = @intFromBool(inverse) };
+        try self.dispatch(.hadamard, &.{ data, signs }, p, @intCast(rows * blocks), 256, .{});
     }
     pub const L2Params = extern struct { width: u32, stride: u32, eps: f32, rows: u32, heads: u32, row_stride: u32 };
     pub fn l2Norm(self: *Backend, data: Buffer, rows: usize, width: usize, stride: usize, eps: f32) !void {
