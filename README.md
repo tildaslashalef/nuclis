@@ -2,8 +2,20 @@
 
 A local inference engine and evaluation CLI for large language models in
 GGUF format, written in Zig with a Metal backend for Apple Silicon. The
-first target is Qwen3.8-27B on an M4 Pro with 48 GB of unified memory; a
-second architecture, Gemma 4 12B, runs through the same adapter seam.
+first target is Qwen3.8-27B on an M4 Pro with 48 GB of unified memory;
+Gemma 4, in its 12B and 26B-A4B mixture-of-experts configurations, runs
+through the same adapter seam.
+
+## Project status
+
+nuclis is an experimental project, built in my free time to learn two
+things at once: how an inference stack works, from the GGUF bytes to the
+sampled token, and Zig. It is not production software. It has run on one
+machine, the version is 0.x and breaking changes arrive without notice,
+and understanding comes before features: every kernel is proven against
+a pinned reference before it is made fast, and the documents record what
+was measured, not what was intended. Read it as a worked notebook with a
+working engine inside.
 
 ## What it does
 
@@ -20,7 +32,7 @@ second architecture, Gemma 4 12B, runs through the same adapter seam.
   context, sampling, and a registry of named models with per-model
   overrides.
 
-## Status
+## Results so far
 
 All numbers in this repository were measured on one machine: a Mac with
 an Apple M4 Pro (12 CPU cores, 16 GPU cores), 48 GiB of unified memory,
@@ -156,6 +168,32 @@ inputs and outputs, and numerical correctness before optimization.
 External implementations are references and validation oracles, never
 sources to copy. Third-party material in the tree is listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Contributions
+
+Issues are welcome: a bug with the command and artifact that reproduce
+it, or a measurement from hardware other than the machine in *Results so
+far*,
+is useful. Pull requests are not being reviewed for now. The project is
+a learning exercise whose plan is set by what I want to understand next,
+and I do not have the time to review contributions properly. Fork
+freely; the licence allows it.
+
+## Disclosure
+
+This code is written with heavy assistance from AI coding agents, with
+me directing what gets built, deciding what counts as evidence, and
+keeping or discarding the result. The instructions those agents work
+from are committed in [AGENTS.md](AGENTS.md), so the process is
+inspectable, and every number in the documentation was measured on the
+machine named above, never estimated by anyone or anything. If software
+built this way is not for you, this repository is not for you.
+
+None of it would exist without [llama.cpp](https://github.com/ggml-org/llama.cpp)
+and GGML: the GGUF format is theirs, and a pinned build of llama.cpp is
+the oracle every layer and kernel here is checked against. nuclis copies
+no code from them; the third-party material the tree does contain is
+listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Licence
 

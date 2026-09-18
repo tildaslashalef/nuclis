@@ -74,6 +74,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-10 | Gemma 4 26B-A4B: catalogue verdict, acceptance record, agent check | 2026-09-18 |
 | MODL-15 | Bonsai 2 27B accepted ahead of Muse: artifact pinned, facts read, three units planned | 2026-09-18 |
 | APPS-11 | `model pull`: a verified file whose encoding this build does not store keeps its sidecar | 2026-09-18 |
+| REPO-05 | README for a public repository: project status, contributions, disclosure | 2026-09-18 |
 
 ## Context
 
@@ -2209,3 +2210,34 @@ pulled the projector, and `model ls` shows both *present*.
 **Files.** `src/model.zig`.
 
 **Remaining.** None.
+
+### REPO-05 — README for a public repository: project status, contributions, disclosure (2026-09-18)
+
+**Outcome.** Three sections for the repository going public, decided
+2026-09-18. *Project status* states what this is: an experimental,
+free-time project for learning the inference stack and Zig together, not
+production software, one machine, 0.x with breaking changes, understanding
+before features. *Contributions* states the policy plainly: issues with a
+reproduction or a measurement from other hardware are welcome, pull
+requests are not being reviewed, forks are encouraged; no `CONTRIBUTING.md`,
+because a contribution process nobody runs would be a false promise.
+*Disclosure* says the code is written with heavy assistance from AI
+coding agents under human direction, points at the committed `AGENTS.md`
+as the inspectable process, states that every number was measured, and
+acknowledges llama.cpp and GGML as the format's origin and the oracle
+every kernel is proven against, with no code copied and the third-party
+notices as the record. The wording is this project's own (its rule
+against copying from references covers prose about the project too). The
+former *Status* section, the measured results, is *Results so far*, so
+the two headings no longer collide; the intro names all three families.
+
+**Evidence.** Documentation only: links checked, the licence file and the
+notices present. Absolute paths to the developer's toolchain remain in
+`docs/development.md` and `docs/architecture.md` and the benchmark
+records name the model path under the home directory; environment facts,
+left as recorded.
+
+**Files.** `README.md`.
+
+**Remaining.** The GitHub repository's description and topics are set
+outside the tree; the project page named in *Name* is not live.
