@@ -60,7 +60,8 @@ const kernel_names = [_][:0]const u8{
     "nu_attention_chunk_h", "nu_pack_half",           "nu_attention_decode",    "nu_attention_decode_h", "nu_attention_merge",     "nu_gelu_mul",
     "nu_scale",             "nu_add_scale",           "nu_softcap",             "nu_attention_decode_w", "nu_attention_decode_wh", "nu_matvec_q4_0",
     "nu_matmul_q4_0",       "nu_matmul_q4_0_32",      "nu_matvec_experts",      "nu_route",              "nu_combine_experts",     "nu_gelu_mul_rows",
-    "nu_expert_lists",      "nu_matmul_experts",      "nu_matmul_experts_q4_0",
+    "nu_expert_lists",      "nu_matmul_experts",      "nu_matmul_experts_q4_0", "nu_matvec_pq2_0",       "nu_matvec_ptq1_0",       "nu_matmul_pq2_0",
+    "nu_matmul_ptq1_0",     "nu_matmul_pq2_0_32",     "nu_matmul_ptq1_0_32",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -132,6 +133,12 @@ pub const Kernel = enum(u32) {
     expert_lists,
     matmul_experts,
     matmul_experts_q4_0,
+    matvec_pq2_0,
+    matvec_ptq1_0,
+    matmul_pq2_0,
+    matmul_ptq1_0,
+    matmul_pq2_0_32,
+    matmul_ptq1_0_32,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -381,7 +388,7 @@ pub const Backend = struct {
     pub fn matmulGeometry(kernel: Kernel) MatmulGeometry {
         return switch (kernel) {
             .matmul => .{ .rows = 32, .tokens = 32, .half = false },
-            .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0 => .{ .rows = 64, .tokens = 64, .half = true },
+            .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
             else => .{ .rows = 32, .tokens = 32, .half = true },
         };
     }
@@ -420,7 +427,8 @@ pub const Backend = struct {
         const alignment: usize = switch (encoding) {
             12, 13 => 16,
             23 => 8,
-            2, 11, 14, 21 => 2,
+            143 => 4,
+            2, 11, 14, 21, 142 => 2,
             else => return false,
         };
         return weight_offset % alignment == 0 and stride % alignment == 0;
@@ -428,11 +436,15 @@ pub const Backend = struct {
     /// Picks a specialized matvec when its vector loads are aligned
     /// (`blockAligned`) and the input vector is float4-aligned. Otherwise
     /// `null`: generic path. The K-quant kernels walk 256-value strides;
-    /// the Q4_0 kernel walks 32-value blocks, so any Q4_0 row serves.
+    /// the Q4_0 kernel walks 32-value blocks and the ternary kernels
+    /// 128-value blocks (lanes past the last block idle), so any whole-block
+    /// row serves those three.
     pub fn specializedMatvec(encoding: u32, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
         if (input_offset % 16 != 0 or !blockAligned(encoding, weight_offset, stride)) return null;
         return switch (encoding) {
             2 => .matvec_q4_0,
+            142 => .matvec_pq2_0,
+            143 => .matvec_ptq1_0,
             11 => .matvec_q3_k,
             21 => .matvec_iq3_s,
             12 => .matvec_q4_k,
@@ -450,6 +462,8 @@ pub const Backend = struct {
         if (!blockAligned(encoding, weight_offset, stride)) return null;
         if (tokens <= 32) return switch (encoding) {
             2 => .matmul_q4_0_32,
+            142 => .matmul_pq2_0_32,
+            143 => .matmul_ptq1_0_32,
             11 => .matmul_q3_k_32,
             21 => .matmul_iq3_s_32,
             12 => .matmul_q4_k_32,
@@ -460,6 +474,8 @@ pub const Backend = struct {
         };
         return switch (encoding) {
             2 => .matmul_q4_0,
+            142 => .matmul_pq2_0,
+            143 => .matmul_ptq1_0,
             11 => .matmul_q3_k,
             21 => .matmul_iq3_s,
             12 => .matmul_q4_k,

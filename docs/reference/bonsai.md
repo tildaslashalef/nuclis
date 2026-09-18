@@ -261,7 +261,11 @@ same top three logits as the fork to three decimals (353: 11.505, 1204:
 
 MODL-16 closed on 2026-09-18: the file validates and binds, the three
 encodings decode against the fork's fixtures, the CPU reference applies
-the rotation and matches the fork's traces. Metal (the ternary and BF16
-matvecs and tiles, the transform kernel) is KERN-10; the Metal plan,
-profile, catalogue, and acceptance are MODL-17. Until then
-`generate --backend metal` on the file returns `UnsupportedRotation`.
+the rotation and matches the fork's traces. KERN-10 session 1 (the same
+day) added the Metal decoders, matvecs, and tiles for the three encodings
+([metal-backend.md § Ternary](metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18):
+PQ2_0 119 GB/s, PTQ1_0 88 GB/s on the output head — at the kernel set's
+multiply rate, half the Q4_0 byte rate by density); session 2 is the
+transform kernel. The Metal plan, profile, catalogue, and acceptance are
+MODL-17. Until then `generate --backend metal` on the file returns
+`UnsupportedRotation`.

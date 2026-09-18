@@ -431,6 +431,64 @@ values with one scale and no group coefficients to unpack: 0.9 ns per
 generic kernel on Q4_0 is also the fastest generic case for the same
 reason. In the QAT Gemma file every matrix takes this kernel.
 
+### Ternary matvecs and tiles (KERN-10, 2026-09-18)
+
+Bonsai 2 27B's PQ2_0 (id 142, 34 B per 128 values) and PTQ1_0 (id 143,
+28 B; [bonsai.md](bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc))
+got `nu_dequant_pq2_0` / `nu_dequant_ptq1_0` (and `nu_dequant_bf16` for
+the file's `ssm_alpha` / `ssm_beta` rows) in the generic library,
+`nu_matvec_pq2_0` / `nu_matvec_ptq1_0`, and the `nu_tile_*` decoders
+behind `nu_matmul_pq2_0`, `nu_matmul_ptq1_0`, and their `_32`
+instantiations. The matvecs keep the set's geometry (four SIMD groups of
+four rows) with **four lanes per 128-value block, eight blocks per
+iteration**, every lane running the same code on its quarter so the
+digit-major PTQ1_0 layout costs no divergence: a PQ2_0 quarter is 32
+consecutive values (eight bytes, one `packed_ushort4` at two-byte
+alignment); a PTQ1_0 quarter is four bytes of the 16-byte run, two of the
+8-byte run, and one digit of the two tail bytes (one `uint` at four-byte
+alignment, two `ushort`), 20 + 10 + 2 values in the strided order the
+layout gives them. `w = d · t` factors as `d · (Σ t·x − Σ x)` with the raw
+code as `t`, exact for a one-hot input, which is what keeps the fixture
+columns exact. Two-bit fields are masked four bytes at once
+(`(w >> 2k) & 0x03030303`: elements k, 4+k, 8+k, 12+k) and paired with the
+inputs in that strided order — a free re-labelling of registers — which
+took PQ2_0 from 105 to 119 GB/s; trits come out of 16-bit slots two
+bytes at a time (`((w & 0x00ff00ff) · 3ⁿ) & 0x00ff00ff`, then bits 8–9 of
+`q · 3`). `specializedMatvec` accepts any whole-block row at the two
+alignments; the tiles decode eight segments per block with the generic
+expression in the generic order (bit-identical to the F32 tile before the
+half rounding, as the others).
+
+2026-09-18, the same micro-benchmark (Q4_0 re-measured in the run: 230.3
+/ 211.2 / 230.7 / 207.0), best GB/s of weight bytes:
+
+| Encoding | 69,632×5,120 | 20,480×17,408 | 248,320×5,120 | 5,120×17,408 | generic kernel |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| PQ2_0 | 118.5 | 101.1 | 118.7 | 96.9 | 47.6–49.4 |
+| PTQ1_0 | 88.0 | 87.6 | 88.5 | 83.3 | 29.6–30.3 |
+
+**The bytes are not the bound.** The design's target was the Q4_0 set's
+200 GB/s; these kernels reach about half. In values per second they
+are at the set's ceiling — PQ2_0 448 G values/s on the output head,
+PTQ1_0 405, Q4_0 410 — and a ternary byte carries twice the values of
+a Q4_0 byte (3.8 against 1.8), so at the same multiply rate the byte
+rate halves. The per-value cost of this design (a field mask shared by
+four values, one integer-to-float conversion, one FMA) is the floor
+the structure has; going past it needs different arithmetic (packed
+integer products, or sharing one decoded value across several inputs),
+which is a follow-up measured against the model rate MODL-17 records,
+not against this table. PTQ1_0 pays its five-digit extraction: 12 % fewer
+bytes than PQ2_0 at 25 % fewer bytes per second, so it decodes slower;
+whether the catalogue moves to it is decided by MODL-17's measurement.
+At batch 1 the transform of the activations (KERN-10 session 2) adds
+to the token, not to these numbers.
+
+`make bench-matmul` (256 tokens), best ms and the GFLOP/s of the tile:
+PQ2_0 9.18 ms / 4,971 on 17,408×5,120 and 9.73 / 4,689 on 5,120×17,408,
+PTQ1_0 9.69 / 4,711 and 10.78 / 4,234, Q4_0 in the same run 9.66 / 4,724
+and 10.05 / 4,540: the prefill tiles are compute-bound and the ternary
+tiles match the set.
+
 ### Gathered expert kernels (KERN-09)
 
 A mixture-of-experts layer stores each expert projection as a 3-D tensor

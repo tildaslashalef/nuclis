@@ -6,8 +6,9 @@
 // see THIRD_PARTY_NOTICES.md for the provenance of the two lookup tables.
 //
 // Block sizes in bytes / elements per block:
-//   F32 4/1  F16 2/1  Q8_0 34/32  IQ4_NL 18/32  Q4_0 18/32
+//   F32 4/1  F16 2/1  BF16 2/1  Q8_0 34/32  IQ4_NL 18/32  Q4_0 18/32
 //   Q3_K 110/256  Q4_K 144/256  Q5_K 176/256  Q6_K 210/256  IQ3_S 110/256  IQ4_XS 136/256
+//   PQ2_0 34/128  PTQ1_0 28/128 (the PrismML fork's ternary blocks; docs/reference/bonsai.md)
 
 inline float nu_half(device const uchar * b) {
     ushort bits = ushort(b[0]) | (ushort(b[1]) << 8);
@@ -21,6 +22,44 @@ inline void nu_dequant_f32(device const uchar * row, uint first, thread float * 
 inline void nu_dequant_f16(device const uchar * row, uint first, thread float * out) {
     device const half * x = (device const half *)row + first;
     for (uint j = 0; j < 16; ++j) out[j] = float(x[j]);
+}
+// BF16: the high half of a single, widened without rounding.
+inline void nu_dequant_bf16(device const uchar * row, uint first, thread float * out) {
+    device const ushort * x = (device const ushort *)row + first;
+    for (uint j = 0; j < 16; ++j) out[j] = as_type<float>(uint(x[j]) << 16);
+}
+
+// PQ2_0: half scale, then 32 bytes of four two-bit codes each, low bits
+// first; the value is d * (q - 1).
+inline void nu_dequant_pq2_0(device const uchar * b, uint first, thread float * out) {
+    float d = nu_half(b);
+    for (uint j = 0; j < 16; ++j) {
+        uint i = first + j;
+        out[j] = d * float(int((b[2 + i / 4] >> (2 * (i % 4))) & 3) - 1);
+    }
+}
+// PTQ1_0: 24 base-3 bytes (five trits each, the leading digit in the top
+// bits) in runs of 16 and 8 emitted digit-major, two four-trit tail bytes,
+// then the half scale; digit n of a byte is ((byte * 3^n mod 256) * 3) >> 8
+// and the value d * (digit - 1). Element i of the block: run 1 holds
+// i < 80 as digit i / 16 of byte i % 16, run 2 holds 80 <= i < 120 as
+// digit (i - 80) / 8 of byte 16 + (i - 80) % 8, the tail 120 <= i as digit
+// (i - 120) / 2 of byte 24 + (i - 120) % 2.
+constant uint nu_pow3[5] = { 1, 3, 9, 27, 81 };
+inline float nu_trit(uint byte, uint digit) {
+    uint q = (byte * nu_pow3[digit]) & 255u;
+    return float(int((q * 3u) >> 8) - 1);
+}
+inline void nu_dequant_ptq1_0(device const uchar * b, uint first, thread float * out) {
+    float d = nu_half(b + 26);
+    for (uint j = 0; j < 16; ++j) {
+        uint i = first + j;
+        uint byte, digit;
+        if (i < 80) { byte = i % 16; digit = i / 16; }
+        else if (i < 120) { byte = 16 + (i - 80) % 8; digit = (i - 80) / 8; }
+        else { byte = 24 + (i - 120) % 2; digit = (i - 120) / 2; }
+        out[j] = d * nu_trit(b[byte], digit);
+    }
 }
 
 // Q8_0: half scale, then 32 signed bytes.
@@ -165,6 +204,8 @@ inline uint2 nu_block_geometry(uint encoding) {
         case 20: return uint2(18, 32);
         case 21: return uint2(110, 256);
         case 23: return uint2(136, 256);
+        case 142: return uint2(34, 128);
+        case 143: return uint2(28, 128);
         default: return uint2(0, 0);
     }
 }
@@ -174,6 +215,7 @@ inline void nu_segment(device const uchar * row, uint encoding, uint segment, th
     uint element = segment * 16;
     if (encoding == 0) { nu_dequant_f32(row, element, out); return; }
     if (encoding == 1) { nu_dequant_f16(row, element, out); return; }
+    if (encoding == 30) { nu_dequant_bf16(row, element, out); return; }
     uint2 g = nu_block_geometry(encoding);
     device const uchar * block = row + ulong(element / g.y) * g.x;
     uint first = element % g.y;
@@ -187,6 +229,8 @@ inline void nu_segment(device const uchar * row, uint encoding, uint segment, th
         case 20: nu_dequant_iq4_nl(block, first, out); break;
         case 21: nu_dequant_iq3_s(block, first, out); break;
         case 23: nu_dequant_iq4_xs(block, first, out); break;
+        case 142: nu_dequant_pq2_0(block, first, out); break;
+        case 143: nu_dequant_ptq1_0(block, first, out); break;
         default: for (uint j = 0; j < 16; ++j) out[j] = 0; break;
     }
 }

@@ -75,14 +75,15 @@ fn tiledMatrix(alloc: std.mem.Allocator, sample_bytes: []const u8, encoding: u32
 /// half operands of the matmul tiles. The CPU reference reads the same
 /// bytes, so the comparison stays exact. Positions are format facts
 /// (dequant.metal header): Q4_K/Q5_K d and dmin at 0/2, Q6_K d at 208,
-/// Q3_K d at 108, IQ3_S, IQ4_XS, and Q4_0 d at 0.
+/// Q3_K d at 108, IQ3_S, IQ4_XS, Q4_0, and PQ2_0 d at 0, PTQ1_0 d at 26.
 fn tameScales(region: []u8, encoding: u32) void {
     const layout = inference.encoding.layout(encoding) orelse return;
     const positions: []const usize = switch (encoding) {
         12, 13 => &.{ 0, 2 },
         14 => &.{208},
         11 => &.{108},
-        2, 21, 23 => &.{0},
+        143 => &.{26},
+        2, 21, 23, 142 => &.{0},
         else => return,
     };
     var offset: usize = 0;
@@ -116,6 +117,8 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
         .{ .id = 14, .fixture = "k-signed", .name = "Q6_K" },
         .{ .id = 23, .fixture = "iq", .name = "IQ4_XS" },
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
+        .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
+        .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
     };
     const rounds = 5; // measured command buffers
     // One weight buffer for every case: fresh multi-GB buffers made timings swing
@@ -130,7 +133,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(248320 * 4);
     std.debug.print("{s:<8} {s:<26} {s:>9} {s:>8} {s:>9} {s:>9}  rounds (GB/s)\n", .{ "encoding", "shape", "MB", "path", "best", "mean" });
-    inline for (.{ "k-affine", "k-signed", "iq", "simple" }) |fixture_name| {
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         for (encodings) |enc| {
@@ -201,6 +204,8 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
         .{ .id = 14, .fixture = "k-signed", .name = "Q6_K" },
         .{ .id = 23, .fixture = "iq", .name = "IQ4_XS" },
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
+        .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
+        .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
     };
     const rounds = 5;
     var max_bytes: usize = 0;
@@ -213,7 +218,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(tokens) * 17408 * 4);
     std.debug.print("{s:<8} {s:<24} {s:<11} {s:>8} {s:>9} {s:>10} {s:>8}  rounds (ms), {d} tokens\n", .{ "encoding", "shape", "tile", "MB", "best ms", "GFLOP/s", "tok/s*", tokens });
-    inline for (.{ "k-affine", "k-signed", "iq", "simple" }) |fixture_name| {
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         for (encodings) |enc| {
@@ -797,10 +802,10 @@ fn checkSegments(alloc: std.mem.Allocator) !void {
     const packed_output = try b.create(12 * rows * 4);
     var list: std.ArrayList(Backend.Segment) = .empty;
     defer list.deinit(alloc);
-    inline for (.{ "simple", "k-affine", "k-signed", "iq" }) |name| {
+    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
-        var seen: [64]bool = @splat(false);
+        var seen: [256]bool = @splat(false);
         for (fixtures.value.rows) |sample| {
             if (seen[sample.encoding]) continue;
             seen[sample.encoding] = true;
@@ -1046,7 +1051,7 @@ pub fn main(init: std.process.Init) !void {
 
     // 1. Every quantized fixture column through the GPU matvec, exact. The
     // backend is recreated per fixture file to exercise object cleanup.
-    inline for (.{ "simple", "k-affine", "k-signed", "iq" }) |name| {
+    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
         var backend = try openBackend(alloc);
         defer backend.deinit();
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
@@ -1109,13 +1114,13 @@ pub fn main(init: std.process.Init) !void {
             for (input) |*x| x.* = random.float(f32) * 2 - 1;
             const decoded = try alloc.alloc(f32, columns);
             defer alloc.free(decoded);
-            inline for (.{ "simple", "k-affine", "k-signed", "iq" }) |name| {
+            inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
                 const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
                 defer fixtures.deinit();
-                var seen: [64]bool = @splat(false);
+                var seen: [256]bool = @splat(false);
                 for (fixtures.value.rows) |sample| {
                     if (sample.encoding >= seen.len or seen[sample.encoding]) continue;
-                    if (columns % 256 != 0 and sample.encoding != 2) continue;
+                    if (columns % 256 != 0 and sample.encoding != 2) continue; // 704: Q4_0 alone
                     seen[sample.encoding] = true;
                     if (columns % 256 != 0 and Backend.specializedMatvec(sample.encoding, 0, columns / 32 * 18, 0) == null) return error.SpecializedPathNotSelected;
                     const region = try tiledMatrix(alloc, sample.bytes, sample.encoding, rows, columns);
@@ -1160,10 +1165,10 @@ pub fn main(init: std.process.Init) !void {
                 const generic_out = try b.create(padded * mm_rows * 4);
                 const decoded = try alloc.alloc(f32, columns);
                 defer alloc.free(decoded);
-                inline for (.{ "simple", "k-affine", "k-signed", "iq" }) |name| {
+                inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
                     const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
                     defer fixtures.deinit();
-                    var seen: [64]bool = @splat(false);
+                    var seen: [256]bool = @splat(false);
                     for (fixtures.value.rows) |sample| {
                         if (sample.encoding >= seen.len or seen[sample.encoding]) continue;
                         seen[sample.encoding] = true;
@@ -1251,9 +1256,13 @@ pub fn main(init: std.process.Init) !void {
             if (Backend.specializedMatvec(encoding, 0, 111, 0) != null) return error.MisalignedWeightsAccepted;
         }
         if (Backend.specializedMatvec(12, 8, 2880, 0) != null or Backend.specializedMatvec(23, 8, 2880, 0) == null or Backend.specializedMatvec(14, 2, 2880, 0) == null) return error.AlignmentRuleMismatch;
+        // Ternary: any whole-block row at two-byte (PQ2_0) or four-byte (PTQ1_0) alignment.
+        if (Backend.specializedMatvec(142, 0, 42 * 34, 0) == null or Backend.specializedMatvec(142, 2, 42 * 34, 0) == null or Backend.specializedMatvec(142, 1, 42 * 34, 0) != null) return error.AlignmentRuleMismatch;
+        if (Backend.specializedMatvec(143, 0, 42 * 28, 0) == null or Backend.specializedMatvec(143, 4, 42 * 28, 0) == null or Backend.specializedMatvec(143, 2, 42 * 28, 0) != null) return error.AlignmentRuleMismatch;
+        if (Backend.specializedMatmul(142, 0, 42 * 34, 64) == null or Backend.specializedMatmul(143, 0, 42 * 28, 20) == null or Backend.matmulGeometry(Backend.specializedMatmul(143, 0, 42 * 28, 20).?).tokens != 32) return error.AlignmentRuleMismatch;
         // Q4_0: both kernels take any whole-block row (a 42-block row here), at 2-byte alignment.
         if (Backend.specializedMatvec(2, 0, 756, 0) == null or Backend.specializedMatmul(2, 0, 756, 64) == null or Backend.specializedMatvec(2, 2, 2880, 0) == null) return error.AlignmentRuleMismatch;
-        for ([_]u32{ 0, 1, 8, 20 }) |encoding| if (Backend.specializedMatvec(encoding, 0, 4096, 0) != null or Backend.specializedMatmul(encoding, 0, 4096, 64) != null) return error.GenericEncodingSpecialized;
+        for ([_]u32{ 0, 1, 8, 20, 30 }) |encoding| if (Backend.specializedMatvec(encoding, 0, 4096, 0) != null or Backend.specializedMatmul(encoding, 0, 4096, 64) != null) return error.GenericEncodingSpecialized;
         // A misaligned weight slice still computes correctly through the fallback:
         // the same Q4_K matrix copied 8 bytes into a larger buffer.
         {
