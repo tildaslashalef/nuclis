@@ -1142,6 +1142,21 @@ kernel void nu_hadamard(device float * data [[buffer(0)]],
     *(device float4 *)(x + i) = out;
 }
 
+// A fixed permutation of the `groups` vectors of `width` inside every row:
+// dst[r][g] = src[r][map[g]]. One thread per element.
+struct GatherParams { uint width; uint groups; uint rows; uint in_stride; uint out_stride; };
+kernel void nu_gather_rows(device float * dst [[buffer(0)]],
+                           device const float * src [[buffer(1)]],
+                           device const uint * map [[buffer(2)]],
+                           constant GatherParams & p [[buffer(7)]],
+                           uint i [[thread_position_in_grid]]) {
+    const uint per_row = p.groups * p.width;
+    const uint row = i / per_row, rest = i % per_row;
+    if (row >= p.rows) return;
+    const uint g = rest / p.width, j = rest % p.width;
+    dst[ulong(row) * p.out_stride + g * p.width + j] = src[ulong(row) * p.in_stride + map[g] * p.width + j];
+}
+
 // ---------------------------------------------------------------------------
 // RMSNorm with learned weight: y = x * rsqrt(mean(x^2) + eps) * w, optionally
 // multiplied by silu(multiplier) (flags & 1). One 256-thread group per row.

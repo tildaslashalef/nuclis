@@ -9,9 +9,8 @@ boundary.
 
 Themes, in order (reordered 2026-09-17, once the third family was planned;
 the Bonsai 2 27B units — Qwen3.8-27B in Prism ML's ternary encoding, a
-new weight format on the existing adapter, accepted 2026-09-18 ahead of
-Muse — and the Muse Glimmer 30B units themselves are in
-[../TODO.md](../TODO.md)):
+new weight format on the existing adapter — closed on 2026-09-18, and the
+Muse Glimmer 30B units are in [../TODO.md](../TODO.md)):
 
 1. **Speculative decoding across the families** — draft tokens from each
    model's own draft source (Qwen's MTP head, Gemma's MTP companion, Muse's
@@ -229,6 +228,18 @@ the profile that motivated it.
   latency-bound K loop). A split-K or bandwidth-bound small-M kernel for
   chunks under ~64 tokens would cut first-token latency of chat turns by
   several times ([bench.md](reference/bench.md)).
+- **The ternary matvec's arithmetic.** Bonsai 2 27B decodes at 1.3× the
+  Qwen3.8-27B rate where its byte count promises 2–3×, and at 80–87 % of
+  the PrismML fork: the PQ2_0 / PTQ1_0 matvecs move about 100 GB/s of
+  weight bytes because they are at the kernel set's multiply-rate ceiling
+  (one field mask per four values, one integer-to-float conversion, one FMA
+  per value; a ternary byte carries twice the values of a 4-bit byte). The
+  experiments are packed integer products (several trits against several
+  inputs in one integer multiply-add) and sharing one decoded weight across
+  several inputs; the transform and the gather are 2.3 % of the step and
+  not the lever. Judge against the acceptance record
+  ([bench.md](reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18),
+  [metal-backend.md](reference/metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18)).
 - **A GPU penalty kernel.** Apply the token history to the logits on the
   device before `nu_topk_partial`, so the instruct profile (presence penalty
   1.5) returns to the GPU sampling path. The 32K record measured the cost of

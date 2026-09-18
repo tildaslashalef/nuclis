@@ -518,7 +518,7 @@ pub const Resolved = struct {
     model: []const u8,
     /// The registry entry `model` names, if any.
     entry: ?*const ModelEntry,
-    /// The sampling profile the model runs with (see `profileFor`), or the
+    /// The sampling profile the model runs with (see `pinnedProfile`), or the
     /// forced one.
     profile: Profile,
     /// A profile the flag or the registry entry forces on the file at open,
@@ -552,13 +552,14 @@ pub const Resolved = struct {
 };
 
 /// The sampling profile belongs to the checkpoint. The catalogue records it
-/// per entry so `config show` can name it without opening the file; a
-/// registry entry, a bare path, or a catalogue entry whose profile unit is
-/// pending takes the first profile, since the file is not read here. The
-/// engine selects the artifact's own profile from its template digest at
-/// load (`inference.profiles.forDocument`).
-fn profileFor(model: []const u8) Profile {
-    return if (catalog.find(model)) |entry| entry.profile orelse .qwen38 else .qwen38;
+/// per entry so `config show` can name it without opening the file: the
+/// profile a catalogue entry pins onto its file, or null for a registry
+/// entry, a bare path, or an entry whose profile unit is pending. The pin is
+/// forced at open, so a catalogue file whose own template is not pinned
+/// (Bonsai renders the Qwen3.8 protocol) still renders; a file whose digest
+/// is pinned detects the same profile anyway, so nothing is reported forced.
+fn pinnedProfile(model: []const u8) ?Profile {
+    return if (catalog.find(model)) |entry| entry.profile else null;
 }
 
 /// Applies defaults < profile < file < entry < flags for one command. The
@@ -574,8 +575,8 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     var r: Resolved = .{
         .model = name,
         .entry = entry,
-        .profile = flags.prompt_profile orelse e.profile orelse profileFor(name),
-        .forced_profile = flags.prompt_profile orelse e.profile,
+        .profile = flags.prompt_profile orelse e.profile orelse pinnedProfile(name) orelse .qwen38,
+        .forced_profile = flags.prompt_profile orelse e.profile orelse pinnedProfile(name),
         .backend = flags.backend orelse cfg.engine.backend,
         .ctx_size = flags.ctx_size orelse e.ctx_size orelse cfg.engine.ctx_size,
         .kv_precision = flags.kv orelse cfg.engine.kv_precision,

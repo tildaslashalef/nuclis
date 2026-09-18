@@ -82,10 +82,13 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   the expert configuration `gemma-4-26b-a4b` and its traces,
   `GEMMA_26B_A4B_MODEL`; `-cpu`, `-f32`, `-f16` singly) when the second
   adapter, the expert kernels, or shared math changed, `make
-  compare-bonsai-cpu` (the Qwen CPU reference on `bonsai-2-27b`'s
-  ternary, Hadamard-rotated file against the PrismML fork's traces,
-  `BONSAI_MODEL`; [bonsai.md](reference/bonsai.md)) when the ternary
-  decoders, the transform, or the Qwen runtime changed, `make test-metal`
+  compare-bonsai` (`compare-bonsai-cpu`, `-f32`, `-f16`: the Qwen CPU
+  reference and the Metal plan in both cache precisions on
+  `bonsai-2-27b`'s ternary, Hadamard-rotated file against the PrismML
+  fork's traces, the F16 row at the Qwen tolerance, `BONSAI_MODEL`;
+  [bonsai.md](reference/bonsai.md)) when the ternary decoders, the
+  transform, or the Qwen runtime or plan changed, `make
+  test-generation-bonsai-metal` with it, `make test-metal`
   (with `bench-kernels`, `bench-matmul`, and `bench-hadamard` for the
   numbers in metal-backend.md) when a kernel changed, and
   `make test-generation-gemma4-metal`
@@ -99,7 +102,10 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   ([bench.md](reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12);
   `baseline-gemma4` for the K-quant entry's, `baseline-gemma4-26b-a4b` for
   the expert entry's,
-  [bench.md](reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)). `generate --prompt-tokens <json>` feeds a token
+  [bench.md](reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18),
+  `baseline-bonsai` for the ternary entry's on the Qwen token arrays
+  against the fork's records,
+  [bench.md](reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)). `generate --prompt-tokens <json>` feeds a token
   array untokenized, as `bench` does. `make bench-kernels` ranks matvec kernel variants without a model,
   `make bench-matmul` the prefill tile per encoding (generic and specialized;
   `ARGS=<tokens>` for a chunk other than 256), `make bench-experts` the

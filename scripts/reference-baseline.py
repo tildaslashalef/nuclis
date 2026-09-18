@@ -12,6 +12,7 @@ import hashlib
 import json
 import pathlib
 import statistics
+import re
 import subprocess
 import time
 import urllib.parse
@@ -70,8 +71,12 @@ def main():
     parser.add_argument("--capacity-check", action="store_true")
     parser.add_argument("--server-pid", type=int, help="optionally sample this server's RSS between requests")
     parser.add_argument("--family", choices=sorted(FAMILIES), default="qwen38", help="the profile family of the loaded artifact")
+    parser.add_argument("--reference-revision", default=REVISION,
+                        help="the full commit the server must be built from (the mainline pin by default; the PrismML fork's for Bonsai)")
     args = parser.parse_args()
     family = FAMILIES[args.family]
+    if not re.fullmatch(r"[0-9a-f]{40}", args.reference_revision):
+        parser.error("--reference-revision must be a full commit hash")
     address = urllib.parse.urlparse(args.url)
     if (address.scheme != "http" or address.hostname != "127.0.0.1"
             or address.username or address.password or address.path not in ("", "/")
@@ -97,7 +102,7 @@ def main():
             return json.load(response)
 
     props = request("/props")
-    if REVISION[:7] not in props["build_info"]:
+    if args.reference_revision[:7] not in props["build_info"]:
         raise RuntimeError("server is not the pinned reference revision")
     context = props["default_generation_settings"]["n_ctx"]
     if props["total_slots"] != 1 or max(lengths) + args.generate > context:
@@ -120,7 +125,7 @@ def main():
         }
 
     save("run-config.json", {
-        "started_at": timestamp(), "reference_revision": REVISION,
+        "started_at": timestamp(), "reference_revision": args.reference_revision,
         "context": context, "prompt_lengths": lengths, "generate": args.generate,
         "repetitions": args.repetitions, "capacity_check": args.capacity_check,
         "hardware": capture("sysctl", "-n", "machdep.cpu.brand_string", "hw.memsize", "hw.ncpu"),
@@ -212,7 +217,7 @@ def main():
             item[metric] = {"mean": statistics.mean(values),
                             "sample_stdev": statistics.stdev(values) if len(values) > 1 else None}
         summary.append(item)
-    save("summary.json", {"reference_revision": REVISION, "context": context,
+    save("summary.json", {"reference_revision": args.reference_revision, "context": context,
                           "generate": args.generate, "results": summary})
     print("Completed: " + str(args.output_dir / "summary.json"), flush=True)
 

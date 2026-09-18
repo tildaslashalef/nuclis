@@ -182,6 +182,14 @@ def summarize(runs):
     return rows
 
 
+def reference_revision(benchmarks, names):
+    """The one reference revision the committed records were measured at."""
+    revisions = {json.loads((benchmarks / name).read_text())["reference_revision"] for name in names if (benchmarks / name).is_file()}
+    if len(revisions) > 1:
+        raise RuntimeError("the reference records were measured at different revisions: " + ", ".join(sorted(revisions)))
+    return revisions.pop() if revisions else None
+
+
 def reference_rows(benchmarks, names):
     """Means of the accepted reference samples, read from the committed records."""
     rows = {}
@@ -318,7 +326,7 @@ def main():
         "prompts": prompts,
         "summary": summarize(runs),
         "family": family,
-        "reference": {"revision": "7620399f58aebfd2196b74021f9581bcf7218cb9", "run": args.run, "rows": reference_rows(ROOT / "docs/benchmarks", args.reference_records.split(","))},
+        "reference": {"revision": reference_revision(ROOT / "docs/benchmarks", args.reference_records.split(",")), "run": args.run, "rows": reference_rows(ROOT / "docs/benchmarks", args.reference_records.split(","))},
         "runs": runs,
     }
     output.parent.mkdir(parents=True, exist_ok=True)

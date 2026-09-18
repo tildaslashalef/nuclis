@@ -662,6 +662,95 @@ every length; the 14.25 GB weight file is memory-mapped and charged to
 wired memory, so the headroom is 48 GiB − 14.25 GB − 8.0 GB ≈ 29 GB at 32K.
 The reference server's resident set between requests was 15.08–15.62 GB.
 
+## Bonsai 2 27B acceptance record (MODL-17, 2026-09-18)
+
+The v0.1 acceptance workload on the catalogue's ternary entry,
+`bonsai-2-27b` (`Ternary-Bonsai-2-27B-PQ2_0.gguf`, SHA-256 `3907dc16…`,
+7.21 GB, Qwen3.8-27B's architecture with every matrix PQ2_0 in a
+Hadamard-rotated basis, [bonsai.md](bonsai.md)). The reference side is the
+**PrismML fork** of llama.cpp at `prism-b10687-5d80cff` (commit
+`5d80cff0…`, the only decoder of the file; stock llama.cpp rejects it),
+its server started with the recipe's flags minus `--lazy-mode` (which its
+base does not know) at 32,768 context, F16 cache, and the workload harness
+run against it with `--family qwen38 --reference-revision 5d80cff0…`
+(`tests/fixtures/run-2026-09-18-bonsai/`,
+[reference-2026-09-18-bonsai.json](../benchmarks/reference-2026-09-18-bonsai.json):
+three measured repetitions at every length after one warmup, 32,639
+included). Its token arrays are byte-identical to the Qwen3.8 run's
+(`run-2026-09-06` and the boundary run; the file shares the vocabulary and
+its single-user-turn rendering), and `make baseline-bonsai` fed them through
+`bench --prompt-tokens`
+([nuclis-2026-09-18-bonsai.json](../benchmarks/nuclis-2026-09-18-bonsai.json)).
+Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2, AC power on both
+sides, Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` from the MODL-17 tree
+(`7177307` plus this unit's plan, Makefile, and documents), `--kv f16
+--ctx-size 32768 --max-tokens 128`, the Qwen prefill chunk, one 65-minute
+sequence 512 → 32,639 with nothing else on the GPU. Mean ± sample standard
+deviation over three measured runs (one at 32,639); the reference columns
+are the fork's warm means over three samples:
+
+| Prompt tokens | Prefill tok/s | Fork | Decode tok/s | Fork | Decode ms/step | First token | Warmup (prefill / decode) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 512 | 93.69 ± 0.10 | 97.54 ± 0.31 | 13.87 ± 0.00 | 17.05 ± 0.08 | 72.1 | 5.5 s | 94.5 / 13.96 |
+| 4,096 | 86.01 ± 0.02 | 99.07 ± 0.26 | 13.26 ± 0.00 | 16.61 ± 0.07 | 75.4 | 47.6 s | 86.8 / 13.34 |
+| 16,384 | 66.35 ± 0.01 | 79.69 ± 2.88 | 11.72 ± 0.00 | 13.42 ± 0.18 | 85.3 | 247 s | 66.3 / 11.71 |
+| 32,639 | 50.63 (one run) | 84.76 ± 3.90 | 10.20 (one run) | 12.83 ± 0.04 | 98.0 | 645 s | 50.6 / 10.20 |
+
+Every sample stopped with `token_budget` at exactly the array's count and
+128 generated tokens, on both sides. Beside the Qwen3.8-27B record on the
+same arrays (ENGN-07: 90.45 / 83.70 / 62.70 / 49.55 prefill, 10.62 / 10.20
+/ 8.27 / 7.55 decode), the ternary file decodes **31–35 % faster** at every
+length and prefills at the same rate — the prefill tiles are compute-bound
+and the ternary tiles match the set, so a file less than half the size
+gains nothing there.
+
+**Decode** is at 81 % of the fork at 512 and 80 % at 4K, 87 % at 16K, and
+80 % at 32K. The step reads 7.2 GB of ternary weights, so 72.1 ms is 100
+GB/s effective against the fork's 123 at 58.6 ms; the kernels are at the
+set's multiply-rate ceiling
+([metal-backend.md § Ternary matvecs and tiles](metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18):
+a ternary byte carries twice the values of a Q4_0 byte, and the same
+values per second is half the byte rate), the transform is 2.1 % and the
+gather 0.2 % of the step
+([§ The rotation on the Qwen plan](metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18)).
+The byte count alone projected two to three times the Qwen rate; the
+kernel set delivers 1.3×, and the fork's own kernels 1.6× over the
+mainline Qwen record (17.05 against 9.66 at 512). Closing the rest is a
+different ternary arithmetic in the matvec (packed integer products, or
+one decoded weight across several inputs), a kernel unit the roadmap
+carries, not a plan change. From 512 to 32K nuclis adds 25.9 ms per step
+and the fork 19.9: the same attention-and-recurrent growth as the Qwen
+record (KERN-08's flash-decoding kernel over 16 attention layers, the 48
+DeltaNet states), on a smaller base.
+
+**Prefill** is at 96 % of the fork at 512, 87 % at 4K, 83 % at 16K, and
+60 % at 32K, the Qwen plan's own long-context curve (the fork's rate holds
+at 80–99 over the four lengths where nuclis's falls 94 → 51, the chunk
+attention latency ENGN-08 measured), unchanged by the encoding.
+
+**Agent check** (Metal, context 8,192, `--think medium`, `-p --json`,
+`--model bonsai-2-27b` with the catalogue's forced `.qwen38` profile):
+"create greeting.txt with hello world, then read it back" issued
+`write_file` then `read_file` in three steps and answered from the
+contents, `hello world` on disk; **176** prompt tokens, **210** generated
+(three thinking spans of 5.6, 4.9, and 2.0 s), prefill **3.19 s**, decode
+**15.1 s** (72 ms per token in the loop, the record's 512-token rate),
+`replayed: true`, stop `eos`.
+
+**Memory.** Session block 2,304,376,832 bytes (2.15 GiB) at 32,768 capacity
+(16 attention layers × 2 × 1,024 halves per position plus the 48 recurrent
+states), peak resident set 2.36 GiB at every length; the 7.21 GB file is
+memory-mapped, so the headroom is 48 GiB − 7.2 GB − 2.4 GB ≈ 38 GB at 32K.
+
+**PTQ1_0.** The record above is the PQ2_0 file's. The denser packing of the
+same weights (`Ternary-Bonsai-2-27B-PTQ1_0.gguf`, 5.95 GB) measured on the
+same plan the same day by `make bench` (22-token prompt, 64 output tokens,
+context 2,048, two rounds): 13.05 / 13.01 tok/s decode against PQ2_0's
+12.87, prefill 39.3 against 39.1, and it matches the PQ2_0 traces on both
+cache precisions ([bonsai.md](bonsai.md#metal-plan-modl-17-2026-09-18)).
+Not slower at 1.26 GB less, so the catalogue entry moved to it (decided
+2026-09-18); the acceptance workload was not re-run on it.
+
 ## Per-kernel profile
 
 `nuclis bench --profile` (Metal only) adds a table of GPU time per kernel and

@@ -1,0 +1,612 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-18",
+  "label": "warm",
+  "purged_before_first_run": false,
+  "started_at": "2026-09-18T15:18:05+00:00",
+  "finished_at": "2026-09-18T16:02:03+00:00",
+  "methodology": "See ../reference/bench.md#acceptance-runs and ../reference/reference-baseline.md. Each run feeds the reference harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident model pages).",
+  "nuclis_version": "nuclis 0.2.0-dev",
+  "git_revision": "7177307d96ef5eebb4fa75095b9c35ba8977c57b",
+  "git_dirty": true,
+  "build_mode": "ReleaseSafe",
+  "zig_version": "0.16.0",
+  "hardware": {
+    "cpu": "Apple M4 Pro",
+    "memory_bytes": 51539607552,
+    "cpu_cores": 12,
+    "gpu": "Graphics/Displays:\n\n    Apple M4 Pro:\n\n      Chipset Model: Apple M4 Pro\n      Type: GPU\n      Bus: Built-In\n      Total Number of Cores: 16\n      Vendor: Apple (0x106b)\n      Metal Support: Metal 4\n      Displays:\n        Color LCD:\n          Display Type: Built-in Liquid Retina XDR Display\n          Resolution: 3024 x 1964 Retina\n          Main Display: Yes\n          Mirror: Off\n          Online: Yes\n          Automatically Adjust Brightness: Yes\n          Connection Type: Internal"
+  },
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+  "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22020195)\t28%; charging; 3:35 remaining present: true",
+  "model_path": "/Users/alef/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+  "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+  "backend": "metal",
+  "kv_precision": "f16",
+  "context": 32768,
+  "output_tokens": 128,
+  "warmup_runs": 1,
+  "repetitions": 3,
+  "boundary_repetitions": 1,
+  "prompts": [
+    {
+      "prompt_tokens": 512,
+      "corpus_tokens": 493,
+      "text_file": ".zig-cache/prompts/reference/prompt-512.txt",
+      "text_sha256": "3747401a3d40014d952eba16d8ea03495c3d0d56e1a97af9e88ea847a9099ea3",
+      "text_bytes": 1295,
+      "text_tokens": 511,
+      "text_ids_equal_reference": false,
+      "reference_fixture": "tests/fixtures/run-2026-09-18-bonsai/prompt-512.json",
+      "reference_fixture_sha256": "4043b51f3b40205517d309a67163712601d35739b3c68e88483bdd318ebcb005"
+    },
+    {
+      "prompt_tokens": 4096,
+      "corpus_tokens": 4077,
+      "text_file": ".zig-cache/prompts/reference/prompt-4096.txt",
+      "text_sha256": "11d9074d266b8df0654d9c3d477d10552e6bd04799f043977a1aa0b36e81fc00",
+      "text_bytes": 9519,
+      "text_tokens": 4096,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-18-bonsai/prompt-4096.json",
+      "reference_fixture_sha256": "338fc6a792f88e0703b631358ed2089e542b8e6315570055335bdbf77339bb0a"
+    },
+    {
+      "prompt_tokens": 16384,
+      "corpus_tokens": 16365,
+      "text_file": ".zig-cache/prompts/reference/prompt-16384.txt",
+      "text_sha256": "b31ef30007317098a6814de355d0e032fa6ece4875b9c3f3e3940ec59954b033",
+      "text_bytes": 37725,
+      "text_tokens": 16384,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-18-bonsai/prompt-16384.json",
+      "reference_fixture_sha256": "353fb179aa85e76710196ca7e9327dd754e2b73987a393b306b70a7f05d28130"
+    },
+    {
+      "prompt_tokens": 32639,
+      "corpus_tokens": 32620,
+      "text_file": ".zig-cache/prompts/reference/prompt-32639.txt",
+      "text_sha256": "9fd1075aada618d0f2dd7f262fa6253854cee655f25e315d358a40abbf0ecf5c",
+      "text_bytes": 75040,
+      "text_tokens": 32639,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-18-bonsai/prompt-32639.json",
+      "reference_fixture_sha256": "6f3ea62a995d7fd78d8bd927c913e6e371f7645fff70decbd1842a19f6c45cab"
+    }
+  ],
+  "summary": [
+    {
+      "prompt_tokens": 512,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 93.69026943758227,
+        "sample_stdev": 0.10382805648275283
+      },
+      "decode_tokens_per_second": {
+        "mean": 13.871041115174583,
+        "sample_stdev": 0.0030618676332728905
+      },
+      "first_token_milliseconds": {
+        "mean": 5464.819846666667,
+        "sample_stdev": 6.056005477121303
+      },
+      "session_bytes": 2304376832,
+      "peak_resident_bytes": 2529378304
+    },
+    {
+      "prompt_tokens": 4096,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 86.00600392052213,
+        "sample_stdev": 0.022572158708980203
+      },
+      "decode_tokens_per_second": {
+        "mean": 13.264548694892861,
+        "sample_stdev": 0.0010384093601939987
+      },
+      "first_token_milliseconds": {
+        "mean": 47624.58474966667,
+        "sample_stdev": 12.497395979486683
+      },
+      "session_bytes": 2304376832,
+      "peak_resident_bytes": 2529443840
+    },
+    {
+      "prompt_tokens": 16384,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 66.34687442997499,
+        "sample_stdev": 0.014626241775412684
+      },
+      "decode_tokens_per_second": {
+        "mean": 11.71601989913978,
+        "sample_stdev": 0.0032899747419078565
+      },
+      "first_token_milliseconds": {
+        "mean": 246944.57254166665,
+        "sample_stdev": 54.44002353899485
+      },
+      "session_bytes": 2304376832,
+      "peak_resident_bytes": 2529476608
+    },
+    {
+      "prompt_tokens": 32639,
+      "samples": 1,
+      "prefill_tokens_per_second": {
+        "mean": 50.62892797803857,
+        "sample_stdev": null
+      },
+      "decode_tokens_per_second": {
+        "mean": 10.197779305080358,
+        "sample_stdev": null
+      },
+      "first_token_milliseconds": {
+        "mean": 644670.967875,
+        "sample_stdev": null
+      },
+      "session_bytes": 2304376832,
+      "peak_resident_bytes": 2529902592
+    }
+  ],
+  "family": "qwen38",
+  "reference": {
+    "revision": "5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6",
+    "run": "run-2026-09-18-bonsai",
+    "rows": [
+      {
+        "prompt_tokens": 512,
+        "samples": 3,
+        "source": "reference-2026-09-18-bonsai.json",
+        "prefill_tokens_per_second": 97.53998708047136,
+        "decode_tokens_per_second": 17.05237132026475
+      },
+      {
+        "prompt_tokens": 4096,
+        "samples": 3,
+        "source": "reference-2026-09-18-bonsai.json",
+        "prefill_tokens_per_second": 99.06876564014061,
+        "decode_tokens_per_second": 16.605678872425546
+      },
+      {
+        "prompt_tokens": 16384,
+        "samples": 3,
+        "source": "reference-2026-09-18-bonsai.json",
+        "prefill_tokens_per_second": 79.68500143212626,
+        "decode_tokens_per_second": 13.41815885253482
+      },
+      {
+        "prompt_tokens": 32639,
+        "samples": 3,
+        "source": "reference-2026-09-18-bonsai.json",
+        "prefill_tokens_per_second": 84.76007640157088,
+        "decode_tokens_per_second": 12.827261309392124
+      }
+    ]
+  },
+  "runs": [
+    {
+      "prompt_tokens": 512,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-18-bonsai/prompt-512.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 2529378304,
+      "peak_footprint_bytes": 2758972096,
+      "memory_before": {
+        "timestamp": "2026-09-18T15:18:05+00:00",
+        "swap": "total = 3072.00M  used = 1556.50M  free = 1515.50M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-18T15:19:05+00:00",
+        "swap": "total = 3072.00M  used = 1556.50M  free = 1515.50M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 2304376832,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 763.110292,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5554.398125,
+            "first_token_milliseconds": 5554.398292,
+            "decode_milliseconds": 9154.6305,
+            "prefill_tokens_per_second": 92.17920438499357,
+            "decode_tokens_per_second": 13.872760894063394,
+            "gpu_busy_milliseconds": 14533.664124959614
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5458.730375,
+            "first_token_milliseconds": 5458.730708,
+            "decode_milliseconds": 9155.623125,
+            "prefill_tokens_per_second": 93.7947040478254,
+            "decode_tokens_per_second": 13.871256851236982,
+            "gpu_busy_milliseconds": 14524.572708352935
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5464.8865,
+            "first_token_milliseconds": 5464.886666,
+            "decode_milliseconds": 9157.854459,
+            "prefill_tokens_per_second": 93.68904550899639,
+            "decode_tokens_per_second": 13.867877085029356,
+            "gpu_busy_milliseconds": 14532.029250171036
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5470.841875,
+            "first_token_milliseconds": 5470.842166,
+            "decode_milliseconds": 9153.819875,
+            "prefill_tokens_per_second": 93.58705875592503,
+            "decode_tokens_per_second": 13.873989409257412,
+            "gpu_busy_milliseconds": 14534.66833330458
+          }
+        ],
+        "mean_prefill_tokens_per_second": 93.69026943758229,
+        "mean_decode_tokens_per_second": 13.871041115174583,
+        "mean_first_token_milliseconds": 5464.819846666668
+      }
+    },
+    {
+      "prompt_tokens": 4096,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-18-bonsai/prompt-4096.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 2529443840,
+      "peak_footprint_bytes": 2768966288,
+      "memory_before": {
+        "timestamp": "2026-09-18T15:19:05+00:00",
+        "swap": "total = 3072.00M  used = 1556.50M  free = 1515.50M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-18T15:22:56+00:00",
+        "swap": "total = 3072.00M  used = 1548.50M  free = 1523.50M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 2304376832,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 768.843458,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 47717.183584,
+            "first_token_milliseconds": 47717.183959,
+            "decode_milliseconds": 9570.445333,
+            "prefill_tokens_per_second": 85.8390980429412,
+            "decode_tokens_per_second": 13.270019897829554,
+            "gpu_busy_milliseconds": 57071.13629131345
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 47610.350292,
+            "first_token_milliseconds": 47610.350583,
+            "decode_milliseconds": 9575.230542,
+            "prefill_tokens_per_second": 86.03171316486309,
+            "decode_tokens_per_second": 13.263388222658211,
+            "gpu_busy_milliseconds": 57058.075458102394
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 47633.757416,
+            "first_token_milliseconds": 47633.757625,
+            "decode_milliseconds": 9574.162625,
+            "prefill_tokens_per_second": 85.98943736956113,
+            "decode_tokens_per_second": 13.264867641623123,
+            "gpu_busy_milliseconds": 57080.464666709304
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 47629.645333,
+            "first_token_milliseconds": 47629.646041,
+            "decode_milliseconds": 9573.785459,
+            "prefill_tokens_per_second": 85.99686122714216,
+            "decode_tokens_per_second": 13.26539022039725,
+            "gpu_busy_milliseconds": 57075.514458992984
+          }
+        ],
+        "mean_prefill_tokens_per_second": 86.00600392052213,
+        "mean_decode_tokens_per_second": 13.264548694892861,
+        "mean_first_token_milliseconds": 47624.58474966666
+      }
+    },
+    {
+      "prompt_tokens": 16384,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-18-bonsai/prompt-16384.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 2529476608,
+      "peak_footprint_bytes": 2775405224,
+      "memory_before": {
+        "timestamp": "2026-09-18T15:22:56+00:00",
+        "swap": "total = 3072.00M  used = 1548.50M  free = 1523.50M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-18T15:40:08+00:00",
+        "swap": "total = 3072.00M  used = 1548.50M  free = 1523.50M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 2304376832,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 768.19975,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 246870.270708,
+            "first_token_milliseconds": 246870.270833,
+            "decode_milliseconds": 10833.74925,
+            "prefill_tokens_per_second": 66.36684098499296,
+            "decode_tokens_per_second": 11.722626864379384,
+            "gpu_busy_milliseconds": 257322.78833340388
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 246891.317916,
+            "first_token_milliseconds": 246891.318083,
+            "decode_milliseconds": 10837.174042,
+            "prefill_tokens_per_second": 66.36118328621964,
+            "decode_tokens_per_second": 11.71892224926953,
+            "gpu_busy_milliseconds": 257433.2588747493
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 246942.274,
+            "first_token_milliseconds": 246942.274209,
+            "decode_milliseconds": 10839.237333,
+            "prefill_tokens_per_second": 66.34748977811714,
+            "decode_tokens_per_second": 11.716691506823011,
+            "gpu_busy_milliseconds": 257487.96912515536
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 247000.125042,
+            "first_token_milliseconds": 247000.125333,
+            "decode_milliseconds": 10843.166375,
+            "prefill_tokens_per_second": 66.33195022558817,
+            "decode_tokens_per_second": 11.712445941326802,
+            "gpu_busy_milliseconds": 257546.3591251173
+          }
+        ],
+        "mean_prefill_tokens_per_second": 66.34687442997499,
+        "mean_decode_tokens_per_second": 11.71601989913978,
+        "mean_first_token_milliseconds": 246944.57254166665
+      }
+    },
+    {
+      "prompt_tokens": 32639,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-18-bonsai/prompt-32639.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "1",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 2529902592,
+      "peak_footprint_bytes": 2798850728,
+      "memory_before": {
+        "timestamp": "2026-09-18T15:40:08+00:00",
+        "swap": "total = 3072.00M  used = 1548.50M  free = 1523.50M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-18T16:02:03+00:00",
+        "swap": "total = 3072.00M  used = 1484.50M  free = 1587.50M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 2304376832,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 1,
+        "load_milliseconds": 774.772208,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 643573.987583,
+            "first_token_milliseconds": 643573.987666,
+            "decode_milliseconds": 12401.781917,
+            "prefill_tokens_per_second": 50.715225645739196,
+            "decode_tokens_per_second": 10.240463898652509,
+            "gpu_busy_milliseconds": 655286.9996666559
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 644670.967834,
+            "first_token_milliseconds": 644670.967875,
+            "decode_milliseconds": 12453.69175,
+            "prefill_tokens_per_second": 50.62892797803857,
+            "decode_tokens_per_second": 10.197779305080358,
+            "gpu_busy_milliseconds": 656523.243082629
+          }
+        ],
+        "mean_prefill_tokens_per_second": 50.62892797803857,
+        "mean_decode_tokens_per_second": 10.197779305080358,
+        "mean_first_token_milliseconds": 644670.967875
+      }
+    }
+  ]
+}

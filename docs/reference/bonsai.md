@@ -19,14 +19,14 @@ fork rather than the file, the sentence says so.
 
 ## Artifacts
 
-| | PQ2_0 (the catalogue's file) | PTQ1_0 (the footprint win, follows) |
+| | PQ2_0 (the bring-up file, the traces' source) | PTQ1_0 (the catalogue's file since 2026-09-18) |
 | --- | --- | --- |
 | Repository | `prism-ml/Ternary-Bonsai-2-27B-gguf` | same |
 | Commit | `6ed5e12bf84b7a63069882c91dd9e9218647d17b` (Apache-2.0, released 2026-09-17) | same |
 | File | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | `Ternary-Bonsai-2-27B-PTQ1_0.gguf` |
 | Size | 7,206,168,928 B | 5,946,648,928 B |
 | SHA-256 | `3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1` | `53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3` |
-| Pulled | 2026-09-18 (`nuclis model pull bonsai-2-27b`, with the Q8_0 projector) | not pulled |
+| Pulled | 2026-09-18 (`nuclis model pull bonsai-2-27b` while it was the entry's file, with the Q8_0 projector) | 2026-09-18 (`model pull prism-ml/Ternary-Bonsai-2-27B-gguf --file … --revision 6ed5e12b…`; `nuclis model pull bonsai-2-27b` since the move) |
 | `general.file_type` | 141 | 143 |
 
 Companions: `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` (629,246,976 B, SHA-256
@@ -69,8 +69,9 @@ false. `Hello,` tokenizes to `[9419, 11]` on both files.
 | BF16 (id 30) | 96 | 47,185,920 | `ssm_alpha.weight` and `ssm_beta.weight` [5120, 48] on the 48 DeltaNet blocks (Q8_0 in the Qwen file) |
 
 Text weights 7,195,047,936 bytes. The PTQ1_0 file has the same 851 tensors
-with the 402 matrices in id 143 (read from its header on 2026-09-18 by
-range request; to be re-read from the pulled file when it is measured).
+with the 402 matrices in id 143 (5,935,527,936 text-weight bytes: the
+same scales and trits in the denser packing, which is why it matches the
+PQ2_0 traces below at the same thresholds).
 
 ## Encodings (from the fork's `ggml-common.h` and `ggml-quants.c`)
 
@@ -164,14 +165,13 @@ set or claimed twice is refused), the inverse list equal to the embedding,
 `gdn_v_grouped` present; any other `prism.hadamard.*` key, or rotation keys
 without the version, is `UnsupportedConfiguration`. The binding carries
 `Rotation` (block, the three sign vectors borrowed from the Document,
-`value_grouped`), and `validate` prints the basis. Until the runtimes apply
-the transform, `Runtime.init` and `Plan.init` refuse a rotated binding with
-`error.UnsupportedRotation` rather than run in the stored basis.
+`value_grouped`), and `validate` prints the basis; both runtimes apply the
+transform from it (§ CPU reference, § Metal plan).
 
 Prism's whitepaper calls the transform "one of the larger non-matmul costs
 of a decode step" at batch 1 on Metal and fuses the sign flip into its
-load path; whether nuclis fuses it into the matvec input load is measured
-in KERN-10, not assumed.
+load path; nuclis measured it instead of fusing it: 2.1 % of a decode
+token as separate dispatches (§ Metal plan), so no fusion.
 
 ## Chat template
 
@@ -189,11 +189,16 @@ history), which the upstream template refuses with `System message must be
 at the beginning.` instead of merging. So the digest is not an alias (an
 alias must render every case), and the difference is a stricter input
 contract, not a different rendering: for every conversation the file's own
-template accepts, the pinned profile renders the same bytes. MODL-17
-decides the profile from this evidence; the recommendation is the
-catalogue entry's `profile = .qwen38` (a registry `profile` renders the
-pinned protocol onto the file), with the deviation recorded: nuclis merges
-system messages the file's template would refuse. The fork's
+template accepts, the pinned profile renders the same bytes. **Decided
+2026-09-18 (MODL-17): the catalogue entry's `profile = .qwen38`**, forced
+at open the way a registry entry's profile is (the catalogue's pin is now
+a forced profile, not only the sampling default, so `--model bonsai-2-27b`
+renders without any registry entry; by path, `--prompt-profile qwen38`
+does the same), with the deviation recorded here: nuclis merges leading
+system messages the file's template would refuse. No `profiles/bonsai.zig`:
+the sampling hints in the header (1.0 / 0.95 / 20) are the pinned
+profile's, and the digest stays unpinned rather than declared an alias
+it is not. The fork's
 `llama-completion --jinja` aborts at its start-up template self-test on
 this template (the same raise, from its fixed example conversation); the
 fork's server renders it.
@@ -257,6 +262,81 @@ on the PQ2_0 file, then `compare-generation.py` against
 same top three logits as the fork to three decimals (353: 11.505, 1204:
 9.753, 198: 9.348). The two positions take about 56 s on the CPU.
 
+## Metal plan (MODL-17, 2026-09-18)
+
+[`qwen35_metal.zig`](../../inference/src/models/qwen35_metal.zig) uploads
+the three sign vectors (F32) and, when `value_grouped`, a 48-entry gather
+map at plan init, and dispatches the same transforms as the CPU reference
+at the same points, in place (`Backend.hadamard`): the inverse over the
+embedding row after `embed` (one dispatch over all rows of a prefill
+chunk), the forward over the normed residual before the mixer's
+projections, over the mixer output before `attn_output` / `ssm_out`, over
+the normed residual before the FFN pair, over the FFN hidden before
+`ffn_down`, and over the output-head input. `ssm_alpha` / `ssm_beta` read
+the residual before its transform: on the decode path the plain file's
+four-way merged DeltaNet projection splits into two two-way merges around
+the transform (the plain file keeps its one dispatch; the BF16 rows go
+through the merged kernel's generic branch), on the prefill path they are
+simply dispatched first. `ssm_out`'s input is regathered from the tiled
+head order to the grouped one by the row-gather kernel added for it
+([metal-backend.md § The rotation on the Qwen plan](metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18))
+into a scratch of one decode row and `padded` prefill rows, then
+transformed there. Nothing changes on a plain Qwen file (`make bench` on
+`qwen3.8-27b` after the change: 10.42 tok/s decode, 39.3 prefill on the
+22-token prompt, its usual numbers).
+
+`make compare-bonsai` on 2026-09-18, the fork's traces, 129 files each:
+
+| Row | Max abs | Max relative RMS | Thresholds |
+| --- | ---: | ---: | --- |
+| `compare-bonsai-cpu` | 2.44e-4 | 5.4e-6 | 2e-3 / 1e-4 |
+| `compare-bonsai-f32` | 4.27e-4 | 5.4e-6 | 2e-3 / 1e-4 |
+| `compare-bonsai-f16` | 1.34e-2 | 7.4e-5 | 3e-2 / 2e-4 (the Qwen F16 tolerance) |
+
+The greedy token is 353 (` I`) on every row, the fork's. `make
+test-generation-bonsai-metal` passes: identical two-token logits across
+sessions, reset after cancellation through both callbacks, the snapshot
+round trip, and chunked prefill against per-token steps at max abs
+7.9e-4 / relative RMS 4.0e-5 (chunk 64; F16 cache 2.4e-3 / 5.0e-5),
+argmax 278/278. Greedy `Hello,` on Metal continues `I'm a student in the
+University of California, Berkeley` where the fork's smoke run said `…
+the University of the West of England`: the same first six tokens, then
+the F16 cache and the tile arithmetic diverge, as the trace comparison's
+tolerances allow.
+
+**Rate.** `make bench MODEL=bonsai-2-27b` (22-token prompt, 64 output
+tokens, context 2,048, F16 cache, three measured runs after one warmup,
+2026-09-18, M4 Pro, ReleaseSafe, nothing else on the GPU): **12.87 tok/s
+decode**, 39.1 prefill, first token 563 ms — against 10.42 / 39.3 for
+`qwen3.8-27b` on the same plan and prompt. The first runs after another
+model has held the memory take two rounds to page the file in (1.4–1.8
+tok/s, then 12.9). The byte count projected two to three times the Qwen
+rate; the token gets 1.24×, because the ternary matvecs move about 100
+GB/s of weight bytes where the Q4_K kernels move 170–200: 7.2 GB at 93
+GB/s effective is 77.7 ms, 16.4 GB at 170 is 96. The per-kernel profile
+puts the matvecs at about 80 % of the step (97–116 GB/s), the transform
+at 2.1 %, the gather at 0.2 %
+([metal-backend.md](metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18));
+the kernels are at the set's multiply-rate ceiling (§ Ternary matvecs and
+tiles), so the rate the byte count promises needs a different ternary
+arithmetic in the matvec, the follow-up named there. The fork on the same
+machine decodes at 17.0 tok/s at 512 tokens ([bench.md § Bonsai
+acceptance record](bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+
+**PTQ1_0, and the entry's move.** The denser packing on the same plan
+(`--model <PTQ1_0 path>`, 2026-09-18, the same `make bench` protocol, two
+rounds): **13.05 / 13.01 tok/s decode**, 39.3 / 39.2 prefill, first token
+560 ms — not slower than PQ2_0's 12.87 despite the micro-benchmark's 88
+against 119 GB/s (17 % fewer bytes at a lower byte rate come out even on
+the whole token), and `make compare-bonsai-f32` / `-f16` on it against
+the PQ2_0 traces pass at max abs 2.29e-4 / 1.29e-2 (relative RMS 5.5e-6 /
+7.3e-5), the same weights in another packing. **Decided 2026-09-18: the
+catalogue entry is the PTQ1_0 file** (5,946,648,928 B, SHA-256
+`53107f53…`), 1.26 GB smaller at the same rate; the acceptance record
+above was measured on the PQ2_0 file before the move and says so, the
+traces stay the PQ2_0 capture, and `BONSAI_MODEL` defaults to the PTQ1_0
+path.
+
 ## Status
 
 MODL-16 closed on 2026-09-18: the file validates and binds, the three
@@ -268,5 +348,8 @@ PQ2_0 119 GB/s, PTQ1_0 88 GB/s on the output head — at the kernel set's
 multiply rate, half the Q4_0 byte rate by density) and the transform
 kernel (`nu_hadamard`, 1.3–2.2 ms per token as 258 dispatches,
 [§ The Hadamard transform kernel](metal-backend.md#the-hadamard-transform-kernel-kern-10-session-2-2026-09-18)).
-The Metal plan, profile, catalogue, and acceptance are MODL-17. Until
-then `generate --backend metal` on the file returns `UnsupportedRotation`.
+MODL-17 closed the same day: the Metal plan applies the rotation and
+matches the traces in both cache precisions, the profile is the pinned
+Qwen3.8 one through the catalogue entry, and the acceptance record
+against the fork's server, the agent check, and the PTQ1_0 measurement
+are in [bench.md](bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18).

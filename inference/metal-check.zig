@@ -1006,6 +1006,44 @@ fn checkHadamard(alloc: std.mem.Allocator) !void {
     std.debug.print("Hadamard transform vs cpu.hadamard on 5,120 / 6,144 / 17,408 over strided rows, forward, inverse, and the round trip: max abs {e:.3} (bound 3e-5)\n", .{worst});
 }
 
+/// The row gather on the Bonsai value-head regrouping (48 heads of 128,
+/// tiled `rep * 16 + nk` to grouped `nk * 3 + rep`) over strided rows,
+/// exact, plus the overlap and map-size refusals.
+fn checkGatherRows(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const width: usize = 128;
+    const groups: usize = 48;
+    const rows: usize = 3;
+    const in_stride = groups * width + 64;
+    const out_stride = groups * width + 128;
+    var map: [48]u32 = undefined;
+    for (&map, 0..) |*m, g| m.* = @intCast((g % 3) * 16 + g / 3);
+    const src = try alloc.alloc(f32, rows * in_stride);
+    defer alloc.free(src);
+    for (src, 0..) |*x, i| x.* = @floatFromInt(i);
+    const src_buffer = try upload(b, src);
+    const dst_buffer = try b.create(rows * out_stride * 4);
+    @memset(dst_buffer.floats(), -1);
+    const map_buffer = try uploadBytes(b, std.mem.sliceAsBytes(&map));
+    try b.begin();
+    try b.gatherRows(dst_buffer, src_buffer, map_buffer, width, groups, rows, in_stride, out_stride);
+    try b.commit();
+    for (0..rows) |r| for (0..out_stride) |c| {
+        const got = dst_buffer.floats()[r * out_stride + c];
+        const want: f32 = if (c < groups * width) src[r * in_stride + map[c / width] * width + c % width] else -1;
+        if (got != want) {
+            std.debug.print("gather rows: row {d} column {d} got {d} want {d}\n", .{ r, c, got, want });
+            return error.MetalMismatch;
+        }
+    };
+    if (b.gatherRows(src_buffer, src_buffer, map_buffer, width, groups, rows, in_stride, in_stride)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    if (b.gatherRows(dst_buffer, src_buffer, map_buffer.slice(0, 47 * 4), width, groups, rows, in_stride, out_stride)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    if (b.gatherRows(dst_buffer, src_buffer, map_buffer, width, groups, rows, groups * width - 1, out_stride)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    std.debug.print("row gather on the 48-head regrouping over strided rows: exact; overlap, short map, and short stride refused\n", .{});
+}
+
 fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     var prng = std.Random.DefaultPrng.init(0x6e44a);
     const random = prng.random();
@@ -1148,6 +1186,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len != 1) return error.UnknownOption;
     try checkSegments(alloc);
     try checkHadamard(alloc);
+    try checkGatherRows(alloc);
 
     // 1. Every quantized fixture column through the GPU matvec, exact. The
     // backend is recreated per fixture file to exercise object cleanup.

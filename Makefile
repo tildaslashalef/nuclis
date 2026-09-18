@@ -24,6 +24,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
         compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
         compare-gemma4-26b-a4b compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 \
+        compare-bonsai compare-bonsai-cpu compare-bonsai-f32 compare-bonsai-f16 test-generation-bonsai-metal baseline-bonsai \
         test-generation-gemma4 test-generation-gemma4-metal test-generation-gemma4-qat-metal test-generation-gemma4-26b-a4b-metal clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
@@ -164,8 +165,10 @@ compare-f16: metal ## The F16 cache at its own tolerance (max abs 3e-2, relative
 	$(call compare_run,f16,0.03,0.0002)
 
 # `bonsai-2-27b`: Qwen3.8-27B re-encoded ternary in a Hadamard-rotated basis
-# (MODL-16, docs/reference/bonsai.md), with its own traces from the PrismML fork.
-BONSAI_MODEL ?= $(HOME)/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf
+# (docs/reference/bonsai.md), with its own traces from the PrismML fork
+# (captured from the PQ2_0 packing, which the catalogue's PTQ1_0 file of the
+# same weights matches at the same thresholds).
+BONSAI_MODEL ?= $(HOME)/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf
 # $(1) label, $(2) backend flags, $(3) max absolute, $(4) max relative RMS per trace file.
 define compare_bonsai_run
 	rm -rf "$(TRACE)-bonsai-$(1)" && mkdir -p "$(TRACE)-bonsai-$(1)"
@@ -174,8 +177,23 @@ define compare_bonsai_run
 	python3 scripts/compare-generation.py "$(TRACE)-bonsai-$(1)" tests/fixtures/bonsai-hello-comma --positions 2 --max-absolute $(3) --max-relative-rms $(4) \
 	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("bonsai $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
 endef
+compare-bonsai: compare-bonsai-cpu compare-bonsai-f32 compare-bonsai-f16 ## bonsai-2-27b vs the PrismML fork's traces: CPU reference, Metal F32 and F16 caches (docs/reference/bonsai.md)
+
 compare-bonsai-cpu: metal ## The Qwen CPU reference on the Bonsai file (ternary weights, the Hadamard transform) vs the fork's traces at the bring-up thresholds
 	$(call compare_bonsai_run,cpu,--backend cpu,0.002,0.0001)
+
+compare-bonsai-f32: metal ## The Qwen Metal plan on the Bonsai file with the F32 cache at the bring-up thresholds
+	$(call compare_bonsai_run,f32,--backend metal --kv f32,0.002,0.0001)
+
+compare-bonsai-f16: metal ## The Qwen Metal plan on the Bonsai file with the F16 cache at its own tolerance
+	$(call compare_bonsai_run,f16,--backend metal --kv f16,0.03,0.0002)
+
+test-generation-bonsai-metal: ## The generation check on bonsai-2-27b, Metal plan
+	$(ZIG) build test-generation $(METAL) -- "$(BONSAI_MODEL)" --metal
+
+baseline-bonsai: metal ## The reference workload on bonsai-2-27b against the PrismML fork's records (tests/fixtures/run-2026-09-18-bonsai, whose token arrays are the Qwen run's); writes docs/benchmarks/nuclis-<date>-bonsai.json
+	python3 scripts/nuclis-baseline.py --model "$(BONSAI_MODEL)" --nuclis $(BIN) --run run-2026-09-18-bonsai \
+	  --reference-records reference-2026-09-18-bonsai.json --output docs/benchmarks/nuclis-$$(date +%F)-bonsai.json $(ARGS)
 
 # The catalogue's Gemma 4 12B file (QAT, every matrix Q4_0; MODL-08) and the
 # K-quant file the adapter was brought up on (MODL-05–MODL-07); both stay pinned in

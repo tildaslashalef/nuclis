@@ -80,9 +80,16 @@ PQ2_0 file and its Q8_0 projector verified by the pull the same day;
 `bonsai-2-27b` entered the catalogue then: the file is Qwen3.8-27B's
 architecture with every matrix in Prism ML's ternary packings (ids 142
 and 143) in a Hadamard-rotated basis ([bonsai.md](bonsai.md)). Since
-MODL-16 the Qwen adapter binds it, `inspect` says *supported*, and the
-CPU reference runs it against the fork's traces; the Metal plan refuses
-the rotation until KERN-10 and MODL-17. The repository also lists
+MODL-16 the Qwen adapter binds it and `inspect` says *supported*; since
+MODL-17 both backends run it against the fork's traces and it has its
+acceptance record and agent check
+([bench.md](bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+The PTQ1_0 file was pulled and verified on 2026-09-18 for the packing
+measurement (`nuclis model pull prism-ml/Ternary-Bonsai-2-27B-gguf --file
+Ternary-Bonsai-2-27B-PTQ1_0.gguf --revision 6ed5e12b…`) and became the
+entry's file the same day, measured not slower than PQ2_0 on the whole
+token at 1.26 GB less ([bonsai.md](bonsai.md#metal-plan-modl-17-2026-09-18));
+the PQ2_0 file stays the traces' source. The repository also lists
 `Ternary-Bonsai-2-27B-F16.gguf` (53,808,408,928 B). The 26B-A4B
 repository also lists `mmproj-F16.gguf` (1,193,058,784 B), `mmproj-F32.gguf`
 (2,291,200,480 B), `MTP/mtp-gemma-4-26B-A4B-it-{BF16,F16}.gguf`

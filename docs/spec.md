@@ -78,8 +78,10 @@ Use the shared user root and `NUCLIS_HOME` override documented in
 entry, a catalogue name, or a path) takes precedence over the configured
 model, which defaults to the catalogue entry under that root's `models/`
 directory. The prompt profile is selected by the file's chat-template
-digest; `--prompt-profile <p>` or a registry entry's `profile` forces one
-on a file whose template is not pinned, with a notice.
+digest; `--prompt-profile <p>`, a registry entry's `profile`, or the
+catalogue entry's `profile` forces one on a file whose template is not
+pinned, with a notice (the catalogue's pin is how `bonsai-2-27b` renders
+the Qwen3.8 protocol its upstream template does not carry the digest of).
 
 The [published configuration](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/blob/main/config.json)
 uses the Qwen3.5 architecture family despite the Qwen3.8 model name. It describes

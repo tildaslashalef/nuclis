@@ -47,8 +47,10 @@ pub const Entry = struct {
     quantization: []const u8,
     /// `general.architecture` of the main file.
     architecture: []const u8,
-    /// The checkpoint's prompt profile; `null` while its profile unit is
-    /// pending, when configuration falls back as it does for a bare path.
+    /// The checkpoint's prompt profile, forced at open (which lets an entry
+    /// pin a protocol onto a file whose own template digest is not); `null`
+    /// while its profile unit is pending, when configuration falls back as
+    /// it does for a bare path.
     profile: ?Profile,
     companions: []const Companion,
 
@@ -154,22 +156,24 @@ pub const entries = [_]Entry{
     },
     // Prism ML's ternary re-encoding of Qwen3.8-27B: the same architecture
     // as `qwen3.8-27b`, its weights ternary at group 128 in a Hadamard-rotated
-    // basis (docs/reference/bonsai.md). The 2-bit-slot packing is the bring-up
-    // file (decided 2026-09-18); the denser PTQ1_0 packing follows once the
-    // plan runs. The adapter binds it and the CPU reference runs it; the
-    // Metal plan refuses the rotation until its kernels land. The profile is
-    // decided from the alias evidence: its upstream template refuses a second
-    // system message the pinned one merges (docs/reference/bonsai.md).
+    // basis (docs/reference/bonsai.md). The 2-bit-slot PQ2_0 packing was the
+    // bring-up file; the entry moved to the denser PTQ1_0 packing of the same
+    // weights on 2026-09-18 once measured not slower on the whole token
+    // (13.05 against 12.87 tok/s) at 1.26 GB less, matching the same traces
+    // (bench.md § Bonsai 2 27B acceptance record). The profile is the pinned Qwen3.8 one
+    // (decided 2026-09-18): the file's upstream template renders every
+    // conversation it accepts byte-identically, and refuses a second system
+    // message the pinned one merges (docs/reference/bonsai.md).
     .{
         .name = "bonsai-2-27b",
         .repo = "prism-ml/Ternary-Bonsai-2-27B-gguf",
-        .file = "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        .file = "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
         .revision = "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
-        .sha256 = "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
-        .size = 7_206_168_928,
-        .quantization = "PQ2_0 (ternary g128)",
+        .sha256 = "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3",
+        .size = 5_946_648_928,
+        .quantization = "PTQ1_0 (ternary g128)",
         .architecture = "qwen35",
-        .profile = null,
+        .profile = .qwen38,
         .companions = &.{
             .{ .role = .mmproj, .file = "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf", .size = 629_246_976, .sha256 = "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903", .loaded_by = "the vision unit" },
         },
@@ -265,7 +269,7 @@ test "the table is well formed: unique names, 40-character commits, 64-character
     try std.testing.expectEqualStrings("gemma4", find("gemma-4-12b").?.architecture);
     try std.testing.expectEqual(@as(?Profile, .gemma4), find("gemma-4-26b-a4b").?.profile);
     try std.testing.expectEqual(@as(?Profile, null), find("muse-glimmer-30b").?.profile);
-    try std.testing.expectEqual(@as(?Profile, null), find("bonsai-2-27b").?.profile);
+    try std.testing.expectEqual(@as(?Profile, .qwen38), find("bonsai-2-27b").?.profile);
     try std.testing.expectEqualStrings("qwen35", find("bonsai-2-27b").?.architecture);
     try std.testing.expect(find("bonsai-2-27b").?.companion(.mtp) == null);
     try std.testing.expectEqualStrings("muse-glimmer", find("muse-glimmer-30b").?.architecture);

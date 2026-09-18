@@ -89,7 +89,7 @@ adapter — `nuclis model inspect` says which of the two it is.
 | `gemma-4-12b-qat` | gemma4 | `unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` | 6.72 GB |
 | `gemma-4-26b-a4b` | gemma4 (mixture of experts) | `unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` | 14.2 GB |
 | `muse-glimmer-30b` | muse-glimmer | `unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf` | 15.9 GB |
-| `bonsai-2-27b` | qwen35 (ternary, Hadamard-rotated) | `prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf` | 7.21 GB |
+| `bonsai-2-27b` | qwen35 (ternary, Hadamard-rotated) | `prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf` | 5.95 GB |
 
 Each entry carries the vision projector and the draft head of its
 repository as companions (`--all` fetches them; they are verified now and
@@ -101,9 +101,13 @@ decodes faster. The 26B-A4B mixture of experts runs on both backends with
 its own acceptance record. The Muse entry is pinned ahead of its
 architecture, and `nuclis model inspect` reports it *not runnable* until
 that lands. Bonsai (Qwen3.8-27B re-encoded ternary by Prism ML) runs on
-the CPU reference, where it matches its own oracle's traces; the Metal
-backend refuses it until its ternary kernels and the Hadamard transform of
-activations its weights require land there (in progress).
+both backends with its own acceptance record against the PrismML fork of
+llama.cpp, the only decoder of its encodings: the Qwen plan applies the
+Hadamard transform its folded weights require to every activation, and
+the 5.95 GB file decodes faster than the 16.5 GB Qwen3.8 — by less than
+the byte count promises, because the ternary matvec
+kernels are bound by their multiply rate, not by bytes
+([bench.md](docs/reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
 
 ```sh
 nuclis model ls                       # the catalogue and what is present

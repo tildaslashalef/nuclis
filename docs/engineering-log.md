@@ -77,6 +77,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-10 | Ternary matvec and matmul tiles, the Walsh-Hadamard kernel | 2026-09-18 |
 | APPS-11 | `model pull`: a verified file whose encoding this build does not store keeps its sidecar | 2026-09-18 |
 | REPO-05 | README for a public repository: project status, contributions, disclosure | 2026-09-18 |
+| MODL-17 | Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance | 2026-09-18 |
 
 ## Context
 
@@ -2372,3 +2373,76 @@ inputs) and is judged against MODL-17's model rate; PTQ1_0 decodes 25 %
 slower per byte than PQ2_0 here. No BF16 matvec beyond the generic path
 (96 rows of 5,120 × 48 per token: negligible).
 
+### MODL-17 — Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance (2026-09-18)
+
+**Outcome.** The Qwen Metal plan runs the rotated file: the three sign
+vectors and a 48-entry value-head gather map go to the GPU at plan init,
+the embedding row gets the inverse transform after the gather, and every
+activation a folded weight reads gets the forward transform in place
+(`Backend.hadamard`) before its projection — the normed residual before
+the mixer, the mixer output before `attn_output` / `ssm_out`, the normed
+residual before the FFN pair, the FFN hidden before `ffn_down`, the
+output-head input — on both the decode and the chunked-prefill paths;
+`ssm_alpha` / `ssm_beta` read the residual first (the four-way merged
+DeltaNet projection splits in two around the transform on a rotated file
+only). `ssm_out`'s input is regathered from the tiled to the grouped head
+order by a new row-gather kernel (`nu_gather_rows`, `Backend.gatherRows`)
+into a scratch and transformed there. The profile is decided: the
+catalogue entry's `profile = .qwen38`, and a catalogue entry's profile is
+now forced at open like a registry entry's, so a file whose own template
+digest is not pinned renders the entry's protocol without configuration;
+the deviation (nuclis merges leading system messages the upstream
+template refuses) is recorded in bonsai.md. The entry moved to the
+PTQ1_0 packing (5,946,648,928 B, SHA-256 `53107f53…`), measured not
+slower than PQ2_0 on the whole token at 1.26 GB less; `make
+compare-bonsai` (three rows), `test-generation-bonsai-metal`, and
+`baseline-bonsai` exist; the workload harness takes
+`--reference-revision` and the nuclis record reads the reference revision
+from the records it cites.
+
+**Evidence.** `make compare-bonsai` against the fork's traces (129 files
+each): cpu max abs 2.44e-4 / relative RMS 5.4e-6, **f32 4.27e-4 / 5.4e-6**,
+**f16 1.34e-2 / 7.4e-5** (the Qwen F16 tolerance), greedy token 353 on
+every row; the PTQ1_0 file on the same plan 2.29e-4 / 1.29e-2 and its
+CPU row 2.44e-4. `make test-generation-bonsai-metal` passed on both
+packings (chunk 64 against per-token steps max abs 7.9e-4, relative RMS
+4.0e-5, argmax 278/278). `metal-check` proves the gather exact on the
+48 × 128 regrouping over strided rows. `make bench` (22-token prompt, 64
+output tokens, context 2,048, F16 cache, warm): PQ2_0 **12.87 tok/s**
+decode / 39.1 prefill, PTQ1_0 **13.05** / 39.3; `qwen3.8-27b` on the same
+plan after the change 10.42 / 39.3, unchanged. Per-kernel profile: 1,292
+dispatches per step, the transform **1.66 ms (2.1 %)**, the gather 0.16
+ms, the ternary matvecs about 80 % at 97–116 GB/s — so no norm fusion,
+and the rate the byte count promised (2–3×; delivered 1.3×) is a matvec
+arithmetic question. Acceptance record against the PrismML fork's server
+(`prism-b10687-5d80cff`, its `--lazy-mode` dropped) on the Qwen token
+arrays (byte-identical, verified): decode **13.87 / 13.26 / 11.72 /
+10.20** tok/s at 512 / 4K / 16K / 32,639 against the fork's 17.05 /
+16.61 / 13.42 / 12.83 (80–87 %), prefill 93.69 / 86.01 / 66.35 / 50.63
+against 97.54 / 99.07 / 79.69 / 84.76 (96 % → 60 %); every sample stopped
+on `token_budget` on both sides; session 2.15 GiB, peak RSS 2.36 GiB
+([bench.md](reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+Agent check (Metal, context 8,192, `--think medium`, `-p --json`):
+`write_file` then `read_file` in three steps, `hello world` on disk, 176
+prompt tokens, 210 generated, prefill 3.19 s, decode 15.1 s, `replayed:
+true`, stop `eos`. `make check`: 413 tests and `test-metal`.
+
+**Files.** `inference/src/models/qwen35_metal.zig`,
+`inference/src/backends/metal/kernels.metal`, `root.zig`,
+`inference/metal-check.zig`, `src/catalog.zig`, `src/config.zig`,
+`Makefile`, `scripts/reference-baseline.py`, `scripts/nuclis-baseline.py`,
+`tests/fixtures/run-2026-09-18-bonsai/`, `tests/fixtures/provenance.md`,
+`docs/benchmarks/reference-2026-09-18-bonsai.json`,
+`docs/benchmarks/nuclis-2026-09-18-bonsai.json`, `docs/reference/bonsai.md`,
+`docs/reference/bench.md`, `docs/reference/metal-backend.md`,
+`docs/reference/artifacts.md`, `docs/reference/reference-baseline.md`,
+`docs/development.md`, `docs/spec.md`, `README.md`.
+
+**Remaining.** Decode is at 80–87 % of the fork and 1.3× the Qwen3.8
+rate where the bytes promise 2–3×: the ternary matvecs are at the kernel
+set's multiply-rate ceiling, and closing the gap needs a different
+arithmetic (packed integer products, or one decoded weight shared across
+several inputs) — a kernel unit for the roadmap's performance theme,
+judged against this record. The acceptance workload was measured on the
+PQ2_0 file before the entry moved; the PTQ1_0 file has the short bench
+and the traces. The transform stays 258 separate dispatches (2.1 %).

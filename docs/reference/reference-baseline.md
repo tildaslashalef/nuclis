@@ -67,10 +67,17 @@ builds against this checkout unchanged with its include and library paths
 in place of the mainline ones, into
 `.zig-cache/generation/prism-reference-generation`
 ([generation.md](generation.md#numerical-traces)). The fork's server takes
-the same flags as the mainline one below; `--jinja` renders the Bonsai
-template, while the fork's `llama-completion --jinja` aborts at its own
-start-up template self-test on that template (see bonsai.md). The Bonsai
-acceptance run (MODL-17) records the fork's revision as its reference side.
+the mainline one's flags below except `--lazy-mode`, which its older base
+does not know (drop it; the rest are accepted); `--jinja` renders the
+Bonsai template, while the fork's `llama-completion --jinja` aborts at its
+own start-up template self-test on that template (see bonsai.md). The
+Bonsai acceptance run (MODL-17, 2026-09-18) ran the workload harness
+against that server with `--reference-revision 5d80cff0…` (the harness
+otherwise insists on the mainline pin) and `--family qwen38`, the fork's
+revision recorded as the reference side of
+[reference-2026-09-18-bonsai.json](../benchmarks/reference-2026-09-18-bonsai.json)
+and read from there by `nuclis-baseline.py` into the nuclis record
+([bench.md](bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
 
 ## Run the workload
 

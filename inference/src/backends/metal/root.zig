@@ -61,7 +61,7 @@ const kernel_names = [_][:0]const u8{
     "nu_scale",             "nu_add_scale",           "nu_softcap",             "nu_attention_decode_w", "nu_attention_decode_wh", "nu_matvec_q4_0",
     "nu_matmul_q4_0",       "nu_matmul_q4_0_32",      "nu_matvec_experts",      "nu_route",              "nu_combine_experts",     "nu_gelu_mul_rows",
     "nu_expert_lists",      "nu_matmul_experts",      "nu_matmul_experts_q4_0", "nu_matvec_pq2_0",       "nu_matvec_ptq1_0",       "nu_matmul_pq2_0",
-    "nu_matmul_ptq1_0",     "nu_matmul_pq2_0_32",     "nu_matmul_ptq1_0_32",    "nu_hadamard",
+    "nu_matmul_ptq1_0",     "nu_matmul_pq2_0_32",     "nu_matmul_ptq1_0_32",    "nu_hadamard",           "nu_gather_rows",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -140,6 +140,7 @@ pub const Kernel = enum(u32) {
     matmul_pq2_0_32,
     matmul_ptq1_0_32,
     hadamard,
+    gather_rows,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -770,6 +771,21 @@ pub const Backend = struct {
         if (rows * blocks > std.math.maxInt(u32)) return error.InvalidShape;
         const p: HadamardParams = .{ .width = @intCast(width), .stride = @intCast(stride), .rows = @intCast(rows), .blocks = @intCast(blocks), .inverse = @intFromBool(inverse) };
         try self.dispatch(.hadamard, &.{ data, signs }, p, @intCast(rows * blocks), 256, .{});
+    }
+    pub const GatherParams = extern struct { width: u32, groups: u32, rows: u32, in_stride: u32, out_stride: u32 };
+    /// dst[r][g][0..width] = src[r][map[g]][0..width] over `rows` rows of
+    /// `groups` vectors: a fixed permutation of the vectors inside every row.
+    /// `map` holds `groups` u32 indices below `groups` (a bijection is the
+    /// caller's contract); `dst` and `src` must not overlap.
+    pub fn gatherRows(self: *Backend, dst: Buffer, src: Buffer, map: Buffer, width: usize, groups: usize, rows: usize, in_stride: usize, out_stride: usize) !void {
+        if (width == 0 or groups == 0 or rows == 0 or in_stride < groups * width or out_stride < groups * width) return error.InvalidShape;
+        const count = rows * groups * width;
+        if (count > std.math.maxInt(u32) or map.len < groups * 4 or map.offset % 4 != 0) return error.InvalidShape;
+        const src_len = ((rows - 1) * in_stride + groups * width) * 4;
+        const dst_len = ((rows - 1) * out_stride + groups * width) * 4;
+        if (src.len < src_len or dst.len < dst_len or overlaps(dst, dst_len, src, src_len)) return error.InvalidShape;
+        const p: GatherParams = .{ .width = @intCast(width), .groups = @intCast(groups), .rows = @intCast(rows), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride) };
+        try self.dispatch(.gather_rows, &.{ dst, src, map }, p, perElement(count), 256, .{});
     }
     pub const L2Params = extern struct { width: u32, stride: u32, eps: f32, rows: u32, heads: u32, row_stride: u32 };
     pub fn l2Norm(self: *Backend, data: Buffer, rows: usize, width: usize, stride: usize, eps: f32) !void {

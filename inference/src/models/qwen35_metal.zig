@@ -2,7 +2,10 @@
 //! buffer per token: the CPU supplies a token ID and reads back logits (or a
 //! greedy token); every activation, norm, gate, cache write, and recurrent
 //! update stays on the GPU. The schedule is the same as `qwen35_runtime.zig`,
-//! which remains the CPU reference these results are compared against.
+//! which remains the CPU reference these results are compared against. On a
+//! rotated (Bonsai) file the embedding row is un-rotated after the gather and
+//! every activation a rotated weight reads is transformed in place first
+//! (`ssm_alpha` / `ssm_beta` read the residual before its transform).
 //!
 //! Ownership: the plan borrows the mapped weights and the `Backend`; it owns
 //! the session and the GPU buffers it creates. Session memory is wrapped once
@@ -34,6 +37,22 @@ const LayerConstants = struct {
 /// A weight matrix ready for dispatch: its GPU range and CPU-side descriptor.
 const Weight = struct { buffer: Buffer, matrix: @import("../backends/cpu/root.zig").Matrix };
 
+/// The rotated file's transform operands, uploaded once at init: the sign
+/// vector per width (`model.Rotation.widths` order) and, when the fold used
+/// the grouped value-head order, the gather map with the regathered scratch
+/// `ssm_out` reads (one decode row, `padded` prefill rows).
+const Rotation = struct {
+    signs: [3]Buffer,
+    value_map: ?Buffer,
+    regrouped: Buffer,
+    regrouped_c: Buffer,
+
+    fn signsFor(self: Rotation, width: usize) !Buffer {
+        for (model.Rotation.widths, self.signs) |w, signs| if (w == width) return signs;
+        return error.InvalidShape;
+    }
+};
+
 pub const Plan = struct {
     alloc: std.mem.Allocator,
     backend: *metal.Backend,
@@ -41,6 +60,7 @@ pub const Plan = struct {
     binding: model.Binding,
     state: session.Session,
     state_buffer: Buffer,
+    rotation: ?Rotation,
     constants: []LayerConstants,
     output_norm: Buffer,
     rope_table: Buffer,
@@ -101,9 +121,6 @@ pub const Plan = struct {
     /// bytes attention reads per token; the recurrent state stays F32.
     pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision) !Plan {
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
-        // The rotation's transform and the ternary and BF16 kernels are not
-        // in this plan yet; refuse rather than run in the stored basis.
-        if (binding.rotation != null) return error.UnsupportedRotation;
         var layouts: [64]session.Layout = undefined;
         for (binding.layers, &layouts) |layer, *layout| layout.* = switch (layer.mixer) {
             .full_attention => .{ .attention = .{ .key_row = 1024, .value_row = 1024, .precision = kv } },
@@ -178,6 +195,23 @@ pub const Plan = struct {
         self.alpha_c = try backend.create(n * 48 * 4);
         self.beta_c = try backend.create(n * 48 * 4);
         self.mixed_out_c = try backend.create(n * 6144 * 4);
+        self.rotation = null;
+        if (binding.rotation) |rotation| {
+            var signs: [3]Buffer = undefined;
+            for (&signs, rotation.signs) |*buffer, source| {
+                if (source.values.len == 0) return error.InvalidShape;
+                buffer.* = try backend.create(source.values.len * 4);
+                for (buffer.floats(), source.values) |*out, value| out.* = @floatFromInt(value.signed);
+            }
+            var value_map: ?Buffer = null;
+            if (rotation.value_grouped) {
+                // Grouped head `nk * 3 + rep` takes the mixer's tiled head `rep * 16 + nk`.
+                const map = try backend.create(48 * 4);
+                for (@as([*]u32, @ptrCast(@alignCast(map.host)))[0..48], 0..) |*m, g| m.* = @intCast((g % 3) * 16 + g / 3);
+                value_map = map;
+            }
+            self.rotation = .{ .signs = signs, .value_map = value_map, .regrouped = try backend.create(6144 * 4), .regrouped_c = try backend.create(n * 6144 * 4) };
+        }
         return self;
     }
     pub fn deinit(self: *Plan) void {
@@ -220,6 +254,28 @@ pub const Plan = struct {
         const w = try self.weight(tensor);
         try self.backend.matvec(w.buffer, w.matrix, input, output);
     }
+    /// On a rotated file, transforms `rows` rows of `width` (packed at that
+    /// stride) in place into the basis the rotated weights were folded for;
+    /// no dispatch on a plain file.
+    fn rotate(self: *Plan, data: Buffer, width: usize, rows: usize) !void {
+        const rotation = self.rotation orelse return;
+        try self.backend.hadamard(data, try rotation.signsFor(width), width, rows, width, false);
+    }
+    /// The activation `ssm_out` reads: the mixer output as is on a plain file;
+    /// on a rotated one, transformed in place, or first regathered into the
+    /// scratch of its path (`chunk`: the prefill rows) from the tiled to the
+    /// grouped head order when the fold used it (`qwen35_runtime.rotateGrouped`).
+    fn rotateGrouped(self: *Plan, input: Buffer, rows: usize, chunk: bool) !Buffer {
+        const rotation = self.rotation orelse return input;
+        const map = rotation.value_map orelse {
+            try self.rotate(input, 6144, rows);
+            return input;
+        };
+        const scratch = if (chunk) rotation.regrouped_c else rotation.regrouped;
+        try self.backend.gatherRows(scratch, input, map, 128, 48, rows, 6144, 6144);
+        try self.rotate(scratch, 6144, rows);
+        return scratch;
+    }
 
     /// Merge only shapes the backend can encode as whole threadgroups. A
     /// rejected merge records no work; the standalone path remains the fallback.
@@ -258,6 +314,7 @@ pub const Plan = struct {
         errdefer if (b.recording) b.commit() catch {};
         const embedding = try self.weight(self.binding.token_embedding);
         try b.embed(embedding.buffer, embedding.matrix, token, self.x);
+        if (self.rotation) |rotation| try b.hadamard(self.x, try rotation.signsFor(hidden), hidden, 1, hidden, true);
         for (self.binding.layers, self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
             switch (layer.mixer) {
@@ -266,7 +323,9 @@ pub const Plan = struct {
             }
             try b.add(self.x, self.projected, hidden);
             try b.rmsNorm(self.x, c.post_attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+            try self.rotate(self.normalized, hidden, 1);
             try self.projections(&.{ layer.ffn_gate, layer.ffn_up }, &.{ self.gate, self.up }, .silu_mul_pair);
+            try self.rotate(self.gate, ffn, 1);
             try self.mm(layer.ffn_down, self.gate, self.projected);
             try b.add(self.x, self.projected, hidden);
             if (observer) |o| {
@@ -292,6 +351,7 @@ pub const Plan = struct {
     /// `self.normalized` and whichever readbacks were requested.
     fn recordOutputs(self: *Plan, greedy: ?*u32, topk: ?*sampling.TopK) !void {
         const b = self.backend;
+        try self.rotate(self.normalized, hidden, 1);
         try self.mm(self.binding.output, self.normalized, self.logits);
         if (greedy != null) try b.argmax(self.logits, vocabulary, self.argmax_values, self.argmax_indices, self.argmax_result);
         if (topk) |top| try b.topk(self.logits, vocabulary, sampling.TopK.capacity, top.temperature, self.topk);
@@ -363,6 +423,7 @@ pub const Plan = struct {
         errdefer if (b.recording) b.commit() catch {};
         const embedding = try self.weight(self.binding.token_embedding);
         for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
+        if (self.rotation) |rotation| try b.hadamard(self.x_c, try rotation.signsFor(hidden), hidden, count, hidden, true);
         const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
         for (self.binding.layers, self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x_c, c.attention_norm, self.normalized_c, norm);
@@ -372,9 +433,11 @@ pub const Plan = struct {
             }
             try b.add(self.x_c, self.projected_c, count * hidden);
             try b.rmsNorm(self.x_c, c.post_attention_norm, self.normalized_c, norm);
+            try self.rotate(self.normalized_c, hidden, count);
             try self.mmRows(layer.ffn_gate, self.normalized_c, hidden, self.gate_c, ffn, count);
             try self.mmRows(layer.ffn_up, self.normalized_c, hidden, self.up_c, ffn, count);
             try b.siluMul(self.gate_c, self.up_c, count * ffn);
+            try self.rotate(self.gate_c, ffn, count);
             try self.mmRows(layer.ffn_down, self.gate_c, ffn, self.projected_c, hidden, count);
             try b.add(self.x_c, self.projected_c, count * hidden);
             if (observer) |o| if (o.check) |check| try check(o.context);
@@ -399,6 +462,7 @@ pub const Plan = struct {
         const b = self.backend;
         const cache = self.state.layers[il].attention;
         const position = self.state.position;
+        try self.rotate(self.normalized_c, hidden, count);
         try self.mmRows(attn.query_and_gate, self.normalized_c, hidden, self.qg_c, 24 * 512, count);
         try self.mmRows(attn.key, self.normalized_c, hidden, self.k_c, 1024, count);
         try self.mmRows(attn.value, self.normalized_c, hidden, self.v_c, 1024, count);
@@ -430,16 +494,19 @@ pub const Plan = struct {
         const total = position + count;
         try b.attentionChunk(self.stateSlice(cache.keys.range(0, total)), self.stateSlice(cache.values.range(0, total)), queries, self.mixed_out_c, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = position, .count = count, .q_stride = 24 * 256, .out_stride = 6144, .scale = 1.0 / 16.0, .precision = precision });
         try b.sigmoidGate(self.mixed_out_c, self.qg_c, count * 24, 256, 512, 256);
+        try self.rotate(self.mixed_out_c, 6144, count);
         try self.mmRows(attn.output, self.mixed_out_c, 6144, self.projected_c, hidden, count);
     }
 
     fn deltaChunk(self: *Plan, linear: model.DeltaNet, c: anytype, il: usize, count: usize) !void {
         const b = self.backend;
         const state = self.state.layers[il].recurrent;
-        try self.mmRows(linear.qkv, self.normalized_c, hidden, self.mixed_c, 10240, count);
-        try self.mmRows(linear.gate, self.normalized_c, hidden, self.z_c, 6144, count);
+        // The gating projections read the residual before its transform.
         try self.mmRows(linear.beta, self.normalized_c, hidden, self.beta_c, 48, count);
         try self.mmRows(linear.alpha, self.normalized_c, hidden, self.alpha_c, 48, count);
+        try self.rotate(self.normalized_c, hidden, count);
+        try self.mmRows(linear.qkv, self.normalized_c, hidden, self.mixed_c, 10240, count);
+        try self.mmRows(linear.gate, self.normalized_c, hidden, self.z_c, 6144, count);
         const history = self.stateFloats(state.history);
         try b.convolutionRows(history, self.mixed_c, c.convolution, self.convolved_c, 10240, 4, count, 10240);
         try b.convolutionHistory(history, self.mixed_c, 10240, 4, count, 10240);
@@ -450,7 +517,8 @@ pub const Plan = struct {
         // 32-token sub-chunks with the state carried in place.
         try b.deltaChunk(self.stateFloats(state.matrix), self.convolved_c, self.alpha_c, self.beta_c, self.mixed_out_c, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = count, .in_stride = 10240, .gate_stride = 48, .out_stride = 6144, .scale = 1.0 / @sqrt(@as(f32, 128)) });
         try b.rmsNorm(self.mixed_out_c, c.norm, self.mixed_out_c, .{ .rows = count * 48, .width = 128, .in_stride = 128, .out_stride = 128, .silu_multiplier = .{ .buffer = self.z_c, .stride = 128 } });
-        try self.mmRows(linear.output, self.mixed_out_c, 6144, self.projected_c, hidden, count);
+        const out_input = try self.rotateGrouped(self.mixed_out_c, count, true);
+        try self.mmRows(linear.output, out_input, 6144, self.projected_c, hidden, count);
     }
 
     /// Copies the last step's logits out of the shared buffer. Valid after a
@@ -473,6 +541,7 @@ pub const Plan = struct {
         // through F32 scratch rows and one pack dispatch.
         const k_row = if (precision == .f32) k_slot else self.k;
         const v_row = if (precision == .f32) v_slot else self.v;
+        try self.rotate(self.normalized, hidden, 1);
         try self.projections(&.{ attn.query_and_gate, attn.key, attn.value }, &.{ self.qg, k_row, v_row }, .plain);
         // Each projected head stores query then gate; the gate is applied after attention.
         try b.rmsNorm(self.qg, c.query_norm, self.q, .{ .rows = 24, .width = 256, .in_stride = 512, .out_stride = 256 });
@@ -483,13 +552,22 @@ pub const Plan = struct {
         const visible = position + 1;
         try b.attentionDecode(self.stateSlice(cache.keys.range(0, visible)), self.stateSlice(cache.values.range(0, visible)), self.q, self.partials, self.mixed_out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = visible, .scale = 1.0 / 16.0, .precision = precision });
         try b.sigmoidGate(self.mixed_out, self.qg, 24, 256, 512, 256);
+        try self.rotate(self.mixed_out, 6144, 1);
         try self.mm(attn.output, self.mixed_out, self.projected);
     }
 
     fn linearAttention(self: *Plan, linear: model.DeltaNet, c: anytype, il: usize) !void {
         const b = self.backend;
         const state = self.state.layers[il].recurrent;
-        try self.projections(&.{ linear.qkv, linear.gate, linear.beta, linear.alpha }, &.{ self.mixed, self.z, self.beta, self.alpha }, .plain);
+        if (self.rotation == null) {
+            try self.projections(&.{ linear.qkv, linear.gate, linear.beta, linear.alpha }, &.{ self.mixed, self.z, self.beta, self.alpha }, .plain);
+        } else {
+            // The gating projections read the residual before its transform,
+            // so the merge splits in two around it.
+            try self.projections(&.{ linear.beta, linear.alpha }, &.{ self.beta, self.alpha }, .plain);
+            try self.rotate(self.normalized, hidden, 1);
+            try self.projections(&.{ linear.qkv, linear.gate }, &.{ self.mixed, self.z }, .plain);
+        }
         try b.convolution(self.stateFloats(state.history), self.mixed, c.convolution, self.convolved, 10240, 4);
         try b.silu(self.convolved, 10240);
         // Convolution output is [Q:16x128 | K:16x128 | V:48x128]; Q and K are L2-normalized.
@@ -497,6 +575,7 @@ pub const Plan = struct {
         try b.deltaGates(self.alpha, self.beta, c.a, c.time_bias, 48);
         try b.delta(self.stateFloats(state.matrix), self.convolved, self.alpha, self.beta, self.mixed_out, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .scale = 1.0 / @sqrt(@as(f32, 128)) });
         try b.rmsNorm(self.mixed_out, c.norm, self.mixed_out, .{ .rows = 48, .width = 128, .in_stride = 128, .out_stride = 128, .silu_multiplier = .{ .buffer = self.z, .stride = 128 } });
-        try self.mm(linear.output, self.mixed_out, self.projected);
+        const out_input = try self.rotateGrouped(self.mixed_out, 1, false);
+        try self.mm(linear.output, out_input, self.projected);
     }
 };

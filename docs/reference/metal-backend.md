@@ -523,6 +523,39 @@ that precedes two of the four activations per layer; whether the 2–3 %
 justifies it is read from MODL-17's per-kernel profile of the whole
 token, not from this number.
 
+### The rotation on the Qwen plan (MODL-17, 2026-09-18)
+
+`qwen35_metal.zig` applies the transform where the CPU reference does
+([bonsai.md § Metal plan](bonsai.md#metal-plan-modl-17-2026-09-18)): the
+inverse over the embedding row(s) after the gather, the forward over the
+normed residual before the mixer's projections, over the mixer output
+before `attn_output` / `ssm_out`, over the normed residual before the FFN
+pair, over the FFN hidden before `ffn_down`, and over the output-head
+input — in place, since nothing reads those buffers afterwards except the
+projection itself; the DeltaNet `ssm_alpha` / `ssm_beta` projections are
+dispatched before the residual is transformed (the four-way merged matvec
+of the plain file splits into two two-way merges around the transform,
+the plain file keeps its one dispatch). The `ssm_out` input is regathered
+first from the mixer's tiled head order into the fold's grouped order by
+`nu_gather_rows` (`Backend.gatherRows`: `dst[r][g] = src[r][map[g]]` over
+rows of `groups` vectors, one thread per element, the 48-entry map
+uploaded once at plan init), into a scratch of one decode row and
+`padded` prefill rows, then transformed there. `metal-check` proves the
+gather exact on the 48 × 128 regrouping over strided rows and its
+refusals (overlap, a short map, a short stride).
+
+On the whole token (`make bench-profile MODEL=bonsai-2-27b`, 22-token
+prompt, 2,048 context, 192 measured steps): 1,292 dispatches per step,
+79.9 ms attributed of 85.5 ms command-buffer time; the 258 transforms take
+**1.66 ms (2.1 %)** and the 48 gathers 0.16 ms (0.2 %), the matvecs about
+80 % at 97–116 GB/s of weight bytes (`matvec_segments` on the merged
+projections 102–113, the PQ2_0 FFN down 97, the output head 116), the
+norms 2.1 ms (2.6 %). So the fusion question the transform kernel left
+open is answered for now: folding the transform into the norm that
+precedes two of the four activations would save at most about 1 % of the
+token, and the token is bound by the ternary matvecs' multiply rate
+(§ Ternary matvecs and tiles), which is where the next kernel work goes.
+
 ### Gathered expert kernels (KERN-09)
 
 A mixture-of-experts layer stores each expert projection as a 3-D tensor

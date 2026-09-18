@@ -16,102 +16,28 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-KERN-10 closed on 2026-09-18 (MODL-16 the same day): the Metal backend
-decodes PQ2_0, PTQ1_0, and BF16, runs the ternary matvecs and prefill
-tiles (PQ2_0 119 GB/s, PTQ1_0 88 GB/s on the output head: at the kernel
-set's multiply rate, half Q4_0's byte rate by density — the 200 GB/s
-target is not met, the reasoning is in metal-backend.md), and has
-`nu_hadamard` (1.3–2.2 ms per token as 258 dispatches, launch overhead;
-no fusion attempted). The CPU reference runs Bonsai against the fork's
-traces. Next is MODL-17: `qwen35_metal.zig` dispatches the inverse after
-the embedding gather and the forward transform before each rotated
-projection (the four activations per layer and the output-head input,
-the value-head regathering before `ssm_out` — see `rotate` /
-`rotateGrouped` in `qwen35_runtime.zig` for the exact set), the sign
-vectors uploaded at plan init, `make compare-bonsai` (F32, F16) and
-`test-generation-bonsai-metal`, the profile decision (recommendation:
-the entry's `profile = .qwen38`; the file's template refuses merged
-system messages, 4 of 68 alias cases), the catalogue entry filled,
-the acceptance record against the fork's server, PTQ1_0 measured, `make
-bench` on Qwen unchanged. Muse Glimmer follows.
+MODL-17 closed on 2026-09-18: `bonsai-2-27b` runs on the Metal plan
+(the transform on every rotated activation, the value-head regather for
+`ssm_out`), matches the fork's traces on every row, has its acceptance
+record against the fork's server (decode 13.9 → 10.2 tok/s over 512 →
+32K, 80–87 % of the fork, 1.3× Qwen3.8), its agent check, and moved to
+the PTQ1_0 file; the catalogue's profile is forced at open. The ternary
+matvec rate is the remaining gap (a roadmap kernel unit). Next is
+MODL-11, Muse Glimmer 30B: session 1 pulls the file, records the
+artifact facts, and brings up the `gpt4o` tokenizer splitter; session 2
+the adapter and CPU reference (design below).
 
-Order: MODL-17 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
+Order: MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 After AGNT-10 the roadmap continues with speculative decoding across the
-families, then performance, then vision
-([docs/roadmap.md](docs/roadmap.md)).
+families, then performance (the ternary matvec arithmetic among it), then
+vision ([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-17 | Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance | 1–2 |
 | MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2 |
 | MODL-12 | Muse Glimmer 30B: Metal plan | 1 |
 | MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 1 |
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 1 |
-
-## Bonsai 2 27B — the artifact (decided 2026-09-18)
-
-`prism-ml/Ternary-Bonsai-2-27B-gguf` at commit
-`6ed5e12bf84b7a63069882c91dd9e9218647d17b` (Apache-2.0, released
-2026-09-17). **`Ternary-Bonsai-2-27B-PQ2_0.gguf`**, 7,206,168,928 B,
-SHA-256 `3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1`,
-is the catalogue's file: each trit in a 2-bit slot, 34 bytes per 128
-weights, the packing Prism measures on Apple Silicon and the faster
-prompt processing everywhere by its own table; the bring-up target
-because its unpack is the Q4_0 nibble path's shape. The denser
-**`Ternary-Bonsai-2-27B-PTQ1_0.gguf`** (5,946,648,928 B, SHA-256
-`53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3`, 28
-bytes per 128) is the footprint win and follows in the same units once
-the plan runs; whether the entry moves to it is measured, not assumed.
-Companions: `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` 629,246,976 B
-(SHA-256 `6807ede6…`, pinned under `mmproj`), `…-mmproj-BF16.gguf`
-931,145,856 B (`e287342d…`, the reference projector, not pinned), and an
-F16 language file of 53.8 GB (not pulled). Stock llama.cpp rejects the
-files (ids past its type count); the oracle is the PrismML fork at its
-release `prism-b10687-5d80cff` (commit `5d80cff0b8cb…`, 2026-09-17,
-MIT, tracks mainline) — pinned by tag, since the fork has already
-retired one format (its legacy group-128 `Q2_0`).
-
-Why: the same architecture as the flagship at 7.2 GB (5.95 GB in
-PTQ1_0) instead of 16.5 GB, and decode is memory-bound, so the byte
-count alone projects two to three times the Qwen3.8 rate; Prism's own
-M4 Pro number is 18.0 tok/s decode and 125 pp512 on a pre-rotation
-build, the M5 Pro 27.7 tok/s at about 201 GB/s. Quality claims (98.2 %
-of the FP16 average over 14 thinking-mode benchmarks, measured through
-vLLM on H100) are Prism's; nuclis proves equivalence to the fork, not
-quality.
-
-**Facts** live in [docs/reference/bonsai.md](docs/reference/bonsai.md)
-since session 1 (read from the pulled PQ2_0 file and the fork's loader):
-header and tensors, both block layouts, the rotation contract including
-`gdn_v_grouped`, the template evidence, and the oracle recipe. Two things
-the earlier header read had wrong: the PQ2_0 file's `qwen35.block_count`
-is 64 with no `nextn` key (the Qwen release says 65 + 1), and its
-`general.file_type` is 141. Prism's Apple numbers (pre-rotation build,
-"pending re-measurement"): M4 Pro 18.0 tg128 / 125 pp512 at 7.2 GB; M5
-Pro 28.7 / 393; M5 Max 47.0 / 765; current build M5 Pro PQ2_0 27.7 / 397,
-PTQ1_0 27.1 / 369.
-
-## MODL-17 — Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance
-
-**Design.** `qwen35_metal.zig` dispatches the transform before each
-rotated projection (and the inverse after the embedding gather) when the
-binding carries the rotation, with no change on the plain Qwen file;
-`make compare-bonsai` (CPU, Metal F32, Metal F16 at their tolerances)
-and `make test-generation-bonsai-metal`; the profile: `.qwen38` through
-the alias if the fixtures prove the template identical, else
-`profiles/bonsai.zig` (the sampling defaults from the header, `xhigh`
-default); the catalogue entry's `profile` filled; `nuclis --help`; the
-acceptance record against the fork's server on the Qwen arrays
-(`tests/fixtures/run-2026-09-06` tokens apply since the vocabulary is
-identical, re-verified by the script's tokenizer check; the reference
-side is the fork's run, recorded with its own revision;
-`make baseline-bonsai`); the agent check; PTQ1_0 measured on the same
-plan (`--model <path>`) and the entry moved only if it is not slower;
-`make bench` on Qwen unchanged.
-
-**Acceptance.** Traces at the thresholds on every path; the generation
-check; the acceptance table in bench.md; the live tool turn; the Qwen
-rate unchanged.
 
 ## Muse Glimmer 30B — the artifact (decided 2026-09-16)
 
