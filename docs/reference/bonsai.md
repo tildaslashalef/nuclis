@@ -228,14 +228,40 @@ Runs on 2026-09-18 (M4 Pro, Metal, the PQ2_0 file):
   has RMS 7.03 (Qwen 5.46) and a peak of 327 (Qwen 91). The payload of
   `make compare-bonsai-cpu` (session 2).
 
+## CPU reference against the fork (MODL-16, 2026-09-18)
+
+[`cpu/hadamard.zig`](../../inference/src/backends/cpu/hadamard.zig) is the
+transform: `forward` (signs, then the butterflies per block, F64 scratch,
+scale `1/√block`) and `inverse` (butterflies, then signs), tested against
+the parity-defined matrix and as a round trip. The Qwen runtime
+([`qwen35_runtime.zig`](../../inference/src/models/qwen35_runtime.zig))
+decodes the three sign vectors to F32 at init and, on a rotated binding,
+applies `inverse` to the embedding row after lookup and `forward` to each
+activation a rotated weight reads — the normed residual before the mixer
+(shared by `attn_qkv` / `attn_gate` or `q` / `k` / `v`), the mixer output
+before `ssm_out` / `attn_output`, the normed residual before the FFN
+(shared by `gate` / `up`), the FFN hidden before `ffn_down`, and the
+normed residual before the output head — into a separate scratch, so
+`ssm_alpha` / `ssm_beta` keep the untransformed residual. `ssm_out`'s
+input is regathered first: the mixer emits the 48 value heads tiled
+(head `rep · 16 + nk`, key group `h % 16`, the same order as the fork's
+mixer), and `value_grouped` says the fold used the grouped order
+(`nk · 3 + rep`), so the permutation is a real gather. A plain Qwen file
+takes none of these paths.
+
+`make compare-bonsai-cpu` (`generate --backend cpu --raw --prompt 'Hello,'`
+on the PQ2_0 file, then `compare-generation.py` against
+`tests/fixtures/bonsai-hello-comma` at the bring-up thresholds 2e-3 /
+1e-4) **passes on the first run**: 129 files, max abs 2.44e-4 (at
+`token-1-layer-63`), max relative RMS 5.4e-6, greedy token 353 with the
+same top three logits as the fork to three decimals (353: 11.505, 1204:
+9.753, 198: 9.348). The two positions take about 56 s on the CPU.
+
 ## Status
 
-Session 1 of MODL-16 (2026-09-18): the fork is pinned and built, the file
-validates and binds (851 text tensors, no auxiliary block, the rotation
-read into the binding, `inspect` says *supported*), the three encodings
-decode on the CPU against the fork's fixtures, the traces are captured,
-and the template evidence is recorded. Session 2 adds `cpu.hadamard`, the
-runtime's transform before every rotated projection and after the
-embedding lookup, and `make compare-bonsai-cpu` against these traces.
-Metal (the ternary and BF16 matvecs, the transform kernel) is KERN-10; the
-Metal plan, profile, catalogue, and acceptance are MODL-17.
+MODL-16 closed on 2026-09-18: the file validates and binds, the three
+encodings decode against the fork's fixtures, the CPU reference applies
+the rotation and matches the fork's traces. Metal (the ternary and BF16
+matvecs and tiles, the transform kernel) is KERN-10; the Metal plan,
+profile, catalogue, and acceptance are MODL-17. Until then
+`generate --backend metal` on the file returns `UnsupportedRotation`.

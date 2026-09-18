@@ -100,10 +100,10 @@ quantization-aware-trained checkpoint, whose every weight matrix is Q4_0
 decodes faster. The 26B-A4B mixture of experts runs on both backends with
 its own acceptance record. The Muse entry is pinned ahead of its
 architecture, and `nuclis model inspect` reports it *not runnable* until
-that lands. Bonsai (Qwen3.8-27B re-encoded ternary by Prism ML) validates
-and binds through the Qwen adapter, its two weight encodings decode on the
-CPU, and `generate` refuses it until the Hadamard transform of activations
-its weights require is applied (in progress).
+that lands. Bonsai (Qwen3.8-27B re-encoded ternary by Prism ML) runs on
+the CPU reference, where it matches its own oracle's traces; the Metal
+backend refuses it until its ternary kernels and the Hadamard transform of
+activations its weights require land there (in progress).
 
 ```sh
 nuclis model ls                       # the catalogue and what is present

@@ -160,6 +160,20 @@ compare-f32: metal ## The F32 cache at the bring-up thresholds (max abs 2e-3, re
 compare-f16: metal ## The F16 cache at its own tolerance (max abs 3e-2, relative RMS 2e-4; see docs/reference/metal-backend.md)
 	$(call compare_run,f16,0.03,0.0002)
 
+# `bonsai-2-27b`: Qwen3.8-27B re-encoded ternary in a Hadamard-rotated basis
+# (MODL-16, docs/reference/bonsai.md), with its own traces from the PrismML fork.
+BONSAI_MODEL ?= $(HOME)/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf
+# $(1) label, $(2) backend flags, $(3) max absolute, $(4) max relative RMS per trace file.
+define compare_bonsai_run
+	rm -rf "$(TRACE)-bonsai-$(1)" && mkdir -p "$(TRACE)-bonsai-$(1)"
+	$(BIN) generate $(2) --model "$(BONSAI_MODEL)" --raw --prompt 'Hello,' --max-tokens 1 --ctx-size 8 \
+	  --logits "$(TRACE)-bonsai-$(1)/logits.f32" --trace-dir "$(TRACE)-bonsai-$(1)" $(ARGS) > /dev/null
+	python3 scripts/compare-generation.py "$(TRACE)-bonsai-$(1)" tests/fixtures/bonsai-hello-comma --positions 2 --max-absolute $(3) --max-relative-rms $(4) \
+	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("bonsai $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
+endef
+compare-bonsai-cpu: metal ## The Qwen CPU reference on the Bonsai file (ternary weights, the Hadamard transform) vs the fork's traces at the bring-up thresholds
+	$(call compare_bonsai_run,cpu,--backend cpu,0.002,0.0001)
+
 # The catalogue's Gemma 4 12B file (QAT, every matrix Q4_0; MODL-08) and the
 # K-quant file the adapter was brought up on (MODL-05–MODL-07); both stay pinned in
 # docs/reference/artifacts.md and each has its own trace fixtures.

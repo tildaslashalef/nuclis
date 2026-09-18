@@ -73,6 +73,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-09 | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2026-09-18 (two sessions) |
 | MODL-10 | Gemma 4 26B-A4B: catalogue verdict, acceptance record, agent check | 2026-09-18 |
 | MODL-15 | Bonsai 2 27B accepted ahead of Muse: artifact pinned, facts read, three units planned | 2026-09-18 |
+| MODL-16 | Bonsai 2 27B: oracle, facts, ternary encodings, Hadamard transform, CPU reference | 2026-09-18 |
 | APPS-11 | `model pull`: a verified file whose encoding this build does not store keeps its sidecar | 2026-09-18 |
 | REPO-05 | README for a public repository: project status, contributions, disclosure | 2026-09-18 |
 
@@ -2241,3 +2242,81 @@ left as recorded.
 
 **Remaining.** The GitHub repository's description and topics are set
 outside the tree; the project page named in *Name* is not live.
+
+### MODL-16 — Bonsai 2 27B: oracle, facts, ternary encodings, Hadamard transform, CPU reference (2026-09-18)
+
+**Outcome.** Bonsai 2 27B runs on the CPU reference and matches its
+oracle. The PrismML llama.cpp fork at release `prism-b10687-5d80cff`
+(`5d80cff0…`, MIT) is the second pinned oracle, built beside mainline
+with the same recipe; two pins, never one moving one
+(`quant-fixtures.py`'s `PRISM_REVISION`, `profile-alias-check.py
+--reference-revision`). `docs/reference/bonsai.md` records the artifact,
+header, tensors, both block layouts, and the rotation contract as the
+fork's loader implements it: `R = (1/√1024) H S` per 1024-block, explicit
+±1 signs per input width (5120 / 6144 / 17408), 401 rotated matrices
+(everything but the embedding, which stores rotated rows and gets
+`S · H` after lookup, and the BF16 `ssm_alpha` / `ssm_beta`), and
+`gdn_v_grouped` = the `ssm_out` input regathered from the mixer's tiled
+value-head order to the grouped order the fold used. `quant.row` decodes
+PQ2_0 (id 142), PTQ1_0 (id 143, base-3 trits extracted by the fixed-point
+multiply, digit-major runs), and BF16 (id 30); the GGUF parser retains
+`prism.hadamard.*` arrays whole; the Qwen adapter lists the three
+encodings as executable, accepts the file's 64 blocks without the draft
+head (the header read in MODL-15 was wrong on this and on `file_type`
+141), validates the rotation against the pinned contract, and carries it
+in `Binding.rotation` (`Summary.rotated_basis`, shown by `validate`).
+`cpu.hadamard` implements the transform; the Qwen runtime applies the
+inverse after the embedding lookup and the forward transform to the four
+activations per layer that meet rotated weights plus the output-head
+input, with the value-head gather before `ssm_out`. The Metal plan
+refuses a rotated binding (`UnsupportedRotation`) until KERN-10 and
+MODL-17. The Bonsai chat template (`c3cf9e34…`, the upstream Qwen3.8
+template) is not an alias of `qwen38`: 4 of 68 fixture cases differ, all
+the merged-system histories it refuses; every other prompt and token
+stream is byte-identical. MODL-17 chooses the profile from that evidence.
+
+**Evidence.** The fork's `llama-completion -ngl 99` on the PQ2_0 file
+(`Hello, I'm a student in the University of the West of England (UWE)`,
+17.1 tok/s on 16 tokens, a smoke run) and its loader line `loaded 402
+Hadamard-folded weight(s) (1 inverse-lookup) using 1 rotation(s) and 3
+sign vector(s)`; `tests/fixtures/bonsai-hello-comma/` (129 files, greedy
+token 353, the same as Qwen3.8's) from `reference-generation.cpp` built
+against the fork; `inference/src/quant/fixtures/ternary.json` from the
+fork's own decoders, matched exactly, plus hand tests for code order, the
++2 code, the canonical trit packing, and BF16 edge values;
+`fixtures/bonsai-2-27b.json` (the inventory with rotation arrays) bound
+in tests with 851 / 0 tensors and the negative cases (version, sign mode,
+a sign of 0, a never-rotated name, a slot claimed twice, an unknown key,
+rotation keys without the version, 65 blocks); `cpu.hadamard` against the
+parity-defined matrix and as a round trip; `nuclis validate --model
+bonsai-2-27b` (851 tensors, 7,195,047,936 bytes, the rotated basis
+printed) and `model inspect` (*supported*); **`make compare-bonsai-cpu`
+passed on the first run: 129 files, max abs 2.44e-4, max relative RMS
+5.4e-6, greedy 353 with the fork's top three logits to three decimals**
+(56 s for two positions); the alias gate's 64 / 68 on the fork's server;
+`make check` (unit tests, `test-metal` unchanged) and `make compare`
+(Qwen unchanged).
+
+**Files.** `inference/src/tensor/encoding.zig`,
+`inference/src/quant/decode.zig`, `inference/src/quant/fixtures/ternary.json`,
+`inference/src/formats/gguf.zig`, `inference/src/models/inventory.zig`,
+`inference/src/models/fixtures/bonsai-2-27b.json`,
+`inference/src/models/qwen35.zig`, `qwen35_runtime.zig`, `qwen35_metal.zig`,
+`registry.zig`, `inference/src/backends/cpu/hadamard.zig`, `cpu/root.zig`,
+`src/catalog.zig`, `src/validate.zig`, `src/model.zig`, `Makefile`,
+`scripts/quant-fixtures.py`, `scripts/gguf-inventory.py`,
+`scripts/profile-alias-check.py`, `tests/fixtures/bonsai-hello-comma/`,
+`tests/fixtures/provenance.md`, `docs/reference/bonsai.md`,
+`reference-baseline.md`, `quantization.md`, `cpu-reference.md`,
+`generation.md`, `artifacts.md`, `prompt-profile.md`, `docs/development.md`,
+`docs/llm-guide.md` (§ 49), `README.md`, `THIRD_PARTY_NOTICES.md`.
+
+**Remaining.** Metal: the ternary matvecs and tiles, BF16 rows (not in
+KERN-10's original design; added to its plan), and the transform kernel
+(KERN-10); the Metal plan, the profile decision, the catalogue's
+`profile`, and the acceptance record against the fork's server (MODL-17).
+PTQ1_0 is decoded but no file of it is pulled or traced. The fork's
+`llama-completion --jinja` aborts on the Bonsai template's start-up
+self-test (its server renders it). The CPU rotation copies each rotated
+activation into scratch; the reference favours clarity over the copy.
+

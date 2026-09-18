@@ -16,42 +16,29 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-MODL-16 session 1 closed its work on 2026-09-18 (the unit stays open for
-session 2): the PrismML fork is pinned at `prism-b10687-5d80cff`
-(`5d80cff0…`) and built under `.zig-cache/reference/prism-llama.cpp`
-as the second oracle; it runs the pulled PQ2_0 file on Metal; its
-`Hello,` traces are committed (`tests/fixtures/bonsai-hello-comma/`,
-greedy token 353 as Qwen3.8's); `docs/reference/bonsai.md` records the
-artifact, header, both block layouts, and the rotation contract as the
-fork's loader implements it (`gdn_v_grouped` = a tiled→grouped
-permutation of the 6144-wide `ssm_out` input before the transform);
-`quant.row` decodes ids 142, 143, 30 bit-identically to the fork's
-decoders (`fixtures/ternary.json`); the GGUF parser retains
-`prism.hadamard.*` arrays whole; the Qwen adapter accepts 64 blocks
-without the auxiliary layer, lists the three encodings as executable,
-validates the rotation against a pinned contract, and carries it in
-`Binding.rotation`; `validate` and `inspect` bind the file (*supported*);
-both runtimes refuse a rotated binding with `error.UnsupportedRotation`
-until they apply it. The alias gate says the Bonsai template is **not**
-an alias of `qwen38`: 4 of 68 cases differ, all the `merged_system_*`
-histories the upstream template refuses; every other prompt and token
-stream is byte-identical (MODL-17 decides the profile; recommendation:
-the entry's `profile = .qwen38` with the deviation recorded).
+MODL-16 closed on 2026-09-18: Bonsai 2 27B runs on the CPU reference and
+matches the PrismML fork's traces on the first run (max abs 2.44e-4, the
+same greedy token and top-three logits). The fork is the second pinned
+oracle (`prism-b10687-5d80cff`, built under
+`.zig-cache/reference/prism-llama.cpp`); `docs/reference/bonsai.md`
+holds the facts, both block layouts, the rotation contract, the
+template evidence (not an alias of `qwen38`: 4 of 68 cases, the
+merged-system histories the upstream template refuses; recommendation
+for MODL-17: the entry's `profile = .qwen38` with the deviation
+recorded), and the CPU result. The Metal plan refuses a rotated binding
+until KERN-10 lands its kernels. Next is KERN-10 session 1: the ternary
+dequant and matvec kernels, **plus BF16 rows** (`ssm_alpha` /
+`ssm_beta`, which the original design did not list), then the transform
+kernel. Muse Glimmer follows the two remaining Bonsai units; its facts
+were read on 2026-09-16 and its files are pulled.
 
-Next is MODL-16 session 2: `cpu.hadamard` and the runtime transform, then
-`make compare-bonsai-cpu`. Read `qwen35_runtime.zig`'s DeltaNet output
-order before deciding whether `value_grouped` is a gather or a no-op.
-Muse Glimmer follows the three Bonsai units; its facts were read on
-2026-09-16 and its files are pulled.
-
-Order: MODL-16 → KERN-10 → MODL-17 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
+Order: KERN-10 → MODL-17 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 After AGNT-10 the roadmap continues with speculative decoding across the
 families, then performance, then vision
 ([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-16 | Bonsai 2 27B: oracle, facts, ternary encodings, Hadamard transform, CPU reference | 2 |
 | KERN-10 | Ternary matvec and matmul tiles, the Walsh-Hadamard kernel | 2 |
 | MODL-17 | Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance | 1–2 |
 | MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2 |
@@ -102,56 +89,12 @@ is 64 with no `nextn` key (the Qwen release says 65 + 1), and its
 Pro 28.7 / 393; M5 Max 47.0 / 765; current build M5 Pro PQ2_0 27.7 / 397,
 PTQ1_0 27.1 / 369.
 
-## MODL-16 — Bonsai 2 27B: oracle, facts, ternary encodings, Hadamard transform, CPU reference
-
-**Session 1 delivered (2026-09-18).** The fork pinned, built, and run;
-`docs/reference/bonsai.md`; the inventory fixture
-(`models/fixtures/bonsai-2-27b.json`, rotation arrays included);
-`quant.row` arms for 142 / 143 / 30 with the fork's fixture and hand
-tests; `gguf.retained_key_prefixes`; the adapter's `Rotation`,
-`validateRotation`, the optional auxiliary block, `executableEncoding`;
-`Summary.rotated_basis` shown by `validate`; the traces; the alias-gate
-evidence (`profile-alias-check.py --reference-revision`, template refusals
-reported as mismatches); the guide's § 49. Session-1 state to be aware
-of: `inspect` says *supported* and `validate` prints the rotated basis,
-while `generate` on either backend returns `UnsupportedRotation`.
-
-**Session 2 design.**
-- `cpu.hadamard`: the sign flip and the normalized blockwise FWHT of
-  block 1024, in place over an activation of width 5120 / 6144 / 17408,
-  against an F64 reference and a fixture from the fork (a `Hello,` layer-0
-  input through the fork's transform, or the embedding inverse checked
-  against `token-0-layer-0` minus the layer's own contribution — decide
-  by what the harness can observe); the inverse on the embedding row
-  (`h = signs ⊙ (H z)`, the reverse order).
-- `qwen35_runtime.zig` applies the forward transform to the four
-  activations per layer that meet rotated weights (the residual before the
-  mixer, the mixer output before `ssm_out` / `attn_output`, the residual
-  before the FFN, the FFN hidden before `ffn_down`) and the output-head
-  input, once per activation; `ssm_alpha` / `ssm_beta` (BF16, unrotated)
-  take the untransformed residual. `value_grouped`: the fork permutes the
-  `ssm_out` input from tiled `[hd=128, nk=16, rep=3]` to grouped
-  `[hd, rep, nk]` (value head `rep·16+nk` → `nk·3+rep`) before the signs
-  and the transform; apply the same permutation only if the mixer's
-  output order is the tiled one (read it, do not assume).
-- `make compare-bonsai-cpu` at the bring-up thresholds (2e-3 / 1e-4)
-  against `tests/fixtures/bonsai-hello-comma` (`--positions 2`, Qwen's
-  geometry) with the same greedy token (353); drop the runtime's
-  `UnsupportedRotation` for the CPU (the Metal plan keeps it until
-  MODL-17).
-- KERN-10 note: the Metal plan also needs BF16 rows (`ssm_alpha` /
-  `ssm_beta`) — a `nu_dequant_bf16` for the generic path or a BF16 matvec —
-  which the KERN-10 design below did not list.
-
-**Acceptance.** The file validates (851 tensors, three encodings in the
-executable set — done); the fork's traces match on the CPU at the
-thresholds; `make check`, `compare` (Qwen unchanged), `test-metal`
-unchanged.
-
 ## KERN-10 — Ternary matvec and matmul tiles, the Walsh-Hadamard kernel
 
-**Design.** `dequant.metal` gains `nu_dequant_pq2_0` and
-`nu_dequant_ptq1_0` bit-identical to `quant.row`; `kernels.metal` gains
+**Design.** `dequant.metal` gains `nu_dequant_pq2_0`,
+`nu_dequant_ptq1_0`, and `nu_dequant_bf16` (the 96 `ssm_alpha` /
+`ssm_beta` rows, [5120, 48], which the generic matvec and the embedding
+path must decode too) bit-identical to `quant.row`; `kernels.metal` gains
 `nu_matvec_pq2_0` / `nu_matvec_ptq1_0` derived from the Q4_0 kernel (a
 32-byte 2-bit block per 128 values; the base-3 unpack by the fixed-point
 multiply of mainline's contract) with the bandwidth target of the Q4_0

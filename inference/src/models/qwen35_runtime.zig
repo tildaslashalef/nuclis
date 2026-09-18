@@ -2,7 +2,9 @@
 //! and bindings borrow the loaded model; this runtime owns session and workspace.
 //! A failed step poisons the session. No MTP, multimodal positions, or rewinding.
 //! This is the numerical reference; `qwen35_metal.zig` runs the same schedule
-//! on the GPU and is compared against it.
+//! on the GPU and is compared against it. On a rotated (Bonsai) file every
+//! projection except `ssm_alpha` / `ssm_beta` reads its input through the
+//! Hadamard transform and the embedding row is un-rotated after lookup.
 const std = @import("std");
 const model = @import("qwen35.zig");
 const weights = @import("../runtime/weights.zig");
@@ -25,11 +27,25 @@ const LayerConstants = struct {
     },
 };
 
+/// The binding's rotation with its sign vectors decoded once to F32,
+/// indexed as `model.Rotation.widths`.
+const Rotation = struct {
+    block: usize,
+    signs: [3][]f32,
+    value_grouped: bool,
+
+    fn signsFor(self: Rotation, width: usize) ![]const f32 {
+        for (model.Rotation.widths, self.signs) |w, signs| if (w == width) return signs;
+        return error.InvalidShape;
+    }
+};
+
 pub const Runtime = struct {
     storage: std.heap.ArenaAllocator,
     state: session.Session,
     view: weights.View,
     binding: model.Binding,
+    rotation: ?Rotation,
     constants: []LayerConstants,
     output_norm: []f32,
     x: []f32,
@@ -48,13 +64,11 @@ pub const Runtime = struct {
     alpha: []f32,
     beta: []f32,
     mixed_out: []f32,
+    rotated: []f32,
     attention_scratch: []f64,
     delta_scratch: []f64,
 
     pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize) !Runtime {
-        // A rotated file needs the activation transform before every
-        // projection; running it in the stored basis would be wrong math.
-        if (binding.rotation != null) return error.UnsupportedRotation;
         var layouts: [64]session.Layout = undefined;
         for (binding.layers, &layouts) |layer, *layout| layout.* = switch (layer.mixer) {
             .full_attention => .{ .attention = .{ .key_row = 1024, .value_row = 1024 } },
@@ -80,6 +94,16 @@ pub const Runtime = struct {
         result.mixed_out = try a.alloc(f32, 6144);
         result.alpha = try a.alloc(f32, 48);
         result.beta = try a.alloc(f32, 48);
+        result.rotated = try a.alloc(f32, 17408);
+        result.rotation = null;
+        if (binding.rotation) |rotation| {
+            var signs: [3][]f32 = undefined;
+            for (&signs, rotation.signs) |*decoded, source| {
+                decoded.* = try a.alloc(f32, source.values.len);
+                for (decoded.*, source.values) |*out, value| out.* = @floatFromInt(value.signed);
+            }
+            result.rotation = .{ .block = rotation.block, .signs = signs, .value_grouped = rotation.value_grouped };
+        }
         result.attention_scratch = try a.alloc(f64, capacity);
         result.delta_scratch = try a.alloc(f64, 128 * 129);
         result.output_norm = try view.vector(a, binding.output_norm);
@@ -112,6 +136,30 @@ pub const Runtime = struct {
     fn mm(self: *Runtime, tensor: *const Tensor, input: []const f32, output: []f32) !void {
         try cpu.matvec(try self.view.matrix(tensor), input, output, self.row);
     }
+    /// The activation a rotated projection reads: on a rotated file, `input`
+    /// sign-flipped and transformed into the `rotated` scratch (so callers
+    /// that also feed an unrotated projection keep `input`); else `input`.
+    fn rotate(self: *Runtime, input: []const f32) ![]const f32 {
+        const rotation = self.rotation orelse return input;
+        const out = self.rotated[0..input.len];
+        @memcpy(out, input);
+        try cpu.hadamard.forward(out, try rotation.signsFor(input.len), rotation.block);
+        return out;
+    }
+    /// `ssm_out`'s input: the fold was computed with the 48 value heads in
+    /// group order (`nk * 3 + rep`) while the mixer emits them tiled
+    /// (`rep * 16 + nk`), so the heads are regathered before the transform.
+    fn rotateGrouped(self: *Runtime, input: []const f32) ![]const f32 {
+        const rotation = self.rotation orelse return input;
+        if (!rotation.value_grouped) return self.rotate(input);
+        if (input.len != 6144) return error.InvalidShape;
+        const out = self.rotated[0..6144];
+        for (0..3) |rep| for (0..16) |nk| {
+            @memcpy(out[(nk * 3 + rep) * 128 ..][0..128], input[(rep * 16 + nk) * 128 ..][0..128]);
+        };
+        try cpu.hadamard.forward(out, try rotation.signsFor(6144), rotation.block);
+        return out;
+    }
     fn norm(input: []const f32, output: []f32, weight: []const f32) !void {
         if (weight.len != output.len) return error.InvalidShape;
         try cpu.rmsNorm(input, output, 1e-6);
@@ -126,6 +174,7 @@ pub const Runtime = struct {
         try self.state.begin();
         errdefer self.state.fail();
         try self.view.row(self.binding.token_embedding, token, self.x);
+        if (self.rotation) |rotation| try cpu.hadamard.inverse(self.x, try rotation.signsFor(5120), rotation.block);
         for (self.binding.layers, self.constants, 0..) |layer, constants, il| {
             try norm(self.x, self.normalized, constants.attention_norm);
             switch (layer.mixer) {
@@ -134,10 +183,11 @@ pub const Runtime = struct {
             }
             for (self.x, self.projected) |*x, contribution| x.* += contribution;
             try norm(self.x, self.normalized, constants.post_attention_norm);
-            try self.mm(layer.ffn_gate, self.normalized, self.gate);
-            try self.mm(layer.ffn_up, self.normalized, self.up);
+            const ffn_input = try self.rotate(self.normalized);
+            try self.mm(layer.ffn_gate, ffn_input, self.gate);
+            try self.mm(layer.ffn_up, ffn_input, self.up);
             for (self.gate, self.up) |*g, u| g.* = cpu.silu(g.*) * u;
-            try self.mm(layer.ffn_down, self.gate, self.projected);
+            try self.mm(layer.ffn_down, try self.rotate(self.gate), self.projected);
             for (self.x, self.projected) |*x, contribution| {
                 x.* += contribution;
                 if (!std.math.isFinite(x.*)) return error.NonFiniteResult;
@@ -149,16 +199,17 @@ pub const Runtime = struct {
         }
         if (logits) |out| {
             try norm(self.x, self.normalized, self.output_norm);
-            try self.mm(self.binding.output, self.normalized, out);
+            try self.mm(self.binding.output, try self.rotate(self.normalized), out);
             for (out) |x| if (!std.math.isFinite(x)) return error.NonFiniteResult;
         }
         try self.state.commit();
     }
 
     fn fullAttention(self: *Runtime, attn: model.FullAttention, constants: anytype, il: usize) !void {
-        try self.mm(attn.query_and_gate, self.normalized, self.qg);
-        try self.mm(attn.key, self.normalized, self.k);
-        try self.mm(attn.value, self.normalized, self.v);
+        const input = try self.rotate(self.normalized);
+        try self.mm(attn.query_and_gate, input, self.qg);
+        try self.mm(attn.key, input, self.k);
+        try self.mm(attn.value, input, self.v);
         for (0..24) |h| {
             const q = self.q[h * 256 ..][0..256];
             // Each projected head stores query then gate, not all queries then
@@ -180,12 +231,14 @@ pub const Runtime = struct {
         for (0..24) |h| for (0..256) |i| {
             self.mixed_out[h * 256 + i] *= cpu.sigmoid(self.qg[h * 512 + 256 + i]);
         };
-        try self.mm(attn.output, self.mixed_out, self.projected);
+        try self.mm(attn.output, try self.rotate(self.mixed_out), self.projected);
     }
 
     fn linearAttention(self: *Runtime, linear: model.DeltaNet, constants: anytype, il: usize) !void {
-        try self.mm(linear.qkv, self.normalized, self.mixed);
-        try self.mm(linear.gate, self.normalized, self.z);
+        const input = try self.rotate(self.normalized);
+        try self.mm(linear.qkv, input, self.mixed);
+        try self.mm(linear.gate, input, self.z);
+        // The gating projections were left in the original basis.
         try self.mm(linear.beta, self.normalized, self.beta);
         try self.mm(linear.alpha, self.normalized, self.alpha);
         const state = self.state.layers[il].recurrent;
@@ -212,7 +265,7 @@ pub const Runtime = struct {
             try norm(out, out, constants.norm);
             for (out, self.z[h * 128 ..][0..128]) |*x, z| x.* *= cpu.silu(z);
         }
-        try self.mm(linear.output, self.mixed_out, self.projected);
+        try self.mm(linear.output, try self.rotateGrouped(self.mixed_out), self.projected);
     }
 };
 

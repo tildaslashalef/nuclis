@@ -2319,14 +2319,22 @@ mixer already produces the grouped order or the tiled one is a fact of
 fork's fixture; the parser retains the rotation arrays; the adapter
 validates the contract and hands a `Rotation` to the runtimes; the fork's
 traces for `Hello,` are committed (greedy token ` I`, the same as
-Qwen3.8's); and both runtimes refuse a rotated binding with a typed error
-until they apply the transform, because a model in the wrong basis
-produces fluent nonsense, not a crash. The CPU transform and the trace
-comparison are session 2; the Metal kernels and the plan are KERN-10 and
-MODL-17.
+Qwen3.8's). The CPU runtime applies the transform — `cpu.hadamard` is
+forty lines of butterflies in F64 — and matched the fork's traces on the
+first run at max abs 2.4e-4, with the same top three logits to three
+decimals. That first-run match is worth a sentence: the encodings, the
+sign vectors, the block size, the four activations per layer, the
+embedding inverse, and the value-head regathering were each read from a
+contract and pinned before any number was compared, so the comparison
+had one thing to say and said it. The Metal plan still refuses a rotated
+binding with a typed error, because a model in the wrong basis produces
+fluent nonsense, not a crash; the ternary kernels and the transform
+kernel are KERN-10, the plan is MODL-17.
 
 Read: `inference/src/quant/decode.zig` (the `142 =>` arm, `ptq1Block`,
 `trit`), `inference/src/models/qwen35.zig` (`Rotation`,
 `validateRotation`, `rotatedSlot`), `gguf.retained_key_prefixes` in
-`inference/src/formats/gguf.zig`, and
+`inference/src/formats/gguf.zig`,
+`inference/src/backends/cpu/hadamard.zig`, `rotate` and `rotateGrouped`
+in `inference/src/models/qwen35_runtime.zig`, and
 [reference/bonsai.md](reference/bonsai.md).

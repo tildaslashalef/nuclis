@@ -81,7 +81,11 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   `GEMMA_QAT_MODEL`) and `make compare-gemma4-26b-a4b` (the same three on
   the expert configuration `gemma-4-26b-a4b` and its traces,
   `GEMMA_26B_A4B_MODEL`; `-cpu`, `-f32`, `-f16` singly) when the second
-  adapter, the expert kernels, or shared math changed, and
+  adapter, the expert kernels, or shared math changed, `make
+  compare-bonsai-cpu` (the Qwen CPU reference on `bonsai-2-27b`'s
+  ternary, Hadamard-rotated file against the PrismML fork's traces,
+  `BONSAI_MODEL`; [bonsai.md](reference/bonsai.md)) when the ternary
+  decoders, the transform, or the Qwen runtime changed, and
   `make test-generation-gemma4-metal`
   (the generation check on the Gemma plan; `-qat-metal` runs it on the QAT
   entry, whose Q4_0 path amplifies the chunk rounding, `-26b-a4b-metal` on

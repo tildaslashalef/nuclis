@@ -345,6 +345,25 @@ Metal decode chain (`route`, `matvecExperts`, `geluMulRows`,
 `matvecExperts`, `combineExperts`) is checked against it in `test-metal`
 ([metal-backend.md § Gathered expert kernels](metal-backend.md#gathered-expert-kernels-kern-09)).
 
+## The Hadamard rotation's activation side
+
+[hadamard.zig](../../inference/src/backends/cpu/hadamard.zig) is the
+reference for the transform a Hadamard-folded file (Bonsai 2 27B,
+[bonsai.md](bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it))
+needs on every projection input: `forward(x, signs, block)` multiplies each
+element by its ±1 sign and then applies the normalized Sylvester
+Walsh-Hadamard transform in place to every `block` consecutive elements
+(`H[r][c] = (-1)^popcount(r & c) / sqrt(block)`, ten butterfly stages in
+F64 scratch for a 1024 block); `inverse` is the same butterflies followed
+by the signs, `(H S)^-1 = S H`, which is what an embedding row stored in
+the rotated basis needs after lookup. Blocks must be powers of two up to
+1024 and divide the width; the sign vector has the width's length.
+Tests check the butterflies against the parity-defined matrix for blocks
+1, 2, 8, and 1024, the round trip, a constant and a delta block by hand,
+and that rejected shapes leave the input untouched. Which activations
+take it, and the value-head regathering before `ssm_out`, are the
+adapter's runtime's business ([bonsai.md](bonsai.md#cpu-reference-against-the-fork-modl-16-2026-09-18)).
+
 ## Validation and limits
 
 Five matrix-vector test blocks cover:

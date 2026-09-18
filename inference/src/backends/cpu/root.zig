@@ -8,6 +8,7 @@ pub const rope = @import("rope.zig");
 pub const attention = @import("attention.zig");
 pub const recurrent = @import("recurrent.zig");
 pub const experts = @import("experts.zig");
+pub const hadamard = @import("hadamard.zig");
 pub const ExpertMatrix = experts.ExpertMatrix;
 
 pub const rmsNorm = vector.rmsNorm;
@@ -36,6 +37,7 @@ test {
     _ = attention;
     _ = recurrent;
     _ = experts;
+    _ = hadamard;
 }
 
 test "L2 and text RoPE agree with pinned CPU graph fixtures" {
