@@ -56,15 +56,23 @@ reference at 512 tokens and 6–26 % below it from 4K to 32K. Methodology,
 variance, and the raw records:
 [docs/reference/bench.md](docs/reference/bench.md#acceptance-runs).
 
-Gemma 4 12B, in Google's quantization-aware-trained checkpoint (every
-weight matrix Q4_0), runs on both backends, matches llama.cpp's per-layer
-traces, and has its own acceptance record against the reference
-([docs/reference/gemma4.md](docs/reference/gemma4.md),
-[bench.md](docs/reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12)).
-Gemma 4 26B-A4B, the mixture of experts (128 experts, 8 per token, every
-matrix Q4_0), runs the same way and decodes at 55 tok/s on the 512-token
-workload against the reference's 68
-([bench.md](docs/reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+Every supported file against the same reference on its own token arrays,
+same workload and hardware, at the shortest and the longest prompt
+(tokens per second, nuclis / llama.cpp):
+
+| Model | Decode, 512 | Decode, 32,639 | Prefill, 512 | Prefill, 32,639 | Record |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Qwen3.8-27B, UD-Q4_K_M (16.5 GB) | 10.62 / 9.66 | 7.55 / 6.71 | 90.45 / 89.19 | 49.55 / 67.28 | [2026-09-10](docs/reference/bench.md#acceptance-runs) |
+| Gemma 4 12B, UD-Q4_K_XL (7.37 GB) | 19.82 / 24.51 | 14.04 / 16.05 | 192.97 / 209.85 | 74.04 / 142.80 | [2026-09-12](docs/reference/bench.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12) |
+| Gemma 4 12B, QAT Q4_0 (6.72 GB) | 23.96 / 27.69 | 16.24 / 20.94 | 179.45 / 224.46 | 73.04 / 143.72 | [2026-09-12](docs/reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12) |
+| Gemma 4 26B-A4B, QAT Q4_0 (14.2 GB, 128 experts, 8 per token) | 55.29 / 68.02 | 31.30 / 44.09 | 500.42 / 580.76 | 134.74 / 343.38 | [2026-09-18](docs/reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18) |
+
+Each Gemma file matches llama.cpp's per-layer traces on the CPU
+reference and on Metal before its rate is recorded
+([docs/reference/gemma4.md](docs/reference/gemma4.md)). Nothing has been
+tuned for Gemma yet: the Qwen kernels carry it, which is where the
+long-prompt prefill gap comes from, and the per-kernel profiles in
+bench.md say what to do about it.
 
 ## Supported models
 
