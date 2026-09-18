@@ -196,6 +196,10 @@ pub const Transcript = struct {
                 try block.text.appendSlice(self.alloc, text);
             },
             .tool_call => |call| {
+                // A call ends the step's text: an answer streamed before it
+                // would otherwise stay open until the turn ends and hold
+                // everything after it in the live region.
+                self.closeOpen();
                 const name = try self.alloc.dupe(u8, call.name);
                 errdefer self.alloc.free(name);
                 const summary = try self.alloc.dupe(u8, call.summary);
@@ -304,9 +308,11 @@ pub const Transcript = struct {
             var produced: std.ArrayList(Row) = .empty;
             switch (block) {
                 .thinking => |t| {
-                    // The open label animates, so it is the caller's; the text
-                    // under it is shown only when unfolded, and only its tail.
-                    try produced.append(a, .{ .text = options.thinking_label, .style = .thinking_header });
+                    // The open label animates, so it is the caller's; a block
+                    // that closed but is not written yet wears its fold label.
+                    // The text under it is shown only when unfolded, and only its tail.
+                    const label = if (t.closed) try foldLabel(a, t, self.expanded, options.th) else options.thinking_label;
+                    try produced.append(a, .{ .text = label, .style = .thinking_header });
                     if (self.expanded and t.text.items.len > 0) {
                         try produced.append(a, .{ .text = "" });
                         const text = try wrapped(a, t.text.items, options.width, .thinking);
@@ -937,6 +943,37 @@ test "the live region shows the tail of what is open, and says how much is above
     try testing.expect(std.mem.indexOf(u8, s, "… 4 lines above") != null);
     try testing.expect(std.mem.indexOf(u8, s, "five") != null);
     try testing.expect(std.mem.indexOf(u8, s, "one") == null);
+}
+
+test "a step that answers and then calls a tool closes its text; a closed thought never wears the busy label" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 40, .th = .{ .kind = .plain } };
+    const live: Live = .{ .width = 40, .th = options.th, .budget = 10, .thinking_label = "⠋ thinking… 9s" };
+
+    try tr.apply(.{ .user = "largest radius?" });
+    try tr.apply(.{ .thinking_delta = "read it" });
+    try tr.apply(.{ .thinking_end = 2.0 });
+    try tr.apply(.{ .answer_delta = "The file is long.\n\n" });
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "bash", .summary = "Running command", .detail = "$ wc -l x" } });
+    // The call closed the answer, so the whole step is written; only the running call stays live.
+    const written = try texts(a, try tr.takeClosed(a, options));
+    try testing.expect(std.mem.indexOf(u8, written, "Thought for 2.0s") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "The file is long.") != null);
+    try testing.expect(std.mem.indexOf(u8, try texts(a, try tr.liveRows(a, live)), "thinking…") == null);
+
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "400 x", .truncated = false, .is_error = false, .summary = "" } });
+    try tr.apply(.{ .thinking_delta = "so 400 lines" });
+    var rows = try texts(a, try tr.liveRows(a, live));
+    try testing.expect(std.mem.indexOf(u8, rows, "⠋ thinking… 9s") != null);
+    try tr.apply(.{ .thinking_end = 3.0 });
+    // Closed but not yet written: the fold label, not the animated one.
+    rows = try texts(a, try tr.liveRows(a, live));
+    try testing.expect(std.mem.indexOf(u8, rows, "thinking…") == null);
+    try testing.expect(std.mem.indexOf(u8, rows, "Thought for 3.0s") != null);
 }
 
 test "a turn that is cancelled mid-thought keeps its text and its bare label" {

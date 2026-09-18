@@ -80,6 +80,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-17 | Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance | 2026-09-18 |
 | AGNT-12 | An empty tool result no longer aborts the turn | 2026-09-18 |
 | APPS-12 | The default context window is 16K | 2026-09-18 |
+| TERM-09 | A step that answers and then calls a tool no longer holds the turn in the live region | 2026-09-18 |
 
 ## Context
 
@@ -2490,3 +2491,26 @@ being a roadmap item).
 `nuclis --help` and the `config init` example in development.md say 16384.
 
 **Files.** `src/config.zig`, `src/help.zig`, `docs/development.md`.
+
+### TERM-09 — A step that answers and then calls a tool no longer holds the turn in the live region (2026-09-18)
+
+**Outcome.** When a step streamed answer text and then made a tool call,
+its answer block stayed open (only the turn's end closed answers), the
+transcript's in-order writer stopped at it, and every later block of the
+turn stayed in the live region — where a thinking block was painted with
+the animated busy label whether or not it had closed. The screen showed
+several "thinking… 207s" labels ticking on the turn's clock after the tool
+rows of steps that had long finished. A `tool_call` event now closes the
+step's open text (a call ends what the step had to say), and a closed
+thinking block still in the live region wears its fold label
+("Thought for 3.0s") rather than the busy one.
+
+**Evidence.** A transcript test: thinking, answer, call → the whole step
+is written at once and nothing live says "thinking…"; the next step's
+thought shows the busy label while open and its fold label once closed
+before it is written (415 tests). Seen on `bonsai-2-27b` in the
+playground with "Show me all of data/measurements.txt and tell me the
+largest radius in it." (a 6-step turn whose second step answered and
+called `bash`).
+
+**Files.** `src/tui/transcript.zig`.
