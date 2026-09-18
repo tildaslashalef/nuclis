@@ -3,6 +3,9 @@
 //! never repeated GGUF string lookups. Bindings borrow the Document's storage.
 //! Validation checks the declared profile and storage, not tensor values or
 //! numerical execution. See docs/qwen-validation.md for the pinned references.
+//! The same adapter binds Bonsai 2 27B, the ternary re-encoding whose weights
+//! sit in a Hadamard-rotated basis (`Rotation`, docs/reference/bonsai.md),
+//! with or without the auxiliary prediction block.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
@@ -43,17 +46,45 @@ pub const architecture = "qwen35";
 
 /// Whether a weight matrix of this encoding can be bound: the storage
 /// layouts the CPU reference and the Metal kernels execute. Layout support
-/// in `formats/gguf` (which also stores Q4_0 and BF16) is not this claim.
+/// in `formats/gguf` (which also stores Q4_0) is not this claim. BF16 and the
+/// ternary PQ2_0 / PTQ1_0 are the Bonsai file's encodings.
 pub fn executableEncoding(encoding_id: u32) bool {
     return switch (encoding_id) {
-        0, 8, 11, 12, 13, 14, 20, 21, 23 => true,
+        0, 8, 11, 12, 13, 14, 20, 21, 23, 30, 142, 143 => true,
         else => false,
     };
 }
 
+/// The activation-side transform folded into a rotated file's weights
+/// (`prism.hadamard.*`): before every projection except `ssm_alpha` and
+/// `ssm_beta`, the input is multiplied elementwise by its width's sign
+/// vector and then by the normalized Sylvester Walsh-Hadamard matrix per
+/// `block` elements; the embedding row gets the transform and then the
+/// signs after lookup, since the table stores rotated rows. The slices
+/// borrow the Document's metadata.
+pub const Rotation = struct {
+    block: u32,
+    /// One vector of `.signed` ±1 per projection input width, in `widths` order.
+    signs: [3]Signs,
+    /// `ssm_out` sees its input in group order (head dimension fastest, then
+    /// the 16 key groups, then the 3 value heads of a group) before the signs
+    /// and the transform; the tiled order is what the mixer produces.
+    value_grouped: bool,
+
+    pub const Signs = struct { width: u32, values: []const gguf.Value };
+    pub const widths = [3]u32{ 5120, 6144, 17408 };
+    pub const block_size = 1024;
+
+    pub fn signsFor(self: Rotation, width: u32) ?[]const gguf.Value {
+        for (self.signs) |signs| if (signs.width == width) return signs.values;
+        return null;
+    }
+};
+
 /// What a binding reports (`models.Summary`): the pinned configuration's
-/// composition, 16 full-attention and 48 DeltaNet layers plus one
-/// auxiliary prediction layer excluded from the text schedule.
+/// composition, 16 full-attention and 48 DeltaNet layers plus, when the
+/// file carries it, one auxiliary prediction layer excluded from the text
+/// schedule.
 pub const Summary = models.Summary;
 const layer_kinds = [_]models.LayerKind{
     .{ .kind = "full_attention", .count = 16 },
@@ -68,6 +99,8 @@ pub const Binding = struct {
     output: *const Tensor,
     layers: [64]Layer,
     summary: Summary,
+    /// Present on a rotated (Bonsai) file; the runtimes must apply it.
+    rotation: ?Rotation = null,
 };
 
 /// The registry's shared binding error set; this adapter returns all of it.
@@ -90,7 +123,6 @@ pub const family = struct {
 // instead of accepting a familiar architecture name with different semantics.
 const IntegerSetting = struct { key: []const u8, value: u64 };
 const integer_settings = [_]IntegerSetting{
-    .{ .key = "qwen35.block_count", .value = 65 },
     .{ .key = "qwen35.context_length", .value = 262144 },
     .{ .key = "qwen35.embedding_length", .value = 5120 },
     .{ .key = "qwen35.feed_forward_length", .value = 17408 },
@@ -98,7 +130,6 @@ const integer_settings = [_]IntegerSetting{
     .{ .key = "qwen35.attention.head_count_kv", .value = 4 },
     .{ .key = "qwen35.attention.key_length", .value = 256 },
     .{ .key = "qwen35.attention.value_length", .value = 256 },
-    .{ .key = "qwen35.nextn_predict_layers", .value = 1 },
     .{ .key = "qwen35.ssm.conv_kernel", .value = 4 },
     .{ .key = "qwen35.ssm.state_size", .value = 128 },
     .{ .key = "qwen35.ssm.group_count", .value = 16 },
@@ -109,7 +140,10 @@ const integer_settings = [_]IntegerSetting{
     .{ .key = "general.quantization_version", .value = 2 },
 };
 
-fn validateMetadata(doc: *const gguf.Document) Error!void {
+/// The 64 text layers, plus the auxiliary prediction block when the file
+/// declares it: the Qwen3.8 release counts it as a 65th block with one
+/// `nextn` layer, the Bonsai re-encoding drops it (64 blocks, no key).
+fn validateMetadata(doc: *const gguf.Document) Error!bool {
     const arch = switch (doc.get("general.architecture") orelse return error.MissingMetadata) {
         .string => |value| value,
         else => return error.InvalidMetadata,
@@ -122,6 +156,14 @@ fn validateMetadata(doc: *const gguf.Document) Error!void {
             else => return error.InvalidMetadata,
         }
     }
+    const blocks = try unsignedValue(doc, "qwen35.block_count");
+    const auxiliary = switch (blocks) {
+        64 => false,
+        65 => true,
+        else => return error.UnsupportedConfiguration,
+    };
+    const nextn = if (doc.get("qwen35.nextn_predict_layers")) |_| try unsignedValue(doc, "qwen35.nextn_predict_layers") else 0;
+    if (nextn != @as(u64, if (auxiliary) 1 else 0)) return error.UnsupportedConfiguration;
     try expectFloat(doc, "qwen35.rope.freq_base", 10_000_000);
     try expectFloat(doc, "qwen35.attention.layer_norm_rms_epsilon", @as(f32, 1e-6));
     const sections = switch (doc.get("qwen35.rope.dimension_sections") orelse return error.MissingMetadata) {
@@ -149,14 +191,23 @@ fn validateMetadata(doc: *const gguf.Document) Error!void {
         if (std.mem.startsWith(u8, entry.key, "qwen35.") and !knownArchitectureKey(entry.key))
             return error.UnsupportedConfiguration;
     }
+    return auxiliary;
 }
 
 fn knownArchitectureKey(key: []const u8) bool {
     for (integer_settings) |setting| if (std.mem.eql(u8, key, setting.key)) return true;
     for ([_][]const u8{
-        "qwen35.rope.freq_base", "qwen35.attention.layer_norm_rms_epsilon", "qwen35.rope.dimension_sections",
+        "qwen35.block_count",                      "qwen35.nextn_predict_layers",    "qwen35.rope.freq_base",
+        "qwen35.attention.layer_norm_rms_epsilon", "qwen35.rope.dimension_sections",
     }) |known| if (std.mem.eql(u8, key, known)) return true;
     return false;
+}
+
+fn unsignedValue(doc: *const gguf.Document, key: []const u8) Error!u64 {
+    return switch (doc.get(key) orelse return error.MissingMetadata) {
+        .unsigned => |value| value,
+        else => error.InvalidMetadata,
+    };
 }
 
 fn expectFloat(doc: *const gguf.Document, key: []const u8, expected: f64) Error!void {
@@ -164,6 +215,130 @@ fn expectFloat(doc: *const gguf.Document, key: []const u8, expected: f64) Error!
         .float => |value| if (value != expected) return error.UnsupportedConfiguration,
         else => return error.InvalidMetadata,
     }
+}
+
+fn expectString(doc: *const gguf.Document, key: []const u8, expected: []const u8) Error!void {
+    switch (doc.get(key) orelse return error.MissingMetadata) {
+        .string => |value| if (!std.mem.eql(u8, value, expected)) return error.UnsupportedConfiguration,
+        else => return error.InvalidMetadata,
+    }
+}
+
+/// A retained array of exactly `count` elements of `kind`.
+fn arrayValues(doc: *const gguf.Document, key: []const u8, kind: gguf.Type, count: usize) Error![]const gguf.Value {
+    const array = switch (doc.get(key) orelse return error.MissingMetadata) {
+        .array => |a| a,
+        else => return error.InvalidMetadata,
+    };
+    if (array.element_type != kind or array.count != count) return error.UnsupportedConfiguration;
+    const values = array.values orelse return error.InvalidMetadata;
+    if (values.len != count) return error.InvalidMetadata;
+    return values;
+}
+
+const rotation_keys = [_][]const u8{
+    "prism.hadamard.version",       "prism.hadamard.block_size",   "prism.hadamard.transform",
+    "prism.hadamard.axis",          "prism.hadamard.sign_mode",    "prism.hadamard.sign_widths",
+    "prism.hadamard.sign_values",   "prism.hadamard.weight_names", "prism.hadamard.inverse_weight_names",
+    "prism.hadamard.gdn_v_grouped",
+};
+
+// The rotated set is pinned, not read: every matrix except the embedding
+// (inverse after lookup) and the DeltaNet `ssm_alpha` / `ssm_beta`
+// projections, one entry each. 48 * 6 + 16 * 7 + 1 = 401 names.
+const delta_rotated = [_][]const u8{ "attn_qkv", "attn_gate", "ssm_out", "ffn_gate", "ffn_up", "ffn_down" };
+const attention_rotated = [_][]const u8{ "attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down" };
+const rotated_names = 48 * delta_rotated.len + 16 * attention_rotated.len + 1;
+
+/// The rotation contract as the fork's loader reads it, pinned to the one
+/// configuration the runtimes implement; anything else is refused rather
+/// than run in the wrong basis. Null when the file carries no rotation.
+fn validateRotation(doc: *const gguf.Document) Error!?Rotation {
+    const version = doc.get("prism.hadamard.version") orelse {
+        for (doc.metadata) |entry| if (std.mem.startsWith(u8, entry.key, "prism.hadamard.")) return error.UnsupportedConfiguration;
+        return null;
+    };
+    switch (version) {
+        .unsigned => |n| if (n != 1) return error.UnsupportedConfiguration,
+        else => return error.InvalidMetadata,
+    }
+    for (doc.metadata) |entry| {
+        if (!std.mem.startsWith(u8, entry.key, "prism.hadamard.")) continue;
+        var known = false;
+        for (rotation_keys) |key| known = known or std.mem.eql(u8, entry.key, key);
+        if (!known) return error.UnsupportedConfiguration;
+    }
+    if (try unsignedValue(doc, "prism.hadamard.block_size") != Rotation.block_size) return error.UnsupportedConfiguration;
+    try expectString(doc, "prism.hadamard.transform", "normalized-sylvester-walsh-hadamard");
+    try expectString(doc, "prism.hadamard.axis", "input-last-dimension");
+    try expectString(doc, "prism.hadamard.sign_mode", "explicit");
+    const value_grouped = switch (doc.get("prism.hadamard.gdn_v_grouped") orelse return error.MissingMetadata) {
+        .boolean => |b| b,
+        else => return error.InvalidMetadata,
+    };
+
+    const widths = try arrayValues(doc, "prism.hadamard.sign_widths", .int32, Rotation.widths.len);
+    var total: usize = 0;
+    for (widths, Rotation.widths) |value, expected| {
+        switch (value) {
+            .signed => |n| if (n != expected) return error.UnsupportedConfiguration,
+            else => return error.InvalidMetadata,
+        }
+        total += expected;
+    }
+    const values = try arrayValues(doc, "prism.hadamard.sign_values", .int32, total);
+    for (values) |value| switch (value) {
+        .signed => |n| if (n != 1 and n != -1) return error.InvalidMetadata,
+        else => return error.InvalidMetadata,
+    };
+    var signs: [3]Rotation.Signs = undefined;
+    var offset: usize = 0;
+    for (&signs, Rotation.widths) |*entry, width| {
+        entry.* = .{ .width = width, .values = values[offset..][0..width] };
+        offset += width;
+    }
+
+    // Each listed name claims one slot of the pinned set; a name outside the
+    // set or claimed twice is refused, so a full slot table means equality.
+    const names = try arrayValues(doc, "prism.hadamard.weight_names", .string, rotated_names);
+    var slots = [_][attention_rotated.len]bool{[_]bool{false} ** attention_rotated.len} ** 64;
+    var head = false;
+    for (names) |value| {
+        const name = switch (value) {
+            .string => |text| text,
+            else => return error.InvalidMetadata,
+        };
+        if (std.mem.eql(u8, name, "output.weight")) {
+            if (head) return error.UnsupportedConfiguration;
+            head = true;
+            continue;
+        }
+        const slot = rotatedSlot(name) orelse return error.UnsupportedConfiguration;
+        if (slots[slot.layer][slot.kind]) return error.UnsupportedConfiguration;
+        slots[slot.layer][slot.kind] = true;
+    }
+    const inverse = try arrayValues(doc, "prism.hadamard.inverse_weight_names", .string, 1);
+    switch (inverse[0]) {
+        .string => |name| if (!std.mem.eql(u8, name, "token_embd.weight")) return error.UnsupportedConfiguration,
+        else => return error.InvalidMetadata,
+    }
+    return .{ .block = Rotation.block_size, .signs = signs, .value_grouped = value_grouped };
+}
+
+/// `blk.N.KIND.weight` for a rotated kind of layer N's mixer.
+fn rotatedSlot(name: []const u8) ?struct { layer: usize, kind: usize } {
+    if (!std.mem.startsWith(u8, name, "blk.")) return null;
+    const rest = name[4..];
+    const dot = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
+    const layer = std.fmt.parseInt(usize, rest[0..dot], 10) catch return null;
+    if (layer >= 64) return null;
+    const kinds: []const []const u8 = if ((layer + 1) % 4 == 0) &attention_rotated else &delta_rotated;
+    for (kinds, 0..) |kind, index| {
+        if (rest.len == dot + 1 + kind.len + ".weight".len and
+            std.mem.eql(u8, rest[dot + 1 ..][0..kind.len], kind) and
+            std.mem.endsWith(u8, rest, ".weight")) return .{ .layer = layer, .kind = index };
+    }
+    return null;
 }
 
 const Storage = enum { f32, matrix };
@@ -231,7 +406,8 @@ const Binder = struct {
 /// doc must come from successful GGUF parsing. Allocations are temporary lookup
 /// storage, freed before return; only the returned tensor references borrow doc.
 pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
-    try validateMetadata(doc);
+    const auxiliary = try validateMetadata(doc);
+    const rotation = try validateRotation(doc);
     var binder: Binder = .{ .remaining = .init(alloc) };
     defer binder.remaining.deinit();
     for (doc.tensors) |*tensor| {
@@ -249,22 +425,26 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
 
     // The auxiliary block is validated but excluded from the text binding.
     // It always uses full attention, regardless of the main schedule's modulo.
-    _ = try binder.layer(64, true);
-    _ = try binder.weight(64, "nextn.eh_proj.weight", &.{ 10240, 5120 }, .matrix);
-    _ = try binder.weight(64, "nextn.enorm.weight", &.{5120}, .f32);
-    _ = try binder.weight(64, "nextn.hnorm.weight", &.{5120}, .f32);
-    _ = try binder.weight(64, "nextn.shared_head_norm.weight", &.{5120}, .f32);
+    if (auxiliary) {
+        _ = try binder.layer(64, true);
+        _ = try binder.weight(64, "nextn.eh_proj.weight", &.{ 10240, 5120 }, .matrix);
+        _ = try binder.weight(64, "nextn.enorm.weight", &.{5120}, .f32);
+        _ = try binder.weight(64, "nextn.hnorm.weight", &.{5120}, .f32);
+        _ = try binder.weight(64, "nextn.shared_head_norm.weight", &.{5120}, .f32);
+    }
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
     result.summary = .{
         .profile = "qwen35_27b",
         .decoder_layers = 64,
         .layer_kinds = &layer_kinds,
-        .auxiliary_prediction_layers = 1,
+        .auxiliary_prediction_layers = if (auxiliary) 1 else 0,
+        .rotated_basis = if (rotation != null) "normalized-sylvester-walsh-hadamard, block 1024, explicit signs" else null,
         .text_tensors = text_tensors,
         .auxiliary_tensors = binder.tensors - text_tensors,
         .text_tensor_bytes = text_bytes,
         .auxiliary_tensor_bytes = binder.bytes - text_bytes,
     };
+    result.rotation = rotation;
     return result;
 }
 
@@ -283,6 +463,12 @@ fn fixture() !gguf.Document {
 /// serialize it back into GGUF bytes; never referenced by the binary.
 pub fn inventoryDocument(gpa: std.mem.Allocator) !gguf.Document {
     return @import("inventory.zig").document(gpa, @embedFile("fixtures/qwen35-27b.json"));
+}
+
+/// The Bonsai 2 27B PQ2_0 file's inventory (`fixtures/bonsai-2-27b.json`),
+/// rotation arrays included.
+pub fn bonsaiInventoryDocument(gpa: std.mem.Allocator) !gguf.Document {
+    return @import("inventory.zig").document(gpa, @embedFile("fixtures/bonsai-2-27b.json"));
 }
 
 // Fixture allocations are mutable; the public Document exposes const slices.
@@ -403,6 +589,72 @@ test "auxiliary prediction tensors are validated even though they are not execut
     try std.testing.expectError(error.InvalidTensorShape, bind(std.testing.allocator, &doc));
     aux.name = "missing.auxiliary";
     try std.testing.expectError(error.MissingTensor, bind(std.testing.allocator, &doc));
+}
+
+test "the plain Qwen file carries no rotation and one auxiliary layer" {
+    var doc = try fixture();
+    defer doc.deinit();
+    const model = try bind(std.testing.allocator, &doc);
+    try std.testing.expect(model.rotation == null);
+    try std.testing.expectEqual(@as(u32, 1), model.summary.auxiliary_prediction_layers);
+}
+
+test "bind the Bonsai inventory: 64 blocks, ternary and BF16 matrices, the pinned rotation" {
+    var doc = try bonsaiInventoryDocument(std.testing.allocator);
+    defer doc.deinit();
+    const model = try bind(std.testing.allocator, &doc);
+    try std.testing.expectEqual(@as(u32, 851), model.summary.text_tensors);
+    try std.testing.expectEqual(@as(u32, 0), model.summary.auxiliary_tensors);
+    try std.testing.expectEqual(@as(u32, 0), model.summary.auxiliary_prediction_layers);
+    try std.testing.expectEqual(@as(u64, 7_195_047_936), model.summary.text_tensor_bytes);
+    try std.testing.expectEqual(@as(u32, 142), model.output.encoding_id);
+    try std.testing.expectEqual(@as(u32, 30), model.layers[0].mixer.delta_net.alpha.encoding_id);
+    try std.testing.expect(model.summary.rotated_basis != null);
+    const rotation = model.rotation.?;
+    try std.testing.expectEqual(@as(u32, 1024), rotation.block);
+    try std.testing.expect(rotation.value_grouped);
+    try std.testing.expectEqual(@as(usize, 17408), rotation.signsFor(17408).?.len);
+    try std.testing.expect(rotation.signsFor(10240) == null);
+    var negative: usize = 0;
+    for (rotation.signs) |signs| for (signs.values) |value| {
+        if (value.signed == -1) negative += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 14504), negative);
+}
+
+test "reject rotations outside the pinned contract" {
+    var doc = try bonsaiInventoryDocument(std.testing.allocator);
+    defer doc.deinit();
+    const version = metadataEntry(&doc, "prism.hadamard.version");
+    version.value = .{ .unsigned = 2 };
+    try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+    version.value = .{ .unsigned = 1 };
+    // Rotation keys without the version key are a rotation this adapter cannot read.
+    version.key = "general.rotation";
+    try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+    version.key = "prism.hadamard.version";
+    const mode = metadataEntry(&doc, "prism.hadamard.sign_mode");
+    mode.value = .{ .string = "identity" };
+    try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+    mode.value = .{ .string = "explicit" };
+    const signs = @constCast(metadataEntry(&doc, "prism.hadamard.sign_values").value.array.values.?);
+    signs[6000] = .{ .signed = 0 };
+    try std.testing.expectError(error.InvalidMetadata, bind(std.testing.allocator, &doc));
+    signs[6000] = .{ .signed = 1 };
+    const names = @constCast(metadataEntry(&doc, "prism.hadamard.weight_names").value.array.values.?);
+    const saved = names[1];
+    names[1] = .{ .string = "blk.0.ssm_alpha.weight" }; // never rotated
+    try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+    names[1] = names[2]; // a slot claimed twice, another left empty
+    try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+    names[1] = saved;
+    metadataEntry(&doc, "prism.hadamard.axis").key = "prism.hadamard.axes";
+    try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+    metadataEntry(&doc, "prism.hadamard.axes").key = "prism.hadamard.axis";
+    _ = try bind(std.testing.allocator, &doc);
+    // The block count and the auxiliary declaration must agree.
+    metadataEntry(&doc, "qwen35.block_count").value = .{ .unsigned = 65 };
+    try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
 }
 
 fn bindWithAllocator(alloc: std.mem.Allocator, doc: *const gguf.Document) !void {

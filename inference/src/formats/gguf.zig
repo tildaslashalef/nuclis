@@ -39,6 +39,12 @@ pub const Type = enum(u32) {
 /// families in the roadmap; vocabulary arrays are millions of elements.
 pub const retained_array_items = 64;
 
+/// Arrays under these key prefixes are retained whole, strings included,
+/// up to `retained_prefixed_items`: configuration a binding must read
+/// (the Hadamard rotation's sign vectors and weight lists), never vocabulary.
+pub const retained_key_prefixes = [_][]const u8{"prism.hadamard."};
+pub const retained_prefixed_items = 65_536;
+
 pub const Array = struct {
     element_type: Type,
     count: u64,
@@ -203,7 +209,7 @@ const Cursor = struct {
         return std.enums.fromInt(Type, try self.int(u32)) orelse error.InvalidMetadataType;
     }
 
-    fn value(self: *Cursor, alloc: Allocator, tag: Type) Error!Value {
+    fn value(self: *Cursor, alloc: Allocator, tag: Type, retain: bool) Error!Value {
         return switch (tag) {
             .uint8 => .{ .unsigned = try self.int(u8) },
             .uint16 => .{ .unsigned = try self.int(u16) },
@@ -227,9 +233,10 @@ const Cursor = struct {
                 const count = try self.int(u64);
                 if (count > self.limits.array_items) return error.LimitExceeded;
                 var array: Array = .{ .element_type = element_type, .count = count, .file_offset = self.position };
-                if (element_type != .string and count <= retained_array_items) {
+                if (retain and count > retained_prefixed_items) return error.LimitExceeded;
+                if (retain or (element_type != .string and count <= retained_array_items)) {
                     const values = try alloc.alloc(Value, @intCast(count));
-                    for (values) |*item| item.* = try self.value(alloc, element_type);
+                    for (values) |*item| item.* = try self.value(alloc, element_type, false);
                     array.values = values;
                 } else if (element_type == .string) {
                     for (0..@intCast(count)) |_| {
@@ -256,6 +263,11 @@ const Cursor = struct {
         };
     }
 };
+
+fn retainedKey(key: []const u8) bool {
+    for (retained_key_prefixes) |prefix| if (std.mem.startsWith(u8, key, prefix)) return true;
+    return false;
+}
 
 fn validateName(name: []const u8) Error!void {
     if (name.len == 0 or name.len > 65_535 or !std.unicode.utf8ValidateSlice(name))
@@ -314,7 +326,7 @@ pub fn parseDiagnosed(gpa: Allocator, reader: *std.Io.Reader, file_bytes: u64, l
         const inserted = try keys.getOrPut(key);
         if (inserted.found_existing) return error.DuplicateMetadata;
         const tag = try cursor.kind();
-        const value = try cursor.value(alloc, tag);
+        const value = try cursor.value(alloc, tag, retainedKey(key));
         entry.* = .{ .key = key, .kind = tag, .value = value };
         if (std.mem.eql(u8, key, "general.alignment")) {
             if (tag != .uint32) return error.InvalidAlignment;
@@ -633,4 +645,40 @@ test "retain small numeric arrays while leaving large arrays as descriptors" {
     try std.testing.expectEqual(@as(i64, -1), sections.values.?[0].signed);
     try std.testing.expectEqual(@as(i64, 2), sections.values.?[3].signed);
     try std.testing.expect(doc.get("large").?.array.values == null);
+}
+
+test "arrays under a retained key prefix keep every value, strings included" {
+    var bytes: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer bytes.deinit();
+    const w = &bytes.writer;
+    try w.writeAll("GGUF");
+    try w.writeInt(u32, 3, .little);
+    try w.writeInt(u64, 0, .little);
+    try w.writeInt(u64, 3, .little);
+    try fixtureString(w, "prism.hadamard.sign_values");
+    try w.writeInt(u32, 9, .little);
+    try w.writeInt(u32, 5, .little);
+    try w.writeInt(u64, retained_array_items + 1, .little);
+    for (0..retained_array_items + 1) |i| try w.writeInt(i32, if (i % 2 == 0) 1 else -1, .little);
+    try fixtureString(w, "prism.hadamard.weight_names");
+    try w.writeInt(u32, 9, .little);
+    try w.writeInt(u32, 8, .little);
+    try w.writeInt(u64, 2, .little);
+    try fixtureString(w, "output.weight");
+    try fixtureString(w, "blk.0.ffn_up.weight");
+    try fixtureString(w, "other.names");
+    try w.writeInt(u32, 9, .little);
+    try w.writeInt(u32, 8, .little);
+    try w.writeInt(u64, 1, .little);
+    try fixtureString(w, "skipped");
+    try w.splatByteAll(0, (32 - bytes.written().len % 32) % 32);
+    var reader: std.Io.Reader = .fixed(bytes.written());
+    var doc = try parse(std.testing.allocator, &reader, bytes.written().len, .{});
+    defer doc.deinit();
+    const signs = doc.get("prism.hadamard.sign_values").?.array.values.?;
+    try std.testing.expectEqual(@as(usize, retained_array_items + 1), signs.len);
+    try std.testing.expectEqual(@as(i64, -1), signs[1].signed);
+    const names = doc.get("prism.hadamard.weight_names").?.array.values.?;
+    try std.testing.expectEqualStrings("blk.0.ffn_up.weight", names[1].string);
+    try std.testing.expect(doc.get("other.names").?.array.values == null);
 }

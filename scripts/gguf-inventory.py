@@ -4,8 +4,10 @@ adapters' tests hydrate (`inference/src/models/fixtures/*.json`).
 
 Reads the header with the standard library only, so it shares nothing with the
 Zig parser it checks. Output: {"metadata": {...}, "tensors": [[name, dims, encoding_id], ...]}.
-Scalars and short strings are kept; arrays of at most 16 numbers keep their
-values; larger arrays and long strings become descriptors (count/length,
+Scalars and short strings are kept; arrays of at most 64 numbers keep their
+values, as do arrays of any element type under the `prism.hadamard.` prefix
+(the Zig parser retains the same: a binding validates the rotation from
+them); other large arrays and long strings become descriptors (count/length,
 byte offset, element type, and for strings the SHA-256), which is what the
 tests need and keeps vocabularies out of the tree.
 
@@ -34,12 +36,14 @@ class Reader:
         if n <= max_string:
             return raw.decode("utf-8", "replace")
         return {"length": n, "offset": offset, "sha256": hashlib.sha256(raw).hexdigest(), "head": raw[:64].decode("utf-8", "replace")}
-    def value(self, t, max_string):
+    def value(self, t, max_string, retain=False):
         if t == STRING: return self.string(max_string)
         if t == ARRAY:
             et, n = self.scalar(4), self.scalar(10)
             offset = self.pos
-            if et in TYPES and n <= 64:
+            if retain and et == STRING:
+                return {"count": n, "offset": offset, "type": et, "values": [self.string(1 << 16) for _ in range(n)]}
+            if et in TYPES and (n <= 64 or retain):
                 return {"count": n, "offset": offset, "type": et, "values": [int(self.scalar(et)) if et == 7 else self.scalar(et) for _ in range(n)]}
             if et in TYPES:
                 self.read(n * TYPES[et][1])
@@ -59,7 +63,7 @@ def inventory(path, max_string):
         metadata = {}
         for _ in range(n_kv):
             key = r.string(1 << 16)
-            metadata[key] = r.value(r.scalar(4), max_string)
+            metadata[key] = r.value(r.scalar(4), max_string, retain=key.startswith("prism.hadamard."))
         tensors = []
         for _ in range(n_tensors):
             name = r.string(1 << 16)
@@ -77,7 +81,17 @@ def main():
     inv = inventory(a.file, a.max_string)
     text = json.dumps(inv, indent=None, separators=(", ", ": "))
     if a.out:
-        with open(a.out, "w") as f: f.write(json.dumps({"metadata": inv["metadata"], "tensors": inv["tensors"]}, indent=1) + "\n")
+        # Retained numeric arrays stay on one line each (a sign vector is
+        # tens of thousands of entries); everything else is indented.
+        compact = {}
+        for key, value in inv["metadata"].items():
+            if isinstance(value, dict) and "values" in value and value["type"] != STRING:
+                compact[key] = value["values"]
+                value["values"] = f"@@{key}@@"
+        text = json.dumps({"metadata": inv["metadata"], "tensors": inv["tensors"]}, indent=1)
+        for key, values in compact.items():
+            text = text.replace(json.dumps(f"@@{key}@@"), json.dumps(values, separators=(",", ":")))
+        with open(a.out, "w") as f: f.write(text + "\n")
     print(f"{a.file}: GGUF v{inv['gguf_version']}, {len(inv['metadata'])} keys, {len(inv['tensors'])} tensors, directory {inv['directory_bytes']} bytes")
 
 if __name__ == "__main__":

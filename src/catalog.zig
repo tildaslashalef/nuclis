@@ -156,9 +156,9 @@ pub const entries = [_]Entry{
     // as `qwen3.8-27b`, its weights ternary at group 128 in a Hadamard-rotated
     // basis (docs/reference/bonsai.md). The 2-bit-slot packing is the bring-up
     // file (decided 2026-09-18); the denser PTQ1_0 packing follows once the
-    // plan runs. Pinned ahead of its encodings: `inspect` says *not runnable*
-    // until the ternary kernels land. The profile is the Qwen family's once
-    // its template is proven identical, else a variant.
+    // plan runs. The adapter binds it and the runtimes refuse the rotation
+    // until they apply it. The profile is a variant of the Qwen family's: its
+    // upstream template refuses a second system message the pinned one merges.
     .{
         .name = "bonsai-2-27b",
         .repo = "prism-ml/Ternary-Bonsai-2-27B-gguf",

@@ -22,6 +22,7 @@ pub fn render(path: []const u8, summary: Summary, out: *std.Io.Writer, json: boo
     try out.writeAll(")\n");
     try out.print("{s}Text weights:{s} {s}{d}{s} tensors, {s}{d}{s} bytes\n", .{ label, off, number, summary.text_tensors, off, number, summary.text_tensor_bytes, off });
     try out.print("{s}Auxiliary prediction:{s} {s}{d}{s} layer, {s}{d}{s} tensors, {s}{d}{s} bytes (excluded from text binding)\n", .{ label, off, number, summary.auxiliary_prediction_layers, off, number, summary.auxiliary_tensors, off, number, summary.auxiliary_tensor_bytes, off });
+    if (summary.rotated_basis) |basis| try out.print("{s}Rotated basis:{s} {s} (the runtimes transform every projection input)\n", .{ label, off, basis });
     try out.print("{s}Structure matches the text profile executed by `generate` (CPU and Metal backends).{s}\n", .{ sty.on(.success), off });
 }
 

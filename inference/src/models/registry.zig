@@ -48,6 +48,9 @@ pub const Summary = struct {
     /// Layers bound only to be excluded from the text schedule (a draft
     /// head embedded in the main file); zero when the file has none.
     auxiliary_prediction_layers: u32 = 0,
+    /// The weights sit in a rotated basis the runtimes must undo per
+    /// activation (Bonsai's Hadamard fold); the adapter names the transform.
+    rotated_basis: ?[]const u8 = null,
     text_tensors: u32,
     auxiliary_tensors: u32,
     text_tensor_bytes: u64,

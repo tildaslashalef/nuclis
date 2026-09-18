@@ -101,6 +101,9 @@ pub const Plan = struct {
     /// bytes attention reads per token; the recurrent state stays F32.
     pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision) !Plan {
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
+        // The rotation's transform and the ternary and BF16 kernels are not
+        // in this plan yet; refuse rather than run in the stored basis.
+        if (binding.rotation != null) return error.UnsupportedRotation;
         var layouts: [64]session.Layout = undefined;
         for (binding.layers, &layouts) |layer, *layout| layout.* = switch (layer.mixer) {
             .full_attention => .{ .attention = .{ .key_row = 1024, .value_row = 1024, .precision = kv } },

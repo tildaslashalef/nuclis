@@ -9,8 +9,9 @@
 //! Fixture value forms: JSON integers become unsigned metadata, floats
 //! `float32`, booleans `boolean`, strings `string`; an object with `type`
 //! and `count` is an array descriptor whose optional `values` are retained
-//! (integers as `signed`, booleans as `boolean`, matching what the parser
-//! keeps for the same element types); an object with `sha256` describes a
+//! (integers as `signed`, booleans as `boolean`, strings as `string`,
+//! matching what the parser keeps for the same element types); an object
+//! with `sha256` describes a
 //! long string the fixture omits, and is skipped (no key). Tensors are
 //! `[name, dimensions, encoding_id]`.
 const std = @import("std");
@@ -49,6 +50,7 @@ pub fn document(gpa: std.mem.Allocator, json_text: []const u8) !gguf.Document {
                             else => unreachable,
                         } },
                         .uint8, .uint16, .uint32, .uint64 => .{ .unsigned = @intCast(n.integer) },
+                        .string => .{ .string = n.string },
                         else => .{ .signed = n.integer },
                     };
                     array.values = retained;

@@ -52,6 +52,9 @@ pub const Runtime = struct {
     delta_scratch: []f64,
 
     pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize) !Runtime {
+        // A rotated file needs the activation transform before every
+        // projection; running it in the stored basis would be wrong math.
+        if (binding.rotation != null) return error.UnsupportedRotation;
         var layouts: [64]session.Layout = undefined;
         for (binding.layers, &layouts) |layer, *layout| layout.* = switch (layer.mixer) {
             .full_attention => .{ .attention = .{ .key_row = 1024, .value_row = 1024 } },
