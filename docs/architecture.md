@@ -454,6 +454,17 @@ and matmul tile derived from the nearest existing block kernel, and the
 adapter's `executableEncoding` claim, with no edit to the parser, the
 sampler, or the generation loop
 ([reference/gemma4.md § Q4_0 path](reference/gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12)).
+A second *configuration* of an existing family (the 26B-A4B mixture of
+experts beside the 12B) is not a second adapter: `gemma4.configs` pins
+both, selected by `block_count`, and one runtime and one Metal plan run
+either from the same schedule with the expert layer as a branch. The new
+mathematics went where the rule says: `cpu.experts` (routing, the gathered
+expert FFN) with fixtures, the gathered kernels with `metal-check` entries,
+`weights.View.expertMatrix` for the 3-D tensors, and a per-plan
+`preferredChunk` the engine honours; the acceptance record then closed the
+entry as supported
+([reference/gemma4.md § 26B-A4B](reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09),
+[reference/bench.md](reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 
 Registration is one line (MODL-04, 2026-09-11): the adapter declares a
 `family` namespace (`architecture`, `executableEncoding`, `Binding`/`bind`,

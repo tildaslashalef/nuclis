@@ -646,14 +646,16 @@ routing: a perturbed router logit swaps a token's eighth expert. With
 the expert projections alone through per-token F32 matvecs the gap is
 still 1.1e-1 relative RMS, because the dense tiles' rounding already
 moves the router. The check records the expert configuration's own
-bounds (2e1 / 5e-1) beside the 12B's; how this shows against the
-reference harness on real prompts is what the acceptance record (MODL-10)
-measures.
+bounds (2e1 / 5e-1) beside the 12B's. The acceptance record
+([bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18))
+ran the reference's arrays greedy to the token budget at every length,
+which is what a rate record can say about it; per-token agreement on
+real prompts stays the trace comparison's job.
 
 **First-look rates** (`nuclis bench`, Metal, greedy, `--kv f16`, three
 measured runs; Apple M4 Pro 48 GB, macOS 26.6.2, Zig 0.16.0 ReleaseSafe,
-2026-09-18; not the acceptance record, which MODL-10 takes against the
-reference harness):
+2026-09-18; the acceptance record against the reference harness is in
+[bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)):
 
 | Workload | Chunk | Prefill tok/s | Decode tok/s | First token |
 | --- | ---: | ---: | ---: | ---: |
@@ -677,7 +679,26 @@ against the 12B's 20.2 and the Qwen3.8-27B's 10.7 on the same machine:
 a token touches eight experts of 704 and a 2,112-wide shared FFN instead
 of a 15,360-wide FFN, about 2.2 GB of Q4_0 weights with the tied head
 (an estimate from the tensor shapes, not a measurement), so the
-effective rate is roughly 120 GB/s against the 12B's 148: the down
-projection's idle lanes and the six extra dispatches per layer are the
-follow-ups the profile will rank in MODL-10. The Qwen `make bench` is
-unchanged the same day (40.05 / 10.67 tok/s against 40.27 / 10.80).
+effective rate is roughly 120 GB/s against the 12B's 148. The per-kernel
+profile ranked the follow-ups (the expert down projection at 114 GB/s on
+its 704-wide rows, then the launch-bound norms, then the wide
+flash-decoding kernel at long context;
+[bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+The Qwen `make bench` is unchanged the same day (40.05 / 10.67 tok/s
+against 40.27 / 10.80).
+
+**Acceptance record and agent check (MODL-10, 2026-09-18).** Against the
+reference harness on its own arrays: prefill / decode 500.42 / 55.29 at
+512, 346.17 / 49.44 at 4K, 206.44 / 39.55 at 16K, 134.74 / 31.30 at 32,639
+tok/s, the reference at 580.76 / 68.02, 548.41 / 60.82, 459.46 / 50.67,
+343.38 / 44.09; session 6.87 GiB, peak footprint 8.0 GB
+([bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+`nuclis agent --model gemma-4-26b-a4b` (Metal, context 8,192, `--think
+medium`, `--print --json`) on "create greeting.txt with hello world, then
+read it back" issued `write_file` then `read_file` and answered from the
+contents, the file on disk `hello world`: 221 prompt tokens, 71 generated,
+prefill 0.99 s, decode 1.30 s (18–19 ms per token in the loop, against
+the 12B's 8.5 s for 168 tokens under the same check), `replayed: true`
+as on the 12B. The catalogue entry's verdict is *supported* (`model
+inspect`: the Hub's digest at the pinned commit and the adapter's
+binding).

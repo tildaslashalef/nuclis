@@ -66,9 +66,12 @@ values MODL-03's catalogue and the Gemma 4 12B records cite:
 
 The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
 the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
-ahead of their adapters (the 26B-A4B's expert layers landed in MODL-09 on
-both backends; the Muse adapter is MODL-11, and until then `inspect` says
-*not runnable* for it). The 26B-A4B
+ahead of their adapters. The 26B-A4B is supported since 2026-09-18: the
+expert layers run on both backends (MODL-09) and it has its own reference
+traces, acceptance record, and agent check (MODL-10;
+[bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+The Muse adapter is MODL-11, and until then `inspect` says *not runnable*
+for it. The 26B-A4B
 repository also lists `mmproj-F16.gguf` (1,193,058,784 B), `mmproj-F32.gguf`
 (2,291,200,480 B), `MTP/mtp-gemma-4-26B-A4B-it-{BF16,F16}.gguf`
 (855,247,360 B each), `MTP/…-Q8_0.gguf` (461,785,600 B), and a root-level
@@ -210,7 +213,9 @@ again (the pins of MODL-07, above) and `gemma-4-12b-qat` is the QAT file
 Both are pinned, both are verified by `nuclis model pull <name> --all`,
 and each has its own reference traces and acceptance record — which is
 what the single name obscured while it pointed at whichever file was
-newest. `nuclis model inspect`
+newest. `gemma-4-26b-a4b`, the mixture of experts, followed on 2026-09-17
+with its adapter arriving the next day; its verdict is *supported* since
+its acceptance record (MODL-10). `nuclis model inspect`
 judges a remote file from its directory alone and compares the Hub's
 digest against the catalogue (main file or companion) for its verdict
 ([development.md § Model download](../development.md#model-download));

@@ -567,6 +567,101 @@ full-capacity sliding caches), peak resident set 11.54 GiB, peak footprint
 11.77–11.81 GB at every length; the weight file is 0.65 GB smaller than
 the K-quant one.
 
+## Gemma 4 26B-A4B acceptance record (MODL-10, 2026-09-18)
+
+The v0.1 acceptance workload on the catalogue's mixture of experts,
+`gemma-4-26b-a4b` (`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf`, SHA-256
+`a7c5bc71…`, 14.25 GB, every matrix Q4_0, 128 experts of which 8 per
+token). The reference harness ran on this file
+(`tests/fixtures/run-2026-09-18-gemma4-26b-a4b/`,
+[reference-2026-09-18-gemma4-26b-a4b.json](../benchmarks/reference-2026-09-18-gemma4-26b-a4b.json):
+`llama-server 7620399` with the recipe's flags at 32,768 context, F16
+cache, three measured repetitions at every length after one warmup; its
+token arrays are byte-identical to the two 12B runs', since the three
+files share vocabulary and template, and `nuclis tokenize` reproduces the
+corpus through every cut and every text rendering to its array's count),
+and `make baseline-gemma4-26b-a4b` fed the arrays through `bench
+--prompt-tokens` ([nuclis-2026-09-18-gemma4-26b-a4b.json](../benchmarks/nuclis-2026-09-18-gemma4-26b-a4b.json)).
+Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2, AC power on
+both sides, Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` from the MODL-10
+tree (`56ef7d4` plus this unit's Makefile and documents), `--kv f16
+--ctx-size 32768 --max-tokens 128`, the family's prefill chunk of 512,
+one 15-minute sequence 512 → 32,639 with nothing else on the GPU. Mean ±
+sample standard deviation over three measured runs (one at 32,639); the
+reference columns are its warm means over three samples:
+
+| Prompt tokens | Prefill tok/s | Reference | Decode tok/s | Reference | Decode ms/step | First token | Warmup (prefill / decode) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 512 | 500.42 ± 4.65 | 580.76 ± 5.35 | 55.29 ± 0.05 | 68.02 ± 0.12 | 18.1 | 1.0 s | 416.9 / 55.29 |
+| 4,096 | 346.17 ± 1.29 | 548.41 ± 4.12 | 49.44 ± 0.64 | 60.82 ± 0.28 | 20.0–20.5 | 11.8 s | 341.8 / 49.16 |
+| 16,384 | 206.44 ± 1.21 | 459.46 ± 3.28 | 39.55 ± 0.18 | 50.67 ± 2.32 | 25.2–25.4 | 79.4 s | 207.8 / 39.92 |
+| 32,639 | 134.74 (one run) | 343.38 ± 11.81 | 31.30 (one run) | 44.09 ± 0.10 | 31.9 | 242 s | 135.8 / 31.47 |
+
+Every sample stopped with `token_budget` at exactly the array's count and
+128 generated tokens, on both sides. The half-tile rounding that the
+generation check measures on random tokens (3.5e-1 relative RMS through
+the routed layers) does not show here: the workload is greedy on the
+reference's own arrays and every run met its budget with the same stop,
+which is what the record can say about it; per-token agreement with the
+reference on real prompts remains the trace comparison's job, not this
+table's.
+
+**Decode** is at 81 % of the reference at 512 and 4K, 78 % at 16K, and
+71 % at 32K. The step reads about 2.1 GB of Q4_0 weights (eight experts
+of 704 plus the 2,112-wide shared FFN on every layer, the attention
+projections, and the tied 262,144-row head; a sum over the tensor shapes),
+so 18.1 ms is 118 GB/s effective against the reference's 146 at 14.7 ms.
+The gap widens with context faster than the reference's: from 512 to 32K
+nuclis adds 13.8 ms per step and the reference 8.0, for the same five
+global layers reading two KV heads over the whole context (0.67 GB per
+step at 32K in F16, about 3.3 ms of bytes), so the flash-decoding kernel
+on the two-KV-head, 16-query-head geometry is well above its byte cost at
+long context.
+
+**Prefill** is at 86 % of the reference at 512 and falls to 63 % at 4K,
+45 % at 16K, and 39 % at 32K, the steepest fall of the three Gemma
+records (the 12B QAT's is 80 % → 51 %): the reference's rate falls 581 →
+343 over the same lengths, nuclis's 500 → 135. Two things compound here
+beyond the chunk attention latency already named for the 12B: the
+gathered expert tiles are dispatched per 512-token chunk (64 chunks at
+32K, each with its own routing, list build, and two gathered matmuls), and
+the global layers' chunk attention with two KV heads scores the whole
+prefix per chunk.
+
+**Per-kernel profile** (`make bench-profile MODEL=<26b-a4b file>
+ARGS="--kv f16"`, 22-token prompt, 2,048 context, 192 measured steps,
+2026-09-18): 915 dispatches per step, 23.8 ms attributed of 28.7 ms
+command-buffer time. Profile mode costs this model far more than the 12B's
+8 %: the same prompt decodes at 57.9 tok/s unprofiled and 33.4 profiled,
+so the shares below are indicative and the absolute times pessimistic.
+Removing the amortized prefill (the gathered and dense matmul tiles, about
+3.3 ms/step), a decode step attributes about 20.5 ms:
+
+| Part | ms/step | Share | Note |
+| --- | ---: | ---: | --- |
+| Expert matvecs (gate-up, down) | 5.6 | 27 % | gate-up 162 GB/s, down **114 GB/s** (704-wide rows) |
+| Dense matvecs (head, attention, shared FFN, router) | 8.8 | 43 % | 114–180 GB/s; the tied head 2.3 ms alone at 180 GB/s |
+| RMS norms | 2.9 | 14 % | 331 dispatches of ~9 µs: launch latency (eight norms per expert layer) |
+| Attention (decode, wide decode, merge) | 1.6 | 8 % | 2K context |
+| Routing glue (`route`, `combine_experts`, `gelu_mul_rows`) | 0.8 | 4 % | 90 dispatches |
+| RoPE, adds, packing, scales | 0.7 | 3 % | |
+
+Against the 12B's profile, the matvecs hold less of their isolated
+bandwidth (the expert down projection and the 2,112-wide shared FFN down
+at 114 GB/s against 191–224 for the 12B's shapes: narrow rows leave the
+per-row threadgroup lanes idle, the follow-up KERN-09 named) and the
+launch-bound part grew from 337 to 421 small dispatches per step. In
+order: the expert down kernel's idle lanes, a fused norm-and-scale or a
+batched norm launch, and the wide flash-decoding kernel at long context.
+
+**Memory.** Session block 7,381,975,040 bytes (6.87 GiB) at 32,768
+capacity (25 sliding layers × 2 × 2,048 and 5 global layers × 2 × 1,024
+halves per position, the sliding caches allocated for the full capacity as
+on the 12B); peak resident set 7.21 GiB and peak footprint 7.94–8.01 GB at
+every length; the 14.25 GB weight file is memory-mapped and charged to
+wired memory, so the headroom is 48 GiB − 14.25 GB − 8.0 GB ≈ 29 GB at 32K.
+The reference server's resident set between requests was 15.08–15.62 GB.
+
 ## Per-kernel profile
 
 `nuclis bench --profile` (Metal only) adds a table of GPU time per kernel and

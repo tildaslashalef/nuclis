@@ -20,7 +20,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
         test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-experts \
-        baseline baseline-gemma4-qat baseline-gemma4 agent model-ls trace compare compare-f32 compare-f16 \
+        baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
         compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
         compare-gemma4-26b-a4b compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 \
@@ -110,6 +110,10 @@ baseline-gemma4-qat: metal ## The same workload on gemma-4-12b-qat (Q4_0) with i
 baseline-gemma4: metal ## The same on gemma-4-12b (the K-quant entry) (tests/fixtures/run-2026-09-12-gemma4); writes docs/benchmarks/nuclis-<date>-gemma4.json
 	python3 scripts/nuclis-baseline.py --model "$(GEMMA_MODEL)" --nuclis $(BIN) --run run-2026-09-12-gemma4 \
 	  --reference-records reference-2026-09-12-gemma4.json --output docs/benchmarks/nuclis-$$(date +%F)-gemma4.json $(ARGS)
+
+baseline-gemma4-26b-a4b: metal ## The same on gemma-4-26b-a4b (the mixture of experts) with its own reference arrays (tests/fixtures/run-2026-09-18-gemma4-26b-a4b); writes docs/benchmarks/nuclis-<date>-gemma4-26b-a4b.json
+	python3 scripts/nuclis-baseline.py --model "$(GEMMA_26B_A4B_MODEL)" --nuclis $(BIN) --run run-2026-09-18-gemma4-26b-a4b \
+	  --reference-records reference-2026-09-18-gemma4-26b-a4b.json --output docs/benchmarks/nuclis-$$(date +%F)-gemma4-26b-a4b.json $(ARGS)
 
 bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, or one with ARGS=<ENCODING> (no model)
 	$(ZIG) build bench-kernels $(METAL) $(if $(ARGS),-- $(ARGS))

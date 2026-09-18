@@ -71,6 +71,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | TERM-08 | The welcome: ASCII wordmark and session facts; the model's name on the status bar | 2026-09-17 |
 | KERN-09 | Expert routing and gathered expert kernels (decode and prefill) | 2026-09-17 / 2026-09-18 |
 | MODL-09 | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2026-09-18 (two sessions) |
+| MODL-10 | Gemma 4 26B-A4B: catalogue verdict, acceptance record, agent check | 2026-09-18 |
 
 ## Context
 
@@ -2083,3 +2084,63 @@ generic tile for the router's input path. The down projection's idle
 lanes at decode and the 64-token expert tile at prefill (KERN-09's
 follow-ups); the ring layout for windowed caches; the catalogue verdict,
 acceptance record, and agent check are MODL-10.
+
+### MODL-10 — Gemma 4 26B-A4B: catalogue verdict, acceptance record, agent check (2026-09-18)
+
+**Outcome.** The mixture of experts is *supported*: `model inspect
+gemma-4-26b-a4b` reads the Hub's digest at the pinned commit equal to the
+catalogue's and the `gemma4` adapter binding it (the entry, pinned ahead of
+its adapter, needed no change). The acceptance workload ran on both sides:
+the reference harness on the file with `--family gemma4`
+(`tests/fixtures/run-2026-09-18-gemma4-26b-a4b/`, token arrays
+byte-identical to the two 12B runs', summarized in
+`docs/benchmarks/reference-2026-09-18-gemma4-26b-a4b.json`) and `make
+baseline-gemma4-26b-a4b` (new target) feeding those arrays through `bench
+--prompt-tokens` (`docs/benchmarks/nuclis-2026-09-18-gemma4-26b-a4b.json`).
+The per-kernel profile of the decode step was taken and ranked the
+follow-ups. The write-then-read agent check ran on the entry. Documents:
+the record and profile in bench.md, the pointers in gemma4.md, the
+catalogue and provenance notes in artifacts.md, the expert configuration
+as a worked example in architecture.md § Adding a model, the gate list in
+development.md, the fixture row in `tests/fixtures/provenance.md` (whose
+two 12B rows named stale `baseline` targets, corrected), and the README.
+
+**Evidence.** Zig 0.16.0, M4 Pro/48 GiB, AC power, ReleaseSafe, tree
+`56ef7d4` plus this unit's Makefile and documents. Acceptance record:
+prefill / decode **500.42 / 55.29** at 512, **346.17 / 49.44** at 4K,
+**206.44 / 39.55** at 16K, **134.74 / 31.30** at 32,639 against the
+reference's **580.76 / 68.02**, **548.41 / 60.82**, **459.46 / 50.67**,
+**343.38 / 44.09** (decode 81 / 81 / 78 / 71 %, prefill 86 / 63 / 45 /
+39 %); every sample on both sides stopped on the token budget; session
+**6.87 GiB** at 32K, peak footprint **8.0 GB**
+([bench.md](reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+Profile (22-token prompt, 2K context): 915 dispatches per step, a decode
+step about 20.5 ms attributed of which expert matvecs 27 % (down
+projection **114 GB/s** on 704-wide rows), dense matvecs 43 %, norms 14 %
+(331 launches), attention 8 %, routing glue 4 %; profile mode costs this
+model 42 % (57.9 → 33.4 tok/s), so shares are indicative. Agent check
+(Metal, context 8,192, `--think medium`, `--print --json`): `write_file`
+then `read_file`, the answer from the contents, `hello world` on disk;
+**221** prompt tokens, **71** generated, prefill **0.99 s**, decode
+**1.30 s**, `replayed: true`. Decode in the loop 18–19 ms per token
+against the 12B's 8.50 s for 168 tokens (51 ms) and the Qwen3.8-27B's
+about 94 ms. `make check` **401 tests** and `test-metal` passed after the
+runs.
+
+**Files.** `Makefile`, `tests/fixtures/run-2026-09-18-gemma4-26b-a4b/`,
+`tests/fixtures/provenance.md`,
+`docs/benchmarks/reference-2026-09-18-gemma4-26b-a4b.json`,
+`docs/benchmarks/nuclis-2026-09-18-gemma4-26b-a4b.json`,
+`docs/reference/bench.md`, `docs/reference/gemma4.md`,
+`docs/reference/artifacts.md`, `docs/architecture.md`,
+`docs/development.md`, `README.md`.
+
+**Remaining.** Decode at 71–81 % and prefill falling to 39 % of the
+reference at 32K, with the ranked levers in bench.md: the expert down
+kernel's idle lanes on 704-wide rows, a fused or batched norm launch (421
+small dispatches per step), the wide flash-decoding kernel at long
+context (13.8 ms added per step from 512 to 32K against the reference's
+8.0), and the per-chunk cost of the gathered prefill tiles (64 routed
+chunks at 32K). The half-tile rounding on routed layers is unmeasured
+against the reference on real prompts beyond the greedy budget runs; the
+ring layout for windowed caches stays a roadmap item.

@@ -16,25 +16,23 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-MODL-09 closed on 2026-09-18: the Gemma 4 26B-A4B (the first mixture of
-experts) runs on the CPU reference and the Metal plan, matches its pinned
-traces on every path (CPU 5.8e-5, Metal F32 7.7e-5, Metal F16 1.9e-2 max
-abs; the same greedy token and top-5), passes the generation check with
-its own recorded chunk bounds (the half-tile rounding is amplified by the
-discrete routing; the F32-tile comparison at 2.8e-4 proves the schedule),
-and prefills at 526 tok/s and decodes at 55 tok/s on the 512-token array
-with the family's chunk of 512
-([gemma4.md § 26B-A4B](docs/reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
-Next is MODL-10: the catalogue verdict, the acceptance record against
-the reference harness (where the chunked-prefill rounding on real prompts
-gets measured), and the agent check. Then Meta's **Muse Glimmer 30B** (a
-dense agentic model with a new tokenizer splitter and a new chat-protocol
-decoder). The Muse facts were read on 2026-09-16 from its model card, the
-base repository's `config.json`, the remote GGUF header, and the pinned
+MODL-10 closed on 2026-09-18: `gemma-4-26b-a4b` is *supported* (the
+catalogue pin plus the adapter's binding), has its acceptance record
+against the reference harness (decode 55.29 / 49.44 / 39.55 / 31.30 tok/s
+at 512 / 4K / 16K / 32,639 against the reference's 68.02 / 60.82 / 50.67 /
+44.09; prefill 500 → 135 against 581 → 343; session 6.87 GiB at 32K), a
+per-kernel profile that ranks the follow-ups (the expert down kernel's
+idle lanes, the norm launches, the wide flash-decoding kernel at long
+context), and passed the write-then-read agent check
+([bench.md](docs/reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+Next is Meta's **Muse Glimmer 30B** (a dense agentic model with a new
+tokenizer splitter and a new chat-protocol decoder), MODL-11 session 1.
+The Muse facts were read on 2026-09-16 from its model card, the base
+repository's `config.json`, the remote GGUF header, and the pinned
 llama.cpp `7620399`, which already implements both architectures and
 chat formats, so the oracles exist without a reference upgrade.
 
-Order: MODL-10 → MODL-11 → MODL-12 → MODL-13 → AGNT-10.
+Order: MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 All four files of both families are pulled and verified under
 `~/.nuclis/models` (2026-09-17) and both have catalogue entries ahead of
 their adapters; after AGNT-10 the roadmap continues with speculative
@@ -43,27 +41,10 @@ decoding across the families, then performance, then vision
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-10 | Gemma 4 26B-A4B: catalogue, acceptance record, agent check | 1 |
 | MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2 |
 | MODL-12 | Muse Glimmer 30B: Metal plan | 1 |
 | MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 1 |
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 1 |
-
-## MODL-10 — Gemma 4 26B-A4B: catalogue, acceptance record, agent check
-
-**Design.** The catalogue entry `gemma-4-26b-a4b` exists since 2026-09-17
-(the QAT file with its `mmproj-BF16.gguf` and `MTP/…-Q4_0.gguf` companions,
-profile `gemma4`, all pulled and verified); what remains is its verdict
-turning *supported* once the adapter binds, `nuclis --help`, the acceptance record (`scripts/reference-baseline.py
---family gemma4-26b-a4b`, token arrays under `tests/fixtures/run-<date>-gemma4-26b-a4b/`,
-`make baseline-gemma4-26b-a4b`, the table in bench.md); the ring layout
-for windowed caches stays a roadmap follow-up. Live: `nuclis agent
---model gemma-4-26b-a4b` runs the AGNT-09 write-then-read check, and the
-decode rate against the 12B and the 27B is recorded in the log.
-
-**Acceptance.** The record's four prompt lengths at 32K on the token
-budget; the live tool turn; documents updated (gemma4.md, bench.md,
-artifacts.md, architecture.md § adding a model).
 
 ## Muse Glimmer 30B — the artifact (decided 2026-09-16)
 

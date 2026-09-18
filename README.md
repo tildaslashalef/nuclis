@@ -49,6 +49,10 @@ weight matrix Q4_0), runs on both backends, matches llama.cpp's per-layer
 traces, and has its own acceptance record against the reference
 ([docs/reference/gemma4.md](docs/reference/gemma4.md),
 [bench.md](docs/reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12)).
+Gemma 4 26B-A4B, the mixture of experts (128 experts, 8 per token, every
+matrix Q4_0), runs the same way and decodes at 55 tok/s on the 512-token
+workload against the reference's 68
+([bench.md](docs/reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 
 ## Supported models
 

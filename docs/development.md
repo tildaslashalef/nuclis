@@ -86,7 +86,9 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   fixture changed, and `make baseline-gemma4-qat` for the Gemma acceptance
   workload on the QAT entry
   ([bench.md](reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12);
-  `baseline-gemma4-qat` for the QAT entry's own record). `generate --prompt-tokens <json>` feeds a token
+  `baseline-gemma4` for the K-quant entry's, `baseline-gemma4-26b-a4b` for
+  the expert entry's,
+  [bench.md](reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)). `generate --prompt-tokens <json>` feeds a token
   array untokenized, as `bench` does. `make bench-kernels` ranks matvec kernel variants without a model,
   `make bench-matmul` the prefill tile per encoding (generic and specialized;
   `ARGS=<tokens>` for a chunk other than 256), `make bench-experts` the
