@@ -63,6 +63,10 @@ values MODL-03's catalogue and the Gemma 4 12B records cite:
 | `unsloth/Muse-Glimmer-30B-GGUF` | `faa5b025c584459c13febfa5c59883516710ae39` | `Muse-Glimmer-30B-UD-Q4_K_XL.gguf` | 15,878,222,368 | `82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38` |
 | | | `mmproj-kquant.gguf` | 1,400,328,928 | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
 | | | `dflash-kquant.gguf` | 1,631,205,312 | `27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc` |
+| `prism-ml/Ternary-Bonsai-2-27B-gguf` | `6ed5e12bf84b7a63069882c91dd9e9218647d17b` | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | 7,206,168,928 | `3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1` |
+| | | `Ternary-Bonsai-2-27B-PTQ1_0.gguf` | 5,946,648,928 | `53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3` |
+| | | `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` | 629,246,976 | `6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903` |
+| | | `Ternary-Bonsai-2-27B-mmproj-BF16.gguf` | 931,145,856 | `e287342d92332fa3577ed1d42e921dac9370c08da58ba9337fa450f6cc76cfd7` |
 
 The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
 the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
@@ -71,7 +75,15 @@ expert layers run on both backends (MODL-09) and it has its own reference
 traces, acceptance record, and agent check (MODL-10;
 [bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 The Muse adapter is MODL-11, and until then `inspect` says *not runnable*
-for it. The 26B-A4B
+for it. The Bonsai rows were read by `model inspect` on 2026-09-18 and the
+PQ2_0 file and its Q8_0 projector verified by the pull the same day;
+`bonsai-2-27b` entered the catalogue then, ahead of its encodings: the
+file is Qwen3.8-27B's architecture with every matrix in Prism ML's
+ternary packings (ids 142 and 143, which `inspect` reports as not stored)
+in a Hadamard-rotated basis, so it becomes runnable when the encodings
+and the transform land (MODL-16, KERN-10, MODL-17), never through the
+Qwen entry. The repository also lists `Ternary-Bonsai-2-27B-F16.gguf`
+(53,808,408,928 B). The 26B-A4B
 repository also lists `mmproj-F16.gguf` (1,193,058,784 B), `mmproj-F32.gguf`
 (2,291,200,480 B), `MTP/mtp-gemma-4-26B-A4B-it-{BF16,F16}.gguf`
 (855,247,360 B each), `MTP/…-Q8_0.gguf` (461,785,600 B), and a root-level

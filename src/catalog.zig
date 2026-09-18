@@ -152,6 +152,27 @@ pub const entries = [_]Entry{
             .{ .role = .mtp, .file = "dflash-kquant.gguf", .size = 1_631_205_312, .sha256 = "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc", .loaded_by = "the speculative-decoding unit (a DFlash drafter)" },
         },
     },
+    // Prism ML's ternary re-encoding of Qwen3.8-27B: the same architecture
+    // as `qwen3.8-27b`, its weights ternary at group 128 in a Hadamard-rotated
+    // basis (docs/reference/bonsai.md). The 2-bit-slot packing is the bring-up
+    // file (decided 2026-09-18); the denser PTQ1_0 packing follows once the
+    // plan runs. Pinned ahead of its encodings: `inspect` says *not runnable*
+    // until the ternary kernels land. The profile is the Qwen family's once
+    // its template is proven identical, else a variant.
+    .{
+        .name = "bonsai-2-27b",
+        .repo = "prism-ml/Ternary-Bonsai-2-27B-gguf",
+        .file = "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        .revision = "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
+        .sha256 = "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+        .size = 7_206_168_928,
+        .quantization = "PQ2_0 (ternary g128)",
+        .architecture = "qwen35",
+        .profile = null,
+        .companions = &.{
+            .{ .role = .mmproj, .file = "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf", .size = 629_246_976, .sha256 = "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903", .loaded_by = "the vision unit" },
+        },
+    },
 };
 
 /// The widest entry name, so every listing lines its status column up
@@ -243,6 +264,9 @@ test "the table is well formed: unique names, 40-character commits, 64-character
     try std.testing.expectEqualStrings("gemma4", find("gemma-4-12b").?.architecture);
     try std.testing.expectEqual(@as(?Profile, .gemma4), find("gemma-4-26b-a4b").?.profile);
     try std.testing.expectEqual(@as(?Profile, null), find("muse-glimmer-30b").?.profile);
+    try std.testing.expectEqual(@as(?Profile, null), find("bonsai-2-27b").?.profile);
+    try std.testing.expectEqualStrings("qwen35", find("bonsai-2-27b").?.architecture);
+    try std.testing.expect(find("bonsai-2-27b").?.companion(.mtp) == null);
     try std.testing.expectEqualStrings("muse-glimmer", find("muse-glimmer-30b").?.architecture);
     try std.testing.expectEqual(Role.mtp, findFile("unsloth/Muse-Glimmer-30B-GGUF", "dflash-kquant.gguf").?.role);
     try std.testing.expectEqual(Role.mtp, findFile("unsloth/gemma-4-12B-it-qat-GGUF", "mtp-gemma-4-12B-it.gguf").?.role);

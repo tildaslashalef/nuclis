@@ -8,7 +8,9 @@ What a unit must satisfy lives in the [spec](spec.md), and the spec's
 boundary.
 
 Themes, in order (reordered 2026-09-17, once the third family was planned;
-the Gemma 4 26B-A4B and Muse Glimmer 30B units themselves are in
+the Bonsai 2 27B units — Qwen3.8-27B in Prism ML's ternary encoding, a
+new weight format on the existing adapter, accepted 2026-09-18 ahead of
+Muse — and the Muse Glimmer 30B units themselves are in
 [../TODO.md](../TODO.md)):
 
 1. **Speculative decoding across the families** — draft tokens from each

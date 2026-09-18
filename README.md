@@ -69,6 +69,7 @@ adapter — `nuclis model inspect` says which of the two it is.
 | `gemma-4-12b-qat` | gemma4 | `unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` | 6.72 GB |
 | `gemma-4-26b-a4b` | gemma4 (mixture of experts) | `unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` | 14.2 GB |
 | `muse-glimmer-30b` | muse-glimmer | `unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf` | 15.9 GB |
+| `bonsai-2-27b` | qwen35 (ternary, Hadamard-rotated) | `prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf` | 7.21 GB |
 
 Each entry carries the vision projector and the draft head of its
 repository as companions (`--all` fetches them; they are verified now and
@@ -76,10 +77,12 @@ loaded by later units). The two 12B Gemma entries are the same model in
 two quantizations: the plain K-quant release, and Google's
 quantization-aware-trained checkpoint, whose every weight matrix is Q4_0
 — the encoding it was trained for, which is why it is smaller *and*
-decodes faster. The 26B-A4B mixture of experts runs on both backends (its
-acceptance record is the next unit); the Muse entry is pinned ahead of its
-adapter, and `nuclis model inspect` reports it *not runnable* until the
-architecture is implemented.
+decodes faster. The 26B-A4B mixture of experts runs on both backends with
+its own acceptance record. The Muse and Bonsai entries are pinned ahead
+of the code that runs them, and `nuclis model inspect` reports them *not
+runnable* until it lands: Muse needs its architecture, Bonsai (Qwen3.8-27B
+re-encoded ternary by Prism ML) its two weight encodings and the Hadamard
+transform of activations they require.
 
 ```sh
 nuclis model ls                       # the catalogue and what is present

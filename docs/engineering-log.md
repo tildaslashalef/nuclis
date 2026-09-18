@@ -72,6 +72,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-09 | Expert routing and gathered expert kernels (decode and prefill) | 2026-09-17 / 2026-09-18 |
 | MODL-09 | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2026-09-18 (two sessions) |
 | MODL-10 | Gemma 4 26B-A4B: catalogue verdict, acceptance record, agent check | 2026-09-18 |
+| MODL-15 | Bonsai 2 27B accepted ahead of Muse: artifact pinned, facts read, three units planned | 2026-09-18 |
 
 ## Context
 
@@ -2144,3 +2145,43 @@ context (13.8 ms added per step from 512 to 32K against the reference's
 chunks at 32K). The half-tile rounding on routed layers is unmeasured
 against the reference on real prompts beyond the greedy budget runs; the
 ring layout for windowed caches stays a roadmap item.
+
+### MODL-15 — Bonsai 2 27B accepted ahead of Muse: artifact pinned, facts read, three units planned (2026-09-18)
+
+**Outcome.** Prism ML's Bonsai 2 27B (released 2026-09-17) is Qwen3.8-27B
+re-encoded: the GGUF declares `qwen35` with every architecture key equal
+to the pinned file's and the same tokenizer, so the adapter, tokenizer,
+runtime, and plan apply, and the work is a new weight layer: two ternary
+encodings at group 128 (`PQ2_0` id 142, 34 bytes per block; `PTQ1_0` id
+143, 28 bytes, mainline `TQ1_0`'s trit packing), 96 BF16 tensors the
+engine stores but does not decode, and a blockwise Walsh-Hadamard rotation
+(block 1024, explicit signs per input width, `prism.hadamard.*`) applied to
+activations before 401 projections and inverted on the embedding rows.
+Stock llama.cpp rejects the files; the PrismML fork at its release tag is
+the second pinned oracle. Decided: planned ahead of Muse Glimmer (three
+units on existing seams that improve the primary target, against five for
+a new architecture); the catalogue entry `bonsai-2-27b` pins the PQ2_0
+file (the bring-up packing: a 2-bit unpack of the Q4_0 kernel's shape,
+and the faster prompt processing by Prism's table) with the Q8_0
+projector under `mmproj`; PTQ1_0 (5.95 GB) follows in the same units. The
+facts and the three unit designs (MODL-16, KERN-10, MODL-17) are in
+`TODO.md` until `docs/reference/bonsai.md` records them.
+
+**Evidence.** Facts read from the PTQ1_0 header (first 16 MiB parsed
+directly), the model card, the whitepaper, and the fork's `prism-v7`
+`ggml.h` / `ggml-common.h`; digests read by `model inspect` at commit
+`6ed5e12b…` (`PQ2_0` 7,206,168,928 B `3907dc16…`, `PTQ1_0` 5,946,648,928 B
+`53107f53…`, `mmproj-Q8_0` 629,246,976 B `6807ede6…`, `mmproj-BF16`
+931,145,856 B `e287342d…`), the entry and its projector pulled and
+verified by `nuclis model pull bonsai-2-27b --all`; `inspect` reports the
+main file *not runnable: tensor output.weight uses encoding id 142, which
+nuclis does not store*, as intended. The chat template's digest
+(`c3cf9e34…`, 8,952 bytes) differs from the pinned `qwen38` one. `zig
+build test` with the catalogue assertions; `make fmt-check`.
+
+**Files.** `src/catalog.zig`, `TODO.md`, `docs/roadmap.md`,
+`docs/reference/artifacts.md`, `README.md`.
+
+**Remaining.** Everything the three units design; `gdn_v_grouped` and the
+fork's exact transform contract are read from its loader in MODL-16, not
+inferred.
