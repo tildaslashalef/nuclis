@@ -188,8 +188,15 @@ pub fn resolveRole(header: ?Role, flag: ?Role) error{RoleMismatch}!Role {
 }
 
 /// What the GGUF header says about itself, reading the directory only.
+/// Null when it says nothing, or when this build cannot read the directory
+/// (an encoding it does not store, a shape it rejects): the download is
+/// digest-verified either way, so the sidecar is written with the request's
+/// role rather than the file left looking unverified.
 fn roleFromHeader(alloc: Allocator, io: std.Io, path: []const u8) !?Role {
-    var doc = try inference.gguf.open(alloc, io, path, .{});
+    var doc = inference.gguf.open(alloc, io, path, .{}) catch |err| switch (err) {
+        error.UnsupportedTensorType, error.InvalidShape, error.Overflow => return null,
+        else => return err,
+    };
     defer doc.deinit();
     if (doc.string("general.type")) |kind| {
         if (std.mem.eql(u8, kind, "imatrix")) return .imatrix;
@@ -1421,6 +1428,24 @@ fn inspectFixture(arena: Allocator, gpa: Allocator, mutation: Mutation, sha256: 
         .size = std.mem.alignForward(u64, directory.len, 32) + inventory.file_bytes,
         .sha256 = sha256,
     }, &diag);
+}
+
+test "a verified file whose encoding this build does not store still gets its role from the request" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var inventory = try inference.models.qwen35.inventoryDocument(gpa);
+    defer inventory.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", arena);
+    const path = try std.fs.path.join(arena, &.{ root, "ternary.gguf" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = try serializeDirectory(arena, inventory, .{ .encoding = .{ .tensor = "output.weight", .id = 142 } }) });
+    try std.testing.expectEqual(@as(?Role, null), try roleFromHeader(gpa, io, path));
+    try std.testing.expectEqual(Role.main, try resolveRole(try roleFromHeader(gpa, io, path), null));
+    try std.testing.expectEqual(Role.mmproj, try resolveRole(try roleFromHeader(gpa, io, path), .mmproj));
 }
 
 test "inspect judges the pinned directory supported, runnable, or not, from the head of the file" {

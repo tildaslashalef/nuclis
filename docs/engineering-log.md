@@ -73,6 +73,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-09 | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2026-09-18 (two sessions) |
 | MODL-10 | Gemma 4 26B-A4B: catalogue verdict, acceptance record, agent check | 2026-09-18 |
 | MODL-15 | Bonsai 2 27B accepted ahead of Muse: artifact pinned, facts read, three units planned | 2026-09-18 |
+| APPS-11 | `model pull`: a verified file whose encoding this build does not store keeps its sidecar | 2026-09-18 |
 
 ## Context
 
@@ -2185,3 +2186,26 @@ build test` with the catalogue assertions; `make fmt-check`.
 **Remaining.** Everything the three units design; `gdn_v_grouped` and the
 fork's exact transform contract are read from its loader in MODL-16, not
 inferred.
+
+### APPS-11 — `model pull`: a verified file whose encoding this build does not store keeps its sidecar (2026-09-18)
+
+**Outcome.** After publishing a digest-verified download, `pull` reads the
+GGUF header to learn the file's role (`imatrix`, `mmproj`), and that read
+parsed the whole tensor directory: a file with a tensor encoding this
+build does not store (the Bonsai files, ids 142 and 143) failed there,
+which left a verified 7.2 GB file without its sidecar (so `ls` called it
+unverified) and abandoned the companions after it. The role question is a
+metadata one, so a directory the build cannot read now answers *no role
+from the header* and the request's role is recorded, as the contract
+already said for a header that says nothing; every other parse failure
+still propagates.
+
+**Evidence.** A test serializes the Qwen inventory with `output.weight`
+at encoding 142 and checks the null role and its resolution to `main` or
+the flag's role; `zig build test`. `nuclis model pull bonsai-2-27b --all`
+then reused the published file (hashed, verified) and wrote its sidecar,
+pulled the projector, and `model ls` shows both *present*.
+
+**Files.** `src/model.zig`.
+
+**Remaining.** None.
