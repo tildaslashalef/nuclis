@@ -199,9 +199,12 @@ built this way is not for you, this repository is not for you.
 
 None of it would exist without [llama.cpp](https://github.com/ggml-org/llama.cpp)
 and GGML: the GGUF format is theirs, and a pinned build of llama.cpp is
-the oracle every layer and kernel here is checked against. nuclis copies
-no code from them; the third-party material the tree does contain is
-listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+the oracle every layer and kernel here is checked against. The shape of
+the Metal bridge, Objective-C behind a C interface driven from the engine,
+follows antirez's [ds4](https://github.com/antirez/ds4), which also set the
+example of saying the AI part plainly. nuclis copies no code from any of
+them; the third-party material the tree does contain is listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Licence
 
