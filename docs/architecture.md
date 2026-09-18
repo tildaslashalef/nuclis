@@ -412,8 +412,8 @@ A habit you will see everywhere: **validate everything, then write nothing
 until validation passes**. Functions check shapes and finiteness up front so a
 failure leaves caller buffers untouched. Tests assert that.
 
-**Dive deeper:** the Zig 0.16 language reference installed at
-`/Users/alef/.local/opt/zig/stable/doc/langref.html`; [development.md § Toolchain](development.md#toolchain).
+**Dive deeper:** the Zig 0.16 language reference installed with the
+compiler (`doc/langref.html` inside the Zig directory); [development.md § Toolchain](development.md#toolchain).
 
 ## 9. Adding a model
 
