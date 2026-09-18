@@ -116,7 +116,8 @@ pub const Model = struct {
     context: *anyopaque,
     run: *const fn (*anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, sink: *stream.Sink) anyerror!Reply,
     /// Tokens `text` costs in the model's vocabulary; what the result budget
-    /// is measured in.
+    /// is measured in. Empty text costs zero, never an error: tool results
+    /// may be empty.
     count: *const fn (*anyopaque, text: []const u8) anyerror!usize,
 };
 
@@ -865,6 +866,9 @@ pub const Completer = struct {
 
     fn count(context: *anyopaque, text: []const u8) anyerror!usize {
         const self: *Completer = @ptrCast(@alignCast(context));
+        // The encoder refuses an empty prompt; an empty result (a glob with
+        // no match, a command with no output) simply costs nothing.
+        if (text.len == 0) return 0;
         const tokens = try self.eng.encode(text);
         defer self.alloc.free(tokens);
         return tokens.len;
@@ -1104,6 +1108,34 @@ test "one call then an answer: the loop executes the call and sends the result b
     try testing.expectEqual(agent.history.items[1].tool_calls[0].id, agent.history.items[2].tool_call_id.?);
     try testing.expect(std.mem.indexOf(u8, agent.history.items[2].content, "hi there") != null);
     try testing.expectEqualStrings("The file says hi there.", agent.history.items[3].content);
+}
+
+test "a call whose result is empty still reaches the answer" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "hello.txt", .data = "hi there" });
+
+    // A glob that matches nothing returns no text at all (the summary says
+    // "no files"); the loop must feed that empty result back like any other.
+    const glob_none: Profile.ToolCall = .{ .id = 0, .name = "glob", .arguments = "{\"pattern\":\"**/*\\\\.py\"}" };
+    var stub: Stub = .{
+        .answers = &.{ "Checking.\n", "No Python files here." },
+        .calls = &.{&.{glob_none}},
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    defer agent.deinit();
+
+    const stop = try agent.turn("any python files?");
+    try testing.expectEqual(Stop.done, stop);
+    try testing.expectEqual(@as(usize, 1), capture.results.items.len);
+    try testing.expectEqualStrings("", capture.results.items[0]);
+    try testing.expectEqual(@as(usize, 4), agent.history.items.len);
+    try testing.expectEqual(Profile.Role.tool, agent.history.items[2].role);
+    try testing.expectEqualStrings("", agent.history.items[2].content);
+    try testing.expectEqualStrings("No Python files here.", agent.history.items[3].content);
 }
 
 test "a mutation sends a diff event and the model reads the unified change" {

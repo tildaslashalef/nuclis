@@ -78,6 +78,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-11 | `model pull`: a verified file whose encoding this build does not store keeps its sidecar | 2026-09-18 |
 | REPO-05 | README for a public repository: project status, contributions, disclosure | 2026-09-18 |
 | MODL-17 | Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance | 2026-09-18 |
+| AGNT-12 | An empty tool result no longer aborts the turn | 2026-09-18 |
 
 ## Context
 
@@ -2446,3 +2447,28 @@ several inputs) — a kernel unit for the roadmap's performance theme,
 judged against this record. The acceptance workload was measured on the
 PQ2_0 file before the entry moved; the PTQ1_0 file has the short bench
 and the traces. The transform stays 258 separate dispatches (2.1 %).
+
+### AGNT-12 — An empty tool result no longer aborts the turn (2026-09-18)
+
+**Outcome.** A tool result with no text (a `glob` with no match, a `grep`
+with none, a command with no output) ended the turn with `EmptyPrompt`:
+the loop counts every result's tokens to fit it to the context, and the
+engine's encoder refuses an empty text as it refuses an empty prompt.
+`Completer.count` now costs an empty text zero tokens, and the `Model`
+contract says so. Found on `bonsai-2-27b` in the playground: the model's
+second step called `glob` with `**/*\.py` (nothing matches the literal
+backslash) and `bash` together, and the turn died before either result
+was recorded.
+
+**Evidence.** A loop test with a stub model whose `glob` returns empty
+text reaches the answer with the empty `.tool` message in the history
+(414 tests). Live on `bonsai-2-27b` (Metal, `--think low`, `-p --json`):
+"Are there any Rust files (*.rs) in this project? Use glob." fed two
+empty `glob` results back (`no files`) before a third listing and the
+answer, stop `eos`, 331 generated tokens.
+
+**Files.** `src/agent/loop.zig`.
+
+**Remaining.** The model reads an empty `<tool_response>` as ambiguous
+and retried the pattern twice; a tool text that says "no files match
+`*.rs`" would save those steps (the summary row already says it).
