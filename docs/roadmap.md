@@ -240,6 +240,31 @@ the profile that motivated it.
   not the lever. Judge against the acceptance record
   ([bench.md](reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18),
   [metal-backend.md](reference/metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18)).
+- **Muse Glimmer 30B decode against the reference.** The acceptance
+  record measured decode at 66–71 % of the reference at every length,
+  the widest gap of the four families, and the per-kernel profile says
+  where it is: the matvecs' bandwidth tracks the matrix's row count, not
+  its encoding — the 202,048-row head streams at 208 GB/s, the 39,936-row
+  FFN pair at 175, and the two shapes with 6,656 to 8,704 rows (the FFN
+  down projection over 19,968 columns, the merged q/k/v/gate) at 145 to
+  147 — because a matrix with few rows launches too few threadgroups to
+  keep the bus busy, and Muse's 6,656-wide residual puts more than a third
+  of its bytes in those shapes. At the head's rate the token would take
+  84 ms instead of 100, so that is two thirds of the gap; the rest is
+  launch count, 922 dispatches per token with six RMS-norm launches per
+  layer (about 9 ms). Three experiments, in order, each judged against the
+  acceptance record: split-K on the decode matvec for shapes below about
+  16K rows (several threadgroups per row summing column ranges, reduced at
+  the end, the idea the short-prompt bullet above proposes for the matmul);
+  fusing the post norms into the residual add and the q/k head norms into
+  the RoPE launch; then, only if the first two move the 32K row, the
+  flash-decoding split pass over 2 KV heads on the 13 global layers, whose
+  parallelism per layer is the lowest of the families
+  ([muse-glimmer.md](reference/muse-glimmer.md#metal-plan-modl-12-2026-09-19),
+  [bench.md](reference/bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19)).
+  The 4K row's decode drift within one run (9.14 to 8.12 tok/s in four
+  minutes) is to be reproduced first, with the GPU's clock watched, before
+  any of them is measured.
 - **A GPU penalty kernel.** Apply the token history to the logits on the
   device before `nu_topk_partial`, so the instruct profile (presence penalty
   1.5) returns to the GPU sampling path. The 32K record measured the cost of

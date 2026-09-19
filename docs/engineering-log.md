@@ -85,6 +85,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-12 | Muse Glimmer 30B: Metal plan | 2026-09-19 |
 | MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 2026-09-19 |
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 2026-09-19 |
+| ENGN-10 | Muse Glimmer decode gap: the experiments accepted into the performance theme | 2026-09-19 |
 
 ## Context
 
@@ -2749,3 +2750,26 @@ parameter written as `123` or `true` reaches the agent as a number or
 a boolean; a body with several invokes is released as text rather than
 split into calls; a tool result carrying the ATEM markup (a file that
 quotes it) fails the turn instead of rendering, as Gemma's `<|"|>` does.
+
+### ENGN-10 — Muse Glimmer decode gap: the experiments accepted into the performance theme (2026-09-19)
+
+**Outcome.** A roadmap decision, no code. The performance theme gained
+a Muse Glimmer bullet written from MODL-12's per-kernel profile and
+MODL-13's acceptance record: decode at 66–71 % of the reference is two
+thirds an occupancy problem (the matvecs' bandwidth tracks the matrix's
+row count — 208 GB/s on the 202,048-row head, 175 on the 39,936-row FFN
+pair, 145–147 on the 6,656- to 8,704-row shapes that hold more than a
+third of the bytes) and one third launch count (922 dispatches per
+token, six RMS-norm launches per layer). Three experiments in order:
+split-K on the decode matvec for narrow-row shapes, fusing the post
+norms into the residual add and the head norms into the RoPE launch,
+and the 2-KV-head flash-decoding split pass at long context; the 4K
+row's decode drift is to be reproduced first.
+
+**Evidence.** The profile and the record cited in the bullet; nothing
+measured anew.
+
+**Files.** `docs/roadmap.md`.
+
+**Remaining.** The experiments themselves, when the performance theme
+is planned after speculative decoding.
