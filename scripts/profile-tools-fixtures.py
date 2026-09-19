@@ -47,6 +47,15 @@ PROFILES = {
         # a call-bearing assistant message keeps its thought at any age.
         "preserve_thinking": True,
     },
+    "muse_glimmer": {
+        "model_sha256": "82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38",
+        "model_size": 15878222368,
+        "template_sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e",
+        # Four strengths, no off; the template keeps every reasoning message.
+        "efforts": ("low", "medium", "high", "xhigh"),
+        "kwargs": lambda effort: {"reasoning_strength": effort},
+        "preserve_thinking": True,
+    },
 }
 
 
@@ -79,7 +88,14 @@ SEARCH = tool("search",
                                           "properties": {"case_sensitive": {"type": "boolean"}},
                                           "required": ["case_sensitive"]}},
                "required": ["query"]})
-TOOLS = {"qwen38": [READ, BASH], "gemma4": [READ, BASH, SEARCH]}
+# A declaration whose texts need JSON escaping (quotes, a backslash, a tab,
+# a newline, non-ASCII, `<`, `&`), pinning the reference's `tojson` bytes.
+NOTE = tool("note",
+            "Grüße — \"quoted\" back\\slash\ttab\nnewline <b> & c / 🙂",
+            {"type": "object",
+             "properties": {"text": {"type": "string", "description": "Ünïcödé \"text\"", "enum": ["a\"b", "ç"]}},
+             "required": ["text"]})
+TOOLS = {"qwen38": [READ, BASH], "gemma4": [READ, BASH, SEARCH], "muse_glimmer": [READ, BASH, SEARCH, NOTE]}
 
 
 def call(cid, name, arguments):
@@ -187,7 +203,18 @@ GEMMA_CASES = COMMON_CASES + [
         user("thanks"),
     ]),
 ]
-CASES = {"qwen38": COMMON_CASES, "gemma4": GEMMA_CASES}
+# Muse renders the same shapes (ATEM calls as their own messages, results as
+# `tool` turns), plus a multi-line string argument, which the template writes
+# verbatim, and a namespaced tool name, which changes the recipients line.
+MUSE_CASES = GEMMA_CASES + [
+    ("multiline_string_call", [
+        user("write it"),
+        assistant("", "Compose.", [call(1, "bash", {"command": "cat <<'EOF' > a.txt\nline \"one\"\n  line two\nEOF"})]),
+        result(1, ""),
+        user("ok"),
+    ]),
+]
+CASES = {"qwen38": COMMON_CASES, "gemma4": GEMMA_CASES, "muse_glimmer": MUSE_CASES}
 
 
 def to_request(messages):

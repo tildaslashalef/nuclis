@@ -1,8 +1,9 @@
 # Tool calling: model evidence and the engine seam
 
-Research checked 2026-09-13 for AGNT-01, extended 2026-09-16 for AGNT-09.
-These are format findings and design constraints; both profiles now implement
-their native path ([prompt-profile.md](prompt-profile.md)).
+Research checked 2026-09-13 for AGNT-01, extended 2026-09-16 for AGNT-09
+and 2026-09-19 for AGNT-10. These are format findings and design
+constraints; all three profiles implement their native path
+([prompt-profile.md](prompt-profile.md)).
 
 ## Model cards and artifact identity
 
@@ -87,6 +88,49 @@ model's own bytes are reproduced for the incremental prefill, and numbers are
 rendered as their JSON text where the reference reformats floats
 (`1e10` → `10000000000.0`).
 
+## Muse Glimmer: ATEM calls as their own messages
+
+The pinned template (digest `114f55eb…`, [muse-glimmer.md](muse-glimmer.md#chat-template))
+puts declarations into every system turn as prose plus JSON lines: after
+the strength line, the template's instructions, `// Tool metadata` with one
+`{"name": NS, "description": ""}` per tool namespace (a name's part before
+the first `.`, the whole name without one), `// Function schemas` with one
+`{"name": …, "description": …, "parameters": …}` per tool in the
+reference's `tojson` style (a space after `:` and `,`, keys in insertion
+order, quotes, backslashes, and control characters escaped, non-ASCII
+literal), and a fixed example; the recipients line then lists `"self"`,
+one `"NS.*"` per namespace, and `"user"`. A call is its own message,
+`<|start|>assistant to=NAME<|message|>` holding one
+`<atem:function_calls>` block with one `<atem:invoke name="NAME">` and one
+`<atem:parameter name="KEY">VALUE</atem:parameter>` line per argument:
+strings verbatim (spaces and newlines included, no escaping), booleans and
+`null` as words, numbers as written, lists and objects as JSON. Several
+calls of one step are `<|eom|>`-separated messages and the last ends the
+turn with `<|eot|>`; the message's content is not rendered beside its
+calls. A result is its own turn, `<|start|>tool NAME<|message|><tool_output name="NAME">\nCONTENT\n</tool_output><|eot|>`,
+the name resolved from the call it answers. Reasoning stays its own
+`to=self` message at any age. The reference parses the body with a
+schema-aware grammar (string-typed parameters verbatim, others as JSON) and
+treats `<|eot|>` as the end of the call step.
+
+Three facts shaped the implementation (`muse_glimmer-tools.json`, 52 cases
+captured 2026-09-19 through the reference's chat layer). The markup is
+text: no ATEM tag is a token, so the decoder's only structural signals are
+the channel tokens (`<|start|>` 200022, `<|message|>` 200023, `<|eom|>`
+200007) and the header text between them; the profile's `parseTool` reads
+the body of any `to=NAME` message and, like Qwen's, keeps a value that
+parses as JSON and takes anything else as a literal string (the reference's
+schema-aware typing needs the declaration, which the decoder does not
+have). A call body is complete at the turn's end, not at a bracket: the
+decoder completes an open body when the turn stopped on `<|eot|>` and
+releases it as text on a budget stop or a cancellation. And a body with
+more than one invoke, or anything but parameters inside the invoke, is not
+a call: it is released as text rather than guessed at. Content, results,
+names, and argument strings carrying the ATEM markup or a control marker
+are rejected (`error.UnsupportedContent`) because the reference parses with
+regular expressions and the markup would be structure; the model's own
+released text loses the markup instead.
+
 ## Consequences for implementation
 
 AGNT-01 establishes the shared boundary: profiles receive token IDs plus decoded
@@ -114,8 +158,12 @@ its handoff turned out to need no new mechanism, because the model's own
 `<|tool_response>` token after the last call of a step is a stop token, so
 several calls in one step all arrive before generation ends.
 
+Muse's grammar (`fixtures/muse_glimmer-tools.json`, `muse_glimmer.parseTool`)
+rides the decoder's second grammar, the message headers; its handoff is the
+stop token `<|eot|>` after the step's last call, the same shape as Gemma's.
+
 The application can validate call IDs, pending result order, schemas, and
-execution limits without knowing either wire format. The profile alone decides
+execution limits without knowing any wire format. The profile alone decides
 whether results become user turns or remain inside a model turn. Test multiple
 calls, nested values, literal marker-like text, truncated controls, cancellation,
 and reasoning across tool steps when implementing the native parsers.

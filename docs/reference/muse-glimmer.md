@@ -406,4 +406,5 @@ day: the Metal plan matches the traces in both cache precisions, passes
 the generation check, and runs the file at 9.9 tok/s. MODL-13 adds the
 profile (`profiles/muse_glimmer.zig`, the channel-grammar decoder, the
 `high` effort) and the catalogue pin; its acceptance record is in
-[bench.md](bench.md). Tool calling is AGNT-10.
+[bench.md](bench.md). AGNT-10 adds the ATEM tool protocol
+([tool-calling.md](tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).

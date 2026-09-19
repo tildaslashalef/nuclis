@@ -71,7 +71,7 @@ template folds `high` into `xhigh`); a profile with fewer levels collapses
 them, and one without `off` renders it as its lowest level. Validation is
 separate from support: a structurally valid tools input still passes
 `validate`, and a profile whose template defined no tool grammar rejects it
-with `error.ToolsUnsupported`; Qwen3.8 and Gemma 4 render and decode their
+with `error.ToolsUnsupported`; all three profiles render and decode their
 native tool path against pinned fixtures. No profile implements multimodal
 content, assistant prefill, or a general Jinja interpreter.
 
@@ -217,11 +217,30 @@ header still open at a stop, or longer than 256 bytes, is released as
 answer text. `<|eot|>` (200008) and `<|end_of_text|>` (200001) are the
 stop tokens; `<|eom|>` is not, since the model continues after it.
 
-**Tools** are a later unit (AGNT-10): a tool definition or tool history is
-`error.ToolsUnsupported`. Sampling defaults are the model card's "Best
-Practices" (temperature 1.0, top-p 0.95, top-k 64; no `min_p`, no
-penalties), the same for every strength; the file declares no
-`general.sampling.*` keys.
+**Tools.** Declarations go into every system turn between the strength
+line and the recipients line: the template's instructions, one metadata
+line per namespace, one JSON schema line per tool in the reference's
+`tojson` style (insertion-ordered keys, `", "` and `": "` separators,
+non-ASCII literal), and the fixed example; the recipients line gains one
+`"NS.*"` per namespace. An assistant call is its own message
+`<|start|>assistant to=NAME<|message|>` with the ATEM block (one invoke,
+one `<atem:parameter name="KEY">` per argument: strings verbatim, `true`/
+`false`/`null`, numbers as written, lists and objects as JSON), ended by
+`<|eom|>` before another call and `<|eot|>` after the last; content beside
+calls is not rendered. A result is its own `<|start|>tool NAME<|message|>`
+turn wrapping the content in `<tool_output name="NAME">`. Names cannot
+carry a quote, an angle bracket, or whitespace; content, results, names,
+and argument strings carrying the ATEM markup or a control marker are
+rejected. Decoding is the channel grammar above with `muse_glimmer.parseTool`
+on `to=NAME` bodies: a body that is one well-formed block yields the call
+(a value that parses as JSON keeps its type, anything else is a literal
+string), anything else is released as text; the body completes at
+`<|eom|>`, the next `<|start|>`, or the turn's `<|eot|>` stop, and is text
+on a budget stop or a cancellation ([tool-calling.md](tool-calling.md)).
+
+Sampling defaults are the model card's "Best Practices" (temperature 1.0,
+top-p 0.95, top-k 64; no `min_p`, no penalties), the same for every
+strength; the file declares no `general.sampling.*` keys.
 
 ## Evidence and reproduction
 
@@ -265,6 +284,13 @@ object, array, float, boolean, and null arguments; a loop ending on results
 with and without reasoning and with content (the reference's reopened turn);
 two steps in one loop; and a final answer after results followed by a user
 turn. The Zig test prepends `<bos>` as the text test does.
+[muse_glimmer-tools.json](../../inference/src/profiles/fixtures/muse_glimmer-tools.json)
+(`--profile muse_glimmer`, captured 2026-09-19) adds 52 Muse cases across
+the four strengths: Gemma's shapes with a fourth declaration whose texts
+need JSON escaping (quotes, a backslash, a tab, a newline, non-ASCII, `<`,
+`&`), plus a multi-line string argument; the Zig test prepends
+`<|begin_of_text|>` and removes the synthesized turn's date line as the
+text test does.
 
 `make test-vocabulary` (`inference/vocabulary-check.zig`; `MODEL=<path>`
 for the Gemma file) is the opt-in check against the real artifact: it
