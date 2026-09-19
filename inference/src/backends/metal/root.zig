@@ -388,7 +388,7 @@ pub const Backend = struct {
     /// Token padding of `matmul`: activation buffers hold a multiple of this
     /// many token rows (the largest token tile any instantiation uses).
     pub const matmul_tile = 64;
-    /// Chunk length below which the split-K 8×8 tile serves. Set to the
+    /// Chunk length up to which the split-K 16×8 tile serves. Set to the
     /// measured crossover between the small tile and the 32×32 one.
     pub const small_chunk_tokens = 24;
     pub fn matmulPadded(tokens: usize) usize {
@@ -397,7 +397,7 @@ pub const Backend = struct {
     /// Output tile of a matmul kernel and whether its operands are rounded to
     /// half; must match the instantiations in kernels.metal. The specialized
     /// tiles hold half operands and accumulate in F32: 64×64 tiles, 32×32 for
-    /// chunks of at most 32 tokens, and an 8×8 split-K tile for chunks of at
+    /// chunks of at most 32 tokens, and a 16×8 split-K tile for chunks of at
     /// most `small_chunk_tokens`, where the grid's row parallelism matters more
     /// than the tile's K reuse; the generic tile keeps F32 operands in 32×32.
     pub const MatmulGeometry = struct { rows: usize, tokens: usize, half: bool };
@@ -473,7 +473,7 @@ pub const Backend = struct {
     }
     /// Picks a specialized matmul tile under the same weight alignment
     /// rules (the activation tile is staged through float4 loads, which
-    /// `matmul` checks), first the 8×8 split-K instantiation for chunks of at
+    /// `matmul` checks), first the 16×8 split-K instantiation for chunks of at
     /// most `small_chunk_tokens` tokens, then the 32×32 one for at most 32.
     pub fn specializedMatmul(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
         if (!blockAligned(encoding, weight_offset, stride)) return null;

@@ -1310,8 +1310,9 @@ pub fn main(init: std.process.Init) !void {
             const mm_rows: usize = 40;
             // 37 tokens select the 64×64 tiles (one full and one partial token
             // tile of 32 under the old geometry; a partial one now), 20 the
-            // 32×32 tiles, and 8/5/1 the 8×8 split-K tiles (8 on a full tile,
-            // 5 and 1 on a partial one); the buffers hold the larger padding.
+            // 32×32 tiles, and 16/9/8/5/1 the 16×8 split-K tiles (8 on one full
+            // token tile, 16 and 9 on two, 5 and 1 on a partial one); the buffers
+            // hold the larger padding.
             const token_counts = [_]usize{ 37, 20, 16, 9, 8, 5, 1 };
             const padded = Backend.matmulPadded(37);
             const mm_expected = try alloc.alloc(f32, mm_rows);

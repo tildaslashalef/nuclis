@@ -264,7 +264,7 @@ memory, and leave the rest to the grid.
   projection with only 80 threadgroups. A third set (`nu_matmul_*_8`, KERN-11:
   16 rows × 8 tokens, half weight tile, activations from device as F32, 8 KB)
   splits the K range across the four SIMD groups with a `simdgroup_barrier`-
-  only loop and serves chunks of at most `small_chunk_tokens` (16) tokens,
+  only loop and serves chunks of at most `small_chunk_tokens` (24) tokens,
   where the 32-row tile's barrier-bound loop streams weight bytes far below
   the matvec floor; see [§ Small-chunk tile](#small-chunk-tile-kern-11-2026-09-19).
   The generic instantiation
