@@ -923,8 +923,9 @@ two 16-value segments into its own group's 16×64 half tile, and only
 `simdgroup_barrier` orders the loop — no `threadgroup_barrier` inside it. The
 four K partials reduce once at the end in a fixed SIMD-group order.
 `specializedMatmul` takes the `_8` tile for `tokens <= small_chunk_tokens`
-(16), the `_32` tile above it; at 9–16 tokens the `_8` tile runs two token
-tiles, which still beats one 32-token tile by 2.5–4×.
+(24), the `_32` tile above it; at 9–24 tokens the `_8` tile runs two or three
+token tiles and still beats one 32-token tile in wall-clock (22 tokens: 1.55 ms
+against 1.83 ms for Q4_K, measured with the threshold at 32).
 
 Method: `make bench-matmul ARGS=<t>` (Apple M4 Pro, Zig 0.16.0, ReleaseSafe).
 Each row is five measured command buffers after two warm-ups, each buffer
@@ -936,33 +937,33 @@ attributes. The matvec column is the same encoding from `make bench-kernels`
 run immediately before on the same machine (69,632×5,120 for the gate shape,
 5,120×17,408 for the down shape). GB/s of weight bytes:
 
-**ffn_gate (17,408×5,120).** t=1..16 take the 16×8 tile, t=22/32 the 32×32.
+**ffn_gate (17,408×5,120).** t=1..22 take the 16×8 tile, t=32 the 32×32.
 
 | Encoding | matvec | t=1 | t=4 | t=8 | t=9 | t=16 | t=22 | t=32 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Q4_K | 179 | 93 | 96 | 95 | 98 | 95 | 27 | 28 |
-| Q5_K | 211 | 108 | 109 | 108 | 111 | 113 | 33 | 33 |
-| Q3_K | 122 | 64 | 62 | 62 | 64 | 64 | 21 | 21 |
-| Q6_K | 246 | 115 | 115 | 113 | 116 | 115 | 41 | 40 |
-| IQ3_S | 121 | 66 | 66 | 65 | 66 | 66 | 21 | 21 |
-| IQ4_XS | 214 | 87 | 90 | 86 | 88 | 92 | 28 | 28 |
-| Q4_0 | 230 | 90 | 89 | 89 | 91 | 92 | 29 | 29 |
-| PQ2_0 | 116 | 47 | 48 | 48 | 50 | 50 | 14 | 14 |
-| PTQ1_0 | 88 | 32 | 33 | 33 | 34 | 34 | 11 | 11 |
+| Q4_K | 179 | 93 | 96 | 95 | 98 | 95 | 97 | 28 |
+| Q5_K | 211 | 108 | 109 | 108 | 111 | 113 | 114 | 33 |
+| Q3_K | 122 | 64 | 62 | 62 | 64 | 64 | 63 | 21 |
+| Q6_K | 246 | 115 | 115 | 113 | 116 | 115 | 114 | 40 |
+| IQ3_S | 121 | 66 | 66 | 65 | 66 | 66 | 67 | 21 |
+| IQ4_XS | 214 | 87 | 90 | 86 | 88 | 92 | 91 | 28 |
+| Q4_0 | 230 | 90 | 89 | 89 | 91 | 92 | 92 | 29 |
+| PQ2_0 | 116 | 47 | 48 | 48 | 50 | 50 | 49 | 14 |
+| PTQ1_0 | 88 | 32 | 33 | 33 | 34 | 34 | 34 | 11 |
 
 **ffn_down (5,120×17,408).** Same tile assignment.
 
 | Encoding | matvec | t=1 | t=4 | t=8 | t=9 | t=16 | t=22 | t=32 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Q4_K | 151 | 91 | 94 | 92 | 95 | 97 | 26 | 26 |
-| Q5_K | 189 | 105 | 106 | 106 | 110 | 110 | 32 | 32 |
-| Q3_K | 117 | 58 | 58 | 59 | 61 | 61 | 20 | 20 |
-| Q6_K | 238 | 106 | 106 | 109 | 112 | 110 | 37 | 38 |
-| IQ3_S | 113 | 62 | 60 | 61 | 65 | 65 | 21 | 21 |
-| IQ4_XS | 184 | 87 | 86 | 84 | 90 | 88 | 26 | 26 |
-| Q4_0 | 205 | 87 | 88 | 88 | 92 | 90 | 28 | 28 |
-| PQ2_0 | 97 | 46 | 46 | 47 | 49 | 49 | 14 | 13 |
-| PTQ1_0 | 84 | 31 | 31 | 32 | 33 | 33 | 10 | 10 |
+| Q4_K | 151 | 91 | 94 | 92 | 95 | 97 | 97 | 26 |
+| Q5_K | 189 | 105 | 106 | 106 | 110 | 110 | 111 | 32 |
+| Q3_K | 117 | 58 | 58 | 59 | 61 | 61 | 60 | 20 |
+| Q6_K | 238 | 106 | 106 | 109 | 112 | 110 | 113 | 38 |
+| IQ3_S | 113 | 62 | 60 | 61 | 65 | 65 | 65 | 21 |
+| IQ4_XS | 184 | 87 | 86 | 84 | 90 | 88 | 91 | 26 |
+| Q4_0 | 205 | 87 | 88 | 88 | 92 | 90 | 91 | 28 |
+| PQ2_0 | 97 | 46 | 46 | 47 | 49 | 49 | 50 | 13 |
+| PTQ1_0 | 84 | 31 | 31 | 32 | 33 | 33 | 33 | 10 |
 
 **Activation-operand experiments.** Each was measured alone under the batched
 bench at 8 tokens before the threshold moved:
@@ -979,12 +980,13 @@ bench at 8 tokens before the threshold moved:
   already served better; a blocked layout that makes the block one contiguous
   read is left as a follow-up.
 
-**Reading.** The tile is flat across 1–16 tokens: 31–116 GB/s, 37–64 % of the
-same encoding's matvec rate. t=9 and t=16 read the weights twice (two token
-tiles) and still match t=8's bytes-per-second because the attribution counts
-both passes. It is 2.5–4× the 32×32 tile's 10–41 at 22–32, and clears the 70 %
-floor nowhere: the best rows are Q4_K's 52–64 % on the down shape; the ternary
-and Q3/IQ3 rows sit at 37–52 %. The reason is the activation operand — a group
+**Reading.** The tile is flat across 1–22 tokens: 32–116 GB/s, 37–64 % of the
+same encoding's matvec rate. At 9–24 tokens it runs two or three token tiles
+and still matches t=8's bytes-per-second because the attribution counts every
+pass; its wall-clock stays below the 32×32 tile's until the fourth tile
+(t=25), which is why `small_chunk_tokens` is 24. It is still far below the 70 %
+floor: the best rows are Q4_K's 52–64 % on the down shape; the ternary and
+Q3/IQ3 rows sit at 37–52 %. The reason is the activation operand — a group
 gathers 8 tokens × columns × 4 B (160 KB at 5,120 columns) against 16 × columns
 of weights (46 KB of Q4_K) — and the 16-row tile only halved that ratio while
 the packed layout made it worse. The remaining levers (32 rows per group, a

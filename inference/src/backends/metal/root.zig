@@ -390,7 +390,7 @@ pub const Backend = struct {
     pub const matmul_tile = 64;
     /// Chunk length below which the split-K 8×8 tile serves. Set to the
     /// measured crossover between the small tile and the 32×32 one.
-    pub const small_chunk_tokens = 16;
+    pub const small_chunk_tokens = 24;
     pub fn matmulPadded(tokens: usize) usize {
         return (tokens + matmul_tile - 1) / matmul_tile * matmul_tile;
     }

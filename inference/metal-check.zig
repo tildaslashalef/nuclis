@@ -1407,8 +1407,8 @@ pub fn main(init: std.process.Init) !void {
             if (Backend.specializedMatmul(encoding, 0, 2880, 64) == null) return error.SpecializedPathNotSelected;
             if (Backend.specializedMatmul(encoding, 1, 2880, 64) != null) return error.MisalignedWeightsAccepted;
             if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 8).?).tokens != 8) return error.SmallTileNotSelected;
-            if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 16).?).tokens != 8) return error.SmallTileNotSelected;
-            if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 17).?).tokens != 32) return error.SmallTileNotSelected;
+            if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 24).?).tokens != 8) return error.SmallTileNotSelected;
+            if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 25).?).tokens != 32) return error.SmallTileNotSelected;
             if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 32).?).tokens != 32) return error.SmallTileNotSelected;
             if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 33).?).tokens != 64) return error.LargeTileNotSelected;
             if (Backend.specializedMatvec(encoding, 0, 2880, 4) != null) return error.MisalignedInputAccepted;
@@ -1421,7 +1421,7 @@ pub fn main(init: std.process.Init) !void {
         // Ternary: any whole-block row at two-byte (PQ2_0) or four-byte (PTQ1_0) alignment.
         if (Backend.specializedMatvec(142, 0, 42 * 34, 0) == null or Backend.specializedMatvec(142, 2, 42 * 34, 0) == null or Backend.specializedMatvec(142, 1, 42 * 34, 0) != null) return error.AlignmentRuleMismatch;
         if (Backend.specializedMatvec(143, 0, 42 * 28, 0) == null or Backend.specializedMatvec(143, 4, 42 * 28, 0) == null or Backend.specializedMatvec(143, 2, 42 * 28, 0) != null) return error.AlignmentRuleMismatch;
-        if (Backend.specializedMatmul(142, 0, 42 * 34, 64) == null or Backend.specializedMatmul(143, 0, 42 * 28, 20) == null or Backend.matmulGeometry(Backend.specializedMatmul(143, 0, 42 * 28, 20).?).tokens != 32) return error.AlignmentRuleMismatch;
+        if (Backend.specializedMatmul(142, 0, 42 * 34, 64) == null or Backend.specializedMatmul(143, 0, 42 * 28, 32) == null or Backend.matmulGeometry(Backend.specializedMatmul(143, 0, 42 * 28, 32).?).tokens != 32) return error.AlignmentRuleMismatch;
         if (Backend.matmulGeometry(Backend.specializedMatmul(142, 0, 42 * 34, 8).?).tokens != 8 or Backend.matmulGeometry(Backend.specializedMatmul(143, 0, 42 * 28, 8).?).tokens != 8) return error.AlignmentRuleMismatch;
         // Q4_0: both kernels take any whole-block row (a 42-block row here), at 2-byte alignment.
         if (Backend.specializedMatvec(2, 0, 756, 0) == null or Backend.specializedMatmul(2, 0, 756, 64) == null or Backend.specializedMatvec(2, 2, 2880, 0) == null) return error.AlignmentRuleMismatch;
