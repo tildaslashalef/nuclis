@@ -1049,6 +1049,9 @@ inline void nu_matmul_split_body(device const uchar * weights, device const floa
     simdgroup_float8x8 acc = simdgroup_float8x8(0.0f);
     const uint steps = p.columns / 64;
     for (uint step = sg; step < steps; step += 4) {
+        // The previous step's loads read `own`; order them before this step's
+        // writes, and the writes before the loads below.
+        simdgroup_barrier(mem_flags::mem_threadgroup);
         const uint k0 = step * 64;
         float4 q[4];
         nu_tile_segment<ENC>(wrow, p.encoding, k0 / 16 + segment, q);
@@ -1066,6 +1069,7 @@ inline void nu_matmul_split_body(device const uchar * weights, device const floa
     // Reuse each group's own tile: a shared partial region would let a group
     // that finished early overwrite a slower group's weight tile, which no
     // barrier orders (the K loop is the only place a barrier may sit).
+    simdgroup_barrier(mem_flags::mem_threadgroup);
     simdgroup_store(acc, (threadgroup float *)own, 8, ulong2(0, 0), false);
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid < 64) {
