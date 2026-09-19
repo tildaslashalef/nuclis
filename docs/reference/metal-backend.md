@@ -903,6 +903,68 @@ Prefill is within 6–9 % of the reference at 512 and 4K; the remaining gap
 is spread over attention, DeltaNet, norms, and the generic-tile tensors
 (7 IQ4_NL and 106 Q8_0 tensors in this artifact).
 
+### Small-chunk tile (KERN-11, session 1, 2026-09-19)
+
+A prompt's first tokens run through `Backend.matmul` as one short chunk. The
+32×32 tile gives a 5,120-row projection 160 threadgroups whose K loop carries
+two `threadgroup_barrier`s per 64-column step, so at 1–22 tokens it streams
+weight bytes at 6–41 GB/s while the specialized matvecs on the same encodings
+reach 83–252. The `nu_matmul_*_8` split-K set gives one 128-thread group eight
+rows × eight tokens: the four SIMD groups partition the 64-column K steps, each
+lane decodes one 16-value segment into its own SIMD group's 8×64 half tile, and
+only `simdgroup_barrier` orders the loop — no `threadgroup_barrier` inside it.
+The four K partials reduce once at the end through the reused tile in a fixed
+SIMD-group order. `specializedMatmul` takes the `_8` tile for `tokens <=
+small_chunk_tokens` (8), the `_32` tile above it.
+
+Method: `make bench-matmul ARGS=<t>` (Apple M4 Pro, Zig 0.16.0, ReleaseSafe,
+best of five command buffers after one warm-up); weights are read once per token
+tile and the rate is `region.len / best`, the measure of weight streaming at
+small `t`. The matvec column is the same encoding from `make bench-kernels` run
+immediately before on the same machine (69,632×5,120 for the gate shape,
+5,120×17,408 for the down shape). GB/s of weight bytes:
+
+**ffn_gate (17,408×5,120).** t=1/4/8 take the 8×8 tile, t=9..32 the 32×32.
+
+| Encoding | matvec | t=1 | t=4 | t=8 | t=9 | t=16 | t=22 | t=32 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q4_K | 178 | 51.7 | 30.1 | 44.7 | 23.6 | 10.0 | 23.6 | 10.7 |
+| Q5_K | 211 | 44.3 | 87.9 | 87.9 | 34.0 | 21.3 | 34.1 | 17.6 |
+| Q3_K | 124 | 31.3 | 59.7 | 60.5 | 19.2 | 21.9 | 20.5 | 11.4 |
+| Q6_K | 252 | 59.2 | 67.2 | 59.4 | 28.3 | 40.9 | 23.3 | 24.4 |
+| IQ3_S | 123 | 31.7 | 63.1 | 63.2 | 22.2 | 22.2 | 18.2 | 22.3 |
+| IQ4_XS | 214 | 49.5 | 84.0 | 42.2 | 20.6 | 22.6 | 18.5 | 27.3 |
+| Q4_0 | 231 | 44.6 | 60.5 | 44.6 | 27.4 | 21.9 | 11.6 | 21.7 |
+| PQ2_0 | 118 | 45.7 | 45.7 | 45.7 | 14.5 | 8.3 | 7.2 | 14.5 |
+| PTQ1_0 | 88 | 29.4 | 29.4 | 29.4 | 10.6 | 7.3 | 6.4 | 11.0 |
+
+**ffn_down (5,120×17,408).** Same tile assignment.
+
+| Encoding | matvec | t=1 | t=4 | t=8 | t=9 | t=16 | t=22 | t=32 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q4_K | 152 | 44.6 | 64.1 | 76.8 | 26.7 | 10.1 | 26.7 | 13.5 |
+| Q5_K | 189 | 43.7 | 43.0 | 87.3 | 12.7 | 16.2 | 31.7 | 17.3 |
+| Q3_K | 118 | 56.6 | 57.0 | 57.4 | 20.6 | 11.3 | 17.2 | 17.0 |
+| Q6_K | 236 | 53.4 | 74.8 | 64.2 | 26.4 | 22.3 | 35.9 | 24.4 |
+| IQ3_S | 115 | 34.3 | 61.6 | 61.6 | 20.9 | 20.9 | 17.5 | 20.7 |
+| IQ4_XS | 186 | 41.5 | 61.5 | 42.0 | 26.5 | 22.1 | 14.3 | 21.4 |
+| Q4_0 | 205 | 67.8 | 58.9 | 71.7 | 20.4 | 18.8 | 13.0 | 21.0 |
+| PQ2_0 | 97 | 45.3 | 45.3 | 45.3 | 13.7 | 9.2 | 7.7 | 13.6 |
+| PTQ1_0 | 83 | 21.8 | 29.0 | 29.0 | 10.4 | 6.7 | 6.1 | 8.6 |
+
+**Reading.** The `_8` tile removes the 32×32 set's collapse at short chunks: at
+t=1–8 it streams 22–88 GB/s against the 32×32 tile's 6–41 at t=9–32. It is still
+well under the 70 % of the matvec rate the unit's acceptance names: across the
+encodings and both shapes the t=1/4/8 rows sit at roughly 20–50 % of the matvec
+column. The numbers are noisy: the three short rows do identical kernel work
+(one token tile) yet differ by up to 2×, and a second run of the same commands
+after a one-line kernel fix moved the t=1–8 rows by 13 GB/s on average (up to
+45), so the per-encoding figures bracket the rate rather than pin it. The
+`make bench-matmul` loop's single warm-up and per-process clock ramp are the
+likely cause. Session 2 re-measures the 8×8/32×32 crossover with the rounds
+interleaved, decides `small_chunk_tokens`, and measures a `_16` variant if the
+numbers ask for one.
+
 ## Merged projections (KERN-04)
 
 `Backend.matvecSegments` accepts up to four borrowed matrix/output descriptors

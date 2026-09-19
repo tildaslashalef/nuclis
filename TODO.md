@@ -32,10 +32,17 @@ On the same day KERN-11 was pulled in front of the theme: the verify
 batch of ENGN-12 (up to nine token rows) runs through the prefill matmul
 tiles, which the Metal reference records at 20–29 GB/s of weight traffic
 on short chunks against the matvecs' 200+, so a speedup measured on the
-tile as it is would be measured against a known-bad kernel. Next is
-KERN-11 session 1: the 8-row × 8-token tile with the K range split across
-the four SIMD groups, its `metal-check` entries, and the first
-`bench-matmul` numbers.
+tile as it is would be measured against a known-bad kernel. KERN-11
+session 1 (2026-09-19) landed the 8-row × 8-token split-K tile, its
+`metal-check` entries, the bench's weight-byte GB/s column, and the first
+numbers: the `_8` tile streams 22–88 GB/s at 1–8 tokens against the 32×32
+tile's 6–41 at 9–32, roughly 20–50 % of the matvec ceilings (83–252),
+below the unit's 70 % floor, and the short-t runs are noisy enough that
+the crossover is not yet pinned. Next is KERN-11 session 2: re-measure the
+8×8/32×32 crossover with the rounds interleaved, decide
+`small_chunk_tokens`, instantiate a `_16` variant if the numbers ask, and
+close the unit (the docs tables, the `make bench` records, the log).
+Nothing of the speculative-decoding theme is implemented.
 
 Order: KERN-11 → ENGN-11 → MODL-18 → ENGN-12 → MODL-19 → MODL-20. After
 MODL-20 the roadmap continues with the performance follow-ups, then
@@ -205,12 +212,36 @@ documented tolerances), `make test-generation-metal` (chunked against
 stepped), and the Gemma, Bonsai, and Muse compare targets, all of which
 share `Backend.matmul`.
 
-**Sessions.** 1: the kernel and its instantiations, the enum and
-geometry, the check entries, the bench column, first numbers. 2: the
-threshold (and the `_16` variant if the numbers ask for it), the `make
-bench` records, the Metal reference's kernel table and geometry table
-rows and a *Small-chunk tile (KERN-11)* subsection with the measurements,
-the roadmap's short-prompt bullet removed, the log entry.
+**Session 1 (done 2026-09-19).** Landed `nu_matmul_split_t` and the nine
+`nu_matmul_*_8` instantiations (Q3_K, Q4_K, Q5_K, Q6_K, IQ3_S, IQ4_XS,
+Q4_0, PQ2_0, PTQ1_0), the host names and `Kernel` entries, the 8×8
+geometry, and `specializedMatmul`'s `tokens <= small_chunk_tokens` (8)
+tier; `metal-check`'s exactness block now covers token counts 1, 5, and 8
+and pins the t=8/t=9 selection; `matmulBench` reports weight-byte GB/s and
+the selected geometry. First numbers (`make bench-matmul ARGS=<t>`, Apple
+M4 Pro, Zig 0.16.0, ReleaseSafe, best of five; `make bench-kernels` for
+the ceilings): the `_8` tile streams 22–88 GB/s at t=1–8 against the 32×32
+tile's 6–41 at t=9–32, matvec ceilings 83–252, so roughly 20–50 % — below
+the 70 % acceptance floor; the t=1/4/8 rows do identical work and vary up
+to 2×, and a second run moved them 13 GB/s on average, so the crossover is
+not yet pinned. Full table in
+[metal-backend.md](docs/reference/metal-backend.md#small-chunk-tile-kern-11-session-1-2026-09-19).
+`make check`, `make compare` (f32/f16), `make test-generation-metal`, and
+the Gemma QAT / 26B-A4B, Bonsai, and Muse Glimmer compares pass. A first
+version stored all four K partials in one shared region of the tile,
+racing the still-running K loops of the other SIMD groups; it surfaced as
+`NonFiniteResult` in the 6-token remainder chunk of
+`test-generation-metal` (never in the fixture exactness test) and is fixed
+by storing each partial in its own group's tile.
+
+**Session 2 (next).** Re-measure the 8×8/32×32 crossover with the rounds
+interleaved (the run-to-run noise is the open methodology problem), decide
+`small_chunk_tokens`, and instantiate and measure a `_16` variant if the
+numbers ask for it; `make bench` prefill and first-token records on Qwen;
+the Metal reference's kernel and geometry table rows and the final
+subsection; remove the roadmap's short-prompt bullet; the log entry.
+`make compare-gemma4` (the K-quant 12B file) cannot run until that artifact
+is present; the QAT and 26B-A4B Gemma targets cover the family meanwhile.
 
 **Acceptance.** The `_8` tile computes within the half-rounding bound on
 every specialized encoding at 1, 5, and 8 tokens; every gate above
