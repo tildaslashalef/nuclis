@@ -21,14 +21,21 @@ import urllib.request
 
 REVISION = "7620399f58aebfd2196b74021f9581bcf7218cb9"
 
-# Per family: the text the template renders when thinking is off (the check
-# that the server applied the artifact's own template with reasoning
-# disabled) and the BOS marker the prompt must carry as text. The server's
-# `/apply-template` strips a leading BOS because its tokenizer adds one;
-# nuclis's encoder never does, so the token arrays carry it explicitly.
+# Per family: the text the template renders with the harness's default
+# thinking setting (reasoning off where the template can switch it off; the
+# check that the server applied the artifact's own template), the BOS marker
+# the prompt must carry as text, and the smoke test's budget and template
+# arguments. The server's `/apply-template` strips a leading BOS because its
+# tokenizer adds one; nuclis's encoder never does, so the token arrays carry
+# it explicitly. Muse Glimmer cannot switch reasoning off: its default system
+# turn says `Reasoning strength: high.` (and carries the server's date), and
+# the smoke answer follows a reasoning message, so that test asks for `low`
+# strength with a wider budget.
 FAMILIES = {
-    "qwen38": {"thinking_off": "<think>\n\n</think>", "bos": ""},
-    "gemma4": {"thinking_off": "<|channel>thought\n<channel|>", "bos": "<bos>"},
+    "qwen38": {"thinking_off": "<think>\n\n</think>", "bos": "", "smoke_tokens": 96, "smoke_kwargs": None},
+    "gemma4": {"thinking_off": "<|channel>thought\n<channel|>", "bos": "<bos>", "smoke_tokens": 96, "smoke_kwargs": None},
+    "muse-glimmer": {"thinking_off": "Reasoning strength: high.", "bos": "<|begin_of_text|>",
+                     "smoke_tokens": 384, "smoke_kwargs": {"reasoning_strength": "low"}},
 }
 
 
@@ -172,10 +179,13 @@ def main():
         return response, time.perf_counter() - start
 
     # A smoke response checks actual text decoding, but is not a quality score.
-    smoke_prompt = family["bos"] + request("/apply-template", {"messages": [{
+    smoke_request = {"messages": [{
         "role": "user", "content": "Write a Python function add(a, b) that returns their sum. Return only code.",
-    }]})["prompt"]
-    smoke, smoke_seconds = complete(tokenize(smoke_prompt, True), 96, False)
+    }]}
+    if family["smoke_kwargs"]:
+        smoke_request["chat_template_kwargs"] = family["smoke_kwargs"]
+    smoke_prompt = family["bos"] + request("/apply-template", smoke_request)["prompt"]
+    smoke, smoke_seconds = complete(tokenize(smoke_prompt, True), family["smoke_tokens"], False)
     save("smoke.json", {"response": smoke, "wall_seconds": smoke_seconds})
     if "return" not in smoke["content"] or "a + b" not in smoke["content"]:
         raise RuntimeError("smoke output needs review; refusing to label this a working reference")

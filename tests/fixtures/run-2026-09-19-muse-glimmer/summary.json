@@ -1,0 +1,59 @@
+{
+  "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "context": 32768,
+  "generate": 128,
+  "results": [
+    {
+      "prompt_tokens": 512,
+      "phase": "warm",
+      "samples": 3,
+      "prompt_per_second": {
+        "mean": 95.28049890626549,
+        "sample_stdev": 0.05523196685684664
+      },
+      "predicted_per_second": {
+        "mean": 13.69435071950292,
+        "sample_stdev": 0.36900958840323284
+      }
+    },
+    {
+      "prompt_tokens": 4096,
+      "phase": "warm",
+      "samples": 3,
+      "prompt_per_second": {
+        "mean": 93.01307776336992,
+        "sample_stdev": 3.0945998125731418
+      },
+      "predicted_per_second": {
+        "mean": 12.136276162793488,
+        "sample_stdev": 0.8244828102638201
+      }
+    },
+    {
+      "prompt_tokens": 16384,
+      "phase": "warm",
+      "samples": 3,
+      "prompt_per_second": {
+        "mean": 80.96456410319304,
+        "sample_stdev": 1.5046175686763619
+      },
+      "predicted_per_second": {
+        "mean": 10.06590391514949,
+        "sample_stdev": 0.6526463320922328
+      }
+    },
+    {
+      "prompt_tokens": 32639,
+      "phase": "warm",
+      "samples": 3,
+      "prompt_per_second": {
+        "mean": 76.86430313329487,
+        "sample_stdev": 0.04800950369228778
+      },
+      "predicted_per_second": {
+        "mean": 9.975756738874782,
+        "sample_stdev": 0.02041048074280514
+      }
+    }
+  ]
+}

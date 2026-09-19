@@ -403,8 +403,12 @@ reference, the adapter binds the file (`nuclis model inspect` says
 *supported*), and the CPU reference matches the oracle traces at the
 bring-up thresholds with the same greedy token. MODL-12 closed the same
 day: the Metal plan matches the traces in both cache precisions, passes
-the generation check, and runs the file at 9.9 tok/s. MODL-13 adds the
-profile (`profiles/muse_glimmer.zig`, the channel-grammar decoder, the
-`high` effort) and the catalogue pin; its acceptance record is in
-[bench.md](bench.md). AGNT-10 adds the ATEM tool protocol
+the generation check, and runs the file at 9.9 tok/s. MODL-13 closed the
+same day with the profile (`profiles/muse_glimmer.zig`, the channel-grammar
+decoder, the `high` effort), the catalogue pin, and the acceptance record
+([bench.md](bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19):
+9.60 tok/s decode at 512 tokens, 6.62 at 32,639, against the reference's
+13.69 and 9.98), and AGNT-10 with the ATEM tool protocol
 ([tool-calling.md](tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).
+The family is complete for text; the vision projector and the DFlash
+drafter are the roadmap's.

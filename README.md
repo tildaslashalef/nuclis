@@ -66,6 +66,7 @@ same workload and hardware, at the shortest and the longest prompt
 | Gemma 4 12B, UD-Q4_K_XL (7.37 GB) | 19.82 / 24.51 | 14.04 / 16.05 | 192.97 / 209.85 | 74.04 / 142.80 | [2026-09-12](docs/reference/bench.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12) |
 | Gemma 4 12B, QAT Q4_0 (6.72 GB) | 23.96 / 27.69 | 16.24 / 20.94 | 179.45 / 224.46 | 73.04 / 143.72 | [2026-09-12](docs/reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12) |
 | Gemma 4 26B-A4B, QAT Q4_0 (14.2 GB, 128 experts, 8 per token) | 55.29 / 68.02 | 31.30 / 44.09 | 500.42 / 580.76 | 134.74 / 343.38 | [2026-09-18](docs/reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18) |
+| Muse Glimmer 30B, UD-Q4_K_XL (15.9 GB) | 9.60 / 13.69 | 6.62 / 9.98 | 93.49 / 95.28 | 59.20 / 76.86 | [2026-09-19](docs/reference/bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19) |
 
 Each Gemma file matches llama.cpp's per-layer traces on the CPU
 reference and on Metal before its rate is recorded

@@ -110,8 +110,12 @@ The generated table SHA-256 is
 Default tests require neither this script nor the external checkout.
 
 Encoding defaults bound input to 1 MiB, output to 1,048,576 IDs, special-marker
-search to a conservative 1 GiB comparison budget, and aggregate BPE scanning to
-64 MiB across the entire call. Per-piece BPE limits also apply. Work limits may
+search to a conservative 1 GiB comparison budget (each marker's pass over the
+text is a vectorized search for its first byte, charged per 16-byte block,
+plus one comparison per candidate: Muse Glimmer's 2,048 reserved markers
+would otherwise exhaust the budget on 18 KB of text, as the acceptance run
+of MODL-13 found), and aggregate BPE scanning to 64 MiB across the entire
+call. Per-piece BPE limits also apply. Work limits may
 reject expensive input below the byte/token limits. Temporary marker storage
 is proportional to input bytes; output capacity may exceed its logical length.
 All allocations are explicit, and partial failures release owned state. The

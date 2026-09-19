@@ -25,7 +25,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
         compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
         compare-gemma4-26b-a4b compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 \
         compare-bonsai compare-bonsai-cpu compare-bonsai-f32 compare-bonsai-f16 test-generation-bonsai-metal baseline-bonsai \
-        compare-muse-glimmer compare-muse-glimmer-cpu compare-muse-glimmer-f32 compare-muse-glimmer-f16 test-generation-muse-glimmer-metal \
+        compare-muse-glimmer compare-muse-glimmer-cpu compare-muse-glimmer-f32 compare-muse-glimmer-f16 test-generation-muse-glimmer-metal baseline-muse-glimmer \
         test-generation-gemma4 test-generation-gemma4-metal test-generation-gemma4-qat-metal test-generation-gemma4-26b-a4b-metal clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
@@ -116,6 +116,10 @@ baseline-gemma4: metal ## The same on gemma-4-12b (the K-quant entry) (tests/fix
 baseline-gemma4-26b-a4b: metal ## The same on gemma-4-26b-a4b (the mixture of experts) with its own reference arrays (tests/fixtures/run-2026-09-18-gemma4-26b-a4b); writes docs/benchmarks/nuclis-<date>-gemma4-26b-a4b.json
 	python3 scripts/nuclis-baseline.py --model "$(GEMMA_26B_A4B_MODEL)" --nuclis $(BIN) --run run-2026-09-18-gemma4-26b-a4b \
 	  --reference-records reference-2026-09-18-gemma4-26b-a4b.json --output docs/benchmarks/nuclis-$$(date +%F)-gemma4-26b-a4b.json $(ARGS)
+
+baseline-muse-glimmer: metal ## The same workload on muse-glimmer-30b with its own reference arrays (tests/fixtures/run-2026-09-19-muse-glimmer); writes docs/benchmarks/nuclis-<date>-muse-glimmer.json
+	python3 scripts/nuclis-baseline.py --model "$(MUSE_MODEL)" --nuclis $(BIN) --run run-2026-09-19-muse-glimmer \
+	  --reference-records reference-2026-09-19-muse-glimmer.json --output docs/benchmarks/nuclis-$$(date +%F)-muse-glimmer.json $(ARGS)
 
 bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, or one with ARGS=<ENCODING> (no model)
 	$(ZIG) build bench-kernels $(METAL) $(if $(ARGS),-- $(ARGS))

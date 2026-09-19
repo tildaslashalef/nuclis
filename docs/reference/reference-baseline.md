@@ -118,7 +118,12 @@ and writes `<bos>` into the prompt text, since the server's
 encoder never adds one). The Gemma 4 12B run of 2026-09-12 used the same
 server flags on `gemma-4-12b-it-UD-Q4_K_XL.gguf` with
 `--prompt-lengths 512,4096,16384,32639` in one invocation
-(`tests/fixtures/run-2026-09-12-gemma4/`).
+(`tests/fixtures/run-2026-09-12-gemma4/`). `--family muse-glimmer` (the
+run of 2026-09-19, `tests/fixtures/run-2026-09-19-muse-glimmer/`) checks
+the template's default `Reasoning strength: high.` line instead, since
+that template cannot switch reasoning off, writes `<|begin_of_text|>`, and
+gives the smoke request `low` strength and a 384-token budget so the
+model's reasoning message leaves room for the code it checks for.
 
 Use a new output directory for every invocation. The harness refuses to overwrite
 an existing directory. It uses only the Python standard library, accepts only a

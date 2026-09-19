@@ -27,7 +27,7 @@ def sha256_file(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=pathlib.Path, help="the harness output directory")
-    parser.add_argument("--family", required=True, help="the profile family the run measured (qwen38, gemma4)")
+    parser.add_argument("--family", required=True, help="the profile family the run measured (qwen38, gemma4, muse-glimmer)")
     parser.add_argument("--output", type=pathlib.Path, help="record path (default docs/benchmarks/reference-<date>-<family>.json); never overwritten")
     parser.add_argument("--model-sha256", help="skip hashing when the digest is known")
     args = parser.parse_args()

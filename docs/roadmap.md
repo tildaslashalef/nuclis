@@ -10,7 +10,7 @@ boundary.
 Themes, in order (reordered 2026-09-17, once the third family was planned;
 the Bonsai 2 27B units — Qwen3.8-27B in Prism ML's ternary encoding, a
 new weight format on the existing adapter — closed on 2026-09-18, and the
-Muse Glimmer 30B units are in [../TODO.md](../TODO.md)):
+Muse Glimmer 30B units, MODL-11 to MODL-13 and AGNT-10, on 2026-09-19):
 
 1. **Speculative decoding across the families** — draft tokens from each
    model's own draft source (Qwen's MTP head, Gemma's MTP companion, Muse's

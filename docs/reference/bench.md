@@ -775,6 +775,66 @@ Weights are 15.87 GB, so 9.99 tok/s reads 159 GB/s against the
 reference's 223 (71 %); the 512-token prefill is at 91 %. The Qwen
 `make bench` the same day: 39.75 / 10.44 tok/s, unchanged.
 
+## Muse Glimmer 30B acceptance record (MODL-13, 2026-09-19)
+
+The v0.1 acceptance workload on the third family, each side on its own
+token arrays since the tokenizers differ: the reference harness ran on
+the Muse file with `--family muse-glimmer`
+(`tests/fixtures/run-2026-09-19-muse-glimmer/`, summarized in
+[reference-2026-09-19-muse-glimmer.json](../benchmarks/reference-2026-09-19-muse-glimmer.json):
+512, 4,096, 16,384, and 32,639 prompt tokens, three measured repetitions
+at every length after one warmup, 128 output tokens, greedy, context
+32,768, F16 cache, `llama-server 7620399` with the recipe's flags on Metal;
+the template's default `Reasoning strength: high.` system turn, dated
+2026-09-19 by the server's clock, heads every array), and
+`make baseline-muse-glimmer` fed those arrays through `bench --prompt-tokens`
+([nuclis-2026-09-19-muse-glimmer.json](../benchmarks/nuclis-2026-09-19-muse-glimmer.json)).
+Every array starts with `<|begin_of_text|>` and that system turn; the
+script verified that `nuclis tokenize` reproduces the reference's corpus
+tokens through every cut (32,577 tokens) and that all four text renderings
+tokenize to exactly their array's count. The first attempt refused the
+191 KB corpus with `WorkLimitExceeded`: the encoder's special-token scan
+charged every one of Muse's 2,048 reserved markers per byte, exhausting its
+1 GiB budget at 18 KB of text; the scan now searches each marker's first
+byte ([tokenizer.md](tokenizer.md)), and the run below is on that fix.
+Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2, AC power,
+Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` at `bbac7ac`, artifact
+SHA-256 `82bece30…`, `--kv f16 --ctx-size 32768 --max-tokens 128`, one
+42-minute sequence 512 → 32,639 with nothing else on the GPU. Mean ± sample
+standard deviation over the measured runs (one at 32,639); the reference
+columns are its warm means over three samples:
+
+| Prompt tokens | Prefill tok/s | Reference | Decode tok/s | Reference | Decode ms/step | First token | Warmup (prefill / decode) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 512 | 93.49 ± 0.09 | 95.28 | 9.60 ± 0.00 | 13.69 | 103.3–103.4 | 5.5 s | 91.1 / 9.61 |
+| 4,096 | 80.51 ± 2.65 | 93.01 | 8.26 ± 0.22 | 12.14 | 116.5–122.3 | 49–52 s | 83.2 / 9.14 |
+| 16,384 | 67.83 ± 0.17 | 80.96 | 7.19 ± 0.03 | 10.07 | 137.5–138.6 | 241–242 s | 68.8 / 7.30 |
+| 32,639 | 59.20 (one run) | 76.86 | 6.62 (one run) | 9.98 | 149.9 | 551 s | 59.2 / 6.61 |
+
+Every sample stopped with `token_budget` at exactly the array's count and
+128 generated tokens. Decode is at 70 % of the reference at 512, 68 % at
+4K, 71 % at 16K, and 66 % at 32K (15.87 GB of weights at 9.60 tok/s is
+152 GB/s effective against the reference's 217); prefill is at 98 % at
+512 and falls with length (87 % at 4K, 84 % at 16K, 77 % at 32K), the
+reference's own rate falling too (95 → 77). The gap is the widest of the
+four families and is spread over the large Q4_K matvecs
+([muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19)
+has the per-kernel profile); the 4K row's decode drifted from 9.14 tok/s
+on its warmup to 8.12 on its third sample within four minutes, which no
+other length showed and which was not investigated (thermal is the
+obvious suspect). Both are the performance theme's material
+([roadmap](../roadmap.md)), not this unit's.
+
+**Memory.** The session block is 1,744,830,464 bytes (1.63 GiB) at
+32,768 capacity: 52 layers × 2 × 256 halves per position, every sliding
+layer allocated for the full capacity although it reads only the last
+2,048 rows (a ring layout is the roadmap's session-layout unit). Peak
+resident set of the `bench` process was 1.80 GiB at every length and its
+peak footprint 2.17–2.22 GB; the 15.88 GB weight file is memory-mapped and
+charged to wired memory, so the headroom is a calculation: 48 GiB −
+15.9 GB − 2.2 GB ≈ 30 GiB at 32K context, with the vision projector
+(1.4 GB) and the DFlash drafter (1.6 GB) still to come.
+
 ## Per-kernel profile
 
 `nuclis bench --profile` (Metal only) adds a table of GPU time per kernel and

@@ -30,8 +30,10 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 MARKER = "NUCLIS_BENCH_CONTENT"
 CLOSING = "\n```\n\nGive your review."
-# The reference harness's thinking-off marker per family (scripts/reference-baseline.py).
-THINKING_OFF = {"qwen38": "<think>\n\n</think>", "gemma4": "<|channel>thought\n<channel|>"}
+# The reference harness's template marker per family (scripts/reference-baseline.py):
+# thinking off where the template can switch it, the default strength line for Muse.
+THINKING_OFF = {"qwen38": "<think>\n\n</think>", "gemma4": "<|channel>thought\n<channel|>",
+                "muse-glimmer": "Reasoning strength: high."}
 
 
 def timestamp():

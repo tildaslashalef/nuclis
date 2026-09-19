@@ -83,6 +83,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | TERM-09 | A step that answers and then calls a tool no longer holds the turn in the live region | 2026-09-18 |
 | MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2026-09-19 |
 | MODL-12 | Muse Glimmer 30B: Metal plan | 2026-09-19 |
+| MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 2026-09-19 |
 
 ## Context
 
@@ -2634,3 +2635,67 @@ at 145–175 GB/s against the head's 208, spread over the large matrices
 (the performance theme). The full-context cache on sliding layers (a
 ring layout is the roadmap's). The profile, the channel decoder, and
 the acceptance record are MODL-13; tool calling AGNT-10.
+
+### MODL-13 — Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance (2026-09-19)
+
+**Outcome.** The third family renders, decodes, and is measured.
+`profiles/muse_glimmer.zig` implements the pinned template's text
+protocol: `<|begin_of_text|>` as text, one system turn per leading
+system or developer message (each with the strength and recipients
+lines) or the synthesized one without its date line, content verbatim,
+reasoning kept as its own `to=self` message, `off` rendered as `low`.
+`stream.zig` gained the channel grammar (`Markers.channel`): messages
+`HEADER<|message|>BODY` ended by `<|eom|>` or the next `<|start|>`, the
+first header arriving as text, the header routing the body to thinking,
+the answer, or a tool parser, a header longer than 256 bytes released as
+text, a tool body completed on EOS and released as text on any other
+stop. The shared `Effort` gained `high`: Qwen's fixture re-captured with
+35 cases (its template folds `high` into `xhigh`, pinned by the test),
+Gemma treats it as on, and the agent's cycle, help, and configuration
+messages list it. The catalogue pins `.muse_glimmer` (the field is
+non-optional again), `vocabulary-check` selects the Muse expectations
+through the profile, and `nuclis --help` names the profile. The
+acceptance tooling learned the family: `reference-baseline.py` checks
+the template's default strength line, writes `<|begin_of_text|>`, and
+gives the smoke request `low` strength with a 384-token budget;
+`nuclis-baseline.py` the same marker; `make baseline-muse-glimmer`.
+
+Findings that changed the design: the reference sends `developer` as
+`system` (the facts document claimed the role rendered nothing); the
+first acceptance attempt refused the 191 KB corpus, because the
+encoder's special-token scan charged every one of Muse's 2,048 reserved
+markers per byte and exhausted its 1 GiB budget at 18 KB — the scan now
+searches each marker's first byte with the same longest-first
+precedence (`fix(tokenizer)`, its own test with 2,048 markers over
+64 KiB), and every pinned file's vocabulary check still matches.
+
+**Evidence.** The 28 text fixtures match byte for byte (date line
+removed, BOS prepended); `make test-vocabulary` on the Muse file (20
+standalone strings, 28 prompts), the Qwen file (20 and 35), and the QAT
+Gemma file (20 and 14). The acceptance run
+([bench.md](reference/bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19)):
+**9.60 / 8.26 / 7.19 / 6.62 tok/s decode** and **93.49 / 80.51 /
+67.83 / 59.20 prefill** at 512 / 4,096 / 16,384 / 32,639 tokens against
+the reference's 13.69 / 12.14 / 10.07 / 9.98 and 95.28 / 93.01 / 80.96 /
+76.86, every sample at `token_budget` with 128 tokens; the harness
+matched nuclis's corpus tokens to the reference's through 32,577
+tokens. A live `nuclis agent --model muse-glimmer-30b --think medium
+--print --json` turn shows three thinking blocks (32.7 s, 7.0 s, 6.7 s)
+around its calls and answers in 460 tokens at 9.3 tok/s. `make check`:
+442 tests and `test-metal`.
+
+**Files.** `inference/src/profiles/{muse_glimmer,stream,root,qwen38,gemma4}.zig`,
+`inference/src/profiles/fixtures/{qwen38-text,muse_glimmer-tools}.json`,
+`inference/src/tokenizer/encode.zig`, `inference/vocabulary-check.zig`,
+`src/{catalog,config,help}.zig`, `src/agent/{root,commands}.zig`,
+`scripts/{tokenizer-fixtures,reference-baseline,nuclis-baseline,reference-record}.py`,
+`Makefile`, `tests/fixtures/run-2026-09-19-muse-glimmer/`,
+`docs/benchmarks/{reference,nuclis}-2026-09-19-muse-glimmer.json`,
+`README.md`, `TODO.md`, `docs/agent-spec.md`, `docs/development.md`,
+`docs/roadmap.md`, `docs/reference/{muse-glimmer,prompt-profile,bench,reference-baseline,tokenizer,generation,artifacts}.md`.
+
+**Remaining.** Decode at 66–71 % of the reference and prefill falling
+to 77 % at 32K, and the 4K row's decode drift within one run (the
+performance theme); the full-capacity sliding cache (1.63 GiB at 32K);
+the Hub's `chat_template.jinja` revision unchecked as an alias; the
+vision projector and the DFlash drafter (roadmap).

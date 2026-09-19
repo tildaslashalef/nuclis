@@ -1,0 +1,612 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-19",
+  "label": "warm",
+  "purged_before_first_run": false,
+  "started_at": "2026-09-19T08:15:55+00:00",
+  "finished_at": "2026-09-19T08:57:51+00:00",
+  "methodology": "See ../reference/bench.md#acceptance-runs and ../reference/reference-baseline.md. Each run feeds the reference harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident model pages).",
+  "nuclis_version": "nuclis 0.2.0-dev",
+  "git_revision": "bbac7acaa96a6ebf732dac371289493576879e92",
+  "git_dirty": true,
+  "build_mode": "ReleaseSafe",
+  "zig_version": "0.16.0",
+  "hardware": {
+    "cpu": "Apple M4 Pro",
+    "memory_bytes": 51539607552,
+    "cpu_cores": 12,
+    "gpu": "Graphics/Displays:\n\n    Apple M4 Pro:\n\n      Chipset Model: Apple M4 Pro\n      Type: GPU\n      Bus: Built-In\n      Total Number of Cores: 16\n      Vendor: Apple (0x106b)\n      Metal Support: Metal 4\n      Displays:\n        Studio Display:\n          Display Type: Retina LCD\n          Resolution: 5120 x 2880 Retina\n          Display Serial Number: CPYT6CY65X\n          Display Firmware Version: Version 26.4 (Build 23E246)\n          Main Display: Yes\n          Mirror: Off\n          Online: Yes\n          Automatically Adjust Brightness: Yes"
+  },
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+  "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22020195)\t100%; charged; 0:00 remaining present: true",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+  "model_sha256": "82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38",
+  "backend": "metal",
+  "kv_precision": "f16",
+  "context": 32768,
+  "output_tokens": 128,
+  "warmup_runs": 1,
+  "repetitions": 3,
+  "boundary_repetitions": 1,
+  "prompts": [
+    {
+      "prompt_tokens": 512,
+      "corpus_tokens": 450,
+      "text_file": ".zig-cache/prompts/reference/prompt-512.txt",
+      "text_sha256": "9d87316957ecaaa417e46be7a232185e49582dec08df7c2424ffee95834f8f5c",
+      "text_bytes": 1607,
+      "text_tokens": 511,
+      "text_ids_equal_reference": false,
+      "reference_fixture": "tests/fixtures/run-2026-09-19-muse-glimmer/prompt-512.json",
+      "reference_fixture_sha256": "a2760e4ac8e15d2cfdc2e40f19eb2687e8877222986935426446907cfbce1af2"
+    },
+    {
+      "prompt_tokens": 4096,
+      "corpus_tokens": 4034,
+      "text_file": ".zig-cache/prompts/reference/prompt-4096.txt",
+      "text_sha256": "9c3fd78ac92345bac08fdabce2b945cae2668d6e2f1c370351f2bbb9f9c6f319",
+      "text_bytes": 11815,
+      "text_tokens": 4095,
+      "text_ids_equal_reference": false,
+      "reference_fixture": "tests/fixtures/run-2026-09-19-muse-glimmer/prompt-4096.json",
+      "reference_fixture_sha256": "c743a1ae958c0104cb6c4278bf765c9e3bb936017cb8d63322f81daf14b4ce7e"
+    },
+    {
+      "prompt_tokens": 16384,
+      "corpus_tokens": 16322,
+      "text_file": ".zig-cache/prompts/reference/prompt-16384.txt",
+      "text_sha256": "b6c781f011d848d4b71476770549d8af63610c5227c48684b0186894b03723a1",
+      "text_bytes": 46809,
+      "text_tokens": 16383,
+      "text_ids_equal_reference": false,
+      "reference_fixture": "tests/fixtures/run-2026-09-19-muse-glimmer/prompt-16384.json",
+      "reference_fixture_sha256": "e8593ba7b0834d6969f0b270300b332a7c2eee79dbf73404da266ad5db3b8a64"
+    },
+    {
+      "prompt_tokens": 32639,
+      "corpus_tokens": 32577,
+      "text_file": ".zig-cache/prompts/reference/prompt-32639.txt",
+      "text_sha256": "1838fbbf277887d1fd3ad2a0b3debf64d2a464f1397156aaab3c03cd146d2528",
+      "text_bytes": 93100,
+      "text_tokens": 32639,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-19-muse-glimmer/prompt-32639.json",
+      "reference_fixture_sha256": "5771b1c7fdc1b7c10055db5fb04b90d38e1eec8e3298d24573f81d792fb3b26a"
+    }
+  ],
+  "summary": [
+    {
+      "prompt_tokens": 512,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 93.49466540009536,
+        "sample_stdev": 0.08899476609599553
+      },
+      "decode_tokens_per_second": {
+        "mean": 9.604421870423483,
+        "sample_stdev": 0.003933012877201114
+      },
+      "first_token_milliseconds": {
+        "mean": 5476.251805333333,
+        "sample_stdev": 5.214947078741488
+      },
+      "session_bytes": 1744830464,
+      "peak_resident_bytes": 1933918208
+    },
+    {
+      "prompt_tokens": 4096,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 80.51154299974534,
+        "sample_stdev": 2.6471410812957976
+      },
+      "decode_tokens_per_second": {
+        "mean": 8.260913216473803,
+        "sample_stdev": 0.22231495611916782
+      },
+      "first_token_milliseconds": {
+        "mean": 50911.0335,
+        "sample_stdev": 1658.1509621133443
+      },
+      "session_bytes": 1744830464,
+      "peak_resident_bytes": 1934065664
+    },
+    {
+      "prompt_tokens": 16384,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 67.83168676975798,
+        "sample_stdev": 0.17226954319762403
+      },
+      "decode_tokens_per_second": {
+        "mean": 7.1853808699823825,
+        "sample_stdev": 0.029004015814147018
+      },
+      "first_token_milliseconds": {
+        "mean": 241540.07027766667,
+        "sample_stdev": 612.7617255906886
+      },
+      "session_bytes": 1744830464,
+      "peak_resident_bytes": 1934000128
+    },
+    {
+      "prompt_tokens": 32639,
+      "samples": 1,
+      "prefill_tokens_per_second": {
+        "mean": 59.20282058460496,
+        "sample_stdev": null
+      },
+      "decode_tokens_per_second": {
+        "mean": 6.619214916604749,
+        "sample_stdev": null
+      },
+      "first_token_milliseconds": {
+        "mean": 551308.192584,
+        "sample_stdev": null
+      },
+      "session_bytes": 1744830464,
+      "peak_resident_bytes": 1934491648
+    }
+  ],
+  "family": "muse-glimmer",
+  "reference": {
+    "revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+    "run": "run-2026-09-19-muse-glimmer",
+    "rows": [
+      {
+        "prompt_tokens": 512,
+        "samples": 3,
+        "source": "reference-2026-09-19-muse-glimmer.json",
+        "prefill_tokens_per_second": 95.28049890626549,
+        "decode_tokens_per_second": 13.69435071950292
+      },
+      {
+        "prompt_tokens": 4096,
+        "samples": 3,
+        "source": "reference-2026-09-19-muse-glimmer.json",
+        "prefill_tokens_per_second": 93.01307776336992,
+        "decode_tokens_per_second": 12.136276162793488
+      },
+      {
+        "prompt_tokens": 16384,
+        "samples": 3,
+        "source": "reference-2026-09-19-muse-glimmer.json",
+        "prefill_tokens_per_second": 80.96456410319304,
+        "decode_tokens_per_second": 10.06590391514949
+      },
+      {
+        "prompt_tokens": 32639,
+        "samples": 3,
+        "source": "reference-2026-09-19-muse-glimmer.json",
+        "prefill_tokens_per_second": 76.86430313329487,
+        "decode_tokens_per_second": 9.975756738874782
+      }
+    ]
+  },
+  "runs": [
+    {
+      "prompt_tokens": 512,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-19-muse-glimmer/prompt-512.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 1933918208,
+      "peak_footprint_bytes": 2169804920,
+      "memory_before": {
+        "timestamp": "2026-09-19T08:15:55+00:00",
+        "swap": "total = 2048.00M  used = 969.06M  free = 1078.94M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-19T08:17:11+00:00",
+        "swap": "total = 2048.00M  used = 969.06M  free = 1078.94M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 1744830464,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 608.421459,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5620.341458,
+            "first_token_milliseconds": 5620.341708,
+            "decode_milliseconds": 13211.546083,
+            "prefill_tokens_per_second": 91.09766796663548,
+            "decode_tokens_per_second": 9.612803770439681,
+            "gpu_busy_milliseconds": 18632.33637495432
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5474.494666,
+            "first_token_milliseconds": 5474.494791,
+            "decode_milliseconds": 13219.020375,
+            "prefill_tokens_per_second": 93.52461391182585,
+            "decode_tokens_per_second": 9.607368503658881,
+            "gpu_busy_milliseconds": 18608.25758316787
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5472.142042,
+            "first_token_milliseconds": 5472.142292,
+            "decode_milliseconds": 13220.984375,
+            "prefill_tokens_per_second": 93.56482270932982,
+            "decode_tokens_per_second": 9.60594131252046,
+            "gpu_busy_milliseconds": 18609.60091673769
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5482.118041,
+            "first_token_milliseconds": 5482.118333,
+            "decode_milliseconds": 13229.227583,
+            "prefill_tokens_per_second": 93.39455957913039,
+            "decode_tokens_per_second": 9.599955795091109,
+            "gpu_busy_milliseconds": 18625.640833517537
+          }
+        ],
+        "mean_prefill_tokens_per_second": 93.49466540009536,
+        "mean_decode_tokens_per_second": 9.604421870423483,
+        "mean_first_token_milliseconds": 5476.251805333333
+      }
+    },
+    {
+      "prompt_tokens": 4096,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-19-muse-glimmer/prompt-4096.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 1934065664,
+      "peak_footprint_bytes": 2175654056,
+      "memory_before": {
+        "timestamp": "2026-09-19T08:17:11+00:00",
+        "swap": "total = 2048.00M  used = 969.06M  free = 1078.94M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-19T08:21:34+00:00",
+        "swap": "total = 2048.00M  used = 969.06M  free = 1078.94M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 1744830464,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 657.917958,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 49234.8285,
+            "first_token_milliseconds": 49234.828667,
+            "decode_milliseconds": 13889.766375,
+            "prefill_tokens_per_second": 83.19314040060077,
+            "decode_tokens_per_second": 9.143422327720756,
+            "gpu_busy_milliseconds": 62880.21091691917
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 49117.122166,
+            "first_token_milliseconds": 49117.122333,
+            "decode_milliseconds": 14911.614,
+            "prefill_tokens_per_second": 83.3925079355595,
+            "decode_tokens_per_second": 8.516851361629934,
+            "gpu_busy_milliseconds": 63900.50470805727
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 51228.44025,
+            "first_token_milliseconds": 51228.440417,
+            "decode_milliseconds": 15582.554875,
+            "prefill_tokens_per_second": 79.9555867797478,
+            "decode_tokens_per_second": 8.1501397568478,
+            "gpu_busy_milliseconds": 66681.27533327788
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 52387.537541,
+            "first_token_milliseconds": 52387.53775,
+            "decode_milliseconds": 15648.587375,
+            "prefill_tokens_per_second": 78.18653428392874,
+            "decode_tokens_per_second": 8.115748530943677,
+            "gpu_busy_milliseconds": 67906.9072920247
+          }
+        ],
+        "mean_prefill_tokens_per_second": 80.51154299974534,
+        "mean_decode_tokens_per_second": 8.260913216473803,
+        "mean_first_token_milliseconds": 50911.0335
+      }
+    },
+    {
+      "prompt_tokens": 16384,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-19-muse-glimmer/prompt-16384.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 1934000128,
+      "peak_footprint_bytes": 2223397032,
+      "memory_before": {
+        "timestamp": "2026-09-19T08:21:34+00:00",
+        "swap": "total = 2048.00M  used = 969.06M  free = 1078.94M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-19T08:38:49+00:00",
+        "swap": "total = 2048.00M  used = 969.06M  free = 1078.94M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 1744830464,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 663.558458,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 238127.662625,
+            "first_token_milliseconds": 238127.662708,
+            "decode_milliseconds": 17387.861042,
+            "prefill_tokens_per_second": 68.80343014075305,
+            "decode_tokens_per_second": 7.303946108910939,
+            "gpu_busy_milliseconds": 255099.2889998597
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 240853.544208,
+            "first_token_milliseconds": 240853.544333,
+            "decode_milliseconds": 17597.059625,
+            "prefill_tokens_per_second": 68.02474115079184,
+            "decode_tokens_per_second": 7.217114830910281,
+            "gpu_busy_milliseconds": 258128.28262452967
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 241735.047625,
+            "first_token_milliseconds": 241735.047958,
+            "decode_milliseconds": 17691.016459,
+            "prefill_tokens_per_second": 67.77668427052521,
+            "decode_tokens_per_second": 7.178784797036969,
+            "gpu_busy_milliseconds": 259118.27554140473
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 242031.618292,
+            "first_token_milliseconds": 242031.618542,
+            "decode_milliseconds": 17736.82825,
+            "prefill_tokens_per_second": 67.6936348879569,
+            "decode_tokens_per_second": 7.160242981999897,
+            "gpu_busy_milliseconds": 259456.56987570692
+          }
+        ],
+        "mean_prefill_tokens_per_second": 67.83168676975798,
+        "mean_decode_tokens_per_second": 7.185380869982382,
+        "mean_first_token_milliseconds": 241540.07027766667
+      }
+    },
+    {
+      "prompt_tokens": 32639,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-19-muse-glimmer/prompt-32639.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "1",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 1934491648,
+      "peak_footprint_bytes": 2191366312,
+      "memory_before": {
+        "timestamp": "2026-09-19T08:38:49+00:00",
+        "swap": "total = 2048.00M  used = 969.06M  free = 1078.94M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-09-19T08:57:51+00:00",
+        "swap": "total = 2048.00M  used = 969.06M  free = 1078.94M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "ReleaseSafe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 1744830464,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 1,
+        "load_milliseconds": 657.992334,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 551592.55,
+            "first_token_milliseconds": 551592.550375,
+            "decode_milliseconds": 19205.969958,
+            "prefill_tokens_per_second": 59.172300278529875,
+            "decode_tokens_per_second": 6.612527265101744,
+            "gpu_busy_milliseconds": 570084.0724173468
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 551308.192375,
+            "first_token_milliseconds": 551308.192584,
+            "decode_milliseconds": 19186.565416,
+            "prefill_tokens_per_second": 59.20282058460496,
+            "decode_tokens_per_second": 6.619214916604749,
+            "gpu_busy_milliseconds": 569903.2677079667
+          }
+        ],
+        "mean_prefill_tokens_per_second": 59.20282058460496,
+        "mean_decode_tokens_per_second": 6.619214916604749,
+        "mean_first_token_milliseconds": 551308.192584
+      }
+    }
+  ]
+}
