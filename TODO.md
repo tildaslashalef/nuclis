@@ -39,10 +39,16 @@ per-command switch, the draft length) is in
 Nothing of the speculative-decoding theme beyond the recovery contract is
 implemented; its five units were rewritten at implementation level on
 2026-09-19 after the companions' headers and the reference's speculative
-driver were read (the oracle fact is in the theme section). Next is
-MODL-18 session 1: the draft contract in the runtime, the Qwen block's
-tensors moving into a `DraftBlock`, the 65-layout session, and the CPU
-reference against a pinned trace.
+driver were read (the oracle fact is in the theme section). MODL-18
+session 1 is in progress: the dense Qwen35 MTP graph and the `draft-mtp`
+driver are read and their facts recorded with provenance in
+[speculative-decoding.md](docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18)
+(one correction: the block's `h` input is the target's post-`output_norm`
+hidden, not the pre-norm residual); `Binding.draft: ?DraftBlock` binds the
+15 tensors on the 65-block file and is null on Bonsai; the CPU runtime
+keeps the last token's `h`. Remaining: `runtime/draft.zig`'s contract, the
+Qwen `Drafter` (`propose`/`commit`), the 65-layout session, `Engine.open`'s
+`DraftRequest`, and the pinned reference MTP trace.
 
 Order: MODL-18 → ENGN-12 → MODL-19 → MODL-20. After MODL-20 the roadmap
 continues with the performance follow-ups, then vision, then agent
@@ -143,6 +149,20 @@ are recorded per family.
 
 ## MODL-18 — Qwen3.8 draft head: the embedded prediction block
 
+**Progress (2026-09-19, session 1 partial).** The reference's dense MTP
+graph and driver were read and the facts recorded with provenance in
+[speculative-decoding.md](docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18);
+`Binding.draft: ?DraftBlock` now binds the 15 tensors on the 65-block file
+(null on Bonsai) and the CPU runtime keeps the last token's `h`
+(`self.h`, post-`output_norm`). Still to do in this session: the contract
+in `runtime/draft.zig`, the `Drafter` on the Qwen runtime (`propose` over
+the block, `commit` over accepted tokens), the 65-layout session, the
+`Engine.open` `DraftRequest`, and the pinned reference MTP trace/fixture.
+The trace is the open risk: `llama-completion` in the pin does not accept
+`--spec-type`; `llama-speculative-simple` was built and accepts it, or the
+`reference-generation.cpp` harness can be extended to a
+`LLAMA_CONTEXT_TYPE_MTP` context and dump `h_nextn`/`result_output`.
+
 **Facts read on 2026-09-19** (from `inference/src/models/fixtures/qwen35-27b.json`
 and `scripts/gguf-inventory.py` on the separate head; to be confirmed
 from the reference's graph in session 1 and recorded in
@@ -196,11 +216,13 @@ from the reference's graph in session 1 and recorded in
 - `qwen35.zig`: the block's tensors move from "validated, excluded" to a
   `Binding.draft: ?DraftBlock` (the 15 tensors); the text binding is
   unchanged. `qwen35_runtime.zig`: the session's layouts gain one
-  attention layout for the block (`Session.init` on 65 layouts when the
-  drafter is requested); `step`/the prefill path keep the pre-norm
-  residual of the last token (`h`, the input of the `norm` before
-  `self.mm(self.binding.output, …)` around line 200) and, for a batch,
-  every row's `h`; `Drafter.propose` runs the block for one position at
+  attention layout for the block (  `Session.init` on 65 layouts when the
+  drafter is requested); `step`/the prefill path keep the target hidden
+  of the last token (`h` = `self.normalized` after the `output_norm`
+  before `self.mm(self.binding.output, …)`, confirmed from the
+  reference's `t_h_nextn`; the block applies its own `hnorm` on top,
+  [speculative-decoding.md](docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18))
+  and, for a batch, every row's `h`; `Drafter.propose` runs the block for one position at
   a time, chained as the reference does; `commit` runs the block over
   the accepted tokens with their `h` rows to fill its cache (the same
   forward, logits discarded). Tests: the block on the CPU against a

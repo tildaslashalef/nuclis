@@ -41,6 +41,19 @@ pub const Layer = struct {
     mixer: union(enum) { full_attention: FullAttention, delta_net: DeltaNet },
 };
 
+/// The `blk.64` prediction head: the four `nextn` tensors plus one dense
+/// full-attention decoder layer of the main shape. Bound only when the file
+/// declares the 65th block; the text schedule never references it. The head
+/// shares `token_embd` and `output` with the text binding
+/// (docs/reference/speculative-decoding.md § The Qwen3.8 draft head).
+pub const DraftBlock = struct {
+    eh_proj: *const Tensor,
+    enorm: *const Tensor,
+    hnorm: *const Tensor,
+    shared_head_norm: *const Tensor,
+    layer: Layer,
+};
+
 /// The `general.architecture` id this adapter binds.
 pub const architecture = "qwen35";
 
@@ -101,6 +114,9 @@ pub const Binding = struct {
     summary: Summary,
     /// Present on a rotated (Bonsai) file; the runtimes must apply it.
     rotation: ?Rotation = null,
+    /// The embedded prediction head, present on the Qwen3.8 release (65
+    /// blocks) and absent from the Bonsai re-encoding.
+    draft: ?DraftBlock = null,
 };
 
 /// The registry's shared binding error set; this adapter returns all of it.
@@ -423,14 +439,18 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     const text_tensors = binder.tensors;
     const text_bytes = binder.bytes;
 
-    // The auxiliary block is validated but excluded from the text binding.
-    // It always uses full attention, regardless of the main schedule's modulo.
+    // The auxiliary block is bound separately, never in `layers`, so the text
+    // schedule stays 64 layers. It always uses full attention, regardless of
+    // the main schedule's modulo.
+    result.draft = null;
     if (auxiliary) {
-        _ = try binder.layer(64, true);
-        _ = try binder.weight(64, "nextn.eh_proj.weight", &.{ 10240, 5120 }, .matrix);
-        _ = try binder.weight(64, "nextn.enorm.weight", &.{5120}, .f32);
-        _ = try binder.weight(64, "nextn.hnorm.weight", &.{5120}, .f32);
-        _ = try binder.weight(64, "nextn.shared_head_norm.weight", &.{5120}, .f32);
+        result.draft = .{
+            .eh_proj = try binder.weight(64, "nextn.eh_proj.weight", &.{ 10240, 5120 }, .matrix),
+            .enorm = try binder.weight(64, "nextn.enorm.weight", &.{5120}, .f32),
+            .hnorm = try binder.weight(64, "nextn.hnorm.weight", &.{5120}, .f32),
+            .shared_head_norm = try binder.weight(64, "nextn.shared_head_norm.weight", &.{5120}, .f32),
+            .layer = try binder.layer(64, true),
+        };
     }
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
     result.summary = .{
@@ -599,6 +619,26 @@ test "the plain Qwen file carries no rotation and one auxiliary layer" {
     try std.testing.expectEqual(@as(u32, 1), model.summary.auxiliary_prediction_layers);
 }
 
+test "the prediction head binds its fifteen tensors with the main shapes" {
+    var doc = try fixture();
+    defer doc.deinit();
+    const model = try bind(std.testing.allocator, &doc);
+    const draft = model.draft.?;
+    try std.testing.expect(draft.eh_proj == tensorEntry(&doc, "blk.64.nextn.eh_proj.weight"));
+    try std.testing.expect(draft.enorm == tensorEntry(&doc, "blk.64.nextn.enorm.weight"));
+    try std.testing.expect(draft.hnorm == tensorEntry(&doc, "blk.64.nextn.hnorm.weight"));
+    try std.testing.expect(draft.shared_head_norm == tensorEntry(&doc, "blk.64.nextn.shared_head_norm.weight"));
+    try std.testing.expectEqualSlices(u64, &.{ 10240, 5120 }, draft.eh_proj.dimensions);
+    const attention = draft.layer.mixer.full_attention;
+    try std.testing.expectEqualSlices(u64, &.{ 5120, 12288 }, attention.query_and_gate.dimensions);
+    try std.testing.expectEqualSlices(u64, &.{ 5120, 17408 }, draft.layer.ffn_gate.dimensions);
+    // The block's key and value are Q8_0 on the pinned file, an encoding the
+    // profile already executes.
+    try std.testing.expectEqual(@as(u32, 8), attention.key.encoding_id);
+    try std.testing.expectEqual(@as(u32, 8), attention.value.encoding_id);
+    try std.testing.expectEqual(@as(u64, 10240), draft.eh_proj.dimensions[0]);
+}
+
 test "bind the Bonsai inventory: 64 blocks, ternary and BF16 matrices, the pinned rotation" {
     var doc = try bonsaiInventoryDocument(std.testing.allocator);
     defer doc.deinit();
@@ -607,6 +647,7 @@ test "bind the Bonsai inventory: 64 blocks, ternary and BF16 matrices, the pinne
     try std.testing.expectEqual(@as(u32, 0), model.summary.auxiliary_tensors);
     try std.testing.expectEqual(@as(u32, 0), model.summary.auxiliary_prediction_layers);
     try std.testing.expectEqual(@as(u64, 7_195_047_936), model.summary.text_tensor_bytes);
+    try std.testing.expect(model.draft == null);
     try std.testing.expectEqual(@as(u32, 142), model.output.encoding_id);
     try std.testing.expectEqual(@as(u32, 30), model.layers[0].mixer.delta_net.alpha.encoding_id);
     try std.testing.expect(model.summary.rotated_basis != null);

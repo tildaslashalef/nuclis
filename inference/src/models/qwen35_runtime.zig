@@ -50,6 +50,9 @@ pub const Runtime = struct {
     output_norm: []f32,
     x: []f32,
     normalized: []f32,
+    /// The last token's hidden after `output_norm`, the input to the output
+    /// head: the prediction block's `h` input and a draft `commit`'s row.
+    h: []f32,
     projected: []f32,
     gate: []f32,
     up: []f32,
@@ -82,7 +85,7 @@ pub const Runtime = struct {
         // Finish allocations before transferring the arena, whose internal
         // linked-list head can change on each allocation.
         var result: Runtime = undefined;
-        inline for (.{ "x", "normalized", "projected" }) |field| @field(result, field) = try a.alloc(f32, 5120);
+        inline for (.{ "x", "normalized", "projected", "h" }) |field| @field(result, field) = try a.alloc(f32, 5120);
         inline for (.{ "gate", "up", "row" }) |field| @field(result, field) = try a.alloc(f32, 17408);
         result.qg = try a.alloc(f32, 12288);
         result.q = try a.alloc(f32, 6144);
@@ -197,9 +200,11 @@ pub const Runtime = struct {
                 if (o.layer) |report| try report(o.context, il, self.x);
             }
         }
+        // `h` is the prediction block's hidden input, so it is kept on every
+        // token, not only where logits are read.
+        try norm(self.x, self.h, self.output_norm);
         if (logits) |out| {
-            try norm(self.x, self.normalized, self.output_norm);
-            try self.mm(self.binding.output, try self.rotate(self.normalized), out);
+            try self.mm(self.binding.output, try self.rotate(self.h), out);
             for (out) |x| if (!std.math.isFinite(x)) return error.NonFiniteResult;
         }
         try self.state.commit();
