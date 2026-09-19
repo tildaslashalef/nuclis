@@ -1,10 +1,12 @@
-//! Native qwen35 text encoding, composing special-token partitioning, Unicode
-//! splitting, and byte-level BPE. The immutable Vocabulary must outlive Encoder.
-//! No model-layer schedule, conversation format, or implicit BOS/EOS policy.
+//! Native text encoding, composing special-token partitioning, the splitter
+//! the vocabulary's `pre` label selects, and BPE. The immutable Vocabulary
+//! must outlive Encoder. No model-layer schedule, conversation format, or
+//! implicit BOS/EOS policy.
 const std = @import("std");
 const vocabulary = @import("vocabulary.zig");
 const bpe = @import("bpe.zig");
 pub const pre = @import("pre.zig");
+pub const gpt4o = @import("gpt4o.zig");
 pub const Limits = struct {
     input_bytes: usize = 1024 * 1024,
     output_tokens: usize = 1024 * 1024,
@@ -15,19 +17,27 @@ pub const Limits = struct {
 };
 pub const Error = bpe.Error || error{ UnsupportedPreTokenizer, InvalidUtf8 };
 
+/// The splitters, keyed by the `pre` labels the encoder accepts: byte-level
+/// `qwen35` and `llama4` (gpt4o.zig), and Gemma's SPM-style `gemma4`.
+pub const Splitter = enum { qwen35, gpt4o, spm };
+
 pub const Encoder = struct {
     vocab: *const vocabulary.Vocabulary,
     special_ids: []u32,
     allocator: std.mem.Allocator,
-    /// SPM-style vocabulary (`pre == "gemma4"`): `encodeSpm` replaces the
-    /// qwen35 splitter and byte-level pieces.
-    spm: bool,
+    splitter: Splitter,
 
     /// Owns only the special-ID index. At most 4,096 markers, each at most 256
     /// bytes, are accepted. These are operational bounds, not model semantics.
     pub fn init(alloc: std.mem.Allocator, vocab: *const vocabulary.Vocabulary) Error!Encoder {
-        const spm = std.mem.eql(u8, vocab.pre, "gemma4");
-        if (!spm and !std.mem.eql(u8, vocab.pre, "qwen35")) return error.UnsupportedPreTokenizer;
+        const splitter: Splitter = if (std.mem.eql(u8, vocab.pre, "qwen35"))
+            .qwen35
+        else if (std.mem.eql(u8, vocab.pre, "llama4"))
+            .gpt4o
+        else if (std.mem.eql(u8, vocab.pre, "gemma4"))
+            .spm
+        else
+            return error.UnsupportedPreTokenizer;
         var ids: std.ArrayList(u32) = .empty;
         errdefer ids.deinit(alloc);
         for (vocab.tokens, 0..) |token, id| {
@@ -46,7 +56,19 @@ pub const Encoder = struct {
                 return if (x != y) x > y else a < b;
             }
         }.less);
-        return .{ .vocab = vocab, .special_ids = try ids.toOwnedSlice(alloc), .allocator = alloc, .spm = spm };
+        return .{ .vocab = vocab, .special_ids = try ids.toOwnedSlice(alloc), .allocator = alloc, .splitter = splitter };
+    }
+
+    /// Byte-level pieces: `Splitter` is a pre.zig-style iterator over the fragment.
+    fn encodePieces(self: *const Encoder, comptime Iterator: type, alloc: std.mem.Allocator, fragment: []const u8, output: *std.ArrayList(u32), limits: Limits, work: *usize) Error!void {
+        var it = try Iterator.init(fragment);
+        while (it.next()) |piece| {
+            var piece_limits = limits.piece;
+            piece_limits.output_tokens = @min(piece_limits.output_tokens, limits.output_tokens - output.items.len);
+            const ids = try bpe.encodePieceBudget(alloc, self.vocab, piece, piece_limits, work);
+            defer alloc.free(ids);
+            try output.appendSlice(alloc, ids);
+        }
     }
 
     /// Gemma 4's pre-tokenizer (`[^\n]+|[\n]+`; docs/reference/gemma4.md
@@ -145,17 +167,10 @@ pub const Encoder = struct {
             } else {
                 const start = pos;
                 while (pos < text.len and marks[pos] == null) : (pos += 1) {}
-                if (self.spm) {
-                    try self.encodeSpm(alloc, text[start..pos], &output, limits, &work);
-                    continue;
-                }
-                var it = try pre.Iterator.init(text[start..pos]);
-                while (it.next()) |piece| {
-                    var piece_limits = limits.piece;
-                    piece_limits.output_tokens = @min(piece_limits.output_tokens, limits.output_tokens - output.items.len);
-                    const ids = try bpe.encodePieceBudget(alloc, self.vocab, piece, piece_limits, &work);
-                    defer alloc.free(ids);
-                    try output.appendSlice(alloc, ids);
+                switch (self.splitter) {
+                    .spm => try self.encodeSpm(alloc, text[start..pos], &output, limits, &work),
+                    .qwen35 => try self.encodePieces(pre.Iterator, alloc, text[start..pos], &output, limits, &work),
+                    .gpt4o => try self.encodePieces(gpt4o.Iterator, alloc, text[start..pos], &output, limits, &work),
                 }
             }
         }
@@ -170,6 +185,7 @@ fn spend(work: *usize, amount: usize) Error!void {
 
 test {
     _ = pre;
+    _ = gpt4o;
 }
 
 fn fixture() !vocabulary.Vocabulary {
@@ -232,6 +248,17 @@ test "full encoding bounds input, output, and aggregate work across pieces" {
     try std.testing.expectEqual(@as(usize, 0), empty.len);
     vocab.pre = "gpt2";
     try std.testing.expectError(error.UnsupportedPreTokenizer, Encoder.init(std.testing.allocator, &vocab));
+}
+
+test "the pre label selects the splitter: llama4 keeps digit runs together" {
+    var vocab = try fixture();
+    defer vocab.deinit();
+    vocab.pre = "llama4";
+    var encoder = try Encoder.init(std.testing.allocator, &vocab);
+    defer encoder.deinit();
+    const ids = try encoder.encode(std.testing.allocator, "ab12ab<x>", true, .{});
+    defer std.testing.allocator.free(ids);
+    try std.testing.expectEqualSlices(u32, &.{ 2, 5, 2, 10 }, ids);
 }
 
 fn allocationCheck(alloc: std.mem.Allocator, vocab: *const vocabulary.Vocabulary) !void {

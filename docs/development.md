@@ -96,8 +96,8 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   entry, whose Q4_0 path amplifies the chunk rounding, `-26b-a4b-metal` on
   the expert entry, whose routing amplifies it further, and
   `test-generation-gemma4` is the CPU run at ~35 s per token) with it; `make test-vocabulary` on either
-  pinned file (`MODEL=<gemma path>`) when the tokenizer or a profile
-  fixture changed, and `make baseline-gemma4-qat` for the Gemma acceptance
+  pinned Gemma file and on the Muse Glimmer file (`MODEL=<path>`) when the
+  tokenizer or a profile fixture changed, and `make baseline-gemma4-qat` for the Gemma acceptance
   workload on the QAT entry
   ([bench.md](reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12);
   `baseline-gemma4` for the K-quant entry's, `baseline-gemma4-26b-a4b` for

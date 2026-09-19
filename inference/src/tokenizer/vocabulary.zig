@@ -105,6 +105,11 @@ pub fn load(gpa: std.mem.Allocator, doc: gguf.Document, directory: []const u8, l
         entry.value_ptr.* = @intCast(id);
         token.* = .{ .text = owned, .kind = kind };
     }
+    // The reference re-types these spellings as user-defined in every
+    // vocabulary, so they match in plain text even with parse_special off.
+    for ([_][]const u8{ "<|start|>", "<|message|>", "<|channel|>", "<|constrain|>" }) |text| {
+        if (ids.get(text)) |id| tokens[id].kind = .user_defined;
+    }
     var rank: u32 = 0;
     while (try merge_reader.nextString()) |text| : (rank += 1) {
         const space = std.mem.indexOfScalar(u8, text, ' ') orelse return error.InvalidMerge;
@@ -218,6 +223,16 @@ test "vocabulary owns text and retains IDs, types, and ordered merge ranks" {
     try std.testing.expectEqualStrings("qwen35", vocab.pre);
     try std.testing.expectEqual(@as(?u32, 3), vocab.eos);
     try std.testing.expectEqual(@as(?u32, null), vocab.bos);
+}
+
+test "vocabulary re-types the reference's always-rendered markers as user-defined" {
+    var bytes = try fixture(.{ .words = &.{ "a", "<|start|>", "<|message|>", "<end>" }, .kinds = &.{ 1, 3, 3, 3 } });
+    defer bytes.deinit();
+    var vocab = try loadFixture(std.testing.allocator, bytes.written(), .{});
+    defer vocab.deinit();
+    try std.testing.expectEqual(TokenType.user_defined, vocab.tokens[1].kind);
+    try std.testing.expectEqual(TokenType.user_defined, vocab.tokens[2].kind);
+    try std.testing.expectEqual(TokenType.control, vocab.tokens[3].kind);
 }
 
 test "vocabulary rejects unsupported storage and malformed entries" {

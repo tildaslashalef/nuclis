@@ -1,12 +1,14 @@
-# Native qwen35 tokenizer
+# Native tokenizer
 
 The library exposes `vocabulary.load(allocator, document, directory, limits)` in
 [vocabulary.zig](../../inference/src/tokenizer/vocabulary.zig). This implements
 owned GPT-2-family vocabulary storage. The library also exposes `bpe.encodePiece`
 and `bpe.decode` in [bpe.zig](../../inference/src/tokenizer/bpe.zig), composed
-by `tokenizer.Encoder` for full qwen35 text encoding. The explicit artifact check
-matches all [prompt/token fixtures](prompt-profile.md). CLI generation and
-automatic tokenizer/profile selection are still pending.
+by `tokenizer.Encoder` with the splitter the vocabulary's `pre` label selects:
+`qwen35` ([pre.zig](../../inference/src/tokenizer/pre.zig)), `llama4`
+([gpt4o.zig](../../inference/src/tokenizer/gpt4o.zig), Muse Glimmer), and
+Gemma 4's SPM-style `gemma4` ([gemma4.md § Tokenizer](gemma4.md#tokenizer)).
+The explicit artifact check matches all [prompt/token fixtures](prompt-profile.md).
 
 ## Input and ownership
 
@@ -39,8 +41,13 @@ parts correspond to available pieces.
 
 BOS, EOS, and padding IDs are optional; present IDs must be unsigned and inside
 the vocabulary. Token kinds preserve normal, unknown, control, user-defined,
-unused, and byte categories. Additional tokenizer options and special-ID metadata
-are not interpreted yet; successful loading does not establish full compatibility.
+unused, and byte categories, with one override the reference applies to every
+vocabulary at load: the spellings `<|start|>`, `<|message|>`, `<|channel|>`,
+and `<|constrain|>` become user-defined, so the encoder matches them in plain
+text even with `parse_special=false` (Muse Glimmer carries the first two; the
+Qwen and Gemma vocabularies carry none). Additional tokenizer options and
+special-ID metadata are not interpreted yet; successful loading does not
+establish full compatibility.
 
 Defaults allow one million tokens and merges each, 64 MiB of copied token/merge
 text, and the GGUF defaults of a 64 MiB directory and 1 MiB individual strings.
@@ -50,14 +57,15 @@ failures return typed errors and release partially initialized state.
 
 ## Full text encoding
 
-`tokenizer.Encoder.init(allocator, &vocabulary)` accepts only `pre=qwen35` and
+`tokenizer.Encoder.init(allocator, &vocabulary)` accepts `pre` = `qwen35`,
+`llama4`, or `gemma4` (any other label is `UnsupportedPreTokenizer`) and
 owns a sorted special-ID index. The borrowed immutable vocabulary must outlive
 the encoder. Call `deinit` once. Initialization accepts at most 4,096 special
 markers, each between 1 and 256 bytes.
 
 `encoder.encode(allocator, text, parse_special, limits)` returns owned token IDs.
 It validates UTF-8, partitions special markers, splits remaining text with the
-qwen35 Unicode rules, then runs BPE separately on each piece. It never adds
+selected splitter's rules, then runs BPE separately on each piece. It never adds
 BOS/EOS; its policy corresponds to the fixtures' `add_special=false`.
 
 Control and unknown markers are recognized only with `parse_special=true`.
@@ -67,11 +75,23 @@ use token-ID order. Previously claimed spans cannot be split by later markers.
 This precedence differs from simply choosing the first marker found left to
 right. The decoder's supported kinds remain separately documented below.
 
-The allocation-free Unicode iterator uses ordered alternatives for contractions,
+The allocation-free `qwen35` iterator uses ordered alternatives for contractions,
 letter/combining-mark runs with an optional prefix, individual Unicode numbers,
 punctuation with trailing CR/LF, and whitespace. It preserves all source bytes;
 there is no Unicode normalization. Whitespace backtracking can leave one space
 attached to a following word. Returned pieces borrow their input fragment.
+
+The `llama4` iterator (the gpt-4o pattern the reference assigns to that
+label) differs in four places: the contraction is a suffix of the word
+(`don't` is one piece), letter runs are cut at a case seam, numbers go in
+runs of up to three, and a punctuation run also absorbs trailing `/`. The
+case seam is the reference's, not Unicode's: it folds every letter class to
+one and rewrites uppercase as "letter that is not ASCII a–z" and lowercase as
+"letter that is not ASCII A–Z", so `HelloWORLD` splits into `Hello` and
+`WORLD` but `ABCÀÉ` stays whole and `ÀBC` splits into `À` and `BC`; combining
+marks are not letters here (`e\u0301` is `e` then `\u0301`). The rules and
+their evidence are in [muse-glimmer.md § Tokenizer](muse-glimmer.md#tokenizer).
+No table change was needed: the seam only reads ASCII case.
 
 Category data comes from pinned llama.cpp `unicode-data.cpp`, not the host's
 Unicode library. The compact checked-in table contains 1,921 five-byte range
@@ -150,11 +170,14 @@ all 256 bytes, partial UTF-8, ranks versus longest match, leftmost ties, changin
 neighbors, exact work limits, decoding policy, and allocation failures. Unicode/encoder tests add
 combining marks, supplementary categories, contractions, whitespace backtracking,
 marker precedence, cross-piece merge prevention, shared budgets, and cleanup. No model or GPU
-is required. An explicit check uses the external pinned artifact:
+is required. An explicit check uses an external pinned artifact, selecting
+its expectations and fixture by the file's template digest (through the
+profile when one exists; Muse Glimmer's digest is matched directly until
+its profile lands):
 
 ```sh
 zig build test-vocabulary --global-cache-dir .zig-cache/global -- \
-  "$HOME/.nuclis/models/qwen/Qwen3.8-27B-UD-Q4_K_M.gguf"
+  "$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf"
 ```
 
 The inference package also exposes `test-vocabulary` independently. The helper

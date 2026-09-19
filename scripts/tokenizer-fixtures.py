@@ -68,6 +68,19 @@ PROFILES = {
         "preserve_thinking": False,
         "marker_text": "<|turn>model\n<|channel>thought\n<channel|>Hi<turn|>",
     },
+    "muse_glimmer": {
+        "model_sha256": "82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38",
+        "model_size": 15878222368,
+        "template_sha256": "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e",
+        # Four reasoning strengths and no off: the template takes
+        # `reasoning_strength` as a system-prompt line. Conversations without
+        # a system message get the template's synthesized one, whose date line
+        # the server fills from its clock (`strftime_now`) on capture day.
+        "efforts": ("low", "medium", "high", "xhigh"),
+        "kwargs": lambda effort: {"reasoning_strength": effort},
+        "preserve_thinking": True,
+        "marker_text": "<|start|>assistant to=self<|message|>Hi<|eom|><|start|>assistant to=user<|message|>Hello<|eot|>",
+    },
 }
 
 

@@ -183,7 +183,10 @@ and the same template.
 
 The committed fixtures
 ([qwen38-text.json](../../inference/src/profiles/fixtures/qwen38-text.json),
-[gemma4-text.json](../../inference/src/profiles/fixtures/gemma4-text.json))
+[gemma4-text.json](../../inference/src/profiles/fixtures/gemma4-text.json),
+[muse_glimmer-text.json](../../inference/src/profiles/fixtures/muse_glimmer-text.json),
+the last captured ahead of its profile for the tokenizer check and
+described in [muse-glimmer.md](muse-glimmer.md#chat-template))
 hold prompts the pinned reference server rendered from the artifact's own
 template for seven conversations (a single turn, a system message, later
 system/developer messages, assistant history with reasoning, two assistant
@@ -242,7 +245,7 @@ and does not affect `/apply-template`):
 In another terminal:
 
 ```sh
-python3 scripts/tokenizer-fixtures.py --profile gemma4   # or --profile qwen38
+python3 scripts/tokenizer-fixtures.py --profile gemma4   # or --profile qwen38, --profile muse_glimmer
 python3 scripts/profile-tools-fixtures.py --profile gemma4   # or --profile qwen38 (default)
 zig build test --global-cache-dir .zig-cache/global
 ```

@@ -16,16 +16,14 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-MODL-17 closed on 2026-09-18: `bonsai-2-27b` runs on the Metal plan
-(the transform on every rotated activation, the value-head regather for
-`ssm_out`), matches the fork's traces on every row, has its acceptance
-record against the fork's server (decode 13.9 → 10.2 tok/s over 512 →
-32K, 80–87 % of the fork, 1.3× Qwen3.8), its agent check, and moved to
-the PTQ1_0 file; the catalogue's profile is forced at open. The ternary
-matvec rate is the remaining gap (a roadmap kernel unit). Next is
-MODL-11, Muse Glimmer 30B: session 1 pulls the file, records the
-artifact facts, and brings up the `gpt4o` tokenizer splitter; session 2
-the adapter and CPU reference (design below).
+MODL-11 session 1 closed its scope on 2026-09-19: the Muse Glimmer file
+and its companions are pinned and verified, the pinned reference runs it,
+[docs/reference/muse-glimmer.md](docs/reference/muse-glimmer.md) records
+the facts with provenance, the `llama4` splitter (`tokenizer/gpt4o.zig`)
+matches the reference on the captured fixture (`test-vocabulary` passes
+on the file), and the inventory fixture is committed. Next is MODL-11
+session 2: the adapter, the CPU reference schedule, the `Hello,` traces,
+and `make compare-muse-glimmer-cpu` (design below).
 
 Order: MODL-11 → MODL-12 → MODL-13 → AGNT-10.
 After AGNT-10 the roadmap continues with speculative decoding across the
@@ -108,17 +106,28 @@ with provenance):
   `general.sampling.*` keys in the header. Reasoning strength
   low/medium/high/xhigh is a system-prompt line, not a template switch.
 
+**Session 1 delivered (2026-09-19).** Artifact and companions verified
+against the sidecars (already in artifacts.md); the reference runs the
+file (`llama-completion -ngl 99 -no-cnv`, then `--jinja --single-turn`);
+`docs/reference/muse-glimmer.md` (metadata, tensors, forward pass from
+the reference graph, tokenizer, template facts, oracle status);
+`inference/src/models/fixtures/muse-glimmer-30b.json`;
+`tokenizer/gpt4o.zig` selected by `encode.zig` for `pre == "llama4"`,
+with `pre.zig` exporting the shared `Char`/`charAt`; `vocabulary.zig`
+re-types `<|start|>`/`<|message|>` as user-defined like the reference;
+`vocabulary-check.zig` selects Muse by template digest (and accepts
+Gemma's two EOS ids, a latent mismatch on the QAT file);
+`scripts/tokenizer-fixtures.py --profile muse_glimmer` and
+`profiles/fixtures/muse_glimmer-text.json` (20 strings, 28 prompts, all
+matched). Findings that change the remaining design: the reference runs
+a *rewritten* gpt-4o regex through its collapsed generic path (case is
+ASCII-only, marks are not letters), so no Unicode table change was
+needed; the server's synthesized system turn carries a `Current date:`
+line (MODL-13's fixture test must account for it); the reference re-types
+the two channel markers as user-defined (matched with `parse_special`
+off).
+
 **Design.**
-- Session 1: pull the main file (`nuclis model pull unsloth/Muse-Glimmer-30B-GGUF --file …`),
-  record commit/size/digest and the companions' digests in
-  [artifacts.md](docs/reference/artifacts.md); confirm the reference runs
-  it (`llama-completion -ngl 99`, then `--jinja --single-turn`); write
-  `docs/reference/muse-glimmer.md` from the inventory. Tokenizer: a
-  `gpt4o` splitter beside `pre.zig` (the category table gains the
-  uppercase/lowercase letter bits it needs — `scripts/tokenizer-unicode.py`
-  regenerates `unicode-ranges.bin`), `encode.zig` selects it for
-  `pre == "llama4"`, `tokenizer-fixtures.py` captures the strings and
-  prompts, `vocabulary-check.zig` gains the expectations.
 - Session 2: `models/muse_glimmer.zig` (validation over a committed
   inventory fixture, binder, layer kinds), `muse_glimmer_runtime.zig`
   (CPU schedule: unweighted embedding norm, gated attention, sandwich

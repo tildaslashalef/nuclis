@@ -68,7 +68,17 @@ a Gemma key to it is not.
 values it accepts and `tokenizer/encode.zig` the splitters. A new model
 or `pre` value needs its own splitter and possibly its own merge alphabet
 (Gemma: SPM-style BPE over code points with U+2581 spaces and `<0xNN>`
-byte fallback, MODL-05). Check it against the reference server's `/tokenize`
+byte fallback, MODL-05; Muse: the `llama4` label, MODL-11). Read the
+regex the reference *runs* for the label, not the one the tokenizer
+declares: `llama-vocab.cpp` may substitute a rewritten form, and the
+generic path in `unicode.cpp` collapses every Unicode class it does not
+know into one, so `\p{Lu}` and `\p{Ll}` both mean "letter" there. `scripts/reference-split.cpp`, a harness linking the reference's
+`unicode.cpp` and printing `unicode_regex_split` pieces, settles
+boundaries that token ids cannot (BPE merges hide them); the splitter's
+unit tests pin those pieces.
+The artifact check (`inference/vocabulary-check.zig`) selects its
+expectations by template digest, so a family can have its tokenizer
+checked before its profile exists. Check it against the reference server's `/tokenize`
 on a dozen adversarial strings (newline runs, doubled spaces, CRLF, tabs,
 emoji, the chat markers inside text) before anything else, because the
 traces in step 4 need the ids. Note whether the reference forces BOS for

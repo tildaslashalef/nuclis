@@ -494,17 +494,19 @@ need no decoder. The conversation types
 profile-independent conversation validation, including tool-call/result
 correlation, are shared there too (AGNT-01 session 2).
 
-The tokenizer knows two vocabulary models: GPT-2
-byte-level BPE with the `qwen35` splitter, and Gemma 4's SPM-style BPE
-(newline-run splitter, U+2581 spaces, byte fallback; MODL-05) — a third
-`tokenizer.ggml.model` or `pre` needs its own splitter in
-`tokenizer/encode.zig`. The spec requires proving the seam with a small
+The tokenizer knows two vocabulary models and three splitters: GPT-2
+byte-level BPE with the `qwen35` splitter or the `llama4` one (the gpt-4o
+pattern as the reference realizes it, for Muse Glimmer; MODL-11), and Gemma
+4's SPM-style BPE (newline-run splitter, U+2581 spaces, byte fallback;
+MODL-05) — another `tokenizer.ggml.model` or `pre` needs its own splitter
+selected in `tokenizer/encode.zig`. The spec requires proving the seam with a small
 dense-attention test model before calling it stable; that is tracked in
 [../TODO.md](../TODO.md).
 
 **Dive deeper:** [spec.md § Interfaces and extension rules](spec.md#interfaces-and-extension-rules),
 [reference/qwen-validation.md](reference/qwen-validation.md), `models/qwen35.zig` (`bind`),
 [reference/gemma4.md](reference/gemma4.md) (the second architecture's facts, MODL-04–MODL-08),
+[reference/muse-glimmer.md](reference/muse-glimmer.md) (the third's facts and its `llama4` tokenizer, MODL-11),
 [reference/new-model-guide.md](reference/new-model-guide.md) (the order of work, validated while bringing up Gemma 4 12B),
 [reference/tool-calling.md](reference/tool-calling.md) (native tool formats and the planned seam).
 

@@ -1,4 +1,5 @@
-//! Allocation-free qwen35 pre-tokenization of validated UTF-8 text.
+//! Allocation-free qwen35 pre-tokenization of validated UTF-8 text, and the
+//! Unicode category table every splitter shares (gpt4o.zig is the second).
 //! Ordered alternatives match the pinned reference's custom splitter, including
 //! combining marks and whitespace backtracking. Splits borrow the input bytes.
 //! The splitting rules are those declared by the model's `qwen35` tokenizer;
@@ -17,26 +18,41 @@ fn flags(cp: u21) u8 {
     }
     return ranges[low * 5 + 4];
 }
-const Char = struct {
+
+/// One decoded character with its reference category bits; `len == 0` is the
+/// end of the text and belongs to no class.
+pub const Char = struct {
     cp: u21 = 0,
     len: usize = 0,
     bits: u8 = 0,
-    fn letter(self: Char) bool {
-        return self.bits & 0x14 != 0;
+    pub fn letter(self: Char) bool {
+        return self.bits & 4 != 0;
     }
-    fn number(self: Char) bool {
+    pub fn mark(self: Char) bool {
+        return self.bits & 0x10 != 0;
+    }
+    pub fn number(self: Char) bool {
         return self.bits & 2 != 0;
     }
-    fn space(self: Char) bool {
+    pub fn space(self: Char) bool {
         return self.bits & 0x20 != 0;
     }
-    fn newline(self: Char) bool {
+    pub fn newline(self: Char) bool {
         return self.cp == '\r' or self.cp == '\n';
     }
+    /// Neither letter, mark, number, nor whitespace: qwen35's punctuation class.
     fn punctuation(self: Char) bool {
         return self.len != 0 and self.bits == 0;
     }
 };
+
+/// Decodes the character at `offset` of already validated UTF-8.
+pub fn charAt(text: []const u8, offset: usize) Char {
+    if (offset == text.len) return .{};
+    const len = std.unicode.utf8ByteSequenceLength(text[offset]) catch unreachable;
+    const cp = std.unicode.utf8Decode(text[offset..][0..len]) catch unreachable;
+    return .{ .cp = cp, .len = len, .bits = flags(cp) };
+}
 
 pub const Iterator = struct {
     text: []const u8,
@@ -48,10 +64,7 @@ pub const Iterator = struct {
     }
 
     fn at(self: Iterator, offset: usize) Char {
-        if (offset == self.text.len) return .{};
-        const len = std.unicode.utf8ByteSequenceLength(self.text[offset]) catch unreachable;
-        const cp = std.unicode.utf8Decode(self.text[offset..][0..len]) catch unreachable;
-        return .{ .cp = cp, .len = len, .bits = flags(cp) };
+        return charAt(self.text, offset);
     }
 
     pub fn next(self: *Iterator) ?[]const u8 {
@@ -67,8 +80,9 @@ pub const Iterator = struct {
                     return self.finish(start, start + suffix.len);
             }
         }
-        if (!first.newline() and !first.number() and (first.letter() or second.letter())) {
-            while (self.at(end).letter()) end += self.at(end).len;
+        // The run class is letters and combining marks.
+        if (!first.newline() and !first.number() and (wordChar(first) or wordChar(second))) {
+            while (wordChar(self.at(end))) end += self.at(end).len;
             return self.finish(start, end);
         }
         if (first.number()) return self.finish(start, end);
@@ -93,6 +107,10 @@ pub const Iterator = struct {
         if (last_space > start and end < self.text.len) return self.finish(start, last_space);
         if (end > start) return self.finish(start, end);
         return self.finish(start, start + first.len);
+    }
+
+    fn wordChar(ch: Char) bool {
+        return ch.letter() or ch.mark();
     }
 
     fn finish(self: *Iterator, start: usize, end: usize) []const u8 {

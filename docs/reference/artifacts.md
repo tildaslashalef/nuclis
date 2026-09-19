@@ -75,7 +75,9 @@ expert layers run on both backends (MODL-09) and it has its own reference
 traces, acceptance record, and agent check (MODL-10;
 [bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 The Muse adapter is MODL-11, and until then `inspect` says *not runnable*
-for it. The Bonsai rows were read by `model inspect` on 2026-09-18 and the
+for it; the pinned reference loads and runs the file (2026-09-19), its
+tokenizer is native since the same day, and its facts are in
+[muse-glimmer.md](muse-glimmer.md). The Bonsai rows were read by `model inspect` on 2026-09-18 and the
 PQ2_0 file and its Q8_0 projector verified by the pull the same day;
 `bonsai-2-27b` entered the catalogue then: the file is Qwen3.8-27B's
 architecture with every matrix in Prism ML's ternary packings (ids 142
