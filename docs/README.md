@@ -10,7 +10,7 @@ agent.
 | Document | Purpose |
 | --- | --- |
 | [spec.md](spec.md) | **Authoritative spec.** Requirements, scope, and acceptance criteria |
-| [roadmap.md](roadmap.md) | Post-v0.1 designs (embedded agent, MTP, speculative decoding, Gemma 4) and the deferred list |
+| [roadmap.md](roadmap.md) | Accepted themes not yet planned (performance follow-ups, vision, agent expansion) and the deferred list |
 | [architecture.md](architecture.md) | **Start here.** The engine stack in ten short sections with diagrams |
 | [development.md](development.md) | Toolchain, build/test commands, user directories, versioning, conventions |
 | [llm-guide.md](llm-guide.md) | LLM and inference concepts, taught as they are implemented here |
@@ -35,6 +35,7 @@ Detailed engineering documents under [reference/](reference/):
 | [quantization.md](reference/quantization.md) | Row decoders, ownership, pinned numerical fixtures |
 | [qwen-validation.md](reference/qwen-validation.md) | Qwen profile constraints, weight bindings, validation evidence |
 | [reference-baseline.md](reference/reference-baseline.md) | Pinned llama.cpp baseline and comparison measurements |
+| [speculative-decoding.md](reference/speculative-decoding.md) | Speculative decoding: recovery and draft contracts, per-family draft sources, measurements |
 | [tokenizer.md](reference/tokenizer.md) | Native qwen35 encoding/decoding and vocabulary ownership |
 
 ## Decisions

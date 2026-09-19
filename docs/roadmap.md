@@ -10,178 +10,18 @@ boundary.
 Themes, in order (reordered 2026-09-17, once the third family was planned;
 the Bonsai 2 27B units — Qwen3.8-27B in Prism ML's ternary encoding, a
 new weight format on the existing adapter — closed on 2026-09-18, and the
-Muse Glimmer 30B units, MODL-11 to MODL-13 and AGNT-10, on 2026-09-19):
+Muse Glimmer 30B units, MODL-11 to MODL-13 and AGNT-10, on 2026-09-19).
+Speculative decoding across the families, the first theme of that order,
+moved into [../TODO.md](../TODO.md) on 2026-09-19 as ENGN-11, MODL-18,
+ENGN-12, MODL-19, and MODL-20; its accepted configuration lives in the
+[spec](spec.md#speculative-decoding). What remains here:
 
-1. **Speculative decoding across the families** — draft tokens from each
-   model's own draft source (Qwen's MTP head, Gemma's MTP companion, Muse's
-   DFlash drafter) verified by the main model under one recovery contract.
-2. **Performance follow-ups** — measured experiments on text generation,
+1. **Performance follow-ups** — measured experiments on text generation,
    not assumptions; text decoding and prefill are finished before vision
    starts.
-3. **Vision through the companion projectors** — one contract, three
+2. **Vision through the companion projectors** — one contract, three
    projectors, its own milestone.
-4. **Agent expansion** — HTTP serving on the closed agent loop.
-
-## Speculative decoding across the families
-
-A draft source proposes cheap tokens; speculative decoding is the protocol
-that verifies those drafts with the main model and commits only accepted
-state. The two are separable: the draft source is model-specific (an MTP
-head predicts the next few tokens from the main model's hidden state; a
-DFlash drafter is a small block-diffusion model that proposes a block at
-once), the verification and recovery protocol is not. Its gains complement
-kernel specialization but depend on acceptance rate, verification cost, and
-recovery cost; no speedup is assumed and each family is measured on its
-own. The spec lists MTP and speculation as
-[deferred from v0.1](spec.md#local-serving-and-deferred-work). Every family
-in the catalogue now has its draft companion pulled and pinned
-([reference/artifacts.md](reference/artifacts.md)); the `mtp` companion
-role names the draft source the unit loads, whatever its mechanism.
-
-The pinned main GGUF already contains 15 auxiliary prediction tensors (one
-block, 351,008,768 stored bytes), validated but not executed. The upstream
-[MTP directory](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/tree/main/MTP)
-also lists `mtp-Qwen3.8-27B-Q4_0.gguf` (1.37 GB as listed on 2026-09-08). The
-separate head is available locally under `~/.nuclis/models/qwen/`. Inspect its
-metadata and required shared tensors before deciding whether it is needed;
-prefer the existing embedded weights if their contract is sufficient. A
-separate file is not an implementation of MTP, and is not yet a dependency.
-
-### Speculative state recovery
-
-**Design.** Define checkpoint, verify, accept-prefix, and reject semantics for
-both attention and DeltaNet state. A checkpoint at the start of a speculative
-batch must cover recurrent matrices, convolution history, position, and any
-MTP state. Preserve committed attention rows; discard unaccepted appended row.
-Start with checkpoint/restore plus replay of the accepted prefix for
-correctness, then measure whether per-token recurrent checkpoints or another
-bounded recovery scheme are needed. GPU work must complete before restoring
-host-visible state. This extends the KV-cache checkpoint/restore contract
-across a draft batch.
-
-**Acceptance.** Reject at every possible draft position; subsequent state and
-logits match ordinary sequential execution within the documented backend
-contract. Test complete acceptance, immediate rejection, cancellation, errors,
-context boundaries, allocation failures, and independent sessions. Record peak
-memory and recovery cost at short and long context. Never rewind DeltaNet by
-truncating KV length alone.
-
-### MTP prediction reference and Metal execution
-
-**Design.** Inspect the embedded auxiliary block and establish its precise
-weight mapping, hidden-state inputs, token inputs, positional handling, and
-state layout from authoritative architecture sources and pinned reference
-traces. Implement the CPU reference first, with fixtures for each operation,
-then the Metal prediction path. Keep MTP architecture semantics in the Qwen
-adapter; expose draft candidates through a model-independent runtime contract
-that the Gemma companion head and the Muse drafter (below) implement in turn.
-Any external artifact becomes a pinned, explicitly requested dependency only
-if inspection proves the embedded weights insufficient (for Gemma 4 the
-companion file is the only source).
-
-**Acceptance.** CPU and GPU draft logits match the pinned reference with stated
-tolerances at several positions. Tests cover draft state reset and recovery.
-Record draft latency, extra memory, and acceptance statistics on fixed coding
-prompts. This unit alone does not claim speculative speedup.
-
-### Batched verification and speculative generation
-
-**Design.** Add a verification interface returning main-model logits for every
-draft position (chunked prefill currently needs only the final logits). Verify
-a small configurable draft batch using the existing chunked kernels. Start
-with greedy acceptance: accept the longest matching prefix, emit the main
-model's correction at the first mismatch, and restore/advance state according
-to the recovery design. Then implement sampled speculative acceptance with the
-appropriate rejection correction so the target distribution is preserved;
-identical seeded token streams are not a requirement for a sampler that
-consumes random draws differently.
-
-**Acceptance.** Greedy output matches ordinary decoding on pinned prompts;
-synthetic sampled tests verify the acceptance/correction distribution,
-including zero-probability and full-rejection cases. Test EOS, stop limits,
-partial batch acceptance, cancellation, and context capacity. Run `make check`
-and `make compare`, plus the Metal generation target. Benchmark ordinary versus
-speculative decode on identical artifacts, sampling options, prompts, and
-contexts, reporting draft length, acceptance rate, verification/recovery cost,
-memory, and end-to-end tok/s. Ship enabled by default only if measured gains
-justify it; record negative results.
-
-### Draft sources of the other families
-
-The draft contract becomes "draft candidates from a source the adapter
-chooses": Qwen3.8's embedded tensors (or its companion head), Gemma 4's
-companion head (`MTP/mtp-*.gguf`, the 12B and the 26B-A4B alike), and Muse
-Glimmer's `dflash-kquant.gguf`, whose facts (architecture, inputs, block
-size, how the reference drives it) are read from the file before the
-contract is declared shared — a block-diffusion drafter proposes several
-positions at once and may need a different acceptance loop than a
-next-token head. Each companion is a pinned, explicitly configured
-dependency (`models.<name>.mtp`), never an implicit download. Speculation
-ships enabled per family only where its measured acceptance rate pays for
-verification; negative results are recorded.
-
-### Configuration (accepted 2026-09-17)
-
-Three knobs, because they answer three different questions:
-
-- **The file**: `models.<name>.mtp` in `~/.nuclis/nuclis.json`, one draft
-  companion per registry entry (`config init` fills it from the
-  catalogue). Resolved and verified at load, never an implicit download; a
-  missing or mismatched file is a typed load error, not a silent fallback.
-  Loading the drafter is a load-time decision because its weights and the
-  checkpoint scratch of the recovery contract belong to the memory plan.
-- **The switch**: a generation setting, `generate.speculative` in the
-  configuration and `--speculative on|off` on `generate`, `agent`, and
-  `bench`, layered like `think` and sampling (defaults, then the entry,
-  then the flag). Per command rather than per load: it changes nothing in
-  the model's state layout, and `bench` must measure the same loaded model
-  both ways in one process, which is how a speedup claim is made. The
-  default is on only for a family whose measured acceptance rate pays;
-  the catalogue entry carries that verdict, not the user.
-- **The draft length** (positions proposed per step): a second generation
-  setting with a per-family default from the same measurement, capped by
-  a host constant. Its best value depends on the prompt mix, so it sits
-  beside the switch, not in the load plan.
-
-Not exposed: the acceptance rule (greedy or sampled follows from whether
-sampling is on) and the recovery scheme (an internal correctness contract).
-Engine seam: load options gain an optional draft-source path and the
-session its checkpoint scratch; the generation loop is what asks the
-drafter, so a drafter loaded but switched off costs memory only, as
-`think` already works for reasoning.
-
-**Where the detail goes.** Update the runtime, Metal, and generation reference
-documents, the benchmark records, the engineering log, and
-[llm-guide.md](llm-guide.md) as each concept is implemented.
-
-## Vision through the companion projectors
-
-Every catalogue entry carries its projector, pulled and pinned: Qwen3.8's
-`mmproj-BF16.gguf` (`clip`, `qwen3vl_merger`), the Gemma 4 12B and 26B-A4B
-`mmproj-BF16.gguf`, and Muse Glimmer's `mmproj-kquant.gguf`. Vision is its
-own milestone after text generation is finished and sped up; the agent gets
-no image tool in it.
-
-**Design.** Load `mmproj-*.gguf` as a second GGUF (its own architecture,
-validated separately), image preprocessing bounded by host constants, the
-vision encoder and projector on Metal, and image tokens spliced into the
-prompt by the model's profile: one loading and splicing contract, three
-projector architectures brought up in turn (Gemma first, whose text path
-is the most exercised). CLI: an image argument on `generate` and a chat
-attachment.
-
-**Acceptance.** Projector output vs a pinned reference trace per family; one
-end-to-end captioning fixture each; memory recorded.
-
-## Agent expansion
-
-The agent loop, tools, and tool-call handling are specified in
-[agent-spec.md](agent-spec.md) and closed for the current phase. The next
-expansion is HTTP serving with an
-[OpenAI-compatible chat-completions protocol](agent-spec.md#relationship-to-external-agent-products),
-under which the tool-call parser lands; it reuses the closed loop. Two
-decisions bound it: the profile owns tool syntax, and there is no permission
-system — supervision is visibility plus the workspace boundary.
+3. **Agent expansion** — HTTP serving on the closed agent loop.
 
 ## Performance follow-ups
 
@@ -270,6 +110,35 @@ the profile that motivated it.
   1.5) returns to the GPU sampling path. The 32K record measured the cost of
   the full readback it pays today at +20.7 ms/token
   ([bench.md](reference/bench.md)); a measured follow-up, not part of v0.1.
+
+## Vision through the companion projectors
+
+Every catalogue entry carries its projector, pulled and pinned: Qwen3.8's
+`mmproj-BF16.gguf` (`clip`, `qwen3vl_merger`), the Gemma 4 12B and 26B-A4B
+`mmproj-BF16.gguf`, and Muse Glimmer's `mmproj-kquant.gguf`. Vision is its
+own milestone after text generation is finished and sped up; the agent gets
+no image tool in it.
+
+**Design.** Load `mmproj-*.gguf` as a second GGUF (its own architecture,
+validated separately), image preprocessing bounded by host constants, the
+vision encoder and projector on Metal, and image tokens spliced into the
+prompt by the model's profile: one loading and splicing contract, three
+projector architectures brought up in turn (Gemma first, whose text path
+is the most exercised). CLI: an image argument on `generate` and a chat
+attachment.
+
+**Acceptance.** Projector output vs a pinned reference trace per family; one
+end-to-end captioning fixture each; memory recorded.
+
+## Agent expansion
+
+The agent loop, tools, and tool-call handling are specified in
+[agent-spec.md](agent-spec.md) and closed for the current phase. The next
+expansion is HTTP serving with an
+[OpenAI-compatible chat-completions protocol](agent-spec.md#relationship-to-external-agent-products),
+under which the tool-call parser lands; it reuses the closed loop. Two
+decisions bound it: the profile owns tool syntax, and there is no permission
+system — supervision is visibility plus the workspace boundary.
 
 ## Also deferred
 
