@@ -250,11 +250,48 @@ prompt 87.9 tok/s over 64 tokens, generation 14.5 tok/s (68.9 ms per
 token). The server (`llama-server --ctx-size 2048 --parallel 1 --device
 MTL0 --n-gpu-layers 99`) is the fixture source.
 
+## CPU reference against the oracle (MODL-11, 2026-09-19)
+
+The adapter (`inference/src/models/muse_glimmer.zig`) pins every
+`muse-glimmer.*` key and the vocabulary size, binds the 731 tensors by
+name and shape (15,865,108,480 weight bytes), classifies layers by
+`kindOf` (`index % 4 == 3` is global), and rejects any other
+`muse-glimmer.*` key, missing or extra tensor, wrong shape, or
+non-executable encoding with a typed error; its tests bind the committed
+inventory and eighteen mutations of it. The CPU runtime
+(`muse_glimmer_runtime.zig`) executes the forward pass above with the
+shared primitives; the only addition to the CPU backend was an
+adjacent-pair mode on `cpu.rope` (`Pairing.adjacent`, the GGUF "normal"
+rope type; Qwen and Gemma rotate split-half). The Metal plan is a
+placeholder that fails at open (`MetalPlanUnavailable`) until MODL-12.
+
+The oracle traces are `tests/fixtures/muse-glimmer-hello-comma/`
+([provenance](../../tests/fixtures/provenance.md)): the pinned reference
+on `<|begin_of_text|>Hello,` (ids `[200000, 19873, 24]`; the harness
+tokenizes with special tokens parsed, so BOS is the text marker), Metal,
+F32 cache, one token per decode: 156 layer files (three positions × 52
+layers × 6,656 floats) and the 202,048 logits, greedy token 372.
+
+`make compare-muse-glimmer-cpu` (`nuclis generate --backend cpu
+--prompt-tokens …`, then `scripts/compare-generation.py` at the bring-up
+thresholds, max abs 2e-3 and relative RMS 1e-4 per file), 2026-09-19:
+
+| Rows | Max abs | Max relative RMS | Greedy |
+| --- | ---: | ---: | --- |
+| 157 files (156 layers + logits) | 1.53e-4 | 6.35e-7 | 372 on both sides, top-5 identical, reference margin 0.31 |
+
+The logits themselves differ by at most 6.0e-6 (relative RMS 4.2e-7).
+The whole run, three CPU tokens through 52 layers with F64 accumulation
+over the Q4_K/Q5_K weights, takes 1 min 41 s on the M4 Pro; the CPU path
+is the reference, not a way to run the model.
+
 ## Status
 
-Session 1 of MODL-11 (2026-09-19): artifact pinned and verified, facts
-recorded, the `llama4` splitter native and matched to the reference on
-the fixture, the inventory fixture committed. The adapter
-(`models/muse_glimmer.zig`), the CPU reference schedule, the `Hello,`
-traces, and `make compare-muse-glimmer-cpu` are session 2; `nuclis model
-inspect` still says *not runnable: no adapter*.
+MODL-11 closed on 2026-09-19: the artifact is pinned and verified, the
+facts recorded, the `llama4` splitter native and matched to the
+reference, the adapter binds the file (`nuclis model inspect` says
+*supported*), and the CPU reference matches the oracle traces at the
+bring-up thresholds with the same greedy token. The Metal plan is
+MODL-12 (its RoPE kernel needs the adjacent pairing, its attention the
+sigmoid gate epilogue and the 2048 window), the profile and the
+acceptance record MODL-13, tool calling AGNT-10.

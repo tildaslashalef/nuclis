@@ -138,7 +138,8 @@ pub const entries = [_]Entry{
     // Meta's dense agentic model. Its draft companion is a DFlash drafter,
     // not an MTP head; it takes the `mtp` role because that role means
     // "the draft source the speculative-decoding unit loads", whatever
-    // its mechanism (decided 2026-09-17). The profile arrives with MODL-13.
+    // its mechanism (decided 2026-09-17). The adapter binds it since
+    // MODL-11; the profile arrives with MODL-13.
     .{
         .name = "muse-glimmer-30b",
         .repo = "unsloth/Muse-Glimmer-30B-GGUF",

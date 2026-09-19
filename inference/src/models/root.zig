@@ -17,11 +17,14 @@ pub const qwen35_metal = @import("qwen35_metal.zig");
 pub const gemma4 = @import("gemma4.zig");
 pub const gemma4_runtime = @import("gemma4_runtime.zig");
 pub const gemma4_metal = @import("gemma4_metal.zig");
+pub const muse_glimmer = @import("muse_glimmer.zig");
+pub const muse_glimmer_runtime = @import("muse_glimmer_runtime.zig");
+pub const muse_glimmer_metal = @import("muse_glimmer_metal.zig");
 pub const inventory = @import("inventory.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
-pub const table = [_]type{ qwen35.family, gemma4.family };
+pub const table = [_]type{ qwen35.family, gemma4.family, muse_glimmer.family };
 
 pub const Registry = registry_module.Registry;
 pub const BindError = registry_module.BindError;
@@ -45,9 +48,22 @@ test "adapters are looked up by architecture id" {
     try std.testing.expectError(error.UnknownArchitecture, select("gemma3"));
     try std.testing.expect(registry.executableEncoding(.qwen35, 12) and !registry.executableEncoding(.qwen35, 2));
     try std.testing.expect(registry.executableEncoding(.gemma4, 2) and !registry.executableEncoding(.gemma4, 30));
-    try std.testing.expectEqual(2, known.len);
+    try std.testing.expectEqual(3, known.len);
     try std.testing.expectEqualStrings("qwen35", known[0]);
     try std.testing.expectEqualStrings("gemma4", known[1]);
+    try std.testing.expectEqualStrings("muse-glimmer", known[2]);
+    try std.testing.expectEqual(Adapter.@"muse-glimmer", try select("muse-glimmer"));
+    try std.testing.expect(registry.executableEncoding(.@"muse-glimmer", 13) and !registry.executableEncoding(.@"muse-glimmer", 30));
+}
+
+test "validate through the registry reaches the third family" {
+    var doc = try muse_glimmer.inventoryDocument(std.testing.allocator);
+    defer doc.deinit();
+    const summary = try registry.validate(.@"muse-glimmer", std.testing.allocator, &doc);
+    try std.testing.expectEqual(@as(u32, 52), summary.decoder_layers);
+    try std.testing.expectEqual(@as(u32, 731), summary.text_tensors);
+    try std.testing.expectEqualStrings("global_attention", summary.layer_kinds[1].kind);
+    try std.testing.expectError(error.UnsupportedArchitecture, registry.validate(.gemma4, std.testing.allocator, &doc));
 }
 
 test "validate through the registry is the adapter's binding summary" {
@@ -76,4 +92,7 @@ test {
     _ = gemma4;
     _ = gemma4_runtime;
     _ = gemma4_metal;
+    _ = muse_glimmer;
+    _ = muse_glimmer_runtime;
+    _ = muse_glimmer_metal;
 }

@@ -215,6 +215,19 @@ define compare_gemma4_run
 	  --max-absolute $(5) --max-relative-rms $(6) \
 	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("gemma4 $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
 endef
+MUSE_MODEL ?= $(HOME)/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf
+# $(1) label, $(2) backend flags, $(3) max absolute, $(4) max relative RMS per trace file.
+define compare_muse_glimmer_run
+	rm -rf "$(TRACE)-muse-glimmer-$(1)" && mkdir -p "$(TRACE)-muse-glimmer-$(1)"
+	$(BIN) generate $(2) --model "$(MUSE_MODEL)" --prompt-tokens tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json \
+	  --max-tokens 1 --ctx-size 8 --temperature 0 --logits "$(TRACE)-muse-glimmer-$(1)/logits.f32" --trace-dir "$(TRACE)-muse-glimmer-$(1)" $(ARGS) > /dev/null
+	python3 scripts/compare-generation.py "$(TRACE)-muse-glimmer-$(1)" tests/fixtures/muse-glimmer-hello-comma --positions 3 --embedding 6656 --layers 52 --vocab 202048 \
+	  --max-absolute $(3) --max-relative-rms $(4) \
+	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("muse-glimmer $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
+endef
+compare-muse-glimmer-cpu: metal ## The Muse Glimmer CPU reference vs its pinned llama.cpp traces (`<|begin_of_text|>Hello,`, three positions) at the bring-up thresholds (MODL-11, docs/reference/muse-glimmer.md)
+	$(call compare_muse_glimmer_run,cpu,--backend cpu,0.002,0.0001)
+
 compare-gemma4-26b-a4b: compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 ## gemma-4-26b-a4b (mixture of experts) vs its pinned traces: CPU reference, Metal F32 and F16 caches (MODL-09, docs/reference/gemma4.md)
 
 compare-gemma4-26b-a4b-cpu: metal ## The Gemma CPU reference on the 26B-A4B (expert) file vs its pinned traces at the bring-up thresholds

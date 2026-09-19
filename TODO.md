@@ -16,23 +16,22 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-MODL-11 session 1 closed its scope on 2026-09-19: the Muse Glimmer file
-and its companions are pinned and verified, the pinned reference runs it,
-[docs/reference/muse-glimmer.md](docs/reference/muse-glimmer.md) records
-the facts with provenance, the `llama4` splitter (`tokenizer/gpt4o.zig`)
-matches the reference on the captured fixture (`test-vocabulary` passes
-on the file), and the inventory fixture is committed. Next is MODL-11
-session 2: the adapter, the CPU reference schedule, the `Hello,` traces,
-and `make compare-muse-glimmer-cpu` (design below).
+MODL-11 closed on 2026-09-19: Muse Glimmer 30B is pinned, its facts are
+in [docs/reference/muse-glimmer.md](docs/reference/muse-glimmer.md), the
+`llama4` tokenizer is native and matched to the reference, the adapter
+binds the file (`inspect` says *supported*), and the CPU reference
+matches the pinned traces (157 files, max abs 1.5e-4, greedy 372). Next
+is MODL-12, the Metal plan (design below): the placeholder
+`muse_glimmer_metal.zig` fails at open until it lands, and the RoPE
+kernel needs the adjacent-pair mode the CPU reference gained.
 
-Order: MODL-11 → MODL-12 → MODL-13 → AGNT-10.
+Order: MODL-12 → MODL-13 → AGNT-10.
 After AGNT-10 the roadmap continues with speculative decoding across the
 families, then performance (the ternary matvec arithmetic among it), then
 vision ([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2 |
 | MODL-12 | Muse Glimmer 30B: Metal plan | 1 |
 | MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 1 |
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 1 |
@@ -60,96 +59,20 @@ files are quality upgrades to measure afterwards, not bring-up targets:
 check its encodings by `inspect` first), `Q8_0` 29.6 GB (too tight beside
 the cache and companions).
 
-Companions in the repository, sizes from the listing, digests to be read
-by `inspect` in MODL-11: `mmproj-kquant.gguf` 1,400,328,928 B,
+Companions in the repository, sizes from the listing (the pulled ones'
+digests are in artifacts.md): `mmproj-kquant.gguf` 1,400,328,928 B,
 `mmproj-Muse-Glimmer-30B-BF16.gguf` 3,849,173,728 B,
 `dflash-kquant.gguf` 1,631,205,312 B.
 
-## MODL-11 — Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference
-
-**Facts read so far** (to be re-read from the pulled file with
-`scripts/gguf-inventory.py` and recorded in `docs/reference/muse-glimmer.md`
-with provenance):
-- Dense causal transformer, 52 layers in a period-4 pattern
-  (`attention.sliding_window_pattern = 4`: layers 0,1,2 sliding, 3 global;
-  39 sliding + 13 global), window 2048, 32 query heads / 2 KV heads
-  (GQA 16:1), head 128 (`attn_q` 6656×4096, `attn_k`/`attn_v` 6656×256),
-  SwiGLU FFN 19968, vocabulary 202,048, embeddings untied (`output.weight`
-  separate).
-- RoPE θ 500,000 on sliding layers only; **NoPE on global layers**
-  (`layer_rope_theta` is 0 there); rope type NORM (adjacent pairs).
-- Per layer: `attn_norm`, `post_attention_norm`, `ffn_norm`,
-  `post_ffw_norm` (the post norms use eps **1e-8**, the pre norms
-  `rms_epsilon` 1e-5; the `weight + 1` is folded at conversion), per-head
-  `attn_q_norm`/`attn_k_norm` of size 128 (`qk_scale_factor` 3.87 is
-  folded into `attn_q_norm`; `attn_k_norm` is ones), and an **attention
-  output gate** `attn_gate` 6656×4096: `sigmoid(gate(x)) ⊙ attn_out`
-  before `attn_output`. Attention scale 1/√128.
-- The input embedding is RMS-normalized **without a weight** before layer
-  0; logits are scaled by `logit_scale` 0.196116 then soft-capped with
-  tanh at 20 (`final_logit_softcapping`).
-- Tokenizer: `tokenizer.ggml.model = gpt2`, `pre = llama4`, 439,802
-  merges, BOS `<|begin_of_text|>` 200000, EOS `<|end_of_text|>` 200001,
-  EOT `<|eot|>` 200008, `<|eom|>` 200007, `<|start|>` 200022,
-  `<|message|>` 200023, `add_bos_token` true; 2,048 special tokens
-  (200000–202047), most reserved. The `llama4` pre-type is the
-  **gpt-4o regex** in the reference (case-aware letter runs with
-  `\p{Lu}`/`\p{Ll}` classes and contractions, digits in runs of ≤3,
-  punctuation with `[\r\n/]*`), which our `qwen35` splitter does not
-  implement.
-- Template SHA-256 `114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e`
-  (7,167 bytes, no trailing newline): the ATEM protocol (see AGNT-10). It
-  differs from the Hub repository's `chat_template.jinja` (9,992 bytes,
-  which normalizes a "Reasoning effort" line in the system text); the
-  profile pins the GGUF digest as always.
-- Sampling from the card: temperature 1.0, top-p 0.95, top-k 64; no
-  `general.sampling.*` keys in the header. Reasoning strength
-  low/medium/high/xhigh is a system-prompt line, not a template switch.
-
-**Session 1 delivered (2026-09-19).** Artifact and companions verified
-against the sidecars (already in artifacts.md); the reference runs the
-file (`llama-completion -ngl 99 -no-cnv`, then `--jinja --single-turn`);
-`docs/reference/muse-glimmer.md` (metadata, tensors, forward pass from
-the reference graph, tokenizer, template facts, oracle status);
-`inference/src/models/fixtures/muse-glimmer-30b.json`;
-`tokenizer/gpt4o.zig` selected by `encode.zig` for `pre == "llama4"`,
-with `pre.zig` exporting the shared `Char`/`charAt`; `vocabulary.zig`
-re-types `<|start|>`/`<|message|>` as user-defined like the reference;
-`vocabulary-check.zig` selects Muse by template digest (and accepts
-Gemma's two EOS ids, a latent mismatch on the QAT file);
-`scripts/tokenizer-fixtures.py --profile muse_glimmer` and
-`profiles/fixtures/muse_glimmer-text.json` (20 strings, 28 prompts, all
-matched). Findings that change the remaining design: the reference runs
-a *rewritten* gpt-4o regex through its collapsed generic path (case is
-ASCII-only, marks are not letters), so no Unicode table change was
-needed; the server's synthesized system turn carries a `Current date:`
-line (MODL-13's fixture test must account for it); the reference re-types
-the two channel markers as user-defined (matched with `parse_special`
-off).
-
-**Design.**
-- Session 2: `models/muse_glimmer.zig` (validation over a committed
-  inventory fixture, binder, layer kinds), `muse_glimmer_runtime.zig`
-  (CPU schedule: unweighted embedding norm, gated attention, sandwich
-  norms with two epsilons, NoPE globals, sliding window as a cache-row
-  slice as Gemma does, logit scale + softcap), CPU primitives that are
-  new (a sigmoid-gate multiply if `cpu` lacks one; a weightless RMS norm),
-  the `<|begin_of_text|>Hello,` traces from the reference
-  (`tests/fixtures/muse-glimmer-hello-comma/`, three positions) and a
-  `make compare-muse-glimmer-cpu` at the bring-up thresholds (max abs
-  2e-3, relative RMS 1e-4).
-
-**Acceptance.** The file validates (731 tensors, 39 sliding + 13 global);
-the tokenizer matches the reference's `/tokenize` on the captured strings
-and prompts; the CPU reference matches the oracle traces at the thresholds
-with the same greedy token; `make check` and `test-metal` unchanged.
-
 ## MODL-12 — Muse Glimmer 30B: Metal plan
 
-**Design.** `muse_glimmer_metal.zig` composing existing kernels: Q4_K/Q5_K
-matvec and the batched prefill tiles, RMS norm (a weightless variant for
-the embedding norm, or a ones vector), RoPE NORM at θ 5e5 on sliding
-layers only, flash-decoding attention with head 128 and 2 KV heads, the
+**Design.** `muse_glimmer_metal.zig` (today a placeholder `Plan` whose
+`init` fails with `MetalPlanUnavailable`; replace it) composing existing
+kernels: Q4_K/Q5_K matvec and the batched prefill tiles, RMS norm (a
+weightless variant for the embedding norm, or a ones vector; the post
+norms at ε 1e-8, the rest at 1e-5), RoPE with **adjacent pairing** (the
+kernel today rotates split-half; add the mode `cpu.rope.Pairing.adjacent`
+has) at θ 5e5 on sliding layers only, flash-decoding attention with head 128 and 2 KV heads, the
 window mask on prefill and the cache-row slice on decode (window 2048),
 the sigmoid gate epilogue before the output projection (Qwen3.5's
 attention gate path is the nearest existing kernel), SwiGLU, the logit
@@ -158,7 +81,8 @@ sliding layers (the ring layout remains the roadmap follow-up; 1.7 GB at
 32K F16 is affordable).
 
 **Acceptance.** `make compare-muse-glimmer` (CPU, Metal F32, Metal F16 at
-their tolerances) on the pinned traces; `make test-generation-muse-glimmer-metal`;
+their tolerances; `compare-muse-glimmer-cpu` and its macro exist) on the
+pinned traces (`tests/fixtures/muse-glimmer-hello-comma`, three positions); `make test-generation-muse-glimmer-metal`;
 `make bench` on Qwen unchanged; a first decode/prefill number recorded.
 
 ## MODL-13 — Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance

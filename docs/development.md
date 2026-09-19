@@ -88,7 +88,10 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   fork's traces, the F16 row at the Qwen tolerance, `BONSAI_MODEL`;
   [bonsai.md](reference/bonsai.md)) when the ternary decoders, the
   transform, or the Qwen runtime or plan changed, `make
-  test-generation-bonsai-metal` with it, `make test-metal`
+  test-generation-bonsai-metal` with it, `make compare-muse-glimmer-cpu`
+  (the Muse Glimmer CPU reference against its traces, `MUSE_MODEL`;
+  [muse-glimmer.md](reference/muse-glimmer.md)) when the third adapter
+  or shared math changed, `make test-metal`
   (with `bench-kernels`, `bench-matmul`, and `bench-hadamard` for the
   numbers in metal-backend.md) when a kernel changed, and
   `make test-generation-gemma4-metal`

@@ -1,13 +1,24 @@
-//! Unscaled, split-half rotary position embedding for one attention head.
-//! Architecture-neutral: the caller supplies the rotary width, frequency base,
-//! and position. Model adapters own position streams and Q/K head traversal.
-//! No allocation or I/O. Exact alias is supported; partial overlap is forbidden.
+//! Unscaled rotary position embedding for one attention head, pairing the
+//! rotated dimensions split-half (NeoX) or adjacently (the GGUF "normal"
+//! mode). Architecture-neutral: the caller supplies the rotary width,
+//! frequency base, position, and pairing. Model adapters own position
+//! streams and Q/K head traversal. No allocation or I/O. Exact alias is
+//! supported; partial overlap is forbidden.
 const std = @import("std");
+
+/// Which two dimensions form rotation pair `i`.
+pub const Pairing = enum {
+    /// `(i, i + dimensions/2)`: NeoX, Qwen3.5, Gemma 4.
+    split_half,
+    /// `(2i, 2i + 1)`: the GGUF "normal" rope type (Muse Glimmer).
+    adjacent,
+};
 
 pub const Options = struct {
     dimensions: usize,
     base: f32,
     position: i32,
+    pairing: Pairing = .split_half,
     /// Per-pair frequency factors (`dimensions/2` of them): theta for pair i
     /// is divided by `factors[i]`. Null means all ones. Checkpoints use huge
     /// factors (1e30) to leave a pair unrotated; the angle then underflows
@@ -17,7 +28,7 @@ pub const Options = struct {
 pub const Error = error{ InvalidShape, InvalidFrequencyBase, NonFiniteInput };
 
 /// For pair i in the rotary prefix, theta = position * base^(-2*i/dimensions).
-/// Rotate (input[i], input[i+dimensions/2]) by theta; copy the tail unchanged.
+/// Rotate the pair's two dimensions (`Pairing`) by theta; copy the tail unchanged.
 /// All arithmetic is F64 before rounding outputs to F32. Finite input can still
 /// overflow F32 after rotation, producing infinity as in the matvec reference.
 /// Expected errors are validated before any output writes. Base must be >= 1.
@@ -42,11 +53,13 @@ pub fn apply(input: []const f32, output: []f32, options: Options) Error!void {
         const theta = @as(f64, @floatFromInt(options.position)) * std.math.pow(f64, options.base, exponent) / factor;
         const cosine = @cos(theta);
         const sine = @sin(theta);
+        const first = if (options.pairing == .adjacent) 2 * i else i;
+        const second = if (options.pairing == .adjacent) 2 * i + 1 else i + half;
         // Read both values before writing either, so exact alias is safe.
-        const a: f64 = input[i];
-        const b: f64 = input[i + half];
-        output[i] = @floatCast(a * cosine - b * sine);
-        output[i + half] = @floatCast(a * sine + b * cosine);
+        const a: f64 = input[first];
+        const b: f64 = input[second];
+        output[first] = @floatCast(a * cosine - b * sine);
+        output[second] = @floatCast(a * sine + b * cosine);
     }
     for (input[options.dimensions..], output[options.dimensions..]) |x, *y| y.* = x;
 }
@@ -60,6 +73,15 @@ test "RoPE split-half pairs, independent frequencies, and untouched tail" {
     try std.testing.expectEqual(@as(u32, 0x80000000), @as(u32, @bitCast(values[5])));
     try apply(&values, &values, .{ .dimensions = 4, .base = 100, .position = -2 });
     for (values[0..4], [_]f32{ 1, 2, 3, 4 }) |got, want| try std.testing.expectApproxEqAbs(want, got, 5e-7);
+}
+
+test "adjacent pairing rotates (2i, 2i+1) by the split-half angles" {
+    var adjacent = [_]f32{ 1, 2, 3, 4, 9 };
+    try apply(&adjacent, &adjacent, .{ .dimensions = 4, .base = 100, .position = 2, .pairing = .adjacent });
+    // The same angles over the permuted vector [1, 3, 2, 4] in split-half form.
+    var permuted = [_]f32{ 1, 3, 2, 4 };
+    try apply(&permuted, &permuted, .{ .dimensions = 4, .base = 100, .position = 2 });
+    try std.testing.expectEqualSlices(f32, &.{ permuted[0], permuted[2], permuted[1], permuted[3], 9 }, &adjacent);
 }
 
 test "RoPE frequency factors divide the angle; unit factors equal no factors; huge factors leave the pair in place" {

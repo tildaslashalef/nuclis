@@ -84,9 +84,9 @@ flowchart TB
         hf[Client: catalog, Xet transfer, atomic publish]
     end
     subgraph models [inference/src/models — adapters, one namespace per family in table]
-        bind[qwen35.zig / gemma4.zig: bind tensors, validate metadata]
-        rt[qwen35_runtime.zig / gemma4_runtime.zig: CPU schedule]
-        plan[qwen35_metal.zig / gemma4_metal.zig: GPU schedule]
+        bind[qwen35.zig / gemma4.zig / muse_glimmer.zig: bind tensors, validate metadata]
+        rt[qwen35_runtime.zig / gemma4_runtime.zig / muse_glimmer_runtime.zig: CPU schedule]
+        plan[qwen35_metal.zig / gemma4_metal.zig / muse_glimmer_metal.zig: GPU schedule]
     end
     subgraph shared [inference/src — model-agnostic]
         gguf[formats/gguf.zig]

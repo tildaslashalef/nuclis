@@ -81,6 +81,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-12 | An empty tool result no longer aborts the turn | 2026-09-18 |
 | APPS-12 | The default context window is 16K | 2026-09-18 |
 | TERM-09 | A step that answers and then calls a tool no longer holds the turn in the live region | 2026-09-18 |
+| MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2026-09-19 |
 
 ## Context
 
@@ -2514,3 +2515,70 @@ largest radius in it." (a 6-step turn whose second step answered and
 called `bash`).
 
 **Files.** `src/tui/transcript.zig`.
+
+### MODL-11 — Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference (2026-09-19)
+
+**Outcome.** The third architecture is bound and numerically matched on
+the CPU. Session 1: the pulled file and its two companions verified
+against their sidecars; the pinned llama.cpp reference rebuilt and shown
+to run the file (plain and `--jinja --single-turn`);
+`docs/reference/muse-glimmer.md` written from the inventory and the
+reference source (metadata, 731 tensors, the forward pass in equations,
+the tokenizer, the template facts); the inventory fixture committed; the
+`llama4` splitter (`tokenizer/gpt4o.zig`) written and selected by
+`encode.zig` from the vocabulary's `pre` label, with `pre.zig` exporting
+the shared character classes; the vocabulary loader re-typing
+`<|start|>`/`<|message|>` as user-defined like the reference;
+`vocabulary-check.zig` selecting the Muse expectations by template
+digest ahead of its profile (and accepting Gemma's two EOS ids, a latent
+mismatch that made the documented QAT invocation fail);
+`scripts/tokenizer-fixtures.py --profile muse_glimmer` and the captured
+`muse_glimmer-text.json`; `scripts/reference-split.cpp`, a harness
+printing the reference's own `unicode_regex_split` pieces. Session 2:
+`models/muse_glimmer.zig` (pinned keys, named binding, typed rejections
+over eighteen mutations of the inventory), `muse_glimmer_runtime.zig`
+(the CPU schedule: weightless embedding norm, gated attention, sandwich
+norms at two epsilons, NoPE globals, the 2048 window as a cache-row
+slice, logit scale and soft-cap), an adjacent-pair mode on `cpu.rope`,
+a placeholder Metal `Plan` that fails at open, the family in
+`models.table` (the adapter tag is `@"muse-glimmer"`), the oracle traces
+`tests/fixtures/muse-glimmer-hello-comma/`, and
+`make compare-muse-glimmer-cpu`; `nuclis model inspect` says *supported*.
+
+Findings that changed the design: the reference does not run the
+declared gpt-4o regex but a rewritten form through its collapsed generic
+path, where every letter class is one class, so case is ASCII-only and
+combining marks are not letters — the splitter implements that realized
+behavior and no Unicode table change was needed; the reference re-types
+the two channel markers as user-defined (matched with `parse_special`
+off); the server's synthesized system turn carries a `Current date:`
+line from its clock, which the profile unit's fixture test must account
+for; the file's `,` is token 24, not Qwen's 11.
+
+**Evidence.** `zig build test-vocabulary` on the file: 202,048 tokens,
+439,802 merges, all 20 standalone strings and 28 rendered prompts match
+the reference's ids (Qwen and both Gemma files still pass). The splitter
+unit test pins the pieces of some sixty adversarial strings read from
+the harness. `make compare-muse-glimmer-cpu` against the reference's
+traces (`<|begin_of_text|>Hello,` = `[200000, 19873, 24]`, Metal, F32
+cache): **157 files, max abs 1.53e-4, relative RMS 6.35e-7**, logits
+within 6.0e-6, greedy token 372 on both sides with identical top-5, in
+1 min 41 s. `make check`: 426 tests and `test-metal`.
+
+**Files.** `inference/src/tokenizer/{gpt4o,pre,encode,vocabulary}.zig`,
+`inference/vocabulary-check.zig`, `inference/src/models/{muse_glimmer,muse_glimmer_runtime,muse_glimmer_metal,root}.zig`,
+`inference/src/models/fixtures/muse-glimmer-30b.json`,
+`inference/src/profiles/fixtures/muse_glimmer-text.json`,
+`inference/src/backends/cpu/rope.zig`, `scripts/tokenizer-fixtures.py`,
+`scripts/reference-split.cpp`, `tests/fixtures/muse-glimmer-hello-comma/`,
+`tests/fixtures/provenance.md`, `Makefile`, `src/catalog.zig`,
+`docs/reference/muse-glimmer.md`, `docs/reference/tokenizer.md`,
+`docs/reference/new-model-guide.md`, `docs/reference/prompt-profile.md`,
+`docs/reference/artifacts.md`, `docs/architecture.md`,
+`docs/development.md`, `THIRD_PARTY_NOTICES.md`.
+
+**Remaining.** The Metal plan (MODL-12: the RoPE kernel's adjacent
+pairing, the gate epilogue, the window), the profile with the channel
+decoder and the acceptance record (MODL-13), ATEM tool calling (AGNT-10);
+the CPU decode policy still omits user-defined tokens with `special`
+off, where the reference renders them.
