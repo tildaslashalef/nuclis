@@ -42,7 +42,10 @@ the crossover is not yet pinned. Next is KERN-11 session 2: re-measure the
 8×8/32×32 crossover with the rounds interleaved, decide
 `small_chunk_tokens`, instantiate a `_16` variant if the numbers ask, and
 close the unit (the docs tables, the `make bench` records, the log).
-Nothing of the speculative-decoding theme is implemented.
+Nothing of the speculative-decoding theme is implemented; its five
+units were rewritten at implementation level on 2026-09-19 after the
+companions' headers and the reference's speculative driver were read
+(the oracle fact is in the theme section).
 
 Order: KERN-11 → ENGN-11 → MODL-18 → ENGN-12 → MODL-19 → MODL-20. After
 MODL-20 the roadmap continues with the performance follow-ups, then
@@ -120,6 +123,19 @@ on `generate`, `agent`, and `bench`, `generate.draft_length` and
 recovery scheme are not exposed. Whether the `mtp` role is renamed to a
 mechanism-neutral `draft` (sidecars, `--with`, the config key) is decided
 in MODL-19, when the first companion file is loaded.
+
+**The oracle.** The pinned llama.cpp checkout (`7620399f5`, the one
+`make compare` already runs) implements speculative decoding with both
+draft kinds in `common/speculative.cpp` (`--spec-type draft-mtp` and
+`draft-dflash`, `-md <draft file>`, `--spec-draft-n-max`), opens a main
+file as an MTP context that runs only the `nextn` layer with its own
+attention cache (`LLAMA_CONTEXT_TYPE_MTP`), exposes the target's
+pre-norm residual as `llama_get_embeddings_nextn`, and knows the
+`gemma4-assistant` and `dflash` architectures. One pinned reference
+therefore serves every family's draft traces; no second pin is needed.
+Read the driver before implementing each source: `process()` (how the
+drafter's cache is filled for accepted tokens), `draft()` (how positions
+are proposed), and the model's graph for the block.
 
 **Where the detail goes.** A new
 [docs/reference/speculative-decoding.md](docs/reference/speculative-decoding.md)
@@ -280,9 +296,8 @@ variant only if the numbers ask for it; `make bench` prefill and
 first-token records on Qwen; the Metal reference's kernel and geometry
 table rows and the final subsection (the session-1 table stays, marked
 as taken before the methodology fix); remove the roadmap's short-prompt
-bullet; the log entry. `make compare-gemma4` (the K-quant 12B file)
-cannot run while that artifact is absent; the QAT and 26B-A4B Gemma
-targets cover the family meanwhile.
+bullet; the log entry; `make compare-gemma4` (the K-quant 12B file, pulled again
+on 2026-09-19) joins the gates.
 
 **Acceptance.** The `_8` tile computes within the half-rounding bound on
 every specialized encoding at 1, 5, and 8 tokens; every gate above
@@ -294,178 +309,398 @@ and after.
 
 ## ENGN-11 — Speculative state recovery
 
-**Design.**
-- Session 1: `runtime/session.zig` gains a checkpoint region — a second
-  copy of every recurrent layer's history and matrix, allocated at `init`
-  when the caller asks for it (the memory plan: 150 MB on Qwen, nothing on
-  attention-only layouts), plus the checkpointed position. `checkpoint()`
-  copies recurrent state and records the position; `rewind(position)`
-  restores the recurrent copy and sets the position, refusing a position
-  outside `[checkpointed, current]` or a session that is updating or
-  failed (`SessionNotReady`), and a rewind without a checkpoint
-  (`NoCheckpoint`); a `reset` or `restore` invalidates the checkpoint.
-  On the CPU the copy is a `memcpy`; on Metal the session's byte block is
-  the shared buffer, the copy is a blit encoded in order with the plan's
-  command buffers, and the executor waits for the batch's GPU work before
-  a rewind touches host-visible state. `engine.Model` exposes the pair on
-  both executors (`checkpoint`, `rewind`) and the accepted-prefix
-  operation on top of them: `recover(base, tokens[0..a+1])` — position
-  rewind when `a = k` or the layouts are attention-only, otherwise
-  rewind to the base and replay the accepted tokens through `prefill`.
-  The existing chunked prefill is the verify batch's stand-in: the test
-  feeds `k` tokens as one chunk at a checkpointed position.
-- Session 2 (if needed): the ordering on Metal, the measurements, and
-  the bounded-scheme question. Measure at position 512 and 32,639 on
-  Qwen and Gemma 4: checkpoint cost, rewind cost, replay cost per
-  accepted length `a ∈ {0, 2, 4, 7}` at `k = 8`, peak memory. If replay
-  costs a full step, note it as the price a partial rejection pays and
-  leave per-token recurrent checkpoints to the benchmark's verdict in
-  ENGN-12.
+**Files.** `inference/src/runtime/session.zig` (the byte block, `Layout`,
+`Session.init/snapshot/restore/reset`), `inference/src/engine.zig`
+(`Executor`, `Model.snapshot/restore` around line 190, `runLoop`),
+`inference/generation-check.zig` (the per-family `Spec`, the executor
+wrapper with `step`/`reset`/`state`, the snapshot check around line 182),
+`docs/reference/session.md`, the new
+`docs/reference/speculative-decoding.md`. The Metal plans wrap the
+session's block as one shared buffer (`backend.wrap(state.memory)` in
+each `*_metal.zig`), so a region inside the block is GPU-visible with no
+new binding, and the backend is synchronous: when a step returns, the
+GPU is done with the block (the snapshot doc states this contract).
 
-**Acceptance.** On both backends (`make test-generation` and
-`test-generation-metal` extended): step to a position, checkpoint,
-feed `k = 8` tokens as one batch, and for every `a` in `0..8` recover to
-`a` and step one more token; the logits equal a never-speculated session
-that stepped the same tokens, bit for bit on the CPU and within the
-documented chunk-versus-step contract on Metal (the difference is the
-prefill tile against the matvec, recorded, not hidden). Unit tests: full
-acceptance (no copy), immediate rejection (`a = 0`), a cancelled batch
-(the session poisons, the checkpoint dies with the reset), errors,
-a batch that would exceed the capacity refused before any write,
-allocation failure of the checkpoint region, two independent sessions
-(one rewound, the other untouched), and the interplay with snapshot and
-restore. Memory and costs recorded in the new reference document and
-session.md; `make check`.
+**Session (session 1).**
+- `Session.init` gains a `checkpoint: bool` parameter. When set, the
+  block grows by a page-aligned region holding one copy of every
+  recurrent layer's history and matrix (F32), zero bytes for
+  attention-only layouts; `bytes()` includes it; `layout_digest` and
+  `snapshot`/`restore` ignore it (a snapshot never carries a checkpoint).
+  New fields: `checkpoint_region: []u8` and `checkpoint_position: ?usize`.
+- `pub fn checkpoint(self: *Session) !void`: `SessionNotReady` unless
+  `.ready`; `NoCheckpointRegion` if `init` was not asked for one; copies
+  the recurrent state into the region (a `memcpy`; valid on both
+  backends because the block is quiescent between steps) and records the
+  position.
+- `pub fn rewind(self: *Session) !void`: back to the checkpoint — the
+  recurrent copy is restored and the position set; `NoCheckpoint` when
+  none is recorded; `SessionNotReady` on an updating or failed session.
+- `pub fn truncate(self: *Session, position: usize) !void`: sets the
+  position back for attention-only layouts; `RecurrentStateNotRewindable`
+  when any layer is recurrent and `position < self.position`;
+  `RewindOutOfRange` unless `checkpoint_position <= position <=
+  self.position`. Rows past the position are left as they are, which is
+  already the contract `restore` documents.
+- `reset` and `restore` clear `checkpoint_position` (the region's bytes
+  are stale, never read without a fresh `checkpoint`).
+- Unit tests beside the existing snapshot tests: the round trip on a
+  layout with both kinds; `truncate` refused on a recurrent layout and
+  accepted on an attention-only one; the range refusals; `reset` and
+  `restore` clearing the checkpoint; two sessions, one rewound, the other
+  byte-identical to before; the region under `std.testing.FailingAllocator`
+  at every allocation point; `bytes()` accounting.
+
+**Engine (session 1).** `Model.checkpoint()`, `Model.rewind()`,
+`Model.truncate(position)` forward to the session on both executors;
+`Model.recover(self, accepted: []const u32) !void` is the accepted-prefix
+operation: if the session has a recurrent layer, `rewind()` then
+`prefill(accepted, null, null, null, null)` when `accepted.len > 0`;
+otherwise `truncate(checkpoint_position + accepted.len)`. `Executor` gets
+a `hasRecurrentState()` from the layouts. Nothing in `runLoop` changes in
+this unit; ENGN-12 is its caller.
+
+**Check (session 1, `generation-check.zig`).** A `recoveryCheck` after the
+snapshot check, on every family, with the executor wrapper gaining
+`prefill` (Metal: `p.prefill`; CPU: a loop of `step`). Protocol, with
+`k + 1 = 4` rows on both backends and a second pass with 8 rows on Metal
+(the CPU reference steps in about 18 s on Qwen, which bounds the CPU
+pass): step `tokens[0]`, `checkpoint()`, prefill `tokens[1..1+rows]` as
+one batch, then for every `a` in `0..rows`: `recover(tokens[1..1+a])`,
+step `tokens[1+a]` with logits → A; a second executor steps
+`tokens[0..1+a]` one by one and `tokens[1+a]` with logits → B. On the CPU
+A equals B bit for bit (replay is the same sequential arithmetic); on
+Metal the chunk-versus-step contract applies (`spec.bounds.chunk_max_abs`
+and `chunk_rel_rms`, argmax equal), and the difference is recorded, not
+hidden. Then the refusals: `rewind` with no checkpoint; `truncate` on
+Qwen (`RecurrentStateNotRewindable`) and accepted on Gemma and Muse;
+a cancelled batch (the `cancelCheck` observer the snapshot check uses)
+poisons the session so `checkpoint`/`rewind` return `SessionNotReady`
+until `reset`, after which `rewind` is `NoCheckpoint`; a batch that would
+pass the capacity is refused by `prefill` before any write (position
+unchanged). Print the checkpoint and rewind wall times and the region's
+size; replay cost is a short-chunk prefill, KERN-11's number.
+
+**Session 2 (only if needed).** Ordering problems on Metal, or a
+measured replay cost that argues for per-token recurrent checkpoints
+written by the DeltaNet chunk kernel (`(k + 1) × 150 MB` of device
+scratch on Qwen); the decision and its numbers go to the reference doc,
+not into this unit's code unless the numbers demand it.
+
+**Docs and close.** `speculative-decoding.md` gains its first section,
+the recovery contract with the measured costs; `session.md` gains a
+*Checkpoint and rewind* section beside *Snapshot and restore*;
+`architecture.md`'s session paragraph mentions the region; the log entry.
+
+**Acceptance.** `make check`; `make test-generation` and
+`test-generation-metal` on Qwen, and the Metal generation checks on
+Gemma (12B QAT), Bonsai, and Muse, all with the recovery check passing at
+every `a`; the unit tests above; costs recorded.
 
 ## MODL-18 — Qwen3.8 draft head: the embedded prediction block
 
-**Design.**
-- Session 1: facts. From the inventory fixture and the separate head's
-  header (`scripts/gguf-inventory.py` on `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`,
-  never loaded by the engine unless the embedded block proves
-  insufficient): the 15 tensors of block 64 (`eh_proj` 10240×5120,
-  `enorm`, `hnorm`, `shared_head_norm`, and one full-attention layer's
-  attention and FFN) and what the block shares with the main model (the
-  token embedding and the output head, per `config.json`'s "no dedicated
-  MTP embeddings"). The mapping from the architecture's authoritative
-  source, confirmed by the reference: the block's input at position `i`
-  is `eh_proj([enorm(embed(t_{i+1})); hnorm(h_i)])` with `h_i` the main
-  model's residual before its final norm, the layer runs with its own KV
-  cache over every committed position, and `shared_head_norm` feeds the
-  shared head. The oracle for pinned draft-logit traces is the pinned
-  mainline revision if it executes the block, else a second pinned
-  revision or implementation recorded in `reference-baseline.md` the way
-  MODL-16 pinned the fork. Facts and provenance go to
-  `speculative-decoding.md`. Then the draft contract in `inference/`
-  (`runtime/draft.zig`, or the name the code suggests), the session
-  layout gaining the block's attention cache (one more attention layer,
-  checkpointed and rewound with the rest), the runtime keeping `h` of
-  the last committed token (and of every row of a batch, for ENGN-12),
-  and the CPU reference in `qwen35_runtime.zig`; `make compare` gains
-  the draft rows at several positions of `Hello,`.
-- Session 2: `qwen35_metal.zig` runs the block on the existing kernel
-  set (the concatenation is a layout step; `eh_proj` a 10240-wide matvec;
-  the head matvec on the draft's hidden state, which dominates the draft's
-  cost — `k` drafts cost `k` head matvecs plus `k` block forwards), with
-  the draft's argmax on the device; draft state reset and rewind tests;
-  the offline acceptance statistic: ordinary greedy decoding of the
-  fixed coding prompts with a draft taken at every step and compared to
-  the token the main model then chose, per draft depth.
+**Facts read on 2026-09-19** (from `inference/src/models/fixtures/qwen35-27b.json`
+and `scripts/gguf-inventory.py` on the separate head; to be confirmed
+from the reference's graph in session 1 and recorded in
+`speculative-decoding.md` with provenance):
+- Block 64 of the main file is the whole draft head: `nextn.eh_proj`
+  [10240 → 5120] Q6_K, `nextn.enorm`, `nextn.hnorm`,
+  `nextn.shared_head_norm` [5120] F32, and one full-attention layer of
+  the main model's shape — `attn_norm`, `attn_q` [5120 → 12288] Q6_K (the
+  merged query and gate, as the main full-attention layers), `attn_k` and
+  `attn_v` [5120 → 1024] **Q8_0**, `attn_q_norm`/`attn_k_norm` [256],
+  `attn_output` [6144 → 5120] Q6_K, `post_attention_norm`, `ffn_gate`/
+  `ffn_up` [5120 → 17408] and `ffn_down` Q6_K. The separate
+  `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` holds the same 15 tensors and adds
+  only `token_embd`/`output` at **Q3_K** and `output_norm`, i.e. lower
+  quantized copies of what the main file already has. **Decision: the
+  embedded block is the source; the separate file is not loaded** (the
+  catalogue keeps it pinned; the log records why).
+- The reference (pinned llama.cpp, `draft-mtp`) opens the *same* main
+  file as a second context of type MTP that runs only the `nextn` layer
+  with a plain attention cache of its own; the target exposes its
+  residual after the last layer and before `output_norm` for every
+  position (`t_h_nextn`, `llama_get_embeddings_nextn`); the drafter's
+  batch carries both a token id and an embedding row per position: at MTP
+  position `p + 1` the pair `(h_p, x_{p+1})`, the block computing
+  `eh_proj([enorm(embed(x_{p+1})); hnorm(h_p)])` → the layer → 
+  `shared_head_norm` → the shared output head → logits for `x_{p+2}`.
+  `process()` fills the drafter's cache for accepted tokens by copying the
+  target's `h` rows for the batch (plus one pending row carried across
+  batches); `draft()` chains: the drafted token and the block's own
+  output hidden state feed the next draft position (qwen35 is the
+  single-head mode). Read those two functions and the qwen35 graph
+  builder for the exact alignment before writing the CPU reference.
+- Q8_0 must be in `qwen35.executableEncoding` for the block's `attn_k`
+  and `attn_v` (the generic matvec and the generic F32 tile serve it);
+  confirm, and reject the block otherwise as the binder already rejects
+  unsupported encodings.
 
-**Acceptance.** CPU and GPU draft logits match the pinned traces at the
-stated tolerances at several positions; tests cover reset and recovery;
-draft latency per token, extra memory, and the acceptance statistic per
-depth recorded. No speedup claimed. `make check`, `compare` (main-model
-rows unchanged), `test-metal`.
+**Session 1 — contract and CPU reference.**
+- `inference/src/runtime/draft.zig`: the model-independent contract.
+  `pub const Drafter = struct { ptr, vtable }` or a comptime-generic
+  family member, whichever the registry's pattern suggests
+  (`models/registry.zig`), with: `propose(self, max: usize, out:
+  []u32) !usize` (greedy candidates from the state after the last
+  committed token; also returns the draft's logits row per position for
+  ENGN-12's sampled acceptance, into a caller-owned `[]f32` of `max ×
+  vocabulary`), `commit(self, tokens: []const u32, h_rows: ...)`
+  (advance the drafter's own state over accepted tokens), `checkpoint`/
+  `rewind` (its cache is one more attention layout in the *same*
+  `Session`, so it rides on ENGN-11's checkpoint), `reset`, and
+  `bytes()` for the load plan.
+- `qwen35.zig`: the block's tensors move from "validated, excluded" to a
+  `Binding.draft: ?DraftBlock` (the 15 tensors); the text binding is
+  unchanged. `qwen35_runtime.zig`: the session's layouts gain one
+  attention layout for the block (`Session.init` on 65 layouts when the
+  drafter is requested); `step`/the prefill path keep the pre-norm
+  residual of the last token (`h`, the input of the `norm` before
+  `self.mm(self.binding.output, …)` around line 200) and, for a batch,
+  every row's `h`; `Drafter.propose` runs the block for one position at
+  a time, chained as the reference does; `commit` runs the block over
+  the accepted tokens with their `h` rows to fill its cache (the same
+  forward, logits discarded). Tests: the block on the CPU against a
+  pinned trace from the reference at positions 1..3 of `Hello,` (the
+  trace harness of `reference-baseline.md` extended to dump the MTP
+  context's `nextn` outputs and draft logits; if the harness cannot reach
+  them, the pinned fixture is the reference's greedy draft *tokens* at
+  those positions from `llama-completion --spec-type draft-mtp -md
+  <main file> --spec-draft-n-max 4` with tracing on, and our CPU logits
+  become the pinned oracle for Metal).
+- `Engine.open` gains `draft: DraftRequest = .none | .embedded | .{ .file
+  = path }`; for `.embedded` the Qwen adapter binds the block, sizes the
+  session for it, and constructs the drafter; `nuclis inspect`/`validate`
+  report the block as *draft head: embedded*.
+
+**Session 2 — Metal and the statistic.** `qwen35_metal.zig` runs the block
+with the existing kernels (the concatenation is two `nu_copy`/pack
+dispatches or a strided input; `eh_proj` a 10240-wide matvec; the layer
+is the main model's full-attention layer code path over the block's
+cache; the head matvec on the block's normalized output, argmax on the
+device via `nu_argmax_partial/final`, logits read back only when ENGN-12
+samples); reset and rewind tests through `generation-check.zig` (the
+drafter's cache rides the recovery check); `make compare` gains the
+draft rows (`compare-generation.py` compares the new trace files). The
+acceptance statistic, offline: `nuclis generate --draft-stats` (or a
+`generation-check` mode) decodes the fixed coding prompts greedily and,
+at every step, proposes 4 drafts and counts, per depth, whether draft
+`i` equals the token the main model chose `i` steps later; reported as a
+per-depth acceptance table in `speculative-decoding.md`. Draft latency
+per position and the block's bytes recorded.
+
+**Acceptance.** CPU block outputs match the pinned trace at the stated
+tolerance at 3 positions; Metal matches the CPU within the F16-cache
+contract (`compare-f32`/`-f16` tolerances for the new rows); reset and
+rewind tests pass on both executors; the per-depth acceptance statistic
+and draft latency recorded; `make check`, `compare` (main rows
+unchanged), `test-generation-metal`; the Qwen decode rate in `make bench`
+unchanged with the drafter loaded but switched off.
 
 ## ENGN-12 — Batched verification, speculative generation, the switch, the benchmark
 
-**Design.**
-- Session 1: `verify(tokens, rows)` on both executors — the CPU runtime
-  keeps each step's logits; the Metal plan's chunk path computes the head
-  on every row of the chunk (the prefill tile already runs every row
-  through the layers; the head is the exception computed for the last
-  row) and reads the rows back, argmax per row on the device for the
-  greedy path. `engine.runLoop` gains the speculative step when a drafter
-  is loaded and the switch is on: propose `k` (shortened to what the
-  capacity and the token budget allow), verify, accept the longest
-  matching prefix, take the correction or the bonus, recover per
-  ENGN-11, commit the drafter, and emit the committed tokens in order
-  through the existing hooks — stop tokens, the budget, the context
-  limit, and the penalty history are per committed token, so a stop
-  inside the batch discards what follows it. Sampled acceptance as the
-  theme fixes it, in `sampling/`: the shaped `p_i` and `q_i` on the host
-  from full rows, the draws from the seeded sampler's stream, the
-  residual distribution for the correction.
-- Session 2: configuration — `generate.speculative` (default from the
-  catalogue entry's verdict, off for a bare path), `generate.draft_length`
-  (per-family default from the entry, capped by `max_draft_length`), the
-  flags on `generate`, `agent`, and `bench`, layered as `think` is
-  (defaults, entry, flag) with `config show` provenance and `--help`;
-  `bench` measures ordinary and speculative decode on the same loaded
-  model in one process and reports draft length, accepted drafts per
-  step, verification and recovery cost, memory, and end-to-end tok/s; the
-  record in bench.md against the Qwen acceptance record's workload (the
-  fixed coding prompts at 512, 4K, 16K, 32,639); the Qwen entry's default
-  set from the measurement.
+**Files.** `inference/src/engine.zig` (`Executor.prefill` line 60,
+`runLoop` line 493 with its `gpu_greedy`/`gpu_topk` selection),
+`inference/src/models/*_metal.zig` (`Plan.prefill`, which computes the
+head for the last row only), `inference/src/models/*_runtime.zig`
+(`Runtime.step` already yields full logits per token),
+`inference/src/sampling/root.zig` (`Sampler.select`, `Candidate`,
+`History`), `src/config.zig` (`Config.Generate`, `ModelEntry`, `Flags`,
+`Resolved`, `resolve`, the `leafIndex` provenance), `src/cli.zig` (the
+`--think` parsing pattern around line 198 and its tests around 541),
+`src/catalog.zig` (`Entry`), `src/bench.zig` (`Sample`, `Report`, `run`),
+`src/help.zig`, `docs/spec.md § Speculative decoding`,
+`docs/reference/generation.md`, `docs/reference/bench.md`,
+`docs/development.md § Configuration file`.
 
-**Acceptance.** Greedy speculative output equals ordinary greedy
-decoding on the pinned prompts, token for token on the CPU and within
-the backend contract on Metal (a divergence caused by chunk-versus-step
-numerics is recorded with its position); synthetic tests of the
-acceptance and correction distribution over fixed `p` and `q` (counts
-over many seeds, including a zero-probability draft, full rejection,
-full acceptance); tests of EOS inside a batch, the budget inside a
-batch, partial acceptance, cancellation mid-batch, and context capacity;
+**Session 1 — verify and the loop.**
+- `Executor.verify(self, tokens: []const u32, rows: []f32) !void`:
+  logits for every token, `rows.len == tokens.len × vocabulary`. CPU: a
+  loop of `Runtime.step` with each row's logits. Metal: `Plan.verify`
+  runs the chunk path once and the output head over all `tokens.len`
+  rows through `Backend.matmul` (the tile KERN-11 shipped; the head is
+  `output.weight`, 248,320 × 5,120 on Qwen, one weight pass), then reads
+  the rows back (`tokens.len × vocabulary × 4` bytes, ≤ 8 MB at eight
+  rows). A `verifyGreedy` variant that returns only per-row argmax
+  (`nu_argmax_partial/final` per row) serves the greedy path without the
+  readback. `Model.verify`/`verifyGreedy` forward on both executors.
+- `runLoop` gains the speculative step, taken when `eng.drafter != null`
+  and `settings.speculative`: with `t0` the last chosen token not yet
+  fed, `k = min(draft_length, capacity − position − 1, budget_left)`;
+  `drafter.propose(k, drafts, q_rows)`; `checkpoint()`; `verify([t0] ++
+  drafts[0..k])` (greedy: `verifyGreedy`); accept the longest prefix
+  where row `i`'s choice equals `drafts[i]`; the token after the prefix
+  is row `a`'s choice (the correction, or the bonus when `a == k`);
+  `recover([t0] ++ drafts[0..a])`; `drafter.commit(...)`; then the
+  committed tokens `drafts[0..a]` and the new token go through the
+  existing per-token path in order — `history.observe`, the `token`
+  hook, `isStop`, the budget, the context limit — so a stop token inside
+  the batch ends the turn there and the rest is discarded (recover to
+  that prefix). Cancellation during `verify` poisons the session exactly
+  as a cancelled step does and `resetAll` handles it. The observer's
+  `before_step`/`step` hooks fire once per batch with the position.
+- Sampled acceptance, `inference/src/sampling/speculative.zig`:
+  `Sampler.distribution(logits, scratch, history) → []Candidate` (the
+  shaped, normalized distribution the existing `select` draws from,
+  factored out of it); `accept(p, q, draft, rng) bool` with probability
+  `min(1, p(draft) / q(draft))` (a draft absent from `p`'s candidates is
+  probability 0 → rejected); `residual(p, q, scratch) → []Candidate`
+  normalizing `max(0, p − q)` (if it is empty, the correction is drawn
+  from `p`); the history for row `i` includes the accepted drafts before
+  it. The drafter's `q` rows are its logits through the same shaping.
+  Unit tests with fixed `p`/`q` tables: counts over 20,000 seeded draws
+  match the target distribution within 3 σ, including a zero-probability
+  draft, full rejection, and full acceptance.
+
+**Session 2 — configuration and the benchmark.**
+- `Config.Generate` gains `speculative: bool = false` and `draft_length:
+  usize = 4`; `ModelEntry` gains `speculative: ?bool` and `draft_length:
+  ?usize`; `Flags` gains both; `Resolved` gains both, resolved as
+  `think` is (defaults, entry, flag) with `config show` provenance;
+  `cli.zig` parses `--speculative on|off` and `--draft-length N` for
+  `generate`, `agent`, and `bench` (tests beside the `--think` ones);
+  `config.max_draft_length` is a host constant equal to KERN-11's token
+  tile minus one (7 while the tile is 8 rows), a larger value is
+  `InvalidNumber`; `Entry` gains `speculative: bool` and `draft_length:
+  u8` (the verdict, written by the benchmark; `config init` copies them
+  into the entry). A drafter is loaded whenever the family has a source
+  (embedded or the entry's `mtp` file) and either the switch is on or
+  `bench` will measure both ways; `generate` with the switch off and no
+  drafter needed loads nothing extra.
+- `bench`: when a drafter is loaded, each measured run is done twice on
+  the same loaded model, switch off then on, and the report carries both;
+  `Sample` gains `speculative: bool`, `draft_length: ?usize`,
+  `accepted_per_step: ?f64`, `verify_milliseconds: ?f64`,
+  `recover_milliseconds: ?f64`; `schema_version` becomes 2 and the text
+  report prints the pair with the ratio. The record in `bench.md`: the
+  Qwen acceptance workload (512, 4K, 16K, 32,639) greedy and with the
+  instruct sampling profile, draft length 2, 4, 7, memory, end-to-end
+  tok/s; the Qwen entry's `speculative`/`draft_length` set from it;
+  `spec.md`'s section updated with the measured result.
+
+**Acceptance.** Greedy speculative output equals ordinary greedy decoding
+token for token on the CPU on the pinned prompts (`generation-check`
+gains this) and on Metal within the chunk-versus-step contract with any
+divergence recorded by position; the sampled-acceptance unit tests; EOS
+inside a batch, the budget inside a batch, partial acceptance,
+cancellation mid-batch, and a batch at the context limit, each a test;
 `make check`, `make compare`, `make test-generation-metal`; the benchmark
-record with the verdict, positive or negative.
+record with the verdict, positive or negative, and the entry updated.
 
 ## MODL-19 — Gemma 4 draft heads: the companion file as a second GGUF
 
-**Design.** Facts first: `scripts/gguf-inventory.py` on the 12B's
-`mtp-gemma-4-12B-it.gguf` and the 26B-A4B's
-`MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf` — architecture key, tensors, the
-shared tensors they reference, whether the 26B-A4B head carries experts —
-and the reference's loader for how the head is driven; recorded with
-provenance before any code. Loading: `Engine.open` gains the optional
-draft-source path (the accepted seam), resolved from `models.<name>.mtp`
-(`config init` fills it from the catalogue) and verified at load — a
-missing file, a foreign architecture, or a vocabulary or width that does
-not match the main file is a typed load error, never a fallback or a
-download; the head's memory joins the load plan. The Gemma adapter
-implements the draft contract for both entries, CPU reference then Metal,
-traces from the reference at several positions. The role name (`mtp` or
-`draft`) is decided here for the sidecars, `--with`, and the config key,
-with the recommendation to keep `mtp` and document that it names the
-draft source, since a rename migrates every sidecar for no behavior.
-Measurements as ENGN-12's benchmark on both entries; each catalogue
-verdict set from its own numbers.
+**Facts read on 2026-09-19** (`nuclis inspect` and the inventory script on
+the 12B's `mtp-gemma-4-12B-it.gguf`; the 26B-A4B's
+`MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf` is inspected in session 1):
+- `general.architecture = gemma4-assistant`, 4 blocks, embedding 1024,
+  FFN 8192, 16 query heads, `head_count_kv = [8, 8, 8, 1]`, key/value
+  length 512 (256 on sliding), sliding window 1024 with pattern
+  `[1, 1, 1, 0]`, RoPE bases 1e6 / 1e4, `nextn_predict_layers = 4`,
+  `attention.shared_kv_layers = 4`, `embedding_length_out = 3840`
+  (the target's width), `rope_freqs.weight` [256]. 49 tensors, Q4_0:
+  `nextn.pre_projection` [7680 → 1024] (the concatenation of the 3840-wide
+  token embedding and the 3840-wide target residual, projected into the
+  head's width), `nextn.post_projection` [1024 → 3840] (back to the
+  target's width for its output head), an own `token_embd` [1024 ×
+  262144], `output_norm`, and per block `attn_norm`, `attn_q` [1024 →
+  4096], `attn_q_norm` [256], `attn_output` [4096 → 1024], the three FFN
+  matrices and their norms, `layer_output_scale` [1] — and **no `attn_k`
+  or `attn_v`**: with `shared_kv_layers = 4` the head's layers attend
+  through the target's own key/value cache, which is why the KV head
+  counts mirror the target's layer kinds. In the reference this is the
+  `chain_heads` mode: four trained heads, one per draft step, selected
+  by `llama_set_nextn_layer_offset`, so the drafter proposes at most four
+  positions per step and each position is one layer's forward.
+- What session 1 must read from the reference's `gemma4-assistant` graph
+  before code: which target layers' caches each head layer reads (the
+  mapping of 4 head layers onto the 48 target layers), what the 1024-wide
+  `token_embd` is for (the drafted token's input at the head's width,
+  or a tied output), where `layer_output_scale` applies, and whether the
+  head reuses the target's `output` head after `post_projection`.
 
-**Acceptance.** Traces at the tolerances on both backends for both
-entries; the load errors tested with fixtures; greedy equivalence on the
-pinned prompts; the benchmark record and the verdicts; `make check` and
-the Gemma compare targets unchanged for the main model.
+**Design.**
+- Loading a second GGUF: `Engine.open`'s `draft = .{ .file = path }` opens
+  it with `inference.weights.Mapped.open`, validates `general.architecture
+  == "gemma4-assistant"`, `embedding_length_out ==` the main file's
+  embedding width, and the vocabulary size, else `DraftSourceMismatch`;
+  a missing file is `DraftSourceMissing`; both are typed load errors
+  reported by `generate`/`agent`/`bench` and never a fallback. The path
+  comes from `models.<name>.mtp` (already a registry field, filled by
+  `config init` from the catalogue); `nuclis model ls` shows the
+  companion as loaded-by "the draft unit".
+- `gemma4.zig` gains `bindDraft(doc) !DraftBinding` for the head; the
+  Gemma runtime and plan implement the draft contract: the drafter reads
+  the target session's attention rows (read-only) for the shared layers,
+  keeps the target's pre-norm residual per position as the Qwen drafter
+  does, runs one head layer per proposed position, and shares the
+  target's embedding and output head. CPU reference first with pinned
+  traces from the reference (`llama-completion --spec-type draft-mtp -md
+  mtp-gemma-4-12B-it.gguf`), then Metal on the existing kernel set.
+- The 26B-A4B head: inspected first; if it is the same architecture at
+  its own width it is the same code with the MoE main model's residual;
+  if not, the difference is recorded and the 26B-A4B is measured only if
+  it fits the unit's second session.
+- The role name: decided here. Recommendation: keep `mtp` (the registry
+  key, the sidecar role, `--with mtp`) and document that it names the
+  draft source of any mechanism; a rename migrates every sidecar for no
+  behavior.
+
+**Acceptance.** Draft traces at the tolerances on both backends for the
+12B (and the 26B-A4B if in scope); the load errors tested with a missing
+path, a wrong architecture (the projector file), and a mismatched width
+(the Qwen head); greedy equivalence on the pinned prompts on both
+backends; the benchmark record on the Gemma acceptance workload and the
+entries' verdicts; `make check`, the Gemma compare targets unchanged for
+the main model.
 
 ## MODL-20 — Muse Glimmer DFlash drafter
 
-**Design.**
-- Session 1: facts from `dflash-kquant.gguf` and the reference —
-  architecture, tensors, the block size it proposes, which of the
-  target's per-layer input residuals it consumes (the reference exposes
-  every layer's `t_layer_inp` for it), whether one forward proposes the
-  block or a denoising loop does, and how the reference accepts the
-  block; recorded with provenance. Then the fit decision, written into
-  `speculative-decoding.md`: if one forward proposes a block, it is the
-  shared contract's `propose` with `k` the block size; if it needs its own
-  loop, the contract gains only what the facts require or Muse keeps its
-  own acceptance loop beside the shared one. The Muse runtime and plan
-  keep the residuals the drafter reads for the last committed token (and
-  the batch's rows), device-resident on Metal.
-- Session 2: the drafter on the CPU reference and Metal, traces from the
-  reference at several positions, the benchmark on the Muse acceptance
-  workload, the catalogue verdict.
+**Facts read on 2026-09-19** (`nuclis inspect` and the inventory script on
+`dflash-kquant.gguf`; to be confirmed from the reference's `dflash`
+graph and `draft-dflash` driver in session 1):
+- `general.architecture = dflash`, 5 blocks at the target's width 6656
+  (a 2.6B drafter), FFN 19968, 32 query heads, 8 KV heads, head 128,
+  RoPE 5e5, sliding window 2048 on all five layers, `dflash.block_size =
+  16`, `dflash.target_layers = [2, 14, 26, 38, 50]`. Tensors: `fc.weight`
+  [33280 → 6656] (the five target layers' input residuals concatenated,
+  5 × 6656, projected to one feature per position), `enc.output_norm`
+  [6656], per block `attn_norm`, `attn_q` [6656 → 4096] with
+  `attn_q_norm` [128], `attn_k`/`attn_v` [6656 → 1024] with
+  `attn_k_norm`, `attn_output` [4096 → 6656], `ffn_norm`, the three FFN
+  matrices, and a final `output_norm`; **no token embedding and no
+  output head**: it shares the target's `token_embd` and `output.weight`.
+- The reference's `draft-dflash` driver (not the DFlash2 selector: the
+  file has no selector keys) proposes a block in one forward: a batch of
+  `n_draft + 1` rows at positions `n .. n + n_draft` whose first token is
+  the last committed token and the rest a mask token, one decode on the
+  draft context, then the draft tokens are sampled per row from the
+  block's logits; `llama_set_embeddings_nextn(ctx_dft, true, masked)`
+  supplies the target features. The drafter keeps its own attention
+  cache over past positions' features (window 2048). So it fits the
+  shared contract as `propose(k)` with `k ≤ 15` in one forward; the
+  verify batch is then up to 16 rows, which is the case for KERN-11's
+  `_16` tile if it exists, otherwise two 8-row tiles.
+- What session 1 must read before code: the mask token id and where it
+  comes from (`dflash.*` keys or the tokenizer's reserved tokens), whether
+  the block rows attend causally (`dflash.attention.causal`, default
+  when absent), `sample_from_anchor`, exactly which residual each target
+  layer index contributes (the input of layer `l`, `t_layer_inp`, as
+  `muse-glimmer.md` notes), and how the cache is filled for accepted
+  positions (`process()`).
+
+**Design.** Session 1: the facts above confirmed and recorded; the fit
+decision written into `speculative-decoding.md` (expected: the shared
+`propose` with a block; if the driver needs something the contract lacks,
+add only that); the Muse runtime and plan retain the input residuals of
+layers 2, 14, 26, 38, 50 for the last committed token and for every row
+of a batch (device-resident on Metal, one 5 × 6656 row per position);
+loading through the same `draft = .{ .file }` path as MODL-19 with
+`DraftSourceMismatch` on width or vocabulary; `muse_glimmer.zig`
+`bindDraft`; the CPU reference of the drafter with pinned traces from the
+reference (`llama-completion --spec-type draft-dflash -md
+dflash-kquant.gguf`). Session 2: Metal, the benchmark on the Muse
+acceptance workload with draft lengths 4, 8, 15, the catalogue verdict.
 
 **Acceptance.** Traces at the tolerances on both backends; the contract
 decision documented; the benchmark record; the verdict, negative if the
-drafter does not pay for its verification; `make check`, the Muse compare
-targets unchanged.
+drafter does not pay for its verification; `make check`, the Muse
+compare targets unchanged.

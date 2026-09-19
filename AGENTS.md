@@ -43,6 +43,12 @@ its own: the current unit's section says what the session delivered and
 what remains, *Where we are* says where to pick up. A unit the plan marks
 as several sessions closes once, at its end.
 
+**A unit's section is written for whoever implements it next**, which may
+be another model: files, functions, numbers, and gate commands, not
+intent. A unit whose design waits on facts (a file's header, a
+reference's driver) reads them in its first session and ends that session
+by rewriting its section at that level, committed before any code.
+
 **Closing a unit** happens in one commit: append its outcome, evidence,
 files, and remaining limitations to the engineering log and add its row to
 the log's table; update the documents it changed; delete its section and
