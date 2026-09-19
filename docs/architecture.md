@@ -506,7 +506,7 @@ dense-attention test model before calling it stable; that is tracked in
 **Dive deeper:** [spec.md § Interfaces and extension rules](spec.md#interfaces-and-extension-rules),
 [reference/qwen-validation.md](reference/qwen-validation.md), `models/qwen35.zig` (`bind`),
 [reference/gemma4.md](reference/gemma4.md) (the second architecture's facts, MODL-04–MODL-08),
-[reference/muse-glimmer.md](reference/muse-glimmer.md) (the third's facts and its `llama4` tokenizer, MODL-11),
+[reference/muse-glimmer.md](reference/muse-glimmer.md) (the third's facts, its `llama4` tokenizer, and its Metal plan, MODL-11–MODL-12),
 [reference/new-model-guide.md](reference/new-model-guide.md) (the order of work, validated while bringing up Gemma 4 12B),
 [reference/tool-calling.md](reference/tool-calling.md) (native tool formats and the planned seam).
 

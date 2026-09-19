@@ -801,29 +801,32 @@ pub const Backend = struct {
         const p: L2Params = .{ .width = @intCast(width), .stride = @intCast(stride), .eps = eps, .rows = @intCast(rows * heads), .heads = @intCast(heads), .row_stride = @intCast(row_stride) };
         try self.dispatch(.l2norm, &.{data}, p, @intCast(rows * heads), 32, .{});
     }
-    pub const RopeParams = extern struct { heads: u32, head_stride: u32, dims: u32, position: u32 };
+    /// Which two channels form rotation pair `i`: `cpu.rope.Pairing`.
+    pub const Pairing = cpu.rope.Pairing;
+    pub const RopeParams = extern struct { heads: u32, head_stride: u32, dims: u32, position: u32, pairing: u32 };
     /// Rotates the leading `dims` channels of `heads` heads using a (cos, sin)
-    /// table with `dims/2` entries per position; see `ropeTable`.
-    pub fn rope(self: *Backend, data: Buffer, table: Buffer, heads: usize, head_stride: usize, dims: usize, position: usize) !void {
+    /// table with `dims/2` entries per position (`ropeTable`), pairing the
+    /// channels split-half or adjacently as `cpu.rope.apply` does.
+    pub fn rope(self: *Backend, data: Buffer, table: Buffer, heads: usize, head_stride: usize, dims: usize, position: usize, pairing: Pairing) !void {
         if (heads == 0 or dims == 0 or dims % 2 != 0 or head_stride < dims or data.len < ((heads - 1) * head_stride + dims) * 4) return error.InvalidShape;
         if (table.len < (position + 1) * (dims / 2) * 8) return error.InvalidShape;
-        const p: RopeParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position) };
+        const p: RopeParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position), .pairing = @intFromEnum(pairing) };
         try self.dispatch(.rope, &.{ data, table }, p, perElement(heads * dims / 2), 256, .{});
     }
-    pub const RopeRowsParams = extern struct { heads: u32, head_stride: u32, dims: u32, position: u32, rows: u32, row_stride: u32 };
+    pub const RopeRowsParams = extern struct { heads: u32, head_stride: u32, dims: u32, position: u32, rows: u32, row_stride: u32, pairing: u32 };
     /// `rope` over `rows` token rows of `row_stride` floats; row t is rotated
     /// for position `position + t`.
-    pub fn ropeRows(self: *Backend, data: Buffer, table: Buffer, heads: usize, head_stride: usize, dims: usize, position: usize, rows: usize, row_stride: usize) !void {
+    pub fn ropeRows(self: *Backend, data: Buffer, table: Buffer, heads: usize, head_stride: usize, dims: usize, position: usize, rows: usize, row_stride: usize, pairing: Pairing) !void {
         if (rows == 0 or heads == 0 or dims == 0 or dims % 2 != 0 or head_stride < dims or row_stride < (heads - 1) * head_stride + dims) return error.InvalidShape;
         if (data.len < ((rows - 1) * row_stride + (heads - 1) * head_stride + dims) * 4 or table.len < (position + rows) * (dims / 2) * 8) return error.InvalidShape;
-        const p: RopeRowsParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position), .rows = @intCast(rows), .row_stride = @intCast(row_stride) };
+        const p: RopeRowsParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position), .rows = @intCast(rows), .row_stride = @intCast(row_stride), .pairing = @intFromEnum(pairing) };
         try self.dispatch(.rope_rows, &.{ data, table }, p, perElement(rows * heads * dims / 2), 256, .{});
     }
     /// Fills `table` with F64-computed (cos, sin) pairs for `positions` positions
-    /// of the unscaled split-half rotation with `dims` rotary channels: the
-    /// angles of `cpu.rope.apply`, including its optional per-pair `factors`
-    /// (`dims / 2` finite positive divisors; a checkpoint's 1e30 entries leave
-    /// a pair in place to F32 precision).
+    /// of the unscaled rotation with `dims` rotary channels: the angles of
+    /// `cpu.rope.apply` (the same for either pairing), including its optional
+    /// per-pair `factors` (`dims / 2` finite positive divisors; a checkpoint's
+    /// 1e30 entries leave a pair in place to F32 precision).
     pub fn ropeTable(table: Buffer, positions: usize, dims: usize, base: f64, factors: ?[]const f32) !void {
         if (dims == 0 or dims % 2 != 0 or table.len < positions * (dims / 2) * 8) return error.InvalidShape;
         const half = dims / 2;

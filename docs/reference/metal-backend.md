@@ -36,6 +36,7 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([generation.md](generat
 | `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair), embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
 | `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule (MODL-06) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](gemma4.md#metal-plan-modl-06-2026-09-11)). |
+| `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule (MODL-12) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19)). |
 | `metal-check.zig` | Explicit GPU checks against pinned fixtures and CPU references; `--matvec-bench` measures the matvec kernels' achieved bandwidth. |
 
 The MSL source is assembled at compile time: the IQ3_S codebook is emitted from
@@ -156,7 +157,9 @@ memory, and leave the rest to the grid.
 - `nu_rmsnorm`: 256-thread group per row, strided input/output rows, weighted,
   optional `silu(multiplier)` epilogue (used for DeltaNet's output gate).
 - `nu_l2norm`, `nu_rope` (from an F64-computed cos/sin table uploaded at init;
-  `Backend.ropeTable` takes optional per-pair frequency factors, MODL-06),
+  `Backend.ropeTable` takes optional per-pair frequency factors, MODL-06;
+  a `pairing` parameter rotates split-half `(i, i + dims/2)` or adjacent
+  `(2i, 2i + 1)` pairs, `cpu.rope.Pairing`, MODL-12),
   `nu_add`, `nu_silu_mul`, `nu_silu_inplace`, `nu_delta_gates`, `nu_sigmoid_gate`.
 - MODL-06 epilogues for Gemma 4: `nu_gelu_mul` (tanh GELU of `cpu.gelu`, also
   pair mode 2 of `nu_matvec_segments`), `nu_scale` (x *= s), `nu_add_scale`
@@ -1115,11 +1118,12 @@ started in ENGN-08's session.
 | Merged GELU pair (`gelu_mul_pair`), every fixture encoding | vs standalone matvecs + `nu_gelu_mul` | **exact** |
 | RMSNorm (5120; 48×128 with silu gate; 24 strided heads) | vs CPU `rmsNorm` | 1e-5 |
 | RoPE at position 32,767 | vs CPU `rope.apply` | 2e-6 relative |
+| RoPE with adjacent pairing, 32 heads of 128 at base 5e5, position 32,767 (MODL-12) | vs CPU `rope.apply` in that mode | 2e-6 relative |
 | L2 norm, silu·mul, add, silu, gates, sigmoid gate | vs `cpu.*` | 1e-6 |
 | Argmax over 248,320 with a tie | lowest index | exact |
 | Partial top-k (256) over 248,320 with ties, vs the CPU sort | (value, index) pairs | **exact** |
 | Batched matmul, 40 rows × 1,280/5,120 columns × 37 tokens, every encoding | per-token row vs F64 CPU `matvec` | `4e-6 × Σ|w·x| + 1e-6` |
-| Chunk kernels (rope rows, convolution rows + history, grouped L2 norm, repeated delta gates, copy) | vs their sequential single-token forms | **exact** |
+| Chunk kernels (rope rows in both pairings, convolution rows + history, grouped L2 norm, repeated delta gates, copy) | vs their sequential single-token forms | **exact** |
 | Exp-sum over 248,320 flat logits, T = 1.5 | vs F64 | ≤ 2e-6 relative (measured 9.6e-8) |
 | Non-finite logit raises the partition flag and never enters the list; shape rejection | API invariants | exact |
 

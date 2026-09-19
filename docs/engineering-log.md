@@ -82,6 +82,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-12 | The default context window is 16K | 2026-09-18 |
 | TERM-09 | A step that answers and then calls a tool no longer holds the turn in the live region | 2026-09-18 |
 | MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2026-09-19 |
+| MODL-12 | Muse Glimmer 30B: Metal plan | 2026-09-19 |
 
 ## Context
 
@@ -2582,3 +2583,54 @@ pairing, the gate epilogue, the window), the profile with the channel
 decoder and the acceptance record (MODL-13), ATEM tool calling (AGNT-10);
 the CPU decode policy still omits user-defined tokens with `special`
 off, where the reference renders them.
+
+### MODL-12 — Muse Glimmer 30B: Metal plan (2026-09-19)
+
+**Outcome.** The third architecture runs on the GPU.
+`models/muse_glimmer_metal.zig` replaces the placeholder: the CPU
+reference's schedule as encoder calls, one command buffer per token or
+per prompt chunk, with the weightless embedding norm bound to a row of
+ones, the post norms at their own epsilon, the four attention
+projections merged into one segment dispatch (the query packed with
+the gate and the scratch key with the value, so the four weights and
+two outputs fit the kernel's seven bindings), RoPE on sliding layers
+only, the sigmoid gate as the Qwen3.5 epilogue, the 2048 window as a
+cache-row slice on decode and the chunk kernel's mask on prefill, and
+the untied head scaled then soft-capped. The one backend change is a
+`pairing` parameter on `nu_rope` and `nu_rope_rows` (`Backend.Pairing`,
+the CPU's enum; the table is shared), with the Qwen and Gemma plans
+passing `.split_half`. `generation-check` gained the family's spec
+and `test-metal` the adjacent-pairing cases; `make compare-muse-glimmer`
+runs the CPU reference and both cache precisions, `make
+test-generation-muse-glimmer-metal` the protocol.
+
+**Evidence.** `make compare-muse-glimmer` against the pinned traces
+(157 files): Metal F32 **max abs 1.53e-4, relative RMS 8.0e-7** at the
+bring-up thresholds, logits within 6.0e-6; Metal F16 7.3e-2 / 1.97e-4
+at the family's tolerance of 0.1 / 3e-4 (seventeen late-layer files
+above Qwen's 3e-2 bound, the logits within 2.6e-3); greedy 372 with
+identical top-5 on every path. The generation check: sessions
+bit-identical, cancellation and reset, snapshot 106,496 bytes bit-exact,
+chunked prefill 1.39e-2 / 4.5e-3 against 5e-2 / 1e-2 (the F32 tiles at
+3.7e-5 / 4.1e-6), the F16 cache 5.0e-3 / 6.0e-4 against 2e-2 / 2e-3,
+argmax 75 of 75 everywhere. `test-metal`: adjacent RoPE within 2e-6
+relative of `cpu.rope.apply`, the rows form bit-identical. First-look
+rates (`nuclis bench`, raw prompt): **9.99 tok/s decode**, 93.2 tok/s
+prefill on 512 tokens, against the reference's 14.08 / 101.9 on the
+same file (71 % / 91 %); the per-kernel profile is in muse-glimmer.md.
+The Qwen `make bench` is unchanged (39.75 / 10.44 tok/s). `make check`:
+427 tests and `test-metal`.
+
+**Files.** `inference/src/models/muse_glimmer_metal.zig`,
+`inference/src/models/{gemma4_metal,qwen35_metal}.zig`,
+`inference/src/backends/metal/{root.zig,kernels.metal}`,
+`inference/metal-check.zig`, `inference/generation-check.zig`,
+`Makefile`, `docs/reference/muse-glimmer.md`,
+`docs/reference/metal-backend.md`, `docs/reference/bench.md`,
+`docs/architecture.md`, `docs/development.md`.
+
+**Remaining.** Decode at 71 % of the reference: the Q4_K matvecs read
+at 145–175 GB/s against the head's 208, spread over the large matrices
+(the performance theme). The full-context cache on sliding layers (a
+ring layout is the roadmap's). The profile, the channel decoder, and
+the acceptance record are MODL-13; tool calling AGNT-10.

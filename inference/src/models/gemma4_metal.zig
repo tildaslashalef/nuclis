@@ -542,9 +542,9 @@ pub const Plan = struct {
         }
         const rope = self.ropeOf(kind);
         try b.rmsNorm(q, c.query_norm, q, .{ .rows = heads, .width = hd, .in_stride = hd, .out_stride = hd });
-        try b.rope(q, rope.table, heads, hd, rope.dims, position);
+        try b.rope(q, rope.table, heads, hd, rope.dims, position, .split_half);
         try b.rmsNorm(k_row, c.key_norm, k_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
-        try b.rope(k_row, rope.table, kv_heads, hd, rope.dims, position);
+        try b.rope(k_row, rope.table, kv_heads, hd, rope.dims, position, .split_half);
         try b.rmsNorm(v_row, self.ones, v_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
         if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = kvw }, .{ .dst = v_slot, .src = v_row, .count = kvw } });
         const first = firstVisible(kind, position);
@@ -632,9 +632,9 @@ pub const Plan = struct {
         if (layer.value) |value| try self.mmRows(value, self.normalized_c, hidden, self.v_c, kvw, count) else try b.copy(self.v_c, self.k_c, count * kvw);
         const rope = self.ropeOf(kind);
         try b.rmsNorm(self.q_c, c.query_norm, self.q_c, .{ .rows = count * heads, .width = hd, .in_stride = hd, .out_stride = hd });
-        try b.ropeRows(self.q_c, rope.table, heads, hd, rope.dims, position, count, qw);
+        try b.ropeRows(self.q_c, rope.table, heads, hd, rope.dims, position, count, qw, .split_half);
         try b.rmsNorm(self.k_c, c.key_norm, self.k_c, .{ .rows = count * kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
-        try b.ropeRows(self.k_c, rope.table, kv_heads, hd, rope.dims, position, count, kvw);
+        try b.ropeRows(self.k_c, rope.table, kv_heads, hd, rope.dims, position, count, kvw, .split_half);
         try b.rmsNorm(self.v_c, self.ones, self.v_c, .{ .rows = count * kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
         // The chunk's keys and values are contiguous in the cache; padding rows never leave the chunk buffers.
         const precision = cache.keys.precision;

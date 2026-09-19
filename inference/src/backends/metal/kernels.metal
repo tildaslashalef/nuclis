@@ -1209,7 +1209,15 @@ kernel void nu_l2norm(device float * data [[buffer(0)]],
 
 // Rotary embedding from a precomputed table: table[position][i] = (cos, sin)
 // for i < dims/2. Rotates the leading `dims` channels of each head in place.
-struct RopeParams { uint heads; uint head_stride; uint dims; uint position; };
+// Pair i is (i, i + dims/2) with `pairing` 0 (split-half) and (2i, 2i + 1)
+// with 1 (adjacent, the GGUF "normal" rope type): cpu.rope.Pairing.
+struct RopeParams { uint heads; uint head_stride; uint dims; uint position; uint pairing; };
+inline void nu_rotate_pair(device float * x, uint i, uint half_dims, uint pairing, float2 cs) {
+    uint first = pairing ? 2 * i : i, second = pairing ? 2 * i + 1 : i + half_dims;
+    float a = x[first], b = x[second];
+    x[first] = a * cs.x - b * cs.y;
+    x[second] = a * cs.y + b * cs.x;
+}
 kernel void nu_rope(device float * data [[buffer(0)]],
                     device const float2 * table [[buffer(1)]],
                     constant RopeParams & p [[buffer(7)]],
@@ -1218,15 +1226,12 @@ kernel void nu_rope(device float * data [[buffer(0)]],
     if (index >= p.heads * half_dims) return;
     uint head = index / half_dims, i = index % half_dims;
     float2 cs = table[ulong(p.position) * half_dims + i];
-    device float * x = data + ulong(head) * p.head_stride;
-    float a = x[i], b = x[i + half_dims];
-    x[i] = a * cs.x - b * cs.y;
-    x[i + half_dims] = a * cs.y + b * cs.x;
+    nu_rotate_pair(data + ulong(head) * p.head_stride, i, half_dims, p.pairing, cs);
 }
 
 // Rotary embedding over a chunk of token rows: row t holds `heads` heads at
 // `row_stride` and sits at position `position + t`. Same arithmetic as nu_rope.
-struct RopeRowsParams { uint heads; uint head_stride; uint dims; uint position; uint rows; uint row_stride; };
+struct RopeRowsParams { uint heads; uint head_stride; uint dims; uint position; uint rows; uint row_stride; uint pairing; };
 kernel void nu_rope_rows(device float * data [[buffer(0)]],
                          device const float2 * table [[buffer(1)]],
                          constant RopeRowsParams & p [[buffer(7)]],
@@ -1235,10 +1240,7 @@ kernel void nu_rope_rows(device float * data [[buffer(0)]],
     if (index >= p.rows * per_row) return;
     uint row = index / per_row, rest = index % per_row, head = rest / half_dims, i = rest % half_dims;
     float2 cs = table[ulong(p.position + row) * half_dims + i];
-    device float * x = data + ulong(row) * p.row_stride + ulong(head) * p.head_stride;
-    float a = x[i], b = x[i + half_dims];
-    x[i] = a * cs.x - b * cs.y;
-    x[i + half_dims] = a * cs.y + b * cs.x;
+    nu_rotate_pair(data + ulong(row) * p.row_stride + ulong(head) * p.head_stride, i, half_dims, p.pairing, cs);
 }
 
 // Elementwise helpers.

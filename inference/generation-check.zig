@@ -46,6 +46,16 @@ const gemma4_spec: Spec = .{
     .bounds = .{ .chunk_max_abs = 6e-1, .chunk_rel_rms = 2e-2, .half_max_abs = 2.0, .half_rel_rms = 6e-2 },
     .expert_bounds = .{ .chunk_max_abs = 2e1, .chunk_rel_rms = 5e-1, .half_max_abs = 2e1, .half_rel_rms = 5e-1 },
 };
+// Muse Glimmer: `Hello` then `,` (the pinned trace's tokens). The half
+// tiles' rounding measured 1.4e-2 / 4.5e-3 on the 70-token prefill and
+// the F16 cache 5.0e-3 / 6.0e-4 (muse-glimmer.md § Metal plan); the
+// F32-tile comparison at its unchanged bound proves the schedule.
+const muse_glimmer_spec: Spec = .{
+    .Family = inference.models.muse_glimmer.family,
+    .vocabulary = inference.models.muse_glimmer.vocabulary,
+    .tokens = .{ 19873, 24 },
+    .bounds = .{ .chunk_max_abs = 5e-2, .chunk_rel_rms = 1e-2, .half_max_abs = 2e-2, .half_rel_rms = 2e-3 },
+};
 /// The bounds of the bound configuration: the expert ones when the family
 /// declares them and the file is an expert configuration.
 fn boundsOf(comptime spec: Spec, binding: spec.Family.Binding) Bounds {
@@ -80,6 +90,7 @@ pub fn main(init: std.process.Init) !void {
     switch (try inference.models.select(architecture)) {
         .qwen35 => try run(qwen35_spec, alloc, &mapped, use_metal),
         .gemma4 => try run(gemma4_spec, alloc, &mapped, use_metal),
+        .@"muse-glimmer" => try run(muse_glimmer_spec, alloc, &mapped, use_metal),
     }
 }
 

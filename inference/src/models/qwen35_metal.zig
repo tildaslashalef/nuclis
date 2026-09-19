@@ -467,9 +467,9 @@ pub const Plan = struct {
         try self.mmRows(attn.key, self.normalized_c, hidden, self.k_c, 1024, count);
         try self.mmRows(attn.value, self.normalized_c, hidden, self.v_c, 1024, count);
         try b.rmsNorm(self.qg_c, c.query_norm, self.q_c, .{ .rows = count * 24, .width = 256, .in_stride = 512, .out_stride = 256 });
-        try b.ropeRows(self.q_c, self.rope_table, 24, 256, 64, position, count, 24 * 256);
+        try b.ropeRows(self.q_c, self.rope_table, 24, 256, 64, position, count, 24 * 256, .split_half);
         try b.rmsNorm(self.k_c, c.key_norm, self.k_c, .{ .rows = count * 4, .width = 256, .in_stride = 256, .out_stride = 256 });
-        try b.ropeRows(self.k_c, self.rope_table, 4, 256, 64, position, count, 1024);
+        try b.ropeRows(self.k_c, self.rope_table, 4, 256, 64, position, count, 1024, .split_half);
         // The chunk's keys and values are contiguous in the cache; padding rows never leave the chunk buffers.
         const precision = cache.keys.precision;
         const k_rows = self.stateSlice(cache.keys.range(position, count));
@@ -545,9 +545,9 @@ pub const Plan = struct {
         try self.projections(&.{ attn.query_and_gate, attn.key, attn.value }, &.{ self.qg, k_row, v_row }, .plain);
         // Each projected head stores query then gate; the gate is applied after attention.
         try b.rmsNorm(self.qg, c.query_norm, self.q, .{ .rows = 24, .width = 256, .in_stride = 512, .out_stride = 256 });
-        try b.rope(self.q, self.rope_table, 24, 256, 64, position);
+        try b.rope(self.q, self.rope_table, 24, 256, 64, position, .split_half);
         try b.rmsNorm(k_row, c.key_norm, k_row, .{ .rows = 4, .width = 256, .in_stride = 256, .out_stride = 256 });
-        try b.rope(k_row, self.rope_table, 4, 256, 64, position);
+        try b.rope(k_row, self.rope_table, 4, 256, 64, position, .split_half);
         if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = 1024 }, .{ .dst = v_slot, .src = v_row, .count = 1024 } });
         const visible = position + 1;
         try b.attentionDecode(self.stateSlice(cache.keys.range(0, visible)), self.stateSlice(cache.values.range(0, visible)), self.q, self.partials, self.mixed_out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = visible, .scale = 1.0 / 16.0, .precision = precision });

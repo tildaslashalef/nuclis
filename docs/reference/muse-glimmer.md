@@ -262,8 +262,8 @@ inventory and eighteen mutations of it. The CPU runtime
 (`muse_glimmer_runtime.zig`) executes the forward pass above with the
 shared primitives; the only addition to the CPU backend was an
 adjacent-pair mode on `cpu.rope` (`Pairing.adjacent`, the GGUF "normal"
-rope type; Qwen and Gemma rotate split-half). The Metal plan is a
-placeholder that fails at open (`MetalPlanUnavailable`) until MODL-12.
+rope type; Qwen and Gemma rotate split-half). The Metal plan is
+[§ Metal plan](#metal-plan-modl-12-2026-09-19).
 
 The oracle traces are `tests/fixtures/muse-glimmer-hello-comma/`
 ([provenance](../../tests/fixtures/provenance.md)): the pinned reference
@@ -285,13 +285,116 @@ The whole run, three CPU tokens through 52 layers with F64 accumulation
 over the Q4_K/Q5_K weights, takes 1 min 41 s on the M4 Pro; the CPU path
 is the reference, not a way to run the model.
 
+## Metal plan (MODL-12, 2026-09-19)
+
+`inference/src/models/muse_glimmer_metal.zig` records the forward pass
+above as `Backend` encoder calls, one command buffer per token (`step`)
+or per prompt chunk (`prefill`), the same shape as the Gemma plan. What
+the schedule needed from the backend, and what it reused unchanged
+([metal-backend.md](metal-backend.md)):
+
+| Operation | Kernel | Status |
+| --- | --- | --- |
+| Projections, FFN, the untied head | `nu_matvec_q4_k`, `nu_matvec_q5_k`, `nu_matmul_*`, `nu_matvec_segments` | reused; the four attention projections (q, k, v, gate) merge into one segment dispatch, the FFN pair into the SiLU pair mode |
+| Embedding norm without a weight | `nu_rmsnorm` with a row of ones | reused |
+| Pre norms and q/k norms at 1e-5, post norms at 1e-8 | `nu_rmsnorm` (`Norm.eps`) | reused; the epsilon is per call |
+| RoPE, adjacent pairing over the whole 128-wide head, base 5e5, sliding layers only | `nu_rope`, `nu_rope_rows` | **extended**: a `pairing` parameter (`Backend.Pairing`, the CPU's enum) selects `(2i, 2i+1)`; the table is the same for either pairing |
+| Decode attention (32 over 2, width 128, scale 1/√128) | `nu_attention_decode` / `_h` | reused; the window is a cache-row slice (`firstVisible`), as in the CPU reference |
+| Prefill attention | `nu_attention_chunk` / `_h` with `window = 2048` on sliding layers | reused (the MODL-06 window mask) |
+| Attention output gate `o ⊙ sigmoid(g)` | `nu_sigmoid_gate` | reused (the Qwen3.5 gate epilogue; here the gate is its own projection, stride 128, offset 0) |
+| Logit scale and soft-cap | `nu_scale`, `nu_softcap` | reused; the scale is one rounding before the tanh, where the reference folds it into the argument |
+
+Every cache is allocated for the full session capacity, sliding layers
+included (the CPU reference does the same): 52 × 2 × 256 halves per
+position, 1.7 GB at 32,768 tokens with the F16 cache. A ring layout for
+the 39 windowed layers is a session-layout unit of its own
+([roadmap](../roadmap.md)).
+
+**Against the pinned traces** (`make compare-muse-glimmer`, three
+positions of `<|begin_of_text|>Hello,`, 157 files, 2026-09-19):
+
+| Path | Max absolute | Max relative RMS | Threshold | Greedy / top-5 |
+| --- | --- | --- | --- | --- |
+| CPU reference | 1.53e-4 | 6.35e-7 | 2e-3 / 1e-4 | 372, identical |
+| Metal, F32 cache | 1.53e-4 (layers), 6.0e-6 (logits) | 8.0e-7 | 2e-3 / 1e-4 | 372, identical |
+| Metal, F16 cache | 7.3e-2 (layer 49 of token 0), 2.6e-3 (logits) | 1.97e-4 (layers), 1.0e-4 (logits) | 0.1 / 3e-4 (its own) | 372, identical, reference margin 0.31 |
+
+The F16 row sets the family's tolerance: seventeen of the 156 layer files
+sit above the Qwen bound of 3e-2 (all in the last eight layers, none
+above 0.1) while every relative RMS stays under 2e-4 and the logits
+within 2.6e-3. The kernels are the ones `test-metal` holds within 2e-4
+of the CPU over the rounded operands; the residual stream of the late
+layers is simply large. `--kv f32` is available for numerical work; the
+default stays `f16` as for the other families.
+
+**Generation check** (`make test-generation-muse-glimmer-metal`,
+2026-09-19): sessions bit-identical, cancellation and reset through both
+observer callbacks, snapshot/restore bit-exact (106,496 bytes at position
+1); chunked prefill vs per-token steps on 70 tokens: chunks of 64 / 48 /
+32 at 1.39e-2 / 1.26e-2 / 6.3e-3 max abs and 4.5e-3 / 4.0e-3 / 1.2e-3
+relative RMS (recorded bounds 5e-2 / 1e-2), the generic F32 tiles at
+3.7e-5 / 4.1e-6 (the schedule itself), the F16 cache stepped at 2.4e-3 /
+2.6e-4 and chunked at 5.0e-3 / 6.0e-4 (bounds 2e-2 / 2e-3), argmax 75 of
+75 on every path. The gap between the half tiles and the F32 tiles is the
+specialized matmul's half-operand rounding (ENGN-05), as on Gemma.
+
+**First-look rates** (`nuclis bench`, Metal, greedy, context 2,048, three
+measured runs after one warmup; Apple M4 Pro 48 GB, Zig 0.16.0
+ReleaseSafe, 2026-09-19; not the acceptance record, which MODL-13 takes
+against the reference harness). The prompt is raw (`--raw`) because the
+profile does not exist yet:
+
+| Workload | Prefill tok/s | Decode tok/s | First token |
+| --- | ---: | ---: | ---: |
+| 10-token raw prompt (the `make bench` text through Muse's tokenizer), 64 out, `--kv f16` | 18.3 | 9.99 | 547 ms |
+| same, `--kv f32` | 18.2 | 9.91 | 549 ms |
+| 512-token array (the first 512 ids of `docs/spec.md`'s opening 6,000 bytes through Muse's tokenizer), 128 out, `--kv f16` | 93.2 | 9.59 | 5,492 ms |
+| same, `--kv f32` | 93.0 | 9.52 | 5,504 ms |
+| Reference `llama-bench` `7620399` on the same file (`-p 512 -n 128 -ngl 99 -fa 1 -ctk f16 -ctv f16 -r 3`) | 101.9 ± 0.1 | 14.08 ± 0.11 | — |
+
+Decode is 71 % of the reference (15.87 GB of weights at 9.99 tok/s is
+159 GB/s effective against the reference's 223) and prefill 91 %. The
+Qwen `make bench` is unchanged by the shared-kernel change (39.75 /
+10.44 tok/s the same day; its recorded spread is 10.36–10.47). The
+decode gap is wider than Gemma's (81 %) or Qwen's; where the time goes
+is the performance theme's question ([roadmap](../roadmap.md)), with
+the per-kernel profile below as its starting point.
+
+**Per-kernel profile** (`make bench-profile MODEL=<file> ARGS=--raw`,
+the raw 10-token prompt, 64 output tokens, 192 measured decode steps;
+profiling itself costs 10 %: 9.07 tok/s profiled against 9.99). 922
+dispatches per token, 107.5 ms attributed of 111.6 ms of command-buffer
+time:
+
+| Kernel | Shape (rows × columns) | Dispatches/step | ms/step | Share | GB/s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `matvec_segments` (FFN gate + up, SiLU pair) | 39,936 × 6,656 Q4_K | 51.2 | 43.8 | 40.8 % | 174.6 |
+| `matvec_q4_k` (FFN down) | 6,656 × 19,968 | 51.2 | 26.1 | 24.2 % | 146.9 |
+| `matvec_segments` (q, k, v, gate) | 8,704 × 6,656 Q4_K | 51.2 | 11.5 | 10.7 % | 144.6 |
+| `matvec_q4_k` / `matvec_q5_k` (attention output) | 6,656 × 4,096 | 51.2 | 5.2 | 4.9 % | 151.8 / 167.0 |
+| `matvec_q5_k` (the untied head) | 202,048 × 6,656 | 1.0 | 4.4 | 4.1 % | 207.9 |
+| `rmsnorm` (six per layer, the embedding and output norms) | — | 314 | 4.3 | 4.0 % | — |
+| `attention_decode_h` + `attention_merge` | 32 over 2, ≤ 74 visible | 51.2 + 51.2 | 2.8 | 2.6 % | — |
+| everything else (`add`, `rope`, `sigmoid_gate`, `pack_half`, the prompt's matmul tiles amortized) | — | — | 9.4 | 8.7 % | — |
+
+The four attention projections merge into one segment dispatch only
+because the plan packs the query with the gate and the scratch key with
+the value: the segment kernel binds seven buffers, and four weights with
+four separate outputs need nine (unmerged, the 256-row k and v matvecs
+ran at 52 GB/s; merging them moved decode from 9.88 to 9.99 tok/s). The
+matvecs read at 145–175 GB/s where the head's Q5_K rows reach 208 and
+the reference averages 223 across the whole token, so the gap is spread
+over the large Q4_K matrices rather than sitting in one kernel; that is
+the performance theme's starting point, not this unit's.
+
 ## Status
 
 MODL-11 closed on 2026-09-19: the artifact is pinned and verified, the
 facts recorded, the `llama4` splitter native and matched to the
 reference, the adapter binds the file (`nuclis model inspect` says
 *supported*), and the CPU reference matches the oracle traces at the
-bring-up thresholds with the same greedy token. The Metal plan is
-MODL-12 (its RoPE kernel needs the adjacent pairing, its attention the
-sigmoid gate epilogue and the 2048 window), the profile and the
-acceptance record MODL-13, tool calling AGNT-10.
+bring-up thresholds with the same greedy token. MODL-12 closed the same
+day: the Metal plan matches the traces in both cache precisions, passes
+the generation check, and runs the file at 9.9 tok/s. The profile with
+its channel decoder and the acceptance record are MODL-13, tool calling
+AGNT-10.

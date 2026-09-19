@@ -751,6 +751,30 @@ cache precisions ([bonsai.md](bonsai.md#metal-plan-modl-17-2026-09-18)).
 Not slower at 1.26 GB less, so the catalogue entry moved to it (decided
 2026-09-18); the acceptance workload was not re-run on it.
 
+## Muse Glimmer 30B: first look (MODL-12, 2026-09-19)
+
+The third family's rates on the same machine, method, and build as
+above (greedy, context 2,048, three measured runs after one warmup), not
+an acceptance record: the reference harness run on the same token arrays
+is MODL-13's. The prompt is raw because the profile does not exist yet;
+the 512-token array is the first 512 ids of `docs/spec.md`'s opening
+6,000 bytes through Muse's tokenizer (the Qwen arrays carry ids above
+its vocabulary). Both cache precisions, since Muse's F16 tolerance is
+its own ([muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19),
+which also holds the per-kernel profile).
+
+| Workload | Prefill tok/s | Decode tok/s | First token |
+| --- | ---: | ---: | ---: |
+| 10-token raw prompt (the `make bench` text through Muse's tokenizer), 64 out, `--kv f16` | 18.3 | 9.99 | 547 ms |
+| same, `--kv f32` | 18.2 | 9.91 | 549 ms |
+| 512-token array, 128 out, `--kv f16` | 93.2 | 9.59 | 5,492 ms |
+| same, `--kv f32` | 93.0 | 9.52 | 5,504 ms |
+| `llama-bench` `7620399`, same file, `-p 512 -n 128 -ngl 99 -fa 1 -ctk f16 -ctv f16 -r 3` | 101.9 ± 0.1 | 14.08 ± 0.11 | — |
+
+Weights are 15.87 GB, so 9.99 tok/s reads 159 GB/s against the
+reference's 223 (71 %); the 512-token prefill is at 91 %. The Qwen
+`make bench` the same day: 39.75 / 10.44 tok/s, unchanged.
+
 ## Per-kernel profile
 
 `nuclis bench --profile` (Metal only) adds a table of GPU time per kernel and

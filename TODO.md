@@ -16,23 +16,20 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-MODL-11 closed on 2026-09-19: Muse Glimmer 30B is pinned, its facts are
-in [docs/reference/muse-glimmer.md](docs/reference/muse-glimmer.md), the
-`llama4` tokenizer is native and matched to the reference, the adapter
-binds the file (`inspect` says *supported*), and the CPU reference
-matches the pinned traces (157 files, max abs 1.5e-4, greedy 372). Next
-is MODL-12, the Metal plan (design below): the placeholder
-`muse_glimmer_metal.zig` fails at open until it lands, and the RoPE
-kernel needs the adjacent-pair mode the CPU reference gained.
+MODL-12 closed on 2026-09-19: the Muse Glimmer Metal plan matches the
+pinned traces in both cache precisions, passes the generation check,
+and decodes at 9.99 tok/s (71 % of the reference; the per-kernel
+profile is in [docs/reference/muse-glimmer.md](docs/reference/muse-glimmer.md)).
+Next is MODL-13, the profile (design below): `nuclis bench` and `agent`
+still refuse the file (`UnsupportedPromptTemplate`) until it lands.
 
-Order: MODL-12 → MODL-13 → AGNT-10.
+Order: MODL-13 → AGNT-10.
 After AGNT-10 the roadmap continues with speculative decoding across the
 families, then performance (the ternary matvec arithmetic among it), then
 vision ([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-12 | Muse Glimmer 30B: Metal plan | 1 |
 | MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 1 |
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 1 |
 
@@ -63,27 +60,6 @@ Companions in the repository, sizes from the listing (the pulled ones'
 digests are in artifacts.md): `mmproj-kquant.gguf` 1,400,328,928 B,
 `mmproj-Muse-Glimmer-30B-BF16.gguf` 3,849,173,728 B,
 `dflash-kquant.gguf` 1,631,205,312 B.
-
-## MODL-12 — Muse Glimmer 30B: Metal plan
-
-**Design.** `muse_glimmer_metal.zig` (today a placeholder `Plan` whose
-`init` fails with `MetalPlanUnavailable`; replace it) composing existing
-kernels: Q4_K/Q5_K matvec and the batched prefill tiles, RMS norm (a
-weightless variant for the embedding norm, or a ones vector; the post
-norms at ε 1e-8, the rest at 1e-5), RoPE with **adjacent pairing** (the
-kernel today rotates split-half; add the mode `cpu.rope.Pairing.adjacent`
-has) at θ 5e5 on sliding layers only, flash-decoding attention with head 128 and 2 KV heads, the
-window mask on prefill and the cache-row slice on decode (window 2048),
-the sigmoid gate epilogue before the output projection (Qwen3.5's
-attention gate path is the nearest existing kernel), SwiGLU, the logit
-scale and tanh soft-cap (Gemma's). The KV cache stays full-context on
-sliding layers (the ring layout remains the roadmap follow-up; 1.7 GB at
-32K F16 is affordable).
-
-**Acceptance.** `make compare-muse-glimmer` (CPU, Metal F32, Metal F16 at
-their tolerances; `compare-muse-glimmer-cpu` and its macro exist) on the
-pinned traces (`tests/fixtures/muse-glimmer-hello-comma`, three positions); `make test-generation-muse-glimmer-metal`;
-`make bench` on Qwen unchanged; a first decode/prefill number recorded.
 
 ## MODL-13 — Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance
 

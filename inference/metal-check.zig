@@ -2001,7 +2001,7 @@ pub fn main(init: std.process.Init) !void {
         try Backend.ropeTable(table, positions, 64, 1e7, null);
         for (0..24) |h| try inference.cpu.rope.apply(q_expected[h * 256 ..][0..256], q_expected[h * 256 ..][0..256], .{ .dimensions = 64, .base = 1e7, .position = 32767 });
         try b.begin();
-        try b.rope(q, table, 24, 256, 64, 32767);
+        try b.rope(q, table, 24, 256, 64, 32767, .split_half);
         try b.commit();
         for (q.floats(), q_expected) |got, want| try expectClose("rope", got, want, 2e-6 * @max(1, @abs(want)));
         // RoPE over a whole 512-wide head with per-pair factors (the
@@ -2018,7 +2018,7 @@ pub fn main(init: std.process.Init) !void {
             defer alloc.free(wide_expected);
             for (0..16) |h| try inference.cpu.rope.apply(wide.floats()[h * 512 ..][0..512], wide_expected[h * 512 ..][0..512], .{ .dimensions = 512, .base = 1e6, .position = 32767, .factors = &factors });
             try b.begin();
-            try b.rope(wide, wide_table, 16, 512, 512, 32767);
+            try b.rope(wide, wide_table, 16, 512, 512, 32767, .split_half);
             try b.commit();
             for (wide.floats(), wide_expected, 0..) |got, want, i| {
                 try expectClose("rope with factors", got, want, 2e-6 * @max(1, @abs(want)));
@@ -2029,6 +2029,22 @@ pub fn main(init: std.process.Init) !void {
             try std.testing.expectError(error.InvalidShape, Backend.ropeTable(wide_table, positions, 512, 1e6, factors[0..100]));
             factors[3] = 0;
             try std.testing.expectError(error.InvalidShape, Backend.ropeTable(wide_table, positions, 512, 1e6, &factors));
+        }
+        // Adjacent pairing (Muse Glimmer: the whole 128-wide head at base
+        // 5e5), 32 heads at position 32767, against cpu.rope.apply in that
+        // mode; the same table serves both pairings.
+        {
+            const adjacent_table = try b.create(positions * 64 * 8);
+            try Backend.ropeTable(adjacent_table, positions, 128, 5e5, null);
+            const adjacent = try b.create(32 * 128 * 4);
+            for (adjacent.floats()) |*v| v.* = random.floatNorm(f32);
+            const adjacent_expected = try alloc.alloc(f32, 32 * 128);
+            defer alloc.free(adjacent_expected);
+            for (0..32) |h| try inference.cpu.rope.apply(adjacent.floats()[h * 128 ..][0..128], adjacent_expected[h * 128 ..][0..128], .{ .dimensions = 128, .base = 5e5, .position = 32767, .pairing = .adjacent });
+            try b.begin();
+            try b.rope(adjacent, adjacent_table, 32, 128, 128, 32767, .adjacent);
+            try b.commit();
+            for (adjacent.floats(), adjacent_expected) |got, want| try expectClose("rope adjacent", got, want, 2e-6 * @max(1, @abs(want)));
         }
         // L2 norm over 32 rows of 128.
         const l2 = try b.create(32 * 128 * 4);
@@ -2216,8 +2232,11 @@ pub fn main(init: std.process.Init) !void {
             y.* = x.*;
         }
         try b.begin();
-        for (0..rows) |t| try b.rope(seq.slice(t * 32 * 4, 32 * 4), table, 3, 8, 8, 7 + t);
-        try b.ropeRows(chunk, table, 3, 8, 8, 7, rows, 32);
+        for (0..rows) |t| try b.rope(seq.slice(t * 32 * 4, 32 * 4), table, 3, 8, 8, 7 + t, .split_half);
+        try b.ropeRows(chunk, table, 3, 8, 8, 7, rows, 32, .split_half);
+        // The adjacent pairing on top: the composition is still bit-identical.
+        for (0..rows) |t| try b.rope(seq.slice(t * 32 * 4, 32 * 4), table, 3, 8, 8, 7 + t, .adjacent);
+        try b.ropeRows(chunk, table, 3, 8, 8, 7, rows, 32, .adjacent);
         try b.commit();
         if (!std.mem.eql(f32, seq.floats(), chunk.floats())) return error.RopeRowsMismatch;
         // Convolution: 6 channels, 4 taps, row stride 9 (channels 6..8 untouched).
@@ -2366,5 +2385,5 @@ pub fn main(init: std.process.Init) !void {
         if (p.command_buffers != 0) return error.ProfileCountedEmptyPass;
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors and in both pairings, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
 }

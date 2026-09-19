@@ -25,6 +25,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
         compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
         compare-gemma4-26b-a4b compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 \
         compare-bonsai compare-bonsai-cpu compare-bonsai-f32 compare-bonsai-f16 test-generation-bonsai-metal baseline-bonsai \
+        compare-muse-glimmer compare-muse-glimmer-cpu compare-muse-glimmer-f32 compare-muse-glimmer-f16 test-generation-muse-glimmer-metal \
         test-generation-gemma4 test-generation-gemma4-metal test-generation-gemma4-qat-metal test-generation-gemma4-26b-a4b-metal clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
@@ -225,8 +226,19 @@ define compare_muse_glimmer_run
 	  --max-absolute $(3) --max-relative-rms $(4) \
 	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("muse-glimmer $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
 endef
-compare-muse-glimmer-cpu: metal ## The Muse Glimmer CPU reference vs its pinned llama.cpp traces (`<|begin_of_text|>Hello,`, three positions) at the bring-up thresholds (MODL-11, docs/reference/muse-glimmer.md)
+compare-muse-glimmer: compare-muse-glimmer-cpu compare-muse-glimmer-f32 compare-muse-glimmer-f16 ## muse-glimmer-30b vs its pinned llama.cpp traces (`<|begin_of_text|>Hello,`, three positions): CPU reference, Metal F32 and F16 caches (docs/reference/muse-glimmer.md)
+
+compare-muse-glimmer-cpu: metal ## The Muse Glimmer CPU reference at the bring-up thresholds (max abs 2e-3, relative RMS 1e-4)
 	$(call compare_muse_glimmer_run,cpu,--backend cpu,0.002,0.0001)
+
+compare-muse-glimmer-f32: metal ## The Muse Glimmer Metal plan with the F32 cache at the bring-up thresholds
+	$(call compare_muse_glimmer_run,f32,--backend metal --kv f32,0.002,0.0001)
+
+compare-muse-glimmer-f16: metal ## The Muse Glimmer Metal plan with the F16 cache at the family's tolerance (max abs 0.1, relative RMS 3e-4; docs/reference/muse-glimmer.md)
+	$(call compare_muse_glimmer_run,f16,--backend metal --kv f16,0.1,0.0003)
+
+test-generation-muse-glimmer-metal: ## The generation check on muse-glimmer-30b, Metal plan
+	$(ZIG) build test-generation $(METAL) -- "$(MUSE_MODEL)" --metal
 
 compare-gemma4-26b-a4b: compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 ## gemma-4-26b-a4b (mixture of experts) vs its pinned traces: CPU reference, Metal F32 and F16 caches (MODL-09, docs/reference/gemma4.md)
 
