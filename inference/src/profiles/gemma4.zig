@@ -749,7 +749,7 @@ test "thinking is a switch: every effort but off renders like medium" {
     const messages = [_]Message{ .{ .role = .system, .content = "Be brief." }, .{ .role = .user, .content = "Hi" } };
     const on = try render(alloc, &messages, &.{}, .medium, .{});
     defer alloc.free(on);
-    for ([_]Effort{ .low, .xhigh }) |effort| {
+    for ([_]Effort{ .low, .high, .xhigh }) |effort| {
         const other = try render(alloc, &messages, &.{}, effort, .{});
         defer alloc.free(other);
         try std.testing.expectEqualStrings(on, other);
@@ -797,7 +797,7 @@ test "invalid conversations and bounded rendering return typed errors" {
 
 test "sampling defaults are the file's hint in every mode and flags override per option" {
     const hint = sampling.Options{ .temperature = 1.0, .top_p = 0.95, .top_k = 64, .min_p = 0, .presence_penalty = 0, .repetition_penalty = 1 };
-    for ([_]Effort{ .off, .low, .medium, .xhigh }) |effort| {
+    for ([_]Effort{ .off, .low, .medium, .high, .xhigh }) |effort| {
         try std.testing.expectEqual(hint, samplingDefaults(effort));
         _ = try sampling.Sampler.init(0, samplingDefaults(effort));
     }

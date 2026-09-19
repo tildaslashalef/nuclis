@@ -17,11 +17,14 @@ pub const stream = @import("stream.zig");
 
 pub const qwen38 = @import("qwen38.zig");
 pub const gemma4 = @import("gemma4.zig");
+pub const muse_glimmer = @import("muse_glimmer.zig");
 
 pub const Role = enum { system, developer, user, assistant, tool };
 /// The reasoning control shared by every profile. Named after Qwen3.8's
-/// levels because it was the first; profiles with fewer levels collapse them.
-pub const Effort = enum { off, low, medium, xhigh };
+/// levels because it was the first (its template folds `high` into
+/// `xhigh`); profiles with fewer levels collapse them, and one without
+/// `off` (Muse Glimmer) renders it as `low`.
+pub const Effort = enum { off, low, medium, high, xhigh };
 
 /// One assistant request to call a tool. `id` is host correlation data: a
 /// model's native wire format need not carry it, so the host assigns it and
@@ -93,6 +96,9 @@ pub const StreamMarkers = struct {
     tool_open: ?[]const u8 = null,
     tool_close: ?[]const u8 = null,
     tool_parse: ?stream.ParseTool = null,
+    /// The message-header grammar's control texts (`stream.Channel`);
+    /// `tool_parse` then reads a tool body. Replaces the bracket grammar.
+    channel: ?struct { start: []const u8, message: []const u8, eom: []const u8 } = null,
 };
 
 /// The profiles the tree implements. Each tag names a module with the same
@@ -102,6 +108,7 @@ pub const StreamMarkers = struct {
 pub const Profile = enum {
     qwen38,
     gemma4,
+    muse_glimmer,
 
     /// Resolve control tokens against this artifact once per completion.
     /// The profile supplies the non-special header suffix separately.
@@ -121,6 +128,14 @@ pub const Profile = enum {
                         .parse = m.tool_parse.?,
                     };
                 }
+                if (m.channel) |c| {
+                    markers.channel = .{
+                        .start = vocab.tokenId(c.start) orelse return error.MissingReasoningToken,
+                        .message = vocab.tokenId(c.message) orelse return error.MissingReasoningToken,
+                        .eom = vocab.tokenId(c.eom) orelse return error.MissingReasoningToken,
+                        .parse = m.tool_parse,
+                    };
+                }
                 break :blk stream.Decoder.init(alloc, markers, effort != .off);
             },
         };
@@ -131,6 +146,7 @@ pub const Profile = enum {
         return switch (self) {
             .qwen38 => qwen38,
             .gemma4 => gemma4,
+            .muse_glimmer => muse_glimmer,
         };
     }
 
@@ -364,6 +380,7 @@ fn nextJson(scanner: *std.json.Scanner) Error!?std.json.Token {
 test "profiles are selected by template digest" {
     try std.testing.expectEqual(Profile.qwen38, forTemplate(qwen38.template_sha256).?);
     try std.testing.expectEqual(Profile.gemma4, forTemplate(gemma4.template_sha256).?);
+    try std.testing.expectEqual(Profile.muse_glimmer, forTemplate(muse_glimmer.template_sha256).?);
     try std.testing.expect(forTemplate("") == null);
     try std.testing.expect(forTemplate("0000000000000000000000000000000000000000000000000000000000000000") == null);
     try std.testing.expectEqualStrings(qwen38.template_sha256, Profile.qwen38.templateSha256());
@@ -390,6 +407,8 @@ test "every profile names at least one stop token and both reasoning markers" {
     try std.testing.expectEqualStrings("<|im_end|>", Profile.qwen38.stopTokens()[0]);
     try std.testing.expectEqualStrings("<turn|>", Profile.gemma4.stopTokens()[0]);
     try std.testing.expectEqualStrings("<|tool_response>", Profile.gemma4.stopTokens()[2]);
+    try std.testing.expectEqualStrings("<|eot|>", Profile.muse_glimmer.stopTokens()[0]);
+    try std.testing.expectEqualStrings("<|eom|>", Profile.muse_glimmer.reasoning().close);
     try std.testing.expectEqualStrings("</think>", Profile.qwen38.reasoning().close);
     try std.testing.expectEqualStrings("<channel|>", Profile.gemma4.reasoning().close);
 }
@@ -512,4 +531,5 @@ test {
     _ = stream;
     _ = qwen38;
     _ = gemma4;
+    _ = muse_glimmer;
 }

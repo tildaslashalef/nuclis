@@ -14,6 +14,14 @@
 //! and emits one `tool_call` event when the closing token arrives. A call that
 //! is still open at EOS, a budget stop, or a cancellation is released as plain
 //! answer text and never surfaces for execution.
+//!
+//! The second grammar (`Markers.channel`, Muse Glimmer) is a sequence of
+//! messages `HEADER<|message|>BODY` ended by `<|eom|>` or the next
+//! `<|start|>`: the header is ordinary text (`assistant to=self`) that
+//! routes the body to thinking, the answer, or a tool parser, and a tool
+//! body is complete at the end of the turn (`<|eot|>` is a stop token), not
+//! at a closing bracket, so `end` completes it on EOS and releases it as
+//! text on any other stop.
 const std = @import("std");
 const Utf8 = @import("../tokenizer/stream.zig").Stream;
 const ToolCall = @import("../events.zig").ToolCall;
@@ -28,6 +36,18 @@ pub const Tool = struct {
     parse: ParseTool,
 };
 
+/// The message-header grammar: `start` opens a header, `message` ends it
+/// and starts the body, `eom` ends a message. `parse` reads a tool body.
+pub const Channel = struct {
+    start: u32,
+    message: u32,
+    eom: u32,
+    parse: ?ParseTool = null,
+};
+/// A header longer than this is not one: its bytes are released as answer
+/// text (a model writing prose where a header belongs hides nothing).
+pub const header_limit = 256;
+
 pub const Markers = struct {
     open: u32,
     close: u32,
@@ -35,6 +55,9 @@ pub const Markers = struct {
     open_suffix: []const u8 = "",
     /// Present only when the template defines a native call grammar.
     tool: ?Tool = null,
+    /// Present for the message-header grammar, which replaces the bracket
+    /// grammar above (`open`/`close`/`tool` are then unused).
+    channel: ?Channel = null,
 };
 
 pub const Decoder = struct {
@@ -56,9 +79,15 @@ pub const Decoder = struct {
     /// be released exactly as the model wrote it.
     tool_open_text: std.ArrayList(u8) = .empty,
     tool_close_text: std.ArrayList(u8) = .empty,
+    /// Channel grammar: true while a header is being collected (from the
+    /// start of the completion, since the prompt ends inside one).
+    in_header: bool = false,
+    header_buf: std.ArrayList(u8) = .empty,
 
     pub fn init(alloc: std.mem.Allocator, markers: Markers, thinking: bool) Decoder {
-        return .{ .alloc = alloc, .markers = markers, .thinking = thinking, .scratch = .init(alloc) };
+        const channel = markers.channel != null;
+        // Under the channel grammar the first header decides the channel.
+        return .{ .alloc = alloc, .markers = markers, .thinking = thinking and !channel, .in_header = channel, .scratch = .init(alloc) };
     }
 
     pub fn deinit(self: *Decoder) void {
@@ -66,20 +95,23 @@ pub const Decoder = struct {
         self.tool_buf.deinit(self.alloc);
         self.tool_open_text.deinit(self.alloc);
         self.tool_close_text.deinit(self.alloc);
+        self.header_buf.deinit(self.alloc);
         self.* = undefined;
     }
 
     /// The completion boundary is shared by the real loop and fake token
     /// sources. Flush text before the single terminal event; finish itself is
     /// also used at channel boundaries and therefore never emits a stop.
+    /// Under the channel grammar a tool body open at EOS is a complete call.
     pub fn end(self: *Decoder, outcome: @import("../engine.zig").Outcome, sink: anytype) !void {
-        try self.finish(sink);
+        try self.finishWith(sink, self.markers.channel != null and outcome.stop == .eos);
         try sink.send(.{ .stop = outcome });
     }
 
     /// `piece` is the decoded bytes of exactly `token`, not accumulated text.
     /// Sink errors propagate immediately; the caller must abandon this decoder.
     pub fn feed(self: *Decoder, token: u32, piece: []const u8, sink: anytype) !void {
+        if (self.markers.channel) |channel| return self.feedChannel(channel, token, piece, sink);
         if (self.markers.tool) |tool| {
             if (token == tool.open) {
                 try self.finish(sink);
@@ -156,6 +188,89 @@ pub const Decoder = struct {
         try self.text(bytes, sink);
     }
 
+    fn feedChannel(self: *Decoder, channel: Channel, token: u32, piece: []const u8, sink: anytype) !void {
+        if (token == channel.start) {
+            try self.closeMessage(sink);
+            self.in_header = true;
+            self.header_buf.clearRetainingCapacity();
+            return;
+        }
+        if (self.in_header) {
+            if (token == channel.message) {
+                self.in_header = false;
+                self.route(channel);
+                return;
+            }
+            try self.header_buf.appendSlice(self.alloc, piece);
+            if (self.header_buf.items.len > header_limit) {
+                // Not a header after all: nothing stays hidden.
+                self.in_header = false;
+                self.thinking = false;
+                try self.text(self.header_buf.items, sink);
+                self.header_buf.clearRetainingCapacity();
+            }
+            return;
+        }
+        if (token == channel.eom) {
+            try self.closeMessage(sink);
+            self.in_header = true;
+            self.header_buf.clearRetainingCapacity();
+            return;
+        }
+        if (self.in_tool) {
+            try self.tool_buf.appendSlice(self.alloc, piece);
+            return;
+        }
+        try self.text(piece, sink);
+    }
+
+    /// The header decides the body's channel: `assistant to=self` is
+    /// thinking, `assistant` and `assistant to=user` the answer, any other
+    /// recipient a tool body when the profile parses one, else the answer.
+    fn route(self: *Decoder, channel: Channel) void {
+        var header = std.mem.trim(u8, self.header_buf.items, " \t\r\n");
+        if (std.mem.startsWith(u8, header, "assistant")) header = std.mem.trimStart(u8, header["assistant".len..], " \t\r\n");
+        self.thinking = false;
+        self.in_tool = false;
+        if (std.mem.eql(u8, header, "to=self")) {
+            self.thinking = true;
+        } else if (header.len != 0 and !std.mem.eql(u8, header, "to=user") and std.mem.startsWith(u8, header, "to=") and channel.parse != null) {
+            self.in_tool = true;
+            self.tool_buf.clearRetainingCapacity();
+        }
+        self.header_buf.clearRetainingCapacity();
+    }
+
+    /// A message boundary under the channel grammar: a tool body is one
+    /// complete call, other text is flushed with its UTF-8 state.
+    fn closeMessage(self: *Decoder, sink: anytype) !void {
+        if (self.in_tool) {
+            self.in_tool = false;
+            try self.finishChannelTool(sink);
+            return;
+        }
+        self.scratch.clearRetainingCapacity();
+        try self.utf8.finish(&self.scratch.writer);
+        try self.flush(sink);
+    }
+
+    /// Parse and emit the collected tool body, or release it as answer text.
+    fn finishChannelTool(self: *Decoder, sink: anytype) !void {
+        const parse = self.markers.channel.?.parse.?;
+        const parsed = try parse(self.alloc, self.tool_buf.items);
+        if (parsed) |call| {
+            defer {
+                self.alloc.free(call.name);
+                self.alloc.free(call.arguments);
+            }
+            try sink.send(.{ .tool_call = call });
+        } else {
+            self.thinking = false;
+            try self.text(self.tool_buf.items, sink);
+        }
+        self.tool_buf.clearRetainingCapacity();
+    }
+
     /// One complete call: parse the collected body and emit it, or release the
     /// whole thing as answer text when it is not one well-formed call.
     fn finishTool(self: *Decoder, sink: anytype) !void {
@@ -192,6 +307,26 @@ pub const Decoder = struct {
     /// boundary. A call still open here never reached its closing token, so it
     /// is text, not an action.
     pub fn finish(self: *Decoder, sink: anytype) !void {
+        try self.finishWith(sink, false);
+    }
+
+    /// `finish`, completing an open channel-grammar tool body when
+    /// `complete_tool` (the turn ended on its stop token).
+    fn finishWith(self: *Decoder, sink: anytype, complete_tool: bool) !void {
+        if (self.in_header) {
+            self.in_header = false;
+            self.thinking = false;
+            try self.text(self.header_buf.items, sink);
+            self.header_buf.clearRetainingCapacity();
+        }
+        if (self.in_tool and self.markers.channel != null) {
+            self.in_tool = false;
+            if (complete_tool) try self.finishChannelTool(sink) else {
+                self.thinking = false;
+                try self.text(self.tool_buf.items, sink);
+                self.tool_buf.clearRetainingCapacity();
+            }
+        }
         if (self.in_tool) {
             self.in_tool = false;
             try self.text(self.tool_open_text.items, sink);

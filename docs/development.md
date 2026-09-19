@@ -103,7 +103,10 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   the expert entry, whose routing amplifies it further, and
   `test-generation-gemma4` is the CPU run at ~35 s per token) with it; `make test-vocabulary` on either
   pinned Gemma file and on the Muse Glimmer file (`MODEL=<path>`) when the
-  tokenizer or a profile fixture changed, and `make baseline-gemma4-qat` for the Gemma acceptance
+  tokenizer or a profile fixture changed, `make baseline-muse-glimmer` for
+  the Muse acceptance workload
+  ([bench.md](reference/bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19)),
+  and `make baseline-gemma4-qat` for the Gemma acceptance
   workload on the QAT entry
   ([bench.md](reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12);
   `baseline-gemma4` for the K-quant entry's, `baseline-gemma4-26b-a4b` for

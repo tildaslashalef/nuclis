@@ -556,7 +556,7 @@ pub const Resolved = struct {
 /// The sampling profile belongs to the checkpoint. The catalogue records it
 /// per entry so `config show` can name it without opening the file: the
 /// profile a catalogue entry pins onto its file, or null for a registry
-/// entry, a bare path, or an entry whose profile unit is pending. The pin is
+/// entry or a bare path. The pin is
 /// forced at open, so a catalogue file whose own template is not pinned
 /// (Bonsai renders the Qwen3.8 protocol) still renders; a file whose digest
 /// is pinned detects the same profile anyway, so nothing is reported forced.
@@ -1178,7 +1178,7 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"model\": \"\" } }", .err = error.InvalidConfigValue, .needle = "engine.model must not be empty" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": \"metal\" }", .err = error.InvalidConfigValue, .needle = "engine must be an object" },
         .{ .text = "{ \"schema_version\": 1, \"generate\": { \"max_tokens\": 0 } }", .err = error.InvalidConfigValue, .needle = "generate.max_tokens must be 1..4096" },
-        .{ .text = "{ \"schema_version\": 1, \"generate\": { \"think\": \"loud\" } }", .err = error.InvalidConfigValue, .needle = "generate.think must be one of off|low|medium|xhigh" },
+        .{ .text = "{ \"schema_version\": 1, \"generate\": { \"think\": \"loud\" } }", .err = error.InvalidConfigValue, .needle = "generate.think must be one of off|low|medium|high|xhigh" },
         .{ .text = "{ \"schema_version\": 1, \"generate\": { \"sampling\": { \"top_p\": 0 } } }", .err = error.InvalidConfigValue, .needle = "generate.sampling.top_p is out of range" },
         .{ .text = "{ \"schema_version\": 1, \"generate\": { \"sampling\": { \"temperature\": \"hot\" } } }", .err = error.InvalidConfigValue, .needle = "generate.sampling.temperature must be null or a number" },
         .{ .text = "{ \"schema_version\": 1, \"agent\": { \"fold_thinking\": 1 } }", .err = error.InvalidConfigValue, .needle = "agent.fold_thinking must be true or false" },
@@ -1196,7 +1196,7 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"ctx_size\": 0 } } }", .err = error.InvalidConfigValue, .needle = "models.g.ctx_size must be 1..32768" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generate\": { \"max_tokens\": 5000 } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generate.max_tokens must be 1..4096" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generate\": { \"sampling\": { \"top_p\": 2 } } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generate.sampling.top_p is out of range" },
-        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"agent\": { \"think\": \"loud\" } } } }", .err = error.InvalidConfigValue, .needle = "models.g.agent.think must be null or one of off|low|medium|xhigh" },
+        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"agent\": { \"think\": \"loud\" } } } }", .err = error.InvalidConfigValue, .needle = "models.g.agent.think must be null or one of off|low|medium|high|xhigh" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": {} } }", .err = error.InvalidConfigValue, .needle = "models.g: needs path, or repo and file" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"repo\": \"a/b\" } } }", .err = error.InvalidConfigValue, .needle = "models.g: needs path, or repo and file" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"repo\": \"a/b\" } } }", .err = error.InvalidConfigValue, .needle = "models.g: path excludes repo, file, and revision" },

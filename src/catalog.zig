@@ -48,10 +48,8 @@ pub const Entry = struct {
     /// `general.architecture` of the main file.
     architecture: []const u8,
     /// The checkpoint's prompt profile, forced at open (which lets an entry
-    /// pin a protocol onto a file whose own template digest is not); `null`
-    /// while its profile unit is pending, when configuration falls back as
-    /// it does for a bare path.
-    profile: ?Profile,
+    /// pin a protocol onto a file whose own template digest is not).
+    profile: Profile,
     companions: []const Companion,
 
     pub fn companion(self: *const Entry, role: Role) ?*const Companion {
@@ -139,7 +137,7 @@ pub const entries = [_]Entry{
     // not an MTP head; it takes the `mtp` role because that role means
     // "the draft source the speculative-decoding unit loads", whatever
     // its mechanism (decided 2026-09-17). The adapter binds it since
-    // MODL-11; the profile arrives with MODL-13.
+    // MODL-11; the profile since MODL-13.
     .{
         .name = "muse-glimmer-30b",
         .repo = "unsloth/Muse-Glimmer-30B-GGUF",
@@ -149,7 +147,7 @@ pub const entries = [_]Entry{
         .size = 15_878_222_368,
         .quantization = "UD-Q4_K_XL",
         .architecture = "muse-glimmer",
-        .profile = null,
+        .profile = .muse_glimmer,
         .companions = &.{
             .{ .role = .mmproj, .file = "mmproj-kquant.gguf", .size = 1_400_328_928, .sha256 = "f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6", .loaded_by = "the vision unit" },
             .{ .role = .mtp, .file = "dflash-kquant.gguf", .size = 1_631_205_312, .sha256 = "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc", .loaded_by = "the speculative-decoding unit (a DFlash drafter)" },
@@ -266,11 +264,11 @@ test "the table is well formed: unique names, 40-character commits, 64-character
         for (entries[i + 1 ..]) |other| try std.testing.expect(!std.mem.eql(u8, e.name, other.name));
     }
     try std.testing.expectEqualStrings("unsloth/Qwen3.8-27B-GGUF", find("qwen3.8-27b").?.repo);
-    try std.testing.expectEqual(@as(?Profile, .gemma4), find("gemma-4-12b").?.profile);
+    try std.testing.expectEqual(Profile.gemma4, find("gemma-4-12b").?.profile);
     try std.testing.expectEqualStrings("gemma4", find("gemma-4-12b").?.architecture);
-    try std.testing.expectEqual(@as(?Profile, .gemma4), find("gemma-4-26b-a4b").?.profile);
-    try std.testing.expectEqual(@as(?Profile, null), find("muse-glimmer-30b").?.profile);
-    try std.testing.expectEqual(@as(?Profile, .qwen38), find("bonsai-2-27b").?.profile);
+    try std.testing.expectEqual(Profile.gemma4, find("gemma-4-26b-a4b").?.profile);
+    try std.testing.expectEqual(Profile.muse_glimmer, find("muse-glimmer-30b").?.profile);
+    try std.testing.expectEqual(Profile.qwen38, find("bonsai-2-27b").?.profile);
     try std.testing.expectEqualStrings("qwen35", find("bonsai-2-27b").?.architecture);
     try std.testing.expect(find("bonsai-2-27b").?.companion(.mtp) == null);
     try std.testing.expectEqualStrings("muse-glimmer", find("muse-glimmer-30b").?.architecture);

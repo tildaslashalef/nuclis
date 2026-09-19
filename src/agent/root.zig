@@ -537,7 +537,8 @@ const Ui = struct {
                     self.effort = switch (self.effort) {
                         .off => .low,
                         .low => .medium,
-                        .medium => .xhigh,
+                        .medium => .high,
+                        .high => .xhigh,
                         .xhigh => .off,
                     };
                     self.record(.{ .effort = .{ .effort = @tagName(self.effort) } });
@@ -880,7 +881,7 @@ fn runCommand(ui: *Ui, parsed: commands.Result, root_dir: ?[]const u8, cwd: []co
                     // The effort is part of the system block: prime it again.
                     primeSession(ui);
                 } else {
-                    try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s} is not an effort; known: off, low, medium, xhigh", .{name}) });
+                    try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s} is not an effort; known: off, low, medium, high, xhigh", .{name}) });
                 }
             },
             .ctx => |size| {

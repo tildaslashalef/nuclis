@@ -1,12 +1,9 @@
 //! Explicit full-artifact check of the vocabulary, the tokenizer, and the
 //! profile's captured prompts. No GPU, server, or tensor payload is needed.
-//! The artifact's template digest selects the fixture and the expected
-//! vocabulary facts (both pinned files), through the profile when one exists.
+//! The artifact's template digest selects the profile, which selects the
+//! fixture and the expected vocabulary facts.
 const std = @import("std");
 const inference = @import("inference");
-
-/// The Muse Glimmer template digest, selected directly until its profile exists.
-const muse_glimmer_template = "114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e";
 
 const Expect = struct {
     tokens: usize,
@@ -23,28 +20,25 @@ const Expect = struct {
     byte_level: bool,
 };
 
-const Selection = struct { name: []const u8, expect: Expect, profile: ?inference.profiles.Profile };
+const Selection = struct { name: []const u8, expect: Expect, profile: inference.profiles.Profile };
 
 fn select(doc: inference.gguf.Document) ?Selection {
-    if (inference.profiles.forDocument(doc)) |profile| return .{ .name = @tagName(profile), .expect = expectations(profile), .profile = profile };
-    const template = doc.string("tokenizer.chat_template") orelse return null;
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(template, &digest, .{});
-    if (!std.mem.eql(u8, &std.fmt.bytesToHex(digest, .lower), muse_glimmer_template)) return null;
-    return .{ .name = "muse_glimmer", .profile = null, .expect = .{
-        .tokens = 202_048,
-        .merges = 439_802,
-        .bos = 200000,
-        .eos = &.{200001},
-        .texts = &.{ "<|begin_of_text|>", "<|end_of_text|>", "<|eom|>", "<|eot|>", "<|finetune_right_pad|>", "<|start|>", "<|message|>", "system", "user", "assistant", "tool" },
-        .ids = &.{ 200000, 200001, 200007, 200008, 200018, 200022, 200023, 15651, 1556, 140680, 21188 },
-        .fixture = @embedFile("src/profiles/fixtures/muse_glimmer-text.json"),
-        .byte_level = true,
-    } };
+    const profile = inference.profiles.forDocument(doc) orelse return null;
+    return .{ .name = @tagName(profile), .expect = expectations(profile), .profile = profile };
 }
 
 fn expectations(profile: inference.profiles.Profile) Expect {
     return switch (profile) {
+        .muse_glimmer => .{
+            .tokens = 202_048,
+            .merges = 439_802,
+            .bos = 200000,
+            .eos = &.{200001},
+            .texts = &.{ "<|begin_of_text|>", "<|end_of_text|>", "<|eom|>", "<|eot|>", "<|finetune_right_pad|>", "<|start|>", "<|message|>", "system", "user", "assistant", "tool" },
+            .ids = &.{ 200000, 200001, 200007, 200008, 200018, 200022, 200023, 15651, 1556, 140680, 21188 },
+            .fixture = @embedFile("src/profiles/fixtures/muse_glimmer-text.json"),
+            .byte_level = true,
+        },
         .qwen38 => .{
             .tokens = 248_320,
             .merges = 247_587,
@@ -85,9 +79,7 @@ pub fn main(init: std.process.Init) !void {
         if (vocab.tokenId(text) != id) return error.TokenIdMismatch;
     }
     // The stop set the engine resolves at load must exist in this vocabulary.
-    if (selection.profile) |profile| {
-        for (profile.stopTokens()) |text| if (vocab.tokenId(text) == null) return error.MissingStopToken;
-    }
+    for (selection.profile.stopTokens()) |text| if (vocab.tokenId(text) == null) return error.MissingStopToken;
     std.debug.print("Vocabulary check passed ({s}): {d} tokens, {d} merges; selected fixture IDs match.\n", .{ selection.name, vocab.tokens.len, vocab.merge_ranks.count() });
     try checkFixtures(init.gpa, &vocab, expect);
 }

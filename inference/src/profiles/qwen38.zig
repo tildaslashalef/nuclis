@@ -168,12 +168,13 @@ fn renderSystem(builder: *Builder, alloc: std.mem.Allocator, tools: []const prof
 }
 
 /// The reasoning-effort instruction the template inserts. `medium` has none;
-/// `off` (thinking disabled) never reaches this text.
+/// `off` (thinking disabled) never reaches this text; the template resolves
+/// `high` to `xhigh` before choosing the line (the fixture's `*_high` cases).
 fn instructionFor(effort: Effort) []const u8 {
     return switch (effort) {
         .off, .medium => "",
         .low => "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.",
-        .xhigh => "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.",
+        .high, .xhigh => "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.",
     };
 }
 
@@ -367,13 +368,13 @@ pub const SamplingOverrides = profiles.SamplingOverrides;
 
 /// The official Qwen3.8 sampler settings per reasoning mode, from the Unsloth
 /// Qwen3.8 guide (https://unsloth.ai/docs/models/qwen3.8.md, read 2026-09-08):
-/// thinking mode (`low`, `medium`, `xhigh`) temperature 1.0, top-p 0.95,
+/// thinking mode (`low`, `medium`, `high`, `xhigh`) temperature 1.0, top-p 0.95,
 /// top-k 20; instruct mode (`off`) temperature 0.7, top-p 0.8, top-k 20,
 /// presence penalty 1.5. Neither mode uses `min_p` or a repetition penalty.
 pub fn samplingDefaults(effort: Effort) sampling.Options {
     return switch (effort) {
         .off => .{ .temperature = 0.7, .top_p = 0.8, .top_k = 20, .min_p = 0, .presence_penalty = 1.5, .repetition_penalty = 1 },
-        .low, .medium, .xhigh => .{ .temperature = 1.0, .top_p = 0.95, .top_k = 20, .min_p = 0, .presence_penalty = 0, .repetition_penalty = 1 },
+        .low, .medium, .high, .xhigh => .{ .temperature = 1.0, .top_p = 0.95, .top_k = 20, .min_p = 0, .presence_penalty = 0, .repetition_penalty = 1 },
     };
 }
 
@@ -432,11 +433,19 @@ test "text prompts match pinned reference fixtures in every reasoning mode" {
     defer fixture.deinit();
     try std.testing.expectEqualStrings(template_sha256, fixture.value.template_sha256);
     try std.testing.expect(fixture.value.preserve_thinking);
+    try std.testing.expectEqual(@as(usize, 35), fixture.value.prompt_cases.len);
+    var high_cases: usize = 0;
     for (fixture.value.prompt_cases) |case| {
         const prompt = try render(alloc, case.messages, &.{}, case.effort, .{});
         defer alloc.free(prompt);
         try std.testing.expectEqualStrings(case.prompt, prompt);
+        // The template folds `high` into `xhigh`: the captured line says so.
+        if (case.effort == .high) {
+            high_cases += 1;
+            try std.testing.expect(std.mem.indexOf(u8, case.prompt, "Reasoning effort is set to xhigh.") != null);
+        }
     }
+    try std.testing.expectEqual(@as(usize, 7), high_cases);
 }
 
 test "native tool prompts match pinned reference fixtures in every reasoning mode" {
@@ -517,9 +526,9 @@ test "sampling defaults follow the official per-mode table and flags override pe
     const instruct = samplingDefaults(.off);
     try std.testing.expectEqual(sampling.Options{ .temperature = 0.7, .top_p = 0.8, .top_k = 20, .min_p = 0, .presence_penalty = 1.5, .repetition_penalty = 1 }, instruct);
     const thinking = sampling.Options{ .temperature = 1.0, .top_p = 0.95, .top_k = 20, .min_p = 0, .presence_penalty = 0, .repetition_penalty = 1 };
-    for ([_]Effort{ .low, .medium, .xhigh }) |effort| try std.testing.expectEqual(thinking, samplingDefaults(effort));
+    for ([_]Effort{ .low, .medium, .high, .xhigh }) |effort| try std.testing.expectEqual(thinking, samplingDefaults(effort));
     // Every profile validates as sampler options.
-    for ([_]Effort{ .off, .low, .medium, .xhigh }) |effort| _ = try sampling.Sampler.init(0, samplingDefaults(effort));
+    for ([_]Effort{ .off, .low, .medium, .high, .xhigh }) |effort| _ = try sampling.Sampler.init(0, samplingDefaults(effort));
     // No overrides: the profile verbatim. One override: only that option moves.
     try std.testing.expectEqual(instruct, samplingOptions(.off, .{}));
     const greedy = samplingOptions(.off, .{ .temperature = 0 });

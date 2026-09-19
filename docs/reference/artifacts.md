@@ -76,8 +76,9 @@ traces, acceptance record, and agent check (MODL-10;
 [bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 Since MODL-11 (2026-09-19) the Muse adapter binds the file and the CPU
 reference matches the pinned reference's traces on it, so `inspect` says
-*supported*; the Metal plan (MODL-12) and the profile (MODL-13) follow.
-Its facts are in [muse-glimmer.md](muse-glimmer.md). The Bonsai rows were read by `model inspect` on 2026-09-18 and the
+*supported*; the Metal plan (MODL-12) and the profile with its acceptance
+record (MODL-13) landed the same day. Its facts are in
+[muse-glimmer.md](muse-glimmer.md). The Bonsai rows were read by `model inspect` on 2026-09-18 and the
 PQ2_0 file and its Q8_0 projector verified by the pull the same day;
 `bonsai-2-27b` entered the catalogue then: the file is Qwen3.8-27B's
 architecture with every matrix in Prism ML's ternary packings (ids 142

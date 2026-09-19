@@ -66,19 +66,21 @@ partial output on errors, including allocation failures
 buffer may reserve more.
 
 The effort argument is the shared `Effort` (`off`, `low`, `medium`,
-`xhigh`), named after Qwen3.8's levels because it came first; a profile
-with fewer levels collapses them. Validation is separate from support: a
-structurally valid tools input still passes `validate`, and a profile whose
-template defined no tool grammar would reject it with
-`error.ToolsUnsupported`; both profiles now render and decode their native
-tool path against pinned fixtures. Neither implements multimodal content,
-assistant prefill, or a general Jinja interpreter.
+`high`, `xhigh`), named after Qwen3.8's levels because it came first (its
+template folds `high` into `xhigh`); a profile with fewer levels collapses
+them, and one without `off` renders it as its lowest level. Validation is
+separate from support: a structurally valid tools input still passes
+`validate`, and a profile whose template defined no tool grammar rejects it
+with `error.ToolsUnsupported`; Qwen3.8 and Gemma 4 render and decode their
+native tool path against pinned fixtures. No profile implements multimodal
+content, assistant prefill, or a general Jinja interpreter.
 
 ## Qwen3.8 (`qwen38`)
 
 Leading system/developer messages are trimmed and merged with newlines;
 empty leading system content is omitted. `low` and `xhigh` prepend the
-artifact's reasoning instructions to the system block; `medium` adds none.
+artifact's reasoning instructions to the system block; `medium` adds none,
+and `high` renders the `xhigh` line, as the template resolves it.
 All modes append the assistant generation prefix `<|im_start|>assistant\n<think>\n`;
 `off` closes it at once with an empty thinking block. Previous assistant
 reasoning is preserved in history as `<think>…</think>` before the answer,
@@ -179,22 +181,65 @@ K-quant file's `eos_token_id`), `<eos>` (1, the QAT file's), and
 `<|tool_response>` (50, the tool handoff); both files carry all three tokens
 and the same template.
 
+## Muse Glimmer (`muse_glimmer`)
+
+Turns are `<|start|>ROLE<|message|>…<|eot|>` with nothing trimmed: the
+template writes content and reasoning verbatim, so the profile does too.
+The prompt starts with `<|begin_of_text|>` as text (the encoder never adds
+BOS; the reference server strips it from `/apply-template` output and the
+fixture test prepends it). Every leading system or developer message is
+its own system turn (the reference sends `developer` as `system`), each
+closed by `\n\nReasoning strength: LEVEL.` and
+`\n\n# Valid recipients: "self", "user".`; without one the profile writes
+the template's synthesized turn, `You are a helpful AI assistant.` and
+`Knowledge cutoff: 2026-01-04.`, **without** the `Current date:` line the
+template adds from the server's clock (decided 2026-09-16: the profile
+takes no clock; the fixture test removes the captured line). The level is
+the template's `reasoning_strength`: `low`, `medium`, `high`, `xhigh`, and
+the shared `off` renders as `low` because the model always opens a
+reasoning message. Assistant history keeps `reasoning_content` wherever
+it appears, as its own message `<|start|>assistant to=self<|message|>…<|eom|>`
+(the template has no last-user gate), then the answer as
+`<|start|>assistant to=user<|message|>…<|eot|>`; two assistant messages in
+a row are two such turns. The generation prompt is `<|start|>assistant`.
+Content carrying a control marker (`<|start|>`, `<|message|>`, `<|eom|>`,
+`<|eot|>`, `<|end_of_text|>`, `<|begin_of_text|>`) is rejected; the
+assistant's own past text loses them instead.
+
+**Decoding** is the stream decoder's channel grammar (`stream.Channel`):
+the model's output is a sequence of messages `HEADER<|message|>BODY`
+ended by `<|eom|>` (200007) or the next `<|start|>` (200022), the first
+header arriving as ordinary text (` to=self`) because the prompt ends
+inside it. The header routes the body: `assistant to=self` is thinking,
+`assistant` or `assistant to=user` the answer, any other `to=NAME` a tool
+body when the profile parses one (AGNT-10) and answer text otherwise. A
+header still open at a stop, or longer than 256 bytes, is released as
+answer text. `<|eot|>` (200008) and `<|end_of_text|>` (200001) are the
+stop tokens; `<|eom|>` is not, since the model continues after it.
+
+**Tools** are a later unit (AGNT-10): a tool definition or tool history is
+`error.ToolsUnsupported`. Sampling defaults are the model card's "Best
+Practices" (temperature 1.0, top-p 0.95, top-k 64; no `min_p`, no
+penalties), the same for every strength; the file declares no
+`general.sampling.*` keys.
+
 ## Evidence and reproduction
 
 The committed fixtures
 ([qwen38-text.json](../../inference/src/profiles/fixtures/qwen38-text.json),
 [gemma4-text.json](../../inference/src/profiles/fixtures/gemma4-text.json),
 [muse_glimmer-text.json](../../inference/src/profiles/fixtures/muse_glimmer-text.json),
-the last captured ahead of its profile for the tokenizer check and
 described in [muse-glimmer.md](muse-glimmer.md#chat-template))
 hold prompts the pinned reference server rendered from the artifact's own
 template for seven conversations (a single turn, a system message, later
 system/developer messages, assistant history with reasoning, two assistant
 messages in a row, Unicode with nonbreaking spaces, and whitespace-only
-user text): 28 cases across four efforts for Qwen3.8, 14 across `off` and
-`medium` for Gemma 4 (the Zig test asserts `low` and `xhigh` render like
-`medium`). Native rendering matches every prompt byte for byte (default
-`zig build test`). Each file also retains the exact token ids of every
+user text): 35 cases across five efforts for Qwen3.8 (re-captured
+2026-09-19 with `high`), 14 across `off` and `medium` for Gemma 4 (the
+Zig test asserts `low`, `high`, and `xhigh` render like `medium`), and 28
+across four strengths for Muse Glimmer (its test removes the synthesized
+turn's captured date line and prepends `<|begin_of_text|>`). Native
+rendering matches every prompt byte for byte (default `zig build test`). Each file also retains the exact token ids of every
 rendered prompt and of ten standalone strings captured with special-token
 parsing both off and on (`add_special=false`): code, numbers,
 contractions, leading whitespace, CRLF, multilingual text, emoji, and the
@@ -226,8 +271,8 @@ for the Gemma file) is the opt-in check against the real artifact: it
 selects the profile from the file's template, asserts the vocabulary
 facts (size, merges, BOS/EOS, selected ids, the stop set resolving), and
 encodes every captured string and prompt to the reference's ids (Qwen3.8:
-20 standalone and 28 prompts, plus the byte-level single-piece checks;
-Gemma 4: 20 and 14). Default tests exercise committed fixtures and
+20 standalone and 35 prompts, plus the byte-level single-piece checks;
+Gemma 4: 20 and 14; Muse Glimmer: 20 and 28). Default tests exercise committed fixtures and
 synthetic vocabularies only.
 
 Capture, with the reference built as in
@@ -261,7 +306,8 @@ settings per request as the template's own keyword arguments
 generation. Stop the server afterward.
 
 Captures: Qwen3.8 on 2026-09-07 (re-captured 2026-09-12 with the seven
-conversations), Gemma 4 on 2026-09-12, both with llama.cpp
+conversations, 2026-09-19 with `high`), Gemma 4 on 2026-09-12, Muse
+Glimmer on 2026-09-19, all with llama.cpp
 `7620399f58aebfd2196b74021f9581bcf7218cb9` on the pinned files
 ([artifacts.md](artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11)).
 The templates are adapted, not copied; their origins and licenses are in

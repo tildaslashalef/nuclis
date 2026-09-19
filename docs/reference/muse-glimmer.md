@@ -210,19 +210,25 @@ template digest until the profile exists.
 `114f55ebdc1804c1af371197b9fdf2d6bb925966c9dfe46b73782a71bc07965e`, no
 trailing newline. It differs from the Hub repository's
 `chat_template.jinja`; the profile pins the file's digest as always.
-Facts the fixture capture confirmed (the profile is MODL-13, the tool
-protocol AGNT-10; the plan in `TODO.md` holds their designs):
+Facts the fixture capture confirmed, which `profiles/muse_glimmer.zig`
+implements (MODL-13; the clauses are in
+[prompt-profile.md § Muse Glimmer](prompt-profile.md#muse-glimmer-muse_glimmer),
+the tool protocol in AGNT-10):
 
 - The prompt opens with `bos_token` as text, but the server's
   `/apply-template` output omits it (its tokenizer adds BOS): the fixture
   prompts start at `<|start|>`, as Gemma's do. nuclis's encoder never adds
   BOS, so the profile writes `<|begin_of_text|>` itself.
-- Turns are `<|start|>ROLE<|message|>…<|eot|>`; two consecutive messages
-  of one role end the first with `<|eom|>`. The system turn is the
-  caller's text, `\n\nReasoning strength: LEVEL.`, then
+- Turns are `<|start|>ROLE<|message|>…<|eot|>`, content verbatim (the
+  template trims nothing). The `<|eom|>` ending only applies to the last
+  tool call of an assistant message that another assistant message
+  follows; two content messages in a row both end with `<|eot|>` (the
+  `continued_*` cases). The system turn is the caller's text,
+  `\n\nReasoning strength: LEVEL.`, then
   `\n\n# Valid recipients: "self", "user".` (tool namespaces between). The
   level is the `reasoning_strength` template variable (default `high`, no
-  off); the fixture captures `low`, `medium`, `high`, `xhigh`.
+  off); the fixture captures `low`, `medium`, `high`, `xhigh`, and the
+  profile renders the shared `off` as `low`.
 - Without a system message the template synthesizes one: `You are a
   helpful AI assistant.`, `Knowledge cutoff: 2026-01-04.`, and, because the
   server defines `strftime_now`, `Current date: 2026-09-19.` on capture
@@ -230,8 +236,10 @@ protocol AGNT-10; the plan in `TODO.md` holds their designs):
   and `empty_*` cases carry that line). The profile decision of
   2026-09-16 renders the default without the date line; the MODL-13 test
   must account for the captured line.
-- A `developer` message renders nothing (the template has no branch for
-  the role); a later `system` message renders as a second system turn.
+- The template has no branch for the `developer` role, but the reference
+  sends it as `system`: every leading system or developer message is its
+  own system turn, each with the strength and recipients lines (the
+  `merged_system_*` cases render three).
 - Assistant history: `reasoning_content` renders as
   `<|start|>assistant to=self<|message|>…<|eom|>` wherever it appears,
   then the answer as `<|start|>assistant to=user<|message|>…<|eot|>`; the
@@ -395,6 +403,7 @@ reference, the adapter binds the file (`nuclis model inspect` says
 *supported*), and the CPU reference matches the oracle traces at the
 bring-up thresholds with the same greedy token. MODL-12 closed the same
 day: the Metal plan matches the traces in both cache precisions, passes
-the generation check, and runs the file at 9.9 tok/s. The profile with
-its channel decoder and the acceptance record are MODL-13, tool calling
-AGNT-10.
+the generation check, and runs the file at 9.9 tok/s. MODL-13 adds the
+profile (`profiles/muse_glimmer.zig`, the channel-grammar decoder, the
+`high` effort) and the catalogue pin; its acceptance record is in
+[bench.md](bench.md). Tool calling is AGNT-10.

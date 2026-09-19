@@ -98,9 +98,9 @@ two quantizations: the plain K-quant release, and Google's
 quantization-aware-trained checkpoint, whose every weight matrix is Q4_0
 — the encoding it was trained for, which is why it is smaller *and*
 decodes faster. The 26B-A4B mixture of experts runs on both backends with
-its own acceptance record. The Muse entry is pinned ahead of its
-architecture, and `nuclis model inspect` reports it *not runnable* until
-that lands. Bonsai (Qwen3.8-27B re-encoded ternary by Prism ML) runs on
+its own acceptance record. The Muse entry (Meta's dense 30B with the
+ATEM tool protocol) runs on both backends with its own profile and
+acceptance record. Bonsai (Qwen3.8-27B re-encoded ternary by Prism ML) runs on
 both backends with its own acceptance record against the PrismML fork of
 llama.cpp, the only decoder of its encodings: the Qwen plan applies the
 Hadamard transform its folded weights require to every activation, and

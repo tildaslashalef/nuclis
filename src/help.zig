@@ -105,8 +105,8 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "--ctx-size <n>", "context window in tokens, default 16384");
     try row(out, sty, "--max-tokens <n>", "output budget, default 2048");
     try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU, default f16");
-    try row(out, sty, "--think <effort>", "off, low, medium, xhigh — what the profile supports");
-    try row(out, sty, "--prompt-profile <p>", "qwen38 or gemma4: force the prompt profile on a file whose");
+    try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh — what the profile supports");
+    try row(out, sty, "--prompt-profile <p>", "qwen38, gemma4, or muse_glimmer: force the prompt profile on a file whose");
     try out.print("{s}chat template is not the pinned one (a finetune); default: by digest\n", .{continuation});
     try row(out, sty, "--seed <n>", "sampler seed, default 0");
     try row(out, sty, "--json", "machine-readable output instead of a text report");
@@ -145,7 +145,7 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "commands");
     try row(out, sty, "/new", "start a new session");
     try row(out, sty, "/ctx <n>", "context window in tokens");
-    try row(out, sty, "/think <effort>", "off, low, medium, xhigh");
+    try row(out, sty, "/think <effort>", "off, low, medium, high, xhigh");
     try row(out, sty, "/save [path]", "export this session as markdown");
     try row(out, sty, "/help", "keys and commands, inside the surface");
 

@@ -48,8 +48,9 @@ PROFILES = {
         "model_sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
         "model_size": 16464440224,
         "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
-        # Four reasoning efforts: the template takes `reasoning_effort`.
-        "efforts": ("off", "low", "medium", "xhigh"),
+        # Five reasoning efforts: the template takes `reasoning_effort` and
+        # resolves `high` to `xhigh` itself.
+        "efforts": ("off", "low", "medium", "high", "xhigh"),
         "kwargs": lambda effort: {"enable_thinking": effort != "off",
                                   "reasoning_effort": "xhigh" if effort == "off" else effort,
                                   "preserve_thinking": True},

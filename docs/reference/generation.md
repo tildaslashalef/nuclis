@@ -26,7 +26,7 @@ overrides come from `~/.nuclis/nuclis.json` when it exists
 ([development.md § Configuration file](../development.md#configuration-file));
 flags override the file per option.
 The default prompt profile renders one user turn with thinking disabled;
-`--think off|low|medium|xhigh` selects the reasoning effort the template
+`--think off|low|medium|high|xhigh` selects the reasoning effort the template
 encodes. `--raw` supplies literal prompt text, recognizing special-token markers without
 inserting BOS or EOS. `--prompt` is limited to 64 KiB and `--prompt-file` to
 4 MiB of valid UTF-8; the two are exclusive and neither is ever truncated.
@@ -54,7 +54,7 @@ the sampler to the file's profile once the model is open. Qwen3.8, from the
 [Unsloth Qwen3.8 guide](https://unsloth.ai/docs/models/qwen3.8.md) (read
 2026-09-08):
 
-| Option | Thinking (`low`, `medium`, `xhigh`) | Instruct (`off`) |
+| Option | Thinking (`low`, `medium`, `high`, `xhigh`) | Instruct (`off`) |
 | --- | ---: | ---: |
 | `temperature` | 1.0 | 0.7 |
 | `top_p` | 0.95 | 0.80 |

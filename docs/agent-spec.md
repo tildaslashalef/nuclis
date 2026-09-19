@@ -145,7 +145,7 @@ holds the APPS-02 outcome.
   Left/Right/Home/End move by grapheme cluster (emoji and combining marks
   are one unit); Delete/Backspace; Up/Down recall submitted prompts (the
   pre-recall input is kept as a draft); Tab folds thinking; Ctrl-T cycles
-  effort off/low/medium/xhigh; Ctrl-W cycles the context window
+  effort off/low/medium/high/xhigh; Ctrl-W cycles the context window
   2k/4k/8k/16k/32k (the engine re-opens at the new capacity, the
   conversation replays into it on the next turn, a failed re-open falls
   back); Ctrl-N starts a new session; Ctrl-C cancels a running turn (second

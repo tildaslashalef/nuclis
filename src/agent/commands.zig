@@ -29,7 +29,7 @@ pub const table = [_]Spec{
     .{ .kind = .new, .name = "new", .summary = "start a new session (as Ctrl-N)" },
     .{ .kind = .resume_session, .name = "resume", .summary = "pick a saved session and replay it" },
     .{ .kind = .ctx, .name = "ctx", .argument = "<n>", .summary = "context window in tokens (as Ctrl-W, with a value)" },
-    .{ .kind = .think, .name = "think", .argument = "<effort>", .summary = "reasoning effort: off, low, medium, xhigh (as Ctrl-T)" },
+    .{ .kind = .think, .name = "think", .argument = "<effort>", .summary = "reasoning effort: off, low, medium, high, xhigh (as Ctrl-T)" },
     .{ .kind = .save, .name = "save", .argument = "[path]", .summary = "export this session as markdown" },
     .{ .kind = .help, .name = "help", .summary = "keys and commands" },
 };

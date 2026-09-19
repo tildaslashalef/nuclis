@@ -20,8 +20,11 @@ MODL-12 closed on 2026-09-19: the Muse Glimmer Metal plan matches the
 pinned traces in both cache precisions, passes the generation check,
 and decodes at 9.99 tok/s (71 % of the reference; the per-kernel
 profile is in [docs/reference/muse-glimmer.md](docs/reference/muse-glimmer.md)).
-Next is MODL-13, the profile (design below): `nuclis bench` and `agent`
-still refuse the file (`UnsupportedPromptTemplate`) until it lands.
+MODL-13 is in progress: the profile, the channel-grammar decoder, the
+`high` effort, and the catalogue pin are in the tree with their fixture
+tests; the reference acceptance run (`tests/fixtures/run-2026-09-19-muse-glimmer`)
+and `make baseline-muse-glimmer` close it with the record in bench.md and
+the live `nuclis agent` check.
 
 Order: MODL-13 → AGNT-10.
 After AGNT-10 the roadmap continues with speculative decoding across the
