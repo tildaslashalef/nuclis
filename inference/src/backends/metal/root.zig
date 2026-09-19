@@ -62,6 +62,8 @@ const kernel_names = [_][:0]const u8{
     "nu_matmul_q4_0",       "nu_matmul_q4_0_32",      "nu_matvec_experts",      "nu_route",              "nu_combine_experts",     "nu_gelu_mul_rows",
     "nu_expert_lists",      "nu_matmul_experts",      "nu_matmul_experts_q4_0", "nu_matvec_pq2_0",       "nu_matvec_ptq1_0",       "nu_matmul_pq2_0",
     "nu_matmul_ptq1_0",     "nu_matmul_pq2_0_32",     "nu_matmul_ptq1_0_32",    "nu_hadamard",           "nu_gather_rows",
+    "nu_matmul_q3_k_8",     "nu_matmul_q4_k_8",       "nu_matmul_q5_k_8",       "nu_matmul_q6_k_8",      "nu_matmul_iq3_s_8",
+    "nu_matmul_iq4_xs_8",   "nu_matmul_q4_0_8",       "nu_matmul_pq2_0_8",      "nu_matmul_ptq1_0_8",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -141,6 +143,15 @@ pub const Kernel = enum(u32) {
     matmul_ptq1_0_32,
     hadamard,
     gather_rows,
+    matmul_q3_k_8,
+    matmul_q4_k_8,
+    matmul_q5_k_8,
+    matmul_q6_k_8,
+    matmul_iq3_s_8,
+    matmul_iq4_xs_8,
+    matmul_q4_0_8,
+    matmul_pq2_0_8,
+    matmul_ptq1_0_8,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -377,20 +388,24 @@ pub const Backend = struct {
     /// Token padding of `matmul`: activation buffers hold a multiple of this
     /// many token rows (the largest token tile any instantiation uses).
     pub const matmul_tile = 64;
+    /// Chunk length below which the split-K 8×8 tile serves. Set to the
+    /// measured crossover between the small tile and the 32×32 one.
+    pub const small_chunk_tokens = 8;
     pub fn matmulPadded(tokens: usize) usize {
         return (tokens + matmul_tile - 1) / matmul_tile * matmul_tile;
     }
     /// Output tile of a matmul kernel and whether its operands are rounded to
     /// half; must match the instantiations in kernels.metal. The specialized
-    /// tiles hold half operands and accumulate in F32: 64×64 tiles, or
-    /// 32×32 for chunks of at most 32 tokens (four times the threadgroups of
-    /// a 64×64 tile with one token tile, which is what a short prompt needs);
-    /// the generic tile keeps F32 operands in 32×32 tiles.
+    /// tiles hold half operands and accumulate in F32: 64×64 tiles, 32×32 for
+    /// chunks of at most 32 tokens, and an 8×8 split-K tile for chunks of at
+    /// most `small_chunk_tokens`, where the grid's row parallelism matters more
+    /// than the tile's K reuse; the generic tile keeps F32 operands in 32×32.
     pub const MatmulGeometry = struct { rows: usize, tokens: usize, half: bool };
     pub fn matmulGeometry(kernel: Kernel) MatmulGeometry {
         return switch (kernel) {
             .matmul => .{ .rows = 32, .tokens = 32, .half = false },
             .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
+            .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 8, .tokens = 8, .half = true },
             else => .{ .rows = 32, .tokens = 32, .half = true },
         };
     }
@@ -458,10 +473,22 @@ pub const Backend = struct {
     }
     /// Picks a specialized matmul tile under the same weight alignment
     /// rules (the activation tile is staged through float4 loads, which
-    /// `matmul` checks), the 32×32 instantiation when the chunk has at most
-    /// 32 tokens.
+    /// `matmul` checks), first the 8×8 split-K instantiation for chunks of at
+    /// most `small_chunk_tokens` tokens, then the 32×32 one for at most 32.
     pub fn specializedMatmul(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
         if (!blockAligned(encoding, weight_offset, stride)) return null;
+        if (tokens <= small_chunk_tokens) return switch (encoding) {
+            2 => .matmul_q4_0_8,
+            142 => .matmul_pq2_0_8,
+            143 => .matmul_ptq1_0_8,
+            11 => .matmul_q3_k_8,
+            21 => .matmul_iq3_s_8,
+            12 => .matmul_q4_k_8,
+            13 => .matmul_q5_k_8,
+            14 => .matmul_q6_k_8,
+            23 => .matmul_iq4_xs_8,
+            else => unreachable,
+        };
         if (tokens <= 32) return switch (encoding) {
             2 => .matmul_q4_0_32,
             142 => .matmul_pq2_0_32,
