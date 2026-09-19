@@ -1063,12 +1063,18 @@ inline void nu_matmul_split_body(device const uchar * weights, device const floa
             simdgroup_multiply_accumulate(acc, a, b, acc);
         }
     }
-    threadgroup float * partial = (threadgroup float *)tile;
-    simdgroup_store(acc, partial + sg * 64, 8, ulong2(0, 0), false);
+    // Reuse each group's own tile: a shared partial region would let a group
+    // that finished early overwrite a slower group's weight tile, which no
+    // barrier orders (the K loop is the only place a barrier may sit).
+    simdgroup_store(acc, (threadgroup float *)own, 8, ulong2(0, 0), false);
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid < 64) {
+        threadgroup float * part0 = (threadgroup float *)tile;
+        threadgroup float * part1 = (threadgroup float *)(tile + 8 * 64);
+        threadgroup float * part2 = (threadgroup float *)(tile + 2 * 8 * 64);
+        threadgroup float * part3 = (threadgroup float *)(tile + 3 * 8 * 64);
         const uint r = tid >> 3, t = tid & 7;
-        const float total = ((partial[tid] + partial[64 + tid]) + partial[128 + tid]) + partial[192 + tid];
+        const float total = ((part0[tid] + part1[tid]) + part2[tid]) + part3[tid];
         if (row0 + r < p.rows) output[ulong(token0 + t) * p.out_stride + row0 + r] = total;
     }
 }
