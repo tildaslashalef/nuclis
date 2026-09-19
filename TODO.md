@@ -234,14 +234,55 @@ racing the still-running K loops of the other SIMD groups; it surfaced as
 `test-generation-metal` (never in the fixture exactness test) and is fixed
 by storing each partial in its own group's tile.
 
-**Session 2 (next).** Re-measure the 8×8/32×32 crossover with the rounds
-interleaved (the run-to-run noise is the open methodology problem), decide
-`small_chunk_tokens`, and instantiate and measure a `_16` variant if the
-numbers ask for it; `make bench` prefill and first-token records on Qwen;
-the Metal reference's kernel and geometry table rows and the final
-subsection; remove the roadmap's short-prompt bullet; the log entry.
-`make compare-gemma4` (the K-quant 12B file) cannot run until that artifact
-is present; the QAT and 26B-A4B Gemma targets cover the family meanwhile.
+**Review of session 1 (2026-09-19).** Accepted: the kernel, the host
+tiers, the checks, and all gates re-run and passing (`make check`,
+`compare` f16 max abs 0.025, `test-generation-metal` chunk-32 max abs
+2.6e-3, Gemma QAT f16, Bonsai f16, Muse f16 at their tolerances). Three
+findings, which set session 2's order:
+1. **The bench measures one dispatch per command buffer.** `matmulBench`
+   wraps each `matmul` in its own `begin`/`commit`, and the reference's
+   own methodology note (`bench-kernels`, KERN-05) records that isolated
+   dispatches measure the GPU's clock ramp, not the kernel; at t ≤ 8 the
+   whole matmul is about a millisecond, so the recorded 22–88 GB/s and the
+   2× spread between identical rows are the ramp, not the tile. Batch
+   16–64 dispatches per command buffer (as `bench-kernels` does) before
+   any number is compared with the matvec column or a threshold chosen.
+   When a token count spans several token tiles (t = 9 on an `_8` tile),
+   the bytes must be multiplied by the token-tile count, as `matmul`'s
+   profile attribution already does.
+2. **The activation operand costs more traffic than the weights.** Each
+   threadgroup loads the chunk's whole activation block for its K range
+   transposed and strided straight from device memory (8 tokens × columns
+   × 4 B = 160 KB at 5,120 columns) and there are `rows / 8` threadgroups,
+   so the gate shape reads about 100 MB of gathered activations against
+   44 MB of Q4_K weights, in 8-row × 32-byte gathers per k8 step. Two
+   experiments, cheapest first: (a) 16 rows per threadgroup (each SIMD
+   group keeps two accumulators; one B load serves two A loads), which
+   halves the activation traffic per weight byte and keeps `rows / 16`
+   groups, still the matvec's grid; (b) pack the chunk's activations once
+   per projection input into a `[k][token]` half layout (a transposing
+   sibling of `nu_pack_half`, run once for the projections that share an
+   input) so the B loads are contiguous 128-byte rows. Measure each alone
+   under the batched bench.
+3. **Order the tile's reuse across steps by the spec.** Step i+1's lane
+   writes into `own` follow step i's `simdgroup_load` reads of the same
+   region, and the final `simdgroup_store` follows the last reads, with
+   no barrier between them; lockstep execution makes this hold in
+   practice, but a `simdgroup_barrier(mem_threadgroup)` before the writes
+   (at the top of the step and before the final store) is the ordering
+   the language guarantees and costs nothing measurable. Add it.
+
+**Session 2 (next).** In this order: the batched bench (finding 1) and a
+re-measured table; the barrier (finding 3); the two activation-operand
+experiments (finding 2), each measured alone; then decide
+`small_chunk_tokens` from the 8×8/32×32 crossover and instantiate a `_16`
+variant only if the numbers ask for it; `make bench` prefill and
+first-token records on Qwen; the Metal reference's kernel and geometry
+table rows and the final subsection (the session-1 table stays, marked
+as taken before the methodology fix); remove the roadmap's short-prompt
+bullet; the log entry. `make compare-gemma4` (the K-quant 12B file)
+cannot run while that artifact is absent; the QAT and 26B-A4B Gemma
+targets cover the family meanwhile.
 
 **Acceptance.** The `_8` tile computes within the half-rounding bound on
 every specialized encoding at 1, 5, and 8 tokens; every gate above
