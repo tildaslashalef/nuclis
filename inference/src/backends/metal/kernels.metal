@@ -1031,67 +1031,67 @@ kernel void nu_matmul_t(device const uchar * weights [[buffer(0)]],
     const uint row0 = (group % p.row_tiles) * TR, token0 = (group / p.row_tiles) * TT;
     nu_matmul_body<ENC, TR, TT, TW, TX, STAGE, false>(weights, input, output, p, row0, token0, nullptr, 0, 1, tile, xt, tid, sg);
 }
-// Small-chunk tile: one 128-thread group owns 8 rows × 8 tokens of output. The
-// four SIMD groups partition the 64-column K steps (`sg` takes steps sg, sg+4,
-// ...), so a 5,120-row projection launches eight times the groups of the 32×32
-// tile. Each lane decodes one 16-value segment (row lane>>2, segment lane&3)
-// into its own SIMD group's 8×64 half tile and multiplies it by the activation
-// block loaded transposed straight from device memory. That tile is private to
-// one SIMD group, so `simdgroup_barrier` orders write and read and no
-// `threadgroup_barrier` sits in the K loop. The four K partials are summed once
-// at the end through the reused tile in a fixed SIMD-group order.
+// Small-chunk tile: one 128-thread group owns 16 rows × 8 tokens of output.
+// Two 8x8 accumulators per SIMD group share one activation block per step, so
+// one B load serves two weight loads and the gathered activation traffic per
+// weight byte halves. The four SIMD groups partition the 64-column K steps,
+// each lane decodes two 16-value segments into its own group's 16×64 half
+// tile, and only `simdgroup_barrier` orders the loop; the four K partials are
+// summed once at the end in a fixed SIMD-group order.
 template <uint ENC, typename TW>
 inline void nu_matmul_split_body(device const uchar * weights, device const float * input, device float * output, MatmulParams p,
-                                 uint row0, uint token0, threadgroup TW * tile, uint tid, uint sg) {
-    const uint row = (tid & 31) >> 2, segment = tid & 3;
-    threadgroup TW * own = tile + sg * 8 * 64;
+                                   uint row0, uint token0, threadgroup TW * tile, uint tid, uint sg) {
+    const uint lane = tid & 31;
+    const uint row = lane & 15, seg = lane >> 4; // two segments: `seg` and `seg + 2`
+    threadgroup TW * own = tile + sg * 16 * 64;
     device const uchar * wrow = weights + ulong(min(row0 + row, p.rows - 1)) * p.stride;
-    simdgroup_float8x8 acc = simdgroup_float8x8(0.0f);
+    simdgroup_float8x8 acc0 = simdgroup_float8x8(0.0f), acc1 = simdgroup_float8x8(0.0f);
     const uint steps = p.columns / 64;
     for (uint step = sg; step < steps; step += 4) {
-        // The previous step's loads read `own`; order them before this step's
-        // writes, and the writes before the loads below.
         simdgroup_barrier(mem_flags::mem_threadgroup);
         const uint k0 = step * 64;
         float4 q[4];
-        nu_tile_segment<ENC>(wrow, p.encoding, k0 / 16 + segment, q);
-        threadgroup vec<TW, 4> * slot = (threadgroup vec<TW, 4> *)(own + row * 64 + segment * 16);
+        nu_tile_segment<ENC>(wrow, p.encoding, k0 / 16 + seg, q);
+        threadgroup vec<TW, 4> * slot = (threadgroup vec<TW, 4> *)(own + row * 64 + seg * 16);
+        for (uint c = 0; c < 4; ++c) slot[c] = vec<TW, 4>(q[c]);
+        nu_tile_segment<ENC>(wrow, p.encoding, k0 / 16 + seg + 2, q);
+        slot = (threadgroup vec<TW, 4> *)(own + row * 64 + (seg + 2) * 16);
         for (uint c = 0; c < 4; ++c) slot[c] = vec<TW, 4>(q[c]);
         simdgroup_barrier(mem_flags::mem_threadgroup);
         for (uint k8 = 0; k8 < 64; k8 += 8) {
-            simdgroup_matrix<TW, 8, 8> a;
-            simdgroup_load(a, own + k8, 64);
+            simdgroup_matrix<TW, 8, 8> a0, a1;
+            simdgroup_load(a0, own + k8, 64);
+            simdgroup_load(a1, own + 8 * 64 + k8, 64);
             simdgroup_float8x8 b;
             simdgroup_load(b, input + ulong(token0) * p.in_stride + k0 + k8, p.in_stride, ulong2(0, 0), true);
-            simdgroup_multiply_accumulate(acc, a, b, acc);
+            simdgroup_multiply_accumulate(acc0, a0, b, acc0);
+            simdgroup_multiply_accumulate(acc1, a1, b, acc1);
         }
     }
-    // Reuse each group's own tile: a shared partial region would let a group
-    // that finished early overwrite a slower group's weight tile, which no
-    // barrier orders (the K loop is the only place a barrier may sit).
     simdgroup_barrier(mem_flags::mem_threadgroup);
-    simdgroup_store(acc, (threadgroup float *)own, 8, ulong2(0, 0), false);
+    simdgroup_store(acc0, (threadgroup float *)own, 8, ulong2(0, 0), false);
+    simdgroup_store(acc1, (threadgroup float *)own + 64, 8, ulong2(0, 0), false);
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (tid < 64) {
-        threadgroup float * part0 = (threadgroup float *)tile;
-        threadgroup float * part1 = (threadgroup float *)(tile + 8 * 64);
-        threadgroup float * part2 = (threadgroup float *)(tile + 2 * 8 * 64);
-        threadgroup float * part3 = (threadgroup float *)(tile + 3 * 8 * 64);
-        const uint r = tid >> 3, t = tid & 7;
-        const float total = ((part0[tid] + part1[tid]) + part2[tid]) + part3[tid];
-        if (row0 + r < p.rows) output[ulong(token0 + t) * p.out_stride + row0 + r] = total;
-    }
+    threadgroup float * part0 = (threadgroup float *)tile;
+    threadgroup float * part1 = (threadgroup float *)(tile + 16 * 64);
+    threadgroup float * part2 = (threadgroup float *)(tile + 2 * 16 * 64);
+    threadgroup float * part3 = (threadgroup float *)(tile + 3 * 16 * 64);
+    const uint i = tid & 63, hi = tid >> 6; // tid < 64 reduces acc0, else acc1
+    const uint r = 8 * hi + (i >> 3), t = i & 7;
+    const uint at = i + 64 * hi;
+    const float total = ((part0[at] + part1[at]) + part2[at]) + part3[at];
+    if (row0 + r < p.rows) output[ulong(token0 + t) * p.out_stride + row0 + r] = total;
 }
 template <uint ENC, typename TW>
 kernel void nu_matmul_split_t(device const uchar * weights [[buffer(0)]],
-                              device const float * input [[buffer(1)]],
-                              device float * output [[buffer(2)]],
-                              constant MatmulParams & p [[buffer(7)]],
-                              uint group [[threadgroup_position_in_grid]],
-                              uint tid [[thread_position_in_threadgroup]],
-                              uint sg [[simdgroup_index_in_threadgroup]]) {
-    threadgroup TW tile[4 * 8 * 64];
-    const uint row0 = (group % p.row_tiles) * 8, token0 = (group / p.row_tiles) * 8;
+                                device const float * input [[buffer(1)]],
+                                device float * output [[buffer(2)]],
+                                constant MatmulParams & p [[buffer(7)]],
+                                uint group [[threadgroup_position_in_grid]],
+                                uint tid [[thread_position_in_threadgroup]],
+                                uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup TW tile[4 * 16 * 64];
+    const uint row0 = (group % p.row_tiles) * 16, token0 = (group / p.row_tiles) * 8;
     nu_matmul_split_body<ENC, TW>(weights, input, output, p, row0, token0, tile, tid, sg);
 }
 // Gathered expert matmul over the row lists of `nu_expert_lists`: threadgroup
@@ -1144,8 +1144,9 @@ template [[host_name("nu_matmul_pq2_0")]] kernel void nu_matmul_t<142, 64, 64, h
 template [[host_name("nu_matmul_ptq1_0")]] kernel void nu_matmul_t<143, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_pq2_0_32")]] kernel void nu_matmul_t<142, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0_32")]] kernel void nu_matmul_t<143, 32, 32, half, float, false>(NU_MATMUL_ARGS);
-// The `_8` split-K set (8×8) serves chunks of at most `small_chunk_tokens`
-// tokens, where even the 32-row tile leaves too few threadgroups.
+// The `_8` set (16 rows × 8 tokens) serves chunks of at most
+// `small_chunk_tokens` tokens, where even the 32-row tile leaves too few
+// threadgroups.
 template [[host_name("nu_matmul_q3_k_8")]] kernel void nu_matmul_split_t<11, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q4_k_8")]] kernel void nu_matmul_split_t<12, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q5_k_8")]] kernel void nu_matmul_split_t<13, half>(NU_MATMUL_ARGS);

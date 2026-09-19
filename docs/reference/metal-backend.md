@@ -122,6 +122,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_matvec_experts` (KERN-09) | 128 | 16 rows of one slot's expert (the segment bodies) | 4 rows | `simd_sum` | none |
 | `nu_route` (KERN-09) | 256 | one row of ≤ 256 router logits | 32 logits; k rounds of "best untaken" | `simd_max`, `simd_sum`, `simd_shuffle_down`, 8-way threadgroup pick | 8 + 8 + 64 entries |
 | `nu_matmul_*` (specialized, ENGN-05) | 128 | 64-row × 64-token output tile (32×32 for chunks of ≤ 32 tokens) | a 32×32 quarter as 4×4 `simdgroup_float8x8` (2×2 in the small tile) | matrix loads and MACs | 8 KB half weight tile + 8 KB half activation tile (small tile: 4 KB, activations from device), `threadgroup_barrier` |
+| `nu_matmul_*_8` (KERN-11) | 128 | 16-row × 8-token output tile (two token tiles for 9..16) | 16 rows × 8 tokens over one K slice: two 8×8 accumulators sharing one B load, four groups split K | matrix loads and MACs | 8 KB half tile (16 rows × 64 k per group), `simdgroup_barrier` only |
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
 | `nu_delta_chunk` | 128 | (value head, 32 value rows), all sub-chunks | an 8-row block of every 32×32 tile; column `tid` in the triangular solve | matrix MACs; no shuffles | 24 KB of 32×32 tiles, `threadgroup_barrier` per phase, `mem_device` per sub-chunk |
@@ -260,7 +261,13 @@ memory, and leave the rest to the grid.
   8 KB) and accumulate in F32. A second set (`nu_matmul_*_32`, 32×32, half
   weight tile, activations loaded from device memory as F32, 4 KB) serves
   chunks of at most 32 tokens, where the 64-row tiles leave a 5,120-row
-  projection with only 80 threadgroups. The generic instantiation
+  projection with only 80 threadgroups. A third set (`nu_matmul_*_8`, KERN-11:
+  16 rows × 8 tokens, half weight tile, activations from device as F32, 8 KB)
+  splits the K range across the four SIMD groups with a `simdgroup_barrier`-
+  only loop and serves chunks of at most `small_chunk_tokens` (16) tokens,
+  where the 32-row tile's barrier-bound loop streams weight bytes far below
+  the matvec floor; see [§ Small-chunk tile](#small-chunk-tile-kern-11-2026-09-19).
+  The generic instantiation
   (`nu_matmul`) keeps F32 operands in 32×32 tiles for F32, F16, Q8_0,
   IQ4_NL, and misaligned ranges (exact for dense rows of any magnitude).
   `Backend.matmul` selects by encoding, weight alignment (the matvec
@@ -903,19 +910,21 @@ Prefill is within 6–9 % of the reference at 512 and 4K; the remaining gap
 is spread over attention, DeltaNet, norms, and the generic-tile tensors
 (7 IQ4_NL and 106 Q8_0 tensors in this artifact).
 
-### Small-chunk tile (KERN-11, session 1, 2026-09-19)
+### Small-chunk tile (KERN-11, 2026-09-19)
 
 A prompt's first tokens run through `Backend.matmul` as one short chunk. The
 32×32 tile gives a 5,120-row projection 160 threadgroups whose K loop carries
-two `threadgroup_barrier`s per 64-column step, so at 9–32 tokens it streams
+two `threadgroup_barrier`s per 64-column step, so at 22–32 tokens it streams
 weight bytes at 10–41 GB/s while the specialized matvecs on the same encodings
-reach 84–242. The `nu_matmul_*_8` split-K set gives one 128-thread group eight
-rows × eight tokens: the four SIMD groups partition the 64-column K steps, each
-lane decodes one 16-value segment into its own SIMD group's 8×64 half tile, and
-only `simdgroup_barrier` orders the loop — no `threadgroup_barrier` inside it.
-The four K partials reduce once at the end through the reused tile in a fixed
-SIMD-group order. `specializedMatmul` takes the `_8` tile for `tokens <=
-small_chunk_tokens` (8), the `_32` tile above it.
+reach 88–246. The `nu_matmul_*_8` set gives one 128-thread group **16 rows ×
+8 tokens**: two 8×8 accumulators per SIMD group share one activation block per
+step, the four SIMD groups partition the 64-column K steps, each lane decodes
+two 16-value segments into its own group's 16×64 half tile, and only
+`simdgroup_barrier` orders the loop — no `threadgroup_barrier` inside it. The
+four K partials reduce once at the end in a fixed SIMD-group order.
+`specializedMatmul` takes the `_8` tile for `tokens <= small_chunk_tokens`
+(16), the `_32` tile above it; at 9–16 tokens the `_8` tile runs two token
+tiles, which still beats one 32-token tile by 2.5–4×.
 
 Method: `make bench-matmul ARGS=<t>` (Apple M4 Pro, Zig 0.16.0, ReleaseSafe).
 Each row is five measured command buffers after two warm-ups, each buffer
@@ -927,44 +936,61 @@ attributes. The matvec column is the same encoding from `make bench-kernels`
 run immediately before on the same machine (69,632×5,120 for the gate shape,
 5,120×17,408 for the down shape). GB/s of weight bytes:
 
-**ffn_gate (17,408×5,120), batched.** t=1/4/8 take the 8×8 tile, t=9..32 the 32×32.
+**ffn_gate (17,408×5,120).** t=1..16 take the 16×8 tile, t=22/32 the 32×32.
 
 | Encoding | matvec | t=1 | t=4 | t=8 | t=9 | t=16 | t=22 | t=32 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Q4_K | 176 | 73 | 75 | 75 | 28 | 28 | 28 | 28 |
-| Q5_K | 211 | 83 | 85 | 85 | 33 | 34 | 34 | 34 |
-| Q3_K | 121 | 57 | 58 | 58 | 21 | 22 | 22 | 22 |
-| Q6_K | 242 | 105 | 107 | 101 | 41 | 41 | 41 | 41 |
-| IQ3_S | 121 | 60 | 62 | 62 | 22 | 22 | 22 | 22 |
-| IQ4_XS | 214 | 80 | 81 | 83 | 28 | 28 | 28 | 28 |
-| Q4_0 | 229 | 84 | 87 | 87 | 29 | 29 | 29 | 29 |
-| PQ2_0 | 118 | 42 | 45 | 45 | 14 | 14 | 14 | 14 |
-| PTQ1_0 | 88 | 28 | 29 | 29 | 11 | 11 | 11 | 11 |
+| Q4_K | 179 | 93 | 96 | 95 | 98 | 95 | 27 | 28 |
+| Q5_K | 211 | 108 | 109 | 108 | 111 | 113 | 33 | 33 |
+| Q3_K | 122 | 64 | 62 | 62 | 64 | 64 | 21 | 21 |
+| Q6_K | 246 | 115 | 115 | 113 | 116 | 115 | 41 | 40 |
+| IQ3_S | 121 | 66 | 66 | 65 | 66 | 66 | 21 | 21 |
+| IQ4_XS | 214 | 87 | 90 | 86 | 88 | 92 | 28 | 28 |
+| Q4_0 | 230 | 90 | 89 | 89 | 91 | 92 | 29 | 29 |
+| PQ2_0 | 116 | 47 | 48 | 48 | 50 | 50 | 14 | 14 |
+| PTQ1_0 | 88 | 32 | 33 | 33 | 34 | 34 | 11 | 11 |
 
-**ffn_down (5,120×17,408), batched.** Same tile assignment.
+**ffn_down (5,120×17,408).** Same tile assignment.
 
 | Encoding | matvec | t=1 | t=4 | t=8 | t=9 | t=16 | t=22 | t=32 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Q4_K | 150 | 73 | 74 | 75 | 27 | 27 | 27 | 26 |
-| Q5_K | 186 | 83 | 85 | 84 | 32 | 32 | 32 | 32 |
-| Q3_K | 113 | 55 | 55 | 50 | 20 | 20 | 20 | 20 |
-| Q6_K | 229 | 100 | 102 | 102 | 38 | 38 | 38 | 38 |
-| IQ3_S | 112 | 59 | 59 | 61 | 21 | 21 | 21 | 21 |
-| IQ4_XS | 181 | 79 | 81 | 82 | 26 | 26 | 26 | 26 |
-| Q4_0 | 204 | 84 | 86 | 86 | 28 | 28 | 28 | 28 |
-| PQ2_0 | 97 | 44 | 44 | 44 | 14 | 14 | 14 | 14 |
-| PTQ1_0 | 84 | 28 | 28 | 29 | 10 | 10 | 10 | 10 |
+| Q4_K | 151 | 91 | 94 | 92 | 95 | 97 | 26 | 26 |
+| Q5_K | 189 | 105 | 106 | 106 | 110 | 110 | 32 | 32 |
+| Q3_K | 117 | 58 | 58 | 59 | 61 | 61 | 20 | 20 |
+| Q6_K | 238 | 106 | 106 | 109 | 112 | 110 | 37 | 38 |
+| IQ3_S | 113 | 62 | 60 | 61 | 65 | 65 | 21 | 21 |
+| IQ4_XS | 184 | 87 | 86 | 84 | 90 | 88 | 26 | 26 |
+| Q4_0 | 205 | 87 | 88 | 88 | 92 | 90 | 28 | 28 |
+| PQ2_0 | 97 | 46 | 46 | 47 | 49 | 49 | 14 | 13 |
+| PTQ1_0 | 84 | 31 | 31 | 32 | 33 | 33 | 10 | 10 |
 
-**Reading.** The batched bench is stable (the five rounds of an identical row
-agree within a few percent) and shows the `_8` tile flat across t=1/4/8, as it
-should be: the three token counts are one token tile of work. It streams 28–107
-GB/s, 33–54 % of the same encoding's matvec rate — above the 32×32 tile's 10–41
-at t=9–32 but still short of the 70 % the acceptance names. The activation
-operand is the suspected reason: each 8-row threadgroup gathers the chunk's
-whole activation block (8 × columns × 4 B) for its K range against 8 × columns
-of weights, and at 5,120 columns that is 160 KB of gathered activations per
-group against 23 KB of Q4_K weights. The two activation-operand experiments
-below measure whether the gathered loads are the gap.
+**Activation-operand experiments.** Each was measured alone under the batched
+bench at 8 tokens before the threshold moved:
+- **16 rows per threadgroup, kept.** Two accumulators per SIMD group share one
+  B load, halving the gathered activation traffic per weight byte. It moved
+  Q4_K from 75 to 95 GB/s and every encoding up 4–32 %, most where the weight
+  bytes per activation byte are fewest (the K-quants). The shipped `_8` tile is
+  this geometry.
+- **Packed `[k][token]` half activations, dropped.** A transposing sibling of
+  `nu_pack_half` (one per projection input) reached 62–67 GB/s at 8 tokens
+  against the 16-row tile's 90+ on the same encodings, before its one-time pack
+  cost of 34–112 µs per input. A plain `[k][token]` layout leaves each 8×8 B
+  block as eight 16-byte strided half loads, which the transposed float gather
+  already served better; a blocked layout that makes the block one contiguous
+  read is left as a follow-up.
+
+**Reading.** The tile is flat across 1–16 tokens: 31–116 GB/s, 37–64 % of the
+same encoding's matvec rate. t=9 and t=16 read the weights twice (two token
+tiles) and still match t=8's bytes-per-second because the attribution counts
+both passes. It is 2.5–4× the 32×32 tile's 10–41 at 22–32, and clears the 70 %
+floor nowhere: the best rows are Q4_K's 52–64 % on the down shape; the ternary
+and Q3/IQ3 rows sit at 37–52 %. The reason is the activation operand — a group
+gathers 8 tokens × columns × 4 B (160 KB at 5,120 columns) against 16 × columns
+of weights (46 KB of Q4_K) — and the 16-row tile only halved that ratio while
+the packed layout made it worse. The remaining levers (32 rows per group, a
+blocked activation read, or keeping the activations in threadgroup memory
+across a row strip) are recorded in the log, not shipped; the unit closes
+below its floor on this record.
 
 **Session 1 table (single dispatch per command buffer — the rate is the GPU's
 clock ramp, not the tile; kept for the record and superseded by the batched

@@ -183,10 +183,11 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
 }
 
 /// `--matmul-bench [tokens]`: throughput of the batched prefill matmul on
-/// model shapes for a chunk of `tokens` (default 256). Reports GPU ms per dispatch, GFLOP/s of
-/// F32 multiply-adds (2 · rows · columns · tokens), and the prefill tok/s the
-/// 54 GFLOP/token model would reach if this were the only cost — a ceiling
-/// not a prediction.
+/// model shapes for a chunk of `tokens` (default 256). One command buffer
+/// issues 64 dispatches at t <= 8 and 16 above (the batch keeps the GPU
+/// clocked), five measured after two warm-ups; reports GPU ms per dispatch,
+/// GFLOP/s of F32 multiply-adds (2 · rows · columns · tokens), and the weight
+/// bytes per second the tile streams.
 fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
@@ -259,7 +260,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
                 }
                 const flops = 2.0 * @as(f64, @floatFromInt(shape.rows * shape.columns * tokens));
                 const gflops = flops / (best * 1e-3) / 1e9;
-                const tile = switch (geometry.tokens) {
+                const tile = if (geometry.rows == 16) "16x8" else switch (geometry.tokens) {
                     8 => "8x8",
                     16 => "8x16",
                     32 => "32x32",
@@ -1311,7 +1312,7 @@ pub fn main(init: std.process.Init) !void {
             // tile of 32 under the old geometry; a partial one now), 20 the
             // 32×32 tiles, and 8/5/1 the 8×8 split-K tiles (8 on a full tile,
             // 5 and 1 on a partial one); the buffers hold the larger padding.
-            const token_counts = [_]usize{ 37, 20, 8, 5, 1 };
+            const token_counts = [_]usize{ 37, 20, 16, 9, 8, 5, 1 };
             const padded = Backend.matmulPadded(37);
             const mm_expected = try alloc.alloc(f32, mm_rows);
             defer alloc.free(mm_expected);
@@ -1406,7 +1407,8 @@ pub fn main(init: std.process.Init) !void {
             if (Backend.specializedMatmul(encoding, 0, 2880, 64) == null) return error.SpecializedPathNotSelected;
             if (Backend.specializedMatmul(encoding, 1, 2880, 64) != null) return error.MisalignedWeightsAccepted;
             if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 8).?).tokens != 8) return error.SmallTileNotSelected;
-            if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 9).?).tokens != 32) return error.SmallTileNotSelected;
+            if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 16).?).tokens != 8) return error.SmallTileNotSelected;
+            if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 17).?).tokens != 32) return error.SmallTileNotSelected;
             if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 32).?).tokens != 32) return error.SmallTileNotSelected;
             if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 33).?).tokens != 64) return error.LargeTileNotSelected;
             if (Backend.specializedMatvec(encoding, 0, 2880, 4) != null) return error.MisalignedInputAccepted;

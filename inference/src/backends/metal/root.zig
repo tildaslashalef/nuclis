@@ -390,7 +390,7 @@ pub const Backend = struct {
     pub const matmul_tile = 64;
     /// Chunk length below which the split-K 8×8 tile serves. Set to the
     /// measured crossover between the small tile and the 32×32 one.
-    pub const small_chunk_tokens = 8;
+    pub const small_chunk_tokens = 16;
     pub fn matmulPadded(tokens: usize) usize {
         return (tokens + matmul_tile - 1) / matmul_tile * matmul_tile;
     }
@@ -405,7 +405,7 @@ pub const Backend = struct {
         return switch (kernel) {
             .matmul => .{ .rows = 32, .tokens = 32, .half = false },
             .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
-            .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 8, .tokens = 8, .half = true },
+            .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
             else => .{ .rows = 32, .tokens = 32, .half = true },
         };
     }
