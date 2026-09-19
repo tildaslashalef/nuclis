@@ -439,6 +439,22 @@ Incremental KERN-04 experiments on that same workload:
 | Plus gate/up split across SIMD groups (kept) | 10.95 | 10.49 |
 | Plus attention projections (final) | 11.02 | 10.63 |
 
+KERN-11 (2026-09-19) short-chunk prefill matmul, same hardware, artifact,
+build, and standard `make bench` workload (22 prompt tokens, 64 generated,
+context 2048, one warmup, three measured runs). The 22-token chunk now runs
+the 16-row × 8-token split tile (three token tiles) instead of one 32×32 tile;
+decode is untouched. Before is the same build with `small_chunk_tokens = 8`,
+which selects the 32×32 tile for this prompt:
+
+| Version | Prefill tok/s | First token ms | Decode tok/s |
+| --- | ---: | ---: | ---: |
+| Before (32×32 tile) | 38.78 | 567.3 | 10.22 |
+| After (16×8 split tile, threshold 24) | 43.01 | 511.5 | 10.20 |
+
+Prefill +10.9 %, first token −9.8 %, decode within noise. The per-shape
+kernel rates and the experiments behind the tile are in
+[metal-backend.md § Small-chunk tile](metal-backend.md#small-chunk-tile-kern-11-2026-09-19).
+
 ## Gemma 4 12B: first look (MODL-06, 2026-09-11)
 
 The second family's rates on the same machine, method, and build as
