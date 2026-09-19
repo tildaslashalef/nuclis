@@ -89,16 +89,38 @@ fn cancelCheck(context: *anyopaque) !void {
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len < 2 or args.len > 3) return error.ExpectedModelPath;
-    const use_metal = args.len == 3;
-    if (use_metal and !std.mem.eql(u8, args[2], "--metal")) return error.UnknownOption;
-    var mapped = try inference.weights.Mapped.open(alloc, init.io, args[1]);
+    var use_metal = false;
+    var draft_stats = false;
+    var draft_trace: ?[]const u8 = null;
+    var path: ?[]const u8 = null;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--metal")) {
+            use_metal = true;
+        } else if (std.mem.eql(u8, arg, "--draft-stats")) {
+            draft_stats = true;
+        } else if (std.mem.eql(u8, arg, "--draft-trace")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedTraceDirectory;
+            draft_trace = args[i];
+        } else if (path == null) {
+            path = arg;
+        } else return error.UnknownOption;
+    }
+    const model_path = path orelse return error.ExpectedModelPath;
+    var mapped = try inference.weights.Mapped.open(alloc, init.io, model_path);
     defer mapped.deinit(init.io);
     const architecture = mapped.document.string("general.architecture") orelse return error.MissingMetadata;
     switch (try inference.models.select(architecture)) {
-        .qwen35 => try run(qwen35_spec, alloc, init.io, &mapped, use_metal),
-        .gemma4 => try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
-        .@"muse-glimmer" => try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
+        .qwen35 => if (draft_trace) |dir|
+            try draftTrace(qwen35_spec, alloc, init.io, &mapped, use_metal, dir)
+        else if (draft_stats)
+            try draftStats(qwen35_spec, alloc, init.io, &mapped, use_metal)
+        else
+            try run(qwen35_spec, alloc, init.io, &mapped, use_metal),
+        .gemma4 => if (draft_stats or draft_trace != null) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
+        .@"muse-glimmer" => if (draft_stats or draft_trace != null) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
     }
 }
 
@@ -193,6 +215,18 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     // populated, detecting accidental shared mutable storage.
     try second.sequence(actual);
     if (!std.mem.eql(f32, expected, actual)) return error.SessionIsolationMismatch;
+    // A loaded drafter must not perturb decode while it is never asked to
+    // propose: the block's cache and workspace are idle, so the same two
+    // tokens decode identically (both executors).
+    if (comptime spec.draft != null) {
+        var with_draft: Model = if (backend) |*b|
+            .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, true) }
+        else
+            .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, true) };
+        defer with_draft.deinit();
+        try with_draft.sequence(actual);
+        if (!std.mem.eql(f32, expected, actual)) return error.DraftLoadedDecodeMismatch;
+    }
     var context: u8 = 0;
     // Both cancellation paths must poison the session and recover on reset.
     for ([_]Observer{
@@ -215,7 +249,10 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     var other: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 8, 4, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 8, true, false) };
     defer other.deinit();
     try checkSnapshot(spec, Model, alloc, &first, &second, &other, expected, actual);
-    if (comptime spec.draft != null) try checkDraft(spec, alloc, mapped.view(), binding, spec.draft.?);
+    if (comptime spec.draft != null) {
+        try checkDraft(spec, alloc, mapped.view(), binding, spec.draft.?, if (backend) |*b| b else null);
+        try draftRecoveryCheck(spec, alloc, if (backend) |*b| b else null, mapped.view(), binding, spec.draft.?);
+    }
     try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal);
     if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true);
     if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual);
@@ -345,20 +382,19 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
     if (other.state().position != before) return error.OverflowTouchedSession;
 }
 
-/// The prediction block on the CPU against the reference's pinned trace: at
-/// position 0 pair the first token with a zero hidden, at position 1 pair the
-/// second with the first position's target hidden. Both the block's `h_nextn`
-/// and its greedy token must match. The trace was captured from the pinned
-/// reference on Metal with an F32 cache; the tolerances are the bring-up
-/// block tolerances (docs/reference/speculative-decoding.md).
-fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.weights.View, binding: spec.Family.Binding, draft: Draft) !void {
+/// The prediction block against the reference's pinned trace, on the CPU
+/// reference and, when a backend is given, on the Metal plan: at position 0
+/// pair the first token with a zero hidden, at position 1 pair the second with
+/// the first position's target hidden. Both the block's `h_nextn` and its
+/// greedy token must match. The trace was captured from the pinned reference
+/// with an F32 cache; the tolerances are the bring-up block tolerances
+/// (docs/reference/speculative-decoding.md).
+fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.weights.View, binding: spec.Family.Binding, draft: Draft, backend: ?*inference.metal.Backend) !void {
     const Runtime = spec.Family.Runtime;
     const hidden = 5120;
     const p0_h = @embedFile("src/models/fixtures/qwen35-mtp/p0-h.f32");
     const p1_h = @embedFile("src/models/fixtures/qwen35-mtp/p1-h.f32");
     const p1_hprev = @embedFile("src/models/fixtures/qwen35-mtp/p1-hprev.f32");
-    var runtime = try Runtime.init(alloc, view, binding, 4, false, true);
-    defer runtime.deinit();
     const logits = try alloc.alloc(f32, spec.vocabulary);
     defer alloc.free(logits);
     const zeros = try alloc.alloc(f32, hidden);
@@ -368,16 +404,353 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
     defer alloc.free(h_prev);
     for (h_prev, 0..) |*v, i| v.* = std.mem.bytesToValue(f32, p1_hprev[i * 4 ..][0..4]);
 
+    var runtime = try Runtime.init(alloc, view, binding, 4, false, true);
+    defer runtime.deinit();
     try runtime.draftForward(zeros, draft.tokens[0], 0, logits);
-    try compareDraft("position 0", p0_h, runtime.draft_h);
+    try compareDraft("cpu position 0", p0_h, runtime.draft_h, 2e-2, 1e-3);
     if (argmax(logits) != draft.greedy[0]) return error.DraftGreedyMismatch;
     try runtime.draftForward(h_prev, draft.tokens[1], 1, logits);
-    try compareDraft("position 1", p1_h, runtime.draft_h);
+    try compareDraft("cpu position 1", p1_h, runtime.draft_h, 2e-2, 1e-3);
     if (argmax(logits) != draft.greedy[1]) return error.DraftGreedyMismatch;
-    std.debug.print("Draft block check passed: positions 0 and 1 match the pinned trace; greedy tokens {d} and {d}.\n", .{ draft.greedy[0], draft.greedy[1] });
+
+    if (backend) |b| {
+        const Plan = spec.Family.Plan;
+        var plan = try Plan.init(alloc, b, view, binding, 4, 4, .f32, false, true);
+        defer plan.deinit();
+        try plan.draftForwardHost(zeros, draft.tokens[0], 0, null, logits);
+        try compareDraft("metal f32 position 0", p0_h, plan.draft_h.floats()[0..hidden], 2e-2, 1e-3);
+        if (argmax(logits) != draft.greedy[0]) return error.DraftGreedyMismatch;
+        try plan.draftForwardHost(h_prev, draft.tokens[1], 1, null, logits);
+        try compareDraft("metal f32 position 1", p1_h, plan.draft_h.floats()[0..hidden], 2e-2, 1e-3);
+        if (argmax(logits) != draft.greedy[1]) return error.DraftGreedyMismatch;
+
+        // The F16 cache's rounding of the block's keys and values at the
+        // family's recorded tolerance, the same rows.
+        const bounds = spec.bounds;
+        var half = try Plan.init(alloc, b, view, binding, 4, 4, .f16, false, true);
+        defer half.deinit();
+        try half.draftForwardHost(zeros, draft.tokens[0], 0, null, logits);
+        try compareDraft("metal f16 position 0", p0_h, half.draft_h.floats()[0..hidden], bounds.half_max_abs, bounds.half_rel_rms);
+        if (argmax(logits) != draft.greedy[0]) return error.DraftGreedyMismatch;
+        try half.draftForwardHost(h_prev, draft.tokens[1], 1, null, logits);
+        try compareDraft("metal f16 position 1", p1_h, half.draft_h.floats()[0..hidden], bounds.half_max_abs, bounds.half_rel_rms);
+        if (argmax(logits) != draft.greedy[1]) return error.DraftGreedyMismatch;
+    }
+    std.debug.print("Draft block check passed ({s}): positions 0 and 1 match the pinned trace; greedy tokens {d} and {d}.\n", .{ if (backend != null) "cpu and metal" else "cpu", draft.greedy[0], draft.greedy[1] });
 }
 
-fn compareDraft(label: []const u8, expected: []const u8, actual: []const f32) !void {
+/// The block's cache rides the session's recovery: `reset` clears it and a
+/// checkpoint/rewind leaves it rewritable, so the same row reproduces its
+/// hidden. `propose` is deterministic across two independently reset runners.
+/// Runs on the CPU reference or the Metal plan (whichever backend is given;
+/// null selects the CPU reference).
+fn draftRecoveryCheck(comptime spec: Spec, alloc: std.mem.Allocator, backend: ?*inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding, draft: Draft) !void {
+    const Family = spec.Family;
+    const hidden = 5120;
+    const p1_hprev = @embedFile("src/models/fixtures/qwen35-mtp/p1-hprev.f32");
+    const zeros = try alloc.alloc(f32, hidden);
+    defer alloc.free(zeros);
+    @memset(zeros, 0);
+    const h_prev = try alloc.alloc(f32, hidden);
+    defer alloc.free(h_prev);
+    for (h_prev, 0..) |*v, i| v.* = std.mem.bytesToValue(f32, p1_hprev[i * 4 ..][0..4]);
+    const before = try alloc.alloc(f32, hidden);
+    defer alloc.free(before);
+
+    var first: DraftRunner(spec) = if (backend) |b|
+        .{ .metal = try Family.Plan.init(alloc, b, view, binding, 8, 8, .f32, true, true) }
+    else
+        .{ .cpu = try Family.Runtime.init(alloc, view, binding, 8, true, true) };
+    defer first.deinit();
+    var second: DraftRunner(spec) = if (backend) |b|
+        .{ .metal = try Family.Plan.init(alloc, b, view, binding, 8, 8, .f32, true, true) }
+    else
+        .{ .cpu = try Family.Runtime.init(alloc, view, binding, 8, true, true) };
+    defer second.deinit();
+
+    // Reset clears both the block's cache and its pending target hidden.
+    try first.forward(zeros, draft.tokens[0], 0, null);
+    @memcpy(before, first.blockHidden());
+    first.reset();
+    try first.forward(zeros, draft.tokens[0], 0, null);
+    if (!std.mem.eql(f32, before, first.blockHidden())) return error.DraftResetMismatch;
+
+    // A checkpoint/rewind leaves the block's row rewritable to the same bytes.
+    first.reset();
+    try first.forward(zeros, draft.tokens[0], 0, null);
+    try first.checkpoint();
+    try first.forward(h_prev, draft.tokens[1], 1, null);
+    @memcpy(before, first.blockHidden());
+    try first.rewind();
+    try first.forward(h_prev, draft.tokens[1], 1, null);
+    if (!std.mem.eql(f32, before, first.blockHidden())) return error.DraftRewindMismatch;
+
+    // Two reset runners propose the same greedy chain.
+    var one: [4]u32 = undefined;
+    var two: [4]u32 = undefined;
+    first.reset();
+    second.reset();
+    _ = try first.propose(draft.tokens[0], &one);
+    _ = try second.propose(draft.tokens[0], &two);
+    if (!std.mem.eql(u32, &one, &two)) return error.DraftProposeMismatch;
+    std.debug.print("Draft recovery check passed ({s}): reset and rewind reproduce the block's hidden; propose is deterministic.\n", .{if (backend != null) "metal" else "cpu"});
+}
+
+/// A per-depth acceptance statistic for the embedded prediction head. It
+/// decodes a fixed coding prompt greedily, records the target hidden of every
+/// token, and at each step proposes `max_drafts` chained candidates from the
+/// state after the committed prefix, then counts whether draft `i` equals the
+/// token the target chose `i` steps later. The table bounds the verification
+/// theme cares about; a low rate is a measurement, not a failure. Draft
+/// latency per position and the block's own bytes are reported alongside.
+const max_drafts = 4;
+const draft_generated = 32;
+const draft_prompts = [_][]const u8{
+    "Write a Zig function that reverses a string.",
+    "def fibonacci(n):",
+};
+
+/// Either executor behind one step/hidden/propose surface for the draft
+/// statistics and traces.
+fn DraftRunner(comptime spec: Spec) type {
+    const Family = spec.Family;
+    const hidden = 5120;
+    return union(enum) {
+        cpu: Family.Runtime,
+        metal: Family.Plan,
+        fn step(self: *@This(), token: u32, logits: []f32) !void {
+            switch (self.*) {
+                .cpu => |*r| try r.step(token, logits, null),
+                .metal => |*p| try p.step(token, logits, null, null, null),
+            }
+        }
+        /// The post-`output_norm` hidden of the last step: the block's `h`.
+        fn lastHidden(self: *@This()) []const f32 {
+            return switch (self.*) {
+                .cpu => |*r| r.h,
+                .metal => |*p| p.normalized.floats()[0..hidden],
+            };
+        }
+        /// Runs one block row with a host `h_prev`, the block's hidden
+        /// landing in `blockHidden`.
+        fn forward(self: *@This(), h_prev: []const f32, token: u32, position: usize, logits: ?[]f32) !void {
+            switch (self.*) {
+                .cpu => |*r| try r.draftForward(h_prev, token, position, logits),
+                .metal => |*p| try p.draftForwardHost(h_prev, token, position, null, logits),
+            }
+        }
+        fn blockHidden(self: *@This()) []const f32 {
+            return switch (self.*) {
+                .cpu => |*r| r.draft_h,
+                .metal => |*p| p.draft_h.floats()[0..hidden],
+            };
+        }
+        fn propose(self: *@This(), token: u32, out: []u32) !usize {
+            return switch (self.*) {
+                .cpu => |*r| r.propose(token, out, null),
+                .metal => |*p| p.propose(token, out, null),
+            };
+        }
+        fn commit(self: *@This(), tokens: []const u32, h_rows: []const f32) !void {
+            return switch (self.*) {
+                .cpu => |*r| r.commit(tokens, h_rows),
+                .metal => |*p| p.commit(tokens, h_rows),
+            };
+        }
+        fn bytes(self: *@This()) usize {
+            return switch (self.*) {
+                .cpu => |*r| r.drafter().?.bytes(),
+                .metal => |*p| p.drafter().?.bytes(),
+            };
+        }
+        fn reset(self: *@This()) void {
+            switch (self.*) {
+                .cpu => |*r| r.reset(),
+                .metal => |*p| p.reset(),
+            }
+        }
+        fn checkpoint(self: *@This()) !void {
+            return switch (self.*) {
+                .cpu => |*r| r.state.checkpoint(),
+                .metal => |*p| p.state.checkpoint(),
+            };
+        }
+        fn rewind(self: *@This()) !void {
+            return switch (self.*) {
+                .cpu => |*r| r.state.rewind(),
+                .metal => |*p| p.state.rewind(),
+            };
+        }
+        fn deinit(self: *@This()) void {
+            switch (self.*) {
+                .cpu => |*r| r.deinit(),
+                .metal => |*p| p.deinit(),
+            }
+        }
+    };
+}
+
+fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool) !void {
+    const Family = spec.Family;
+    const hidden = 5120;
+    var backend: ?inference.metal.Backend = null;
+    defer if (backend) |*b| b.deinit();
+    if (use_metal) {
+        var diagnostic: [8192]u8 = @splat(0);
+        backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+    }
+    const binding = try Family.bind(alloc, &mapped.document);
+    var vocab = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
+    defer vocab.deinit();
+    var encoder = try inference.tokenizer.Encoder.init(alloc, &vocab);
+    defer encoder.deinit();
+
+    const Runner = DraftRunner(spec);
+
+    for (draft_prompts) |text| {
+        const prompt = try encoder.encode(alloc, text, true, .{});
+        defer alloc.free(prompt);
+        const capacity = prompt.len + draft_generated + max_drafts + 1;
+        var runner: Runner = if (backend) |*b|
+            .{ .metal = try Family.Plan.init(alloc, b, mapped.view(), binding, capacity, @min(capacity, 256), .f32, false, true) }
+        else
+            .{ .cpu = try Family.Runtime.init(alloc, mapped.view(), binding, capacity, false, true) };
+        defer runner.deinit();
+        const logits = try alloc.alloc(f32, spec.vocabulary);
+        defer alloc.free(logits);
+        const sequence = try alloc.alloc(u32, capacity);
+        defer alloc.free(sequence);
+        const hidden_rows = try alloc.alloc(f32, capacity * hidden);
+        defer alloc.free(hidden_rows);
+        const seeds = try alloc.alloc(usize, draft_generated);
+        defer alloc.free(seeds);
+        const drafts = try alloc.alloc(u32, draft_generated * max_drafts);
+        defer alloc.free(drafts);
+        const counts = try alloc.alloc(usize, draft_generated);
+        defer alloc.free(counts);
+        @memset(counts, 0);
+
+        // The prompt, then the greedy continuation; every step's target
+        // hidden is kept for the drafter's `commit`.
+        var len: usize = 0;
+        for (prompt) |token| {
+            try runner.step(token, logits);
+            sequence[len] = token;
+            @memcpy(hidden_rows[len * hidden ..][0..hidden], runner.lastHidden());
+            len += 1;
+        }
+        try runner.commit(sequence[0..len], hidden_rows[0 .. len * hidden]);
+        var next = argmax(logits);
+        var propose_ns: i64 = 0;
+        var proposed: usize = 0;
+        var j: usize = 0;
+        while (j < draft_generated) : (j += 1) {
+            const start = std.Io.Clock.awake.now(io);
+            const k = try runner.propose(next, drafts[j * max_drafts ..][0..max_drafts]);
+            propose_ns += @intCast(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds());
+            proposed += k;
+            counts[j] = k;
+            seeds[j] = len; // the seed token is appended next; its index is `len`.
+            try runner.step(next, logits);
+            sequence[len] = next;
+            @memcpy(hidden_rows[len * hidden ..][0..hidden], runner.lastHidden());
+            len += 1;
+            next = argmax(logits);
+            try runner.commit(sequence[len - 1 .. len], hidden_rows[(len - 1) * hidden ..][0..hidden]);
+        }
+
+        var accepted = [_]usize{0} ** max_drafts;
+        var total = [_]usize{0} ** max_drafts;
+        for (0..draft_generated) |step| {
+            for (0..counts[step]) |i| {
+                const at = seeds[step] + 1 + i;
+                if (at >= len) break;
+                total[i] += 1;
+                if (drafts[step * max_drafts + i] == sequence[at]) accepted[i] += 1;
+            }
+        }
+        std.debug.print("Draft acceptance ({s}, \"{s}\", {d} prompt + {d} greedy):\n", .{ if (use_metal) "metal" else "cpu", text, prompt.len, draft_generated });
+        for (accepted, total, 0..) |a, t, depth| {
+            const rate: f64 = if (t == 0) 0 else @as(f64, @floatFromInt(a)) / @as(f64, @floatFromInt(t));
+            std.debug.print("  depth {d}: {d}/{d} = {d:.1} %\n", .{ depth, a, t, rate * 100 });
+        }
+        const millis = @as(f64, @floatFromInt(propose_ns)) / std.time.ns_per_ms;
+        std.debug.print("  drafts {d}, propose {d:.3} ms total, {d:.3} ms/position; block workspace {d} bytes.\n", .{ proposed, millis, millis / @as(f64, @floatFromInt(@max(proposed, 1))), runner.bytes() });
+    }
+}
+
+/// Writes the native prediction-block trace for the pinned `Hello,` tokens
+/// (`p0-h.f32`, `p1-h.f32`, `p1-hprev.f32`, `greedy.txt`) so
+/// `compare-generation.py --draft` can compare it against the reference's
+/// captured rows. The target is stepped live for each position's hidden, so
+/// this is an independent capture, not a replay of the pinned `hprev`.
+fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8) !void {
+    const Family = spec.Family;
+    const hidden = 5120;
+    const tokens = spec.draft.?.tokens;
+    var backend: ?inference.metal.Backend = null;
+    defer if (backend) |*b| b.deinit();
+    if (use_metal) {
+        var diagnostic: [8192]u8 = @splat(0);
+        backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+    }
+    const binding = try Family.bind(alloc, &mapped.document);
+    const capacity = tokens.len + max_drafts + 2;
+    var runner: DraftRunner(spec) = if (backend) |*b|
+        .{ .metal = try Family.Plan.init(alloc, b, mapped.view(), binding, capacity, 8, .f32, false, true) }
+    else
+        .{ .cpu = try Family.Runtime.init(alloc, mapped.view(), binding, capacity, false, true) };
+    defer runner.deinit();
+    const logits = try alloc.alloc(f32, spec.vocabulary);
+    defer alloc.free(logits);
+    const zeros = try alloc.alloc(f32, hidden);
+    defer alloc.free(zeros);
+    @memset(zeros, 0);
+    const h_prev = try alloc.alloc(f32, hidden);
+    defer alloc.free(h_prev);
+    var greedy: [2]u32 = undefined;
+
+    try runner.step(tokens[0], logits);
+    @memcpy(h_prev, runner.lastHidden());
+    try runner.forward(zeros, tokens[0], 0, logits);
+    try writeFloats(io, directory, "p0-h.f32", runner.blockHidden());
+    greedy[0] = argmax(logits);
+
+    try runner.step(tokens[1], logits);
+    try runner.forward(h_prev, tokens[1], 1, logits);
+    try writeFloats(io, directory, "p1-h.f32", runner.blockHidden());
+    try writeFloats(io, directory, "p1-hprev.f32", h_prev);
+    greedy[1] = argmax(logits);
+
+    var path: [4096]u8 = undefined;
+    const gpath = try std.fmt.bufPrint(&path, "{s}/greedy.txt", .{directory});
+    const file = try std.Io.Dir.cwd().createFile(io, gpath, .{});
+    defer file.close(io);
+    var buffer: [128]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    try writer.interface.print("{d}\n{d}\n", .{ greedy[0], greedy[1] });
+    try writer.interface.flush();
+    std.debug.print("Draft trace ({s}) written to {s}: greedy {d}, {d}.\n", .{ if (use_metal) "metal" else "cpu", directory, greedy[0], greedy[1] });
+}
+
+fn writeFloats(io: std.Io, directory: []const u8, name: []const u8, values: []const f32) !void {
+    var path: [4096]u8 = undefined;
+    const full = try std.fmt.bufPrint(&path, "{s}/{s}", .{ directory, name });
+    const file = try std.Io.Dir.cwd().createFile(io, full, .{});
+    defer file.close(io);
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    for (values) |value| try writer.interface.writeInt(u32, @bitCast(value), .little);
+    try writer.interface.flush();
+}
+
+fn compareDraft(label: []const u8, expected: []const u8, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
     var max_abs: f64 = 0;
     var sum_sq: f64 = 0;
     var ref_sq: f64 = 0;
@@ -389,8 +762,8 @@ fn compareDraft(label: []const u8, expected: []const u8, actual: []const f32) !v
         ref_sq += @as(f64, e) * e;
     }
     const rel_rms = @sqrt(sum_sq / ref_sq);
-    std.debug.print("Draft block ({s}): max abs {e:.3}, relative RMS {e:.3} (bounds 2e-2 / 1e-3)\n", .{ label, max_abs, rel_rms });
-    if (!(max_abs <= 2e-2) or !(rel_rms <= 1e-3)) return error.DraftBlockMismatch;
+    std.debug.print("Draft block ({s}): max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0})\n", .{ label, max_abs, rel_rms, max_abs_bound, rel_rms_bound });
+    if (!(max_abs <= max_abs_bound) or !(rel_rms <= rel_rms_bound)) return error.DraftBlockMismatch;
 }
 
 fn argmax(values: []const f32) u32 {

@@ -92,7 +92,7 @@ flowchart TB
         gguf[formats/gguf.zig]
         quant[quant/decode.zig + tensor/encoding.zig]
         tok[tokenizer/*  profiles/*]
-        sess[runtime/session.zig  runtime/weights.zig]
+        sess[runtime/session.zig  runtime/weights.zig  runtime/draft.zig]
         eng[engine.zig  Engine, Model, runLoop]
         samp[sampling/root.zig]
         cpu[backends/cpu/*  reference math]
@@ -136,6 +136,7 @@ about files, terminals, signals, and the network is `src/` (the
 | `quant`, `tensor` | block layouts, decode equations | which tensor is which |
 | `tokenizer`, `profiles` | vocabularies, merges, chat template | layers, kernels |
 | `runtime/session` | "a layer has KV rows" or "a layer has recurrent state" | how big, or why |
+| `runtime/draft` | that a family can propose tokens and advance over committed ones | how a family predicts, or the generation loop |
 | `backends/cpu`, `backends/metal` | one operation at a time, with shapes as parameters | layer order |
 | `models/qwen35*`, `models/gemma4*` | everything above, composed in one family's order | terminals, files |
 | `engine` | composing adapters, backends, tokenizer, and sampler into `open`/`step`/`runLoop` | files, terminals, signals |

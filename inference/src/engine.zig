@@ -331,8 +331,6 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference
     return switch (backend) {
         .cpu => .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, want_draft, want_draft) },
         .metal => blk: {
-            // The Metal prediction block is MODL-18 session 2.
-            if (want_draft) return error.DraftUnsupportedOnGpu;
             const gpu = try alloc.create(inference.metal.Backend);
             errdefer alloc.destroy(gpu);
             var diagnostic: [8192]u8 = @splat(0);
@@ -345,7 +343,7 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference
                 return err;
             };
             errdefer gpu.deinit();
-            const plan = try Family.Plan.init(alloc, gpu, view, binding, capacity, @min(chunkFor(Family, binding), capacity), kv, false, false);
+            const plan = try Family.Plan.init(alloc, gpu, view, binding, capacity, @min(chunkFor(Family, binding), capacity), kv, want_draft, want_draft);
             break :blk .{ .metal = .{ .backend = gpu, .plan = plan } };
         },
     };

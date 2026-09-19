@@ -18,8 +18,8 @@ it is empty, ask what to work on and write the agreed plan here.
 
 Planned on 2026-09-19, after AGNT-10 closed and emptied the plan: the
 roadmap's first theme, speculative decoding across the families, as five
-units. ENGN-11 closed the same day in one session (its session 2 was not
-needed): `Session.init` can reserve a page-aligned checkpoint region, and
+units. ENGN-11 closed on 2026-09-19 (its session 2 was not needed):
+`Session.init` can reserve a page-aligned checkpoint region, and
 `checkpoint`/`rewind`/`truncate`, `engine.Model.recover`, and the
 `recoveryCheck` on every family and both backends implement the
 accepted-prefix recovery, documented in
@@ -27,42 +27,42 @@ accepted-prefix recovery, documented in
 [session.md](docs/reference/session.md). On Qwen the region is 150 MB and
 checkpoint/rewind cost 3 ms on Metal and 2 ms on CPU; the replay is
 bit-identical to sequential decoding on the CPU and within the family's
-chunk-versus-step bound on Metal. What still exists from before: the Qwen
-adapter binds and validates the 15 embedded `nextn` tensors (351 MB) and
-never executes them; both executors return logits for the last token of a
-prefill only; the catalogue pins every family's draft companion and every
-file is pulled (Qwen's separate head, both Gemma heads, Muse's DFlash
-drafter), but `Engine.open` loads one GGUF and sizes no checkpoint region
-yet. The accepted configuration (the file per registry entry, the
-per-command switch, the draft length) is in
-[docs/spec.md § Speculative decoding](docs/spec.md#speculative-decoding).
-Nothing of the speculative-decoding theme beyond the recovery contract is
-implemented; its five units were rewritten at implementation level on
-2026-09-19 after the companions' headers and the reference's speculative
-driver were read (the oracle fact is in the theme section). MODL-18
-session 1 is in progress: the dense Qwen35 MTP graph and the `draft-mtp`
-driver are read and their facts recorded with provenance in
-[speculative-decoding.md](docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18)
-(one correction: the block's `h` input is the target's post-`output_norm`
-hidden, not the pre-norm residual); `Binding.draft: ?DraftBlock` binds the
-15 tensors on the 65-block file and is null on Bonsai; the CPU runtime
-keeps the last token's `h`, sizes the 65-layout session, runs the block
-(`draftForward`) and exposes `propose`/`commit` behind
-[runtime/draft.zig](inference/src/runtime/draft.zig)'s contract;
-`Engine.open` takes a `DraftRequest` (`.embedded` on CPU Qwen; `.file` and
-Metal are MODL-18 session 2 / MODL-19). The block matches a pinned
-reference trace (positions 0 and 1 of `Hello,`, max abs ≤ 1.1e-5, greedy
-tokens equal) via `checkDraft` in `make test-generation`; `nuclis validate`
-reports *draft head: embedded*. Session 1 is complete on the CPU. Next is
-MODL-18 session 2: the Metal block, the compare rows, and `--draft-stats`.
+chunk-versus-step bound on Metal.
 
-Order: MODL-18 → ENGN-12 → MODL-19 → MODL-20. After MODL-20 the roadmap
-continues with the performance follow-ups, then vision, then agent
-expansion ([docs/roadmap.md](docs/roadmap.md)).
+MODL-18 closed on 2026-09-20 (two sessions). The Qwen adapter's
+`Binding.draft: ?DraftBlock` (the 15 embedded `nextn` tensors) is now
+executed by a `runtime/draft.zig` contract on both executors. The CPU
+reference (`qwen35_runtime.draftForward`/`propose`/`commit`) and the Metal
+plan (`qwen35_metal.zig`, the same kernels over the block's own cache
+layout) match the pinned reference trace at positions 0 and 1 (Metal
+1.5e-5 max abs / 7.2e-7 relative RMS; the F16 cache within the family's
+`half_*` bound); `compare-draft` writes and compares the native rows on
+both backends; `draftRecoveryCheck` shows the block rides the session's
+reset/checkpoint/rewind on both. `generation-check --draft-stats`
+(`make draft-stats`) records the per-depth acceptance (depth 0–3 at
+90/80/69/64 % and 94/83/83/86 % on two coding prompts), the block's
+workspace (1,116,160 bytes) and propose latency (6.2 ms per position on
+Metal). Facts and provenance are in
+[speculative-decoding.md](docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18);
+`Engine.open`'s `DraftRequest.embedded` builds the block on CPU and Metal;
+`nuclis validate` reports *draft head: embedded*.
+
+Two MODL-18 acceptance items did not close and are carried explicitly.
+The pinned trace has 2 positions, not the plan's 3: the reference harness
+captures one MTP row per prompt token and `Hello,` has two, while the
+acceptance statistic now exercises 64 positions across two prompts. And
+"the decode rate unchanged with the drafter loaded but switched off" has
+no caller until ENGN-12 adds the load switch, so it is folded into
+ENGN-12's acceptance. The catalogue's separate `mtp-Qwen3.8-27B-Q4_0.gguf`
+stays pinned but is not loaded: the embedded block is the source, as the
+log records.
+
+Order: ENGN-12 → MODL-19 → MODL-20. After MODL-20 the roadmap continues
+with the performance follow-ups, then vision, then agent expansion
+([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-18 | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2 |
 | ENGN-12 | Batched verification, speculative generation (greedy and sampled), the switch and the draft length, benchmark | 2 |
 | MODL-19 | Gemma 4 draft heads: the companion file as a second GGUF, 12B and 26B-A4B | 1–2 |
 | MODL-20 | Muse Glimmer DFlash drafter: facts, contract fit, acceptance loop | 2 |
@@ -153,120 +153,6 @@ session, Metal, generation, and bench references gain their sections;
 No unit claims a speedup before ENGN-12's benchmark, and negative results
 are recorded per family.
 
-## MODL-18 — Qwen3.8 draft head: the embedded prediction block
-
-**Progress (2026-09-19, session 1 partial).** The reference's dense MTP
-graph and driver were read and the facts recorded with provenance in
-[speculative-decoding.md](docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18).
-Delivered: `Binding.draft: ?DraftBlock` (15 tensors, null on Bonsai);
-`runtime/draft.zig`'s `Drafter` contract; the CPU runtime's 65-layout
-session, `draftForward`, `propose`/`commit`, and `drafter()`; a pinned
-reference trace (`scripts/reference-generation.cpp --mtp-draft`, the
-fixture under `inference/src/models/fixtures/qwen35-mtp/`) checked by
-`checkDraft` in `generation-check`; `Engine.open`'s `DraftRequest`
-(`.embedded` on CPU; `.file` and Metal are later units); and `validate`'s
-*draft head: embedded* line. Session 1 is complete. Session 2: the Metal
-block, the `compare` rows, and `--draft-stats`.
-
-**Facts read on 2026-09-19** (from `inference/src/models/fixtures/qwen35-27b.json`
-and `scripts/gguf-inventory.py` on the separate head; to be confirmed
-from the reference's graph in session 1 and recorded in
-`speculative-decoding.md` with provenance):
-- Block 64 of the main file is the whole draft head: `nextn.eh_proj`
-  [10240 → 5120] Q6_K, `nextn.enorm`, `nextn.hnorm`,
-  `nextn.shared_head_norm` [5120] F32, and one full-attention layer of
-  the main model's shape — `attn_norm`, `attn_q` [5120 → 12288] Q6_K (the
-  merged query and gate, as the main full-attention layers), `attn_k` and
-  `attn_v` [5120 → 1024] **Q8_0**, `attn_q_norm`/`attn_k_norm` [256],
-  `attn_output` [6144 → 5120] Q6_K, `post_attention_norm`, `ffn_gate`/
-  `ffn_up` [5120 → 17408] and `ffn_down` Q6_K. The separate
-  `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` holds the same 15 tensors and adds
-  only `token_embd`/`output` at **Q3_K** and `output_norm`, i.e. lower
-  quantized copies of what the main file already has. **Decision: the
-  embedded block is the source; the separate file is not loaded** (the
-  catalogue keeps it pinned; the log records why).
-- The reference (pinned llama.cpp, `draft-mtp`) opens the *same* main
-  file as a second context of type MTP that runs only the `nextn` layer
-  with a plain attention cache of its own; the target exposes its
-  residual after the last layer and before `output_norm` for every
-  position (`t_h_nextn`, `llama_get_embeddings_nextn`); the drafter's
-  batch carries both a token id and an embedding row per position: at MTP
-  position `p + 1` the pair `(h_p, x_{p+1})`, the block computing
-  `eh_proj([enorm(embed(x_{p+1})); hnorm(h_p)])` → the layer → 
-  `shared_head_norm` → the shared output head → logits for `x_{p+2}`.
-  `process()` fills the drafter's cache for accepted tokens by copying the
-  target's `h` rows for the batch (plus one pending row carried across
-  batches); `draft()` chains: the drafted token and the block's own
-  output hidden state feed the next draft position (qwen35 is the
-  single-head mode). Read those two functions and the qwen35 graph
-  builder for the exact alignment before writing the CPU reference.
-- Q8_0 must be in `qwen35.executableEncoding` for the block's `attn_k`
-  and `attn_v` (the generic matvec and the generic F32 tile serve it);
-  confirm, and reject the block otherwise as the binder already rejects
-  unsupported encodings.
-
-**Session 1 — contract and CPU reference.**
-- `inference/src/runtime/draft.zig`: the model-independent contract.
-  `pub const Drafter = struct { ptr, vtable }` or a comptime-generic
-  family member, whichever the registry's pattern suggests
-  (`models/registry.zig`), with: `propose(self, max: usize, out:
-  []u32) !usize` (greedy candidates from the state after the last
-  committed token; also returns the draft's logits row per position for
-  ENGN-12's sampled acceptance, into a caller-owned `[]f32` of `max ×
-  vocabulary`), `commit(self, tokens: []const u32, h_rows: ...)`
-  (advance the drafter's own state over accepted tokens), `checkpoint`/
-  `rewind` (its cache is one more attention layout in the *same*
-  `Session`, so it rides on ENGN-11's checkpoint), `reset`, and
-  `bytes()` for the load plan.
-- `qwen35.zig`: the block's tensors move from "validated, excluded" to a
-  `Binding.draft: ?DraftBlock` (the 15 tensors); the text binding is
-  unchanged. `qwen35_runtime.zig`: the session's layouts gain one
-  attention layout for the block (  `Session.init` on 65 layouts when the
-  drafter is requested); `step`/the prefill path keep the target hidden
-  of the last token (`h` = `self.normalized` after the `output_norm`
-  before `self.mm(self.binding.output, …)`, confirmed from the
-  reference's `t_h_nextn`; the block applies its own `hnorm` on top,
-  [speculative-decoding.md](docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18))
-  and, for a batch, every row's `h`; `Drafter.propose` runs the block for one position at
-  a time, chained as the reference does; `commit` runs the block over
-  the accepted tokens with their `h` rows to fill its cache (the same
-  forward, logits discarded). Tests: the block on the CPU against a
-  pinned trace from the reference at positions 1..3 of `Hello,` (the
-  trace harness of `reference-baseline.md` extended to dump the MTP
-  context's `nextn` outputs and draft logits; if the harness cannot reach
-  them, the pinned fixture is the reference's greedy draft *tokens* at
-  those positions from `llama-completion --spec-type draft-mtp -md
-  <main file> --spec-draft-n-max 4` with tracing on, and our CPU logits
-  become the pinned oracle for Metal).
-- `Engine.open` gains `draft: DraftRequest = .none | .embedded | .{ .file
-  = path }`; for `.embedded` the Qwen adapter binds the block, sizes the
-  session for it, and constructs the drafter; `nuclis inspect`/`validate`
-  report the block as *draft head: embedded*.
-
-**Session 2 — Metal and the statistic.** `qwen35_metal.zig` runs the block
-with the existing kernels (the concatenation is two `nu_copy`/pack
-dispatches or a strided input; `eh_proj` a 10240-wide matvec; the layer
-is the main model's full-attention layer code path over the block's
-cache; the head matvec on the block's normalized output, argmax on the
-device via `nu_argmax_partial/final`, logits read back only when ENGN-12
-samples); reset and rewind tests through `generation-check.zig` (the
-drafter's cache rides the recovery check); `make compare` gains the
-draft rows (`compare-generation.py` compares the new trace files). The
-acceptance statistic, offline: `nuclis generate --draft-stats` (or a
-`generation-check` mode) decodes the fixed coding prompts greedily and,
-at every step, proposes 4 drafts and counts, per depth, whether draft
-`i` equals the token the main model chose `i` steps later; reported as a
-per-depth acceptance table in `speculative-decoding.md`. Draft latency
-per position and the block's bytes recorded.
-
-**Acceptance.** CPU block outputs match the pinned trace at the stated
-tolerance at 3 positions; Metal matches the CPU within the F16-cache
-contract (`compare-f32`/`-f16` tolerances for the new rows); reset and
-rewind tests pass on both executors; the per-depth acceptance statistic
-and draft latency recorded; `make check`, `compare` (main rows
-unchanged), `test-generation-metal`; the Qwen decode rate in `make bench`
-unchanged with the drafter loaded but switched off.
-
 ## ENGN-12 — Batched verification, speculative generation, the switch, the benchmark
 
 **Files.** `inference/src/engine.zig` (`Executor.prefill` line 60,
@@ -355,7 +241,9 @@ divergence recorded by position; the sampled-acceptance unit tests; EOS
 inside a batch, the budget inside a batch, partial acceptance,
 cancellation mid-batch, and a batch at the context limit, each a test;
 `make check`, `make compare`, `make test-generation-metal`; the benchmark
-record with the verdict, positive or negative, and the entry updated.
+record with the verdict, positive or negative, and the entry updated; the
+Qwen decode rate in `make bench` unchanged with the drafter loaded but
+switched off (carried from MODL-18: the load switch lands here).
 
 ## MODL-19 — Gemma 4 draft heads: the companion file as a second GGUF
 

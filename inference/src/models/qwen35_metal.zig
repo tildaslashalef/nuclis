@@ -20,6 +20,7 @@ const metal = @import("../backends/metal/root.zig");
 const Observer = @import("qwen35_runtime.zig").Observer;
 const Tensor = @import("../formats/gguf.zig").Tensor;
 const Buffer = metal.Buffer;
+const Drafter = @import("../runtime/draft.zig").Drafter;
 
 pub const vocabulary = 248320;
 const hidden = 5120;
@@ -115,19 +116,40 @@ pub const Plan = struct {
     beta_c: Buffer,
     mixed_out_c: Buffer, // padded × 6144
 
+    /// The embedded prediction head's workspace, allocated only when a
+    /// drafter was requested. `draft_h` is the block's `h_nextn` (after
+    /// `shared_head_norm`); `draft_chain` is the block's own hidden chaining
+    /// `propose` positions; `draft_pending_h` is the target hidden of the
+    /// last committed token. The block's attention cache is one more layout
+    /// in `state` (`draft_layer`), so checkpoint/rewind cover it.
+    draft_layer: usize,
+    has_draft: bool,
+    draft_constants: ?LayerConstants,
+    draft_enorm: Buffer,
+    draft_hnorm_w: Buffer,
+    draft_head_norm: Buffer,
+    draft_h: Buffer,
+    draft_hnorm: Buffer,
+    draft_concat: Buffer,
+    draft_chain: Buffer,
+    draft_pending_h: Buffer,
+    draft_logits: Buffer,
+
     /// `chunk` bounds the tokens one `prefill` command buffer processes (and
     /// sizes its activation buffers: about 0.4 MB per token). `kv` is the
     /// attention cache precision: `f16` halves cache memory and the
     /// bytes attention reads per token; the recurrent state stays F32.
     pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool, draft: bool) !Plan {
-        _ = draft;
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
-        var layouts: [64]session.Layout = undefined;
-        for (binding.layers, &layouts) |layer, *layout| layout.* = switch (layer.mixer) {
+        if (draft and binding.draft == null) return error.NoDraftBlock;
+        const text = binding.layers.len;
+        var layouts: [text + 1]session.Layout = undefined;
+        for (binding.layers, layouts[0..text]) |layer, *layout| layout.* = switch (layer.mixer) {
             .full_attention => .{ .attention = .{ .key_row = 1024, .value_row = 1024, .precision = kv } },
             .delta_net => .{ .recurrent = .{ .history = 10240 * 3, .matrix = 48 * 128 * 128 } },
         };
-        var state = try session.Session.init(alloc, &layouts, capacity, checkpoint);
+        if (draft) layouts[text] = .{ .attention = .{ .key_row = 1024, .value_row = 1024, .precision = kv } };
+        var state = try session.Session.init(alloc, layouts[0 .. text + @intFromBool(draft)], capacity, checkpoint);
         errdefer state.deinit();
         const constants = try alloc.alloc(LayerConstants, binding.layers.len);
         errdefer alloc.free(constants);
@@ -213,6 +235,30 @@ pub const Plan = struct {
             }
             self.rotation = .{ .signs = signs, .value_map = value_map, .regrouped = try backend.create(6144 * 4), .regrouped_c = try backend.create(n * 6144 * 4) };
         }
+        self.has_draft = draft;
+        self.draft_layer = text;
+        self.draft_constants = null;
+        if (draft) {
+            const block = binding.draft.?;
+            self.draft_enorm = try self.constant(block.enorm);
+            self.draft_hnorm_w = try self.constant(block.hnorm);
+            self.draft_head_norm = try self.constant(block.shared_head_norm);
+            self.draft_constants = .{
+                .attention_norm = try self.constant(block.layer.attention_norm),
+                .post_attention_norm = try self.constant(block.layer.post_attention_norm),
+                .mixer = .{ .full_attention = .{
+                    .query_norm = try self.constant(block.layer.mixer.full_attention.query_norm),
+                    .key_norm = try self.constant(block.layer.mixer.full_attention.key_norm),
+                } },
+            };
+            self.draft_h = try backend.create(hidden * 4);
+            self.draft_hnorm = try backend.create(hidden * 4);
+            self.draft_concat = try backend.create(2 * hidden * 4);
+            self.draft_chain = try backend.create(hidden * 4);
+            self.draft_pending_h = try backend.create(hidden * 4);
+            self.draft_logits = try backend.create(vocabulary * 4);
+            @memset(self.draft_pending_h.floats(), 0);
+        }
         return self;
     }
     pub fn deinit(self: *Plan) void {
@@ -225,6 +271,7 @@ pub const Plan = struct {
     }
     pub fn reset(self: *Plan) void {
         self.state.reset();
+        if (self.has_draft) @memset(self.draft_pending_h.floats(), 0);
     }
 
     /// Small F32 tensor copied into its own GPU buffer once at init.
@@ -319,7 +366,7 @@ pub const Plan = struct {
         for (self.binding.layers, self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
             switch (layer.mixer) {
-                .full_attention => |attn| try self.fullAttention(attn, c.mixer.full_attention, il),
+                .full_attention => |attn| try self.fullAttention(attn, c.mixer.full_attention, il, self.state.position),
                 .delta_net => |linear| try self.linearAttention(linear, c.mixer.delta_net, il),
             }
             try b.add(self.x, self.projected, hidden);
@@ -531,10 +578,130 @@ pub const Plan = struct {
         for (out) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;
     }
 
-    fn fullAttention(self: *Plan, attn: model.FullAttention, c: anytype, il: usize) !void {
+    // --- the prediction block (MODL-18) --------------------------------
+
+    /// One row of the block at `position`: pair `token` with `h_prev`,
+    /// project, run the full-attention layer over the block's own cache, the
+    /// FFN, `shared_head_norm`, and the shared output head. The block's
+    /// `h_nextn` lands in `draft_h`, its own hidden for chaining in
+    /// `draft_chain`. `h_prev` is a device row of `hidden` floats; `greedy`
+    /// and `logits` are read only when given.
+    pub fn draftForward(self: *Plan, h_prev: Buffer, token: u32, position: usize, greedy: ?*u32, logits: ?[]f32) !void {
+        const block = self.binding.draft orelse return error.NoDraftBlock;
+        const constants = self.draft_constants orelse return error.NoDraftBlock;
+        if (token >= vocabulary or position >= self.state.capacity or h_prev.len < hidden * 4) return error.InvalidShape;
+        if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
+        const b = self.backend;
+        const single: metal.Backend.Norm = .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden };
+        try b.begin();
+        errdefer if (b.recording) b.commit() catch {};
+        const embedding = try self.weight(self.binding.token_embedding);
+        try b.embed(embedding.buffer, embedding.matrix, token, self.x);
+        // [enorm(embed(x_p)); hnorm(h_{p-1})], projected by eh_proj.
+        try b.rmsNorm(self.x, self.draft_enorm, self.normalized, single);
+        try b.rmsNorm(h_prev, self.draft_hnorm_w, self.draft_hnorm, single);
+        try b.copy(self.draft_concat.slice(0, hidden * 4), self.normalized, hidden);
+        try b.copy(self.draft_concat.slice(hidden * 4, hidden * 4), self.draft_hnorm, hidden);
+        try self.mm(block.eh_proj, self.draft_concat, self.x);
+        try b.rmsNorm(self.x, constants.attention_norm, self.normalized, single);
+        try self.fullAttention(block.layer.mixer.full_attention, constants.mixer.full_attention, self.draft_layer, position);
+        try b.add(self.x, self.projected, hidden);
+        try b.rmsNorm(self.x, constants.post_attention_norm, self.normalized, single);
+        try self.mm(block.layer.ffn_gate, self.normalized, self.gate);
+        try self.mm(block.layer.ffn_up, self.normalized, self.up);
+        try b.siluMul(self.gate, self.up, ffn);
+        try self.mm(block.layer.ffn_down, self.gate, self.projected);
+        try b.add(self.x, self.projected, hidden);
+        try b.rmsNorm(self.x, self.draft_head_norm, self.draft_h, single);
+        // The block's own hidden chains the next proposed position.
+        try b.copy(self.draft_chain, self.draft_h, hidden);
+        try self.mm(self.binding.output, self.draft_h, self.draft_logits);
+        if (greedy != null or logits != null) try b.argmax(self.draft_logits, vocabulary, self.argmax_values, self.argmax_indices, self.argmax_result);
+        try b.commit();
+        if (greedy) |out| {
+            out.* = @as(*const u32, @ptrCast(@alignCast(self.argmax_result.host))).*;
+            if (out.* >= vocabulary) return error.NonFiniteResult;
+        }
+        if (logits) |out| {
+            @memcpy(out, self.draft_logits.floats());
+            for (out) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;
+        }
+    }
+
+    /// `draftForward` with a host `h_prev`, staged through `draft_chain`.
+    pub fn draftForwardHost(self: *Plan, h_prev: []const f32, token: u32, position: usize, greedy: ?*u32, logits: ?[]f32) !void {
+        if (h_prev.len != hidden) return error.InvalidShape;
+        @memcpy(self.draft_chain.floats()[0..hidden], h_prev);
+        try self.draftForward(self.draft_chain, token, position, greedy, logits);
+    }
+
+    /// Greedy candidates from the state after the last committed token, each
+    /// chained through the block's own hidden. `out.len` bounds the count;
+    /// `logits`, when given, holds one vocabulary row per proposed position.
+    pub fn propose(self: *Plan, token: u32, out: []u32, logits: ?[]f32) !usize {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (logits) |rows| if (rows.len != out.len * vocabulary) return error.InvalidShape;
+        const start = self.state.position;
+        var h_prev = self.draft_pending_h;
+        var next = token;
+        var count: usize = 0;
+        while (count < out.len) : (count += 1) {
+            var greedy: u32 = 0;
+            const row: ?[]f32 = if (logits) |rows| rows[count * vocabulary ..][0..vocabulary] else null;
+            try self.draftForward(h_prev, next, start + count, &greedy, row);
+            out[count] = greedy;
+            next = greedy;
+            h_prev = self.draft_chain;
+        }
+        return count;
+    }
+
+    /// Advances the block over tokens the main model committed, whose target
+    /// hidden rows are `h_rows` (`tokens.len * hidden`). The caller has
+    /// already `recover`ed the session; the block's cache row index is the
+    /// main token position, so the accepted prefix ends at `state.position`.
+    pub fn commit(self: *Plan, tokens: []const u32, h_rows: []const f32) !void {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (h_rows.len != tokens.len * hidden) return error.InvalidShape;
+        if (tokens.len == 0) return;
+        if (self.state.position < tokens.len) return error.InvalidShape;
+        const start = self.state.position - tokens.len;
+        for (tokens, 0..) |token, i| {
+            const h_prev = if (i == 0) self.draft_pending_h else blk: {
+                @memcpy(self.draft_chain.floats()[0..hidden], h_rows[(i - 1) * hidden ..][0..hidden]);
+                break :blk self.draft_chain;
+            };
+            try self.draftForward(h_prev, token, start + i, null, null);
+        }
+        @memcpy(self.draft_pending_h.floats()[0..hidden], h_rows[h_rows.len - hidden ..][0..hidden]);
+    }
+
+    /// The contract value the engine holds, or null when no block is loaded.
+    pub fn drafter(self: *Plan) ?Drafter {
+        if (!self.has_draft) return null;
+        return .{ .host = self, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+    }
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, logits: ?[]f32) anyerror!usize {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        return self.propose(token, out, logits);
+    }
+    fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        return self.commit(tokens, h_rows);
+    }
+    fn resetDraftFn(host: *anyopaque) void {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        if (self.has_draft) @memset(self.draft_pending_h.floats(), 0);
+    }
+    fn draftBytes(host: *anyopaque) usize {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        if (!self.has_draft) return 0;
+        return (self.draft_h.len + self.draft_hnorm.len + self.draft_chain.len + self.draft_pending_h.len + self.draft_concat.len + self.draft_logits.len);
+    }
+
+    fn fullAttention(self: *Plan, attn: model.FullAttention, c: anytype, il: usize, position: usize) !void {
         const b = self.backend;
         const cache = self.state.layers[il].attention;
-        const position = self.state.position;
         const k_slot = self.stateSlice(cache.keys.range(position, 1));
         const v_slot = self.stateSlice(cache.values.range(position, 1));
         const precision = cache.keys.precision;

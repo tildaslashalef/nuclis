@@ -237,6 +237,15 @@ is not what the block consumes: its `h` input is the target's
 `inference/src/models/fixtures/qwen35-mtp/` and checked by
 `make test-generation` (the `checkDraft` pass in `generation-check`).
 
+`generation-check` can write the same rows natively: `--draft-trace DIR`
+steps the pinned `Hello,` tokens through the block on the CPU reference or
+the Metal plan (`--metal`) and writes `p0-h.f32`, `p1-h.f32`,
+`p1-hprev.f32`, and `greedy.txt`. `compare-generation.py --draft` compares
+those rows and the greedy tokens against the pinned directory
+(`make compare-draft`, both backends). `--draft-stats` instead reports the
+per-depth acceptance statistic and draft latency
+([speculative-decoding.md § Acceptance statistic](speculative-decoding.md#the-qwen38-draft-head-modl-18)).
+
 The comparison checks every requested layer and final logits, rejecting missing,
 wrong-sized, or nonfinite files. Initial bring-up tolerances are maximum absolute
 error 0.002 and relative RMS error 0.0001 for every tensor. These are local

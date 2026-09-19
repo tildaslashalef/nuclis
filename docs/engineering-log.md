@@ -88,6 +88,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-10 | Muse Glimmer decode gap: the experiments accepted into the performance theme | 2026-09-19 |
 | KERN-11 | Small-chunk prefill matmul near the weight-bandwidth floor | 2026-09-19 |
 | ENGN-11 | Speculative state recovery: checkpoint, rewind, truncate, recover | 2026-09-19 |
+| MODL-18 | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2026-09-20 |
 
 ## Context
 
@@ -2878,3 +2879,75 @@ DeltaNet chunk kernel were not built: the measured replay cost (one 150 MB copy
 plus an `a + 1`-token prefill) did not argue for the `(k + 1) × 150 MB` of
 device scratch. The CPU recovery pass on Qwen runs about 20 minutes; the Metal
 recovery check for a 4- and an 8-row batch is the cheap one.
+
+### MODL-18 — Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan (2026-09-19 / 2026-09-20, two sessions)
+
+**Outcome.** The Qwen3.8 release's 65th block is the family's draft source:
+the 15 embedded `nextn` tensors (351,008,768 B) around one dense
+full-attention layer of the main shape. Session 1 read the pinned
+reference's graph and driver and recorded the facts with provenance; session
+2 ran the block on Metal and measured it. `Binding.draft: ?DraftBlock` binds
+the block (null on Bonsai); `runtime/draft.zig` is the model-independent
+contract (`propose`/`commit`/`reset`/`bytes`; no `rewind`, because the
+block's cache is one more `Session` layout that checkpoint/rewind already
+cover); `Engine.open`'s `DraftRequest.embedded` sizes the 65-layout session
+and builds a drafter on both executors; `nuclis validate` reports *draft
+head: embedded*. The block consumes `[enorm(embed(x_p)); hnorm(h_{p-1})]`
+projected by `eh_proj`, runs the layer over its own cache at the main token
+position, and heads through `shared_head_norm` and the shared `output`. The
+CPU reference keeps the target hidden (`self.h`, post-`output_norm`) and
+chains the block's own hidden; the Metal plan runs the same kernels (two
+copies into a 10,240-wide buffer plus an `eh_proj` matvec, the full-attention
+path over a 65th layout, the shared-head matvec, device argmax). The draft is
+only ever run when asked: `runLoop` still calls no drafter until ENGN-12.
+
+`generation-check` gained the checks and diagnostics: `checkDraft` (CPU and
+Metal, F32 and F16 caches) against the pinned trace; `draftRecoveryCheck` on
+both executors; a `--draft-trace DIRECTORY` writer of the native
+`p0-h`/`p1-h`/`p1-hprev`/`greedy.txt` rows; `--draft-stats` (the
+`make draft-stats` target) for the per-depth acceptance and latency;
+`compare-generation.py --draft` and the `make compare-draft` targets.
+
+**Evidence.** Session 1 (`make test-generation`, CPU, Qwen 27B): positions 0
+and 1 of `Hello,` match the pinned reference at 7.2e-6 and 1.1e-5 max abs
+(3.1e-7 / 4.9e-7 relative RMS), greedy tokens 9419 and 271 equal. Session 2
+also ran the new checks on the CPU reference: the same block rows match,
+`draftRecoveryCheck` passes, and a draft-loaded session decodes the two pinned
+tokens identically to the no-drafter session. The CPU run's long tail is the
+pre-existing accepted-prefix replay pass (about 20 minutes on Qwen; ENGN-11),
+which the Metal run covers in seconds, so the full CPU recovery pass was not
+re-waited on. Session 2 (`make test-generation-metal`): the Metal F32 rows
+match at 1.5e-5 / 5.8e-7 (position 0) and 1.5e-5 / 7.2e-7 (position 1); the
+F16 cache rows are at 8.5e-3 / 3.1e-4 and 2.5e-3 / 2.4e-4, within the family's
+recorded `half_*` bound; a draft-loaded session never asked to propose decodes
+the two pinned tokens identically to the no-drafter session; the main recovery
+and prefill checks are unchanged (recovery 4 and 8 rows within 2.9e-3 / 1.5e-4,
+prefill within 2.6e-3 / 1.3e-4, F16 within 5.5e-4 / 2.4e-5). `make compare-draft-metal` and
+`-cpu` pass all three native rows against
+`inference/src/models/fixtures/qwen35-mtp/` (Metal 1.5e-5 max abs / 7.9e-7
+relative RMS, greedy `[9419, 271]`). `make draft-stats` (Metal): depth 0-3 at
+28/31, 24/30, 20/29, 18/28 (90.3 / 80.0 / 69.0 / 64.3 %) and 29/31, 25/30,
+24/29, 24/28 (93.5 / 83.3 / 82.8 / 85.7 %) on the two fixed prompts; 128
+drafts in 797.1 and 798.5 ms (6.2 ms per position, about 1.6 ms per block
+forward), block workspace 1,116,160 B; the reference's own driver accepts
+24/40 (60 %) on the first prompt, so the rates are credible. `make check`
+passes (204 unit tests and the Metal fixtures); `make compare`'s main rows are
+unchanged (129 files, 6.1e-5 max abs F32, 2.5e-2 F16).
+
+**Files.** `inference/src/runtime/draft.zig`,
+`inference/src/models/qwen35_metal.zig`, `inference/src/models/qwen35.zig`,
+`inference/src/engine.zig`, `inference/generation-check.zig`,
+`scripts/compare-generation.py`, `Makefile`,
+`docs/reference/{speculative-decoding,generation,session}.md`,
+`docs/architecture.md`, `docs/engineering-log.md`, `TODO.md`.
+
+**Remaining.** The pinned trace has 2 positions, not the plan's 3: the
+reference harness captures one MTP row per prompt token and `Hello,` has two;
+the acceptance statistic now exercises 64 positions instead. The "decode rate
+in `make bench` unchanged with the drafter loaded but switched off" check has
+no caller until ENGN-12 adds the load switch and is folded into ENGN-12's
+acceptance. The separate `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` stays pinned but
+unloaded: the embedded block is the source (the log records why).
+`DraftRequest.file` and the Gemma/Muse sources remain MODL-19/20; sampled
+acceptance and batched verification are ENGN-12, so this unit measures
+drafting quality only, not a speedup.

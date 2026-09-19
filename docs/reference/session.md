@@ -126,6 +126,12 @@ executors, and `engine.Model.recover(accepted)` is the accepted-prefix
 operation used by the loop: rewind then `prefill(accepted)` on a recurrent
 model, `truncate(checkpoint + accepted.len)` otherwise.
 
+A model with an embedded draft block (Qwen's `blk.64`, MODL-18) adds the
+block's attention cache as **one more layout in the same session** while the
+drafter is loaded, so the checkpoint/rewind/truncate contract above covers
+it with no second mechanism: the block's rows are rewritten by `commit`
+after a rewind, and `reset` memsets them with the rest.
+
 **Costs** (`make test-generation` / `test-generation-metal`, Qwen 27B,
 2026-09-19): the region is 156,893,184 bytes (150 MB) on Qwen and on
 Bonsai; `checkpoint` and `rewind` 3 ms each on Metal and 2 ms each on the

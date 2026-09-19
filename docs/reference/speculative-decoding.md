@@ -6,17 +6,32 @@ in are planned in [TODO.md](../../TODO.md) (ENGN-11, MODL-18, ENGN-12,
 MODL-19, MODL-20); closed outcomes are cited from the
 [engineering log](../engineering-log.md).
 
-As of 2026-09-19 the recovery contract is implemented and measured
-(ENGN-11). What exists: the Qwen adapter binds and validates the 15
-embedded `nextn` tensors without executing them
+As of 2026-09-20 the recovery contract (ENGN-11) and the Qwen3.8 embedded
+prediction block (MODL-18) are implemented and measured. What exists: the
+draft contract in `runtime/draft.zig`; the Qwen adapter binds the 15
+embedded `nextn` tensors and both executors run the block
 ([qwen-validation.md](qwen-validation.md)); the session has a host-side
-snapshot and restore and, now, an in-block checkpoint
+snapshot and restore and an in-block checkpoint
 ([session.md](session.md)); every family's draft companion is pinned and
-pulled ([artifacts.md](artifacts.md)).
+pulled ([artifacts.md](artifacts.md)). Gemma 4's and Muse Glimmer's own
+draft sources are still to come (MODL-19, MODL-20).
 
-Sections to come, one per unit: the draft contract, each family's draft
-source with its facts and provenance, and the measurements behind each
-catalogue verdict.
+Sections to come, one per unit: each family's draft source with its facts
+and provenance, and the measurements behind each catalogue verdict.
+
+## The draft contract (MODL-18)
+
+`inference/src/runtime/draft.zig` owns the model-independent interface: a
+family exposes a `Drafter` (a host pointer and four function pointers)
+whose `propose(token, out, logits)` returns greedy candidates chained from
+the state after the last committed token and, when asked, one vocabulary
+row per proposed position for sampled acceptance; `commit(tokens, h_rows)`
+advances the drafter over tokens the main model committed using their
+target hidden; `reset()` clears the drafter's state; `bytes()` reports the
+workspace it owns beyond the session's. There is deliberately no
+`rewind`: the drafter's own attention cache is one more layout in the
+*same* `Session`, so ENGN-11's checkpoint/rewind/truncate cover it and the
+generation loop only needs `reset` on a session reset.
 
 ## The recovery contract (ENGN-11)
 
@@ -134,3 +149,42 @@ trace captured from the pinned reference through the extended harness
 the acceptance the theme cares about, the reference's own
 `llama-speculative-simple --spec-type draft-mtp --spec-draft-n-max 4` on
 `Hello,` accepted 8 of 33 drafts (24.2 %) over 16 generated tokens.
+
+**Metal (2026-09-20).** `qwen35_metal.zig` runs the same block with the
+existing kernels: the pair is two copies into a 10,240-wide buffer and an
+`eh_proj` matvec; the layer is the main full-attention path over the
+block's own cache layout (the plan sizes 65 layouts when a drafter is
+asked for); the head is the shared `output` matvec on the normalized
+hidden, argmaxed on the device. `Plan.init`'s `draft` flag is honored and
+`Engine.open(.embedded)` builds the block on Metal as on the CPU. Against
+the same pinned trace the Metal rows match at 1.5e-5 max abs / 5.8e-7
+relative RMS at position 0 and 1.5e-5 / 7.2e-7 at position 1 (F32 cache);
+with the F16 cache the keys and values round within the family's recorded
+`half_*` bound (8.5e-3 / 3.1e-4 and 2.5e-3 / 2.4e-4). `compare-draft-metal` / `-cpu` write the native rows and
+run `compare-generation.py --draft` against the pinned directory; both pass
+on all three rows (block `h` at positions 0 and 1, and the target `hprev`).
+`draftRecoveryCheck` (generation-check, both executors) resets the block
+and takes a checkpoint/rewind across a block row: the hidden is
+reproduced byte for byte and two independently reset drafters propose the
+same greedy chain.
+
+**Acceptance statistic (2026-09-20).** `generation-check --draft-stats`
+(the `make draft-stats` target) decodes each fixed coding prompt greedily,
+records every step's target hidden, commits the drafter over the prefix,
+proposes four chained candidates at every step and compares draft `i` to
+the token the target chose `i + 1` steps after the seed. On Metal, four
+drafts per position cost 6.2 ms (about 1.6 ms per block forward) and the
+block's workspace is 1,116,160 bytes. The per-depth acceptance was:
+
+| Prompt | depth 0 | depth 1 | depth 2 | depth 3 |
+| --- | ---: | ---: | ---: | ---: |
+| `Write a Zig function that reverses a string.` | 28/31 = 90.3 % | 24/30 = 80.0 % | 20/29 = 69.0 % | 18/28 = 64.3 % |
+| `def fibonacci(n):` | 29/31 = 93.5 % | 25/30 = 83.3 % | 24/29 = 82.8 % | 24/28 = 85.7 % |
+
+The reference's own driver on the first prompt accepted 24 of 40 drafts
+(60 %) with its top-k sampler, so the rates are credible rather than an
+artifact of the alignment. The block's weights add no decode cost when
+speculation is off: nothing in `runLoop` calls `propose` until ENGN-12.
+The block's own `attn_k`/`attn_v` are Q8_0, already in
+`qwen35.executableEncoding`.
+

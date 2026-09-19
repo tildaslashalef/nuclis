@@ -19,6 +19,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
+        compare-draft compare-draft-metal compare-draft-cpu draft-stats \
         test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-hadamard bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
@@ -59,6 +60,25 @@ test-generation: ## Full-model session isolation/reset check on the CPU referenc
 
 test-generation-metal: ## Same protocol on the GPU plan
 	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal
+
+# The embedded prediction block's `Hello,` rows against the pinned reference
+# trace (`inference/src/models/fixtures/qwen35-mtp/`), on each backend.
+compare-draft: compare-draft-metal compare-draft-cpu ## The prediction block's trace rows vs the reference (MODL-18)
+
+compare-draft-metal: metal ## Native GPU prediction-block rows vs the pinned reference trace
+	rm -rf "$(TRACE)-draft-metal" && mkdir -p "$(TRACE)-draft-metal"
+	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal --draft-trace "$(TRACE)-draft-metal"
+	python3 scripts/compare-generation.py "$(TRACE)-draft-metal" inference/src/models/fixtures/qwen35-mtp --positions 2 --draft \
+	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("draft metal", "passed", d["passed"], "rows", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c), "greedy", d["native_greedy"])'
+
+compare-draft-cpu: ## Native CPU reference prediction-block rows vs the pinned reference trace
+	rm -rf "$(TRACE)-draft-cpu" && mkdir -p "$(TRACE)-draft-cpu"
+	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(MODEL)" --draft-trace "$(TRACE)-draft-cpu"
+	python3 scripts/compare-generation.py "$(TRACE)-draft-cpu" inference/src/models/fixtures/qwen35-mtp --positions 2 --draft \
+	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("draft cpu", "passed", d["passed"], "rows", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c), "greedy", d["native_greedy"])'
+
+draft-stats: metal ## Per-depth acceptance of the embedded prediction head on the fixed prompts (MODL-18)
+	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal --draft-stats
 
 test-generation-gemma4: ## The generation check on gemma-4-12b, CPU reference (very slow: ~35 s per token)
 	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(GEMMA_MODEL)"
