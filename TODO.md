@@ -52,9 +52,9 @@ keeps the last token's `h`, sizes the 65-layout session, runs the block
 `Engine.open` takes a `DraftRequest` (`.embedded` on CPU Qwen; `.file` and
 Metal are MODL-18 session 2 / MODL-19). The block matches a pinned
 reference trace (positions 0 and 1 of `Hello,`, max abs ≤ 1.1e-5, greedy
-tokens equal) via `checkDraft` in `make test-generation`. Remaining in
-session 1: `inspect`/`validate` reporting the block as *draft head:
-embedded*. Session 2: the Metal block, the compare rows, and `--draft-stats`.
+tokens equal) via `checkDraft` in `make test-generation`; `nuclis validate`
+reports *draft head: embedded*. Session 1 is complete on the CPU. Next is
+MODL-18 session 2: the Metal block, the compare rows, and `--draft-stats`.
 
 Order: MODL-18 → ENGN-12 → MODL-19 → MODL-20. After MODL-20 the roadmap
 continues with the performance follow-ups, then vision, then agent
@@ -163,10 +163,10 @@ Delivered: `Binding.draft: ?DraftBlock` (15 tensors, null on Bonsai);
 session, `draftForward`, `propose`/`commit`, and `drafter()`; a pinned
 reference trace (`scripts/reference-generation.cpp --mtp-draft`, the
 fixture under `inference/src/models/fixtures/qwen35-mtp/`) checked by
-`checkDraft` in `generation-check`; and `Engine.open`'s `DraftRequest`
-(`.embedded` on CPU; `.file` and Metal are later units). Remaining:
-`inspect`/`validate` reporting the block as *draft head: embedded*, then
-session 2 (the Metal block, the compare rows, `--draft-stats`).
+`checkDraft` in `generation-check`; `Engine.open`'s `DraftRequest`
+(`.embedded` on CPU; `.file` and Metal are later units); and `validate`'s
+*draft head: embedded* line. Session 1 is complete. Session 2: the Metal
+block, the `compare` rows, and `--draft-stats`.
 
 **Facts read on 2026-09-19** (from `inference/src/models/fixtures/qwen35-27b.json`
 and `scripts/gguf-inventory.py` on the separate head; to be confirmed
