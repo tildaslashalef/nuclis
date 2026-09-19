@@ -1291,8 +1291,9 @@ pub fn main(init: std.process.Init) !void {
             const mm_rows: usize = 40;
             // 37 tokens select the 64×64 tiles (one full and one partial token
             // tile of 32 under the old geometry; a partial one now), 20 the
-            // 32×32 tiles; the buffers hold the larger padding.
-            const token_counts = [_]usize{ 37, 20 };
+            // 32×32 tiles, and 8/5/1 the 8×8 split-K tiles (8 on a full tile,
+            // 5 and 1 on a partial one); the buffers hold the larger padding.
+            const token_counts = [_]usize{ 37, 20, 8, 5, 1 };
             const padded = Backend.matmulPadded(37);
             const mm_expected = try alloc.alloc(f32, mm_rows);
             defer alloc.free(mm_expected);
@@ -1386,6 +1387,8 @@ pub fn main(init: std.process.Init) !void {
             if (Backend.specializedMatvec(encoding, 1, 2880, 0) != null) return error.MisalignedWeightsAccepted;
             if (Backend.specializedMatmul(encoding, 0, 2880, 64) == null) return error.SpecializedPathNotSelected;
             if (Backend.specializedMatmul(encoding, 1, 2880, 64) != null) return error.MisalignedWeightsAccepted;
+            if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 8).?).tokens != 8) return error.SmallTileNotSelected;
+            if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 9).?).tokens != 32) return error.SmallTileNotSelected;
             if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 32).?).tokens != 32) return error.SmallTileNotSelected;
             if (Backend.matmulGeometry(Backend.specializedMatmul(encoding, 0, 2880, 33).?).tokens != 64) return error.LargeTileNotSelected;
             if (Backend.specializedMatvec(encoding, 0, 2880, 4) != null) return error.MisalignedInputAccepted;
@@ -1399,6 +1402,7 @@ pub fn main(init: std.process.Init) !void {
         if (Backend.specializedMatvec(142, 0, 42 * 34, 0) == null or Backend.specializedMatvec(142, 2, 42 * 34, 0) == null or Backend.specializedMatvec(142, 1, 42 * 34, 0) != null) return error.AlignmentRuleMismatch;
         if (Backend.specializedMatvec(143, 0, 42 * 28, 0) == null or Backend.specializedMatvec(143, 4, 42 * 28, 0) == null or Backend.specializedMatvec(143, 2, 42 * 28, 0) != null) return error.AlignmentRuleMismatch;
         if (Backend.specializedMatmul(142, 0, 42 * 34, 64) == null or Backend.specializedMatmul(143, 0, 42 * 28, 20) == null or Backend.matmulGeometry(Backend.specializedMatmul(143, 0, 42 * 28, 20).?).tokens != 32) return error.AlignmentRuleMismatch;
+        if (Backend.matmulGeometry(Backend.specializedMatmul(142, 0, 42 * 34, 8).?).tokens != 8 or Backend.matmulGeometry(Backend.specializedMatmul(143, 0, 42 * 28, 8).?).tokens != 8) return error.AlignmentRuleMismatch;
         // Q4_0: both kernels take any whole-block row (a 42-block row here), at 2-byte alignment.
         if (Backend.specializedMatvec(2, 0, 756, 0) == null or Backend.specializedMatmul(2, 0, 756, 64) == null or Backend.specializedMatvec(2, 2, 2880, 0) == null) return error.AlignmentRuleMismatch;
         for ([_]u32{ 0, 1, 8, 20, 30 }) |encoding| if (Backend.specializedMatvec(encoding, 0, 4096, 0) != null or Backend.specializedMatmul(encoding, 0, 4096, 64) != null) return error.GenericEncodingSpecialized;
