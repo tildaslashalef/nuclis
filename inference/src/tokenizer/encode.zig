@@ -126,34 +126,27 @@ pub const Encoder = struct {
         @memset(marks, null);
         var special_work = limits.special_work;
         // Longest marker types partition all still-raw fragments first, matching
-        // reference precedence even when a shorter marker starts earlier.
+        // reference precedence even when a shorter marker starts earlier. Each
+        // marker's pass is a vectorized search for its first byte (charged per
+        // 16-byte block) plus one comparison per candidate: a vocabulary with
+        // thousands of markers (Muse Glimmer's 2,048 reserved tokens) would
+        // otherwise spend its whole budget on a few kilobytes of text.
         for (self.special_ids) |id| {
             const token = self.vocab.tokens[id];
             if (!parse_special and token.kind != .user_defined) continue;
+            const size = token.text.len;
             var pos: usize = 0;
-            while (pos < text.len) {
-                if (marks[pos]) |existing| {
-                    try spend(&special_work, 1);
-                    pos += self.vocab.tokens[existing].text.len;
-                    continue;
-                }
-                const size = token.text.len;
+            while (std.mem.indexOfScalarPos(u8, text, pos, token.text[0])) |at| {
+                try spend(&special_work, (at - pos + 15) / 16);
+                pos = at + 1;
+                if (size > text.len - at) break;
                 try spend(&special_work, size);
-                if (size <= text.len - pos and std.mem.eql(u8, text[pos..][0..size], token.text)) {
-                    try spend(&special_work, size); // inspect existing marker starts
-                    var overlaps = false;
-                    for (marks[pos..][0..size]) |mark| if (mark != null) {
-                        overlaps = true;
-                        break;
-                    };
-                    if (!overlaps) {
-                        marks[pos] = id;
-                        pos += size;
-                        continue;
-                    }
-                }
-                pos += 1;
+                if (!std.mem.eql(u8, text[at..][0..size], token.text)) continue;
+                if (try self.covered(marks, at, size, &special_work)) continue;
+                marks[at] = id;
+                pos = at + size;
             }
+            try spend(&special_work, (text.len -| pos + 15) / 16);
         }
         var output: std.ArrayList(u32) = .empty;
         errdefer output.deinit(alloc);
@@ -175,6 +168,20 @@ pub const Encoder = struct {
             }
         }
         return output.toOwnedSlice(alloc);
+    }
+
+    /// Whether a marker placed earlier (a longer type, or this type further
+    /// left) starts inside `[at, at + size)` or extends into it from before.
+    fn covered(self: *const Encoder, marks: []const ?u32, at: usize, size: usize, work: *usize) Error!bool {
+        try spend(work, size);
+        for (marks[at..][0..size]) |mark| if (mark != null) return true;
+        // Markers are at most 256 bytes, so only that many earlier starts matter.
+        const back = @min(at, 256);
+        try spend(work, back);
+        for (1..back + 1) |k| if (marks[at - k]) |earlier| {
+            if (self.vocab.tokens[earlier].text.len > k) return true;
+        };
+        return false;
     }
 };
 
@@ -248,6 +255,39 @@ test "full encoding bounds input, output, and aggregate work across pieces" {
     try std.testing.expectEqual(@as(usize, 0), empty.len);
     vocab.pre = "gpt2";
     try std.testing.expectError(error.UnsupportedPreTokenizer, Encoder.init(std.testing.allocator, &vocab));
+}
+
+test "a marker starting inside an earlier placement is skipped, and thousands of markers stay within budget" {
+    var vocab = try fixture();
+    defer vocab.deinit();
+    var encoder = try Encoder.init(std.testing.allocator, &vocab);
+    defer encoder.deinit();
+    // `xu>` (longest) takes bytes 1..4 of `axu>`; `ax` would start at 0 and
+    // reach into it, and `<u>`-like candidates inside it are covered too.
+    const ids = try encoder.encode(std.testing.allocator, "axu>axu>", true, .{});
+    defer std.testing.allocator.free(ids);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 13, 0, 13 }, ids);
+    // 2,048 reserved markers over 64 KiB of text: the per-marker pass is a
+    // first-byte search, so the default budget holds with room to spare.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tokens: std.ArrayList(vocabulary.Token) = .empty;
+    try tokens.appendSlice(a, &.{ .{ .text = "a", .kind = .normal }, .{ .text = "<", .kind = .normal }, .{ .text = "|", .kind = .normal }, .{ .text = ">", .kind = .normal }, .{ .text = "r", .kind = .normal } });
+    for (0..2048) |i| try tokens.append(a, .{ .text = try std.fmt.allocPrint(a, "<|reserved_special_token_{d}|>", .{i}), .kind = .control });
+    var token_ids: std.StringHashMapUnmanaged(u32) = .empty;
+    for (tokens.items, 0..) |token, id| try token_ids.put(a, token.text, @intCast(id));
+    var many: vocabulary.Vocabulary = .{ .storage = arena, .tokens = tokens.items, .pre = "llama4", .bos = null, .eos = null, .padding = null, .token_ids = token_ids, .merge_ranks = .empty };
+    var wide = try Encoder.init(std.testing.allocator, &many);
+    defer wide.deinit();
+    const text = try std.testing.allocator.alloc(u8, 64 * 1024);
+    defer std.testing.allocator.free(text);
+    @memset(text, 'a');
+    @memcpy(text[100..][0.."<|reserved_special_token_7|>".len], "<|reserved_special_token_7|>");
+    const out = try wide.encode(std.testing.allocator, text, true, .{ .special_work = 64 * 1024 * 1024 });
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqual(@as(usize, 64 * 1024 - "<|reserved_special_token_7|>".len + 1), out.len);
+    try std.testing.expectEqual(@as(u32, 5 + 7), out[100]);
 }
 
 test "the pre label selects the splitter: llama4 keeps digit runs together" {
