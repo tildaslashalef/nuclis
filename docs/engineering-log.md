@@ -87,6 +87,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 2026-09-19 |
 | ENGN-10 | Muse Glimmer decode gap: the experiments accepted into the performance theme | 2026-09-19 |
 | KERN-11 | Small-chunk prefill matmul near the weight-bandwidth floor | 2026-09-19 |
+| ENGN-11 | Speculative state recovery: checkpoint, rewind, truncate, recover | 2026-09-19 |
 
 ## Context
 
@@ -2821,3 +2822,59 @@ spans two or three token tiles; ENGN-12 sets `max_draft_length` to 7 unless a
 is not at the floor and a 16-token tile re-reads no fewer weights per token).
 The session-1 race (the four partials stored into a shared region) is fixed and
 is checked only by `test-generation-metal`, not the fixture exactness test.
+
+### ENGN-11 — Speculative state recovery: checkpoint, rewind, truncate, recover (2026-09-19, one session)
+
+**Outcome.** The session can undo one verify batch without a host snapshot.
+`Session.init` gains a `want_checkpoint: bool`; when set the block grows by a
+page-aligned region, after the layer regions, holding one copy of every
+recurrent layer's history and matrix in layer order (zero bytes and a still
+valid position on attention-only layouts). `checkpoint()` copies the recurrent
+state and records the position (`NoCheckpointRegion` without a region),
+`rewind()` restores it (`NoCheckpoint` when none is recorded),
+`truncate(position)` moves the position for attention-only layouts
+(`RecurrentStateNotRewindable` on a recurrent one) within
+`[checkpoint, position]` (`RewindOutOfRange`). `reset` and `restore` clear the
+recorded position; the region stays out of `layout_digest` and `snapshot`. The
+region is a slice of the same block the Metal plans wrap, so it is GPU-visible
+with no new binding. `Runtime.init`/`Plan.init` (all three families) forward the
+flag, and `engine.Model.checkpoint/rewind/truncate` and `hasRecurrentState`
+forward on both executors; `Model.recover(accepted)` rewinds and replays the
+accepted prefix on a recurrent model, truncating to `checkpoint + accepted.len`
+otherwise. CPU `Executor.prefill` now admits the whole batch before the first
+write (`ContextFull`, position unchanged), matching the Metal plans.
+`generation-check` gains a `recoveryCheck` on every family and both backends:
+it steps a header token, checkpoints, consumes a 4-row batch (and 8 on Metal),
+then for every accepted length replays and steps, comparing against a second
+executor that stepped the same tokens one by one — plus the refusals (rewind
+without a checkpoint, truncate on a recurrent layout, a cancelled batch
+poisoning the session, an over-capacity batch). Session 2 was not needed: Metal
+ordering is correct and replay is a short-chunk prefill.
+
+**Evidence.** `make check` (fmt, unit tests, Metal fixtures) passes; the new
+session unit tests cover the round trip (under every allocation failure), the
+region offset and `bytes()` accounting, checkpoint/rewind on the session state
+machine, the range refusals, attention-only truncate, and a rewound session
+leaving a peer untouched. `make test-generation` (CPU, Qwen 27B): the replay
+equals sequential decoding bit for bit at every accepted length; region
+156,893,184 bytes, checkpoint 2 ms, rewind 2 ms. `make test-generation-metal`
+(Qwen 27B): a 4-row batch within 2.851e-3 max abs / 1.476e-4 relative RMS and
+an 8-row batch within 2.244e-3 / 9.592e-5, argmax equal at every accepted
+length (bounds 2e-2 / 1e-3); checkpoint 3 ms, rewind 3 ms. Bonsai 2 (Metal): a
+recurrent replay within 8.583e-6 / 4.306e-7, checkpoint/rewind 2 ms. Gemma 4
+12B QAT and Muse Glimmer (Metal, attention-only): region 0 bytes of state,
+checkpoint/rewind free, batch and sequential logits identical at the small
+tiles (bounds 6e-1 / 2e-2 and 5e-2 / 1e-2).
+
+**Files.** `inference/src/runtime/session.zig`, `inference/src/engine.zig`,
+`inference/{generation-check.zig,src/models/{qwen35,gemma4,muse_glimmer}_{runtime,metal}.zig}`,
+`docs/reference/{session,speculative-decoding}.md`, `docs/architecture.md`,
+`docs/engineering-log.md`, `TODO.md`.
+
+**Remaining.** `Engine.open` still sizes no region (`openExecutor` passes
+`false`): the drafter request that enables it lands with MODL-18, and ENGN-12
+is `recover`'s first caller. Per-token recurrent checkpoints written by the
+DeltaNet chunk kernel were not built: the measured replay cost (one 150 MB copy
+plus an `a + 1`-token prefill) did not argue for the `(k + 1) × 150 MB` of
+device scratch. The CPU recovery pass on Qwen runs about 20 minutes; the Metal
+recovery check for a 4- and an 8-row batch is the cheap one.

@@ -81,14 +81,14 @@ pub const Runtime = struct {
     expert_scratch: []f32,
     accumulator: []f64,
 
-    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize) !Runtime {
+    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool) !Runtime {
         const config = binding.config;
         var layouts: [model.max_layers]session.Layout = undefined;
         for (binding.active(), layouts[0..config.layer_count]) |layer, *layout| {
             const width = layer.kvWidth();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width } };
         }
-        var state = try session.Session.init(gpa, layouts[0..config.layer_count], capacity);
+        var state = try session.Session.init(gpa, layouts[0..config.layer_count], capacity, checkpoint);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -315,7 +315,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
                 const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
                 const scalar: Tensor = .{ .name = "scale", .dimensions = &.{1}, .encoding_id = 0, .offset = 0, .elements = 1, .bytes = 4 };
                 const file = [_]u8{ 0, 0, 0, 0 };
-                var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, emptyBinding(cfg, &tensor, &scalar), 1);
+                var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, emptyBinding(cfg, &tensor, &scalar), 1, false);
                 defer runtime.deinit();
                 try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
                 try std.testing.expectEqual(.ready, runtime.state.status);
@@ -345,7 +345,7 @@ test "session layouts follow the layer kinds and the configuration's KV heads" {
             const width = model.kvHeadsOf(case.config, model.kindOf(i)) * model.kindOf(i).headSize();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width } };
         }
-        var state = try session.Session.init(std.testing.allocator, layouts[0..case.config.layer_count], 4);
+        var state = try session.Session.init(std.testing.allocator, layouts[0..case.config.layer_count], 4, false);
         defer state.deinit();
         try std.testing.expect(state.bytes() >= case.per_position * 4);
         try std.testing.expect(state.bytes() < case.per_position * 4 + case.config.layer_count * 2 * 16);

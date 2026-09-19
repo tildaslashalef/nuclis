@@ -17,39 +17,39 @@ it is empty, ask what to work on and write the agreed plan here.
 ## Where we are
 
 Planned on 2026-09-19, after AGNT-10 closed and emptied the plan: the
-roadmap's first theme, speculative decoding across the families, as
-five units. Nothing of it is implemented. What exists today: the Qwen
-adapter binds and validates the 15 embedded `nextn` tensors (351 MB)
-and never executes them; the session has a host-side snapshot and
-restore (ENGN-06, a 150 MB copy on Qwen) and no in-place checkpoint;
-both executors return logits for the last token of a prefill only; the
-catalogue pins every family's draft companion and every file is pulled
-(Qwen's separate head, both Gemma heads, Muse's DFlash drafter), but
-`Engine.open` loads one GGUF. The accepted configuration (the file per
-registry entry, the per-command switch, the draft length) is in
+roadmap's first theme, speculative decoding across the families, as five
+units. ENGN-11 closed the same day in one session (its session 2 was not
+needed): `Session.init` can reserve a page-aligned checkpoint region, and
+`checkpoint`/`rewind`/`truncate`, `engine.Model.recover`, and the
+`recoveryCheck` on every family and both backends implement the
+accepted-prefix recovery, documented in
+[speculative-decoding.md](docs/reference/speculative-decoding.md) and
+[session.md](docs/reference/session.md). On Qwen the region is 150 MB and
+checkpoint/rewind cost 3 ms on Metal and 2 ms on CPU; the replay is
+bit-identical to sequential decoding on the CPU and within the family's
+chunk-versus-step bound on Metal. What still exists from before: the Qwen
+adapter binds and validates the 15 embedded `nextn` tensors (351 MB) and
+never executes them; both executors return logits for the last token of a
+prefill only; the catalogue pins every family's draft companion and every
+file is pulled (Qwen's separate head, both Gemma heads, Muse's DFlash
+drafter), but `Engine.open` loads one GGUF and sizes no checkpoint region
+yet. The accepted configuration (the file per registry entry, the
+per-command switch, the draft length) is in
 [docs/spec.md § Speculative decoding](docs/spec.md#speculative-decoding).
-KERN-11 was pulled in front of the theme on 2026-09-19 and closed the
-same day: a 16-row × 8-token split-K prefill tile now serves chunks of at
-most 24 tokens (the 32×32 tile above it to 32, the 64×64 beyond), and the
-22-token benchmark prompt's prefill rose 38.78 → 43.01 tok/s and its first
-token fell 567.3 → 511.5 ms with decode unchanged. The tile streams
-32–116 GB/s, 37–64 % of the same encoding's matvec rate, below the unit's
-70 % floor: the activation operand is the remaining cost and the levers not
-shipped are in the log. Next is ENGN-11 session 1: the session checkpoint
-region, `checkpoint`/`rewind`/`truncate`, the engine's `recover`, and the
-generation-check recovery pass.
-Nothing of the speculative-decoding theme beyond that is implemented; its
-five units were rewritten at implementation level on 2026-09-19 after the
-companions' headers and the reference's speculative driver were read
-(the oracle fact is in the theme section).
+Nothing of the speculative-decoding theme beyond the recovery contract is
+implemented; its five units were rewritten at implementation level on
+2026-09-19 after the companions' headers and the reference's speculative
+driver were read (the oracle fact is in the theme section). Next is
+MODL-18 session 1: the draft contract in the runtime, the Qwen block's
+tensors moving into a `DraftBlock`, the 65-layout session, and the CPU
+reference against a pinned trace.
 
-Order: ENGN-11 → MODL-18 → ENGN-12 → MODL-19 → MODL-20. After
-MODL-20 the roadmap continues with the performance follow-ups, then
-vision, then agent expansion ([docs/roadmap.md](docs/roadmap.md)).
+Order: MODL-18 → ENGN-12 → MODL-19 → MODL-20. After MODL-20 the roadmap
+continues with the performance follow-ups, then vision, then agent
+expansion ([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| ENGN-11 | Speculative state recovery: checkpoint, batch, accept-prefix, rewind on both state kinds | 1–2 |
 | MODL-18 | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2 |
 | ENGN-12 | Batched verification, speculative generation (greedy and sampled), the switch and the draft length, benchmark | 2 |
 | MODL-19 | Gemma 4 draft heads: the companion file as a second GGUF, 12B and 26B-A4B | 1–2 |
@@ -140,96 +140,6 @@ session, Metal, generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
 No unit claims a speedup before ENGN-12's benchmark, and negative results
 are recorded per family.
-
-## ENGN-11 — Speculative state recovery
-
-**Files.** `inference/src/runtime/session.zig` (the byte block, `Layout`,
-`Session.init/snapshot/restore/reset`), `inference/src/engine.zig`
-(`Executor`, `Model.snapshot/restore` around line 190, `runLoop`),
-`inference/generation-check.zig` (the per-family `Spec`, the executor
-wrapper with `step`/`reset`/`state`, the snapshot check around line 182),
-`docs/reference/session.md`, the new
-`docs/reference/speculative-decoding.md`. The Metal plans wrap the
-session's block as one shared buffer (`backend.wrap(state.memory)` in
-each `*_metal.zig`), so a region inside the block is GPU-visible with no
-new binding, and the backend is synchronous: when a step returns, the
-GPU is done with the block (the snapshot doc states this contract).
-
-**Session (session 1).**
-- `Session.init` gains a `checkpoint: bool` parameter. When set, the
-  block grows by a page-aligned region holding one copy of every
-  recurrent layer's history and matrix (F32), zero bytes for
-  attention-only layouts; `bytes()` includes it; `layout_digest` and
-  `snapshot`/`restore` ignore it (a snapshot never carries a checkpoint).
-  New fields: `checkpoint_region: []u8` and `checkpoint_position: ?usize`.
-- `pub fn checkpoint(self: *Session) !void`: `SessionNotReady` unless
-  `.ready`; `NoCheckpointRegion` if `init` was not asked for one; copies
-  the recurrent state into the region (a `memcpy`; valid on both
-  backends because the block is quiescent between steps) and records the
-  position.
-- `pub fn rewind(self: *Session) !void`: back to the checkpoint — the
-  recurrent copy is restored and the position set; `NoCheckpoint` when
-  none is recorded; `SessionNotReady` on an updating or failed session.
-- `pub fn truncate(self: *Session, position: usize) !void`: sets the
-  position back for attention-only layouts; `RecurrentStateNotRewindable`
-  when any layer is recurrent and `position < self.position`;
-  `RewindOutOfRange` unless `checkpoint_position <= position <=
-  self.position`. Rows past the position are left as they are, which is
-  already the contract `restore` documents.
-- `reset` and `restore` clear `checkpoint_position` (the region's bytes
-  are stale, never read without a fresh `checkpoint`).
-- Unit tests beside the existing snapshot tests: the round trip on a
-  layout with both kinds; `truncate` refused on a recurrent layout and
-  accepted on an attention-only one; the range refusals; `reset` and
-  `restore` clearing the checkpoint; two sessions, one rewound, the other
-  byte-identical to before; the region under `std.testing.FailingAllocator`
-  at every allocation point; `bytes()` accounting.
-
-**Engine (session 1).** `Model.checkpoint()`, `Model.rewind()`,
-`Model.truncate(position)` forward to the session on both executors;
-`Model.recover(self, accepted: []const u32) !void` is the accepted-prefix
-operation: if the session has a recurrent layer, `rewind()` then
-`prefill(accepted, null, null, null, null)` when `accepted.len > 0`;
-otherwise `truncate(checkpoint_position + accepted.len)`. `Executor` gets
-a `hasRecurrentState()` from the layouts. Nothing in `runLoop` changes in
-this unit; ENGN-12 is its caller.
-
-**Check (session 1, `generation-check.zig`).** A `recoveryCheck` after the
-snapshot check, on every family, with the executor wrapper gaining
-`prefill` (Metal: `p.prefill`; CPU: a loop of `step`). Protocol, with
-`k + 1 = 4` rows on both backends and a second pass with 8 rows on Metal
-(the CPU reference steps in about 18 s on Qwen, which bounds the CPU
-pass): step `tokens[0]`, `checkpoint()`, prefill `tokens[1..1+rows]` as
-one batch, then for every `a` in `0..rows`: `recover(tokens[1..1+a])`,
-step `tokens[1+a]` with logits → A; a second executor steps
-`tokens[0..1+a]` one by one and `tokens[1+a]` with logits → B. On the CPU
-A equals B bit for bit (replay is the same sequential arithmetic); on
-Metal the chunk-versus-step contract applies (`spec.bounds.chunk_max_abs`
-and `chunk_rel_rms`, argmax equal), and the difference is recorded, not
-hidden. Then the refusals: `rewind` with no checkpoint; `truncate` on
-Qwen (`RecurrentStateNotRewindable`) and accepted on Gemma and Muse;
-a cancelled batch (the `cancelCheck` observer the snapshot check uses)
-poisons the session so `checkpoint`/`rewind` return `SessionNotReady`
-until `reset`, after which `rewind` is `NoCheckpoint`; a batch that would
-pass the capacity is refused by `prefill` before any write (position
-unchanged). Print the checkpoint and rewind wall times and the region's
-size; replay cost is a short-chunk prefill, KERN-11's number.
-
-**Session 2 (only if needed).** Ordering problems on Metal, or a
-measured replay cost that argues for per-token recurrent checkpoints
-written by the DeltaNet chunk kernel (`(k + 1) × 150 MB` of device
-scratch on Qwen); the decision and its numbers go to the reference doc,
-not into this unit's code unless the numbers demand it.
-
-**Docs and close.** `speculative-decoding.md` gains its first section,
-the recovery contract with the measured costs; `session.md` gains a
-*Checkpoint and rewind* section beside *Snapshot and restore*;
-`architecture.md`'s session paragraph mentions the region; the log entry.
-
-**Acceptance.** `make check`; `make test-generation` and
-`test-generation-metal` on Qwen, and the Metal generation checks on
-Gemma (12B QAT), Bonsai, and Muse, all with the recovery check passing at
-every `a`; the unit tests above; costs recorded.
 
 ## MODL-18 — Qwen3.8 draft head: the embedded prediction block
 

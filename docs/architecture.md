@@ -182,7 +182,10 @@ Two consequences worth internalizing:
   "rewind" it by truncating a length; the spec forbids that, and the
   session offers `snapshot`/`restore` instead (ENGN-06): a caller-owned copy of
   the used extent, restored only into a session of the same capacity and
-  layout. `Session` has a tiny state
+  layout. A speculative verify batch needs the cheaper in-block
+  `checkpoint`/`rewind`/`truncate` (ENGN-11): a page-aligned region holding one
+  recurrent copy, restored by `rewind`, while attention-only state is rewound
+  by position with `truncate`. `Session` has a tiny state
   machine — `ready → updating → ready`, or `failed` until `reset()` — so a
   half-finished token can never be mistaken for committed state.
 
@@ -574,7 +577,9 @@ the file it names.
   layers are `Rows` at the layout's precision (`f32` or `f16`, KERN-07; the
   CPU reference asserts `f32`), recurrent state is `[]f32`, regions start
   on 16-byte boundaries. `snapshot`/`restore` (ENGN-06) copy the used extent
-  and require an equal `layout_digest` and capacity. The GPU-idle invariant
+  and require an equal `layout_digest` and capacity. An optional page-aligned
+  checkpoint region inside the block holds one recurrent copy, outside the
+  digest and the snapshot (ENGN-11). The GPU-idle invariant
   (no command buffer in flight when the CPU touches state, snapshots
   included) is documented in `session.zig` and
   [reference/session.md](reference/session.md).

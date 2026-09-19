@@ -57,10 +57,15 @@ pub fn Executor(comptime Family: type) type {
         /// Consumes a prompt. The GPU plan batches it in chunks unless the
         /// observer wants per-layer activations, which are per token by contract;
         /// the CPU reference steps token by token. Readbacks refer to the last token.
+        /// The whole batch must fit: it is admitted before the first write, so a
+        /// refused batch leaves the position unchanged on both executors.
         pub fn prefill(self: *Self, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, observer: ?Observer) !void {
             if (tokens.len == 0) return error.InvalidShape;
             switch (self.*) {
-                .cpu => |*runtime| for (tokens, 0..) |token, i| try runtime.step(token, if (i + 1 == tokens.len) logits else null, observer),
+                .cpu => |*runtime| {
+                    if (tokens.len > runtime.state.capacity - runtime.state.position) return error.ContextFull;
+                    for (tokens, 0..) |token, i| try runtime.step(token, if (i + 1 == tokens.len) logits else null, observer);
+                },
                 .metal => |*m| {
                     if (observer != null and observer.?.layer != null) {
                         for (tokens, 0..) |token, i| {
@@ -94,6 +99,20 @@ pub fn Executor(comptime Family: type) type {
                 .cpu => |*runtime| &runtime.state,
                 .metal => |*m| &m.plan.state,
             };
+        }
+        /// Whether any layer's state is recurrent, which `recover` must replay
+        /// rather than rewind by position.
+        pub fn hasRecurrentState(self: *const Self) bool {
+            return self.session().hasRecurrent();
+        }
+        pub fn checkpoint(self: *Self) !void {
+            return self.sessionMut().checkpoint();
+        }
+        pub fn rewind(self: *Self) !void {
+            return self.sessionMut().rewind();
+        }
+        pub fn truncate(self: *Self, position: usize) !void {
+            return self.sessionMut().truncate(position);
         }
         pub fn gpu(self: *const Self) ?*inference.metal.Backend {
             return switch (self.*) {
@@ -199,6 +218,45 @@ pub const Model = struct {
     pub fn restore(self: *Model, snap: *const inference.session.Snapshot) !void {
         try self.sessionMut().restore(snap);
     }
+    /// Records the committed recurrent state so a verify batch can be undone;
+    /// see `recover`. Valid between steps and on both executors, as `snapshot`
+    /// is. Nothing reads the region until `rewind`.
+    pub fn checkpoint(self: *Model) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.checkpoint(),
+        }
+    }
+    pub fn rewind(self: *Model) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.rewind(),
+        }
+    }
+    pub fn truncate(self: *Model, position: usize) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.truncate(position),
+        }
+    }
+    /// Whether the model's state cannot be rewound by position alone.
+    pub fn hasRecurrentState(self: *const Model) bool {
+        return self.session().hasRecurrent();
+    }
+    /// Returns the session to the state after the accepted prefix of a
+    /// speculative verify batch. `accepted` is the tokens the main model
+    /// committed, starting with the token fed before the batch; the position
+    /// ends at the checkpoint plus `accepted.len`. Recurrent state is replayed
+    /// (rewind then a batched forward), attention alone is truncated: rows
+    /// past the position are ignored by contract. A missing checkpoint is
+    /// `NoCheckpoint`; a batch larger than the context is `ContextFull` for
+    /// recurrent state (nothing is written past the capacity).
+    pub fn recover(self: *Model, accepted: []const u32) !void {
+        const at = self.session().checkpoint_position orelse return error.NoCheckpoint;
+        if (self.hasRecurrentState()) {
+            try self.rewind();
+            if (accepted.len > 0) try self.prefill(accepted, null, null, null, null);
+        } else {
+            try self.truncate(at + accepted.len);
+        }
+    }
     pub fn supportsGpuArgmax(self: *const Model) bool {
         return self.gpu() != null;
     }
@@ -227,7 +285,9 @@ fn chunkFor(comptime Family: type, binding: Family.Binding) usize {
 /// returned by value; its diagnostic text is logged on failure.
 fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference.weights.View, binding: Family.Binding, backend: Backend, capacity: usize, kv: KvPrecision) !Executor(Family) {
     return switch (backend) {
-        .cpu => .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity) },
+        // A checkpoint region is sized only when a caller needs to undo a
+        // verify batch; no caller does yet, so `open` asks for none.
+        .cpu => .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, false) },
         .metal => blk: {
             const gpu = try alloc.create(inference.metal.Backend);
             errdefer alloc.destroy(gpu);
@@ -241,7 +301,7 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference
                 return err;
             };
             errdefer gpu.deinit();
-            const plan = try Family.Plan.init(alloc, gpu, view, binding, capacity, @min(chunkFor(Family, binding), capacity), kv);
+            const plan = try Family.Plan.init(alloc, gpu, view, binding, capacity, @min(chunkFor(Family, binding), capacity), kv, false);
             break :blk .{ .metal = .{ .backend = gpu, .plan = plan } };
         },
     };

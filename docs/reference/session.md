@@ -18,8 +18,9 @@ GPU backend wraps it once with no copy; every region starts on a 16-byte
 boundary and each view is exact (padding belongs to nobody).
 `Session.bytes()` is the block, page padding included: 2.15 GiB at 32,768
 tokens with the F16 cache, 4.15 with F32, of which 150 MB is recurrent
-state. `layout_digest` hashes the layouts and the capacity; equal digests
-mean byte-compatible state.
+state. A session built with a checkpoint region adds another 150 MB on
+Qwen (`checkpoint_region`, below). `layout_digest` hashes the layouts and
+the capacity; equal digests mean byte-compatible state.
 
 ## The state machine
 
@@ -86,3 +87,53 @@ cancelled step refuses to snapshot until reset. Unit tests cover the
 round trip under every allocation failure, the used-extent size, the
 untouched unused row, precision and capacity mismatches, and a truncated
 snapshot.
+
+## Checkpoint and rewind (ENGN-11)
+
+A snapshot copies at `snapshot()` time whatever the caller then holds in
+the heap; the recovery of a speculative verify batch cannot pay that: it
+must be taken and undone inside one decode step, and the batch is fed
+before the accept decision. `Session.init`'s `checkpoint` flag therefore
+reserves one **page-aligned region inside the block**, after the layer
+regions, holding one copy of every recurrent layer's history and matrix in
+layer order (F32, on the same 16-byte boundaries the layer views use).
+Attention-only layouts reserve zero bytes. The region is not part of
+`layout_digest` and is never packed into a `Snapshot`; `bytes()` includes
+it, and a GPU binds it with the rest of the shared block, no second
+binding.
+
+| Call | Effect |
+| --- | --- |
+| `checkpoint()` | `SessionNotReady` unless ready; `NoCheckpointRegion` if the session was built without one; else copies the recurrent state into the region and records the position. A no-op copy on attention-only layouts, but the position is still recorded. |
+| `rewind()` | Returns to the recorded checkpoint: restores the recurrent copy and sets the position. `NoCheckpoint` without one; `SessionNotReady` on an updating or failed session. |
+| `truncate(position)` | Moves the position back without touching layer memory. Allowed only when no layer is recurrent (`RecurrentStateNotRewindable`) and only within `[checkpoint_position, position]` (`RewindOutOfRange`). |
+
+Two state kinds, two rewinds. Attention rows `[0, position)` are
+independent of later rows, so a verify batch writes `[P, P + k + 1)` and
+accepting `a` drafts costs `truncate(P + a + 1)` and nothing else; rows
+past the position are left as they are, exactly as `restore` documents.
+Recurrent state is a function of every token fed, so `rewind` restores the
+copy and the accepted prefix is then **replayed** through `prefill` — the
+batch's rows are rewritten by the same forward, and never by truncating a
+position alone. Whether per-token recurrent checkpoints written by the
+DeltaNet chunk kernel would beat replay is a measurement, not an
+assumption ([speculative-decoding.md](speculative-decoding.md)).
+
+`reset()` and `restore()` clear the recorded position: both rewrite the
+state, so the region's bytes are stale and are only read after a fresh
+`checkpoint()`. `engine.Model.checkpoint/rewind/truncate` forward on both
+executors, and `engine.Model.recover(accepted)` is the accepted-prefix
+operation used by the loop: rewind then `prefill(accepted)` on a recurrent
+model, `truncate(checkpoint + accepted.len)` otherwise.
+
+**Costs** (`make test-generation` / `test-generation-metal`, Qwen 27B,
+2026-09-19): the region is 156,893,184 bytes (150 MB) on Qwen and on
+Bonsai; `checkpoint` and `rewind` 3 ms each on Metal and 2 ms each on the
+CPU reference (one 150 MB copy in each direction, the block quiescent
+between steps). On the attention-only Gemma 4 and Muse Glimmer the region
+is zero bytes and both calls are free. The recovery check confirms the
+accepted-prefix contract per accepted length: on the CPU the replay's
+logits equal the sequential run bit for bit; on Metal the batch is chunked,
+so the family's chunk-versus-step bound applies (Qwen 27B ≤ 2.9e-3 max abs
+and 1.5e-4 relative RMS over a 4- and an 8-row batch, argmax equal; Bonsai
+≤ 8.6e-6; Gemma 4 and Muse exactly zero at these small tiles).

@@ -162,7 +162,7 @@ pub const Plan = struct {
     /// sizes its activation buffers: about 0.3 MB per token, plus 0.16 MB per
     /// token of expert slot rows on the 26B-A4B). `kv` is the attention
     /// cache precision of every layer.
-    pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision) !Plan {
+    pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool) !Plan {
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
         const config = binding.config;
         const hidden = config.embedding;
@@ -172,7 +172,7 @@ pub const Plan = struct {
             const width = layer.kvWidth();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width, .precision = kv } };
         }
-        var state = try session.Session.init(alloc, layouts[0..config.layer_count], capacity);
+        var state = try session.Session.init(alloc, layouts[0..config.layer_count], capacity, checkpoint);
         errdefer state.deinit();
         const constants = try alloc.alloc(LayerConstants, config.layer_count);
         errdefer alloc.free(constants);

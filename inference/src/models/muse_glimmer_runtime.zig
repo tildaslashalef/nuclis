@@ -58,10 +58,10 @@ pub const Runtime = struct {
     mixed_out: []f32,
     attention_scratch: []f64,
 
-    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize) !Runtime {
+    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool) !Runtime {
         var layouts: [model.layer_count]session.Layout = undefined;
         for (&layouts) |*layout| layout.* = .{ .attention = .{ .key_row = model.kv_width, .value_row = model.kv_width } };
-        var state = try session.Session.init(gpa, &layouts, capacity);
+        var state = try session.Session.init(gpa, &layouts, capacity, checkpoint);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -226,7 +226,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
         fn check(alloc: std.mem.Allocator) !void {
             const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
             const file = [_]u8{ 0, 0, 0, 0 };
-            var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, emptyBinding(&tensor), 1);
+            var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, emptyBinding(&tensor), 1, false);
             defer runtime.deinit();
             try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);
@@ -243,7 +243,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
 test "the session layout is 52 attention layers of two 256-float rows per position" {
     var layouts: [model.layer_count]session.Layout = undefined;
     for (&layouts) |*layout| layout.* = .{ .attention = .{ .key_row = model.kv_width, .value_row = model.kv_width } };
-    var state = try session.Session.init(std.testing.allocator, &layouts, 4);
+    var state = try session.Session.init(std.testing.allocator, &layouts, 4, false);
     defer state.deinit();
     const per_position = model.layer_count * 2 * model.kv_width * 4;
     try std.testing.expect(state.bytes() >= per_position * 4);

@@ -88,13 +88,13 @@ pub fn main(init: std.process.Init) !void {
     defer mapped.deinit(init.io);
     const architecture = mapped.document.string("general.architecture") orelse return error.MissingMetadata;
     switch (try inference.models.select(architecture)) {
-        .qwen35 => try run(qwen35_spec, alloc, &mapped, use_metal),
-        .gemma4 => try run(gemma4_spec, alloc, &mapped, use_metal),
-        .@"muse-glimmer" => try run(muse_glimmer_spec, alloc, &mapped, use_metal),
+        .qwen35 => try run(qwen35_spec, alloc, init.io, &mapped, use_metal),
+        .gemma4 => try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
+        .@"muse-glimmer" => try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
     }
 }
 
-fn run(comptime spec: Spec, alloc: std.mem.Allocator, mapped: *inference.weights.Mapped, use_metal: bool) !void {
+fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool) !void {
     const Family = spec.Family;
     const Runtime = Family.Runtime;
     const Plan = Family.Plan;
@@ -106,6 +106,17 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, mapped: *inference.weights
             switch (self.*) {
                 .cpu => |*r| try r.step(token, logits, observer),
                 .metal => |*p| try p.step(token, logits, null, null, observer),
+            }
+        }
+        /// The whole batch is admitted before the first write, as the plans
+        /// do; the CPU reference steps token by token.
+        fn prefill(self: *@This(), tokens: []const u32, logits: ?[]f32, observer: ?Observer) !void {
+            switch (self.*) {
+                .cpu => |*r| {
+                    if (tokens.len > r.state.capacity - r.state.position) return error.ContextFull;
+                    for (tokens, 0..) |token, i| try r.step(token, if (i + 1 == tokens.len) logits else null, observer);
+                },
+                .metal => |*p| try p.prefill(tokens, logits, null, null, observer),
             }
         }
         fn reset(self: *@This()) void {
@@ -126,6 +137,24 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, mapped: *inference.weights
                 .metal => |*p| &p.state,
             };
         }
+        fn checkpoint(self: *@This()) !void {
+            return self.state().checkpoint();
+        }
+        fn rewind(self: *@This()) !void {
+            return self.state().rewind();
+        }
+        fn truncate(self: *@This(), position: usize) !void {
+            return self.state().truncate(position);
+        }
+        /// The accepted-prefix operation, mirroring `engine.Model.recover`:
+        /// recurrent state is replayed, attention alone is truncated.
+        fn recover(self: *@This(), accepted: []const u32) !void {
+            const at = self.state().checkpoint_position orelse return error.NoCheckpoint;
+            if (self.state().hasRecurrent()) {
+                try self.rewind();
+                if (accepted.len > 0) try self.prefill(accepted, null, null);
+            } else try self.truncate(at + accepted.len);
+        }
         fn sequence(self: *@This(), logits: []f32) !void {
             try self.step(spec.tokens[0], null, null);
             try self.step(spec.tokens[1], logits, null); // exercises a nonzero position
@@ -141,9 +170,11 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, mapped: *inference.weights
             return err;
         };
     }
-    var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 4, 4, .f32) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 4) };
+    // A checkpoint region so the recovery check can take and undo a verify
+    // batch; 16 positions hold the header, an 8-row batch, and its correction.
+    var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true) };
     defer first.deinit();
-    var second: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 4, 4, .f32) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 4) };
+    var second: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true) };
     defer second.deinit();
     const expected = try alloc.alloc(f32, spec.vocabulary);
     defer alloc.free(expected);
@@ -173,9 +204,11 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, mapped: *inference.weights
         if (!std.mem.eql(f32, expected, actual)) return error.ResetMismatch;
     }
     std.debug.print("Generation check passed ({s}, {s}): two-token logits identical across independent sessions and reset after partial-step cancellation through both the layer and the check callbacks.\n", .{ Family.architecture, if (use_metal) "metal" else "cpu" });
-    var other: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 8, 4, .f32) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 8) };
+    var other: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 8, 4, .f32, true) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 8, true) };
     defer other.deinit();
     try checkSnapshot(spec, Model, alloc, &first, &second, &other, expected, actual);
+    try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal);
+    if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true);
     if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual);
 }
 
@@ -219,6 +252,90 @@ fn checkSnapshot(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
     std.debug.print("Snapshot check passed: restore reproduces the next step's logits bit for bit ({d} bytes at position 1), the continuation matches an unsnapshotted run, other capacities and poisoned sessions are refused.\n", .{snap.bytes()});
 }
 
+/// The accepted-prefix recovery contract. Step a header token, checkpoint,
+/// then consume a `rows`-token batch. For every accepted length `a` in
+/// `[0, rows]`, undo the batch, replay the accepted prefix, and step the next
+/// token; the logits must match a second executor that consumed the same
+/// tokens one by one from scratch. Replay is the same sequential arithmetic on
+/// the CPU (bit-identical); on Metal the batch is chunked, so the family's
+/// chunk-versus-step tolerance applies and the difference is printed. Then the
+/// refusals: rewind without a checkpoint, truncate on a recurrent layout, a
+/// cancelled batch poisoning the session, and an over-capacity batch refused
+/// before any write.
+fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Allocator, io: std.Io, first: *Model, second: *Model, other: *Model, rows: usize, use_metal: bool) !void {
+    const count = rows + 1;
+    const capacity = first.state().capacity;
+    const tokens = try alloc.alloc(u32, @max(count + 1, capacity + 1));
+    defer alloc.free(tokens);
+    var seed: u32 = 0x9e3779b9;
+    for (tokens) |*t| {
+        seed = seed *% 1664525 +% 1013904223;
+        t.* = seed % @as(u32, @intCast(spec.vocabulary));
+    }
+    const a = try alloc.alloc(f32, spec.vocabulary);
+    defer alloc.free(a);
+    const b = try alloc.alloc(f32, spec.vocabulary);
+    defer alloc.free(b);
+
+    first.reset();
+    second.reset();
+    try first.step(tokens[0], null, null);
+    const checkpoint_start = std.Io.Clock.awake.now(io);
+    try first.checkpoint();
+    const checkpoint_time = checkpoint_start.durationTo(std.Io.Clock.awake.now(io));
+    try first.prefill(tokens[1 .. 1 + rows], null, null);
+    for (0..rows + 1) |accepted| {
+        try first.recover(tokens[1 .. 1 + accepted]);
+        try first.step(tokens[1 + accepted], a, null);
+        second.reset();
+        for (tokens[0 .. 1 + accepted]) |t| try second.step(t, null, null);
+        try second.step(tokens[1 + accepted], b, null);
+        if (use_metal) {
+            try compareRecovery(rows, b, a, spec.bounds.chunk_max_abs, spec.bounds.chunk_rel_rms);
+        } else if (!std.mem.eql(f32, a, b)) return error.RecoveryMismatch;
+    }
+    const rewind_start = std.Io.Clock.awake.now(io);
+    try first.rewind();
+    const rewind_time = rewind_start.durationTo(std.Io.Clock.awake.now(io));
+    std.debug.print("Recovery check passed ({d} rows): checkpoint {d:.3} ms, rewind {d:.3} ms, region {d} bytes.\n", .{
+        rows, checkpoint_time.toMilliseconds(), rewind_time.toMilliseconds(), first.state().checkpoint_region.len,
+    });
+
+    // Rewind without a live checkpoint.
+    first.reset();
+    if (first.rewind()) |_| return error.ExpectedNoCheckpoint else |err| if (err != error.NoCheckpoint) return err;
+
+    // Position truncate: a recurrent layout refuses, an attention-only one accepts.
+    first.reset();
+    try first.step(tokens[0], null, null);
+    try first.checkpoint();
+    try first.step(tokens[1], null, null);
+    if (first.state().hasRecurrent()) {
+        if (first.truncate(1)) |_| return error.ExpectedRecurrentRefusal else |err| if (err != error.RecurrentStateNotRewindable) return err;
+    } else {
+        try first.truncate(1);
+        if (first.state().position != 1) return error.TruncatePositionMismatch;
+    }
+
+    // A cancelled batch poisons the session exactly as a cancelled step does.
+    first.reset();
+    try first.step(tokens[0], null, null);
+    try first.checkpoint();
+    var context: u8 = 0;
+    if (first.prefill(tokens[1 .. 1 + rows], null, .{ .context = &context, .check = cancelCheck })) |_| return error.ExpectedCancellation else |err| if (err != error.Canceled) return err;
+    if (first.checkpoint()) |_| return error.ExpectedPoisonedSession else |err| if (err != error.SessionNotReady) return err;
+    if (first.rewind()) |_| return error.ExpectedPoisonedSession else |err| if (err != error.SessionNotReady) return err;
+    first.reset();
+    if (first.rewind()) |_| return error.ExpectedNoCheckpoint else |err| if (err != error.NoCheckpoint) return err;
+
+    // A batch past the capacity is refused before the first write.
+    other.reset();
+    try other.step(tokens[0], null, null);
+    const before = other.state().position;
+    if (other.prefill(tokens[0..other.state().capacity], null, null)) |_| return error.ExpectedContextFull else |err| if (err != error.ContextFull) return err;
+    if (other.state().position != before) return error.OverflowTouchedSession;
+}
+
 /// A 70-token prompt through per-token steps and through `prefill` with
 /// 32-token chunks (two full chunks and a partial one, crossing chunk
 /// boundaries inside attention and any recurrent state) must agree on the
@@ -238,16 +355,16 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         t.* = seed % 150000;
     }
     const bounds = boundsOf(spec, binding);
-    var stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32);
+    var stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false);
     defer stepped.deinit();
     for (tokens, 0..) |t, i| try stepped.step(t, if (i + 1 == tokens.len) expected else null, null, null, null);
     for ([_]usize{ 64, 48 }) |chunk| {
-        var big = try Plan.init(alloc, b, view, binding, 128, chunk, .f32);
+        var big = try Plan.init(alloc, b, view, binding, 128, chunk, .f32, false);
         defer big.deinit();
         try big.prefill(&tokens, actual, null, null, null);
         try compareChunked("chunk", chunk, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
     }
-    var chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32);
+    var chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false);
     defer chunked.deinit();
     try chunked.prefill(&tokens, actual, null, null, null);
     if (chunked.state.position != tokens.len or stepped.state.position != tokens.len) return error.PositionMismatch;
@@ -261,22 +378,22 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         defer alloc.free(generic_expected);
         b.generic_only = true;
         defer b.generic_only = false;
-        var generic_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32);
+        var generic_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false);
         defer generic_stepped.deinit();
         for (tokens, 0..) |t, i| try generic_stepped.step(t, if (i + 1 == tokens.len) generic_expected else null, null, null, null);
-        var generic_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32);
+        var generic_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false);
         defer generic_chunked.deinit();
         try generic_chunked.prefill(&tokens, actual, null, null, null);
         try compareChunked("F32 tiles, chunk", 32, generic_expected, actual, 5e-3, 2e-4);
     }
     // The same 70 tokens through an F16 cache, stepped and chunked,
     // against the F32 stepped logits (the session holds half the bytes).
-    var half_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f16);
+    var half_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false);
     defer half_stepped.deinit();
     if (half_stepped.state.bytes() >= stepped.state.bytes()) return error.HalfCacheNotSmaller;
     for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null);
     try compareChunked("F16 KV stepped", 1, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
-    var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16);
+    var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false);
     defer half_chunked.deinit();
     try half_chunked.prefill(&tokens, actual, null, null, null);
     try compareChunked("F16 KV chunk", 32, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
@@ -290,27 +407,51 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
     if (stepped.prefill(tokens[0..1], null, null, null, .{ .context = &context, .layer = cancel })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
 }
 
+/// The distance between two logit rows: max abs, relative RMS, and each
+/// argmax. Shared by the chunked-prefill and recovery comparisons.
+const Difference = struct {
+    max_abs: f64,
+    rel_rms: f64,
+    arg_expected: usize,
+    arg_actual: usize,
+
+    fn of(expected: []const f32, actual: []const f32) Difference {
+        var max_abs: f64 = 0;
+        var sum_sq: f64 = 0;
+        var ref_sq: f64 = 0;
+        for (expected, actual) |e, a| {
+            const d = @abs(@as(f64, e) - a);
+            max_abs = @max(max_abs, d);
+            sum_sq += d * d;
+            ref_sq += @as(f64, e) * e;
+        }
+        var arg_expected: usize = 0;
+        var arg_actual: usize = 0;
+        for (expected, 0..) |v, i| if (v > expected[arg_expected]) {
+            arg_expected = i;
+        };
+        for (actual, 0..) |v, i| if (v > actual[arg_actual]) {
+            arg_actual = i;
+        };
+        return .{ .max_abs = max_abs, .rel_rms = @sqrt(sum_sq / ref_sq), .arg_expected = arg_expected, .arg_actual = arg_actual };
+    }
+    fn within(self: Difference, max_abs_bound: f64, rel_rms_bound: f64) bool {
+        return self.max_abs <= max_abs_bound and self.rel_rms <= rel_rms_bound and self.arg_expected == self.arg_actual;
+    }
+};
+
 /// Final logits of a chunked prefill against the stepped ones: max abs,
 /// relative RMS, and the greedy choice, within the family's recorded bound.
 fn compareChunked(label: []const u8, chunk: usize, expected: []const f32, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
-    var max_abs: f64 = 0;
-    var sum_sq: f64 = 0;
-    var ref_sq: f64 = 0;
-    for (expected, actual) |e, a| {
-        const d = @abs(@as(f64, e) - a);
-        max_abs = @max(max_abs, d);
-        sum_sq += d * d;
-        ref_sq += @as(f64, e) * e;
-    }
-    const rel_rms = @sqrt(sum_sq / ref_sq);
-    var arg_e: usize = 0;
-    var arg_a: usize = 0;
-    for (expected, 0..) |v, i| if (v > expected[arg_e]) {
-        arg_e = i;
-    };
-    for (actual, 0..) |v, i| if (v > actual[arg_a]) {
-        arg_a = i;
-    };
-    std.debug.print("Prefill (70 tokens, {s} {d}) vs per-token F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ label, chunk, max_abs, rel_rms, arg_e, arg_a, max_abs_bound, rel_rms_bound });
-    if (!(max_abs <= max_abs_bound) or !(rel_rms <= rel_rms_bound) or arg_e != arg_a) return error.ChunkedPrefillMismatch;
+    const d = Difference.of(expected, actual);
+    std.debug.print("Prefill (70 tokens, {s} {d}) vs per-token F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ label, chunk, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
+    if (!d.within(max_abs_bound, rel_rms_bound)) return error.ChunkedPrefillMismatch;
+}
+
+/// A recovered verify batch's correction logits against the sequential run's:
+/// the same metrics, recorded at the family's chunk-versus-step bound.
+fn compareRecovery(rows: usize, expected: []const f32, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
+    const d = Difference.of(expected, actual);
+    std.debug.print("Recovery (batch {d} rows) vs sequential F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ rows, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
+    if (!d.within(max_abs_bound, rel_rms_bound)) return error.RecoveryMismatch;
 }

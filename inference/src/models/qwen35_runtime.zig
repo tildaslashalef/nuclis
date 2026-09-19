@@ -68,13 +68,13 @@ pub const Runtime = struct {
     attention_scratch: []f64,
     delta_scratch: []f64,
 
-    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize) !Runtime {
+    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool) !Runtime {
         var layouts: [64]session.Layout = undefined;
         for (binding.layers, &layouts) |layer, *layout| layout.* = switch (layer.mixer) {
             .full_attention => .{ .attention = .{ .key_row = 1024, .value_row = 1024 } },
             .delta_net => .{ .recurrent = .{ .history = 10240 * 3, .matrix = 48 * 128 * 128 } },
         };
-        var state = try session.Session.init(gpa, &layouts, capacity);
+        var state = try session.Session.init(gpa, &layouts, capacity, checkpoint);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -278,7 +278,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
             const attention: model.FullAttention = .{ .query_and_gate = &tensor, .key = &tensor, .value = &tensor, .output = &tensor, .query_norm = &tensor, .key_norm = &tensor };
             const layer: model.Layer = .{ .attention_norm = &tensor, .post_attention_norm = &tensor, .ffn_gate = &tensor, .ffn_up = &tensor, .ffn_down = &tensor, .mixer = .{ .full_attention = attention } };
             const binding: model.Binding = .{ .token_embedding = &tensor, .output_norm = &tensor, .output = &tensor, .layers = @splat(layer), .summary = .{ .profile = "test", .decoder_layers = 64, .layer_kinds = &.{}, .text_tensors = 0, .auxiliary_tensors = 0, .text_tensor_bytes = 0, .auxiliary_tensor_bytes = 0 } };
-            var runtime = try Runtime.init(alloc, .{ .file = &.{}, .data_offset = 0 }, binding, 1);
+            var runtime = try Runtime.init(alloc, .{ .file = &.{}, .data_offset = 0 }, binding, 1, false);
             defer runtime.deinit();
             try std.testing.expectError(error.InvalidTokenId, runtime.step(248320, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);
