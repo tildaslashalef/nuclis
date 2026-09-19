@@ -12,19 +12,3 @@ test, and measure in [docs/development.md](docs/development.md).
 Session protocol (also in [AGENTS.md](AGENTS.md)): read this file first. If
 it lists work, summarize *Where we are* and ask the user how to continue. If
 it is empty, ask what to work on and write the agreed plan here.
-
-
-## Where we are
-
-MODL-13 closed on 2026-09-19: the Muse Glimmer profile, the channel-grammar
-decoder, the `high` effort, the catalogue pin, and the acceptance record
-([docs/reference/bench.md](docs/reference/bench.md)). AGNT-10's code and
-fixtures are in the tree and pass; its live `--print --json` turn ran
-(`write_file` then `read_file`, the file on disk as asked), so it closes
-next with its log entry.
-
-Order: AGNT-10.
-
-| Unit | Title | Sessions |
-| --- | --- | --- |
-| AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 1 |

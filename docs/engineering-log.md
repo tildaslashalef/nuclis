@@ -84,6 +84,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2026-09-19 |
 | MODL-12 | Muse Glimmer 30B: Metal plan | 2026-09-19 |
 | MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 2026-09-19 |
+| AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 2026-09-19 |
 
 ## Context
 
@@ -2699,3 +2700,52 @@ to 77 % at 32K, and the 4K row's decode drift within one run (the
 performance theme); the full-capacity sliding cache (1.63 GiB at 32K);
 the Hub's `chat_template.jinja` revision unchecked as an alias; the
 vision projector and the DFlash drafter (roadmap).
+
+### AGNT-10 — Muse Glimmer ATEM tool calling: rendering, decoding, fixtures (2026-09-19)
+
+**Outcome.** The profile renders the template's ATEM protocol and the
+loop drives it. Declarations go into every system turn as the
+template's prose plus one metadata line per namespace and one JSON
+schema line per tool in the reference's `tojson` style (insertion-
+ordered keys, `", "` and `": "`, control characters escaped, non-ASCII
+literal), with the recipients line listing each namespace; a call is
+its own `assistant to=NAME` message holding one `<atem:function_calls>`
+block (strings verbatim, `true`/`false`/`null`, numbers as written,
+lists and objects as JSON), `<|eom|>` between a step's calls and
+`<|eot|>` after the last; a result is its own `tool NAME` turn. The
+channel decoder hands `to=NAME` bodies to `muse_glimmer.parseTool`
+(one well-formed block with one invoke; a value that parses as JSON
+keeps its type, anything else is a literal string), completes an open
+body when the turn stops on `<|eot|>`, and releases it as text on a
+budget stop, a cancellation, or a malformed body. Names cannot carry a
+quote, an angle bracket, or whitespace; content, results, names, and
+argument strings carrying the markup or a control marker are rejected.
+`scripts/profile-tools-fixtures.py --profile muse_glimmer` captures
+Gemma's shapes plus a declaration whose texts need JSON escaping and a
+multi-line string argument; the fixture was captured while the
+reference server was up for MODL-13 and landed in that unit's commit.
+[tool-calling.md](reference/tool-calling.md) records the format and
+the three facts that shaped the implementation.
+
+**Evidence.** The 52 tool fixtures match byte for byte; the parser
+round-trips a rendered call with every value type and refuses nine
+malformed, truncated, or multi-invoke bodies; the decoder test delivers
+two calls in one turn and releases the second as text under a budget
+stop; smuggled markup in arguments, results, names, keys, content, and
+tool names is rejected. The live `--print --json` turn on the pulled
+file (Metal, context 8,192, `--think medium`): `write_file` then
+`read_file` as asked, `greeting.txt` on disk with `hello world`, the
+answer quoting the contents, stop `eos` after 460 tokens. `make check`
+passes.
+
+**Files.** `inference/src/profiles/muse_glimmer.zig`,
+`inference/src/profiles/fixtures/muse_glimmer-tools.json`,
+`scripts/profile-tools-fixtures.py`,
+`docs/reference/{tool-calling,prompt-profile,muse-glimmer}.md`.
+
+**Remaining.** Values are typed by whether they parse as JSON (Qwen's
+rule), not by the declaration as the reference does, so a string-typed
+parameter written as `123` or `true` reaches the agent as a number or
+a boolean; a body with several invokes is released as text rather than
+split into calls; a tool result carrying the ATEM markup (a file that
+quotes it) fails the turn instead of rendering, as Gemma's `<|"|>` does.
