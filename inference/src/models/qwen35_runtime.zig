@@ -53,6 +53,22 @@ pub const Runtime = struct {
     /// The last token's hidden after `output_norm`, the input to the output
     /// head: the prediction block's `h` input and a draft `commit`'s row.
     h: []f32,
+    /// The prediction block's workspace, allocated only when a drafter was
+    /// requested. `draft_h` is the block's `h_nextn` (after
+    /// `shared_head_norm`); `draft_pending_h` is the target hidden of the
+    /// last committed token, the seed every `propose` starts from.
+    draft_h: []f32,
+    draft_hnorm: []f32,
+    draft_concat: []f32,
+    draft_chain: []f32,
+    draft_logits: []f32,
+    draft_pending_h: []f32,
+    draft_enorm: []f32,
+    draft_hnorm_w: []f32,
+    draft_head_norm: []f32,
+    draft_constants: ?LayerConstants,
+    draft_layer: usize,
+    has_draft: bool,
     projected: []f32,
     gate: []f32,
     up: []f32,
@@ -71,13 +87,20 @@ pub const Runtime = struct {
     attention_scratch: []f64,
     delta_scratch: []f64,
 
-    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool) !Runtime {
-        var layouts: [64]session.Layout = undefined;
-        for (binding.layers, &layouts) |layer, *layout| layout.* = switch (layer.mixer) {
+    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
+        const text = binding.layers.len;
+        var layouts: [65]session.Layout = undefined;
+        for (binding.layers, layouts[0..text]) |layer, *layout| layout.* = switch (layer.mixer) {
             .full_attention => .{ .attention = .{ .key_row = 1024, .value_row = 1024 } },
             .delta_net => .{ .recurrent = .{ .history = 10240 * 3, .matrix = 48 * 128 * 128 } },
         };
-        var state = try session.Session.init(gpa, &layouts, capacity, checkpoint);
+        if (draft) {
+            if (binding.draft == null) return error.NoDraftBlock;
+            // The block is a full-attention layer of the main shape; its cache
+            // is one more layout in the same session, so recovery rewinds it.
+            layouts[text] = .{ .attention = .{ .key_row = 1024, .value_row = 1024 } };
+        }
+        var state = try session.Session.init(gpa, layouts[0 .. text + @intFromBool(draft)], capacity, checkpoint);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -121,6 +144,28 @@ pub const Runtime = struct {
                 },
             };
         }
+        result.has_draft = draft;
+        result.draft_layer = text;
+        inline for (.{ "draft_h", "draft_hnorm", "draft_chain", "draft_pending_h" }) |field| @field(result, field) = try a.alloc(f32, if (draft) 5120 else 0);
+        inline for (.{ "draft_enorm", "draft_hnorm_w", "draft_head_norm" }) |field| @field(result, field) = try a.alloc(f32, if (draft) 5120 else 0);
+        result.draft_concat = try a.alloc(f32, if (draft) 10240 else 0);
+        result.draft_logits = try a.alloc(f32, if (draft) 248320 else 0);
+        result.draft_constants = null;
+        if (draft) {
+            const block = binding.draft.?;
+            result.draft_enorm = try view.vector(a, block.enorm);
+            result.draft_hnorm_w = try view.vector(a, block.hnorm);
+            result.draft_head_norm = try view.vector(a, block.shared_head_norm);
+            result.draft_constants = .{
+                .attention_norm = try view.vector(a, block.layer.attention_norm),
+                .post_attention_norm = try view.vector(a, block.layer.post_attention_norm),
+                .mixer = .{ .full_attention = .{
+                    .query_norm = try view.vector(a, block.layer.mixer.full_attention.query_norm),
+                    .key_norm = try view.vector(a, block.layer.mixer.full_attention.key_norm),
+                } },
+            };
+            @memset(result.draft_pending_h, 0);
+        }
         result.storage = storage;
         result.state = state;
         result.view = view;
@@ -134,6 +179,7 @@ pub const Runtime = struct {
     }
     pub fn reset(self: *Runtime) void {
         self.state.reset();
+        if (self.has_draft) @memset(self.draft_pending_h, 0);
     }
 
     fn mm(self: *Runtime, tensor: *const Tensor, input: []const f32, output: []f32) !void {
@@ -181,7 +227,10 @@ pub const Runtime = struct {
         for (self.binding.layers, self.constants, 0..) |layer, constants, il| {
             try norm(self.x, self.normalized, constants.attention_norm);
             switch (layer.mixer) {
-                .full_attention => |attn| try self.fullAttention(attn, constants.mixer.full_attention, il),
+                .full_attention => |attn| {
+                    const cache = self.state.layers[il].attention;
+                    try self.fullAttention(attn, constants.mixer.full_attention.query_norm, constants.mixer.full_attention.key_norm, cache.keys, cache.values, self.state.position, true);
+                },
                 .delta_net => |linear| try self.linearAttention(linear, constants.mixer.delta_net, il),
             }
             for (self.x, self.projected) |*x, contribution| x.* += contribution;
@@ -210,8 +259,12 @@ pub const Runtime = struct {
         try self.state.commit();
     }
 
-    fn fullAttention(self: *Runtime, attn: model.FullAttention, constants: anytype, il: usize) !void {
-        const input = try self.rotate(self.normalized);
+    /// One full-attention layer over `keys`/`values` at `position`, reading
+    /// `self.normalized`. `rotated` applies the file's activation transform:
+    /// the text schedule's projections are rotated, the prediction block's are
+    /// not.
+    fn fullAttention(self: *Runtime, attn: model.FullAttention, query_norm: []const f32, key_norm: []const f32, keys: session.Rows, values: session.Rows, position: usize, rotated: bool) !void {
+        const input = if (rotated) try self.rotate(self.normalized) else self.normalized;
         try self.mm(attn.query_and_gate, input, self.qg);
         try self.mm(attn.key, input, self.k);
         try self.mm(attn.value, input, self.v);
@@ -219,24 +272,23 @@ pub const Runtime = struct {
             const q = self.q[h * 256 ..][0..256];
             // Each projected head stores query then gate, not all queries then
             // all gates. The gate remains untouched until after attention.
-            try norm(self.qg[h * 512 ..][0..256], q, constants.query_norm);
-            try cpu.rope.apply(q, q, .{ .dimensions = 64, .base = 1e7, .position = @intCast(self.state.position) });
+            try norm(self.qg[h * 512 ..][0..256], q, query_norm);
+            try cpu.rope.apply(q, q, .{ .dimensions = 64, .base = 1e7, .position = @intCast(position) });
         }
         for (0..4) |h| {
             const k = self.k[h * 256 ..][0..256];
-            try norm(k, k, constants.key_norm);
-            try cpu.rope.apply(k, k, .{ .dimensions = 64, .base = 1e7, .position = @intCast(self.state.position) });
+            try norm(k, k, key_norm);
+            try cpu.rope.apply(k, k, .{ .dimensions = 64, .base = 1e7, .position = @intCast(position) });
         }
-        const cache = self.state.layers[il].attention;
-        const position = self.state.position;
         // The reference cache is F32 by decision: the views assert it.
-        @memcpy(cache.keys.floats(position, 1), self.k);
-        @memcpy(cache.values.floats(position, 1), self.v);
-        try cpu.attention.apply(.{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .tokens = position + 1, .visible_tokens = position + 1, .scale = 1.0 / 16.0, .queries = self.q, .keys = cache.keys.floats(0, position + 1), .values = cache.values.floats(0, position + 1) }, self.mixed_out, self.attention_scratch);
+        @memcpy(keys.floats(position, 1), self.k);
+        @memcpy(values.floats(position, 1), self.v);
+        try cpu.attention.apply(.{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .tokens = position + 1, .visible_tokens = position + 1, .scale = 1.0 / 16.0, .queries = self.q, .keys = keys.floats(0, position + 1), .values = values.floats(0, position + 1) }, self.mixed_out, self.attention_scratch);
         for (0..24) |h| for (0..256) |i| {
             self.mixed_out[h * 256 + i] *= cpu.sigmoid(self.qg[h * 512 + 256 + i]);
         };
-        try self.mm(attn.output, try self.rotate(self.mixed_out), self.projected);
+        const mixed = if (rotated) try self.rotate(self.mixed_out) else self.mixed_out;
+        try self.mm(attn.output, mixed, self.projected);
     }
 
     fn linearAttention(self: *Runtime, linear: model.DeltaNet, constants: anytype, il: usize) !void {
@@ -272,6 +324,117 @@ pub const Runtime = struct {
         }
         try self.mm(linear.output, try self.rotateGrouped(self.mixed_out), self.projected);
     }
+
+    // --- the prediction block (MODL-18) --------------------------------
+
+    /// One row of the block at `position`: pair the token with `h_prev`,
+    /// project, run the full-attention layer over the block's own cache, the
+    /// FFN, `shared_head_norm`, and the shared output head into `logits`. The
+    /// block's `h_nextn` lands in `self.draft_h`.
+    pub fn draftForward(self: *Runtime, h_prev: []const f32, token: u32, position: usize, logits: ?[]f32) !void {
+        const block = self.binding.draft orelse return error.NoDraftBlock;
+        const constants = self.draft_constants orelse return error.NoDraftBlock;
+        if (token >= 248320 or h_prev.len != 5120 or position >= self.state.capacity) return error.InvalidShape;
+        if (logits) |out| if (out.len != 248320) return error.InvalidShape;
+        // [enorm(embed(x_p)); hnorm(h_{p-1})], projected by eh_proj.
+        try self.view.row(self.binding.token_embedding, token, self.x);
+        try norm(self.x, self.normalized, self.draft_enorm);
+        try norm(h_prev, self.draft_hnorm, self.draft_hnorm_w);
+        @memcpy(self.draft_concat[0..5120], self.normalized);
+        @memcpy(self.draft_concat[5120..10240], self.draft_hnorm);
+        try self.mm(block.eh_proj, self.draft_concat, self.x);
+        // The block's own full-attention cache, in the same session block.
+        try norm(self.x, self.normalized, constants.attention_norm);
+        const cache = self.state.layers[self.draft_layer].attention;
+        try self.fullAttention(block.layer.mixer.full_attention, constants.mixer.full_attention.query_norm, constants.mixer.full_attention.key_norm, cache.keys, cache.values, position, false);
+        for (self.x, self.projected) |*x, contribution| x.* += contribution;
+        try norm(self.x, self.normalized, constants.post_attention_norm);
+        try self.mm(block.layer.ffn_gate, self.normalized, self.gate);
+        try self.mm(block.layer.ffn_up, self.normalized, self.up);
+        for (self.gate, self.up) |*g, u| g.* = cpu.silu(g.*) * u;
+        try self.mm(block.layer.ffn_down, self.gate, self.projected);
+        for (self.x, self.projected) |*x, contribution| {
+            x.* += contribution;
+            if (!std.math.isFinite(x.*)) return error.NonFiniteResult;
+        }
+        try norm(self.x, self.draft_h, self.draft_head_norm);
+        if (logits) |out| {
+            try self.mm(self.binding.output, self.draft_h, out);
+            for (out) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;
+        }
+    }
+
+    /// Advances the block over tokens the main model committed, whose target
+    /// hidden rows are `h_rows` (`tokens.len * 5120`). The block's cache row
+    /// index is the main token position, so the accepted prefix ends at
+    /// `state.position`; the caller has already `recover`ed the session.
+    pub fn commit(self: *Runtime, tokens: []const u32, h_rows: []const f32) !void {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (h_rows.len != tokens.len * 5120) return error.InvalidShape;
+        if (tokens.len == 0) return;
+        if (self.state.position < tokens.len) return error.InvalidShape;
+        const start = self.state.position - tokens.len;
+        for (tokens, 0..) |token, i| {
+            // Row 0 pairs with the previous committed token's hidden; the
+            // rest with the hidden of the row before them.
+            const h_prev = if (i == 0) self.draft_pending_h else h_rows[(i - 1) * 5120 ..][0..5120];
+            try self.draftForward(h_prev, token, start + i, null);
+        }
+        @memcpy(self.draft_pending_h, h_rows[h_rows.len - 5120 ..][0..5120]);
+    }
+
+    /// Greedy candidates from the state after the last committed token.
+    /// `out.len` bounds the count; `logits`, when given, holds one vocabulary
+    /// row per proposed position (caller-owned, for sampled acceptance).
+    pub fn propose(self: *Runtime, token: u32, out: []u32, logits: ?[]f32) !usize {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (logits) |rows| if (rows.len != out.len * 248320) return error.InvalidShape;
+        const start = self.state.position;
+        var h_prev: []const f32 = self.draft_pending_h;
+        var next = token;
+        var count: usize = 0;
+        while (count < out.len) : (count += 1) {
+            const rows = if (logits) |rows| rows[count * 248320 ..][0..248320] else self.draft_logits;
+            try self.draftForward(h_prev, next, start + count, rows);
+            out[count] = argmax(rows);
+            next = out[count];
+            // The block's own hidden chains the next position.
+            @memcpy(self.draft_chain, self.draft_h);
+            h_prev = self.draft_chain;
+        }
+        return count;
+    }
+
+    fn argmax(values: []const f32) u32 {
+        var best: usize = 0;
+        for (values, 0..) |v, i| {
+            if (v > values[best]) best = i;
+        }
+        return @intCast(best);
+    }
+
+    /// The contract value the engine holds, or null when no block is loaded.
+    pub fn drafter(self: *Runtime) ?@import("../runtime/draft.zig").Drafter {
+        if (!self.has_draft) return null;
+        return .{ .host = self, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+    }
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, logits: ?[]f32) anyerror!usize {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        return self.propose(token, out, logits);
+    }
+    fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        return self.commit(tokens, h_rows);
+    }
+    fn resetDraftFn(host: *anyopaque) void {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        if (self.has_draft) @memset(self.draft_pending_h, 0);
+    }
+    fn draftBytes(host: *anyopaque) usize {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        if (!self.has_draft) return 0;
+        return (self.draft_h.len + self.draft_hnorm.len + self.draft_chain.len + self.draft_pending_h.len + self.draft_concat.len + self.draft_logits.len) * @sizeOf(f32);
+    }
 };
 
 test "runtime workspace cleanup and invalid steps preserve session admission" {
@@ -283,7 +446,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
             const attention: model.FullAttention = .{ .query_and_gate = &tensor, .key = &tensor, .value = &tensor, .output = &tensor, .query_norm = &tensor, .key_norm = &tensor };
             const layer: model.Layer = .{ .attention_norm = &tensor, .post_attention_norm = &tensor, .ffn_gate = &tensor, .ffn_up = &tensor, .ffn_down = &tensor, .mixer = .{ .full_attention = attention } };
             const binding: model.Binding = .{ .token_embedding = &tensor, .output_norm = &tensor, .output = &tensor, .layers = @splat(layer), .summary = .{ .profile = "test", .decoder_layers = 64, .layer_kinds = &.{}, .text_tensors = 0, .auxiliary_tensors = 0, .text_tensor_bytes = 0, .auxiliary_tensor_bytes = 0 } };
-            var runtime = try Runtime.init(alloc, .{ .file = &.{}, .data_offset = 0 }, binding, 1, false);
+            var runtime = try Runtime.init(alloc, .{ .file = &.{}, .data_offset = 0 }, binding, 1, false, false);
             defer runtime.deinit();
             try std.testing.expectError(error.InvalidTokenId, runtime.step(248320, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);

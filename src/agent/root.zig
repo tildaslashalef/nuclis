@@ -1017,7 +1017,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     var sampler = try inference.sampling.Sampler.init(seed orelse 0, settings.samplingOptions());
     try out.writeAll("Loading model…\n");
     try out.flush();
-    var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, kv, settings.forced_profile);
+    var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, kv, settings.forced_profile, .none);
     defer eng.deinit();
     // The file's own profile from here on: the configuration guessed one
     // from the catalogue name without opening the file (`config show`).
@@ -1173,7 +1173,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 ui.status = "resizing context…";
                 try ui.draw();
                 eng.deinit();
-                if (engine.Engine.open(alloc, io, model_path, backend, newcap, kv, settings.forced_profile)) |opened| {
+                if (engine.Engine.open(alloc, io, model_path, backend, newcap, kv, settings.forced_profile, .none)) |opened| {
                     eng = opened;
                     ui.eng = &eng;
                     ui.completer.reset();
@@ -1187,7 +1187,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 } else |err| {
                     // Fall back to the previous size rather than lose the
                     // session over an allocation failure.
-                    eng = try engine.Engine.open(alloc, io, model_path, backend, old_capacity, kv, settings.forced_profile);
+                    eng = try engine.Engine.open(alloc, io, model_path, backend, old_capacity, kv, settings.forced_profile, .none);
                     ui.eng = &eng;
                     ui.status = @errorName(err);
                 }

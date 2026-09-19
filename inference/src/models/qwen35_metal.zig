@@ -119,7 +119,8 @@ pub const Plan = struct {
     /// sizes its activation buffers: about 0.4 MB per token). `kv` is the
     /// attention cache precision: `f16` halves cache memory and the
     /// bytes attention reads per token; the recurrent state stays F32.
-    pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool) !Plan {
+    pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool, draft: bool) !Plan {
+        _ = draft;
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
         var layouts: [64]session.Layout = undefined;
         for (binding.layers, &layouts) |layer, *layout| layout.* = switch (layer.mixer) {

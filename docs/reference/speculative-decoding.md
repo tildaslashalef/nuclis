@@ -122,3 +122,15 @@ target's `h`, never the block's.
 `executableEncoding` already admits id 8 (generic matvec and generic F32
 tile), and the binder validates every block tensor's shape and encoding
 before it is bound.
+
+**Measured.** The CPU block (`qwen35_runtime.draftForward`) runs against a
+trace captured from the pinned reference through the extended harness
+(`scripts/reference-generation.cpp --mtp-draft`): at positions 0 and 1 of
+`Hello,`, its `h_nextn` matches to 7.2e-6 and 1.1e-5 max abs (3.1e-7 and
+4.9e-7 relative RMS) and its greedy draft token equals the reference's
+(9419, 271). The vectors are pinned under
+`inference/src/models/fixtures/qwen35-mtp/` and checked by `checkDraft` in
+`make test-generation` / `test-generation-metal`. As a sanity figure for
+the acceptance the theme cares about, the reference's own
+`llama-speculative-simple --spec-type draft-mtp --spec-draft-n-max 4` on
+`Hello,` accepted 8 of 33 drafts (24.2 %) over 16 generated tokens.

@@ -46,9 +46,15 @@ driver are read and their facts recorded with provenance in
 (one correction: the block's `h` input is the target's post-`output_norm`
 hidden, not the pre-norm residual); `Binding.draft: ?DraftBlock` binds the
 15 tensors on the 65-block file and is null on Bonsai; the CPU runtime
-keeps the last token's `h`. Remaining: `runtime/draft.zig`'s contract, the
-Qwen `Drafter` (`propose`/`commit`), the 65-layout session, `Engine.open`'s
-`DraftRequest`, and the pinned reference MTP trace.
+keeps the last token's `h`, sizes the 65-layout session, runs the block
+(`draftForward`) and exposes `propose`/`commit` behind
+[runtime/draft.zig](inference/src/runtime/draft.zig)'s contract;
+`Engine.open` takes a `DraftRequest` (`.embedded` on CPU Qwen; `.file` and
+Metal are MODL-18 session 2 / MODL-19). The block matches a pinned
+reference trace (positions 0 and 1 of `Hello,`, max abs ≤ 1.1e-5, greedy
+tokens equal) via `checkDraft` in `make test-generation`. Remaining in
+session 1: `inspect`/`validate` reporting the block as *draft head:
+embedded*. Session 2: the Metal block, the compare rows, and `--draft-stats`.
 
 Order: MODL-18 → ENGN-12 → MODL-19 → MODL-20. After MODL-20 the roadmap
 continues with the performance follow-ups, then vision, then agent
@@ -151,17 +157,16 @@ are recorded per family.
 
 **Progress (2026-09-19, session 1 partial).** The reference's dense MTP
 graph and driver were read and the facts recorded with provenance in
-[speculative-decoding.md](docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18);
-`Binding.draft: ?DraftBlock` now binds the 15 tensors on the 65-block file
-(null on Bonsai) and the CPU runtime keeps the last token's `h`
-(`self.h`, post-`output_norm`). Still to do in this session: the contract
-in `runtime/draft.zig`, the `Drafter` on the Qwen runtime (`propose` over
-the block, `commit` over accepted tokens), the 65-layout session, the
-`Engine.open` `DraftRequest`, and the pinned reference MTP trace/fixture.
-The trace is the open risk: `llama-completion` in the pin does not accept
-`--spec-type`; `llama-speculative-simple` was built and accepts it, or the
-`reference-generation.cpp` harness can be extended to a
-`LLAMA_CONTEXT_TYPE_MTP` context and dump `h_nextn`/`result_output`.
+[speculative-decoding.md](docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18).
+Delivered: `Binding.draft: ?DraftBlock` (15 tensors, null on Bonsai);
+`runtime/draft.zig`'s `Drafter` contract; the CPU runtime's 65-layout
+session, `draftForward`, `propose`/`commit`, and `drafter()`; a pinned
+reference trace (`scripts/reference-generation.cpp --mtp-draft`, the
+fixture under `inference/src/models/fixtures/qwen35-mtp/`) checked by
+`checkDraft` in `generation-check`; and `Engine.open`'s `DraftRequest`
+(`.embedded` on CPU; `.file` and Metal are later units). Remaining:
+`inspect`/`validate` reporting the block as *draft head: embedded*, then
+session 2 (the Metal block, the compare rows, `--draft-stats`).
 
 **Facts read on 2026-09-19** (from `inference/src/models/fixtures/qwen35-27b.json`
 and `scripts/gguf-inventory.py` on the separate head; to be confirmed

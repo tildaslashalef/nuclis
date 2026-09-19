@@ -23,6 +23,17 @@ const profiles = inference.profiles;
 pub const Observer = inference.observer.Observer;
 
 pub const Backend = enum { cpu, metal };
+
+/// What draft source to load with the artifact. A load-time decision: the
+/// drafter's weights and the checkpoints its recovery fills belong to the
+/// memory plan (docs/spec.md § Speculative decoding).
+pub const DraftRequest = union(enum) {
+    none,
+    /// The artifact's own embedded prediction block (the Qwen3.8 release).
+    embedded,
+    /// A separate companion file, opened by MODL-19/20.
+    file: []const u8,
+};
 /// Attention cache precision. A GPU option: the CPU reference runtime
 /// keeps F32 whatever is requested, and `Engine.kv_precision` reports what
 /// the session actually uses.
@@ -104,6 +115,15 @@ pub fn Executor(comptime Family: type) type {
         /// rather than rewind by position.
         pub fn hasRecurrentState(self: *const Self) bool {
             return self.session().hasRecurrent();
+        }
+        /// The adapter's drafter when one is loaded and the backend runs it;
+        /// null when the family or backend has none. The contract value's host
+        /// is this live executor, so it never outlives a move.
+        pub fn drafter(self: *Self) ?inference.draft.Drafter {
+            return switch (self.*) {
+                .cpu => |*r| if (comptime @hasDecl(@TypeOf(r.*), "drafter")) r.drafter() else null,
+                .metal => |*m| if (comptime @hasDecl(@TypeOf(m.plan), "drafter")) m.plan.drafter() else null,
+            };
         }
         pub fn checkpoint(self: *Self) !void {
             return self.sessionMut().checkpoint();
@@ -240,6 +260,23 @@ pub const Model = struct {
     pub fn hasRecurrentState(self: *const Model) bool {
         return self.session().hasRecurrent();
     }
+    /// The loaded drafter, or null. `propose`/`commitDraft` are the loop's
+    /// only calls: propose chained candidates, commit advances the drafter
+    /// over the accepted prefix after `recover`. The drafter's cache is one
+    /// more layout in the session, so `checkpoint`/`rewind` cover it.
+    pub fn drafter(self: *Model) ?inference.draft.Drafter {
+        switch (self.exec) {
+            inline else => |*e| return e.drafter(),
+        }
+    }
+    pub fn propose(self: *Model, token: u32, out: []u32, logits: ?[]f32) !usize {
+        const d = self.drafter() orelse return error.NoDrafter;
+        return d.propose(token, out, logits);
+    }
+    pub fn commitDraft(self: *Model, tokens: []const u32, h_rows: []const f32) !void {
+        const d = self.drafter() orelse return error.NoDrafter;
+        try d.commit(tokens, h_rows);
+    }
     /// Returns the session to the state after the accepted prefix of a
     /// speculative verify batch. `accepted` is the tokens the main model
     /// committed, starting with the token fed before the batch; the position
@@ -283,12 +320,19 @@ fn chunkFor(comptime Family: type, binding: Family.Binding) usize {
 /// Builds one family's executor for the backend. Heap-allocates the Metal
 /// backend so the plan's pointer stays valid when the Engine value is
 /// returned by value; its diagnostic text is logged on failure.
-fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference.weights.View, binding: Family.Binding, backend: Backend, capacity: usize, kv: KvPrecision) !Executor(Family) {
+fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference.weights.View, binding: Family.Binding, backend: Backend, capacity: usize, kv: KvPrecision, draft: DraftRequest) !Executor(Family) {
+    // A checkpoint region is sized only when a caller needs to undo a verify
+    // batch, which is exactly when a drafter is loaded.
+    const want_draft = switch (draft) {
+        .none => false,
+        .embedded => true,
+        .file => return error.DraftSourceUnsupported,
+    };
     return switch (backend) {
-        // A checkpoint region is sized only when a caller needs to undo a
-        // verify batch; no caller does yet, so `open` asks for none.
-        .cpu => .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, false) },
+        .cpu => .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, want_draft, want_draft) },
         .metal => blk: {
+            // The Metal prediction block is MODL-18 session 2.
+            if (want_draft) return error.DraftUnsupportedOnGpu;
             const gpu = try alloc.create(inference.metal.Backend);
             errdefer alloc.destroy(gpu);
             var diagnostic: [8192]u8 = @splat(0);
@@ -301,7 +345,7 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference
                 return err;
             };
             errdefer gpu.deinit();
-            const plan = try Family.Plan.init(alloc, gpu, view, binding, capacity, @min(chunkFor(Family, binding), capacity), kv, false);
+            const plan = try Family.Plan.init(alloc, gpu, view, binding, capacity, @min(chunkFor(Family, binding), capacity), kv, false, false);
             break :blk .{ .metal = .{ .backend = gpu, .plan = plan } };
         },
     };
@@ -345,7 +389,7 @@ pub const Engine = struct {
     /// F32). An architecture without an adapter is `UnknownArchitecture`;
     /// `models.known` names the ones the tree has. `forced` selects the
     /// prompt profile regardless of the file's template digest.
-    pub fn open(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, backend: Backend, capacity: usize, kv: KvPrecision, forced: ?profiles.Profile) !Engine {
+    pub fn open(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, backend: Backend, capacity: usize, kv: KvPrecision, forced: ?profiles.Profile, draft: DraftRequest) !Engine {
         const started = std.Io.Clock.awake.now(io);
         if (capacity == 0 or capacity > 32768) return error.InvalidGenerationBudget;
         var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
@@ -372,7 +416,7 @@ pub const Engine = struct {
             inline else => |a| blk: {
                 const Family = models.registry.family(a);
                 const binding = try Family.bind(alloc, &mapped.document);
-                break :blk .{ .exec = @unionInit(Executors, @tagName(a), try openExecutor(Family, alloc, mapped.view(), binding, backend, capacity, kv)) };
+                break :blk .{ .exec = @unionInit(Executors, @tagName(a), try openExecutor(Family, alloc, mapped.view(), binding, backend, capacity, kv, draft)) };
             },
         };
         errdefer model.deinit(alloc);
@@ -660,6 +704,7 @@ pub fn runLoop(
 /// meaningful only as a mirror of what the session has consumed.
 fn resetAll(eng: *Engine, history: ?*inference.sampling.History) void {
     eng.model.reset();
+    if (eng.model.drafter()) |d| d.reset();
     if (history) |h| h.reset();
 }
 

@@ -163,7 +163,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // `--temperature 0` restores greedy decoding. Validation happens here,
     // before the model loads.
     var sampler = try inference.sampling.Sampler.init(options.seed orelse 0, settings.samplingOptions());
-    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile);
+    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, .none);
     defer eng.deinit();
     // The configuration resolved the profile from the catalogue name (a
     // bare path takes the first profile); the file's own template decides.

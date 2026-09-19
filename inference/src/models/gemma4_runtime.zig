@@ -81,7 +81,8 @@ pub const Runtime = struct {
     expert_scratch: []f32,
     accumulator: []f64,
 
-    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool) !Runtime {
+    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
+        _ = draft;
         const config = binding.config;
         var layouts: [model.max_layers]session.Layout = undefined;
         for (binding.active(), layouts[0..config.layer_count]) |layer, *layout| {
@@ -315,7 +316,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
                 const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
                 const scalar: Tensor = .{ .name = "scale", .dimensions = &.{1}, .encoding_id = 0, .offset = 0, .elements = 1, .bytes = 4 };
                 const file = [_]u8{ 0, 0, 0, 0 };
-                var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, emptyBinding(cfg, &tensor, &scalar), 1, false);
+                var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, emptyBinding(cfg, &tensor, &scalar), 1, false, false);
                 defer runtime.deinit();
                 try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
                 try std.testing.expectEqual(.ready, runtime.state.status);

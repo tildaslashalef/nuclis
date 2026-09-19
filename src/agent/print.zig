@@ -83,7 +83,7 @@ pub fn run(
     const limit = settings.max_tokens;
     if (capacity == 0 or capacity > config.max_context or limit == 0 or limit > config.max_output_tokens) return error.InvalidGenerationBudget;
     var sampler = try inference.sampling.Sampler.init(options.seed orelse 0, settings.samplingOptions());
-    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile);
+    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, .none);
     defer eng.deinit();
     const profile = eng.profile orelse return error.UnsupportedPromptTemplate;
     try sampler.setOptions(profile.samplingOptions(settings.think, settings.sampling));

@@ -20,6 +20,12 @@ const Bounds = struct {
     half_max_abs: f64,
     half_rel_rms: f64,
 };
+/// The prediction block's pinned trace: the tokens of `Hello,` and the
+/// reference's greedy draft per position, against the embedded hidden rows.
+const Draft = struct {
+    tokens: [2]u32,
+    greedy: [2]u32,
+};
 const Spec = struct {
     Family: type,
     vocabulary: usize,
@@ -28,8 +34,10 @@ const Spec = struct {
     /// The bounds of a mixture-of-experts configuration of the family, when
     /// it has one: discrete routing amplifies the tiles' rounding.
     expert_bounds: ?Bounds = null,
+    /// The prediction block's trace to check, when the family has one.
+    draft: ?Draft = null,
 };
-const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabulary = inference.models.qwen35_metal.vocabulary, .tokens = .{ 9419, 11 }, .bounds = .{ .chunk_max_abs = 2e-2, .chunk_rel_rms = 1e-3, .half_max_abs = 2e-2, .half_rel_rms = 1e-3 } };
+const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabulary = inference.models.qwen35_metal.vocabulary, .tokens = .{ 9419, 11 }, .bounds = .{ .chunk_max_abs = 2e-2, .chunk_rel_rms = 1e-3, .half_max_abs = 2e-2, .half_rel_rms = 1e-3 }, .draft = .{ .tokens = .{ 9419, 11 }, .greedy = .{ 9419, 271 } } };
 // Gemma's F16 tolerance is the model's own sensitivity to rounding keys
 // (unscaled attention scores; gemma4.md), not the kernels': the same
 // kernels are within 2e-4 of the CPU over the rounded operands (test-metal).
@@ -172,9 +180,9 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     }
     // A checkpoint region so the recovery check can take and undo a verify
     // batch; 16 positions hold the header, an 8-row batch, and its correction.
-    var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true) };
+    var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, false) };
     defer first.deinit();
-    var second: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true) };
+    var second: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, false) };
     defer second.deinit();
     const expected = try alloc.alloc(f32, spec.vocabulary);
     defer alloc.free(expected);
@@ -204,9 +212,10 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         if (!std.mem.eql(f32, expected, actual)) return error.ResetMismatch;
     }
     std.debug.print("Generation check passed ({s}, {s}): two-token logits identical across independent sessions and reset after partial-step cancellation through both the layer and the check callbacks.\n", .{ Family.architecture, if (use_metal) "metal" else "cpu" });
-    var other: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 8, 4, .f32, true) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 8, true) };
+    var other: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 8, 4, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 8, true, false) };
     defer other.deinit();
     try checkSnapshot(spec, Model, alloc, &first, &second, &other, expected, actual);
+    if (comptime spec.draft != null) try checkDraft(spec, alloc, mapped.view(), binding, spec.draft.?);
     try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal);
     if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true);
     if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual);
@@ -336,6 +345,62 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
     if (other.state().position != before) return error.OverflowTouchedSession;
 }
 
+/// The prediction block on the CPU against the reference's pinned trace: at
+/// position 0 pair the first token with a zero hidden, at position 1 pair the
+/// second with the first position's target hidden. Both the block's `h_nextn`
+/// and its greedy token must match. The trace was captured from the pinned
+/// reference on Metal with an F32 cache; the tolerances are the bring-up
+/// block tolerances (docs/reference/speculative-decoding.md).
+fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.weights.View, binding: spec.Family.Binding, draft: Draft) !void {
+    const Runtime = spec.Family.Runtime;
+    const hidden = 5120;
+    const p0_h = @embedFile("src/models/fixtures/qwen35-mtp/p0-h.f32");
+    const p1_h = @embedFile("src/models/fixtures/qwen35-mtp/p1-h.f32");
+    const p1_hprev = @embedFile("src/models/fixtures/qwen35-mtp/p1-hprev.f32");
+    var runtime = try Runtime.init(alloc, view, binding, 4, false, true);
+    defer runtime.deinit();
+    const logits = try alloc.alloc(f32, spec.vocabulary);
+    defer alloc.free(logits);
+    const zeros = try alloc.alloc(f32, hidden);
+    defer alloc.free(zeros);
+    @memset(zeros, 0);
+    const h_prev = try alloc.alloc(f32, hidden);
+    defer alloc.free(h_prev);
+    for (h_prev, 0..) |*v, i| v.* = std.mem.bytesToValue(f32, p1_hprev[i * 4 ..][0..4]);
+
+    try runtime.draftForward(zeros, draft.tokens[0], 0, logits);
+    try compareDraft("position 0", p0_h, runtime.draft_h);
+    if (argmax(logits) != draft.greedy[0]) return error.DraftGreedyMismatch;
+    try runtime.draftForward(h_prev, draft.tokens[1], 1, logits);
+    try compareDraft("position 1", p1_h, runtime.draft_h);
+    if (argmax(logits) != draft.greedy[1]) return error.DraftGreedyMismatch;
+    std.debug.print("Draft block check passed: positions 0 and 1 match the pinned trace; greedy tokens {d} and {d}.\n", .{ draft.greedy[0], draft.greedy[1] });
+}
+
+fn compareDraft(label: []const u8, expected: []const u8, actual: []const f32) !void {
+    var max_abs: f64 = 0;
+    var sum_sq: f64 = 0;
+    var ref_sq: f64 = 0;
+    for (actual, 0..) |a, i| {
+        const e: f32 = std.mem.bytesToValue(f32, expected[i * 4 ..][0..4]);
+        const d = @abs(@as(f64, e) - a);
+        max_abs = @max(max_abs, d);
+        sum_sq += d * d;
+        ref_sq += @as(f64, e) * e;
+    }
+    const rel_rms = @sqrt(sum_sq / ref_sq);
+    std.debug.print("Draft block ({s}): max abs {e:.3}, relative RMS {e:.3} (bounds 2e-2 / 1e-3)\n", .{ label, max_abs, rel_rms });
+    if (!(max_abs <= 2e-2) or !(rel_rms <= 1e-3)) return error.DraftBlockMismatch;
+}
+
+fn argmax(values: []const f32) u32 {
+    var best: usize = 0;
+    for (values, 0..) |v, i| {
+        if (v > values[best]) best = i;
+    }
+    return @intCast(best);
+}
+
 /// A 70-token prompt through per-token steps and through `prefill` with
 /// 32-token chunks (two full chunks and a partial one, crossing chunk
 /// boundaries inside attention and any recurrent state) must agree on the
@@ -355,16 +420,16 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         t.* = seed % 150000;
     }
     const bounds = boundsOf(spec, binding);
-    var stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false);
+    var stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
     defer stepped.deinit();
     for (tokens, 0..) |t, i| try stepped.step(t, if (i + 1 == tokens.len) expected else null, null, null, null);
     for ([_]usize{ 64, 48 }) |chunk| {
-        var big = try Plan.init(alloc, b, view, binding, 128, chunk, .f32, false);
+        var big = try Plan.init(alloc, b, view, binding, 128, chunk, .f32, false, false);
         defer big.deinit();
         try big.prefill(&tokens, actual, null, null, null);
         try compareChunked("chunk", chunk, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
     }
-    var chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false);
+    var chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
     defer chunked.deinit();
     try chunked.prefill(&tokens, actual, null, null, null);
     if (chunked.state.position != tokens.len or stepped.state.position != tokens.len) return error.PositionMismatch;
@@ -378,22 +443,22 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         defer alloc.free(generic_expected);
         b.generic_only = true;
         defer b.generic_only = false;
-        var generic_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false);
+        var generic_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
         defer generic_stepped.deinit();
         for (tokens, 0..) |t, i| try generic_stepped.step(t, if (i + 1 == tokens.len) generic_expected else null, null, null, null);
-        var generic_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false);
+        var generic_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
         defer generic_chunked.deinit();
         try generic_chunked.prefill(&tokens, actual, null, null, null);
         try compareChunked("F32 tiles, chunk", 32, generic_expected, actual, 5e-3, 2e-4);
     }
     // The same 70 tokens through an F16 cache, stepped and chunked,
     // against the F32 stepped logits (the session holds half the bytes).
-    var half_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false);
+    var half_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
     defer half_stepped.deinit();
     if (half_stepped.state.bytes() >= stepped.state.bytes()) return error.HalfCacheNotSmaller;
     for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null);
     try compareChunked("F16 KV stepped", 1, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
-    var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false);
+    var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
     defer half_chunked.deinit();
     try half_chunked.prefill(&tokens, actual, null, null, null);
     try compareChunked("F16 KV chunk", 32, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);

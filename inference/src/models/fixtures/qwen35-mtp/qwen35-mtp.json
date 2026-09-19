@@ -1,0 +1,16 @@
+{
+  "reference": "llama.cpp",
+  "revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "tool": "scripts/reference-generation.cpp --mtp-draft",
+  "model": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "prompt": "Hello,",
+  "tokens": [9419, 11],
+  "greedy_draft": [9419, 271],
+  "block": "blk.64 (nextn)",
+  "files": {
+    "p0-h.f32": "the block's h_nextn at position 0 (h_prev zeros, token 9419)",
+    "p1-hprev.f32": "the target hidden after position 0, fed as h_prev at position 1",
+    "p1-h.f32": "the block's h_nextn at position 1 (token 11)"
+  },
+  "note": "Captured on Metal with an F32 cache and flash attention off, one token per decode. The target hidden is the output_norm-applied final hidden (llama_get_embeddings_nextn), not the pre-norm residual."
+}

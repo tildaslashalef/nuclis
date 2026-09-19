@@ -116,7 +116,8 @@ pub const Plan = struct {
     /// `chunk` bounds the tokens one `prefill` command buffer processes (and
     /// sizes its activation buffers: about 0.4 MB per token). `kv` is the
     /// attention cache precision of every layer.
-    pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool) !Plan {
+    pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool, draft: bool) !Plan {
+        _ = draft;
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
         var layouts: [model.layer_count]session.Layout = undefined;
         for (&layouts) |*layout| layout.* = .{ .attention = .{ .key_row = kv_width, .value_row = kv_width, .precision = kv } };

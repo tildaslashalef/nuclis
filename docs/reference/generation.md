@@ -208,6 +208,7 @@ mkdir -p .zig-cache/generation
 c++ -std=c++17 \
   -I.zig-cache/reference/llama.cpp/include \
   -I.zig-cache/reference/llama.cpp/ggml/include \
+  -I.zig-cache/reference/llama.cpp/src \
   scripts/reference-generation.cpp \
   -L.zig-cache/reference/llama.cpp/build/bin -lllama -lggml -lggml-base \
   -Wl,-rpath,"$PWD/.zig-cache/reference/llama.cpp/build/bin" \
@@ -222,6 +223,19 @@ mkdir -p .zig-cache/generation/native-check .zig-cache/generation/reference-chec
 python3 scripts/compare-generation.py \
   .zig-cache/generation/native-check .zig-cache/generation/reference-check --positions 2
 ```
+
+The same helper takes `--mtp-draft` after the trace directory. It then
+loads the file with its MTP tensors (`llama_model_params.load_mtp`), opens
+a second context of type `LLAMA_CONTEXT_TYPE_MTP`, and writes, per prompt
+position `p`, the block's pair inputs and outputs: `token-p-mtp-hprev.f32`
+(the target hidden of position `p - 1`; zeros at position 0),
+`token-p-mtp-h.f32` (the block's `h_nextn`), `mtp-greedy.txt` (the greedy
+draft token per position), and `mtp-tokens.txt`. The first `l_out-63` row
+is not what the block consumes: its `h` input is the target's
+`output_norm`-applied hidden, which is why the helper reads
+`llama_get_embeddings_nextn`. The small vectors are pinned under
+`inference/src/models/fixtures/qwen35-mtp/` and checked by
+`make test-generation` (the `checkDraft` pass in `generation-check`).
 
 The comparison checks every requested layer and final logits, rejecting missing,
 wrong-sized, or nonfinite files. Initial bring-up tolerances are maximum absolute
