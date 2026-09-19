@@ -208,6 +208,10 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
     };
     const rounds = 5;
+    // Back-to-back dispatches per command buffer keep the clock where a token
+    // keeps it; an isolated short dispatch measures ramp-up, not the kernel
+    // (the matvec bench's note). 16 is the floor the slowest shape needs.
+    const repeats: usize = if (tokens <= 8) 64 else 16;
     var max_bytes: usize = 0;
     for (encodings) |enc| for (shapes) |shape| {
         const layout = inference.encoding.layout(enc.id) orelse return error.UnknownEncoding;
@@ -217,7 +221,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
     const input = try b.create(Backend.matmulPadded(tokens) * 17408 * 4);
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(tokens) * 17408 * 4);
-    std.debug.print("{s:<8} {s:<24} {s:<11} {s:>8} {s:>9} {s:>10} {s:>8} {s:>8}  rounds (ms), {d} tokens\n", .{ "encoding", "shape", "tile", "MB", "best ms", "GFLOP/s", "tok/s*", "GB/s", tokens });
+    std.debug.print("{s:<8} {s:<24} {s:<11} {s:>8} {s:>9} {s:>10} {s:>8} {s:>8}  rounds (ms), {d} tokens, {d}/round\n", .{ "encoding", "shape", "tile", "MB", "best ms", "GFLOP/s", "tok/s*", "GB/s", tokens, repeats });
     inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
@@ -235,29 +239,35 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
                 @memcpy(weights.host[0..region.len], region);
                 const matrix: inference.cpu.Matrix = .{ .rows = shape.rows, .columns = shape.columns, .encoding = enc.id, .bytes = region };
                 b.generic_only = generic;
+                const kernel: inference.metal.Kernel = if (generic) .matmul else (Backend.specializedMatmul(enc.id, 0, region.len / shape.rows, tokens) orelse .matmul);
+                const geometry = Backend.matmulGeometry(kernel);
+                // A chunk spanning several token tiles reads the weights once
+                // per tile, as `matmul`'s profile attribution counts them.
+                const token_tiles = (tokens + geometry.tokens - 1) / geometry.tokens;
+                const weight_mb = @as(f64, @floatFromInt(region.len)) / 1e6;
                 var best: f64 = std.math.inf(f64);
                 var samples: [rounds]f64 = undefined;
-                for (0..rounds + 1) |i| {
+                for (0..rounds + 2) |i| {
                     const before = b.gpuSeconds();
                     try b.begin();
-                    try b.matmul(weights, matrix, input, shape.columns, output, shape.rows, tokens);
+                    for (0..repeats) |_| try b.matmul(weights, matrix, input, shape.columns, output, shape.rows, tokens);
                     try b.commit();
-                    const ms = (b.gpuSeconds() - before) * 1e3;
-                    if (i == 0) continue; // warm-up
-                    samples[i - 1] = ms;
+                    const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
+                    if (i < 2) continue; // warm-up
+                    samples[i - 2] = ms;
                     best = @min(best, ms);
                 }
                 const flops = 2.0 * @as(f64, @floatFromInt(shape.rows * shape.columns * tokens));
                 const gflops = flops / (best * 1e-3) / 1e9;
-                const kernel = if (generic) null else Backend.specializedMatmul(enc.id, 0, region.len / shape.rows, tokens);
-                const tile = if (kernel) |k| switch (Backend.matmulGeometry(k).tokens) {
+                const tile = switch (geometry.tokens) {
                     8 => "8x8",
+                    16 => "8x16",
                     32 => "32x32",
                     64 => "64x64",
                     else => "specialized",
-                } else "generic";
-                const gbps = @as(f64, @floatFromInt(region.len)) / best / 1e6;
-                std.debug.print("{s:<8} {s:<24} {s:<11} {d:>8.1} {d:>9.2} {d:>10.0} {d:>8.1} {d:>8.1} ", .{ enc.name, shape.name, tile, @as(f64, @floatFromInt(region.len)) / 1e6, best, gflops, gflops / 54.0, gbps });
+                };
+                const gbps = weight_mb * @as(f64, @floatFromInt(token_tiles)) / best;
+                std.debug.print("{s:<8} {s:<24} {s:<11} {d:>8.1} {d:>9.2} {d:>10.0} {d:>8.1} {d:>8.1} ", .{ enc.name, shape.name, if (generic) "generic" else tile, weight_mb, best, gflops, gflops / 54.0, gbps });
                 for (samples) |ms| std.debug.print(" {d:.1}", .{ms});
                 std.debug.print("\n", .{});
             };

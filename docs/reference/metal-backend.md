@@ -907,9 +907,9 @@ is spread over attention, DeltaNet, norms, and the generic-tile tensors
 
 A prompt's first tokens run through `Backend.matmul` as one short chunk. The
 32×32 tile gives a 5,120-row projection 160 threadgroups whose K loop carries
-two `threadgroup_barrier`s per 64-column step, so at 1–22 tokens it streams
-weight bytes at 6–41 GB/s while the specialized matvecs on the same encodings
-reach 83–252. The `nu_matmul_*_8` split-K set gives one 128-thread group eight
+two `threadgroup_barrier`s per 64-column step, so at 9–32 tokens it streams
+weight bytes at 10–41 GB/s while the specialized matvecs on the same encodings
+reach 84–242. The `nu_matmul_*_8` split-K set gives one 128-thread group eight
 rows × eight tokens: the four SIMD groups partition the 64-column K steps, each
 lane decodes one 16-value segment into its own SIMD group's 8×64 half tile, and
 only `simdgroup_barrier` orders the loop — no `threadgroup_barrier` inside it.
@@ -917,12 +917,58 @@ The four K partials reduce once at the end through the reused tile in a fixed
 SIMD-group order. `specializedMatmul` takes the `_8` tile for `tokens <=
 small_chunk_tokens` (8), the `_32` tile above it.
 
-Method: `make bench-matmul ARGS=<t>` (Apple M4 Pro, Zig 0.16.0, ReleaseSafe,
-best of five command buffers after one warm-up); weights are read once per token
-tile and the rate is `region.len / best`, the measure of weight streaming at
-small `t`. The matvec column is the same encoding from `make bench-kernels` run
-immediately before on the same machine (69,632×5,120 for the gate shape,
+Method: `make bench-matmul ARGS=<t>` (Apple M4 Pro, Zig 0.16.0, ReleaseSafe).
+Each row is five measured command buffers after two warm-ups, each buffer
+issuing 64 dispatches at t ≤ 8 and 16 above, timed with `gpuSeconds()` and
+divided by the dispatch count — the batch keeps the GPU clocked where an
+isolated dispatch measures ramp-up. Weights are read once per token tile
+(`region.len × ceil(t / tile_tokens)`), the count `Backend.matmul`'s profile
+attributes. The matvec column is the same encoding from `make bench-kernels`
+run immediately before on the same machine (69,632×5,120 for the gate shape,
 5,120×17,408 for the down shape). GB/s of weight bytes:
+
+**ffn_gate (17,408×5,120), batched.** t=1/4/8 take the 8×8 tile, t=9..32 the 32×32.
+
+| Encoding | matvec | t=1 | t=4 | t=8 | t=9 | t=16 | t=22 | t=32 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q4_K | 176 | 73 | 75 | 75 | 28 | 28 | 28 | 28 |
+| Q5_K | 211 | 83 | 85 | 85 | 33 | 34 | 34 | 34 |
+| Q3_K | 121 | 57 | 58 | 58 | 21 | 22 | 22 | 22 |
+| Q6_K | 242 | 105 | 107 | 101 | 41 | 41 | 41 | 41 |
+| IQ3_S | 121 | 60 | 62 | 62 | 22 | 22 | 22 | 22 |
+| IQ4_XS | 214 | 80 | 81 | 83 | 28 | 28 | 28 | 28 |
+| Q4_0 | 229 | 84 | 87 | 87 | 29 | 29 | 29 | 29 |
+| PQ2_0 | 118 | 42 | 45 | 45 | 14 | 14 | 14 | 14 |
+| PTQ1_0 | 88 | 28 | 29 | 29 | 11 | 11 | 11 | 11 |
+
+**ffn_down (5,120×17,408), batched.** Same tile assignment.
+
+| Encoding | matvec | t=1 | t=4 | t=8 | t=9 | t=16 | t=22 | t=32 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q4_K | 150 | 73 | 74 | 75 | 27 | 27 | 27 | 26 |
+| Q5_K | 186 | 83 | 85 | 84 | 32 | 32 | 32 | 32 |
+| Q3_K | 113 | 55 | 55 | 50 | 20 | 20 | 20 | 20 |
+| Q6_K | 229 | 100 | 102 | 102 | 38 | 38 | 38 | 38 |
+| IQ3_S | 112 | 59 | 59 | 61 | 21 | 21 | 21 | 21 |
+| IQ4_XS | 181 | 79 | 81 | 82 | 26 | 26 | 26 | 26 |
+| Q4_0 | 204 | 84 | 86 | 86 | 28 | 28 | 28 | 28 |
+| PQ2_0 | 97 | 44 | 44 | 44 | 14 | 14 | 14 | 14 |
+| PTQ1_0 | 84 | 28 | 28 | 29 | 10 | 10 | 10 | 10 |
+
+**Reading.** The batched bench is stable (the five rounds of an identical row
+agree within a few percent) and shows the `_8` tile flat across t=1/4/8, as it
+should be: the three token counts are one token tile of work. It streams 28–107
+GB/s, 33–54 % of the same encoding's matvec rate — above the 32×32 tile's 10–41
+at t=9–32 but still short of the 70 % the acceptance names. The activation
+operand is the suspected reason: each 8-row threadgroup gathers the chunk's
+whole activation block (8 × columns × 4 B) for its K range against 8 × columns
+of weights, and at 5,120 columns that is 160 KB of gathered activations per
+group against 23 KB of Q4_K weights. The two activation-operand experiments
+below measure whether the gathered loads are the gap.
+
+**Session 1 table (single dispatch per command buffer — the rate is the GPU's
+clock ramp, not the tile; kept for the record and superseded by the batched
+table above).**
 
 **ffn_gate (17,408×5,120).** t=1/4/8 take the 8×8 tile, t=9..32 the 32×32.
 
@@ -938,7 +984,7 @@ immediately before on the same machine (69,632×5,120 for the gate shape,
 | PQ2_0 | 118 | 45.7 | 45.7 | 45.7 | 14.5 | 8.3 | 7.2 | 14.5 |
 | PTQ1_0 | 88 | 29.4 | 29.4 | 29.4 | 10.6 | 7.3 | 6.4 | 11.0 |
 
-**ffn_down (5,120×17,408).** Same tile assignment.
+**ffn_down (5,120×17,408).**
 
 | Encoding | matvec | t=1 | t=4 | t=8 | t=9 | t=16 | t=22 | t=32 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -951,19 +997,6 @@ immediately before on the same machine (69,632×5,120 for the gate shape,
 | Q4_0 | 205 | 67.8 | 58.9 | 71.7 | 20.4 | 18.8 | 13.0 | 21.0 |
 | PQ2_0 | 97 | 45.3 | 45.3 | 45.3 | 13.7 | 9.2 | 7.7 | 13.6 |
 | PTQ1_0 | 83 | 21.8 | 29.0 | 29.0 | 10.4 | 6.7 | 6.1 | 8.6 |
-
-**Reading.** The `_8` tile removes the 32×32 set's collapse at short chunks: at
-t=1–8 it streams 22–88 GB/s against the 32×32 tile's 6–41 at t=9–32. It is still
-well under the 70 % of the matvec rate the unit's acceptance names: across the
-encodings and both shapes the t=1/4/8 rows sit at roughly 20–50 % of the matvec
-column. The numbers are noisy: the three short rows do identical kernel work
-(one token tile) yet differ by up to 2×, and a second run of the same commands
-after a one-line kernel fix moved the t=1–8 rows by 13 GB/s on average (up to
-45), so the per-encoding figures bracket the rate rather than pin it. The
-`make bench-matmul` loop's single warm-up and per-process clock ramp are the
-likely cause. Session 2 re-measures the 8×8/32×32 crossover with the rounds
-interleaved, decides `small_chunk_tokens`, and measures a `_16` variant if the
-numbers ask for one.
 
 ## Merged projections (KERN-04)
 
