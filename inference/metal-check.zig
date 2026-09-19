@@ -217,7 +217,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
     const input = try b.create(Backend.matmulPadded(tokens) * 17408 * 4);
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(tokens) * 17408 * 4);
-    std.debug.print("{s:<8} {s:<24} {s:<11} {s:>8} {s:>9} {s:>10} {s:>8}  rounds (ms), {d} tokens\n", .{ "encoding", "shape", "tile", "MB", "best ms", "GFLOP/s", "tok/s*", tokens });
+    std.debug.print("{s:<8} {s:<24} {s:<11} {s:>8} {s:>9} {s:>10} {s:>8} {s:>8}  rounds (ms), {d} tokens\n", .{ "encoding", "shape", "tile", "MB", "best ms", "GFLOP/s", "tok/s*", "GB/s", tokens });
     inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
@@ -249,7 +249,15 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
                 }
                 const flops = 2.0 * @as(f64, @floatFromInt(shape.rows * shape.columns * tokens));
                 const gflops = flops / (best * 1e-3) / 1e9;
-                std.debug.print("{s:<8} {s:<24} {s:<11} {d:>8.1} {d:>9.2} {d:>10.0} {d:>8.1} ", .{ enc.name, shape.name, if (generic) "generic" else "specialized", @as(f64, @floatFromInt(region.len)) / 1e6, best, gflops, gflops / 54.0 });
+                const kernel = if (generic) null else Backend.specializedMatmul(enc.id, 0, region.len / shape.rows, tokens);
+                const tile = if (kernel) |k| switch (Backend.matmulGeometry(k).tokens) {
+                    8 => "8x8",
+                    32 => "32x32",
+                    64 => "64x64",
+                    else => "specialized",
+                } else "generic";
+                const gbps = @as(f64, @floatFromInt(region.len)) / best / 1e6;
+                std.debug.print("{s:<8} {s:<24} {s:<11} {d:>8.1} {d:>9.2} {d:>10.0} {d:>8.1} {d:>8.1} ", .{ enc.name, shape.name, tile, @as(f64, @floatFromInt(region.len)) / 1e6, best, gflops, gflops / 54.0, gbps });
                 for (samples) |ms| std.debug.print(" {d:.1}", .{ms});
                 std.debug.print("\n", .{});
             };
