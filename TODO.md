@@ -28,32 +28,27 @@ catalogue pins every family's draft companion and every file is pulled
 `Engine.open` loads one GGUF. The accepted configuration (the file per
 registry entry, the per-command switch, the draft length) is in
 [docs/spec.md § Speculative decoding](docs/spec.md#speculative-decoding).
-On the same day KERN-11 was pulled in front of the theme: the verify
-batch of ENGN-12 (up to nine token rows) runs through the prefill matmul
-tiles, which the Metal reference records at 20–29 GB/s of weight traffic
-on short chunks against the matvecs' 200+, so a speedup measured on the
-tile as it is would be measured against a known-bad kernel. KERN-11
-session 1 (2026-09-19) landed the 8-row × 8-token split-K tile, its
-`metal-check` entries, the bench's weight-byte GB/s column, and the first
-numbers: the `_8` tile streams 22–88 GB/s at 1–8 tokens against the 32×32
-tile's 6–41 at 9–32, roughly 20–50 % of the matvec ceilings (83–252),
-below the unit's 70 % floor, and the short-t runs are noisy enough that
-the crossover is not yet pinned. Next is KERN-11 session 2: re-measure the
-8×8/32×32 crossover with the rounds interleaved, decide
-`small_chunk_tokens`, instantiate a `_16` variant if the numbers ask, and
-close the unit (the docs tables, the `make bench` records, the log).
-Nothing of the speculative-decoding theme is implemented; its five
-units were rewritten at implementation level on 2026-09-19 after the
+KERN-11 was pulled in front of the theme on 2026-09-19 and closed the
+same day: a 16-row × 8-token split-K prefill tile now serves chunks of at
+most 24 tokens (the 32×32 tile above it to 32, the 64×64 beyond), and the
+22-token benchmark prompt's prefill rose 38.78 → 43.01 tok/s and its first
+token fell 567.3 → 511.5 ms with decode unchanged. The tile streams
+32–116 GB/s, 37–64 % of the same encoding's matvec rate, below the unit's
+70 % floor: the activation operand is the remaining cost and the levers not
+shipped are in the log. Next is ENGN-11 session 1: the session checkpoint
+region, `checkpoint`/`rewind`/`truncate`, the engine's `recover`, and the
+generation-check recovery pass.
+Nothing of the speculative-decoding theme beyond that is implemented; its
+five units were rewritten at implementation level on 2026-09-19 after the
 companions' headers and the reference's speculative driver were read
 (the oracle fact is in the theme section).
 
-Order: KERN-11 → ENGN-11 → MODL-18 → ENGN-12 → MODL-19 → MODL-20. After
+Order: ENGN-11 → MODL-18 → ENGN-12 → MODL-19 → MODL-20. After
 MODL-20 the roadmap continues with the performance follow-ups, then
 vision, then agent expansion ([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-11 | Small-chunk prefill matmul near the weight-bandwidth floor | 2 |
 | ENGN-11 | Speculative state recovery: checkpoint, batch, accept-prefix, rewind on both state kinds | 1–2 |
 | MODL-18 | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2 |
 | ENGN-12 | Batched verification, speculative generation (greedy and sampled), the switch and the draft length, benchmark | 2 |
@@ -145,167 +140,6 @@ session, Metal, generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
 No unit claims a speedup before ENGN-12's benchmark, and negative results
 are recorded per family.
-
-## KERN-11 — Small-chunk prefill matmul near the weight-bandwidth floor
-
-**The problem, with numbers.** A chunk of `t ≤ 32` tokens goes through
-the `nu_matmul_*_32` tiles (`inference/src/backends/metal/kernels.metal`,
-template `nu_matmul_body`, instantiated with `[[host_name]]` near the end
-of the file): one threadgroup of 128 threads owns a 32-row × 32-token
-output tile, and its K loop takes 64 columns per step with two
-`threadgroup_barrier`s per step (after staging, after the multiplies).
-On a 5,120-row projection that is 160 threadgroups, each walking 80
-sequential steps that move 1 KB of Q4_K weights apiece; the GPU (16
-cores) is mostly waiting on latency. Measured: 20–29 GB/s of weight
-bytes on the 22-token bench prompt, where the specialized matvecs on the
-same encodings reach 200+ GB/s (`make bench-kernels`). Decode is
-bandwidth-bound, so a chunk of 1–8 tokens *could* cost about one matvec
-pass; today it costs several. This is first-token latency in every chat
-turn, and it is the cost of ENGN-12's verify batch.
-
-**Design: a tile shaped like the matvec.** A new instantiation set,
-`nu_matmul_*_8` (one per specialized encoding: Q3_K, Q4_K, Q5_K, Q6_K,
-IQ3_S, IQ4_XS, Q4_0, PQ2_0, PTQ1_0, plus the generic F32 tile if it
-measures well), with this geometry:
-- One threadgroup of 128 threads owns **8 rows × 8 tokens** of output.
-  Grid: `rows / 8` row tiles (rows % 8 == 0 is already the contract) ×
-  `ceil(tokens / 8)` token tiles, so a 5,120-row projection launches 640
-  threadgroups and a 17,408-row one 2,176 — the matvec's order of
-  parallelism (it launches `rows / 16`).
-- **The four SIMD groups split the K range**: SIMD group `sg` takes the
-  64-column steps `k0 = 64 · (4j + sg)`. Per step, each lane decodes one
-  16-value segment (`row = lane >> 2`, `segment = lane & 3`) through the
-  existing `nu_tile_segment<ENC>` into the SIMD group's **own** 8×64 half
-  tile in threadgroup memory (1 KB per SIMD group, 4 KB per threadgroup),
-  then eight `simdgroup_load` / `simdgroup_multiply_accumulate` pairs
-  against B blocks loaded straight from device memory transposed (the
-  existing `STAGE == false` path of the body) into one
-  `simdgroup_float8x8` accumulator. Because each SIMD group writes and
-  reads only its own tile, the K loop needs `simdgroup_barrier` only —
-  **no `threadgroup_barrier` in the loop**, which is the latency fix.
-- At the end, the four accumulators are stored to threadgroup memory
-  (4 × 256 B, reusing the tiles), summed by 64 threads in a fixed order
-  (deterministic), and stored with the existing row bound
-  (`row0 + r < p.rows`); token rows past `tokens` are computed on the
-  padding as today. Columns % 64 == 0 stays the contract; a K range that
-  does not divide by 4 steps leaves SIMD groups with one step fewer.
-- Host side (`inference/src/backends/metal/root.zig`): the new names
-  appended to `kernel_names` **and** to the `Kernel` enum in the same
-  order (the pipelines are indexed by enum value); `matmulGeometry`
-  returns `{ .rows = 8, .tokens = 8, .half = true }` for them;
-  `specializedMatmul` gains a first tier, `tokens <= small_chunk_tokens`
-  (a `pub const`, initially 8, set by the measurement), before the ≤ 32
-  tier; `matmul` needs no other change (`matmulPadded` stays 64; the
-  buffers already hold that many rows).
-
-**What is measured, and the decision it makes.**
-- `inference/metal-check.zig` `matmulBench` reports, beside GFLOP/s, the
-  GB/s of weight bytes (`region.len / best`) — the number that matters at
-  small `t` — and is run as `make bench-matmul ARGS=<t>` for `t` in 1, 4,
-  8, 9, 16, 22, 32 on both FFN shapes, all encodings, specialized and
-  generic. The ceiling is the same encoding's matvec rate from
-  `make bench-kernels` on a rested machine (the reference's methodology
-  notes apply: heat, clock ramp, back-to-back rounds).
-- The threshold: the `_8` tile serves the range where it beats the 32×32
-  tile; if 8 tokens sit at the floor and 9–16 do not, a `_16` variant
-  (8 rows × 16 tokens, two B blocks per step, the same split) is
-  instantiated and measured before the threshold is set. ENGN-12 picks
-  `max_draft_length` so its verify batch (`k + 1` rows) fits one token
-  tile of whatever this unit ships.
-- `make bench` on Qwen (22-token prompt): prefill tok/s and first-token
-  latency before and after, recorded in bench.md; the decode row must not
-  move (the tile is not on the decode path).
-
-**Correctness gates.** `metal-check`'s matmul exactness check (the block
-that loops `token_counts` over the fixtures, comparing the specialized
-tile with the generic F32 tile under the half-rounding bound) gains
-token counts 1, 5, and 8 so the new tile is checked on every encoding and
-on a partial token tile; the selection checks gain `tokens = 8 →
-geometry.tokens == 8` and `tokens = 9 → 32` (or the measured threshold).
-Then `make test-metal`, `make check`, `make compare` (the `Hello,` trace
-is a short chunk, so the F32/F16 traces exercise the new tile at the
-documented tolerances), `make test-generation-metal` (chunked against
-stepped), and the Gemma, Bonsai, and Muse compare targets, all of which
-share `Backend.matmul`.
-
-**Session 1 (done 2026-09-19).** Landed `nu_matmul_split_t` and the nine
-`nu_matmul_*_8` instantiations (Q3_K, Q4_K, Q5_K, Q6_K, IQ3_S, IQ4_XS,
-Q4_0, PQ2_0, PTQ1_0), the host names and `Kernel` entries, the 8×8
-geometry, and `specializedMatmul`'s `tokens <= small_chunk_tokens` (8)
-tier; `metal-check`'s exactness block now covers token counts 1, 5, and 8
-and pins the t=8/t=9 selection; `matmulBench` reports weight-byte GB/s and
-the selected geometry. First numbers (`make bench-matmul ARGS=<t>`, Apple
-M4 Pro, Zig 0.16.0, ReleaseSafe, best of five; `make bench-kernels` for
-the ceilings): the `_8` tile streams 22–88 GB/s at t=1–8 against the 32×32
-tile's 6–41 at t=9–32, matvec ceilings 83–252, so roughly 20–50 % — below
-the 70 % acceptance floor; the t=1/4/8 rows do identical work and vary up
-to 2×, and a second run moved them 13 GB/s on average, so the crossover is
-not yet pinned. Full table in
-[metal-backend.md](docs/reference/metal-backend.md#small-chunk-tile-kern-11-session-1-2026-09-19).
-`make check`, `make compare` (f32/f16), `make test-generation-metal`, and
-the Gemma QAT / 26B-A4B, Bonsai, and Muse Glimmer compares pass. A first
-version stored all four K partials in one shared region of the tile,
-racing the still-running K loops of the other SIMD groups; it surfaced as
-`NonFiniteResult` in the 6-token remainder chunk of
-`test-generation-metal` (never in the fixture exactness test) and is fixed
-by storing each partial in its own group's tile.
-
-**Review of session 1 (2026-09-19).** Accepted: the kernel, the host
-tiers, the checks, and all gates re-run and passing (`make check`,
-`compare` f16 max abs 0.025, `test-generation-metal` chunk-32 max abs
-2.6e-3, Gemma QAT f16, Bonsai f16, Muse f16 at their tolerances). Three
-findings, which set session 2's order:
-1. **The bench measures one dispatch per command buffer.** `matmulBench`
-   wraps each `matmul` in its own `begin`/`commit`, and the reference's
-   own methodology note (`bench-kernels`, KERN-05) records that isolated
-   dispatches measure the GPU's clock ramp, not the kernel; at t ≤ 8 the
-   whole matmul is about a millisecond, so the recorded 22–88 GB/s and the
-   2× spread between identical rows are the ramp, not the tile. Batch
-   16–64 dispatches per command buffer (as `bench-kernels` does) before
-   any number is compared with the matvec column or a threshold chosen.
-   When a token count spans several token tiles (t = 9 on an `_8` tile),
-   the bytes must be multiplied by the token-tile count, as `matmul`'s
-   profile attribution already does.
-2. **The activation operand costs more traffic than the weights.** Each
-   threadgroup loads the chunk's whole activation block for its K range
-   transposed and strided straight from device memory (8 tokens × columns
-   × 4 B = 160 KB at 5,120 columns) and there are `rows / 8` threadgroups,
-   so the gate shape reads about 100 MB of gathered activations against
-   44 MB of Q4_K weights, in 8-row × 32-byte gathers per k8 step. Two
-   experiments, cheapest first: (a) 16 rows per threadgroup (each SIMD
-   group keeps two accumulators; one B load serves two A loads), which
-   halves the activation traffic per weight byte and keeps `rows / 16`
-   groups, still the matvec's grid; (b) pack the chunk's activations once
-   per projection input into a `[k][token]` half layout (a transposing
-   sibling of `nu_pack_half`, run once for the projections that share an
-   input) so the B loads are contiguous 128-byte rows. Measure each alone
-   under the batched bench.
-3. **Order the tile's reuse across steps by the spec.** Step i+1's lane
-   writes into `own` follow step i's `simdgroup_load` reads of the same
-   region, and the final `simdgroup_store` follows the last reads, with
-   no barrier between them; lockstep execution makes this hold in
-   practice, but a `simdgroup_barrier(mem_threadgroup)` before the writes
-   (at the top of the step and before the final store) is the ordering
-   the language guarantees and costs nothing measurable. Add it.
-
-**Session 2 (next).** In this order: the batched bench (finding 1) and a
-re-measured table; the barrier (finding 3); the two activation-operand
-experiments (finding 2), each measured alone; then decide
-`small_chunk_tokens` from the 8×8/32×32 crossover and instantiate a `_16`
-variant only if the numbers ask for it; `make bench` prefill and
-first-token records on Qwen; the Metal reference's kernel and geometry
-table rows and the final subsection (the session-1 table stays, marked
-as taken before the methodology fix); remove the roadmap's short-prompt
-bullet; the log entry; `make compare-gemma4` (the K-quant 12B file, pulled again
-on 2026-09-19) joins the gates.
-
-**Acceptance.** The `_8` tile computes within the half-rounding bound on
-every specialized encoding at 1, 5, and 8 tokens; every gate above
-passes; on the two FFN shapes at 1–8 tokens the tile streams weight
-bytes at no less than 70 % of the same encoding's matvec rate (the floor
-the design claims; below it the unit records why and what is left);
-prefill on the 22-token prompt and first-token latency recorded before
-and after.
 
 ## ENGN-11 — Speculative state recovery
 

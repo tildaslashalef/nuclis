@@ -86,6 +86,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 2026-09-19 |
 | AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 2026-09-19 |
 | ENGN-10 | Muse Glimmer decode gap: the experiments accepted into the performance theme | 2026-09-19 |
+| KERN-11 | Small-chunk prefill matmul near the weight-bandwidth floor | 2026-09-19 |
 
 ## Context
 
@@ -2773,3 +2774,50 @@ measured anew.
 
 **Remaining.** The experiments themselves, when the performance theme
 is planned after speculative decoding.
+
+### KERN-11 — Small-chunk prefill matmul near the weight-bandwidth floor (2026-09-19, two sessions)
+
+**Outcome.** A 16-row × 8-token split-K prefill tile (`nu_matmul_*_8`, one per
+specialized encoding) serves chunks of at most `small_chunk_tokens` (24)
+tokens, the 32×32 tile the rest of the range to 32 and the 64×64 tile beyond.
+The four SIMD groups partition the 64-column K steps (`sg` takes steps sg,
+sg+4, …); each lane decodes two 16-value segments into its own group's 16×64
+half tile, two 8×8 accumulators per group share one activation block per step,
+so one B load serves two weight loads; `simdgroup_barrier` orders write and
+read (no `threadgroup_barrier` in the loop) and the four K partials reduce once
+in a fixed order. `matmulGeometry` returns 16×8 half and `specializedMatmul`
+gains the first tier. `matmulBench` now batches 64 (t ≤ 8) or 16 dispatches
+per command buffer, divides the GPU time by the count, and attributes weight
+bytes per token tile — the session-1 table measured the clock ramp and is kept
+marked as such.
+
+**Evidence.** `test-metal`: the half tile within the set's bound at 1, 5, 8, 9,
+and 16 tokens for every fixture encoding (worst |Δ|/Σ|w·x| 3.02e-5, bound
+2e-4), the 24/25 selection pinned, chunked prefill unchanged. `make check`,
+`make compare` (f32 max abs 6.1e-5, rel RMS 7.7e-7; f16 2.5e-2 / 1.9e-4),
+`make test-generation-metal` (chunk 32 max abs 2.6e-3, argmax equal), and the
+Gemma QAT, Gemma K-quant, Bonsai, and Muse compare targets pass. `make
+bench-matmul` at 1–32 tokens on both FFN shapes (batched, every encoding): the
+tile streams 32–116 GB/s, 37–64 % of the same encoding's matvec rate — **the
+design's 70 % floor is not met**. The gap is the activation operand: a group
+gathers 8 tokens × columns × 4 B (160 KB at 5,120 columns) against 16 × columns
+of weights (46 KB of Q4_K). The 16-row geometry was kept from the two
+activation experiments (Q4_K 75 → 95 GB/s at 8 tokens, every encoding up 4–32 %);
+the packed `[k][token]` half layout measured 62–67 GB/s before its one-time
+pack cost (34–112 µs per input) and was dropped. `make bench` (22-token
+prompt): prefill 38.78 → 43.01 tok/s, first token 567.3 → 511.5 ms, decode
+10.22 → 10.20 (unchanged).
+
+**Files.** `inference/src/backends/metal/kernels.metal`, `root.zig`,
+`inference/metal-check.zig`, `docs/reference/metal-backend.md`,
+`docs/reference/bench.md`, `docs/roadmap.md`.
+
+**Remaining.** The tile is 37–64 % of the matvec rate, not 70 %. Levers not
+shipped: 32 rows per threadgroup, a blocked activation read that makes an 8×8 B
+block one contiguous 128-byte load, or holding the activations in threadgroup
+memory across a row strip. The tile is 8 tokens, so a 9–16 row verify batch
+spans two or three token tiles; ENGN-12 sets `max_draft_length` to 7 unless a
+16-token tile is added (the design's `_16` was not asked for: the 8-token tile
+is not at the floor and a 16-token tile re-reads no fewer weights per token).
+The session-1 race (the four partials stored into a shared region) is fixed and
+is checked only by `test-generation-metal`, not the fixture exactness test.

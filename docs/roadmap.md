@@ -62,12 +62,6 @@ the profile that motivated it.
   checkpoint amplifies half-operand rounding about five times more than the
   K-quant file, which is precision, not correctness
   ([gemma4.md](reference/gemma4.md)).
-- **Short-prompt prefill near the weight-bandwidth floor.** The 22-token
-  benchmark prompt measured well above one token through the matvec path; with
-  one token tile the matmul tiles run at 20–25 GB/s (too few threadgroups, a
-  latency-bound K loop). A split-K or bandwidth-bound small-M kernel for
-  chunks under ~64 tokens would cut first-token latency of chat turns by
-  several times ([bench.md](reference/bench.md)).
 - **The ternary matvec's arithmetic.** Bonsai 2 27B decodes at 1.3× the
   Qwen3.8-27B rate where its byte count promises 2–3×, and at 80–87 % of
   the PrismML fork: the PQ2_0 / PTQ1_0 matvecs move about 100 GB/s of

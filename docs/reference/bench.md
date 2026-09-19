@@ -1018,11 +1018,15 @@ a kernel from the token schedule: use it to rank kernel variants, and `bench`
 to claim decode speed.
 
 `make bench-matmul` (`metal-check --matmul-bench`) measures the batched
-prefill matmul alone on the two FFN shapes for a 256-token chunk: GPU ms per
-dispatch, GFLOP/s of F32 multiply-adds, and the prefill tok/s the 54
+prefill matmul alone on the two FFN shapes for a chunk of `ARGS=<tokens>`
+(256 by default): GPU ms per dispatch, GFLOP/s of F32 multiply-adds, GB/s of
+weight bytes (read once per token tile), and the prefill tok/s the 54
 GFLOP/token model would reach if that were its only cost — a ceiling for
-ENGN-02, not a prediction. Results are in
-[metal-backend.md § Kernels](metal-backend.md#kernels).
+ENGN-02, not a prediction. Since KERN-11 it issues 64 dispatches per command
+buffer at t ≤ 8 and 16 above and divides by the count, because one short
+dispatch measures the clock ramp. Results are in
+[metal-backend.md § Kernels](metal-backend.md#kernels) and, for the
+small-chunk tile, [§ Small-chunk tile](metal-backend.md#small-chunk-tile-kern-11-2026-09-19).
 
 `make bench-experts` (`metal-check --experts-bench`) measures the gathered
 expert kernels on the Gemma 4 26B-A4B shape (128 experts, 8 selected;
