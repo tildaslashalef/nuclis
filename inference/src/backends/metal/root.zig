@@ -61,9 +61,9 @@ const kernel_names = [_][:0]const u8{
     "nu_scale",             "nu_add_scale",           "nu_softcap",             "nu_attention_decode_w", "nu_attention_decode_wh", "nu_matvec_q4_0",
     "nu_matmul_q4_0",       "nu_matmul_q4_0_32",      "nu_matvec_experts",      "nu_route",              "nu_combine_experts",     "nu_gelu_mul_rows",
     "nu_expert_lists",      "nu_matmul_experts",      "nu_matmul_experts_q4_0", "nu_matvec_pq2_0",       "nu_matvec_ptq1_0",       "nu_matmul_pq2_0",
-    "nu_matmul_ptq1_0",     "nu_matmul_pq2_0_32",     "nu_matmul_ptq1_0_32",    "nu_hadamard",           "nu_gather_rows",
-    "nu_matmul_q3_k_8",     "nu_matmul_q4_k_8",       "nu_matmul_q5_k_8",       "nu_matmul_q6_k_8",      "nu_matmul_iq3_s_8",
-    "nu_matmul_iq4_xs_8",   "nu_matmul_q4_0_8",       "nu_matmul_pq2_0_8",      "nu_matmul_ptq1_0_8",
+    "nu_matmul_ptq1_0",     "nu_matmul_pq2_0_32",     "nu_matmul_ptq1_0_32",    "nu_hadamard",           "nu_gather_rows",         "nu_matmul_q3_k_8",
+    "nu_matmul_q4_k_8",     "nu_matmul_q5_k_8",       "nu_matmul_q6_k_8",       "nu_matmul_iq3_s_8",     "nu_matmul_iq4_xs_8",     "nu_matmul_q4_0_8",
+    "nu_matmul_pq2_0_8",    "nu_matmul_ptq1_0_8",
 };
 pub const Kernel = enum(u32) {
     matvec,
