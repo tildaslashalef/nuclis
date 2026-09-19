@@ -21,7 +21,9 @@ pub fn render(path: []const u8, summary: Summary, out: *std.Io.Writer, json: boo
     for (summary.layer_kinds, 0..) |kind, i| try out.print("{s}{s}{d}{s} {s}", .{ if (i > 0) ", " else "", number, kind.count, off, kind.kind });
     try out.writeAll(")\n");
     try out.print("{s}Text weights:{s} {s}{d}{s} tensors, {s}{d}{s} bytes\n", .{ label, off, number, summary.text_tensors, off, number, summary.text_tensor_bytes, off });
-    try out.print("{s}Auxiliary prediction:{s} {s}{d}{s} layer, {s}{d}{s} tensors, {s}{d}{s} bytes (excluded from text binding)\n", .{ label, off, number, summary.auxiliary_prediction_layers, off, number, summary.auxiliary_tensors, off, number, summary.auxiliary_tensor_bytes, off });
+    if (summary.auxiliary_prediction_layers > 0) {
+        try out.print("{s}Draft head:{s} {s}embedded{s} ({s}{d}{s} prediction layer, {s}{d}{s} tensors, {s}{d}{s} bytes; run by the CPU reference)\n", .{ label, off, sty.on(.code), off, number, summary.auxiliary_prediction_layers, off, number, summary.auxiliary_tensors, off, number, summary.auxiliary_tensor_bytes, off });
+    }
     if (summary.rotated_basis) |basis| try out.print("{s}Rotated basis:{s} {s} (the runtimes transform every projection input)\n", .{ label, off, basis });
     try out.print("{s}Structure matches the text profile executed by `generate` (CPU and Metal backends).{s}\n", .{ sty.on(.success), off });
 }
