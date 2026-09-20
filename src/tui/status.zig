@@ -63,6 +63,9 @@ pub const Status = struct {
     budget: usize = 0,
     /// The turn had to replay the conversation into a fresh session.
     replayed: bool = false,
+    /// Mean accepted drafts per verify batch, from the turn's engine timing;
+    /// null on an ordinary run. Shown only while non-null.
+    accepted_per_step: ?f64 = null,
 
     /// Folds a turn event into the bar. Only two kinds say anything about it:
     /// the progress beat and the end of a turn.
@@ -80,6 +83,7 @@ pub const Status = struct {
                 self.prompt_tokens = end.stats.prompt_tokens;
                 self.generated = end.stats.generated;
                 self.replayed = end.stats.replayed;
+                self.accepted_per_step = end.stats.accepted_per_step;
                 if (end.stats.prompt_tokens > 0 and end.stats.prefill_seconds > 0)
                     self.rates.prefill = @as(f64, @floatFromInt(end.stats.prompt_tokens)) / end.stats.prefill_seconds;
                 if (end.stats.generated > 1 and end.stats.decode_seconds > 0)
@@ -119,6 +123,7 @@ pub const Status = struct {
         try w.writer.print(" t/s {s} {s} tg ", .{ gl.table_bar, gl.decode });
         try rate(&w.writer, self.rates.decode);
         try w.writer.print(" t/s {s} {s} think {s}{s}{s}", .{ gl.table_bar, gl.effort, th.paint(.accent), self.effort, theme.fg_default });
+        if (self.accepted_per_step) |accepted| try w.writer.print(" {s} spec {d:.2}/step", .{ gl.table_bar, accepted });
         if (self.replayed) try w.writer.print(" {s} replayed", .{gl.table_bar});
         if (self.model.len != 0) try w.writer.print(" {s} {s}", .{ gl.table_bar, self.model });
         const wrapped = try view.wrapStyled(a, w.written(), options.width, .character);
@@ -213,13 +218,15 @@ test "a decoding bar shows the live count, and the end freezes the measurements"
         .generated = 400,
         .prefill_seconds = 0.5,
         .decode_seconds = 10,
+        .accepted_per_step = 2.33,
         .replayed = true,
     } } });
-    const done = try painted(a, status, .{ .width = 120, .th = .{ .kind = .plain } });
+    const done = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } });
     try testing.expect(!status.busy);
     try testing.expect(std.mem.indexOf(u8, done, "in 31 out 400") != null);
     try testing.expect(std.mem.indexOf(u8, done, "pp 62.00 t/s") != null); // 31 / 0.5
     try testing.expect(std.mem.indexOf(u8, done, "tg 39.90 t/s") != null); // 399 / 10
+    try testing.expect(std.mem.indexOf(u8, done, "spec 2.33/step") != null);
     try testing.expect(std.mem.indexOf(u8, done, "replayed") != null);
 
     // A turn that produced one token has no decode interval to divide by.

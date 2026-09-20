@@ -191,6 +191,8 @@ pub const Agent = struct {
     agg_generated: usize = 0,
     agg_prefill_seconds: f64 = 0,
     agg_decode_seconds: f64 = 0,
+    agg_speculative_steps: usize = 0,
+    agg_accepted_drafts: usize = 0,
     agg_replayed: bool = false,
     /// The last completed step's stop, so a turn that ended because its
     /// step ran out of output budget says so.
@@ -282,6 +284,8 @@ pub const Agent = struct {
         self.agg_generated = 0;
         self.agg_prefill_seconds = 0;
         self.agg_decode_seconds = 0;
+        self.agg_speculative_steps = 0;
+        self.agg_accepted_drafts = 0;
         self.agg_replayed = false;
 
         const stop = try self.steps();
@@ -303,6 +307,8 @@ pub const Agent = struct {
             self.agg_generated += reply.outcome.timing.generated_tokens;
             self.agg_prefill_seconds += seconds(reply.outcome.timing.prefill);
             self.agg_decode_seconds += seconds(reply.outcome.timing.decode);
+            self.agg_speculative_steps += reply.outcome.timing.speculative_steps;
+            self.agg_accepted_drafts += reply.outcome.timing.accepted_drafts;
             self.agg_replayed = self.agg_replayed or reply.replayed;
             self.last_stop = reply.outcome.stop;
 
@@ -697,6 +703,7 @@ pub const Agent = struct {
                     .generated = self.agg_generated,
                     .prefill_seconds = self.agg_prefill_seconds,
                     .decode_seconds = self.agg_decode_seconds,
+                    .accepted_per_step = if (self.agg_speculative_steps > 0) @as(f64, @floatFromInt(self.agg_accepted_drafts)) / @as(f64, @floatFromInt(self.agg_speculative_steps)) else null,
                     .replayed = self.agg_replayed,
                 },
             },
@@ -832,10 +839,22 @@ pub const Completer = struct {
         self.eng.model.reset();
         if (self.history) |h| h.reset();
         self.seen.clearRetainingCapacity();
-        self.eng.model.prefill(tokens, self.buffers.logits, null, null, null, self.observer) catch |err| {
-            self.eng.model.reset();
-            return err;
-        };
+        // With a drafter, prime through `commitPrompt` so the primed snapshot
+        // carries the block's cache rows; a per-layer observer is a per-token
+        // contract and keeps the ordinary prefill (speculation is off then).
+        const drafter = self.eng.model.drafter();
+        const layer_observer = self.observer != null and self.observer.?.layer != null;
+        if (drafter != null and !layer_observer) {
+            inference.engine.commitPrompt(self.eng, tokens, self.buffers.logits, self.observer) catch |err| {
+                self.eng.model.reset();
+                return err;
+            };
+        } else {
+            self.eng.model.prefill(tokens, self.buffers.logits, null, null, null, self.observer) catch |err| {
+                self.eng.model.reset();
+                return err;
+            };
+        }
         if (self.history) |h| for (tokens) |token| try h.observe(token);
         const snapshot = try self.eng.model.snapshot(self.alloc);
         self.primed = .{ .text = text, .tokens = tokens, .snapshot = snapshot };
