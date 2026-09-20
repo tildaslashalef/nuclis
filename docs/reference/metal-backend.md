@@ -310,7 +310,7 @@ memory, and leave the rest to the grid.
   hence the 32×32 set for short chunks; short prompts remain far from the
   weight-bandwidth floor (KERN-12's multi-row matvec closes below its target —
   see [§ Multi-row matvec](#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target)
-  — and KERN-14's split-K remains in [TODO.md](../../TODO.md)).
+  — and KERN-15's split-K remains in [TODO.md](../../TODO.md)).
 - Mixture of experts (KERN-09; see [§ Gathered expert kernels](#gathered-expert-kernels-kern-09)):
   `nu_route` (softmax and top-k with renormalized weights per logit row),
   `nu_matvec_experts` (a matvec over the selected experts' slices of a 3-D

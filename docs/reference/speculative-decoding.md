@@ -77,7 +77,7 @@ context-long replay. A bounded alternative — per-token recurrent
 checkpoints written by the DeltaNet chunk kernel, `(k + 1) × 150 MB` of
 device scratch on Qwen — was not needed by these numbers and is not built;
 ENGN-14 measures recovery by accepted length and reopens it
-([§ Recovery by accepted length](#recovery-by-accepted-length-engn-14-session-1-2026-09-20)).
+([§ Recovery by accepted length](#recovery-by-accepted-length-engn-14-2026-09-20)).
 
 ## The Qwen3.8 draft head (MODL-18)
 
@@ -382,7 +382,7 @@ before and after replacing replay with recurrent-state copies. `make compare`
 `make draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29, 24/28)
 are unchanged.
 
-## Recovery by accepted length (ENGN-14, session 1, 2026-09-20)
+## Recovery by accepted length (ENGN-14, 2026-09-20)
 
 The aggregate `recover_milliseconds / speculative_steps` mixed accepted
 lengths together, which hid that the replay's cost is governed by its row
@@ -397,35 +397,40 @@ no other field covered). `bench`'s samples expose the same as
 `calls`, `rewind_milliseconds`, `replay_milliseconds`). Full acceptance
 recovers nothing: its cells count calls with zero time.
 
-Measured on Qwen3.8-27B UD-Q4_K_M, Metal, F16 KV, ctx 32768, the 512-token
-prose prompt, greedy, 128 output tokens, draft 4, warmup 1 and three measured
-runs on one loaded model (48 verify batches per run, 144 total; per-run files
-under `.zig-cache/bench/engn14/`). `calls` and milliseconds **per call**,
-summed over the three runs:
+Session 1 measured the replay by accepted length and moved the seed-only
+case to the per-token `step` path; session 2 replaced the replay with
+per-row recurrent checkpoints. Measured on Qwen3.8-27B UD-Q4_K_M, Metal,
+F16 KV, ctx 32768, the 512-token prose prompt, greedy, 128 output tokens,
+draft 4, warmup 1 and three measured runs on one loaded model (48 verify
+batches per run, 144 total; per-run files under `.zig-cache/bench/engn14/`).
+`calls` and milliseconds **per call**, summed over the three runs:
 
-| accepted prefix | calls | rewind ms | replay via prefill ms | replay via step ms |
+| accepted prefix | calls | replay via prefill ms (session 1) | replay via step ms (session 1) | restore by slot ms (session 2) |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 (seed only) | 36 | 13.8 | 217.8 | **96.4** |
-| 2 | 42 | 12.7 | 179.8 | 178.4 |
-| 3 | 27 | 12.0 | 220.4 | 219.8 |
-| 4 | 18 | 10.6 | 182.8 | 182.4 |
+| 1 (seed only) | 36 | 217.8 | 96.4 | 15.6 |
+| 2 | 42 | 179.8 | 178.4 | 14.9 |
+| 3 | 27 | 220.4 | 219.8 | 16.5 |
+| 4 | 18 | 182.8 | 182.4 | 13.0 |
 | 5 (all four drafts) | 24 | 0 | 0 | 0 |
 
-`recover`'s mean per batch was 182 ms with the seed-only replay on the
-prefill path and 150 ms with it on the step path; `checkpoint` copied
-5.7–15.9 ms per batch and `rewind` 10.6–14.0 ms per call (both above the
-3 ms the contract recorded; the copy is 156,893,184 bytes). The
-seed-only replay is the common case (36 of 144 batches; the acceptance
-distribution above sums to 1.67 accepted drafts per batch) and the step
-path is 2.3× faster than a one-row chunked prefill, so
-`Model.recover` keeps it: a one-token accepted prefix now replays through
-`step` and every longer prefix through `prefill`. Lengths 2–4 are
-unchanged by that branch, and the 2-row replay (KERN-12's routed case)
-sits at 179 ms per call against 218–220 ms for three rows.
+The session-1 `recover` mean was 182 ms per batch on the prefill path and
+150 ms with the seed-only branch; session 2's is **12.7 ms per batch**
+(610.8 ms over 48 batches), all of it the slot copy. The write side costs
+`verify` 12,330 ms per run against 11,307 without slots — **+21 ms per
+batch** for up to five 150 MB slot writes and their recompute — and
+`checkpoint` still copies the batch's checkpoint (150 ms per run, ~3 ms per
+batch). `session_bytes` is 3,850,633,216 with the 1,255,146,752-byte row
+region. The off/on pair at draft 4 greedy reads 0.85× (8.56 vs 10.04 tok/s)
+against session 1's 0.62×; prose still loses, now to the verify batch
+rather than recovery: sampled acceptance (ENGN-15), the proposal policy
+(ENGN-16), the small-batch tile (KERN-14), and long-context attention
+(KERN-16) are the remaining levers.
 
-Remaining: per-row recurrent checkpoints written by the verify batch
-(`Session.restoreRow`, `DeltaChunkParams.row_states`,
-`convolutionHistory` per row), which the ≤ 40 ms per-batch target needs;
-session 2 implements and measures them against these cells, then runs the
-record. The instrumentation is gated like the rest of speculation: when the
-switch is off the loop never writes these fields and `bench` omits them.
+Two facts for the next revisiter. The kernel computes each row's state as
+`S_r = γ_r S₀ + Σ_{s≤r} r(r,s) U[s]ᵀK[s]` with every exponent ≤ 0; the
+first implementation rescaled the full-chunk `W` by `r(r, n−1)` and
+overflowed on a layer whose chunk decay reached `cum = −114`, writing `inf`
+into slots and NaN into the state on restore. And the slot writes are only
+gated by `row_states > 0`: ordinary prefill, decode, and the prompt commit
+pass 0, and the kernels take the same code path as before. The layout and
+the refusals are in [session.md § Row checkpoints](session.md#row-checkpoints-engn-14).

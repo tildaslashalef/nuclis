@@ -97,6 +97,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-13 | Prompt commit at the plan's chunk and the batched drafter commit | 2026-09-20 |
 | KERN-12 | Multi-row matvec for 2–8 rows: 2-row routing shipped, closed below its target | 2026-09-20 (two sessions) |
 | REPO-08 | Repair the multi-row benchmark controls and hand-off | 2026-09-20 |
+| ENGN-14 | Recovery without the whole-stack replay: per-row recurrent checkpoints | 2026-09-20 (two sessions) |
 
 ## Context
 
@@ -3281,3 +3282,70 @@ is conditional on that record; ENGN-17 still owns final defaults.
 The original five/eight-row bandwidth and verify targets remain unmet; two-row
 recovery latency must be measured separately by ENGN-14. No scalar kernel or
 production routing threshold changed.
+
+### ENGN-14 — Recovery without the whole-stack replay (2026-09-20, two sessions)
+
+**Outcome.** A verify batch now leaves the recurrent state after every row
+behind, so recovery copies the accepted row instead of rewinding and replaying
+it. Session 1 measured the replay per accepted length (the aggregate hid it)
+and moved the seed-only case to the per-token `step` path: 218 → 96 ms per
+call, lengths 2–4 unchanged. Session 2 added `Session.row_checkpoints` (eight
+page-aligned slots of one 156,893,184-byte recurrent copy), `restoreRow`,
+`rowSlotLayer`, and the refusals; `nu_delta_chunk` writes each row's state and
+`nu_convolution_history` each row's history, both only when the verifier
+passes `row_states > 0`, so ordinary prefill, decode, and the prompt commit
+pass 0 and are unchanged; `Plan.verify`/`verifyGreedy` pass the batch count
+and mark the slots; `Model.recover` restores `accepted.len - 1` and replays
+nothing. `Timing` gained `recover_rewind`/`recover_replay`/
+`recover_by_length`/`checkpoint`, exposed per sample by `bench`.
+
+**The overflow found and fixed.** The first kernel form rescaled the
+full-chunk `W` (base `cum[n−1]`) by `r(r, n−1)` to get prefix `r`; when a
+layer's chunk decay is large — measured `cum = −114` on one Qwen layer — the
+scale is `exp(97) = inf`, the slot fills with `inf`, and `0 · inf` turns the
+restored state into NaNs (`NonFiniteResult` at token 58 of the first record
+attempt). The shipped form builds each prefix's rescaled `U` rows directly
+from the threadgroup's solved `U`, where every exponent `cum[r] − cum[s] ≤ 0`.
+A second bug, `restoreRow` reading only one layer copy per slot, was caught by
+the backend's bounds validation before any measurement.
+
+**Evidence.** The full record (12 configurations, 46 minutes, 20:49–21:35,
+`417aea0`, `nuclis 0.2.0-dev`, Apple M4 Pro 48 GiB, macOS 26.6.2, artifact
+SHA-256 `322e194f…`, one loaded model, nothing else on the GPU;
+[bench.md § Recovery record](reference/bench.md#recovery-by-row-checkpoints-engn-14-2026-09-20),
+reports under
+[benchmarks/speculative-2026-09-20-recovery/](benchmarks/speculative-2026-09-20-recovery/)).
+`recover` fell from 150–182 ms to **6–22 ms per batch** at every accepted
+length (all of it the slot copy; replay zero), the ≤ 40 ms target met;
+`checkpoint` 3–5 ms; the slot writes add 21 ms per verify batch (`verify`
+241–372 ms, now 70–80 % of the batch); `session_bytes` 3,850,633,216 (row
+region 1,255,146,752). Speedups: code greedy 1.22× (draft 4) and 1.34×
+(draft 7), code instruct 1.23×; prose 0.75–1.04× by draft length; prose 4K
+0.74–0.79×. `make check`, `make compare` (f32 6.1e-5 / 7.7e-7, f16 2.5e-2 /
+1.9e-4), `make test-metal` (every slot against the CPU's sequential state,
+7.7e-7 worst; the per-row history exact), `make test-generation-metal`
+(restore-by-slot exact against the CPU replay at 4 and 8 rows, refusals
+included), `make speculative-check-metal`, and `make draft-stats` (28/31,
+24/30, 20/29, 18/28 and 29/31, 25/30, 24/29, 24/28) passed. `make
+speculative-check` (CPU) was deferred to the next unit that needs it: the CPU
+reference is unchanged (`row_checkpoints == 0`, `Model.recover` takes the
+step/prefill replay branch exactly as before, and `Session.init` adds only a
+zero-sized region there).
+
+**Files.** `inference/src/runtime/session.zig`,
+`inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`,
+`inference/src/models/qwen35_metal.zig` (and the `Session.init` signature in
+the other families), `inference/src/engine.zig`,
+`inference/generation-check.zig`, `inference/metal-check.zig`,
+`src/bench.zig`, `docs/reference/{session,speculative-decoding,bench}.md`,
+`docs/benchmarks/speculative-2026-09-20-recovery/`, `TODO.md`, and this log.
+
+**Remaining.** The verify batch now dominates (241–372 ms, ~2.6–3.0 ordinary
+steps at 512, 3.6 at 4K) and is what keeps prose below 1×; the record replans
+the remaining speculative units around it (the small-batch matrix tile becomes
+its own unit). The checkpoint copy is still taken every batch although the row
+slots make it unnecessary for recovery; dropping it is a follow-up. The
+session grows by 1.26 GB whenever a drafter is loaded, recorded here and in
+`session_bytes`. KERN-12's 3–8-row verify target remains unmet. The CPU
+speculative check is outstanding (deferred, not failed).

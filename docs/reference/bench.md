@@ -118,7 +118,7 @@ kernel's cost grows with the visible cache (ENGN-05 measured the matmul
 tile at the reference's rate at 4K; ENGN-08 profiled the kernel at 30 % of
 the 16K prefill and found it latency-bound, not cache-bound:
 [metal-backend.md § ENGN-08](metal-backend.md#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change),
-KERN-15 in [TODO.md](../../TODO.md)). The 16K row is lower than the 66.5 / 8.92
+KERN-16 in [TODO.md](../../TODO.md)). The 16K row is lower than the 66.5 / 8.92
 measured after the 13,399-token docs prompt in KERN-08 because the prompt is
 longer (the decode rate at 16K context is what this row states) and the
 run followed the 4K row without a cool-down.
@@ -765,7 +765,7 @@ kernel set delivers 1.3×, and the fork's own kernels 1.6× over the
 mainline Qwen record (17.05 against 9.66 at 512). Closing the rest is a
 different ternary arithmetic in the matvec (packed integer products, or
 one decoded weight across several inputs), a kernel unit the plan
-carries (KERN-16), not a plan change. From 512 to 32K nuclis adds 25.9 ms per step
+carries (KERN-17), not a plan change. From 512 to 32K nuclis adds 25.9 ms per step
 and the fork 19.9: the same attention-and-recurrent growth as the Qwen
 record (KERN-08's flash-decoding kernel over 16 attention layers, the 48
 DeltaNet states), on a smaller base.
@@ -870,7 +870,7 @@ has the per-kernel profile); the 4K row's decode drifted from 9.14 tok/s
 on its warmup to 8.12 on its third sample within four minutes, which no
 other length showed and which was not investigated (thermal is the
 obvious suspect). Both are the performance theme's material
-(KERN-14 in [TODO.md](../../TODO.md)), not this unit's.
+(KERN-15 in [TODO.md](../../TODO.md)), not this unit's.
 
 **Memory.** The session block is 1,744,830,464 bytes (1.63 GiB) at
 32,768 capacity: 52 layers × 2 × 256 halves per position, every sliding
@@ -953,6 +953,73 @@ record within the sequence's drift (10.43 against 10.62 tok/s at 512 with
 the drafter loaded, its cache and checkpoint region allocated) and gets an
 in-process baseline in ENGN-17. The per-batch costs above are the plan's
 cost table; the targets are in `TODO.md`.
+
+## Recovery by row checkpoints (ENGN-14, 2026-09-20)
+
+The second speculative-decoding record, taken after the whole-stack replay
+was replaced by per-row recurrent checkpoints
+([speculative-decoding.md § Recovery by accepted length](speculative-decoding.md#recovery-by-accepted-length-engn-14-2026-09-20),
+[session.md § Row checkpoints](session.md#row-checkpoints-engn-14)). Same
+methodology, corpus, prompts, sampling, draft lengths, context, and
+precision as the ENGN-12 record above; `make speculative-record`
+(`scripts/nuclis-speculative.py`; reports under
+[benchmarks/speculative-2026-09-20-recovery/](../benchmarks/speculative-2026-09-20-recovery/))
+ran twelve configurations in one 46-minute sequence (20:49–21:35), each an
+off/on pair on one loaded model. Apple M4 Pro (12 CPU, 16 GPU cores),
+48 GiB, macOS 26.6.2 (25G83), AC power, Zig 0.16.0, ReleaseSafe,
+`nuclis 0.2.0-dev` at `417aea0`, artifact SHA-256 `322e194f…`, backend
+metal, nothing else on the GPU. Session block 3,850,633,216 bytes (the 32K
+session, the block's own cache, the 150 MB checkpoint region, and the
+1,255,146,752-byte row region). Means over the measured runs; per-batch
+costs are the run's milliseconds divided by its verify batches; every
+sample stopped on `token_budget`:
+
+| configuration | prompt | draft | accepted/step | tokens/batch | verify ms | accept ms | recover ms | prefill off → on (s) | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| prose 512, greedy | 512 | 2 | 1.23 | 2.23 | 254.1 | 0.0 | 9.7 | 5.93 → 6.15 | 10.31 → 7.78 | 0.75× |
+| prose 512, greedy | 512 | 4 | 1.67 | 2.65 | 287.0 | 0.0 | 22.2 | 7.61 → 6.88 | 8.26 → 7.67 | 0.93× |
+| prose 512, greedy | 512 | 7 | 2.28 | 3.26 | 261.2 | 0.0 | 21.2 | 6.14 → 6.23 | 9.35 → 9.70 | 1.04× |
+| prose 512, instruct | 512 | 2 | 1.36 | 2.35 | 249.7 | 54.9 | 6.4 | 6.29 → 6.35 | 8.18 → 7.07 | 0.86× |
+| prose 512, instruct | 512 | 4 | 1.82 | 2.80 | 256.3 | 61.4 | 11.1 | 6.28 → 6.38 | 7.99 → 7.68 | 0.96× |
+| prose 512, instruct | 512 | 7 | 2.06 | 3.05 | 264.6 | 65.2 | 13.0 | 6.39 → 6.52 | 7.78 → 7.66 | 0.98× |
+| code, greedy | 10 | 2 | 1.35 | 2.35 | 254.6 | 0.0 | 8.1 | 0.41 → 0.44 | 8.81 → 8.29 | 0.94× |
+| code, greedy | 10 | 4 | 2.34 | 3.34 | 257.6 | 0.0 | 9.8 | 0.38 → 0.43 | 9.15 → 11.13 | 1.22× |
+| code, greedy | 10 | 7 | 2.97 | 3.97 | 250.3 | 0.0 | 15.3 | 0.37 → 0.42 | 9.32 → 12.51 | 1.34× |
+| code, instruct | 10 | 4 | 2.79 | 3.78 | 241.2 | 76.6 | 6.3 | 0.35 → 0.37 | 8.56 → 10.57 | 1.23× |
+| prose 4K, greedy | 4,096 | 4 | 1.98 | 2.95 | 371.7 | 0.0 | 17.7 | 52.44 → 55.29 | 8.72 → 6.85 | 0.79× |
+| prose 4K, instruct | 4,096 | 4 | 1.79 | 2.77 | 362.2 | 62.6 | 12.2 | 60.13 → 55.18 | 7.67 → 5.64 | 0.74× |
+
+Per-batch cost breakdown (ms), same samples:
+
+| configuration | propose | verify | accept | recover | checkpoint | commit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| prose 512, greedy, d2 | 12.8 | 254.1 | 0.0 | 9.7 | 5.2 | 5.6 |
+| prose 512, greedy, d4 | 26.3 | 287.0 | 0.0 | 22.2 | 5.0 | 5.7 |
+| prose 512, greedy, d7 | 43.5 | 261.2 | 0.0 | 21.2 | 4.5 | 5.6 |
+| prose 512, instruct, d2 | 13.2 | 249.7 | 54.9 | 6.4 | 3.0 | 5.8 |
+| prose 512, instruct, d4 | 25.1 | 256.3 | 61.4 | 11.1 | 2.9 | 8.2 |
+| prose 512, instruct, d7 | 42.8 | 264.6 | 65.2 | 13.0 | 2.9 | 9.6 |
+| code, greedy, d2 | 12.7 | 254.6 | 0.0 | 8.1 | 3.8 | 4.7 |
+| code, greedy, d4 | 24.9 | 257.6 | 0.0 | 9.8 | 3.4 | 4.7 |
+| code, greedy, d7 | 43.0 | 250.3 | 0.0 | 15.3 | 3.8 | 4.7 |
+| code, instruct, d4 | 25.3 | 241.2 | 76.6 | 6.3 | 2.8 | 4.9 |
+| prose 4K, greedy, d4 | 26.2 | 371.7 | 0.0 | 17.7 | 4.6 | 10.9 |
+| prose 4K, instruct, d4 | 34.0 | 362.2 | 62.5 | 12.2 | 3.0 | 15.3 |
+
+**Reading.** Recovery is out of the picture: 6–22 ms per batch at every
+accepted length (all of it one 150 MB slot copy; replay zero), against the
+99–272 ms of the ENGN-12 record, and `checkpoint` is 3–5 ms. What decides
+a configuration now is the verify batch over the tokens it advances: 250–287
+ms at 512 for 2.2–4.0 tokens (63–126 ms per token against an ordinary step
+of ≈ 95–105 ms), 362–372 ms at 4K. Verify barely scales with rows (254 ms
+at 3 rows against 250 ms at 8), so proposing fewer drafts buys little; the
+code prompt wins because acceptance is high (2.34–2.97 drafts per batch,
+1.22–1.34× at draft 4–7) and prose loses because 1.23–2.28 accepted drafts
+do not amortize a ~2.6-step batch. The sampled path still pays its host
+acceptance (55–77 ms, the full-vocabulary sorts), which is ENGN-15 and
+KERN-13's target; the verify itself is the new KERN-14 (small-batch tile)
+and KERN-16 (long-context attention) territory. The plan was rewritten from
+this table: [TODO.md](../../TODO.md).
 
 ## Per-kernel profile
 
@@ -1100,7 +1167,7 @@ Prefill in the same run: the 32-token matmul tile runs at 25–29 GB/s on a
 few threadgroups), not a Q4_0 property.
 
 Follow-ups from this profile are in the plan
-([TODO.md](../../TODO.md): KERN-14, ENGN-18); none was scheduled before TERM-01.
+([TODO.md](../../TODO.md): KERN-15, ENGN-18); none was scheduled before TERM-01.
 
 ## Kernel micro-benchmark
 

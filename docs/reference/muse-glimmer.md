@@ -365,7 +365,7 @@ Decode is 71 % of the reference (15.87 GB of weights at 9.99 tok/s is
 Qwen `make bench` is unchanged by the shared-kernel change (39.75 /
 10.44 tok/s the same day; its recorded spread is 10.36–10.47). The
 decode gap is wider than Gemma's (81 %) or Qwen's; where the time goes
-is the performance theme's question (KERN-14 in [TODO.md](../../TODO.md)), with
+is the performance theme's question (KERN-15 in [TODO.md](../../TODO.md)), with
 the per-kernel profile below as its starting point.
 
 **Per-kernel profile** (`make bench-profile MODEL=<file> ARGS=--raw`,

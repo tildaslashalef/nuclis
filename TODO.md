@@ -16,110 +16,112 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-REPO-08 repaired and revalidated the KERN-12 sweep: the control now forces
-`Backend.matmulTile`, and the head uses its actual aligned stride. All twelve
-specialized two-row cases beat the tile; routing stays at two tokens. See the
-[corrected sweep](docs/reference/metal-backend.md#corrected-two-row-control-repo-08-2026-09-20)
-and [log](docs/engineering-log.md#repo-08--repair-the-multi-row-benchmark-controls-and-hand-off-2026-09-20).
-**Next: ENGN-14 session 2** — per-row recurrent checkpoints written by the
-verify batch, then `make speculative-record`. Session 1 (2026-09-20) landed the
-per-length instrumentation and the seed-only `step` replay: measured on prose
-512 draft 4 greedy, seed-only replay fell from 218 to 96 ms per call (36 of 144
-batches) and `recover` per batch from 182 to 150 ms; lengths 2–4 are unchanged
-(180–220 ms per call), full acceptance recovers nothing. The per-length table
-and the new `Timing`/bench fields are in
-[speculative-decoding.md](docs/reference/speculative-decoding.md#recovery-by-accepted-length-engn-14-session-1-2026-09-20);
-the ≤ 40 ms target still needs the per-row checkpoints.
+ENGN-14 closed on 2026-09-20: a verify batch now leaves the recurrent state
+after every row behind, so recovery copies the accepted row instead of
+rewinding and replaying. `recover` fell from 150–182 ms to **6–22 ms per
+batch** at every accepted length (the ≤ 40 ms target), the slot writes add
+21 ms per verify batch, and `session_bytes` is 3,850,633,216. The record
+(12 configurations, `417aea0`) reads: code greedy 1.22× (draft 4) and 1.34×
+(draft 7), code instruct 1.23×; prose 512 0.75–1.04× by draft length, 4K
+0.74–0.79×. The record also replanned the rest of this file: **the verify
+batch is now 70–80 % of every batch** (241–287 ms at 512 for 2.2–4.0
+tokens), so the small-batch matrix tile becomes its own unit (KERN-14), the
+sampled acceptance (17–22 % of an instruct batch) is ENGN-15 behind KERN-13,
+and the proposal policy is ENGN-16. Facts:
+[speculative-decoding.md](docs/reference/speculative-decoding.md#recovery-by-accepted-length-engn-14-2026-09-20),
+[session.md § Row checkpoints](docs/reference/session.md#row-checkpoints-engn-14),
+the record in
+[bench.md § Recovery by row checkpoints](docs/reference/bench.md#recovery-by-row-checkpoints-engn-14-2026-09-20),
+and the [log](docs/engineering-log.md#engn-14--recovery-without-the-whole-stack-replay-2026-09-20-two-sessions).
+
+**Next: KERN-13**, then ENGN-15 (sampled acceptance) — the pair shares one
+acceptance path and one quick `make speculative-record ARGS="--only prose512
+code"` check; ENGN-17 runs the single full record.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
 embedded draft head), ENGN-12 (batched verification, the speculative
 loop, greedy and sampled acceptance, the switch and the draft length, the
 benchmark record), and ENGN-13 (the prompt commit at the plan's chunk and
-the batched drafter commit) closed on 2026-09-19/20; their facts are in
-[speculative-decoding.md](docs/reference/speculative-decoding.md) and the
-record in [bench.md § Speculative record](docs/reference/bench.md#speculative-decoding-record-engn-12-2026-09-20).
-ENGN-13 removed the commit fixed costs: speculative prefill is now 1.02×
-ordinary at 512 (from 2.9–3.3×) and 1.05× at 4K, and the drafter's commit
-of the accepted prefix is 5.4 ms per batch at 512 (10.8 ms at 4K). The
-record's verdict stands: the switch stays **off** by default with
-`draft_length 4`; code-like prompts gain modestly, prose loses, because
-every verify batch pays fixed costs that exceed the tokens it advances.
-KERN-12 (the multi-row matvec) closed on 2026-09-20 **below its target**: the
-register-tiled body wins at 2 rows (143–182 GB/s against the 16×8 tile's
-88–116) but at 5 rows streams 49–67 and at 8 rows 20–33, so `matmul` routes
-only 2-row batches of the specialized encodings (`small_batch_rows = 2`) and
-the tile keeps the verify. The tested scalar bodies miss acceptance; the
-constant-input probe can eliminate arithmetic as well as loads, so it does
-not prove a universal scalar limit. Its facts are in
-[metal-backend.md § Multi-row matvec](docs/reference/metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target).
+the batched drafter commit) closed on 2026-09-19/20. The switch stays
+**off** by default with `draft_length 4`; the current record's verdict is in
+the cost table below. KERN-12 (the multi-row matvec) closed on 2026-09-20
+**below its target**: the register-tiled body wins at 2 rows (143–182 GB/s
+against the 16×8 tile's 88–116) but at 5 rows streams 49–67 and at 8 rows
+20–33, so `matmul` routes only 2-row batches of the specialized encodings
+(`small_batch_rows = 2`) and the tile keeps the verify
+([metal-backend.md § Multi-row matvec](docs/reference/metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target)).
+REPO-08 repaired that sweep's controls; all twelve two-row cases beat the
+tile.
 
 This plan is the path to the speed benefit, as measured costs per verify
-batch on Metal (Qwen 27B, F16 KV, 512-token context, ordinary decode step
-≈ 95 ms; the record's numbers, see *Working a unit here* for how to refresh
-them):
+batch on Metal (Qwen 27B, F16 KV, 512-token context unless noted; ordinary
+decode step ≈ 95–105 ms; the ENGN-14 record's numbers, see *Working a unit
+here* for how to refresh them):
 
-| cost per batch | measured (record, draft 4) | cause | unit | target |
+| cost per batch | measured (record, 2026-09-20) | cause | unit | target |
 | --- | ---: | --- | --- | ---: |
-| propose `k` drafts | 6.2 ms × k | one block forward per draft | ENGN-15 | fewer forwards, same accepted tokens |
-| checkpoint | 3 ms | one 150 MB copy | — | — |
-| verify `1 + k` rows | 227–251 ms at 512, 341–344 ms at 4K | the 16×8 prefill tile at 37–64 % of the matvec rate; the chunk attention over the visible cache | KERN-15 at long context (KERN-12 did not win 3–8 rows) | ≤ 130 ms |
-| accept (sampled) | 46–78 ms | one full-vocabulary sort per row on the host | KERN-13 + ENGN-16 | ≤ 5 ms |
-| recover (on rejection) | 97 ms (seed only) to 220 ms (3 rows) per call; 150 ms/batch (was 182) | rewind + a replay of `a + 1` rows: seed-only now through `step`, longer prefixes through the small-chunk path | ENGN-14 session 2 | ≤ 40 ms |
-| commit `a + 1` tokens | 5.4 ms/batch (was 6.2 ms × (a + 1)) | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
-| prompt commit (prefill) | 1.02× ordinary prefill (was 2.9–3.3×) | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
-| tokens per batch | 2.2–4.0 (1.2–3.0 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-15 | more accepted per proposed |
+| propose `k` drafts | 12.7–43.5 ms (≈ 6.3 ms per draft) | one block forward per draft | ENGN-16 | fewer forwards, same accepted tokens |
+| checkpoint | 2.8–5.2 ms | one 150 MB copy | — | — |
+| verify `1 + k` rows | 241–287 ms at 512, 362–372 ms at 4K | the 16×8 prefill tile at small row counts; the chunk attention over the visible cache | KERN-14 at 512, KERN-16 at long context | ≤ 130 ms |
+| accept (sampled) | 54.9–76.6 ms | one full-vocabulary sort per row on the host | KERN-13 + ENGN-15 | ≤ 5 ms |
+| recover (on rejection) | 6–22 ms (was 150–182) | one 150 MB slot copy | ENGN-14 ✓ | ≤ 40 ms |
+| commit `a + 1` tokens | 4.7–15.3 ms | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
+| prompt commit (prefill) | 1.02× ordinary prefill | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
+| tokens per batch | 2.23–3.97 (1.23–2.97 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-16 | more accepted per proposed |
 
-Measured speedups at draft 4: prose 0.56× greedy / 0.63× instruct at 512,
-0.54× at 4K; code 0.85× greedy / 1.04× instruct (the instruct baseline pays
-the penalty readback). With the targets met, the code prompt (≈ 3.3 tokens
-per batch) costs ≈ 25 + 3 + 130 + 20 + 8 ≈ 190 ms for 3.3 tokens, about
-1.6× the ordinary rate, and ≈ 2.5× if ENGN-15 lifts it to 5 tokens per
-batch; prose stays near 1× and is the reason the proposal policy and the
-per-entry verdict exist. Nothing here claims a speedup before ENGN-17
-measures it. KERN-12 closed below its target, so the verify term stays
-227–251 ms at 512 unless a later unit takes the tile (KERN-15 only helps the
-long-context rows); the estimate above is correspondingly optimistic.
+Measured speedups: code greedy 1.22× (draft 4) and 1.34× (draft 7), code
+instruct 1.23×; prose 512 greedy 0.75 / 0.93 / 1.04× at drafts 2 / 4 / 7,
+instruct 0.86 / 0.96 / 0.98×; 4K 0.79× greedy and 0.74× instruct at draft
+4. The per-token arithmetic is now clean: verify must cost less than the
+tokens it advances are worth. At draft 4 the code prompt advances 3.34
+tokens for a 258 ms verify (77 ms/token against ~105), prose 2.65 for 287
+(108 against ~100). KERN-14's target (≤ 130 ms at 512) would put prose at
+draft 4 near 1.3× and code near 1.6×; ENGN-15 removes the sampled path's
+55–77 ms; ENGN-16 trims the proposal and the wasted rows on prose. Nothing
+here claims a speedup before ENGN-17 measures it.
 
-Order: ENGN-14 → ENGN-15 → KERN-13 → ENGN-16 → ENGN-17
-→ TERM-10 → MODL-19 → MODL-20 → MODL-21 → AGNT-11 → MODL-22 → MODL-23 →
-KERN-14 → KERN-15 → ENGN-18 → ENGN-19 → KERN-16. ENGN-14 is measured
-against the replay *after* KERN-12's 2-row routing; KERN-13 (the GPU penalty kernel)
-precedes ENGN-16 because the instruct profile's presence penalty defeats the
-readback path otherwise; ENGN-17 re-runs the record on the finished path and
-sets the defaults.
-TERM-10 (chat polish) is independent of everything else and sits where it
-does only to land early. The vision units bring Qwen first, then the chat's
-image input on it, then the other two families. The general performance
-follow-ups (planned 2026-09-20) close the plan in the
-order of measured leverage: the row-poor matvecs first (two thirds of
-Muse's gap, and every family's small projections), then the long-context
-prefill attention (the 32K record's largest deficit, and every speculative
-verify batch at long context), then Gemma 12B's launch-bound decode, then
-the ring layout (memory, not speed), and last the ternary arithmetic
-experiment, which is the least certain and may close negative. AGNT-12
-(background commands) and APPS-14 (teacher-forced `eval`) are drafted for
-decision, not ordered.
+Order: KERN-13 → ENGN-15 → KERN-14 → ENGN-16 → KERN-15 → KERN-16 →
+ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 → MODL-19 → MODL-20 →
+MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13 precedes ENGN-15 because the
+instruct profile's presence penalty defeats the GPU top-k readback path
+otherwise; the two are one session block with one `--only` check and no
+intermediate record. KERN-14 follows because verify is 70–80 % of a batch
+and its target is the plan's largest single lever; ENGN-16 is cheap and
+trims the prose waste after that. **KERN-15 and KERN-16 sit before ENGN-17
+because they change the Qwen path the verdict measures**: the split-K
+matvec touches Qwen's row-poor shapes, and the long-context attention is
+every verify batch at 16K–32K (and the 32K acceptance's largest deficit).
+ENGN-18 (Gemma's launch-bound decode), ENGN-19 (the ring layout: memory,
+not speed), and KERN-17 (the ternary experiment) are other-family or
+experimental and sit after the verdict, grouped so the performance theme
+finishes in one stretch; TERM-10 (chat polish) and the vision units follow.
+The performance group closes in the order of measured leverage: the
+small-batch tile, the row-poor matvecs (two thirds of Muse's gap, and every
+family's small projections), the long-context prefill attention, Gemma's
+decode, the ring layout, and last the ternary arithmetic, which is the
+least certain and may close negative. AGNT-12 (background commands) and
+APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| ENGN-14 | Recovery without the whole-stack replay | 1–2 |
-| ENGN-15 | Draft proposal policy: `p_min` early stop and an adaptive length | 1 |
 | KERN-13 | A GPU penalty kernel: the token history applied on the device before the top-k | 1 |
-| ENGN-16 | Sampled acceptance on the GPU top-k readback | 1 |
+| ENGN-15 | Sampled acceptance on the GPU top-k readback | 1 |
+| KERN-14 | The small-batch matmul tile for the verify batch (32-row threadgroups) | 1–2 |
+| ENGN-16 | Draft proposal policy: `p_min` early stop and an adaptive length | 1 |
+| KERN-15 | Split-K decode matvec for row-poor shapes (Muse's gap, every family's small projections) | 1–2 |
+| KERN-16 | Long-context prefill attention, second attempt (register-level reuse) | 2 |
 | ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
+| ENGN-18 | Gemma 4 12B decode: fused norms and fewer launches | 1–2 |
+| ENGN-19 | A ring layout for windowed attention caches | 2 |
+| KERN-17 | The ternary matvec's arithmetic (experiment; may close negative) | 1 |
+| TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
 | MODL-19 | Gemma 4 draft heads: the companion file as a second GGUF, 12B and 26B-A4B | 1–2 |
 | MODL-20 | Muse Glimmer DFlash drafter: facts, contract fit, acceptance loop | 2 |
-| TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
-| KERN-14 | Split-K decode matvec for row-poor shapes (Muse's gap, every family's small projections) | 1–2 |
-| KERN-15 | Long-context prefill attention, second attempt (register-level reuse) | 2 |
-| ENGN-18 | Gemma 4 12B decode: fused norms and fewer launches | 1–2 |
-| ENGN-19 | A ring layout for windowed attention caches | 2 |
-| KERN-16 | The ternary matvec's arithmetic (experiment; may close negative) | 1 |
 | AGNT-12 | Background commands (drafted for decision; see its section) | — |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
 
@@ -146,7 +148,7 @@ Every unit keeps these green and says so in its log entry:
 - `make compare-draft-metal` — the block's own pinned trace.
 
 **The record.** `make speculative-record` runs
-`scripts/nuclis-speculative.sh`: the reference corpus arrays at 512 and 4,096
+`scripts/nuclis-speculative.py`: the reference corpus arrays at 512 and 4,096
 tokens and the fixed code prompt, greedy and with the instruct profile's
 sampling (`--temperature 0.7 --top-p 0.8 --top-k 20 --presence-penalty
 1.5`), draft lengths 2, 4, 7, 128 output tokens, context 32,768, F16 KV,
@@ -156,7 +158,11 @@ pair on one loaded model; JSON per configuration under
 `verify_milliseconds`, `accept_milliseconds`, `recover_milliseconds` divided
 by `speculative_steps`; tokens per batch is `(generated_tokens − 1) /
 speculative_steps`; the speedup is `decode_tokens_per_second` on vs off in
-the same pair. A single configuration by hand:
+the same pair. **The full 12-configuration record runs once per path, at
+ENGN-17.** Units before it gate on a quick pass —
+`make speculative-record ARGS="--only prose512 code"` — and their measured
+numbers go into the reference docs as they are taken. A single
+configuration by hand:
 
 ```sh
 M=$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
@@ -217,7 +223,7 @@ file drops the block and its entry pins no draft companion.
 **Verification** returns the main model's logits for every row of the batch
 on both executors; the GPU plan computes the head on all rows of the chunk
 and reads them back, bypassing the device top-k path while speculation is
-on (ENGN-16 changes that). Greedy acceptance compares the draft with the
+on (ENGN-15 changes that). Greedy acceptance compares the draft with the
 row's argmax. Sampled acceptance draws the target's own token from the
 row's shaped distribution (temperature, top-k/p, min-p, penalties with the
 history advanced through the earlier drafts of the batch) and accepts
@@ -253,98 +259,119 @@ its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
 
-## ENGN-14 — Recovery without the whole-stack replay
+## KERN-13 — A GPU penalty kernel: the token history applied on the device before the top-k
 
-**Facts (read 2026-09-20; replay measured in session 1).**
-- `Model.recover(accepted)` (`engine.zig`): full acceptance returns at
-  once; otherwise `rewind()` then a replay of `a + 1` rows. Measured on prose
-  512, draft 4, greedy, 144 batches over three runs (per-call ms): accepted
-  1 (seed only) 218 through `prefill`, 96 through `step`; accepted 2 179
-  (KERN-12's 2-row routing); accepted 3 220; accepted 4 183; full acceptance
-  0. `recover` averaged 182 ms/batch before the step branch, 150 after;
-  `checkpoint` 5.7–15.9 ms/batch and `rewind` 10.6–14.0 ms/call (the
-  3 ms the contract recorded is optimistic under load). Table and files:
-  [speculative-decoding.md](docs/reference/speculative-decoding.md#recovery-by-accepted-length-engn-14-session-1-2026-09-20).
-- The DeltaNet chunk kernel (`nu_delta_chunk`, `kernels.metal` ≈ line
-  1848) carries the state across 32-token sub-chunks in place: after a
-  sub-chunk of `n` rows, `S_new = γ_n S₀ + Wᵀ K` with `W[s][j] = r(n − 1,
-  s) U[s][j]` (its header comment). The state after row `r` of the same
-  sub-chunk is the same formula truncated: `S_r = γ_r S₀ + Σ_{s ≤ r} r(r,
-  s) U[s]ᵀ K[s]`, and `cum`, `beta`, `U` are already in threadgroup memory
-  when the carry is computed. A verify batch (≤ 8 rows) is one sub-chunk.
-- Recurrent state per checkpoint: 156,893,184 bytes (48 layers: the
-  48 × 128 × 128 matrix and the 4 × 10,240 convolution history each); eight
-  per-row slots are 1.255 GB, which fits beside the 16.5 GB of weights and
-  the 2.15 GiB 32K session on 48 GiB but belongs in the memory record.
-- The convolution history after row `r` is the last 4 of `[history, mixed
-  rows 0 .. r]`; `convolutionHistory(history, input, channels, taps, rows,
-  stride)` already computes it for `rows = r + 1`.
+**Facts.** Sampling with a presence or repetition penalty (the Qwen instruct
+profile: presence 1.5) defers `Sampler.selectFrom` (penalties change the
+sort), so every such token reads the full 248,320-logit row back and sorts
+it on the host: the 32K record measured +20.7 ms per token against the GPU
+top-k path ([bench.md](docs/reference/bench.md)); the ENGN-14 record's
+instruct baseline decodes at 7.7–8.6 tok/s against 8.8–10.3 greedy for the
+same reason. `sampling.History` is a bit set over the vocabulary
+(`std.DynamicBitSetUnmanaged`); `Sampler.penalize` applies `l / r` (or
+`l · r` for negative logits) then `l − presence` to seen ids
+(`inference/src/sampling/root.zig`). The top-k path is `Backend.topk`
+(`nu_topk_partial`, `nu_topk_final`, `nu_expsum_partial`). This is the
+first half of the ENGN-15 block and its dependency.
 
-**Design, two steps, each measured against the record.**
-1. **Done (session 1).** In `Model.recover`, an `accepted.len == 1` prefix
-   replays through `step` (the matvec path) instead of `prefill`: 218 → 96 ms
-   per call, measured with the branch out and in on the same config; the
-   lengths 2–4 are unchanged and it stays. `Timing` gained
-   `recover_rewind`/`recover_replay`/`recover_by_length`/`checkpoint` and
-   `bench` the matching `Sample` fields, so every later change is measured
-   per accepted length.
-2. **Done (session 2).** Per-row recurrent checkpoints: `Session` gains a
-   `row_checkpoints` region (8 slots of one recurrent copy each),
-   `restoreRow(slot)`, `rowSlotLayer(il)` and the refusals;
-   `nu_delta_chunk` writes each row's state into its slot and
-   `nu_convolution_history` each row's history, both only when the verifier
-   passes `row_states > 0` (ordinary prefill/decode passes 0 and the kernels
-   are no-ops); `Plan.verify`/`verifyGreedy` pass the batch count and mark
-   the rows; `Model.recover` restores the accepted row and replays nothing.
-   The per-row state is computed as `S_r = γ_r S₀ + Σ_{s≤r} r(r,s) U[s]ᵀK[s]`
-   with every exponent ≤ 0: the first attempt rescaled the full-chunk `w`
-   by `r(r,n−1)`, which overflows when a layer's chunk decay is large
-   (measured `cum = −114` on layer 46), producing `inf` and NaNs downstream.
-   Measured on prose 512 draft 4 greedy (144 batches): `recover` 150 →
-   **12.7 ms/batch** (13–17 ms per restore, all lengths), `verify` +21 ms per
-   batch for the slot writes, `session_bytes` 3,850,633,216 (row region
-   1,255,146,752); the off/on pair reads 0.85× greedy (was 0.62×).
-   `make test-metal` (slot fixtures), `make test-generation-metal` (restore
-   by slot at 4 and 8 rows, exact), `make speculative-check-metal`,
-   `make draft-stats`, `make check`, `make compare` all green.
-3. Keep the winner: the slot write costs +21 ms per verify batch against the
-   132 ms it removes from recovery, so it stays (the record below is the
-   evidence).
+**Design.** A `nu_penalize` kernel over the logits buffer in place: inputs
+the history as a device bit set (`vocabulary / 32` words, uploaded when it
+changed since the last step — the loop marks it dirty on `observe`), the
+repetition and presence values; one thread per logit. `Backend.penalize
+(logits, count, history_bits, repetition, presence)` recorded by
+`Plan.recordOutputs` before the argmax/top-k when the sampler says
+penalties are active; `Sampler.selectFrom` then accepts a readback taken
+after penalties (a `penalized: bool` on `TopK`), and the greedy GPU path
+does the same. The CPU path is unchanged and remains the reference; the
+fixture compares the kernel's row against `penalize` for every logit sign
+and both penalties.
 
-**Measurement hand-off (2026-09-20 review).** Session 1 took the per-length
-baseline; session 2 took the same cells for the per-row checkpoints (facts
-above), the added write time inside `verify`, `session_bytes` with the region,
-and the off/on pair. **Remaining:** `make speculative-record` on this revision,
-the cost table in `bench.md` and *Where we are* refreshed from it, the
-reference sections (`speculative-decoding.md`, `session.md`), and the log
-entry. Keep the existing 512/4K prose/code, greedy/instruct, draft 2/4/7
-methodology. ENGN-17 still runs the final record and decides defaults after
-the proposal/acceptance work.
+**Acceptance.** `make test-metal` fixture exact to F32 rounding; the
+instruct profile's decode within 2 % of greedy on `make bench`; the
+sampled token stream identical to the CPU path for a fixed seed on the
+generation check (a new case); `make check`, `make compare`. No record run
+of its own: ENGN-15 measures the block and ENGN-17 the path.
 
-**Next kernel experiment, after that record.** KERN-15 optimizes attention,
-not the small-batch matrix tile; no existing unit covers the latter. If verify
-remains the bottleneck, design a separate unit before coding (identifier assigned
-in closure order). First test 32 output rows per threadgroup against the current
-16×8 split-K tile, then a blocked activation read if profiling supports it.
-Use `Backend.matmulTile` as the fixed control in `make bench-matvec-rows
-ARGS="8 head"`; record 2/5/8-token bandwidth and full-model verify latency,
-including regression at two tokens. Keep only an exactness-gated measured win.
-Do not resume scalar multi-row tuning without new evidence. This follow-up is
-conditional and does not replace or reorder the existing ENGN-15–17 work.
-
-**Acceptance.** `recover_milliseconds / speculative_steps` on prose 512 at
-draft 4 ≤ 40 ms with step 2, or ≤ the step-1 replay if step 2 loses; the
-memory record with the region (`nuclis validate` and the bench's
-`session_bytes`); `make test-generation-metal` green at every accepted
-length; `make check`, `make speculative-check-metal`, `make draft-stats`.
-
-## ENGN-15 — Draft proposal policy: `p_min` early stop and an adaptive length
+## ENGN-15 — Sampled acceptance on the GPU top-k readback
 
 **Facts (read 2026-09-20).**
+- With sampling on, `Plan.verify` reads back `(k + 1) × 248,320` logits
+  (7.9 MB) and `speculativeBatch` calls `Sampler.distribution` per row, a
+  full-vocabulary sort each. The ENGN-14 record measures
+  `accept_milliseconds / speculative_steps` at **54.9–76.6 ms** across the
+  sampled configurations (17–22 % of an instruct batch); ordinary sampled
+  decoding uses the GPU partial top-k (`gpu_topk`, `Sampler.selectFrom`)
+  and sorts nothing. The instruct profile's presence penalty 1.5 makes
+  `selectFrom` defer, which is KERN-13 and lands first in this block.
+- `verifyGreedy` already runs the argmax kernel per row of `verify_logits`
+  (`b.argmax(verify_logits.slice(i × vocabulary × 4, …))`).
+
+**Design.**
+1. `Plan.verify` gains a per-row top-k mode: `TopKBuffers × max_verify_rows`
+   (`topkBuffers(sampling.TopK.capacity)` each; a few KB per row),
+   `b.topk(verify_logits.slice(row), vocabulary, TopK.capacity, temperature,
+   self.topk_rows[i])` per row, read back into `[]sampling.TopK` (the
+   `readOutputs` code path per row); the logits stay on the device and
+   `Plan.readVerifyRow(i, out)` copies one row for the fallback.
+2. `speculativeBatch`'s sampled path: `sampler.selectFrom(&tops[i],
+   candidates)` is the target's draw for row `i` (compared with the draft
+   as `decide` does); `null` → `readVerifyRow(i)` + `sampler.select`, counted
+   in `topk_fallbacks`. With penalties active the path is the full readback
+   until KERN-13 lands, so this unit starts after it.
+3. `Executor.verify`'s signature carries the mode; the CPU reference keeps
+   full rows and `distribution`.
+
+**Acceptance.** Instruct sampling without penalties (`--temperature 0.7
+--top-p 0.8 --top-k 20`): `accept_milliseconds / speculative_steps` ≤ 5 ms
+(from the record's 54.9–76.6 ms); with the penalties active (KERN-13) the
+same bound on `--presence-penalty 1.5`; a new `generation-check` case shows
+the readback path and the full-logit path emit identical tokens for a fixed
+seed (`selectFrom` returns what `select` would for the same logits and RNG
+state, by contract); the seeded tests in `sampling/speculative.zig`
+unchanged; `make check`, `make speculative-check-metal`. Gate with
+`make speculative-record ARGS="--only prose512 code"` (one quick pass, no
+full record).
+
+## KERN-14 — The small-batch matmul tile for the verify batch (32-row threadgroups)
+
+**Facts (from the ENGN-14 record and KERN-12).** The verify batch is
+241–287 ms at 512 for 2.2–4.0 tokens and 362–372 ms at 4K — 70–80 % of a
+speculative batch, and what keeps prose below 1×. It barely scales with
+rows (254 ms at 3 rows against 250 at 8), so its cost is the matmul tile
+plus the chunk attention over the visible cache, not the row count. KERN-12
+showed the register-tiled scalar body wins only at 2 rows (routed) and
+that the 16×8 split-K tile is flat at 88–116 GB/s; KERN-11's unfinished
+levers are 32 output rows per threadgroup, a blocked activation read, and
+holding activations in threadgroup memory across a row strip. REPO-08 left
+`make bench-matvec-rows ARGS="8 head"` with `Backend.matmulTile` as the
+fixed control, and the full-model verify latency is in the record.
+
+**Design.** One experiment per session, exactness-gated: first a 32-output-
+row threadgroup variant of the tile (`nu_matmul_*` at `rows_per_group =
+32`) against the current 16×8 split-K tile; then, if profiling supports it,
+a blocked activation read. Use `Backend.matmulTile` as the fixed control in
+`make bench-matvec-rows`; measure 2/5/8-token bandwidth on both FFN shapes
+and the head, and full-model verify latency (`verify_milliseconds /
+speculative_steps` on the record's configs), including the 2-token
+regression. Keep only an exactness-gated measured win; the 2-row routing
+stays as it is. Files: `inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
+`docs/reference/metal-backend.md`, `docs/reference/bench.md`.
+
+**Acceptance.** A measured verdict either way. If positive: ≥ 150 GB/s at
+5 rows on `bench-matvec-rows` and `verify_milliseconds /
+speculative_steps` ≤ 130 ms at 512 (the plan's target), with the 2-row
+routing not regressed; `make test-metal`, `make compare` unchanged, and the
+record's rows re-measured. If negative, the numbers and the control that
+beat the candidate, logged.
+
+## ENGN-16 — Draft proposal policy: `p_min` early stop and an adaptive length
+
+**Facts (read 2026-09-20; updated from the ENGN-14 record).**
 - `propose` (`qwen35_metal.zig` / `qwen35_runtime.zig`) always proposes
-  `k = draft_length` positions at 6.2 ms per block forward: 25 ms at 4,
-  ≈ 43 ms at 7 (0.45 of a decode step). Per-depth acceptance on code falls
-  90 → 64 % across depths 0–3 (MODL-18) and is 22 % overall on prose.
+  `k = draft_length` positions at ≈ 6.3 ms per block forward: 12.7–43.5 ms
+  per batch at drafts 2–7 (5–12 % of a batch). Per-depth acceptance on code
+  falls 90 → 64 % across depths 0–3 (MODL-18) and is 22 % overall on prose.
 - The reference MTP driver (`common/speculative.cpp:1602–1700`) stops
   drafting when the block's top candidate has `p < p_min` (default 0 =
   off, `--spec-draft-p-min`; a top-k 10 sampler on the block's logits) and
@@ -352,6 +379,9 @@ length; `make check`, `make speculative-check-metal`, `make draft-stats`.
 - `Backend.topk` returns Σ exp((l − max) / T) as partial sums (`sums`) with
   the top ids and values, so `p_max = 1 / total` at T = 1 with no logit
   readback; `sampling.TopK.total` is the F64 sum of the partials.
+- Verify barely scales with rows, so the policy's value is the skipped
+  block forwards and the avoided hopeless rows on prose, not a big verify
+  cut.
 
 **Design.**
 1. `Drafter.propose(token, out, p_min: f32)`: on Metal, when `p_min > 0`,
@@ -378,75 +408,8 @@ length; `make check`, `make speculative-check-metal`, `make draft-stats`.
 falls by ≥ 30 % and `decode_tokens_per_second` (on) is not lower; code 512,
 draft 7: within 2 % of the unpoliced run. `make speculative-check-metal`
 still passes (the policy changes which drafts are proposed, never the
-tokens emitted); `make check`, `make draft-stats`.
-
-## KERN-13 — A GPU penalty kernel: the token history applied on the device before the top-k
-
-**Facts.** Sampling with a presence or repetition penalty (the Qwen instruct
-profile: presence 1.5) defers `Sampler.selectFrom` (penalties change the
-sort), so every such token reads the full 248,320-logit row back and sorts
-it on the host: the 32K record measured +20.7 ms per token against the GPU
-top-k path ([bench.md](docs/reference/bench.md)); the ENGN-12 record's
-instruct baseline decodes at 8.0 tok/s against 10.4 greedy for the same
-reason. `sampling.History` is a bit set over the vocabulary
-(`std.DynamicBitSetUnmanaged`); `Sampler.penalize` applies `l / r` (or
-`l · r` for negative logits) then `l − presence` to seen ids
-(`inference/src/sampling/root.zig`). The top-k path is `Backend.topk`
-(`nu_topk_partial`, `nu_topk_final`, `nu_expsum_partial`).
-
-**Design.** A `nu_penalize` kernel over the logits buffer in place: inputs
-the history as a device bit set (`vocabulary / 32` words, uploaded when it
-changed since the last step — the loop marks it dirty on `observe`), the
-repetition and presence values; one thread per logit. `Backend.penalize
-(logits, count, history_bits, repetition, presence)` recorded by
-`Plan.recordOutputs` before the argmax/top-k when the sampler says
-penalties are active; `Sampler.selectFrom` then accepts a readback taken
-after penalties (a `penalized: bool` on `TopK`), and the greedy GPU path
-does the same. The CPU path is unchanged and remains the reference; the
-fixture compares the kernel's row against `penalize` for every logit sign
-and both penalties.
-
-**Acceptance.** `make test-metal` fixture exact to F32 rounding; the
-instruct profile's decode within 2 % of greedy on `make bench`; the
-sampled token stream identical to the CPU path for a fixed seed on the
-generation check (a new case); `make check`, `make compare`.
-
-## ENGN-16 — Sampled acceptance on the GPU top-k readback
-
-**Facts (read 2026-09-20).**
-- With sampling on, `Plan.verify` reads back `(k + 1) × 248,320` logits
-  (7.9 MB) and `speculativeBatch` calls `Sampler.distribution` per row, a
-  full-vocabulary sort each (`Timing.accept`; the record's
-  `accept_milliseconds / speculative_steps`). Ordinary sampled decoding
-  uses the GPU partial top-k (`gpu_topk`, `Sampler.selectFrom`) and sorts
-  nothing. The instruct profile's presence penalty 1.5 makes `selectFrom`
-  defer (penalties change the sort), which is KERN-13 and stays a
-  dependency here.
-- `verifyGreedy` already runs the argmax kernel per row of `verify_logits`
-  (`b.argmax(verify_logits.slice(i × vocabulary × 4, …))`).
-
-**Design.**
-1. `Plan.verify` gains a per-row top-k mode: `TopKBuffers × max_verify_rows`
-   (`topkBuffers(sampling.TopK.capacity)` each; a few KB per row),
-   `b.topk(verify_logits.slice(row), vocabulary, TopK.capacity, temperature,
-   self.topk_rows[i])` per row, read back into `[]sampling.TopK` (the
-   `readOutputs` code path per row); the logits stay on the device and
-   `Plan.readVerifyRow(i, out)` copies one row for the fallback.
-2. `speculativeBatch`'s sampled path: `sampler.selectFrom(&tops[i],
-   candidates)` is the target's draw for row `i` (compared with the draft
-   as `decide` does); `null` → `readVerifyRow(i)` + `sampler.select`, counted
-   in `topk_fallbacks`. With penalties active the path is today's full
-   readback until the penalty kernel exists.
-3. `Executor.verify`'s signature carries the mode; the CPU reference keeps
-   full rows and `distribution`.
-
-**Acceptance.** Instruct sampling without penalties (`--temperature 0.7
---top-p 0.8 --top-k 20`): `accept_milliseconds / speculative_steps` ≤ 5 ms
-(from the record's value); a new `generation-check` case shows the readback
-path and the full-logit path emit identical tokens for a fixed seed
-(`selectFrom` returns what `select` would for the same logits and RNG
-state, by contract); the seeded tests in `sampling/speculative.zig`
-unchanged; `make check`, `make speculative-check-metal`.
+tokens emitted); `make check`, `make draft-stats`. Gate with
+`make speculative-record ARGS="--only prose512 code"`.
 
 ## ENGN-17 — The verdict, the defaults, and the bench baseline without the drafter
 
@@ -465,7 +428,7 @@ comparable across records. The per-entry verdict lives in `src/catalog.zig`
    a pair is then the loaded-but-off case, and the default the true
    baseline; report both in the record.
 2. Re-run `make speculative-record` on the finished path (after ENGN-13
-   through ENGN-16), write the record in `bench.md` with the per-batch cost
+   through KERN-16), write the record in `bench.md` with the per-batch cost
    table of *Where we are* refreshed, and the spec's measured result.
 3. `catalog.Entry` gains `speculative: bool` and `draft_length: usize`;
    `config init` writes them into the entry's `generation`; set Qwen's from
@@ -982,7 +945,7 @@ profile's tool fixtures (`scripts/profile-tools-fixtures.py`), transcript
 rows, and cancellation tests. The risk is an orphaned process; the
 mitigation is the workspace owning every pid. Decide after TERM-10.
 
-## KERN-14 — Split-K decode matvec for row-poor shapes
+## KERN-15 — Split-K decode matvec for row-poor shapes
 
 **Facts (from the Muse Glimmer profile, MODL-12/13).** The decode matvecs'
 bandwidth tracks the matrix's row count, not its encoding: the 202,048-row
@@ -1019,7 +982,7 @@ unchanged.
 reference 13.69); Qwen decode not slower; `make compare` and every family's
 compare target unchanged; the acceptance records re-run for Muse.
 
-## KERN-15 — Long-context prefill attention, second attempt
+## KERN-16 — Long-context prefill attention, second attempt
 
 **Facts (ENGN-05, ENGN-08).** The 32K acceptance record measured prefill
 below the reference (−6 % at 4K, −15 % at 16K, −26 % at 32,639) and the
@@ -1091,7 +1054,7 @@ must not regress.
 with decode and prefill within 2 % of before; every compare and
 generation check unchanged; the memory rows of both records refreshed.
 
-## KERN-16 — The ternary matvec's arithmetic (experiment)
+## KERN-17 — The ternary matvec's arithmetic (experiment)
 
 **Facts (KERN-10, MODL-17).** Bonsai 2 27B decodes at 1.3× the
 Qwen3.8-27B rate where its byte count promises 2–3×, and at 80–87 % of

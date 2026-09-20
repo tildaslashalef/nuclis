@@ -115,9 +115,9 @@ past the position are left as they are, exactly as `restore` documents.
 Recurrent state is a function of every token fed, so `rewind` restores the
 copy and the accepted prefix is then **replayed** through `prefill` — the
 batch's rows are rewritten by the same forward, and never by truncating a
-position alone. Whether per-token recurrent checkpoints written by the
-DeltaNet chunk kernel would beat replay is a measurement, not an
-assumption ([speculative-decoding.md](speculative-decoding.md)).
+position alone. Per-row checkpoints written by the DeltaNet chunk kernel
+beat that replay and are what Qwen's Metal plan uses
+([§ Row checkpoints](#row-checkpoints-engn-14)).
 
 `reset()` and `restore()` clear the recorded position: both rewrite the
 state, so the region's bytes are stale and are only read after a fresh
@@ -143,3 +143,53 @@ logits equal the sequential run bit for bit; on Metal the batch is chunked,
 so the family's chunk-versus-step bound applies (Qwen 27B ≤ 2.9e-3 max abs
 and 1.5e-4 relative RMS over a 4- and an 8-row batch, argmax equal; Bonsai
 ≤ 8.6e-6; Gemma 4 and Muse exactly zero at these small tiles).
+
+## Row checkpoints (ENGN-14)
+
+A verify batch can leave the state after **every row** behind, so recovery
+copies the accepted row instead of replaying it. `Session.init`'s
+`row_checkpoints` count (0, or the plan's row bound) reserves a second
+page-aligned region after the checkpoint region: that many slots, each the
+same packed recurrent copy as the checkpoint region (`row_slot_bytes`,
+156,893,184 bytes on Qwen), so slot `r` holds the state after the batch's
+first `r + 1` rows. The region is excluded from `layout_digest` and from a
+`Snapshot` like the checkpoint region, counted by `bytes()`, and written by
+the kernels that run the batch, not by a host copy:
+
+- `nu_delta_chunk` writes `S_r` to slot `r` (`Backend.deltaChunk` binds the
+  layer's slot window and passes `row_states`/`row_stride`).
+- `nu_convolution_history` writes each row's convolution history
+  (`Backend.convolutionHistory`'s `RowSlots`).
+- Both are no-ops when `row_states == 0`: ordinary prefill, decode, and the
+  prompt commit pass 0 and behave exactly as before.
+
+`Plan.verify`/`verifyGreedy` pass the batch length and set
+`Session.row_checkpoint_rows` to it; `beginChunk`, `checkpoint`, `rewind`,
+`restore`, and `reset` clear it, so only the most recent batch's slots are
+readable. `Session.restoreRow(slot)` copies that slot into the recurrent
+layers and sets `position = checkpoint_position + slot + 1`; attention rows
+past the position are ignored by contract. Refusals: `SessionNotReady`,
+`NoCheckpoint` without a live checkpoint, `NoRowCheckpoints` without a
+region, `RowNotCheckpointed` past the rows the last forward wrote.
+`rowSlotLayer(il)` returns the layer's history and matrix views spanning
+every slot plus the byte stride, which is what the plan binds.
+
+The kernel computes each row's state directly as
+`S_r = γ_r S₀ + Σ_{s≤r} r(r,s) U[s]ᵀK[s]`, building the rescaled `U` rows
+from the threadgroup's solved `U` (every exponent `cum[r] − cum[s] ≤ 0`).
+The cheaper-looking form that rescales the full-chunk `W` by
+`r(r, n−1)` overflows when a layer's chunk decay is large — measured
+`cum[n−1] = −114` on one Qwen layer, where `exp(97)` is `inf` — and the
+`inf` then poisons the restored state through `0 · inf`. Slot rows live in
+the first 8-token block, so only one block is needed per row.
+
+**Costs** (Qwen 27B, Metal, F16 KV, 32K context, draft 4): eight slots are
+1,255,146,752 bytes, so a speculative session is 3,850,633,216 bytes with
+the 150 MB checkpoint region and the 2.15 GiB attention/recurrent block.
+`restoreRow` copies one 150 MB slot, 13–17 ms per call at every accepted
+length (against 97–220 ms for the step/prefill replay); the slot writes add
+21 ms per verify batch. `make test-metal` checks every slot against the
+CPU's sequential state (7.7e-7 worst) and the per-row history against the
+exact gather; `make test-generation-metal` compares restore-by-slot with
+the CPU's replay through the next step's logits at every accepted length
+(exact) and exercises the refusals.
