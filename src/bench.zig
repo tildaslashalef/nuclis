@@ -76,13 +76,16 @@ pub const Sample = struct {
     speculative: bool = false,
     draft_length: ?usize = null,
     /// Verify batches run, accepted drafts per batch, and the run's time in
-    /// the model's `verify`, the host acceptance decision, and `recover`
+    /// the drafter's `propose`, the model's `verify`, the host acceptance
+    /// decision, `recover`, and the drafter's `commit` of the accepted prefix
     /// (divide by the batches for the per-batch cost); speculative samples only.
     speculative_steps: ?usize = null,
     accepted_per_step: ?f64 = null,
+    propose_milliseconds: ?f64 = null,
     verify_milliseconds: ?f64 = null,
     accept_milliseconds: ?f64 = null,
     recover_milliseconds: ?f64 = null,
+    commit_milliseconds: ?f64 = null,
 };
 
 pub const Report = struct {
@@ -362,9 +365,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 .draft_length = if (on) settings.draft_length else null,
                 .speculative_steps = if (on) t.speculative_steps else null,
                 .accepted_per_step = if (on and t.speculative_steps > 0) @as(f64, @floatFromInt(t.accepted_drafts)) / @as(f64, @floatFromInt(t.speculative_steps)) else null,
+                .propose_milliseconds = if (on) engine.milliseconds(t.propose) else null,
                 .verify_milliseconds = if (on) engine.milliseconds(t.verify) else null,
                 .accept_milliseconds = if (on) engine.milliseconds(t.accept) else null,
                 .recover_milliseconds = if (on) engine.milliseconds(t.recover) else null,
+                .commit_milliseconds = if (on) engine.milliseconds(t.commit) else null,
             };
             if (!json) {
                 try writer.print("{s} run {d}{s}: {d} prompt, {d} generated, {s}\n", .{ if (i < warmup) "warmup" else "measured", i, if (on) " (speculative)" else "", t.prompt_tokens, t.generated_tokens, @tagName(outcome.stop) });

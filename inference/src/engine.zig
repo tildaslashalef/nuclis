@@ -651,15 +651,18 @@ pub const Timing = struct {
     /// tokens needed the full-logit fallback (see reference/generation.md).
     topk_fallbacks: ?usize = null,
     /// Speculative decoding: verify batches run, drafts accepted and
-    /// proposed across them, and time spent in the model's `verify`, the
-    /// acceptance decision on the host (`accept`: the shaped distributions
-    /// and draws of the sampled path), and `recover`.
+    /// proposed across them, and time spent in the model's `propose`,
+    /// `verify`, the acceptance decision on the host (`accept`: the shaped
+    /// distributions and draws of the sampled path), `recover`, and the
+    /// drafter `commit` of the accepted prefix.
     speculative_steps: usize = 0,
     accepted_drafts: usize = 0,
     proposed_drafts: usize = 0,
+    propose: std.Io.Duration = .zero,
     verify: std.Io.Duration = .zero,
     accept: std.Io.Duration = .zero,
     recover: std.Io.Duration = .zero,
+    commit: std.Io.Duration = .zero,
 };
 
 pub const Outcome = struct {
@@ -906,9 +909,11 @@ pub fn runLoop(
             timing.speculative_steps += 1;
             timing.accepted_drafts += result.accepted;
             timing.proposed_drafts += result.proposed;
+            timing.propose = .{ .nanoseconds = timing.propose.nanoseconds + result.propose.nanoseconds };
             timing.verify = .{ .nanoseconds = timing.verify.nanoseconds + result.verify.nanoseconds };
             timing.accept = .{ .nanoseconds = timing.accept.nanoseconds + result.accept.nanoseconds };
             timing.recover = .{ .nanoseconds = timing.recover.nanoseconds + result.recover.nanoseconds };
+            timing.commit = .{ .nanoseconds = timing.commit.nanoseconds + result.commit.nanoseconds };
             // The accepted drafts and the correction go through the ordinary
             // per-token checks in order; the correction is the next batch's
             // seed, so it is not sampled again.
@@ -968,7 +973,7 @@ pub fn runLoop(
 
 /// The accepted length, the model's next token, and the timings of one verify
 /// batch.
-const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, verify: std.Io.Duration, accept: std.Io.Duration, recover: std.Io.Duration };
+const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, propose: std.Io.Duration, verify: std.Io.Duration, accept: std.Io.Duration, recover: std.Io.Duration, commit: std.Io.Duration };
 
 /// Proposes `k` drafts from `seed_token`, checkpoints, verifies `[seed] ++
 /// drafts` on the main model, accepts the longest prefix (greedy: the row's
@@ -989,13 +994,15 @@ fn speculativeBatch(
     vocabulary: usize,
     drafter: inference.draft.Drafter,
 ) !BatchResult {
+    const propose_start = std.Io.Clock.awake.now(eng.io);
     const n = try eng.model.propose(seed_token, s.drafts[0..k]);
+    const propose = propose_start.durationTo(std.Io.Clock.awake.now(eng.io));
     try eng.model.checkpoint();
     s.tokens[0] = seed_token;
     @memcpy(s.tokens[1 .. 1 + n], s.drafts[0..n]);
     const batch = s.tokens[0 .. 1 + n];
     const hidden = s.hidden[0 .. (1 + n) * drafter.hidden];
-    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .verify = .zero, .accept = .zero, .recover = .zero };
+    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .propose = propose, .verify = .zero, .accept = .zero, .recover = .zero, .commit = .zero };
     const verify_start = std.Io.Clock.awake.now(eng.io);
     if (greedy) {
         try eng.model.verifyGreedy(batch, vocabulary, s.choices[0 .. 1 + n], hidden, observer);
@@ -1036,7 +1043,9 @@ fn speculativeBatch(
     const recover_start = std.Io.Clock.awake.now(eng.io);
     try eng.model.recover(batch[0 .. 1 + result.accepted]);
     result.recover = recover_start.durationTo(std.Io.Clock.awake.now(eng.io));
+    const commit_start = std.Io.Clock.awake.now(eng.io);
     try eng.model.commitDraft(batch[0 .. 1 + result.accepted], hidden[0 .. (1 + result.accepted) * drafter.hidden]);
+    result.commit = commit_start.durationTo(std.Io.Clock.awake.now(eng.io));
     return result;
 }
 

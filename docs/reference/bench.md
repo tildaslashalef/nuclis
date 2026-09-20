@@ -49,6 +49,7 @@ first-touch page-in of the mapped weights and is normally the warmup.
 | `speculative`, `draft_length` | With `--speculative on` (or a drafter in the file) every run is an off/on pair on the same loaded model; the on sample carries the draft length. |
 | `speculative_steps`, `accepted_per_step` | Verify batches the run made and the mean accepted drafts per batch; tokens per batch is `(generated_tokens − 1) / speculative_steps`. |
 | `verify_milliseconds`, `accept_milliseconds`, `recover_milliseconds` | The run's time in the model's verify batches, in the host acceptance decision (the sampled path's per-row distributions), and in recovery (rewind and replay); divide by `speculative_steps` for the per-batch cost. |
+| `propose_milliseconds`, `commit_milliseconds` | The run's time in the drafter's proposal of the batch's drafts and in its commit of the accepted prefix; divide by `speculative_steps` for the per-batch cost. The prompt commit is inside `prefill_milliseconds`. |
 | `mean_speculative_decode_tokens_per_second`, `decode_speedup` | The on samples' decode mean and its ratio to the off samples' mean, the pair's comparison. |
 
 Means are computed over measured (non-warmup) samples only; a rate that could
