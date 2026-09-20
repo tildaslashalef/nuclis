@@ -125,6 +125,10 @@ pub const Plan = struct {
     alpha_c: Buffer, // padded × 48
     beta_c: Buffer,
     mixed_out_c: Buffer, // padded × 6144
+    /// Post-`output_norm` rows of a prefill chunk when `prefill` is asked for
+    /// them; a drafter's `commit` consumes the same rows, so it exists only
+    /// with the draft.
+    prefill_hidden: Buffer, // chunk × hidden
 
     /// The embedded prediction head's workspace, allocated only when a
     /// drafter was requested. `draft_h` is the block's `h_nextn` (after
@@ -241,6 +245,7 @@ pub const Plan = struct {
         self.alpha_c = try backend.create(n * 48 * 4);
         self.beta_c = try backend.create(n * 48 * 4);
         self.mixed_out_c = try backend.create(n * 6144 * 4);
+        self.prefill_hidden = try backend.create(if (draft) chunk * hidden * 4 else 4);
         self.rotation = null;
         if (binding.rotation) |rotation| {
             var signs: [3]Buffer = undefined;
@@ -463,12 +468,20 @@ pub const Plan = struct {
     /// here (`error.InvalidShape`): trace through `step`. Arithmetic order
     /// differs from `step` (tile accumulation), so results agree within a
     /// tolerance, not bit for bit; `generation-check --metal` measures it.
-    pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, observer: ?Observer) !void {
+    ///
+    /// `hidden_rows`, when given (`tokens.len × hidden`), receives every
+    /// row's post-`output_norm` hidden — the rows the drafter's `commit`
+    /// consumes — and requires the block.
+    pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, hidden_rows: ?[]f32, observer: ?Observer) !void {
         if (tokens.len == 0) return error.InvalidShape;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
+        if (hidden_rows) |h| {
+            if (!self.has_draft) return error.HiddenUnsupported;
+            if (h.len != tokens.len * hidden) return error.InvalidShape;
+        }
         // The whole prompt must fit: a prompt is never half-consumed.
         if (self.state.status != .ready) return error.SessionNotReady;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
@@ -476,7 +489,7 @@ pub const Plan = struct {
         while (offset < tokens.len) {
             const count = @min(self.chunk, tokens.len - offset);
             const last = offset + count == tokens.len;
-            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, observer);
+            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (hidden_rows) |h| h[offset * hidden ..][0 .. count * hidden] else null, observer);
             offset += count;
             // The whole prompt is one `step` for the loop's hooks, so this is
             // the only place a caller can learn how far a long prefill has got.
@@ -484,16 +497,26 @@ pub const Plan = struct {
         }
     }
 
-    fn prefillChunk(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, observer: ?Observer) !void {
+    fn prefillChunk(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, hidden_rows: ?[]f32, observer: ?Observer) !void {
         const count = tokens.len;
         std.debug.assert(count >= 1 and count <= self.chunk);
+        const want_outputs = logits != null or greedy != null or topk != null;
         try self.state.beginChunk(count);
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
         try self.recordLayers(tokens, count, observer);
-        if (logits != null or greedy != null or topk != null) {
+        if (hidden_rows != null) {
+            // Normalize every row, as `verify` does; the last row also serves
+            // the output head when a readback was asked for.
+            try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+            try b.copy(self.prefill_hidden, self.normalized_c, count * hidden);
+            if (want_outputs) {
+                try b.copy(self.normalized, self.normalized_c.slice((count - 1) * hidden * 4, hidden * 4), hidden);
+                try self.recordOutputs(greedy, topk);
+            }
+        } else if (want_outputs) {
             const last_row = self.x_c.slice((count - 1) * hidden * 4, hidden * 4);
             try b.rmsNorm(last_row, self.output_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
             try self.recordOutputs(greedy, topk);
@@ -501,6 +524,7 @@ pub const Plan = struct {
         try b.commit();
         try self.readOutputs(logits, greedy, topk);
         try self.state.commitChunk(count);
+        if (hidden_rows) |dest| @memcpy(dest, self.prefill_hidden.floats()[0 .. count * hidden]);
     }
 
     /// Records the embedding gather and every decoder layer over one admitted

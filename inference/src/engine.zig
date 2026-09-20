@@ -74,20 +74,34 @@ pub fn Executor(comptime Family: type) type {
         /// the CPU reference steps token by token. Readbacks refer to the last token.
         /// The whole batch must fit: it is admitted before the first write, so a
         /// refused batch leaves the position unchanged on both executors.
-        pub fn prefill(self: *Self, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, observer: ?Observer) !void {
+        ///
+        /// `hidden`, when given (`tokens.len × hidden`), receives every row's
+        /// post-`output_norm` hidden on both executors; a family with no such
+        /// hidden refuses it (`error.HiddenUnsupported`).
+        pub fn prefill(self: *Self, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, hidden: ?[]f32, observer: ?Observer) !void {
             if (tokens.len == 0) return error.InvalidShape;
             switch (self.*) {
                 .cpu => |*runtime| {
                     if (tokens.len > runtime.state.capacity - runtime.state.position) return error.ContextFull;
-                    for (tokens, 0..) |token, i| try runtime.step(token, if (i + 1 == tokens.len) logits else null, observer);
+                    if (hidden) |out| {
+                        if (comptime @hasField(Family.Runtime, "h")) {
+                            const width = runtime.h.len;
+                            if (out.len != tokens.len * width) return error.InvalidShape;
+                            for (tokens, 0..) |token, i| {
+                                try runtime.step(token, if (i + 1 == tokens.len) logits else null, observer);
+                                @memcpy(out[i * width ..][0..width], runtime.h);
+                            }
+                        } else return error.HiddenUnsupported;
+                    } else for (tokens, 0..) |token, i| try runtime.step(token, if (i + 1 == tokens.len) logits else null, observer);
                 },
                 .metal => |*m| {
                     if (observer != null and observer.?.layer != null) {
+                        if (hidden != null) return error.HiddenUnsupported;
                         for (tokens, 0..) |token, i| {
                             const last = i + 1 == tokens.len;
                             try m.plan.step(token, if (last) logits else null, if (last) greedy else null, if (last) topk else null, observer);
                         }
-                    } else try m.plan.prefill(tokens, logits, greedy, topk, observer);
+                    } else try m.plan.prefill(tokens, logits, greedy, topk, hidden, observer);
                 },
             }
         }
@@ -227,9 +241,9 @@ pub const Model = struct {
             inline else => |*e| try e.step(token, logits, greedy, topk, observer),
         }
     }
-    pub fn prefill(self: *Model, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, observer: ?Observer) !void {
+    pub fn prefill(self: *Model, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, hidden: ?[]f32, observer: ?Observer) !void {
         switch (self.exec) {
-            inline else => |*e| try e.prefill(tokens, logits, greedy, topk, observer),
+            inline else => |*e| try e.prefill(tokens, logits, greedy, topk, hidden, observer),
         }
     }
     pub fn verify(self: *Model, tokens: []const u32, vocabulary: usize, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
@@ -346,7 +360,7 @@ pub const Model = struct {
             // rewound or replayed.
             if (accepted.len == self.session().position - at) return;
             try self.rewind();
-            if (accepted.len > 0) try self.prefill(accepted, null, null, null, null);
+            if (accepted.len > 0) try self.prefill(accepted, null, null, null, null, null);
         } else {
             try self.truncate(at + accepted.len);
         }
@@ -794,7 +808,7 @@ pub fn runLoop(
     } else if (eng.model.chunkedPrefill(observer)) {
         // One prefill call for the whole prompt; the per-token hooks fire once.
         if (hooks) |h| if (h.before_step) |call| try call(h.context, eng.model.session().position);
-        eng.model.prefill(tokens, if (want_logits) logits else null, if (gpu_greedy) &chosen else null, if (gpu_topk) &top else null, observer) catch |err| switch (err) {
+        eng.model.prefill(tokens, if (want_logits) logits else null, if (gpu_greedy) &chosen else null, if (gpu_topk) &top else null, null, observer) catch |err| switch (err) {
             error.Cancelled => {
                 resetAll(eng, history);
                 timing.prefill = prefill_start.durationTo(std.Io.Clock.awake.now(io));

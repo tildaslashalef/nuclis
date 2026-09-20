@@ -832,7 +832,7 @@ pub const Completer = struct {
         self.eng.model.reset();
         if (self.history) |h| h.reset();
         self.seen.clearRetainingCapacity();
-        self.eng.model.prefill(tokens, self.buffers.logits, null, null, self.observer) catch |err| {
+        self.eng.model.prefill(tokens, self.buffers.logits, null, null, null, self.observer) catch |err| {
             self.eng.model.reset();
             return err;
         };

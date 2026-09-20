@@ -151,7 +151,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
                     if (tokens.len > r.state.capacity - r.state.position) return error.ContextFull;
                     for (tokens, 0..) |token, i| try r.step(token, if (i + 1 == tokens.len) logits else null, observer);
                 },
-                .metal => |*p| try p.prefill(tokens, logits, null, null, observer),
+                .metal => |*p| try p.prefill(tokens, logits, null, null, null, observer),
             }
         }
         fn reset(self: *@This()) void {
@@ -443,6 +443,27 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
         try half.draftForwardHost(h_prev, draft.tokens[1], 1, null, logits);
         try compareDraft("metal f16 position 1", p1_h, half.draft_h.floats()[0..hidden], bounds.half_max_abs, bounds.half_rel_rms);
         if (argmax(logits) != draft.greedy[1]) return error.DraftGreedyMismatch;
+
+        // `prefill` yields the post-`output_norm` hidden of every row (the
+        // drafter's commit input); it must reproduce `verify`'s rows, which
+        // are already checked.
+        const rows = draft.tokens.len;
+        const prefill_hidden = try alloc.alloc(f32, rows * hidden);
+        defer alloc.free(prefill_hidden);
+        const verify_hidden = try alloc.alloc(f32, rows * hidden);
+        defer alloc.free(verify_hidden);
+        const verify_rows = try alloc.alloc(f32, rows * spec.vocabulary);
+        defer alloc.free(verify_rows);
+        var chunked = try Plan.init(alloc, b, view, binding, 4, 4, .f32, false, true);
+        defer chunked.deinit();
+        try chunked.prefill(&draft.tokens, null, null, null, prefill_hidden, null);
+        var verified = try Plan.init(alloc, b, view, binding, 4, 4, .f32, false, true);
+        defer verified.deinit();
+        try verified.verify(&draft.tokens, verify_rows, verify_hidden, null);
+        var hidden_max_abs: f64 = 0;
+        for (verify_hidden, prefill_hidden) |e, a| hidden_max_abs = @max(hidden_max_abs, @abs(@as(f64, e) - a));
+        std.debug.print("Prefill hidden check passed: {d} rows match verify (max abs {e:.3}).\n", .{ rows, hidden_max_abs });
+        if (hidden_max_abs > 1e-3) return error.PrefillHiddenMismatch;
     }
     std.debug.print("Draft block check passed ({s}): positions 0 and 1 match the pinned trace; greedy tokens {d} and {d}.\n", .{ if (backend != null) "cpu and metal" else "cpu", draft.greedy[0], draft.greedy[1] });
 }
@@ -792,7 +813,7 @@ fn DraftRunner(comptime spec: Spec) type {
                     if (tokens.len > r.state.capacity - r.state.position) return error.ContextFull;
                     for (tokens, 0..) |token, i| try r.step(token, if (i + 1 == tokens.len) logits else null, null);
                 },
-                .metal => |*p| try p.prefill(tokens, logits, null, null, null),
+                .metal => |*p| try p.prefill(tokens, logits, null, null, null, null),
             }
         }
         fn verify(self: *@This(), tokens: []const u32, rows: []f32, h_rows: ?[]f32) !void {
@@ -1069,12 +1090,12 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
     for ([_]usize{ 64, 48 }) |chunk| {
         var big = try Plan.init(alloc, b, view, binding, 128, chunk, .f32, false, false);
         defer big.deinit();
-        try big.prefill(&tokens, actual, null, null, null);
+        try big.prefill(&tokens, actual, null, null, null, null);
         try compareChunked("chunk", chunk, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
     }
     var chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
     defer chunked.deinit();
-    try chunked.prefill(&tokens, actual, null, null, null);
+    try chunked.prefill(&tokens, actual, null, null, null, null);
     if (chunked.state.position != tokens.len or stepped.state.position != tokens.len) return error.PositionMismatch;
     try compareChunked("chunk", 32, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
     // The same comparison through the generic F32 tiles and matvecs
@@ -1091,7 +1112,7 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         for (tokens, 0..) |t, i| try generic_stepped.step(t, if (i + 1 == tokens.len) generic_expected else null, null, null, null);
         var generic_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
         defer generic_chunked.deinit();
-        try generic_chunked.prefill(&tokens, actual, null, null, null);
+        try generic_chunked.prefill(&tokens, actual, null, null, null, null);
         try compareChunked("F32 tiles, chunk", 32, generic_expected, actual, 5e-3, 2e-4);
     }
     // The same 70 tokens through an F16 cache, stepped and chunked,
@@ -1103,16 +1124,16 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
     try compareChunked("F16 KV stepped", 1, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
     var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
     defer half_chunked.deinit();
-    try half_chunked.prefill(&tokens, actual, null, null, null);
+    try half_chunked.prefill(&tokens, actual, null, null, null, null);
     try compareChunked("F16 KV chunk", 32, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
     // 60 more tokens do not fit the remaining 58 positions: refused before any work.
-    if (chunked.prefill(tokens[0..60], null, null, null, null)) |_| return error.ExpectedContextFull else |err| if (err != error.ContextFull) return err;
+    if (chunked.prefill(tokens[0..60], null, null, null, null, null)) |_| return error.ExpectedContextFull else |err| if (err != error.ContextFull) return err;
     if (chunked.state.position != tokens.len) return error.PositionMismatch;
-    try chunked.prefill(tokens[0..58], null, null, null, null);
+    try chunked.prefill(tokens[0..58], null, null, null, null, null);
     if (chunked.state.position != 128) return error.PositionMismatch;
     // A per-layer observer is a per-token contract: prefill refuses it.
     var context: u8 = 0;
-    if (stepped.prefill(tokens[0..1], null, null, null, .{ .context = &context, .layer = cancel })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    if (stepped.prefill(tokens[0..1], null, null, null, null, .{ .context = &context, .layer = cancel })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
 }
 
 /// The distance between two logit rows: max abs, relative RMS, and each

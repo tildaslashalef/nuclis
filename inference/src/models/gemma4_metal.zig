@@ -565,7 +565,8 @@ pub const Plan = struct {
     /// (`error.InvalidShape`): trace through `step`. Arithmetic order differs
     /// from `step` (tile accumulation), so results agree within a tolerance,
     /// not bit for bit; `generation-check --metal` measures it.
-    pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, observer: ?Observer) !void {
+    pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, hidden_rows: ?[]f32, observer: ?Observer) !void {
+        if (hidden_rows != null) return error.HiddenUnsupported;
         if (tokens.len == 0) return error.InvalidShape;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
