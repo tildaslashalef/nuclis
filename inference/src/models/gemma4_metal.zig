@@ -26,7 +26,7 @@
 //! `commit()` — which the synchronous backend guarantees. Every attention
 //! cache is allocated for the full capacity, sliding layers included (the
 //! reference does the same); a ring layout for the windowed layers is a
-//! session-layout unit of its own (roadmap).
+//! session-layout unit of its own (ENGN-19).
 const std = @import("std");
 const model = @import("gemma4.zig");
 const weights = @import("../runtime/weights.zig");

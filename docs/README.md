@@ -10,7 +10,6 @@ agent.
 | Document | Purpose |
 | --- | --- |
 | [spec.md](spec.md) | **Authoritative spec.** Requirements, scope, and acceptance criteria |
-| [roadmap.md](roadmap.md) | Accepted themes not yet planned (performance follow-ups, vision, agent expansion) and the deferred list |
 | [architecture.md](architecture.md) | **Start here.** The engine stack in ten short sections with diagrams |
 | [development.md](development.md) | Toolchain, build/test commands, user directories, versioning, conventions |
 | [llm-guide.md](llm-guide.md) | LLM and inference concepts, taught as they are implemented here |
@@ -40,9 +39,12 @@ Detailed engineering documents under [reference/](reference/):
 
 ## Decisions
 
-Point decisions that are hard to reverse or likely to be questioned live in
-[adr/](adr/), one file per decision (see the [template](adr/TEMPLATE.md)); a
-change supersedes rather than edits.
+Decisions that change the architecture and span several units are recorded
+in [adr/](adr/), one file per decision (see the [template](adr/TEMPLATE.md)),
+written when the user asks for one; the plan's units cite it. A change
+supersedes rather than edits. Ordinary units need no record beyond the plan
+and the log. There is no roadmap file: what comes next is agreed in session
+and written into the plan.
 
 ## Data directories
 

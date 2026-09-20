@@ -837,8 +837,8 @@ One unit each, after AGNT-01:
    are measured. See the
    [engineering log](engineering-log.md#agnt-07--polish-resume-and-the-agent-plan-closed-2026-09-14).
 
-The plan closes here. The engine work that follows is in
-[roadmap.md](roadmap.md); the one-time repository reset is a separate,
+The plan closes here. The engine work that follows is planned in
+[TODO.md](../TODO.md); the one-time repository reset is a separate,
 post-plan action, not a unit of this plan.
 
 Default tests need no model: parser tests, tool contracts against temporary

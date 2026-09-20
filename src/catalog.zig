@@ -32,7 +32,7 @@ pub const Companion = struct {
     file: []const u8,
     size: u64,
     sha256: []const u8,
-    /// The unit that will consume it (roadmap ids); informational until then.
+    /// The unit that will consume it (plan ids); informational until then.
     loaded_by: []const u8,
 };
 

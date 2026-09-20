@@ -307,7 +307,7 @@ memory, and leave the rest to the grid.
   half operands. At 22 tokens the large tiles run at 20–25 GB/s of weight
   traffic (one token tile, too few threadgroups, a latency-bound K loop),
   hence the 32×32 set for short chunks; short prompts remain far from the
-  weight-bandwidth floor (a follow-up, see roadmap).
+  weight-bandwidth floor (KERN-12's multi-row matvec and KERN-14's split-K in [TODO.md](../../TODO.md)).
 - Mixture of experts (KERN-09; see [§ Gathered expert kernels](#gathered-expert-kernels-kern-09)):
   `nu_route` (softmax and top-k with renormalized weights per logit row),
   `nu_matvec_experts` (a matvec over the selected experts' slices of a 3-D

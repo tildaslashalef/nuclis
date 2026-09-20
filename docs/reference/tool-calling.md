@@ -15,7 +15,7 @@ with configurable thinking and no previous-turn thoughts in ordinary history.
 Neither card alone defines the complete wire format.
 
 The engine's pinned Gemma artifacts are **12B**, not the requested 26B-A4B.
-The latter's numerical implementation remains the 26B-A4B mixture-of-experts unit in the roadmap. The existing
+The latter's numerical implementation landed as MODL-10 (2026-09-18). The existing
 [artifact record](artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11)
 and [profile fixtures](prompt-profile.md#evidence-and-reproduction) remain
 authoritative for implemented behavior. A live upstream template is evidence

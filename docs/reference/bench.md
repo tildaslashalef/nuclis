@@ -115,7 +115,7 @@ kernel's cost grows with the visible cache (ENGN-05 measured the matmul
 tile at the reference's rate at 4K; ENGN-08 profiled the kernel at 30 % of
 the 16K prefill and found it latency-bound, not cache-bound:
 [metal-backend.md § ENGN-08](metal-backend.md#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change),
-[roadmap](../roadmap.md#also-deferred)). The 16K row is lower than the 66.5 / 8.92
+KERN-15 in [TODO.md](../../TODO.md)). The 16K row is lower than the 66.5 / 8.92
 measured after the 13,399-token docs prompt in KERN-08 because the prompt is
 longer (the decode rate at 16K context is what this row states) and the
 run followed the 4K row without a cool-down.
@@ -422,7 +422,7 @@ context 2048, one warmup, three measured runs; decode ms/step is
 
 The instruct profile pays the pre-KERN-06 cost on every token because its
 presence penalty must be applied to all 248,320 logits before the sort; a
-GPU penalty kernel is a measured follow-up ([roadmap](../roadmap.md)). The
+GPU penalty kernel is a measured follow-up (KERN-13 in [TODO.md](../../TODO.md)). The
 thinking profile stays on the GPU path. Prefill (34.7 tok/s) and first
 token (634 ms greedy, 654 ms instruct) are unchanged in definition; the
 greedy row was re-measured in the same session as the profiles (10.60 vs
@@ -522,8 +522,8 @@ Prefill is at 92 % at 512 and falls with length (78 % at 4K, 67 % at 16K,
 52 % at 32K): the reference's own rate falls too (210 → 143), but
 nuclis's falls faster, as Qwen's did before ENGN-08 found the chunk attention
 kernel latency-bound. Nothing in MODL-06 or MODL-07 was tuned for Gemma; the
-per-kernel profile on this file is the follow-up already in the
-[roadmap](../roadmap.md#also-deferred), and the 512-wide global layers'
+per-kernel profile on this file is the follow-up already planned (ENGN-18
+in [TODO.md](../../TODO.md)), and the 512-wide global layers'
 chunk attention (scores recomputed per value split, MODL-06) is the first
 thing to profile.
 
@@ -531,8 +531,8 @@ thing to profile.
 32,768 capacity: every one of the 40 sliding layers is allocated for the
 full capacity although it reads only the last 1,024 rows ([gemma4.md §
 Metal plan](gemma4.md#metal-plan-modl-06-2026-09-11)); a ring layout for
-those layers would cut it to about 0.35 GB and is the roadmap's
-session-layout unit. Peak resident set of the `bench` process was
+those layers would cut it to about 0.35 GB and is the plan's
+session-layout unit (ENGN-19). Peak resident set of the `bench` process was
 10.75 GiB at every length and its peak footprint 11.74–11.80 GB; the
 7.37 GB weight file is memory-mapped and charged to wired memory, so the
 headroom is a calculation: 48 GiB − 7.37 GB − 11.8 GB ≈ 29 GiB at 32K
@@ -578,7 +578,7 @@ at 32K: the Q4_0 matmul tile decodes two 16-value segments per 32-value
 block with two 8-byte loads and a scale read each, where the K-quant
 tiles amortize their loads over 256 values, and the long-context fall is
 the chunk attention latency already named for the K-quant file. Both are
-the per-kernel profile's first targets ([roadmap](../roadmap.md#also-deferred)).
+the per-kernel profile's first targets (ENGN-18 in [TODO.md](../../TODO.md)).
 The reference's own 16K row has a 15 % spread this time (132–175 tok/s),
 so ratios at that length are indicative.
 
@@ -737,8 +737,8 @@ The byte count alone projected two to three times the Qwen rate; the
 kernel set delivers 1.3×, and the fork's own kernels 1.6× over the
 mainline Qwen record (17.05 against 9.66 at 512). Closing the rest is a
 different ternary arithmetic in the matvec (packed integer products, or
-one decoded weight across several inputs), a kernel unit the roadmap
-carries, not a plan change. From 512 to 32K nuclis adds 25.9 ms per step
+one decoded weight across several inputs), a kernel unit the plan
+carries (KERN-16), not a plan change. From 512 to 32K nuclis adds 25.9 ms per step
 and the fork 19.9: the same attention-and-recurrent growth as the Qwen
 record (KERN-08's flash-decoding kernel over 16 attention layers, the 48
 DeltaNet states), on a smaller base.
@@ -843,12 +843,12 @@ has the per-kernel profile); the 4K row's decode drifted from 9.14 tok/s
 on its warmup to 8.12 on its third sample within four minutes, which no
 other length showed and which was not investigated (thermal is the
 obvious suspect). Both are the performance theme's material
-([roadmap](../roadmap.md)), not this unit's.
+(KERN-14 in [TODO.md](../../TODO.md)), not this unit's.
 
 **Memory.** The session block is 1,744,830,464 bytes (1.63 GiB) at
 32,768 capacity: 52 layers × 2 × 256 halves per position, every sliding
 layer allocated for the full capacity although it reads only the last
-2,048 rows (a ring layout is the roadmap's session-layout unit). Peak
+2,048 rows (a ring layout is the plan's session-layout unit, ENGN-19). Peak
 resident set of the `bench` process was 1.80 GiB at every length and its
 peak footprint 2.17–2.22 GB; the 15.88 GB weight file is memory-mapped and
 charged to wired memory, so the headroom is a calculation: 48 GiB −
@@ -1072,8 +1072,8 @@ Prefill in the same run: the 32-token matmul tile runs at 25–29 GB/s on a
 22-token prompt, the known small-M case (ENGN-05; one token tile leaves too
 few threadgroups), not a Q4_0 property.
 
-Follow-ups from this profile are in the
-[roadmap](../roadmap.md#also-deferred); none is scheduled before TERM-01.
+Follow-ups from this profile are in the plan
+([TODO.md](../../TODO.md): KERN-14, ENGN-18); none was scheduled before TERM-01.
 
 ## Kernel micro-benchmark
 

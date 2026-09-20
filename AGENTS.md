@@ -15,28 +15,30 @@ Read [docs/architecture.md](docs/architecture.md) for the stack overview and
 workflow and toolchain conventions live in
 [docs/development.md](docs/development.md); detailed reference documents
 (benchmarks, Metal backend, CPU reference, GGUF, prompt profile) live under
-[docs/reference/](docs/reference/). The plan, the log, and the roadmap are
-described in the session protocol below.
+[docs/reference/](docs/reference/). The plan and the log are described in
+the session protocol below.
 
 ## The session protocol
 
-Three files carry the project's state, and every session starts from them:
+Two files carry the project's state, and every session starts from them:
 
 | File | Holds | Changes when |
 | --- | --- | --- |
 | [TODO.md](TODO.md) | the active plan: unfinished units only, with a *Where we are* hand-off note | a plan is written, a session ends, a unit closes |
 | [docs/engineering-log.md](docs/engineering-log.md) | the durable, append-only record of every unit ever closed, with its evidence | a unit closes (entry **and** table row, together) |
-| [docs/roadmap.md](docs/roadmap.md) | accepted themes not yet planned | a theme is accepted, or moves into `TODO.md` |
 
 **A fresh session is in one of two states.** Read `TODO.md` first; it
 tells you which.
 
 1. **It lists work.** Summarize *Where we are* and the next unit, ask how
    the user wants to continue, then continue that unit. Do not replan.
-2. **It is empty.** Nothing is in progress. Ask what to work on, take the
-   next theme from the roadmap if the user agrees, and write the plan into
-   `TODO.md` in its format (where-we-are note, order, unit table, unit
-   designs) before touching code.
+2. **It is empty.** Nothing is in progress. Ask what to work on, agree the
+   theme with the user, and write the plan into `TODO.md` in its format
+   (where-we-are note, order, unit table, unit designs) before touching
+   code. There is no roadmap file. A theme that changes the architecture
+   and spans several units is recorded as an ADR under `docs/adr/` **when
+   the user asks for one** (never by default), and the plan cites it;
+   ordinary units need no record beyond the plan and the log.
 
 **Ending a session** leaves `TODO.md` able to restart the next one on
 its own: the current unit's section says what the session delivered and
@@ -56,12 +58,13 @@ row from `TODO.md`; refresh *Where we are*. When the last unit closes,
 empty `TODO.md` back to its header.
 
 **Nothing closes silently.** Work that lands outside a planned unit (a
-catalogue entry, a roadmap decision, a side fix) is still a unit: give it
+catalogue entry, a process decision, a side fix) is still a unit: give it
 the next identifier of its area and log it in the commit that lands it.
 
 **Durable knowledge never lives only in `TODO.md`**: requirements go to
 `docs/spec.md`, environment facts to `docs/development.md`, designs that
-outlive a unit to a reference document, future ideas to `docs/roadmap.md`.
+outlive a unit to a reference document, decisions that outlive the plan
+to an ADR when the user asks for one.
 
 ## Session hygiene
 
@@ -317,7 +320,7 @@ identifier as a *citation*, never as the explanation:
 - **Current docs** (architecture, llm-guide, reference) may cite an identifier
   as a link to its log entry, but the sentence must read correctly if the
   identifier is removed.
-- **The log and the live plan** (the log itself, `TODO.md`, the roadmap) keep
+- **The log and the live plan** (the log itself, `TODO.md`, the ADRs) keep
   identifiers as keys. On close, the identifier migrates to the log and its
   anchor becomes permanent; never reuse an identifier for a different unit.
 

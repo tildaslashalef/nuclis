@@ -1055,7 +1055,7 @@ the CPU could touch anything. So the instruct profile falls back to the
 full 1 MB readback on every token and measured 8.69 tok/s against 10.60
 greedy. That is not a defect of the design; it is the honest cost of a
 default the model card asks for, measured and recorded, with the fix (a
-kernel that applies the history on the device) named in the roadmap. The
+kernel that applies the history on the device) planned as KERN-13. The
 engineering rule this leaves behind: when a default changes the output
 distribution, make its effect on both correctness and speed a measured
 number before calling it the default.
@@ -1416,7 +1416,7 @@ them at 170. The 32×32 set for chunks of at most 32 tokens recovers the
 lost threadgroups (39 tok/s, above the 35 before ENGN-05), but the honest
 number is that 22 tokens take 563 ms and one token takes 95 ms: a
 small-M product wants a different design (split the K dimension across
-threadgroups and reduce), which is queued in the roadmap rather than
+threadgroups and reduce), which is planned as KERN-14 rather than
 squeezed into a unit about the large-tile ceiling.
 
 **The numerics contract moved, and the record says by how much.** The F32

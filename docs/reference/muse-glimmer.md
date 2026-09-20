@@ -316,7 +316,7 @@ Every cache is allocated for the full session capacity, sliding layers
 included (the CPU reference does the same): 52 × 2 × 256 halves per
 position, 1.7 GB at 32,768 tokens with the F16 cache. A ring layout for
 the 39 windowed layers is a session-layout unit of its own
-([roadmap](../roadmap.md)).
+(ENGN-19 in [TODO.md](../../TODO.md)).
 
 **Against the pinned traces** (`make compare-muse-glimmer`, three
 positions of `<|begin_of_text|>Hello,`, 157 files, 2026-09-19):
@@ -365,7 +365,7 @@ Decode is 71 % of the reference (15.87 GB of weights at 9.99 tok/s is
 Qwen `make bench` is unchanged by the shared-kernel change (39.75 /
 10.44 tok/s the same day; its recorded spread is 10.36–10.47). The
 decode gap is wider than Gemma's (81 %) or Qwen's; where the time goes
-is the performance theme's question ([roadmap](../roadmap.md)), with
+is the performance theme's question (KERN-14 in [TODO.md](../../TODO.md)), with
 the per-kernel profile below as its starting point.
 
 **Per-kernel profile** (`make bench-profile MODEL=<file> ARGS=--raw`,
@@ -411,4 +411,4 @@ decoder, the `high` effort), the catalogue pin, and the acceptance record
 13.69 and 9.98), and AGNT-10 with the ATEM tool protocol
 ([tool-calling.md](tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).
 The family is complete for text; the vision projector and the DFlash
-drafter are the roadmap's.
+drafter are planned (MODL-23 and MODL-20 in [TODO.md](../../TODO.md)).

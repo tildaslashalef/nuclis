@@ -36,7 +36,7 @@ pub const Type = enum(u32) {
 /// Numeric and boolean arrays of at most this many elements keep their
 /// values in the Document; larger ones keep a descriptor. Sized for
 /// per-layer arrays (Gemma 4's 48-layer patterns) with room for the
-/// families in the roadmap; vocabulary arrays are millions of elements.
+/// families to come; vocabulary arrays are millions of elements.
 pub const retained_array_items = 64;
 
 /// Arrays under these key prefixes are retained whole, strings included,

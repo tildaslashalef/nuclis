@@ -62,7 +62,7 @@ ENGN-17 re-runs the record on the finished path and sets the defaults.
 TERM-10 (chat polish) is independent of everything else and sits where it
 does only to land early. The vision units bring Qwen first, then the chat's
 image input on it, then the other two families. The general performance
-follow-ups (moved from the roadmap on 2026-09-20) close the plan in the
+follow-ups (planned 2026-09-20) close the plan in the
 order of measured leverage: the row-poor matvecs first (two thirds of
 Muse's gap, and every family's small projections), then the long-context
 prefill attention (the 32K record's largest deficit, and every speculative
@@ -70,8 +70,7 @@ verify batch at long context), then Gemma 12B's launch-bound decode, then
 the ring layout (memory, not speed), and last the ternary arithmetic
 experiment, which is the least certain and may close negative. AGNT-12
 (background commands) and APPS-14 (teacher-forced `eval`) are drafted for
-decision, not ordered. The roadmap ([docs/roadmap.md](docs/roadmap.md)) is
-empty.
+decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
@@ -551,8 +550,8 @@ generation check (a new case); `make check`, `make compare`.
   `accept_milliseconds / speculative_steps`). Ordinary sampled decoding
   uses the GPU partial top-k (`gpu_topk`, `Sampler.selectFrom`) and sorts
   nothing. The instruct profile's presence penalty 1.5 makes `selectFrom`
-  defer (penalties change the sort), which is the roadmap's "GPU penalty
-  kernel" item and stays a dependency here.
+  defer (penalties change the sort), which is KERN-13 and stays a
+  dependency here.
 - `verifyGreedy` already runs the argmax kernel per row of `verify_logits`
   (`b.argmax(verify_logits.slice(i × vocabulary × 4, …))`).
 
@@ -606,7 +605,7 @@ comparable across records. The per-entry verdict lives in `src/catalog.zig`
 4. Documentation: `docs/development.md § Configuration file`,
    `docs/reference/bench.md § Definitions` (the speculative fields),
    `docs/spec.md § Speculative decoding` (the measured result and the
-   defaults), the roadmap's speculative paragraph.
+   defaults).
 
 **Acceptance.** The record with both baselines; the entry's defaults from
 it; `make check`; `config init` / `config show` tests cover the new entry

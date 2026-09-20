@@ -91,6 +91,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-18 | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2026-09-20 |
 | APPS-13 | The configuration section is `generation`, not `generate` | 2026-09-20 |
 | ENGN-12 | Batched verification, speculative generation (greedy and sampled), the switch and the draft length, the benchmark record | 2026-09-20 |
+| REPO-07 | The roadmap file retired; themes are agreed in session and, when architectural, recorded as ADRs on request | 2026-09-20 |
 
 | REPO-06 | DiffusionGemma structured reads and kev research | 2026-09-20 |
 
@@ -3082,3 +3083,33 @@ baseline without the drafter loaded (ENGN-17). The 16K and 32,639 rows were
 not run: the prefill path makes them minutes long and the 4K row already
 shows the trend. Draft length 7 was never worse than 4 in the record; the
 default waits for the proposal policy.
+
+### REPO-07 — The roadmap file retired; themes are agreed in session and, when architectural, recorded as ADRs on request (2026-09-20)
+
+**Outcome.** `docs/roadmap.md` is deleted. Its role, the queue of accepted
+themes not yet planned, no longer exists as a file: what comes next is
+agreed with the user in session and written straight into `TODO.md`, and a
+theme that changes the architecture and spans several units is recorded as
+an ADR under `docs/adr/` only when the user asks for one; ordinary units
+need no record beyond the plan and the log. `AGENTS.md`'s session protocol
+(two state files, the empty-plan state) and `docs/README.md` say so. Every
+reference to the roadmap outside this log now points at the plan's unit
+that carries the item (KERN-13, KERN-14, KERN-15, KERN-16, ENGN-18,
+ENGN-19, MODL-20, MODL-23) or at the closed unit it became (MODL-10); four
+code comments were reworded. The roadmap's content had already moved into
+`TODO.md` on 2026-09-20; HTTP serving on the agent loop is not planned, and
+`docs/agent-spec.md` keeps the contract an endpoint would reuse.
+
+**Evidence.** No reference to `roadmap.md` remains outside this log and the
+dated research notes (`grep -rn roadmap` over the tree); `zig fmt --check`
+on the touched sources (comment edits only).
+
+**Files.** `docs/roadmap.md` (deleted), `AGENTS.md`, `docs/README.md`,
+`docs/agent-spec.md`, `docs/llm-guide.md`, `docs/reference/bench.md`,
+`docs/reference/gemma4.md`, `docs/reference/muse-glimmer.md`,
+`docs/reference/tool-calling.md`, `docs/reference/metal-backend.md`,
+`TODO.md`, `src/catalog.zig`, `inference/src/formats/gguf.zig`,
+`inference/src/models/muse_glimmer_metal.zig`,
+`inference/src/models/gemma4_metal.zig`, `docs/engineering-log.md`.
+
+**Remaining.** None; the ADR template stays as it was.
