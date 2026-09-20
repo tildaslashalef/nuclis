@@ -13,6 +13,7 @@ pub const tokenizer = @import("tokenizer/encode.zig");
 pub const models = @import("models/root.zig");
 pub const weights = @import("runtime/weights.zig");
 pub const sampling = @import("sampling/root.zig");
+pub const speculative = @import("sampling/speculative.zig");
 pub const session = @import("runtime/session.zig");
 pub const draft = @import("runtime/draft.zig");
 pub const observer = @import("runtime/observer.zig");
@@ -33,6 +34,7 @@ test {
     _ = weights;
     _ = session;
     _ = sampling;
+    _ = speculative;
     _ = engine;
     _ = events;
 }

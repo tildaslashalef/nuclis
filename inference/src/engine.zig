@@ -87,6 +87,44 @@ pub fn Executor(comptime Family: type) type {
                 },
             }
         }
+        /// Logits for every row of a verify batch: `rows.len == tokens.len ×
+        /// vocabulary`. The family's `verify` runs a chunk and the output head
+        /// over all rows when it has one; otherwise the CPU runtime steps token
+        /// by token. `h_rows`, when given, receives the post-`output_norm`
+        /// hidden per row (`tokens.len × Family` hidden), which the drafter's
+        /// `commit` consumes; a family without a specialized verify refuses it.
+        pub fn verify(self: *Self, tokens: []const u32, vocabulary: usize, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
+            switch (self.*) {
+                .cpu => |*runtime| if (comptime @hasDecl(Family.Runtime, "verify")) {
+                    try runtime.verify(tokens, rows, h_rows, observer);
+                } else {
+                    if (h_rows != null) return error.HiddenUnsupported;
+                    for (tokens, 0..) |token, i| try runtime.step(token, rows[i * vocabulary ..][0..vocabulary], observer);
+                },
+                .metal => |*m| if (comptime @hasDecl(Family.Plan, "verify")) {
+                    try m.plan.verify(tokens, rows, h_rows, observer);
+                } else {
+                    if (h_rows != null) return error.HiddenUnsupported;
+                    for (tokens, 0..) |token, i| try m.plan.step(token, rows[i * vocabulary ..][0..vocabulary], null, null, observer);
+                },
+            }
+        }
+        /// `verify`'s greedy sibling: per-row argmax only, no logit readback
+        /// where the family implements it.
+        pub fn verifyGreedy(self: *Self, tokens: []const u32, vocabulary: usize, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
+            _ = vocabulary;
+            switch (self.*) {
+                .cpu => |*runtime| if (comptime @hasDecl(Family.Runtime, "verifyGreedy")) {
+                    try runtime.verifyGreedy(tokens, out, h_rows, observer);
+                } else return error.UnsupportedVerify,
+                .metal => |*m| if (comptime @hasDecl(Family.Plan, "verifyGreedy")) {
+                    try m.plan.verifyGreedy(tokens, out, h_rows, observer);
+                } else {
+                    if (h_rows != null) return error.HiddenUnsupported;
+                    for (tokens, 0..) |token, i| try m.plan.step(token, null, &out[i], null, observer);
+                },
+            }
+        }
         pub fn readLogits(self: *Self, out: []f32) !void {
             switch (self.*) {
                 .cpu => return error.LogitsNotRetained,
@@ -188,6 +226,16 @@ pub const Model = struct {
     pub fn prefill(self: *Model, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, observer: ?Observer) !void {
         switch (self.exec) {
             inline else => |*e| try e.prefill(tokens, logits, greedy, topk, observer),
+        }
+    }
+    pub fn verify(self: *Model, tokens: []const u32, vocabulary: usize, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.verify(tokens, vocabulary, rows, h_rows, observer),
+        }
+    }
+    pub fn verifyGreedy(self: *Model, tokens: []const u32, vocabulary: usize, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.verifyGreedy(tokens, vocabulary, out, h_rows, observer),
         }
     }
     /// Whether `prefill` processes the prompt as chunks rather than per-token
@@ -307,6 +355,70 @@ pub const Model = struct {
     }
 };
 
+/// The host bound on a draft block: KERN-11's 8-row token tile less the seed
+/// row. A requested length above it is refused; the switch and the length are
+/// the only speculative knobs exposed (docs/spec.md § Speculative decoding).
+pub const max_draft_length = 7;
+
+/// Runtime speculative settings, resolved by the caller from the
+/// configuration file and flags. `enabled` alone does nothing without a
+/// loaded drafter.
+pub const Speculative = struct {
+    enabled: bool = false,
+    draft_length: usize = 0,
+};
+
+/// Engine-owned scratch for the speculative step, sized once when a drafter is
+/// loaded: the proposed drafts, their `q` logit rows, the target rows and
+/// hidden of a verify batch, and the candidate buffers `distribution` writes.
+/// `runLoop` borrows it; it is freed with the engine.
+const SpeculativeScratch = struct {
+    drafts: []u32,
+    q_rows: []f32,
+    rows: []f32,
+    hidden: []f32,
+    tokens: []u32,
+    choices: []u32,
+    p: []inference.sampling.Candidate,
+    q: []inference.sampling.Candidate,
+    residual: []inference.sampling.Candidate,
+
+    fn init(alloc: std.mem.Allocator, vocabulary: usize, hidden_width: usize) !SpeculativeScratch {
+        const rows = max_draft_length + 1;
+        const drafts = try alloc.alloc(u32, max_draft_length);
+        errdefer alloc.free(drafts);
+        const q_rows = try alloc.alloc(f32, max_draft_length * vocabulary);
+        errdefer alloc.free(q_rows);
+        const logits = try alloc.alloc(f32, rows * vocabulary);
+        errdefer alloc.free(logits);
+        const hidden = try alloc.alloc(f32, rows * hidden_width);
+        errdefer alloc.free(hidden);
+        const tokens = try alloc.alloc(u32, rows);
+        errdefer alloc.free(tokens);
+        const choices = try alloc.alloc(u32, rows);
+        errdefer alloc.free(choices);
+        const p = try alloc.alloc(inference.sampling.Candidate, vocabulary);
+        errdefer alloc.free(p);
+        const q = try alloc.alloc(inference.sampling.Candidate, vocabulary);
+        errdefer alloc.free(q);
+        const residual = try alloc.alloc(inference.sampling.Candidate, vocabulary);
+        errdefer alloc.free(residual);
+        return .{ .drafts = drafts, .q_rows = q_rows, .rows = logits, .hidden = hidden, .tokens = tokens, .choices = choices, .p = p, .q = q, .residual = residual };
+    }
+    fn deinit(self: *SpeculativeScratch, alloc: std.mem.Allocator) void {
+        alloc.free(self.drafts);
+        alloc.free(self.q_rows);
+        alloc.free(self.rows);
+        alloc.free(self.hidden);
+        alloc.free(self.tokens);
+        alloc.free(self.choices);
+        alloc.free(self.p);
+        alloc.free(self.q);
+        alloc.free(self.residual);
+        self.* = undefined;
+    }
+};
+
 /// Prompt tokens per prefill command buffer on the GPU plan. Bounds the
 /// chunk activation buffers (~0.4 MB per token) and the work between
 /// cancellation checks; the plan clamps it to the session capacity. A
@@ -376,6 +488,8 @@ pub const Engine = struct {
     /// The attention cache precision the session was built with: the
     /// request on the GPU plan, always `f32` on the CPU reference.
     kv_precision: KvPrecision,
+    /// Speculative-step scratch, allocated exactly when a drafter is loaded.
+    spec: ?SpeculativeScratch,
     /// `general.name` from the artifact metadata, borrowed from the mapping.
     name: []const u8,
     /// Wall time spent in `open`, including directory parsing and mapping.
@@ -418,6 +532,11 @@ pub const Engine = struct {
             },
         };
         errdefer model.deinit(alloc);
+        // The verify scratch is part of the load plan: it exists exactly when a
+        // drafter was requested, so a plain run pays nothing.
+        var spec: ?SpeculativeScratch = null;
+        errdefer if (spec) |*s| s.deinit(alloc);
+        if (model.drafter()) |drafter| spec = try SpeculativeScratch.init(alloc, vocab.tokens.len, drafter.hidden);
         var encoder = try inference.tokenizer.Encoder.init(alloc, &vocab);
         errdefer encoder.deinit();
         return .{
@@ -433,6 +552,7 @@ pub const Engine = struct {
             .stop_ids = stop_ids,
             .stop_count = stop_count,
             .kv_precision = if (backend == .cpu) .f32 else kv,
+            .spec = spec,
             .name = mapped.document.string("general.name") orelse "unnamed model",
             .load = started.durationTo(std.Io.Clock.awake.now(io)),
         };
@@ -440,6 +560,7 @@ pub const Engine = struct {
 
     pub fn deinit(self: *Engine) void {
         self.model.deinit(self.alloc);
+        if (self.spec) |*s| s.deinit(self.alloc);
         self.encoder.deinit();
         self.vocab.deinit();
         self.mapped.deinit(self.io);
@@ -556,6 +677,7 @@ pub fn complete(
     limit: usize,
     sampler: *inference.sampling.Sampler,
     history: ?*inference.sampling.History,
+    settings: Speculative,
     buffers: CompletionBuffers,
     observer: ?Observer,
     sink: anytype,
@@ -577,7 +699,7 @@ pub fn complete(
     };
     var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, &eng.vocab, buffers.effort), .sink = sink };
     defer bridge.decoder.deinit();
-    const outcome = try runLoop(eng, tokens, limit, sampler, history, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token });
+    const outcome = try runLoop(eng, tokens, limit, sampler, history, settings, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token });
     try bridge.decoder.end(outcome, sink);
     return outcome;
 }
@@ -598,6 +720,7 @@ pub fn runLoop(
     limit: usize,
     sampler: *inference.sampling.Sampler,
     history: ?*inference.sampling.History,
+    settings: Speculative,
     logits: []f32,
     candidates: []inference.sampling.Candidate,
     generated: []u32,
@@ -606,6 +729,15 @@ pub fn runLoop(
 ) !Outcome {
     const io = eng.io;
     if (sampler.options.penaltiesActive() and history == null) return error.HistoryRequired;
+    if (settings.draft_length > max_draft_length) return error.InvalidDraftLength;
+    const drafter = eng.model.drafter();
+    // Speculation batches the step, so the per-token GPU greedy/top-k
+    // shortcuts are off while it runs and the loop materializes every seed's
+    // logits. A per-layer observer is a per-token contract and disables it.
+    const can_speculate = settings.enabled and drafter != null and (observer == null or observer.?.layer == null);
+    // Greedy acceptance compares the target's argmax without penalties, so a
+    // penalized greedy run takes the sampled path (its point masses).
+    const greedy_verify = sampler.options.temperature == 0 and !sampler.options.penaltiesActive();
     var timing: Timing = .{ .prompt_tokens = tokens.len };
     const gpu_before = eng.gpuSeconds();
     const prefill_start = std.Io.Clock.awake.now(io);
@@ -614,13 +746,42 @@ pub fn runLoop(
     // callers that need logits still receive them. Penalties change the
     // argmax and the sort on the CPU, so both GPU paths are off while one
     // is active (see reference/generation.md).
-    const gpu_greedy = sampler.options.temperature == 0 and !sampler.options.penaltiesActive() and eng.model.supportsGpuArgmax() and !hooks_need_logits(hooks);
-    const gpu_topk = !gpu_greedy and sampler.gpuEligible() and eng.model.supportsGpuTopK() and !hooks_need_logits(hooks);
+    const gpu_greedy = !can_speculate and sampler.options.temperature == 0 and !sampler.options.penaltiesActive() and eng.model.supportsGpuArgmax() and !hooks_need_logits(hooks);
+    const gpu_topk = !can_speculate and !gpu_greedy and sampler.gpuEligible() and eng.model.supportsGpuTopK() and !hooks_need_logits(hooks);
     if (gpu_topk) timing.topk_fallbacks = 0;
     var chosen: u32 = 0;
     var top: inference.sampling.TopK = .{ .temperature = sampler.options.temperature };
     const want_logits = !gpu_greedy and !gpu_topk;
-    if (eng.model.chunkedPrefill(observer)) {
+    const vocabulary = logits.len;
+    const spec: ?*SpeculativeScratch = if (can_speculate) &(eng.spec orelse return error.NoSpeculativeScratch) else null;
+    if (spec) |s| {
+        // Speculation commits the prompt to the drafter too: the block's cache
+        // is filled from the target hidden of every committed position, not
+        // just the accepted drafts. The prompt goes through `verify` in
+        // verify-sized chunks (the last chunk's logits seed decoding), which
+        // also admits and commits the session.
+        if (hooks) |h| if (h.before_step) |call| try call(h.context, eng.model.session().position);
+        const hidden_width = drafter.?.hidden;
+        var offset: usize = 0;
+        while (offset < tokens.len) {
+            const count = @min(tokens.len - offset, max_draft_length + 1);
+            const chunk = tokens[offset..][0..count];
+            const hidden = s.hidden[0 .. count * hidden_width];
+            eng.model.verify(chunk, vocabulary, s.rows[0 .. count * vocabulary], hidden, observer) catch |err| switch (err) {
+                error.Cancelled => {
+                    resetAll(eng, history);
+                    timing.prefill = prefill_start.durationTo(std.Io.Clock.awake.now(io));
+                    return .{ .stop = .cancelled, .timing = timing };
+                },
+                else => return err,
+            };
+            try eng.model.commitDraft(chunk, hidden);
+            if (offset + count == tokens.len) @memcpy(logits, s.rows[(count - 1) * vocabulary ..][0..vocabulary]);
+            offset += count;
+            if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = offset, .target = tokens.len });
+        }
+        if (hooks) |h| if (h.step) |call| try call(h.context, eng.model.session().position);
+    } else if (eng.model.chunkedPrefill(observer)) {
         // One prefill call for the whole prompt; the per-token hooks fire once.
         if (hooks) |h| if (h.before_step) |call| try call(h.context, eng.model.session().position);
         eng.model.prefill(tokens, if (want_logits) logits else null, if (gpu_greedy) &chosen else null, if (gpu_topk) &top else null, observer) catch |err| switch (err) {
@@ -654,34 +815,99 @@ pub fn runLoop(
     var decode_start = std.Io.Clock.awake.now(io);
     var count: usize = 0;
     var stop: StopReason = .token_budget;
+    // A batch's correction: already chosen and emitted, it seeds the next
+    // batch without being sampled or emitted again.
+    var seed: ?u32 = null;
     while (count < limit) {
-        const token = if (gpu_greedy) chosen else if (gpu_topk) (try sampler.selectFrom(&top, candidates)) orelse blk: {
-            // The readback could not decide exactly (nucleus beyond the
-            // readback, a borderline denominator, or a non-finite logit):
-            // read the full logits and take the reference path.
-            timing.topk_fallbacks.? += 1;
-            try eng.model.readLogits(logits);
-            break :blk try sampler.select(logits, candidates, history);
-        } else try sampler.select(logits, candidates, history);
-        generated[count] = token;
-        count += 1;
-        if (history) |h| try h.observe(token);
-        if (count == 1) {
-            decode_start = std.Io.Clock.awake.now(io);
-            timing.first_token = prefill_start.durationTo(decode_start);
+        var token: u32 = undefined;
+        if (seed) |carried| {
+            token = carried;
+            seed = null;
+        } else {
+            token = if (gpu_greedy) chosen else if (gpu_topk) (try sampler.selectFrom(&top, candidates)) orelse blk: {
+                // The readback could not decide exactly (nucleus beyond the
+                // readback, a borderline denominator, or a non-finite logit):
+                // read the full logits and take the reference path.
+                timing.topk_fallbacks.? += 1;
+                try eng.model.readLogits(logits);
+                break :blk try sampler.select(logits, candidates, history);
+            } else try sampler.select(logits, candidates, history);
+            generated[count] = token;
+            count += 1;
+            if (history) |h| try h.observe(token);
+            if (count == 1) {
+                decode_start = std.Io.Clock.awake.now(io);
+                timing.first_token = prefill_start.durationTo(decode_start);
+            }
+            if (hooks) |h| if (h.token) |call| try call(h.context, token);
+            if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .decode, .position = count, .target = limit });
+            if (eng.isStop(token)) {
+                stop = .eos;
+                break;
+            }
+            if (count == limit) break;
+            if (eng.model.session().position >= eng.model.session().capacity) {
+                stop = .context_limit;
+                break;
+            }
         }
-        if (hooks) |h| if (h.token) |call| try call(h.context, token);
-        if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .decode, .position = count, .target = limit });
-        if (eng.isStop(token)) {
-            stop = .eos;
-            break;
-        }
-        if (count == limit) break;
-        if (eng.model.session().position >= eng.model.session().capacity) {
-            stop = .context_limit;
-            break;
-        }
-        if (hooks) |h| if (h.before_step) |call| try call(h.context, eng.model.session().position);
+        const position = eng.model.session().position;
+        if (spec) |s| if (position + 1 < eng.model.session().capacity) {
+            const room = eng.model.session().capacity - position - 1;
+            const k = @min(settings.draft_length, @min(room, limit - count));
+            if (hooks) |h| if (h.before_step) |call| try call(h.context, position);
+            const result = speculativeBatch(eng, sampler, history, observer, s, token, k, greedy_verify, vocabulary, drafter.?) catch |err| switch (err) {
+                // A cancelled batch poisons the session exactly as a cancelled
+                // step does; the loop resets it and reports cancellation.
+                error.Canceled => {
+                    resetAll(eng, history);
+                    stop = .cancelled;
+                    break;
+                },
+                else => return err,
+            };
+            if (hooks) |h| if (h.step) |call| try call(h.context, eng.model.session().position);
+            // The accepted drafts and the correction go through the ordinary
+            // per-token checks in order; the correction is the next batch's
+            // seed, so it is not sampled again.
+            @memcpy(s.choices[0..result.accepted], s.drafts[0..result.accepted]);
+            s.choices[result.accepted] = result.correction;
+            const extras = s.choices[0 .. result.accepted + 1];
+            var kept: usize = extras.len;
+            var broke = false;
+            for (extras, 0..) |extra, i| {
+                generated[count] = extra;
+                count += 1;
+                if (history) |h| try h.observe(extra);
+                if (hooks) |h| if (h.token) |call| try call(h.context, extra);
+                if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .decode, .position = count, .target = limit });
+                if (eng.isStop(extra)) {
+                    stop = .eos;
+                    kept = i;
+                    broke = true;
+                    break;
+                }
+                if (count == limit) {
+                    stop = .token_budget;
+                    kept = i;
+                    broke = true;
+                    break;
+                }
+            }
+            if (broke) {
+                // Discard the accepted drafts past the stop/budget: recover to
+                // the tokens actually emitted.
+                if (kept < result.accepted) try eng.model.recover(s.tokens[0 .. 1 + kept]);
+                break;
+            }
+            if (eng.model.session().position >= eng.model.session().capacity) {
+                stop = .context_limit;
+                break;
+            }
+            seed = result.correction;
+            continue;
+        };
+        if (hooks) |h| if (h.before_step) |call| try call(h.context, position);
         eng.model.step(token, if (want_logits) logits else null, if (gpu_greedy) &chosen else null, if (gpu_topk) &top else null, observer) catch |err| switch (err) {
             error.Cancelled => {
                 resetAll(eng, history);
@@ -696,6 +922,69 @@ pub fn runLoop(
     timing.generated_tokens = count;
     if (eng.gpuSeconds()) |after| timing.gpu_seconds = after - (gpu_before orelse 0);
     return .{ .stop = stop, .timing = timing };
+}
+
+/// The accepted length and the model's next token after a verify batch.
+const BatchResult = struct { accepted: usize, correction: u32 };
+
+/// Proposes `k` drafts from `seed_token`, checkpoints, verifies `[seed] ++
+/// drafts` on the main model, accepts the longest prefix (greedy by argmax,
+/// sampled by `min(1, p/q)` over penalties-shaped distributions), recovers the
+/// session to the accepted prefix, and advances the drafter over it. The
+/// caller emits the accepted drafts and the correction. A `k` of 0 still runs
+/// the single-token batch so the drafter's cache stays aligned with the
+/// committed token.
+fn speculativeBatch(
+    eng: *Engine,
+    sampler: *inference.sampling.Sampler,
+    history: ?*inference.sampling.History,
+    observer: ?Observer,
+    s: *SpeculativeScratch,
+    seed_token: u32,
+    k: usize,
+    greedy: bool,
+    vocabulary: usize,
+    drafter: inference.draft.Drafter,
+) !BatchResult {
+    const n = try eng.model.propose(seed_token, s.drafts[0..k], if (greedy) null else s.q_rows[0 .. k * vocabulary]);
+    try eng.model.checkpoint();
+    s.tokens[0] = seed_token;
+    @memcpy(s.tokens[1 .. 1 + n], s.drafts[0..n]);
+    const batch = s.tokens[0 .. 1 + n];
+    const hidden = s.hidden[0 .. (1 + n) * drafter.hidden];
+    var result: BatchResult = .{ .accepted = 0, .correction = 0 };
+    if (greedy) {
+        try eng.model.verifyGreedy(batch, vocabulary, s.choices[0 .. 1 + n], hidden, observer);
+        while (result.accepted < n and s.choices[result.accepted] == s.drafts[result.accepted]) result.accepted += 1;
+        result.correction = s.choices[result.accepted];
+    } else {
+        try eng.model.verify(batch, vocabulary, s.rows[0 .. (1 + n) * vocabulary], hidden, observer);
+        // The target row `i`'s distribution sees the accepted drafts before it;
+        // a rejected draft is dropped and the correction drawn from the
+        // residual `max(0, p - q)`.
+        var rejected = false;
+        while (result.accepted < n) {
+            const i = result.accepted;
+            const p = try sampler.distribution(s.rows[i * vocabulary ..][0..vocabulary], s.p, history);
+            const q = try sampler.distribution(s.q_rows[i * vocabulary ..][0..vocabulary], s.q, history);
+            if (inference.speculative.accept(sampler, p, q, s.drafts[i])) {
+                if (history) |h| try h.observe(s.drafts[i]);
+                result.accepted += 1;
+            } else {
+                const correction_dist = try inference.speculative.residual(p, q, s.residual);
+                result.correction = inference.speculative.draw(sampler, if (correction_dist.len == 0) p else correction_dist);
+                rejected = true;
+                break;
+            }
+        }
+        if (!rejected) {
+            const p = try sampler.distribution(s.rows[n * vocabulary ..][0..vocabulary], s.p, history);
+            result.correction = inference.speculative.draw(sampler, p);
+        }
+    }
+    try eng.model.recover(batch[0 .. 1 + result.accepted]);
+    try eng.model.commitDraft(batch[0 .. 1 + result.accepted], hidden[0 .. (1 + result.accepted) * drafter.hidden]);
+    return result;
 }
 
 /// The session and its token history are reset together: the history is

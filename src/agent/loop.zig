@@ -918,6 +918,7 @@ pub const Completer = struct {
             self.buffers.generated.len,
             self.sampler,
             self.history,
+            .{},
             self.buffers,
             self.observer,
             sink,

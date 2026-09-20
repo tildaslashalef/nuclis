@@ -20,6 +20,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
         compare-draft compare-draft-metal compare-draft-cpu draft-stats \
+        speculative-check speculative-check-metal \
         test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-hadamard bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
@@ -79,6 +80,12 @@ compare-draft-cpu: ## Native CPU reference prediction-block rows vs the pinned r
 
 draft-stats: metal ## Per-depth acceptance of the embedded prediction head on the fixed prompts (MODL-18)
 	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal --draft-stats
+
+speculative-check: ## Greedy speculation vs ordinary greedy on the CPU reference (very slow)
+	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(MODEL)" --speculative-check
+
+speculative-check-metal: metal ## Greedy speculation vs ordinary greedy on the Metal plan (ENGN-12)
+	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal --speculative-check
 
 test-generation-gemma4: ## The generation check on gemma-4-12b, CPU reference (very slow: ~35 s per token)
 	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(GEMMA_MODEL)"

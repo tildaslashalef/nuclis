@@ -207,6 +207,51 @@ pub const Sampler = struct {
         return self.finish(retained.survivors, retained.sum, 0, true).?;
     }
 
+    /// The shaped, normalized distribution `select` draws from: penalties,
+    /// sort, top-k, temperature and `min_p`, then the top-p nucleus, with the
+    /// retained candidates' weights normalized to probabilities summing to 1.
+    /// Greedy (`temperature == 0`) returns the single argmax with weight 1, so
+    /// the result is never empty. The slice borrows `scratch`; `scratch.len`
+    /// must be at least `logits.len` for the sampled path and 1 for greedy.
+    pub fn distribution(self: *const Sampler, logits: []const f32, scratch: []Candidate, history: ?*const History) ![]Candidate {
+        if (logits.len == 0 or logits.len > std.math.maxInt(u32)) return error.InvalidLogits;
+        var best: usize = 0;
+        var best_value: f32 = undefined;
+        for (logits, 0..) |raw, i| {
+            const value = self.penalize(raw, i, history);
+            if (!std.math.isFinite(value)) return error.NonFiniteResult;
+            if (i == 0 or value > best_value) {
+                best = i;
+                best_value = value;
+            }
+        }
+        if (self.options.temperature == 0) {
+            if (scratch.len < 1) return error.InsufficientScratch;
+            scratch[0] = .{ .id = @intCast(best), .weight = 1 };
+            return scratch[0..1];
+        }
+        if (scratch.len < logits.len) return error.InsufficientScratch;
+        const candidates = scratch[0..logits.len];
+        for (candidates, logits, 0..) |*c, raw, id| c.* = .{ .id = @intCast(id), .weight = self.penalize(raw, id, history) };
+        std.mem.sort(Candidate, candidates, {}, lessThan);
+        const k = if (self.options.top_k == 0) candidates.len else @min(self.options.top_k, candidates.len);
+        const retained = self.exponentiate(candidates[0..k]);
+        // The nucleus walk of `finish` without the draw: stop after the first
+        // candidate that reaches the top-p threshold, so the retained set is
+        // the whole support `select` would draw from.
+        const threshold = @as(f64, self.options.top_p) * retained.sum;
+        var count: usize = 0;
+        var accumulated: f64 = 0;
+        while (count < retained.survivors.len) {
+            accumulated += retained.survivors[count].weight;
+            count += 1;
+            if (accumulated >= threshold) break;
+        }
+        const kept = retained.survivors[0..count];
+        for (kept) |*c| c.weight /= accumulated;
+        return kept;
+    }
+
     /// GPU path: returns the token `select` would return for the same logits
     /// and RNG state, or `null` when the readback cannot decide (the caller
     /// then reads the full logits and calls `select`; the RNG has not advanced).

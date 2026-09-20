@@ -6,15 +6,19 @@ in are planned in [TODO.md](../../TODO.md) (ENGN-11, MODL-18, ENGN-12,
 MODL-19, MODL-20); closed outcomes are cited from the
 [engineering log](../engineering-log.md).
 
-As of 2026-09-20 the recovery contract (ENGN-11) and the Qwen3.8 embedded
-prediction block (MODL-18) are implemented and measured. What exists: the
-draft contract in `runtime/draft.zig`; the Qwen adapter binds the 15
-embedded `nextn` tensors and both executors run the block
-([qwen-validation.md](qwen-validation.md)); the session has a host-side
-snapshot and restore and an in-block checkpoint
+As of 2026-09-20 the recovery contract (ENGN-11), the Qwen3.8 embedded
+prediction block (MODL-18), and speculative generation (ENGN-12 session 1)
+are implemented and measured. What exists: the draft contract in
+`runtime/draft.zig`; the Qwen adapter binds the 15 embedded `nextn` tensors
+and both executors run the block ([qwen-validation.md](qwen-validation.md));
+the session has a host-side snapshot and restore and an in-block checkpoint
 ([session.md](session.md)); every family's draft companion is pinned and
-pulled ([artifacts.md](artifacts.md)). Gemma 4's and Muse Glimmer's own
-draft sources are still to come (MODL-19, MODL-20).
+pulled ([artifacts.md](artifacts.md)); the verify batch, the sampled
+acceptance module, and the `runLoop` speculative step are in place and
+checked for greedy equivalence on both executors. The `generate`/`agent`/
+`bench` configuration (the switch, the draft length) and the benchmark
+record are ENGN-12 session 2. Gemma 4's and Muse Glimmer's own draft sources
+are still to come (MODL-19, MODL-20).
 
 Sections to come, one per unit: each family's draft source with its facts
 and provenance, and the measurements behind each catalogue verdict.
@@ -167,6 +171,60 @@ on all three rows (block `h` at positions 0 and 1, and the target `hprev`).
 and takes a checkpoint/rewind across a block row: the hidden is
 reproduced byte for byte and two independently reset drafters propose the
 same greedy chain.
+
+## The verify batch and the loop (ENGN-12, session 1)
+
+Implemented and checked on 2026-09-20; the configuration and the benchmark
+are session 2.
+
+**Verify.** `Model.verify(tokens, vocabulary, rows, hidden, observer)` fills
+`rows` (`tokens.len × vocabulary`) with the target logits of every row and,
+when `hidden` is given, the post-`output_norm` hidden per row that
+`Drafter.commit` consumes. The CPU reference loops `Runtime.step`; the Metal
+plan records the layer stack once (`recordLayers`, shared with
+`prefillChunk`) and runs the output head over all rows through the batched
+matmul tile into a device buffer sized by the tile
+(`matmulPadded(max_verify_rows) × vocabulary`, about 64 MB), reading back
+only `tokens.len` rows. `verifyGreedy` returns each row's argmax from the
+device (`nu_argmax_partial`/`final` per row) without a logit readback. A
+batch is at most the plan's chunk and `max_verify_rows = 16`; the loop uses
+at most `max_draft_length + 1 = 8`.
+
+**The loop.** `runLoop` takes a `Speculative{ enabled, draft_length }`
+setting; `max_draft_length = 7` is the host bound (KERN-11's 8-row tile less
+the seed). When a drafter is loaded and the switch is on, it first commits
+the prompt to the drafter in verify-sized chunks (the block's cache is
+filled from the target hidden of every committed position), then each step:
+proposes `k = min(draft_length, capacity − position − 1, budget_left)`
+drafts; checkpoints; verifies `[seed] ++ drafts`; accepts the longest prefix
+(greedy: `verifyGreedy` argmax equals the draft; sampled: `accept` over the
+shaped distributions); recovers the accepted prefix; commits it to the
+drafter; and emits the accepted drafts and the correction through the
+ordinary per-token checks. The correction is emitted once and carried as the
+next step's seed. EOS, the budget, or the context limit inside a batch ends
+the turn there and the session recovers to the emitted prefix; a cancelled
+`verify` poisons the session and `resetAll` handles it. The per-token GPU
+greedy/top-k shortcuts are off while speculating (every seed row is
+materialized), and a per-layer observer disables speculation.
+
+**Sampled acceptance.** `inference/src/sampling/speculative.zig`:
+`Sampler.distribution` is the shaped, normalized nucleus (penalties, sort,
+top-k, temperature and `min_p`, top-p) factored from `select`; `accept`
+returns `min(1, p(draft)/q(draft))` with a draft absent from `p` rejected;
+`residual` normalizes `max(0, p − q)` and the correction is drawn from it (or
+from `p` when it is empty). The history advances through the accepted drafts,
+so row `i`'s penalties see the drafts before it. Unit tests draw 20,000
+seeded samples from fixed `p`/`q` tables and hold the empirical counts to the
+target within 3 σ, including a zero-probability draft, full rejection, and
+full acceptance.
+
+**Evidence.** `generation-check --speculative-check`
+(`make speculative-check`, `make speculative-check-metal`) runs the model
+primitives and, on Metal, the engine loop: 12 greedy tokens equal ordinary
+greedy decoding token for token on both executors (7 of 24 drafts accepted on
+the pinned `Hello,` seed on Metal). `make check`, `make compare`, and
+`make test-generation-metal` pass; `make test-generation` is unchanged (the
+speculative check is its own target because the CPU reference is slow).
 
 **Acceptance statistic (2026-09-20).** `generation-check --draft-stats`
 (the `make draft-stats` target) decodes each fixed coding prompt greedily,

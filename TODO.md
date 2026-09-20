@@ -57,8 +57,22 @@ ENGN-12's acceptance. The catalogue's separate `mtp-Qwen3.8-27B-Q4_0.gguf`
 stays pinned but is not loaded: the embedded block is the source, as the
 log records.
 
-Order: ENGN-12 → MODL-19 → MODL-20. After MODL-20 the roadmap continues
-with the performance follow-ups, then vision, then agent expansion
+ENGN-12 session 1 closed on 2026-09-20: `Model.verify`/`verifyGreedy` and
+the Qwen Metal `Plan.verify`/`verifyGreedy` (the layer stack once, the output
+head over every row, ≤ 8 rows per batch), the sampled acceptance module
+`inference/src/sampling/speculative.zig` with its seeded tests, and the
+`runLoop` speculative step (prompt committed to the drafter in verify-sized
+chunks, propose/checkpoint/verify/accept/recover/commit, a carried
+correction, EOS/budget/context inside a batch). Greedy speculation equals
+ordinary greedy token for token on the pinned seed on both executors and
+through `engine.runLoop` on Metal (`make speculative-check`,
+`make speculative-check-metal`; 7/24 drafts accepted on `Hello,`); `make
+check`, `make compare`, and `make test-generation-metal` pass. Session 2
+remains: the `speculative`/`draft_length` configuration and flags, the
+drafter load switch, and the benchmark record.
+
+Order: ENGN-12 (session 2) → MODL-19 → MODL-20. After MODL-20 the roadmap
+continues with the performance follow-ups, then vision, then agent expansion
 ([docs/roadmap.md](docs/roadmap.md)).
 
 | Unit | Title | Sessions |
@@ -169,44 +183,20 @@ head for the last row only), `inference/src/models/*_runtime.zig`
 `docs/reference/generation.md`, `docs/reference/bench.md`,
 `docs/development.md § Configuration file`.
 
-**Session 1 — verify and the loop.**
-- `Executor.verify(self, tokens: []const u32, rows: []f32) !void`:
-  logits for every token, `rows.len == tokens.len × vocabulary`. CPU: a
-  loop of `Runtime.step` with each row's logits. Metal: `Plan.verify`
-  runs the chunk path once and the output head over all `tokens.len`
-  rows through `Backend.matmul` (the tile KERN-11 shipped; the head is
-  `output.weight`, 248,320 × 5,120 on Qwen, one weight pass), then reads
-  the rows back (`tokens.len × vocabulary × 4` bytes, ≤ 8 MB at eight
-  rows). A `verifyGreedy` variant that returns only per-row argmax
-  (`nu_argmax_partial/final` per row) serves the greedy path without the
-  readback. `Model.verify`/`verifyGreedy` forward on both executors.
-- `runLoop` gains the speculative step, taken when `eng.drafter != null`
-  and `settings.speculative`: with `t0` the last chosen token not yet
-  fed, `k = min(draft_length, capacity − position − 1, budget_left)`;
-  `drafter.propose(k, drafts, q_rows)`; `checkpoint()`; `verify([t0] ++
-  drafts[0..k])` (greedy: `verifyGreedy`); accept the longest prefix
-  where row `i`'s choice equals `drafts[i]`; the token after the prefix
-  is row `a`'s choice (the correction, or the bonus when `a == k`);
-  `recover([t0] ++ drafts[0..a])`; `drafter.commit(...)`; then the
-  committed tokens `drafts[0..a]` and the new token go through the
-  existing per-token path in order — `history.observe`, the `token`
-  hook, `isStop`, the budget, the context limit — so a stop token inside
-  the batch ends the turn there and the rest is discarded (recover to
-  that prefix). Cancellation during `verify` poisons the session exactly
-  as a cancelled step does and `resetAll` handles it. The observer's
-  `before_step`/`step` hooks fire once per batch with the position.
-- Sampled acceptance, `inference/src/sampling/speculative.zig`:
-  `Sampler.distribution(logits, scratch, history) → []Candidate` (the
-  shaped, normalized distribution the existing `select` draws from,
-  factored out of it); `accept(p, q, draft, rng) bool` with probability
-  `min(1, p(draft) / q(draft))` (a draft absent from `p`'s candidates is
-  probability 0 → rejected); `residual(p, q, scratch) → []Candidate`
-  normalizing `max(0, p − q)` (if it is empty, the correction is drawn
-  from `p`); the history for row `i` includes the accepted drafts before
-  it. The drafter's `q` rows are its logits through the same shaping.
-  Unit tests with fixed `p`/`q` tables: counts over 20,000 seeded draws
-  match the target distribution within 3 σ, including a zero-probability
-  draft, full rejection, and full acceptance.
+**Session 1 (closed 2026-09-20).** `Model.verify`/`verifyGreedy` and the
+Qwen Metal `Plan.verify`/`verifyGreedy` (layer stack once, output head over
+every row, `max_verify_rows = 16`), the `runLoop` speculative step (the
+prompt committed to the drafter in verify-sized chunks, then
+propose/checkpoint/verify/accept/recover/commit with a carried correction and
+the ordinary per-token checks), and the sampled module
+`inference/src/sampling/speculative.zig` (`distribution`, `accept`,
+`residual`) with its seeded tests. Facts and evidence are in
+[speculative-decoding.md](docs/reference/speculative-decoding.md#the-verify-batch-and-the-loop-engn-12-session-1)
+and [generation.md](docs/reference/generation.md#speculative-verification-and-the-loop-engn-12).
+Greedy equivalence passes on both executors through the primitives and
+through `engine.runLoop` on Metal (`make speculative-check`,
+`make speculative-check-metal`); `make check`, `make compare`, and
+`make test-generation-metal` pass. Session 2 remains.
 
 **Session 2 — configuration and the benchmark.**
 - `Config.Generate` gains `speculative: bool = false` and `draft_length:
@@ -234,16 +224,14 @@ head for the last row only), `inference/src/models/*_runtime.zig`
   tok/s; the Qwen entry's `speculative`/`draft_length` set from it;
   `spec.md`'s section updated with the measured result.
 
-**Acceptance.** Greedy speculative output equals ordinary greedy decoding
-token for token on the CPU on the pinned prompts (`generation-check`
-gains this) and on Metal within the chunk-versus-step contract with any
-divergence recorded by position; the sampled-acceptance unit tests; EOS
-inside a batch, the budget inside a batch, partial acceptance,
-cancellation mid-batch, and a batch at the context limit, each a test;
-`make check`, `make compare`, `make test-generation-metal`; the benchmark
-record with the verdict, positive or negative, and the entry updated; the
-Qwen decode rate in `make bench` unchanged with the drafter loaded but
-switched off (carried from MODL-18: the load switch lands here).
+**Acceptance.** Session 1 closed the greedy equivalence on both executors
+and the sampled-acceptance unit tests. Session 2 owes: EOS inside a batch,
+the budget inside a batch, partial acceptance, cancellation mid-batch, and a
+batch at the context limit, each a test; the benchmark record with the
+verdict, positive or negative, and the entry updated; the Qwen decode rate in
+`make bench` unchanged with the drafter loaded but switched off (carried from
+MODL-18: the load switch lands here). `make check`, `make compare`, and
+`make test-generation-metal` are green.
 
 ## MODL-19 — Gemma 4 draft heads: the companion file as a second GGUF
 

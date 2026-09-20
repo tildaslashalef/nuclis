@@ -91,6 +91,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var use_metal = false;
     var draft_stats = false;
+    var speculative_check = false;
     var draft_trace: ?[]const u8 = null;
     var path: ?[]const u8 = null;
     var i: usize = 1;
@@ -100,6 +101,8 @@ pub fn main(init: std.process.Init) !void {
             use_metal = true;
         } else if (std.mem.eql(u8, arg, "--draft-stats")) {
             draft_stats = true;
+        } else if (std.mem.eql(u8, arg, "--speculative-check")) {
+            speculative_check = true;
         } else if (std.mem.eql(u8, arg, "--draft-trace")) {
             i += 1;
             if (i >= args.len) return error.ExpectedTraceDirectory;
@@ -117,10 +120,12 @@ pub fn main(init: std.process.Init) !void {
             try draftTrace(qwen35_spec, alloc, init.io, &mapped, use_metal, dir)
         else if (draft_stats)
             try draftStats(qwen35_spec, alloc, init.io, &mapped, use_metal)
+        else if (speculative_check)
+            try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal)
         else
             try run(qwen35_spec, alloc, init.io, &mapped, use_metal),
-        .gemma4 => if (draft_stats or draft_trace != null) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
-        .@"muse-glimmer" => if (draft_stats or draft_trace != null) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
+        .gemma4 => if (draft_stats or speculative_check or draft_trace != null) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
+        .@"muse-glimmer" => if (draft_stats or speculative_check or draft_trace != null) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
     }
 }
 
@@ -496,6 +501,173 @@ fn draftRecoveryCheck(comptime spec: Spec, alloc: std.mem.Allocator, backend: ?*
     std.debug.print("Draft recovery check passed ({s}): reset and rewind reproduce the block's hidden; propose is deterministic.\n", .{if (backend != null) "metal" else "cpu"});
 }
 
+/// Greedy speculation against ordinary greedy decoding. Two seeded sessions
+/// consume the pinned prompt; the first decodes token by token, the second
+/// proposes a draft block, verifies it greedily, recovers the accepted prefix,
+/// and continues from the correction. On the CPU reference the outputs must be
+/// token for token identical (the replay is the same sequential arithmetic);
+/// on Metal the verify batch uses the chunk tiles, so the first divergence is
+/// recorded by position rather than failed.
+fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, model_path: []const u8, use_metal: bool) !void {
+    const Family = spec.Family;
+    const draft = spec.draft.?;
+    const hidden = 5120;
+    const block_drafts = 4;
+    const generated = 12;
+    const capacity = spec.tokens.len + generated + block_drafts + 2;
+    var backend: ?inference.metal.Backend = null;
+    defer if (backend) |*b| b.deinit();
+    if (use_metal) {
+        var diagnostic: [8192]u8 = @splat(0);
+        backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+    }
+    const binding = try Family.bind(alloc, &mapped.document);
+    const view = mapped.view();
+    const Runner = DraftRunner(spec);
+    var sequential: Runner = if (backend) |*b|
+        .{ .metal = try Family.Plan.init(alloc, b, view, binding, capacity, 8, .f32, true, false) }
+    else
+        .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, true, false) };
+    defer sequential.deinit();
+    var speculative: Runner = if (backend) |*b|
+        .{ .metal = try Family.Plan.init(alloc, b, view, binding, capacity, 8, .f32, true, true) }
+    else
+        .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, true, true) };
+    defer speculative.deinit();
+    const logits = try alloc.alloc(f32, spec.vocabulary);
+    defer alloc.free(logits);
+    const prompt = [_]u32{ draft.tokens[0], draft.tokens[1] };
+    const prompt_hidden = try alloc.alloc(f32, prompt.len * hidden);
+    defer alloc.free(prompt_hidden);
+    const base = try alloc.alloc(u32, generated);
+    defer alloc.free(base);
+    const result = try alloc.alloc(u32, generated);
+    defer alloc.free(result);
+    const drafts = try alloc.alloc(u32, block_drafts);
+    defer alloc.free(drafts);
+    const batch = try alloc.alloc(u32, block_drafts + 1);
+    defer alloc.free(batch);
+    const choices = try alloc.alloc(u32, block_drafts + 1);
+    defer alloc.free(choices);
+    const h_rows = try alloc.alloc(f32, (block_drafts + 1) * hidden);
+    defer alloc.free(h_rows);
+
+    // The token-by-token baseline.
+    try sequential.prefill(&prompt, logits);
+    var base_count: usize = 0;
+    var next = argmax(logits);
+    while (base_count < generated) : (base_count += 1) {
+        base[base_count] = next;
+        if (base_count + 1 == generated) break;
+        try sequential.step(next, logits);
+        next = argmax(logits);
+    }
+
+    // The speculative run: commit the prompt, then batch-verify each position.
+    for (prompt, 0..) |token, i| {
+        try speculative.step(token, logits);
+        @memcpy(prompt_hidden[i * hidden ..][0..hidden], speculative.lastHidden());
+    }
+    try speculative.commit(&prompt, prompt_hidden);
+    var count: usize = 0;
+    var seed = argmax(logits);
+    var accepted_total: usize = 0;
+    var proposed_total: usize = 0;
+    // The correction is already emitted when a batch ends; the next iteration
+    // uses it as the seed without emitting it again.
+    var carried = false;
+    while (count < generated) {
+        if (!carried) {
+            result[count] = seed;
+            count += 1;
+            if (count == generated) break;
+        }
+        carried = false;
+        const room = speculative.state().capacity - speculative.state().position - 1;
+        const k = @min(block_drafts, room);
+        const n = try speculative.propose(seed, drafts[0..k]);
+        try speculative.checkpoint();
+        batch[0] = seed;
+        @memcpy(batch[1 .. 1 + n], drafts[0..n]);
+        try speculative.verifyGreedy(batch[0 .. 1 + n], choices[0 .. 1 + n], h_rows[0 .. (1 + n) * hidden]);
+        var accepted: usize = 0;
+        while (accepted < n and choices[accepted] == drafts[accepted]) accepted += 1;
+        accepted_total += accepted;
+        proposed_total += n;
+        const correction = choices[accepted];
+        try speculative.recover(batch[0 .. 1 + accepted]);
+        try speculative.commit(batch[0 .. 1 + accepted], h_rows[0 .. (1 + accepted) * hidden]);
+        for (drafts[0..accepted]) |token| {
+            if (count == generated) break;
+            result[count] = token;
+            count += 1;
+        }
+        if (count == generated) break;
+        result[count] = correction;
+        count += 1;
+        seed = correction;
+        carried = true;
+    }
+
+    var divergence: ?usize = null;
+    for (base, result, 0..) |expected, actual, i| {
+        if (expected != actual) {
+            divergence = i;
+            break;
+        }
+    }
+    if (divergence) |at| {
+        std.debug.print("Speculative greedy diverges from ordinary greedy at position {d} ({s}): sequential {d}, speculative {d}.\n", .{ at, if (backend != null) "metal chunk-versus-step" else "cpu", base[at], result[at] });
+        if (backend == null) return error.SpeculativeMismatch;
+    } else {
+        std.debug.print("Speculative greedy passed ({s}): {d} tokens identical to ordinary greedy decoding; accepted {d}/{d} drafts.\n", .{ if (backend != null) "metal" else "cpu", generated, accepted_total, proposed_total });
+    }
+    // The same comparison through the engine's loop, which owns the seed,
+    // batch, recover, and emission control flow the primitives above do not.
+    // Backend-independent, so the Metal run covers it and the slow CPU oracle
+    // stays on the primitives.
+    if (use_metal) try speculativeLoop(alloc, io, model_path, use_metal);
+}
+
+/// Runs `inference.engine.runLoop` twice on one loaded engine, ordinary greedy
+/// then speculative greedy, and requires identical token streams. This is the
+/// loop-level check: propose, checkpoint, verify, recover, commit, emission.
+fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, use_metal: bool) !void {
+    const engine = inference.engine;
+    const generated = 12;
+    const capacity = 64;
+    const backend: engine.Backend = if (use_metal) .metal else .cpu;
+    var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, .f32, null, .embedded);
+    defer eng.deinit();
+    const prompt = try eng.encode("Hello,");
+    defer alloc.free(prompt);
+    const vocab = eng.vocab.tokens.len;
+    const logits = try alloc.alloc(f32, vocab);
+    defer alloc.free(logits);
+    const a = try alloc.alloc(u32, generated);
+    defer alloc.free(a);
+    const b = try alloc.alloc(u32, generated);
+    defer alloc.free(b);
+    var sampler = try inference.sampling.Sampler.init(0, .{});
+    const no_candidates: []inference.sampling.Candidate = &.{};
+
+    resetForRun(&eng);
+    const first = try engine.runLoop(&eng, prompt, generated, &sampler, null, .{}, logits, no_candidates, a, null, null);
+    resetForRun(&eng);
+    const second = try engine.runLoop(&eng, prompt, generated, &sampler, null, .{ .enabled = true, .draft_length = 4 }, logits, no_candidates, b, null, null);
+    if (first.timing.generated_tokens != second.timing.generated_tokens) return error.SpeculativeLoopLengthMismatch;
+    if (!std.mem.eql(u32, a[0..first.timing.generated_tokens], b[0..second.timing.generated_tokens])) return error.SpeculativeLoopMismatch;
+    std.debug.print("Speculative loop passed ({s}): {d} tokens identical to ordinary greedy through engine.runLoop.\n", .{ if (use_metal) "metal" else "cpu", first.timing.generated_tokens });
+}
+
+fn resetForRun(eng: *inference.engine.Engine) void {
+    eng.model.reset();
+    if (eng.model.drafter()) |drafter| drafter.reset();
+}
+
 /// A per-depth acceptance statistic for the embedded prediction head. It
 /// decodes a fixed coding prompt greedily, records the target hidden of every
 /// token, and at each step proposes `max_drafts` chained candidates from the
@@ -556,6 +728,46 @@ fn DraftRunner(comptime spec: Spec) type {
                 .cpu => |*r| r.commit(tokens, h_rows),
                 .metal => |*p| p.commit(tokens, h_rows),
             };
+        }
+        /// One prefill over `tokens`, keeping only the last row's logits; the
+        /// batch is admitted before the first write on both executors.
+        fn prefill(self: *@This(), tokens: []const u32, logits: ?[]f32) !void {
+            switch (self.*) {
+                .cpu => |*r| {
+                    if (tokens.len > r.state.capacity - r.state.position) return error.ContextFull;
+                    for (tokens, 0..) |token, i| try r.step(token, if (i + 1 == tokens.len) logits else null, null);
+                },
+                .metal => |*p| try p.prefill(tokens, logits, null, null, null),
+            }
+        }
+        fn verify(self: *@This(), tokens: []const u32, rows: []f32, h_rows: ?[]f32) !void {
+            switch (self.*) {
+                .cpu => |*r| try r.verify(tokens, rows, h_rows, null),
+                .metal => |*p| try p.verify(tokens, rows, h_rows, null),
+            }
+        }
+        fn verifyGreedy(self: *@This(), tokens: []const u32, out: []u32, h_rows: ?[]f32) !void {
+            switch (self.*) {
+                .cpu => |*r| try r.verifyGreedy(tokens, out, h_rows, null),
+                .metal => |*p| try p.verifyGreedy(tokens, out, h_rows, null),
+            }
+        }
+        fn state(self: *@This()) *inference.session.Session {
+            return switch (self.*) {
+                .cpu => |*r| &r.state,
+                .metal => |*p| &p.state,
+            };
+        }
+        fn truncate(self: *@This(), position: usize) !void {
+            return self.state().truncate(position);
+        }
+        /// The accepted-prefix operation, mirroring `engine.Model.recover`.
+        fn recover(self: *@This(), accepted: []const u32) !void {
+            const at = self.state().checkpoint_position orelse return error.NoCheckpoint;
+            if (self.state().hasRecurrent()) {
+                try self.rewind();
+                if (accepted.len > 0) try self.prefill(accepted, null);
+            } else try self.truncate(at + accepted.len);
         }
         fn bytes(self: *@This()) usize {
             return switch (self.*) {

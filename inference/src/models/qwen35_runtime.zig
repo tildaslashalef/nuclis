@@ -405,6 +405,30 @@ pub const Runtime = struct {
         return count;
     }
 
+    /// Reference verify: one step per token, keeping every row's logits and,
+    /// when asked, the post-`output_norm` hidden the drafter's `commit` reads.
+    pub fn verify(self: *Runtime, tokens: []const u32, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
+        if (rows.len != tokens.len * 248320) return error.InvalidShape;
+        if (h_rows) |h| if (h.len != tokens.len * 5120) return error.InvalidShape;
+        for (tokens, 0..) |token, i| {
+            try self.step(token, rows[i * 248320 ..][0..248320], observer);
+            if (h_rows) |h| @memcpy(h[i * 5120 ..][0..5120], self.h);
+        }
+    }
+
+    /// Reference verify, greedy: the same steps with a per-row argmax instead
+    /// of full logits. Reuses the block's logits scratch, which exists exactly
+    /// when a drafter does.
+    pub fn verifyGreedy(self: *Runtime, tokens: []const u32, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
+        if (out.len != tokens.len) return error.InvalidShape;
+        if (h_rows) |h| if (h.len != tokens.len * 5120) return error.InvalidShape;
+        for (tokens, 0..) |token, i| {
+            try self.step(token, self.draft_logits, observer);
+            out[i] = argmax(self.draft_logits);
+            if (h_rows) |h| @memcpy(h[i * 5120 ..][0..5120], self.h);
+        }
+    }
+
     fn argmax(values: []const f32) u32 {
         var best: usize = 0;
         for (values, 0..) |v, i| {
@@ -416,7 +440,7 @@ pub const Runtime = struct {
     /// The contract value the engine holds, or null when no block is loaded.
     pub fn drafter(self: *Runtime) ?@import("../runtime/draft.zig").Drafter {
         if (!self.has_draft) return null;
-        return .{ .host = self, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = 5120, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, logits: ?[]f32) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));

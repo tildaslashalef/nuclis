@@ -91,6 +91,7 @@ pub fn runLoop(
     limit: usize,
     sampler: *inference.sampling.Sampler,
     history: ?*inference.sampling.History,
+    settings: inference.engine.Speculative,
     logits: []f32,
     candidates: []inference.sampling.Candidate,
     generated: []u32,
@@ -98,7 +99,7 @@ pub fn runLoop(
     hooks: ?Hooks,
 ) !Outcome {
     var bridge: Bridge = .{ .trace = trace, .hooks = hooks };
-    return inference.engine.runLoop(eng, tokens, limit, sampler, history, logits, candidates, generated, trace.observer(), .{
+    return inference.engine.runLoop(eng, tokens, limit, sampler, history, settings, logits, candidates, generated, trace.observer(), .{
         .context = &bridge,
         .prefill = if (hooks != null and hooks.?.prefill != null) Bridge.prefill else null,
         .token = if (hooks != null and hooks.?.token != null) Bridge.token else null,
@@ -188,7 +189,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // Final prompt logits are written before decoding so a later failure
     // still leaves the comparison artifact behind.
     var presenter: Presenter = .{ .eng = &eng, .writer = writer, .enabled = !json, .logits_path = options.logits_path };
-    const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
+    const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, .{}, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
     const count = outcome.timing.generated_tokens;
     const decoded = try inference.bpe.decode(alloc, &eng.vocab, generated[0..count], false, .{});
     defer alloc.free(decoded);

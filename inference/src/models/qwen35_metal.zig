@@ -25,6 +25,10 @@ const Drafter = @import("../runtime/draft.zig").Drafter;
 pub const vocabulary = 248320;
 const hidden = 5120;
 const ffn = 17408;
+/// Rows a single verify batch may hold: the largest draft block plus its
+/// seed token and bonus. Sizes the device buffers the output head reads back
+/// (about 16 MB of logits), not the layer activations, which are chunk-sized.
+pub const max_verify_rows = 16;
 
 const LayerConstants = struct {
     attention_norm: Buffer,
@@ -87,6 +91,12 @@ pub const Plan = struct {
     /// Flash-decoding partials: `[24][splits][2 + 256]`, 1.6 MB, independent of the capacity.
     partials: Buffer,
     logits: Buffer, // vocabulary
+    /// A verify batch's output head over every row: `max_verify_rows`
+    /// vocabulary rows, its per-row argmax results, and the post-`output_norm`
+    /// hidden rows the drafter's `commit` consumes.
+    verify_logits: Buffer,
+    verify_argmax: Buffer,
+    verify_hidden: Buffer,
     argmax_values: Buffer,
     argmax_indices: Buffer,
     argmax_result: Buffer,
@@ -195,6 +205,19 @@ pub const Plan = struct {
         self.mixed_out = try backend.create(6144 * 4);
         self.partials = try backend.create(metal.Backend.attentionDecodePartials(24, 256) * 4);
         self.logits = try backend.create(vocabulary * 4);
+        // Verify scratch exists only with a drafter (the loop's only caller).
+        // `matmul` writes `matmulPadded(tokens)` output rows regardless of the
+        // token count, so the logits buffer is sized by the tile, not the
+        // batch: about 64 MB, kept out of a non-speculative load.
+        if (draft) {
+            self.verify_logits = try backend.create(metal.Backend.matmulPadded(max_verify_rows) * vocabulary * 4);
+            self.verify_argmax = try backend.create(max_verify_rows * 4);
+            self.verify_hidden = try backend.create(max_verify_rows * hidden * 4);
+        } else {
+            self.verify_logits = try backend.create(4);
+            self.verify_argmax = try backend.create(4);
+            self.verify_hidden = try backend.create(4);
+        }
         self.argmax_values = try backend.create(metal.Backend.argmax_partials * 4);
         self.argmax_indices = try backend.create(metal.Backend.argmax_partials * 4);
         self.argmax_result = try backend.create(4);
@@ -469,6 +492,24 @@ pub const Plan = struct {
         const b = self.backend;
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
+        try self.recordLayers(tokens, count, observer);
+        if (logits != null or greedy != null or topk != null) {
+            const last_row = self.x_c.slice((count - 1) * hidden * 4, hidden * 4);
+            try b.rmsNorm(last_row, self.output_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+            try self.recordOutputs(greedy, topk);
+        }
+        try b.commit();
+        try self.readOutputs(logits, greedy, topk);
+        try self.state.commitChunk(count);
+    }
+
+    /// Records the embedding gather and every decoder layer over one admitted
+    /// chunk of `count` tokens, leaving the final hidden rows in `x_c`. The
+    /// caller owns the command buffer (`begin`/`commit`) and the state
+    /// admission (`beginChunk`/`commitChunk`); `prefillChunk` and `verify`
+    /// share it so the schedule is written once.
+    fn recordLayers(self: *Plan, tokens: []const u32, count: usize, observer: ?Observer) !void {
+        const b = self.backend;
         const embedding = try self.weight(self.binding.token_embedding);
         for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
         if (self.rotation) |rotation| try b.hadamard(self.x_c, try rotation.signsFor(hidden), hidden, count, hidden, true);
@@ -490,13 +531,71 @@ pub const Plan = struct {
             try b.add(self.x_c, self.projected_c, count * hidden);
             if (observer) |o| if (o.check) |check| try check(o.context);
         }
-        if (logits != null or greedy != null or topk != null) {
-            const last_row = self.x_c.slice((count - 1) * hidden * 4, hidden * 4);
-            try b.rmsNorm(last_row, self.output_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
-            try self.recordOutputs(greedy, topk);
-        }
+    }
+
+    /// Verifies a batch: records the layer stack once and computes the output
+    /// head for every row, so `rows` (`tokens.len × vocabulary`) holds the
+    /// target logits of each position and `h_rows` (`tokens.len × hidden`),
+    /// when given, their post-`output_norm` hidden. The whole batch is
+    /// admitted before the first write, as `prefill` is.
+    pub fn verify(self: *Plan, tokens: []const u32, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        if (tokens.len == 0 or tokens.len > self.chunk or tokens.len > max_verify_rows) return error.InvalidShape;
+        if (rows.len != tokens.len * vocabulary) return error.InvalidShape;
+        if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        const count = tokens.len;
+        try self.state.beginChunk(count);
+        errdefer self.state.fail();
+        const b = self.backend;
+        try b.begin();
+        errdefer if (b.recording) b.commit() catch {};
+        try self.recordLayers(tokens, count, observer);
+        try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+        if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
+        try self.rotate(self.normalized_c, hidden, count);
+        const head = try self.weight(self.binding.output);
+        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
         try b.commit();
-        try self.readOutputs(logits, greedy, topk);
+        if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
+        @memcpy(rows, self.verify_logits.floats()[0 .. count * vocabulary]);
+        try self.state.commitChunk(count);
+    }
+
+    /// `verify`'s greedy sibling: per-row argmax read back (four bytes a row),
+    /// no logit readback. `out` holds `tokens.len` token ids.
+    pub fn verifyGreedy(self: *Plan, tokens: []const u32, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        if (tokens.len == 0 or tokens.len > self.chunk or tokens.len > max_verify_rows) return error.InvalidShape;
+        if (out.len != tokens.len) return error.InvalidShape;
+        if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        const count = tokens.len;
+        try self.state.beginChunk(count);
+        errdefer self.state.fail();
+        const b = self.backend;
+        try b.begin();
+        errdefer if (b.recording) b.commit() catch {};
+        try self.recordLayers(tokens, count, observer);
+        try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+        if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
+        try self.rotate(self.normalized_c, hidden, count);
+        const head = try self.weight(self.binding.output);
+        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
+        for (0..count) |i| try b.argmax(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, self.argmax_values, self.argmax_indices, self.verify_argmax.slice(i * 4, 4));
+        try b.commit();
+        if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
+        const ids = @as([*]const u32, @ptrCast(@alignCast(self.verify_argmax.host)))[0..count];
+        for (ids, out) |id, *token| {
+            if (id >= vocabulary) return error.NonFiniteResult;
+            token.* = id;
+        }
         try self.state.commitChunk(count);
     }
 
@@ -679,7 +778,7 @@ pub const Plan = struct {
     /// The contract value the engine holds, or null when no block is loaded.
     pub fn drafter(self: *Plan) ?Drafter {
         if (!self.has_draft) return null;
-        return .{ .host = self, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = hidden, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, logits: ?[]f32) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));

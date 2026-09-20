@@ -157,6 +157,37 @@ same token is produced from a 2 KB readback instead of 1 MB of logits:
 Greedy decoding with a penalty active takes the CPU argmax over the
 penalized logits (full readback) instead of the GPU argmax.
 
+### Speculative verification and the loop (ENGN-12)
+
+When a drafter is loaded and the speculative switch is on, the loop batches
+the step instead of feeding one token at a time. `Executor.verify` returns the
+target logits of every row of a batch (`tokens.len × vocabulary`) and, when
+asked, their post-`output_norm` hidden, which the drafter's `commit` consumes:
+the CPU reference steps token by token; the Metal plan records the layer stack
+once and runs the output head over all rows through the batched matmul tile,
+reading the rows back (about 8 MB at eight rows). `verifyGreedy` returns only
+each row's argmax (four bytes a row) for the greedy path. The plan requires a
+batch no larger than its chunk and `max_verify_rows` (16); the loop's batches
+are at most `max_draft_length + 1` (8).
+
+`runLoop` commits the prompt to the drafter first, in verify-sized chunks, so
+the block's cache holds the target hidden of every committed position. Each
+speculative step then: proposes `k` drafts (`drafter.propose`), checkpoints the
+session, verifies `[seed] ++ drafts`, accepts the longest matching prefix
+(greedy: row argmax equals the draft; sampled: `min(1, p/q)` over the shaped
+distributions), recovers the accepted prefix, commits it to the drafter, and
+emits the accepted drafts and the correction through the ordinary per-token
+path (history, hooks, stop, budget, context limit). A stop token inside the
+batch ends the turn there and the session recovers to the emitted prefix; a
+correction is emitted once and carried as the next batch's seed. Cancellation
+during `verify` poisons the session and the loop resets it, as a cancelled step
+does. The sampled path lives in `inference/src/sampling/speculative.zig`:
+`Sampler.distribution` is the shaped, normalized nucleus, `accept` is the
+`min(1, p/q)` test, and `residual` normalizes `max(0, p − q)`. Greedy
+speculation must equal ordinary greedy token for token, checked by
+`generation-check --speculative-check` (`make speculative-check`,
+`make speculative-check-metal`).
+
 The output budget is 1–4,096 tokens and context is 1–32,768, with
 prompt plus output budget required to fit. These are allocation/execution bounds,
 not a validated 32K performance claim. Both `<|im_end|>` and `<|endoftext|>` stop

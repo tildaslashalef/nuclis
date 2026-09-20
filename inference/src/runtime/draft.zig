@@ -15,6 +15,8 @@ pub const Drafter = struct {
     /// The family executor the methods act on; the caller passes the live
     /// address, so nothing here outlives a move.
     host: *anyopaque,
+    /// The target hidden width `commit` consumes and `verify` reports per row.
+    hidden: usize,
     /// Greedy candidates from the state after the last committed token, using
     /// `token` (the last chosen token not yet fed) as the block's seed.
     /// `logits`, when given, holds `out.len * vocabulary` values, one row per
