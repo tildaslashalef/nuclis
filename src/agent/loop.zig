@@ -778,6 +778,9 @@ pub const Completer = struct {
     /// session is.
     history: ?*inference.sampling.History,
     buffers: inference.engine.CompletionBuffers,
+    /// Speculative decoding for this turn, resolved from the configuration
+    /// and flags; the engine must have been opened with a matching drafter.
+    speculative: inference.engine.Speculative = .{},
     observer: ?inference.observer.Observer = null,
     /// Rendered prompt plus generated text the session has consumed. Empty
     /// after a reset, which is what makes the next render replay.
@@ -918,7 +921,7 @@ pub const Completer = struct {
             self.buffers.generated.len,
             self.sampler,
             self.history,
-            .{},
+            self.speculative,
             self.buffers,
             self.observer,
             sink,

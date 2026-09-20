@@ -186,6 +186,9 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         fn recover(self: *@This(), accepted: []const u32) !void {
             const at = self.state().checkpoint_position orelse return error.NoCheckpoint;
             if (self.state().hasRecurrent()) {
+                // The batch already fed the accepted prefix when every draft
+                // was accepted; nothing is rewound or replayed then.
+                if (accepted.len == self.state().position - at) return;
                 try self.rewind();
                 if (accepted.len > 0) try self.prefill(accepted, null, null);
             } else try self.truncate(at + accepted.len);
@@ -638,6 +641,7 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
 fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, use_metal: bool) !void {
     const engine = inference.engine;
     const generated = 12;
+    const max_limit = 24;
     const capacity = 64;
     const backend: engine.Backend = if (use_metal) .metal else .cpu;
     var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, .f32, null, .embedded);
@@ -647,9 +651,9 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     const vocab = eng.vocab.tokens.len;
     const logits = try alloc.alloc(f32, vocab);
     defer alloc.free(logits);
-    const a = try alloc.alloc(u32, generated);
+    const a = try alloc.alloc(u32, max_limit);
     defer alloc.free(a);
-    const b = try alloc.alloc(u32, generated);
+    const b = try alloc.alloc(u32, max_limit);
     defer alloc.free(b);
     var sampler = try inference.sampling.Sampler.init(0, .{});
     const no_candidates: []inference.sampling.Candidate = &.{};
@@ -660,8 +664,59 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     const second = try engine.runLoop(&eng, prompt, generated, &sampler, null, .{ .enabled = true, .draft_length = 4 }, logits, no_candidates, b, null, null);
     if (first.timing.generated_tokens != second.timing.generated_tokens) return error.SpeculativeLoopLengthMismatch;
     if (!std.mem.eql(u32, a[0..first.timing.generated_tokens], b[0..second.timing.generated_tokens])) return error.SpeculativeLoopMismatch;
-    std.debug.print("Speculative loop passed ({s}): {d} tokens identical to ordinary greedy through engine.runLoop.\n", .{ if (use_metal) "metal" else "cpu", first.timing.generated_tokens });
+    // Partial acceptance: the run rejected at least one draft, so the
+    // correction path ran.
+    if (second.timing.accepted_drafts >= second.timing.proposed_drafts) return error.SpeculativeNoPartialAcceptance;
+    std.debug.print("Speculative loop passed ({s}): {d} tokens identical to ordinary greedy through engine.runLoop; accepted {d}/{d} drafts.\n", .{ if (use_metal) "metal" else "cpu", first.timing.generated_tokens, second.timing.accepted_drafts, second.timing.proposed_drafts });
+
+    const spec: engine.Speculative = .{ .enabled = true, .draft_length = 4 };
+
+    // Budget inside a batch: a limit below what the first batch would emit.
+    resetForRun(&eng);
+    const short = try engine.runLoop(&eng, prompt, 3, &sampler, null, spec, logits, no_candidates, a, null, null);
+    if (short.stop != .token_budget or short.timing.generated_tokens != 3) return error.SpeculativeBudgetMismatch;
+    std.debug.print("Speculative budget passed: stopped at {d} tokens inside a batch.\n", .{short.timing.generated_tokens});
+
+    // EOS inside a batch: the rendered turn ends with the profile's stop
+    // token, which speculation must emit and then stop on.
+    const rendered = try eng.prompt("Hello,", false, .off);
+    defer alloc.free(rendered);
+    const eos_tokens = try eng.encode(rendered);
+    defer alloc.free(eos_tokens);
+    resetForRun(&eng);
+    const eos = try engine.runLoop(&eng, eos_tokens, 24, &sampler, null, spec, logits, no_candidates, a, null, null);
+    if (eos.stop != .eos) return error.SpeculativeEosMismatch;
+    std.debug.print("Speculative EOS passed: stopped after {d} tokens.\n", .{eos.timing.generated_tokens});
+
+    // Cancellation mid-batch: the observer's check fires during the first
+    // decode verify (the prompt commit leaves the position at its end), and
+    // the loop resets the poisoned session and reports cancellation.
+    var canceller = CancelAt{ .eng = &eng, .at = prompt.len };
+    resetForRun(&eng);
+    const cancelled = try engine.runLoop(&eng, prompt, 24, &sampler, null, spec, logits, no_candidates, a, .{ .context = &canceller, .check = CancelAt.check }, null);
+    if (cancelled.stop != .cancelled) return error.SpeculativeCancellationMismatch;
+    if (eng.model.session().position != 0) return error.SpeculativeCancellationNotReset;
+    std.debug.print("Speculative cancellation passed: a cancelled verify reset the session.\n", .{});
+
+    // Context limit at a batch: a session with room for the prompt and two
+    // tokens cannot hold a verify batch plus its correction.
+    var small = try engine.Engine.open(alloc, io, model_path, backend, prompt.len + 2, .f32, null, .embedded);
+    defer small.deinit();
+    const full = try engine.runLoop(&small, prompt, 24, &sampler, null, spec, logits, no_candidates, a, null, null);
+    if (full.stop != .context_limit) return error.SpeculativeContextMismatch;
+    std.debug.print("Speculative context passed: stopped at the {d}-token context.\n", .{prompt.len + 2});
 }
+
+/// Cancels a turn once the session position reaches `at`, which during a
+/// verify batch is the batch's start: the prompt commit stays below it.
+const CancelAt = struct {
+    eng: *inference.engine.Engine,
+    at: usize,
+    fn check(context: *anyopaque) !void {
+        const self: *CancelAt = @ptrCast(@alignCast(context));
+        if (self.eng.model.session().position >= self.at) return error.Canceled;
+    }
+};
 
 fn resetForRun(eng: *inference.engine.Engine) void {
     eng.model.reset();
@@ -765,6 +820,9 @@ fn DraftRunner(comptime spec: Spec) type {
         fn recover(self: *@This(), accepted: []const u32) !void {
             const at = self.state().checkpoint_position orelse return error.NoCheckpoint;
             if (self.state().hasRecurrent()) {
+                // The batch already fed the accepted prefix when every draft
+                // was accepted; nothing is rewound or replayed then.
+                if (accepted.len == self.state().position - at) return;
                 try self.rewind();
                 if (accepted.len > 0) try self.prefill(accepted, null);
             } else try self.truncate(at + accepted.len);

@@ -35,7 +35,7 @@ Defaults (without a configuration file) are the Metal backend when built
 in, 2,048 output tokens, 8,192 total context, and seed zero (before APPS-03:
 CPU, 16 tokens, 2,048 context). Sampling
 defaults come from the official Qwen3.8 profile of the reasoning mode (next
-section); the file's `generate.sampling` entries and then `--temperature`,
+section); the file's `generation.sampling` entries and then `--temperature`,
 `--top-k`, `--top-p`, `--min-p`, `--presence-penalty`, and
 `--repetition-penalty` each override one option, and `--temperature 0`
 selects greedy. Greedy ties select the lowest token

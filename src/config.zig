@@ -45,6 +45,9 @@ pub const max_file_bytes = 64 * 1024;
 /// the chat check their resolved values against the same bounds).
 pub const max_context = 32768;
 pub const max_output_tokens = 4096;
+/// The largest draft block: KERN-11's 8-row token tile less the seed row.
+/// One host constant, the engine's.
+pub const max_draft_length = inference.engine.max_draft_length;
 /// `bench` never takes its output budget from the file: the measurement
 /// workload is a command-line matter so runs stay comparable.
 pub const bench_max_tokens = 32;
@@ -58,7 +61,7 @@ const max_path_bytes = 160;
 pub const Config = struct {
     schema_version: u32 = schema_version,
     engine: Engine = .{},
-    generate: Generate = .{},
+    generation: Generation = .{},
     agent: Agent = .{},
     models: Models = .{},
 
@@ -75,9 +78,14 @@ pub const Config = struct {
         /// always keeps F32 and reports it.
         kv_precision: KvPrecision = .f16,
     };
-    pub const Generate = struct {
+    pub const Generation = struct {
         max_tokens: usize = 2048,
         think: Effort = .off,
+        /// Speculative decoding: propose drafts with the model's draft source
+        /// and verify them in batches (docs/spec.md § Speculative decoding).
+        speculative: bool = false,
+        /// Drafts proposed per step, 1..`max_draft_length`.
+        draft_length: usize = 4,
         /// Per-option overrides of the reasoning mode's profile; `null`
         /// keeps the profile's value.
         sampling: Overrides = .{},
@@ -112,12 +120,14 @@ pub const ModelEntry = struct {
     /// the file's template digest.
     profile: ?Profile = null,
     ctx_size: ?usize = null,
-    generate: Generate = .{},
+    generation: Generation = .{},
     agent: Agent = .{},
 
-    pub const Generate = struct {
+    pub const Generation = struct {
         max_tokens: ?usize = null,
         think: ?Effort = null,
+        speculative: ?bool = null,
+        draft_length: ?usize = null,
         sampling: Overrides = .{},
     };
     pub const Agent = struct {
@@ -461,8 +471,9 @@ fn validateSampling(overrides: Overrides, path: []const u8, diag: *Diagnostic) !
 /// way (`path`, or `repo` and `file`).
 fn validate(cfg: *const Config, diag: *Diagnostic) !void {
     try validateRange(cfg.engine.ctx_size, "engine.ctx_size", max_context, diag);
-    try validateRange(cfg.generate.max_tokens, "generate.max_tokens", max_output_tokens, diag);
-    try validateSampling(cfg.generate.sampling, "generate.sampling", diag);
+    try validateRange(cfg.generation.max_tokens, "generation.max_tokens", max_output_tokens, diag);
+    try validateRange(cfg.generation.draft_length, "generation.draft_length", max_draft_length, diag);
+    try validateSampling(cfg.generation.sampling, "generation.sampling", diag);
     for (cfg.models.entries) |named| {
         const e = named.entry;
         var buffer: [max_path_bytes]u8 = undefined;
@@ -491,8 +502,9 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
         };
         var key_buffer: [max_path_bytes]u8 = undefined;
         if (e.ctx_size) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.ctx_size", .{prefix}) catch unreachable, max_context, diag);
-        if (e.generate.max_tokens) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generate.max_tokens", .{prefix}) catch unreachable, max_output_tokens, diag);
-        try validateSampling(e.generate.sampling, std.fmt.bufPrint(&key_buffer, "{s}.generate.sampling", .{prefix}) catch unreachable, diag);
+        if (e.generation.max_tokens) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.max_tokens", .{prefix}) catch unreachable, max_output_tokens, diag);
+        if (e.generation.draft_length) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.draft_length", .{prefix}) catch unreachable, max_draft_length, diag);
+        try validateSampling(e.generation.sampling, std.fmt.bufPrint(&key_buffer, "{s}.generation.sampling", .{prefix}) catch unreachable, diag);
     }
 }
 
@@ -505,6 +517,8 @@ pub const Flags = struct {
     kv: ?KvPrecision = null,
     max_tokens: ?usize = null,
     think: ?Effort = null,
+    speculative: ?bool = null,
+    draft_length: ?usize = null,
     /// `--prompt-profile`: see `ModelEntry.profile`.
     prompt_profile: ?Profile = null,
     sampling: Overrides = .{},
@@ -531,6 +545,9 @@ pub const Resolved = struct {
     kv_precision: KvPrecision,
     max_tokens: usize,
     think: Effort,
+    /// Speculative decoding on this run, and the drafts proposed per step.
+    speculative: bool,
+    draft_length: usize,
     /// Overrides over the reasoning mode's profile (`generate`, the agent);
     /// for `bench`, the flags alone over neutral greedy options.
     sampling: Overrides,
@@ -582,13 +599,15 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
         .backend = flags.backend orelse cfg.engine.backend,
         .ctx_size = flags.ctx_size orelse e.ctx_size orelse cfg.engine.ctx_size,
         .kv_precision = flags.kv orelse cfg.engine.kv_precision,
-        .max_tokens = flags.max_tokens orelse if (bench) bench_max_tokens else e.generate.max_tokens orelse cfg.generate.max_tokens,
+        .max_tokens = flags.max_tokens orelse if (bench) bench_max_tokens else e.generation.max_tokens orelse cfg.generation.max_tokens,
         .think = flags.think orelse switch (command) {
-            .generate => e.generate.think orelse cfg.generate.think,
+            .generate => e.generation.think orelse cfg.generation.think,
             .agent => e.agent.think orelse cfg.agent.think,
             .bench => .off,
         },
-        .sampling = if (bench) flags.sampling else cfg.generate.sampling.merge(e.generate.sampling).merge(flags.sampling),
+        .speculative = flags.speculative orelse e.generation.speculative orelse cfg.generation.speculative,
+        .draft_length = flags.draft_length orelse e.generation.draft_length orelse cfg.generation.draft_length,
+        .sampling = if (bench) flags.sampling else cfg.generation.sampling.merge(e.generation.sampling).merge(flags.sampling),
         .fold_thinking = e.agent.fold_thinking orelse cfg.agent.fold_thinking,
         .theme = cfg.agent.theme,
         .config_file = if (loaded.found) loaded.path else null,
@@ -600,16 +619,20 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     if (flags.backend != null) o[comptime leafIndex(Config, "engine.backend")] = .flag;
     if (flags.ctx_size != null) o[comptime leafIndex(Config, "engine.ctx_size")] = .flag else if (e.ctx_size != null) o[comptime leafIndex(Config, "engine.ctx_size")] = .model;
     if (flags.kv != null) o[comptime leafIndex(Config, "engine.kv_precision")] = .flag;
-    const budget = comptime leafIndex(Config, "generate.max_tokens");
-    if (flags.max_tokens != null) o[budget] = .flag else if (bench) o[budget] = .default else if (e.generate.max_tokens != null) o[budget] = .model;
+    const budget = comptime leafIndex(Config, "generation.max_tokens");
+    if (flags.max_tokens != null) o[budget] = .flag else if (bench) o[budget] = .default else if (e.generation.max_tokens != null) o[budget] = .model;
     // The entry's efforts are not command-specific, the flag is.
-    if (e.generate.think != null) o[comptime leafIndex(Config, "generate.think")] = .model;
+    if (e.generation.think != null) o[comptime leafIndex(Config, "generation.think")] = .model;
     if (e.agent.think != null) o[comptime leafIndex(Config, "agent.think")] = .model;
-    if (flags.think != null) o[if (command == .agent) comptime leafIndex(Config, "agent.think") else comptime leafIndex(Config, "generate.think")] = .flag;
+    if (flags.think != null) o[if (command == .agent) comptime leafIndex(Config, "agent.think") else comptime leafIndex(Config, "generation.think")] = .flag;
     if (e.agent.fold_thinking != null) o[comptime leafIndex(Config, "agent.fold_thinking")] = .model;
+    if (e.generation.speculative != null) o[comptime leafIndex(Config, "generation.speculative")] = .model;
+    if (flags.speculative != null) o[comptime leafIndex(Config, "generation.speculative")] = .flag;
+    if (e.generation.draft_length != null) o[comptime leafIndex(Config, "generation.draft_length")] = .model;
+    if (flags.draft_length != null) o[comptime leafIndex(Config, "generation.draft_length")] = .flag;
     inline for (@typeInfo(Overrides).@"struct".fields) |field| {
-        const index = comptime leafIndex(Config, "generate.sampling." ++ field.name);
-        if (@field(flags.sampling, field.name) != null) o[index] = .flag else if (bench) o[index] = .default else if (@field(e.generate.sampling, field.name) != null) o[index] = .model else if (@field(cfg.generate.sampling, field.name) == null) o[index] = .profile;
+        const index = comptime leafIndex(Config, "generation.sampling." ++ field.name);
+        if (@field(flags.sampling, field.name) != null) o[index] = .flag else if (bench) o[index] = .default else if (@field(e.generation.sampling, field.name) != null) o[index] = .model else if (@field(cfg.generation.sampling, field.name) == null) o[index] = .profile;
     }
     return r;
 }
@@ -926,7 +949,7 @@ pub const Effective = struct {
     model_kind: enum { registry, catalogue, path },
     profile: Profile,
     engine: struct { model: []const u8, backend: Backend, ctx_size: usize, kv_precision: KvPrecision },
-    generate: struct { max_tokens: usize, think: Effort, sampling: inference.sampling.Options },
+    generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, sampling: inference.sampling.Options },
     agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName },
     origin: Origin,
 
@@ -940,7 +963,7 @@ pub const Effective = struct {
             .model_kind = if (gen.entry != null) .registry else if (catalog.find(gen.model) != null) .catalogue else .path,
             .profile = gen.profile,
             .engine = .{ .model = gen.model, .backend = gen.backend, .ctx_size = gen.ctx_size, .kv_precision = gen.kv_precision },
-            .generate = .{ .max_tokens = gen.max_tokens, .think = gen.think, .sampling = gen.samplingOptions() },
+            .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .sampling = gen.samplingOptions() },
             .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme },
             .origin = origin,
         };
@@ -981,8 +1004,8 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         try s.write(view.profile);
         try s.objectField("engine");
         try s.write(view.engine);
-        try s.objectField("generate");
-        try s.write(view.generate);
+        try s.objectField("generation");
+        try s.write(view.generation);
         try s.objectField("agent");
         try s.write(view.agent);
         try s.endObject();
@@ -1006,7 +1029,7 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         try out.print("{s}config:{s} no user root (HOME and NUCLIS_HOME unset); built-in defaults\n", .{ sty.on(.label), sty.off() })
     else
         try out.print("{s}config:{s} {s}{s}{s} {s}({s}){s}\n", .{ sty.on(.label), sty.off(), sty.on(.code), loaded.path, sty.off(), sty.on(.dim), if (loaded.found) "file" else "not found; built-in defaults", sty.off() });
-    try out.print("{s}model:{s} {s}{s}{s} ({s}; {s}{s}{s} profile). {s}Values are effective: a null sampling key in the file takes the profile's value for generate.think = {s} (source \"profile\").{s}\n", .{
+    try out.print("{s}model:{s} {s}{s}{s} ({s}; {s}{s}{s} profile). {s}Values are effective: a null sampling key in the file takes the profile's value for generation.think = {s} (source \"profile\").{s}\n", .{
         sty.on(.label),
         sty.off(),
         sty.on(.keyword),
@@ -1021,7 +1044,7 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         @tagName(view.profile),
         sty.off(),
         sty.on(.dim),
-        @tagName(view.generate.think),
+        @tagName(view.generation.think),
         sty.off(),
     });
     const Rows = struct {
@@ -1038,7 +1061,7 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
     var rows: Rows = .{ .out = out, .origin = &view.origin, .sty = sty };
     try rows.leaf("schema_version", loaded.config.schema_version);
     try walk(@TypeOf(view.engine), view.engine, "engine.", &rows);
-    try walk(@TypeOf(view.generate), view.generate, "generate.", &rows);
+    try walk(@TypeOf(view.generation), view.generation, "generation.", &rows);
     try walk(@TypeOf(view.agent), view.agent, "agent.", &rows);
     for (loaded.config.models.entries) |named| {
         var entry_rows: struct {
@@ -1095,23 +1118,23 @@ test "file values override defaults per key and the source is recorded" {
     var loaded = try fromText(alloc,
         \\{ "schema_version": 1,
         \\  "engine": { "model": "/abs/other.gguf", "ctx_size": 4096 },
-        \\  "generate": { "sampling": { "temperature": 0, "top_k": 40 } },
+        \\  "generation": { "sampling": { "temperature": 0, "top_k": 40 } },
         \\  "agent": { "fold_thinking": false, "theme": "gruvbox-dark" } }
     , "t.json", &diag);
     defer loaded.deinit();
     try std.testing.expectEqualStrings("/abs/other.gguf", loaded.config.engine.model);
     try std.testing.expectEqual(@as(usize, 4096), loaded.config.engine.ctx_size);
     try std.testing.expectEqual((Config.Engine{}).backend, loaded.config.engine.backend);
-    try std.testing.expectEqual(@as(f32, 0), loaded.config.generate.sampling.temperature.?);
-    try std.testing.expectEqual(@as(usize, 40), loaded.config.generate.sampling.top_k.?);
-    try std.testing.expect(loaded.config.generate.sampling.top_p == null);
-    try std.testing.expectEqual(@as(usize, 2048), loaded.config.generate.max_tokens);
+    try std.testing.expectEqual(@as(f32, 0), loaded.config.generation.sampling.temperature.?);
+    try std.testing.expectEqual(@as(usize, 40), loaded.config.generation.sampling.top_k.?);
+    try std.testing.expect(loaded.config.generation.sampling.top_p == null);
+    try std.testing.expectEqual(@as(usize, 2048), loaded.config.generation.max_tokens);
     try std.testing.expect(!loaded.config.agent.fold_thinking);
     try std.testing.expectEqual(@as(usize, 0), loaded.config.models.entries.len);
     try std.testing.expectEqual(.file, loaded.source("engine.model"));
     try std.testing.expectEqual(.default, loaded.source("engine.backend"));
-    try std.testing.expectEqual(.file, loaded.source("generate.sampling.top_k"));
-    try std.testing.expectEqual(.default, loaded.source("generate.sampling.top_p"));
+    try std.testing.expectEqual(.file, loaded.source("generation.sampling.top_k"));
+    try std.testing.expectEqual(.default, loaded.source("generation.sampling.top_p"));
     try std.testing.expectEqual(.default, loaded.source("agent.think"));
     try std.testing.expectEqual(.file, loaded.source("agent.fold_thinking"));
     // The palette is a global display key: stated in the file, it is the
@@ -1129,7 +1152,7 @@ test "registry entries parse by name with their overrides and companions" {
         \\  "models": {
         \\    "gemma": { "repo": "unsloth/gemma-4-12b-it-GGUF", "file": "gemma-4-12b-it-UD-Q4_K_XL.gguf",
         \\               "revision": "fc034cfff751157913579611efad8462ac1be606", "mmproj": "mmproj-F16.gguf",
-        \\               "ctx_size": 4096, "generate": { "think": "off", "sampling": { "top_k": 64 } },
+        \\               "ctx_size": 4096, "generation": { "think": "off", "sampling": { "top_k": 64 } },
         \\               "agent": { "fold_thinking": false } },
         \\    "local": { "path": "/scratch/x.gguf", "profile": "gemma4" } } }
     , "t.json", &diag);
@@ -1142,9 +1165,9 @@ test "registry entries parse by name with their overrides and companions" {
     try std.testing.expectEqualStrings("mmproj-F16.gguf", gemma.mmproj.?);
     try std.testing.expect(gemma.mtp == null and gemma.path == null);
     try std.testing.expectEqual(@as(usize, 4096), gemma.ctx_size.?);
-    try std.testing.expectEqual(.off, gemma.generate.think.?);
-    try std.testing.expectEqual(@as(usize, 64), gemma.generate.sampling.top_k.?);
-    try std.testing.expect(gemma.generate.sampling.temperature == null and gemma.generate.max_tokens == null);
+    try std.testing.expectEqual(.off, gemma.generation.think.?);
+    try std.testing.expectEqual(@as(usize, 64), gemma.generation.sampling.top_k.?);
+    try std.testing.expect(gemma.generation.sampling.temperature == null and gemma.generation.max_tokens == null);
     try std.testing.expect(!gemma.agent.fold_thinking.? and gemma.agent.think == null);
     try std.testing.expectEqualStrings("/scratch/x.gguf", loaded.config.models.find("local").?.path.?);
     try std.testing.expectEqual(.gemma4, loaded.config.models.find("local").?.profile.?);
@@ -1169,7 +1192,7 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
     const alloc = std.testing.allocator;
     const cases = [_]struct { text: []const u8, err: anyerror, needle: []const u8 }{
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"modle\": \"x\" } }", .err = error.UnknownConfigKey, .needle = "unknown key engine.modle" },
-        .{ .text = "{ \"schema_version\": 1, \"generate\": { \"sampling\": { \"top_q\": 1 } } }", .err = error.UnknownConfigKey, .needle = "generate.sampling.top_q" },
+        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"top_q\": 1 } } }", .err = error.UnknownConfigKey, .needle = "generation.sampling.top_q" },
         .{ .text = "{ \"schema_version\": 1, \"tui\": {} }", .err = error.UnknownConfigKey, .needle = "unknown key tui" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"backend\": \"cuda\" } }", .err = error.InvalidConfigValue, .needle = "engine.backend must be one of cpu|metal" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"kv_precision\": \"f64\" } }", .err = error.InvalidConfigValue, .needle = "engine.kv_precision must be one of f32|f16" },
@@ -1177,10 +1200,10 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"ctx_size\": 65536 } }", .err = error.InvalidConfigValue, .needle = "engine.ctx_size must be 1..32768" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"model\": \"\" } }", .err = error.InvalidConfigValue, .needle = "engine.model must not be empty" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": \"metal\" }", .err = error.InvalidConfigValue, .needle = "engine must be an object" },
-        .{ .text = "{ \"schema_version\": 1, \"generate\": { \"max_tokens\": 0 } }", .err = error.InvalidConfigValue, .needle = "generate.max_tokens must be 1..4096" },
-        .{ .text = "{ \"schema_version\": 1, \"generate\": { \"think\": \"loud\" } }", .err = error.InvalidConfigValue, .needle = "generate.think must be one of off|low|medium|high|xhigh" },
-        .{ .text = "{ \"schema_version\": 1, \"generate\": { \"sampling\": { \"top_p\": 0 } } }", .err = error.InvalidConfigValue, .needle = "generate.sampling.top_p is out of range" },
-        .{ .text = "{ \"schema_version\": 1, \"generate\": { \"sampling\": { \"temperature\": \"hot\" } } }", .err = error.InvalidConfigValue, .needle = "generate.sampling.temperature must be null or a number" },
+        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"max_tokens\": 0 } }", .err = error.InvalidConfigValue, .needle = "generation.max_tokens must be 1..4096" },
+        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"think\": \"loud\" } }", .err = error.InvalidConfigValue, .needle = "generation.think must be one of off|low|medium|high|xhigh" },
+        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"top_p\": 0 } } }", .err = error.InvalidConfigValue, .needle = "generation.sampling.top_p is out of range" },
+        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"temperature\": \"hot\" } } }", .err = error.InvalidConfigValue, .needle = "generation.sampling.temperature must be null or a number" },
         .{ .text = "{ \"schema_version\": 1, \"agent\": { \"fold_thinking\": 1 } }", .err = error.InvalidConfigValue, .needle = "agent.fold_thinking must be true or false" },
         .{ .text = "{ \"schema_version\": 1, \"chat\": { \"think\": \"low\" } }", .err = error.UnknownConfigKey, .needle = "unknown key chat: the section is now agent" },
         .{ .text = "{ \"schema_version\": 1, \"agent\": { \"theme\": \"solarized\" } }", .err = error.InvalidConfigValue, .needle = "agent.theme must be one of gruvbox-dark" },
@@ -1191,11 +1214,11 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"x.gguf\": { \"path\": \"x\" } } }", .err = error.InvalidConfigValue, .needle = "entry name \"x.gguf\"" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"\": { \"path\": \"x\" } } }", .err = error.InvalidConfigValue, .needle = "entry name \"\"" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"imatrix\": \"i.gguf\" } } }", .err = error.UnknownConfigKey, .needle = "unknown key models.g.imatrix" },
-        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generate\": { \"sampling\": { \"top_q\": 1 } } } } }", .err = error.UnknownConfigKey, .needle = "unknown key models.g.generate.sampling.top_q" },
+        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"sampling\": { \"top_q\": 1 } } } } }", .err = error.UnknownConfigKey, .needle = "unknown key models.g.generation.sampling.top_q" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"ctx_size\": \"big\" } } }", .err = error.InvalidConfigValue, .needle = "models.g.ctx_size must be null or a non-negative integer" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"ctx_size\": 0 } } }", .err = error.InvalidConfigValue, .needle = "models.g.ctx_size must be 1..32768" },
-        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generate\": { \"max_tokens\": 5000 } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generate.max_tokens must be 1..4096" },
-        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generate\": { \"sampling\": { \"top_p\": 2 } } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generate.sampling.top_p is out of range" },
+        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"max_tokens\": 5000 } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generation.max_tokens must be 1..4096" },
+        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"sampling\": { \"top_p\": 2 } } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generation.sampling.top_p is out of range" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"agent\": { \"think\": \"loud\" } } } }", .err = error.InvalidConfigValue, .needle = "models.g.agent.think must be null or one of off|low|medium|high|xhigh" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": {} } }", .err = error.InvalidConfigValue, .needle = "models.g: needs path, or repo and file" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"repo\": \"a/b\" } } }", .err = error.InvalidConfigValue, .needle = "models.g: needs path, or repo and file" },
@@ -1231,7 +1254,7 @@ test "resolve applies defaults < file < flags per command and records the source
     var diag: Diagnostic = .{};
     var loaded = try fromText(alloc,
         \\{ "schema_version": 1, "engine": { "backend": "cpu", "ctx_size": 4096 },
-        \\  "generate": { "max_tokens": 64, "think": "medium", "sampling": { "temperature": 0.5, "top_k": 40 } },
+        \\  "generation": { "max_tokens": 64, "think": "medium", "sampling": { "temperature": 0.5, "top_k": 40 } },
         \\  "agent": { "think": "xhigh", "fold_thinking": false } }
     , "t.json", &diag);
     defer loaded.deinit();
@@ -1246,11 +1269,11 @@ test "resolve applies defaults < file < flags per command and records the source
     try std.testing.expectEqual(@as(usize, 64), gen.max_tokens);
     try std.testing.expectEqual(.medium, gen.think);
     try std.testing.expectEqual(Overrides{ .temperature = 0.5, .top_k = 10 }, gen.sampling);
-    try std.testing.expectEqual(.file, gen.source("generate.sampling.temperature"));
-    try std.testing.expectEqual(.flag, gen.source("generate.sampling.top_k"));
+    try std.testing.expectEqual(.file, gen.source("generation.sampling.temperature"));
+    try std.testing.expectEqual(.flag, gen.source("generation.sampling.top_k"));
     // An unset override takes the profile's value, and says so.
-    try std.testing.expectEqual(.profile, gen.source("generate.sampling.min_p"));
-    try std.testing.expectEqual(.profile, gen.source("generate.sampling.top_p"));
+    try std.testing.expectEqual(.profile, gen.source("generation.sampling.min_p"));
+    try std.testing.expectEqual(.profile, gen.source("generation.sampling.top_p"));
     try std.testing.expectEqual(inference.sampling.Options{ .temperature = 0.5, .top_k = 10, .top_p = 0.95 }, gen.samplingOptions());
     try std.testing.expectEqualStrings("t.json", gen.config_file.?);
     const agent = resolve(&loaded, "/abs/m.gguf", .{ .think = .low }, .agent);
@@ -1258,7 +1281,7 @@ test "resolve applies defaults < file < flags per command and records the source
     try std.testing.expectEqual(.flag, agent.source("engine.model"));
     try std.testing.expectEqual(.low, agent.think);
     try std.testing.expectEqual(.flag, agent.source("agent.think"));
-    try std.testing.expectEqual(.file, agent.source("generate.think"));
+    try std.testing.expectEqual(.file, agent.source("generation.think"));
     try std.testing.expect(!agent.fold_thinking);
     try std.testing.expectEqual(@as(usize, 64), agent.max_tokens);
     // bench: engine from the file; budget and sampling from flags only.
@@ -1266,15 +1289,15 @@ test "resolve applies defaults < file < flags per command and records the source
     try std.testing.expectEqual(.cpu, bench.backend);
     try std.testing.expectEqual(@as(usize, 4096), bench.ctx_size);
     try std.testing.expectEqual(@as(usize, bench_max_tokens), bench.max_tokens);
-    try std.testing.expectEqual(.default, bench.source("generate.max_tokens"));
+    try std.testing.expectEqual(.default, bench.source("generation.max_tokens"));
     try std.testing.expectEqual(Overrides{}, bench.sampling);
-    try std.testing.expectEqual(.default, bench.source("generate.sampling.temperature"));
-    try std.testing.expectEqual(.default, bench.source("generate.sampling.min_p"));
+    try std.testing.expectEqual(.default, bench.source("generation.sampling.temperature"));
+    try std.testing.expectEqual(.default, bench.source("generation.sampling.min_p"));
     try std.testing.expectEqual(.off, bench.think);
     const flagged = resolve(&loaded, null, .{ .backend = .metal, .max_tokens = 8, .sampling = .{ .min_p = 0.1 } }, .bench);
     try std.testing.expectEqual(.metal, flagged.backend);
     try std.testing.expectEqual(@as(usize, 8), flagged.max_tokens);
-    try std.testing.expectEqual(.flag, flagged.source("generate.max_tokens"));
+    try std.testing.expectEqual(.flag, flagged.source("generation.max_tokens"));
     try std.testing.expectEqual(Overrides{ .min_p = 0.1 }, flagged.sampling);
     // No file: defaults unless flagged, no file to record, and the
     // profile as the source of every sampling option.
@@ -1289,7 +1312,7 @@ test "resolve applies defaults < file < flags per command and records the source
     try std.testing.expectEqual(inference.profiles.Profile.qwen38.samplingDefaults(.off), plain.samplingOptions());
     try std.testing.expectEqual(.low, resolve(&none, null, .{}, .agent).think);
     try std.testing.expect(plain.config_file == null);
-    try std.testing.expectEqual(.profile, plain.source("generate.sampling.temperature"));
+    try std.testing.expectEqual(.profile, plain.source("generation.sampling.temperature"));
     try std.testing.expectEqual(.default, plain.source("engine.ctx_size"));
 }
 
@@ -1298,10 +1321,10 @@ test "a registry entry layers between the file's globals and the flags, for its 
     var diag: Diagnostic = .{};
     var loaded = try fromText(alloc,
         \\{ "schema_version": 1, "engine": { "model": "gemma", "ctx_size": 8192 },
-        \\  "generate": { "max_tokens": 64, "sampling": { "temperature": 0.5, "top_k": 40 } },
+        \\  "generation": { "max_tokens": 64, "sampling": { "temperature": 0.5, "top_k": 40 } },
         \\  "agent": { "think": "xhigh" },
         \\  "models": { "gemma": { "repo": "unsloth/gemma-4-12b-it-GGUF", "file": "g.gguf", "ctx_size": 4096,
-        \\                         "generate": { "max_tokens": 32, "think": "low", "sampling": { "top_k": 64, "min_p": 0.05 } },
+        \\                         "generation": { "max_tokens": 32, "think": "low", "sampling": { "top_k": 64, "min_p": 0.05 } },
         \\                         "agent": { "think": "off", "fold_thinking": false } } } }
     , "t.json", &diag);
     defer loaded.deinit();
@@ -1311,14 +1334,14 @@ test "a registry entry layers between the file's globals and the flags, for its 
     try std.testing.expectEqual(@as(usize, 4096), gen.ctx_size);
     try std.testing.expectEqual(.model, gen.source("engine.ctx_size"));
     try std.testing.expectEqual(@as(usize, 32), gen.max_tokens);
-    try std.testing.expectEqual(.model, gen.source("generate.max_tokens"));
+    try std.testing.expectEqual(.model, gen.source("generation.max_tokens"));
     try std.testing.expectEqual(.low, gen.think);
-    try std.testing.expectEqual(.model, gen.source("generate.think"));
+    try std.testing.expectEqual(.model, gen.source("generation.think"));
     try std.testing.expectEqual(Overrides{ .temperature = 0.5, .top_k = 64, .min_p = 0.1 }, gen.sampling);
-    try std.testing.expectEqual(.file, gen.source("generate.sampling.temperature"));
-    try std.testing.expectEqual(.model, gen.source("generate.sampling.top_k"));
-    try std.testing.expectEqual(.flag, gen.source("generate.sampling.min_p"));
-    try std.testing.expectEqual(.profile, gen.source("generate.sampling.top_p"));
+    try std.testing.expectEqual(.file, gen.source("generation.sampling.temperature"));
+    try std.testing.expectEqual(.model, gen.source("generation.sampling.top_k"));
+    try std.testing.expectEqual(.flag, gen.source("generation.sampling.min_p"));
+    try std.testing.expectEqual(.profile, gen.source("generation.sampling.top_p"));
     try std.testing.expect(!gen.fold_thinking);
     try std.testing.expectEqual(.model, gen.source("agent.fold_thinking"));
     const agent = resolve(&loaded, null, .{}, .agent);
@@ -1373,12 +1396,12 @@ test "set edits one key of the file's own text, validates it, and reports the pr
         \\{ "schema_version": 1, "engine": { "ctx_size": 4096 },
         \\  "models": { "local": { "path": "/scratch/x.gguf" } } }
     ;
-    var num = try set(alloc, text, "t.json", "generate.sampling.temperature", "0.7", &diag);
+    var num = try set(alloc, text, "t.json", "generation.sampling.temperature", "0.7", &diag);
     defer num.deinit(alloc);
     try std.testing.expect(num.previous == null);
     try std.testing.expect(std.mem.indexOf(u8, num.text, "\"temperature\": 0.7") != null);
     try std.testing.expect(std.mem.indexOf(u8, num.text, "\"ctx_size\": 4096") != null);
-    var cleared = try set(alloc, num.text, "t.json", "generate.sampling.temperature", "null", &diag);
+    var cleared = try set(alloc, num.text, "t.json", "generation.sampling.temperature", "null", &diag);
     defer cleared.deinit(alloc);
     try std.testing.expectEqualStrings("0.7", cleared.previous.?);
     try std.testing.expect(std.mem.indexOf(u8, cleared.text, "\"temperature\": null") != null);
@@ -1468,30 +1491,30 @@ test "show prints the effective value of every key with its source in both forms
     const alloc = std.testing.allocator;
     var diag: Diagnostic = .{};
     var loaded = try fromText(alloc,
-        \\{ "schema_version": 1, "engine": { "ctx_size": 4096 }, "generate": { "sampling": { "top_k": 40 } },
-        \\  "models": { "mine": { "path": "custom/m.gguf", "ctx_size": 2048, "generate": { "sampling": { "top_p": 0.5 } } } } }
+        \\{ "schema_version": 1, "engine": { "ctx_size": 4096 }, "generation": { "sampling": { "top_k": 40 } },
+        \\  "models": { "mine": { "path": "custom/m.gguf", "ctx_size": 2048, "generation": { "sampling": { "top_p": 0.5 } } } } }
     , "/r/nuclis.json", &diag);
     defer loaded.deinit();
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
     try show(&loaded, &out.writer, false, .none);
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "config: /r/nuclis.json (file)\nmodel: qwen3.8-27b (catalogue name; qwen38 profile)."));
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "a null sampling key in the file takes the profile's value for generate.think = off") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "a null sampling key in the file takes the profile's value for generation.think = off") != null);
     try expectRow(out.written(), "schema_version", "1", "file");
     try expectRow(out.written(), "engine.model", "qwen3.8-27b", "default");
     try expectRow(out.written(), "engine.ctx_size", "4096", "file");
     // The profile's instruct values fill the unset sampling keys.
-    try expectRow(out.written(), "generate.sampling.temperature", "0.7", "profile");
-    try expectRow(out.written(), "generate.sampling.top_k", "40", "file");
-    try expectRow(out.written(), "generate.sampling.presence_penalty", "1.5", "profile");
+    try expectRow(out.written(), "generation.sampling.temperature", "0.7", "profile");
+    try expectRow(out.written(), "generation.sampling.top_k", "40", "file");
+    try expectRow(out.written(), "generation.sampling.presence_penalty", "1.5", "profile");
     try expectRow(out.written(), "agent.think", "low", "default");
     try expectRow(out.written(), "agent.fold_thinking", "true", "default");
     // The entry's stated keys, and only those.
     try expectRow(out.written(), "models.mine.path", "custom/m.gguf", "file");
     try expectRow(out.written(), "models.mine.ctx_size", "2048", "file");
-    try expectRow(out.written(), "models.mine.generate.sampling.top_p", "0.5", "file");
+    try expectRow(out.written(), "models.mine.generation.sampling.top_p", "0.5", "file");
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "models.mine.repo") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "models.mine.generate.sampling.top_k") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "models.mine.generation.sampling.top_k") == null);
     out.clearRetainingCapacity();
     try show(&loaded, &out.writer, true, .none);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
@@ -1500,16 +1523,16 @@ test "show prints the effective value of every key with its source in both forms
     try std.testing.expectEqualStrings("/r/nuclis.json", object.get("path").?.string);
     try std.testing.expect(object.get("found").?.bool);
     try std.testing.expectEqual(@as(i64, 4096), object.get("config").?.object.get("engine").?.object.get("ctx_size").?.integer);
-    try std.testing.expect(object.get("config").?.object.get("generate").?.object.get("sampling").?.object.get("top_p").? == .null);
+    try std.testing.expect(object.get("config").?.object.get("generation").?.object.get("sampling").?.object.get("top_p").? == .null);
     try std.testing.expectEqualStrings("custom/m.gguf", object.get("config").?.object.get("models").?.object.get("mine").?.object.get("path").?.string);
     const effective = object.get("effective").?.object;
     try std.testing.expectEqualStrings("catalogue", effective.get("model_kind").?.string);
     try std.testing.expectEqualStrings("qwen38", effective.get("profile").?.string);
-    try std.testing.expectEqual(@as(i64, 40), effective.get("generate").?.object.get("sampling").?.object.get("top_k").?.integer);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.8), effective.get("generate").?.object.get("sampling").?.object.get("top_p").?.float, 1e-6);
+    try std.testing.expectEqual(@as(i64, 40), effective.get("generation").?.object.get("sampling").?.object.get("top_k").?.integer);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.8), effective.get("generation").?.object.get("sampling").?.object.get("top_p").?.float, 1e-6);
     try std.testing.expectEqualStrings("file", object.get("sources").?.object.get("engine.ctx_size").?.string);
-    try std.testing.expectEqualStrings("default", object.get("sources").?.object.get("generate.think").?.string);
-    try std.testing.expectEqualStrings("profile", object.get("sources").?.object.get("generate.sampling.top_p").?.string);
+    try std.testing.expectEqualStrings("default", object.get("sources").?.object.get("generation.think").?.string);
+    try std.testing.expectEqualStrings("profile", object.get("sources").?.object.get("generation.sampling.top_p").?.string);
     try std.testing.expectEqual(@as(usize, leaf_count), object.get("sources").?.object.count());
     // The `config` object of `show --json` is itself a loadable file.
     var written: std.Io.Writer.Allocating = .init(alloc);

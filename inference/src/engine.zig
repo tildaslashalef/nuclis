@@ -29,8 +29,12 @@ pub const Backend = enum { cpu, metal };
 /// memory plan (docs/spec.md § Speculative decoding).
 pub const DraftRequest = union(enum) {
     none,
-    /// The artifact's own embedded prediction block (the Qwen3.8 release).
+    /// The artifact's own embedded prediction block (the Qwen3.8 release);
+    /// a family without one is `DraftSourceMissing`.
     embedded,
+    /// The embedded block when the family has one, otherwise no drafter:
+    /// `bench` measures what is available rather than failing.
+    optional_embedded,
     /// A separate companion file, opened by MODL-19/20.
     file: []const u8,
 };
@@ -336,6 +340,11 @@ pub const Model = struct {
     pub fn recover(self: *Model, accepted: []const u32) !void {
         const at = self.session().checkpoint_position orelse return error.NoCheckpoint;
         if (self.hasRecurrentState()) {
+            // The verify batch fed exactly the accepted prefix when every
+            // draft was accepted (accepted is the whole batch): the recurrent
+            // state is already a function of those tokens, so nothing is
+            // rewound or replayed.
+            if (accepted.len == self.session().position - at) return;
             try self.rewind();
             if (accepted.len > 0) try self.prefill(accepted, null, null, null, null);
         } else {
@@ -437,7 +446,7 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference
     // batch, which is exactly when a drafter is loaded.
     const want_draft = switch (draft) {
         .none => false,
-        .embedded => true,
+        .embedded, .optional_embedded => true,
         .file => return error.DraftSourceUnsupported,
     };
     return switch (backend) {
@@ -532,6 +541,9 @@ pub const Engine = struct {
             },
         };
         errdefer model.deinit(alloc);
+        // A required embedded block that the family does not bind is a typed
+        // load error, never a silent non-speculative run.
+        if (std.meta.activeTag(draft) == .embedded and model.drafter() == null) return error.DraftSourceMissing;
         // The verify scratch is part of the load plan: it exists exactly when a
         // drafter was requested, so a plain run pays nothing.
         var spec: ?SpeculativeScratch = null;
@@ -634,6 +646,13 @@ pub const Timing = struct {
     /// Present when the GPU partial top-k path sampled this run: how many
     /// tokens needed the full-logit fallback (see reference/generation.md).
     topk_fallbacks: ?usize = null,
+    /// Speculative decoding: verify batches run, drafts accepted and
+    /// proposed across them, and time spent in `verify` and `recover`.
+    speculative_steps: usize = 0,
+    accepted_drafts: usize = 0,
+    proposed_drafts: usize = 0,
+    verify: std.Io.Duration = .zero,
+    recover: std.Io.Duration = .zero,
 };
 
 pub const Outcome = struct {
@@ -867,6 +886,11 @@ pub fn runLoop(
                 else => return err,
             };
             if (hooks) |h| if (h.step) |call| try call(h.context, eng.model.session().position);
+            timing.speculative_steps += 1;
+            timing.accepted_drafts += result.accepted;
+            timing.proposed_drafts += result.proposed;
+            timing.verify = .{ .nanoseconds = timing.verify.nanoseconds + result.verify.nanoseconds };
+            timing.recover = .{ .nanoseconds = timing.recover.nanoseconds + result.recover.nanoseconds };
             // The accepted drafts and the correction go through the ordinary
             // per-token checks in order; the correction is the next batch's
             // seed, so it is not sampled again.
@@ -924,8 +948,9 @@ pub fn runLoop(
     return .{ .stop = stop, .timing = timing };
 }
 
-/// The accepted length and the model's next token after a verify batch.
-const BatchResult = struct { accepted: usize, correction: u32 };
+/// The accepted length, the model's next token, and the timings of one verify
+/// batch.
+const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, verify: std.Io.Duration, recover: std.Io.Duration };
 
 /// Proposes `k` drafts from `seed_token`, checkpoints, verifies `[seed] ++
 /// drafts` on the main model, accepts the longest prefix (greedy by argmax,
@@ -952,7 +977,8 @@ fn speculativeBatch(
     @memcpy(s.tokens[1 .. 1 + n], s.drafts[0..n]);
     const batch = s.tokens[0 .. 1 + n];
     const hidden = s.hidden[0 .. (1 + n) * drafter.hidden];
-    var result: BatchResult = .{ .accepted = 0, .correction = 0 };
+    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .verify = .zero, .recover = .zero };
+    const verify_start = std.Io.Clock.awake.now(eng.io);
     if (greedy) {
         try eng.model.verifyGreedy(batch, vocabulary, s.choices[0 .. 1 + n], hidden, observer);
         while (result.accepted < n and s.choices[result.accepted] == s.drafts[result.accepted]) result.accepted += 1;
@@ -982,7 +1008,10 @@ fn speculativeBatch(
             result.correction = inference.speculative.draw(sampler, p);
         }
     }
+    result.verify = verify_start.durationTo(std.Io.Clock.awake.now(eng.io));
+    const recover_start = std.Io.Clock.awake.now(eng.io);
     try eng.model.recover(batch[0 .. 1 + result.accepted]);
+    result.recover = recover_start.durationTo(std.Io.Clock.awake.now(eng.io));
     try eng.model.commitDraft(batch[0 .. 1 + result.accepted], hidden[0 .. (1 + result.accepted) * drafter.hidden]);
     return result;
 }

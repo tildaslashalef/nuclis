@@ -72,9 +72,19 @@ pub const Sample = struct {
     gpu_busy_milliseconds: ?f64,
     /// Present on the GPU partial top-k sampling path: tokens that needed the full-logit fallback.
     topk_fallbacks: ?usize = null,
+    /// This sample ran with the speculative switch on (the pair's second run).
+    speculative: bool = false,
+    draft_length: ?usize = null,
+    /// Accepted drafts per verify batch, and the time per batch in `verify`
+    /// and `recover`; present only on speculative samples.
+    accepted_per_step: ?f64 = null,
+    verify_milliseconds: ?f64 = null,
+    recover_milliseconds: ?f64 = null,
 };
 
 pub const Report = struct {
+    /// Pre-1.0: the shape evolves with the tree, so no bump for the
+    /// speculative sample fields and means added alongside the rest.
     schema_version: u32 = 1,
     backend: []const u8,
     model_path: []const u8,
@@ -99,6 +109,13 @@ pub const Report = struct {
     mean_prefill_tokens_per_second: ?f64,
     mean_decode_tokens_per_second: ?f64,
     mean_first_token_milliseconds: ?f64,
+    /// Speculative decoding, when a drafter was loaded and both ways measured:
+    /// the draft length, the decode rate with the switch on, the accepted
+    /// drafts per verify batch, and the decode speedup over the baseline.
+    speculative_draft_length: ?usize = null,
+    mean_speculative_decode_tokens_per_second: ?f64 = null,
+    mean_accepted_per_step: ?f64 = null,
+    decode_speedup: ?f64 = null,
     profile: ?ProfileReport = null,
 
     pub fn render(self: Report, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
@@ -110,9 +127,9 @@ pub const Report = struct {
         const off = sty.off();
         try out.print("{s}Backend:{s} {s} ({s})\n{s}Model:{s} {s}{s}{s}\n{s}Config:{s} {s}{s}{s}\n", .{ label, off, self.backend, self.build_mode, label, off, sty.on(.code), self.model_path, off, label, off, sty.on(.code), self.config, off });
         try out.print("{s}Context:{s} {d} tokens, KV {s} (session {d:.1} MiB), output budget: {d}, {s}, prompt from {s}{s}\n{s}Load:{s} {d:.1} ms\n\n", .{ label, off, self.context, self.kv_precision, @as(f64, @floatFromInt(self.session_bytes)) / (1024 * 1024), self.max_tokens, self.sampling, self.prompt_source, if (self.profile != null) ", profiled (one encoder per dispatch; rates not comparable)" else "", label, off, self.load_milliseconds });
-        try out.print("{s}run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms  fallbacks{s}\n", .{ sty.on(.header), off });
+        try out.print("{s}run    prompt  gen  spec  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms  fallbacks{s}\n", .{ sty.on(.header), off });
         for (self.samples, 0..) |s, i| {
-            try out.print("{s}{d: <4} {d: >7} {d: >4}  {s: <13} {d: >11.1} ", .{ if (s.warmup) "w" else " ", i, s.prompt_tokens, s.generated_tokens, s.stop_reason, s.prefill_milliseconds });
+            try out.print("{s}{d: <4} {d: >7} {d: >4}  {s: <4}  {s: <13} {d: >11.1} ", .{ if (s.warmup) "w" else " ", i, s.prompt_tokens, s.generated_tokens, if (s.speculative) "on" else "off", s.stop_reason, s.prefill_milliseconds });
             try rate(out, s.prefill_tokens_per_second);
             try out.print(" {d: >9.1} {d: >11.1} ", .{ s.first_token_milliseconds, s.decode_milliseconds });
             try rate(out, s.decode_tokens_per_second);
@@ -126,6 +143,14 @@ pub const Report = struct {
         try rate(out, self.mean_decode_tokens_per_second);
         try out.print("{s} tok/s, first token ", .{off});
         if (self.mean_first_token_milliseconds) |ms| try out.print("{d:.1} ms\n", .{ms}) else try out.writeAll("—\n");
+        if (self.speculative_draft_length) |drafts| {
+            try out.print("{s}Speculative (draft length {d}):{s} decode ", .{ sty.on(.bold), drafts, off });
+            if (self.mean_speculative_decode_tokens_per_second) |v| try out.print("{s}{d:.2}{s} tok/s", .{ sty.on(.number), v, off }) else try out.writeAll("—");
+            try out.print(" vs baseline ", .{});
+            if (self.mean_decode_tokens_per_second) |v| try out.print("{d:.2} tok/s", .{v}) else try out.writeAll("—");
+            if (self.decode_speedup) |x| try out.print(", {s}{d:.2}x{s}", .{ sty.on(.number), x, off }) else try out.writeAll(", —x");
+            if (self.mean_accepted_per_step) |v| try out.print(", accepted {d:.2} drafts/step\n", .{v}) else try out.writeAll(", accepted —\n");
+        }
         if (self.profile) |p| try renderProfile(p, out, sty);
     }
     fn rate(out: *std.Io.Writer, value: ?f64) !void {
@@ -191,16 +216,45 @@ fn perSecond(count: usize, duration: std.Io.Duration) ?f64 {
     return @as(f64, @floatFromInt(count)) / (@as(f64, @floatFromInt(duration.nanoseconds)) / std.time.ns_per_s);
 }
 
-/// Pure aggregation over samples so the statistics are testable without a model.
-pub fn summarize(samples: []const Sample) struct { prefill: ?f64, decode: ?f64, first: ?f64, measured: usize } {
+/// Pure aggregation over samples so the statistics are testable without a
+/// model. The baseline means (switch off) and the speculative ones are kept
+/// apart: mixing them would hide the very comparison the pair exists for.
+pub const Summary = struct {
+    prefill: ?f64,
+    decode: ?f64,
+    first: ?f64,
+    measured: usize,
+    speculative_decode: ?f64,
+    accepted_per_step: ?f64,
+    speculative_measured: usize,
+};
+
+pub fn summarize(samples: []const Sample) Summary {
     var prefill_sum: f64 = 0;
     var prefill_n: usize = 0;
     var decode_sum: f64 = 0;
     var decode_n: usize = 0;
     var first_sum: f64 = 0;
     var measured: usize = 0;
+    var spec_decode_sum: f64 = 0;
+    var spec_decode_n: usize = 0;
+    var accepted_sum: f64 = 0;
+    var accepted_n: usize = 0;
+    var speculative_measured: usize = 0;
     for (samples) |s| {
         if (s.warmup or std.mem.eql(u8, s.stop_reason, "cancelled")) continue;
+        if (s.speculative) {
+            speculative_measured += 1;
+            if (s.decode_tokens_per_second) |v| {
+                spec_decode_sum += v;
+                spec_decode_n += 1;
+            }
+            if (s.accepted_per_step) |v| {
+                accepted_sum += v;
+                accepted_n += 1;
+            }
+            continue;
+        }
         measured += 1;
         first_sum += s.first_token_milliseconds;
         if (s.prefill_tokens_per_second) |v| {
@@ -217,6 +271,9 @@ pub fn summarize(samples: []const Sample) struct { prefill: ?f64, decode: ?f64, 
         .decode = if (decode_n > 0) decode_sum / @as(f64, @floatFromInt(decode_n)) else null,
         .first = if (measured > 0) first_sum / @as(f64, @floatFromInt(measured)) else null,
         .measured = measured,
+        .speculative_decode = if (spec_decode_n > 0) spec_decode_sum / @as(f64, @floatFromInt(spec_decode_n)) else null,
+        .accepted_per_step = if (accepted_n > 0) accepted_sum / @as(f64, @floatFromInt(accepted_n)) else null,
+        .speculative_measured = speculative_measured,
     };
 }
 
@@ -228,8 +285,13 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     const repeat = options.repeat orelse 3;
     const warmup = options.warmup orelse 1;
     if (limit == 0 or limit > config.max_output_tokens or capacity == 0 or capacity > config.max_context or repeat == 0 or repeat > 100 or warmup > 100) return error.InvalidGenerationBudget;
-    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, .none);
+    // Bench measures what the model offers: the drafter is loaded when the
+    // family has one (`--speculative on` makes it required), and each
+    // measured run is done both ways on the same loaded model.
+    const draft: inference.engine.DraftRequest = if (settings.speculative) .embedded else .optional_embedded;
+    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);
     defer eng.deinit();
+    const speculate = eng.model.drafter() != null;
     const gpu: ?*inference.metal.Backend = eng.model.gpu();
     if (options.profile) {
         const backend = gpu orelse return error.ProfileRequiresMetal;
@@ -261,42 +323,58 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     var sampling_label: [192]u8 = undefined;
     const o = sampler.options;
     const sampling: []const u8 = if (o.temperature == 0 and !o.penaltiesActive()) "greedy" else try std.fmt.bufPrint(&sampling_label, "sampled: temperature {d}, top-k {d}, top-p {d}, min-p {d}, presence {d}, repetition {d}, seed {d}", .{ o.temperature, o.top_k, o.top_p, o.min_p, o.presence_penalty, o.repetition_penalty, options.seed orelse 0 });
-    const samples = try alloc.alloc(Sample, warmup + repeat);
+    const per_iteration: usize = if (speculate) 2 else 1;
+    const samples = try alloc.alloc(Sample, (warmup + repeat) * per_iteration);
     defer alloc.free(samples);
     var trace: generate.Trace = .{ .io = io, .directory = null, .started = std.Io.Clock.awake.now(io) };
     var completed: usize = 0;
-    for (samples, 0..) |*sample, i| {
-        // Every run starts from an empty session and an empty token history.
-        eng.model.reset();
-        history.reset();
+    var cancelled = false;
+    for (0..warmup + repeat) |i| {
         // Warm-up dispatches are timed too but must not enter the profile.
         if (i == warmup) if (gpu) |backend| if (backend.profile) |*p| p.clear();
-        // Decode covers the steps after the first sampled token; the first
-        // token's latency (prefill included) is reported separately.
-        const outcome = try generate.runLoop(&eng, tokens, limit, &sampler, &history, .{}, logits, candidates, generated, &trace, null);
-        const t = outcome.timing;
-        const decode_steps = if (t.generated_tokens > 1) t.generated_tokens - 1 else 0;
-        sample.* = .{
-            .warmup = i < warmup,
-            .prompt_tokens = t.prompt_tokens,
-            .generated_tokens = t.generated_tokens,
-            .stop_reason = @tagName(outcome.stop),
-            .prefill_milliseconds = engine.milliseconds(t.prefill),
-            .first_token_milliseconds = engine.milliseconds(t.first_token),
-            .decode_milliseconds = engine.milliseconds(t.decode),
-            .prefill_tokens_per_second = perSecond(t.prompt_tokens, t.prefill),
-            .decode_tokens_per_second = perSecond(decode_steps, t.decode),
-            .gpu_busy_milliseconds = if (t.gpu_seconds) |s| s * 1000 else null,
-            .topk_fallbacks = t.topk_fallbacks,
-        };
-        if (!json) {
-            try writer.print("{s} run {d}: {d} prompt, {d} generated, {s}\n", .{ if (i < warmup) "warmup" else "measured", i, t.prompt_tokens, t.generated_tokens, @tagName(outcome.stop) });
-            try writer.flush();
+        for ([_]bool{ false, true }) |on| {
+            if (on and !speculate) continue;
+            // Every run starts from an empty session and an empty token history.
+            eng.model.reset();
+            history.reset();
+            const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length } else .{};
+            // Decode covers the steps after the first sampled token; the first
+            // token's latency (prefill included) is reported separately.
+            const outcome = try generate.runLoop(&eng, tokens, limit, &sampler, &history, spec, logits, candidates, generated, &trace, null);
+            const t = outcome.timing;
+            const decode_steps = if (t.generated_tokens > 1) t.generated_tokens - 1 else 0;
+            samples[completed] = .{
+                .warmup = i < warmup,
+                .prompt_tokens = t.prompt_tokens,
+                .generated_tokens = t.generated_tokens,
+                .stop_reason = @tagName(outcome.stop),
+                .prefill_milliseconds = engine.milliseconds(t.prefill),
+                .first_token_milliseconds = engine.milliseconds(t.first_token),
+                .decode_milliseconds = engine.milliseconds(t.decode),
+                .prefill_tokens_per_second = perSecond(t.prompt_tokens, t.prefill),
+                .decode_tokens_per_second = perSecond(decode_steps, t.decode),
+                .gpu_busy_milliseconds = if (t.gpu_seconds) |s| s * 1000 else null,
+                .topk_fallbacks = t.topk_fallbacks,
+                .speculative = on,
+                .draft_length = if (on) settings.draft_length else null,
+                .accepted_per_step = if (on and t.speculative_steps > 0) @as(f64, @floatFromInt(t.accepted_drafts)) / @as(f64, @floatFromInt(t.speculative_steps)) else null,
+                .verify_milliseconds = if (on) engine.milliseconds(t.verify) else null,
+                .recover_milliseconds = if (on) engine.milliseconds(t.recover) else null,
+            };
+            if (!json) {
+                try writer.print("{s} run {d}{s}: {d} prompt, {d} generated, {s}\n", .{ if (i < warmup) "warmup" else "measured", i, if (on) " (speculative)" else "", t.prompt_tokens, t.generated_tokens, @tagName(outcome.stop) });
+                try writer.flush();
+            }
+            completed += 1;
+            // A cancelled run is reported as its own sample and ends the
+            // benchmark; partial runs must not be averaged as if they had
+            // finished.
+            if (outcome.stop == .cancelled) {
+                cancelled = true;
+                break;
+            }
         }
-        completed += 1;
-        // A cancelled run is reported as its own sample and ends the benchmark;
-        // partial runs must not be averaged as if they had finished.
-        if (outcome.stop == .cancelled) break;
+        if (cancelled) break;
     }
     const measured_samples = samples[0..completed];
     const stats = summarize(measured_samples);
@@ -324,6 +402,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         .mean_prefill_tokens_per_second = stats.prefill,
         .mean_decode_tokens_per_second = stats.decode,
         .mean_first_token_milliseconds = stats.first,
+        .speculative_draft_length = if (speculate) settings.draft_length else null,
+        .mean_speculative_decode_tokens_per_second = stats.speculative_decode,
+        .mean_accepted_per_step = stats.accepted_per_step,
+        .decode_speedup = if (stats.decode != null and stats.speculative_decode != null) stats.speculative_decode.? / stats.decode.? else null,
         .profile = profile,
     };
     if (!json) try writer.writeByte('\n');

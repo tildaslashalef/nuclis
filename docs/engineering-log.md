@@ -89,6 +89,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-11 | Small-chunk prefill matmul near the weight-bandwidth floor | 2026-09-19 |
 | ENGN-11 | Speculative state recovery: checkpoint, rewind, truncate, recover | 2026-09-19 |
 | MODL-18 | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2026-09-20 |
+| APPS-13 | The configuration section is `generation`, not `generate` | 2026-09-20 |
 
 ## Context
 
@@ -2951,3 +2952,25 @@ unloaded: the embedded block is the source (the log records why).
 `DraftRequest.file` and the Gemma/Muse sources remain MODL-19/20; sampled
 acceptance and batched verification are ENGN-12, so this unit measures
 drafting quality only, not a speedup.
+
+### APPS-13 — The configuration section is `generation`, not `generate` (2026-09-20)
+
+**Outcome.** The shared generation scope of `nuclis.json` was renamed from
+`generate` to `generation`. The section was named after a command while it
+holds settings every generation path shares: `max_tokens`, `think`,
+`speculative`, `draft_length`, and `sampling` all apply to `agent` as well as
+`generate`, and `bench` reads only `engine` plus its own flags. The scope rule
+is now explicit — `engine` and `generation` are shared, `agent` is the chat
+surface's own — and per-model entries mirror it
+(`models.<name>.generation.*`). A decision recorded here, not a compatibility
+shim: the tree is pre-1.0 and the schema is internal.
+
+**Evidence.** `make check` (451 unit tests and the Metal fixtures) with every
+config path, test needle, and help line on `generation.*`; `config init`
+writes the full schema under the new key and `config show` prints it with the
+same sources; a hand-written file with a custom `models` map loads and
+resolves unchanged.
+
+**Files.** `src/config.zig`, `src/cli.zig`, `src/help.zig`,
+`docs/development.md`, `docs/reference/generation.md`, `docs/spec.md`,
+`docs/llm-guide.md`, `docs/engineering-log.md`, `TODO.md`.

@@ -290,11 +290,16 @@ downloaded; a repository with several GGUFs and no `--file` lists them as
 
 ### Configuration file
 
-`nuclis.json` is one sectioned document (`engine`, `generate`, `agent`,
-and the `models` registry; the `agent` section holds the agent surface's
-settings (`think`, `fold_thinking`, `theme`) and was named `chat` until
-2026-09-11, see
-[agent-spec.md](agent-spec.md#configuration)) with a `schema_version`;
+`nuclis.json` is one sectioned document (`engine`, `generation`, `agent`,
+and the `models` registry) with a `schema_version`. The sections name a
+*scope*, not a command: `engine` (the artifact and its session) and
+`generation` (how tokens are produced: budget, effort, speculative decoding,
+sampling) are shared by `generate` and `agent`; `agent` holds only the chat
+surface's own settings (`think`, `fold_thinking`, `theme`, and was named
+`chat` until 2026-09-11, see
+[agent-spec.md](agent-spec.md#configuration)); `bench` reads `engine` plus
+its own flags. The section was named `generate` until 2026-09-20, when the
+rename made the scope explicit;
 `src/config.zig` is its schema and the built-in defaults. `nuclis config
 init` writes the defaults with every catalogue model as a registry entry
 (one today), so the file shows the entry shape with the catalogue's facts
@@ -307,7 +312,7 @@ and the `nuclis model pull <name>` to run next:
   "schema_version": 1,
   "engine":   { "model": "qwen3.8-27b", "backend": "metal", "ctx_size": 16384,
                 "kv_precision": "f16" },
-  "generate": { "max_tokens": 2048, "think": "off",
+  "generation": { "max_tokens": 2048, "think": "off", "speculative": false, "draft_length": 4,
                 "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,
                               "presence_penalty": null, "repetition_penalty": null } },
   "agent":    { "think": "low", "fold_thinking": true },
@@ -316,7 +321,7 @@ and the `nuclis model pull <name>` to run next:
                                  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
                                  "mmproj": "mmproj-BF16.gguf", "mtp": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
                                  "profile": null, "ctx_size": null,
-                                 "generate": { "max_tokens": null, "think": null, "sampling": { "…": null } },
+                                 "generation": { "max_tokens": null, "think": null, "speculative": null, "draft_length": null, "sampling": { "…": null } },
                                  "agent": { "think": null, "fold_thinking": null } } }
 }
 ```
@@ -329,7 +334,7 @@ and the `nuclis model pull <name>` to run next:
   `file`, `model`, `flag`), one line above the table naming the model, how
   it resolved (registry entry, catalogue name, path), its profile, and that
   a `null` sampling key takes the profile's value for the configured
-  `generate.think`; then each registry entry's stated keys. The profile
+  `generation.think`; then each registry entry's stated keys. The profile
   named there is the catalogue entry's (the first profile for a bare path
   or an unknown registry name), chosen without opening the file; a run
   samples with the opened file's own profile, selected by its template
@@ -342,7 +347,7 @@ and the `nuclis model pull <name>` to run next:
   the rendering is the pinned protocol's, not necessarily the file's own
   ([prompt-profile.md § Evidence](reference/prompt-profile.md#evidence-and-reproduction)).
   `nuclis config set <key> <value>` changes one key by its dotted name
-  (`engine.model hauhau`, `generate.sampling.temperature 0.7`,
+  (`engine.model hauhau`, `generation.sampling.temperature 0.7`,
   `models.<name>.profile gemma4`; `null` clears an override): the file's
   own text is edited so stated keys and their order survive, the result
   goes through the same loader before it is written (a refused value
@@ -374,7 +379,7 @@ and the `nuclis model pull <name>` to run next:
   optional `revision`; optional `mmproj` and `mtp` companion file names
   in the same directory (recorded for the units that will load them, the vision unit
   and the MTP unit, and used by `model pull <name> --with`); and optional
-  `ctx_size`, `generate` (`max_tokens`, `think`, `sampling`), and `agent`
+  `ctx_size`, `generation` (`max_tokens`, `think`, `speculative`, `draft_length`, `sampling`), and `agent`
   (`think`, `fold_thinking`) overrides that apply only while that entry is
   the model, `null` meaning the global value. Entries pin no digest (a
   pull by entry name takes the Hub's). A registry name shadows a catalogue

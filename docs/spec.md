@@ -456,7 +456,7 @@ Three settings, because they answer three different questions:
   Loading the drafter is a load-time decision because its weights and the
   checkpoint scratch of the recovery contract belong to the memory plan.
   The `mtp` role names the draft source whatever its mechanism.
-- **The switch**: a generation setting, `generate.speculative` in the
+- **The switch**: a generation setting, `generation.speculative` in the
   configuration and `--speculative on|off` on `generate`, `agent`, and
   `bench`, layered like `think` and sampling (defaults, then the entry,
   then the flag). Per command rather than per load: it changes nothing in

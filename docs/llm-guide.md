@@ -1069,7 +1069,7 @@ interesting part is not the file but how little code it takes when the
 schema *is* a Zig struct.
 
 **The struct is the schema.** `src/config.zig` declares `Config` with
-three section structs (`engine`, `generate`, `agent`, then `chat`) whose fields carry
+three section structs (`engine`, `generation`, `agent`, then `chat`) whose fields carry
 their defaults. Everything else derives from it: the JSON written by
 `config init` is `std.json.Stringify` over `Config{}`; loading walks the
 parsed `std.json.Value` tree against the struct with an `inline for` over

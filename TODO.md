@@ -67,9 +67,15 @@ correction, EOS/budget/context inside a batch). Greedy speculation equals
 ordinary greedy token for token on the pinned seed on both executors and
 through `engine.runLoop` on Metal (`make speculative-check`,
 `make speculative-check-metal`; 7/24 drafts accepted on `Hello,`); `make
-check`, `make compare`, and `make test-generation-metal` pass. Session 2
-remains: the `speculative`/`draft_length` configuration and flags, the
-drafter load switch, and the benchmark record.
+check`, `make compare`, and `make test-generation-metal` pass. Session 2 (in
+progress) has landed the `generation.speculative`/`generation.draft_length`
+configuration and flags, the drafter load switch, the bench off/on pair with
+its `verify`/`recover`/acceptance fields, the loop edge tests (partial
+acceptance, budget, EOS, cancellation, context limit), and the
+full-acceptance replay skip in `Model.recover`; the `generate` → `generation`
+section rename is APPS-13. Remaining: the benchmark record (the Qwen
+acceptance workload) with the verdict, the entry's
+`speculative`/`draft_length`, and the spec's measured result.
 
 Order: ENGN-12 (session 2) → MODL-19 → MODL-20. After MODL-20 the roadmap
 continues with the performance follow-ups, then vision, then agent expansion
@@ -198,40 +204,93 @@ through `engine.runLoop` on Metal (`make speculative-check`,
 `make speculative-check-metal`); `make check`, `make compare`, and
 `make test-generation-metal` pass. Session 2 remains.
 
-**Session 2 — configuration and the benchmark.**
-- `Config.Generate` gains `speculative: bool = false` and `draft_length:
-  usize = 4`; `ModelEntry` gains `speculative: ?bool` and `draft_length:
-  ?usize`; `Flags` gains both; `Resolved` gains both, resolved as
-  `think` is (defaults, entry, flag) with `config show` provenance;
-  `cli.zig` parses `--speculative on|off` and `--draft-length N` for
-  `generate`, `agent`, and `bench` (tests beside the `--think` ones);
-  `config.max_draft_length` is a host constant equal to KERN-11's token
-  tile minus one (7 while the tile is 8 rows), a larger value is
-  `InvalidNumber`; `Entry` gains `speculative: bool` and `draft_length:
-  u8` (the verdict, written by the benchmark; `config init` copies them
-  into the entry). A drafter is loaded whenever the family has a source
-  (embedded or the entry's `mtp` file) and either the switch is on or
-  `bench` will measure both ways; `generate` with the switch off and no
-  drafter needed loads nothing extra.
-- `bench`: when a drafter is loaded, each measured run is done twice on
-  the same loaded model, switch off then on, and the report carries both;
-  `Sample` gains `speculative: bool`, `draft_length: ?usize`,
-  `accepted_per_step: ?f64`, `verify_milliseconds: ?f64`,
-  `recover_milliseconds: ?f64`; `schema_version` becomes 2 and the text
-  report prints the pair with the ratio. The record in `bench.md`: the
-  Qwen acceptance workload (512, 4K, 16K, 32,639) greedy and with the
-  instruct sampling profile, draft length 2, 4, 7, memory, end-to-end
-  tok/s; the Qwen entry's `speculative`/`draft_length` set from it;
-  `spec.md`'s section updated with the measured result.
+**Session 2 (in progress, 2026-09-20).** Landed: the `generation.speculative`
+/ `generation.draft_length` configuration, entry overrides, and
+`--speculative on|off` / `--draft-length N` flags with `config show`
+provenance and the `max_draft_length = 7` bound (`InvalidNumber` above it);
+the drafter load switch (`DraftRequest.embedded` required by
+`generate`/`agent` with `DraftSourceMissing` when the family has none,
+`optional_embedded` for `bench`, which measures both ways on one loaded
+model); the bench off/on pair and its `Sample` fields (`speculative`,
+`draft_length`, `accepted_per_step`, `verify_milliseconds`,
+`recover_milliseconds`), the text pair and speedup, `schema_version` staying
+1; the loop edge tests (partial acceptance, budget inside a batch, EOS inside
+a batch, cancellation mid-batch, the context limit at a batch); the
+full-acceptance replay skip in `Model.recover`; and the `generate` →
+`generation` section rename (APPS-13).
 
-**Acceptance.** Session 1 closed the greedy equivalence on both executors
-and the sampled-acceptance unit tests. Session 2 owes: EOS inside a batch,
-the budget inside a batch, partial acceptance, cancellation mid-batch, and a
-batch at the context limit, each a test; the benchmark record with the
-verdict, positive or negative, and the entry updated; the Qwen decode rate in
-`make bench` unchanged with the drafter loaded but switched off (carried from
-MODL-18: the load switch lands here). `make check`, `make compare`, and
-`make test-generation-metal` are green.
+Remaining: the benchmark record (the Qwen acceptance workload at 512, 4K,
+16K, 32,639, greedy and with the instruct profile, draft length 2, 4, 7) with
+the verdict, the entry's `speculative`/`draft_length` set from it, and
+`spec.md`'s measured result. Early numbers: speculative wins modestly on
+high-acceptance code (≈1.05–1.1× at draft 4) and loses on prose (≈0.4×);
+the per-batch cost is dominated by the small-chunk verify path and, on Qwen,
+the recurrent replay. The performance follow-ups below are the hand-off for
+that work; they are proposed, not yet accepted into the roadmap.
+
+**Acceptance.** Session 1 closed the greedy equivalence on both executors and
+the sampled-acceptance unit tests; session 2 closed the loop edge tests and
+the off/on bench pair. The benchmark record with the verdict and the entry's
+verdict remain. `make check`, `make compare`, `make speculative-check`,
+`make speculative-check-metal`, and `make test-generation-metal` are green.
+
+## Speculative performance follow-ups — hand-off (drafted 2026-09-20)
+
+Not accepted into the roadmap yet. The ENGN-12 benchmark showed the win is
+workload-dependent: a verify batch must advance enough tokens to cover its
+fixed cost, and our per-batch cost is too high. Baseline decode on Qwen 27B
+(M4 Pro, Metal, F32 KV) is ~95 ms/token; measured (32 output tokens, repeat
+1, no warmup):
+
+| workload | draft | accepted/step | tokens/batch | verify/batch | recover/batch | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| prose corpus 512 | 4 | 0.88/4 (22 %) | ~1.9 | ~230 ms | ~195 ms | 0.38× |
+| code, raw prompt | 2 | 1.46/2 (73 %) | ~3.5 | ~290 ms | ~90 ms | 0.71× |
+| code, raw prompt | 4 | 3.0/4 (75 %) | ~5 | ~260 ms | ~60 ms | 1.09× |
+| code, raw prompt | 7 | 3.57/7 (51 %) | ~5.6 | — | — | 1.05× |
+
+Also: prose 512 prefill 16,917 ms vs 5,947 ms (2.85×) because the prompt is
+committed in 8-row `verify` chunks with the output head on every chunk. The
+costs: acceptance decides everything; verify is a small-chunk path (3–5 rows
+run the 16×8 tile at 37–64 % of matvec rate, ~2.7× a decode step); any
+rejected draft forces a recurrent rewind + replay (a second chunk forward),
+already skipped when every draft is accepted; proposal costs draft_length
+block forwards. The units, in leverage order:
+
+- **ENGN-13 — Prompt commit: hidden-only, prefill-sized chunks.** Feed the
+  prompt to the drafter through a hidden-only forward at the plan's normal
+  chunk size (no output head), committing each chunk; the last chunk still
+  yields the decode seed's logits. Files: `engine.zig` (the speculative
+  prefill branch), `qwen35_metal.zig`, `qwen35_runtime.zig`. Acceptance:
+  512-token prefill within ~10 % of baseline; greedy equivalence unchanged.
+- **KERN-12 — A small-batch verify path (3–8 rows).** Decide from a 1–8 token
+  `bench-matmul`-style sweep whether a dedicated verify tile beats the 16×8
+  tile / dispatch count. Files: `backends/metal/root.zig`, `qwen35_metal.zig`,
+  `metal-check.zig`, `Makefile`. Acceptance: a 5-row verify measurably closer
+  to one decode step; `test-metal` and `make compare` unchanged.
+- **ENGN-14 — Bounded recurrent checkpoints.** Write a recurrent checkpoint
+  per verify row (≈ (k+1) × 150 MB device scratch) and restore row `a` on
+  partial acceptance, replacing the replay; measure the copy against the
+  replay and keep the winner. Files: `runtime/session.zig`, `engine.zig`, the
+  family plans. Acceptance: `recover` below the replay's time on Qwen; the
+  scratch in the load-plan memory record.
+- **ENGN-15 — Draft proposal policy.** Add the reference driver's `p_min`
+  early stop to `propose` and/or an adaptive length (grow on full acceptance,
+  shrink on rejection); `draft_length` stays the cap. Files:
+  `runtime/draft.zig`, `qwen35_runtime.zig`, `qwen35_metal.zig`, `engine.zig`.
+  Acceptance: fewer proposed drafts per accepted token at the same tokens.
+- **ENGN-16 — Workload-aware verdict and defaults.** After the ENGN-12
+  benchmark, set each entry's `generation.speculative`/`generation.draft_length`
+  from the measured verdict and document the workload dependence in `bench.md`
+  and `spec.md`; keep the switch off by default where it loses.
+
+Sequencing: ENGN-13 and KERN-12 first (parallel), then ENGN-14, then ENGN-15,
+then the ENGN-12 benchmark record and ENGN-16 so the verdict reflects the
+optimized path. Open questions: is a new verify tile worth it or is dispatch
+count the limiter; does the checkpoint copy beat the replay once verify is
+faster; should `draft_length` default per entry; and is the sampled
+(temperature > 0) path benchmarked separately (the instruct profile pays the
+CPU penalty path).
 
 ## MODL-19 — Gemma 4 draft heads: the companion file as a second GGUF
 

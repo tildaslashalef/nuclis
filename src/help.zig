@@ -106,6 +106,8 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "--max-tokens <n>", "output budget, default 2048");
     try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU, default f16");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh — what the profile supports");
+    try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source, default off");
+    try row(out, sty, "--draft-length <n>", "drafts per step, 1..7, default 4");
     try row(out, sty, "--prompt-profile <p>", "qwen38, gemma4, or muse_glimmer: force the prompt profile on a file whose");
     try out.print("{s}chat template is not the pinned one (a finetune); default: by digest\n", .{continuation});
     try row(out, sty, "--seed <n>", "sampler seed, default 0");
@@ -288,7 +290,7 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "existing file. `show` prints the effective value of every key with the");
     try plain(out, "layer it came from — default, profile, file, model entry, or flag.");
     try plain(out, "`set` changes one key by its dotted name (engine.model hauhau,");
-    try plain(out, "generate.sampling.temperature 0.7, models.<name>.profile gemma4; null");
+    try plain(out, "generation.sampling.temperature 0.7, models.<name>.profile gemma4; null");
     try plain(out, "clears an override) and validates the file before writing it; a missing");
     try plain(out, "file is created as `init` would. Entries are created by `model pull");
     try plain(out, "--register <name>`, never by `set`. An unknown key or an out-of-range");
@@ -296,7 +298,7 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
 
     try heading(out, sty, "sections");
     try row(out, sty, "engine", "model, backend, ctx_size, kv_precision");
-    try row(out, sty, "generate", "max_tokens, think, sampling overrides");
+    try row(out, sty, "generation", "max_tokens, think, speculative, draft_length, sampling overrides");
     try row(out, sty, "agent", "think, fold_thinking, theme");
     try row(out, sty, "models", "named entries: path, or repo + file + revision");
 

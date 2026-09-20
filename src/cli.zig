@@ -198,6 +198,14 @@ pub fn parseArgs(args: []const []const u8) !Options {
             } else if ((samples or command == .tokenize) and std.mem.eql(u8, flag, "--think")) {
                 if (f.think != null) return error.DuplicateOption;
                 f.think = std.meta.stringToEnum(inference.profiles.Effort, value) orelse return error.InvalidNumber;
+            } else if (std.mem.eql(u8, flag, "--speculative")) {
+                if (f.speculative != null) return error.DuplicateOption;
+                f.speculative = parseOnOff(value) orelse return error.InvalidNumber;
+            } else if (std.mem.eql(u8, flag, "--draft-length")) {
+                if (f.draft_length != null) return error.DuplicateOption;
+                const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
+                if (n == 0 or n > config.max_draft_length) return error.InvalidNumber;
+                f.draft_length = n;
             } else if (std.mem.eql(u8, flag, "--temperature")) {
                 if (f.sampling.temperature != null) return error.DuplicateOption;
                 f.sampling.temperature = std.fmt.parseFloat(f32, value) catch return error.InvalidNumber;
@@ -245,6 +253,14 @@ pub fn parseArgs(args: []const []const u8) !Options {
     // Token prompts are fed as given: --raw would suggest a rendering choice that does not exist.
     if (sources > 1 or (token_prompt and (options.benchmark.raw or options.generation.raw))) return error.ConflictingPromptSources;
     return options;
+}
+
+/// `on`/`off` as a boolean flag value (`--speculative on`), or null for
+/// anything else so the caller reports `InvalidNumber`.
+fn parseOnOff(value: []const u8) ?bool {
+    if (std.mem.eql(u8, value, "on")) return true;
+    if (std.mem.eql(u8, value, "off")) return false;
+    return null;
 }
 
 /// `model pull <name|owner/repo> [flags]` | `model inspect <name|owner/repo>
@@ -504,7 +520,7 @@ fn selectAdapter(document: *const inference.gguf.Document, diag: *Diagnostic) !i
 fn renderStart(alloc: std.mem.Allocator, io: std.Io, root: []const u8, out: *std.Io.Writer, sty: style.Style) !void {
     const defaults: config.Config = .{};
     const off = sty.off();
-    try out.print("  {s}engine.model{s} {s}{s}{s} (catalogue name), backend {s}, ctx_size {d}; think {s} (generate) / {s} (agent)\n", .{ sty.on(.label), off, sty.on(.keyword), defaults.engine.model, off, @tagName(defaults.engine.backend), defaults.engine.ctx_size, @tagName(defaults.generate.think), @tagName(defaults.agent.think) });
+    try out.print("  {s}engine.model{s} {s}{s}{s} (catalogue name), backend {s}, ctx_size {d}; think {s} (generate) / {s} (agent)\n", .{ sty.on(.label), off, sty.on(.keyword), defaults.engine.model, off, @tagName(defaults.engine.backend), defaults.engine.ctx_size, @tagName(defaults.generation.think), @tagName(defaults.agent.think) });
     try out.print("  {s}models{s} {s}(the catalogue, registered in the file; `nuclis model ls` shows them){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
     const models = try model.modelsDir(alloc, root);
     defer alloc.free(models);
@@ -591,6 +607,17 @@ test "agent parses sampling and effort flags without a prompt" {
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "generate", "--prompt", "a", "--prompt-profile", "gemma4", "--prompt-profile", "gemma4" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "agent", "--raw", "--think", "low" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "bench", "--prompt", "a", "--think", "low" }));
+    // Speculative decoding: the switch and the draft length on every command
+    // that generates; the host bound is `config.max_draft_length`.
+    try std.testing.expect((try parseArgs(&.{ "generate", "--prompt", "a", "--speculative", "on" })).flags.speculative.?);
+    try std.testing.expect(!(try parseArgs(&.{ "bench", "--prompt", "a", "--speculative", "off" })).flags.speculative.?);
+    try std.testing.expectEqual(@as(usize, 2), (try parseArgs(&.{ "agent", "--speculative", "on", "--draft-length", "2" })).flags.draft_length.?);
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--speculative", "maybe" }));
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "0" }));
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "8" }));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "generate", "--prompt", "a", "--speculative", "on", "--speculative", "off" }));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "2", "--draft-length", "3" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "tokenize", "--prompt", "a", "--speculative", "on" }));
     const sampled = try parseArgs(&.{ "bench", "--prompt", "a", "--temperature", "0.7", "--top-k", "40", "--top-p", "0.95", "--seed", "3" });
     try std.testing.expectEqual(@as(f32, 0.7), sampled.flags.sampling.temperature.?);
     try std.testing.expectEqual(@as(usize, 40), sampled.flags.sampling.top_k.?);
