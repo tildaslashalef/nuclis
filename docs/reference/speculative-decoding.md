@@ -299,3 +299,19 @@ per-batch costs — verify 225–250 ms at 512 and ≈ 342 ms at 4K, recovery
 draft, commit 6.2 ms per token, the prefill at 2.9–3.3× — are the cost
 table the plan's performance units (ENGN-13 to ENGN-17, KERN-12, KERN-13)
 target.
+
+## The prompt commit and the batched drafter commit (ENGN-13, in progress)
+
+**Prompt commit through `prefill` (2026-09-20).** `Plan.prefill` gained a
+`hidden_rows` readback — every row's post-`output_norm` hidden, checked
+bit-identical to `verify`'s rows on the pinned `Hello,` trace — and
+`runLoop`'s speculative prompt branch now consumes the prompt through
+`engine.commitPrompt` in `prefill_chunk` (256) chunks instead of `verify` in
+8-row chunks. At revision `db9cf80`, prose 512, draft 4, F16 KV, ctx 32768,
+three measured pairs on one loaded model: ordinary prefill 5,823.1 ms,
+speculative prefill 9,238.3 ms (1.59×; the ENGN-12 record's old path measured
+16,917 ms, 2.85×). The residual is the still-serial `Plan.commit`, 512 ×
+≈ 6.7 ms = 3,415 ms; the batched commit removes it next. `make check`,
+`make compare` (f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4), and
+`make draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29,
+24/28) pass.
