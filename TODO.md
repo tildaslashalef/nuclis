@@ -18,14 +18,18 @@ it is empty, ask what to work on and write the agreed plan here.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
-embedded draft head), and ENGN-12 (batched verification, the speculative
+embedded draft head), ENGN-12 (batched verification, the speculative
 loop, greedy and sampled acceptance, the switch and the draft length, the
-benchmark record) closed on 2026-09-19/20; their facts are in
+benchmark record), and ENGN-13 (the prompt commit at the plan's chunk and
+the batched drafter commit) closed on 2026-09-19/20; their facts are in
 [speculative-decoding.md](docs/reference/speculative-decoding.md) and the
 record in [bench.md § Speculative record](docs/reference/bench.md#speculative-decoding-record-engn-12-2026-09-20).
-The record's verdict: the switch stays **off** by default with `draft_length
-4`; code-like prompts gain modestly, prose loses, because every verify batch
-pays fixed costs that exceed the tokens it advances.
+ENGN-13 removed the commit fixed costs: speculative prefill is now 1.02×
+ordinary at 512 (from 2.9–3.3×) and 1.05× at 4K, and the drafter's commit
+of the accepted prefix is 5.4 ms per batch at 512 (10.8 ms at 4K). The
+record's verdict stands: the switch stays **off** by default with
+`draft_length 4`; code-like prompts gain modestly, prose loses, because
+every verify batch pays fixed costs that exceed the tokens it advances.
 
 This plan is the path to the speed benefit, as measured costs per verify
 batch on Metal (Qwen 27B, F16 KV, 512-token context, ordinary decode step
@@ -39,8 +43,8 @@ them):
 | verify `1 + k` rows | 227–251 ms at 512, 341–344 ms at 4K | the 16×8 prefill tile at 37–64 % of the matvec rate; the chunk attention over the visible cache | KERN-12 (KERN-15 at long context) | ≤ 130 ms |
 | accept (sampled) | 46–78 ms | one full-vocabulary sort per row on the host | KERN-13 + ENGN-16 | ≤ 5 ms |
 | recover (on rejection) | 99–272 ms | rewind + a whole-stack replay of `a + 1` rows through the same small-chunk path | ENGN-14 (and KERN-12) | ≤ 40 ms |
-| commit `a + 1` tokens | 6.2 ms × (a + 1) | one block forward per committed token | ENGN-13 | one batched forward, ≤ 8 ms |
-| prompt commit (prefill) | 2.9–3.3 × ordinary prefill | 8-row verify chunks with the head, plus per-token commit | ENGN-13 | ≤ 1.10 × |
+| commit `a + 1` tokens | 5.4 ms/batch (was 6.2 ms × (a + 1)) | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
+| prompt commit (prefill) | 1.02× ordinary prefill (was 2.9–3.3×) | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
 | tokens per batch | 2.2–4.0 (1.2–3.0 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-15 | more accepted per proposed |
 
 Measured speedups at draft 4: prose 0.56× greedy / 0.63× instruct at 512,
@@ -52,13 +56,13 @@ batch; prose stays near 1× and is the reason the proposal policy and the
 per-entry verdict exist. Nothing here claims a speedup before ENGN-17
 measures it.
 
-Order: ENGN-13 → KERN-12 → ENGN-14 → ENGN-15 → KERN-13 → ENGN-16 → ENGN-17
+Order: KERN-12 → ENGN-14 → ENGN-15 → KERN-13 → ENGN-16 → ENGN-17
 → TERM-10 → MODL-19 → MODL-20 → MODL-21 → AGNT-11 → MODL-22 → MODL-23 →
-KERN-14 → KERN-15 → ENGN-18 → ENGN-19 → KERN-16. ENGN-13 and KERN-12 are
-independent and may swap; ENGN-14 is measured against the replay *after*
-KERN-12; KERN-13 (the GPU penalty kernel) precedes ENGN-16 because the
-instruct profile's presence penalty defeats the readback path otherwise;
-ENGN-17 re-runs the record on the finished path and sets the defaults.
+KERN-14 → KERN-15 → ENGN-18 → ENGN-19 → KERN-16. ENGN-14 is measured
+against the replay *after* KERN-12; KERN-13 (the GPU penalty kernel)
+precedes ENGN-16 because the instruct profile's presence penalty defeats the
+readback path otherwise; ENGN-17 re-runs the record on the finished path and
+sets the defaults.
 TERM-10 (chat polish) is independent of everything else and sits where it
 does only to land early. The vision units bring Qwen first, then the chat's
 image input on it, then the other two families. The general performance
@@ -74,7 +78,6 @@ decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| ENGN-13 | Prompt commit at the plan's chunk and the batched drafter commit | 1 |
 | KERN-12 | A multi-row matvec for 2–8 rows: the verify, replay, and commit path | 1–2 |
 | ENGN-14 | Recovery without the whole-stack replay | 1–2 |
 | ENGN-15 | Draft proposal policy: `p_min` early stop and an adaptive length | 1 |
@@ -225,116 +228,6 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
-
-## ENGN-13 — Prompt commit at the plan's chunk and the batched drafter commit
-
-**Facts (read 2026-09-20).**
-- `engine.runLoop` (`inference/src/engine.zig`, the `if (spec) |s|` prompt
-  branch before the ordinary prefill) commits the prompt through
-  `Model.verify` in chunks of `max_draft_length + 1` = 8 rows: each chunk
-  runs the layer stack, `output_norm`, and the output head over 8 rows and
-  reads 8 × 248,320 × 4 = 7.9 MB of logits back, then `commitDraft(chunk,
-  hidden)`. Measured: prose 512 prefill 16,917 ms speculative vs 5,947 ms
-  ordinary (2.85×).
-- `Plan.commit` (`inference/src/models/qwen35_metal.zig`, after `propose`)
-  runs one `draftForward` command buffer per token: 6.2 ms per position
-  (MODL-18). It is called once per prompt chunk and once per verify batch
-  (`a + 1` tokens: up to 50 ms per batch at full acceptance of 7).
-- `Plan.prefill` chunks at `self.chunk` = `engine.prefill_chunk` = 256
-  tokens; `prefillChunk` applies `output_norm` to the last row only, and
-  `verify` shows the all-rows form (`rmsNorm(x_c → normalized_c, rows =
-  count)` then `copy` into `verify_hidden`).
-- `attentionChunk(attn, c, il, count)` writes cache rows at
-  `self.state.position`; a drafter commit's rows start at
-  `state.position − tokens.len` (the session has already advanced).
-- The Qwen file has no activation rotation (`Plan.rotation == null`, so
-  `rotate` is a no-op); the block exists only in this family, and its
-  projections are unrotated on the CPU (`fullAttention(..., rotated =
-  false)`), so the chunk kernels serve the block unchanged.
-- The CPU `Runtime.step` keeps the post-`output_norm` hidden in `self.h`
-  on every token (`qwen35_runtime.zig`, the `norm(self.x, self.h,
-  self.output_norm)` before the head).
-- The agent's `Completer.prime` (`src/agent/loop.zig`, the
-  `self.eng.model.prefill(tokens, self.buffers.logits, …)` call) prefills the
-  system block and tools with the ordinary path, so the drafter never sees
-  the primed prefix; only the turn's remainder reaches `runLoop`'s commit,
-  and the block attends over rows it never wrote for the whole prefix. The
-  primed snapshot (`Model.snapshot`) includes the block's cache layout.
-
-**Design.**
-1. `Plan.prefill(tokens, logits, greedy, topk, hidden: ?[]f32, observer)`:
-   `hidden` receives `tokens.len × 5120` post-`output_norm` rows. In
-   `prefillChunk`, when `hidden != null`, normalize all `count` rows into
-   `normalized_c` (as `verify` does), `copy` into a new `prefill_hidden`
-   buffer (`chunk × 5120 × 4` = 5.2 MB, allocated with `draft`), and after
-   `commit` memcpy the chunk's rows into `hidden[offset × 5120 ..]`; when
-   `logits`/`greedy`/`topk` are also asked, use row `count − 1` of
-   `normalized_c` for `recordOutputs` instead of the single-row norm.
-   `Executor.prefill` (engine.zig) forwards; the CPU branch copies
-   `runtime.h` into `hidden[i × 5120 ..]` after each `step`. The Gemma and
-   Muse plans refuse a non-null `hidden` with `error.HiddenUnsupported`
-   (they have no drafter yet).
-2. `runLoop`'s prompt branch commits in chunks of `engine.prefill_chunk`
-   (256) through `eng.model.prefill(chunk, last ? logits : null, null,
-   null, s.hidden[0 .. count × 5120], observer)` then `commitDraft(chunk,
-   hidden)`; `SpeculativeScratch.hidden` grows to `prefill_chunk × hidden`
-   floats (5.2 MB); the verify batch keeps using its first 8 rows. Factor
-   the branch into `pub fn commitPrompt(eng, tokens, logits, observer) !void`
-   so the agent can call it (step 4).
-3. Batched `Plan.commit(tokens, h_rows)` for `tokens.len ≥ 2` (one token
-   keeps `draftForward`): one command buffer over `count = tokens.len ≤
-   self.chunk` rows at positions `start = state.position − count`:
-   - `embed` each token into `x_c` row `t`; `rmsNorm(x_c, draft_enorm →
-     draft_concat_c, rows = count, out_stride = 10240)` (the enorm half at
-     column 0);
-   - `draft_hprev_c` (`chunk × 5120`): row 0 ← `draft_pending_h`, rows
-     `1 .. count − 1` ← `h_rows[0 .. (count − 1) × 5120]` (host memcpy into
-     `floats()`); `rmsNorm(draft_hprev_c, draft_hnorm_w →
-     draft_concat_c.slice(5120 × 4, …), rows = count, out_stride = 10240)`
-     (the hnorm half at column 5120) — no per-row copies;
-   - `mmRows(block.eh_proj, draft_concat_c, 10240, x_c, 5120, count)`;
-     `rmsNorm(x_c, constants.attention_norm → normalized_c)`;
-     `attentionChunk(block.layer.mixer.full_attention,
-     constants.mixer.full_attention, self.draft_layer, count, start)` — add
-     the `position` parameter to `attentionChunk`; `recordLayers` passes
-     `self.state.position`; `add(x_c, projected_c)`;
-     `rmsNorm(post_attention_norm)`; `mmRows` gate and up (5120 → 17408),
-     `siluMul`, `mmRows` down; `add`. The head norm is not needed: `commit`
-     only fills the block's cache rows and sets `draft_pending_h ←
-     h_rows[last]`; `draft_chain` is `propose`'s.
-   - Buffers: reuse `x_c`, `normalized_c`, `projected_c`, `gate_c`, `up_c`,
-     `qg_c`, `q_c`, `q_c_h`, `k_c`, `v_c`, `mixed_out_c` (a commit never
-     overlaps a main forward); add `draft_hprev_c` and `draft_concat_c`
-     (`chunk × 10240 × 4` = 10.5 MB), allocated with `draft`.
-   - The CPU `Runtime.commit` stays per token: it is the reference.
-4. `Completer.prime`: when `self.eng.model.drafter() != null`, commit the
-   prefix through `engine.commitPrompt` instead of `Model.prefill`, so the
-   primed snapshot carries the block's rows; `draft_pending_h` is
-   refreshed by the turn's remainder commit (a turn's remainder is never
-   empty). `Completer.run` is unchanged (it already goes through
-   `runLoop`).
-5. `engine.Timing` gains `propose` and `commit` durations measured in
-   `speculativeBatch`; `bench.Sample` gains `propose_milliseconds` and
-   `commit_milliseconds`; `docs/reference/bench.md § Definitions` lists the
-   speculative sample fields.
-
-**Acceptance.**
-- `make draft-stats` reproduces MODL-18's table within one draft per cell
-  (the prefix commit is now batched on Metal): 28/31, 24/30, 20/29, 18/28
-  and 29/31, 25/30, 24/29, 24/28.
-- `make speculative-check-metal`: 12 tokens identical, 6/21 accepted
-  through `runLoop`, unchanged; add a case that commits a 16-token prefix
-  batched and, on a second engine, token by token (`draftForwardHost`),
-  then proposes 4 drafts from both: identical drafts, block logits within
-  the family bound (2e-2 max abs / 1e-3 rel RMS).
-- `make compare-draft-metal` unchanged (the single-position path is
-  untouched); `make check`, `make compare`, `make test-generation-metal`.
-- Record (prose 512, draft 4): speculative prefill ≤ 1.10 × ordinary
-  (≤ 6.6 s from 16.9 s); 4K ≤ 1.15 ×; `commit_milliseconds /
-  speculative_steps` ≤ 8 ms at draft 4.
-- `nuclis agent --speculative on` on a coding task: the first turn's
-  `accepted_per_step` (print it in the agent's per-turn stats line) is in
-  the range `bench` measures on the code prompt, not below it.
 
 ## KERN-12 — A multi-row matvec for 2–8 rows: the verify, replay, and commit path
 

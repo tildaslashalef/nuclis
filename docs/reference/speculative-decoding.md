@@ -300,7 +300,7 @@ draft, commit 6.2 ms per token, the prefill at 2.9–3.3× — are the cost
 table the plan's performance units (ENGN-13 to ENGN-17, KERN-12, KERN-13)
 target.
 
-## The prompt commit and the batched drafter commit (ENGN-13, in progress)
+## The prompt commit and the batched drafter commit (ENGN-13)
 
 **Prompt commit through `prefill` (2026-09-20).** `Plan.prefill` gained a
 `hidden_rows` readback — every row's post-`output_norm` hidden, checked
@@ -311,7 +311,7 @@ bit-identical to `verify`'s rows on the pinned `Hello,` trace — and
 
 **Batched drafter commit (2026-09-20).** `Plan.commit` over two or more
 tokens is one command buffer: it embeds each token, pairs it with the
-previous row's target hidden in a `chunk × 10240` `[enorm; hnorm]` buffer,
+previous row's target hidden in a `padded × 10240` `[enorm; hnorm]` buffer,
 projects `eh_proj`, runs the block's attention chunk at the batch's cache
 positions, and adds the FFN — the head norm is skipped because a commit only
 fills the block's cache rows. One token keeps the standalone `draftForward`;
@@ -338,3 +338,14 @@ batch was 1.667 at 512 and 1.977 at 4K. The serial prompt commit measured
 f16 2.5e-2 / 1.9e-4), `make test-generation-metal` pass. `engine.Timing`
 now separates `propose` and `commit`, and `bench.Sample` carries
 `propose_milliseconds` and `commit_milliseconds`.
+
+**The agent (2026-09-20).** `Completer.prime` commits the primed prefix
+through `commitPrompt` when a drafter is loaded, so the primed snapshot
+carries the block's cache rows (the agent's first turn no longer attends over
+prefix rows the block never wrote). The loop surfaces the turn's mean
+accepted drafts per batch in the status bar (`spec N.NN/step`), from the
+engine timing. On a bounded pty at revision `ccb191b`, the first turn of
+`nuclis agent --speculative on` on `Write a one-line Python function that
+doubles a number.` (ctx 4096, 32 tokens) settled at **spec 2.56/step**,
+within the range `bench` measures for the code prompt (1.2–3.0 accepted at
+draft 4).

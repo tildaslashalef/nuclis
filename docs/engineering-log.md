@@ -94,6 +94,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-07 | The roadmap file retired; themes are agreed in session and, when architectural, recorded as ADRs on request | 2026-09-20 |
 
 | REPO-06 | DiffusionGemma structured reads and kev research | 2026-09-20 |
+| ENGN-13 | Prompt commit at the plan's chunk and the batched drafter commit | 2026-09-20 |
 
 ## Context
 
@@ -3113,3 +3114,65 @@ on the touched sources (comment edits only).
 `inference/src/models/gemma4_metal.zig`, `docs/engineering-log.md`.
 
 **Remaining.** None; the ADR template stays as it was.
+
+### ENGN-13 — Prompt commit at the plan's chunk and the batched drafter commit (2026-09-20)
+
+**Outcome.** The speculative fixed costs the ENGN-12 record blamed for the
+missing speedup are gone: the prompt is committed to the drafter at the
+plan's own chunk (256 tokens), and an accepted prefix is committed in one
+batched forward instead of one per token. `Plan.prefill` gained a
+`hidden_rows` readback — every row's post-`output_norm` hidden, the rows the
+drafter's `commit` consumes — and `Executor.prefill`/`Model.prefill` forward
+it; Gemma 4 and Muse refuse it (`error.HiddenUnsupported`) and the CPU
+reference copies `Runtime.h`. `runLoop`'s speculative prompt branch is now
+`engine.commitPrompt`: chunks of `prefill_chunk` through `prefill` (which
+also admits the session and reads the last chunk's logits), then
+`commitDraft`; `SpeculativeScratch.hidden` grew to `prefill_chunk × hidden`.
+`Plan.commit` over two or more tokens is one command buffer — embed, the
+`[enorm; hnorm]` pair into a `padded × 10240` buffer, `eh_proj`, the block's
+attention chunk at the batch's cache positions, the FFN (the head norm is
+skipped) — reusing the chunk activation buffers; a single token keeps the
+standalone `draftForward`, and the CPU `Runtime.commit` stays per token as
+the reference. `attentionChunk` takes an explicit position. `Completer.prime`
+commits the primed prefix through `commitPrompt` when a drafter is loaded, so
+the primed snapshot carries the block's cache rows and the agent's first turn
+no longer attends over prefix rows the block never wrote.
+`engine.Timing` separates `propose` and `commit`; `bench.Sample` carries
+`propose_milliseconds` and `commit_milliseconds`; the agent shows the turn's
+mean accepted drafts per batch as `spec N.NN/step`.
+
+**Evidence.** At revision `9a5d3cf`, draft 4, F16 KV, ctx 32768, on the
+pinned Qwen 27B: speculative prefill 1.02× ordinary at 512 (5,939.4 ms
+against 5,807.8, three runs; the old path measured 2.85× and the serial
+prompt commit 1.59×) and 1.05× at 4,096 (54,399 against 51,831 ms, two
+runs); `commit_milliseconds / speculative_steps` 5.4 ms at 512 (the target
+was ≤ 8 ms) and 10.8 ms at 4K; propose 25.7 ms, verify 236.5 ms, recover
+185.5 ms per batch at 512; accepted 1.667 drafts/batch at 512 and 1.977 at
+4K. `make draft-stats` reproduced MODL-18 exactly (28/31, 24/30, 20/29,
+18/28 and 29/31, 25/30, 24/29, 24/28). `make speculative-check-metal` was
+unchanged (12 tokens identical; 7/24 and 6/21 accepted) and the new
+16-token case passes (batched versus serial commit: 4 drafts identical,
+block logits 4.2e-4 max abs / 3.1e-5 relative RMS, bounds 2e-2 / 1e-3);
+`make speculative-check` passed on the CPU reference (12 tokens identical);
+`make compare-draft-metal` unchanged (3 rows, 1.5e-5 / 7.9e-7, greedy
+9419/271); `make check` (450 tests), `make compare` (f32 6.1e-5 / 7.7e-7,
+f16 2.5e-2 / 1.9e-4), and `make test-generation-metal` are green. On a
+bounded pty at `ccb191b`, the first turn of `nuclis agent --speculative on`
+on `Write a one-line Python function that doubles a number.` (ctx 4096)
+settled at `spec 2.56/step`, inside the range bench measures on the code
+prompt.
+
+**Files.** `inference/src/models/qwen35_metal.zig`,
+`inference/src/engine.zig`, `inference/src/models/{gemma4,muse_glimmer}_metal.zig`,
+`inference/generation-check.zig`, `src/agent/loop.zig`,
+`src/tui/{status,event}.zig`, `src/bench.zig`,
+`docs/reference/{speculative-decoding,bench}.md`,
+`docs/engineering-log.md`, `TODO.md`.
+
+**Remaining.** The 4K commit is 10.8 ms per batch, above the 512 target: the
+16-row commit still runs its matmuls through the 16×8 tile and its attention
+through the chunk kernel over the visible cache, which KERN-12 and KERN-15
+lower. `Plan.commit` sub-chunks internally when the plan's chunk is smaller
+than the prompt chunk (small contexts); the batched path is not itself
+measured against KERN-12's multi-row matvec yet. `bench` still cannot
+measure a baseline without the drafter loaded (ENGN-17).
