@@ -16,6 +16,12 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
+Research side unit REPO-06 closed on 2026-09-20:
+[TypeSafe/Jev research](docs/research/typesafe-jev.md) now compares
+DiffusionGemma structured reads and kev, with proposed integration and
+quality gates. No implementation or roadmap reorder was accepted; resume
+the speculative-decoding work below.
+
 Planned on 2026-09-19, after AGNT-10 closed and emptied the plan: the
 roadmap's first theme, speculative decoding across the families, as five
 units. ENGN-11 closed on 2026-09-19 (its session 2 was not needed):

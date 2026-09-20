@@ -91,6 +91,8 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-18 | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2026-09-20 |
 | APPS-13 | The configuration section is `generation`, not `generate` | 2026-09-20 |
 
+| REPO-06 | DiffusionGemma structured reads and kev research | 2026-09-20 |
+
 ## Context
 
 ### Starting point for the kernel work (measured 2026-09-07)
@@ -2974,3 +2976,28 @@ resolves unchanged.
 **Files.** `src/config.zig`, `src/cli.zig`, `src/help.zig`,
 `docs/development.md`, `docs/reference/generation.md`, `docs/spec.md`,
 `docs/llm-guide.md`, `docs/engineering-log.md`, `TODO.md`.
+
+### REPO-06 — DiffusionGemma structured reads and kev research (2026-09-20)
+
+**Outcome.** Enriched the TypeSafe/Jev research with the DiffusionGemma
+artifact and runtime requirements, pinned open llama.cpp/vLLM proposals,
+the no-training structured-read experiment, and kev's separate trained
+pointer-head approach. Distinguished typed validity, question isolation,
+label conditioning, seed sensitivity and empirical calibration. Recorded a
+proposed model-first sequence and common evaluation gates without accepting
+implementation work or changing the active speculative-decoding sequence.
+
+**Evidence.** Read official Google architecture/configuration, Unsloth's
+card and repository metadata, the llama.cpp graph at `12e0a9627d02`, vLLM
+PR body/diff/discussion at `ceb8eebf3eed`, and kev README/model at
+`20fa6268c8ce`; permanent source links are in the research note. Checked
+local Markdown targets and `git diff --check`. Documentation only; no model
+execution, benchmarks or build/tests performed.
+
+**Files.** `docs/research/typesafe-jev.md`, `docs/engineering-log.md`,
+`TODO.md`.
+
+**Remaining.** GGUF inventory and digest verification, CPU/Metal numerical
+parity, local memory/performance measurements and held-out decision quality
+are future experiments. Public sources do not disclose Jev's architecture
+or training recipe; neither comparison establishes equivalent calibration.
