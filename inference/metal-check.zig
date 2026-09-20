@@ -314,8 +314,9 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
         max_bytes = @max(max_bytes, shape.rows * (shape.columns / layout.elements_per_block) * layout.bytes_per_block);
     };
     if (with_head) for (encodings) |enc| {
-        if (Backend.specializedMatvecRows(enc.id, 2, 0, 1, 0) == null) continue;
         const layout = inference.encoding.layout(enc.id) orelse return error.UnknownEncoding;
+        const stride = (head_shape.columns / layout.elements_per_block) * layout.bytes_per_block;
+        if (Backend.specializedMatvecRows(enc.id, 2, 0, stride, 0) == null) continue;
         max_bytes = @max(max_bytes, head_shape.rows * (head_shape.columns / layout.elements_per_block) * layout.bytes_per_block);
     };
     const weights = try b.create(max_bytes);
@@ -336,7 +337,9 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
                 break;
             };
             const bytes = sample_bytes orelse return error.FixtureMissing;
-            const specialized = Backend.specializedMatvecRows(enc.id, 2, 0, 1, 0) != null;
+            const layout = inference.encoding.layout(enc.id) orelse return error.UnknownEncoding;
+            const head_stride = (head_shape.columns / layout.elements_per_block) * layout.bytes_per_block;
+            const specialized = Backend.specializedMatvecRows(enc.id, 2, 0, head_stride, 0) != null;
             for (ffn_shapes) |shape| try matvecRowsShape(alloc, b, enc.name, enc.id, bytes, shape, max_rows, rounds, repeats, weights, input, output);
             if (with_head and specialized) try matvecRowsShape(alloc, b, enc.name, enc.id, bytes, head_shape, max_rows, rounds, repeats, weights, input, output);
         }
@@ -355,7 +358,7 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
         for (0..rounds + 1) |i| {
             const before = b.gpuSeconds();
             try b.begin();
-            for (0..repeats) |_| try b.matmul(weights, matrix, input, shape.columns, output, shape.rows, tokens);
+            for (0..repeats) |_| try b.matmulTile(weights, matrix, input, shape.columns, output, shape.rows, tokens);
             try b.commit();
             const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
             if (i == 0) continue;
@@ -2590,6 +2593,21 @@ pub fn main(init: std.process.Init) !void {
         try b.begin();
         try b.commit();
         if (p.command_buffers != 0) return error.ProfileCountedEmptyPass;
+
+        // The benchmark control must remain a tile when production routes two
+        // tokens to the multi-row matvec. Assert the dispatched kernels.
+        const tile_matrix: inference.cpu.Matrix = .{ .rows = 32, .columns = 1280, .encoding = 12, .bytes = region[0 .. 32 * (region.len / 35)] };
+        const batch_input = try b.create(Backend.matmulPadded(2) * 1280 * 4);
+        for (batch_input.floats(), 0..) |*x, i| x.* = input.floats()[i % 1280];
+        const batch_out = try b.create(Backend.matmulPadded(2) * 32 * 4);
+        try b.begin();
+        try b.matmulTile(weights, tile_matrix, batch_input, 1280, batch_out, 32, 2);
+        try b.matmul(weights, tile_matrix, batch_input, 1280, batch_out, 32, 2);
+        try b.commit();
+        inline for (.{ .matmul_q4_k_8, .matvec_rows_q4_k_t2 }) |kernel| {
+            const total = p.totals.get(.{ .kernel = kernel, .encoding = 12, .rows = 32, .columns = 1280 }) orelse return error.BenchmarkControlKernelMissing;
+            if (total.dispatches != 1) return error.BenchmarkControlDispatchMismatch;
+        }
     }
 
     std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors and in both pairings, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});

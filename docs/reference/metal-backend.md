@@ -123,7 +123,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_route` (KERN-09) | 256 | one row of ≤ 256 router logits | 32 logits; k rounds of "best untaken" | `simd_max`, `simd_sum`, `simd_shuffle_down`, 8-way threadgroup pick | 8 + 8 + 64 entries |
 | `nu_matmul_*` (specialized, ENGN-05) | 128 | 64-row × 64-token output tile (32×32 for chunks of ≤ 32 tokens) | a 32×32 quarter as 4×4 `simdgroup_float8x8` (2×2 in the small tile) | matrix loads and MACs | 8 KB half weight tile + 8 KB half activation tile (small tile: 4 KB, activations from device), `threadgroup_barrier` |
 | `nu_matmul_*_8` (KERN-11) | 128 | 16-row × 8-token output tile (two token tiles for 9..16) | 16 rows × 8 tokens over one K slice: two 8×8 accumulators sharing one B load, four groups split K | matrix loads and MACs | 8 KB half tile (16 rows × 64 k per group), `simdgroup_barrier` only |
-| `nu_matvec_rows_*_t<n>` (KERN-12) | 128 | 16 output rows × up to 8 tokens | 4 rows; 8 lanes per 256-value block; one accumulator per (row, token) | `simd_shuffle_down` (4/2/1) per row group | none |
+| `nu_matvec_rows_*_t<n>` (KERN-12) | 128 | 16 output rows × up to 8 tokens | 4 rows; 8 lanes per 256-value block; one accumulator per (row, token) | `simd_sum` across 32 lanes per (row, token) | none |
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
 | `nu_delta_chunk` | 128 | (value head, 32 value rows), all sub-chunks | an 8-row block of every 32×32 tile; column `tid` in the triangular solve | matrix MACs; no shuffles | 24 KB of 32×32 tiles, `threadgroup_barrier` per phase, `mem_device` per sub-chunk |
@@ -1018,8 +1018,9 @@ to the specialized bodies (`small_batch_rows = 2`, `route_small_batch`);
 Method: `make bench-matvec-rows ARGS=8` (Apple M4 Pro, Zig 0.16.0,
 ReleaseSafe), two FFN shapes, three measured command buffers after a warm-up,
 16 dispatches each, GB/s of weight bytes. Each cell is the gate shape / the
-down shape. The tile column is `Backend.matmul` at the same count (the 16×8
-tile), which the multi-row must beat.
+down shape. The historical tile column predates production routing.
+The repaired sweep uses `Backend.matmulTile` explicitly at the same count;
+`Backend.matmul` would now select the multi-row kernel at two tokens.
 
 | Encoding | 2 rows | 3 | 4 | 5 | 8 | tile |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -1028,20 +1029,54 @@ tile), which the multi-row must beat.
 | Q6_K | **182 / 179** | **125 / 121** | 88 / 87 | 67 / 63 | 33 / 31 | 116 / 108 |
 | IQ4_XS | **172 / 154** | **109 / 94** | 102 / 82 | 65 / 49 | 23 / 20 | 90 / 87 |
 
-Bold beats the tile. The body wins at 2 rows for every encoding and, for Q6_K
-and IQ4_XS only, at 3; at 5–8 rows it is **slower than the tile** — 49–67 GB/s
-against 87–116, far below the 150 GB/s the plan targeted. The wall is not
-weight traffic: replacing the per-token input offset with a constant (so the
-compiler eliminates the loads) measured **181 GB/s flat from 2 to 8 rows**,
-while the real body's marginal cost is ~0.19–0.22 ms per token on the 50 MB
-FFN (~0.9 TFLOP/s of useful FMA). Sharing a token's input across rows needs
-either the decoded weights for all four rows (~128 registers) or the inputs for
-all tokens (~272 at 8), and every such layout spills and measures slower; the
-scalar FMA path cannot meet the tile's flat matrix-unit rate. The unit ships
-the 2-row routing and closes below its acceptance, recorded in the log. A
-reference-style `1 row per lane group × NT tokens` body was also measured and
+Bold beats the tile. The tested body wins at 2 rows for every encoding and,
+for Q6_K and IQ4_XS only, at 3; at 5–8 rows it is slower than the tile and
+misses acceptance. Both paths make one logical weight pass at these counts.
+The scalar body's arithmetic and activation-load work grow with token count,
+while the matrix tile computes eight token columns regardless.
+
+A probe replacing the per-token input offset with a constant measured
+181 GB/s flat from 2 to 8 rows. It does not isolate input-load cost: the compiler
+can also merge identical dot products and accumulator recurrences. The real
+body's marginal cost is ~0.19–0.22 ms per token on the 50 MB FFN
+(~0.9 TFLOP/s of useful arithmetic). Tested layouts retaining more inputs or
+decoded rows were slower, consistent with register pressure, but register
+counts, spills and occupancy need compiler/profiler evidence. These experiments
+justify stopping work on these scalar bodies, not an impossibility claim for
+all scalar register tiles. The unit shipped two-row routing below its original
+acceptance; the matrix tile and eliminating recovery replay are the next levers.
+
+A reference-style `1 row per lane group × NT tokens` body was also measured and
 rejected: it decodes a 256-value block header once per 16-value segment instead
 of once per 32 values, and Q4_K fell to 55 GB/s at 2 rows.
+
+#### Corrected two-row control (REPO-08, 2026-09-20)
+
+`make bench-matvec-rows ARGS="2 head"`, Apple M4 Pro (48 GiB), Zig 0.16.0,
+ReleaseSafe, revision `27303ed` plus the REPO-08 repair committed with this
+record. Minimum of three measured command buffers after one warm-up, sixteen
+dispatches per buffer; synthetic quantization fixtures, no model loaded. Rates
+are logical weight bytes per GPU second, not measured DRAM traffic. No other
+GPU benchmark ran concurrently.
+
+The control calls `Backend.matmulTile`, which bypasses multi-row routing while
+sharing production validation and tile selection. A profiler fixture asserts
+that two-token Q4_K control and production calls dispatch `matmul_q4_k_8` and
+`matvec_rows_q4_k_t2`, respectively. Head allocation and selection use the actual
+aligned row stride; the previous `stride=1` capability check skipped every head.
+
+| Encoding | FFN gate tile / rows GB/s | FFN down tile / rows GB/s | Head tile / rows GB/s |
+| --- | ---: | ---: | ---: |
+| Q4_K | 96.8 / 143.7 | 93.8 / 127.7 | 95.4 / 146.8 |
+| Q5_K | 111.8 / 147.9 | 106.7 / 137.6 | 110.6 / 150.8 |
+| Q6_K | 116.2 / 181.9 | 109.3 / 178.1 | 114.1 / 188.0 |
+| IQ4_XS | 90.8 / 172.3 | 87.7 / 154.8 | 89.2 / 169.4 |
+
+Shapes: gate 17,408×5,120; down 5,120×17,408; head 248,320×5,120.
+All twelve specialized cases win; production routing remains two tokens only.
+The generic paths remain slower on both FFN shapes (Q3_K, IQ3_S, Q4_0,
+PQ2_0, PTQ1_0). This run revalidates two-token routing; it does not replace
+the historical 3–8-token measurements or measure full-model recovery latency.
 
 **Session 1 table (single dispatch per command buffer — the rate is the GPU's
 clock ramp, not the tile; kept for the record and superseded by the batched

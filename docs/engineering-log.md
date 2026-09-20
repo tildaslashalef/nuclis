@@ -96,6 +96,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-06 | DiffusionGemma structured reads and kev research | 2026-09-20 |
 | ENGN-13 | Prompt commit at the plan's chunk and the batched drafter commit | 2026-09-20 |
 | KERN-12 | Multi-row matvec for 2–8 rows: 2-row routing shipped, closed below its target | 2026-09-20 (two sessions) |
+| REPO-08 | Repair the multi-row benchmark controls and hand-off | 2026-09-20 |
 
 ## Context
 
@@ -3239,3 +3240,44 @@ unfinished levers (32 rows per threadgroup, a blocked activation read, or
 holding activations in threadgroup across a row strip) are the path, not a
 scalar body; the 16×8 tile is already flat at 88–116 GB/s because it uses
 half-precision matrix units.
+
+
+### REPO-08 — Repair the multi-row benchmark controls and hand-off (2026-09-20)
+
+**Outcome.** The multi-row sweep uses an explicit `Backend.matmulTile` control,
+sharing validation and tile dispatch with production `matmul` but bypassing
+small-batch routing. Previously both columns selected the scalar kernel at two
+tokens. Head allocation and selection now use the actual row stride instead of
+`1`, which failed every specialized alignment check and silently skipped the head.
+A profiler fixture pins the actual control and production kernel identities.
+
+**Evidence.** `make bench-matvec-rows ARGS="2 head"` on Apple M4 Pro 48 GiB,
+Zig 0.16.0, ReleaseSafe, `27303ed` plus this repair: all four specialized
+encodings beat the tile on both FFN shapes and the head (twelve cases). FFN
+127.7–181.9 vs 87.7–116.2 GB/s; head 146.8–188.0 vs 89.2–114.1.
+[Method and table](reference/metal-backend.md#corrected-two-row-control-repo-08-2026-09-20).
+Formatting and 450 CPU tests passed via `make check`; its Metal stage could not
+access the device in the sandbox, then `make test-metal` passed outside it,
+including the dispatch regression and 2/5/8-row error 5.64e-8 (bound 4e-6).
+`make build` and the fresh `./zig-out/bin/nuclis --version` passed; current
+document link targets and `git diff --check` passed.
+
+**Corrections to KERN-12's interpretation.** The constant-input probe can remove
+arithmetic and accumulator state as well as loads; it does not isolate load issue
+or prove every scalar layout incapable of the target. The tested bodies miss the
+original target, and two-row routing remains the measured deliverable. The
+reduction is whole-SIMD `simd_sum`, not row-group shuffles. Aggregate recovery
+milliseconds per speculative step cannot establish two-row replay latency.
+The original log entry is retained as historical evidence; current references
+and TODO carry these corrections.
+
+**Files.** `inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
+`docs/reference/{metal-backend,speculative-decoding,bench}.md`, `TODO.md`, and
+this log. ENGN-14 is next; its hand-off specifies recovery timings by length
+and an immediate record refresh. The separate small-batch matrix-tile experiment
+is conditional on that record; ENGN-17 still owns final defaults.
+
+**Remaining.** No new full-model or 3–8-token performance record in this repair.
+The original five/eight-row bandwidth and verify targets remain unmet; two-row
+recovery latency must be measured separately by ENGN-14. No scalar kernel or
+production routing threshold changed.

@@ -364,18 +364,18 @@ against the tile's 88–116) and for Q6_K/IQ4_XS at 3; at 5 rows it is 49–67 a
 at 8 rows 20–33, below the tile. `Backend.matmul` therefore routes only 2-row
 batches of the specialized encodings (`small_batch_rows = 2`); the tile keeps
 3–24, so the 5-row verify is unchanged and the plan's verify target
-(≥ 150 GB/s at 5, ≤ 130 ms) is **not met**. The body is FMA- and load-bound,
-not weight-bound: a probe with the per-token input offset constant measured
-181 GB/s flat to 8 rows, and every layout that shares the inputs across rows
-spills the 256-register budget.
+(≥ 150 GB/s at 5, ≤ 130 ms) is **not met**. Growing arithmetic and
+activation-load work plausibly explain the tested scalar bodies' decline. The constant-input probe also permits
+arithmetic elimination, so it cannot isolate load cost or prove all scalar
+layouts incapable of meeting the target.
 
 A spot run at the close revision (512 prose, draft 4, F16 KV, ctx 32768,
 warmup 1, repeat 1, one loaded model) measured `verify_milliseconds /
 speculative_steps` 232–288 ms and `recover_milliseconds / speculative_steps`
-170–217 ms, in the record's range for verify; the recover path is a full stack
-pass plus checkpoint/rewind, so the 2-row improvement is not visible in it and
-the ≤ 110 ms replay target is left to ENGN-14, whose per-row recurrent
-checkpoints remove the replay instead of accelerating it. `make compare`
+170–217 ms. These are aggregate costs per speculative step, mixing accepted
+lengths and steps without replay; they do not establish two-row recovery latency
+or the effect of its routing. ENGN-14 must measure recovery by accepted length
+before and after replacing replay with recurrent-state copies. `make compare`
 (f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4), `make test-generation-metal`,
 `make speculative-check-metal` (12 tokens greedy, the loop edge cases), and
 `make draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29, 24/28)

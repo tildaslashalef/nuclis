@@ -16,6 +16,15 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
+REPO-08 repaired and revalidated the KERN-12 sweep: the control now forces
+`Backend.matmulTile`, and the head uses its actual aligned stride. All twelve
+specialized two-row cases beat the tile; routing stays at two tokens. See the
+[corrected sweep](docs/reference/metal-backend.md#corrected-two-row-control-repo-08-2026-09-20)
+and [log](docs/engineering-log.md#repo-08--repair-the-multi-row-benchmark-controls-and-hand-off-2026-09-20).
+**Next: ENGN-14.** Its section includes the corrected seed-only baseline,
+recovery timings by accepted length, an immediate post-recovery record, and a
+conditional matrix-tile experiment distinct from KERN-15's attention work.
+
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
 embedded draft head), ENGN-12 (batched verification, the speculative
@@ -34,9 +43,9 @@ KERN-12 (the multi-row matvec) closed on 2026-09-20 **below its target**: the
 register-tiled body wins at 2 rows (143–182 GB/s against the 16×8 tile's
 88–116) but at 5 rows streams 49–67 and at 8 rows 20–33, so `matmul` routes
 only 2-row batches of the specialized encodings (`small_batch_rows = 2`) and
-the tile keeps the verify. The wall is scalar-FMA/load issue, not weight
-traffic (a probe with the per-token input offset constant measured 181 GB/s
-flat to 8 rows). Its facts are in
+the tile keeps the verify. The tested scalar bodies miss acceptance; the
+constant-input probe can eliminate arithmetic as well as loads, so it does
+not prove a universal scalar limit. Its facts are in
 [metal-backend.md § Multi-row matvec](docs/reference/metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target).
 
 This plan is the path to the speed benefit, as measured costs per verify
@@ -246,10 +255,11 @@ generation, and bench references gain their sections;
   `prefill(accepted)` — the whole 64-layer stack over `a + 1` rows through
   the small-chunk path. Measured ≈ 195 ms per batch on prose, where `a` is
   mostly 0 (the seed alone is replayed). KERN-12 routed only the 2-row
-  batches (`a = 1`) to the multi-row matvec; `a = 0` is the 1-row matvec, and
+  batches (`a = 1`) to the multi-row matvec; `a = 0` still reaches the
+  one-token prefill tile through recovery, and
   the rest of the stack pass is unchanged, so the comparison below is against
   the replay with that routing in place (a spot run measured 170–217 ms per
-  batch at 512, in the record's range).
+  speculative step at 512, mixing recovery lengths; not a two-row timing).
 - The DeltaNet chunk kernel (`nu_delta_chunk`, `kernels.metal` ≈ line
   1848) carries the state across 32-token sub-chunks in place: after a
   sub-chunk of `n` rows, `S_new = γ_n S₀ + Wᵀ K` with `W[s][j] = r(n − 1,
@@ -269,8 +279,9 @@ generation, and bench references gain their sections;
 1. Cheap first: in `Model.recover`, when `accepted.len == 1` replay through
    `step` (the matvec path: `Plan.step(token, null, null, null, observer)`)
    instead of `prefill`. Before KERN-12 this takes the prose replay from
-   ≈ 195 to ≈ 95 ms; after it the two paths should be close, and the record
-   decides whether the branch stays.
+   ≈ 195 to ≈ 95 ms as a hypothesis; KERN-12 changes only two-row
+   batches and gives no reason for the one-row paths to converge. Measure
+   the branch before deciding whether it stays.
 2. Per-row recurrent checkpoints written by the verify batch:
    - `Session.init` gains `row_checkpoints: usize` (0, or
      `max_draft_length + 1`): a second page-aligned region of
@@ -300,6 +311,28 @@ generation, and bench references gain their sections;
 3. Keep the winner: if the per-row write costs more than the
    post-KERN-12 replay on the prose workload, remove it (the log keeps the
    number) and keep step 1.
+
+**Measurement hand-off (2026-09-20 review).** Before changing recovery,
+measure replay separately for every accepted length (including seed-only and
+seed plus one draft); report calls and milliseconds per recovery call, not just
+`recover_milliseconds / speculative_steps`. Measure added verify/checkpoint
+writes, copy latency, session bytes and the total off/on throughput together.
+After the winning recovery change, run `make speculative-record` immediately
+and update the cost table in `bench.md` and *Where we are*. Keep the existing
+512/4K prose/code, greedy/instruct, draft 2/4/7 methodology. This intermediate
+record establishes priorities; ENGN-17 still runs the final record and decides
+defaults after the proposal/acceptance work.
+
+**Next kernel experiment, after that record.** KERN-15 optimizes attention,
+not the small-batch matrix tile; no existing unit covers the latter. If verify
+remains the bottleneck, design a separate unit before coding (identifier assigned
+in closure order). First test 32 output rows per threadgroup against the current
+16×8 split-K tile, then a blocked activation read if profiling supports it.
+Use `Backend.matmulTile` as the fixed control in `make bench-matvec-rows
+ARGS="8 head"`; record 2/5/8-token bandwidth and full-model verify latency,
+including regression at two tokens. Keep only an exactness-gated measured win.
+Do not resume scalar multi-row tuning without new evidence. This follow-up is
+conditional and does not replace or reorder the existing ENGN-15–17 work.
 
 **Acceptance.** `recover_milliseconds / speculative_steps` on prose 512 at
 draft 4 ≤ 40 ms with step 2, or ≤ the step-1 replay if step 2 loses; the

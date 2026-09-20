@@ -439,7 +439,7 @@ pub const Backend = struct {
         return route_small_batch and tokens >= 2 and tokens <= small_batch_rows;
     }
     /// output[t][r] = Σ_c weights[r,c] · input[t,c] for `1 < tokens ≤
-    /// small_batch_rows` activation rows. Each weight block is decoded once
+    /// matvec_rows_max` activation rows. Each weight block is decoded once
     /// and multiplied against every token row, so the weight bytes (the
     /// bandwidth bound of a small batch) are read once instead of once per
     /// token. The specialized encodings use their multi-row body when aligned,
@@ -515,6 +515,14 @@ pub const Backend = struct {
     /// range is aligned (`specializedMatmul`), every other case through the
     /// generic F32 tile (`matmulGeometry`).
     pub fn matmul(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
+        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, true);
+    }
+    /// Same contract as `matmul`, but always uses a matrix tile. Keeps benchmark
+    /// controls independent of production small-batch routing.
+    pub fn matmulTile(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
+        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, false);
+    }
+    fn matmulImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize, allow_matvec_rows: bool) !void {
         if (matrix.rows == 0 or matrix.rows % 8 != 0 or matrix.columns == 0 or matrix.columns % 64 != 0 or matrix.bytes.len % matrix.rows != 0) return error.InvalidShape;
         if (tokens == 0 or in_stride < matrix.columns or out_stride < matrix.rows) return error.InvalidShape;
         const stride = matrix.bytes.len / matrix.rows;
@@ -525,7 +533,7 @@ pub const Backend = struct {
         // A 2-row batch is a matvec problem, not a tile one, and only the
         // specialized bodies beat the tile: the generic `nu_matvec_rows` is
         // slower there (the sweep measures both).
-        if (usesMatvecRows(tokens) and !self.generic_only and
+        if (allow_matvec_rows and usesMatvecRows(tokens) and !self.generic_only and
             specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset) != null)
             return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
         const kernel = (if (self.generic_only) null else specializedMatmul(matrix.encoding, weights.offset, stride, tokens)) orelse .matmul;

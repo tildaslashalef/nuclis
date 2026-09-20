@@ -473,7 +473,16 @@ and the register/FMA analysis are in
 [metal-backend.md § Multi-row matvec](metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target).
 A repeat-1 spot run at the close revision (512 prose, draft 4, F16 KV, ctx
 32768) measured verify 232–288 ms and recover 170–217 ms per batch, within the
-speculative record's range for verify; the record itself is ENGN-17's.
+speculative record's range for verify. Recovery here is aggregate milliseconds
+per speculative step, not latency conditioned on two-row replay. ENGN-14 now
+refreshes the record immediately after the recovery change, including recovery
+calls/timings by accepted length; ENGN-17 retains the final defaults record.
+
+The corrected two-row sweep (2026-09-20, `27303ed` plus REPO-08) forces the
+specialized tile control and includes all four head encodings. All specialized
+cases still win: FFN 127.7–181.9 GB/s vs tile 87.7–116.2, head 146.8–188.0
+vs 89.2–114.1. Routing stays at two tokens. Method and individual rates:
+[corrected control](metal-backend.md#corrected-two-row-control-repo-08-2026-09-20).
 
 ## Gemma 4 12B: first look (MODL-06, 2026-09-11)
 
