@@ -349,3 +349,34 @@ engine timing. On a bounded pty at revision `ccb191b`, the first turn of
 doubles a number.` (ctx 4096, 32 tokens) settled at **spec 2.56/step**,
 within the range `bench` measures for the code prompt (1.2–3.0 accepted at
 draft 4).
+
+## Small batches: the multi-row matvec and the 2-row routing (KERN-12)
+
+The verify batch (`1 + k` rows), the recovery replay (`a + 1`), and the
+decode-time commit (`a + 1`) all reach `Backend.matmul`, which served them with
+the 16×8 split tile. KERN-12 added `nu_matvec_rows_*_t2..t8`: one SIMD group
+per four output rows, a decoded weight slice multiplied against every activation
+row before the next slice is fetched, one accumulator per (row, token). The
+sweep (`make bench-matvec-rows`, both FFN shapes, in
+[metal-backend.md § Multi-row matvec](metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target))
+shows it wins at **2 rows only** for every specialized encoding (143–182 GB/s
+against the tile's 88–116) and for Q6_K/IQ4_XS at 3; at 5 rows it is 49–67 and
+at 8 rows 20–33, below the tile. `Backend.matmul` therefore routes only 2-row
+batches of the specialized encodings (`small_batch_rows = 2`); the tile keeps
+3–24, so the 5-row verify is unchanged and the plan's verify target
+(≥ 150 GB/s at 5, ≤ 130 ms) is **not met**. The body is FMA- and load-bound,
+not weight-bound: a probe with the per-token input offset constant measured
+181 GB/s flat to 8 rows, and every layout that shares the inputs across rows
+spills the 256-register budget.
+
+A spot run at the close revision (512 prose, draft 4, F16 KV, ctx 32768,
+warmup 1, repeat 1, one loaded model) measured `verify_milliseconds /
+speculative_steps` 232–288 ms and `recover_milliseconds / speculative_steps`
+170–217 ms, in the record's range for verify; the recover path is a full stack
+pass plus checkpoint/rewind, so the 2-row improvement is not visible in it and
+the ≤ 110 ms replay target is left to ENGN-14, whose per-row recurrent
+checkpoints remove the replay instead of accelerating it. `make compare`
+(f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4), `make test-generation-metal`,
+`make speculative-check-metal` (12 tokens greedy, the loop edge cases), and
+`make draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29, 24/28)
+are unchanged.

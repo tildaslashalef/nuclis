@@ -30,10 +30,14 @@ of the accepted prefix is 5.4 ms per batch at 512 (10.8 ms at 4K). The
 record's verdict stands: the switch stays **off** by default with
 `draft_length 4`; code-like prompts gain modestly, prose loses, because
 every verify batch pays fixed costs that exceed the tokens it advances.
-KERN-12 (the multi-row matvec) is in progress: session 1 landed the kernels,
-the exactness fixture, and the sweep, but not the routing — the scalar body
-measured slower than the 16×8 tile at every 2–8-row shape, so `matmul` still
-uses the tile and normal mode is unchanged (see KERN-12's Session 1).
+KERN-12 (the multi-row matvec) closed on 2026-09-20 **below its target**: the
+register-tiled body wins at 2 rows (143–182 GB/s against the 16×8 tile's
+88–116) but at 5 rows streams 49–67 and at 8 rows 20–33, so `matmul` routes
+only 2-row batches of the specialized encodings (`small_batch_rows = 2`) and
+the tile keeps the verify. The wall is scalar-FMA/load issue, not weight
+traffic (a probe with the per-token input offset constant measured 181 GB/s
+flat to 8 rows). Its facts are in
+[metal-backend.md § Multi-row matvec](docs/reference/metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target).
 
 This plan is the path to the speed benefit, as measured costs per verify
 batch on Metal (Qwen 27B, F16 KV, 512-token context, ordinary decode step
@@ -44,9 +48,9 @@ them):
 | --- | ---: | --- | --- | ---: |
 | propose `k` drafts | 6.2 ms × k | one block forward per draft | ENGN-15 | fewer forwards, same accepted tokens |
 | checkpoint | 3 ms | one 150 MB copy | — | — |
-| verify `1 + k` rows | 227–251 ms at 512, 341–344 ms at 4K | the 16×8 prefill tile at 37–64 % of the matvec rate; the chunk attention over the visible cache | KERN-12 (KERN-15 at long context) | ≤ 130 ms |
+| verify `1 + k` rows | 227–251 ms at 512, 341–344 ms at 4K | the 16×8 prefill tile at 37–64 % of the matvec rate; the chunk attention over the visible cache | KERN-15 at long context (KERN-12 did not win 3–8 rows) | ≤ 130 ms |
 | accept (sampled) | 46–78 ms | one full-vocabulary sort per row on the host | KERN-13 + ENGN-16 | ≤ 5 ms |
-| recover (on rejection) | 99–272 ms | rewind + a whole-stack replay of `a + 1` rows through the same small-chunk path | ENGN-14 (and KERN-12) | ≤ 40 ms |
+| recover (on rejection) | 99–272 ms | rewind + a whole-stack replay of `a + 1` rows through the same small-chunk path | ENGN-14 | ≤ 40 ms |
 | commit `a + 1` tokens | 5.4 ms/batch (was 6.2 ms × (a + 1)) | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
 | prompt commit (prefill) | 1.02× ordinary prefill (was 2.9–3.3×) | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
 | tokens per batch | 2.2–4.0 (1.2–3.0 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-15 | more accepted per proposed |
@@ -58,12 +62,14 @@ per batch) costs ≈ 25 + 3 + 130 + 20 + 8 ≈ 190 ms for 3.3 tokens, about
 1.6× the ordinary rate, and ≈ 2.5× if ENGN-15 lifts it to 5 tokens per
 batch; prose stays near 1× and is the reason the proposal policy and the
 per-entry verdict exist. Nothing here claims a speedup before ENGN-17
-measures it.
+measures it. KERN-12 closed below its target, so the verify term stays
+227–251 ms at 512 unless a later unit takes the tile (KERN-15 only helps the
+long-context rows); the estimate above is correspondingly optimistic.
 
-Order: KERN-12 → ENGN-14 → ENGN-15 → KERN-13 → ENGN-16 → ENGN-17
+Order: ENGN-14 → ENGN-15 → KERN-13 → ENGN-16 → ENGN-17
 → TERM-10 → MODL-19 → MODL-20 → MODL-21 → AGNT-11 → MODL-22 → MODL-23 →
 KERN-14 → KERN-15 → ENGN-18 → ENGN-19 → KERN-16. ENGN-14 is measured
-against the replay *after* KERN-12; KERN-13 (the GPU penalty kernel)
+against the replay *after* KERN-12's 2-row routing; KERN-13 (the GPU penalty kernel)
 precedes ENGN-16 because the instruct profile's presence penalty defeats the
 readback path otherwise; ENGN-17 re-runs the record on the finished path and
 sets the defaults.
@@ -82,7 +88,6 @@ decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-12 | A multi-row matvec for 2–8 rows: the verify, replay, and commit path | 1–2 |
 | ENGN-14 | Recovery without the whole-stack replay | 1–2 |
 | ENGN-15 | Draft proposal policy: `p_min` early stop and an adaptive length | 1 |
 | KERN-13 | A GPU penalty kernel: the token history applied on the device before the top-k | 1 |
@@ -233,102 +238,6 @@ its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
 
-## KERN-12 — A multi-row matvec for 2–8 rows: the verify, replay, and commit path
-
-**Session 1 (landed 2026-09-20).** The kernels, the exactness fixture, and the
-sweep exist; production routing is deliberately **off** because the scalar
-body measured slower than the tile.
-- `kernels.metal`: `nu_matvec_rows` (generic) and
-  `nu_matvec_rows_{q4_k,q5_k,q6_k,iq4_xs}` (host-named `<4, NU_MATVEC_ROWS_MAX>`),
-  `MatvecRowsParams`; `root.zig`: `matvecRows`, `specializedMatvecRows`,
-  `usesMatvecRows` gated by `route_small_batch = false`; the `Kernel` enum and
-  pipeline list extended. The existing matvec and tile bodies are untouched.
-- `metal-check.zig`: exactness at 2/5/8 rows against the CPU matvec of each
-  row for every encoding (worst `|Δ| / Σ|w·x|` 5.64e-8, bound 4e-6), the
-  1-row refusal, and `--matvec-rows-bench` (`make bench-matvec-rows`, Metal)
-  sweeping 1–8 rows on the two FFN shapes at `17408×5120` and `5120×17408`
-  (the 248,320-row head only with a second argument).
-- **Finding.** At Q4_K `17408×5120` the 16×8 tile streams ~96 GB/s at every
-  row count (it already reads the weights once at ≤8 rows and parallelizes the
-  token tile), while the scalar multi-row body gives 85 GB/s at 2 rows and
-  falls to 22 GB/s at 5 and 4 GB/s at 8: the preloaded `NuInputs16 xa[8]`+
-  `xb[8]` (80 registers) with `acc[4×8]` spills, and the per-block input
-  reload costs more than the tile's reused decode. `route_small_batch` stays
-  false, so `matmul` is byte-for-byte the old path (`make compare` reproduces
-  f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4; `make check`, `make test-metal`
-  green).
-- **Session 2.** Register-tile the body until the sweep shows ≥150 GB/s at 5
-  rows and ≥120 GB/s at 8 (template `NT` at 2/4 with token groups, or a
-  1-row × NT layout with the input kept in registers), then flip
-  `route_small_batch`, reconsider `small_batch_rows` from the sweep, and
-  measure the record's `verify`/`replay`/`commit` rows.
-
-**Facts (read 2026-09-20).**
-- A verify batch (`1 + k ≤ 8` rows), the recovery replay (`a + 1 ≤ 8`
-  rows), and after ENGN-13 the decode-time commit (`a + 1` rows) all go
-  through `Plan.mmRows` → `Backend.matmul`
-  (`inference/src/backends/metal/root.zig`), which at ≤
-  `small_chunk_tokens` (24) tokens selects the 16×8 split-K tile
-  (`nu_matmul_*_8`, KERN-11): 32–116 GB/s of weight bytes, 37–64 % of the
-  same encoding's matvec rate. Measured: a 5-row verify ≈ 260 ms against
-  a 95 ms decode step; a 2-row replay ≈ 195 ms.
-- The decode matvecs (`nu_matvec_q4_k`, `_q5_k`, `_q6_k`, `_iq4_xs`, the
-  generic `nu_matvec`; `kernels.metal`, `Kernel` enum and
-  `specializedMatvec` in `root.zig`) stream weights at ≈ 200 GB/s. The
-  Qwen file's tensors: Q5_K 131, IQ4_XS 117, Q4_K 104, Q8_0 106 (the
-  block's `attn_k`/`attn_v` and small tensors), Q6_K 30, Q3_K 7, IQ4_NL 7,
-  IQ3_S 4, F32 360 (norms). The head `output` is 248,320 × 5,120.
-- Weight bytes dominate: a forward over 5 rows reads the same 16.4 GB as
-  over 1. A kernel that decodes each weight block once and multiplies it
-  against `n ≤ 8` activation rows held in registers reads weights once;
-  at 8 rows the FMA count is still far below the GPU's rate, so the floor
-  for a small batch is one weight pass ≈ one decode step. This is the
-  small-batch path every engine uses (the reference's `mul_mv` with
-  `nr1 > 1`); it is not a matmul tile.
-- The attention chunk (`attentionChunk`) and DeltaNet chunk (`deltaChunk`)
-  kernels over 8 rows are not the cost; confirm with `bench --profile
-  --speculative on` before writing anything (the per-kernel table
-  attributes GPU time per kernel).
-
-**Design.**
-1. `kernels.metal`: `nu_matvec_rows_<enc>` for Q4_K, Q5_K, Q6_K, IQ4_XS and
-   a generic `nu_matvec_rows` (Q3_K, IQ3_S, IQ4_NL, Q8_0 stay generic), a
-   template over `NU_ROWS ≤ 8`: the existing per-lane decode loop with the
-   activation reads replaced by `n` rows (`input + t × in_stride`) and `n`
-   accumulators, `out[t × out_stride + row]`. Same thread mapping as the
-   matvec (one SIMD group per row block). `MatvecRowsParams { columns,
-   encoding, stride, rows, tokens, in_stride, out_stride }`.
-2. `root.zig`: `matvecRows(weights, matrix, input, in_stride, output,
-   out_stride, tokens)` for `1 < tokens ≤ small_batch_rows`; the alignment
-   rule of `specializedMatvec`; the `Shape` bytes count weights once.
-   `Backend.matmul` routes `tokens ≤ small_batch_rows` to it **once
-   `route_small_batch` flips** (gated off in session 1: the sweep must show
-   the kernel beating the tile first), so `mmRows` callers then change
-   nothing: verify, replay through `prefillChunk`, the batched commit, and
-   short prompts all take the path. `small_batch_rows`
-   is a measured constant (8 unless the sweep shows the tile winning at
-   7–8).
-3. `inference/metal-check.zig`: an exactness fixture at rows 1, 2, 5, 8
-   against the CPU matvec per row for every encoding (the tile's bound:
-   |Δ| / Σ|w·x| ≤ 2e-4) and the selection pinned at `small_batch_rows` and
-   `small_batch_rows + 1`; a `--matvec-rows-bench` sweep at 1–8 rows on the
-   two FFN shapes (17,408 × 5,120 and 5,120 × 17,408) and the head, GB/s of
-   weight bytes and ms per dispatch, batched like `matmulBench`; Makefile
-   `bench-matvec-rows`.
-4. `docs/reference/metal-backend.md`: the kernel, the selection rule, the
-   sweep table.
-
-**Acceptance.**
-- Sweep: at 5 rows every specialized encoding streams ≥ 150 GB/s (≥ 75 %
-  of its matvec rate); at 8 rows ≥ 120 GB/s.
-- Record (512, draft 4): `verify_milliseconds / speculative_steps` ≤
-  130 ms on both prompts (from ≈ 260); the replay of 2 rows ≤ 110 ms.
-- `make test-metal`, `make compare` (the single-token path is untouched:
-  6.1e-5 / 7.7e-7 unchanged), `make test-generation-metal`,
-  `make speculative-check-metal`, `make draft-stats` green; `make bench`
-  (22-token prompt) prefill not slower than 43.0 tok/s (it stays on the
-  tile at 22 rows).
-
 ## ENGN-14 — Recovery without the whole-stack replay
 
 **Facts (read 2026-09-20).**
@@ -336,8 +245,11 @@ body measured slower than the tile.
   once; otherwise `rewind()` (one 150 MB copy, 3 ms) then
   `prefill(accepted)` — the whole 64-layer stack over `a + 1` rows through
   the small-chunk path. Measured ≈ 195 ms per batch on prose, where `a` is
-  mostly 0 (the seed alone is replayed); KERN-12 lowers this path too, so
-  the comparison below is against the post-KERN-12 replay.
+  mostly 0 (the seed alone is replayed). KERN-12 routed only the 2-row
+  batches (`a = 1`) to the multi-row matvec; `a = 0` is the 1-row matvec, and
+  the rest of the stack pass is unchanged, so the comparison below is against
+  the replay with that routing in place (a spot run measured 170–217 ms per
+  batch at 512, in the record's range).
 - The DeltaNet chunk kernel (`nu_delta_chunk`, `kernels.metal` ≈ line
   1848) carries the state across 32-token sub-chunks in place: after a
   sub-chunk of `n` rows, `S_new = γ_n S₀ + Wᵀ K` with `W[s][j] = r(n − 1,

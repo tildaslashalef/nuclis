@@ -460,6 +460,21 @@ Prefill +10.9 %, first token −9.8 %, decode within noise. The per-shape
 kernel rates and the experiments behind the tile are in
 [metal-backend.md § Small-chunk tile](metal-backend.md#small-chunk-tile-kern-11-2026-09-19).
 
+KERN-12 (2026-09-20) multi-row matvec, same machine and build: the kernel
+reads the weight bytes once per batch instead of once per token and was meant
+to serve the verify, replay, and commit batches (2–8 rows). On the two FFN
+shapes (`make bench-matvec-rows`, Apple M4 Pro, Zig 0.16.0, ReleaseSafe) it
+beats the 16×8 tile at 2 rows (143–182 GB/s against 88–116) and for
+Q6_K/IQ4_XS at 3, but at 5 rows streams 49–67 and at 8 rows 20–33, below the
+tile, so it fails the unit's ≥ 150 / ≥ 120 GB/s targets. `Backend.matmul`
+routes only 2-row batches of the specialized encodings to it
+(`small_batch_rows = 2`); the verify (5 rows) is unchanged. Full table, method,
+and the register/FMA analysis are in
+[metal-backend.md § Multi-row matvec](metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target).
+A repeat-1 spot run at the close revision (512 prose, draft 4, F16 KV, ctx
+32768) measured verify 232–288 ms and recover 170–217 ms per batch, within the
+speculative record's range for verify; the record itself is ENGN-17's.
+
 ## Gemma 4 12B: first look (MODL-06, 2026-09-11)
 
 The second family's rates on the same machine, method, and build as

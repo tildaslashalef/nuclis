@@ -314,7 +314,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
         max_bytes = @max(max_bytes, shape.rows * (shape.columns / layout.elements_per_block) * layout.bytes_per_block);
     };
     if (with_head) for (encodings) |enc| {
-        if (Backend.specializedMatvecRows(enc.id, 0, 1, 0) == null) continue;
+        if (Backend.specializedMatvecRows(enc.id, 2, 0, 1, 0) == null) continue;
         const layout = inference.encoding.layout(enc.id) orelse return error.UnknownEncoding;
         max_bytes = @max(max_bytes, head_shape.rows * (head_shape.columns / layout.elements_per_block) * layout.bytes_per_block);
     };
@@ -336,7 +336,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
                 break;
             };
             const bytes = sample_bytes orelse return error.FixtureMissing;
-            const specialized = Backend.specializedMatvecRows(enc.id, 0, 1, 0) != null;
+            const specialized = Backend.specializedMatvecRows(enc.id, 2, 0, 1, 0) != null;
             for (ffn_shapes) |shape| try matvecRowsShape(alloc, b, enc.name, enc.id, bytes, shape, max_rows, rounds, repeats, weights, input, output);
             if (with_head and specialized) try matvecRowsShape(alloc, b, enc.name, enc.id, bytes, head_shape, max_rows, rounds, repeats, weights, input, output);
         }
@@ -1616,11 +1616,14 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
             std.debug.print("Multi-row matvec vs CPU (2/5/8 rows): worst |difference| / Σ|w·x| {e:.2} (bound 4e-6)\n", .{rows_worst});
-            // Selection: one row and more than `small_batch_rows` stay on the tile.
-            // Routing stays off until the sweep shows the kernel beating the
-            // tile; the intended threshold is pinned by the constant.
-            if (Backend.usesMatvecRows(1) or Backend.usesMatvecRows(2) or Backend.usesMatvecRows(Backend.small_batch_rows) or Backend.usesMatvecRows(Backend.small_batch_rows + 1)) return error.MatvecRowsSelection;
-            if (Backend.small_batch_rows != 8) return error.MatvecRowsSelection;
+            // Selection: `matmul` routes 2-row batches to the multi-row matvec
+            // and one row, three or more, or the end of the instantiated range
+            // stay on the tile. The sweep put the crossover at 2 for the single
+            // safe threshold across encodings (`matvec_rows_max` is the kernel
+            // range, not the routing one).
+            if (Backend.usesMatvecRows(1) or !Backend.usesMatvecRows(2) or Backend.usesMatvecRows(3) or
+                Backend.usesMatvecRows(Backend.matvec_rows_max)) return error.MatvecRowsSelection;
+            if (Backend.small_batch_rows != 2 or Backend.matvec_rows_max != 8) return error.MatvecRowsSelection;
             // One row is refused by the kernel itself, never silently served.
             const one_fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/k-affine.json"), .{ .ignore_unknown_fields = true });
             defer one_fixtures.deinit();

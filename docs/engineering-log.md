@@ -95,6 +95,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 
 | REPO-06 | DiffusionGemma structured reads and kev research | 2026-09-20 |
 | ENGN-13 | Prompt commit at the plan's chunk and the batched drafter commit | 2026-09-20 |
+| KERN-12 | Multi-row matvec for 2–8 rows: 2-row routing shipped, closed below its target | 2026-09-20 (two sessions) |
 
 ## Context
 
@@ -3176,3 +3177,65 @@ lower. `Plan.commit` sub-chunks internally when the plan's chunk is smaller
 than the prompt chunk (small contexts); the batched path is not itself
 measured against KERN-12's multi-row matvec yet. `bench` still cannot
 measure a baseline without the drafter loaded (ENGN-17).
+
+### KERN-12 — A multi-row matvec for 2–8 rows: the 2-row routing (2026-09-20, two sessions, closed below its target)
+
+**Outcome.** A specialized multi-row matvec (`nu_matvec_rows_*_t2` … `_t8`,
+Q4_K/Q5_K/Q6_K/IQ4_XS) reads each weight slice once and multiplies it against
+every activation row of a batch; a generic `nu_matvec_rows` serves the other
+encodings. Each SIMD group owns four output rows (the matvec's `pair`/`half`
+mapping over the 256-value block), the token loop is innermost, and the token
+count is a template parameter so every `acc[row][token]` index is constant —
+a runtime token bound moves the accumulators to thread-local memory and fell
+to 4 GB/s at 8 rows in session 1. `Backend.matmul` routes 2-row batches of the
+specialized encodings to the kernel (`small_batch_rows = 2`,
+`route_small_batch`); `matvec_rows_max = 8` is the kernel range the sweep
+covers, the tile keeps 3–24. Session 2 rewrote the four bodies after session
+1's scalar form spilled: extracted the per-row scale products, `#pragma unroll`
+on the row and token loops, and per-encoding, per-count host names.
+
+**Finding.** The register-tiled body wins at **2 rows** (143–182 GB/s of
+weight bytes against the 16×8 tile's 88–116) and for Q6_K/IQ4_XS at 3, but at
+5 rows streams 49–67 and at 8 rows 20–33, below the tile. The unit's
+acceptance (≥150 GB/s at 5, ≥120 at 8) is **not met**, so the verify batch
+stays on the tile. The wall is scalar-FMA and per-(row, token) input-load
+issue, not weight traffic: a probe replacing the per-token input offset with a
+constant (the compiler eliminates the loads) measured **181 GB/s flat from 2
+to 8 rows**, and every layout that shares a token's input across rows needs
+128–272 registers and spills. The reference-style one-row-per-lane-group body
+was also measured and rejected: its 16-value segment decode reads the block
+header twice as often as the matvec's 32-value slice.
+
+**Evidence.** `make bench-matvec-rows` (Apple M4 Pro, Zig 0.16.0, ReleaseSafe,
+two FFN shapes 17,408×5,120 and 5,120×17,408, three measured command buffers
+after a warm-up, 16 dispatches each) is the table in
+[metal-backend.md § Multi-row matvec](reference/metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target):
+Q4_K 143/128, 86/84, 53/52, 28/27 at 2/3/5/8 rows (gate/down); Q5_K 148/137,
+98/92, 61/60, 30/28; Q6_K 182/179, 125/121, 67/63, 33/31; IQ4_XS 172/154,
+109/94, 65/49, 23/20. `make test-metal` exactness at 2/5/8 rows for every
+encoding, worst `|Δ|/Σ|w·x|` 5.64e-8 (bound 4e-6), the 1-row refusal, and the
+selection pinned (`small_batch_rows == 2`, `matvec_rows_max == 8`). `make
+compare` unchanged (f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4), `make
+test-generation-metal` green at every accepted length (4- and 8-row recovery
+max abs 0.0), `make speculative-check-metal` green (12 tokens, 7/24 and 6/21
+accepted, every loop edge), `make draft-stats` reproduces MODL-18 (28/31,
+24/30, 20/29, 18/28; 29/31, 25/30, 24/29, 24/28). A repeat-1 spot run at the
+close revision (512 prose, draft 4, F16 KV, ctx 32768) measured
+`verify_milliseconds / speculative_steps` 232–288 ms and
+`recover_milliseconds / speculative_steps` 170–217 ms, in the record's range
+for verify.
+
+**Files.** `inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
+`docs/reference/{metal-backend,speculative-decoding,bench}.md`,
+`docs/engineering-log.md`, `TODO.md`.
+
+**Remaining.** The verify (5 rows) and the commit beyond 2 rows stay on the
+16×8 tile; the ≤ 130 ms verify and ≤ 110 ms 2-row replay targets are unmet.
+The ≤ 110 ms replay is left to ENGN-14: per-row recurrent checkpoints remove
+the replay rather than accelerate it, and a full stack pass dominates the
+recover time regardless of the matvec. If the tile itself is to move, KERN-11's
+unfinished levers (32 rows per threadgroup, a blocked activation read, or
+holding activations in threadgroup across a row strip) are the path, not a
+scalar body; the 16×8 tile is already flat at 88–116 GB/s because it uses
+half-precision matrix units.

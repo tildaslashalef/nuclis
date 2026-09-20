@@ -49,22 +49,26 @@ const iq3_grid_source = blk: {
 const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ iq3_grid_source ++ @embedFile("dequant.metal") ++ "\n" ++ @embedFile("kernels.metal");
 
 const kernel_names = [_][:0]const u8{
-    "nu_matvec",             "nu_matvec_q4_k",         "nu_matvec_q5_k",         "nu_matvec_q6_k",        "nu_matvec_iq4_xs",       "nu_embed",
-    "nu_rmsnorm",            "nu_l2norm",              "nu_rope",                "nu_add",                "nu_silu_mul",            "nu_silu_inplace",
-    "nu_delta_gates",        "nu_sigmoid_gate",        "nu_delta",               "nu_convolution",        "nu_attention_scores",    "nu_attention_softmax",
-    "nu_attention_values",   "nu_argmax_partial",      "nu_argmax_final",        "nu_matvec_q3_k",        "nu_matvec_iq3_s",        "nu_matvec_segments",
-    "nu_topk_partial",       "nu_topk_final",          "nu_expsum_partial",      "nu_matmul",             "nu_rope_rows",           "nu_copy",
-    "nu_convolution_rows",   "nu_convolution_history", "nu_attention_chunk",     "nu_delta_chunk",        "nu_matmul_q3_k",         "nu_matmul_q4_k",
-    "nu_matmul_q5_k",        "nu_matmul_q6_k",         "nu_matmul_iq3_s",        "nu_matmul_iq4_xs",      "nu_matmul_q3_k_32",      "nu_matmul_q4_k_32",
-    "nu_matmul_q5_k_32",     "nu_matmul_q6_k_32",      "nu_matmul_iq3_s_32",     "nu_matmul_iq4_xs_32",   "nu_attention_scores_h",  "nu_attention_values_h",
-    "nu_attention_chunk_h",  "nu_pack_half",           "nu_attention_decode",    "nu_attention_decode_h", "nu_attention_merge",     "nu_gelu_mul",
-    "nu_scale",              "nu_add_scale",           "nu_softcap",             "nu_attention_decode_w", "nu_attention_decode_wh", "nu_matvec_q4_0",
-    "nu_matmul_q4_0",        "nu_matmul_q4_0_32",      "nu_matvec_experts",      "nu_route",              "nu_combine_experts",     "nu_gelu_mul_rows",
-    "nu_expert_lists",       "nu_matmul_experts",      "nu_matmul_experts_q4_0", "nu_matvec_pq2_0",       "nu_matvec_ptq1_0",       "nu_matmul_pq2_0",
-    "nu_matmul_ptq1_0",      "nu_matmul_pq2_0_32",     "nu_matmul_ptq1_0_32",    "nu_hadamard",           "nu_gather_rows",         "nu_matmul_q3_k_8",
-    "nu_matmul_q4_k_8",      "nu_matmul_q5_k_8",       "nu_matmul_q6_k_8",       "nu_matmul_iq3_s_8",     "nu_matmul_iq4_xs_8",     "nu_matmul_q4_0_8",
-    "nu_matmul_pq2_0_8",     "nu_matmul_ptq1_0_8",     "nu_matvec_rows",         "nu_matvec_rows_q4_k",   "nu_matvec_rows_q5_k",    "nu_matvec_rows_q6_k",
-    "nu_matvec_rows_iq4_xs",
+    "nu_matvec",                "nu_matvec_q4_k",           "nu_matvec_q5_k",           "nu_matvec_q6_k",           "nu_matvec_iq4_xs",         "nu_embed",
+    "nu_rmsnorm",               "nu_l2norm",                "nu_rope",                  "nu_add",                   "nu_silu_mul",              "nu_silu_inplace",
+    "nu_delta_gates",           "nu_sigmoid_gate",          "nu_delta",                 "nu_convolution",           "nu_attention_scores",      "nu_attention_softmax",
+    "nu_attention_values",      "nu_argmax_partial",        "nu_argmax_final",          "nu_matvec_q3_k",           "nu_matvec_iq3_s",          "nu_matvec_segments",
+    "nu_topk_partial",          "nu_topk_final",            "nu_expsum_partial",        "nu_matmul",                "nu_rope_rows",             "nu_copy",
+    "nu_convolution_rows",      "nu_convolution_history",   "nu_attention_chunk",       "nu_delta_chunk",           "nu_matmul_q3_k",           "nu_matmul_q4_k",
+    "nu_matmul_q5_k",           "nu_matmul_q6_k",           "nu_matmul_iq3_s",          "nu_matmul_iq4_xs",         "nu_matmul_q3_k_32",        "nu_matmul_q4_k_32",
+    "nu_matmul_q5_k_32",        "nu_matmul_q6_k_32",        "nu_matmul_iq3_s_32",       "nu_matmul_iq4_xs_32",      "nu_attention_scores_h",    "nu_attention_values_h",
+    "nu_attention_chunk_h",     "nu_pack_half",             "nu_attention_decode",      "nu_attention_decode_h",    "nu_attention_merge",       "nu_gelu_mul",
+    "nu_scale",                 "nu_add_scale",             "nu_softcap",               "nu_attention_decode_w",    "nu_attention_decode_wh",   "nu_matvec_q4_0",
+    "nu_matmul_q4_0",           "nu_matmul_q4_0_32",        "nu_matvec_experts",        "nu_route",                 "nu_combine_experts",       "nu_gelu_mul_rows",
+    "nu_expert_lists",          "nu_matmul_experts",        "nu_matmul_experts_q4_0",   "nu_matvec_pq2_0",          "nu_matvec_ptq1_0",         "nu_matmul_pq2_0",
+    "nu_matmul_ptq1_0",         "nu_matmul_pq2_0_32",       "nu_matmul_ptq1_0_32",      "nu_hadamard",              "nu_gather_rows",           "nu_matmul_q3_k_8",
+    "nu_matmul_q4_k_8",         "nu_matmul_q5_k_8",         "nu_matmul_q6_k_8",         "nu_matmul_iq3_s_8",        "nu_matmul_iq4_xs_8",       "nu_matmul_q4_0_8",
+    "nu_matmul_pq2_0_8",        "nu_matmul_ptq1_0_8",       "nu_matvec_rows",           "nu_matvec_rows_q4_k_t2",   "nu_matvec_rows_q4_k_t3",   "nu_matvec_rows_q4_k_t4",
+    "nu_matvec_rows_q4_k_t5",   "nu_matvec_rows_q4_k_t6",   "nu_matvec_rows_q4_k_t7",   "nu_matvec_rows_q4_k_t8",   "nu_matvec_rows_q5_k_t2",   "nu_matvec_rows_q5_k_t3",
+    "nu_matvec_rows_q5_k_t4",   "nu_matvec_rows_q5_k_t5",   "nu_matvec_rows_q5_k_t6",   "nu_matvec_rows_q5_k_t7",   "nu_matvec_rows_q5_k_t8",   "nu_matvec_rows_q6_k_t2",
+    "nu_matvec_rows_q6_k_t3",   "nu_matvec_rows_q6_k_t4",   "nu_matvec_rows_q6_k_t5",   "nu_matvec_rows_q6_k_t6",   "nu_matvec_rows_q6_k_t7",   "nu_matvec_rows_q6_k_t8",
+    "nu_matvec_rows_iq4_xs_t2", "nu_matvec_rows_iq4_xs_t3", "nu_matvec_rows_iq4_xs_t4", "nu_matvec_rows_iq4_xs_t5", "nu_matvec_rows_iq4_xs_t6", "nu_matvec_rows_iq4_xs_t7",
+    "nu_matvec_rows_iq4_xs_t8",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -154,10 +158,34 @@ pub const Kernel = enum(u32) {
     matmul_pq2_0_8,
     matmul_ptq1_0_8,
     matvec_rows,
-    matvec_rows_q4_k,
-    matvec_rows_q5_k,
-    matvec_rows_q6_k,
-    matvec_rows_iq4_xs,
+    matvec_rows_q4_k_t2,
+    matvec_rows_q4_k_t3,
+    matvec_rows_q4_k_t4,
+    matvec_rows_q4_k_t5,
+    matvec_rows_q4_k_t6,
+    matvec_rows_q4_k_t7,
+    matvec_rows_q4_k_t8,
+    matvec_rows_q5_k_t2,
+    matvec_rows_q5_k_t3,
+    matvec_rows_q5_k_t4,
+    matvec_rows_q5_k_t5,
+    matvec_rows_q5_k_t6,
+    matvec_rows_q5_k_t7,
+    matvec_rows_q5_k_t8,
+    matvec_rows_q6_k_t2,
+    matvec_rows_q6_k_t3,
+    matvec_rows_q6_k_t4,
+    matvec_rows_q6_k_t5,
+    matvec_rows_q6_k_t6,
+    matvec_rows_q6_k_t7,
+    matvec_rows_q6_k_t8,
+    matvec_rows_iq4_xs_t2,
+    matvec_rows_iq4_xs_t3,
+    matvec_rows_iq4_xs_t4,
+    matvec_rows_iq4_xs_t5,
+    matvec_rows_iq4_xs_t6,
+    matvec_rows_iq4_xs_t7,
+    matvec_rows_iq4_xs_t8,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -391,15 +419,22 @@ pub const Backend = struct {
         try self.dispatch(.matvec, &.{ weights, input, output }, p, @intCast(matrix.rows), 32, shape);
     }
     pub const MatvecRowsParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32, tokens: u32, in_stride: u32, out_stride: u32 };
-    /// Largest batch the multi-row matvec is meant to serve. The 2026-09-20
-    /// sweep (metal-check `--matvec-rows-bench`) measured the scalar body
-    /// slower than the 16×8 tile at every 2–8-row shape, so `matmul` does not
-    /// route to it yet; the register-tiled body is the follow-up.
-    pub const small_batch_rows = 8;
+    /// Largest batch `matmul` routes to the multi-row matvec. The 2026-09-20
+    /// sweep (metal-check `--matvec-rows-bench`) measured the scalar body at
+    /// 143–182 GB/s (weight bytes) at 2 rows against the 16×8 tile's 88–116,
+    /// but at 3 rows only Q6_K and IQ4_XS still win and at 5–8 the per-token
+    /// input loads and scalar FMA cap it at 49–67. The single safe threshold
+    /// is 2; the tile serves 3–24.
+    pub const small_batch_rows = 2;
     /// Whether `matmul` routes a `tokens`-row batch to the multi-row matvec.
-    /// Off until the sweep shows the kernel beating the tile: routing it now
-    /// would slow ordinary short-prompt prefill, not only speculation.
-    pub const route_small_batch = false;
+    /// On for 2-row batches: the replay of a short accepted prefix and the
+    /// 2-token commit are the batches that win, and routing only the
+    /// specialized encodings keeps the tile under the rest.
+    pub const route_small_batch = true;
+    /// Largest token count the multi-row kernels are instantiated for; the
+    /// sweep measures every count to `matvec_rows_max` even though `matmul`
+    /// routes only to `small_batch_rows`.
+    pub const matvec_rows_max = 8;
     pub fn usesMatvecRows(tokens: usize) bool {
         return route_small_batch and tokens >= 2 and tokens <= small_batch_rows;
     }
@@ -409,36 +444,41 @@ pub const Backend = struct {
     /// bandwidth bound of a small batch) are read once instead of once per
     /// token. The specialized encodings use their multi-row body when aligned,
     /// every other encoding the generic one. `input` and `output` hold
-    /// `tokens` rows of `in_stride`/`out_stride` floats. Called directly by
-    /// `metal-check` while `route_small_batch` is off.
+    /// `tokens` rows of `in_stride`/`out_stride` floats. `matmul` routes only
+    /// the specialized encodings here; `metal-check` calls it directly for
+    /// every encoding.
     pub fn matvecRows(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
         if (matrix.rows == 0 or matrix.columns == 0 or matrix.columns % 16 != 0 or matrix.bytes.len % matrix.rows != 0) return error.InvalidShape;
         const stride = matrix.bytes.len / matrix.rows;
         try quant.validateRow(matrix.encoding, stride, matrix.columns);
-        if (tokens < 2 or tokens > small_batch_rows or tokens > 64) return error.InvalidShape;
+        if (tokens < 2 or tokens > matvec_rows_max or tokens > 64) return error.InvalidShape;
         if (in_stride < matrix.columns or out_stride < matrix.rows) return error.InvalidShape;
         if (weights.len < matrix.bytes.len or input.len < ((tokens - 1) * in_stride + matrix.columns) * 4 or output.len < ((tokens - 1) * out_stride + matrix.rows) * 4) return error.InvalidShape;
         if (input.offset % 16 != 0 or in_stride % 4 != 0 or output.offset % 4 != 0) return error.InvalidShape;
         const shape: Shape = .{ .encoding = matrix.encoding, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = matrix.bytes.len };
         const p: MatvecRowsParams = .{ .columns = @intCast(matrix.columns), .encoding = matrix.encoding, .stride = @intCast(stride), .rows = @intCast(matrix.rows), .tokens = @intCast(tokens), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride) };
-        if (!self.generic_only) if (specializedMatvecRows(matrix.encoding, weights.offset, stride, input.offset)) |kernel| {
+        if (!self.generic_only) if (specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset)) |kernel| {
             const rows_per_group = rows_per_simdgroup * simdgroups_per_matvec_group;
             try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast((matrix.rows + rows_per_group - 1) / rows_per_group), 32 * simdgroups_per_matvec_group, shape);
             return;
         };
         try self.dispatch(.matvec_rows, &.{ weights, input, output }, p, @intCast(matrix.rows), 32, shape);
     }
-    /// The multi-row bodies that exist (Q4_K, Q5_K, Q6_K, IQ4_XS); every other
-    /// encoding takes the generic `nu_matvec_rows` above.
-    pub fn specializedMatvecRows(encoding: u32, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
-        if (input_offset % 16 != 0 or !blockAligned(encoding, weight_offset, stride)) return null;
-        return switch (encoding) {
-            12 => .matvec_rows_q4_k,
-            13 => .matvec_rows_q5_k,
-            14 => .matvec_rows_q6_k,
-            23 => .matvec_rows_iq4_xs,
-            else => null,
+    /// The multi-row bodies that exist (Q4_K, Q5_K, Q6_K, IQ4_XS), one per token
+    /// count 2..8; every other encoding takes the generic `nu_matvec_rows` above.
+    /// The token count is a template parameter so the body's accumulator loops
+    /// are compile-time bound (see kernels.metal); the per-encoding kernels are
+    /// contiguous in `Kernel` at `t2`.
+    pub fn specializedMatvecRows(encoding: u32, tokens: usize, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
+        if (input_offset % 16 != 0 or tokens < 2 or tokens > matvec_rows_max or !blockAligned(encoding, weight_offset, stride)) return null;
+        const base: u32 = switch (encoding) {
+            12 => @intFromEnum(Kernel.matvec_rows_q4_k_t2),
+            13 => @intFromEnum(Kernel.matvec_rows_q5_k_t2),
+            14 => @intFromEnum(Kernel.matvec_rows_q6_k_t2),
+            23 => @intFromEnum(Kernel.matvec_rows_iq4_xs_t2),
+            else => return null,
         };
+        return @enumFromInt(base + tokens - 2);
     }
     pub const MatmulParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32, tokens: u32, in_stride: u32, out_stride: u32, row_tiles: u32 };
     /// Token padding of `matmul`: activation buffers hold a multiple of this
@@ -482,9 +522,12 @@ pub const Backend = struct {
         const padded = matmulPadded(tokens);
         if (weights.len < matrix.bytes.len or input.len < padded * in_stride * 4 or output.len < padded * out_stride * 4) return error.InvalidShape;
         if (input.offset % 16 != 0 or in_stride % 4 != 0 or output.offset % 4 != 0) return error.InvalidShape;
-        // A small batch is a matvec problem, not a tile one, once the multi-row
-        // kernel beats the tile (`route_small_batch`).
-        if (usesMatvecRows(tokens)) return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
+        // A 2-row batch is a matvec problem, not a tile one, and only the
+        // specialized bodies beat the tile: the generic `nu_matvec_rows` is
+        // slower there (the sweep measures both).
+        if (usesMatvecRows(tokens) and !self.generic_only and
+            specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset) != null)
+            return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
         const kernel = (if (self.generic_only) null else specializedMatmul(matrix.encoding, weights.offset, stride, tokens)) orelse .matmul;
         const geometry = matmulGeometry(kernel);
         const row_tiles = (matrix.rows + geometry.rows - 1) / geometry.rows;

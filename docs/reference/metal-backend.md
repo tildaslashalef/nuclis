@@ -123,6 +123,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_route` (KERN-09) | 256 | one row of ≤ 256 router logits | 32 logits; k rounds of "best untaken" | `simd_max`, `simd_sum`, `simd_shuffle_down`, 8-way threadgroup pick | 8 + 8 + 64 entries |
 | `nu_matmul_*` (specialized, ENGN-05) | 128 | 64-row × 64-token output tile (32×32 for chunks of ≤ 32 tokens) | a 32×32 quarter as 4×4 `simdgroup_float8x8` (2×2 in the small tile) | matrix loads and MACs | 8 KB half weight tile + 8 KB half activation tile (small tile: 4 KB, activations from device), `threadgroup_barrier` |
 | `nu_matmul_*_8` (KERN-11) | 128 | 16-row × 8-token output tile (two token tiles for 9..16) | 16 rows × 8 tokens over one K slice: two 8×8 accumulators sharing one B load, four groups split K | matrix loads and MACs | 8 KB half tile (16 rows × 64 k per group), `simdgroup_barrier` only |
+| `nu_matvec_rows_*_t<n>` (KERN-12) | 128 | 16 output rows × up to 8 tokens | 4 rows; 8 lanes per 256-value block; one accumulator per (row, token) | `simd_shuffle_down` (4/2/1) per row group | none |
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
 | `nu_delta_chunk` | 128 | (value head, 32 value rows), all sub-chunks | an 8-row block of every 32×32 tile; column `tid` in the triangular solve | matrix MACs; no shuffles | 24 KB of 32×32 tiles, `threadgroup_barrier` per phase, `mem_device` per sub-chunk |
@@ -307,7 +308,9 @@ memory, and leave the rest to the grid.
   half operands. At 22 tokens the large tiles run at 20–25 GB/s of weight
   traffic (one token tile, too few threadgroups, a latency-bound K loop),
   hence the 32×32 set for short chunks; short prompts remain far from the
-  weight-bandwidth floor (KERN-12's multi-row matvec and KERN-14's split-K in [TODO.md](../../TODO.md)).
+  weight-bandwidth floor (KERN-12's multi-row matvec closes below its target —
+  see [§ Multi-row matvec](#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target)
+  — and KERN-14's split-K remains in [TODO.md](../../TODO.md)).
 - Mixture of experts (KERN-09; see [§ Gathered expert kernels](#gathered-expert-kernels-kern-09)):
   `nu_route` (softmax and top-k with renormalized weights per logit row),
   `nu_matvec_experts` (a matvec over the selected experts' slices of a 3-D
@@ -993,6 +996,52 @@ the packed layout made it worse. The remaining levers (32 rows per group, a
 blocked activation read, or keeping the activations in threadgroup memory
 across a row strip) are recorded in the log, not shipped; the unit closes
 below its floor on this record.
+
+### Multi-row matvec (KERN-12, 2026-09-20; closed below its target)
+
+A verify batch (`1 + k` ≤ 8 rows), the recovery replay (`a + 1` rows), and the
+decode-time commit (`a + 1` rows) are small batches that `Backend.matmul`
+served with the 16×8 split tile. The `nu_matvec_rows_*` set is the one-weight-
+pass alternative: each SIMD group owns four output rows (the matvec's mapping,
+`kb = lane >> 3` selecting the 256-value block and `pair`/`half` the 32-value
+slice), the token loop is innermost so a decoded slice serves every activation
+row, and `acc[row][token]` is indexed by constants (`#pragma unroll`), which is
+what keeps it in registers. Q4_K, Q5_K, Q6_K, and IQ4_XS have specialized
+bodies; `nu_matvec_rows` (one SIMD group per row, a runtime token bound) serves
+Q4_0 and the ternary encodings and is slower than the tile at every count. The
+token count is a template parameter, one host name per encoding and count
+(`nu_matvec_rows_q4_k_t2` … `_t8`): a runtime `tokens` loop with `break` moves
+the accumulators to thread-local memory. `Backend.matmul` routes 2-row batches
+to the specialized bodies (`small_batch_rows = 2`, `route_small_batch`);
+`matvec_rows_max = 8` is the kernel range and `metal-check`'s sweep covers it.
+
+Method: `make bench-matvec-rows ARGS=8` (Apple M4 Pro, Zig 0.16.0,
+ReleaseSafe), two FFN shapes, three measured command buffers after a warm-up,
+16 dispatches each, GB/s of weight bytes. Each cell is the gate shape / the
+down shape. The tile column is `Backend.matmul` at the same count (the 16×8
+tile), which the multi-row must beat.
+
+| Encoding | 2 rows | 3 | 4 | 5 | 8 | tile |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q4_K | **143 / 128** | 86 / 84 | 64 / 62 | 53 / 52 | 28 / 27 | 96 / 94 |
+| Q5_K | **148 / 137** | 98 / 92 | 73 / 73 | 61 / 60 | 30 / 28 | 112 / 108 |
+| Q6_K | **182 / 179** | **125 / 121** | 88 / 87 | 67 / 63 | 33 / 31 | 116 / 108 |
+| IQ4_XS | **172 / 154** | **109 / 94** | 102 / 82 | 65 / 49 | 23 / 20 | 90 / 87 |
+
+Bold beats the tile. The body wins at 2 rows for every encoding and, for Q6_K
+and IQ4_XS only, at 3; at 5–8 rows it is **slower than the tile** — 49–67 GB/s
+against 87–116, far below the 150 GB/s the plan targeted. The wall is not
+weight traffic: replacing the per-token input offset with a constant (so the
+compiler eliminates the loads) measured **181 GB/s flat from 2 to 8 rows**,
+while the real body's marginal cost is ~0.19–0.22 ms per token on the 50 MB
+FFN (~0.9 TFLOP/s of useful FMA). Sharing a token's input across rows needs
+either the decoded weights for all four rows (~128 registers) or the inputs for
+all tokens (~272 at 8), and every such layout spills and measures slower; the
+scalar FMA path cannot meet the tile's flat matrix-unit rate. The unit ships
+the 2-row routing and closes below its acceptance, recorded in the log. A
+reference-style `1 row per lane group × NT tokens` body was also measured and
+rejected: it decodes a 256-value block header once per 16-value segment instead
+of once per 32 values, and Q4_K fell to 55 GB/s at 2 rows.
 
 **Session 1 table (single dispatch per command buffer — the rate is the GPU's
 clock ramp, not the tile; kept for the record and superseded by the batched
