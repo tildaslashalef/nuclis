@@ -319,13 +319,22 @@ the CPU `Runtime.commit` stays per token as the reference. The scratch
 (`draft_hprev_c`, `draft_concat_c`) is sized by the padded chunk, since
 `eh_proj`'s matmul reads padded rows.
 
-**Measured** at revision `4525e81`, prose 512, draft 4, F16 KV, ctx 32768,
-three measured pairs on one loaded model: ordinary prefill 5,944.1 ms,
-speculative prefill 6,176.7 ms (**1.04×**; the serial prompt commit measured
-1.59× at `db9cf80`, and the ENGN-12 record's old `verify`-per-8-rows path
-2.85×). The batched commit added ≈ 232 ms over the ordinary prefill for 512
-tokens. `make draft-stats` reproduces MODL-18 (28/31, 24/30, 20/29, 18/28 and
+**Measured** at revision `9a5d3cf`, draft 4, F16 KV, ctx 32768, prose 512 and
+4,096, one warmup and repeated measured pairs on one loaded model:
+
+| workload | ordinary prefill | speculative prefill | ratio | propose/batch | verify/batch | recover/batch | commit/batch |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 (three runs) | 5,807.8 ms | 5,939.4 ms | **1.02×** | 25.7 ms | 236.5 ms | 185.5 ms | **5.4 ms** |
+| 4,096 (two runs) | 51,831 ms | 54,399 ms | **1.05×** | 26.5 ms | 345.0 ms | 243.2 ms | 10.8 ms |
+
+Both meet the unit's targets (≤ 1.10× at 512, ≤ 1.15× at 4K, and
+`commit_milliseconds / speculative_steps` ≤ 8 ms at 512). Accepted drafts per
+batch was 1.667 at 512 and 1.977 at 4K. The serial prompt commit measured
+1.59× at `db9cf80` and the ENGN-12 record's old `verify`-per-8-rows path
+2.85×. `make draft-stats` reproduces MODL-18 (28/31, 24/30, 20/29, 18/28 and
 29/31, 25/30, 24/29, 24/28), `make speculative-check-metal` is unchanged
 (7/24 and 6/21 accepted), `make compare-draft-metal` unchanged (3 rows,
 1.5e-5 / 7.9e-7), and `make check`, `make compare` (f32 6.1e-5 / 7.7e-7,
-f16 2.5e-2 / 1.9e-4), `make test-generation-metal` pass.
+f16 2.5e-2 / 1.9e-4), `make test-generation-metal` pass. `engine.Timing`
+now separates `propose` and `commit`, and `bench.Sample` carries
+`propose_milliseconds` and `commit_milliseconds`.
