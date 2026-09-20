@@ -140,7 +140,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         fn step(self: *@This(), token: u32, logits: ?[]f32, observer: ?Observer) !void {
             switch (self.*) {
                 .cpu => |*r| try r.step(token, logits, observer),
-                .metal => |*p| try p.step(token, logits, null, null, observer),
+                .metal => |*p| try p.step(token, logits, null, null, null, observer),
             }
         }
         /// The whole batch is admitted before the first write, as the plans
@@ -151,7 +151,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
                     if (tokens.len > r.state.capacity - r.state.position) return error.ContextFull;
                     for (tokens, 0..) |token, i| try r.step(token, if (i + 1 == tokens.len) logits else null, observer);
                 },
-                .metal => |*p| try p.prefill(tokens, logits, null, null, null, observer),
+                .metal => |*p| try p.prefill(tokens, logits, null, null, null, null, observer),
             }
         }
         /// Consumes one batch. The Metal plan with a drafter runs its greedy
@@ -494,7 +494,7 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
         defer alloc.free(verify_rows);
         var chunked = try Plan.init(alloc, b, view, binding, 4, 4, .f32, false, true);
         defer chunked.deinit();
-        try chunked.prefill(&draft.tokens, null, null, null, prefill_hidden, null);
+        try chunked.prefill(&draft.tokens, null, null, null, null, prefill_hidden, null);
         var verified = try Plan.init(alloc, b, view, binding, 4, 4, .f32, false, true);
         defer verified.deinit();
         try verified.verify(&draft.tokens, verify_rows, verify_hidden, null);
@@ -588,8 +588,8 @@ fn draftBatchCommitCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *infe
     defer batched.deinit();
     var serial = try Plan.init(alloc, b, view, binding, 2 * count, count, .f32, false, true);
     defer serial.deinit();
-    try batched.prefill(tokens, null, null, null, hidden_rows, null);
-    try serial.prefill(tokens, null, null, null, null, null);
+    try batched.prefill(tokens, null, null, null, null, hidden_rows, null);
+    try serial.prefill(tokens, null, null, null, null, null, null);
     try batched.commit(tokens, hidden_rows);
     for (tokens, 0..) |token, i| {
         const h_prev: []const f32 = if (i == 0) serial.draft_pending_h.floats()[0..hidden] else hidden_rows[(i - 1) * hidden ..][0..hidden];
@@ -743,6 +743,89 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
     // Backend-independent, so the Metal run covers it and the slow CPU oracle
     // stays on the primitives.
     if (use_metal) try speculativeLoop(alloc, io, model_path, use_metal);
+    if (backend) |*b| try penaltyCheck(spec, alloc, b, view, binding);
+}
+
+/// The device history penalties against the sampler on the same logits: two
+/// plans consume the same tokens, one steps with the partial top-k readback
+/// taken after `nu_penalize`, the other reads full logits back and lets the
+/// sampler apply the penalties itself. With one seed each, every selected
+/// token must be identical — sampled (the top-k path) and greedy (the argmax
+/// path), both with penalties active. Each plan's arithmetic is identical, so
+/// the logits the two sides decide on are the same vector.
+fn penaltyCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding) !void {
+    const Plan = spec.Family.Plan;
+    const draft = spec.draft.?;
+    const capacity = 64;
+    const steps = 8;
+    var topk_plan = try Plan.init(alloc, b, view, binding, capacity, 8, .f32, false, false);
+    defer topk_plan.deinit();
+    var full_plan = try Plan.init(alloc, b, view, binding, capacity, 8, .f32, false, false);
+    defer full_plan.deinit();
+    const logits = try alloc.alloc(f32, spec.vocabulary);
+    defer alloc.free(logits);
+    const candidates = try alloc.alloc(inference.sampling.Candidate, spec.vocabulary);
+    defer alloc.free(candidates);
+    var history = try inference.sampling.History.init(alloc, spec.vocabulary);
+    defer history.deinit();
+    // A history with both ends of the vocabulary and the pinned tokens, so
+    // the penalty reaches the ids the head proposes and the id-ordered ties.
+    try history.observe(0);
+    try history.observe(1);
+    try history.observe(spec.vocabulary - 1);
+    try history.observe(draft.tokens[0]);
+    try history.observe(draft.tokens[1]);
+
+    const options: inference.sampling.Options = .{ .temperature = 0.7, .top_k = 20, .top_p = 0.8, .presence_penalty = 1.5, .repetition_penalty = 1.1 };
+    const penalties: inference.sampling.Penalties = .{ .history = &history, .repetition = options.repetition_penalty, .presence = options.presence_penalty };
+    try topk_plan.step(draft.tokens[0], null, null, null, null, null);
+    try full_plan.step(draft.tokens[0], null, null, null, null, null);
+    try topk_plan.step(draft.tokens[1], null, null, null, null, null);
+    try full_plan.step(draft.tokens[1], logits, null, null, null, null);
+
+    var top: inference.sampling.TopK = .{ .temperature = options.temperature };
+    var topk_sampler = try inference.sampling.Sampler.init(0x9e37, options);
+    var full_sampler = try inference.sampling.Sampler.init(0x9e37, options);
+    // The seeds come from their own sampler so the two compared streams both
+    // start fresh at the first loop draw.
+    var seed_sampler = try inference.sampling.Sampler.init(0x9e37, options);
+    var token = try seed_sampler.select(logits, candidates, &history);
+    for (0..steps) |_| {
+        try topk_plan.step(token, null, null, &top, penalties, null);
+        const from_topk = (try topk_sampler.selectFrom(&top, candidates)) orelse return error.PenaltyTopKFallback;
+        try full_plan.step(token, logits, null, null, null, null);
+        const from_full = try full_sampler.select(logits, candidates, &history);
+        if (from_topk != from_full) return error.PenaltySampledMismatch;
+        try history.observe(token);
+        token = from_topk;
+    }
+    std.debug.print("Penalty check (metal, sampled): {d} tokens identical between the device top-k readback and the full-logit sampler.\n", .{steps});
+
+    // The greedy sibling: the device argmax after the same penalties versus
+    // the sampler's penalized argmax, stepped independently from scratch.
+    topk_plan.reset();
+    full_plan.reset();
+    history.reset();
+    try history.observe(0);
+    try history.observe(1);
+    try history.observe(spec.vocabulary - 1);
+    try history.observe(draft.tokens[0]);
+    try history.observe(draft.tokens[1]);
+    var chosen: u32 = undefined;
+    try topk_plan.step(draft.tokens[0], null, null, null, null, null);
+    try full_plan.step(draft.tokens[0], null, null, null, null, null);
+    try topk_plan.step(draft.tokens[1], null, null, null, null, null);
+    try full_plan.step(draft.tokens[1], logits, null, null, null, null);
+    var greedy_sampler = try inference.sampling.Sampler.init(0, .{ .presence_penalty = options.presence_penalty, .repetition_penalty = options.repetition_penalty });
+    var expected = try greedy_sampler.select(logits, candidates, &history);
+    for (0..steps) |_| {
+        try history.observe(expected);
+        try topk_plan.step(expected, null, &chosen, null, penalties, null);
+        try full_plan.step(expected, logits, null, null, null, null);
+        expected = try greedy_sampler.select(logits, candidates, &history);
+        if (chosen != expected) return error.PenaltyGreedyMismatch;
+    }
+    std.debug.print("Penalty check (metal, greedy): {d} tokens identical between the device argmax and the penalized sampler.\n", .{steps + 1});
 }
 
 /// Runs `inference.engine.runLoop` twice on one loaded engine, ordinary greedy
@@ -858,7 +941,7 @@ fn DraftRunner(comptime spec: Spec) type {
         fn step(self: *@This(), token: u32, logits: []f32) !void {
             switch (self.*) {
                 .cpu => |*r| try r.step(token, logits, null),
-                .metal => |*p| try p.step(token, logits, null, null, null),
+                .metal => |*p| try p.step(token, logits, null, null, null, null),
             }
         }
         /// The post-`output_norm` hidden of the last step: the block's `h`.
@@ -902,7 +985,7 @@ fn DraftRunner(comptime spec: Spec) type {
                     if (tokens.len > r.state.capacity - r.state.position) return error.ContextFull;
                     for (tokens, 0..) |token, i| try r.step(token, if (i + 1 == tokens.len) logits else null, null);
                 },
-                .metal => |*p| try p.prefill(tokens, logits, null, null, null, null),
+                .metal => |*p| try p.prefill(tokens, logits, null, null, null, null, null),
             }
         }
         fn verify(self: *@This(), tokens: []const u32, rows: []f32, h_rows: ?[]f32) !void {
@@ -1175,16 +1258,16 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
     const bounds = boundsOf(spec, binding);
     var stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
     defer stepped.deinit();
-    for (tokens, 0..) |t, i| try stepped.step(t, if (i + 1 == tokens.len) expected else null, null, null, null);
+    for (tokens, 0..) |t, i| try stepped.step(t, if (i + 1 == tokens.len) expected else null, null, null, null, null);
     for ([_]usize{ 64, 48 }) |chunk| {
         var big = try Plan.init(alloc, b, view, binding, 128, chunk, .f32, false, false);
         defer big.deinit();
-        try big.prefill(&tokens, actual, null, null, null, null);
+        try big.prefill(&tokens, actual, null, null, null, null, null);
         try compareChunked("chunk", chunk, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
     }
     var chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
     defer chunked.deinit();
-    try chunked.prefill(&tokens, actual, null, null, null, null);
+    try chunked.prefill(&tokens, actual, null, null, null, null, null);
     if (chunked.state.position != tokens.len or stepped.state.position != tokens.len) return error.PositionMismatch;
     try compareChunked("chunk", 32, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
     // The same comparison through the generic F32 tiles and matvecs
@@ -1198,10 +1281,10 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         defer b.generic_only = false;
         var generic_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
         defer generic_stepped.deinit();
-        for (tokens, 0..) |t, i| try generic_stepped.step(t, if (i + 1 == tokens.len) generic_expected else null, null, null, null);
+        for (tokens, 0..) |t, i| try generic_stepped.step(t, if (i + 1 == tokens.len) generic_expected else null, null, null, null, null);
         var generic_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
         defer generic_chunked.deinit();
-        try generic_chunked.prefill(&tokens, actual, null, null, null, null);
+        try generic_chunked.prefill(&tokens, actual, null, null, null, null, null);
         try compareChunked("F32 tiles, chunk", 32, generic_expected, actual, 5e-3, 2e-4);
     }
     // The same 70 tokens through an F16 cache, stepped and chunked,
@@ -1209,20 +1292,20 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
     var half_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
     defer half_stepped.deinit();
     if (half_stepped.state.bytes() >= stepped.state.bytes()) return error.HalfCacheNotSmaller;
-    for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null);
+    for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null, null);
     try compareChunked("F16 KV stepped", 1, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
     var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
     defer half_chunked.deinit();
-    try half_chunked.prefill(&tokens, actual, null, null, null, null);
+    try half_chunked.prefill(&tokens, actual, null, null, null, null, null);
     try compareChunked("F16 KV chunk", 32, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
     // 60 more tokens do not fit the remaining 58 positions: refused before any work.
-    if (chunked.prefill(tokens[0..60], null, null, null, null, null)) |_| return error.ExpectedContextFull else |err| if (err != error.ContextFull) return err;
+    if (chunked.prefill(tokens[0..60], null, null, null, null, null, null)) |_| return error.ExpectedContextFull else |err| if (err != error.ContextFull) return err;
     if (chunked.state.position != tokens.len) return error.PositionMismatch;
-    try chunked.prefill(tokens[0..58], null, null, null, null, null);
+    try chunked.prefill(tokens[0..58], null, null, null, null, null, null);
     if (chunked.state.position != 128) return error.PositionMismatch;
     // A per-layer observer is a per-token contract: prefill refuses it.
     var context: u8 = 0;
-    if (stepped.prefill(tokens[0..1], null, null, null, null, .{ .context = &context, .layer = cancel })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    if (stepped.prefill(tokens[0..1], null, null, null, null, null, .{ .context = &context, .layer = cancel })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
 }
 
 /// The distance between two logit rows: max abs, relative RMS, and each

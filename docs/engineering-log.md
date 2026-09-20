@@ -98,6 +98,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-12 | Multi-row matvec for 2–8 rows: 2-row routing shipped, closed below its target | 2026-09-20 (two sessions) |
 | REPO-08 | Repair the multi-row benchmark controls and hand-off | 2026-09-20 |
 | ENGN-14 | Recovery without the whole-stack replay: per-row recurrent checkpoints | 2026-09-20 (two sessions) |
+| KERN-13 | A GPU penalty kernel: the token history applied on the device before the top-k | 2026-09-20 |
 
 ## Context
 
@@ -3349,3 +3350,70 @@ slots make it unnecessary for recovery; dropping it is a follow-up. The
 session grows by 1.26 GB whenever a drafter is loaded, recorded here and in
 `session_bytes`. KERN-12's 3–8-row verify target remains unmet. The CPU
 speculative check is outstanding (deferred, not failed).
+
+### KERN-13 — A GPU penalty kernel: the token history applied on the device before the top-k (2026-09-20)
+
+**Outcome.** A sampler with an active presence or repetition penalty no
+longer forces the full-logit readback: `nu_penalize` applies the penalties
+in place on the device, before the output head's argmax and before the top-k
+partial pass, so the 2 KB readback is the vector the CPU sampler would sort.
+The kernel takes the history as `vocabulary / 32` little-endian u32 words
+(bit `id` in word `id / 32`), the repetition and presence values; for a
+token in the set it computes `l / r` for positive and `l · r` for negative
+logits, then `l − presence` — `Sampler.penalize` operation for operation.
+The plans keep a `penalty_history` buffer and upload the words only when
+`History.revision` changed (an `observe` of an unset id, a non-empty
+`reset`), one 31 KB copy per change. `TopK` gained a `penalized` flag and
+`Sampler.selectFrom` decides a penalized readback only when the device
+marked it so (an unpenalized one still defers to the full path);
+`gpuEligible()` no longer excludes penalties. The raw `logits` readback is
+never penalized in place: the kernel is recorded only when a selection
+(greedy or top-k) was requested, and the loop's `readLogits` fallback skips
+the sampler's own penalties when the retained vector already carries them —
+a first implementation penalized in place unconditionally, which `make
+compare` caught as a 1.5-logit shift in the raw trace. `Penalties`
+(`{ history, repetition, presence }`) threads through
+`Executor.step`/`prefill`; Qwen, Gemma 4, and Muse Glimmer all apply it
+(Gemma and Muse after their soft-cap). The CPU reference ignores it and
+keeps penalizing in `select`.
+
+**Evidence.** `make test-metal`: the device vector equals the CPU sampler
+for every logit sign (positive, negative, zero, negative zero), both
+penalties alone and together including a rewarding pair, on a word layout
+from `writeWords`; exact except that Metal's fast math flushes subnormal
+operands to zero (a residual below the smallest normal F32, unresolvable in
+a softmax). `make speculative-check-metal` now also runs a penalty check on
+the real model: two plans consume the same tokens, one steps with the
+penalized top-k readback, the other reads full logits and lets the sampler
+penalize; 8 sampled and 9 greedy tokens are identical with one seed each.
+`make check`, `make compare` (f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4),
+and `make speculative-check-metal`'s existing phases pass. The unit's gate
+pass `make speculative-record ARGS="--only prose512 code"` (`d31c5cd`,
+`nuclis 0.2.0-dev`, Apple M4 Pro 48 GiB, macOS 26.6.2, artifact SHA-256
+`322e194f…`, reports under `.zig-cache/bench/spec/`; table in
+[bench.md § The KERN-13 quick pass](reference/bench.md#the-kern-13-quick-pass-2026-09-20))
+puts the instruct off baselines at 9.04 / 8.87 / 8.80 tok/s (prose d2/d4/d7)
+and 8.74 (code d4), against 8.18 / 7.99 / 7.78 and 8.56 in the ENGN-14
+record and inside the greedy off band (code 8.66–8.74; prose 9.21–10.22,
+whose spread is the session's clock drift). `topk_fallbacks` is 0
+everywhere. A same-session pair measured prose instruct at 9.90 against
+greedy 10.156 tok/s (2.5 % below) and, in the reverse order, 9.159 against
+10.156 — the cross-process spread dominates the difference the acceptance's
+2 % band would test. The sampled accept time is unchanged (62.8–91.3 ms per
+batch): that is ENGN-15's target.
+
+**Files.** `inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`,
+`inference/src/sampling/root.zig`,
+`inference/src/models/{qwen35_metal,gemma4_metal,muse_glimmer_metal}.zig`,
+`inference/src/engine.zig`, `inference/metal-check.zig`,
+`inference/generation-check.zig`, `src/agent/loop.zig`,
+`docs/reference/{speculative-decoding,metal-backend,bench}.md`, `TODO.md`,
+and this log.
+
+**Remaining.** The speculative sampled acceptance still reads every verify
+row back and sorts it (ENGN-15 now has the device path it needs). The
+subnormal flush is accepted, not compensated; a logit whose magnitude is
+below `floatMin` is numerically zero under any softmax step. The CPU
+speculative check deferred from ENGN-14 was started in this session and
+reported with ENGN-15.

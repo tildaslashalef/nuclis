@@ -130,6 +130,10 @@ pub const Plan = struct {
     argmax_indices: Buffer,
     argmax_result: Buffer,
     topk: metal.Backend.TopKBuffers,
+    /// The history bit set as device words for `nu_penalize`, uploaded when
+    /// the history's revision changed; `penalty_revision` is the last upload.
+    penalty_history: Buffer,
+    penalty_revision: u64,
     /// Chunked prefill: up to `chunk` prompt tokens per command buffer
     /// through the batched matmul. The `_c` buffers hold `padded` token rows
     /// ([token][feature]); `step` keeps its own single-token buffers above.
@@ -230,6 +234,8 @@ pub const Plan = struct {
         self.argmax_indices = try backend.create(metal.Backend.argmax_partials * 4);
         self.argmax_result = try backend.create(4);
         self.topk = try backend.topkBuffers(sampling.TopK.capacity);
+        self.penalty_history = try backend.create((vocabulary + 31) / 32 * 4);
+        self.penalty_revision = std.math.maxInt(u64);
         self.chunk = chunk;
         self.padded = metal.Backend.matmulPadded(chunk);
         const n = self.padded;
@@ -355,10 +361,11 @@ pub const Plan = struct {
     /// observer's `check` runs between recorded layers at no GPU cost; its
     /// `layer` callback forces a commit after every layer (48 command buffers
     /// per token) and is for numerical traces only.
-    pub fn step(self: *Plan, token: u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, observer: ?Observer) !void {
+    pub fn step(self: *Plan, token: u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
         if (token >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
+        if (penalties) |p| try self.syncPenalties(p);
         try self.state.begin();
         errdefer self.state.fail();
         const b = self.backend;
@@ -388,11 +395,21 @@ pub const Plan = struct {
         }
         if (logits != null or greedy != null or topk != null) {
             try b.rmsNorm(self.x, self.output_norm, self.normalized, norm);
-            try self.recordOutputs(greedy, topk);
+            try self.recordOutputs(greedy, topk, penalties);
         }
         try b.commit();
-        try self.readOutputs(logits, greedy, topk);
+        try self.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commit();
+    }
+
+    /// Uploads the history words to the device when the set changed since the
+    /// last upload; valid before the command buffer's first dispatch.
+    fn syncPenalties(self: *Plan, p: sampling.Penalties) !void {
+        if (p.history.revision == self.penalty_revision) return;
+        const words = (vocabulary + 31) / 32;
+        const out = @as([*]u32, @ptrCast(@alignCast(self.penalty_history.host)))[0..words];
+        if (p.history.writeWords(out) != words) return error.InvalidShape;
+        self.penalty_revision = p.history.revision;
     }
 
     /// The feed-forward block over the residual `x` (the attention output
@@ -475,15 +492,21 @@ pub const Plan = struct {
 
     /// Records the tied output head for the normalized last-token row in
     /// `self.normalized`, the soft-cap, and whichever readbacks were requested.
-    fn recordOutputs(self: *Plan, greedy: ?*u32, topk: ?*sampling.TopK) !void {
+    /// `penalties` applies `nu_penalize` after the soft-cap — the vector the
+    /// CPU sampler penalizes — before either selection.
+    fn recordOutputs(self: *Plan, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties) !void {
         const b = self.backend;
         try self.mm(self.binding.token_embedding, self.normalized, self.logits);
         try b.softcap(self.logits, vocabulary, model.final_softcap);
+        // In place, so only a selection readback may request it: a raw
+        // `logits` readback must stay unpenalized for a CPU sampler.
+        if (penalties) |p| if (greedy != null or topk != null) try b.penalize(self.logits, vocabulary, self.penalty_history, p.repetition, p.presence);
         if (greedy != null) try b.argmax(self.logits, vocabulary, self.argmax_values, self.argmax_indices, self.argmax_result);
         if (topk) |top| try b.topk(self.logits, vocabulary, sampling.TopK.capacity, top.temperature, self.topk);
     }
-    /// Copies the requested readbacks out after `commit`.
-    fn readOutputs(self: *Plan, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK) !void {
+    /// Copies the requested readbacks out after `commit`; `penalized` marks a
+    /// `topk` readback taken after the device penalties.
+    fn readOutputs(self: *Plan, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalized: bool) !void {
         if (logits) |out| try self.readLogits(out);
         if (greedy) |out| {
             const id = @as(*const u32, @ptrCast(@alignCast(self.argmax_result.host))).*;
@@ -491,6 +514,7 @@ pub const Plan = struct {
             out.* = id;
         }
         if (topk) |top| {
+            top.penalized = penalized;
             const ids = @as([*]const u32, @ptrCast(@alignCast(self.topk.indices.host)))[0..sampling.TopK.capacity];
             for (ids) |id| if (id >= vocabulary) return error.NonFiniteResult;
             @memcpy(top.ids[0..], ids);
@@ -509,7 +533,10 @@ pub const Plan = struct {
 
     /// Copies the last step's logits out of the shared buffer. Valid after a
     /// `step` that computed them (any non-null `logits`/`greedy`/`topk`) and
-    /// until the next step; the sampler's fallback path uses it.
+    /// until the next step; the sampler's fallback path uses it. When a
+    /// selection was requested with penalties, the vector is the penalized
+    /// one (the raw vector is not kept), so the sampler must not penalize it
+    /// again.
     pub fn readLogits(self: *Plan, out: []f32) !void {
         if (out.len != vocabulary) return error.InvalidShape;
         @memcpy(out, self.logits.floats());
@@ -565,7 +592,7 @@ pub const Plan = struct {
     /// (`error.InvalidShape`): trace through `step`. Arithmetic order differs
     /// from `step` (tile accumulation), so results agree within a tolerance,
     /// not bit for bit; `generation-check --metal` measures it.
-    pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, hidden_rows: ?[]f32, observer: ?Observer) !void {
+    pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
         if (hidden_rows != null) return error.HiddenUnsupported;
         if (tokens.len == 0) return error.InvalidShape;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
@@ -579,7 +606,7 @@ pub const Plan = struct {
         while (offset < tokens.len) {
             const count = @min(self.chunk, tokens.len - offset);
             const last = offset + count == tokens.len;
-            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, observer);
+            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, observer);
             offset += count;
             // The whole prompt is one `step` for the loop's hooks, so this is
             // the only place a caller can learn how far a long prefill has got.
@@ -587,9 +614,10 @@ pub const Plan = struct {
         }
     }
 
-    fn prefillChunk(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, observer: ?Observer) !void {
+    fn prefillChunk(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
         const count = tokens.len;
         std.debug.assert(count >= 1 and count <= self.chunk);
+        if (penalties) |p| try self.syncPenalties(p);
         try self.state.beginChunk(count);
         errdefer self.state.fail();
         const b = self.backend;
@@ -612,10 +640,10 @@ pub const Plan = struct {
         if (logits != null or greedy != null or topk != null) {
             const last_row = self.x_c.slice((count - 1) * hidden * 4, hidden * 4);
             try b.rmsNorm(last_row, self.output_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
-            try self.recordOutputs(greedy, topk);
+            try self.recordOutputs(greedy, topk, penalties);
         }
         try b.commit();
-        try self.readOutputs(logits, greedy, topk);
+        try self.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commitChunk(count);
     }
 

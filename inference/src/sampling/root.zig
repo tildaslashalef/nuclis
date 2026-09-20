@@ -18,7 +18,8 @@
 //!   floating-point step that touches the chosen token on the CPU in the same
 //!   order; the GPU only supplies the candidates and one sum whose error is
 //!   bounded and guarded (see `total_band`). Penalties alter the sort itself,
-//!   so a sampler with an active penalty is never GPU-eligible.
+//!   so a readback taken before them cannot decide: the device must apply them
+//!   first and mark the `TopK` `penalized` (the Metal `nu_penalize` kernel).
 const std = @import("std");
 
 /// Neutral defaults: greedy, no cut, no penalty. `Sampler.init` validates.
@@ -95,6 +96,11 @@ pub const Candidate = struct { id: u32, weight: f64 };
 pub const History = struct {
     alloc: std.mem.Allocator,
     seen: std.DynamicBitSetUnmanaged,
+    /// Bumped whenever the set changes (an `observe` of an unset id, a
+    /// non-empty `reset`). A GPU executor uploads the bits when its
+    /// last-uploaded revision differs: one 31 KB copy per change, not per
+    /// step.
+    revision: u64 = 0,
 
     pub fn init(alloc: std.mem.Allocator, vocabulary: usize) !History {
         if (vocabulary == 0 or vocabulary > std.math.maxInt(u32)) return error.InvalidLogits;
@@ -106,17 +112,43 @@ pub const History = struct {
     }
     pub fn observe(self: *History, id: u32) !void {
         if (id >= self.seen.bit_length) return error.InvalidToken;
-        self.seen.set(id);
+        if (!self.seen.isSet(id)) {
+            self.seen.set(id);
+            self.revision += 1;
+        }
     }
     pub fn contains(self: *const History, id: u32) bool {
         return id < self.seen.bit_length and self.seen.isSet(id);
     }
     pub fn reset(self: *History) void {
+        if (self.seen.count() != 0) self.revision += 1;
         self.seen.unsetAll();
     }
     pub fn count(self: *const History) usize {
         return self.seen.count();
     }
+    /// The set as little-endian u32 words for a device kernel (bit `id` in
+    /// word `id / 32`, bit `id % 32`), zeroed first. `out` must hold at least
+    /// `(bit_length + 31) / 32`; returns the words written.
+    pub fn writeWords(self: *const History, out: []u32) usize {
+        const words = (self.seen.bit_length + 31) / 32;
+        std.debug.assert(out.len >= words);
+        @memset(out[0..words], 0);
+        var it = self.seen.iterator(.{});
+        while (it.next()) |id| out[id / 32] |= @as(u32, 1) << @intCast(id % 32);
+        return words;
+    }
+};
+
+/// The history penalties an executor applies to its logits before selecting,
+/// with the values of `Options.repetition_penalty` / `presence_penalty`. The
+/// GPU plan applies them on the device, so the readback it produces is the
+/// penalized vector and may decide (`TopK.penalized`); the CPU reference
+/// ignores this and the sampler penalizes in `select`.
+pub const Penalties = struct {
+    history: *const History,
+    repetition: f32,
+    presence: f32,
 };
 
 /// The GPU partial top-k readback. `ids`/`values` are the `count` best
@@ -134,6 +166,10 @@ pub const TopK = struct {
     values: [capacity]f32 = undefined,
     total: f64 = 0,
     finite: bool = false,
+    /// Whether the values and `total` were taken after the history penalties
+    /// (the device applied them before the partial passes). A readback with
+    /// penalties active but not applied cannot decide and defers.
+    penalized: bool = false,
 };
 
 /// Relative uncertainty allowed on `TopK.total`. The nucleus decision
@@ -166,17 +202,20 @@ pub const Sampler = struct {
         if (!std.math.isFinite(o.repetition_penalty) or o.repetition_penalty <= 0) return error.InvalidSamplingOptions;
     }
 
-    /// Whether a `TopK` readback can decide tokens for these options: sampled
-    /// (`temperature > 0`), no penalty (they change the sort), and either
+    /// Whether a `TopK` readback can decide tokens for these options, given
+    /// that the backend applied any active penalties before the readback
+    /// (`TopK.penalized`): sampled (`temperature > 0`) and either
     /// `1 ≤ top_k ≤ capacity` (the retained set is inside the readback, always
     /// exact) or `top_k = 0` with a nucleus (`top_p < 1`, guarded by `total`)
     /// or a `min_p` filter (its survivors are a prefix of the readback unless
     /// all of it survives, in which case the sampler defers). `top_k >
     /// capacity` and the full distribution (`top_k = 0, top_p = 1, min_p = 0`)
-    /// need every logit and are not eligible.
+    /// need every logit and are not eligible. A caller that cannot apply the
+    /// penalties on the device must not use the readback; `selectFrom`
+    /// enforces that through `TopK.penalized`.
     pub fn gpuEligible(self: *const Sampler) bool {
         const o = self.options;
-        if (o.temperature == 0 or o.penaltiesActive()) return false;
+        if (o.temperature == 0) return false;
         if (o.top_k >= 1 and o.top_k <= TopK.capacity) return true;
         return o.top_k == 0 and (o.top_p < 1 or o.min_p > 0);
     }
@@ -255,12 +294,13 @@ pub const Sampler = struct {
     /// GPU path: returns the token `select` would return for the same logits
     /// and RNG state, or `null` when the readback cannot decide (the caller
     /// then reads the full logits and calls `select`; the RNG has not advanced).
-    /// Active penalties always defer: the readback was taken before any
-    /// history could be applied.
+    /// A readback taken before the history penalties defers: with penalties
+    /// active only one the device applied first (`top.penalized`) is the same
+    /// vector `select` would sort.
     pub fn selectFrom(self: *Sampler, top: *const TopK, scratch: []Candidate) !?u32 {
         if (top.count == 0 or top.count > TopK.capacity) return error.InvalidLogits;
         if (!top.finite) return null; // `select` reports NonFiniteResult
-        if (self.options.penaltiesActive()) return null;
+        if (self.options.penaltiesActive() and !top.penalized) return null;
         if (self.options.temperature == 0) return top.ids[0];
         if (top.temperature != self.options.temperature) return error.InvalidSamplingOptions;
         if (scratch.len < top.count) return error.InsufficientScratch;
@@ -294,7 +334,8 @@ pub const Sampler = struct {
     /// The logit after the history penalties: repetition first (`l / r` for
     /// positive, `l · r` for negative logits), then `l − presence`. Neutral
     /// options are exact identities in F32, so no branch is needed on them.
-    fn penalize(self: *const Sampler, value: f32, id: usize, history: ?*const History) f32 {
+    /// Public as the reference operation the device kernel mirrors.
+    pub fn penalize(self: *const Sampler, value: f32, id: usize, history: ?*const History) f32 {
         const h = history orelse return value;
         if (!h.contains(@intCast(id))) return value;
         const r = self.options.repetition_penalty;
@@ -438,16 +479,25 @@ test "history observes token ids within the vocabulary and resets" {
     var history = try History.init(std.testing.allocator, 10);
     defer history.deinit();
     try std.testing.expect(!history.contains(3));
+    const empty_revision = history.revision;
     try history.observe(3);
-    try history.observe(3);
+    try history.observe(3); // a repeat changes nothing
     try history.observe(9);
     try std.testing.expect(history.contains(3) and history.contains(9) and !history.contains(0));
     try std.testing.expectEqual(@as(usize, 2), history.count());
+    try std.testing.expectEqual(empty_revision + 2, history.revision);
     try std.testing.expectError(error.InvalidToken, history.observe(10));
     try std.testing.expect(!history.contains(10));
+    // The device words are little-endian u32 with bit `id % 32` of word `id / 32`.
+    var words: [1]u32 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), history.writeWords(&words));
+    try std.testing.expectEqual(@as(u32, (1 << 3) | (1 << 9)), words[0]);
     history.reset();
     try std.testing.expectEqual(@as(usize, 0), history.count());
     try std.testing.expect(!history.contains(3));
+    try std.testing.expectEqual(empty_revision + 3, history.revision);
+    try std.testing.expectEqual(@as(usize, 1), history.writeWords(&words));
+    try std.testing.expectEqual(@as(u32, 0), words[0]);
     try std.testing.expectError(error.InvalidLogits, History.init(std.testing.allocator, 0));
 }
 
@@ -511,12 +561,56 @@ test "penalties: hand-computed small vocabulary, neutral no-ops, greedy interact
     defer tiny.deinit();
     try tiny.observe(0);
     try std.testing.expectError(error.NonFiniteResult, overflow.select(&.{ 1e30, 0 }, &.{}, &tiny));
-    // Penalties are never GPU-eligible and the readback path defers for them.
-    try std.testing.expect(!presence.gpuEligible());
+    // A penalized readback must be marked as such: the same one without the
+    // flag defers, so a backend that skipped the penalty never decides from
+    // the raw vector.
+    try std.testing.expect(!presence.gpuEligible()); // greedy
     var top: TopK = .{ .temperature = 1, .count = 1, .finite = true, .total = 1 };
     top.ids[0] = 1;
     top.values[0] = 2;
     try std.testing.expectEqual(@as(?u32, null), try presence.selectFrom(&top, &scratch));
+    top.penalized = true;
+    try std.testing.expectEqual(@as(?u32, 1), try presence.selectFrom(&top, &scratch));
+}
+
+test "a penalized readback decides like the reference path" {
+    // A vocabulary-wide random vector, the history's penalties applied on the
+    // host: the readback of the *penalized* vector must decide exactly what
+    // `select` does on the same penalized vector with the same seed, for the
+    // option sets the device path is eligible for.
+    const alloc = std.testing.allocator;
+    const vocabulary = 4096;
+    const logits = try alloc.alloc(f32, vocabulary);
+    defer alloc.free(logits);
+    const penalized = try alloc.alloc(f32, vocabulary);
+    defer alloc.free(penalized);
+    var scratch: [vocabulary]Candidate = undefined;
+    var reference_scratch: [vocabulary]Candidate = undefined;
+    var prng = std.Random.DefaultPrng.init(7);
+    const random = prng.random();
+    for (0..8) |vector| {
+        for (logits) |*l| l.* = random.floatNorm(f32) * 3;
+        if (vector % 4 == 0) logits[11] = logits[12]; // a tie among seen ids
+        var history = try History.init(alloc, vocabulary);
+        defer history.deinit();
+        try history.observe(11);
+        try history.observe(12);
+        for (0..16) |i| try history.observe(@intCast(i * 251 + 17));
+        const options: Options = .{ .temperature = 0.7, .top_k = 20, .top_p = 0.8, .presence_penalty = 1.5, .repetition_penalty = 1.1 };
+        var shape = try Sampler.init(1, options);
+        for (penalized, logits, 0..) |*out, raw, id| out.* = shape.penalize(raw, id, &history);
+        // The device's top-k over the penalized vector, built as a correct GPU
+        // would: the reference sort's first `capacity` entries and its F64 sum.
+        var top = referenceTopK(penalized, &reference_scratch, options.temperature, 0);
+        top.penalized = true;
+        for (0..64) |seed| {
+            var cpu = try Sampler.init(seed, options);
+            var gpu = try Sampler.init(seed, options);
+            const expected = try cpu.select(logits, &scratch, &history);
+            const token = (try gpu.selectFrom(&top, &scratch)) orelse unreachable;
+            try std.testing.expectEqual(expected, token);
+        }
+    }
 }
 
 test "min_p is a cutoff relative to the top candidate, applied after top-k and before top-p" {
@@ -670,10 +764,12 @@ test "readback validation and the uncertainty band" {
     try std.testing.expect((try Sampler.init(0, .{ .temperature = 1, .top_k = 40 })).gpuEligible());
     try std.testing.expect(!(try Sampler.init(0, .{ .temperature = 1, .top_k = 300 })).gpuEligible());
     try std.testing.expect(!(try Sampler.init(0, .{ .temperature = 1 })).gpuEligible());
-    // min_p alone makes the full distribution eligible; a penalty removes eligibility again.
+    // min_p alone makes the full distribution eligible; penalties keep the
+    // shape eligible (a device that applies them before the readback may
+    // decide), while `selectFrom` still requires the `penalized` mark.
     try std.testing.expect((try Sampler.init(0, .{ .temperature = 1, .min_p = 0.05 })).gpuEligible());
-    try std.testing.expect(!(try Sampler.init(0, .{ .temperature = 1, .top_k = 20, .presence_penalty = 1.5 })).gpuEligible());
-    try std.testing.expect(!(try Sampler.init(0, .{ .temperature = 1, .top_k = 20, .repetition_penalty = 1.1 })).gpuEligible());
+    try std.testing.expect((try Sampler.init(0, .{ .temperature = 1, .top_k = 20, .presence_penalty = 1.5 })).gpuEligible());
+    try std.testing.expect((try Sampler.init(0, .{ .temperature = 1, .top_k = 20, .repetition_penalty = 1.1 })).gpuEligible());
     // The min_p prefix defers when the whole readback survives (all weights ≥ min_p).
     var prefix = try Sampler.init(1, .{ .temperature = 1, .min_p = 0.5 });
     try std.testing.expectEqual(@as(?u32, null), try prefix.selectFrom(&top, &scratch)); // both weights are 1

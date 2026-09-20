@@ -850,7 +850,7 @@ pub const Completer = struct {
                 return err;
             };
         } else {
-            self.eng.model.prefill(tokens, self.buffers.logits, null, null, null, self.observer) catch |err| {
+            self.eng.model.prefill(tokens, self.buffers.logits, null, null, null, null, self.observer) catch |err| {
                 self.eng.model.reset();
                 return err;
             };

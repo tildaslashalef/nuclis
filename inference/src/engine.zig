@@ -62,11 +62,14 @@ pub fn Executor(comptime Family: type) type {
 
         /// One token step. `greedy` selects the argmax on the GPU and `topk`
         /// reads back the partial top-k for sampling when available; the CPU
-        /// runtime ignores both and callers sample from `logits`.
-        pub fn step(self: *Self, token: u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, observer: ?Observer) !void {
+        /// runtime ignores both and callers sample from `logits`. `penalties`,
+        /// when given, are applied by the GPU plan before its argmax/top-k so
+        /// the readback is the vector the sampler would sort; the CPU runtime
+        /// ignores them (the caller's sampler applies them to `logits`).
+        pub fn step(self: *Self, token: u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, penalties: ?inference.sampling.Penalties, observer: ?Observer) !void {
             switch (self.*) {
                 .cpu => |*runtime| try runtime.step(token, logits, observer),
-                .metal => |*m| try m.plan.step(token, logits, greedy, topk, observer),
+                .metal => |*m| try m.plan.step(token, logits, greedy, topk, penalties, observer),
             }
         }
         /// Consumes a prompt. The GPU plan batches it in chunks unless the
@@ -78,7 +81,7 @@ pub fn Executor(comptime Family: type) type {
         /// `hidden`, when given (`tokens.len × hidden`), receives every row's
         /// post-`output_norm` hidden on both executors; a family with no such
         /// hidden refuses it (`error.HiddenUnsupported`).
-        pub fn prefill(self: *Self, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, hidden: ?[]f32, observer: ?Observer) !void {
+        pub fn prefill(self: *Self, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, penalties: ?inference.sampling.Penalties, hidden: ?[]f32, observer: ?Observer) !void {
             if (tokens.len == 0) return error.InvalidShape;
             switch (self.*) {
                 .cpu => |*runtime| {
@@ -99,9 +102,9 @@ pub fn Executor(comptime Family: type) type {
                         if (hidden != null) return error.HiddenUnsupported;
                         for (tokens, 0..) |token, i| {
                             const last = i + 1 == tokens.len;
-                            try m.plan.step(token, if (last) logits else null, if (last) greedy else null, if (last) topk else null, observer);
+                            try m.plan.step(token, if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, observer);
                         }
-                    } else try m.plan.prefill(tokens, logits, greedy, topk, hidden, observer);
+                    } else try m.plan.prefill(tokens, logits, greedy, topk, penalties, hidden, observer);
                 },
             }
         }
@@ -123,7 +126,7 @@ pub fn Executor(comptime Family: type) type {
                     try m.plan.verify(tokens, rows, h_rows, observer);
                 } else {
                     if (h_rows != null) return error.HiddenUnsupported;
-                    for (tokens, 0..) |token, i| try m.plan.step(token, rows[i * vocabulary ..][0..vocabulary], null, null, observer);
+                    for (tokens, 0..) |token, i| try m.plan.step(token, rows[i * vocabulary ..][0..vocabulary], null, null, null, observer);
                 },
             }
         }
@@ -139,7 +142,7 @@ pub fn Executor(comptime Family: type) type {
                     try m.plan.verifyGreedy(tokens, out, h_rows, observer);
                 } else {
                     if (h_rows != null) return error.HiddenUnsupported;
-                    for (tokens, 0..) |token, i| try m.plan.step(token, null, &out[i], null, observer);
+                    for (tokens, 0..) |token, i| try m.plan.step(token, null, &out[i], null, null, observer);
                 },
             }
         }
@@ -171,6 +174,16 @@ pub fn Executor(comptime Family: type) type {
         /// rather than rewind by position.
         pub fn hasRecurrentState(self: *const Self) bool {
             return self.session().hasRecurrent();
+        }
+        /// Whether the executor applies the sampler's history penalties to its
+        /// logits before selecting. The CPU reference leaves them to the
+        /// sampler; the GPU plan applies them on the device so its readback is
+        /// the penalized vector.
+        pub fn supportsGpuPenalties(self: *const Self) bool {
+            return switch (self.*) {
+                .cpu => false,
+                .metal => true,
+            };
         }
         /// The adapter's drafter when one is loaded and the backend runs it;
         /// null when the family or backend has none. The contract value's host
@@ -236,14 +249,14 @@ pub const Model = struct {
     pub fn adapter(self: *const Model) models.Adapter {
         return self.exec;
     }
-    pub fn step(self: *Model, token: u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, observer: ?Observer) !void {
+    pub fn step(self: *Model, token: u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, penalties: ?inference.sampling.Penalties, observer: ?Observer) !void {
         switch (self.exec) {
-            inline else => |*e| try e.step(token, logits, greedy, topk, observer),
+            inline else => |*e| try e.step(token, logits, greedy, topk, penalties, observer),
         }
     }
-    pub fn prefill(self: *Model, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, hidden: ?[]f32, observer: ?Observer) !void {
+    pub fn prefill(self: *Model, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, penalties: ?inference.sampling.Penalties, hidden: ?[]f32, observer: ?Observer) !void {
         switch (self.exec) {
-            inline else => |*e| try e.prefill(tokens, logits, greedy, topk, hidden, observer),
+            inline else => |*e| try e.prefill(tokens, logits, greedy, topk, penalties, hidden, observer),
         }
     }
     pub fn verify(self: *Model, tokens: []const u32, vocabulary: usize, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
@@ -385,9 +398,9 @@ pub const Model = struct {
                 // chunked prefill for one row reaches the small-batch tile,
                 // which measured 2.3x slower on the prose replay.
                 if (accepted.len == 1) {
-                    try self.step(accepted[0], null, null, null, null);
+                    try self.step(accepted[0], null, null, null, null, null);
                 } else {
-                    try self.prefill(accepted, null, null, null, null, null);
+                    try self.prefill(accepted, null, null, null, null, null, null);
                 }
                 stats.replay = replay_start.durationTo(std.Io.Clock.awake.now(io));
             }
@@ -401,6 +414,11 @@ pub const Model = struct {
     }
     pub fn supportsGpuTopK(self: *const Model) bool {
         return self.gpu() != null;
+    }
+    pub fn supportsGpuPenalties(self: *const Model) bool {
+        return switch (self.exec) {
+            inline else => |*e| e.supportsGpuPenalties(),
+        };
     }
     fn deinit(self: *Model, alloc: std.mem.Allocator) void {
         switch (self.exec) {
@@ -798,7 +816,7 @@ pub fn commitPrompt(eng: *Engine, tokens: []const u32, logits: ?[]f32, observer:
         const count = @min(tokens.len - offset, prefill_chunk);
         const chunk = tokens[offset..][0..count];
         const hidden = s.hidden[0 .. count * drafter.hidden];
-        try eng.model.prefill(chunk, if (offset + count == tokens.len) logits else null, null, null, hidden, inner);
+        try eng.model.prefill(chunk, if (offset + count == tokens.len) logits else null, null, null, null, hidden, inner);
         try eng.model.commitDraft(chunk, hidden);
         offset += count;
         if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = offset, .target = tokens.len });
@@ -842,14 +860,28 @@ pub fn runLoop(
     var timing: Timing = .{ .prompt_tokens = tokens.len };
     const gpu_before = eng.gpuSeconds();
     const prefill_start = std.Io.Clock.awake.now(io);
+    // Active penalties are the executor's on the GPU (one `nu_penalize`
+    // dispatch before selection, so the readback is the vector the sampler
+    // would sort); the CPU reference leaves them to the sampler. An executor
+    // that cannot apply them keeps both GPU selection paths off, exactly as
+    // before (see reference/generation.md).
+    const penalties: ?inference.sampling.Penalties = if (sampler.options.penaltiesActive()) .{
+        .history = history orelse return error.HistoryRequired,
+        .repetition = sampler.options.repetition_penalty,
+        .presence = sampler.options.presence_penalty,
+    } else null;
     // Greedy decoding on the GPU selects the token without reading back
     // logits, and eligible sampling reads back only the partial top-k;
-    // callers that need logits still receive them. Penalties change the
-    // argmax and the sort on the CPU, so both GPU paths are off while one
-    // is active (see reference/generation.md).
-    const gpu_greedy = !can_speculate and sampler.options.temperature == 0 and !sampler.options.penaltiesActive() and eng.model.supportsGpuArgmax() and !hooks_need_logits(hooks);
-    const gpu_topk = !can_speculate and !gpu_greedy and sampler.gpuEligible() and eng.model.supportsGpuTopK() and !hooks_need_logits(hooks);
+    // callers that need logits still receive them.
+    const gpu_greedy = !can_speculate and sampler.options.temperature == 0 and eng.model.supportsGpuArgmax() and
+        (penalties == null or eng.model.supportsGpuPenalties()) and !hooks_need_logits(hooks);
+    const gpu_topk = !can_speculate and !gpu_greedy and sampler.gpuEligible() and eng.model.supportsGpuTopK() and
+        (penalties == null or eng.model.supportsGpuPenalties()) and !hooks_need_logits(hooks);
     if (gpu_topk) timing.topk_fallbacks = 0;
+    // The history is what the penalties read, so it must already hold the
+    // whole prompt when the prefill computes the GPU's first selection; on
+    // the CPU paths the sampler reads it only after the prefill completes.
+    if (history) |h| for (tokens) |token| try h.observe(token);
     var chosen: u32 = 0;
     var top: inference.sampling.TopK = .{ .temperature = sampler.options.temperature };
     const want_logits = !gpu_greedy and !gpu_topk;
@@ -872,7 +904,7 @@ pub fn runLoop(
     } else if (eng.model.chunkedPrefill(observer)) {
         // One prefill call for the whole prompt; the per-token hooks fire once.
         if (hooks) |h| if (h.before_step) |call| try call(h.context, eng.model.session().position);
-        eng.model.prefill(tokens, if (want_logits) logits else null, if (gpu_greedy) &chosen else null, if (gpu_topk) &top else null, null, observer) catch |err| switch (err) {
+        eng.model.prefill(tokens, if (want_logits) logits else null, if (gpu_greedy) &chosen else null, if (gpu_topk) &top else null, penalties, null, observer) catch |err| switch (err) {
             error.Cancelled => {
                 resetAll(eng, history);
                 timing.prefill = prefill_start.durationTo(std.Io.Clock.awake.now(io));
@@ -884,7 +916,7 @@ pub fn runLoop(
     } else for (tokens, 0..) |token, i| {
         if (hooks) |h| if (h.before_step) |call| try call(h.context, eng.model.session().position);
         const last = i + 1 == tokens.len;
-        eng.model.step(token, if (last and want_logits) logits else null, if (last and gpu_greedy) &chosen else null, if (last and gpu_topk) &top else null, observer) catch |err| switch (err) {
+        eng.model.step(token, if (last and want_logits) logits else null, if (last and gpu_greedy) &chosen else null, if (last and gpu_topk) &top else null, penalties, observer) catch |err| switch (err) {
             error.Cancelled => {
                 resetAll(eng, history);
                 timing.prefill = prefill_start.durationTo(std.Io.Clock.awake.now(io));
@@ -897,7 +929,6 @@ pub fn runLoop(
         // observer); the chunked path reports from inside the plan.
         if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = i + 1, .target = tokens.len });
     }
-    if (history) |h| for (tokens) |token| try h.observe(token);
     timing.prefill = prefill_start.durationTo(std.Io.Clock.awake.now(io));
     if (hooks) |h| if (h.prefill) |call| try call(h.context, logits);
     var decode_start = std.Io.Clock.awake.now(io);
@@ -915,10 +946,13 @@ pub fn runLoop(
             token = if (gpu_greedy) chosen else if (gpu_topk) (try sampler.selectFrom(&top, candidates)) orelse blk: {
                 // The readback could not decide exactly (nucleus beyond the
                 // readback, a borderline denominator, or a non-finite logit):
-                // read the full logits and take the reference path.
+                // read the full logits and take the reference path. With
+                // penalties active the retained vector is already penalized
+                // (it fed the readback), so the sampler must not apply them
+                // again.
                 timing.topk_fallbacks.? += 1;
                 try eng.model.readLogits(logits);
-                break :blk try sampler.select(logits, candidates, history);
+                break :blk try sampler.select(logits, candidates, if (penalties != null) null else history);
             } else try sampler.select(logits, candidates, history);
             generated[count] = token;
             count += 1;
@@ -1009,7 +1043,7 @@ pub fn runLoop(
             continue;
         };
         if (hooks) |h| if (h.before_step) |call| try call(h.context, position);
-        eng.model.step(token, if (want_logits) logits else null, if (gpu_greedy) &chosen else null, if (gpu_topk) &top else null, observer) catch |err| switch (err) {
+        eng.model.step(token, if (want_logits) logits else null, if (gpu_greedy) &chosen else null, if (gpu_topk) &top else null, penalties, observer) catch |err| switch (err) {
             error.Cancelled => {
                 resetAll(eng, history);
                 stop = .cancelled;

@@ -1218,3 +1218,41 @@ changed kernel alone on a rested machine before comparing with a record.
 
 On the CPU reference backend, each step takes roughly 18–19 s; `bench` runs
 there only with small budgets and is useful for definitions, not for speed.
+
+## The KERN-13 quick pass (2026-09-20)
+
+The device penalty kernel (KERN-13) landed; a full record waits for ENGN-17.
+This is the unit's gate pass, `make speculative-record ARGS="--only prose512
+code"`, which covers the prose-512 and code configurations (the 4K pair was
+not re-measured). Same methodology as the ENGN-14 record above: Apple M4 Pro
+(12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2 (25G83), AC power, Zig 0.16.0,
+ReleaseSafe, `nuclis 0.2.0-dev` at `d31c5cd`, artifact SHA-256 `322e194f…`,
+backend metal, F16 KV, context 32,768, 128 output tokens, one warmup and
+three measured runs (two at 4K, not run here) per configuration, off/on
+pairs on one loaded model; reports under `.zig-cache/bench/spec/`. Every
+sample stopped on `token_budget`; `topk_fallbacks` was 0 at every measured
+sample in both the off and on halves. The off half of the instruct
+configurations is the new penalized GPU path; the accept half still reads
+the full verify rows back (ENGN-15).
+
+| configuration | prompt | draft | accepted/step | tokens/batch | verify ms | accept ms | recover ms | prefill off → on (s) | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code, greedy | 10 | 2 | 1.35 | 2.35 | 257.3 | 0.0 | 10.3 | 0.40 → 0.45 | 8.66 → 8.11 | 0.94× |
+| code, greedy | 10 | 4 | 2.34 | 3.34 | 273.1 | 0.0 | 12.7 | 0.40 → 0.45 | 8.67 → 10.41 | 1.20× |
+| code, greedy | 10 | 7 | 2.97 | 3.97 | 268.8 | 0.0 | 18.9 | 0.40 → 0.44 | 8.74 → 11.63 | 1.33× |
+| code, instruct | 10 | 4 | 2.79 | 3.77 | 252.4 | 91.3 | 6.8 | 0.37 → 0.45 | 8.74 → 9.83 | 1.12× |
+| prose 512, greedy | 512 | 2 | 1.23 | 2.23 | 248.8 | 0.0 | 11.2 | 5.89 → 6.03 | 10.22 → 7.86 | 0.77× |
+| prose 512, greedy | 512 | 4 | 1.67 | 2.65 | 262.8 | 0.0 | 20.5 | 5.99 → 6.28 | 9.50 → 8.31 | 0.87× |
+| prose 512, greedy | 512 | 7 | 2.28 | 3.26 | 268.6 | 0.0 | 20.0 | 6.23 → 6.46 | 9.21 → 9.51 | 1.03× |
+| prose 512, instruct | 512 | 2 | 1.36 | 2.35 | 251.1 | 62.9 | 6.7 | 6.38 → 6.61 | 9.04 → 6.87 | 0.76× |
+| prose 512, instruct | 512 | 4 | 1.82 | 2.80 | 265.5 | 71.7 | 11.7 | 6.50 → 6.62 | 8.87 → 7.31 | 0.82× |
+| prose 512, instruct | 512 | 7 | 2.06 | 3.05 | 264.2 | 77.9 | 13.7 | 6.52 → 6.66 | 8.80 → 7.47 | 0.85× |
+
+**Reading.** The instruct baseline moved from the ENGN-14 record's 8.18 /
+7.99 / 7.78 tok/s (prose d2/d4/d7) to 9.04 / 8.87 / 8.80, and from 8.56 to
+8.74 on code — inside the spread of the greedy off baselines (code
+8.66–8.74; prose 9.21–10.22 across the record's consecutive runs is clock
+drift over the 25-minute sequence, not a path difference). The sampled
+accept time is unchanged (62.8–91.3 ms): it still sorts the full verify
+rows, which ENGN-15 moves onto the device readback. Verify and recover are
+where ENGN-14 left them (249–273 ms and 6.8–20.5 ms per batch).

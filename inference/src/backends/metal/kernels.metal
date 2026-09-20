@@ -2259,6 +2259,23 @@ kernel void nu_delta_chunk(device float * state [[buffer(0)]],
     }
 }
 
+// History penalties in place, one thread per logit: repetition first (divide
+// positive logits, multiply negative ones), then presence, for every token in
+// the history bit set. Bit `id` lives in word `id / 32`, bit `id % 32`; the
+// host uploads the words when the history changed. Matches the CPU sampler's
+// `penalize` operation for operation.
+struct PenalizeParams { uint count; uint history_words; float repetition; float presence; };
+kernel void nu_penalize(device float * logits [[buffer(0)]],
+                        device const uint * history [[buffer(1)]],
+                        constant PenalizeParams & p [[buffer(7)]],
+                        uint tid [[thread_position_in_grid]]) {
+    if (tid >= p.count) return;
+    if (!(history[tid >> 5] & (1u << (tid & 31u)))) return;
+    float x = logits[tid];
+    float scaled = x > 0.0f ? x / p.repetition : x * p.repetition;
+    logits[tid] = scaled - p.presence;
+}
+
 // Greedy selection: one threadgroup reduces a strided slice to (value, index);
 // a second pass with one group merges partials. Ties select the lowest index.
 struct ArgmaxParams { uint count; uint partials; };

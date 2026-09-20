@@ -52,23 +52,23 @@ const kernel_names = [_][:0]const u8{
     "nu_matvec",                "nu_matvec_q4_k",           "nu_matvec_q5_k",           "nu_matvec_q6_k",           "nu_matvec_iq4_xs",         "nu_embed",
     "nu_rmsnorm",               "nu_l2norm",                "nu_rope",                  "nu_add",                   "nu_silu_mul",              "nu_silu_inplace",
     "nu_delta_gates",           "nu_sigmoid_gate",          "nu_delta",                 "nu_convolution",           "nu_attention_scores",      "nu_attention_softmax",
-    "nu_attention_values",      "nu_argmax_partial",        "nu_argmax_final",          "nu_matvec_q3_k",           "nu_matvec_iq3_s",          "nu_matvec_segments",
-    "nu_topk_partial",          "nu_topk_final",            "nu_expsum_partial",        "nu_matmul",                "nu_rope_rows",             "nu_copy",
-    "nu_convolution_rows",      "nu_convolution_history",   "nu_attention_chunk",       "nu_delta_chunk",           "nu_matmul_q3_k",           "nu_matmul_q4_k",
-    "nu_matmul_q5_k",           "nu_matmul_q6_k",           "nu_matmul_iq3_s",          "nu_matmul_iq4_xs",         "nu_matmul_q3_k_32",        "nu_matmul_q4_k_32",
-    "nu_matmul_q5_k_32",        "nu_matmul_q6_k_32",        "nu_matmul_iq3_s_32",       "nu_matmul_iq4_xs_32",      "nu_attention_scores_h",    "nu_attention_values_h",
-    "nu_attention_chunk_h",     "nu_pack_half",             "nu_attention_decode",      "nu_attention_decode_h",    "nu_attention_merge",       "nu_gelu_mul",
-    "nu_scale",                 "nu_add_scale",             "nu_softcap",               "nu_attention_decode_w",    "nu_attention_decode_wh",   "nu_matvec_q4_0",
-    "nu_matmul_q4_0",           "nu_matmul_q4_0_32",        "nu_matvec_experts",        "nu_route",                 "nu_combine_experts",       "nu_gelu_mul_rows",
-    "nu_expert_lists",          "nu_matmul_experts",        "nu_matmul_experts_q4_0",   "nu_matvec_pq2_0",          "nu_matvec_ptq1_0",         "nu_matmul_pq2_0",
-    "nu_matmul_ptq1_0",         "nu_matmul_pq2_0_32",       "nu_matmul_ptq1_0_32",      "nu_hadamard",              "nu_gather_rows",           "nu_matmul_q3_k_8",
-    "nu_matmul_q4_k_8",         "nu_matmul_q5_k_8",         "nu_matmul_q6_k_8",         "nu_matmul_iq3_s_8",        "nu_matmul_iq4_xs_8",       "nu_matmul_q4_0_8",
-    "nu_matmul_pq2_0_8",        "nu_matmul_ptq1_0_8",       "nu_matvec_rows",           "nu_matvec_rows_q4_k_t2",   "nu_matvec_rows_q4_k_t3",   "nu_matvec_rows_q4_k_t4",
-    "nu_matvec_rows_q4_k_t5",   "nu_matvec_rows_q4_k_t6",   "nu_matvec_rows_q4_k_t7",   "nu_matvec_rows_q4_k_t8",   "nu_matvec_rows_q5_k_t2",   "nu_matvec_rows_q5_k_t3",
-    "nu_matvec_rows_q5_k_t4",   "nu_matvec_rows_q5_k_t5",   "nu_matvec_rows_q5_k_t6",   "nu_matvec_rows_q5_k_t7",   "nu_matvec_rows_q5_k_t8",   "nu_matvec_rows_q6_k_t2",
-    "nu_matvec_rows_q6_k_t3",   "nu_matvec_rows_q6_k_t4",   "nu_matvec_rows_q6_k_t5",   "nu_matvec_rows_q6_k_t6",   "nu_matvec_rows_q6_k_t7",   "nu_matvec_rows_q6_k_t8",
-    "nu_matvec_rows_iq4_xs_t2", "nu_matvec_rows_iq4_xs_t3", "nu_matvec_rows_iq4_xs_t4", "nu_matvec_rows_iq4_xs_t5", "nu_matvec_rows_iq4_xs_t6", "nu_matvec_rows_iq4_xs_t7",
-    "nu_matvec_rows_iq4_xs_t8",
+    "nu_attention_values",      "nu_penalize",              "nu_argmax_partial",        "nu_argmax_final",          "nu_matvec_q3_k",           "nu_matvec_iq3_s",
+    "nu_matvec_segments",       "nu_topk_partial",          "nu_topk_final",            "nu_expsum_partial",        "nu_matmul",                "nu_rope_rows",
+    "nu_copy",                  "nu_convolution_rows",      "nu_convolution_history",   "nu_attention_chunk",       "nu_delta_chunk",           "nu_matmul_q3_k",
+    "nu_matmul_q4_k",           "nu_matmul_q5_k",           "nu_matmul_q6_k",           "nu_matmul_iq3_s",          "nu_matmul_iq4_xs",         "nu_matmul_q3_k_32",
+    "nu_matmul_q4_k_32",        "nu_matmul_q5_k_32",        "nu_matmul_q6_k_32",        "nu_matmul_iq3_s_32",       "nu_matmul_iq4_xs_32",      "nu_attention_scores_h",
+    "nu_attention_values_h",    "nu_attention_chunk_h",     "nu_pack_half",             "nu_attention_decode",      "nu_attention_decode_h",    "nu_attention_merge",
+    "nu_gelu_mul",              "nu_scale",                 "nu_add_scale",             "nu_softcap",               "nu_attention_decode_w",    "nu_attention_decode_wh",
+    "nu_matvec_q4_0",           "nu_matmul_q4_0",           "nu_matmul_q4_0_32",        "nu_matvec_experts",        "nu_route",                 "nu_combine_experts",
+    "nu_gelu_mul_rows",         "nu_expert_lists",          "nu_matmul_experts",        "nu_matmul_experts_q4_0",   "nu_matvec_pq2_0",          "nu_matvec_ptq1_0",
+    "nu_matmul_pq2_0",          "nu_matmul_ptq1_0",         "nu_matmul_pq2_0_32",       "nu_matmul_ptq1_0_32",      "nu_hadamard",              "nu_gather_rows",
+    "nu_matmul_q3_k_8",         "nu_matmul_q4_k_8",         "nu_matmul_q5_k_8",         "nu_matmul_q6_k_8",         "nu_matmul_iq3_s_8",        "nu_matmul_iq4_xs_8",
+    "nu_matmul_q4_0_8",         "nu_matmul_pq2_0_8",        "nu_matmul_ptq1_0_8",       "nu_matvec_rows",           "nu_matvec_rows_q4_k_t2",   "nu_matvec_rows_q4_k_t3",
+    "nu_matvec_rows_q4_k_t4",   "nu_matvec_rows_q4_k_t5",   "nu_matvec_rows_q4_k_t6",   "nu_matvec_rows_q4_k_t7",   "nu_matvec_rows_q4_k_t8",   "nu_matvec_rows_q5_k_t2",
+    "nu_matvec_rows_q5_k_t3",   "nu_matvec_rows_q5_k_t4",   "nu_matvec_rows_q5_k_t5",   "nu_matvec_rows_q5_k_t6",   "nu_matvec_rows_q5_k_t7",   "nu_matvec_rows_q5_k_t8",
+    "nu_matvec_rows_q6_k_t2",   "nu_matvec_rows_q6_k_t3",   "nu_matvec_rows_q6_k_t4",   "nu_matvec_rows_q6_k_t5",   "nu_matvec_rows_q6_k_t6",   "nu_matvec_rows_q6_k_t7",
+    "nu_matvec_rows_q6_k_t8",   "nu_matvec_rows_iq4_xs_t2", "nu_matvec_rows_iq4_xs_t3", "nu_matvec_rows_iq4_xs_t4", "nu_matvec_rows_iq4_xs_t5", "nu_matvec_rows_iq4_xs_t6",
+    "nu_matvec_rows_iq4_xs_t7", "nu_matvec_rows_iq4_xs_t8",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -90,6 +90,7 @@ pub const Kernel = enum(u32) {
     attention_scores,
     attention_softmax,
     attention_values,
+    penalize,
     argmax_partial,
     argmax_final,
     matvec_q3_k,
@@ -1264,6 +1265,22 @@ pub const Backend = struct {
         try self.dispatch(.topk_partial, &.{ logits, scratch.partial_values, scratch.partial_indices }, p, topk_partials, 256, .{});
         try self.dispatch(.topk_final, &.{ scratch.partial_values, scratch.partial_indices, scratch.values, scratch.indices }, p, 1, 256, .{});
         try self.dispatch(.expsum_partial, &.{ logits, scratch.values, scratch.sums, scratch.flags }, p, topk_partials, 256, .{});
+    }
+
+    pub const PenalizeParams = extern struct { count: u32, history_words: u32, repetition: f32, presence: f32 };
+    /// Applies the history penalties to `logits[0..count]` in place:
+    /// `l / r` for positive and `l · r` for negative logits of every token in
+    /// `history` (bit `id` in word `id / 32`), then `l − presence`. One thread
+    /// per logit; `repetition` must be positive and both values finite. The
+    /// readback taken after this is the penalized logits, which is what the
+    /// CPU sampler sorts (`sampling.Sampler.penalize`).
+    pub fn penalize(self: *Backend, logits: Buffer, count: usize, history: Buffer, repetition: f32, presence: f32) !void {
+        if (count == 0 or count > std.math.maxInt(u32) or logits.len < count * 4) return error.InvalidShape;
+        if (!std.math.isFinite(repetition) or repetition <= 0 or !std.math.isFinite(presence)) return error.InvalidShape;
+        const words = (count + 31) / 32;
+        if (history.len < words * 4) return error.InvalidShape;
+        const p: PenalizeParams = .{ .count = @intCast(count), .history_words = @intCast(words), .repetition = repetition, .presence = presence };
+        try self.dispatch(.penalize, &.{ logits, history }, p, perElement(count), 256, .{});
     }
 
     pub const ArgmaxParams = extern struct { count: u32, partials: u32 };

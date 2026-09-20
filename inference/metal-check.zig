@@ -2458,6 +2458,73 @@ pub fn main(init: std.process.Init) !void {
         if (b.topk(logits, 248320, k, 0, scratch)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
     }
 
+    // 9c. The history penalties on the device: the kernel's vector equals
+    // `sampling.Sampler.penalize` for every logit sign (positive, negative,
+    // zero, negative zero, subnormal), both penalties alone and together
+    // (including a rewarding pair), on a word layout from `writeWords`.
+    {
+        const count = 4096;
+        const logits_buf = try b.create(count * 4);
+        const words_buf = try b.create((count + 31) / 32 * 4);
+        var history = try inference.sampling.History.init(alloc, count);
+        defer history.deinit();
+        for (0..64) |i| try history.observe(@intCast(i * 61 + 3));
+        try history.observe(count - 1);
+        _ = history.writeWords(@as([*]u32, @ptrCast(@alignCast(words_buf.host)))[0 .. (count + 31) / 32]);
+        const options_list = [_]inference.sampling.Options{
+            .{ .presence_penalty = 1.5 },
+            .{ .repetition_penalty = 1.1 },
+            .{ .repetition_penalty = 4.0, .presence_penalty = 0.5 },
+            .{ .repetition_penalty = 0.5, .presence_penalty = -2.0 },
+        };
+        var prng = std.Random.DefaultPrng.init(0x9e3779b9);
+        const random = prng.random();
+        var raw: [count]f32 = undefined;
+        var expected: [count]f32 = undefined;
+        var seen_mismatch = false;
+        for (0..8) |vector| {
+            for (&raw) |*l| l.* = random.floatNorm(f32) * 4;
+            for (0..64) |i| {
+                const id = i * 61 + 3;
+                raw[id] = switch (i % 5) {
+                    0 => 2.5,
+                    1 => -3.5,
+                    2 => 0,
+                    3 => -0.0,
+                    else => std.math.floatMin(f32) * 0.5,
+                };
+            }
+            raw[count - 1] = -1.25;
+            for (options_list) |options| {
+                // The kernel penalizes in place, so each option set starts from
+                // the raw vector again.
+                @memcpy(logits_buf.floats(), &raw);
+                var sampler = try inference.sampling.Sampler.init(0, options);
+                for (&expected, raw, 0..) |*e, value, id| e.* = sampler.penalize(value, id, &history);
+                try b.begin();
+                try b.penalize(logits_buf, count, words_buf, options.repetition_penalty, options.presence_penalty);
+                try b.commit();
+                for (logits_buf.floats(), expected, 0..) |got, want, id| {
+                    if (@as(u32, @bitCast(got)) == @as(u32, @bitCast(want))) continue;
+                    // Metal's fast math flushes subnormal operands to zero; the
+                    // residual is below the smallest normal F32, which no
+                    // softmax can resolve, and the CPU keeps the subnormal.
+                    if (@abs(want) < std.math.floatMin(f32) and @abs(got) < std.math.floatMin(f32)) continue;
+                    if (!seen_mismatch) {
+                        std.debug.print("penalize logit {d} (vector {d}): got {e} want {e}\n", .{ id, vector, got, want });
+                        seen_mismatch = true;
+                    }
+                    return error.MetalPenalizeMismatch;
+                }
+            }
+        }
+        // Shape rejection: a zero count, an empty history range, a bad rate.
+        if (b.penalize(logits_buf, 0, words_buf, 1, 0)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.penalize(logits_buf, count, words_buf.slice(0, 4), 1, 0)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.penalize(logits_buf, count, words_buf, 0, 0)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.penalize(logits_buf, count, words_buf, 1, std.math.nan(f32))) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    }
+
     // 9b. Chunk kernels equal their sequential single-token forms bit
     // for bit: rope over rows, convolution over rows plus history update,
     // grouped L2 norm, repeated delta gates, and copy.
@@ -2654,5 +2721,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors and in both pairings, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors and in both pairings, activations and the epilogues, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
 }

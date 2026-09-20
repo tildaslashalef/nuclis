@@ -434,3 +434,53 @@ into slots and NaN into the state on restore. And the slot writes are only
 gated by `row_states > 0`: ordinary prefill, decode, and the prompt commit
 pass 0, and the kernels take the same code path as before. The layout and
 the refusals are in [session.md § Row checkpoints](session.md#row-checkpoints-engn-14).
+
+## The device penalty kernel (KERN-13, 2026-09-20)
+
+A sampler with a presence or repetition penalty changes the sort itself, so
+before this unit the loop turned both GPU selection paths off while one was
+active: every such token read the full 248,320-logit row back and sorted it
+on the host, and the ordinary decode step measured 7.7–8.6 tok/s on the
+instruct profile against 8.8–10.3 greedy (the ENGN-14 record). `nu_penalize`
+([metal-backend.md § History penalties](metal-backend.md#history-penalties-kern-13-2026-09-20))
+applies the penalties on the device in place — before the argmax and before
+the three top-k passes — so the readback is the vector the CPU sampler
+would sort: repetition first (`l / r` for positive, `l · r` for negative
+logits), then `l − presence`, for every token in the history bit set. The
+host uploads the set as `vocabulary / 32` little-endian u32 words when its
+revision changed (`History.revision`, bumped by `observe` and `reset`), so
+the 31 KB copy happens on a change, not per step.
+
+The sampler side: `TopK` carries a `penalized` flag; `Sampler.selectFrom`
+decides a readback with penalties active only when the device marked it
+`penalized` (an unpenalized readback still defers to the full path), and
+`gpuEligible()` no longer excludes penalties. `Sampler`'s profile defaults
+to the same operation as before when a full readback is requested: raw
+`logits` are never penalized in place by the plan, and the loop's `readLogits`
+fallback skips the sampler's own penalties when the vector already carries
+them. The Qwen, Gemma 4, and Muse Glimmer plans all upload and apply the
+penalty (each on the final logits, after Gemma's and Muse's soft-cap).
+
+Measured 2026-09-20, `make speculative-record ARGS="--only prose512 code"`,
+Qwen3.8-27B UD-Q4_K_M, Metal, F16 KV, ctx 32768, 128 output tokens, one
+warmup and three measured runs per configuration, off/on pairs on one
+loaded model (`d31c5cd`; the full table is in
+[bench.md § The KERN-13 quick pass](bench.md#the-kern-13-quick-pass-2026-09-20)):
+
+| configuration | decode off tok/s (before KERN-13) | decode off tok/s (now) |
+| --- | ---: | ---: |
+| code, greedy, d2/d4/d7 | 8.81 / 9.15 / 9.32 | 8.66 / 8.67 / 8.74 |
+| code, instruct, d4 | 8.56 | 8.74 |
+| prose 512, greedy, d2/d4/d7 | 10.31 / 8.26 / 9.35 | 10.22 / 9.50 / 9.21 |
+| prose 512, instruct, d2/d4/d7 | 8.18 / 7.99 / 7.78 | 9.04 / 8.87 / 8.80 |
+
+The instruct baseline now sits inside the greedy band within a run and
+across the record (code instruct 8.74 against code greedy 8.66–8.74;
+prose instruct 8.80–9.04 against greedy 9.21–10.22, whose spread across the
+record's three consecutive runs is the session's clock drift, not the
+kernel). `topk_fallbacks` is 0 at every configuration: the penalized
+readback decided every token. The speculative speedups move little
+(code greedy 1.20× at draft 4 against 1.22×, prose 512 greedy 0.88 against
+0.93), because the acceptance decision still sorts the full rows
+(ENGN-15); what this unit fixes is ordinary decode with penalties, which is
+no longer 12–25 % below greedy.

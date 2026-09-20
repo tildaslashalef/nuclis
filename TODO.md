@@ -16,27 +16,22 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-ENGN-14 closed on 2026-09-20: a verify batch now leaves the recurrent state
-after every row behind, so recovery copies the accepted row instead of
-rewinding and replaying. `recover` fell from 150–182 ms to **6–22 ms per
-batch** at every accepted length (the ≤ 40 ms target), the slot writes add
-21 ms per verify batch, and `session_bytes` is 3,850,633,216. The record
-(12 configurations, `417aea0`) reads: code greedy 1.22× (draft 4) and 1.34×
-(draft 7), code instruct 1.23×; prose 512 0.75–1.04× by draft length, 4K
-0.74–0.79×. The record also replanned the rest of this file: **the verify
-batch is now 70–80 % of every batch** (241–287 ms at 512 for 2.2–4.0
-tokens), so the small-batch matrix tile becomes its own unit (KERN-14), the
-sampled acceptance (17–22 % of an instruct batch) is ENGN-15 behind KERN-13,
-and the proposal policy is ENGN-16. Facts:
-[speculative-decoding.md](docs/reference/speculative-decoding.md#recovery-by-accepted-length-engn-14-2026-09-20),
-[session.md § Row checkpoints](docs/reference/session.md#row-checkpoints-engn-14),
-the record in
-[bench.md § Recovery by row checkpoints](docs/reference/bench.md#recovery-by-row-checkpoints-engn-14-2026-09-20),
-and the [log](docs/engineering-log.md#engn-14--recovery-without-the-whole-stack-replay-2026-09-20-two-sessions).
+KERN-13 closed on 2026-09-20: the history penalties now run on the device
+before the argmax and the top-k (`nu_penalize`), so a penalized sampler
+reads back 2 KB instead of the 248,320-logit row. The instruct off baseline
+moved from 8.18 / 7.99 / 7.78 tok/s (prose 512 d2/d4/d7) and 8.56 (code d4)
+to 9.04 / 8.87 / 8.80 and 8.74, inside the greedy band; `topk_fallbacks` is
+0 everywhere. The sampled acceptance still sorts the full verify rows
+(62.8–91.3 ms per batch), unchanged, which is ENGN-15's target. The quick
+pass (`d31c5cd`, `--only prose512 code`) and the check evidence are in
+[speculative-decoding.md § The device penalty kernel](docs/reference/speculative-decoding.md#the-device-penalty-kernel-kern-13-2026-09-20),
+the table in
+[bench.md § The KERN-13 quick pass](docs/reference/bench.md#the-kern-13-quick-pass-2026-09-20),
+and the [log](docs/engineering-log.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20).
 
-**Next: KERN-13**, then ENGN-15 (sampled acceptance) — the pair shares one
-acceptance path and one quick `make speculative-record ARGS="--only prose512
-code"` check; ENGN-17 runs the single full record.
+**Next: ENGN-15** (sampled acceptance on the GPU top-k readback), then
+KERN-14; ENGN-15 closes with one quick `make speculative-record ARGS="--only
+prose512 code"` check and ENGN-17 runs the single full record.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -64,29 +59,30 @@ here* for how to refresh them):
 | propose `k` drafts | 12.7–43.5 ms (≈ 6.3 ms per draft) | one block forward per draft | ENGN-16 | fewer forwards, same accepted tokens |
 | checkpoint | 2.8–5.2 ms | one 150 MB copy | — | — |
 | verify `1 + k` rows | 241–287 ms at 512, 362–372 ms at 4K | the 16×8 prefill tile at small row counts; the chunk attention over the visible cache | KERN-14 at 512, KERN-16 at long context | ≤ 130 ms |
-| accept (sampled) | 54.9–76.6 ms | one full-vocabulary sort per row on the host | KERN-13 + ENGN-15 | ≤ 5 ms |
+| accept (sampled) | 62.8–91.3 ms (quick pass) | one full-vocabulary sort per row on the host | ENGN-15 | ≤ 5 ms |
 | recover (on rejection) | 6–22 ms (was 150–182) | one 150 MB slot copy | ENGN-14 ✓ | ≤ 40 ms |
 | commit `a + 1` tokens | 4.7–15.3 ms | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
 | prompt commit (prefill) | 1.02× ordinary prefill | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
 | tokens per batch | 2.23–3.97 (1.23–2.97 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-16 | more accepted per proposed |
 
-Measured speedups: code greedy 1.22× (draft 4) and 1.34× (draft 7), code
-instruct 1.23×; prose 512 greedy 0.75 / 0.93 / 1.04× at drafts 2 / 4 / 7,
-instruct 0.86 / 0.96 / 0.98×; 4K 0.79× greedy and 0.74× instruct at draft
-4. The per-token arithmetic is now clean: verify must cost less than the
-tokens it advances are worth. At draft 4 the code prompt advances 3.34
-tokens for a 258 ms verify (77 ms/token against ~105), prose 2.65 for 287
-(108 against ~100). KERN-14's target (≤ 130 ms at 512) would put prose at
-draft 4 near 1.3× and code near 1.6×; ENGN-15 removes the sampled path's
-55–77 ms; ENGN-16 trims the proposal and the wasted rows on prose. Nothing
-here claims a speedup before ENGN-17 measures it.
+Measured speedups (KERN-13 quick pass, `d31c5cd`): code greedy 0.94 / 1.20 /
+1.33× at drafts 2 / 4 / 7, code instruct 1.12× at draft 4; prose 512 greedy
+0.77 / 0.87 / 1.03×, instruct 0.76 / 0.82 / 0.85×. The instruct off
+baselines are now inside the greedy band, so the sampled configurations'
+remaining deficit is the acceptance path and the verify batch, not the
+penalty readback. The per-token arithmetic is unchanged: verify must cost
+less than the tokens it advances are worth. At draft 4 the code prompt
+advances 3.34 tokens for a 273 ms verify (82 ms/token against ~115), prose
+2.65 for 263 (99 against ~105). KERN-14's target (≤ 130 ms at 512) would put
+prose at draft 4 near 1.3× and code near 1.6×; ENGN-15 removes the sampled
+path's 63–91 ms; ENGN-16 trims the proposal and the wasted rows on prose.
+Nothing here claims a speedup before ENGN-17 measures it.
 
-Order: KERN-13 → ENGN-15 → KERN-14 → ENGN-16 → KERN-15 → KERN-16 →
+Order: ENGN-15 → KERN-14 → ENGN-16 → KERN-15 → KERN-16 →
 ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 → MODL-19 → MODL-20 →
-MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13 precedes ENGN-15 because the
-instruct profile's presence penalty defeats the GPU top-k readback path
-otherwise; the two are one session block with one `--only` check and no
-intermediate record. KERN-14 follows because verify is 70–80 % of a batch
+MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13 landed first because the
+instruct profile's presence penalty defeated the GPU top-k readback path
+otherwise. KERN-14 follows because verify is 70–80 % of a batch
 and its target is the plan's largest single lever; ENGN-16 is cheap and
 trims the prose waste after that. **KERN-15 and KERN-16 sit before ENGN-17
 because they change the Qwen path the verdict measures**: the split-K
@@ -105,7 +101,6 @@ APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-13 | A GPU penalty kernel: the token history applied on the device before the top-k | 1 |
 | ENGN-15 | Sampled acceptance on the GPU top-k readback | 1 |
 | KERN-14 | The small-batch matmul tile for the verify batch (32-row threadgroups) | 1–2 |
 | ENGN-16 | Draft proposal policy: `p_min` early stop and an adaptive length | 1 |
@@ -258,39 +253,6 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
-
-## KERN-13 — A GPU penalty kernel: the token history applied on the device before the top-k
-
-**Facts.** Sampling with a presence or repetition penalty (the Qwen instruct
-profile: presence 1.5) defers `Sampler.selectFrom` (penalties change the
-sort), so every such token reads the full 248,320-logit row back and sorts
-it on the host: the 32K record measured +20.7 ms per token against the GPU
-top-k path ([bench.md](docs/reference/bench.md)); the ENGN-14 record's
-instruct baseline decodes at 7.7–8.6 tok/s against 8.8–10.3 greedy for the
-same reason. `sampling.History` is a bit set over the vocabulary
-(`std.DynamicBitSetUnmanaged`); `Sampler.penalize` applies `l / r` (or
-`l · r` for negative logits) then `l − presence` to seen ids
-(`inference/src/sampling/root.zig`). The top-k path is `Backend.topk`
-(`nu_topk_partial`, `nu_topk_final`, `nu_expsum_partial`). This is the
-first half of the ENGN-15 block and its dependency.
-
-**Design.** A `nu_penalize` kernel over the logits buffer in place: inputs
-the history as a device bit set (`vocabulary / 32` words, uploaded when it
-changed since the last step — the loop marks it dirty on `observe`), the
-repetition and presence values; one thread per logit. `Backend.penalize
-(logits, count, history_bits, repetition, presence)` recorded by
-`Plan.recordOutputs` before the argmax/top-k when the sampler says
-penalties are active; `Sampler.selectFrom` then accepts a readback taken
-after penalties (a `penalized: bool` on `TopK`), and the greedy GPU path
-does the same. The CPU path is unchanged and remains the reference; the
-fixture compares the kernel's row against `penalize` for every logit sign
-and both penalties.
-
-**Acceptance.** `make test-metal` fixture exact to F32 rounding; the
-instruct profile's decode within 2 % of greedy on `make bench`; the
-sampled token stream identical to the CPU path for a fixed seed on the
-generation check (a new case); `make check`, `make compare`. No record run
-of its own: ENGN-15 measures the block and ENGN-17 the path.
 
 ## ENGN-15 — Sampled acceptance on the GPU top-k readback
 

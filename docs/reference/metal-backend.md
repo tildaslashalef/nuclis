@@ -331,6 +331,26 @@ memory, and leave the rest to the grid.
   read back per sampled token; contract in
   [generation.md](generation.md#sampling-on-the-gpu-without-reading-the-vocabulary-back-kern-06).
 
+### History penalties (KERN-13, 2026-09-20)
+
+`nu_penalize` applies the sampler's presence/repetition penalties to the
+logits buffer in place, one thread per logit: for a token in the history
+bit set, `l / r` when `l > 0` and `l · r` otherwise, then `l − presence`.
+The set arrives as `vocabulary / 32` little-endian u32 words (bit `id` in
+word `id / 32`, bit `id % 32`); the plan uploads them only when
+`History.revision` changed, so a decode step that observed a token pays one
+31 KB host-to-device copy plus one 1 MB-read/1 MB-write dispatch (~10 µs at
+the observed bandwidth). `Backend.penalize` validates the count, the word
+range, and finite positive `repetition`; the plans record it between the
+output head and the argmax/top-k, and only when a selection readback was
+requested — a raw `logits` readback stays unpenalized for a CPU sampler.
+The device numbers must equal `Sampling.Sampler.penalize` operation for
+operation; `test-metal` checks every logit sign (positive, negative, zero,
+negative zero) against the CPU sampler, exact except that Metal's fast math
+flushes subnormal operands to zero (a residual below the smallest normal
+F32, unresolvable in any softmax). The costs and the record rows are in
+[speculative-decoding.md § The device penalty kernel](speculative-decoding.md#the-device-penalty-kernel-kern-13-2026-09-20).
+
 ## Specialized matvec
 
 Decode reads every weight once per token, so the matvec kernels for Q5_K,
