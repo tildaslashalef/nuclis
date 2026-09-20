@@ -90,6 +90,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-11 | Speculative state recovery: checkpoint, rewind, truncate, recover | 2026-09-19 |
 | MODL-18 | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2026-09-20 |
 | APPS-13 | The configuration section is `generation`, not `generate` | 2026-09-20 |
+| ENGN-12 | Batched verification, speculative generation (greedy and sampled), the switch and the draft length, the benchmark record | 2026-09-20 |
 
 | REPO-06 | DiffusionGemma structured reads and kev research | 2026-09-20 |
 
@@ -3001,3 +3002,83 @@ execution, benchmarks or build/tests performed.
 parity, local memory/performance measurements and held-out decision quality
 are future experiments. Public sources do not disclose Jev's architecture
 or training recipe; neither comparison establishes equivalent calibration.
+
+### ENGN-12 — Batched verification, speculative generation (greedy and sampled), the switch and the draft length, the benchmark record (2026-09-20, two sessions)
+
+**Outcome.** Speculative generation runs end to end on Qwen3.8-27B with its
+embedded draft head, on both executors, behind a switch, and is measured.
+Session 1: `Model.verify`/`verifyGreedy` and the Qwen Metal
+`Plan.verify`/`verifyGreedy` (the layer stack once, the output head over
+every row of the batch, `max_verify_rows` 16; the greedy sibling reads back
+one argmax per row), the `runLoop` speculative step (the prompt committed
+to the drafter in verify-sized chunks, then propose / checkpoint / verify /
+accept / recover / commit with the correction carried as the next seed and
+the accepted tokens passed through the ordinary per-token checks), and the
+sampled module `inference/src/sampling/speculative.zig`. Session 2: the
+`generation.speculative` / `generation.draft_length` configuration with
+entry overrides and `--speculative on|off` / `--draft-length N` on
+`generate`, `agent`, and `bench` (`max_draft_length` 7); the load switch
+(`DraftRequest.embedded` required by `generate`/`agent`, `DraftSourceMissing`
+on a family without a block, `optional_embedded` for `bench`); the bench
+off/on pair with its sample fields; the loop edge tests; the
+full-acceptance skip in `Model.recover`; the `generate` → `generation`
+rename (APPS-13). A review before the close found and fixed two defects:
+the speculative batch caught `error.Canceled` while the interrupt raises
+`error.Cancelled`, so Ctrl-C during a batch escaped the loop (the harness
+injected the wrong spelling too); and the sampled rule was not
+distribution-preserving — the drafters chain greedy candidates, and
+`min(1, p/q)` with a residual correction is exact only for drafts sampled
+from `q` — so each verify row now draws the target's own token from its
+shaped distribution and accepts the draft when they agree, exact for any
+drafting policy; the draft contract lost its logits rows, `Timing` gained
+`accept`, and the bench sample gained `accept_milliseconds` and
+`speculative_steps`. The record (`make speculative-record`,
+`scripts/nuclis-speculative.py`) decides the entry: the switch stays off,
+`draft_length` 4.
+
+**Evidence.** `make check` (450 tests and the Metal fixtures, including
+the seeded sampled tests: emitted counts and the acceptance rate within 3 σ
+of `p` for a draft the target never emits and for its likeliest token);
+`make speculative-check` (CPU) and `make speculative-check-metal`: 12
+greedy tokens identical to ordinary greedy through the primitives and
+through `engine.runLoop` (7/24 and 6/21 drafts accepted on `Hello,`), the
+budget, EOS, cancellation, and context-limit edges; `make compare` and
+`make test-generation-metal` green; a sampled speculative run with the
+instruct profile's sampling produces coherent code (36 of 48 tokens from
+accepted drafts), and a real SIGINT during a speculative decode ends with
+"generation cancelled after 383 tokens" and exit 0. The record
+([bench.md § Speculative decoding record](reference/bench.md#speculative-decoding-record-engn-12-2026-09-20),
+[benchmarks/speculative-2026-09-20/](benchmarks/speculative-2026-09-20/)),
+twelve off/on configurations at `3d5cb94`: greedy speculation at
+0.56–0.67× on the 512-token corpus prompt, 0.85–0.88× on the code prompt
+at draft 4 and 7, 0.54× at 4K; the instruct sampling 0.63–0.67× on prose
+and 1.04× on code (its baseline pays the penalty readback); per batch:
+verify 225–250 ms at 512 and ≈ 342 ms at 4K, recover 99–272 ms on
+rejection, the sampled decision 46–78 ms, acceptance 1.2–3.0 drafts;
+speculative prefill 2.9–3.3× the ordinary one. The decode rate with the
+drafter loaded but off is 10.43 tok/s at 512 against the 2026-09-10
+record's 10.62, within the sequence's own drift.
+
+**Files.** `inference/src/engine.zig`, `inference/src/sampling/{root,speculative}.zig`,
+`inference/src/runtime/draft.zig`,
+`inference/src/models/qwen35_{runtime,metal}.zig`,
+`inference/generation-check.zig`, `src/{bench,cli,config,generate,help}.zig`,
+`src/agent/{loop,root}.zig`, `scripts/nuclis-speculative.py`, `Makefile`,
+`docs/benchmarks/speculative-2026-09-20/`,
+`docs/reference/{speculative-decoding,generation,bench}.md`,
+`docs/{spec,development,roadmap}.md`, `docs/engineering-log.md`, `TODO.md`.
+
+**Remaining.** No speedup: every per-batch cost is fixed and too high for
+the tokens a batch advances, and the plan's performance units carry the
+targets (the prompt and drafter commit at the plan's chunk, a multi-row
+matvec for 2–8 rows, recovery without the whole-stack replay, the proposal
+policy, the GPU penalty kernel, the sampled readback, the verdict). The
+agent's primed prefix is never committed to the drafter (`Completer.prime`
+uses the ordinary prefill), so its acceptance rate is below the bench's
+until ENGN-13; after an EOS or budget inside a batch the drafter has been
+advanced past the session's emitted prefix, which self-heals at the next
+prompt commit and is documented, not fixed. `bench` cannot measure a
+baseline without the drafter loaded (ENGN-17). The 16K and 32,639 rows were
+not run: the prefill path makes them minutes long and the 4K row already
+shows the trend. Draft length 7 was never worse than 4 in the record; the
+default waits for the proposal policy.

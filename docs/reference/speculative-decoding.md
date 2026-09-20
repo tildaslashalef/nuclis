@@ -2,23 +2,26 @@
 
 The reference document of the speculative-decoding theme. Its requirements
 are in the [spec](../spec.md#speculative-decoding); the units that fill it
-in are planned in [TODO.md](../../TODO.md) (ENGN-11, MODL-18, ENGN-12,
-MODL-19, MODL-20); closed outcomes are cited from the
-[engineering log](../engineering-log.md).
+in are planned in [TODO.md](../../TODO.md); closed outcomes are cited from
+the [engineering log](../engineering-log.md).
 
 As of 2026-09-20 the recovery contract (ENGN-11), the Qwen3.8 embedded
-prediction block (MODL-18), and speculative generation (ENGN-12 session 1)
-are implemented and measured. What exists: the draft contract in
-`runtime/draft.zig`; the Qwen adapter binds the 15 embedded `nextn` tensors
-and both executors run the block ([qwen-validation.md](qwen-validation.md));
-the session has a host-side snapshot and restore and an in-block checkpoint
-([session.md](session.md)); every family's draft companion is pinned and
-pulled ([artifacts.md](artifacts.md)); the verify batch, the sampled
-acceptance module, and the `runLoop` speculative step are in place and
-checked for greedy equivalence on both executors. The `generate`/`agent`/
-`bench` configuration (the switch, the draft length) and the benchmark
-record are ENGN-12 session 2. Gemma 4's and Muse Glimmer's own draft sources
-are still to come (MODL-19, MODL-20).
+prediction block (MODL-18), and speculative generation with its switch,
+draft length, and benchmark record (ENGN-12) are implemented and measured.
+What exists: the draft contract in `runtime/draft.zig`; the Qwen adapter
+binds the 15 embedded `nextn` tensors and both executors run the block
+([qwen-validation.md](qwen-validation.md)); the session has a host-side
+snapshot and restore and an in-block checkpoint ([session.md](session.md));
+every family's draft companion is pinned and pulled
+([artifacts.md](artifacts.md)); the verify batch, the sampled acceptance
+module, and the `runLoop` speculative step are in place, checked for greedy
+equivalence on both executors, and switched by `generation.speculative` /
+`--speculative on|off` with `generation.draft_length` / `--draft-length`;
+`bench` measures the off/on pair on one loaded model. The record
+([bench.md](bench.md#speculative-decoding-record-engn-12-2026-09-20)) keeps
+the switch off by default: the per-batch costs the plan's performance units
+attack are tabulated in `TODO.md`. Gemma 4's and Muse Glimmer's own draft
+sources are still to come (MODL-19, MODL-20).
 
 Sections to come, one per unit: each family's draft source with its facts
 and provenance, and the measurements behind each catalogue verdict.
@@ -250,7 +253,49 @@ block's workspace is 1,116,160 bytes. The per-depth acceptance was:
 The reference's own driver on the first prompt accepted 24 of 40 drafts
 (60 %) with its top-k sampler, so the rates are credible rather than an
 artifact of the alignment. The block's weights add no decode cost when
-speculation is off: nothing in `runLoop` calls `propose` until ENGN-12.
+speculation is off: `runLoop` asks the drafter only while
+`Speculative.enabled` is set.
 The block's own `attn_k`/`attn_v` are Q8_0, already in
 `qwen35.executableEncoding`.
 
+## The switch, the bench pair, and the record (ENGN-12, session 2)
+
+**Configuration.** `generation.speculative` (default off) and
+`generation.draft_length` (default 4, 1 ≤ n ≤ `engine.max_draft_length` =
+7, `InvalidNumber` above it) in `nuclis.json`, per-entry overrides under
+`models.<name>.generation`, and `--speculative on|off` / `--draft-length N`
+on `generate`, `agent`, and `bench`, resolved defaults → entry → flag with
+`config show` provenance (`src/config.zig`, `src/cli.zig`). `generate` and
+`agent` open the model with `DraftRequest.embedded` when the switch is on
+(`DraftSourceMissing` when the family has no embedded block: Gemma, Muse,
+Bonsai) and `.none` otherwise; `bench` opens with `.optional_embedded`
+whatever the switch and measures every run as an off/on pair on the one
+loaded model, so the pair's ratio is the speedup claim
+(`src/bench.zig`: `speculative`, `draft_length`, `speculative_steps`,
+`accepted_per_step`, `verify_milliseconds`, `accept_milliseconds`,
+`recover_milliseconds` per sample; `speculative_draft_length`,
+`mean_speculative_decode_tokens_per_second`, `mean_accepted_per_step`,
+`decode_speedup` per report; `schema_version` stays 1).
+
+**The loop's edges** (`generation-check --speculative-check` on Metal):
+partial acceptance recovers and continues; the budget inside a batch stops
+at exactly the budget with the extra accepted drafts discarded
+(`Model.recover` to the emitted prefix); EOS inside a batch stops after
+the EOS with the session at the tokens before it, as ordinary decoding
+leaves it; cancellation mid-batch (the interrupt's `error.Cancelled`)
+resets the session and reports `.cancelled`; a context with no room for a
+batch stops at `context_limit`. `Model.recover` skips the rewind and the
+replay when every draft was accepted (the batch fed exactly the accepted
+prefix).
+
+**The sampled rule** was corrected in this session (above, *Sampled
+acceptance*): the target-draw rule replaces `min(1, p/q)`, and the draft
+contract lost its logits rows. `Timing.accept` isolates the host decision.
+
+**The record** is in [bench.md § Speculative decoding record](bench.md#speculative-decoding-record-engn-12-2026-09-20)
+(`make speculative-record`): off by default for the Qwen entry; the
+per-batch costs — verify 225–250 ms at 512 and ≈ 342 ms at 4K, recovery
+99–272 ms on rejection, the sampled decision 46–78 ms, proposal 6.2 ms per
+draft, commit 6.2 ms per token, the prefill at 2.9–3.3× — are the cost
+table the plan's performance units (ENGN-13 to ENGN-17, KERN-12, KERN-13)
+target.

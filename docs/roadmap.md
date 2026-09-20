@@ -1,5 +1,11 @@
 # Roadmap beyond v0.1
 
+> 2026-09-20: every theme below was planned into [../TODO.md](../TODO.md)
+> that day (the speculative performance units, the vision projectors and
+> the chat's image input, the performance follow-ups); this file is kept
+> unchanged pending the decision to replace it with [adr/](adr/).
+
+
 Work that is accepted in principle but not active. When a theme starts, its
 design moves into [../TODO.md](../TODO.md) as an `AREA-NN` unit; closed
 outcomes go to [engineering-log.md](engineering-log.md).

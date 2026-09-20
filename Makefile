@@ -20,7 +20,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
         compare-draft compare-draft-metal compare-draft-cpu draft-stats \
-        speculative-check speculative-check-metal \
+        speculative-check speculative-check-metal speculative-record \
         test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-hadamard bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
@@ -222,6 +222,9 @@ compare-bonsai-f16: metal ## The Qwen Metal plan on the Bonsai file with the F16
 
 test-generation-bonsai-metal: ## The generation check on bonsai-2-27b, Metal plan
 	$(ZIG) build test-generation $(METAL) -- "$(BONSAI_MODEL)" --metal
+
+speculative-record: metal ## The speculative-decoding record on Qwen3.8-27B: off/on pairs over the corpus arrays and the code prompt, greedy and instruct, draft 2/4/7; JSON under .zig-cache/bench/spec (docs/reference/bench.md § Speculative record)
+	python3 scripts/nuclis-speculative.py --model "$(MODEL)" --nuclis $(BIN) $(ARGS)
 
 baseline-bonsai: metal ## The reference workload on bonsai-2-27b against the PrismML fork's records (tests/fixtures/run-2026-09-18-bonsai, whose token arrays are the Qwen run's); writes docs/benchmarks/nuclis-<date>-bonsai.json
 	python3 scripts/nuclis-baseline.py --model "$(BONSAI_MODEL)" --nuclis $(BIN) --run run-2026-09-18-bonsai \

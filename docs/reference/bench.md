@@ -46,6 +46,10 @@ first-touch page-in of the mapped weights and is normally the warmup.
 | `kv_precision`, `session_bytes` | The attention cache layout the session used (`f16` or `f32`; always `f32` on the CPU reference) and the session block's size, page-padded (KV cache plus recurrent state). Records taken in different precisions are not comparable without stating this. |
 | `profile` | Present with `--profile`: per-kernel GPU time per step (see below). |
 | `stop_reason` | `eos`, `token_budget`, `context_limit`, or `cancelled`; a run that stops early changes the token counts, so the reason is always reported. Ctrl-C ends the benchmark after the current run, which is reported but excluded from means. |
+| `speculative`, `draft_length` | With `--speculative on` (or a drafter in the file) every run is an off/on pair on the same loaded model; the on sample carries the draft length. |
+| `speculative_steps`, `accepted_per_step` | Verify batches the run made and the mean accepted drafts per batch; tokens per batch is `(generated_tokens − 1) / speculative_steps`. |
+| `verify_milliseconds`, `accept_milliseconds`, `recover_milliseconds` | The run's time in the model's verify batches, in the host acceptance decision (the sampled path's per-row distributions), and in recovery (rewind and replay); divide by `speculative_steps` for the per-batch cost. |
+| `mean_speculative_decode_tokens_per_second`, `decode_speedup` | The on samples' decode mean and its ratio to the off samples' mean, the pair's comparison. |
 
 Means are computed over measured (non-warmup) samples only; a rate that could
 not be measured is omitted from the sample and the mean. The text and JSON
@@ -850,6 +854,78 @@ peak footprint 2.17–2.22 GB; the 15.88 GB weight file is memory-mapped and
 charged to wired memory, so the headroom is a calculation: 48 GiB −
 15.9 GB − 2.2 GB ≈ 30 GiB at 32K context, with the vision projector
 (1.4 GB) and the DFlash drafter (1.6 GB) still to come.
+
+## Speculative decoding record (ENGN-12, 2026-09-20)
+
+The first measurement of speculative generation on Qwen3.8-27B with its
+embedded draft head, taken to decide the catalogue entry's default and to
+size the per-batch costs the performance units attack
+([speculative-decoding.md](speculative-decoding.md), the plan in
+[TODO.md](../../TODO.md)). `make speculative-record`
+(`scripts/nuclis-speculative.py`; the reports are under
+[benchmarks/speculative-2026-09-20/](../benchmarks/speculative-2026-09-20/))
+ran twelve configurations, each as off/on pairs on one loaded model (the
+drafter loaded in both): the reference corpus arrays at 512 and 4,096
+tokens and the fixed code prompt `Write a Zig function that reverses a
+string.` (`--raw`, 10 tokens), greedy and with the instruct profile's
+sampling (`--temperature 0.7 --top-p 0.8 --top-k 20 --presence-penalty
+1.5`, seed 0), draft lengths 2, 4, 7, 128 output tokens, context 32,768,
+F16 KV, one warmup, three measured repetitions (two at 4K). Apple M4 Pro
+(12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2 (25G83), AC power, Zig
+0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` at `3d5cb94`, artifact SHA-256
+`322e194f…`, backend metal, one 62-minute sequence (10:45–11:47) with
+nothing else on the GPU (metadata reads of other files ran on the CPU
+during some configurations). Session block 2,595,487,744 bytes (the 32K
+session, the block's own cache, and the 150 MB checkpoint region). Means
+over the measured runs; per-batch costs are the run's milliseconds divided
+by its verify batches; every sample stopped on `token_budget`:
+
+| configuration | prompt | draft | accepted/step | tokens/batch | verify ms | accept ms | recover ms | prefill off → on (s) | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| prose 512, greedy | 512 | 2 | 1.23 | 2.23 | 224.5 | 0.0 | 99.3 | 5.63 → 16.73 | 10.43 → 6.31 | 0.60× |
+| prose 512, greedy | 512 | 4 | 1.67 | 2.65 | 234.9 | 0.0 | 182.2 | 5.67 → 17.48 | 10.07 → 5.67 | 0.56× |
+| prose 512, greedy | 512 | 7 | 2.28 | 3.26 | 242.4 | 0.0 | 208.0 | 6.15 → 18.87 | 9.06 → 6.09 | 0.67× |
+| prose 512, instruct | 512 | 2 | 1.27 | 2.26 | 237.9 | 46.1 | 106.7 | 6.03 → 18.66 | 8.03 → 5.35 | 0.67× |
+| prose 512, instruct | 512 | 4 | 1.68 | 2.67 | 244.2 | 54.1 | 184.4 | 6.08 → 19.13 | 7.95 → 5.04 | 0.63× |
+| prose 512, instruct | 512 | 7 | 1.92 | 2.92 | 242.8 | 59.0 | 219.9 | 6.15 → 19.13 | 7.80 → 4.96 | 0.64× |
+| code, greedy | 10 | 2 | 1.35 | 2.35 | 239.2 | 0.0 | 102.7 | 0.39 → 0.57 | 9.00 → 6.30 | 0.70× |
+| code, greedy | 10 | 4 | 2.34 | 3.34 | 250.6 | 0.0 | 140.7 | 0.39 → 0.55 | 8.91 → 7.56 | 0.85× |
+| code, greedy | 10 | 7 | 2.97 | 3.97 | 237.6 | 0.0 | 190.4 | 0.40 → 0.56 | 9.01 → 7.90 | 0.88× |
+| code, instruct | 10 | 4 | 2.79 | 3.78 | 226.8 | 77.5 | 98.5 | 0.36 → 0.53 | 7.94 → 8.22 | 1.04× |
+| prose 4K, greedy | 4,096 | 4 | 1.98 | 2.95 | 343.6 | 0.0 | 239.2 | 53.05 → 176.01 | 8.49 → 4.62 | 0.54× |
+| prose 4K, instruct | 4,096 | 4 | 1.55 | 2.54 | 340.9 | 52.0 | 271.9 | 53.18 → 174.87 | 7.63 → 3.57 | 0.47× |
+
+**Reading.** The switch loses on every row but one, and that one (code,
+instruct, draft 4: 1.04×) wins only because its baseline pays the
+penalty-path readback (7.94 tok/s against 8.9–9.0 greedy). The costs are
+fixed per batch and the batches advance too few tokens: a verify batch
+costs 225–250 ms at 512 tokens of context (2.4–2.6 ordinary steps of ≈ 95
+ms) and 341–344 ms at 4K, where the small-chunk attention reads the whole
+visible cache; recovery costs 99–272 ms whenever a draft is rejected (the
+rewind plus a whole-stack replay of the accepted prefix through the same
+small-chunk path; free on full acceptance, which is why it grows with the
+draft length); the sampled path adds 46–78 ms per batch of host time for
+its per-row full-vocabulary sorts (`accept ms`); proposal costs 6.2 ms per
+draft and the drafter's commit 6.2 ms per accepted token (inside
+`decode`, not separated in this record). Acceptance is 1.2–3.0 drafts per
+batch: 42 % per proposed draft on prose at draft 4, 58–68 % on the code
+prompt. The speculative prefill is 2.9–3.3× the ordinary one (16.7 s
+against 5.6 s at 512; 176 s against 53 s at 4K) because the prompt is
+committed through 8-row verify chunks with the output head and a
+per-token drafter commit. The "off" baseline drifted within the sequence
+(10.43 tok/s in the first configuration to 9.0 after ten minutes and 8.5 at
+4K), which the interleaved pairs absorb: the speedup is always the pair's
+ratio. Draft length 7 was never worse than 4 in this record (the extra
+drafts are cheap to propose and the recover cost grows only on
+rejection), but the default stays 4 until the proposal policy exists.
+
+**Verdict.** `generation.speculative` stays off by default for the Qwen
+entry, `draft_length` 4; the carried MODL-18 item "decode rate unchanged
+with the drafter loaded but switched off" holds against the 2026-09-10
+record within the sequence's drift (10.43 against 10.62 tok/s at 512 with
+the drafter loaded, its cache and checkpoint region allocated) and gets an
+in-process baseline in ENGN-17. The per-batch costs above are the plan's
+cost table; the targets are in `TODO.md`.
 
 ## Per-kernel profile
 

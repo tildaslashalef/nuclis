@@ -478,6 +478,18 @@ the drafter, so a drafter loaded but switched off costs memory only, as
 only where its measured acceptance rate pays for verification; negative
 results are recorded.
 
+Measured (2026-09-20, [reference/bench.md § Speculative decoding record](reference/bench.md#speculative-decoding-record-engn-12-2026-09-20)):
+on Qwen3.8-27B with its embedded draft head, greedy speculation decodes at
+0.56–0.67× the ordinary rate on the 512-token corpus prompt and 0.85–0.88×
+on the code prompt at draft lengths 4 and 7, 0.54× at 4K; with the
+instruct profile's sampling 0.63–0.67× on prose and 1.04× on code (the
+baseline there pays the penalty readback). Acceptance is 1.2–3.0 drafts
+per batch; a verify batch costs 2.4–2.6 ordinary steps at 512 and 3.6 at
+4K, recovery up to 2.9 steps on rejection, and the speculative prefill
+2.9–3.3× the ordinary one. The Qwen entry therefore ships with the switch
+off and `draft_length` 4; the performance units planned from these costs
+are in `TODO.md`, and ENGN-17 re-measures and sets the defaults.
+
 ## Remaining discussion
 
 - The 32K acceptance context is measured on the reference workload

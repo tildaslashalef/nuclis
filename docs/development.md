@@ -124,7 +124,11 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   ~8 % perturbation); `make trace` records a Metal System Trace;
   `make baseline` runs the reference workload on the committed token arrays
   and writes the dated record under `docs/benchmarks/`
-  ([bench.md § Acceptance runs](reference/bench.md#acceptance-runs)).
+  ([bench.md § Acceptance runs](reference/bench.md#acceptance-runs));
+  `make speculative-record` (`scripts/nuclis-speculative.py`) runs the
+  speculative off/on pairs on Qwen3.8-27B and `--summarize` prints the
+  record's table
+  ([bench.md § Speculative record](reference/bench.md#speculative-decoding-record-engn-12-2026-09-20)).
 
 ## Toolchain
 
