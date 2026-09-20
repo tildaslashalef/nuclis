@@ -260,6 +260,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     if (comptime spec.draft != null) {
         try checkDraft(spec, alloc, mapped.view(), binding, spec.draft.?, if (backend) |*b| b else null);
         try draftRecoveryCheck(spec, alloc, if (backend) |*b| b else null, mapped.view(), binding, spec.draft.?);
+        if (backend) |*b| try draftBatchCommitCheck(spec, alloc, b, mapped.view(), binding);
     }
     try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal);
     if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true);
@@ -523,6 +524,57 @@ fn draftRecoveryCheck(comptime spec: Spec, alloc: std.mem.Allocator, backend: ?*
     _ = try second.propose(draft.tokens[0], &two);
     if (!std.mem.eql(u32, &one, &two)) return error.DraftProposeMismatch;
     std.debug.print("Draft recovery check passed ({s}): reset and rewind reproduce the block's hidden; propose is deterministic.\n", .{if (backend != null) "metal" else "cpu"});
+}
+
+/// `Plan.commit` over a 16-token prefix in one batched forward against
+/// committing the same rows one at a time (`draftForwardHost`): the proposed
+/// chains must match and the block logits agree within the block's bound
+/// (2e-2 max abs / 1e-3 relative RMS). The two plans consume the same prefix,
+/// so the batched `prefill` also yields the target hidden the serial path is
+/// driven with.
+fn draftBatchCommitCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding) !void {
+    const Plan = spec.Family.Plan;
+    const hidden = 5120;
+    const count = 16;
+    const draft_n = 4;
+    const tokens = try alloc.alloc(u32, count);
+    defer alloc.free(tokens);
+    var seed: u32 = 0xc0ffee;
+    for (tokens) |*t| {
+        seed = seed *% 1664525 +% 1013904223;
+        t.* = seed % 150000;
+    }
+    const hidden_rows = try alloc.alloc(f32, count * hidden);
+    defer alloc.free(hidden_rows);
+
+    var batched = try Plan.init(alloc, b, view, binding, 2 * count, count, .f32, false, true);
+    defer batched.deinit();
+    var serial = try Plan.init(alloc, b, view, binding, 2 * count, count, .f32, false, true);
+    defer serial.deinit();
+    try batched.prefill(tokens, null, null, null, hidden_rows, null);
+    try serial.prefill(tokens, null, null, null, null, null);
+    try batched.commit(tokens, hidden_rows);
+    for (tokens, 0..) |token, i| {
+        const h_prev: []const f32 = if (i == 0) serial.draft_pending_h.floats()[0..hidden] else hidden_rows[(i - 1) * hidden ..][0..hidden];
+        try serial.draftForwardHost(h_prev, token, i, null, null);
+    }
+    @memcpy(serial.draft_pending_h.floats()[0..hidden], hidden_rows[hidden_rows.len - hidden ..][0..hidden]);
+
+    const seed_token = tokens[count - 1];
+    var a: [draft_n]u32 = undefined;
+    var c: [draft_n]u32 = undefined;
+    const na = try batched.propose(seed_token, &a);
+    const nc = try serial.propose(seed_token, &c);
+    if (na != nc or !std.mem.eql(u32, a[0..na], c[0..nc])) return error.BatchedCommitDraftMismatch;
+
+    const logits_a = try alloc.alloc(f32, spec.vocabulary);
+    defer alloc.free(logits_a);
+    const logits_b = try alloc.alloc(f32, spec.vocabulary);
+    defer alloc.free(logits_b);
+    try batched.draftForwardHost(batched.draft_pending_h.floats()[0..hidden], seed_token, count, null, logits_a);
+    try serial.draftForwardHost(serial.draft_pending_h.floats()[0..hidden], seed_token, count, null, logits_b);
+    try compareDraft("batched vs serial commit", std.mem.sliceAsBytes(logits_b), logits_a, 2e-2, 1e-3);
+    std.debug.print("Batched commit check passed: {d} tokens batched match the serial commit ({d} drafts identical).\n", .{ count, na });
 }
 
 /// Greedy speculation against ordinary greedy decoding. Two seeded sessions
