@@ -307,11 +307,25 @@ target.
 bit-identical to `verify`'s rows on the pinned `Hello,` trace — and
 `runLoop`'s speculative prompt branch now consumes the prompt through
 `engine.commitPrompt` in `prefill_chunk` (256) chunks instead of `verify` in
-8-row chunks. At revision `db9cf80`, prose 512, draft 4, F16 KV, ctx 32768,
-three measured pairs on one loaded model: ordinary prefill 5,823.1 ms,
-speculative prefill 9,238.3 ms (1.59×; the ENGN-12 record's old path measured
-16,917 ms, 2.85×). The residual is the still-serial `Plan.commit`, 512 ×
-≈ 6.7 ms = 3,415 ms; the batched commit removes it next. `make check`,
-`make compare` (f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4), and
-`make draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29,
-24/28) pass.
+8-row chunks.
+
+**Batched drafter commit (2026-09-20).** `Plan.commit` over two or more
+tokens is one command buffer: it embeds each token, pairs it with the
+previous row's target hidden in a `chunk × 10240` `[enorm; hnorm]` buffer,
+projects `eh_proj`, runs the block's attention chunk at the batch's cache
+positions, and adds the FFN — the head norm is skipped because a commit only
+fills the block's cache rows. One token keeps the standalone `draftForward`;
+the CPU `Runtime.commit` stays per token as the reference. The scratch
+(`draft_hprev_c`, `draft_concat_c`) is sized by the padded chunk, since
+`eh_proj`'s matmul reads padded rows.
+
+**Measured** at revision `4525e81`, prose 512, draft 4, F16 KV, ctx 32768,
+three measured pairs on one loaded model: ordinary prefill 5,944.1 ms,
+speculative prefill 6,176.7 ms (**1.04×**; the serial prompt commit measured
+1.59× at `db9cf80`, and the ENGN-12 record's old `verify`-per-8-rows path
+2.85×). The batched commit added ≈ 232 ms over the ordinary prefill for 512
+tokens. `make draft-stats` reproduces MODL-18 (28/31, 24/30, 20/29, 18/28 and
+29/31, 25/30, 24/29, 24/28), `make speculative-check-metal` is unchanged
+(7/24 and 6/21 accepted), `make compare-draft-metal` unchanged (3 rows,
+1.5e-5 / 7.9e-7), and `make check`, `make compare` (f32 6.1e-5 / 7.7e-7,
+f16 2.5e-2 / 1.9e-4), `make test-generation-metal` pass.
