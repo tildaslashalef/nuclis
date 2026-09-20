@@ -30,6 +30,10 @@ of the accepted prefix is 5.4 ms per batch at 512 (10.8 ms at 4K). The
 record's verdict stands: the switch stays **off** by default with
 `draft_length 4`; code-like prompts gain modestly, prose loses, because
 every verify batch pays fixed costs that exceed the tokens it advances.
+KERN-12 (the multi-row matvec) is in progress: session 1 landed the kernels,
+the exactness fixture, and the sweep, but not the routing — the scalar body
+measured slower than the 16×8 tile at every 2–8-row shape, so `matmul` still
+uses the tile and normal mode is unchanged (see KERN-12's Session 1).
 
 This plan is the path to the speed benefit, as measured costs per verify
 batch on Metal (Qwen 27B, F16 KV, 512-token context, ordinary decode step
@@ -231,6 +235,34 @@ generation, and bench references gain their sections;
 
 ## KERN-12 — A multi-row matvec for 2–8 rows: the verify, replay, and commit path
 
+**Session 1 (landed 2026-09-20).** The kernels, the exactness fixture, and the
+sweep exist; production routing is deliberately **off** because the scalar
+body measured slower than the tile.
+- `kernels.metal`: `nu_matvec_rows` (generic) and
+  `nu_matvec_rows_{q4_k,q5_k,q6_k,iq4_xs}` (host-named `<4, NU_MATVEC_ROWS_MAX>`),
+  `MatvecRowsParams`; `root.zig`: `matvecRows`, `specializedMatvecRows`,
+  `usesMatvecRows` gated by `route_small_batch = false`; the `Kernel` enum and
+  pipeline list extended. The existing matvec and tile bodies are untouched.
+- `metal-check.zig`: exactness at 2/5/8 rows against the CPU matvec of each
+  row for every encoding (worst `|Δ| / Σ|w·x|` 5.64e-8, bound 4e-6), the
+  1-row refusal, and `--matvec-rows-bench` (`make bench-matvec-rows`, Metal)
+  sweeping 1–8 rows on the two FFN shapes at `17408×5120` and `5120×17408`
+  (the 248,320-row head only with a second argument).
+- **Finding.** At Q4_K `17408×5120` the 16×8 tile streams ~96 GB/s at every
+  row count (it already reads the weights once at ≤8 rows and parallelizes the
+  token tile), while the scalar multi-row body gives 85 GB/s at 2 rows and
+  falls to 22 GB/s at 5 and 4 GB/s at 8: the preloaded `NuInputs16 xa[8]`+
+  `xb[8]` (80 registers) with `acc[4×8]` spills, and the per-block input
+  reload costs more than the tile's reused decode. `route_small_batch` stays
+  false, so `matmul` is byte-for-byte the old path (`make compare` reproduces
+  f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4; `make check`, `make test-metal`
+  green).
+- **Session 2.** Register-tile the body until the sweep shows ≥150 GB/s at 5
+  rows and ≥120 GB/s at 8 (template `NT` at 2/4 with token groups, or a
+  1-row × NT layout with the input kept in registers), then flip
+  `route_small_batch`, reconsider `small_batch_rows` from the sweep, and
+  measure the record's `verify`/`replay`/`commit` rows.
+
 **Facts (read 2026-09-20).**
 - A verify batch (`1 + k ≤ 8` rows), the recovery replay (`a + 1 ≤ 8`
   rows), and after ENGN-13 the decode-time commit (`a + 1` rows) all go
@@ -269,9 +301,11 @@ generation, and bench references gain their sections;
 2. `root.zig`: `matvecRows(weights, matrix, input, in_stride, output,
    out_stride, tokens)` for `1 < tokens ≤ small_batch_rows`; the alignment
    rule of `specializedMatvec`; the `Shape` bytes count weights once.
-   `Backend.matmul` routes `tokens ≤ small_batch_rows` to it, so `mmRows`
-   callers change nothing: verify, replay through `prefillChunk`, the
-   batched commit, and short prompts all take the path. `small_batch_rows`
+   `Backend.matmul` routes `tokens ≤ small_batch_rows` to it **once
+   `route_small_batch` flips** (gated off in session 1: the sweep must show
+   the kernel beating the tile first), so `mmRows` callers then change
+   nothing: verify, replay through `prefillChunk`, the batched commit, and
+   short prompts all take the path. `small_batch_rows`
    is a measured constant (8 unless the sweep shows the tile winning at
    7–8).
 3. `inference/metal-check.zig`: an exactness fixture at rows 1, 2, 5, 8

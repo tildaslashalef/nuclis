@@ -278,6 +278,104 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
     std.debug.print("* tok/s if the whole 54 GFLOP/token model ran at this rate: a ceiling, not a prediction.\n", .{});
 }
 
+/// `--matvec-rows-bench [max_rows] [head]`: the multi-row matvec against the
+/// 16×8 tile on the two FFN shapes at 1..`max_rows` token rows (default 8),
+/// the sweep that settles `small_batch_rows`. The 248,320-row head shape is
+/// added only when a second argument is given, and only for the encodings with
+/// a specialized multi-row body. Each path runs in one command buffer of
+/// `repeats` dispatches; reports GPU ms per dispatch and GB/s of weight bytes
+/// (both paths read the weights once at this size). A measurement aid.
+fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const Shape = struct { rows: usize, columns: usize, name: []const u8 };
+    const ffn_shapes = [_]Shape{
+        .{ .rows = 17408, .columns = 5120, .name = "17408x5120" },
+        .{ .rows = 5120, .columns = 17408, .name = "5120x17408" },
+    };
+    const head_shape: Shape = .{ .rows = 248320, .columns = 5120, .name = "248320x5120" };
+    const encodings = [_]struct { id: u32, fixture: []const u8, name: []const u8 }{
+        .{ .id = 11, .fixture = "k-signed", .name = "Q3_K" },
+        .{ .id = 21, .fixture = "iq", .name = "IQ3_S" },
+        .{ .id = 12, .fixture = "k-affine", .name = "Q4_K" },
+        .{ .id = 13, .fixture = "k-affine", .name = "Q5_K" },
+        .{ .id = 14, .fixture = "k-signed", .name = "Q6_K" },
+        .{ .id = 23, .fixture = "iq", .name = "IQ4_XS" },
+        .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
+        .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
+        .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
+    };
+    const rounds = 3;
+    const repeats: usize = 16;
+    var max_bytes: usize = 0;
+    for (encodings) |enc| for (ffn_shapes) |shape| {
+        const layout = inference.encoding.layout(enc.id) orelse return error.UnknownEncoding;
+        max_bytes = @max(max_bytes, shape.rows * (shape.columns / layout.elements_per_block) * layout.bytes_per_block);
+    };
+    if (with_head) for (encodings) |enc| {
+        if (Backend.specializedMatvecRows(enc.id, 0, 1, 0) == null) continue;
+        const layout = inference.encoding.layout(enc.id) orelse return error.UnknownEncoding;
+        max_bytes = @max(max_bytes, head_shape.rows * (head_shape.columns / layout.elements_per_block) * layout.bytes_per_block);
+    };
+    const weights = try b.create(max_bytes);
+    // `matmul` validates and writes against `matmulPadded` rows, so the shared
+    // activation buffers are padded even though `matvecRows` reads only `tokens`.
+    const input = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
+    for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
+    const output = try b.create(Backend.matmulPadded(max_rows) * (if (with_head) head_shape.rows else 17408) * 4);
+    std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "tile ms", "tile GB/s", "rows ms", "rows GB/s", rounds, repeats });
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary" }) |fixture_name| {
+        const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
+        defer fixtures.deinit();
+        for (encodings) |enc| {
+            if (!std.mem.eql(u8, enc.fixture, fixture_name)) continue;
+            var sample_bytes: ?[]const u8 = null;
+            for (fixtures.value.rows) |sample| if (sample.encoding == enc.id) {
+                sample_bytes = sample.bytes;
+                break;
+            };
+            const bytes = sample_bytes orelse return error.FixtureMissing;
+            const specialized = Backend.specializedMatvecRows(enc.id, 0, 1, 0) != null;
+            for (ffn_shapes) |shape| try matvecRowsShape(alloc, b, enc.name, enc.id, bytes, shape, max_rows, rounds, repeats, weights, input, output);
+            if (with_head and specialized) try matvecRowsShape(alloc, b, enc.name, enc.id, bytes, head_shape, max_rows, rounds, repeats, weights, input, output);
+        }
+    }
+    std.debug.print("The multi-row path reads the weights once for all rows; the tile reads them once per 8-row token tile (one tile here).\n", .{});
+}
+
+fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, encoding: u32, bytes: []const u8, shape: anytype, max_rows: usize, rounds: usize, repeats: usize, weights: Buffer, input: Buffer, output: Buffer) !void {
+    const region = try tiledMatrix(alloc, bytes, encoding, shape.rows, shape.columns);
+    defer alloc.free(region);
+    @memcpy(weights.host[0..region.len], region);
+    const matrix: inference.cpu.Matrix = .{ .rows = shape.rows, .columns = shape.columns, .encoding = encoding, .bytes = region };
+    const bytes_mb = @as(f64, @floatFromInt(region.len)) / 1e6;
+    for (1..max_rows + 1) |tokens| {
+        var tile_ms: f64 = std.math.inf(f64);
+        for (0..rounds + 1) |i| {
+            const before = b.gpuSeconds();
+            try b.begin();
+            for (0..repeats) |_| try b.matmul(weights, matrix, input, shape.columns, output, shape.rows, tokens);
+            try b.commit();
+            const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
+            if (i == 0) continue;
+            tile_ms = @min(tile_ms, ms);
+        }
+        var rows_ms: f64 = std.math.nan(f64);
+        if (tokens >= 2) for (0..rounds + 1) |i| {
+            const before = b.gpuSeconds();
+            try b.begin();
+            for (0..repeats) |_| try b.matvecRows(weights, matrix, input, shape.columns, output, shape.rows, tokens);
+            try b.commit();
+            const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
+            if (i == 0) continue;
+            rows_ms = if (i == 1) ms else @min(rows_ms, ms);
+        };
+        std.debug.print("{s:<8} {s:<13} {d:>5} {d:>10.2} {d:>8.1} ", .{ name, shape.name, tokens, tile_ms, bytes_mb / tile_ms });
+        if (tokens >= 2) std.debug.print("{d:>10.2} {d:>8.1}\n", .{ rows_ms, bytes_mb / rows_ms }) else std.debug.print("{s:>10} {s:>8}\n", .{ "—", "—" });
+    }
+}
+
 /// Mixture-of-experts kernels against `cpu.experts`: the router on rows with
 /// ties and lanes past the expert count (indices exact), the gathered matvec
 /// on both kernel paths with shared and per-slot inputs and NaN in every
@@ -1200,6 +1298,11 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-bench")) return matvecBench(alloc, if (args.len > 2) args[2] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matmul-bench")) return matmulBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-rows-bench")) {
+        const max_rows = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 8;
+        const with_head = args.len > 3 and std.mem.eql(u8, args[3], "head");
+        return matvecRowsBench(alloc, max_rows, with_head);
+    }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--hadamard-bench")) return hadamardBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len != 1) return error.UnknownOption;
@@ -1456,6 +1559,82 @@ pub fn main(init: std.process.Init) !void {
                 for (decoded, input) |w, x| mass += @abs(@as(f64, w) * x);
                 try expectClose("misaligned fallback", actual[r], expected[r], @floatCast(mass * 4e-6 + 1e-6));
             }
+        }
+
+        // 2c. Multi-row matvec: 2, 5, and 8 activation rows against the CPU
+        // matvec of each row, every fixture encoding, specialized and generic.
+        // The multi-row bodies decode weights in F32 exactly as the single-row
+        // matvec, so the same relative-to-mass bound applies; the routing is
+        // pinned below.
+        {
+            var rows_worst: f64 = 0;
+            for ([_]usize{ 2, 5, 8 }) |row_tokens| {
+                for ([_]usize{ 704, 1280, 5120 }) |columns| {
+                    const activations = try b.create(row_tokens * columns * 4);
+                    for (activations.floats()) |*x| x.* = random.float(f32) * 2 - 1;
+                    const decoded = try alloc.alloc(f32, columns);
+                    defer alloc.free(decoded);
+                    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
+                        const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
+                        defer fixtures.deinit();
+                        var seen: [256]bool = @splat(false);
+                        for (fixtures.value.rows) |sample| {
+                            if (sample.encoding >= seen.len or seen[sample.encoding]) continue;
+                            if (columns % 256 != 0 and sample.encoding != 2) continue; // 704: Q4_0 alone
+                            seen[sample.encoding] = true;
+                            const region = try tiledMatrix(alloc, sample.bytes, sample.encoding, rows, columns);
+                            defer alloc.free(region);
+                            const stride = region.len / rows;
+                            const matrix: inference.cpu.Matrix = .{ .rows = rows, .columns = columns, .encoding = sample.encoding, .bytes = region };
+                            const weights = try uploadBytes(b, region);
+                            const out = try b.create(row_tokens * rows * 4);
+                            for ([_]bool{ false, true }) |generic| {
+                                b.generic_only = generic;
+                                try b.begin();
+                                try b.matvecRows(weights, matrix, activations, columns, out, rows, row_tokens);
+                                try b.commit();
+                                b.generic_only = false;
+                                for (0..row_tokens) |t| {
+                                    const x = activations.floats()[t * columns ..][0..columns];
+                                    try inference.cpu.matvec(matrix, x, expected, decoded);
+                                    for (0..rows) |r| {
+                                        try inference.quant.row(sample.encoding, region[r * stride ..][0..stride], decoded);
+                                        var mass: f64 = 0;
+                                        for (decoded, x) |w, xv| mass += @abs(@as(f64, w) * xv);
+                                        const got = out.floats()[t * rows + r];
+                                        const bound = @as(f64, mass * 4e-6 + 1e-6);
+                                        if (mass > 0) rows_worst = @max(rows_worst, @abs(@as(f64, got) - expected[r]) / mass);
+                                        expectClose(if (generic) "matvec rows (generic)" else "matvec rows", got, expected[r], @floatCast(bound)) catch |err| {
+                                            std.debug.print("  encoding {d}, tokens {d}, row {d}\n", .{ sample.encoding, row_tokens, r });
+                                            return err;
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            std.debug.print("Multi-row matvec vs CPU (2/5/8 rows): worst |difference| / Σ|w·x| {e:.2} (bound 4e-6)\n", .{rows_worst});
+            // Selection: one row and more than `small_batch_rows` stay on the tile.
+            // Routing stays off until the sweep shows the kernel beating the
+            // tile; the intended threshold is pinned by the constant.
+            if (Backend.usesMatvecRows(1) or Backend.usesMatvecRows(2) or Backend.usesMatvecRows(Backend.small_batch_rows) or Backend.usesMatvecRows(Backend.small_batch_rows + 1)) return error.MatvecRowsSelection;
+            if (Backend.small_batch_rows != 8) return error.MatvecRowsSelection;
+            // One row is refused by the kernel itself, never silently served.
+            const one_fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/k-affine.json"), .{ .ignore_unknown_fields = true });
+            defer one_fixtures.deinit();
+            var one_bytes: ?[]const u8 = null;
+            for (one_fixtures.value.rows) |sample| if (sample.encoding == 12) {
+                one_bytes = sample.bytes;
+                break;
+            };
+            const one_region = try tiledMatrix(alloc, one_bytes orelse return error.FixtureMissing, 12, 8, 1280);
+            defer alloc.free(one_region);
+            const one_w = try uploadBytes(b, one_region);
+            const one_x = try b.create(1280 * 4);
+            const one_o = try b.create(8 * 4);
+            if (b.matvecRows(one_w, .{ .rows = 8, .columns = 1280, .encoding = 12, .bytes = one_region }, one_x, 1280, one_o, 8, 1)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         }
     }
 
