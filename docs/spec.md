@@ -463,7 +463,10 @@ Three settings, because they answer three different questions:
   the model's state layout, and `bench` must measure the same loaded model
   both ways in one process, which is how a speedup claim is made. The
   default is on only for a family whose measured acceptance rate pays;
-  the catalogue entry carries that verdict, not the user.
+  the catalogue entry carries that verdict, not the user. Off is the
+  ordinary loop, bit-for-bit: every speculative path (the drafter, the
+  checkpoint copy, recovery, per-row state writes) is gated behind the
+  switch and must not run, or change an ordinary dispatch, when it is off.
 - **The draft length** (positions proposed per step): a second generation
   setting with a per-family default from the same measurement, capped by
   a host constant. Its best value depends on the prompt mix, so it sits

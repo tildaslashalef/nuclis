@@ -76,7 +76,8 @@ therefore costs one 150 MB copy plus an `a + 1`-token prefill, not a
 context-long replay. A bounded alternative — per-token recurrent
 checkpoints written by the DeltaNet chunk kernel, `(k + 1) × 150 MB` of
 device scratch on Qwen — was not needed by these numbers and is not built;
-the decision and its measurement are here for the next revisiter.
+ENGN-14 measures recovery by accepted length and reopens it
+([§ Recovery by accepted length](#recovery-by-accepted-length-engn-14-session-1-2026-09-20)).
 
 ## The Qwen3.8 draft head (MODL-18)
 
@@ -380,3 +381,51 @@ before and after replacing replay with recurrent-state copies. `make compare`
 `make speculative-check-metal` (12 tokens greedy, the loop edge cases), and
 `make draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29, 24/28)
 are unchanged.
+
+## Recovery by accepted length (ENGN-14, session 1, 2026-09-20)
+
+The aggregate `recover_milliseconds / speculative_steps` mixed accepted
+lengths together, which hid that the replay's cost is governed by its row
+count. `engine.Timing` now carries the split and the histogram — `recover`
+(aggregate, including the final recover to the emitted count when a batch
+crosses the budget), `recover_rewind` (the checkpoint copy), `recover_replay`,
+`recover_by_length[accepted]` (calls, rewind, replay per accepted prefix of
+1..`max_draft_length + 1`), and `checkpoint` (the verify batch's copy, which
+no other field covered). `bench`'s samples expose the same as
+`checkpoint_milliseconds`, `recover_rewind_milliseconds`,
+`recover_replay_milliseconds`, and `recover_by_length` (cells with `accepted`,
+`calls`, `rewind_milliseconds`, `replay_milliseconds`). Full acceptance
+recovers nothing: its cells count calls with zero time.
+
+Measured on Qwen3.8-27B UD-Q4_K_M, Metal, F16 KV, ctx 32768, the 512-token
+prose prompt, greedy, 128 output tokens, draft 4, warmup 1 and three measured
+runs on one loaded model (48 verify batches per run, 144 total; per-run files
+under `.zig-cache/bench/engn14/`). `calls` and milliseconds **per call**,
+summed over the three runs:
+
+| accepted prefix | calls | rewind ms | replay via prefill ms | replay via step ms |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 (seed only) | 36 | 13.8 | 217.8 | **96.4** |
+| 2 | 42 | 12.7 | 179.8 | 178.4 |
+| 3 | 27 | 12.0 | 220.4 | 219.8 |
+| 4 | 18 | 10.6 | 182.8 | 182.4 |
+| 5 (all four drafts) | 24 | 0 | 0 | 0 |
+
+`recover`'s mean per batch was 182 ms with the seed-only replay on the
+prefill path and 150 ms with it on the step path; `checkpoint` copied
+5.7–15.9 ms per batch and `rewind` 10.6–14.0 ms per call (both above the
+3 ms the contract recorded; the copy is 156,893,184 bytes). The
+seed-only replay is the common case (36 of 144 batches; the acceptance
+distribution above sums to 1.67 accepted drafts per batch) and the step
+path is 2.3× faster than a one-row chunked prefill, so
+`Model.recover` keeps it: a one-token accepted prefix now replays through
+`step` and every longer prefix through `prefill`. Lengths 2–4 are
+unchanged by that branch, and the 2-row replay (KERN-12's routed case)
+sits at 179 ms per call against 218–220 ms for three rows.
+
+Remaining: per-row recurrent checkpoints written by the verify batch
+(`Session.restoreRow`, `DeltaChunkParams.row_states`,
+`convolutionHistory` per row), which the ≤ 40 ms per-batch target needs;
+session 2 implements and measures them against these cells, then runs the
+record. The instrumentation is gated like the rest of speculation: when the
+switch is off the loop never writes these fields and `bench` omits them.

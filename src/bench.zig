@@ -59,6 +59,16 @@ pub const ProfileReport = struct {
     kernels: []const KernelTime,
 };
 
+/// One accepted prefix length's recovery calls in a sample. `accepted` is the
+/// tokens replayed (1 = the seed alone); full acceptance replays nothing and
+/// contributes calls with zero milliseconds.
+pub const RecoverCell = struct {
+    accepted: usize,
+    calls: usize,
+    rewind_milliseconds: f64,
+    replay_milliseconds: f64,
+};
+
 pub const Sample = struct {
     warmup: bool,
     prompt_tokens: usize,
@@ -85,6 +95,15 @@ pub const Sample = struct {
     verify_milliseconds: ?f64 = null,
     accept_milliseconds: ?f64 = null,
     recover_milliseconds: ?f64 = null,
+    /// The verify batch's checkpoint copy, and recovery split into the copy
+    /// (`rewind`) and the forward over the accepted prefix (`replay`); these
+    /// sum to `recover_milliseconds` less clock overhead.
+    checkpoint_milliseconds: ?f64 = null,
+    recover_rewind_milliseconds: ?f64 = null,
+    recover_replay_milliseconds: ?f64 = null,
+    /// Recovery calls per accepted length, index 1..=max_draft_length+1; the
+    /// aggregate is `recover_milliseconds` above.
+    recover_by_length: ?[inference.engine.max_draft_length + 2]RecoverCell = null,
     commit_milliseconds: ?f64 = null,
 };
 
@@ -220,6 +239,21 @@ pub fn profileReport(alloc: std.mem.Allocator, profile: *const inference.metal.P
 fn perSecond(count: usize, duration: std.Io.Duration) ?f64 {
     if (count == 0 or duration.nanoseconds <= 0) return null;
     return @as(f64, @floatFromInt(count)) / (@as(f64, @floatFromInt(duration.nanoseconds)) / std.time.ns_per_s);
+}
+
+/// The run's recovery calls as one cell per accepted length, index 0 included
+/// but always empty (no recovery replays zero tokens).
+fn recoverByLength(t: inference.engine.Timing) [inference.engine.max_draft_length + 2]RecoverCell {
+    var cells: [inference.engine.max_draft_length + 2]RecoverCell = undefined;
+    for (&cells, t.recover_by_length, 0..) |*cell, call, accepted| {
+        cell.* = .{
+            .accepted = accepted,
+            .calls = call.calls,
+            .rewind_milliseconds = engine.milliseconds(call.rewind),
+            .replay_milliseconds = engine.milliseconds(call.replay),
+        };
+    }
+    return cells;
 }
 
 /// Pure aggregation over samples so the statistics are testable without a
@@ -369,6 +403,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 .verify_milliseconds = if (on) engine.milliseconds(t.verify) else null,
                 .accept_milliseconds = if (on) engine.milliseconds(t.accept) else null,
                 .recover_milliseconds = if (on) engine.milliseconds(t.recover) else null,
+                .checkpoint_milliseconds = if (on) engine.milliseconds(t.checkpoint) else null,
+                .recover_rewind_milliseconds = if (on) engine.milliseconds(t.recover_rewind) else null,
+                .recover_replay_milliseconds = if (on) engine.milliseconds(t.recover_replay) else null,
+                .recover_by_length = if (on) recoverByLength(t) else null,
                 .commit_milliseconds = if (on) engine.milliseconds(t.commit) else null,
             };
             if (!json) {

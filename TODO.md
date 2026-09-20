@@ -21,9 +21,15 @@ REPO-08 repaired and revalidated the KERN-12 sweep: the control now forces
 specialized two-row cases beat the tile; routing stays at two tokens. See the
 [corrected sweep](docs/reference/metal-backend.md#corrected-two-row-control-repo-08-2026-09-20)
 and [log](docs/engineering-log.md#repo-08--repair-the-multi-row-benchmark-controls-and-hand-off-2026-09-20).
-**Next: ENGN-14.** Its section includes the corrected seed-only baseline,
-recovery timings by accepted length, an immediate post-recovery record, and a
-conditional matrix-tile experiment distinct from KERN-15's attention work.
+**Next: ENGN-14 session 2** — per-row recurrent checkpoints written by the
+verify batch, then `make speculative-record`. Session 1 (2026-09-20) landed the
+per-length instrumentation and the seed-only `step` replay: measured on prose
+512 draft 4 greedy, seed-only replay fell from 218 to 96 ms per call (36 of 144
+batches) and `recover` per batch from 182 to 150 ms; lengths 2–4 are unchanged
+(180–220 ms per call), full acceptance recovers nothing. The per-length table
+and the new `Timing`/bench fields are in
+[speculative-decoding.md](docs/reference/speculative-decoding.md#recovery-by-accepted-length-engn-14-session-1-2026-09-20);
+the ≤ 40 ms target still needs the per-row checkpoints.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -59,7 +65,7 @@ them):
 | checkpoint | 3 ms | one 150 MB copy | — | — |
 | verify `1 + k` rows | 227–251 ms at 512, 341–344 ms at 4K | the 16×8 prefill tile at 37–64 % of the matvec rate; the chunk attention over the visible cache | KERN-15 at long context (KERN-12 did not win 3–8 rows) | ≤ 130 ms |
 | accept (sampled) | 46–78 ms | one full-vocabulary sort per row on the host | KERN-13 + ENGN-16 | ≤ 5 ms |
-| recover (on rejection) | 99–272 ms | rewind + a whole-stack replay of `a + 1` rows through the same small-chunk path | ENGN-14 | ≤ 40 ms |
+| recover (on rejection) | 97 ms (seed only) to 220 ms (3 rows) per call; 150 ms/batch (was 182) | rewind + a replay of `a + 1` rows: seed-only now through `step`, longer prefixes through the small-chunk path | ENGN-14 session 2 | ≤ 40 ms |
 | commit `a + 1` tokens | 5.4 ms/batch (was 6.2 ms × (a + 1)) | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
 | prompt commit (prefill) | 1.02× ordinary prefill (was 2.9–3.3×) | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
 | tokens per batch | 2.2–4.0 (1.2–3.0 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-15 | more accepted per proposed |
@@ -249,17 +255,16 @@ generation, and bench references gain their sections;
 
 ## ENGN-14 — Recovery without the whole-stack replay
 
-**Facts (read 2026-09-20).**
+**Facts (read 2026-09-20; replay measured in session 1).**
 - `Model.recover(accepted)` (`engine.zig`): full acceptance returns at
-  once; otherwise `rewind()` (one 150 MB copy, 3 ms) then
-  `prefill(accepted)` — the whole 64-layer stack over `a + 1` rows through
-  the small-chunk path. Measured ≈ 195 ms per batch on prose, where `a` is
-  mostly 0 (the seed alone is replayed). KERN-12 routed only the 2-row
-  batches (`a = 1`) to the multi-row matvec; `a = 0` still reaches the
-  one-token prefill tile through recovery, and
-  the rest of the stack pass is unchanged, so the comparison below is against
-  the replay with that routing in place (a spot run measured 170–217 ms per
-  speculative step at 512, mixing recovery lengths; not a two-row timing).
+  once; otherwise `rewind()` then a replay of `a + 1` rows. Measured on prose
+  512, draft 4, greedy, 144 batches over three runs (per-call ms): accepted
+  1 (seed only) 218 through `prefill`, 96 through `step`; accepted 2 179
+  (KERN-12's 2-row routing); accepted 3 220; accepted 4 183; full acceptance
+  0. `recover` averaged 182 ms/batch before the step branch, 150 after;
+  `checkpoint` 5.7–15.9 ms/batch and `rewind` 10.6–14.0 ms/call (the
+  3 ms the contract recorded is optimistic under load). Table and files:
+  [speculative-decoding.md](docs/reference/speculative-decoding.md#recovery-by-accepted-length-engn-14-session-1-2026-09-20).
 - The DeltaNet chunk kernel (`nu_delta_chunk`, `kernels.metal` ≈ line
   1848) carries the state across 32-token sub-chunks in place: after a
   sub-chunk of `n` rows, `S_new = γ_n S₀ + Wᵀ K` with `W[s][j] = r(n − 1,
@@ -276,12 +281,13 @@ generation, and bench references gain their sections;
   stride)` already computes it for `rows = r + 1`.
 
 **Design, two steps, each measured against the record.**
-1. Cheap first: in `Model.recover`, when `accepted.len == 1` replay through
-   `step` (the matvec path: `Plan.step(token, null, null, null, observer)`)
-   instead of `prefill`. Before KERN-12 this takes the prose replay from
-   ≈ 195 to ≈ 95 ms as a hypothesis; KERN-12 changes only two-row
-   batches and gives no reason for the one-row paths to converge. Measure
-   the branch before deciding whether it stays.
+1. **Done (session 1).** In `Model.recover`, an `accepted.len == 1` prefix
+   replays through `step` (the matvec path) instead of `prefill`: 218 → 96 ms
+   per call, measured with the branch out and in on the same config; the
+   lengths 2–4 are unchanged and it stays. `Timing` gained
+   `recover_rewind`/`recover_replay`/`recover_by_length`/`checkpoint` and
+   `bench` the matching `Sample` fields, so every later change is measured
+   per accepted length.
 2. Per-row recurrent checkpoints written by the verify batch:
    - `Session.init` gains `row_checkpoints: usize` (0, or
      `max_draft_length + 1`): a second page-aligned region of
@@ -312,16 +318,16 @@ generation, and bench references gain their sections;
    post-KERN-12 replay on the prose workload, remove it (the log keeps the
    number) and keep step 1.
 
-**Measurement hand-off (2026-09-20 review).** Before changing recovery,
-measure replay separately for every accepted length (including seed-only and
-seed plus one draft); report calls and milliseconds per recovery call, not just
-`recover_milliseconds / speculative_steps`. Measure added verify/checkpoint
-writes, copy latency, session bytes and the total off/on throughput together.
-After the winning recovery change, run `make speculative-record` immediately
-and update the cost table in `bench.md` and *Where we are*. Keep the existing
-512/4K prose/code, greedy/instruct, draft 2/4/7 methodology. This intermediate
-record establishes priorities; ENGN-17 still runs the final record and decides
-defaults after the proposal/acceptance work.
+**Measurement hand-off (2026-09-20 review).** Session 1 took the per-length
+baseline (facts above) with the copy, checkpoint and aggregate throughput in
+the same runs. Session 2 reports the same cells for the per-row checkpoints,
+the added write time inside `verify`, `session_bytes` with the region, and the
+off/on pair together. After the winning recovery change, run
+`make speculative-record` immediately and update the cost table in `bench.md`
+and *Where we are*. Keep the existing 512/4K prose/code, greedy/instruct,
+draft 2/4/7 methodology. This intermediate record establishes priorities;
+ENGN-17 still runs the final record and decides defaults after the
+proposal/acceptance work.
 
 **Next kernel experiment, after that record.** KERN-15 optimizes attention,
 not the small-batch matrix tile; no existing unit covers the latter. If verify

@@ -343,27 +343,49 @@ pub const Model = struct {
         const d = self.drafter() orelse return error.NoDrafter;
         try d.commit(tokens, h_rows);
     }
+    /// How one `recover` call spent its time: the checkpoint copy and the
+    /// forward over the accepted prefix.
+    pub const Recovery = struct {
+        rewind: std.Io.Duration = .zero,
+        replay: std.Io.Duration = .zero,
+    };
     /// Returns the session to the state after the accepted prefix of a
     /// speculative verify batch. `accepted` is the tokens the main model
     /// committed, starting with the token fed before the batch; the position
     /// ends at the checkpoint plus `accepted.len`. Recurrent state is replayed
-    /// (rewind then a batched forward), attention alone is truncated: rows
-    /// past the position are ignored by contract. A missing checkpoint is
-    /// `NoCheckpoint`; a batch larger than the context is `ContextFull` for
-    /// recurrent state (nothing is written past the capacity).
-    pub fn recover(self: *Model, accepted: []const u32) !void {
+    /// (rewind then a forward), attention alone is truncated: rows past the
+    /// position are ignored by contract. Returns the copy and replay times.
+    /// A missing checkpoint is `NoCheckpoint`; a batch larger than the context
+    /// is `ContextFull` for recurrent state (nothing is written past the
+    /// capacity).
+    pub fn recover(self: *Model, io: std.Io, accepted: []const u32) !Recovery {
         const at = self.session().checkpoint_position orelse return error.NoCheckpoint;
+        var stats: Recovery = .{};
         if (self.hasRecurrentState()) {
             // The verify batch fed exactly the accepted prefix when every
             // draft was accepted (accepted is the whole batch): the recurrent
             // state is already a function of those tokens, so nothing is
             // rewound or replayed.
-            if (accepted.len == self.session().position - at) return;
+            if (accepted.len == self.session().position - at) return stats;
+            const rewind_start = std.Io.Clock.awake.now(io);
             try self.rewind();
-            if (accepted.len > 0) try self.prefill(accepted, null, null, null, null, null);
+            stats.rewind = rewind_start.durationTo(std.Io.Clock.awake.now(io));
+            if (accepted.len > 0) {
+                const replay_start = std.Io.Clock.awake.now(io);
+                // A single-token replay takes the per-token matvec path; a
+                // chunked prefill for one row reaches the small-batch tile,
+                // which measured 2.3x slower on the prose replay.
+                if (accepted.len == 1) {
+                    try self.step(accepted[0], null, null, null, null);
+                } else {
+                    try self.prefill(accepted, null, null, null, null, null);
+                }
+                stats.replay = replay_start.durationTo(std.Io.Clock.awake.now(io));
+            }
         } else {
             try self.truncate(at + accepted.len);
         }
+        return stats;
     }
     pub fn supportsGpuArgmax(self: *const Model) bool {
         return self.gpu() != null;
@@ -634,6 +656,15 @@ pub const Engine = struct {
     }
 };
 
+/// One accepted length's recovery calls in a `Timing`: the accepted prefix
+/// length is 1 (the seed alone) through `max_draft_length + 1` (every draft).
+/// Full acceptance is counted too, with a zero replay.
+pub const RecoverCall = struct {
+    calls: usize = 0,
+    rewind: std.Io.Duration = .zero,
+    replay: std.Io.Duration = .zero,
+};
+
 /// Timings for one prefill+decode pass. Durations are wall clock from the
 /// injected Io; GPU busy time comes from Metal timestamps when available.
 pub const Timing = struct {
@@ -661,7 +692,16 @@ pub const Timing = struct {
     propose: std.Io.Duration = .zero,
     verify: std.Io.Duration = .zero,
     accept: std.Io.Duration = .zero,
+    /// Every `recover` call, including the final one to the emitted count when
+    /// a batch crosses the token budget; `recover_rewind` and `recover_replay`
+    /// split it and `recover_by_length` attributes it.
     recover: std.Io.Duration = .zero,
+    recover_rewind: std.Io.Duration = .zero,
+    recover_replay: std.Io.Duration = .zero,
+    recover_by_length: [max_draft_length + 2]RecoverCall = @splat(.{}),
+    /// The verify batch's checkpoint copy, timed in `speculativeBatch`; no
+    /// other field covers it.
+    checkpoint: std.Io.Duration = .zero,
     commit: std.Io.Duration = .zero,
 };
 
@@ -912,7 +952,8 @@ pub fn runLoop(
             timing.propose = .{ .nanoseconds = timing.propose.nanoseconds + result.propose.nanoseconds };
             timing.verify = .{ .nanoseconds = timing.verify.nanoseconds + result.verify.nanoseconds };
             timing.accept = .{ .nanoseconds = timing.accept.nanoseconds + result.accept.nanoseconds };
-            timing.recover = .{ .nanoseconds = timing.recover.nanoseconds + result.recover.nanoseconds };
+            timing.checkpoint = .{ .nanoseconds = timing.checkpoint.nanoseconds + result.checkpoint.nanoseconds };
+            recordRecovery(&timing, result.accepted + 1, result.recover, result.recover_split);
             timing.commit = .{ .nanoseconds = timing.commit.nanoseconds + result.commit.nanoseconds };
             // The accepted drafts and the correction go through the ordinary
             // per-token checks in order; the correction is the next batch's
@@ -944,7 +985,11 @@ pub fn runLoop(
             if (broke) {
                 // Discard the accepted drafts past the stop/budget: recover to
                 // the tokens actually emitted.
-                if (kept < result.accepted) try eng.model.recover(s.tokens[0 .. 1 + kept]);
+                if (kept < result.accepted) {
+                    const recover_start = std.Io.Clock.awake.now(eng.io);
+                    const split = try eng.model.recover(eng.io, s.tokens[0 .. 1 + kept]);
+                    recordRecovery(&timing, kept + 1, recover_start.durationTo(std.Io.Clock.awake.now(eng.io)), split);
+                }
                 break;
             }
             if (eng.model.session().position >= eng.model.session().capacity) {
@@ -972,8 +1017,8 @@ pub fn runLoop(
 }
 
 /// The accepted length, the model's next token, and the timings of one verify
-/// batch.
-const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, propose: std.Io.Duration, verify: std.Io.Duration, accept: std.Io.Duration, recover: std.Io.Duration, commit: std.Io.Duration };
+/// batch: `recover_split` carries the copy/replay split of `recover`.
+const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, propose: std.Io.Duration, verify: std.Io.Duration, accept: std.Io.Duration, recover: std.Io.Duration, recover_split: Model.Recovery, checkpoint: std.Io.Duration, commit: std.Io.Duration };
 
 /// Proposes `k` drafts from `seed_token`, checkpoints, verifies `[seed] ++
 /// drafts` on the main model, accepts the longest prefix (greedy: the row's
@@ -997,12 +1042,14 @@ fn speculativeBatch(
     const propose_start = std.Io.Clock.awake.now(eng.io);
     const n = try eng.model.propose(seed_token, s.drafts[0..k]);
     const propose = propose_start.durationTo(std.Io.Clock.awake.now(eng.io));
+    const checkpoint_start = std.Io.Clock.awake.now(eng.io);
     try eng.model.checkpoint();
+    const checkpoint = checkpoint_start.durationTo(std.Io.Clock.awake.now(eng.io));
     s.tokens[0] = seed_token;
     @memcpy(s.tokens[1 .. 1 + n], s.drafts[0..n]);
     const batch = s.tokens[0 .. 1 + n];
     const hidden = s.hidden[0 .. (1 + n) * drafter.hidden];
-    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .propose = propose, .verify = .zero, .accept = .zero, .recover = .zero, .commit = .zero };
+    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .propose = propose, .verify = .zero, .accept = .zero, .recover = .zero, .recover_split = .{}, .checkpoint = checkpoint, .commit = .zero };
     const verify_start = std.Io.Clock.awake.now(eng.io);
     if (greedy) {
         try eng.model.verifyGreedy(batch, vocabulary, s.choices[0 .. 1 + n], hidden, observer);
@@ -1041,12 +1088,25 @@ fn speculativeBatch(
         result.accept = accept_start.durationTo(std.Io.Clock.awake.now(eng.io));
     }
     const recover_start = std.Io.Clock.awake.now(eng.io);
-    try eng.model.recover(batch[0 .. 1 + result.accepted]);
+    result.recover_split = try eng.model.recover(eng.io, batch[0 .. 1 + result.accepted]);
     result.recover = recover_start.durationTo(std.Io.Clock.awake.now(eng.io));
     const commit_start = std.Io.Clock.awake.now(eng.io);
     try eng.model.commitDraft(batch[0 .. 1 + result.accepted], hidden[0 .. (1 + result.accepted) * drafter.hidden]);
     result.commit = commit_start.durationTo(std.Io.Clock.awake.now(eng.io));
     return result;
+}
+
+/// Attributes one `recover` call to the run's timing: the aggregate, the
+/// copy/replay split, and the accepted length's cell.
+fn recordRecovery(timing: *Timing, accepted_len: usize, total: std.Io.Duration, split: Model.Recovery) void {
+    std.debug.assert(accepted_len > 0 and accepted_len < timing.recover_by_length.len);
+    timing.recover = .{ .nanoseconds = timing.recover.nanoseconds + total.nanoseconds };
+    timing.recover_rewind = .{ .nanoseconds = timing.recover_rewind.nanoseconds + split.rewind.nanoseconds };
+    timing.recover_replay = .{ .nanoseconds = timing.recover_replay.nanoseconds + split.replay.nanoseconds };
+    const cell = &timing.recover_by_length[accepted_len];
+    cell.calls += 1;
+    cell.rewind = .{ .nanoseconds = cell.rewind.nanoseconds + split.rewind.nanoseconds };
+    cell.replay = .{ .nanoseconds = cell.replay.nanoseconds + split.replay.nanoseconds };
 }
 
 /// The session and its token history are reset together: the history is
