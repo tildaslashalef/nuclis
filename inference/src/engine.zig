@@ -409,7 +409,9 @@ const SpeculativeScratch = struct {
         errdefer alloc.free(drafts);
         const logits = try alloc.alloc(f32, rows * vocabulary);
         errdefer alloc.free(logits);
-        const hidden = try alloc.alloc(f32, rows * hidden_width);
+        // The prompt commit harvests a full prefill chunk's hidden rows at
+        // once; the verify batch uses only the first `rows` of it.
+        const hidden = try alloc.alloc(f32, prefill_chunk * hidden_width);
         errdefer alloc.free(hidden);
         const tokens = try alloc.alloc(u32, rows);
         errdefer alloc.free(tokens);
@@ -728,6 +730,29 @@ pub fn complete(
     return outcome;
 }
 
+/// Commits a prompt to the loaded drafter: the target consumes it in
+/// `prefill_chunk` chunks and the block's cache is filled from the target
+/// hidden of every committed position, so the drafter can `propose` from
+/// after the last token. `logits`, when given, receives the last chunk's
+/// last-token logits. Requires a loaded drafter and its scratch.
+pub fn commitPrompt(eng: *Engine, tokens: []const u32, logits: ?[]f32, observer: ?Observer) !void {
+    const drafter = eng.model.drafter() orelse return error.NoDrafter;
+    const s = &(eng.spec orelse return error.NoSpeculativeScratch);
+    // `prefill` reports progress per internal chunk; strip it here so the
+    // caller sees one cumulative position for the whole prompt.
+    const inner: ?Observer = if (observer) |o| .{ .context = o.context, .check = o.check, .layer = o.layer } else null;
+    var offset: usize = 0;
+    while (offset < tokens.len) {
+        const count = @min(tokens.len - offset, prefill_chunk);
+        const chunk = tokens[offset..][0..count];
+        const hidden = s.hidden[0 .. count * drafter.hidden];
+        try eng.model.prefill(chunk, if (offset + count == tokens.len) logits else null, null, null, hidden, inner);
+        try eng.model.commitDraft(chunk, hidden);
+        offset += count;
+        if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = offset, .target = tokens.len });
+    }
+}
+
 /// Shared prefill/decode loop. Prompt token IDs must fit the session; the
 /// loop stops at EOS, the token budget, the context limit, or cancellation.
 /// A cancelled step poisons the session; the loop resets it so the engine is
@@ -778,32 +803,19 @@ pub fn runLoop(
     const want_logits = !gpu_greedy and !gpu_topk;
     const vocabulary = logits.len;
     const spec: ?*SpeculativeScratch = if (can_speculate) &(eng.spec orelse return error.NoSpeculativeScratch) else null;
-    if (spec) |s| {
+    if (spec != null) {
         // Speculation commits the prompt to the drafter too: the block's cache
         // is filled from the target hidden of every committed position, not
-        // just the accepted drafts. The prompt goes through `verify` in
-        // verify-sized chunks (the last chunk's logits seed decoding), which
-        // also admits and commits the session.
+        // just the accepted drafts. The last chunk's logits seed decoding.
         if (hooks) |h| if (h.before_step) |call| try call(h.context, eng.model.session().position);
-        const hidden_width = drafter.?.hidden;
-        var offset: usize = 0;
-        while (offset < tokens.len) {
-            const count = @min(tokens.len - offset, max_draft_length + 1);
-            const chunk = tokens[offset..][0..count];
-            const hidden = s.hidden[0 .. count * hidden_width];
-            eng.model.verify(chunk, vocabulary, s.rows[0 .. count * vocabulary], hidden, observer) catch |err| switch (err) {
-                error.Cancelled => {
-                    resetAll(eng, history);
-                    timing.prefill = prefill_start.durationTo(std.Io.Clock.awake.now(io));
-                    return .{ .stop = .cancelled, .timing = timing };
-                },
-                else => return err,
-            };
-            try eng.model.commitDraft(chunk, hidden);
-            if (offset + count == tokens.len) @memcpy(logits, s.rows[(count - 1) * vocabulary ..][0..vocabulary]);
-            offset += count;
-            if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = offset, .target = tokens.len });
-        }
+        commitPrompt(eng, tokens, if (want_logits) logits else null, observer) catch |err| switch (err) {
+            error.Cancelled => {
+                resetAll(eng, history);
+                timing.prefill = prefill_start.durationTo(std.Io.Clock.awake.now(io));
+                return .{ .stop = .cancelled, .timing = timing };
+            },
+            else => return err,
+        };
         if (hooks) |h| if (h.step) |call| try call(h.context, eng.model.session().position);
     } else if (eng.model.chunkedPrefill(observer)) {
         // One prefill call for the whole prompt; the per-token hooks fire once.
