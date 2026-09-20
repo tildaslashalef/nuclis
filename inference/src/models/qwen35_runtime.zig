@@ -383,20 +383,17 @@ pub const Runtime = struct {
         @memcpy(self.draft_pending_h, h_rows[h_rows.len - 5120 ..][0..5120]);
     }
 
-    /// Greedy candidates from the state after the last committed token.
-    /// `out.len` bounds the count; `logits`, when given, holds one vocabulary
-    /// row per proposed position (caller-owned, for sampled acceptance).
-    pub fn propose(self: *Runtime, token: u32, out: []u32, logits: ?[]f32) !usize {
+    /// Greedy candidates from the state after the last committed token;
+    /// `out.len` bounds the count.
+    pub fn propose(self: *Runtime, token: u32, out: []u32) !usize {
         if (!self.has_draft) return error.NoDraftBlock;
-        if (logits) |rows| if (rows.len != out.len * 248320) return error.InvalidShape;
         const start = self.state.position;
         var h_prev: []const f32 = self.draft_pending_h;
         var next = token;
         var count: usize = 0;
         while (count < out.len) : (count += 1) {
-            const rows = if (logits) |rows| rows[count * 248320 ..][0..248320] else self.draft_logits;
-            try self.draftForward(h_prev, next, start + count, rows);
-            out[count] = argmax(rows);
+            try self.draftForward(h_prev, next, start + count, self.draft_logits);
+            out[count] = argmax(self.draft_logits);
             next = out[count];
             // The block's own hidden chains the next position.
             @memcpy(self.draft_chain, self.draft_h);
@@ -442,9 +439,9 @@ pub const Runtime = struct {
         if (!self.has_draft) return null;
         return .{ .host = self, .hidden = 5120, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, logits: ?[]f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));
-        return self.propose(token, out, logits);
+        return self.propose(token, out);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Runtime = @ptrCast(@alignCast(host));

@@ -75,10 +75,13 @@ pub const Sample = struct {
     /// This sample ran with the speculative switch on (the pair's second run).
     speculative: bool = false,
     draft_length: ?usize = null,
-    /// Accepted drafts per verify batch, and the time per batch in `verify`
-    /// and `recover`; present only on speculative samples.
+    /// Verify batches run, accepted drafts per batch, and the run's time in
+    /// the model's `verify`, the host acceptance decision, and `recover`
+    /// (divide by the batches for the per-batch cost); speculative samples only.
+    speculative_steps: ?usize = null,
     accepted_per_step: ?f64 = null,
     verify_milliseconds: ?f64 = null,
+    accept_milliseconds: ?f64 = null,
     recover_milliseconds: ?f64 = null,
 };
 
@@ -357,8 +360,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 .topk_fallbacks = t.topk_fallbacks,
                 .speculative = on,
                 .draft_length = if (on) settings.draft_length else null,
+                .speculative_steps = if (on) t.speculative_steps else null,
                 .accepted_per_step = if (on and t.speculative_steps > 0) @as(f64, @floatFromInt(t.accepted_drafts)) / @as(f64, @floatFromInt(t.speculative_steps)) else null,
                 .verify_milliseconds = if (on) engine.milliseconds(t.verify) else null,
+                .accept_milliseconds = if (on) engine.milliseconds(t.accept) else null,
                 .recover_milliseconds = if (on) engine.milliseconds(t.recover) else null,
             };
             if (!json) {

@@ -132,14 +132,15 @@ limitations, not a promise of this plan.
 batch on both executors; the GPU plan computes the head on all rows of
 the chunk and reads them back (9 MB at `k = 8` on Qwen), bypassing the
 device top-k path while speculation is on. Greedy acceptance compares the
-draft with the row's argmax; sampled acceptance uses the sampler's shaped
-distributions (temperature, top-k/p, min-p, penalties with the history
-advanced through the earlier drafts of the batch) for both the target `p`
-and the draft `q`: accept `d_i` with probability `min(1, p_i(d_i) /
-q_i(d_i))`, on rejection sample the correction from
-`normalize(max(0, p_i − q_i))`, on full acceptance sample the bonus from
-the last row. Identical seeded streams versus ordinary decoding are not a
-requirement.
+draft with the row's argmax; sampled acceptance draws the target's own
+token from the row's shaped distribution (temperature, top-k/p, min-p,
+penalties with the history advanced through the earlier drafts of the
+batch) and accepts `d_i` when the draw equals it, else the draw is the
+correction; on full acceptance the last row's draw is the bonus. (Revised
+2026-09-20: the `min(1, p/q)` rejection rule with a residual correction is
+exact only for drafts sampled from `q`; the drafters chain greedy
+candidates, so the target-draw rule is the exact one.) Identical seeded
+streams versus ordinary decoding are not a requirement.
 
 **Configuration** is the accepted design of 2026-09-17, now in
 [spec § Speculative decoding](docs/spec.md#speculative-decoding): the

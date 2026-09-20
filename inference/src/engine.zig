@@ -321,9 +321,9 @@ pub const Model = struct {
             inline else => |*e| return e.drafter(),
         }
     }
-    pub fn propose(self: *Model, token: u32, out: []u32, logits: ?[]f32) !usize {
+    pub fn propose(self: *Model, token: u32, out: []u32) !usize {
         const d = self.drafter() orelse return error.NoDrafter;
-        return d.propose(token, out, logits);
+        return d.propose(token, out);
     }
     pub fn commitDraft(self: *Model, tokens: []const u32, h_rows: []const f32) !void {
         const d = self.drafter() orelse return error.NoDrafter;
@@ -378,26 +378,21 @@ pub const Speculative = struct {
 };
 
 /// Engine-owned scratch for the speculative step, sized once when a drafter is
-/// loaded: the proposed drafts, their `q` logit rows, the target rows and
-/// hidden of a verify batch, and the candidate buffers `distribution` writes.
-/// `runLoop` borrows it; it is freed with the engine.
+/// loaded: the proposed drafts, the target rows and hidden of a verify batch,
+/// and the candidate buffer `distribution` writes. `runLoop` borrows it; it is
+/// freed with the engine.
 const SpeculativeScratch = struct {
     drafts: []u32,
-    q_rows: []f32,
     rows: []f32,
     hidden: []f32,
     tokens: []u32,
     choices: []u32,
     p: []inference.sampling.Candidate,
-    q: []inference.sampling.Candidate,
-    residual: []inference.sampling.Candidate,
 
     fn init(alloc: std.mem.Allocator, vocabulary: usize, hidden_width: usize) !SpeculativeScratch {
         const rows = max_draft_length + 1;
         const drafts = try alloc.alloc(u32, max_draft_length);
         errdefer alloc.free(drafts);
-        const q_rows = try alloc.alloc(f32, max_draft_length * vocabulary);
-        errdefer alloc.free(q_rows);
         const logits = try alloc.alloc(f32, rows * vocabulary);
         errdefer alloc.free(logits);
         const hidden = try alloc.alloc(f32, rows * hidden_width);
@@ -408,22 +403,15 @@ const SpeculativeScratch = struct {
         errdefer alloc.free(choices);
         const p = try alloc.alloc(inference.sampling.Candidate, vocabulary);
         errdefer alloc.free(p);
-        const q = try alloc.alloc(inference.sampling.Candidate, vocabulary);
-        errdefer alloc.free(q);
-        const residual = try alloc.alloc(inference.sampling.Candidate, vocabulary);
-        errdefer alloc.free(residual);
-        return .{ .drafts = drafts, .q_rows = q_rows, .rows = logits, .hidden = hidden, .tokens = tokens, .choices = choices, .p = p, .q = q, .residual = residual };
+        return .{ .drafts = drafts, .rows = logits, .hidden = hidden, .tokens = tokens, .choices = choices, .p = p };
     }
     fn deinit(self: *SpeculativeScratch, alloc: std.mem.Allocator) void {
         alloc.free(self.drafts);
-        alloc.free(self.q_rows);
         alloc.free(self.rows);
         alloc.free(self.hidden);
         alloc.free(self.tokens);
         alloc.free(self.choices);
         alloc.free(self.p);
-        alloc.free(self.q);
-        alloc.free(self.residual);
         self.* = undefined;
     }
 };
@@ -647,11 +635,14 @@ pub const Timing = struct {
     /// tokens needed the full-logit fallback (see reference/generation.md).
     topk_fallbacks: ?usize = null,
     /// Speculative decoding: verify batches run, drafts accepted and
-    /// proposed across them, and time spent in `verify` and `recover`.
+    /// proposed across them, and time spent in the model's `verify`, the
+    /// acceptance decision on the host (`accept`: the shaped distributions
+    /// and draws of the sampled path), and `recover`.
     speculative_steps: usize = 0,
     accepted_drafts: usize = 0,
     proposed_drafts: usize = 0,
     verify: std.Io.Duration = .zero,
+    accept: std.Io.Duration = .zero,
     recover: std.Io.Duration = .zero,
 };
 
@@ -878,7 +869,7 @@ pub fn runLoop(
             const result = speculativeBatch(eng, sampler, history, observer, s, token, k, greedy_verify, vocabulary, drafter.?) catch |err| switch (err) {
                 // A cancelled batch poisons the session exactly as a cancelled
                 // step does; the loop resets it and reports cancellation.
-                error.Canceled => {
+                error.Cancelled => {
                     resetAll(eng, history);
                     stop = .cancelled;
                     break;
@@ -890,6 +881,7 @@ pub fn runLoop(
             timing.accepted_drafts += result.accepted;
             timing.proposed_drafts += result.proposed;
             timing.verify = .{ .nanoseconds = timing.verify.nanoseconds + result.verify.nanoseconds };
+            timing.accept = .{ .nanoseconds = timing.accept.nanoseconds + result.accept.nanoseconds };
             timing.recover = .{ .nanoseconds = timing.recover.nanoseconds + result.recover.nanoseconds };
             // The accepted drafts and the correction go through the ordinary
             // per-token checks in order; the correction is the next batch's
@@ -950,15 +942,15 @@ pub fn runLoop(
 
 /// The accepted length, the model's next token, and the timings of one verify
 /// batch.
-const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, verify: std.Io.Duration, recover: std.Io.Duration };
+const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, verify: std.Io.Duration, accept: std.Io.Duration, recover: std.Io.Duration };
 
 /// Proposes `k` drafts from `seed_token`, checkpoints, verifies `[seed] ++
-/// drafts` on the main model, accepts the longest prefix (greedy by argmax,
-/// sampled by `min(1, p/q)` over penalties-shaped distributions), recovers the
-/// session to the accepted prefix, and advances the drafter over it. The
-/// caller emits the accepted drafts and the correction. A `k` of 0 still runs
-/// the single-token batch so the drafter's cache stays aligned with the
-/// committed token.
+/// drafts` on the main model, accepts the longest prefix (greedy: the row's
+/// argmax equals the draft; sampled: the row's own draw equals the draft),
+/// recovers the session to the accepted prefix, and advances the drafter over
+/// it. The caller emits the accepted drafts and the correction. A `k` of 0
+/// still runs the single-token batch so the drafter's cache stays aligned
+/// with the committed token.
 fn speculativeBatch(
     eng: *Engine,
     sampler: *inference.sampling.Sampler,
@@ -971,44 +963,50 @@ fn speculativeBatch(
     vocabulary: usize,
     drafter: inference.draft.Drafter,
 ) !BatchResult {
-    const n = try eng.model.propose(seed_token, s.drafts[0..k], if (greedy) null else s.q_rows[0 .. k * vocabulary]);
+    const n = try eng.model.propose(seed_token, s.drafts[0..k]);
     try eng.model.checkpoint();
     s.tokens[0] = seed_token;
     @memcpy(s.tokens[1 .. 1 + n], s.drafts[0..n]);
     const batch = s.tokens[0 .. 1 + n];
     const hidden = s.hidden[0 .. (1 + n) * drafter.hidden];
-    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .verify = .zero, .recover = .zero };
+    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .verify = .zero, .accept = .zero, .recover = .zero };
     const verify_start = std.Io.Clock.awake.now(eng.io);
     if (greedy) {
         try eng.model.verifyGreedy(batch, vocabulary, s.choices[0 .. 1 + n], hidden, observer);
+        const accept_start = std.Io.Clock.awake.now(eng.io);
+        result.verify = verify_start.durationTo(accept_start);
         while (result.accepted < n and s.choices[result.accepted] == s.drafts[result.accepted]) result.accepted += 1;
         result.correction = s.choices[result.accepted];
+        result.accept = accept_start.durationTo(std.Io.Clock.awake.now(eng.io));
     } else {
         try eng.model.verify(batch, vocabulary, s.rows[0 .. (1 + n) * vocabulary], hidden, observer);
-        // The target row `i`'s distribution sees the accepted drafts before it;
-        // a rejected draft is dropped and the correction drawn from the
-        // residual `max(0, p - q)`.
+        const accept_start = std.Io.Clock.awake.now(eng.io);
+        result.verify = verify_start.durationTo(accept_start);
+        // Row `i`'s shaped distribution sees the accepted drafts before it
+        // through the history; its own draw is the draft when they agree and
+        // the correction otherwise, so every emitted token is a target draw.
         var rejected = false;
         while (result.accepted < n) {
             const i = result.accepted;
             const p = try sampler.distribution(s.rows[i * vocabulary ..][0..vocabulary], s.p, history);
-            const q = try sampler.distribution(s.q_rows[i * vocabulary ..][0..vocabulary], s.q, history);
-            if (inference.speculative.accept(sampler, p, q, s.drafts[i])) {
-                if (history) |h| try h.observe(s.drafts[i]);
-                result.accepted += 1;
-            } else {
-                const correction_dist = try inference.speculative.residual(p, q, s.residual);
-                result.correction = inference.speculative.draw(sampler, if (correction_dist.len == 0) p else correction_dist);
-                rejected = true;
-                break;
+            switch (inference.speculative.decide(sampler, p, s.drafts[i])) {
+                .accepted => {
+                    if (history) |h| try h.observe(s.drafts[i]);
+                    result.accepted += 1;
+                },
+                .correction => |token| {
+                    result.correction = token;
+                    rejected = true;
+                    break;
+                },
             }
         }
         if (!rejected) {
             const p = try sampler.distribution(s.rows[n * vocabulary ..][0..vocabulary], s.p, history);
             result.correction = inference.speculative.draw(sampler, p);
         }
+        result.accept = accept_start.durationTo(std.Io.Clock.awake.now(eng.io));
     }
-    result.verify = verify_start.durationTo(std.Io.Clock.awake.now(eng.io));
     const recover_start = std.Io.Clock.awake.now(eng.io);
     try eng.model.recover(batch[0 .. 1 + result.accepted]);
     result.recover = recover_start.durationTo(std.Io.Clock.awake.now(eng.io));

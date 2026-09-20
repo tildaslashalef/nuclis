@@ -27,9 +27,9 @@ and provenance, and the measurements behind each catalogue verdict.
 
 `inference/src/runtime/draft.zig` owns the model-independent interface: a
 family exposes a `Drafter` (a host pointer and four function pointers)
-whose `propose(token, out, logits)` returns greedy candidates chained from
-the state after the last committed token and, when asked, one vocabulary
-row per proposed position for sampled acceptance; `commit(tokens, h_rows)`
+whose `propose(token, out)` returns greedy candidates chained from the
+state after the last committed token (no draft distribution: acceptance
+draws from the target alone, below); `commit(tokens, h_rows)`
 advances the drafter over tokens the main model committed using their
 target hidden; `reset()` clears the drafter's state; `bytes()` reports the
 workspace it owns beyond the session's. There is deliberately no
@@ -197,8 +197,8 @@ the prompt to the drafter in verify-sized chunks (the block's cache is
 filled from the target hidden of every committed position), then each step:
 proposes `k = min(draft_length, capacity − position − 1, budget_left)`
 drafts; checkpoints; verifies `[seed] ++ drafts`; accepts the longest prefix
-(greedy: `verifyGreedy` argmax equals the draft; sampled: `accept` over the
-shaped distributions); recovers the accepted prefix; commits it to the
+(greedy: `verifyGreedy` argmax equals the draft; sampled: the row's own
+draw equals the draft); recovers the accepted prefix; commits it to the
 drafter; and emits the accepted drafts and the correction through the
 ordinary per-token checks. The correction is emitted once and carried as the
 next step's seed. EOS, the budget, or the context limit inside a batch ends
@@ -209,14 +209,22 @@ materialized), and a per-layer observer disables speculation.
 
 **Sampled acceptance.** `inference/src/sampling/speculative.zig`:
 `Sampler.distribution` is the shaped, normalized nucleus (penalties, sort,
-top-k, temperature and `min_p`, top-p) factored from `select`; `accept`
-returns `min(1, p(draft)/q(draft))` with a draft absent from `p` rejected;
-`residual` normalizes `max(0, p − q)` and the correction is drawn from it (or
-from `p` when it is empty). The history advances through the accepted drafts,
-so row `i`'s penalties see the drafts before it. Unit tests draw 20,000
-seeded samples from fixed `p`/`q` tables and hold the empirical counts to the
-target within 3 σ, including a zero-probability draft, full rejection, and
-full acceptance.
+top-k, temperature and `min_p`, top-p) factored from `select`; `decide`
+draws the target's own token from row `i`'s distribution and accepts the
+draft when they agree, else the draw is the correction; after the last
+accepted row the draw is the bonus. Every emitted token is a draw from the
+target whatever proposed the drafts, which is what makes the rule exact for
+the greedy chains the drafters produce (the `min(1, p/q)` rejection rule with
+a residual correction is exact only for drafts sampled from `q`, so an
+earlier version of this module that used it against argmax drafts leaned
+toward the drafter's choice and was replaced on 2026-09-20). The history
+advances through the accepted drafts, so row `i`'s penalties see the drafts
+before it. Unit tests draw 20,000 seeded decisions against a fixed `p` for
+a draft the target never emits and for its most likely token and hold the
+emitted counts and the acceptance rate to `p` within 3 σ. The decision costs
+one full-vocabulary sort per row on the host (`Timing.accept`, the bench's
+`accept_milliseconds`), which the per-token GPU top-k path avoids in
+ordinary decoding; a per-row top-k readback in `verify` is the follow-up.
 
 **Evidence.** `generation-check --speculative-check`
 (`make speculative-check`, `make speculative-check-metal`) runs the model

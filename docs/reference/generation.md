@@ -174,16 +174,19 @@ are at most `max_draft_length + 1` (8).
 the block's cache holds the target hidden of every committed position. Each
 speculative step then: proposes `k` drafts (`drafter.propose`), checkpoints the
 session, verifies `[seed] ++ drafts`, accepts the longest matching prefix
-(greedy: row argmax equals the draft; sampled: `min(1, p/q)` over the shaped
-distributions), recovers the accepted prefix, commits it to the drafter, and
+(greedy: row argmax equals the draft; sampled: the row's own draw from its
+shaped distribution equals the draft), recovers the accepted prefix, commits
+it to the drafter, and
 emits the accepted drafts and the correction through the ordinary per-token
 path (history, hooks, stop, budget, context limit). A stop token inside the
 batch ends the turn there and the session recovers to the emitted prefix; a
 correction is emitted once and carried as the next batch's seed. Cancellation
 during `verify` poisons the session and the loop resets it, as a cancelled step
 does. The sampled path lives in `inference/src/sampling/speculative.zig`:
-`Sampler.distribution` is the shaped, normalized nucleus, `accept` is the
-`min(1, p/q)` test, and `residual` normalizes `max(0, p − q)`. Greedy
+`Sampler.distribution` is the shaped, normalized nucleus and `decide` draws
+the target's token from it, accepting the draft when they agree and taking
+the draw as the correction otherwise, so every emitted token is a target
+draw whatever proposed the drafts. Greedy
 speculation must equal ordinary greedy token for token, checked by
 `generation-check --speculative-check` (`make speculative-check`,
 `make speculative-check-metal`).

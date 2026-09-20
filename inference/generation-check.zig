@@ -76,14 +76,14 @@ fn boundsOf(comptime spec: Spec, binding: spec.Family.Binding) Bounds {
 /// Trace-style cancellation: after layer 3's values are available (the GPU
 /// plan has committed that layer).
 fn cancel(_: *anyopaque, layer: usize, _: []const f32) !void {
-    if (layer == 3) return error.Canceled;
+    if (layer == 3) return error.Cancelled;
 }
 /// Production-style cancellation through `check`: the fourth boundary, while
 /// the GPU plan is still recording, so partially recorded work is what runs.
 fn cancelCheck(context: *anyopaque) !void {
     const boundaries: *u8 = @ptrCast(context);
     boundaries.* += 1;
-    if (boundaries.* == 4) return error.Canceled;
+    if (boundaries.* == 4) return error.Cancelled;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -245,7 +245,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         context = 0;
         if (first.step(spec.tokens[0], null, observer)) |_| {
             return error.ExpectedCancellation;
-        } else |err| if (err != error.Canceled) return err;
+        } else |err| if (err != error.Cancelled) return err;
         if (first.step(spec.tokens[0], null, null)) |_| {
             return error.ExpectedPoisonedSession;
         } else |err| if (err != error.SessionNotReady) return err;
@@ -300,7 +300,7 @@ fn checkSnapshot(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
     // A poisoned session has no committed state to keep.
     first.reset();
     var context: u8 = 0;
-    if (first.step(word, null, .{ .context = &context, .check = cancelCheck })) |_| return error.ExpectedCancellation else |err| if (err != error.Canceled) return err;
+    if (first.step(word, null, .{ .context = &context, .check = cancelCheck })) |_| return error.ExpectedCancellation else |err| if (err != error.Cancelled) return err;
     if (first.state().snapshot(alloc)) |_| return error.ExpectedPoisonedSession else |err| if (err != error.SessionNotReady) return err;
     first.reset();
     std.debug.print("Snapshot check passed: restore reproduces the next step's logits bit for bit ({d} bytes at position 1), the continuation matches an unsnapshotted run, other capacities and poisoned sessions are refused.\n", .{snap.bytes()});
@@ -376,7 +376,7 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
     try first.step(tokens[0], null, null);
     try first.checkpoint();
     var context: u8 = 0;
-    if (first.prefill(tokens[1 .. 1 + rows], null, .{ .context = &context, .check = cancelCheck })) |_| return error.ExpectedCancellation else |err| if (err != error.Canceled) return err;
+    if (first.prefill(tokens[1 .. 1 + rows], null, .{ .context = &context, .check = cancelCheck })) |_| return error.ExpectedCancellation else |err| if (err != error.Cancelled) return err;
     if (first.checkpoint()) |_| return error.ExpectedPoisonedSession else |err| if (err != error.SessionNotReady) return err;
     if (first.rewind()) |_| return error.ExpectedPoisonedSession else |err| if (err != error.SessionNotReady) return err;
     first.reset();
@@ -714,7 +714,7 @@ const CancelAt = struct {
     at: usize,
     fn check(context: *anyopaque) !void {
         const self: *CancelAt = @ptrCast(@alignCast(context));
-        if (self.eng.model.session().position >= self.at) return error.Canceled;
+        if (self.eng.model.session().position >= self.at) return error.Cancelled;
     }
 };
 
@@ -774,8 +774,8 @@ fn DraftRunner(comptime spec: Spec) type {
         }
         fn propose(self: *@This(), token: u32, out: []u32) !usize {
             return switch (self.*) {
-                .cpu => |*r| r.propose(token, out, null),
-                .metal => |*p| p.propose(token, out, null),
+                .cpu => |*r| r.propose(token, out),
+                .metal => |*p| p.propose(token, out),
             };
         }
         fn commit(self: *@This(), tokens: []const u32, h_rows: []const f32) !void {

@@ -735,19 +735,16 @@ pub const Plan = struct {
     }
 
     /// Greedy candidates from the state after the last committed token, each
-    /// chained through the block's own hidden. `out.len` bounds the count;
-    /// `logits`, when given, holds one vocabulary row per proposed position.
-    pub fn propose(self: *Plan, token: u32, out: []u32, logits: ?[]f32) !usize {
+    /// chained through the block's own hidden; `out.len` bounds the count.
+    pub fn propose(self: *Plan, token: u32, out: []u32) !usize {
         if (!self.has_draft) return error.NoDraftBlock;
-        if (logits) |rows| if (rows.len != out.len * vocabulary) return error.InvalidShape;
         const start = self.state.position;
         var h_prev = self.draft_pending_h;
         var next = token;
         var count: usize = 0;
         while (count < out.len) : (count += 1) {
             var greedy: u32 = 0;
-            const row: ?[]f32 = if (logits) |rows| rows[count * vocabulary ..][0..vocabulary] else null;
-            try self.draftForward(h_prev, next, start + count, &greedy, row);
+            try self.draftForward(h_prev, next, start + count, &greedy, null);
             out[count] = greedy;
             next = greedy;
             h_prev = self.draft_chain;
@@ -780,9 +777,9 @@ pub const Plan = struct {
         if (!self.has_draft) return null;
         return .{ .host = self, .hidden = hidden, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32, logits: ?[]f32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
-        return self.propose(token, out, logits);
+        return self.propose(token, out);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Plan = @ptrCast(@alignCast(host));
