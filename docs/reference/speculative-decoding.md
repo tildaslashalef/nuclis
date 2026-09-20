@@ -535,3 +535,21 @@ rows-mode row, reading the resident row back when the readback defers
 (8/8 rows decided, 0 fallbacks, all equal); and `sampling/root.zig` tests
 `selectFromHistory` against `select` for hundreds of random vectors and
 option sets, including the deferrals.
+
+## The small-batch tile experiment (KERN-14, 2026-09-20, closed negative)
+
+Verify stayed the batch's whole cost after ENGN-15 (262–297 ms at 512
+tokens), so the plan's largest single lever was the small-batch matmul
+tile. The experiment: a 32-output-row variant of the 16×8 split-K tile,
+exactness-gated and measured against `Backend.matmulTile` as the fixed
+control on both FFN shapes and the head. It closed **negative**: the wide
+tile loses 8–26 % on the Qwen FFN encodings at 5 rows (Q4_K 96.8 → 88.7,
+Q6_K 114.0 → 84.6, Q3_K 63.0 → 47.1 GB/s), ties on Q5_K, and wins only
+5–8 % on the wide head; the best tile at 5 rows is 110 GB/s against the
+≤ 150 GB/s bar. Nothing routes to it, the 16×8 tile and the two-row matvec
+routing stay as they were, and full-model verify latency is unchanged.
+Numbers: [metal-backend.md § The wide 32×8 tile](metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative)
+and [bench.md § Small-batch tile sweep](bench.md#small-batch-tile-sweep-kern-14-2026-09-20).
+The verify lever that remains is KERN-16's long-context attention (and, for
+the short-context batch, ENGN-16's proposal policy, which trims what the
+verify is asked to do rather than making it cheaper).

@@ -68,7 +68,8 @@ const kernel_names = [_][:0]const u8{
     "nu_matvec_rows_q5_k_t3",   "nu_matvec_rows_q5_k_t4",   "nu_matvec_rows_q5_k_t5",   "nu_matvec_rows_q5_k_t6",   "nu_matvec_rows_q5_k_t7",   "nu_matvec_rows_q5_k_t8",
     "nu_matvec_rows_q6_k_t2",   "nu_matvec_rows_q6_k_t3",   "nu_matvec_rows_q6_k_t4",   "nu_matvec_rows_q6_k_t5",   "nu_matvec_rows_q6_k_t6",   "nu_matvec_rows_q6_k_t7",
     "nu_matvec_rows_q6_k_t8",   "nu_matvec_rows_iq4_xs_t2", "nu_matvec_rows_iq4_xs_t3", "nu_matvec_rows_iq4_xs_t4", "nu_matvec_rows_iq4_xs_t5", "nu_matvec_rows_iq4_xs_t6",
-    "nu_matvec_rows_iq4_xs_t7", "nu_matvec_rows_iq4_xs_t8",
+    "nu_matvec_rows_iq4_xs_t7", "nu_matvec_rows_iq4_xs_t8", "nu_matmul_q3_k_w8",        "nu_matmul_q4_k_w8",        "nu_matmul_q5_k_w8",        "nu_matmul_q6_k_w8",
+    "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -187,6 +188,15 @@ pub const Kernel = enum(u32) {
     matvec_rows_iq4_xs_t6,
     matvec_rows_iq4_xs_t7,
     matvec_rows_iq4_xs_t8,
+    matmul_q3_k_w8,
+    matmul_q4_k_w8,
+    matmul_q5_k_w8,
+    matmul_q6_k_w8,
+    matmul_iq3_s_w8,
+    matmul_iq4_xs_w8,
+    matmul_q4_0_w8,
+    matmul_pq2_0_w8,
+    matmul_ptq1_0_w8,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -503,6 +513,7 @@ pub const Backend = struct {
             .matmul => .{ .rows = 32, .tokens = 32, .half = false },
             .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
             .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
+            .matmul_q3_k_w8, .matmul_q4_k_w8, .matmul_q5_k_w8, .matmul_q6_k_w8, .matmul_iq3_s_w8, .matmul_iq4_xs_w8, .matmul_q4_0_w8, .matmul_pq2_0_w8, .matmul_ptq1_0_w8 => .{ .rows = 32, .tokens = 8, .half = true },
             else => .{ .rows = 32, .tokens = 32, .half = true },
         };
     }
@@ -516,14 +527,22 @@ pub const Backend = struct {
     /// range is aligned (`specializedMatmul`), every other case through the
     /// generic F32 tile (`matmulGeometry`).
     pub fn matmul(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
-        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, true);
+        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, .auto);
     }
     /// Same contract as `matmul`, but always uses a matrix tile. Keeps benchmark
     /// controls independent of production small-batch routing.
     pub fn matmulTile(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
-        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, false);
+        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, .tile);
     }
-    fn matmulImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize, allow_matvec_rows: bool) !void {
+    /// Same contract, forcing the wide 32×8 split-K tile (KERN-14's
+    /// candidate, measured against `matmulTile`'s 16×8 control). Rejected
+    /// when the encoding or alignment has no wide body, or past its 8-token
+    /// tile.
+    pub fn matmulTile32(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
+        return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, .wide);
+    }
+    const MatmulPolicy = enum { auto, tile, wide };
+    fn matmulImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize, policy: MatmulPolicy) !void {
         if (matrix.rows == 0 or matrix.rows % 8 != 0 or matrix.columns == 0 or matrix.columns % 64 != 0 or matrix.bytes.len % matrix.rows != 0) return error.InvalidShape;
         if (tokens == 0 or in_stride < matrix.columns or out_stride < matrix.rows) return error.InvalidShape;
         const stride = matrix.bytes.len / matrix.rows;
@@ -534,10 +553,16 @@ pub const Backend = struct {
         // A 2-row batch is a matvec problem, not a tile one, and only the
         // specialized bodies beat the tile: the generic `nu_matvec_rows` is
         // slower there (the sweep measures both).
-        if (allow_matvec_rows and usesMatvecRows(tokens) and !self.generic_only and
+        if (policy == .auto and usesMatvecRows(tokens) and !self.generic_only and
             specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset) != null)
             return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
-        const kernel = (if (self.generic_only) null else specializedMatmul(matrix.encoding, weights.offset, stride, tokens)) orelse .matmul;
+        const kernel = (if (self.generic_only) null else switch (policy) {
+            .auto, .tile => specializedMatmul(matrix.encoding, weights.offset, stride, tokens),
+            .wide => specializedMatmulWide(matrix.encoding, weights.offset, stride, tokens),
+        }) orelse blk: {
+            if (policy == .wide) return error.InvalidShape;
+            break :blk .matmul;
+        };
         const geometry = matmulGeometry(kernel);
         const row_tiles = (matrix.rows + geometry.rows - 1) / geometry.rows;
         // The buffers hold `padded` rows, a multiple of every token tile.
@@ -580,6 +605,24 @@ pub const Backend = struct {
             14 => .matvec_q6_k,
             23 => .matvec_iq4_xs,
             else => unreachable,
+        };
+    }
+    /// Picks the wide 32×8 split-K tile for the specialized encodings, up to
+    /// its 8-token tile. The KERN-14 experiment's candidate; nothing routes
+    /// to it in production.
+    pub fn specializedMatmulWide(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
+        if (tokens == 0 or tokens > 8 or !blockAligned(encoding, weight_offset, stride)) return null;
+        return switch (encoding) {
+            2 => .matmul_q4_0_w8,
+            142 => .matmul_pq2_0_w8,
+            143 => .matmul_ptq1_0_w8,
+            11 => .matmul_q3_k_w8,
+            21 => .matmul_iq3_s_w8,
+            12 => .matmul_q4_k_w8,
+            13 => .matmul_q5_k_w8,
+            14 => .matmul_q6_k_w8,
+            23 => .matmul_iq4_xs_w8,
+            else => null,
         };
     }
     /// Picks a specialized matmul tile under the same weight alignment

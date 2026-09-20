@@ -1293,3 +1293,41 @@ the KERN-13 pass) and prose 512 0.92 / 0.98 / 1.01× (was 0.76 / 0.82 /
 KERN-14 and ENGN-16 are next. The prose off baselines sit lower than the
 KERN-13 pass (8.20 vs 8.80–9.04) — the same clock drift within the session's
 runs, and the speedup columns are same-run pairs.
+
+## Small-batch tile sweep (KERN-14, 2026-09-20)
+
+The verify batch's small-batch tile experiment: a 32-output-row variant of
+the 16×8 split-K tile, measured by `make bench-matvec-rows ARGS="8 head"`
+against `Backend.matmulTile`'s 16×8 control (nothing routes to the
+candidate; `Backend.matmulTile32` calls it directly). Apple M4 Pro (48 GiB),
+Zig 0.16.0, ReleaseSafe, `d31c5cd` plus the unit's change, minimum of three
+measured command buffers after one warm-up, sixteen dispatches per buffer,
+synthetic quantization fixtures, no model loaded. Rates are logical weight
+bytes per GPU second. 16×8 → 32×8 GB/s at 2 / 5 / 8 tokens:
+
+| encoding | shape | 2 rows | 5 rows | 8 rows |
+| --- | --- | --- | --- | --- |
+| Q4_K | 17,408×5,120 | 96.3 → 87.7 | 96.8 → 88.7 | 96.7 → 87.7 |
+| Q4_K | 5,120×17,408 | 93.2 → 82.0 | 94.4 → 85.0 | 92.5 → 84.9 |
+| Q4_K | 248,320×5,120 | 92.3 → 86.3 | 92.2 → 85.6 | 95.3 → 87.1 |
+| Q5_K | 17,408×5,120 | 111.0 → 109.5 | 110.0 → 109.8 | 112.0 → 108.0 |
+| Q5_K | 5,120×17,408 | 105.6 → 104.3 | 109.4 → 100.7 | 106.2 → 102.1 |
+| Q5_K | 248,320×5,120 | 108.5 → 107.2 | 106.4 → 106.9 | 106.6 → 104.7 |
+| Q6_K | 17,408×5,120 | 114.4 → 90.0 | 114.0 → 84.6 | 114.1 → 90.8 |
+| Q6_K | 5,120×17,408 | 109.1 → 82.6 | 105.0 → 87.8 | 106.1 → 87.0 |
+| Q6_K | 248,320×5,120 | 108.6 → 88.0 | 109.2 → 89.0 | 110.2 → 90.1 |
+| IQ4_XS | 17,408×5,120 | 91.0 → 89.9 | 90.5 → 92.7 | 90.1 → 88.3 |
+| IQ4_XS | 5,120×17,408 | 87.4 → 89.0 | 85.9 → 89.3 | 87.1 → 89.4 |
+| IQ4_XS | 248,320×5,120 | 83.2 → 89.8 | 83.0 → 89.5 | 85.6 → 88.8 |
+| Q3_K | 17,408×5,120 | 63.6 → 47.7 | 63.0 → 47.1 | 58.5 → 45.2 |
+| Q3_K | 5,120×17,408 | 51.6 → 38.2 | 57.2 → 46.1 | 58.2 → 45.8 |
+| IQ3_S | 17,408×5,120 | 64.9 → 60.0 | 62.3 → 56.6 | 60.5 → 53.9 |
+| IQ3_S | 5,120×17,408 | 60.0 → 55.4 | 60.7 → 55.0 | 59.3 → 54.7 |
+
+**Reading.** The 32-row group loses 8–26 % on the Qwen FFN encodings at 5
+rows (Q4_K 96.8→88.7, Q6_K 114.0→84.6, Q3_K 63.0→47.1), ties on Q5_K, and
+wins only ~5–8 % on the wide head and IQ4_XS. No case reaches the ≤ 150
+GB/s bar. The 16×8 tile stays the verify control; the full-model verify
+latency is unchanged (262–297 ms per batch, the ENGN-15 pass above), since
+production routing never selects the candidate. Verdict in
+[metal-backend.md § The wide 32×8 tile](metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative).

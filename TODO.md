@@ -16,24 +16,26 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-ENGN-15 closed on 2026-09-20: the sampled acceptance decides each verify row
-from the device partial top-k (2 KB a row) instead of sorting the full
-logits. `accept` fell from 62.8–91.3 ms per batch to **18.8–36.9 µs** with
-penalties (0.1–0.2 µs greedy-sampled), `topk_fallbacks` is 0 everywhere,
-and code instruct (draft 4) rose 1.12× → **1.36×**, prose 512 instruct
-0.76 / 0.82 / 0.85× → **0.92 / 0.98 / 1.01×** at drafts 2 / 4 / 7. KERN-13
-landed immediately before it in the same session (the device penalty
-kernel; instruct baselines inside the greedy band). Facts:
-[speculative-decoding.md § Sampled acceptance on the device readback](docs/reference/speculative-decoding.md#sampled-acceptance-on-the-device-readback-engn-15-2026-09-20),
-the table in
-[bench.md § The ENGN-15 quick pass](docs/reference/bench.md#the-engn-15-quick-pass-2026-09-20),
-and the [log](docs/engineering-log.md#engn-15--sampled-acceptance-on-the-gpu-top-k-readback-2026-09-20).
+KERN-14 closed on 2026-09-20 **negative**: the wide 32×8 variant of the
+small-batch tile loses 8–26 % on the Qwen FFN encodings at 5 rows (Q4_K
+96.8 → 88.7, Q6_K 114.0 → 84.6, Q3_K 63.0 → 47.1 GB/s), ties on Q5_K, and
+wins only 5–8 % on the wide head — the best tile at 5 rows is 110 GB/s
+against the ≤ 150 bar. Nothing routes to it; the 16×8 tile and the two-row
+matvec routing stand, so full-model verify latency is unchanged (262–297 ms
+per batch). The wide kernels stay as the measured fixture. Verdict:
+[metal-backend.md § The wide 32×8 tile](docs/reference/metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative),
+sweep in
+[bench.md § Small-batch tile sweep](docs/reference/bench.md#small-batch-tile-sweep-kern-14-2026-09-20),
+[log](docs/engineering-log.md#kern-14--the-wide-328-small-batch-tile-measured-closed-negative-2026-09-20).
+Before it in the same session, KERN-13 (the device penalty kernel) and
+ENGN-15 (sampled acceptance on the per-row top-k) closed positive: `accept`
+fell from 62.8–91.3 ms per batch to **18.8–36.9 µs**, code instruct (draft
+4) rose to **1.36×**, prose 512 instruct to **0.92 / 0.98 / 1.01×** at
+drafts 2 / 4 / 7. The deferred CPU speculative check was run and passed (12
+tokens identical to ordinary greedy).
 
-**Next: KERN-14** (the small-batch matmul tile for the verify batch), then
-ENGN-16; KERN-14 closes with one quick `make speculative-record ARGS="--only
-prose512 code"` check and ENGN-17 runs the single full record. The deferred
-CPU speculative check was run and passed in the ENGN-15 session (12 tokens
-identical to ordinary greedy).
+**Next: ENGN-16** (the proposal policy: `p_min` early stop and an adaptive
+length), then KERN-15 and KERN-16, then ENGN-17's full record.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -60,7 +62,7 @@ here* for how to refresh them):
 | --- | ---: | --- | --- | ---: |
 | propose `k` drafts | 12.7–43.5 ms (≈ 6.3 ms per draft) | one block forward per draft | ENGN-16 | fewer forwards, same accepted tokens |
 | checkpoint | 2.8–5.2 ms | one 150 MB copy | — | — |
-| verify `1 + k` rows | 241–287 ms at 512, 362–372 ms at 4K | the 16×8 prefill tile at small row counts; the chunk attention over the visible cache | KERN-14 at 512, KERN-16 at long context | ≤ 130 ms |
+| verify `1 + k` rows | 262–297 ms at 512, 362–372 ms at 4K | the 16×8 prefill tile at small row counts; the chunk attention over the visible cache | KERN-16 at long context (KERN-14 closed negative) | ≤ 130 ms |
 | accept (sampled) | 18.8–36.9 µs (quick pass) | one draw per row on the device readback | ENGN-15 ✓ | ≤ 5 ms |
 | recover (on rejection) | 6–22 ms (was 150–182) | one 150 MB slot copy | ENGN-14 ✓ | ≤ 40 ms |
 | commit `a + 1` tokens | 4.7–15.3 ms | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
@@ -73,17 +75,18 @@ draft 4; prose 512 greedy 0.81 / 0.93 / 1.07×, instruct 0.92 / 0.98 / 1.01×.
 Both sampled paths are now free of host work; what remains is the batch's
 model time. At draft 4 the code prompt advances 3.34 tokens for a 272 ms
 verify (81 ms/token against ~115), prose 2.65 for 291 (110 against ~120).
-KERN-14's target (≤ 130 ms at 512) would put prose at draft 4 near 1.5× and
-code near 1.7×; ENGN-16 trims the proposal and the wasted rows on prose.
-Nothing here claims a final speedup before ENGN-17 measures it.
+KERN-14 closed negative, so the 512-token verify stays where it is;
+KERN-16's long-context attention is the remaining kernel lever, and
+ENGN-16 trims the proposal and the wasted rows on prose. Nothing here
+claims a final speedup before ENGN-17 measures it.
 
-Order: KERN-14 → ENGN-16 → KERN-15 → KERN-16 →
+Order: ENGN-16 → KERN-15 → KERN-16 →
 ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 → MODL-19 → MODL-20 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13 and ENGN-15 landed first
 because the instruct profile's presence penalty defeated the GPU top-k
-readback path otherwise. KERN-14 follows because verify is 70–80 % of a
-batch and its target is the plan's largest single lever; ENGN-16 is cheap
-and trims the prose waste after that. **KERN-15 and KERN-16 sit before ENGN-17
+readback path otherwise. KERN-14's small-batch tile closed negative, so
+verify stays on the 16×8 tile at 512; ENGN-16 is cheap and trims the prose
+waste, and KERN-15/KERN-16 are the remaining kernel levers. **KERN-15 and KERN-16 sit before ENGN-17
 because they change the Qwen path the verdict measures**: the split-K
 matvec touches Qwen's row-poor shapes, and the long-context attention is
 every verify batch at 16K–32K (and the 32K acceptance's largest deficit).
@@ -92,15 +95,14 @@ not speed), and KERN-17 (the ternary experiment) are other-family or
 experimental and sit after the verdict, grouped so the performance theme
 finishes in one stretch; TERM-10 (chat polish) and the vision units follow.
 The performance group closes in the order of measured leverage: the
-small-batch tile, the row-poor matvecs (two thirds of Muse's gap, and every
-family's small projections), the long-context prefill attention, Gemma's
-decode, the ring layout, and last the ternary arithmetic, which is the
-least certain and may close negative. AGNT-12 (background commands) and
+row-poor matvecs (two thirds of Muse's gap, and every family's small
+projections), the long-context prefill attention, Gemma's decode, the ring
+layout, and last the ternary arithmetic, which is the least certain and may
+close negative; the small-batch tile led the order and closed negative. AGNT-12 (background commands) and
 APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-14 | The small-batch matmul tile for the verify batch (32-row threadgroups) | 1–2 |
 | ENGN-16 | Draft proposal policy: `p_min` early stop and an adaptive length | 1 |
 | KERN-15 | Split-K decode matvec for row-poor shapes (Muse's gap, every family's small projections) | 1–2 |
 | KERN-16 | Long-context prefill attention, second attempt (register-level reuse) | 2 |

@@ -1130,6 +1130,45 @@ table above).**
 | PQ2_0 | 97 | 45.3 | 45.3 | 45.3 | 13.7 | 9.2 | 7.7 | 13.6 |
 | PTQ1_0 | 83 | 21.8 | 29.0 | 29.0 | 10.4 | 6.7 | 6.1 | 8.6 |
 
+### The wide 32×8 tile (KERN-14, 2026-09-20; closed negative)
+
+The verify batch's small-batch tile was the plan's largest single lever
+(241–297 ms per batch at 512 tokens, 70–80 % of a speculative batch), so
+KERN-14 tried one variant of the 16×8 split-K tile: 32 output rows per
+128-thread group (`nu_matmul_wide_body`, the `_w8` instantiations), where
+each lane owns a row and four 8-row accumulator blocks share one B load per
+K step, halving the gathered activation traffic per weight byte. Nothing
+routes to it in production; `Backend.matmulTile32` measures it against
+`Backend.matmulTile`'s 16×8 control in `make bench-matvec-rows`, and
+`test-metal` exactness-gates it against the generic F32 tile at the
+half-tile bound.
+
+`make bench-matvec-rows ARGS="8 head"`, Apple M4 Pro (48 GiB), Zig 0.16.0,
+ReleaseSafe, `d31c5cd` plus this unit's change, minimum of three measured
+command buffers after one warm-up, sixteen dispatches per buffer, synthetic
+quantization fixtures. GB/s of logical weight bytes; the numbers are the
+minimum measured buffer. 16×8 / 32×8 at 2, 5, and 8 tokens:
+
+| Encoding | gate 17,408×5,120 | down 5,120×17,408 | head 248,320×5,120 |
+| --- | --- | --- | --- |
+| Q4_K | 96.3/87.7, 96.8/88.7, 96.7/87.7 | 93.2/82.0, 94.4/85.0, 92.5/84.9 | 92.3/86.3, 92.2/85.6, 95.3/87.1 |
+| Q5_K | 111.0/109.5, 110.0/109.8, 112.0/108.0 | 105.6/104.3, 109.4/100.7, 106.2/102.1 | 108.5/107.2, 106.4/106.9, 106.6/104.7 |
+| Q6_K | 114.4/90.0, 114.0/84.6, 114.1/90.8 | 109.1/82.6, 105.0/87.8, 106.1/87.0 | 108.6/88.0, 109.2/89.0, 110.2/90.1 |
+| IQ4_XS | 91.0/89.9, 90.5/92.7, 90.1/88.3 | 87.4/89.0, 85.9/89.3, 87.1/89.4 | 83.2/89.8, 83.0/89.5, 85.6/88.8 |
+| Q3_K | 63.6/47.7, 63.0/47.1, 58.5/45.2 | 51.6/38.2, 57.2/46.1, 58.2/45.8 | — |
+| IQ3_S | 64.9/60.0, 62.3/56.6, 60.5/53.9 | 60.0/55.4, 60.7/55.0, 59.3/54.7 | — |
+
+**Verdict: negative.** The 32-row group loses on the shapes that matter
+(Q4_K −8 %, Q6_K −26 %, Q3_K −25 % at 5 rows), ties on Q5_K, and gains only
+on the wide head and IQ4_XS (~5–8 %), never approaching the ≤ 150 GB/s
+acceptance bar (the best tile at 5 rows is Q5_K's 110 GB/s). Halving the
+activation reads did not pay for the wider tile's register pressure and
+longer per-step dependency chain; the 16×8 control stands and production
+routing is untouched (the two-row matvec routing included). The numbers are
+in [bench.md § Small-batch tile sweep](bench.md#small-batch-tile-sweep-kern-14-2026-09-20);
+the full-model verify latency is unchanged from the ENGN-15 quick pass
+(262–297 ms), since nothing routes to the candidate.
+
 ## Merged projections (KERN-04)
 
 `Backend.matvecSegments` accepts up to four borrowed matrix/output descriptors

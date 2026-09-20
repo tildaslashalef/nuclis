@@ -325,7 +325,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     const input = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(max_rows) * (if (with_head) head_shape.rows else 17408) * 4);
-    std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "tile ms", "tile GB/s", "rows ms", "rows GB/s", rounds, repeats });
+    std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "16x8 ms", "16x8 GB/s", "32x8 ms", "32x8 GB/s", "rows ms", "rows GB/s", rounds, repeats });
     inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
@@ -364,6 +364,16 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
             if (i == 0) continue;
             tile_ms = @min(tile_ms, ms);
         }
+        var wide_ms: f64 = std.math.nan(f64);
+        if (Backend.specializedMatmulWide(encoding, weights.offset, region.len / shape.rows, tokens) != null) for (0..rounds + 1) |i| {
+            const before = b.gpuSeconds();
+            try b.begin();
+            for (0..repeats) |_| try b.matmulTile32(weights, matrix, input, shape.columns, output, shape.rows, tokens);
+            try b.commit();
+            const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
+            if (i == 0) continue;
+            wide_ms = if (i == 1) ms else @min(wide_ms, ms);
+        };
         var rows_ms: f64 = std.math.nan(f64);
         if (tokens >= 2) for (0..rounds + 1) |i| {
             const before = b.gpuSeconds();
@@ -375,6 +385,7 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
             rows_ms = if (i == 1) ms else @min(rows_ms, ms);
         };
         std.debug.print("{s:<8} {s:<13} {d:>5} {d:>10.2} {d:>8.1} ", .{ name, shape.name, tokens, tile_ms, bytes_mb / tile_ms });
+        if (std.math.isNan(wide_ms)) std.debug.print("{s:>10} {s:>8} ", .{ "—", "—" }) else std.debug.print("{d:>10.2} {d:>8.1} ", .{ wide_ms, bytes_mb / wide_ms });
         if (tokens >= 2) std.debug.print("{d:>10.2} {d:>8.1}\n", .{ rows_ms, bytes_mb / rows_ms }) else std.debug.print("{s:>10} {s:>8}\n", .{ "—", "—" });
     }
 }
@@ -1486,6 +1497,24 @@ pub fn main(init: std.process.Init) !void {
                                             std.debug.print("matmul specialized tile differs from generic (encoding {d}, token {d}, row {d}): {d} vs {d}\n", .{ sample.encoding, t, r, got, generic });
                                             return error.MetalMismatch;
                                         }
+                                    }
+                                }
+                            }
+                            // The wide 32×8 tile (KERN-14) must land on the
+                            // same rows within the half-tile bound; it is an
+                            // experiment, so nothing routes to it.
+                            if (Backend.specializedMatmulWide(sample.encoding, weights.offset, stride, mm_tokens) != null) {
+                                for (out.floats()) |*v| v.* = std.math.nan(f32);
+                                try b.begin();
+                                try b.matmulTile32(weights, matrix, activations, columns, out, mm_rows, mm_tokens);
+                                try b.commit();
+                                for (0..mm_tokens) |t| {
+                                    const x = activations.floats()[t * columns ..][0..columns];
+                                    for (0..mm_rows) |r| {
+                                        try inference.quant.row(sample.encoding, region[r * stride ..][0..stride], decoded);
+                                        var mass: f64 = 0;
+                                        for (decoded, x) |w, xv| mass += @abs(@as(f64, w) * xv);
+                                        try expectClose("matmul wide tile vs generic F32 tile", out.floats()[t * mm_rows + r], generic_out.floats()[t * mm_rows + r], @floatCast(mass * 2e-4 + 1e-6));
                                     }
                                 }
                             }

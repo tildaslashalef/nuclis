@@ -100,6 +100,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-14 | Recovery without the whole-stack replay: per-row recurrent checkpoints | 2026-09-20 (two sessions) |
 | KERN-13 | A GPU penalty kernel: the token history applied on the device before the top-k | 2026-09-20 |
 | ENGN-15 | Sampled acceptance on the GPU top-k readback | 2026-09-20 |
+| KERN-14 | The wide 32×8 small-batch tile: measured, closed negative | 2026-09-20 |
 
 ## Context
 
@@ -3472,3 +3473,46 @@ A row whose penalties can raise values, a penalized greedy verify
 (`temperature 0` with penalties), and a `top_k = 0` nucleus under penalties
 still take the full-row fallback by design; none of the record's
 configurations hits them.
+
+### KERN-14 — The wide 32×8 small-batch tile: measured, closed negative (2026-09-20)
+
+**Outcome.** The verify batch's small-batch tile experiment closed negative
+and nothing routes to it. One new variant of the 16×8 split-K tile: 32
+output rows per 128-thread group (`nu_matmul_wide_body`, the `_w8`
+instantiations for the seven specialized encodings), where each lane owns a
+row and four 8-row accumulator blocks share one B load per K step, halving
+the gathered activation traffic per weight byte. `Backend.matmulTile32`
+forces it, `specializedMatmulWide` picks it, `matmulGeometry` labels it
+32×8, and the production `matmul` policy is untouched (`.auto`, the 16×8
+tile, and the two-row matvec routing as before). The design's second
+experiment (a blocked activation read) was not run: the first variant's
+regression is a tile-shape effect, not an activation-load effect, and the
+head/FFN split shows no promising half.
+
+**Evidence.** `make bench-matvec-rows ARGS="8 head"` (Apple M4 Pro 48 GiB,
+Zig 0.16.0, ReleaseSafe, `d31c5cd` plus the change; minimum of three
+measured command buffers after one warm-up, sixteen dispatches per buffer;
+[bench.md § Small-batch tile sweep](reference/bench.md#small-batch-tile-sweep-kern-14-2026-09-20)).
+At 5 rows, 16×8 → 32×8 GB/s: Q4_K 96.8 → 88.7 (gate), 94.4 → 85.0 (down);
+Q6_K 114.0 → 84.6 and 105.0 → 87.8; Q3_K 63.0 → 47.1 and 57.2 → 46.1;
+IQ3_S 62.3 → 56.6 and 60.7 → 55.0; Q5_K 110.0 → 109.8 and 109.4 → 100.7;
+IQ4_XS 90.5 → 92.7 and 85.9 → 89.3; head IQ4_XS 83.0 → 89.5, Q6_K 109.2 →
+89.0. No shape reaches the ≤ 150 GB/s bar (the best at 5 rows is 110). The
+same trend holds at 2 and 8 rows. `make test-metal` passes with the wide
+tile exactness-gated against the generic F32 tile at the half-tile bound
+(2e-4 relative to Σ|w·x|) on both FFN shapes at 1/5/8/9/16/20/37 tokens,
+and `make check` passes. The full-model verify latency is unchanged from
+the ENGN-15 pass (262–297 ms per batch) because production never selects
+the candidate; the 2-row routing is not regressed (nothing changed in it).
+
+**Files.** `inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
+`docs/reference/{metal-backend,speculative-decoding,bench}.md`, `TODO.md`,
+and this log.
+
+**Remaining.** Verify stays bounded by the 16×8 tile (and the visible-cache
+attention) at 512; KERN-16 attacks the long-context case and ENGN-16 trims
+what the verify is asked to do. The wide kernels stay instantiated as the
+measured fixture (`matmulTile32`); removing them would remove the record
+from the tree, which the repo's convention keeps (KERN-12's unused token
+counts).
