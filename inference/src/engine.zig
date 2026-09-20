@@ -367,6 +367,15 @@ pub const Model = struct {
             // state is already a function of those tokens, so nothing is
             // rewound or replayed.
             if (accepted.len == self.session().position - at) return stats;
+            // A batch that kept row checkpoints restores the accepted row
+            // directly: one copy, no replay. The CPU reference and a batch
+            // past the region replay below.
+            if (accepted.len > 0 and self.session().row_checkpoints > 0 and accepted.len <= self.session().row_checkpoint_rows) {
+                const restore_start = std.Io.Clock.awake.now(io);
+                try self.sessionMut().restoreRow(accepted.len - 1);
+                stats.rewind = restore_start.durationTo(std.Io.Clock.awake.now(io));
+                return stats;
+            }
             const rewind_start = std.Io.Clock.awake.now(io);
             try self.rewind();
             stats.rewind = rewind_start.durationTo(std.Io.Clock.awake.now(io));

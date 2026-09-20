@@ -121,7 +121,7 @@ pub const Plan = struct {
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
         var layouts: [model.layer_count]session.Layout = undefined;
         for (&layouts) |*layout| layout.* = .{ .attention = .{ .key_row = kv_width, .value_row = kv_width, .precision = kv } };
-        var state = try session.Session.init(alloc, &layouts, capacity, checkpoint);
+        var state = try session.Session.init(alloc, &layouts, capacity, checkpoint, 0);
         errdefer state.deinit();
         const constants = try alloc.alloc(LayerConstants, model.layer_count);
         errdefer alloc.free(constants);

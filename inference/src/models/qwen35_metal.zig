@@ -29,6 +29,10 @@ const ffn = 17408;
 /// seed token and bonus. Sizes the device buffers the output head reads back
 /// (about 16 MB of logits), not the layer activations, which are chunk-sized.
 pub const max_verify_rows = 16;
+/// Rows one recovery row-checkpoint region covers: the host's
+/// `engine.max_draft_length` plus the seed. A longer batch writes no slots and
+/// falls back to rewind and replay.
+pub const max_draft_rows = 8;
 
 const LayerConstants = struct {
     attention_norm: Buffer,
@@ -169,7 +173,7 @@ pub const Plan = struct {
             .delta_net => .{ .recurrent = .{ .history = 10240 * 3, .matrix = 48 * 128 * 128 } },
         };
         if (draft) layouts[text] = .{ .attention = .{ .key_row = 1024, .value_row = 1024, .precision = kv } };
-        var state = try session.Session.init(alloc, layouts[0 .. text + @intFromBool(draft)], capacity, checkpoint);
+        var state = try session.Session.init(alloc, layouts[0 .. text + @intFromBool(draft)], capacity, checkpoint, if (draft and checkpoint) max_draft_rows else 0);
         errdefer state.deinit();
         const constants = try alloc.alloc(LayerConstants, binding.layers.len);
         errdefer alloc.free(constants);
@@ -514,7 +518,7 @@ pub const Plan = struct {
         const b = self.backend;
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
-        try self.recordLayers(tokens, count, observer);
+        try self.recordLayers(tokens, count, observer, 0);
         if (hidden_rows != null) {
             // Normalize every row, as `verify` does; the last row also serves
             // the output head when a readback was asked for.
@@ -540,7 +544,7 @@ pub const Plan = struct {
     /// caller owns the command buffer (`begin`/`commit`) and the state
     /// admission (`beginChunk`/`commitChunk`); `prefillChunk` and `verify`
     /// share it so the schedule is written once.
-    fn recordLayers(self: *Plan, tokens: []const u32, count: usize, observer: ?Observer) !void {
+    fn recordLayers(self: *Plan, tokens: []const u32, count: usize, observer: ?Observer, row_states: usize) !void {
         const b = self.backend;
         const embedding = try self.weight(self.binding.token_embedding);
         for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
@@ -550,7 +554,7 @@ pub const Plan = struct {
             try b.rmsNorm(self.x_c, c.attention_norm, self.normalized_c, norm);
             switch (layer.mixer) {
                 .full_attention => |attn| try self.attentionChunk(attn, c.mixer.full_attention, il, count, self.state.position),
-                .delta_net => |linear| try self.deltaChunk(linear, c.mixer.delta_net, il, count),
+                .delta_net => |linear| try self.deltaChunk(linear, c.mixer.delta_net, il, count, row_states),
             }
             try b.add(self.x_c, self.projected_c, count * hidden);
             try b.rmsNorm(self.x_c, c.post_attention_norm, self.normalized_c, norm);
@@ -583,9 +587,10 @@ pub const Plan = struct {
         try self.state.beginChunk(count);
         errdefer self.state.fail();
         const b = self.backend;
+        const row_states = self.recoveryRows(count);
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
-        try self.recordLayers(tokens, count, observer);
+        try self.recordLayers(tokens, count, observer, row_states);
         try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
         if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
         try self.rotate(self.normalized_c, hidden, count);
@@ -595,6 +600,7 @@ pub const Plan = struct {
         if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
         @memcpy(rows, self.verify_logits.floats()[0 .. count * vocabulary]);
         try self.state.commitChunk(count);
+        self.state.row_checkpoint_rows = row_states;
     }
 
     /// `verify`'s greedy sibling: per-row argmax read back (four bytes a row),
@@ -612,9 +618,10 @@ pub const Plan = struct {
         try self.state.beginChunk(count);
         errdefer self.state.fail();
         const b = self.backend;
+        const row_states = self.recoveryRows(count);
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
-        try self.recordLayers(tokens, count, observer);
+        try self.recordLayers(tokens, count, observer, row_states);
         try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
         if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
         try self.rotate(self.normalized_c, hidden, count);
@@ -629,12 +636,21 @@ pub const Plan = struct {
             token.* = id;
         }
         try self.state.commitChunk(count);
+        self.state.row_checkpoint_rows = row_states;
     }
 
     /// Batched projection over `count` token rows.
     fn mmRows(self: *Plan, tensor: *const Tensor, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, count: usize) !void {
         const w = try self.weight(tensor);
         try self.backend.matmul(w.buffer, w.matrix, input, in_stride, output, out_stride, count);
+    }
+
+    /// Rows a verify batch checkpoints for recovery: every row when the
+    /// session has a row region and the batch fits it, else none (recovery
+    /// then falls back to rewind and replay).
+    fn recoveryRows(self: *Plan, count: usize) usize {
+        if (self.state.row_checkpoints == 0 or count > max_draft_rows) return 0;
+        return count;
     }
 
     fn attentionChunk(self: *Plan, attn: model.FullAttention, c: anytype, il: usize, count: usize, position: usize) !void {
@@ -676,9 +692,12 @@ pub const Plan = struct {
         try self.mmRows(attn.output, self.mixed_out_c, 6144, self.projected_c, hidden, count);
     }
 
-    fn deltaChunk(self: *Plan, linear: model.DeltaNet, c: anytype, il: usize, count: usize) !void {
+    fn deltaChunk(self: *Plan, linear: model.DeltaNet, c: anytype, il: usize, count: usize, row_states: usize) !void {
         const b = self.backend;
         const state = self.state.layers[il].recurrent;
+        // A verify batch also fills the row slots `recover` restores from.
+        const slot = if (row_states > 0) try self.state.rowSlotLayer(il) else null;
+        const slot_stride = if (slot) |s| s.stride / 4 else 0;
         // The gating projections read the residual before its transform.
         try self.mmRows(linear.beta, self.normalized_c, hidden, self.beta_c, 48, count);
         try self.mmRows(linear.alpha, self.normalized_c, hidden, self.alpha_c, 48, count);
@@ -687,13 +706,17 @@ pub const Plan = struct {
         try self.mmRows(linear.gate, self.normalized_c, hidden, self.z_c, 6144, count);
         const history = self.stateFloats(state.history);
         try b.convolutionRows(history, self.mixed_c, c.convolution, self.convolved_c, 10240, 4, count, 10240);
-        try b.convolutionHistory(history, self.mixed_c, 10240, 4, count, 10240);
+        try b.convolutionHistory(history, self.mixed_c, .{
+            .base = if (slot) |s| self.stateSlice(s.history) else history,
+            .states = row_states,
+            .stride = slot_stride,
+        }, 10240, 4, count, 10240);
         try b.silu(self.convolved_c, count * 10240);
         try b.l2NormRows(self.convolved_c, count, 32, 128, 128, 10240, 1e-6);
         try b.deltaGatesRows(self.alpha_c, self.beta_c, c.a, c.time_bias, 48, count);
         // One chunkwise dispatch for the whole chunk: the WY form over
         // 32-token sub-chunks with the state carried in place.
-        try b.deltaChunk(self.stateFloats(state.matrix), self.convolved_c, self.alpha_c, self.beta_c, self.mixed_out_c, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = count, .in_stride = 10240, .gate_stride = 48, .out_stride = 6144, .scale = 1.0 / @sqrt(@as(f32, 128)) });
+        try b.deltaChunk(self.stateFloats(state.matrix), self.convolved_c, self.alpha_c, self.beta_c, self.mixed_out_c, if (slot) |s| self.stateSlice(s.matrix) else self.stateFloats(state.matrix), .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = count, .in_stride = 10240, .gate_stride = 48, .out_stride = 6144, .row_states = row_states, .row_stride = slot_stride, .scale = 1.0 / @sqrt(@as(f32, 128)) });
         try b.rmsNorm(self.mixed_out_c, c.norm, self.mixed_out_c, .{ .rows = count * 48, .width = 128, .in_stride = 128, .out_stride = 128, .silu_multiplier = .{ .buffer = self.z_c, .stride = 128 } });
         const out_input = try self.rotateGrouped(self.mixed_out_c, count, true);
         try self.mmRows(linear.output, out_input, 6144, self.projected_c, hidden, count);

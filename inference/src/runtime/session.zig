@@ -118,9 +118,21 @@ pub const Session = struct {
     /// The position `checkpoint` recorded, or null when none is live. Cleared
     /// by `reset` and `restore`, whose rewrites make the region stale.
     checkpoint_position: ?usize = null,
+    /// Row checkpoints: `row_checkpoints` page-aligned slots of one recurrent
+    /// copy each, laid out like `checkpoint_region`, for a verifier that keeps
+    /// the state after every batch row. Only with a checkpoint region.
+    row_checkpoints: usize = 0,
+    row_region: []u8 = &.{},
+    /// Bytes of one row slot (`checkpointBytes`), the stride between slots.
+    row_slot_bytes: usize = 0,
+    /// Slots the last forward wrote and that are still valid; any new chunk
+    /// clears it. `restoreRow` is the only reader.
+    row_checkpoint_rows: usize = 0,
 
-    pub fn init(gpa: std.mem.Allocator, layouts: []const Layout, capacity: usize, want_checkpoint: bool) !Session {
+    pub fn init(gpa: std.mem.Allocator, layouts: []const Layout, capacity: usize, want_checkpoint: bool, row_checkpoints: usize) !Session {
         if (capacity == 0 or capacity > 32768 or layouts.len == 0 or layouts.len > 1024) return error.InvalidShape;
+        if (row_checkpoints > 0 and !want_checkpoint) return error.InvalidShape;
+        if (row_checkpoints > 1024) return error.InvalidShape;
         var total: usize = 0;
         for (layouts) |layout| {
             const n = try sizes(layout, capacity);
@@ -128,9 +140,15 @@ pub const Session = struct {
             if (total > max_bytes) return error.LimitExceeded;
         }
         const checkpoint_bytes = if (want_checkpoint) try checkpointBytes(layouts) else 0;
+        var row_bytes: usize = 0;
         if (want_checkpoint) {
             // The region starts on its own page so it is GPU-bindable alone.
             total = try std.math.add(usize, std.mem.alignForward(usize, total, page), checkpoint_bytes);
+            if (total > max_bytes) return error.LimitExceeded;
+        }
+        if (row_checkpoints > 0) {
+            row_bytes = try std.math.mul(usize, checkpoint_bytes, row_checkpoints);
+            total = try std.math.add(usize, std.mem.alignForward(usize, total, page), row_bytes);
             if (total > max_bytes) return error.LimitExceeded;
         }
         const layers = try gpa.alloc(Layer, layouts.len);
@@ -156,8 +174,22 @@ pub const Session = struct {
                 .recurrent => .{ .recurrent = .{ .history = asFloats(first), .matrix = asFloats(second) } },
             };
         }
-        const region: []u8 = if (want_checkpoint) memory[std.mem.alignForward(usize, cursor, page)..][0..checkpoint_bytes] else &.{};
-        return .{ .gpa = gpa, .memory = memory, .layers = layers, .capacity = capacity, .layout_digest = digest(layouts, capacity), .checkpoint_enabled = want_checkpoint, .checkpoint_region = region };
+        const region_start = std.mem.alignForward(usize, cursor, page);
+        const region: []u8 = if (want_checkpoint) memory[region_start..][0..checkpoint_bytes] else &.{};
+        const row_start = std.mem.alignForward(usize, region_start + checkpoint_bytes, page);
+        const row_region: []u8 = if (row_checkpoints > 0) memory[row_start..][0..row_bytes] else &.{};
+        return .{
+            .gpa = gpa,
+            .memory = memory,
+            .layers = layers,
+            .capacity = capacity,
+            .layout_digest = digest(layouts, capacity),
+            .checkpoint_enabled = want_checkpoint,
+            .checkpoint_region = region,
+            .row_checkpoints = row_checkpoints,
+            .row_region = row_region,
+            .row_slot_bytes = if (row_checkpoints > 0) checkpoint_bytes else 0,
+        };
     }
     /// Order-sensitive hash of every layout field and the capacity.
     fn digest(layouts: []const Layout, capacity: usize) u64 {
@@ -232,11 +264,13 @@ pub const Session = struct {
         try self.commitChunk(1);
     }
     /// Admission for `count` positions at once (chunked prefill): the whole
-    /// chunk must fit, so a chunk never half-fills the context.
+    /// chunk must fit, so a chunk never half-fills the context. A new chunk
+    /// invalidates the row checkpoints of the last one.
     pub fn beginChunk(self: *Session, count: usize) !void {
         if (self.status != .ready) return error.SessionNotReady;
         if (count == 0) return error.InvalidShape;
         if (count > self.capacity - self.position) return error.ContextFull;
+        self.row_checkpoint_rows = 0;
         self.status = .updating;
     }
     pub fn commitChunk(self: *Session, count: usize) !void {
@@ -274,6 +308,7 @@ pub const Session = struct {
         };
         std.debug.assert(cursor == self.checkpoint_region.len);
         self.checkpoint_position = self.position;
+        self.row_checkpoint_rows = 0;
     }
     /// Returns to the last `checkpoint`: the recurrent copy is restored and
     /// the position set. `NoCheckpoint` without one; `SessionNotReady` on an
@@ -293,6 +328,76 @@ pub const Session = struct {
         };
         std.debug.assert(cursor == self.checkpoint_region.len);
         self.position = at;
+        self.row_checkpoint_rows = 0;
+    }
+    /// Returns to the state after row `slot` of the last verify batch: slot `r`
+    /// holds the recurrent state after the batch's first `r + 1` rows, copied
+    /// back here, and the position becomes the checkpoint's plus `r + 1`.
+    /// Attention rows past the position are ignored by contract, so nothing
+    /// else is touched; a slot is written by the kernel that ran the batch.
+    /// Refusals: `SessionNotReady`, `NoCheckpoint` without a live checkpoint,
+    /// `NoRowCheckpoints` without a row region, `RowNotCheckpointed` past the
+    /// rows the last forward wrote.
+    pub fn restoreRow(self: *Session, slot: usize) !void {
+        if (self.status != .ready) return error.SessionNotReady;
+        const at = self.checkpoint_position orelse return error.NoCheckpoint;
+        if (self.row_checkpoints == 0) return error.NoRowCheckpoints;
+        if (slot >= self.row_checkpoint_rows or slot >= self.row_checkpoints) return error.RowNotCheckpointed;
+        var cursor: usize = 0;
+        for (self.layers) |layer| switch (layer) {
+            .attention => {},
+            .recurrent => |r| for ([_][]f32{ r.history, r.matrix }) |values| {
+                const slice = std.mem.sliceAsBytes(values);
+                const from = self.row_region[slot * self.row_slot_bytes + cursor ..][0..slice.len];
+                @memcpy(slice, from);
+                cursor += aligned(slice.len);
+            },
+        };
+        std.debug.assert(cursor == self.row_slot_bytes);
+        self.position = at + slot + 1;
+        for (self.layers, 0..) |layer, i| switch (layer) {
+            .attention => {},
+            .recurrent => |r| {
+                for ([_][]f32{ r.history, r.matrix }) |values| {
+                    for (values, 0..) |v, vi| {
+                        if (!std.math.isFinite(v)) {
+                            std.debug.print("restoreRow: slot {d} layer {d} index {d} non-finite {e}\n", .{ slot, i, vi, v });
+                            break;
+                        }
+                    }
+                }
+            },
+        };
+    }
+    /// Recurrent layer `il`'s row-slot geometry for the verifier that fills it:
+    /// a view of every slot of the layer's history and matrix and the byte
+    /// stride between slots, so slot `r`'s matrix sits at
+    /// `matrix.ptr + r * stride`. The views span all slots (they include the
+    /// other layers' bytes in between); only each slot's own region is written.
+    /// `InvalidShape` for an attention layer or an out-of-range index.
+    pub const RowSlotLayer = struct { history: []u8, matrix: []u8, stride: usize };
+    pub fn rowSlotLayer(self: *const Session, il: usize) !RowSlotLayer {
+        if (self.row_checkpoints == 0) return error.NoRowCheckpoints;
+        if (il >= self.layers.len) return error.InvalidShape;
+        const r = switch (self.layers[il]) {
+            .recurrent => |x| x,
+            .attention => return error.InvalidShape,
+        };
+        var cursor: usize = 0;
+        for (self.layers[0..il]) |prev| switch (prev) {
+            .attention => {},
+            .recurrent => |x| {
+                for ([_][]f32{ x.history, x.matrix }) |values| cursor += aligned(std.mem.sliceAsBytes(values).len);
+            },
+        };
+        const history = std.mem.sliceAsBytes(r.history);
+        const matrix = std.mem.sliceAsBytes(r.matrix);
+        const span = (self.row_checkpoints - 1) * self.row_slot_bytes;
+        return .{
+            .history = self.row_region[cursor..][0 .. span + history.len],
+            .matrix = self.row_region[cursor + aligned(history.len) ..][0 .. span + matrix.len],
+            .stride = self.row_slot_bytes,
+        };
     }
     /// Moves the position back without touching layer memory. Only an
     /// attention-only layout may truncate: a recurrent state is a function of
@@ -305,12 +410,14 @@ pub const Session = struct {
         if (position < self.position and self.hasRecurrent()) return error.RecurrentStateNotRewindable;
         if (position < at or position > self.position) return error.RewindOutOfRange;
         self.position = position;
+        self.row_checkpoint_rows = 0;
     }
     pub fn reset(self: *Session) void {
         @memset(self.memory, 0);
         self.position = 0;
         self.status = .ready;
         self.checkpoint_position = null;
+        self.row_checkpoint_rows = 0;
     }
 
     /// The used extent of each layer, in layer order: attention rows
@@ -381,12 +488,13 @@ pub const Session = struct {
         // The rewrite leaves the region stale: it is only read after a fresh
         // `checkpoint`, and no recorded position may point at it.
         self.checkpoint_position = null;
+        self.row_checkpoint_rows = 0;
     }
 };
 
 fn snapshotRoundTrip(a: std.mem.Allocator) !void {
     const layouts = [_]Layout{ .{ .attention = .{ .key_row = 2, .value_row = 2, .precision = .f16 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } };
-    var s = try Session.init(a, &layouts, 3, false);
+    var s = try Session.init(a, &layouts, 3, false, 0);
     defer s.deinit();
     // Two committed positions with distinct bytes in every region.
     try s.beginChunk(2);
@@ -425,17 +533,17 @@ test "snapshot copies the used extent and restore brings it back" {
 test "restore refuses other capacities, other layouts, and unready sessions" {
     const a = std.testing.allocator;
     const layouts = [_]Layout{ .{ .attention = .{ .key_row = 2, .value_row = 2 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } };
-    var s = try Session.init(a, &layouts, 3, false);
+    var s = try Session.init(a, &layouts, 3, false, 0);
     defer s.deinit();
     try s.begin();
     try s.commit();
     var snap = try s.snapshot(a);
     defer snap.deinit();
-    var other_capacity = try Session.init(a, &layouts, 4, false);
+    var other_capacity = try Session.init(a, &layouts, 4, false, 0);
     defer other_capacity.deinit();
     try std.testing.expectError(error.SnapshotMismatch, other_capacity.restore(&snap));
     try std.testing.expectEqual(@as(usize, 0), other_capacity.position);
-    var other_precision = try Session.init(a, &.{ .{ .attention = .{ .key_row = 2, .value_row = 2, .precision = .f16 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } }, 3, false);
+    var other_precision = try Session.init(a, &.{ .{ .attention = .{ .key_row = 2, .value_row = 2, .precision = .f16 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } }, 3, false, 0);
     defer other_precision.deinit();
     try std.testing.expectError(error.SnapshotMismatch, other_precision.restore(&snap));
     try std.testing.expect(other_precision.layout_digest != s.layout_digest);
@@ -456,7 +564,7 @@ test "restore refuses other capacities, other layouts, and unready sessions" {
 }
 
 fn exercise(a: std.mem.Allocator) !void {
-    var s = try Session.init(a, &.{ .{ .attention = .{ .key_row = 2, .value_row = 3 } }, .{ .recurrent = .{ .history = 2, .matrix = 4 } } }, 1, false);
+    var s = try Session.init(a, &.{ .{ .attention = .{ .key_row = 2, .value_row = 3 } }, .{ .recurrent = .{ .history = 2, .matrix = 4 } } }, 1, false, 0);
     defer s.deinit();
     try s.begin();
     s.layers[1].recurrent.matrix[0] = 1;
@@ -479,7 +587,7 @@ test "session failures require reset and allocation failures release all layers"
 }
 
 test "attention views carve rows at the layout's precision" {
-    var s = try Session.init(std.testing.allocator, &.{ .{ .attention = .{ .key_row = 4, .value_row = 8, .precision = .f16 } }, .{ .attention = .{ .key_row = 4, .value_row = 8 } } }, 3, false);
+    var s = try Session.init(std.testing.allocator, &.{ .{ .attention = .{ .key_row = 4, .value_row = 8, .precision = .f16 } }, .{ .attention = .{ .key_row = 4, .value_row = 8 } } }, 3, false, 0);
     defer s.deinit();
     const half = s.layers[0].attention;
     try std.testing.expectEqual(@as(usize, 8), half.keys.rowBytes());
@@ -498,7 +606,7 @@ test "attention views carve rows at the layout's precision" {
 }
 
 test "chunk admission requires the whole chunk to fit" {
-    var s = try Session.init(std.testing.allocator, &.{.{ .recurrent = .{ .history = 1, .matrix = 1 } }}, 4, false);
+    var s = try Session.init(std.testing.allocator, &.{.{ .recurrent = .{ .history = 1, .matrix = 1 } }}, 4, false, 0);
     defer s.deinit();
     try std.testing.expectError(error.InvalidShape, s.beginChunk(0));
     try std.testing.expectError(error.ContextFull, s.beginChunk(5));
@@ -514,7 +622,7 @@ test "chunk admission requires the whole chunk to fit" {
 
 fn checkpointRoundTrip(a: std.mem.Allocator) !void {
     const layouts = [_]Layout{ .{ .attention = .{ .key_row = 2, .value_row = 2 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } };
-    var s = try Session.init(a, &layouts, 4, true);
+    var s = try Session.init(a, &layouts, 4, true, 0);
     defer s.deinit();
     // The region sits on its own page, after the 96 bytes of layer regions.
     try std.testing.expectEqual(@as(usize, page), s.offsetOf(s.checkpoint_region));
@@ -557,15 +665,90 @@ test "checkpoint copies recurrent state and rewind brings it back" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkpointRoundTrip, .{});
 }
 
+fn rowCheckpointRoundTrip(a: std.mem.Allocator) !void {
+    const layouts = [_]Layout{
+        .{ .attention = .{ .key_row = 2, .value_row = 2 } },
+        .{ .recurrent = .{ .history = 2, .matrix = 2 } },
+        .{ .recurrent = .{ .history = 1, .matrix = 1 } },
+    };
+    var s = try Session.init(a, &layouts, 4, true, 3);
+    defer s.deinit();
+    // One slot packs aligned(8) + aligned(8) + aligned(4) + aligned(4) = 64.
+    try std.testing.expectEqual(@as(usize, 64), s.row_slot_bytes);
+    try std.testing.expectEqual(@as(usize, 3 * 64), s.row_region.len);
+    try std.testing.expectEqual(@as(usize, 0), s.offsetOf(s.row_region) % page);
+    try std.testing.expectEqual(@as(usize, 3 * page), s.bytes());
+    try s.beginChunk(1);
+    try s.commitChunk(1);
+    try s.checkpoint();
+    // Slot geometry in layer order: layer 1 at 0, layer 2 at 32; the views
+    // span every slot (3 slots: 2 strides beyond the first).
+    const one = try s.rowSlotLayer(1);
+    const two = try s.rowSlotLayer(2);
+    try std.testing.expectEqual(@as(usize, 64), one.stride);
+    try std.testing.expectEqual(@as(usize, 8 + 2 * 64), one.history.len);
+    try std.testing.expectEqual(@as(usize, 8 + 2 * 64), one.matrix.len);
+    try std.testing.expectEqual(@as(usize, 32), s.offsetOf(two.history) - s.offsetOf(one.history));
+    try std.testing.expectError(error.InvalidShape, s.rowSlotLayer(0));
+    try std.testing.expectError(error.InvalidShape, s.rowSlotLayer(3));
+    // Pretend the batch wrote three slots with distinct values.
+    for (0..3) |r| {
+        const value: f32 = @floatFromInt(r + 1);
+        const base = r * s.row_slot_bytes;
+        for (asFloats(s.row_region[base..][0..8])) |*v| v.* = value;
+        for (asFloats(s.row_region[base + 16 ..][0..8])) |*v| v.* = value * 10;
+        for (asFloats(s.row_region[base + 32 ..][0..4])) |*v| v.* = value * 100;
+        for (asFloats(s.row_region[base + 48 ..][0..4])) |*v| v.* = value * 1000;
+    }
+    s.row_checkpoint_rows = 3;
+    // Slot 1 is the state after the checkpoint plus two rows.
+    try s.restoreRow(1);
+    try std.testing.expectEqual(@as(usize, 3), s.position);
+    try std.testing.expectEqualSlices(f32, &.{ 2, 2 }, s.layers[1].recurrent.history);
+    try std.testing.expectEqualSlices(f32, &.{ 20, 20 }, s.layers[1].recurrent.matrix);
+    try std.testing.expectEqualSlices(f32, &.{200}, s.layers[2].recurrent.history);
+    try std.testing.expectEqualSlices(f32, &.{2000}, s.layers[2].recurrent.matrix);
+    // Slots stay valid across restores; a new chunk invalidates them.
+    try s.restoreRow(0);
+    try std.testing.expectEqual(@as(usize, 2), s.position);
+    try s.beginChunk(1);
+    try std.testing.expectError(error.SessionNotReady, s.restoreRow(0));
+    try s.commitChunk(1);
+    try std.testing.expectError(error.RowNotCheckpointed, s.restoreRow(0));
+    // A slot past the rows the batch wrote is refused.
+    s.row_checkpoint_rows = 1;
+    try std.testing.expectError(error.RowNotCheckpointed, s.restoreRow(1));
+    // Without a row region, and without a live checkpoint.
+    var none = try Session.init(a, &layouts, 4, true, 0);
+    defer none.deinit();
+    try none.beginChunk(1);
+    try none.commitChunk(1);
+    try none.checkpoint();
+    try std.testing.expectError(error.NoRowCheckpoints, none.restoreRow(0));
+    var fresh = try Session.init(a, &layouts, 4, true, 3);
+    defer fresh.deinit();
+    try fresh.beginChunk(1);
+    try fresh.commitChunk(1);
+    try std.testing.expectError(error.NoCheckpoint, fresh.restoreRow(0));
+    // A poisoned session refuses until reset.
+    try s.begin();
+    s.fail();
+    try std.testing.expectError(error.SessionNotReady, s.restoreRow(0));
+}
+test "row checkpoints restore the state of one batch row" {
+    try rowCheckpointRoundTrip(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, rowCheckpointRoundTrip, .{});
+}
+
 test "checkpoint and rewind obey the session state machine" {
     const a = std.testing.allocator;
-    var s = try Session.init(a, &.{.{ .recurrent = .{ .history = 1, .matrix = 1 } }}, 4, false);
+    var s = try Session.init(a, &.{.{ .recurrent = .{ .history = 1, .matrix = 1 } }}, 4, false, 0);
     defer s.deinit();
     // No region: checkpoint is refused, and there is nothing to rewind.
     try std.testing.expectError(error.NoCheckpointRegion, s.checkpoint());
     try std.testing.expectError(error.NoCheckpoint, s.rewind());
     // A poisoned session neither checkpoints nor rewinds until reset.
-    var with_region = try Session.init(a, &.{.{ .recurrent = .{ .history = 1, .matrix = 1 } }}, 4, true);
+    var with_region = try Session.init(a, &.{.{ .recurrent = .{ .history = 1, .matrix = 1 } }}, 4, true, 0);
     defer with_region.deinit();
     try with_region.begin();
     with_region.fail();
@@ -594,7 +777,7 @@ test "checkpoint and rewind obey the session state machine" {
 
 test "truncate rewinds attention and refuses recurrent state" {
     const a = std.testing.allocator;
-    var attn = try Session.init(a, &.{.{ .attention = .{ .key_row = 2, .value_row = 2 } }}, 8, true);
+    var attn = try Session.init(a, &.{.{ .attention = .{ .key_row = 2, .value_row = 2 } }}, 8, true, 0);
     defer attn.deinit();
     // The region is empty on an attention-only layout but still records a position.
     try std.testing.expectEqual(@as(usize, 0), attn.checkpoint_region.len);
@@ -613,7 +796,7 @@ test "truncate rewinds attention and refuses recurrent state" {
     try attn.rewind();
     try std.testing.expectEqual(@as(usize, 4), attn.position);
 
-    var rec = try Session.init(a, &.{.{ .recurrent = .{ .history = 1, .matrix = 1 } }}, 8, true);
+    var rec = try Session.init(a, &.{.{ .recurrent = .{ .history = 1, .matrix = 1 } }}, 8, true, 0);
     defer rec.deinit();
     try rec.beginChunk(4);
     try rec.commitChunk(4);
@@ -630,9 +813,9 @@ test "truncate rewinds attention and refuses recurrent state" {
 test "rewind restores the recorded bytes exactly and leaves a peer untouched" {
     const a = std.testing.allocator;
     const layouts = [_]Layout{.{ .recurrent = .{ .history = 3, .matrix = 2 } }};
-    var first = try Session.init(a, &layouts, 4, true);
+    var first = try Session.init(a, &layouts, 4, true, 0);
     defer first.deinit();
-    var peer = try Session.init(a, &layouts, 4, true);
+    var peer = try Session.init(a, &layouts, 4, true, 0);
     defer peer.deinit();
     try first.beginChunk(2);
     try first.commitChunk(2);

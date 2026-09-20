@@ -62,7 +62,7 @@ pub const Runtime = struct {
         _ = draft;
         var layouts: [model.layer_count]session.Layout = undefined;
         for (&layouts) |*layout| layout.* = .{ .attention = .{ .key_row = model.kv_width, .value_row = model.kv_width } };
-        var state = try session.Session.init(gpa, &layouts, capacity, checkpoint);
+        var state = try session.Session.init(gpa, &layouts, capacity, checkpoint, 0);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -244,7 +244,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
 test "the session layout is 52 attention layers of two 256-float rows per position" {
     var layouts: [model.layer_count]session.Layout = undefined;
     for (&layouts) |*layout| layout.* = .{ .attention = .{ .key_row = model.kv_width, .value_row = model.kv_width } };
-    var state = try session.Session.init(std.testing.allocator, &layouts, 4, false);
+    var state = try session.Session.init(std.testing.allocator, &layouts, 4, false, 0);
     defer state.deinit();
     const per_position = model.layer_count * 2 * model.kv_width * 4;
     try std.testing.expect(state.bytes() >= per_position * 4);

@@ -100,7 +100,7 @@ pub const Runtime = struct {
             // is one more layout in the same session, so recovery rewinds it.
             layouts[text] = .{ .attention = .{ .key_row = 1024, .value_row = 1024 } };
         }
-        var state = try session.Session.init(gpa, layouts[0 .. text + @intFromBool(draft)], capacity, checkpoint);
+        var state = try session.Session.init(gpa, layouts[0 .. text + @intFromBool(draft)], capacity, checkpoint, 0);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();

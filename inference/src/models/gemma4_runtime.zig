@@ -89,7 +89,7 @@ pub const Runtime = struct {
             const width = layer.kvWidth();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width } };
         }
-        var state = try session.Session.init(gpa, layouts[0..config.layer_count], capacity, checkpoint);
+        var state = try session.Session.init(gpa, layouts[0..config.layer_count], capacity, checkpoint, 0);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -346,7 +346,7 @@ test "session layouts follow the layer kinds and the configuration's KV heads" {
             const width = model.kvHeadsOf(case.config, model.kindOf(i)) * model.kindOf(i).headSize();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width } };
         }
-        var state = try session.Session.init(std.testing.allocator, layouts[0..case.config.layer_count], 4, false);
+        var state = try session.Session.init(std.testing.allocator, layouts[0..case.config.layer_count], 4, false, 0);
         defer state.deinit();
         try std.testing.expect(state.bytes() >= case.per_position * 4);
         try std.testing.expect(state.bytes() < case.per_position * 4 + case.config.layer_count * 2 * 16);

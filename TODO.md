@@ -288,46 +288,38 @@ generation, and bench references gain their sections;
    `recover_rewind`/`recover_replay`/`recover_by_length`/`checkpoint` and
    `bench` the matching `Sample` fields, so every later change is measured
    per accepted length.
-2. Per-row recurrent checkpoints written by the verify batch:
-   - `Session.init` gains `row_checkpoints: usize` (0, or
-     `max_draft_length + 1`): a second page-aligned region of
-     `row_checkpoints × recurrent bytes` after the checkpoint region;
-     `Session.restoreRow(r)` copies slot `r` into the recurrent layers and
-     sets `position = checkpoint_position + r + 1`; `bytes()` counts it;
-     `layout_digest` and `snapshot` exclude it as they do the checkpoint
-     region.
-   - `DeltaChunkParams` gains `row_states: uint` and the kernel a buffer(5)
-     `row_states_base`: after computing `U`, `cum`, and `beta` for the
-     sub-chunk, for `r < row_states` write `S_r` to slot `r` (a rank-`(r +
-     1)` update per head block, one extra pass per row; for 8 rows across
-     48 layers, estimate ≤ 40 ms per batch — the measurement is the point).
-     `Backend.deltaChunk` takes the optional slot buffer and stride; the
-     plan passes slot `r` of layer `il` at `region + r × recurrent_bytes +
-     offset(il)`.
-   - The history per row: `convolutionHistory` into the slot for each
-     `r` (160 KB per layer per row).
-   - `Plan.verify` / `verifyGreedy` pass `row_states = count`;
-     `Model.recover` on a partial acceptance calls `restoreRow(accepted.len
-     − 1)` (row 0 is the seed) and replays nothing. The CPU reference keeps
-     rewind + replay and is the oracle.
-   - `generation-check`'s `recoveryCheck` on Metal compares restore-by-slot
-     against the CPU's replayed state through the next step's logits at
-     every accepted length (bounds 2e-2 max abs / 1e-3 rel RMS), and the
-     refusals (`restoreRow` without a batch, a row past the batch).
-3. Keep the winner: if the per-row write costs more than the
-   post-KERN-12 replay on the prose workload, remove it (the log keeps the
-   number) and keep step 1.
+2. **Done (session 2).** Per-row recurrent checkpoints: `Session` gains a
+   `row_checkpoints` region (8 slots of one recurrent copy each),
+   `restoreRow(slot)`, `rowSlotLayer(il)` and the refusals;
+   `nu_delta_chunk` writes each row's state into its slot and
+   `nu_convolution_history` each row's history, both only when the verifier
+   passes `row_states > 0` (ordinary prefill/decode passes 0 and the kernels
+   are no-ops); `Plan.verify`/`verifyGreedy` pass the batch count and mark
+   the rows; `Model.recover` restores the accepted row and replays nothing.
+   The per-row state is computed as `S_r = γ_r S₀ + Σ_{s≤r} r(r,s) U[s]ᵀK[s]`
+   with every exponent ≤ 0: the first attempt rescaled the full-chunk `w`
+   by `r(r,n−1)`, which overflows when a layer's chunk decay is large
+   (measured `cum = −114` on layer 46), producing `inf` and NaNs downstream.
+   Measured on prose 512 draft 4 greedy (144 batches): `recover` 150 →
+   **12.7 ms/batch** (13–17 ms per restore, all lengths), `verify` +21 ms per
+   batch for the slot writes, `session_bytes` 3,850,633,216 (row region
+   1,255,146,752); the off/on pair reads 0.85× greedy (was 0.62×).
+   `make test-metal` (slot fixtures), `make test-generation-metal` (restore
+   by slot at 4 and 8 rows, exact), `make speculative-check-metal`,
+   `make draft-stats`, `make check`, `make compare` all green.
+3. Keep the winner: the slot write costs +21 ms per verify batch against the
+   132 ms it removes from recovery, so it stays (the record below is the
+   evidence).
 
 **Measurement hand-off (2026-09-20 review).** Session 1 took the per-length
-baseline (facts above) with the copy, checkpoint and aggregate throughput in
-the same runs. Session 2 reports the same cells for the per-row checkpoints,
-the added write time inside `verify`, `session_bytes` with the region, and the
-off/on pair together. After the winning recovery change, run
-`make speculative-record` immediately and update the cost table in `bench.md`
-and *Where we are*. Keep the existing 512/4K prose/code, greedy/instruct,
-draft 2/4/7 methodology. This intermediate record establishes priorities;
-ENGN-17 still runs the final record and decides defaults after the
-proposal/acceptance work.
+baseline; session 2 took the same cells for the per-row checkpoints (facts
+above), the added write time inside `verify`, `session_bytes` with the region,
+and the off/on pair. **Remaining:** `make speculative-record` on this revision,
+the cost table in `bench.md` and *Where we are* refreshed from it, the
+reference sections (`speculative-decoding.md`, `session.md`), and the log
+entry. Keep the existing 512/4K prose/code, greedy/instruct, draft 2/4/7
+methodology. ENGN-17 still runs the final record and decides defaults after
+the proposal/acceptance work.
 
 **Next kernel experiment, after that record.** KERN-15 optimizes attention,
 not the small-batch matrix tile; no existing unit covers the latter. If verify

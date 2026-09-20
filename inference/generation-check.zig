@@ -154,6 +154,24 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
                 .metal => |*p| try p.prefill(tokens, logits, null, null, null, observer),
             }
         }
+        /// Consumes one batch. The Metal plan with a drafter runs its greedy
+        /// verify path, which also fills the row checkpoints; everything else
+        /// steps token by token or prefills.
+        fn batch(self: *@This(), tokens: []const u32) !void {
+            switch (self.*) {
+                .cpu => |*r| for (tokens) |token| try r.step(token, null, null),
+                .metal => |*p| {
+                    if (@hasField(@TypeOf(p.*), "has_draft")) {
+                        if (p.has_draft and p.state.row_checkpoints > 0) {
+                            var choices: [16]u32 = undefined;
+                            try p.verifyGreedy(tokens, choices[0..tokens.len], null, null);
+                            return;
+                        }
+                    }
+                    try self.prefill(tokens, null, null);
+                },
+            }
+        }
         fn reset(self: *@This()) void {
             switch (self.*) {
                 .cpu => |*r| r.reset(),
@@ -182,13 +200,19 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
             return self.state().truncate(position);
         }
         /// The accepted-prefix operation, mirroring `engine.Model.recover`:
-        /// recurrent state is replayed, attention alone is truncated.
+        /// a batch that kept row checkpoints restores the accepted row,
+        /// recurrent state without them is replayed, attention alone is
+        /// truncated.
         fn recover(self: *@This(), accepted: []const u32) !void {
             const at = self.state().checkpoint_position orelse return error.NoCheckpoint;
             if (self.state().hasRecurrent()) {
                 // The batch already fed the accepted prefix when every draft
                 // was accepted; nothing is rewound or replayed then.
                 if (accepted.len == self.state().position - at) return;
+                if (accepted.len > 0 and self.state().row_checkpoints > 0 and accepted.len <= self.state().row_checkpoint_rows) {
+                    try self.state().restoreRow(accepted.len - 1);
+                    return;
+                }
                 try self.rewind();
                 if (accepted.len > 0) try self.prefill(accepted, null, null);
             } else try self.truncate(at + accepted.len);
@@ -210,7 +234,10 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     }
     // A checkpoint region so the recovery check can take and undo a verify
     // batch; 16 positions hold the header, an 8-row batch, and its correction.
-    var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, false) };
+    // The Metal plan also takes a drafter when the family has one, so the
+    // recovery check can run verify batches and restore their row checkpoints.
+    const first_draft = use_metal and spec.draft != null;
+    var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, first_draft) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, false) };
     defer first.deinit();
     var second: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, false) };
     defer second.deinit();
@@ -338,7 +365,7 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
     const checkpoint_start = std.Io.Clock.awake.now(io);
     try first.checkpoint();
     const checkpoint_time = checkpoint_start.durationTo(std.Io.Clock.awake.now(io));
-    try first.prefill(tokens[1 .. 1 + rows], null, null);
+    try first.batch(tokens[1 .. 1 + rows]);
     for (0..rows + 1) |accepted| {
         try first.recover(tokens[1 .. 1 + accepted]);
         try first.step(tokens[1 + accepted], a, null);
@@ -349,16 +376,26 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
             try compareRecovery(rows, b, a, spec.bounds.chunk_max_abs, spec.bounds.chunk_rel_rms);
         } else if (!std.mem.eql(f32, a, b)) return error.RecoveryMismatch;
     }
+    if (first.state().row_checkpoints > 0) {
+        // Slots cover every accepted prefix, not the post-batch state.
+        if (first.state().restoreRow(rows + 1)) |_| return error.ExpectedRowNotCheckpointed else |err| if (err != error.RowNotCheckpointed) return err;
+    }
     const rewind_start = std.Io.Clock.awake.now(io);
     try first.rewind();
     const rewind_time = rewind_start.durationTo(std.Io.Clock.awake.now(io));
-    std.debug.print("Recovery check passed ({d} rows): checkpoint {d:.3} ms, rewind {d:.3} ms, region {d} bytes.\n", .{
-        rows, checkpoint_time.toMilliseconds(), rewind_time.toMilliseconds(), first.state().checkpoint_region.len,
+    std.debug.print("Recovery check passed ({d} rows{s}): checkpoint {d:.3} ms, rewind {d:.3} ms, region {d} bytes, rows {d}x{d} bytes.\n", .{
+        rows, if (first.state().row_checkpoints > 0) ", row slots" else "", checkpoint_time.toMilliseconds(), rewind_time.toMilliseconds(), first.state().checkpoint_region.len, first.state().row_checkpoints, first.state().row_slot_bytes,
     });
 
-    // Rewind without a live checkpoint.
+    // Rewind without a live checkpoint; a row restore without a batch is
+    // refused the same way.
     first.reset();
     if (first.rewind()) |_| return error.ExpectedNoCheckpoint else |err| if (err != error.NoCheckpoint) return err;
+    if (first.state().row_checkpoints > 0) {
+        try first.step(tokens[0], null, null);
+        try first.checkpoint();
+        if (first.state().restoreRow(0)) |_| return error.ExpectedRowNotCheckpointed else |err| if (err != error.RowNotCheckpointed) return err;
+    }
 
     // Position truncate: a recurrent layout refuses, an attention-only one accepts.
     first.reset();

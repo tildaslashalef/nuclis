@@ -2084,7 +2084,7 @@ pub fn main(init: std.process.Init) !void {
         defer alloc.free(start);
         const scale: f32 = 1.0 / @sqrt(@as(f32, 128));
         try b.begin();
-        try b.deltaChunk(state, qkv, decays, betas, out, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = count, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .scale = scale });
+        try b.deltaChunk(state, qkv, decays, betas, out, state, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = count, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .scale = scale });
         try b.commit();
         // Per head: gather contiguous rows for the CPU references.
         const q = try alloc.alloc(f32, count * 128);
@@ -2142,10 +2142,43 @@ pub fn main(init: std.process.Init) !void {
         }
         if (worst_seq > 1e-4) return error.DeltaChunkSequentialMismatch;
         std.debug.print("Chunk DeltaNet vs CPU chunkwise F64: output max abs {e:.3} (bound 1e-5), state {e:.3} (bound 1e-4); vs 70 sequential CPU steps: {e:.3} (bound 1e-4)\n", .{ worst_out, worst_state, worst_seq });
+        // Row slots: the first 8 rows of the same chunk each write their
+        // prefix state, and every slot must equal the CPU's sequential state
+        // after that row. The carry still runs over all 70 rows.
+        const slot_rows: usize = 8;
+        const slot_stride = 48 * 128 * 128;
+        const slots = try b.create(slot_rows * slot_stride * 4);
+        @memset(slots.floats(), std.math.nan(f32));
+        @memcpy(state.floats(), start);
+        try b.begin();
+        try b.deltaChunk(state, qkv, decays, betas, out, slots, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = count, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .row_states = slot_rows, .row_stride = slot_stride, .scale = scale });
+        try b.commit();
+        var worst_slots: f32 = 0;
+        for (0..48) |h| {
+            const kh = h % 16;
+            for (0..slot_rows) |t| {
+                const row = qkv.floats()[t * in_stride ..][0..in_stride];
+                @memcpy(q[t * 128 ..][0..128], row[kh * 128 ..][0..128]);
+                @memcpy(k[t * 128 ..][0..128], row[2048 + kh * 128 ..][0..128]);
+                @memcpy(v[t * 128 ..][0..128], row[4096 + h * 128 ..][0..128]);
+                ld[t] = decays.floats()[t * 48 + h];
+                bt[t] = betas.floats()[t * 48 + h];
+            }
+            @memcpy(seq_state, start[h * 128 * 128 ..][0 .. 128 * 128]);
+            for (0..slot_rows) |t| {
+                try inference.cpu.recurrent.delta(.{ .query = q[t * 128 ..][0..128], .key = k[t * 128 ..][0..128], .value = v[t * 128 ..][0..128], .log_decay = ld[t], .beta = bt[t], .scale = scale }, seq_state, seq_state, seq_out, step_scratch);
+                for (seq_state, slots.floats()[t * slot_stride + h * 128 * 128 ..][0 .. 128 * 128]) |want, got| {
+                    worst_slots = @max(worst_slots, @abs(got - want));
+                    try expectClose("delta chunk row slot", got, want, 1e-3);
+                }
+            }
+        }
+        std.debug.print("Chunk DeltaNet row slots vs CPU sequential state: max abs {e:.3} (bound 1e-3)\n", .{worst_slots});
         const small = try b.create(8 * 4);
         try b.begin();
-        if (b.deltaChunk(small, small, small, small, small, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 100, .count = 1, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .scale = scale })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
-        if (b.deltaChunk(state, qkv, decays, betas, out, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = 0, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .scale = scale })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.deltaChunk(small, small, small, small, small, small, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 100, .count = 1, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .scale = scale })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.deltaChunk(state, qkv, decays, betas, out, state, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = 0, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .scale = scale })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        if (b.deltaChunk(state, qkv, decays, betas, out, slots, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = count, .in_stride = in_stride, .gate_stride = 48, .out_stride = 6144, .row_states = 9, .row_stride = slot_stride, .scale = scale })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         try b.commit();
     }
 
@@ -2467,13 +2500,24 @@ pub fn main(init: std.process.Init) !void {
             x.* = 7;
             y.* = 7;
         }
+        const history_init = try alloc.dupe(f32, history_chunk.floats());
+        defer alloc.free(history_init);
+        const hist_slots = try b.create(rows * channels * 3 * 4);
+        @memset(hist_slots.floats(), std.math.nan(f32));
         try b.begin();
         for (0..rows) |t| try b.convolution(history_seq, conv_in.slice(t * 9 * 4, 9 * 4), conv_w, out_seq.slice(t * 9 * 4, 9 * 4), channels, 4);
         try b.convolutionRows(history_chunk, conv_in, conv_w, out_chunk, channels, 4, rows, 9);
-        try b.convolutionHistory(history_chunk, conv_in, channels, 4, rows, 9);
+        try b.convolutionHistory(history_chunk, conv_in, .{ .base = hist_slots, .states = rows, .stride = channels * 3 }, channels, 4, rows, 9);
         try b.commit();
         if (!std.mem.eql(f32, out_seq.floats(), out_chunk.floats())) return error.ConvolutionRowsMismatch;
         if (!std.mem.eql(f32, history_seq.floats(), history_chunk.floats())) return error.ConvolutionHistoryMismatch;
+        // Each slot is the history after that row: a pure gather of the
+        // initial history and the rows before it, bit-equal to the reference.
+        for (0..rows) |r| for (0..channels) |c| for (0..3) |j| {
+            const s = @as(isize, @intCast(r)) + 1 - 3 + @as(isize, @intCast(j));
+            const want = if (s < 0) history_init[c * 3 + @as(usize, @intCast(3 + s))] else conv_in.floats()[@as(usize, @intCast(s)) * 9 + c];
+            if (hist_slots.floats()[r * channels * 3 + c * 3 + j] != want) return error.ConvolutionHistorySlotMismatch;
+        };
         // L2 norm: 2 heads of width 4 at stride 8 within rows of stride 20.
         const l2_seq = try b.create(rows * 20 * 4);
         const l2_chunk = try b.create(rows * 20 * 4);
@@ -2610,5 +2654,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors and in both pairings, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors and in both pairings, activations and the epilogues, gates, argmax, partial top-k with exp-sum, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
 }
