@@ -148,6 +148,12 @@ pub const Plan = struct {
     draft_chain: Buffer,
     draft_pending_h: Buffer,
     draft_logits: Buffer,
+    /// Batched-commit scratch: each committed row's previous target hidden and
+    /// the `[enorm(embed); hnorm(h_prev)]` pair `eh_proj` reads. Sized by the
+    /// padded chunk (`eh_proj`'s matmul reads padded rows); a commit never
+    /// overlaps a main forward, so it reuses the chunk activation buffers too.
+    draft_hprev_c: Buffer, // padded × hidden
+    draft_concat_c: Buffer, // padded × 2 × hidden
 
     /// `chunk` bounds the tokens one `prefill` command buffer processes (and
     /// sizes its activation buffers: about 0.4 MB per token). `kv` is the
@@ -285,6 +291,8 @@ pub const Plan = struct {
             self.draft_chain = try backend.create(hidden * 4);
             self.draft_pending_h = try backend.create(hidden * 4);
             self.draft_logits = try backend.create(vocabulary * 4);
+            self.draft_hprev_c = try backend.create(n * hidden * 4);
+            self.draft_concat_c = try backend.create(n * 2 * hidden * 4);
             @memset(self.draft_pending_h.floats(), 0);
         }
         return self;
@@ -541,7 +549,7 @@ pub const Plan = struct {
         for (self.binding.layers, self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x_c, c.attention_norm, self.normalized_c, norm);
             switch (layer.mixer) {
-                .full_attention => |attn| try self.attentionChunk(attn, c.mixer.full_attention, il, count),
+                .full_attention => |attn| try self.attentionChunk(attn, c.mixer.full_attention, il, count, self.state.position),
                 .delta_net => |linear| try self.deltaChunk(linear, c.mixer.delta_net, il, count),
             }
             try b.add(self.x_c, self.projected_c, count * hidden);
@@ -629,10 +637,9 @@ pub const Plan = struct {
         try self.backend.matmul(w.buffer, w.matrix, input, in_stride, output, out_stride, count);
     }
 
-    fn attentionChunk(self: *Plan, attn: model.FullAttention, c: anytype, il: usize, count: usize) !void {
+    fn attentionChunk(self: *Plan, attn: model.FullAttention, c: anytype, il: usize, count: usize, position: usize) !void {
         const b = self.backend;
         const cache = self.state.layers[il].attention;
-        const position = self.state.position;
         try self.rotate(self.normalized_c, hidden, count);
         try self.mmRows(attn.query_and_gate, self.normalized_c, hidden, self.qg_c, 24 * 512, count);
         try self.mmRows(attn.key, self.normalized_c, hidden, self.k_c, 1024, count);
@@ -780,20 +787,66 @@ pub const Plan = struct {
     /// hidden rows are `h_rows` (`tokens.len * hidden`). The caller has
     /// already `recover`ed the session; the block's cache row index is the
     /// main token position, so the accepted prefix ends at `state.position`.
+    /// A single token runs the standalone `draftForward`; a longer prefix runs
+    /// one batched forward per `chunk` rows (the cache is filled from the
+    /// target hidden, never the block's own).
     pub fn commit(self: *Plan, tokens: []const u32, h_rows: []const f32) !void {
         if (!self.has_draft) return error.NoDraftBlock;
         if (h_rows.len != tokens.len * hidden) return error.InvalidShape;
         if (tokens.len == 0) return;
         if (self.state.position < tokens.len) return error.InvalidShape;
         const start = self.state.position - tokens.len;
-        for (tokens, 0..) |token, i| {
-            const h_prev = if (i == 0) self.draft_pending_h else blk: {
-                @memcpy(self.draft_chain.floats()[0..hidden], h_rows[(i - 1) * hidden ..][0..hidden]);
-                break :blk self.draft_chain;
-            };
-            try self.draftForward(h_prev, token, start + i, null, null);
+        if (tokens.len == 1) {
+            try self.draftForward(self.draft_pending_h, tokens[0], start, null, null);
+        } else {
+            var base: usize = 0;
+            while (base < tokens.len) {
+                const count = @min(tokens.len - base, self.chunk);
+                const h_prev: []const f32 = if (base == 0) self.draft_pending_h.floats()[0..hidden] else h_rows[(base - 1) * hidden ..][0..hidden];
+                const next: []const f32 = if (count > 1) h_rows[base * hidden ..][0 .. (count - 1) * hidden] else &.{};
+                try self.commitBatch(tokens[base..][0..count], h_prev, next, start + base);
+                base += count;
+            }
         }
         @memcpy(self.draft_pending_h.floats()[0..hidden], h_rows[h_rows.len - hidden ..][0..hidden]);
+    }
+
+    /// One command buffer over `count` committed rows at cache positions
+    /// `start .. start + count`. Row `t` of the block pairs with the target
+    /// hidden of the row before it: `h_prev` for row 0, `h_next_rows`
+    /// (`(count − 1) × hidden`) for the rest, staged into `draft_hprev_c`.
+    /// The head norm is skipped: a commit only fills the cache rows, and the
+    /// caller sets `draft_pending_h` from the last target hidden.
+    fn commitBatch(self: *Plan, tokens: []const u32, h_prev: []const f32, h_next_rows: []const f32, start: usize) !void {
+        const count = tokens.len;
+        std.debug.assert(count >= 1 and count <= self.chunk);
+        std.debug.assert(h_prev.len == hidden and h_next_rows.len == (count - 1) * hidden);
+        const block = self.binding.draft.?;
+        const constants = self.draft_constants.?;
+        const b = self.backend;
+        const hp = self.draft_hprev_c.floats();
+        @memcpy(hp[0..hidden], h_prev);
+        if (count > 1) @memcpy(hp[hidden .. count * hidden], h_next_rows);
+        try b.begin();
+        errdefer if (b.recording) b.commit() catch {};
+        const embedding = try self.weight(self.binding.token_embedding);
+        for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
+        // enorm fills column 0 of the pair, hnorm column `hidden`; the 10240
+        // stride leaves room for the other half without a per-row copy.
+        const pair: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = 2 * hidden };
+        try b.rmsNorm(self.x_c, self.draft_enorm, self.draft_concat_c, pair);
+        try b.rmsNorm(self.draft_hprev_c, self.draft_hnorm_w, self.draft_concat_c.slice(hidden * 4, self.draft_concat_c.len - hidden * 4), pair);
+        try self.mmRows(block.eh_proj, self.draft_concat_c, 2 * hidden, self.x_c, hidden, count);
+        try b.rmsNorm(self.x_c, constants.attention_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+        try self.attentionChunk(block.layer.mixer.full_attention, constants.mixer.full_attention, self.draft_layer, count, start);
+        try b.add(self.x_c, self.projected_c, count * hidden);
+        try b.rmsNorm(self.x_c, constants.post_attention_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+        try self.mmRows(block.layer.ffn_gate, self.normalized_c, hidden, self.gate_c, ffn, count);
+        try self.mmRows(block.layer.ffn_up, self.normalized_c, hidden, self.up_c, ffn, count);
+        try b.siluMul(self.gate_c, self.up_c, count * ffn);
+        try self.mmRows(block.layer.ffn_down, self.gate_c, ffn, self.projected_c, hidden, count);
+        try b.add(self.x_c, self.projected_c, count * hidden);
+        try b.commit();
     }
 
     /// The contract value the engine holds, or null when no block is loaded.
