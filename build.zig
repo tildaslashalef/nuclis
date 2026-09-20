@@ -75,6 +75,10 @@ pub fn build(b: *std.Build) void {
     matmul_bench.addArg("--matmul-bench");
     if (b.args) |args| matmul_bench.addArgs(args);
     b.step("bench-matmul", "Throughput of the batched prefill matmul on model shapes (-Dmetal=true)").dependOn(&matmul_bench.step);
+    const matvec_rows_bench = b.addRunArtifact(inference.artifact("metal-check"));
+    matvec_rows_bench.addArg("--matvec-rows-bench");
+    if (b.args) |args| matvec_rows_bench.addArgs(args);
+    b.step("bench-matvec-rows", "Multi-row matvec vs the 16x8 tile at 1-8 rows (-Dmetal=true)").dependOn(&matvec_rows_bench.step);
     const hadamard_bench = b.addRunArtifact(inference.artifact("metal-check"));
     hadamard_bench.addArg("--hadamard-bench");
     b.step("bench-hadamard", "GPU time of one token's Hadamard transforms on the Bonsai schedule (-Dmetal=true)").dependOn(&hadamard_bench.step);

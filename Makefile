@@ -21,7 +21,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
         compare-draft compare-draft-metal compare-draft-cpu draft-stats \
         speculative-check speculative-check-metal speculative-record \
-        test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-hadamard bench-experts \
+        test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-matvec-rows bench-hadamard bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
         compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
@@ -64,7 +64,7 @@ test-generation-metal: ## Same protocol on the GPU plan
 
 # The embedded prediction block's `Hello,` rows against the pinned reference
 # trace (`inference/src/models/fixtures/qwen35-mtp/`), on each backend.
-compare-draft: compare-draft-metal compare-draft-cpu ## The prediction block's trace rows vs the reference (MODL-18)
+compare-draft: compare-draft-metal ## The prediction block's trace rows vs the reference (MODL-18; add compare-draft-cpu explicitly)
 
 compare-draft-metal: metal ## Native GPU prediction-block rows vs the pinned reference trace
 	rm -rf "$(TRACE)-draft-metal" && mkdir -p "$(TRACE)-draft-metal"
@@ -154,6 +154,9 @@ bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, 
 bench-matmul: ## Throughput of the batched prefill matmul on model shapes, 256 tokens or ARGS=<tokens> (no model)
 	$(ZIG) build bench-matmul $(METAL) $(if $(ARGS),-- $(ARGS))
 
+bench-matvec-rows: ## Multi-row matvec vs the 16x8 tile at 1-8 rows, or ARGS=<max rows> (no model)
+	$(ZIG) build bench-matvec-rows $(METAL) $(if $(ARGS),-- $(ARGS))
+
 bench-hadamard: ## GPU time of one token's 258 Hadamard transforms on the Bonsai schedule, and per block (no model; docs/reference/metal-backend.md)
 	$(ZIG) build bench-hadamard $(METAL)
 
@@ -209,7 +212,7 @@ define compare_bonsai_run
 	python3 scripts/compare-generation.py "$(TRACE)-bonsai-$(1)" tests/fixtures/bonsai-hello-comma --positions 2 --max-absolute $(3) --max-relative-rms $(4) \
 	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("bonsai $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
 endef
-compare-bonsai: compare-bonsai-cpu compare-bonsai-f32 compare-bonsai-f16 ## bonsai-2-27b vs the PrismML fork's traces: CPU reference, Metal F32 and F16 caches (docs/reference/bonsai.md)
+compare-bonsai: compare-bonsai-f32 compare-bonsai-f16 ## bonsai-2-27b vs the PrismML fork's traces: Metal F32 and F16 caches (add the -cpu target explicitly) (docs/reference/bonsai.md)
 
 compare-bonsai-cpu: metal ## The Qwen CPU reference on the Bonsai file (ternary weights, the Hadamard transform) vs the fork's traces at the bring-up thresholds
 	$(call compare_bonsai_run,cpu,--backend cpu,0.002,0.0001)
@@ -260,7 +263,7 @@ define compare_muse_glimmer_run
 	  --max-absolute $(3) --max-relative-rms $(4) \
 	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("muse-glimmer $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
 endef
-compare-muse-glimmer: compare-muse-glimmer-cpu compare-muse-glimmer-f32 compare-muse-glimmer-f16 ## muse-glimmer-30b vs its pinned llama.cpp traces (`<|begin_of_text|>Hello,`, three positions): CPU reference, Metal F32 and F16 caches (docs/reference/muse-glimmer.md)
+compare-muse-glimmer: compare-muse-glimmer-f32 compare-muse-glimmer-f16 ## muse-glimmer-30b vs its pinned llama.cpp traces (`<|begin_of_text|>Hello,`, three positions): Metal F32 and F16 caches (add the -cpu target explicitly) (docs/reference/muse-glimmer.md)
 
 compare-muse-glimmer-cpu: metal ## The Muse Glimmer CPU reference at the bring-up thresholds (max abs 2e-3, relative RMS 1e-4)
 	$(call compare_muse_glimmer_run,cpu,--backend cpu,0.002,0.0001)
@@ -274,7 +277,7 @@ compare-muse-glimmer-f16: metal ## The Muse Glimmer Metal plan with the F16 cach
 test-generation-muse-glimmer-metal: ## The generation check on muse-glimmer-30b, Metal plan
 	$(ZIG) build test-generation $(METAL) -- "$(MUSE_MODEL)" --metal
 
-compare-gemma4-26b-a4b: compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 ## gemma-4-26b-a4b (mixture of experts) vs its pinned traces: CPU reference, Metal F32 and F16 caches (MODL-09, docs/reference/gemma4.md)
+compare-gemma4-26b-a4b: compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 ## gemma-4-26b-a4b (mixture of experts) vs its pinned traces: Metal F32 and F16 caches (add the -cpu target explicitly) (MODL-09, docs/reference/gemma4.md)
 
 compare-gemma4-26b-a4b-cpu: metal ## The Gemma CPU reference on the 26B-A4B (expert) file vs its pinned traces at the bring-up thresholds
 	$(call compare_gemma4_run,26b-a4b-cpu,$(GEMMA_26B_A4B_MODEL),tests/fixtures/gemma4-26b-a4b-hello-comma,--backend cpu,0.002,0.0001,2816,30)
@@ -285,7 +288,7 @@ compare-gemma4-26b-a4b-f32: metal ## The Gemma Metal plan on the 26B-A4B file wi
 compare-gemma4-26b-a4b-f16: metal ## The Gemma Metal plan on the 26B-A4B file with the F16 cache at the family's tolerance
 	$(call compare_gemma4_run,26b-a4b-f16,$(GEMMA_26B_A4B_MODEL),tests/fixtures/gemma4-26b-a4b-hello-comma,--backend metal --kv f16,1.0,0.05,2816,30)
 
-compare-gemma4-qat: compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 ## gemma-4-12b-qat vs its pinned llama.cpp traces (`<bos>Hello,`, three positions): CPU reference, Metal F32 and F16 caches (MODL-08, docs/reference/gemma4.md)
+compare-gemma4-qat: compare-gemma4-qat-f32 compare-gemma4-qat-f16 ## gemma-4-12b-qat vs its pinned llama.cpp traces (`<bos>Hello,`, three positions): Metal F32 and F16 caches (add the -cpu target explicitly) (MODL-08, docs/reference/gemma4.md)
 
 compare-gemma4-qat-cpu: metal ## The Gemma CPU reference on the QAT file at the bring-up thresholds (max abs 2e-3, relative RMS 1e-4)
 	$(call compare_gemma4_run,qat-cpu,$(GEMMA_QAT_MODEL),tests/fixtures/gemma4-qat-hello-comma,--backend cpu,0.002,0.0001)
@@ -296,7 +299,7 @@ compare-gemma4-qat-f32: metal ## The Gemma Metal plan on the QAT file with the F
 compare-gemma4-qat-f16: metal ## The Gemma Metal plan on the QAT file with the F16 cache at its own tolerance (the model's key-rounding sensitivity; see docs/reference/gemma4.md)
 	$(call compare_gemma4_run,qat-f16,$(GEMMA_QAT_MODEL),tests/fixtures/gemma4-qat-hello-comma,--backend metal --kv f16,1.0,0.05)
 
-compare-gemma4: compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 ## gemma-4-12b (K-quant) vs its pinned traces (MODL-05/MODL-06)
+compare-gemma4: compare-gemma4-f32 compare-gemma4-f16 ## gemma-4-12b (K-quant) vs its pinned traces (MODL-05/MODL-06)
 
 compare-gemma4-cpu: metal ## The Gemma CPU reference on the K-quant file at the bring-up thresholds
 	$(call compare_gemma4_run,cpu,$(GEMMA_MODEL),tests/fixtures/gemma4-hello-comma,--backend cpu,0.002,0.0001)
