@@ -484,3 +484,54 @@ readback decided every token. The speculative speedups move little
 0.93), because the acceptance decision still sorts the full rows
 (ENGN-15); what this unit fixes is ordinary decode with penalties, which is
 no longer 12–25 % below greedy.
+
+## Sampled acceptance on the device readback (ENGN-15, 2026-09-20)
+
+The sampled acceptance used to call `Sampler.distribution` on every verify
+row: a full-vocabulary sort per row on the host, measured at 62.8–91.3 ms
+per batch in the KERN-13 quick pass (17–22 % of an instruct batch). Now the
+verify batch has two output modes (`engine.VerifyOutput`): full `rows`, as
+before, and `topk` — one `sampling.TopK` per row from the device partial
+top-k over that row, with every row's logits left resident in
+`verify_logits` so `Plan.readVerifyRow(row, out)` serves a fallback. The
+plan owns one `TopKBuffers` set per verify row (16 × ~130 KB, allocated
+with the drafter) because the rows' dispatches share one command buffer.
+
+The sampled path in `speculativeBatch` picks a row's token with
+`Sampler.selectFromHistory(&tops[i], scratch, history)`: the penalties,
+when active, are applied on the host to the 256 candidates with the *live*
+history — which the accepted drafts of the batch advance, as
+`distribution`'s call sequence did — and the penalized top-k is exact when
+its last entry clears the readback's smallest raw value. That bound holds
+because the penalties only lower values; `repetition_penalty < 1`,
+`presence_penalty < 0`, a penalized greedy draw (`temperature == 0`), a
+nucleus (`top_k == 0`), or a retained set that fails the bound returns
+`null` without advancing the RNG, and the loop reads the row back and takes
+`distribution` (counted in `topk_fallbacks`). Without penalties
+`selectFromHistory` delegates to `selectFrom`, so eligible nucleus sampling
+decides from the readback as it already did on the step path. The greedy
+sampled path still uses `verifyGreedy`; only the temperature-0-with-penalty
+configuration falls back to full rows.
+
+Measured 2026-09-20, `make speculative-record ARGS="--only prose512 code"`,
+same workload and methodology as the KERN-13 pass above
+([bench.md § The ENGN-15 quick pass](bench.md#the-engn-15-quick-pass-2026-09-20)):
+
+| configuration | accept before (KERN-13 pass) | accept now | fallbacks | speedup before → now |
+| --- | ---: | ---: | ---: | ---: |
+| code, instruct, d4 | 91.3 ms | 36.9 µs | 0 | 1.12× → 1.36× |
+| prose 512, instruct, d2 | 62.9 ms | 18.8 µs | 0 | 0.76× → 0.92× |
+| prose 512, instruct, d4 | 71.7 ms | 21.6 µs | 0 | 0.82× → 0.98× |
+| prose 512, instruct, d7 | 77.9 ms | 23.8 µs | 0 | 0.85× → 1.01× |
+
+The ≤ 5 ms target is met by two orders of magnitude, and the readback
+decided every row: the fallback path exists for the guard's edge cases, not
+for this profile. `Timing.topk_fallbacks` now counts the verify fallbacks
+too, not just the step-path ones. Exactness is checked twice:
+`generation-check --metal` runs `verifyTopKCheck`, which verifies the same
+four-token batch with both modes on real logits and requires every row's
+readback decision (with and without penalties) to equal `select` on the
+rows-mode row, reading the resident row back when the readback defers
+(8/8 rows decided, 0 fallbacks, all equal); and `sampling/root.zig` tests
+`selectFromHistory` against `select` for hundreds of random vectors and
+option sets, including the deferrals.

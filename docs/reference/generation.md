@@ -126,14 +126,14 @@ same token is produced from a 2 KB readback instead of 1 MB of logits:
   the reference order on the same values, so the result is bit-identical
   wherever it is produced. The GPU contributes only the candidate set and
   the denominator.
-- **Eligibility.** No penalty may be active: the readback is taken after
-  the projection, before the CPU could apply the history, so
-  `presence_penalty ≠ 0` or `repetition_penalty ≠ 1` (the instruct profile)
-  runs the full path every token — the documented cost of that profile
-  until a GPU penalty kernel exists (measured in [bench.md](bench.md)).
-  Then `1 ≤ top_k ≤ 256`: the retained set is inside the readback and its
-  denominator is computed on the CPU; always exact, never falls back, with
-  or without `min_p`. `top_k = 0, min_p > 0`: the survivors are a prefix of
+- **Eligibility.** With a penalty active (`presence_penalty ≠ 0` or
+  `repetition_penalty ≠ 1`, the instruct profile) the readback must be taken
+  *after* the device applied it: `nu_penalize` runs between the output head
+  and the argmax/top-k, the plan marks the `TopK` `penalized`, and
+  `selectFrom` then treats it as the penalized vector. A readback without
+  that mark defers. Then `1 ≤ top_k ≤ 256`: the retained set is inside the
+  readback and its denominator is computed on the CPU; always exact, never
+  falls back, with or without `min_p`. `top_k = 0, min_p > 0`: the survivors are a prefix of
   the readback and their sum is the exact CPU sum, so the decision is
   exact; only when all 256 candidates survive the filter does the sampler
   **defer** (the prefix may continue past the readback). `top_k = 0, top_p
@@ -143,7 +143,7 @@ same token is produced from a 2 KB readback instead of 1 MB of logits:
   accepts a threshold comparison whose margin exceeds `total_band = 1e-5`;
   a comparison inside the band, or a nucleus that runs past the 256
   candidates, **falls back**. Not eligible (the full path runs every token):
-  any penalty, `top_k > 256`, and `top_k = 0` with `top_p = 1, min_p = 0`.
+  `top_k > 256` and `top_k = 0` with `top_p = 1, min_p = 0`.
 - **Fallback** reads the full logits from the GPU's shared buffer
   (`Plan.readLogits`, valid until the next step) and runs `select`; the RNG
   has not advanced, so the token equals the reference path's. A non-finite
@@ -154,8 +154,10 @@ same token is produced from a 2 KB readback instead of 1 MB of logits:
   reference path; comparing a `--logits` run with a plain run at the same
   seed is the end-to-end equivalence check (recorded in [bench.md](bench.md)).
 
-Greedy decoding with a penalty active takes the CPU argmax over the
-penalized logits (full readback) instead of the GPU argmax.
+Greedy decoding with a penalty active takes the same device argmax, after
+`nu_penalize`; the raw logits are only read back when a full vector was
+asked for (a trace or `--logits`), and then it is unpenalized for the CPU
+sampler.
 
 ### Speculative verification and the loop (ENGN-12)
 
@@ -164,11 +166,14 @@ the step instead of feeding one token at a time. `Executor.verify` returns the
 target logits of every row of a batch (`tokens.len × vocabulary`) and, when
 asked, their post-`output_norm` hidden, which the drafter's `commit` consumes:
 the CPU reference steps token by token; the Metal plan records the layer stack
-once and runs the output head over all rows through the batched matmul tile,
-reading the rows back (about 8 MB at eight rows). `verifyGreedy` returns only
-each row's argmax (four bytes a row) for the greedy path. The plan requires a
-batch no larger than its chunk and `max_verify_rows` (16); the loop's batches
-are at most `max_draft_length + 1` (8).
+once and runs the output head over all rows through the batched matmul tile.
+The full-logits mode reads the rows back (about 8 MB at eight rows);
+`verifyGreedy` returns only each row's argmax (four bytes a row); the sampled
+acceptance asks for the per-row partial top-k instead (2 KB a row), leaving
+the logits resident so `readVerifyRow` can serve a row the readback cannot
+decide. The plan requires a batch no larger than its chunk and
+`max_verify_rows` (16); the loop's batches are at most `max_draft_length + 1`
+(8).
 
 `runLoop` commits the prompt to the drafter first, in verify-sized chunks, so
 the block's cache holds the target hidden of every committed position. Each
@@ -186,10 +191,19 @@ does. The sampled path lives in `inference/src/sampling/speculative.zig`:
 `Sampler.distribution` is the shaped, normalized nucleus and `decide` draws
 the target's token from it, accepting the draft when they agree and taking
 the draw as the correction otherwise, so every emitted token is a target
-draw whatever proposed the drafts. Greedy
+draw whatever proposed the drafts. When the options are eligible the row's
+decision comes from the device readback instead
+(`Sampler.selectFromHistory`): the penalties, when active, are applied to the
+256 candidates with the live history (which the accepted drafts of the batch
+advance), the penalized top-k is exact when its last entry clears the
+readback's smallest raw value (penalties only lower values; `repetition < 1`
+or `presence < 0` defers), and a row that cannot be decided reads its
+resident logits back and takes `distribution` (counted in
+`topk_fallbacks`). Greedy
 speculation must equal ordinary greedy token for token, checked by
 `generation-check --speculative-check` (`make speculative-check`,
-`make speculative-check-metal`).
+`make speculative-check-metal`); the two verify modes are compared row by row
+on real logits there as well.
 
 The output budget is 1–4,096 tokens and context is 1–32,768, with
 prompt plus output budget required to fit. These are allocation/execution bounds,

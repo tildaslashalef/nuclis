@@ -1256,3 +1256,40 @@ drift over the 25-minute sequence, not a path difference). The sampled
 accept time is unchanged (62.8–91.3 ms): it still sorts the full verify
 rows, which ENGN-15 moves onto the device readback. Verify and recover are
 where ENGN-14 left them (249–273 ms and 6.8–20.5 ms per batch).
+
+## The ENGN-15 quick pass (2026-09-20)
+
+The verify batch's per-row top-k readback landed (ENGN-15): the sampled
+acceptance no longer reads and sorts the full logits of every verify row.
+This is the unit's gate pass, `make speculative-record ARGS="--only prose512
+code"` (the 4K pair waits for ENGN-17). Same methodology and revision line as
+[the KERN-13 quick pass](#the-kern-13-quick-pass-2026-09-20) — the runs above
+were taken immediately before these, `nuclis 0.2.0-dev` at `d31c5cd` plus the
+ENGN-15 change, artifact SHA-256 `322e194f…`; reports under
+`.zig-cache/bench/spec/`. Every sample stopped on `token_budget`. `accept`
+is the host acceptance per batch in microseconds now that the full-row sorts
+are gone; `fallbacks` counts sampled rows whose readback could not decide
+(0 everywhere: the readback decided every row).
+
+| configuration | draft | accepted/step | tokens/batch | verify ms | accept µs | recover ms | propose ms | fallbacks | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code, greedy | 2 | 1.35 | 2.35 | 263.8 | 0.1 | 9.3 | 13.0 | 0 | 8.27 → 7.97 | 0.96× |
+| code, greedy | 4 | 2.34 | 3.34 | 271.8 | 0.2 | 13.4 | 25.8 | 0 | 8.67 → 10.43 | 1.20× |
+| code, greedy | 7 | 2.97 | 3.97 | 271.8 | 0.1 | 18.3 | 44.6 | 0 | 8.66 → 11.53 | 1.33× |
+| code, instruct | 4 | 2.79 | 3.77 | 274.5 | 36.9 | 10.6 | 25.8 | 0 | 8.64 → 11.79 | 1.36× |
+| prose 512, greedy | 2 | 1.23 | 2.23 | 262.2 | 0.1 | 7.6 | 12.9 | 0 | 9.43 → 7.65 | 0.81× |
+| prose 512, greedy | 4 | 1.67 | 2.65 | 291.1 | 0.2 | 16.2 | 25.8 | 0 | 8.34 → 7.72 | 0.93× |
+| prose 512, greedy | 7 | 2.28 | 3.26 | 294.3 | 0.1 | 18.6 | 45.1 | 0 | 8.25 → 8.84 | 1.07× |
+| prose 512, instruct | 2 | 1.36 | 2.35 | 282.8 | 18.8 | 8.1 | 13.2 | 0 | 8.20 → 7.50 | 0.92× |
+| prose 512, instruct | 4 | 1.82 | 2.80 | 297.3 | 21.6 | 15.0 | 25.7 | 0 | 8.20 → 8.06 | 0.98× |
+| prose 512, instruct | 7 | 2.06 | 3.05 | 297.2 | 23.8 | 18.6 | 44.0 | 0 | 8.19 → 8.24 | 1.01× |
+
+**Reading.** Accept fell from 62.8–91.3 ms per batch (the KERN-13 pass) to
+0.02–0.04 ms — 18.8–36.9 µs with penalties, 0.1–0.2 µs for the greedy
+sampled path — against the ≤ 5 ms target, two orders of magnitude under it.
+The instruct speedups moved with it: code 1.36× at draft 4 (was 1.12× in
+the KERN-13 pass) and prose 512 0.92 / 0.98 / 1.01× (was 0.76 / 0.82 /
+0.85×). Verify (262–297 ms) and propose (13–45 ms) are now the whole batch;
+KERN-14 and ENGN-16 are next. The prose off baselines sit lower than the
+KERN-13 pass (8.20 vs 8.80–9.04) — the same clock drift within the session's
+runs, and the speedup columns are same-run pairs.

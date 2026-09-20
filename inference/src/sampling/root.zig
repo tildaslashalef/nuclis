@@ -331,6 +331,45 @@ pub const Sampler = struct {
         return self.finish(candidates, top.total, total_band, false);
     }
 
+    /// `selectFrom` against a *live* history: when the readback was taken
+    /// before the penalties (`!top.penalized`), each candidate is penalized
+    /// on the host with `history` and the retained set is checked against the
+    /// readback's bound. Returns `null` when only the full vocabulary can
+    /// decide — no active penalty (delegates), temperature 0 (a penalized
+    /// argmax may sit outside the readback), a penalty that can raise a value
+    /// (`repetition < 1` or `presence < 0`, which breaks the bound), a
+    /// retained set that could include an id outside the readback, or a
+    /// nucleus/`min_p` prefix. The RNG advances only on a decision.
+    ///
+    /// Exactness: every id outside the readback has a penalized value at most
+    /// the readback's smallest *raw* value when the penalties only lower
+    /// values, so the penalized top-k is the sorted readback's first k once
+    /// its last entry clears that bound.
+    pub fn selectFromHistory(self: *Sampler, top: *const TopK, scratch: []Candidate, history: ?*const History) !?u32 {
+        if (!self.options.penaltiesActive() or history == null or top.penalized) return self.selectFrom(top, scratch);
+        const o = self.options;
+        if (o.temperature == 0 or o.repetition_penalty < 1 or o.presence_penalty < 0) return null;
+        if (top.count == 0 or top.count > TopK.capacity) return error.InvalidLogits;
+        if (top.temperature != o.temperature) return error.InvalidSamplingOptions;
+        if (!top.finite) return null;
+        if (scratch.len < top.count) return error.InsufficientScratch;
+        const candidates = scratch[0..top.count];
+        var bound: f32 = top.values[0];
+        for (candidates, top.ids[0..top.count], top.values[0..top.count]) |*c, id, value| {
+            if (!std.math.isFinite(value)) return error.NonFiniteResult;
+            c.* = .{ .id = id, .weight = self.penalize(value, id, history) };
+            bound = @min(bound, value);
+        }
+        std.mem.sort(Candidate, candidates, {}, lessThan);
+        if (o.top_k >= 1 and o.top_k <= TopK.capacity) {
+            const k = @min(o.top_k, candidates.len);
+            if (candidates[k - 1].weight <= bound) return null;
+            const retained = self.exponentiate(candidates[0..k]);
+            return self.finish(retained.survivors, retained.sum, 0, true);
+        }
+        return null;
+    }
+
     /// The logit after the history penalties: repetition first (`l / r` for
     /// positive, `l · r` for negative logits), then `l − presence`. Neutral
     /// options are exact identities in F32, so no branch is needed on them.
@@ -732,6 +771,71 @@ test "GPU top-k readback reproduces the reference sampler or defers" {
     try std.testing.expect(min_p_decided > 0);
     // 1 ≤ top_k ≤ capacity never defers: the retained set is in the readback.
     try std.testing.expectEqual(@as(usize, 0), exact_path_fallbacks);
+}
+
+test "a raw readback with a live history decides like the reference path" {
+    // The verify-batch path: the readback is the raw top-256 of a row, the
+    // history grows with what the batch accepted, and the sampler penalizes
+    // the candidates on the host. For every option set that only lowers
+    // values, the decision must equal `select` on the same row and history;
+    // option sets that can raise an unseen id defer.
+    const alloc = std.testing.allocator;
+    const vocabulary = 1024;
+    const logits = try alloc.alloc(f32, vocabulary);
+    defer alloc.free(logits);
+    var scratch: [vocabulary]Candidate = undefined;
+    var reference_scratch: [vocabulary]Candidate = undefined;
+    var prng = std.Random.DefaultPrng.init(20260920);
+    const random = prng.random();
+    const penalties = [_]Options{
+        .{ .temperature = 0.7, .top_k = 20, .top_p = 0.8, .presence_penalty = 1.5 },
+        .{ .temperature = 0.7, .top_k = 20, .top_p = 0.8, .presence_penalty = 1.5, .repetition_penalty = 1.1 },
+        .{ .temperature = 1.0, .top_k = 5, .top_p = 1, .presence_penalty = 0.5 },
+        .{ .temperature = 0.5, .top_k = 256, .top_p = 0.95, .repetition_penalty = 2.0 },
+        // Raising penalties and greedy have no bound to check against.
+        .{ .temperature = 0.7, .top_k = 20, .repetition_penalty = 0.5, .presence_penalty = -1.0 },
+        .{ .top_k = 20, .presence_penalty = 1.5 },
+        // A shape the readback never decides: the full distribution.
+        .{ .temperature = 1, .top_p = 1, .presence_penalty = 1.5 },
+    };
+    var decided: usize = 0;
+    var deferred: usize = 0;
+    for (0..12) |vector| {
+        const scale: f32 = 0.5 + 7.5 * @as(f32, @floatFromInt(vector % 6)) / 5;
+        for (logits) |*l| l.* = random.floatNorm(f32) * scale;
+        if (vector % 4 == 0) logits[7] = logits[3];
+        var history = try History.init(alloc, vocabulary);
+        defer history.deinit();
+        for (0..16) |i| try history.observe(@intCast(i * 61 + 17));
+        for (penalties) |options| {
+            const top = referenceTopK(logits, &reference_scratch, options.temperature, 0);
+            for (0..3) |seed| {
+                var reference = try Sampler.init(seed, options);
+                var gpu = try Sampler.init(seed, options);
+                const expected = try reference.select(logits, &scratch, &history);
+                const drawn = try gpu.selectFromHistory(&top, &scratch, &history);
+                if (drawn) |token| {
+                    decided += 1;
+                    try std.testing.expectEqual(expected, token);
+                } else {
+                    deferred += 1;
+                    // The fallback is `select` on the full row, which is what
+                    // the caller does with the same RNG state.
+                    try std.testing.expectEqual(expected, try gpu.select(logits, &scratch, &history));
+                }
+            }
+        }
+    }
+    try std.testing.expect(decided > 0);
+    try std.testing.expect(deferred > 0);
+    // No penalty at all delegates to `selectFrom` and always decides the
+    // retained top-k set.
+    var plain = try Sampler.init(1, .{ .temperature = 0.7, .top_k = 20, .top_p = 0.8 });
+    var history = try History.init(alloc, vocabulary);
+    defer history.deinit();
+    try history.observe(3);
+    const top = referenceTopK(logits, &reference_scratch, 0.7, 0);
+    try std.testing.expect((try plain.selectFromHistory(&top, &scratch, &history)) != null);
 }
 
 test "readback validation and the uncertainty band" {

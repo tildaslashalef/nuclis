@@ -497,7 +497,7 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
         try chunked.prefill(&draft.tokens, null, null, null, null, prefill_hidden, null);
         var verified = try Plan.init(alloc, b, view, binding, 4, 4, .f32, false, true);
         defer verified.deinit();
-        try verified.verify(&draft.tokens, verify_rows, verify_hidden, null);
+        try verified.verify(&draft.tokens, verify_rows, null, verify_hidden, null);
         var hidden_max_abs: f64 = 0;
         for (verify_hidden, prefill_hidden) |e, a| hidden_max_abs = @max(hidden_max_abs, @abs(@as(f64, e) - a));
         std.debug.print("Prefill hidden check passed: {d} rows match verify (max abs {e:.3}).\n", .{ rows, hidden_max_abs });
@@ -744,6 +744,66 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
     // stays on the primitives.
     if (use_metal) try speculativeLoop(alloc, io, model_path, use_metal);
     if (backend) |*b| try penaltyCheck(spec, alloc, b, view, binding);
+    if (backend) |*b| try verifyTopKCheck(spec, alloc, b, view, binding);
+}
+
+/// The verify batch's per-row top-k readback against the same batch's full
+/// rows: two identically configured plans consume the same four tokens, one
+/// verifies into full rows and the other into the device readback. For every
+/// row and a fixed seed — with and without the history penalties — the
+/// readback path must select the token the rows path's `select` selects; a
+/// row the readback cannot decide must fall back to the resident logits,
+/// which must be bit-identical to the rows plan's, and `select` on those must
+/// agree. Exercises the whole ENGN-15 seam on real logits.
+fn verifyTopKCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding) !void {
+    const Plan = spec.Family.Plan;
+    const draft = spec.draft.?;
+    const count = 4;
+    const capacity = 64;
+    var rows_plan = try Plan.init(alloc, b, view, binding, capacity, 8, .f32, false, true);
+    defer rows_plan.deinit();
+    var topk_plan = try Plan.init(alloc, b, view, binding, capacity, 8, .f32, false, true);
+    defer topk_plan.deinit();
+    const batch = [count]u32{ draft.tokens[0], draft.tokens[1], 9419, 271 };
+    const rows = try alloc.alloc(f32, count * spec.vocabulary);
+    defer alloc.free(rows);
+    const resident = try alloc.alloc(f32, spec.vocabulary);
+    defer alloc.free(resident);
+    const candidates = try alloc.alloc(inference.sampling.Candidate, spec.vocabulary);
+    defer alloc.free(candidates);
+    var tops: [count]inference.sampling.TopK = undefined;
+    const options_sets = [_]inference.sampling.Options{
+        .{ .temperature = 0.7, .top_k = 20, .top_p = 0.8 },
+        .{ .temperature = 0.7, .top_k = 20, .top_p = 0.8, .presence_penalty = 1.5, .repetition_penalty = 1.1 },
+    };
+    try rows_plan.verify(&batch, rows, null, null, null);
+    for (&tops) |*top| top.* = .{ .temperature = 0.7 };
+    try topk_plan.verify(&batch, null, &tops, null, null);
+    var decided: usize = 0;
+    var fallbacks: usize = 0;
+    for (options_sets, 0..) |options, set| {
+        var history = try inference.sampling.History.init(alloc, spec.vocabulary);
+        defer history.deinit();
+        try history.observe(0);
+        try history.observe(1);
+        try history.observe(draft.tokens[0]);
+        for (0..count) |i| {
+            const row = rows[i * spec.vocabulary ..][0..spec.vocabulary];
+            var topk_sampler = try inference.sampling.Sampler.init(0x51 + set * count + i, options);
+            var rows_sampler = try inference.sampling.Sampler.init(0x51 + set * count + i, options);
+            const expected = try rows_sampler.select(row, candidates, &history);
+            if (try topk_sampler.selectFromHistory(&tops[i], candidates, &history)) |token| {
+                decided += 1;
+                if (token != expected) return error.VerifyTopKMismatch;
+            } else {
+                fallbacks += 1;
+                try topk_plan.readVerifyRow(i, resident);
+                if (!std.mem.eql(f32, resident, row)) return error.VerifyRowMismatch;
+                if (try topk_sampler.select(resident, candidates, &history) != expected) return error.VerifyTopKFallbackMismatch;
+            }
+        }
+    }
+    std.debug.print("Verify top-k check (metal): {d}/{d} rows decided by the readback, {d} fell back to the resident logits, all equal to the rows path.\n", .{ decided, decided + fallbacks, fallbacks });
 }
 
 /// The device history penalties against the sampler on the same logits: two
@@ -991,7 +1051,7 @@ fn DraftRunner(comptime spec: Spec) type {
         fn verify(self: *@This(), tokens: []const u32, rows: []f32, h_rows: ?[]f32) !void {
             switch (self.*) {
                 .cpu => |*r| try r.verify(tokens, rows, h_rows, null),
-                .metal => |*p| try p.verify(tokens, rows, h_rows, null),
+                .metal => |*p| try p.verify(tokens, rows, null, h_rows, null),
             }
         }
         fn verifyGreedy(self: *@This(), tokens: []const u32, out: []u32, h_rows: ?[]f32) !void {

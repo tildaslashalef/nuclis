@@ -99,6 +99,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-08 | Repair the multi-row benchmark controls and hand-off | 2026-09-20 |
 | ENGN-14 | Recovery without the whole-stack replay: per-row recurrent checkpoints | 2026-09-20 (two sessions) |
 | KERN-13 | A GPU penalty kernel: the token history applied on the device before the top-k | 2026-09-20 |
+| ENGN-15 | Sampled acceptance on the GPU top-k readback | 2026-09-20 |
 
 ## Context
 
@@ -3417,3 +3418,57 @@ subnormal flush is accepted, not compensated; a logit whose magnitude is
 below `floatMin` is numerically zero under any softmax step. The CPU
 speculative check deferred from ENGN-14 was started in this session and
 reported with ENGN-15.
+
+### ENGN-15 — Sampled acceptance on the GPU top-k readback (2026-09-20)
+
+**Outcome.** The sampled acceptance no longer sorts the full logits of every
+verify row. `engine.VerifyOutput` gives `verify` two modes: full `rows`, as
+before, and `topk` — one `sampling.TopK` per row from the device partial
+top-k over that row, with the logits left resident (`verify_logits`) so
+`Plan.readVerifyRow` serves a fallback. The plan owns one `TopKBuffers` set
+per verify row (16 × ~130 KB, allocated with the drafter) because the rows'
+dispatches share one command buffer. The sampled path decides each row with
+`Sampler.selectFromHistory`: the penalties, when active, are applied on the
+host to the 256 candidates with the live history that the accepted drafts
+advance, and the penalized top-k is exact when its last entry clears the
+readback's smallest raw value (the penalties only lower values). Raising
+penalties (`repetition < 1`, `presence < 0`), a penalized greedy draw, a
+nucleus, or a failed bound return `null` without advancing the RNG, and the
+loop reads the row back and takes `distribution`, counted in
+`topk_fallbacks` (which `Timing` now fills for verify as well as the step
+path). Without penalties `selectFromHistory` delegates to `selectFrom`, so
+eligible nucleus sampling decides from the readback as on the step path.
+The seeded tests in `sampling/speculative.zig` are unchanged.
+
+**Evidence.** `make speculative-check-metal` passes all phases plus a new
+`verifyTopKCheck`: the same four-token batch verified with both modes on
+real logits, every row's readback decision (with and without penalties)
+equal to `select` on the rows-mode row, the resident rows bit-identical when
+the readback defers — 8/8 rows decided, 0 fallbacks. `sampling/root.zig`
+tests `selectFromHistory` against `select` over random vectors and option
+sets, including the deferrals. `make check`, `make compare` (f32 6.1e-5 /
+7.7e-7, f16 2.5e-2 / 1.9e-4). The unit's gate pass
+`make speculative-record ARGS="--only prose512 code"` (same revision and
+workload as the KERN-13 pass, reports under `.zig-cache/bench/spec/`; table
+in [bench.md § The ENGN-15 quick pass](reference/bench.md#the-engn-15-quick-pass-2026-09-20))
+measures `accept` at **18.8–36.9 µs per batch** with penalties and
+0.1–0.2 µs for the greedy sampled path, against the ≤ 5 ms target and the
+62.8–91.3 ms of the KERN-13 pass, with `topk_fallbacks` 0 at every
+configuration. Code instruct draft 4 rose 1.12× → **1.36×**; prose 512
+instruct 0.76 / 0.82 / 0.85× → **0.92 / 0.98 / 1.01×** at drafts 2 / 4 / 7.
+The deferred CPU speculative check was run in this session: `make
+speculative-check` finished exit 0, 12 tokens identical to ordinary greedy
+decoding, 7/24 drafts accepted (the engine-loop edge cases are Metal-only
+by design).
+
+**Files.** `inference/src/engine.zig`, `inference/src/sampling/root.zig`,
+`inference/src/models/qwen35_metal.zig`, `inference/generation-check.zig`,
+`docs/reference/{speculative-decoding,bench,generation}.md`, `TODO.md`, and
+this log.
+
+**Remaining.** Verify (262–297 ms) and propose (13–45 ms) are now the whole
+batch; KERN-14 (small-batch tile) and ENGN-16 (proposal policy) are next.
+A row whose penalties can raise values, a penalized greedy verify
+(`temperature 0` with penalties), and a `top_k = 0` nucleus under penalties
+still take the full-row fallback by design; none of the record's
+configurations hits them.

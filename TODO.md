@@ -16,22 +16,24 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-KERN-13 closed on 2026-09-20: the history penalties now run on the device
-before the argmax and the top-k (`nu_penalize`), so a penalized sampler
-reads back 2 KB instead of the 248,320-logit row. The instruct off baseline
-moved from 8.18 / 7.99 / 7.78 tok/s (prose 512 d2/d4/d7) and 8.56 (code d4)
-to 9.04 / 8.87 / 8.80 and 8.74, inside the greedy band; `topk_fallbacks` is
-0 everywhere. The sampled acceptance still sorts the full verify rows
-(62.8–91.3 ms per batch), unchanged, which is ENGN-15's target. The quick
-pass (`d31c5cd`, `--only prose512 code`) and the check evidence are in
-[speculative-decoding.md § The device penalty kernel](docs/reference/speculative-decoding.md#the-device-penalty-kernel-kern-13-2026-09-20),
+ENGN-15 closed on 2026-09-20: the sampled acceptance decides each verify row
+from the device partial top-k (2 KB a row) instead of sorting the full
+logits. `accept` fell from 62.8–91.3 ms per batch to **18.8–36.9 µs** with
+penalties (0.1–0.2 µs greedy-sampled), `topk_fallbacks` is 0 everywhere,
+and code instruct (draft 4) rose 1.12× → **1.36×**, prose 512 instruct
+0.76 / 0.82 / 0.85× → **0.92 / 0.98 / 1.01×** at drafts 2 / 4 / 7. KERN-13
+landed immediately before it in the same session (the device penalty
+kernel; instruct baselines inside the greedy band). Facts:
+[speculative-decoding.md § Sampled acceptance on the device readback](docs/reference/speculative-decoding.md#sampled-acceptance-on-the-device-readback-engn-15-2026-09-20),
 the table in
-[bench.md § The KERN-13 quick pass](docs/reference/bench.md#the-kern-13-quick-pass-2026-09-20),
-and the [log](docs/engineering-log.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20).
+[bench.md § The ENGN-15 quick pass](docs/reference/bench.md#the-engn-15-quick-pass-2026-09-20),
+and the [log](docs/engineering-log.md#engn-15--sampled-acceptance-on-the-gpu-top-k-readback-2026-09-20).
 
-**Next: ENGN-15** (sampled acceptance on the GPU top-k readback), then
-KERN-14; ENGN-15 closes with one quick `make speculative-record ARGS="--only
-prose512 code"` check and ENGN-17 runs the single full record.
+**Next: KERN-14** (the small-batch matmul tile for the verify batch), then
+ENGN-16; KERN-14 closes with one quick `make speculative-record ARGS="--only
+prose512 code"` check and ENGN-17 runs the single full record. The deferred
+CPU speculative check was run and passed in the ENGN-15 session (12 tokens
+identical to ordinary greedy).
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -59,32 +61,29 @@ here* for how to refresh them):
 | propose `k` drafts | 12.7–43.5 ms (≈ 6.3 ms per draft) | one block forward per draft | ENGN-16 | fewer forwards, same accepted tokens |
 | checkpoint | 2.8–5.2 ms | one 150 MB copy | — | — |
 | verify `1 + k` rows | 241–287 ms at 512, 362–372 ms at 4K | the 16×8 prefill tile at small row counts; the chunk attention over the visible cache | KERN-14 at 512, KERN-16 at long context | ≤ 130 ms |
-| accept (sampled) | 62.8–91.3 ms (quick pass) | one full-vocabulary sort per row on the host | ENGN-15 | ≤ 5 ms |
+| accept (sampled) | 18.8–36.9 µs (quick pass) | one draw per row on the device readback | ENGN-15 ✓ | ≤ 5 ms |
 | recover (on rejection) | 6–22 ms (was 150–182) | one 150 MB slot copy | ENGN-14 ✓ | ≤ 40 ms |
 | commit `a + 1` tokens | 4.7–15.3 ms | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
 | prompt commit (prefill) | 1.02× ordinary prefill | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
 | tokens per batch | 2.23–3.97 (1.23–2.97 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-16 | more accepted per proposed |
 
-Measured speedups (KERN-13 quick pass, `d31c5cd`): code greedy 0.94 / 1.20 /
-1.33× at drafts 2 / 4 / 7, code instruct 1.12× at draft 4; prose 512 greedy
-0.77 / 0.87 / 1.03×, instruct 0.76 / 0.82 / 0.85×. The instruct off
-baselines are now inside the greedy band, so the sampled configurations'
-remaining deficit is the acceptance path and the verify batch, not the
-penalty readback. The per-token arithmetic is unchanged: verify must cost
-less than the tokens it advances are worth. At draft 4 the code prompt
-advances 3.34 tokens for a 273 ms verify (82 ms/token against ~115), prose
-2.65 for 263 (99 against ~105). KERN-14's target (≤ 130 ms at 512) would put
-prose at draft 4 near 1.3× and code near 1.6×; ENGN-15 removes the sampled
-path's 63–91 ms; ENGN-16 trims the proposal and the wasted rows on prose.
-Nothing here claims a speedup before ENGN-17 measures it.
+Measured speedups (ENGN-15 quick pass, `d31c5cd` plus the unit's change):
+code greedy 0.96 / 1.20 / 1.33× at drafts 2 / 4 / 7, code instruct 1.36× at
+draft 4; prose 512 greedy 0.81 / 0.93 / 1.07×, instruct 0.92 / 0.98 / 1.01×.
+Both sampled paths are now free of host work; what remains is the batch's
+model time. At draft 4 the code prompt advances 3.34 tokens for a 272 ms
+verify (81 ms/token against ~115), prose 2.65 for 291 (110 against ~120).
+KERN-14's target (≤ 130 ms at 512) would put prose at draft 4 near 1.5× and
+code near 1.7×; ENGN-16 trims the proposal and the wasted rows on prose.
+Nothing here claims a final speedup before ENGN-17 measures it.
 
-Order: ENGN-15 → KERN-14 → ENGN-16 → KERN-15 → KERN-16 →
+Order: KERN-14 → ENGN-16 → KERN-15 → KERN-16 →
 ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 → MODL-19 → MODL-20 →
-MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13 landed first because the
-instruct profile's presence penalty defeated the GPU top-k readback path
-otherwise. KERN-14 follows because verify is 70–80 % of a batch
-and its target is the plan's largest single lever; ENGN-16 is cheap and
-trims the prose waste after that. **KERN-15 and KERN-16 sit before ENGN-17
+MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13 and ENGN-15 landed first
+because the instruct profile's presence penalty defeated the GPU top-k
+readback path otherwise. KERN-14 follows because verify is 70–80 % of a
+batch and its target is the plan's largest single lever; ENGN-16 is cheap
+and trims the prose waste after that. **KERN-15 and KERN-16 sit before ENGN-17
 because they change the Qwen path the verdict measures**: the split-K
 matvec touches Qwen's row-poor shapes, and the long-context attention is
 every verify batch at 16K–32K (and the 32K acceptance's largest deficit).
@@ -101,7 +100,6 @@ APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| ENGN-15 | Sampled acceptance on the GPU top-k readback | 1 |
 | KERN-14 | The small-batch matmul tile for the verify batch (32-row threadgroups) | 1–2 |
 | ENGN-16 | Draft proposal policy: `p_min` early stop and an adaptive length | 1 |
 | KERN-15 | Split-K decode matvec for row-poor shapes (Muse's gap, every family's small projections) | 1–2 |
@@ -216,14 +214,14 @@ unloaded), Gemma 4's companion heads, Muse's DFlash drafter. Bonsai 2's
 file drops the block and its entry pins no draft companion.
 
 **Verification** returns the main model's logits for every row of the batch
-on both executors; the GPU plan computes the head on all rows of the chunk
-and reads them back, bypassing the device top-k path while speculation is
-on (ENGN-15 changes that). Greedy acceptance compares the draft with the
-row's argmax. Sampled acceptance draws the target's own token from the
-row's shaped distribution (temperature, top-k/p, min-p, penalties with the
-history advanced through the earlier drafts of the batch) and accepts
-`d_i` when the draw equals it, else the draw is the correction; on full
-acceptance the last row's draw is the bonus. Every emitted token is a
+on both executors, or (sampled, eligible options) each row's device partial
+top-k with the logits resident for a fallback. Greedy acceptance compares
+the draft with the row's argmax. Sampled acceptance draws the target's own
+token from the row's shaped distribution (temperature, top-k/p, min-p,
+penalties with the history advanced through the earlier drafts of the
+batch) and accepts `d_i` when the draw equals it, else the draw is the
+correction; on full acceptance the last row's draw is the bonus. Every
+emitted token is a
 target draw whatever proposed the drafts, which is what makes the rule
 exact for greedy chains; the `min(1, p/q)` rejection rule with a residual
 correction is exact only for drafts sampled from `q` and was replaced on
@@ -253,79 +251,6 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
-
-## ENGN-15 — Sampled acceptance on the GPU top-k readback
-
-**Facts (read 2026-09-20).**
-- With sampling on, `Plan.verify` reads back `(k + 1) × 248,320` logits
-  (7.9 MB) and `speculativeBatch` calls `Sampler.distribution` per row, a
-  full-vocabulary sort each. The ENGN-14 record measures
-  `accept_milliseconds / speculative_steps` at **54.9–76.6 ms** across the
-  sampled configurations (17–22 % of an instruct batch); ordinary sampled
-  decoding uses the GPU partial top-k (`gpu_topk`, `Sampler.selectFrom`)
-  and sorts nothing. The instruct profile's presence penalty 1.5 makes
-  `selectFrom` defer, which is KERN-13 and lands first in this block.
-- `verifyGreedy` already runs the argmax kernel per row of `verify_logits`
-  (`b.argmax(verify_logits.slice(i × vocabulary × 4, …))`).
-
-**Design.**
-1. `Plan.verify` gains a per-row top-k mode: `TopKBuffers × max_verify_rows`
-   (`topkBuffers(sampling.TopK.capacity)` each; a few KB per row),
-   `b.topk(verify_logits.slice(row), vocabulary, TopK.capacity, temperature,
-   self.topk_rows[i])` per row, read back into `[]sampling.TopK` (the
-   `readOutputs` code path per row); the logits stay on the device and
-   `Plan.readVerifyRow(i, out)` copies one row for the fallback.
-2. `speculativeBatch`'s sampled path: `sampler.selectFrom(&tops[i],
-   candidates)` is the target's draw for row `i` (compared with the draft
-   as `decide` does); `null` → `readVerifyRow(i)` + `sampler.select`, counted
-   in `topk_fallbacks`. With penalties active the path is the full readback
-   until KERN-13 lands, so this unit starts after it.
-3. `Executor.verify`'s signature carries the mode; the CPU reference keeps
-   full rows and `distribution`.
-
-**Acceptance.** Instruct sampling without penalties (`--temperature 0.7
---top-p 0.8 --top-k 20`): `accept_milliseconds / speculative_steps` ≤ 5 ms
-(from the record's 54.9–76.6 ms); with the penalties active (KERN-13) the
-same bound on `--presence-penalty 1.5`; a new `generation-check` case shows
-the readback path and the full-logit path emit identical tokens for a fixed
-seed (`selectFrom` returns what `select` would for the same logits and RNG
-state, by contract); the seeded tests in `sampling/speculative.zig`
-unchanged; `make check`, `make speculative-check-metal`. Gate with
-`make speculative-record ARGS="--only prose512 code"` (one quick pass, no
-full record).
-
-## KERN-14 — The small-batch matmul tile for the verify batch (32-row threadgroups)
-
-**Facts (from the ENGN-14 record and KERN-12).** The verify batch is
-241–287 ms at 512 for 2.2–4.0 tokens and 362–372 ms at 4K — 70–80 % of a
-speculative batch, and what keeps prose below 1×. It barely scales with
-rows (254 ms at 3 rows against 250 at 8), so its cost is the matmul tile
-plus the chunk attention over the visible cache, not the row count. KERN-12
-showed the register-tiled scalar body wins only at 2 rows (routed) and
-that the 16×8 split-K tile is flat at 88–116 GB/s; KERN-11's unfinished
-levers are 32 output rows per threadgroup, a blocked activation read, and
-holding activations in threadgroup memory across a row strip. REPO-08 left
-`make bench-matvec-rows ARGS="8 head"` with `Backend.matmulTile` as the
-fixed control, and the full-model verify latency is in the record.
-
-**Design.** One experiment per session, exactness-gated: first a 32-output-
-row threadgroup variant of the tile (`nu_matmul_*` at `rows_per_group =
-32`) against the current 16×8 split-K tile; then, if profiling supports it,
-a blocked activation read. Use `Backend.matmulTile` as the fixed control in
-`make bench-matvec-rows`; measure 2/5/8-token bandwidth on both FFN shapes
-and the head, and full-model verify latency (`verify_milliseconds /
-speculative_steps` on the record's configs), including the 2-token
-regression. Keep only an exactness-gated measured win; the 2-row routing
-stays as it is. Files: `inference/src/backends/metal/kernels.metal`,
-`inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
-`docs/reference/metal-backend.md`, `docs/reference/bench.md`.
-
-**Acceptance.** A measured verdict either way. If positive: ≥ 150 GB/s at
-5 rows on `bench-matvec-rows` and `verify_milliseconds /
-speculative_steps` ≤ 130 ms at 512 (the plan's target), with the 2-row
-routing not regressed; `make test-metal`, `make compare` unchanged, and the
-record's rows re-measured. If negative, the numbers and the control that
-beat the candidate, logged.
 
 ## ENGN-16 — Draft proposal policy: `p_min` early stop and an adaptive length
 

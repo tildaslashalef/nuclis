@@ -97,10 +97,13 @@ pub const Plan = struct {
     logits: Buffer, // vocabulary
     /// A verify batch's output head over every row: `max_verify_rows`
     /// vocabulary rows, its per-row argmax results, and the post-`output_norm`
-    /// hidden rows the drafter's `commit` consumes.
+    /// hidden rows the drafter's `commit` consumes. `topk_rows` holds one
+    /// partial top-k scratch set per row for the sampled acceptance path; the
+    /// logits stay resident for `readVerifyRow`'s fallback.
     verify_logits: Buffer,
     verify_argmax: Buffer,
     verify_hidden: Buffer,
+    topk_rows: [max_verify_rows]metal.Backend.TopKBuffers,
     argmax_values: Buffer,
     argmax_indices: Buffer,
     argmax_result: Buffer,
@@ -232,6 +235,7 @@ pub const Plan = struct {
             self.verify_logits = try backend.create(metal.Backend.matmulPadded(max_verify_rows) * vocabulary * 4);
             self.verify_argmax = try backend.create(max_verify_rows * 4);
             self.verify_hidden = try backend.create(max_verify_rows * hidden * 4);
+            for (&self.topk_rows) |*scratch| scratch.* = try backend.topkBuffers(sampling.TopK.capacity);
         } else {
             self.verify_logits = try backend.create(4);
             self.verify_argmax = try backend.create(4);
@@ -598,15 +602,25 @@ pub const Plan = struct {
     }
 
     /// Verifies a batch: records the layer stack once and computes the output
-    /// head for every row, so `rows` (`tokens.len × vocabulary`) holds the
-    /// target logits of each position and `h_rows` (`tokens.len × hidden`),
-    /// when given, their post-`output_norm` hidden. The whole batch is
-    /// admitted before the first write, as `prefill` is.
-    pub fn verify(self: *Plan, tokens: []const u32, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
+    /// head for every row. Exactly one of `rows` (`tokens.len × vocabulary`,
+    /// the full logits of each position) and `tops` (one `sampling.TopK`
+    /// per row, read back from the device partial top-k with every row's
+    /// `temperature`) is given; the logits stay resident either way, so
+    /// `readVerifyRow` can serve a row the readback could not decide.
+    /// `h_rows` (`tokens.len × hidden`), when given, receives the rows'
+    /// post-`output_norm` hidden. The whole batch is admitted before the
+    /// first write, as `prefill` is.
+    pub fn verify(self: *Plan, tokens: []const u32, rows: ?[]f32, tops: ?[]sampling.TopK, h_rows: ?[]f32, observer: ?Observer) !void {
         if (!self.has_draft) return error.NoDraftBlock;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         if (tokens.len == 0 or tokens.len > self.chunk or tokens.len > max_verify_rows) return error.InvalidShape;
-        if (rows.len != tokens.len * vocabulary) return error.InvalidShape;
+        if (rows == null and tops == null) return error.InvalidShape;
+        if (rows != null and tops != null) return error.InvalidShape;
+        if (rows) |r| if (r.len != tokens.len * vocabulary) return error.InvalidShape;
+        if (tops) |t| {
+            if (t.len != tokens.len) return error.InvalidShape;
+            for (t) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
+        }
         if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (self.state.status != .ready) return error.SessionNotReady;
@@ -624,11 +638,46 @@ pub const Plan = struct {
         try self.rotate(self.normalized_c, hidden, count);
         const head = try self.weight(self.binding.output);
         try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
+        if (tops) |out| {
+            for (out, 0..) |top, i| try b.topk(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, sampling.TopK.capacity, top.temperature, self.topk_rows[i]);
+        }
         try b.commit();
         if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
-        @memcpy(rows, self.verify_logits.floats()[0 .. count * vocabulary]);
+        if (rows) |r| @memcpy(r, self.verify_logits.floats()[0 .. count * vocabulary]);
+        if (tops) |out| {
+            for (out, 0..) |*top, i| try self.readVerifyTopK(i, top);
+        }
         try self.state.commitChunk(count);
         self.state.row_checkpoint_rows = row_states;
+    }
+
+    /// One verify row's partial top-k readback from its own scratch set. The
+    /// values are the raw logits (the penalties, when active, are the
+    /// sampler's on the host and `selectFromHistory` checks the bound).
+    fn readVerifyTopK(self: *Plan, row: usize, top: *sampling.TopK) !void {
+        const scratch = self.topk_rows[row];
+        const ids = @as([*]const u32, @ptrCast(@alignCast(scratch.indices.host)))[0..sampling.TopK.capacity];
+        for (ids) |id| if (id >= vocabulary) return error.NonFiniteResult;
+        @memcpy(top.ids[0..], ids);
+        @memcpy(top.values[0..], scratch.values.floats()[0..sampling.TopK.capacity]);
+        top.count = sampling.TopK.capacity;
+        var total: f64 = 0;
+        for (scratch.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
+        top.total = total;
+        top.finite = true;
+        for (@as([*]const u32, @ptrCast(@alignCast(scratch.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
+            top.finite = false;
+        };
+        top.penalized = false;
+    }
+
+    /// Copies one row of the last `verify`'s logits out of the shared buffer:
+    /// the fallback for a row whose readback could not decide. Valid until
+    /// the next verify.
+    pub fn readVerifyRow(self: *Plan, row: usize, out: []f32) !void {
+        if (row >= max_verify_rows or out.len != vocabulary) return error.InvalidShape;
+        @memcpy(out, self.verify_logits.floats()[row * vocabulary ..][0..vocabulary]);
+        for (out) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;
     }
 
     /// `verify`'s greedy sibling: per-row argmax read back (four bytes a row),

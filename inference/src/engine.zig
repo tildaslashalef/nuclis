@@ -51,6 +51,15 @@ pub const StopReason = enum {
     failure,
 };
 
+/// What one `verify` batch computes per row: the full logits (`rows`,
+/// `tokens.len × vocabulary`) or the device partial top-k readback (`topk`,
+/// one `sampling.TopK` per row, the logits left resident for
+/// `readVerifyRow`). The CPU reference has only `rows`.
+pub const VerifyOutput = union(enum) {
+    rows: []f32,
+    topk: []inference.sampling.TopK,
+};
+
 /// One family's executors: the CPU reference runtime or the GPU-resident
 /// plan. Both own a `session.Session` and expose the same step/reset
 /// contract; the engine's `Model` wraps one `Executor` per registered family.
@@ -108,27 +117,60 @@ pub fn Executor(comptime Family: type) type {
                 },
             }
         }
-        /// Logits for every row of a verify batch: `rows.len == tokens.len ×
-        /// vocabulary`. The family's `verify` runs a chunk and the output head
-        /// over all rows when it has one; otherwise the CPU runtime steps token
-        /// by token. `h_rows`, when given, receives the post-`output_norm`
+        /// Every row of a verify batch. The family's `verify` runs a chunk and
+        /// the output head over all rows when it has one; otherwise the
+        /// runtime steps token by token with full `rows` (a `.topk` request is
+        /// refused). `h_rows`, when given, receives the post-`output_norm`
         /// hidden per row (`tokens.len × Family` hidden), which the drafter's
         /// `commit` consumes; a family without a specialized verify refuses it.
-        pub fn verify(self: *Self, tokens: []const u32, vocabulary: usize, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
+        pub fn verify(self: *Self, tokens: []const u32, vocabulary: usize, out: VerifyOutput, h_rows: ?[]f32, observer: ?Observer) !void {
             switch (self.*) {
-                .cpu => |*runtime| if (comptime @hasDecl(Family.Runtime, "verify")) {
-                    try runtime.verify(tokens, rows, h_rows, observer);
-                } else {
-                    if (h_rows != null) return error.HiddenUnsupported;
-                    for (tokens, 0..) |token, i| try runtime.step(token, rows[i * vocabulary ..][0..vocabulary], observer);
+                .cpu => |*runtime| {
+                    const rows = switch (out) {
+                        .rows => |rows| rows,
+                        .topk => return error.UnsupportedVerify,
+                    };
+                    if (comptime @hasDecl(Family.Runtime, "verify")) {
+                        try runtime.verify(tokens, rows, h_rows, observer);
+                    } else {
+                        if (h_rows != null) return error.HiddenUnsupported;
+                        for (tokens, 0..) |token, i| try runtime.step(token, rows[i * vocabulary ..][0..vocabulary], observer);
+                    }
                 },
-                .metal => |*m| if (comptime @hasDecl(Family.Plan, "verify")) {
-                    try m.plan.verify(tokens, rows, h_rows, observer);
-                } else {
+                .metal => |*m| blk: {
+                    if (comptime @hasDecl(Family.Plan, "verify")) {
+                        switch (out) {
+                            .rows => |rows| try m.plan.verify(tokens, rows, null, h_rows, observer),
+                            .topk => |tops| try m.plan.verify(tokens, null, tops, h_rows, observer),
+                        }
+                        break :blk;
+                    }
+                    const rows = switch (out) {
+                        .rows => |rows| rows,
+                        .topk => return error.UnsupportedVerify,
+                    };
                     if (h_rows != null) return error.HiddenUnsupported;
                     for (tokens, 0..) |token, i| try m.plan.step(token, rows[i * vocabulary ..][0..vocabulary], null, null, null, observer);
                 },
             }
+        }
+        /// One row of a verify batch's resident logits, for the readback
+        /// fallback. Only a GPU plan that keeps them resident serves it.
+        pub fn readVerifyRow(self: *Self, row: usize, out: []f32) !void {
+            switch (self.*) {
+                .cpu => return error.UnsupportedVerify,
+                .metal => |*m| if (comptime @hasDecl(Family.Plan, "readVerifyRow")) {
+                    try m.plan.readVerifyRow(row, out);
+                } else return error.UnsupportedVerify,
+            }
+        }
+        /// Whether `verify` serves the per-row top-k readback (the GPU plan
+        /// of a family that carries a drafter).
+        pub fn supportsVerifyTopK(self: *const Self) bool {
+            return switch (self.*) {
+                .cpu => false,
+                .metal => true,
+            };
         }
         /// `verify`'s greedy sibling: per-row argmax only, no logit readback
         /// where the family implements it.
@@ -259,10 +301,20 @@ pub const Model = struct {
             inline else => |*e| try e.prefill(tokens, logits, greedy, topk, penalties, hidden, observer),
         }
     }
-    pub fn verify(self: *Model, tokens: []const u32, vocabulary: usize, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
+    pub fn verify(self: *Model, tokens: []const u32, vocabulary: usize, out: VerifyOutput, h_rows: ?[]f32, observer: ?Observer) !void {
         switch (self.exec) {
-            inline else => |*e| try e.verify(tokens, vocabulary, rows, h_rows, observer),
+            inline else => |*e| try e.verify(tokens, vocabulary, out, h_rows, observer),
         }
+    }
+    pub fn readVerifyRow(self: *Model, row: usize, out: []f32) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.readVerifyRow(row, out),
+        }
+    }
+    pub fn supportsVerifyTopK(self: *const Model) bool {
+        return switch (self.exec) {
+            inline else => |*e| e.supportsVerifyTopK(),
+        };
     }
     pub fn verifyGreedy(self: *Model, tokens: []const u32, vocabulary: usize, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
         switch (self.exec) {
@@ -447,6 +499,7 @@ pub const Speculative = struct {
 const SpeculativeScratch = struct {
     drafts: []u32,
     rows: []f32,
+    tops: []inference.sampling.TopK,
     hidden: []f32,
     tokens: []u32,
     choices: []u32,
@@ -458,6 +511,8 @@ const SpeculativeScratch = struct {
         errdefer alloc.free(drafts);
         const logits = try alloc.alloc(f32, rows * vocabulary);
         errdefer alloc.free(logits);
+        const tops = try alloc.alloc(inference.sampling.TopK, rows);
+        errdefer alloc.free(tops);
         // The prompt commit harvests a full prefill chunk's hidden rows at
         // once; the verify batch uses only the first `rows` of it.
         const hidden = try alloc.alloc(f32, prefill_chunk * hidden_width);
@@ -468,11 +523,12 @@ const SpeculativeScratch = struct {
         errdefer alloc.free(choices);
         const p = try alloc.alloc(inference.sampling.Candidate, vocabulary);
         errdefer alloc.free(p);
-        return .{ .drafts = drafts, .rows = logits, .hidden = hidden, .tokens = tokens, .choices = choices, .p = p };
+        return .{ .drafts = drafts, .rows = logits, .tops = tops, .hidden = hidden, .tokens = tokens, .choices = choices, .p = p };
     }
     fn deinit(self: *SpeculativeScratch, alloc: std.mem.Allocator) void {
         alloc.free(self.drafts);
         alloc.free(self.rows);
+        alloc.free(self.tops);
         alloc.free(self.hidden);
         alloc.free(self.tokens);
         alloc.free(self.choices);
@@ -992,6 +1048,7 @@ pub fn runLoop(
             timing.speculative_steps += 1;
             timing.accepted_drafts += result.accepted;
             timing.proposed_drafts += result.proposed;
+            timing.topk_fallbacks = (timing.topk_fallbacks orelse 0) + result.fallbacks;
             timing.propose = .{ .nanoseconds = timing.propose.nanoseconds + result.propose.nanoseconds };
             timing.verify = .{ .nanoseconds = timing.verify.nanoseconds + result.verify.nanoseconds };
             timing.accept = .{ .nanoseconds = timing.accept.nanoseconds + result.accept.nanoseconds };
@@ -1060,8 +1117,9 @@ pub fn runLoop(
 }
 
 /// The accepted length, the model's next token, and the timings of one verify
-/// batch: `recover_split` carries the copy/replay split of `recover`.
-const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, propose: std.Io.Duration, verify: std.Io.Duration, accept: std.Io.Duration, recover: std.Io.Duration, recover_split: Model.Recovery, checkpoint: std.Io.Duration, commit: std.Io.Duration };
+/// batch: `recover_split` carries the copy/replay split of `recover`, and
+/// `fallbacks` counts sampled rows whose readback could not decide.
+const BatchResult = struct { accepted: usize, correction: u32, proposed: usize, fallbacks: usize, propose: std.Io.Duration, verify: std.Io.Duration, accept: std.Io.Duration, recover: std.Io.Duration, recover_split: Model.Recovery, checkpoint: std.Io.Duration, commit: std.Io.Duration };
 
 /// Proposes `k` drafts from `seed_token`, checkpoints, verifies `[seed] ++
 /// drafts` on the main model, accepts the longest prefix (greedy: the row's
@@ -1092,7 +1150,7 @@ fn speculativeBatch(
     @memcpy(s.tokens[1 .. 1 + n], s.drafts[0..n]);
     const batch = s.tokens[0 .. 1 + n];
     const hidden = s.hidden[0 .. (1 + n) * drafter.hidden];
-    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .propose = propose, .verify = .zero, .accept = .zero, .recover = .zero, .recover_split = .{}, .checkpoint = checkpoint, .commit = .zero };
+    var result: BatchResult = .{ .accepted = 0, .correction = 0, .proposed = n, .fallbacks = 0, .propose = propose, .verify = .zero, .accept = .zero, .recover = .zero, .recover_split = .{}, .checkpoint = checkpoint, .commit = .zero };
     const verify_start = std.Io.Clock.awake.now(eng.io);
     if (greedy) {
         try eng.model.verifyGreedy(batch, vocabulary, s.choices[0 .. 1 + n], hidden, observer);
@@ -1102,7 +1160,17 @@ fn speculativeBatch(
         result.correction = s.choices[result.accepted];
         result.accept = accept_start.durationTo(std.Io.Clock.awake.now(eng.io));
     } else {
-        try eng.model.verify(batch, vocabulary, s.rows[0 .. (1 + n) * vocabulary], hidden, observer);
+        // A sampled batch whose options are eligible reads back each row's
+        // partial top-k instead of the full vocabulary; the penalties, when
+        // active, are applied by the sampler on those candidates with the
+        // live history (which the accepted drafts advance), and a row the
+        // readback cannot decide falls back to its full logits below.
+        const use_topk = sampler.gpuEligible() and eng.model.supportsVerifyTopK();
+        const out: VerifyOutput = if (use_topk) .{ .topk = s.tops[0 .. 1 + n] } else .{ .rows = s.rows[0 .. (1 + n) * vocabulary] };
+        if (use_topk) {
+            for (s.tops[0 .. 1 + n]) |*top| top.* = .{ .temperature = sampler.options.temperature };
+        }
+        try eng.model.verify(batch, vocabulary, out, hidden, observer);
         const accept_start = std.Io.Clock.awake.now(eng.io);
         result.verify = verify_start.durationTo(accept_start);
         // Row `i`'s shaped distribution sees the accepted drafts before it
@@ -1111,8 +1179,20 @@ fn speculativeBatch(
         var rejected = false;
         while (result.accepted < n) {
             const i = result.accepted;
-            const p = try sampler.distribution(s.rows[i * vocabulary ..][0..vocabulary], s.p, history);
-            switch (inference.speculative.decide(sampler, p, s.drafts[i])) {
+            const row = s.rows[i * vocabulary ..][0..vocabulary];
+            const drawn: ?u32 = if (use_topk) try sampler.selectFromHistory(&s.tops[i], s.p, history) else null;
+            var verdict: inference.speculative.Verdict = undefined;
+            if (drawn) |token| {
+                verdict = if (token == s.drafts[i]) .accepted else .{ .correction = token };
+            } else {
+                if (use_topk) {
+                    result.fallbacks += 1;
+                    try eng.model.readVerifyRow(i, row);
+                }
+                const p = try sampler.distribution(row, s.p, history);
+                verdict = inference.speculative.decide(sampler, p, s.drafts[i]);
+            }
+            switch (verdict) {
                 .accepted => {
                     if (history) |h| try h.observe(s.drafts[i]);
                     result.accepted += 1;
@@ -1125,8 +1205,18 @@ fn speculativeBatch(
             }
         }
         if (!rejected) {
-            const p = try sampler.distribution(s.rows[n * vocabulary ..][0..vocabulary], s.p, history);
-            result.correction = inference.speculative.draw(sampler, p);
+            const row = s.rows[n * vocabulary ..][0..vocabulary];
+            const drawn: ?u32 = if (use_topk) try sampler.selectFromHistory(&s.tops[n], s.p, history) else null;
+            if (drawn) |token| {
+                result.correction = token;
+            } else {
+                if (use_topk) {
+                    result.fallbacks += 1;
+                    try eng.model.readVerifyRow(n, row);
+                }
+                const p = try sampler.distribution(row, s.p, history);
+                result.correction = inference.speculative.draw(sampler, p);
+            }
         }
         result.accept = accept_start.durationTo(std.Io.Clock.awake.now(eng.io));
     }
