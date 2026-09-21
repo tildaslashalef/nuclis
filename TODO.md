@@ -89,8 +89,10 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
-**Next: REPO-09** (one gate registry: the model-specific checks become a
-data manifest). ENGN-17 closed on 2026-09-21 with the speculative plan's
+**Next: REPO-09** (one gate registry: tiers, change triggers, and the
+model-specific checks as data; reshaped on 2026-09-21 around cost tiers and
+change-triggered selection, because the CPU tier was running per unit
+without a rule saying when it is needed). ENGN-17 closed on 2026-09-21 with the speculative plan's
 verdict and the full record: Qwen **off** (code greedy 1.20–1.30×, prose
 512 0.81–0.97×, 4K 0.73×), Gemma **off** (0.899× at draft 4, 1.017× at 7),
 Muse **on** (1.163–1.234×); the catalogue entries carry the verdicts and
@@ -185,8 +187,8 @@ verdicts as data.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| REPO-09 | One gate registry: the model-specific checks become a data manifest | 1 |
-| REPO-10 | Benchmark workloads and generated records; bench.md split by family | 2 |
+| REPO-09 | One gate registry: tiers, change triggers, and the model-specific checks as data | 1 |
+| REPO-10 | Benchmark workloads and generated records; bench.md split by family | 1 (+1 optional) |
 | TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
@@ -198,7 +200,9 @@ verdicts as data.
 ## Working a unit here
 
 **Build and gates.** `make build` writes `./zig-out/bin/nuclis` (Metal on).
-Every unit keeps these green and says so in its log entry:
+Until REPO-09 lands, every unit keeps these green and says so in its log
+entry (REPO-09 replaces the list with `make verify`, and the CPU rows with
+`make verify-cpu` when `verify-changed` selects one):
 
 - `make check` — fmt, unit tests, Metal fixtures.
 - `make compare` — the pinned llama.cpp traces of the main model (f32 max
@@ -331,66 +335,116 @@ its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
 
-## REPO-09 — One gate registry: the model-specific checks become data
+## REPO-09 — One gate registry: tiers, change triggers, and the model-specific checks as data
 
 **Order.** After ENGN-17: the verdict settles the per-entry defaults and the
 last records the hand-written recipes must carry, and the manifest is then
 written once against the finished set of families.
 
-**Facts (session 1 reads, then rewrites this section).** `Makefile` is 355
-lines with 85 targets; the model-specific ones are `compare{,-f32,-f16,-cpu}`,
-`compare-gemma4*`, `compare-gemma4-26b-a4b*`, `compare-muse-glimmer*`,
-`compare-bonsai*`, `compare-draft*`, `test-generation*`,
-`speculative-check*`, `draft-stats`, and `baseline-*`. Their commands are
-`./zig-out/bin/nuclis generate …` plus `scripts/compare-generation.py`
-(`--positions`, `--embedding`, `--layers`, `--vocab`, `--max-absolute`,
-`--max-relative-rms`, `--draft`), `zig build test-generation -- …` with
-`--metal`/`--draft-trace`/`--draft-model`, and `scripts/nuclis-*.py`.
-Session 1 lists every target with its command, comparator, bounds, cost
-class, and the doc anchor that holds its evidence.
+**Why (decided 2026-09-21).** `make check` (fmt, unit tests, the Metal
+fixtures) takes seconds. What makes a unit slow is the protocol around it:
+the "every unit keeps these green" list in *Working a unit here* and the
+65-line "run X when Y changed" bullet in
+[development.md § Environment](docs/development.md#environment) are a gate
+registry written as prose, nothing says which gates a given change needs,
+so sessions run most of them, including the CPU tier (~35 s per token on
+Gemma 12B, ~20 min for `speculative-check`). The CPU reference earns that
+cost at three moments only: bringing up an adapter or a draft source, a
+change to the CPU runtime files themselves, and diagnosing a failed Metal
+trace to tell a wrong kernel from wrong model semantics. Otherwise the
+pinned llama.cpp trace checked on Metal is the oracle. The unit therefore
+makes cost and relevance data: every gate carries a *tier* and the source
+paths that make it relevant, and the runner selects by both.
+
+**Facts (read 2026-09-21; the session fills the manifest, not this
+section).** `Makefile` has 82 targets. The gate recipes are
+`compare{,-f32,-f16}` (the `compare_run` macro: `generate` +
+`scripts/compare-generation.py` at 0.002 / 0.0001 for F32 and 0.03 /
+0.0002 for F16), `compare-gemma4{,-cpu,-f32,-f16}`, `compare-gemma4-qat*`,
+`compare-gemma4-26b-a4b*`, `compare-bonsai*`, `compare-muse-glimmer*`
+(each family's `-cpu`, `-f32`, `-f16` rows with its own F16 tolerance),
+`compare-draft{,-cpu,-metal}`, `compare-draft-gemma4*`,
+`compare-draft-muse*` (`zig build test-generation -- <model> --draft-trace
+<dir> [--draft-model <file>]`), `test-generation{,-metal,-gemma4,
+-gemma4-metal,-gemma4-qat-metal,-gemma4-26b-a4b-metal,-bonsai-metal,
+-muse-glimmer-metal}`, `speculative-check{,-metal}`
+(`--speculative-check`), `draft-stats`, and `test-vocabulary` (`MODEL=`).
+Model paths are Make variables (`MODEL`, `GEMMA_MODEL`, `GEMMA_QAT_MODEL`,
+`GEMMA_26B_A4B_MODEL`, `GEMMA_MTP_MODEL`, `MUSE_MODEL`, `MUSE_MTP_MODEL`,
+`BONSAI_MODEL`), overridable from the environment. Every CPU gate builds at
+`OPT=ReleaseSafe`. The evidence anchors are the ones cited in the
+development.md bullet and the log.
 
 **Design.**
-1. `gates.json` (repo root): `models` (pinned paths keyed by name, each
+1. `gates.json` (repo root): `models` (name → pinned path, each
    overridable by an environment variable of the same upper-case name) and
-   `gates[]` of `{name, family, class, command[], comparator, bounds,
-   evidence}`. Comparators: `trace` and `draft` (shell to
-   `compare-generation.py` with the gate's bounds), `greedy` (two `generate`
-   runs must be text-identical), `exit` (a load-error or refusal case),
-   `report` (a `bench --json` sample field against a bar). Commands are argv
-   arrays with `{model}`, `{mtp}`, `{prompt}`, `{trace}` placeholders so no
-   shell quoting survives into the data.
-2. `scripts/gates.py`: `--list`, `--plan NAME|--class cheap`, `--gate NAME`,
-   `--class cheap|heavy`, `--json`; validates the manifest (unknown
-   comparator, missing model key, duplicate name), runs each command from
-   the repo root, prints one line per gate with the measured numbers and the
-   bound, exits non-zero on any failure. Bounds exist nowhere else.
-3. `Makefile`: `check` = `fmt-check` + the package unit tests +
-   `gates.py --class cheap`; `gate NAME=…` = `gates.py --gate $(NAME)`.
-   This unit deletes the *gate* recipes — every `compare*`,
-   `test-generation*`, `speculative-check*`, `draft-stats`, and
-   `compare-draft*` target — and leaves the record and workload recipes
-   (`baseline*`, `speculative-record`) to REPO-10, which replaces them with
-   `bench --workload` invocations. The kernel micro-benchmark steps
-   (`bench-kernels`, `bench-matvec-*`, `bench-matmul`, `bench-hadamard`,
-   `bench-experts`, `bench-attention`, `bench-profile`) stay explicit: they
-   measure, they do not gate. `help` stays generated from the `##` comments.
-4. `generation-check` gains a one-line JSON summary (`--json`) for the
-   `trace`/`draft` comparators instead of stderr scraping, if session 1
-   finds the printed numbers insufficient; its existing `--draft-trace`
-   fixtures are the `draft` gates' commands.
-5. Cost classes: cheap = unit tests, the Gemma 12B `Hello,` traces, the two
-   draft traces (≤ 32 positions), the load-error cases; heavy = the CPU
-   full-model traces and checks, the speculative checks, and the acceptance
-   records.
+   `gates[]` of `{name, family, tier, paths, command, comparator, bounds,
+   evidence}`. `tier` is `verify` (Metal, minutes, once per unit) or
+   `verify-cpu` (the CPU reference, hours, on trigger); `check` stays the
+   Makefile's fmt + unit tests + `test-metal` and is not in the manifest.
+   `paths` are source globs (`inference/src/models/gemma4*.zig`,
+   `inference/src/backends/metal/**`, `inference/src/runtime/engine.zig`):
+   a gate is *relevant* to a change when a changed file matches one. Two
+   comparators: `trace` (shell to `compare-generation.py` with the gate's
+   bounds) and `exit` (the command's status: the generation checks, the
+   speculative checks, `draft-stats`, `test-vocabulary`). `greedy` and
+   `report` comparators are not built until a gate needs one. Commands are
+   argv arrays with `{model}`, `{mtp}`, `{prompt}`, `{trace}` placeholders,
+   so no shell quoting survives into the data. Bounds exist nowhere else.
+2. `scripts/gates.py`: `--list` (name, tier, family, paths, evidence),
+   `--tier verify|verify-cpu`, `--gate NAME`, `--changed [REV]` (the gates
+   whose `paths` match `git diff --name-only REV` plus the working tree;
+   `REV` defaults to `HEAD`, a unit passes its base commit), `--dry-run`
+   (print the commands), `--json`; validates the manifest (unknown tier or
+   comparator, missing model key, duplicate name, a path glob that matches
+   no file), runs each command from the repo root, prints one line per
+   gate with the measured numbers against the bound, exits non-zero on any
+   failure. Unit tests (pure functions, no subprocess) cover the
+   validation and the selection.
+3. `Makefile`: `check` unchanged; `verify` = `gates.py --tier verify`;
+   `verify-cpu` = `--tier verify-cpu`; `verify-changed BASE=…` =
+   `--changed $(BASE)`; `gate NAME=…` = `--gate $(NAME)`. The unit deletes
+   every `compare*`, `test-generation*`, `speculative-check*`,
+   `draft-stats`, `compare-draft*`, and `test-vocabulary` target and their
+   model variables, and leaves the record and workload recipes
+   (`baseline*`, `speculative-record`) to REPO-10. The kernel
+   micro-benchmark steps (`bench-kernels`, `bench-matvec-*`, `bench-matmul`,
+   `bench-hadamard`, `bench-experts`, `bench-attention`, `bench-profile`)
+   stay explicit: they measure, they do not gate. `help` stays generated
+   from the `##` comments.
+4. The CPU tier's cost, two levers measured once in the session: build the
+   CPU gates at `ReleaseFast` (the reference exists to be exact, not safe;
+   the float results are the same, the bounds checks in the matvec loops
+   are not free) and record the wall time of one CPU trace gate at both
+   modes in development.md; and read `test-generation`'s CPU step count
+   and, if its protocol allows fewer steps than the Metal run, give the
+   CPU gates their own count in the manifest. The trace gates stay at
+   their three positions.
+5. Documents: the development.md gate bullet collapses into a new
+   `§ Gates` (the tiers table, the trigger rule, `make verify` /
+   `verify-cpu` / `verify-changed` / `gate`, and a pointer at the
+   manifest); AGENTS.md § Validation gains one sentence (gates are tiered
+   by cost and selected by changed paths); *Working a unit here* below is
+   rewritten to "run `make verify`; run `make verify-cpu` when
+   `verify-changed` selects a CPU gate"; the per-unit list of five
+   commands goes.
+6. If the session has room: a pass cache under `.zig-cache/gates/` keyed
+   on the gate's command and the tree hash of its `paths`, so re-running
+   `verify` after a change outside them is a no-op (`--force` bypasses).
+   Not an acceptance item.
 
 **Acceptance.** Every deleted target has a gate entry and the mapping is in
-the log; `make gate NAME=gemma4-qat-draft-metal` and the other trace gates
-reproduce the numbers their recipes printed; `make check` is green with its
-wall time measured before and after; unit tests for the manifest validation
-and `--plan`; `docs/development.md § Gates` describes the manifest and names
-the two commands.
+the log; `make gate NAME=…` reproduces the numbers the recipes printed on
+three spot checks (the Qwen F16 trace, the Gemma QAT draft trace on Metal,
+the Muse DFlash trace on Metal); `make verify` is green with its wall time
+recorded; `gates.py --changed` on a commit touching only `src/tui/` selects
+nothing and on one touching `inference/src/models/gemma4*.zig` selects the
+Gemma gates (both as unit tests); the ReleaseFast measurement is in
+development.md with the mode the manifest chose; `make check` still
+green; `docs/development.md § Gates`, the AGENTS.md sentence, and the
+rewritten *Working a unit here* are in the same commit.
 
-## REPO-10 — Benchmark workloads, generated records, and bench.md split by family
+## REPO-10 — Benchmark workloads and generated records; bench.md split by family (optional second session)
 
 **Order.** After REPO-09: the gate runner owns execution, this unit owns the
 workload data and the documents the records land in; a gate may then name a
@@ -407,7 +461,7 @@ Bonsai 2 (712–800), Muse Glimmer (801–886), the speculative record
 (1177–1237), and the unit sweeps (1238–1567); the prompt arrays under
 `tests/fixtures/run-*`.
 
-**Design.**
+**Session 1 — workloads and generated records (the unit's deliverable).**
 1. `benchmarks/workloads.json`: `{name, family, model, prompt, max_tokens,
    ctx, kv, sampling, pair, draft_length, warmup, repeat, bars, evidence}`,
    with names `qwen38/prose512`, `qwen38/prose4096`, `qwen38/code`,
@@ -429,12 +483,15 @@ Bonsai 2 (712–800), Muse Glimmer (801–886), the speculative record
    region between `<!-- bench:NAME -->` markers in the target document.
    Record tables stop being transcribed by hand.
 4. `scripts/nuclis-speculative.py` becomes the `speculative-record` workload
-   set (12 configurations) driven by `bench --workload … --pair --json`; its
-   make target becomes a heavy gate (REPO-09).
-5. Documents: `docs/reference/bench.md` (1,560 lines, 25 sections) keeps
-   the introduction, `Definitions`, `What to record with results`, and a
-   record index; every other section moves, with its heading text intact so
-   its slug survives:
+   set (12 configurations) driven by `bench --workload … --pair --json`. It
+   is a record, not a gate: it stays a make target outside the tiers.
+
+**Session 2 — the bench.md split (optional; decided at the end of session
+1).** Worth doing only if session 1's generated sections make the
+1,567-line file harder to work in, since most of its cost is the anchor
+stubs. `docs/reference/bench.md` keeps the introduction, `Definitions`,
+`What to record with results`, and a record index; every other section
+moves, with its heading text intact so its slug survives:
    - `bench-qwen38.md`: `Acceptance runs` (the warm record and the
      cold-start row), `Speculative decoding record` (ENGN-12), `Recovery by
      row checkpoints` (ENGN-14), and the KERN-13 / ENGN-15 / ENGN-16 quick
@@ -454,13 +511,14 @@ Bonsai 2 (712–800), Muse Glimmer (801–886), the speculative record
    `rg -o 'bench\.md#[a-z0-9-]+' docs/engineering-log.md | sort -u`);
    `docs/architecture.md` links the five files.
 
-**Acceptance.** `nuclis bench --workload gemma4-qat/prose512 --pair --json`
-reproduces MODL-19's numbers within run noise and `bench-report.py --table
---write-doc` generates that section from the saved JSON (the generated table
-is what is committed); `--list` shows every workload and its model's status;
-the doc split leaves no dead anchor (`rg` over the old paths); `make check`
-still green; `docs/development.md § The record` and the `bench.md`
-introduction point at the manifest and the report script.
+**Acceptance (session 1).** `nuclis bench --workload gemma4-qat/prose512
+--pair --json` reproduces MODL-19's numbers within run noise and
+`bench-report.py --table --write-doc` generates that section from the saved
+JSON (the generated table is what is committed); `--list` shows every
+workload and its model's status; `make check` still green;
+`docs/development.md § The record` and the `bench.md` introduction point at
+the manifest and the report script. **Session 2**, if taken: the split
+leaves no dead anchor (`rg` over the old paths).
 
 ## TERM-10 — Chat polish: operation dots, the running pulse, write summaries with a file view
 
