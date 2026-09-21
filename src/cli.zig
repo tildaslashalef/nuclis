@@ -7,6 +7,7 @@ const inspection = @import("inspect.zig");
 const validation = @import("validate.zig");
 const generate = @import("generate.zig");
 const bench = @import("bench.zig");
+const discover = @import("discover.zig");
 const tokenize = @import("tokenize.zig");
 const engine = @import("engine.zig");
 const config = @import("config.zig");
@@ -25,6 +26,10 @@ pub const Options = struct {
     /// Which command's page `--help` asked for; null is the overview.
     help_topic: ?help_text.Topic = null,
     config_action: enum { init, show, set } = .show,
+    /// `config init --discover [--dry-run]`: register the runnable files
+    /// the catalogue does not name.
+    discover: bool = false,
+    dry_run: bool = false,
     /// `config set <key> <value>`.
     set_key: []const u8 = "",
     set_value: []const u8 = "",
@@ -103,8 +108,14 @@ pub fn parseArgs(args: []const []const u8) !Options {
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--json")) {
             if (options.json) return error.DuplicateOption;
-            if (command == .config and options.config_action != .show) return error.UnknownOption;
+            if (command == .config and options.config_action == .set) return error.UnknownOption;
             options.json = true;
+        } else if (command == .config and options.config_action == .init and std.mem.eql(u8, args[i], "--discover")) {
+            if (options.discover) return error.DuplicateOption;
+            options.discover = true;
+        } else if (command == .config and options.config_action == .init and std.mem.eql(u8, args[i], "--dry-run")) {
+            if (options.dry_run) return error.DuplicateOption;
+            options.dry_run = true;
         } else if (command != .config and std.mem.eql(u8, args[i], "--model")) {
             if (options.model != null) return error.DuplicateOption;
             i += 1;
@@ -250,6 +261,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
         options.print.seed = options.generation.seed;
         options.print.resume_id = options.resume_id;
     }
+    if (command == .config and options.config_action == .init and !options.discover and (options.json or options.dry_run)) return error.UnknownOption;
     const token_prompt = options.benchmark.prompt_tokens != null or options.generation.prompt_tokens != null;
     const sources = @as(u8, @intFromBool(options.generation.prompt != null)) + @intFromBool(options.generation.prompt_file != null) + @intFromBool(token_prompt);
     if (prompts and sources == 0) return error.MissingPrompt;
@@ -402,12 +414,36 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     if (options.command == .config) {
         const file = config_path orelse return error.MissingHome;
         switch (options.config_action) {
-            .init => switch (try config.init(io, .cwd(), file)) {
-                .created => {
-                    try out.print("{s}wrote{s} {s}{s}{s}\n", .{ sty.on(.success), sty.off(), sty.on(.code), file, sty.off() });
-                    try renderStart(alloc, io, root.?, out, sty);
-                },
-                .exists => try out.print("{s}{s}{s} exists; not overwritten {s}(`nuclis config show` prints it; move it away to start over){s}\n", .{ sty.on(.code), file, sty.off(), sty.on(.dim), sty.off() }),
+            .init => {
+                const created = try config.init(io, .cwd(), file);
+                if (!options.discover) {
+                    switch (created) {
+                        .created => {
+                            try out.print("{s}wrote{s} {s}{s}{s}\n", .{ sty.on(.success), sty.off(), sty.on(.code), file, sty.off() });
+                            try renderStart(alloc, io, root.?, out, sty);
+                        },
+                        .exists => try out.print("{s}{s}{s} exists; not overwritten {s}(`nuclis config show` prints it; move it away to start over){s}\n", .{ sty.on(.code), file, sty.off(), sty.on(.dim), sty.off() }),
+                    }
+                    return;
+                }
+                if (!options.json and created == .created) try out.print("{s}wrote{s} {s}{s}{s}\n", .{ sty.on(.success), sty.off(), sty.on(.code), file, sty.off() });
+                var arena_state = std.heap.ArenaAllocator.init(alloc);
+                defer arena_state.deinit();
+                const arena = arena_state.allocator();
+                const current = try config.readText(alloc, io, .cwd(), file, diag);
+                defer if (current) |c| alloc.free(c);
+                var loaded = try config.fromText(alloc, current orelse return error.FileNotFound, file, diag);
+                defer loaded.deinit();
+                var report = try discover.discover(arena, alloc, io, root.?, loaded.config.models);
+                report.config_file = file;
+                report.dry_run = options.dry_run;
+                if (!options.dry_run and report.registered.len > 0) {
+                    const text = try config.registerDiscovered(alloc, current, file, try discover.toEntries(arena, report.registered), diag);
+                    defer alloc.free(text);
+                    try config.write(io, .cwd(), file, text);
+                    report.written = true;
+                }
+                try report.render(out, options.json, sty);
             },
             .show => {
                 var loaded = try config.load(alloc, io, .cwd(), file, diag);
@@ -658,6 +694,12 @@ test "sampling flags are per-option overrides shared by generate, bench, and the
 
 test "config parses its positional action and rejects the model and generation flags" {
     try std.testing.expectEqual(.init, (try parseArgs(&.{ "config", "init" })).config_action);
+    const discovering = try parseArgs(&.{ "config", "init", "--discover", "--dry-run", "--json" });
+    try std.testing.expect(discovering.discover and discovering.dry_run and discovering.json);
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "init", "--dry-run" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "init", "--json" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "config", "show", "--discover" }));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "config", "init", "--discover", "--discover" }));
     const show = try parseArgs(&.{ "config", "show", "--json" });
     try std.testing.expectEqual(.config, show.command);
     try std.testing.expectEqual(.show, show.config_action);
@@ -840,6 +882,7 @@ test {
     _ = validation;
     _ = engine;
     _ = bench;
+    _ = discover;
     _ = @import("interrupt.zig");
     _ = style;
 }

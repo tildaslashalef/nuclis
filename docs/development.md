@@ -346,7 +346,29 @@ init` writes the defaults with every catalogue model as a registry entry
 (one today), so the file shows the entry shape with the catalogue's facts
 (the entries are optional: a catalogue name resolves without one), then
 prints the effective engine keys, each catalogue model's local status,
-and the `nuclis model pull <name>` to run next:
+and the `nuclis model pull <name>` to run next (the example below).
+
+`nuclis config init --discover [--dry-run] [--json]` registers what the
+catalogue does not name: it walks `<root>/models` as `model ls` does,
+skips the files a registry entry already locates and the companions
+(sidecar role, or a name carrying `mmproj`, `mtp`, or `dflash`), reads each
+remaining file's GGUF directory and judges it as `model inspect` does (an
+adapter for its architecture, every tensor in the executable set, the
+binding), and writes one entry per runnable file: the name is the
+repository's last path segment lower-cased (`-gguf` dropped; a taken name
+gains the quantization suffix, then a counter; never a catalogue name),
+the entry is `repo` + `file` + `revision` from the sidecar (or `path` when
+there is none), companions beside the file fill `mmproj` and `mtp`,
+`profile` is forced to the family's when the template digest matches no
+profile (the finetune case, otherwise left to the digest), and
+`generation.speculative` / `draft_length` take the catalogue's verdict for
+the same architecture (off when the family drafts from a companion that
+is absent). Every skipped file is reported with its reason, a header that
+fails to parse included; the file is created first when absent and kept
+when present, and `--dry-run` prints the report without writing
+(APPS-15). Discovered on 2026-09-21: the HauhauCS Gemma 4 12B finetune
+with its projector and a forced `gemma4` profile, and the Bonsai 2 PQ2_0
+bring-up file. The example:
 
 ```json
 {

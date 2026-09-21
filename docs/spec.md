@@ -275,7 +275,7 @@ nuclis bench --model <path> --prompt-tokens <json-path> --max-tokens 128 --ctx-s
 nuclis tokenize --model <path> --prompt-file <path> [--raw] --json
 nuclis agent --model <path> --think low
 nuclis agent -p "<prompt>" [--json] [--session <path>]   (print mode)
-nuclis config init | show [--json]
+nuclis config init [--discover [--dry-run] [--json]] | show [--json] | set <key> <value>
 nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <role>] [--force] [--json]
 nuclis model inspect (<name> | <owner/repo> --file <name>) [--revision <rev>] [--json]
 nuclis model ls [--json]

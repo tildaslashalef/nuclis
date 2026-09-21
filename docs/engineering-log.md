@@ -110,6 +110,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-17 | The speculative verdict: Qwen and Gemma off, Muse on; the full record and `bench`'s true baseline | 2026-09-21 |
 | REPO-09 | One gate registry: tiers, change triggers, and the model-specific checks as data | 2026-09-21 |
 | REPO-10 | Benchmark workloads as data and generated record tables | 2026-09-21 |
+| APPS-15 | `config init --discover` and self-contained help pages | 2026-09-21 |
 
 ## Context
 
@@ -4141,3 +4142,57 @@ decision. Only the Gemma QAT pair was re-run; the other workloads were
 dry-run and validated, not measured. `bars` exist on one workload; the
 acceptance workloads compare against the reference rows inside
 `nuclis-baseline.py` as before, not through `--check`.
+
+## APPS-15 — `config init --discover` and self-contained help pages (2026-09-21)
+
+**Outcome.** `nuclis config init --discover [--dry-run] [--json]`
+(`src/discover.zig`) registers the runnable GGUF files under
+`<root>/models` that neither the catalogue nor the registry names. It
+reuses `model.list` for the walk (files the catalogue does not name, with
+sidecar and the entry locating them), skips located files and companions
+(sidecar role, or a name carrying `mmproj`, `mtp`, or `dflash`), reads each
+remaining file's GGUF directory and applies `model inspect`'s three checks
+(adapter for the architecture, executable encodings, the binding), and
+builds one entry per runnable file: the repository's last path segment as
+the name (lower-case, `-gguf` dropped, a taken name gaining the
+quantization suffix then a counter, never a catalogue name), `repo` +
+`file` + `revision` from the sidecar or a `path`, the companions beside it
+(catalogue companions in the same directory included), the profile forced
+to the family's when `profiles.forDocument` finds no pinned template, and
+the family's speculative verdict (off when the family drafts from a
+companion that is absent). `config.registerDiscovered` writes the entries
+through the same document editor as `model pull --register`, validated
+before the write; the file is created as `init` does when absent. Every
+skipped file is a report row with its reason, a header that fails to
+parse included. The help (`src/help.zig`) is rewritten: every page is a
+title line, `Usage:`, `Commands:` where there are subcommands, `Options:`
+with every flag the parser accepts for the command and its default,
+`Keys:` / `Commands:` for the agent, `Examples:` with a comment each, and
+`Notes:` for the surprises; the `see docs/…` pointers are gone from every
+page and the overview, which gained `Global options:`, `Examples:`, and
+`Files:`.
+
+**Evidence.** On the user's tree `--dry-run` reported two candidates and
+one skipped companion; the write registered
+`gemma4-12b-qat-uncensored-hauhaucs-balanced` (`repo`, `file`, `revision`
+from the sidecar, `mmproj`, `profile: gemma4` forced, `speculative:
+false`) and `ternary-bonsai-2-27b` (the PQ2_0 bring-up file with the
+catalogue's Bonsai projector beside it); a second `--discover` reports
+nothing to register; `nuclis generate --model
+gemma4-12b-qat-uncensored-hauhaucs-balanced` answers through the forced
+profile. `make check` green: unit tests for companion detection by role
+and name, companions found in the directory and below it, name derivation
+and collision handling, the report's text and JSON, the registry writer
+(free names only, catalogue names refused), the new parser flags, and for
+help: every page has the four sections, contains no `docs/` or `see `, fits
+80 columns, and names every flag of a per-command table.
+
+**Files.** `src/discover.zig` (new), `src/config.zig` (`Discovered`,
+`registerDiscovered`), `src/cli.zig` (`--discover`, `--dry-run`, `--json`
+on `config init`), `src/help.zig` (rewritten), `docs/development.md`
+(§ Configuration file), `docs/spec.md` (the CLI line), `TODO.md`, and this
+log.
+
+**Remaining.** A discovered entry's name is derived and cannot be renamed
+by `config set` (edit the file); no `--name` for a single discovery. The
+help's flag table in the test is maintained by hand beside the parser.

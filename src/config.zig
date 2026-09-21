@@ -884,6 +884,51 @@ pub fn register(gpa: Allocator, current: ?[]const u8, path: []const u8, name: []
     return doc.finish(gpa, path, diag);
 }
 
+/// One entry `config init --discover` writes: a `path`, or the pull's
+/// `repo` + `file` + `revision`; only the keys stated here are written.
+pub const Discovered = struct {
+    name: []const u8,
+    path: ?[]const u8 = null,
+    repo: ?[]const u8 = null,
+    file: ?[]const u8 = null,
+    revision: ?[]const u8 = null,
+    mmproj: ?[]const u8 = null,
+    mtp: ?[]const u8 = null,
+    profile: ?Profile = null,
+    speculative: ?bool = null,
+    draft_length: ?usize = null,
+};
+
+/// Writes the discovered entries into the registry of the file's current
+/// text (`null`: no file yet), each under a name nothing uses; the result
+/// is validated before it is returned, as every edit is.
+pub fn registerDiscovered(gpa: Allocator, current: ?[]const u8, path: []const u8, entries: []const Discovered, diag: *Diagnostic) ![]u8 {
+    var doc = try Document.open(gpa, current, path, diag);
+    defer doc.deinit();
+    const arena = doc.arena.allocator();
+    for (entries) |d| {
+        const models = try doc.objectAt(&.{"models"}, diag);
+        if (models.get(d.name) != null or catalog.find(d.name) != null) {
+            diag.set("{s} is already a registry or catalogue name", .{d.name});
+            return error.RegistryConflict;
+        }
+        const entry = try doc.objectAt(&.{ "models", d.name }, diag);
+        if (d.path) |v| try entry.put(arena, "path", .{ .string = try arena.dupe(u8, v) });
+        if (d.repo) |v| try entry.put(arena, "repo", .{ .string = try arena.dupe(u8, v) });
+        if (d.file) |v| try entry.put(arena, "file", .{ .string = try arena.dupe(u8, v) });
+        if (d.revision) |v| try entry.put(arena, "revision", .{ .string = try arena.dupe(u8, v) });
+        if (d.mmproj) |v| try entry.put(arena, "mmproj", .{ .string = try arena.dupe(u8, v) });
+        if (d.mtp) |v| try entry.put(arena, "mtp", .{ .string = try arena.dupe(u8, v) });
+        if (d.profile) |v| try entry.put(arena, "profile", .{ .string = @tagName(v) });
+        if (d.speculative != null or d.draft_length != null) {
+            const generation = try doc.objectAt(&.{ "models", d.name, "generation" }, diag);
+            if (d.speculative) |v| try generation.put(arena, "speculative", .{ .bool = v });
+            if (d.draft_length) |v| try generation.put(arena, "draft_length", .{ .integer = @intCast(v) });
+        }
+    }
+    return doc.finish(gpa, path, diag);
+}
+
 /// Whether `name` may register `repo`/`file`: a catalogue name resolves
 /// through the registry first, so an entry under it may only say what the
 /// catalogue says. Checked before a transfer as well, so a wrong name
@@ -1590,4 +1635,28 @@ test "the written initial file parses back exactly and shows the entry shape" {
     try std.testing.expectEqual(true, muse.entry.?.generation.speculative.?);
     try std.testing.expect(muse.speculative);
     try std.testing.expect(!gen.speculative);
+}
+
+test "discovered entries are written under free names with only their stated keys" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    const text = try registerDiscovered(alloc, null, "/r/nuclis.json", &.{
+        .{ .name = "fine", .repo = "o/r", .file = "f.gguf", .revision = "abc", .mmproj = "mmproj.gguf", .profile = .gemma4, .speculative = false, .draft_length = 4 },
+        .{ .name = "loose", .path = "o/x/l.gguf" },
+    }, &diag);
+    defer alloc.free(text);
+    var loaded = try fromText(alloc, text, "/r/nuclis.json", &diag);
+    defer loaded.deinit();
+    const fine = loaded.config.models.find("fine").?;
+    try std.testing.expectEqualStrings("o/r", fine.repo.?);
+    try std.testing.expectEqualStrings("mmproj.gguf", fine.mmproj.?);
+    try std.testing.expectEqual(Profile.gemma4, fine.profile.?);
+    try std.testing.expectEqual(false, fine.generation.speculative.?);
+    try std.testing.expect(fine.mtp == null);
+    const loose = loaded.config.models.find("loose").?;
+    try std.testing.expectEqualStrings("o/x/l.gguf", loose.path.?);
+    try std.testing.expect(loose.profile == null and loose.generation.speculative == null);
+    // The catalogue's names and an existing entry are refused.
+    try std.testing.expectError(error.RegistryConflict, registerDiscovered(alloc, text, "/r/nuclis.json", &.{.{ .name = "qwen3.8-27b", .path = "p.gguf" }}, &diag));
+    try std.testing.expectError(error.RegistryConflict, registerDiscovered(alloc, text, "/r/nuclis.json", &.{.{ .name = "fine", .path = "p.gguf" }}, &diag));
 }

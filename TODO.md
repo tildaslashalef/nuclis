@@ -89,9 +89,16 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
-**Next: APPS-15** (`config init --discover` and self-contained help), then
-the 0.2.0 release (`make release`) before TERM-10; REPO-11 (the bench.md
-split) was dropped on 2026-09-21, the user's call. REPO-10 closed on 2026-09-21: the 30
+**Next: the 0.2.0 release** (`make release`), then TERM-10 (chat polish).
+APPS-15 closed on 2026-09-21: `nuclis config init --discover [--dry-run]
+[--json]` registers the runnable GGUF files the catalogue does not name
+(the HauhauCS Gemma 4 finetune with its projector and a forced `gemma4`
+profile, the Bonsai PQ2_0 bring-up file), and every `--help` page is
+self-contained in the Usage / Options / Examples / Notes form with no
+pointer at the repository's documents
+([log](docs/engineering-log.md#apps-15--config-init---discover-and-self-contained-help-pages-2026-09-21)).
+REPO-11 (the bench.md split) was dropped on 2026-09-21, the user's call.
+REPO-10 closed on 2026-09-21: the 30
 benchmark workloads are data in `workloads.json` (the acceptance runs per
 pinned file, the prose/code runs and their draft pairs per family, the
 twelve `qwen38/spec/*` configurations of the speculative record), run by
@@ -163,7 +170,7 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: APPS-15 → (release 0.2.0) → TERM-10 →
+Order: (release 0.2.0) → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -203,7 +210,6 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| APPS-15 | `config init --discover` and self-contained help pages | 1 |
 | TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
@@ -322,65 +328,6 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
-
-## APPS-15 — `config init --discover` and self-contained help pages
-
-**Facts (read 2026-09-21).** `~/.nuclis/models/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced/`
-holds a Gemma 4 12B finetune (`Gemma4-…-Q4_K_M.gguf`, sidecar role `main`,
-repo and revision recorded) and its `mmproj-…-BF16.gguf`; `nuclis model ls`
-already walks the layout (`model.list` → `Listing.other`: files the
-catalogue does not name, with sidecar and the registry entry that locates
-them) and `model inspect` already judges a directory (`judge`:
-`inference.models.adapterFor(architecture)`, the executable-encoding check,
-`registry.validate`). The profile is chosen by template digest
-(`profiles.forDocument`), null for a finetune whose template is not the
-pinned one, which is exactly what an entry's forced `profile` is for. The
-registry is edited through `config.Document` (`register` for `model pull
---register`). Help is `src/help.zig`: one page per command, each ending in
-a `see docs/…` pointer, the overview too.
-
-**Design.**
-1. `src/discover.zig`: `discover(arena, gpa, io, root, registry) !Report`
-   walks `Listing.other`, skips files a registry entry already locates and
-   companions (sidecar role `mmproj`/`mtp`/`imatrix`, or a name carrying
-   `mmproj`, `mtp`, or `dflash`), opens each remaining file's GGUF directory,
-   and judges it as `model inspect` does; a runnable file becomes a
-   candidate: name from the repository's last path segment (lower-case,
-   `-gguf` stripped, `[a-z0-9._-]` kept; a taken name gains the file's
-   quantization suffix, then a counter), the entry as `repo` + `file` +
-   `revision` from the sidecar (or `path` when there is none), companions
-   from the same directory, `profile` forced to the family's when the
-   template digest matches no profile, and `generation.speculative` /
-   `draft_length` from the catalogue entry of the same architecture (off
-   when the family needs a companion that is absent). Every skipped file is
-   reported with its reason; a file whose header fails to parse is a
-   skipped row, never an abort. Bounds are `model ls`'s.
-2. `config.registerDiscovered(gpa, current, path, candidates, diag)` writes
-   the entries into the file's text as `register` does (stated keys and
-   order kept, the result validated before writing).
-3. `nuclis config init --discover [--dry-run] [--json]`: creates the file
-   as `init` does when absent (an existing file is kept), runs the
-   discovery, writes the new entries unless `--dry-run`, and prints one
-   row per registered file (name, path, adapter, profile and whether it is
-   forced, companions) and one per skipped file with its reason; `--json`
-   is the same report. Plain `init` is unchanged.
-4. `src/help.zig`: every page self-contained in the modern form — a
-   one-line description, `Usage:`, `Arguments:`/`Options:` with every flag
-   the parser accepts for that command and its default, `Examples:`, and
-   `Notes:` for the surprises; no `see docs/…` anywhere, the overview
-   included. The config page documents `--discover`. Tests: no page
-   contains `docs/`; every page has `Usage:` and `Examples:`; every flag
-   `cli.zig` parses for a command appears on that command's page (a table
-   in the test); lines ≤ 80 columns; the overview stays one screen.
-5. Docs: `development.md § Configuration file` (the discover paragraph),
-   `spec.md` (the CLI line and bullet), the log.
-
-**Acceptance.** `nuclis config init --discover --dry-run` on the user's
-tree reports the HauhauCS file as a candidate with its mmproj and a forced
-`gemma4` profile and skips nothing it should register; without `--dry-run`
-the entry lands and `nuclis agent --model <name>` opens it; `make check`
-with the new tests; `nuclis <command> --help` for every command shows the
-new form and no document pointer.
 
 ## TERM-10 — Chat polish: operation dots, the running pulse, write summaries with a file view
 
