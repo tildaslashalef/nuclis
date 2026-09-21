@@ -224,6 +224,14 @@ pub const Glyphs = struct {
     effort: []const u8,
     /// Frames of the busy spinner, advanced once per repaint.
     spinner: []const []const u8,
+    /// The box the header and the editor are framed with: corners, the
+    /// horizontal and the vertical edge, one cell each.
+    box_tl: []const u8,
+    box_tr: []const u8,
+    box_bl: []const u8,
+    box_br: []const u8,
+    box_h: []const u8,
+    box_v: []const u8,
 };
 
 pub const GlyphSet = enum { unicode, ascii };
@@ -250,6 +258,12 @@ pub const unicode_glyphs: Glyphs = .{
     .decode = "⇥",
     .effort = "✦",
     .spinner = &.{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+    .box_tl = "╭",
+    .box_tr = "╮",
+    .box_bl = "╰",
+    .box_br = "╯",
+    .box_h = "─",
+    .box_v = "│",
 };
 
 /// The same surface in ASCII, for a terminal whose locale is not UTF-8.
@@ -275,6 +289,12 @@ pub const ascii_glyphs: Glyphs = .{
     .decode = ">",
     .effort = "*",
     .spinner = &.{ "|", "/", "-", "\\" },
+    .box_tl = "+",
+    .box_tr = "+",
+    .box_bl = "+",
+    .box_br = "+",
+    .box_h = "-",
+    .box_v = "|",
 };
 
 /// SGR attributes, as a set rather than a sequence: the order they are

@@ -108,9 +108,12 @@ pub const Screen = struct {
     /// Walks the cursor down so that a region of `rows` lines painted next
     /// will end on the last row of the screen. Called once at startup: with
     /// the region anchored at the bottom, everything above it is transcript,
-    /// and `insertAbove` can scroll all of it.
+    /// and `insertAbove` can scroll all of it. The blank rows walked over are
+    /// slack: insertions fill them and a growing region takes them back
+    /// before anything above scrolls off the top.
     pub fn anchor(self: *Screen, rows: usize) !void {
         const target = self.size.rows -| (rows -| 1);
+        if (self.at < target) self.slack = target - self.at;
         while (self.at < target) try self.newline();
         try self.out.flush();
     }
@@ -153,8 +156,14 @@ pub const Screen = struct {
             try out.writeAll("\x1b[0J");
             for (0..released) |_| try self.newline();
             self.slack += released;
-        } else if (self.region_rows > 0) {
-            const reclaimed = @min(rows.len - self.region_rows, self.slack);
+        } else {
+            // Growth comes out of the slack first: a region growing back
+            // keeps its bottom and moves its top up into the blank rows, and
+            // the first frame after `anchor`, when it is taller than the
+            // anchor walked for, does the same with the rows that would run
+            // past the bottom. Neither scrolls the transcript.
+            const growth = if (self.region_rows > 0) rows.len - self.region_rows else (self.at + rows.len -| 1) -| self.size.rows;
+            const reclaimed = @min(growth, self.slack);
             if (reclaimed > 0) {
                 try out.print("\x1b[{d}A", .{reclaimed});
                 self.at -= reclaimed;
@@ -401,6 +410,40 @@ test "a frame rewrites only the rows after the unchanged prefix, and nothing whe
     try screen.paintFrom(&taller, .{ .row = 3, .column = 1 }, 2);
     try testing.expect(std.mem.indexOf(u8, buffer.written(), "\x1b[2K\rone\r\n\x1b[2K\rtwo") != null);
     try testing.expectEqual(@as(usize, 4), screen.region_rows);
+}
+
+test "the startup anchor records the blank rows it walks as slack, so an insertion fills them" {
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
+    var screen = testScreen(&buffer.writer, .{});
+    // A three-row header on a 10-row screen, then a two-row region at the
+    // bottom: rows 4..8 are blank.
+    try screen.insertAbove(&.{ .{ .text = "h1" }, .{ .text = "h2" }, .{ .text = "h3" } });
+    try testing.expectEqual(@as(usize, 4), screen.at);
+    try screen.anchor(2);
+    try testing.expectEqual(@as(usize, 9), screen.at);
+    try testing.expectEqual(@as(usize, 5), screen.slack);
+    try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" } }, .{ .row = 0, .column = 1 });
+    try testing.expectEqual(@as(usize, 9), screen.region_top);
+    try testing.expectEqual(@as(usize, 5), screen.slack);
+    // The notice lands on row 4, the first blank one; nothing scrolls.
+    buffer.clearRetainingCapacity();
+    try screen.insertAbove(&.{.{ .text = "notice" }});
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "\x1b[4;1H") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "\x1b[1;8r") == null);
+    try testing.expectEqual(@as(usize, 4), screen.slack);
+
+    // A first frame taller than the anchor walked for takes the extra rows
+    // from the slack rather than scrolling: anchored for 2, painted with 4.
+    var fresh = testScreen(&buffer.writer, .{});
+    try fresh.insertAbove(&.{ .{ .text = "h1" }, .{ .text = "h2" }, .{ .text = "h3" } });
+    try fresh.anchor(2);
+    buffer.clearRetainingCapacity();
+    try fresh.paint(&.{ .{ .text = "a" }, .{ .text = "b" }, .{ .text = "c" }, .{ .text = "d" } }, .{ .row = 0, .column = 1 });
+    try testing.expect(std.mem.startsWith(u8, buffer.written(), "\x1b[?2026h\x1b[?25l\r\x1b[2A"));
+    try testing.expectEqual(@as(usize, 7), fresh.region_top);
+    try testing.expectEqual(@as(usize, 4), fresh.region_rows);
+    try testing.expectEqual(@as(usize, 3), fresh.slack);
 }
 
 test "a shorter region keeps its bottom and releases the rows above it" {

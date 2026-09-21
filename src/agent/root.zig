@@ -1220,7 +1220,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 .ctx_size = capacity,
                 .effort = @tagName(settings.think),
                 .workspace = try tui.banner.shortened(a, cwd, environ.get("HOME")),
-            }, term.size().columns);
+            }, term.size().columns, th);
             try scr.insertAbove(welcome);
         }
         try scr.anchor(idle_region_rows);
