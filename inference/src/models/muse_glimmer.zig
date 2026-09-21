@@ -18,6 +18,8 @@
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
+const weights = @import("../runtime/weights.zig");
+const dflash = @import("dflash.zig");
 const Tensor = gguf.Tensor;
 
 pub const architecture = "muse-glimmer";
@@ -90,6 +92,8 @@ pub const Layer = struct {
 /// All tensor pointers borrow doc.tensors. No weights are read or allocated;
 /// keep the source Document alive for the entire binding lifetime.
 pub const Binding = struct {
+    /// The DFlash draft companion when one was loaded; null for the main file.
+    draft: ?dflash.Binding = null,
     token_embedding: *const Tensor,
     /// The untied output head: logits = output · y.
     output: *const Tensor,
@@ -103,6 +107,9 @@ pub const Binding = struct {
 };
 
 pub const Error = models.BindError;
+/// `bindDraft` adds the companion's mismatch, the typed error `Engine.open`
+/// surfaces.
+pub const DraftError = models.BindError || error{ DraftSourceMismatch, InvalidShape, TensorOutOfBounds };
 
 /// The registry entry (`models.table`).
 pub const family = struct {
@@ -112,7 +119,30 @@ pub const family = struct {
     pub const bind = @import("muse_glimmer.zig").bind;
     pub const Runtime = @import("muse_glimmer_runtime.zig").Runtime;
     pub const Plan = @import("muse_glimmer_metal.zig").Plan;
+    /// The draft source is the `dflash` companion file.
+    pub const draft_architecture = dflash.architecture;
+    pub const bindDraft = @import("muse_glimmer.zig").bindDraft;
 };
+
+/// The DFlash companion for a bound target: the companion's architecture,
+/// target width, and vocabulary checks already ran in `Engine.open`; this
+/// binds the file and refuses one whose pinned configuration the adapter's
+/// equations cannot execute. The companion shares no tensor with the target
+/// (its own token embedding and head are the target's, read through the
+/// engine's binding), so `view` is the only mapping it needs.
+pub fn bindDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, target_view: weights.View, target: *const Binding) DraftError!dflash.Binding {
+    _ = target_view;
+    _ = target;
+    var drafter = dflash.bind(alloc, doc) catch |err| switch (err) {
+        error.UnsupportedArchitecture, error.UnsupportedConfiguration, error.MissingMetadata, error.InvalidMetadata => return error.DraftSourceMismatch,
+        else => return err,
+    };
+    // Both widths are the adapter's pinned constants; the check keeps the
+    // failure typed if either file ever stops being the pinned one.
+    if (dflash.embedding != embedding) return error.DraftSourceMismatch;
+    drafter.view = view;
+    return drafter;
+}
 
 const IntegerSetting = struct { key: []const u8, value: u64 };
 const integer_settings = [_]IntegerSetting{
@@ -236,6 +266,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
         if (previous != null) return error.DuplicateTensor;
     }
     var result: Binding = undefined;
+    result.draft = null;
     result.token_embedding = try binder.take("token_embd.weight", &.{ embedding, vocabulary }, .matrix);
     result.output = try binder.take("output.weight", &.{ embedding, vocabulary }, .matrix);
     result.output_norm = try binder.take("output_norm.weight", &.{embedding}, .f32);
@@ -389,4 +420,17 @@ test "kindOf and the geometry constants" {
     try std.testing.expectEqual(@as(usize, 256), kv_width);
     try std.testing.expectApproxEqAbs(@as(f32, 0.08838834764831845), attention_scale, 1e-9);
     try std.testing.expect(executableEncoding(12) and executableEncoding(13) and !executableEncoding(30));
+}
+
+test "the pinned DFlash companion binds into the target binding through bindDraft" {
+    var doc = try inventoryDocument(std.testing.allocator);
+    defer doc.deinit();
+    var target = try bind(std.testing.allocator, &doc);
+    var companion = try dflash.inventoryDocument(std.testing.allocator);
+    defer companion.deinit();
+    const view: weights.View = .{ .file = &.{}, .data_offset = 0 };
+    target.draft = try bindDraft(std.testing.allocator, &companion, view, view, &target);
+    try std.testing.expectEqual(@as(u32, 58), target.draft.?.summary.text_tensors);
+    try std.testing.expectEqual(@as(usize, 33280), dflash.hidden_width);
+    try std.testing.expectEqualStrings("dflash", family.draft_architecture);
 }

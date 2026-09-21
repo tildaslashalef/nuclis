@@ -20,6 +20,9 @@ pub const gemma4_metal = @import("gemma4_metal.zig");
 pub const muse_glimmer = @import("muse_glimmer.zig");
 pub const muse_glimmer_runtime = @import("muse_glimmer_runtime.zig");
 pub const muse_glimmer_metal = @import("muse_glimmer_metal.zig");
+/// Muse Glimmer's DFlash draft companion (an architecture of its own, not a
+/// registry family: the target binds it).
+pub const dflash = @import("dflash.zig");
 pub const inventory = @import("inventory.zig");
 
 /// The registered families, in lookup order. Each registers itself through
@@ -95,4 +98,5 @@ test {
     _ = muse_glimmer;
     _ = muse_glimmer_runtime;
     _ = muse_glimmer_metal;
+    _ = dflash;
 }

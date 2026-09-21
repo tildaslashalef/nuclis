@@ -296,6 +296,25 @@ those rows and the greedy tokens against the pinned directory
 per-depth acceptance statistic and draft latency
 ([speculative-decoding.md § Acceptance statistic](speculative-decoding.md#the-qwen38-draft-head-modl-18)).
 
+`--dflash-draft DRAFT_MODEL` is Muse Glimmer's DFlash form, following the
+reference's `draft-dflash` driver: after the target decodes position `i`,
+the five layer inputs of `dflash.target_layers` are gathered from
+`llama_get_embeddings_layer_inp` (the target must enable them), concatenated
+and injected through the drafter's encoder at `i`; then a 16-row noise block
+`[next token, mask × 15]` is decoded at positions `i+1 …` and its per-row
+final hidden and greedy token are read back from `llama_get_embeddings_ith`
+and `llama_get_logits_ith`. The noise rows are removed afterwards
+(`llama_memory_seq_rm`), as the driver's checkpoint reset does. The
+`museDraftTrace` pass of `generation-check` checks the rows against the
+pinned `inference/src/models/fixtures/muse-dflash/`
+(`make compare-draft-muse-cpu`) and writes its native rows and greedy ids
+into the trace directory. Two environment variables aid the diagnosis of a
+mismatch: `DFLASH_DRAFT_CPU=1` leaves the drafter's model off the GPU, and
+`DFLASH_DUMP_LAYERS=1` also writes the decoder graph's `l_out-N` rows per
+proposal. Neither is needed for the committed trace; they are how its
+tolerances were established (the reference's own CPU and Metal block
+outputs differ by 2–5 % per layer, the pinned rows are the Metal run).
+
 The comparison checks every requested layer and final logits, rejecting missing,
 wrong-sized, or nonfinite files. Initial bring-up tolerances are maximum absolute
 error 0.002 and relative RMS error 0.0001 for every tensor. These are local

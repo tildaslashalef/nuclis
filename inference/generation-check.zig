@@ -132,7 +132,9 @@ pub fn main(init: std.process.Init) !void {
         .gemma4 => if (draft_trace != null)
             try gemmaDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal)
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
-        .@"muse-glimmer" => if (draft_stats or speculative_check or draft_trace != null) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
+        .@"muse-glimmer" => if (draft_trace) |dir|
+            try museDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal, dir)
+        else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
     }
 }
 
@@ -1446,6 +1448,158 @@ fn argmax(values: []const f32) u32 {
         if (v > values[best]) best = i;
     }
     return @intCast(best);
+}
+
+/// The Muse Glimmer DFlash drafter against the pinned trace: the target
+/// consumes `The capital of France is` (954, 7963, 323, 11698, 373) one token
+/// at a time, the drafter's encoder injects every position's five target
+/// layer-input residuals, and at each of positions 1 and 2 a 16-row noise
+/// block is decoded. The five residual rows, the encoder output of positions
+/// 0 and 1, the first four rows of each block's final hidden, and the greedy
+/// draft of every row must match the reference (`--dflash-draft` in
+/// scripts/reference-generation.cpp).
+fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: []const u8, use_metal: bool, directory: []const u8) !void {
+    if (use_metal) return error.MetalDraftUnsupported;
+    const Family = inference.models.muse_glimmer.family;
+    const D = inference.models.dflash;
+    var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
+    defer mapped.deinit(io);
+    var draft_mapped = try inference.weights.Mapped.open(alloc, io, draft_path);
+    defer draft_mapped.deinit(io);
+    var binding = try Family.bind(alloc, &mapped.document);
+    binding.draft = try Family.bindDraft(alloc, &draft_mapped.document, draft_mapped.view(), mapped.view(), &binding);
+    // The reference's proposal never removed its block rows from the cache
+    // between the two positions under test, so a capacity past them keeps
+    // the same visible set.
+    const capacity = 32;
+    var runtime = try Family.Runtime.init(alloc, mapped.view(), binding, capacity, false, true);
+    defer runtime.deinit();
+    const tokens = [5]u32{ 954, 7963, 323, 11698, 373 };
+    const hidden = try alloc.alloc(f32, D.hidden_width);
+    defer alloc.free(hidden);
+    const encoder = try alloc.alloc(f32, D.embedding);
+    defer alloc.free(encoder);
+    const pinned_row = try alloc.alloc(f32, D.hidden_width);
+    defer alloc.free(pinned_row);
+    const block = try alloc.alloc(f32, D.block_size * D.embedding);
+    defer alloc.free(block);
+    var greedy: [D.block_size]u32 = undefined;
+
+    const residual_files = [2][D.block_count][]const u8{
+        .{
+            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-0.f32"),
+            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-1.f32"),
+            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-2.f32"),
+            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-3.f32"),
+            @embedFile("src/models/fixtures/muse-dflash/token-0-inp-4.f32"),
+        },
+        .{
+            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-0.f32"),
+            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-1.f32"),
+            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-2.f32"),
+            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-3.f32"),
+            @embedFile("src/models/fixtures/muse-dflash/token-1-inp-4.f32"),
+        },
+    };
+    const encoder_files = [2][]const u8{
+        @embedFile("src/models/fixtures/muse-dflash/token-0-encoder.f32"),
+        @embedFile("src/models/fixtures/muse-dflash/token-1-encoder.f32"),
+    };
+    const block_files = [2][]const u8{
+        @embedFile("src/models/fixtures/muse-dflash/token-1-block-h.f32"),
+        @embedFile("src/models/fixtures/muse-dflash/token-2-block-h.f32"),
+    };
+    const pinned_greedy = @embedFile("src/models/fixtures/muse-dflash/dflash-greedy.txt");
+
+    // Position 0: the target's residual capture, then the encoder over the
+    // same pinned rows (so a capture error is not charged to the encoder).
+    try runtime.prefill(tokens[0..1], null, hidden, null);
+    try compareResiduals("residuals position 0", residual_files[0], hidden);
+    try assemblePinned(residual_files[0], pinned_row);
+    try runtime.draftEncodeTrace(pinned_row, encoder);
+    try compareDraft("encoder position 0", encoder_files[0], encoder, 1e-2, 1e-4);
+    try writeFloats(io, directory, "token-0-encoder.f32", encoder);
+    try runtime.commit(tokens[0..1], hidden);
+
+    for (0..2) |row| {
+        const label_position = row + 1;
+        try runtime.draftBlockTrace(tokens[label_position], D.block_size, block, &greedy, null);
+        {
+            var name: [64]u8 = undefined;
+            const text = try std.fmt.bufPrint(&name, "token-{d}-block-h.f32", .{label_position});
+            try writeFloats(io, directory, text, block[0 .. 4 * D.embedding]);
+        }
+        // The block's residual stream magnifies the reference backends' own
+        // spread (its CPU quantizes activations, its Metal does not; the two
+        // differ by 2-5 % per layer here). The native rows sit 4.4e-3 from
+        // the pinned Metal ones, inside that spread; the 30 greedy rows pin
+        // the block's behaviour exactly.
+        try compareDraft(
+            if (row == 0) "block position 1" else "block position 2",
+            block_files[row],
+            block[0 .. 4 * D.embedding],
+            2e-2,
+            1e-2,
+        );
+        try compareGreedy(
+            if (row == 0) "greedy position 1" else "greedy position 2",
+            pinned_greedy,
+            row,
+            greedy[1..D.block_size],
+        );
+        if (row == 0) {
+            // The next position: capture token 1's residuals and inject them,
+            // then the second proposal reads both injected rows.
+            try runtime.prefill(tokens[1..2], null, hidden, null);
+            try compareResiduals("residuals position 1", residual_files[1], hidden);
+            try writeFloats(io, directory, "token-1-residuals.f32", hidden);
+            try assemblePinned(residual_files[1], pinned_row);
+            try runtime.draftEncodeTrace(pinned_row, encoder);
+            try compareDraft("encoder position 1", encoder_files[1], encoder, 1e-2, 1e-4);
+            try runtime.commit(tokens[1..2], hidden);
+        }
+    }
+    std.debug.print("Muse DFlash draft check passed: residuals, encoder, two blocks, and {d} greedy rows match the pinned trace.\n", .{2 * (D.block_size - 1)});
+}
+
+/// Concatenates the five pinned residual rows into one `commit` row.
+fn assemblePinned(files: [inference.models.dflash.block_count][]const u8, out: []f32) !void {
+    const width = inference.models.dflash.embedding;
+    if (out.len != files.len * width) return error.InvalidShape;
+    for (files, 0..) |file, slot| {
+        for (out[slot * width ..][0..width], 0..) |*value, i| {
+            value.* = std.mem.bytesToValue(f32, file[i * 4 ..][0..4]);
+        }
+    }
+}
+
+/// The captured residual row is `block_count` slots of `embedding` values in
+/// `target_layers` order; each is pinned as its own file.
+fn compareResiduals(label: []const u8, files: [inference.models.dflash.block_count][]const u8, row: []const f32) !void {
+    const width = inference.models.dflash.embedding;
+    for (files, 0..) |file, slot| {
+        var name: [96]u8 = undefined;
+        const text = try std.fmt.bufPrint(&name, "{s} slot {d}", .{ label, slot });
+        try compareDraft(text, file, row[slot * width ..][0..width], 1e-3, 1e-5);
+    }
+}
+
+/// `rows` greedy draft tokens starting at proposal `proposal` of the pinned
+/// file (one line per block row, `block_size - 1` rows per proposal).
+fn compareGreedy(label: []const u8, pinned: []const u8, proposal: usize, actual: []const u32) !void {
+    const per_proposal = inference.models.dflash.block_size - 1;
+    var lines = std.mem.tokenizeScalar(u8, pinned, '\n');
+    var index: usize = 0;
+    while (lines.next()) |line| : (index += 1) {
+        if (index < proposal * per_proposal or index >= (proposal + 1) * per_proposal) continue;
+        const expected = try std.fmt.parseInt(u32, std.mem.trim(u8, line, " \r"), 10);
+        const row = index - proposal * per_proposal;
+        if (actual[row] != expected) {
+            std.debug.print("{s}: row {d} greedy {d}, expected {d}\n", .{ label, row, actual[row], expected });
+            return error.DraftGreedyMismatch;
+        }
+    }
+    std.debug.print("{s}: {d} greedy rows match.\n", .{ label, per_proposal });
 }
 
 /// A 70-token prompt through per-token steps and through `prefill` with

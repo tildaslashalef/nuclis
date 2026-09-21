@@ -89,7 +89,12 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: `max_draft_length` (the 8-row
 tile bound) is ENGN-17's call.
 
-**Next: MODL-20** (Muse's DFlash drafter), then ENGN-17's full record.
+**Next: MODL-20 session 2** (the DFlash drafter's Metal plan, its trace, the
+Muse benchmark and verdict), then ENGN-17's full record. Session 1 closed on
+2026-09-21 with the facts, the companion binding, the CPU drafter, and the
+pinned trace (residuals ≤ 6.9e-5, encoder 9.5e-7, block 1.05e-2 / 4.4e-3,
+30 greedy rows) — the section below says what remains; **on Metal
+`--speculative on` for this family is `DraftSourceMissing` until then**.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -338,72 +343,53 @@ user's request; the same family-independent framework applies, and this is
 the larger of the two adapters (the block proposal, the feature retention,
 the drafter's own windowed cache).
 
-**Session 0 note (2026-09-21, MODL-19's close).** This unit did not start:
-MODL-19 consumed its session (and produced the negative draft-4 verdict in
-*Where we are*), so the facts below are still the 2026-09-19 reading and only
-the first design step — session 1's reference read — is complete. What
-MODL-19 now hands over, proven end to end and worth copying before re-reading
-the reference: `Engine.open`'s `DraftRequest.{file,preferred}` companion
-mapping with `DraftSourceMissing`/`DraftSourceMismatch` and the engine-owned
-`draft_mapped`; `Family.bindDraft` (companion architecture, target width,
-vocabulary count, shared RoPE factors) and the rule that a companion binding
-**carries its own `weights.View`** — reading its tensors through the target's
-view reinterprets the main file at companion offsets and is silent; the
-per-family `propose`/`commit`/`reset`/`bytes` plus a `draftForwardTrace`
-used by `generation-check --draft-trace --draft-model`; and
-`scripts/reference-generation.cpp`'s per-row capture order (the head row
-before the target decodes that position). What Muse adds on top: five
-retained target residuals per position, the `fc.weight` projection, the
-block proposal with a mask token, and the drafter's own windowed (2048)
-cache — no part of MODL-19's loading or loop work is reusable beyond
-`DraftRequest.file`, which now exists.
+**Session 1 delivered (2026-09-21).** The reference read is done and the
+facts are recorded in
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](docs/reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20):
+the companion is anchor-first and non-causal (the file carries neither
+`dflash.sample_from_anchor` nor `dflash.attention.causal`), the encoder
+fuses the *input* residuals of layers 2/14/26/38/50 through `fc` +
+`enc.output_norm`, the block is one 16-row forward that proposes up to 15
+drafts, and the cache is filled by `process()` = our `commit` with five
+residuals per row (`Drafter.hidden = 33280`). The contract fit holds with no
+new contract surface. On disk: `inference/src/models/dflash.zig` (the
+companion binder: metadata, 58 tensors, the mask token, the target layers,
+unknown-`dflash.*`-key refusals), `muse_glimmer.zig`'s `bindDraft` (own
+view, `DraftSourceMismatch` mapping), the inventory fixture
+`fixtures/dflash-kquant.json`, the CPU drafter in `muse_glimmer_runtime.zig`
+(five extra session layouts when a drafter is bound, residual capture in
+`prefill`/`verify`/`verifyGreedy`, `draftEncode`/`draftInject`,
+`draftBlock` in two passes so the block's K/V all precede attention,
+`propose`/`commit`/`reset`/`bytes`), `museDraftTrace` in
+`generation-check.zig`, `--dflash-draft` + `DFLASH_DRAFT_CPU`/
+`DFLASH_DUMP_LAYERS` in `scripts/reference-generation.cpp`, and
+`make compare-draft-muse-cpu` (+ `compare-draft-muse`). The pinned trace
+(`fixtures/muse-dflash/`, `The capital of France is`) matches: residuals
+≤ 6.9e-5 max abs, encoder 9.5e-7, block 1.05e-2 max abs / 4.4e-3 rel RMS
+(position 1) against bounds 2e-2 / 1e-2, and all 30 greedy rows. Greedy
+`generate --speculative on` vs off on the registry entry is byte-identical
+over 6 tokens (`Hello,`, CPU); missing / wrong-architecture /
+target-as-drafter companions are
+`DraftSourceMissing` / `DraftSourceMismatch`; `make check`,
+`compare-muse-glimmer` (f32 2.4e-4 / 8.1e-7, f16 7.3e-2 / 2.0e-4), and
+`test-generation-muse-glimmer-metal` are unchanged. **Metal is not
+implemented yet**: `muse_glimmer_metal.zig` ignores the `draft` flag, so
+`--speculative on` on Metal is `DraftSourceMissing` until session 2.
 
-**Facts read on 2026-09-19** (`nuclis inspect` and the inventory script on
-`dflash-kquant.gguf`; to be confirmed from the reference's `dflash`
-graph and `draft-dflash` driver in session 1):
-- `general.architecture = dflash`, 5 blocks at the target's width 6656
-  (a 2.6B drafter), FFN 19968, 32 query heads, 8 KV heads, head 128,
-  RoPE 5e5, sliding window 2048 on all five layers, `dflash.block_size =
-  16`, `dflash.target_layers = [2, 14, 26, 38, 50]`. Tensors: `fc.weight`
-  [33280 → 6656] (the five target layers' input residuals concatenated,
-  5 × 6656, projected to one feature per position), `enc.output_norm`
-  [6656], per block `attn_norm`, `attn_q` [6656 → 4096] with
-  `attn_q_norm` [128], `attn_k`/`attn_v` [6656 → 1024] with
-  `attn_k_norm`, `attn_output` [4096 → 6656], `ffn_norm`, the three FFN
-  matrices, and a final `output_norm`; **no token embedding and no
-  output head**: it shares the target's `token_embd` and `output.weight`.
-- The reference's `draft-dflash` driver (not the DFlash2 selector: the
-  file has no selector keys) proposes a block in one forward: a batch of
-  `n_draft + 1` rows at positions `n .. n + n_draft` whose first token is
-  the last committed token and the rest a mask token, one decode on the
-  draft context, then the draft tokens are sampled per row from the
-  block's logits; `llama_set_embeddings_nextn(ctx_dft, true, masked)`
-  supplies the target features. The drafter keeps its own attention
-  cache over past positions' features (window 2048). So it fits the
-  shared contract as `propose(k)` with `k ≤ 15` in one forward; the
-  verify batch is then up to 16 rows, which KERN-12's multi-row path
-  serves at ≤ 8 rows and the 16×8 tile beyond (a 16-row variant of the
-  multi-row matvec is this unit's call, measured).
-- What session 1 must read before code: the mask token id and where it
-  comes from (`dflash.*` keys or the tokenizer's reserved tokens), whether
-  the block rows attend causally (`dflash.attention.causal`, default
-  when absent), `sample_from_anchor`, exactly which residual each target
-  layer index contributes (the input of layer `l`, `t_layer_inp`, as
-  `muse-glimmer.md` notes), and how the cache is filled for accepted
-  positions (`process()`).
-
-**Design.** Session 1: the facts above confirmed and recorded; the fit
-decision written into `speculative-decoding.md` (expected: the shared
-`propose` with a block; if the driver needs something the contract lacks,
-add only that); the Muse runtime and plan retain the input residuals of
-layers 2, 14, 26, 38, 50 for the last committed token and for every row
-of a batch (device-resident on Metal, one 5 × 6656 row per position);
-loading through the same `draft = .{ .file }` path as MODL-19 with
-`DraftSourceMismatch` on width or vocabulary; `muse_glimmer.zig`
-`bindDraft`; the CPU reference of the drafter with pinned traces from the
-reference (`llama-completion --spec-type draft-dflash -md
-dflash-kquant.gguf`). Session 2: Metal, the benchmark on the Muse
-acceptance workload with draft lengths 4, 8, 15, the catalogue verdict.
+**Session 2 (next).** The Metal plan: `Plan.init` opens the five draft
+layouts when a drafter is bound (F16 by default like the language model, so
+the draft cache is ~671 MB at 32,768 tokens), retains the five layer inputs
+per batch row device-resident for `commit`, and runs the encoder and the
+block with the existing kernels — the block's attention needs the
+verify-shaped non-causal windowed form (all block rows visible to every row,
+the prefix back to `position − 2047`), which KERN-16's reuse body takes at
+`attention_reuse_max_rows = 64`; the two-pass K/V-then-attention order must
+hold on the device too. Then `compare-draft-muse-metal` with the same pinned
+rows, `make test-generation-muse-glimmer-metal` (the recovery check now has
+five more attention layouts to rewind), and the benchmark record on the Muse
+acceptance workload (`--speculative on` pairs, draft lengths 4, 8, 15) with
+the per-batch cost table, the catalogue verdict, and the log entry that
+closes the unit.
 
 **Acceptance.** Traces at the tolerances on both backends; the contract
 decision documented; the benchmark record with the per-batch cost table;

@@ -27,14 +27,15 @@ fact below comes from the reference source, and the sentence says so.
 | Pulled | 2026-09-17 (`nuclis model pull`, sidecar verified) |
 | `general.file_type` | 15 (Q4_K_M base; `quantize.imatrix.*` names an imatrix over 416 entries, 166 chunks) |
 
-Companions, pulled and verified the same day, not executed:
-`mmproj-kquant.gguf` (1,400,328,928 B, SHA-256 `f48b4523…`, the `mmproj`
-role) and `dflash-kquant.gguf` (1,631,205,312 B, `27d9a805…`, a DFlash
-drafter carried under the `mtp` role). Digests and the rest of the
-repository's listing are in [artifacts.md](artifacts.md). The quantization
-choice (Meta's "K-Quant-17GB" tier, 1.0 % measured degradation, wide
-headroom on 48 GB) is recorded in the plan that chose it and needs no
-restating here.
+Companions, pulled and verified the same day: `mmproj-kquant.gguf`
+(1,400,328,928 B, SHA-256 `f48b4523…`, the `mmproj` role, not executed) and
+`dflash-kquant.gguf` (1,631,205,312 B, `27d9a805…`, a DFlash drafter carried
+under the `mtp` role; bound and run by the CPU reference since MODL-20,
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
+Digests and the rest of the repository's listing are in
+[artifacts.md](artifacts.md). The quantization choice (Meta's "K-Quant-17GB"
+tier, 1.0 % measured degradation, wide headroom on 48 GB) is recorded in the
+plan that chose it and needs no restating here.
 
 ## Metadata
 
@@ -121,8 +122,9 @@ loader); `attn_q_norm` absorbs the model's `qk_scale_factor` and
 The reference keeps the sliding layers' cache in a separate window-sized
 cache (`build_attn_inp_kv_iswa`); the plan for the Metal unit keeps the
 full context on every layer and masks. It also exposes each layer's input
-residual (`t_layer_inp`) for the DFlash drafter; that belongs to the
-speculative-decoding unit.
+residual (`t_layer_inp`) for the DFlash drafter; the drafter keeps five of
+them (layers 2, 14, 26, 38, 50) per consumed row
+([speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
 
 ## Tokenizer
 
@@ -428,4 +430,7 @@ decoder, the `high` effort), the catalogue pin, and the acceptance record
 13.69 and 9.98), and AGNT-10 with the ATEM tool protocol
 ([tool-calling.md](tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).
 The family is complete for text; the vision projector and the DFlash
-drafter are planned (MODL-23 and MODL-20 in [TODO.md](../../TODO.md)).
+drafter's Metal plan are planned (MODL-23 and MODL-20's second session in
+[TODO.md](../../TODO.md)); the drafter's CPU reference and its pinned trace
+closed in MODL-20 session 1
+([speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).

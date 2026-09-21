@@ -320,6 +320,144 @@ verify cost says the lever is `max_draft_length` (the 8-row tile bound)
 rather than anything in the drafter, which ENGN-17 may raise if the head is
 ever to pay.
 
+## The Muse Glimmer DFlash drafter (MODL-20)
+
+Facts confirmed on 2026-09-21 from the pinned reference (`7620399f5`): the
+drafter graph `src/models/dflash.cpp` (the encoder/decoder duality at
+258–289 and 569–826), the driver `common/speculative.cpp:909-1322`
+(`common_speculative_impl_draft_dflash`), the mask token
+(`llama-vocab.cpp:2563`, `llama_vocab_mask` at 4306), the rope type
+(`llama-model.cpp:3006-3012`), the non-causal SWA mask
+(`llama-kv-cache.cpp:1683-1689`), and the target side of the contract, the
+layer input `t_layer_inp` (`muse-glimmer.cpp:85`). The companion is
+`dflash-kquant.gguf` (1,631,205,312 B, `27d9a805…`, the `mtp` role of the
+Muse entry): 58 tensors, a 2.6B drafter at the target's width.
+
+**The file.** `general.architecture = dflash`, 5 blocks at width 6656
+(FFN 19968), 32 query heads of 128 over 8 KV heads, RMS epsilon 1e-5,
+`dflash.block_size = 16`, `dflash.target_layers = [2, 14, 26, 38, 50]`,
+`dflash.attention.sliding_window = 2048` with the pattern `[1,1,1,1,1]`
+(every layer sliding), NeoX RoPE at base 5e5 over the whole 128-wide head,
+and `tokenizer.ggml.mask_token_id = 201818`. It has no token embedding and
+no output head: the reference reads the *target's* through `ctx_other`
+(`llama-context.cpp:155-162`), and the graph exposes no `sample_from_anchor`
+or `dflash.attention.causal` key, so the pinned configuration is
+anchor-first and non-causal (the driver's defaults,
+`common/speculative.cpp:966-978`). The adapter refuses a file that carries
+either key, a selector/conv key, a rope dimension count, or any other
+`dflash.*` key the pinned set does not have: each would change the
+equations while every checked value still matches.
+
+**The pair.** The drafter's cache is filled from the *target's* residuals,
+not its tokens. For each committed position the reference gathers the input
+of layers 2, 14, 26, 38, and 50 — the residual stream before the layer's own
+pre-norm, the graph's `t_layer_inp` — concatenates them in that order
+(`n_embd_inp = 5 × 6656 = 33280`), projects through `fc.weight`
+[33280 → 6656], RMS-norms with `enc.output_norm`, and then, per draft block,
+projects the cached keys and values (`attn_k`/`attn_v` [6656 → 1024]),
+RMS-norms each key head with `attn_k_norm` [128], applies RoPE at the target
+position, and writes both into the drafter's cache. That is the encoder
+batch (`graph<true>` and the `ubatch.embd` branch of `graph<false>`); it
+computes no queries and no attention.
+
+**The block.** A proposal is one forward over 16 rows at positions
+`P … P + 15`: the anchor (the last committed token) then 15 copies of the
+mask token. Each row embeds with the target's `token_embd`, and per block
+layer: `rms(attn_norm)` → q/k/v projections → per-head RMS norms
+(`attn_q_norm`, `attn_k_norm`) → RoPE at the row's own position →
+attention → `attn_output` → residual → `rms(ffn_norm)` → SiLU-gated FFN
+(`silu(gate)·up`, then down) → residual. After the five blocks a final
+`output_norm` feeds the target's `output` head; the draft tokens are the
+per-row argmax. The attention is **non-causal inside the block** (every row
+sees the anchor and all mask rows, later ones included) and each row sees
+the injected prefix back to its sliding window: the reference's mask drops
+keys with `p_key ≤ p_query − 2048` and, unlike a decoder, never drops future
+positions (`llama-kv-cache.cpp:1664-1689`). The reference does not scale or
+soft-cap these logits: `logit_scale` and `final_logit_softcapping` are the
+target's sampler transforms and are applied to the draft only by the DFlash2
+selector branch, which this file does not have.
+
+**The draft driver and the contract fit.** `draft()` decodes the whole block
+(anchor + `n_max` masks) in one batch and reads rows 1… for the drafts, so
+`propose(k)` is one forward for any `k ≤ 15` — the fit needs nothing the
+shared contract lacks. `process()` injects every target position into the
+drafter's cache, which is exactly `commit(tokens, h_rows)` with five
+residuals per token in place of the single target hidden; `Drafter.hidden`
+is therefore 33280 for this family. The block's own cache rows are noise
+rows: the reference removes them after drafting
+(`llama_memory_seq_rm(memory, seq_id, ckpt.pos_max + 1, -1)` in the example
+loop, `examples/speculative-simple/speculative-simple.cpp:212`) before
+`process()` injects target features at the same
+positions, and on partial acceptance it restores a checkpoint of the
+drafter's cache. Our plan never removes rows: the proposal's attention is
+bounded to the block's last position, so rows a previous proposal left past
+it are never read, and `commit` overwrites the accepted ones. The drafter
+carries no state beyond that cache — no pending hidden like the MTP heads —
+so `reset` is a no-op and recovery is the session's position rewind
+(Muse Glimmer is attention-only).
+
+**The proposal policy.** The reference's `p_min` compares the top candidate's
+probability renormalized over its `top_k = 10` sampler; our `draft_p_min`
+(ENGN-16) compares the full-vocabulary softmax at the argmax. That is a
+policy difference, not an equation: the candidates are argmax either way,
+and the shared contract's stop rule applies (the low-confidence position is
+still proposed, then the chain stops).
+
+**Trace (2026-09-21).** Captured with the harness's new
+`--dflash-draft DRAFT_MODEL` mode (`scripts/reference-generation.cpp`) on
+`The capital of France is` (954, 7963, 323, 11698, 373), Metal target, F32
+caches, one target token per decode, dumping each position's residual rows
+and the block before the target decodes the next token — the driver's
+`draft()` moment. The rows are pinned under
+`inference/src/models/fixtures/muse-dflash/` and checked by
+`make compare-draft-muse-cpu` (the `museDraftTrace` pass in
+`generation-check`):
+
+| rows | max abs | relative RMS |
+| --- | ---: | ---: |
+| five residuals, position 0 | 7.6e-6 … 6.1e-5 | 1.1e-7 … 2.3e-7 |
+| five residuals, position 1 | 5.2e-6 … 6.9e-5 | 2.6e-7 … 4.9e-7 |
+| encoder output, positions 0 / 1 | 9.5e-7 / 9.5e-7 | 2.6e-7 / 2.3e-7 |
+| block hidden (4 rows), position 1 / 2 | 1.05e-2 / 4.8e-3 | 4.4e-3 / 1.5e-3 |
+
+All 30 pinned greedy drafts match (15 rows per proposal). The check's bounds
+are 2e-2 / 1e-2 on the block and 1e-3 / 1e-5 on the residual rows. The
+block's larger figure is the reference's own backend spread, not ours: the
+block's residual stream reaches magnitudes of hundreds before the output
+norm, and the reference's CPU path quantizes activations to Q8_K while its
+Metal path does not, so the two differ by 2.0e-2 (layer 0) to 4.8e-2
+(layer 3) relative RMS per layer while the native CPU reference sits
+2.3e-3…4.4e-3 from the pinned Metal rows. `DFLASH_DRAFT_CPU=1` and
+`DFLASH_DUMP_LAYERS=1` in the harness reproduce that comparison; the trace
+checked in is the Metal run, as for the other families.
+
+**Load errors.** `Engine.open` maps the companion through the same
+`DraftRequest.{file,preferred}` path as MODL-19 and requires the `dflash`
+architecture, the target's width, the target's vocabulary count, the 6656
+feature width, and the `target_layers` list; a missing file is
+`DraftSourceMissing` and everything else `DraftSourceMismatch`. Exercised
+through a temporary `NUCLIS_HOME`: a missing companion, the Gemma MTP file,
+and the Muse target itself as the drafter (three distinct
+rejections). The companion binding carries its own `weights.View`. On the
+CPU, greedy `generate --speculative on` on the registry entry is
+byte-identical to `--speculative off` over 6 tokens (`Hello,`, ctx 64).
+
+**Implemented (session 1, 2026-09-21).** `inference/src/models/dflash.zig`
+binds the companion (metadata, tensors, the mask token, the target layers);
+`muse_glimmer.zig`'s `bindDraft` maps its refusals to
+`DraftSourceMismatch` and attaches the companion's view;
+`muse_glimmer_runtime.zig` keeps the five target layer inputs for every row
+it consumes (`prefill`/`verify`/`verifyGreedy` with `hidden`, the DFlash
+form of the row data the drafter's `commit` consumes), opens five draft
+attention layouts when a drafter is bound, and runs the encoder and the
+block on the CPU. The drafter's workspace is 2,309,376 bytes; its cache is
+part of the session (5 × 2 × 1024 values per position; full capacity, as the
+language model's sliding layers are, so 1.34 GB F32 at 32,768 tokens and
+half that with the F16 cache). **Session 2 is the Metal plan, the acceptance
+workload with draft lengths 4, 8, and 15, and the catalogue verdict**; until
+then a `--speculative on` run of this family on Metal is `DraftSourceMissing`
+by contract.
+
 ## The verify batch and the loop (ENGN-12, session 1)
 
 Implemented and checked on 2026-09-20; the configuration and the benchmark

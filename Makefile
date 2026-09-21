@@ -19,7 +19,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
-        compare-draft compare-draft-metal compare-draft-cpu draft-stats \
+        compare-draft compare-draft-metal compare-draft-cpu compare-draft-muse compare-draft-muse-cpu draft-stats \
         speculative-check speculative-check-metal speculative-record \
         test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b agent model-ls trace compare compare-f32 compare-f16 \
@@ -91,6 +91,18 @@ compare-draft-cpu: ## Native CPU reference prediction-block rows vs the pinned r
 	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(MODEL)" --draft-trace "$(TRACE)-draft-cpu"
 	python3 scripts/compare-generation.py "$(TRACE)-draft-cpu" inference/src/models/fixtures/qwen35-mtp --positions 2 --draft \
 	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("draft cpu", "passed", d["passed"], "rows", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c), "greedy", d["native_greedy"])'
+
+# The Muse Glimmer DFlash drafter's rows against the pinned reference trace
+# (`inference/src/models/fixtures/muse-dflash/`): the companion's encoder fuses
+# the target's layer-2/14/26/38/50 input residuals and a 16-row mask block
+# proposes, so the check needs both files (MODL-20).
+MUSE_MTP_MODEL ?= $(HOME)/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/dflash-kquant.gguf
+
+compare-draft-muse: compare-draft-muse-cpu ## The Muse DFlash drafter vs the reference (MODL-20; the Metal target arrives with the plan)
+
+compare-draft-muse-cpu: ## Native CPU reference DFlash rows vs the pinned reference trace
+	rm -rf "$(TRACE)-muse-dflash-cpu" && mkdir -p "$(TRACE)-muse-dflash-cpu"
+	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(MUSE_MODEL)" --draft-trace "$(TRACE)-muse-dflash-cpu" --draft-model "$(MUSE_MTP_MODEL)"
 
 draft-stats: metal ## Per-depth acceptance of the embedded prediction head on the fixed prompts (MODL-18)
 	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal --draft-stats
