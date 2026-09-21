@@ -2229,6 +2229,160 @@ kernel void nu_attention_chunk_t(device const T * keys [[buffer(0)]],
 template [[host_name("nu_attention_chunk")]] kernel void nu_attention_chunk_t<float>(device const float *, device const float *, device const float *, NU_ATTN_CHUNK_ARGS);
 template [[host_name("nu_attention_chunk_h")]] kernel void nu_attention_chunk_t<half>(device const half *, device const half *, device const half *, NU_ATTN_CHUNK_ARGS);
 
+// Register-reuse causal chunk attention: the same contract, tiling, and
+// masking as `nu_attention_chunk_t`, with the four SIMD groups of a (head,
+// 32-query) tile splitting the 256 value columns (64 each, every group
+// covering all 32 query rows) instead of the query rows. Scores keep the row
+// split — a group scores its own 8 rows — and the probabilities plus the
+// per-row softmax rescale are published through threadgroup memory, so a V
+// block serves four row-block multiplies and a published P block eight
+// column-block multiplies instead of one each. Probabilities and rescales
+// are double-buffered: a group publishing tile t+1 writes the other buffer
+// while a slower group still multiplies tile t's, so the tile loop needs one
+// threadgroup barrier per 32-key tile. A group whose 8 rows are past the
+// caller's padded row count stays out of the score and softmax phases (it
+// would read past the query buffer) but still publishes a zero row and joins
+// the barriers.
+//
+// Live registers per lane at F16: 32 F32 output accumulators (64), the score
+// tile (8), the Q and K blocks (2), the softmax row (8), four P blocks and
+// one V block (5), the rescale diagonal (2), and the index arithmetic (~10)
+// — about 48 live 8×8 matrices, inside the 128-register budget; F32 operands
+// double the block costs.
+#define NU_ATTN_P 32 // query rows per threadgroup, and the published P tile's row count
+template <typename T>
+kernel void nu_attention_chunk_reuse_t(device const T * keys [[buffer(0)]],
+                                       device const T * values [[buffer(1)]],
+                                       device const T * queries [[buffer(2)]],
+                                       device float * output [[buffer(3)]],
+                                       constant AttentionChunkParams & p [[buffer(7)]],
+                                       uint group [[threadgroup_position_in_grid]],
+                                       uint sg [[simdgroup_index_in_threadgroup]],
+                                       uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float scores[4][8 * NU_ATTN_KEYS + 64];
+    threadgroup T probabilities[2][NU_ATTN_P * NU_ATTN_KEYS];
+    threadgroup float rescale[2][NU_ATTN_P];
+    threadgroup float inverse_sum[NU_ATTN_P];
+    threadgroup T stage[4][64];
+    threadgroup float * s = scores[sg];                // this group's score tile [8][32]
+    threadgroup float * diag = s + 8 * NU_ATTN_KEYS;   // rescale diagonal [8][8]
+    const uint vsplits = (p.value_width + 255) / 256;
+    const uint head = group % p.query_heads, rest = group / p.query_heads;
+    const uint vs = rest % vsplits, tile = rest / vsplits;
+    const uint q0 = tile * NU_ATTN_P;                  // first query row of the tile
+    const uint kv = head / (p.query_heads / p.kv_heads);
+    const uint total = p.position + p.count;
+    const uint limit = min(total, p.position + q0 + NU_ATTN_P); // exclusive key bound of the tile
+    const uint padded_rows = (p.count + 7) / 8 * 8;    // rows the caller allocated
+    const ulong krow = ulong(p.kv_heads) * p.key_width, vrow = ulong(p.kv_heads) * p.value_width;
+    const uint v0 = vs * 256;
+    const uint vblocks = min(p.value_width - v0, 256u) / 8;
+    const uint cb_begin = min(sg * 8, vblocks), cb_end = min(cb_begin + 8, vblocks), cb_cols = cb_end - cb_begin;
+    const uint row = lane >> 2, col0 = (lane & 3) * 8;
+    const uint grow = sg * 8 + row;                    // this lane's row within the 32-row tile
+    const uint row_limit = min(limit, p.position + q0 + grow + 1);
+    const uint row_lo = (p.window != 0 && p.position + q0 + grow + 1 > p.window) ? p.position + q0 + grow + 1 - p.window : 0;
+    const uint k_begin = (p.window != 0 && p.position + q0 + 1 > p.window) ? (p.position + q0 + 1 - p.window) / NU_ATTN_KEYS * NU_ATTN_KEYS : 0;
+    const bool active = q0 + sg * 8 < padded_rows;     // this group's rows exist in the caller's buffers
+    device const T * q = queries + ulong(q0 + sg * 8) * p.q_stride + ulong(head) * p.key_width;
+    device const T * k = keys + ulong(kv) * p.key_width;
+    device const T * v = values + ulong(kv) * p.value_width + v0 + cb_begin * 8;
+    float m = -INFINITY, l = 0.0f;
+    simdgroup_float8x8 o[32];
+    for (uint j = 0; j < 32; ++j) o[j] = simdgroup_float8x8(0.0f);
+    uint tile_index = 0;
+    for (uint k0 = k_begin; k0 < limit; k0 += NU_ATTN_KEYS, ++tile_index) {
+        const uint buf = tile_index & 1u;
+        if (active) {
+            // Scores: S[8][32] = Q[8][key_width] · K[k0..k0+32][key_width]ᵀ.
+            simdgroup_float8x8 acc[4];
+            for (uint b = 0; b < 4; ++b) acc[b] = simdgroup_float8x8(0.0f);
+            for (uint d = 0; d < p.key_width; d += 8) {
+                simdgroup_matrix<T, 8, 8> a, kb;
+                simdgroup_load(a, q + d, p.q_stride);
+                for (uint b = 0; b < 4; ++b) {
+                    const uint key = k0 + b * 8;
+                    if (key >= limit) continue;
+                    if (key + 8 <= limit) simdgroup_load(kb, k + key * krow + d, krow, ulong2(0, 0), true);
+                    else nu_load_rows_masked(kb, k + key * krow + d, krow, limit - key, stage[sg], lane, true);
+                    simdgroup_multiply_accumulate(acc[b], a, kb, acc[b]);
+                }
+            }
+            for (uint b = 0; b < 4; ++b) if (k0 + b * 8 < limit) simdgroup_store(acc[b], s + b * 8, NU_ATTN_KEYS);
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            // Online softmax on plain threads; publish P and this row's rescale.
+            float local[8];
+            float tile_max = -INFINITY;
+            for (uint c = 0; c < 8; ++c) {
+                const uint key = k0 + col0 + c;
+                local[c] = (key < row_limit && key >= row_lo) ? s[row * NU_ATTN_KEYS + col0 + c] * p.scale : -INFINITY;
+                tile_max = max(tile_max, local[c]);
+            }
+            tile_max = max(tile_max, simd_shuffle_xor(tile_max, 1));
+            tile_max = max(tile_max, simd_shuffle_xor(tile_max, 2));
+            const float m_new = max(m, tile_max);
+            const bool empty = m_new == -INFINITY;
+            const float alpha = empty ? 1.0f : exp(m - m_new);
+            float sum = 0.0f;
+            for (uint c = 0; c < 8; ++c) { const T e = T(empty ? 0.0f : exp(local[c] - m_new)); probabilities[buf][grow * NU_ATTN_KEYS + col0 + c] = e; sum += float(e); }
+            sum += simd_shuffle_xor(sum, 1);
+            sum += simd_shuffle_xor(sum, 2);
+            l = l * alpha + sum;
+            m = m_new;
+            if ((lane & 3) == 0) rescale[buf][grow] = alpha;
+        } else {
+            for (uint c = 0; c < 8; ++c) probabilities[buf][grow * NU_ATTN_KEYS + col0 + c] = T(0.0f);
+            if ((lane & 3) == 0) rescale[buf][grow] = 1.0f;
+        }
+        // The published probabilities and rescales are read by every group;
+        // the other buffer of the double buffer is still being multiplied, so
+        // this one barrier also orders the previous tile's readers.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (simd_any(rescale[buf][lane] != 1.0f)) {
+            for (uint rb = 0; rb < 4; ++rb) {
+                for (uint i = lane; i < 64; i += 32) diag[i] = ((i >> 3) == (i & 7)) ? rescale[buf][rb * 8 + (i >> 3)] : 0.0f;
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+                simdgroup_float8x8 dm;
+                simdgroup_load(dm, diag, 8);
+                for (uint j = 0; j < cb_cols; ++j) { simdgroup_float8x8 t; simdgroup_multiply(t, dm, o[rb * 8 + j]); o[rb * 8 + j] = t; }
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+            }
+        }
+        // O += P[32][32] · V[k0..k0+32][64], this group's eight column blocks.
+        for (uint b = 0; b < 4; ++b) {
+            const uint key = k0 + b * 8;
+            if (key >= limit) continue;
+            simdgroup_matrix<T, 8, 8> pm[4];
+            for (uint rb = 0; rb < 4; ++rb) simdgroup_load(pm[rb], probabilities[buf] + rb * 8 * NU_ATTN_KEYS + b * 8, NU_ATTN_KEYS);
+            for (uint j = 0; j < cb_cols; ++j) {
+                simdgroup_matrix<T, 8, 8> vb;
+                if (key + 8 <= limit) simdgroup_load(vb, v + key * vrow + j * 8, vrow);
+                else nu_load_rows_masked(vb, v + key * vrow + j * 8, vrow, limit - key, stage[sg], lane, false);
+                for (uint rb = 0; rb < 4; ++rb) simdgroup_multiply_accumulate(o[rb * 8 + j], pm[rb], vb, o[rb * 8 + j]);
+            }
+        }
+    }
+    if (active) if ((lane & 3) == 0) inverse_sum[grow] = 1.0f / l;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Normalize each row by its softmax sum and store this group's columns.
+    device float * out = output + ulong(q0) * p.out_stride + ulong(head) * p.value_width + v0 + cb_begin * 8;
+    for (uint rb = 0; rb < 4; ++rb) {
+        if (q0 + rb * 8 >= padded_rows) continue;
+        for (uint i = lane; i < 64; i += 32) diag[i] = ((i >> 3) == (i & 7)) ? inverse_sum[rb * 8 + (i >> 3)] : 0.0f;
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_float8x8 dm;
+        simdgroup_load(dm, diag, 8);
+        for (uint j = 0; j < cb_cols; ++j) {
+            simdgroup_float8x8 t;
+            simdgroup_multiply(t, dm, o[rb * 8 + j]);
+            simdgroup_store(t, out + rb * 8 * p.out_stride + j * 8, p.out_stride);
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+template [[host_name("nu_attention_chunk_reuse")]] kernel void nu_attention_chunk_reuse_t<float>(device const float *, device const float *, device const float *, NU_ATTN_CHUNK_ARGS);
+template [[host_name("nu_attention_chunk_reuse_h")]] kernel void nu_attention_chunk_reuse_t<half>(device const half *, device const half *, device const half *, NU_ATTN_CHUNK_ARGS);
+
 // ---------------------------------------------------------------------------
 // Chunkwise DeltaNet: `count` tokens of one layer through the WY form
 // of the recurrence, one threadgroup per (value head, block of 32 value

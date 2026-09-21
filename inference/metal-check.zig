@@ -549,6 +549,91 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
     }
 }
 
+/// `--attention-bench`: GPU time per dispatch of the causal chunk attention
+/// on the model geometry (24 query heads, 4 KV heads, 256-wide), the
+/// row-split body against the register-reuse body, F16 and F32
+/// caches. One command buffer issues `repeats` dispatches at 4K..32K visible
+/// rows (the model's chunk of 256 queries) and at the verify-shaped counts;
+/// three measured rounds after two warm-ups; reports GPU ms per dispatch,
+/// TFLOP/s of the 8×8 matrix work (each query row's own causal prefix, both
+/// products) and the logical cache bandwidth the math implies (every query
+/// head reads its KV head's K and V; the reuse body issues a quarter of the
+/// V loads for the same logical bytes). A measurement aid, not the record.
+fn attentionBench(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const qh = 24;
+    const kvh = 4;
+    const width = 256;
+    const q_stride = qh * width;
+    const max_rows = 32512 + 256; // the sweep's largest visible prefix
+    const Case = struct { visible: usize, count: usize };
+    const cases = [_]Case{
+        .{ .visible = 512, .count = 256 },
+        .{ .visible = 4096, .count = 256 },
+        .{ .visible = 8192, .count = 256 },
+        .{ .visible = 16384, .count = 256 },
+        .{ .visible = 32512, .count = 256 },
+        .{ .visible = 512, .count = 64 },
+        .{ .visible = 4096, .count = 64 },
+        .{ .visible = 16384, .count = 64 },
+        .{ .visible = 512, .count = 8 },
+        .{ .visible = 2048, .count = 8 },
+        .{ .visible = 4096, .count = 8 },
+        .{ .visible = 16384, .count = 8 },
+        .{ .visible = 16384, .count = 1 },
+    };
+    const key_f32 = try b.create(max_rows * kvh * width * 4);
+    const value_f32 = try b.create(max_rows * kvh * width * 4);
+    const query_f32 = try b.create(256 * q_stride * 4);
+    for (key_f32.floats(), 0..) |*k, i| k.* = @as(f32, @floatFromInt(i % 17)) / 17 - 0.5;
+    for (value_f32.floats(), 0..) |*v, i| v.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
+    for (query_f32.floats(), 0..) |*q, i| q.* = @as(f32, @floatFromInt(i % 11)) / 11 - 0.5;
+    const key_f16 = try b.create(max_rows * kvh * width * 2);
+    const value_f16 = try b.create(max_rows * kvh * width * 2);
+    const query_f16 = try b.create(256 * q_stride * 2);
+    try b.begin();
+    try b.packHalf(&.{ .{ .dst = key_f16, .src = key_f32, .count = max_rows * kvh * width }, .{ .dst = value_f16, .src = value_f32, .count = max_rows * kvh * width } });
+    try b.packHalf(&.{.{ .dst = query_f16, .src = query_f32, .count = 256 * q_stride }});
+    try b.commit();
+    const out = try b.create(256 * q_stride * 4);
+    const rounds = 3;
+    std.debug.print("{s:<9} {s:>6} {s:<15} {s:>5} {s:>10} {s:>11} {s:>10} {s:>10}\n", .{ "visible", "count", "body", "prec", "best ms", "GFLOP/s", "logical GB/s", "reps" });
+    for (cases) |case| {
+        const position = case.visible - case.count;
+        // Each query row sees its own causal prefix: sum of position + t + 1.
+        const key_rows = case.count * (position + 1) + case.count * (case.count + 1) / 2;
+        const flops = 2.0 * @as(f64, @floatFromInt(qh * key_rows * 2 * width));
+        const repeats: usize = @max(1, 65536 / case.visible);
+        for ([_]bool{ false, true }) |reuse| {
+            for ([_]bool{ false, true }) |half| {
+                const key = if (half) key_f16 else key_f32;
+                const value = if (half) value_f16 else value_f32;
+                const query = if (half) query_f16 else query_f32;
+                var best: f64 = std.math.inf(f64);
+                for (0..rounds + 2) |i| {
+                    const before = b.gpuSeconds();
+                    try b.begin();
+                    for (0..repeats) |_| {
+                        if (reuse) {
+                            try b.attentionChunkReuse(key, value, query, out, .{ .query_heads = qh, .kv_heads = kvh, .key_width = width, .value_width = width, .position = position, .count = case.count, .q_stride = q_stride, .out_stride = q_stride, .scale = 1.0 / 16.0, .precision = if (half) .f16 else .f32 });
+                        } else {
+                            try b.attentionChunk(key, value, query, out, .{ .query_heads = qh, .kv_heads = kvh, .key_width = width, .value_width = width, .position = position, .count = case.count, .q_stride = q_stride, .out_stride = q_stride, .scale = 1.0 / 16.0, .precision = if (half) .f16 else .f32 });
+                        }
+                    }
+                    try b.commit();
+                    const ms = (b.gpuSeconds() - before) * 1e3 / @as(f64, @floatFromInt(repeats));
+                    if (i < 2) continue;
+                    best = @min(best, ms);
+                }
+                const bytes = @as(f64, @floatFromInt(qh * key_rows * 2 * width * 2));
+                std.debug.print("{d:<9} {d:>6} {s:<15} {s:>5} {d:>10.3} {d:>11.0} {d:>10.0} {d:>10}\n", .{ case.visible, case.count, if (reuse) "register-reuse" else "row-split", if (half) "f16" else "f32", best, flops / (best * 1e-3) / 1e9, bytes / best / 1e6, repeats });
+            }
+        }
+    }
+}
+
 /// Mixture-of-experts kernels against `cpu.experts`: the router on rows with
 /// ties and lanes past the expert count (indices exact), the gathered matvec
 /// on both kernel paths with shared and per-slot inputs and NaN in every
@@ -1334,7 +1419,10 @@ fn checkGatherRows(alloc: std.mem.Allocator) !void {
     std.debug.print("row gather on the 48-head regrouping over strided rows: exact; overlap, short map, and short stride refused\n", .{});
 }
 
-fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend) !void {
+fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: bool) !void {
+    const saved_max_rows = b.attention_reuse_max_rows;
+    defer b.attention_reuse_max_rows = saved_max_rows;
+    b.attention_reuse_max_rows = 0; // the row-split branch must not route to the reuse body
     var prng = std.Random.DefaultPrng.init(0x6e44a);
     const random = prng.random();
     const Geometry = struct { qh: usize, kvh: usize, hd: usize };
@@ -1389,7 +1477,11 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend) !void {
             }
         }
         try b.begin();
-        try b.attentionChunk(keys, values, queries, out, .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = case.position, .count = case.count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = if (case.half) .f16 else .f32, .window = case.window });
+        if (reuse) {
+            try b.attentionChunkReuse(keys, values, queries, out, .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = case.position, .count = case.count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = if (case.half) .f16 else .f32, .window = case.window });
+        } else {
+            try b.attentionChunk(keys, values, queries, out, .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = case.position, .count = case.count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = if (case.half) .f16 else .f32, .window = case.window });
+        }
         try b.commit();
         const scratch = try alloc.alloc(f64, total);
         defer alloc.free(scratch);
@@ -1410,7 +1502,7 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend) !void {
             }
         }
     }
-    std.debug.print("Windowed and wide chunk attention vs CPU F64 per row: F32 max abs {e:.3} (bound 1e-5), F16 over the rounded operands {e:.3} (bound 2e-3)\n", .{ worst_f32, worst_f16 });
+    std.debug.print("Windowed and wide chunk attention ({s} body) vs CPU F64 per row: F32 max abs {e:.3} (bound 1e-5), F16 over the rounded operands {e:.3} (bound 2e-3)\n", .{ if (reuse) "register-reuse" else "row-split", worst_f32, worst_f16 });
     // Decode: the wide instantiation (16 heads of 512 over one KV head, four
     // head groups per split; over two, two groups per KV head) and the
     // sliding geometry (groups of 2), F32 and F16 (over the rounded rows),
@@ -1466,6 +1558,93 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     try std.testing.expectError(error.InvalidShape, b.attentionChunk(small, small, small, small, .{ .query_heads = 16, .kv_heads = 1, .key_width = 512, .value_width = 520, .position = 0, .count = 1, .q_stride = 8192, .out_stride = 8192, .scale = 1.0 }));
 }
 
+/// Both chunk bodies against the CPU F64 reference on the model geometry,
+/// with every cache row after `position + count` poisoned: the poison is
+/// outside every compared row's visible prefix, so a kernel that reads a
+/// future row cannot match. Covers the partial first and last 32-row tiles
+/// (counts that are not multiples of 32, so whole SIMD groups find their
+/// rows past the caller's padded count) and both precisions. The poison is
+/// 1e30 in F32 and 6e4 (finite in half) in F16.
+fn checkChunkAttentionReuse(alloc: std.mem.Allocator, b: *Backend) !void {
+    const saved_max_rows = b.attention_reuse_max_rows;
+    defer b.attention_reuse_max_rows = saved_max_rows;
+    b.attention_reuse_max_rows = 0; // the row-split branch must not route to the reuse body
+    var prng = std.Random.DefaultPrng.init(0x16a7);
+    const random = prng.random();
+    const Case = struct { position: usize, count: usize };
+    const cases = [_]Case{
+        .{ .position = 0, .count = 1 },
+        .{ .position = 0, .count = 3 },
+        .{ .position = 1, .count = 32 },
+        .{ .position = 5, .count = 37 },
+        .{ .position = 33, .count = 33 },
+        .{ .position = 200, .count = 200 },
+        .{ .position = 1792, .count = 256 },
+        .{ .position = 16376, .count = 8 },
+    };
+    var worst_f32: f32 = 0;
+    var worst_f16: f32 = 0;
+    for ([_]bool{ false, true }) |reuse| {
+        for ([_]bool{ false, true }) |half| {
+            for (cases) |case| {
+                const total = case.position + case.count;
+                const capacity = total + 64; // poisoned memory after the visible range
+                const rows = Backend.attentionChunkRows(case.count);
+                const k32 = try b.create(capacity * 4 * 256 * 4);
+                const v32 = try b.create(capacity * 4 * 256 * 4);
+                const q32 = try b.create(rows * 6144 * 4);
+                for (k32.floats()) |*k| k.* = random.floatNorm(f32) * 0.5;
+                for (v32.floats()) |*v| v.* = random.floatNorm(f32) * 0.5;
+                for (q32.floats()) |*q| q.* = random.floatNorm(f32) * 0.5;
+                const poison: f32 = if (half) 6e4 else 1e30;
+                @memset(k32.floats()[total * 1024 ..], poison);
+                @memset(v32.floats()[total * 1024 ..], poison);
+                var keys = k32;
+                var values = v32;
+                var queries = q32;
+                if (half) {
+                    keys = try b.create(capacity * 4 * 256 * 2);
+                    values = try b.create(capacity * 4 * 256 * 2);
+                    queries = try b.create(rows * 6144 * 2);
+                    try b.begin();
+                    try b.packHalf(&.{ .{ .dst = keys, .src = k32, .count = capacity * 1024 }, .{ .dst = values, .src = v32, .count = capacity * 1024 } });
+                    try b.packHalf(&.{.{ .dst = queries, .src = q32, .count = rows * 6144 }});
+                    try b.commit();
+                    for ([_]struct { h: Buffer, f: Buffer }{ .{ .h = keys, .f = k32 }, .{ .h = values, .f = v32 }, .{ .h = queries, .f = q32 } }) |pair| {
+                        const halves = @as([*]const u16, @ptrCast(@alignCast(pair.h.host)))[0 .. pair.h.len / 2];
+                        for (halves, pair.f.floats()) |h, *f| f.* = @as(f16, @bitCast(h));
+                    }
+                }
+                const out = try b.create(rows * 6144 * 4);
+                for (out.floats()) |*o| o.* = std.math.nan(f32);
+                try b.begin();
+                if (reuse) {
+                    try b.attentionChunkReuse(keys, values, queries, out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = case.position, .count = case.count, .q_stride = 24 * 256, .out_stride = 6144, .scale = 1.0 / 16.0, .precision = if (half) .f16 else .f32 });
+                } else {
+                    try b.attentionChunk(keys, values, queries, out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = case.position, .count = case.count, .q_stride = 24 * 256, .out_stride = 6144, .scale = 1.0 / 16.0, .precision = if (half) .f16 else .f32 });
+                }
+                try b.commit();
+                const scratch = try alloc.alloc(f64, total);
+                defer alloc.free(scratch);
+                var expected: [24 * 256]f32 = undefined;
+                for (0..case.count) |t| {
+                    const input: inference.cpu.attention.Input = .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .tokens = total, .visible_tokens = case.position + t + 1, .scale = 1.0 / 16.0, .queries = q32.floats()[t * 24 * 256 ..][0 .. 24 * 256], .keys = k32.floats()[0 .. total * 1024], .values = v32.floats()[0 .. total * 1024] };
+                    try inference.cpu.attention.apply(input, &expected, scratch);
+                    for (expected, out.floats()[t * 6144 ..][0 .. 24 * 256]) |e, a| {
+                        const d = @abs(a - e);
+                        if (half) worst_f16 = @max(worst_f16, d) else worst_f32 = @max(worst_f32, d);
+                        expectClose(if (half) "poisoned half chunk attention" else "poisoned chunk attention", a, e, if (half) 1e-3 else 1e-5) catch |err| {
+                            std.debug.print("  {s} body, half {}, position {d}, count {d}, row {d}\n", .{ if (reuse) "register-reuse" else "row-split", half, case.position, case.count, t });
+                            return err;
+                        };
+                    }
+                }
+            }
+        }
+    }
+    std.debug.print("Chunk attention over a poisoned future range, both bodies, model geometry, up to 256-row chunks: F32 max abs {e:.3} (bound 1e-5), F16 over the rounded operands {e:.3} (bound 1e-3)\n", .{ worst_f32, worst_f16 });
+}
+
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -1478,6 +1657,7 @@ pub fn main(init: std.process.Init) !void {
         return matvecRowsBench(alloc, max_rows, with_head);
     }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--hadamard-bench")) return hadamardBench(alloc);
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--attention-bench")) return attentionBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len != 1) return error.UnknownOption;
     try checkSegments(alloc);
@@ -2329,8 +2509,10 @@ pub fn main(init: std.process.Init) !void {
         try b.commit();
     }
 
-    // 8f. The Gemma 4 attention geometry.
-    try checkWindowedAndWideAttention(alloc, b);
+    // 8f. The Gemma 4 attention geometry, both chunk bodies.
+    try checkWindowedAndWideAttention(alloc, b, false);
+    try checkWindowedAndWideAttention(alloc, b, true);
+    try checkChunkAttentionReuse(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
     // 32, 32, and 6) on the model shape (16 Q/K heads broadcast to 48 value

@@ -1387,6 +1387,55 @@ with a partial-score reduction) or accepts 1:1. That is a register-budget
 study first (48 live matrices per SIMD group), then a kernel; it was not
 started in ENGN-08's session.
 
+## Long-context prefill attention, second attempt (KERN-16, 2026-09-21, closed negative)
+
+ENGN-08 left one untried lever on the table: register-level reuse in
+`nu_attention_chunk`. Its body gives each of the four SIMD groups of a
+(head, 32-query) tile eight query rows and all 256 value columns, so every
+8×8 multiply pairs with ~1.5 `simdgroup_load`s and no loaded block serves
+more than one multiply. KERN-16 built the reuse body and measured it.
+
+**Design** (`nu_attention_chunk_reuse` / `_h`, `Backend.attentionChunkReuse`).
+Each SIMD group owns all 32 query rows and 64 value columns (8 column
+blocks × 4 row blocks = 32 F32 accumulators, unchanged). Scores keep the
+row split — a group scores and softmaxes its own 8 rows — and the
+probabilities plus the per-row rescale `exp(m_old − m_new)` are published
+through threadgroup memory. The probability tile and rescale row are
+double-buffered, so a group publishing tile t+1 writes the other buffer
+while a slower group still multiplies tile t's; the tile loop needs **one
+threadgroup barrier per 32-key tile**. A V block then serves four
+row-block multiplies and a published P block eight column-block
+multiplies, cutting the V loads per group per key tile from 128 to 32 at
+the cost of 12 extra shared P loads and one barrier. A group whose 8 rows
+are past the caller's padded row count (`attentionChunkRows`) stays out of
+the score and softmax phases — it would read past the query buffer — but
+publishes a zero row and joins the barriers. Register budget per lane at
+F16: 32 accumulators (64), score tile (8), Q and K blocks (2), the softmax
+row (8), four P blocks and one V block (5), the rescale diagonal (2), and
+index arithmetic (~10): ~48 live 8×8 matrices against the 128-register
+budget, F32 operands doubling the block costs. The row-split body stays as
+the control and as the 512-wide sibling.
+
+**Verdict: closed negative against its acceptance.** The sweep is in
+[bench.md § Prefill attention sweep](bench.md#prefill-attention-sweep-kern-16-2026-09-21).
+At the 256-row prefill chunks the reuse body is 2–5 % ahead in F16 at
+4K–32K (−4.8 % at 16K, −3.2 % at 32,512) and level at 512, against the
+attention cut the unit's acceptance needed (prefill at 32,639 within 10 %
+of the reference from −26 %). The loads were not the limiter: F16 and F32
+caches differ by only 5–10 % in time and the kernel sits flat at
+~640–750 GFLOP/s F16 across the sweep, so the fixed per-tile
+instruction and latency chain dominates, and removing 84 of ~500 per-group
+instructions per tile buys little. What the body does win by 11–16 % is the
+verify-shaped counts (1–64 rows), where spreading the value columns over
+four groups replaces one group's 256-column P·V walk; that window is
+shipped as `Backend.attention_reuse_max_rows = 64` on the 256-wide
+geometry, measured again by ENGN-17's record. Untried levers, recorded for
+a future attempt: padding the score and P tiles against shared-memory bank
+conflicts, staging K/V through shared memory with vectorized cooperative
+loads (the ENGN-08 variant done with double buffering rather than 16
+barriers and scalar copies), and an ablation that removes one phase at a
+time to identify the per-tile limiter rather than guessing at it.
+
 ## Numerical evidence
 
 `test-metal` (ReleaseSafe, Apple M4 Pro, last checked 2026-09-10):
@@ -1412,6 +1461,7 @@ started in ENGN-08's session.
 | Half chunk attention, the ENGN-03 cases with half Q, K, V, and P (KERN-07) | vs CPU over the rounded operands per row | 1e-3 (measured 1.8e-4) |
 | Flash-decoding attention (KERN-08): six pinned fixtures; model shape at 257 / 1,021 / 16,385 / 32,000 visible, F32 and F16 cache | vs fixtures; vs F64 CPU `attention.apply` (F16: over the rounded rows) | 1e-5; 2e-5 up to 1,021 and 1e-4 above (measured ≤ 2.3e-8) |
 | Windowed and wide chunk attention (MODL-06): windows of 1,024 and 8 on the 16/8/256 geometry, 16/1/512 with two value splits, F32 and F16 | vs F64 CPU per row over the window's key slice (F16: rounded operands) | 1e-5 (measured 3.0e-6); 2e-3 (measured 1.9e-4) |
+| Register-reuse chunk attention (KERN-16): the same MODL-06 cases and the model geometry at counts 1–256 over a poison-filled future range (1e30 F32 / 6e4 F16 past `position + count`) | vs F64 CPU per row, both bodies | 1e-5 (measured 3.0e-6); 1e-3 (measured 2.7e-4) |
 | Wide (`_w`/`_wh`) and grouped decode attention (MODL-06), 16/1/512 and 16/8/256 at 257 and 1,021 visible, both precisions | vs F64 CPU `attention.apply` (F16: rounded rows) | 5e-5 (measured 2.4e-7) |
 | RoPE over a 512-wide head with factors (64 ones, 192 × 1e30) at 32,767 | vs CPU `rope.apply` with factors; unrotated pairs exact | 2e-6 relative; **exact** |
 | `nu_gelu_mul` (with ±60, 200, −3e3), `nu_scale`, `nu_add_scale`, `nu_softcap` (with ±3e3) | vs `cpu.gelu`, F32 arithmetic, `std.math.tanh` | 2e-6 relative; exact; exact; 2e-6 relative |

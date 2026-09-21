@@ -119,7 +119,9 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   `make bench-matmul` the prefill tile per encoding (generic and specialized;
   `ARGS=<tokens>` for a chunk other than 256), `make bench-experts` the
   gathered expert kernels on the 26B-A4B shape (decode, then the prefill
-  tiles over `ARGS=<chunk>` tokens, 256 by default);
+  tiles over `ARGS=<chunk>` tokens, 256 by default), `make bench-attention`
+  the prefill chunk attention's row-split and register-reuse bodies from
+  4K to 32K visible rows and at the verify-shaped counts;
   `make bench-profile` times every dispatch inside real tokens (diagnostic,
   ~8 % perturbation); `make trace` records a Metal System Trace;
   `make baseline` runs the reference workload on the committed token arrays

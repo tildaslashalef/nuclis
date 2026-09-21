@@ -70,7 +70,7 @@ const kernel_names = [_][:0]const u8{
     "nu_matvec_rows_q6_k_t8",   "nu_matvec_rows_iq4_xs_t2", "nu_matvec_rows_iq4_xs_t3", "nu_matvec_rows_iq4_xs_t4", "nu_matvec_rows_iq4_xs_t5", "nu_matvec_rows_iq4_xs_t6",
     "nu_matvec_rows_iq4_xs_t7", "nu_matvec_rows_iq4_xs_t8", "nu_matmul_q3_k_w8",        "nu_matmul_q4_k_w8",        "nu_matmul_q5_k_w8",        "nu_matmul_q6_k_w8",
     "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",      "nu_matvec_q4_k_split",
-    "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits",
+    "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits", "nu_attention_chunk_reuse", "nu_attention_chunk_reuse_h",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -203,6 +203,8 @@ pub const Kernel = enum(u32) {
     reduce_splits,
     matvec_segments_split,
     segment_reduce_splits,
+    attention_chunk_reuse,
+    attention_chunk_reuse_h,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -283,6 +285,13 @@ pub const Backend = struct {
     /// specialized kernel applies. `metal-check` compares both paths;
     /// production leaves it off.
     generic_only: bool = false,
+    /// Counts at or below this take the register-reuse chunk body on the
+    /// 256-wide value geometry it was measured on: 11–16 % faster on the
+    /// verify-shaped batches (1–8 rows) and 4–13 % at 64 rows, while the
+    /// row-split body keeps the 256-row prefill chunks (0–5 % apart, either
+    /// way). Zero forces the row-split body everywhere; other widths keep it
+    /// because the column split leaves SIMD groups idle below 256.
+    attention_reuse_max_rows: usize = 64,
     /// Present after `enableProfiling`; read it after `commit()`.
     profile: ?Profile = null,
 
@@ -1342,8 +1351,33 @@ pub const Backend = struct {
     /// One dispatch per layer for a prefill chunk: threadgroup per
     /// (query head, 32-query tile, 256 value columns), no score buffer.
     /// Reads at most `position + count` cache rows. Value widths above 256
-    /// (up to 512) take one threadgroup per 256 columns.
+    /// (up to 512) take one threadgroup per 256 columns. Counts at or below
+    /// `attention_reuse_max_rows` take the register-reuse body instead.
     pub fn attentionChunk(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, s: AttentionChunkShape) !void {
+        try checkAttentionChunk(s, keys, values, queries, output);
+        const p = attentionChunkParams(s);
+        const tiles = (s.count + 31) / 32;
+        const value_splits = (s.value_width + 255) / 256;
+        const reuse = s.value_width == 256 and s.count <= self.attention_reuse_max_rows;
+        const half = s.precision == .f16;
+        const kernel: Kernel = if (reuse) (if (half) .attention_chunk_reuse_h else .attention_chunk_reuse) else if (half) .attention_chunk_h else .attention_chunk;
+        try self.dispatch(kernel, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
+    }
+    /// The register-reuse body explicitly: the same contract, but each
+    /// threadgroup's four SIMD groups split the value columns instead of the
+    /// query rows, so the published P tile makes a V block serve four
+    /// multiplies. Measured against `attentionChunk` by `--attention-bench`.
+    pub fn attentionChunkReuse(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, s: AttentionChunkShape) !void {
+        try checkAttentionChunk(s, keys, values, queries, output);
+        const p = attentionChunkParams(s);
+        const tiles = (s.count + 31) / 32;
+        const value_splits = (s.value_width + 255) / 256;
+        try self.dispatch(if (s.precision == .f16) .attention_chunk_reuse_h else .attention_chunk_reuse, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
+    }
+    fn attentionChunkParams(s: AttentionChunkShape) AttentionChunkParams {
+        return .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = @intCast(s.window) };
+    }
+    fn checkAttentionChunk(s: AttentionChunkShape, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer) !void {
         if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
         if (s.key_width == 0 or s.key_width % 8 != 0 or s.value_width == 0 or s.value_width % 8 != 0 or s.value_width > 512) return error.InvalidShape;
         if (s.count == 0 or s.count > 4096 or s.position > 32768 - s.count) return error.InvalidShape;
@@ -1354,10 +1388,6 @@ pub const Backend = struct {
         if (keys.len < total * s.kv_heads * s.key_width * elem or values.len < total * s.kv_heads * s.value_width * elem) return error.InvalidShape;
         if (queries.len < rows * s.q_stride * elem or output.len < rows * s.out_stride * 4) return error.InvalidShape;
         if (keys.offset % elem != 0 or values.offset % elem != 0 or queries.offset % elem != 0) return error.InvalidShape;
-        const p: AttentionChunkParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = @intCast(s.window) };
-        const tiles = (s.count + 31) / 32;
-        const value_splits = (s.value_width + 255) / 256;
-        try self.dispatch(if (s.precision == .f16) .attention_chunk_h else .attention_chunk, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
     }
     pub const TopKParams = extern struct { count: u32, partials: u32, k: u32, temperature: f32 };
     pub const topk_partials = 64;

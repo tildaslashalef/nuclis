@@ -103,6 +103,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-14 | The wide 32×8 small-batch tile: measured, closed negative | 2026-09-20 |
 | ENGN-16 | Draft proposal policy: the `p_min` early stop shipped, the adaptive length dropped | 2026-09-20 |
 | KERN-15 | Split-K decode matvec for row-poor shapes: measured behind the single pass, closed negative | 2026-09-21 |
+| KERN-16 | Long-context prefill attention: register-level reuse measured 2–5 % at chunk sizes, closed negative; the verify-shaped window shipped | 2026-09-21 |
 
 ## Context
 
@@ -3643,3 +3644,66 @@ segment bucket is global (it would route the other families' merges
 unmeasured). The split machinery stays as the measured fixture, as the
 wide 32×8 tile does, in case an encoding or a fused-consumer reduction
 changes the balance.
+
+### KERN-16 — Long-context prefill attention: register-level reuse measured 2–5 % at chunk sizes, closed negative (2026-09-21)
+
+**Outcome.** The second attempt at the long-context prefill attention
+closed negative against its acceptance. ENGN-08's untried lever — a
+(head, 32-query) threadgroup whose four SIMD groups split the 256 value
+columns and publish the probability tile through threadgroup memory, so a
+V block serves four row-block multiplies — was built
+(`nu_attention_chunk_reuse` / `_h`), is numerically identical in accuracy
+to the shipped body, and is consistently ahead, but only by 2–5 % at the
+256-row prefill chunks (0 % at 512 visible, −4.8 % at 16K, −3.2 % at
+32,512 in F16); the unit's acceptance needed that attention cut to reach
+prefill within 10 % of the reference at 32,639. The reuse body is
+nevertheless the 11–16 % faster one on the verify-shaped counts (1–64
+rows), where each group carries a quarter of the value columns instead of
+one group carrying all 256, so it is shipped behind
+`Backend.attention_reuse_max_rows = 64` on the 256-wide geometry the
+window was measured on; other widths and the 256-row prefill chunks keep
+the row-split body. The mechanism: the removed loads were not the
+limiter. F16 and F32 caches differ by only 5–10 % in time and the kernel
+sits flat at ~640–750 GFLOP/s F16 across 512–32,512 visible, so the
+per-tile instruction and latency chain dominates and removing 84 of ~500
+per-group instructions per tile buys little. The design, the register
+budget, and the untried levers (bank-conflict padding of the score and P
+tiles, vectorized staged K/V with double buffering, and a phase ablation)
+are recorded in
+[metal-backend.md § KERN-16](reference/metal-backend.md#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative).
+
+**Evidence.** `make bench-attention` (`metal-check --attention-bench`;
+Apple M4 Pro 48 GiB, Zig 0.16.0, ReleaseSafe, `652a0cc` plus the change;
+one command buffer of `max(1, 65536/visible)` dispatches after two
+warm-ups, best of three measured rounds, model geometry 24/4/256 on
+synthetic F32 and F16 caches, no model): at count 256, row-split →
+reuse F16 ms 3.684 → 3.688 at 512, 35.179 → 34.246 at 4,096, 71.653 →
+69.932 at 8,192, 145.031 → 138.064 at 16,384, 282.230 → 273.058 at
+32,512; at count 8, 0.862 → 0.767, 3.610 → 3.163, 7.621 → 6.460, 30.642 →
+25.806; at count 64, 1.139 → 1.097, 8.945 → 7.757, 36.121 → 31.382; at
+count 1 and 16,384 visible, 30.704 → 25.831. F32 in the table in
+[bench.md § Prefill attention sweep](reference/bench.md#prefill-attention-sweep-kern-16-2026-09-21);
+run-to-run spread ~1.5 %. `make test-metal` passes with both bodies on the
+MODL-06 windowed/wide cases (F32 2.980e-6, F16 1.929e-4) and on a new
+poisoned-future-range fixture: counts 1–256, F32 and F16, every cache row
+after `position + count` set to 1e30 (F32) or 6e4 (F16), all compared
+rows match the F64 CPU reference (F32 2.384e-7, F16 2.683e-4; bounds 1e-5
+and 1e-3). `make build` passes. Per the session's gate policy the model
+gates (`make compare`, the generation and speculative checks) and the
+speculative record were deferred to ENGN-17, which re-measures the routed
+path.
+
+**Files.** `inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
+`build.zig`, `inference/build.zig`, `Makefile`,
+`docs/reference/{bench,metal-backend}.md`, `docs/development.md`,
+`TODO.md`, and this log.
+
+**Remaining.** The KERN-16 acceptance's prefill bars (32,639 within 10 %,
+16K within 8 %) are not met and the Qwen long-context deficit is therefore
+not attention-load-bound; the 2–5 % at chunk sizes is live in the tree but
+worth ~1 % of prefill. The verify-shaped routing needs ENGN-17's record to
+confirm it on the real batch (the kernel-level window is −11 % at 512 and
+−15 % at 16K context). The three untried levers above are the material for
+a third attempt, which the plan does not currently order; the benchmark
+harness and the fixture make it cheap to test them.

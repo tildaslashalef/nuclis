@@ -45,10 +45,21 @@ splits; the four-segment merge 152.1 → 157.4 / 150.3 / 158.5, below the
 256-value block stands as Muse's decode limiter
 ([bench.md § Split-K matvec sweep](docs/reference/bench.md#split-k-matvec-sweep-kern-15-2026-09-21)).
 
-**Next: KERN-16** (long-context prefill attention), then KERN-18 (fused
-norms for the decode step), then MODL-19 and MODL-20 (the Gemma 4 and Muse
-drafters, moved ahead of ENGN-17 on 2026-09-21), then ENGN-17's full
-record.
+KERN-16 (long-context prefill attention, second attempt) closed negative
+on 2026-09-21: the register-reuse body is correct and 2–5 % ahead at the
+256-row prefill chunks (0 % at 512, −4.8 % at 16K, −3.2 % at 32,512 in
+F16) against the attention cut its acceptance needed, and 11–16 % ahead on
+the verify-shaped counts (1–64 rows), which ship as
+`attention_reuse_max_rows = 64` on the 256-wide geometry while the prefill
+chunks keep the row-split body. The loads were not the limiter (F16 vs F32
+caches differ 5–10 %, the kernel is flat at ~640–750 GFLOP/s F16), so the
+long-context deficit is not attention-load-bound; a third attempt would
+start from the untried levers in
+[metal-backend.md § KERN-16](docs/reference/metal-backend.md#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative)
+([bench.md § Prefill attention sweep](docs/reference/bench.md#prefill-attention-sweep-kern-16-2026-09-21)).
+
+**Next: KERN-18** (fused norms for the decode step), then MODL-19 and
+MODL-20 (the Gemma 4 and Muse drafters), then ENGN-17's full record.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -75,7 +86,7 @@ here* for how to refresh them):
 | --- | ---: | --- | --- | ---: |
 | propose `k` drafts | 10.5–24.9 ms (quick pass; trimmed by `p_min`) | one block forward per draft | ENGN-16 ✓ (early stop; adaptive dropped) | fewer forwards, same accepted tokens |
 | checkpoint | 2.8–5.2 ms | one 150 MB copy | — | — |
-| verify `1 + k` rows | 262–297 ms at 512, 362–372 ms at 4K | the 16×8 prefill tile at small row counts; the chunk attention over the visible cache | KERN-16 at long context (KERN-14 closed negative) | ≤ 130 ms |
+| verify `1 + k` rows | 262–297 ms at 512, 362–372 ms at 4K | the 16×8 prefill tile at small row counts; the chunk attention over the visible cache | KERN-16 ✗ (attention −2–5 % at chunk sizes; the verify-shaped routing lives, ENGN-17 measures it) | ≤ 130 ms |
 | accept (sampled) | 18.8–36.9 µs (quick pass) | one draw per row on the device readback | ENGN-15 ✓ | ≤ 5 ms |
 | recover (on rejection) | 6–22 ms (was 150–182) | one 150 MB slot copy | ENGN-14 ✓ | ≤ 40 ms |
 | commit `a + 1` tokens | 4.7–15.3 ms | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
@@ -88,25 +99,27 @@ draft 4; prose 512 greedy 0.76 / 0.96 / 1.06×, instruct 0.90 / 1.00 / 1.03×.
 Both sampled paths are free of host work and the proposal is trimmed;
 what remains is the batch's model time. At draft 4 the code prompt advances
 3.17 tokens for a 256 ms verify (81 ms/token against ~118), prose 2.49 for
-254 (102 against ~119). KERN-14 and KERN-15 closed negative, so the
-512-token verify and the row-poor matvecs stay where they are; KERN-16's
-long-context attention and KERN-18's fused norms are the remaining kernel
-levers. Nothing here claims a
+254 (102 against ~119). KERN-14, KERN-15, and KERN-16 closed negative, so the
+512-token verify, the row-poor matvecs, and the prefill attention stay where
+they are (KERN-16 keeps its verify-shaped routing); KERN-18's fused norms are
+the remaining kernel lever. Nothing here claims a
 final speedup before ENGN-17 measures it.
 
-Order: KERN-16 → KERN-18 → MODL-19 → MODL-20 →
+Order: KERN-18 → MODL-19 → MODL-20 →
 ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
-KERN-14's small-batch tile and KERN-15's split-K matvec closed negative, so
+KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
+register-reuse attention closed negative, so
 verify stays on the 16×8 tile at 512 and the row-poor shapes on the
-single-pass kernel; KERN-16 and KERN-18 are the remaining kernel levers
+single-pass kernel; KERN-18 is the remaining kernel lever
 (KERN-18 added 2026-09-21: the norm launches pay on all three families and
 on every verify batch, so it sits before the family drafters and the
-verdict, and ENGN-18 keeps only the Gemma tile work). **KERN-16 sits
-before ENGN-17 because it changes the Qwen path the verdict measures**: the
-long-context attention is
-every verify batch at 16K–32K (and the 32K acceptance's largest deficit).
+verdict, and ENGN-18 keeps only the Gemma tile work). **KERN-16's
+verify-shaped routing landed before ENGN-17 because the verdict measures
+the Qwen path it changes**: the reuse body takes the 1–64-row chunk
+attention of every verify batch at 16K–32K context, measured 11–16 %
+faster at the kernel.
 **MODL-19 and MODL-20 moved ahead of ENGN-17 on 2026-09-21** (the user's
 call): the draft contract, the verify batch, both acceptance rules, the
 recovery schemes, the loop, and the switch are family-independent and
@@ -121,16 +134,15 @@ not speed), and KERN-17 (the ternary experiment) are other-family or
 experimental and sit after the verdict, grouped so the performance theme
 finishes in one stretch; TERM-10 (chat polish) and the vision units follow.
 The performance group closes in the order of measured leverage: the
-long-context prefill attention, the fused norms, Gemma's decode and
+fused norms, Gemma's decode and
 prefill, the ring layout, and last
 the ternary arithmetic, which is the least certain and may close negative;
-the small-batch tile and the split-K matvec led the order and closed
-negative. AGNT-12 (background commands) and
+the small-batch tile, the split-K matvec, and the long-context attention
+led the order and closed negative. AGNT-12 (background commands) and
 APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-16 | Long-context prefill attention, second attempt (register-level reuse) | 2 |
 | KERN-18 | Fused norms for the decode step (post-norm into the residual add, q/k norm into RoPE) | 1 |
 | MODL-19 | Gemma 4 draft heads: the companion file as a second GGUF, 12B and 26B-A4B | 1–2 |
 | MODL-20 | Muse Glimmer DFlash drafter: facts, contract fit, acceptance loop | 2 |
@@ -279,32 +291,6 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
-
-## KERN-16 — Long-context prefill attention, second attempt
-
-**Facts (ENGN-05, ENGN-08).** The 32K acceptance record measured prefill
-below the reference (−6 % at 4K, −15 % at 16K, −26 % at 32,639) and the
-profile put the chunk attention kernel at 30 % of the 16K prefill, running
-at 0.7 TFLOP/s: latency-bound with one `simdgroup_load` per multiply, not
-cache-bound. Sharing the cache tiles across the six heads of a KV group
-did not help (three variants, all slower; the re-reads were cache hits).
-The speculative verify batch reads the whole visible cache once per batch
-through the same kernel, so at 16K–32K context this kernel bounds
-speculation too ([metal-backend.md § ENGN-08](docs/reference/metal-backend.md#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change)).
-
-**Design.** Register-level reuse as in the matmul tiles: split the value
-columns across the four SIMD groups of a (head, 32-query) tile so each V
-block serves four row blocks, share the probability tiles through
-threadgroup memory, and budget the registers (48 live matrices per SIMD
-group) on paper before writing it; `attention_chunk` and its half
-variant; the F64 fixture with poisoned future rows; `bench-attention`
-(new, no model) sweeping visible rows 4K–32K. Measure at 16K and 32,639
-on the reference arrays (`make baseline`).
-
-**Acceptance.** Prefill at 32,639 within 10 % of the reference (from
-−26 %); 16K within 8 %; `make test-metal`, `make compare`, the acceptance
-record re-run; the verify batch at 16K context measurably faster on the
-speculative record's 4K/16K rows.
 
 ## KERN-18 — Fused norms for the decode step: post-norm into the residual add, q/k norm into RoPE
 

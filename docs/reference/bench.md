@@ -1221,6 +1221,17 @@ one kernel alone; a full run heats the GPU progressively (the encodings
 measured last come out 15–30 % below their rested rates), so re-measure a
 changed kernel alone on a rested machine before comparing with a record.
 
+`make bench-attention` (`metal-check --attention-bench`) measures the
+causal chunk attention alone on the model geometry (24 query heads, 4 KV
+heads, 256 wide) in F32 and F16: the shipped row-split body beside the
+register-reuse body at 4K–32K visible rows (256-query chunks) and at the
+verify-shaped counts (1, 8, 64). Each case is one dispatch per repeat
+inside one command buffer (`max(1, 65536 / visible)` repeats), two
+warm-ups, best of three measured rounds; it reports GPU ms per dispatch,
+GFLOP/s of the 8×8 matrix work over each query row's own causal prefix,
+and the logical cache bandwidth the math implies. Results and the KERN-16
+reading are in [§ Prefill attention sweep](#prefill-attention-sweep-kern-16-2026-09-21).
+
 On the CPU reference backend, each step takes roughly 18–19 s; `bench` runs
 there only with small budgets and is useful for definitions, not for speed.
 
@@ -1417,3 +1428,52 @@ ENGN-15 pass), while code holds: 1.35× instruct and 1.33× greedy at draft 7
 4 reads 1.57 against the interleaved control's measured 2.16 (−27 %), three
 points short of the unit's 30 % bar, while its decode rate rose — the bar's
 purpose. Verify (234–260 ms) is still the whole batch.
+
+## Prefill attention sweep (KERN-16, 2026-09-21)
+
+The register-reuse chunk attention (`nu_attention_chunk_reuse` /
+`_h`: the four SIMD groups of a (head, 32-query) tile split the value
+columns and publish the probability tile through threadgroup memory)
+against the shipped row-split body, measured by `make bench-attention`
+(`metal-check --attention-bench`). One command buffer issues
+`max(1, 65536 / visible)` dispatches (a prefill chunk of 256 queries or a
+verify-shaped count) after two warm-ups; best of three measured rounds;
+the model geometry (24 query heads, 4 KV heads, 256-wide) with synthetic
+F32 and F16 caches, no model loaded. Apple M4 Pro (48 GiB), Zig 0.16.0,
+ReleaseSafe, `652a0cc` plus the unit's change. GPU ms per dispatch
+(a full layer: 24 heads × the tile count):
+
+| visible | count | row-split f16 | register-reuse f16 | Δ | row-split f32 | register-reuse f32 | Δ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 256 | 3.684 | 3.688 | +0.1 % | 3.951 | 4.101 | +3.8 % |
+| 4,096 | 256 | 35.179 | 34.246 | −2.6 % | 38.054 | 37.960 | −0.2 % |
+| 8,192 | 256 | 71.653 | 69.932 | −2.4 % | 76.276 | 75.120 | −1.5 % |
+| 16,384 | 256 | 145.031 | 138.064 | −4.8 % | 159.276 | 149.165 | −6.3 % |
+| 32,512 | 256 | 282.230 | 273.058 | −3.2 % | 307.087 | 291.255 | −5.2 % |
+| 512 | 64 | 1.139 | 1.097 | −3.7 % | 1.344 | 1.329 | −1.1 % |
+| 4,096 | 64 | 8.945 | 7.757 | −13.3 % | 10.477 | 8.998 | −14.1 % |
+| 16,384 | 64 | 36.121 | 31.382 | −13.1 % | 41.407 | 35.191 | −15.0 % |
+| 512 | 8 | 0.862 | 0.767 | −11.0 % | 0.995 | 0.872 | −12.4 % |
+| 2,048 | 8 | 3.610 | 3.163 | −12.4 % | 4.652 | 3.841 | −17.4 % |
+| 4,096 | 8 | 7.621 | 6.460 | −15.2 % | 9.329 | 7.702 | −17.4 % |
+| 16,384 | 8 | 30.642 | 25.806 | −15.8 % | 37.239 | 30.618 | −17.8 % |
+| 16,384 | 1 | 30.704 | 25.831 | −15.9 % | 37.338 | 30.777 | −17.6 % |
+
+**Reading.** The unit's thesis was that the row-split body pairs every
+8×8 multiply with ~1.5 `simdgroup_load`s and that reusing a V block over
+four row blocks (and a published P block over eight column blocks) would
+lift the long-context prefill the 32K acceptance needs. The reuse body is
+correct and consistently ahead, but only by 2–5 % at the 256-row prefill
+chunks (0 % at 512, −4.8 % at 16K): the loads it removes were not the
+limiter. The kernel is flat at ~640–750 GFLOP/s F16 and ~610–700 F32
+across the sweep, and the F32 cache — twice the bytes per block —
+costs only 5–10 %, so neither matrix throughput nor memory traffic is the
+limit; the fixed per-tile instruction and latency chain is, and the reuse
+body changes 84 of ~500 instructions per SIMD group per tile. Where the
+body wins by 11–16 % is the verify-shaped counts (1–64 rows), because
+there each of the four groups carries a quarter of the value columns
+instead of one group carrying all 256; that is the window the shipped
+routing uses (`attention_reuse_max_rows = 64`, 256-wide values only).
+Run-to-run spread is ~1.5 % (the same 32,512/256 case measured 281.2 ms
+then 282.2 ms for the row-split body in two sweeps). Verdict in
+[metal-backend.md § KERN-16](metal-backend.md#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative).
