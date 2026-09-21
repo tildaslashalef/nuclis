@@ -116,6 +116,9 @@ const Ui = struct {
     /// else the artifact's own.
     model_label: []const u8 = "",
     busy: bool = false,
+    /// The session is being primed: the live region shows the warm-up row
+    /// instead of a turn, and the bar carries no loop step.
+    warming: bool = false,
     quit: bool = false,
     /// Whether the terminal has focus; a turn that ends unfocused notifies.
     focused: bool = true,
@@ -215,7 +218,7 @@ const Ui = struct {
         bar.context_capacity = session.capacity;
         bar.effort = @tagName(self.effort);
         bar.model = self.model_label;
-        if (self.busy) {
+        if (self.busy and !self.warming) {
             bar.prompt_tokens = self.stats.prompt_tokens;
             bar.generated = self.stats.generated;
             bar.replayed = self.stats.replayed;
@@ -261,7 +264,9 @@ const Ui = struct {
         // spurious integer-overflow panic in Zig 0.16.0 (aarch64) on plain
         // values; this form is semantically identical.
         const max_live = ((size.rows -| editor_cap) -| list.len) -| 5;
-        if (self.busy) {
+        if (self.busy and self.warming) {
+            try rows.append(a, .{ .text = try self.warmingLabel(a), .style = .thinking_header });
+        } else if (self.busy) {
             const live = try self.tr.liveRows(a, .{
                 .width = columns,
                 .th = self.th,
@@ -743,6 +748,19 @@ const Ui = struct {
         return w.written();
     }
 
+    /// The warm-up's row in the region: what is being prefilled, how far,
+    /// and the bar's own estimate of what is left.
+    fn warmingLabel(self: *Ui, a: std.mem.Allocator) ![]const u8 {
+        var w: std.Io.Writer.Allocating = .init(a);
+        const gl = self.th.glyphs();
+        const spin = gl.spinner[self.frame % gl.spinner.len];
+        const elapsed = seconds(self.turn_started, std.Io.Clock.awake.now(self.io));
+        try w.writer.print("{s} warming up{s} system prompt and tools", .{ spin, gl.ellipsis });
+        if (self.bar.target > 0) try w.writer.print(" {d}/{d}", .{ @min(self.bar.position, self.bar.target), self.bar.target });
+        if (self.bar.eta(elapsed)) |left| try w.writer.print(" ~{d:.0}s", .{left});
+        return w.written();
+    }
+
     // ----- generation hooks -----
 
     /// The engine's turn beat: after every prefill chunk and
@@ -812,6 +830,7 @@ const Ui = struct {
 fn primeSession(ui: *Ui) void {
     ui.completer.effort = ui.effort;
     ui.busy = true;
+    ui.warming = true;
     ui.status = "warming up";
     ui.turn_started = std.Io.Clock.awake.now(ui.io);
     ui.first_token = null;
@@ -821,19 +840,27 @@ fn primeSession(ui: *Ui) void {
     ui.draw() catch {};
     defer {
         ui.busy = false;
+        ui.warming = false;
         ui.status = "ready";
         ui.bar = .{};
         ui.stats = .{};
         interrupt.clear();
     }
-    _ = ui.completer.prime(ui.agent.system, ui.agent.tool_defs) catch |err| {
+    const primed = ui.completer.prime(ui.agent.system, ui.agent.tool_defs) catch |err| {
         var note: [192]u8 = undefined;
         const text = if (err == error.ContextFull) blk: {
             const overflow = ui.completer.overflow orelse loop.Overflow{ .needed = 0, .capacity = ui.eng.model.session().capacity };
             break :blk std.fmt.bufPrint(&note, "  — context window too small for the system prompt and tools: {d} tokens (prefix plus output budget) of {d}; raise it with /ctx <n>", .{ overflow.needed, overflow.capacity }) catch "  — context window too small for the system prompt and tools";
         } else std.fmt.bufPrint(&note, "  — warm-up skipped: {s}", .{@errorName(err)}) catch "  — warm-up skipped";
         ui.emit(.{ .notice = text }) catch {};
+        return;
     };
+    if (primed > 0) {
+        var note: [96]u8 = undefined;
+        const elapsed = seconds(ui.turn_started, std.Io.Clock.awake.now(ui.io));
+        const text = std.fmt.bufPrint(&note, "  — warmed up in {d:.1}s · {d} tokens", .{ elapsed, primed }) catch "  — warmed up";
+        ui.emit(.{ .notice = text }) catch {};
+    }
 }
 
 fn seconds(from: std.Io.Timestamp, to: std.Io.Timestamp) f64 {
