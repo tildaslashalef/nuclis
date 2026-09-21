@@ -178,7 +178,9 @@ per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
 Order: TERM-10 →
-MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
+AGNT-11 → MODL-21 → MODL-22 → MODL-23 (AGNT-11 moved ahead of the
+vision engine on 2026-09-21, the user's call: the chat side lands first,
+and its turn step waits for the projector). KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
 register-reuse attention closed negative, so
@@ -218,8 +220,8 @@ manifest.
 | Unit | Title | Sessions |
 | --- | --- | --- |
 | TERM-10 | Chat polish: the tmux/Ghostty harness, the repaint tick and visible warm-up, header box, status bar, input box, operation dots, diff bands, markdown hardening | 2 |
-| MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
+| MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
 | AGNT-12 | Background commands (drafted for decision; see its section) | — |
@@ -754,11 +756,23 @@ labels it with its source path.
    below the `image #N` detail row; other terminals keep the row alone.
    Bounded by the decoded size limits; never part of the golden tests.
 
+**Ahead of MODL-21 (reordered 2026-09-21).** This unit lands before the
+vision engine, so it delivers items 1, 2, 4, and 5 in full and of item 3
+only the message shape: the user `Message` carries `images` and the chip
+text, the transcript's detail row reads `image #1: /path/to/file.png
+(48 KB)` from the file's size, and at submit every attachment is refused
+with the item-4 notice until a projector is loaded — the same code path,
+with the reason "no vision support yet for this model". Decoding, the
+grid in the detail row, and the projector call arrive with MODL-21, which
+takes over item 3; the inline preview (item 5) needs the decoder too and
+moves with it.
+
 **Acceptance.** Editor tests for the three ways in, chip deletion, index
-renumbering, and the bounds; a session round trip with an attachment;
-`nuclis agent` with Qwen3.8 and a dropped screenshot answers a question
-about it (recorded in the log); `docs/agent-spec.md` and
-`docs/development.md § The agent's transcript` describe the chip.
+renumbering, and the bounds; a session round trip with an attachment; a
+harness capture of a dropped path becoming a chip and the refusal notice;
+`docs/agent-spec.md` and `docs/development.md § The agent's transcript`
+describe the chip. The end-to-end question about a dropped screenshot is
+MODL-21's acceptance.
 
 ## MODL-22 — Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B)
 
