@@ -69,6 +69,28 @@ fn tiledMatrix(alloc: std.mem.Allocator, sample_bytes: []const u8, encoding: u32
     return region;
 }
 
+/// `tiledMatrix` for the bench paths: row 0 carries the fixture blocks in
+/// order and every later row copies it, because those paths never compare
+/// values. The exact `(r*3+t)` walk above costs one `@memcpy` per block per
+/// row — millions of calls and minutes of host time on the multi-GB shapes.
+/// Caller frees the result.
+fn tiledMatrixRows(alloc: std.mem.Allocator, sample_bytes: []const u8, encoding: u32, rows: usize, columns: usize) ![]u8 {
+    const layout = inference.encoding.layout(encoding) orelse return error.UnknownEncoding;
+    const block_bytes = layout.bytes_per_block;
+    const blocks_per_fixture = sample_bytes.len / block_bytes;
+    if (columns % layout.elements_per_block != 0) return error.FixtureNotTileable;
+    const repeats = columns / layout.elements_per_block;
+    const stride = block_bytes * repeats;
+    const region = try alloc.alloc(u8, stride * rows);
+    errdefer alloc.free(region);
+    for (0..repeats) |t| {
+        const block = t % blocks_per_fixture;
+        @memcpy(region[t * block_bytes ..][0..block_bytes], sample_bytes[block * block_bytes ..][0..block_bytes]);
+    }
+    for (1..rows) |r| @memcpy(region[r * stride ..][0..stride], region[0..stride]);
+    return region;
+}
+
 /// Rewrites the F16 block scales of every block in a tiled region to 2^-6 so
 /// decoded weights stay O(1..16): the pinned fixtures carry extreme scales
 /// (decoded values up to ~1e7) to pin the decoders, which would overflow the
@@ -108,6 +130,12 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
         .{ .rows = 248320, .columns = 5120, .name = "248320x5120 (output)" },
         // Actual down-projection geometry: fewer groups than the tiled cases.
         .{ .rows = 5120, .columns = 17408, .name = "5120x17408 (ffn_down)" },
+        // Muse Glimmer's row-poor shapes (KERN-15); the split sweep is
+        // `--matvec-split`.
+        .{ .rows = 6656, .columns = 19968, .name = "6656x19968 (muse ffn_down)" },
+        .{ .rows = 6656, .columns = 4096, .name = "6656x4096 (muse attn_out)" },
+        .{ .rows = 39936, .columns = 6656, .name = "39936x6656 (muse ffn_gate)" },
+        .{ .rows = 202048, .columns = 6656, .name = "202048x6656 (muse head)" },
     };
     const encodings = [_]struct { id: u32, fixture: []const u8, name: []const u8 }{
         .{ .id = 11, .fixture = "k-signed", .name = "Q3_K" },
@@ -129,7 +157,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
         max_bytes = @max(max_bytes, shape.rows * (shape.columns / layout.elements_per_block) * layout.bytes_per_block);
     };
     const weights = try b.create(max_bytes);
-    const input = try b.create(17408 * 4);
+    const input = try b.create(19968 * 4);
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(248320 * 4);
     std.debug.print("{s:<8} {s:<26} {s:>9} {s:>8} {s:>9} {s:>9}  rounds (GB/s)\n", .{ "encoding", "shape", "MB", "path", "best", "mean" });
@@ -148,7 +176,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
             for (shapes) |shape| {
                 // Small matrices need longer batches to avoid measuring clock ramp-up.
                 const repeats: usize = if (shape.rows < 8192) 64 else 8;
-                const region = try tiledMatrix(alloc, bytes, enc.id, shape.rows, shape.columns);
+                const region = try tiledMatrixRows(alloc, bytes, enc.id, shape.rows, shape.columns);
                 defer alloc.free(region);
                 @memcpy(weights.host[0..region.len], region);
                 const matrix: inference.cpu.Matrix = .{ .rows = shape.rows, .columns = shape.columns, .encoding = enc.id, .bytes = region };
@@ -180,6 +208,137 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
         }
     }
     b.generic_only = false;
+}
+
+/// `--matvec-split [ENCODING]`: the bounded split-K sweep behind KERN-15's
+/// verdict — the two row-poor Muse shapes, the Qwen down-projection geometry,
+/// and the four-segment merged projection — at 1 (the single-pass control),
+/// 2, 4, and 8 splits, for Q4_K and Q5_K, the encodings with a split body.
+/// `--matvec-bench` measures the same kernels whole; this one stays on the
+/// shapes the decision needed. Same methodology: back-to-back dispatches in
+/// one command buffer, `repeats` per buffer by the clock policy above, best
+/// and mean of three measured rounds after two warm-ups.
+fn matvecSplitBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const Shape = struct { rows: usize, columns: usize, name: []const u8 };
+    const shapes = [_]Shape{
+        .{ .rows = 6656, .columns = 19968, .name = "6656x19968 (muse ffn_down)" },
+        .{ .rows = 6656, .columns = 4096, .name = "6656x4096 (muse attn_out)" },
+        .{ .rows = 5120, .columns = 17408, .name = "5120x17408 (qwen ffn_down)" },
+    };
+    const encodings = [_]struct { id: u32, name: []const u8 }{
+        .{ .id = 12, .name = "Q4_K" },
+        .{ .id = 13, .name = "Q5_K" },
+    };
+    if (only) |name| {
+        var known = false;
+        for (encodings) |enc| known = known or std.mem.eql(u8, name, enc.name);
+        if (!known) return error.UnknownEncoding;
+    }
+    var max_bytes: usize = 0;
+    for (encodings) |enc| for (shapes) |shape| {
+        const layout = inference.encoding.layout(enc.id) orelse return error.UnknownEncoding;
+        max_bytes = @max(max_bytes, shape.rows * (shape.columns / layout.elements_per_block) * layout.bytes_per_block);
+    };
+    const weights = try b.create(max_bytes);
+    const input = try b.create(19968 * 4);
+    for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
+    const output = try b.create(6656 * 4);
+    const rounds = 3; // measured command buffers
+    const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/k-affine.json"), .{ .ignore_unknown_fields = true });
+    defer fixtures.deinit();
+    std.debug.print("{s:<8} {s:<28} {s:>9} {s:>8} {s:>9} {s:>9}  rounds (GB/s)\n", .{ "encoding", "shape", "MB", "path", "best", "mean" });
+    for (encodings) |enc| {
+        if (only) |name| if (!std.mem.eql(u8, name, enc.name)) continue;
+        var sample_bytes: ?[]const u8 = null;
+        for (fixtures.value.rows) |sample| if (sample.encoding == enc.id) {
+            sample_bytes = sample.bytes;
+            break;
+        };
+        const bytes = sample_bytes orelse return error.FixtureMissing;
+        for (shapes) |shape| {
+            const region = try tiledMatrixRows(alloc, bytes, enc.id, shape.rows, shape.columns);
+            defer alloc.free(region);
+            @memcpy(weights.host[0..region.len], region);
+            const matrix: inference.cpu.Matrix = .{ .rows = shape.rows, .columns = shape.columns, .encoding = enc.id, .bytes = region };
+            const mb = @as(f64, @floatFromInt(region.len)) / 1e6;
+            const repeats: usize = if (shape.rows < 8192) 64 else 8;
+            for ([_]usize{ 1, 2, 4, 8 }) |splits| {
+                var best: f64 = 0;
+                var total: f64 = 0;
+                var samples: [rounds]f64 = undefined;
+                for (0..rounds + 2) |i| {
+                    const before = b.gpuSeconds();
+                    try b.begin();
+                    for (0..repeats) |_| try b.matvecSplits(weights, matrix, input, output, splits);
+                    try b.commit();
+                    const rate = mb / 1e3 / ((b.gpuSeconds() - before) / @as(f64, @floatFromInt(repeats)));
+                    if (i < 2) continue; // warm-up
+                    samples[i - 2] = rate;
+                    best = @max(best, rate);
+                    total += rate;
+                }
+                var label_buf: [8]u8 = undefined;
+                const label = std.fmt.bufPrint(&label_buf, "split{d}", .{splits}) catch unreachable;
+                std.debug.print("{s:<8} {s:<28} {d:>9.1} {s:>8} {d:>9.1} {d:>9.1} ", .{ enc.name, shape.name, mb, label, best, total / rounds });
+                for (samples) |r| std.debug.print(" {d:.0}", .{r});
+                std.debug.print("\n", .{});
+            }
+        }
+    }
+    // The merged projection (Muse's q/k/v/gate: 4,096 + 256 + 256 + 4,096
+    // Q4_K rows over 6,656 columns, plain mode). The split applies to the
+    // whole merge; 1 forces the single-pass control through the same entry.
+    if (only == null or std.mem.eql(u8, only orelse "", "Q4_K")) {
+        const seg_rows = [_]usize{ 4096, 256, 256, 4096 };
+        const columns: usize = 6656;
+        const total: usize = 8704;
+        var sample_bytes: ?[]const u8 = null;
+        for (fixtures.value.rows) |sample| if (sample.encoding == 12) {
+            sample_bytes = sample.bytes;
+            break;
+        };
+        const region = try tiledMatrixRows(alloc, sample_bytes orelse return error.FixtureMissing, 12, total, columns);
+        defer alloc.free(region);
+        const stride = region.len / total;
+        const seg_weights = try uploadBytes(b, region);
+        const seg_out = try b.create(total * 4);
+        var segs: [4]Backend.Segment = undefined;
+        var start: usize = 0;
+        for (seg_rows, 0..) |r, i| {
+            segs[i] = .{
+                .weights = seg_weights.slice(start * stride, r * stride),
+                .matrix = .{ .rows = r, .columns = columns, .encoding = 12, .bytes = region[start * stride ..][0 .. r * stride] },
+                .output = seg_out.slice(start * 4, r * 4),
+            };
+            start += r;
+        }
+        const seg_mb = @as(f64, @floatFromInt(region.len)) / 1e6;
+        for ([_]usize{ 1, 2, 4, 8 }) |splits| {
+            var best: f64 = 0;
+            var total_rate: f64 = 0;
+            var samples: [rounds]f64 = undefined;
+            const reps: usize = 8;
+            for (0..rounds + 2) |i| {
+                const before = b.gpuSeconds();
+                try b.begin();
+                for (0..reps) |_| try b.matvecSegmentsSplits(&segs, input, .plain, splits);
+                try b.commit();
+                const rate = seg_mb / 1e3 / ((b.gpuSeconds() - before) / @as(f64, @floatFromInt(reps)));
+                if (i < 2) continue; // warm-up
+                samples[i - 2] = rate;
+                best = @max(best, rate);
+                total_rate += rate;
+            }
+            var label_buf: [8]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buf, "split{d}", .{splits}) catch unreachable;
+            std.debug.print("{s:<8} {s:<28} {d:>9.1} {s:>8} {d:>9.1} {d:>9.1} ", .{ "Q4_K", "8704x6656 (muse qkvg seg)", seg_mb, label, best, total_rate / rounds });
+            for (samples) |r| std.debug.print(" {d:.0}", .{r});
+            std.debug.print("\n", .{});
+        }
+    }
 }
 
 /// `--matmul-bench [tokens]`: throughput of the batched prefill matmul on
@@ -1311,6 +1470,7 @@ pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-bench")) return matvecBench(alloc, if (args.len > 2) args[2] else null);
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-split")) return matvecSplitBench(alloc, if (args.len > 2) args[2] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matmul-bench")) return matmulBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-rows-bench")) {
         const max_rows = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 8;
@@ -1415,6 +1575,101 @@ pub fn main(init: std.process.Init) !void {
                         }
                     }
                     b.generic_only = false;
+                }
+            }
+        }
+        // 2a. Split-K matvec (KERN-15): a 6,656-row matrix (the Muse row-poor
+        // geometry) through the row-partial path at 2/4/8 splits, for every
+        // encoding with a split body, against the F64 CPU reference at the
+        // same bound as the single-pass kernel; the partials are summed in
+        // split order, so the difference is F32 rounding order alone. The
+        // merged path gets the same treatment: a four-segment 8,704-row plain
+        // merge at 2/4 splits, each segment's rows against the CPU.
+        {
+            const split_rows: usize = 6656;
+            const columns: usize = 5120;
+            const input = try alloc.alloc(f32, columns);
+            defer alloc.free(input);
+            for (input) |*x| x.* = random.float(f32) * 2 - 1;
+            const split_expected = try alloc.alloc(f32, split_rows);
+            defer alloc.free(split_expected);
+            const split_decoded = try alloc.alloc(f32, columns);
+            defer alloc.free(split_decoded);
+            var checked: usize = 0;
+            inline for (.{ "k-affine", "k-signed" }) |name| {
+                const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
+                defer fixtures.deinit();
+                var seen: [256]bool = @splat(false);
+                for (fixtures.value.rows) |sample| {
+                    if (sample.encoding >= seen.len or seen[sample.encoding]) continue;
+                    seen[sample.encoding] = true;
+                    const region = try tiledMatrix(alloc, sample.bytes, sample.encoding, split_rows, columns);
+                    defer alloc.free(region);
+                    const stride = region.len / split_rows;
+                    if (Backend.specializedMatvec(sample.encoding, 0, stride, 0) == null) continue;
+                    const kernel = Backend.specializedMatvec(sample.encoding, 0, stride, 0).?;
+                    if (Backend.matvecSplitKernel(kernel) == null) continue;
+                    const matrix: inference.cpu.Matrix = .{ .rows = split_rows, .columns = columns, .encoding = sample.encoding, .bytes = region };
+                    const weights = try uploadBytes(b, region);
+                    const in_buf = try uploadBytes(b, std.mem.sliceAsBytes(input));
+                    const out_buf = try b.create(split_rows * 4);
+                    try inference.cpu.matvec(matrix, input, split_expected, split_decoded);
+                    for ([_]usize{ 2, 4, 8 }) |splits| {
+                        try b.begin();
+                        try b.matvecSplits(weights, matrix, in_buf, out_buf, splits);
+                        try b.commit();
+                        for (0..split_rows) |r| {
+                            try inference.quant.row(sample.encoding, region[r * stride ..][0..stride], split_decoded);
+                            var mass: f64 = 0;
+                            for (split_decoded, input) |w, x| mass += @abs(@as(f64, w) * x);
+                            try expectClose("split-K matvec", out_buf.floats()[r], split_expected[r], @floatCast(mass * 4e-6 + 1e-6));
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+            if (checked == 0) return error.SpecializedPathNotSelected;
+            // The merged q/k/v/gate shape: 4 Q4_K segments of 4,096 + 256 +
+            // 256 + 4,096 rows.
+            {
+                const merge_rows = [_]usize{ 4096, 256, 256, 4096 };
+                const total: usize = 8704;
+                const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/k-affine.json"), .{ .ignore_unknown_fields = true });
+                defer fixtures.deinit();
+                var sample_bytes: ?[]const u8 = null;
+                for (fixtures.value.rows) |sample| if (sample.encoding == 12) {
+                    sample_bytes = sample.bytes;
+                    break;
+                };
+                const region = try tiledMatrix(alloc, sample_bytes orelse return error.FixtureMissing, 12, total, columns);
+                defer alloc.free(region);
+                const stride = region.len / total;
+                const weights = try uploadBytes(b, region);
+                const in_buf = try uploadBytes(b, std.mem.sliceAsBytes(input));
+                const out = try b.create(total * 4);
+                const merge_expected = try alloc.alloc(f32, total);
+                defer alloc.free(merge_expected);
+                var segs: [4]Backend.Segment = undefined;
+                var start: usize = 0;
+                for (merge_rows, 0..) |r, i| {
+                    segs[i] = .{
+                        .weights = weights.slice(start * stride, r * stride),
+                        .matrix = .{ .rows = r, .columns = columns, .encoding = 12, .bytes = region[start * stride ..][0 .. r * stride] },
+                        .output = out.slice(start * 4, r * 4),
+                    };
+                    inference.cpu.matvec(segs[i].matrix, input, merge_expected[start..][0..r], split_decoded) catch return error.InvalidShape;
+                    start += r;
+                }
+                for ([_]usize{ 2, 4 }) |splits| {
+                    try b.begin();
+                    try b.matvecSegmentsSplits(&segs, in_buf, .plain, splits);
+                    try b.commit();
+                    for (0..total) |r| {
+                        try inference.quant.row(12, region[r * stride ..][0..stride], split_decoded);
+                        var mass: f64 = 0;
+                        for (split_decoded, input) |w, x| mass += @abs(@as(f64, w) * x);
+                        try expectClose("split-K merged segments", out.floats()[r], merge_expected[r], @floatCast(mass * 4e-6 + 1e-6));
+                    }
                 }
             }
         }
@@ -2750,5 +3005,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors and in both pairings, activations and the epilogues, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors and in both pairings, activations and the epilogues, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
 }

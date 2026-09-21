@@ -364,9 +364,11 @@ Decode is 71 % of the reference (15.87 GB of weights at 9.99 tok/s is
 159 GB/s effective against the reference's 223) and prefill 91 %. The
 Qwen `make bench` is unchanged by the shared-kernel change (39.75 /
 10.44 tok/s the same day; its recorded spread is 10.36–10.47). The
-decode gap is wider than Gemma's (81 %) or Qwen's; where the time goes
-is the performance theme's question (KERN-15 in [TODO.md](../../TODO.md)), with
-the per-kernel profile below as its starting point.
+decode gap is wider than Gemma's (81 %) or Qwen's; the per-kernel profile
+below was its starting point, and KERN-15 (2026-09-21) then measured the
+row-poor matvecs' split-K candidate behind the single pass: the gap is the
+Q4_K kernel's per-block cost, not launch parallelism, and nothing routes
+to the split path.
 
 **Per-kernel profile** (`make bench-profile MODEL=<file> ARGS=--raw`,
 the raw 10-token prompt, 64 output tokens, 192 measured decode steps;
@@ -394,6 +396,23 @@ matvecs read at 145–175 GB/s where the head's Q5_K rows reach 208 and
 the reference averages 223 across the whole token, so the gap is spread
 over the large Q4_K matrices rather than sitting in one kernel; that is
 the performance theme's starting point, not this unit's.
+
+**KERN-15 verdict on the row-poor shapes (2026-09-21).** Split-K twins of
+the Q4_K/Q5_K matvec and of the plain segment merge closed negative:
+measured against the single-pass control they lose 2–10 % on every Q4_K
+plain shape and the loss grows with the split count, while the effective
+in-model 159 GB/s is the Q4_K kernel's ~0.9 ns per 256-value block with 144
+bytes in it (`matvec_q4_k` here at 146.9 and 151.8 GB/s) — not the 6,656
+row count the unit suspected (Q5_K's 176-byte blocks stream 175–208 at the
+same geometry). Nothing routes to the split path; the kernels stay as the
+measured fixture and the exactness gates. The remaining per-family lever is
+per-block arithmetic on the Q4_K kernels (KERN-17 works only the ternary
+arm), and the unit's acceptance — the two row-poor shapes ≥ 190 GB/s and
+Muse decode at 512 ≥ 10.5 tok/s — was not met, so the MODL-13 acceptance
+record above stays the current one. The sweep is
+[bench.md § Split-K matvec sweep](bench.md#split-k-matvec-sweep-kern-15-2026-09-21);
+the kernel note is
+[metal-backend.md § Split-K](metal-backend.md#split-k-kern-15-2026-09-21-closed-negative).
 
 ## Status
 

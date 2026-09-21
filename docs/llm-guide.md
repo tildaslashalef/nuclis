@@ -1416,8 +1416,11 @@ them at 170. The 32×32 set for chunks of at most 32 tokens recovers the
 lost threadgroups (39 tok/s, above the 35 before ENGN-05), but the honest
 number is that 22 tokens take 563 ms and one token takes 95 ms: a
 small-M product wants a different design (split the K dimension across
-threadgroups and reduce), which is planned as KERN-15 rather than
-squeezed into a unit about the large-tile ceiling.
+threadgroups and reduce). That design was built and measured for the decode
+matvecs as KERN-15 and closed negative — splitting K multiplied the
+threadgroups without lifting the per-block cost, and the loss grew with the
+split count — so the case is now evidence that threadgroup count is not
+what bounds this kernel; the small-M prefill tile itself was not re-tried.
 
 **The numerics contract moved, and the record says by how much.** The F32
 tiles were bit-identical to the generic tile and 2.8e-5 from the stepped

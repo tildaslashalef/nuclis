@@ -69,7 +69,8 @@ const kernel_names = [_][:0]const u8{
     "nu_matvec_rows_q6_k_t2",   "nu_matvec_rows_q6_k_t3",   "nu_matvec_rows_q6_k_t4",   "nu_matvec_rows_q6_k_t5",   "nu_matvec_rows_q6_k_t6",   "nu_matvec_rows_q6_k_t7",
     "nu_matvec_rows_q6_k_t8",   "nu_matvec_rows_iq4_xs_t2", "nu_matvec_rows_iq4_xs_t3", "nu_matvec_rows_iq4_xs_t4", "nu_matvec_rows_iq4_xs_t5", "nu_matvec_rows_iq4_xs_t6",
     "nu_matvec_rows_iq4_xs_t7", "nu_matvec_rows_iq4_xs_t8", "nu_matmul_q3_k_w8",        "nu_matmul_q4_k_w8",        "nu_matmul_q5_k_w8",        "nu_matmul_q6_k_w8",
-    "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",
+    "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",      "nu_matvec_q4_k_split",
+    "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -197,6 +198,11 @@ pub const Kernel = enum(u32) {
     matmul_q4_0_w8,
     matmul_pq2_0_w8,
     matmul_ptq1_0_w8,
+    matvec_q4_k_split,
+    matvec_q5_k_split,
+    reduce_splits,
+    matvec_segments_split,
+    segment_reduce_splits,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -270,6 +276,8 @@ pub const Backend = struct {
     handle: *anyopaque,
     pipelines: [kernel_names.len]u32,
     wrapped: std.AutoHashMapUnmanaged(usize, Buffer) = .empty,
+    /// Row-partial buffer of the split-K matvec, created on first use.
+    split_scratch: ?Buffer = null,
     recording: bool = false,
     /// Diagnostic: record the generic `nu_matvec` / `nu_matmul` even when a
     /// specialized kernel applies. `metal-check` compares both paths;
@@ -414,21 +422,70 @@ pub const Backend = struct {
     /// Q3_K, Q6_K, IQ3_S, IQ4_XS, and Q4_0 use the specialized block kernels when the weight range
     /// and input are aligned for their vector loads (see `specializedMatvec`).
     pub fn matvec(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer) !void {
+        return self.matvecImpl(weights, matrix, input, output, 1);
+    }
+    /// `matvec`'s contract, forcing `splits` K splits (the split sweep's knob;
+    /// 1 is the single-pass kernel). Only the specialized encodings with a
+    /// split body are served. No production shape routes here: the 2026-09-21
+    /// sweep measured the split path behind the single pass on every row
+    /// bucket (KERN-15), so the kernels stay as the measured fixture and the
+    /// single pass is what `matvec` records.
+    pub fn matvecSplits(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer, splits: usize) !void {
+        if (splits == 0 or splits > split_k_max) return error.InvalidShape;
+        return self.matvecImpl(weights, matrix, input, output, splits);
+    }
+    /// Most splits the row-partial scratch holds.
+    pub const split_k_max = 8;
+    /// Most rows the row-partial scratch holds per split (512 KB at 8 splits).
+    pub const split_k_rows = 16_384;
+    /// The split body of a specialized matvec, when one exists.
+    pub fn matvecSplitKernel(kernel: Kernel) ?Kernel {
+        return switch (kernel) {
+            .matvec_q4_k => .matvec_q4_k_split,
+            .matvec_q5_k => .matvec_q5_k_split,
+            else => null,
+        };
+    }
+    /// Row-partial scratch, created on first use: `split_k_rows` rows per
+    /// split; the forced path validates the row count against it.
+    fn splitScratch(self: *Backend) !Buffer {
+        if (self.split_scratch) |b| return b;
+        const b = try self.create(split_k_rows * split_k_max * 4);
+        self.split_scratch = b;
+        return b;
+    }
+    fn matvecImpl(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer, splits: usize) !void {
         if (matrix.rows == 0 or matrix.columns == 0 or matrix.columns % 16 != 0 or matrix.bytes.len % matrix.rows != 0) return error.InvalidShape;
         const stride = matrix.bytes.len / matrix.rows;
         try quant.validateRow(matrix.encoding, stride, matrix.columns);
         if (weights.len < matrix.bytes.len or input.len < matrix.columns * 4 or output.len < matrix.rows * 4) return error.InvalidShape;
         // Weight bytes are the traffic that bounds decode; the profile divides them by measured time.
         const shape: Shape = .{ .encoding = matrix.encoding, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = matrix.bytes.len };
+        const rows_per_group = rows_per_simdgroup * simdgroups_per_matvec_group;
         if (!self.generic_only) if (specializedMatvec(matrix.encoding, weights.offset, stride, input.offset)) |kernel| {
+            if (splits > 1) {
+                const split_kernel = matvecSplitKernel(kernel) orelse return error.InvalidShape;
+                const scratch = try self.splitScratch();
+                if (matrix.rows * splits * 4 > scratch.len) return error.InvalidShape;
+                const blocks = matrix.columns / 256;
+                const split_blocks = (blocks + splits - 1) / splits;
+                const p: MatvecSplitParams = .{ .columns = @intCast(matrix.columns), .stride = @intCast(stride), .rows = @intCast(matrix.rows), .blocks = @intCast(blocks), .splits = @intCast(splits), .split_blocks = @intCast(split_blocks) };
+                const row_groups = (matrix.rows + rows_per_group - 1) / rows_per_group;
+                try self.dispatch(split_kernel, &.{ weights, input, scratch }, p, @intCast(row_groups * splits), 32 * simdgroups_per_matvec_group, shape);
+                const rp: ReduceSplitsParams = .{ .rows = @intCast(matrix.rows), .splits = @intCast(splits) };
+                try self.dispatch(.reduce_splits, &.{ scratch, output }, rp, perElement(matrix.rows), 256, .{});
+                return;
+            }
             const p: MatvecBlockParams = .{ .columns = @intCast(matrix.columns), .stride = @intCast(stride), .rows = @intCast(matrix.rows), .blocks = @intCast(matrix.columns / 256) };
-            const rows_per_group = rows_per_simdgroup * simdgroups_per_matvec_group;
             try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast((matrix.rows + rows_per_group - 1) / rows_per_group), 32 * simdgroups_per_matvec_group, shape);
             return;
         };
+        if (splits > 1) return error.InvalidShape;
         const p: MatvecParams = .{ .columns = @intCast(matrix.columns), .encoding = matrix.encoding, .stride = @intCast(stride), .rows = @intCast(matrix.rows) };
         try self.dispatch(.matvec, &.{ weights, input, output }, p, @intCast(matrix.rows), 32, shape);
     }
+    pub const MatvecSplitParams = extern struct { columns: u32, stride: u32, rows: u32, blocks: u32, splits: u32, split_blocks: u32 };
+    pub const ReduceSplitsParams = extern struct { rows: u32, splits: u32 };
     pub const MatvecRowsParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32, tokens: u32, in_stride: u32, out_stride: u32 };
     /// Largest batch `matmul` routes to the multi-row matvec. The 2026-09-20
     /// sweep (metal-check `--matvec-rows-bench`) measured the scalar body at
@@ -674,7 +731,7 @@ pub const Backend = struct {
     pub const Segment = struct { weights: Buffer, matrix: cpu.Matrix, output: Buffer };
     pub const SegmentMode = enum(u32) { plain, silu_mul_pair, gelu_mul_pair };
     const SegmentParams = extern struct { rows: u32, weight_slot: u32, weight_offset: u32, encoding: u32, stride: u32, output_slot: u32, output_offset: u32 };
-    const MatvecSegments = extern struct { columns: u32, blocks: u32, count: u32, mode: u32, segments: [4]SegmentParams };
+    const MatvecSegments = extern struct { columns: u32, blocks: u32, count: u32, mode: u32, splits: u32, split_blocks: u32, total_rows: u32, partials_slot: u32, segments: [4]SegmentParams };
 
     fn overlaps(a: Buffer, a_len: usize, b: Buffer, b_len: usize) bool {
         if (a.id != b.id) return false;
@@ -695,6 +752,18 @@ pub const Backend = struct {
         return @intCast(index);
     }
     pub fn matvecSegments(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode) !void {
+        return self.matvecSegmentsImpl(segments, input, mode, null);
+    }
+    /// `matvecSegments` forcing the split count (the split sweep's knob; 1 is
+    /// the single-pass kernel). Only plain-mode merges whose every segment has
+    /// a specialized split body (Q4_K/Q5_K) are served. As with
+    /// `matvecSplits`, no production merge routes here (KERN-15 measured the
+    /// split behind); the segment split kernels stay as the measured fixture.
+    pub fn matvecSegmentsSplits(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode, splits: usize) !void {
+        if (splits == 0 or splits > split_k_max) return error.InvalidShape;
+        return self.matvecSegmentsImpl(segments, input, mode, splits);
+    }
+    fn matvecSegmentsImpl(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode, splits_override: ?usize) !void {
         // Shape first, then availability: with Metal compiled out the early
         // `MetalNotEnabled` return would otherwise make `InvalidShape`
         // unreachable, and the adapter's switch on it would not compile in
@@ -713,6 +782,10 @@ pub const Backend = struct {
         p.mode = @intFromEnum(mode);
         var total_rows: u32 = 0;
         var bytes: u64 = 0;
+        // The forced split path needs every segment specialized *with a split
+        // body* (neither the generic body nor the non-split encodings honour a
+        // K range) and a free binding slot for the row partials.
+        var all_split_capable = mode == .plain;
         for (segments, 0..) |s, i| {
             const m = s.matrix;
             if (m.rows == 0 or m.rows > std.math.maxInt(u32) / 4 or m.rows % 16 != 0 or m.columns != columns or m.bytes.len % m.rows != 0) return error.InvalidShape;
@@ -726,7 +799,9 @@ pub const Backend = struct {
             };
             total_rows = std.math.add(u32, total_rows, @intCast(m.rows)) catch return error.InvalidShape;
             bytes = std.math.add(u64, bytes, m.bytes.len) catch return error.InvalidShape;
-            const specialized = !self.generic_only and specializedMatvec(m.encoding, s.weights.offset, stride, input.offset) != null;
+            const kernel = if (self.generic_only) null else specializedMatvec(m.encoding, s.weights.offset, stride, input.offset);
+            const specialized = kernel != null;
+            all_split_capable = all_split_capable and (if (kernel) |k| matvecSplitKernel(k) != null else false);
             p.segments[i] = .{
                 .rows = @intCast(m.rows),
                 .weight_slot = try segmentSlot(&bindings, &used, s.weights),
@@ -739,6 +814,21 @@ pub const Backend = struct {
         }
         // Unused slots bind the valid input buffer, because the kernel signature
         // declares all seven. No dispatch is recorded before all validation passes.
+        const splits = splits_override orelse 1;
+        if (splits > 1) {
+            if (!all_split_capable or used >= bindings.len) return error.InvalidShape;
+            const scratch = try self.splitScratch();
+            if (total_rows * splits * 4 > scratch.len) return error.InvalidShape;
+            bindings[used] = scratch;
+            p.splits = @intCast(splits);
+            p.split_blocks = @intCast((p.blocks + splits - 1) / splits);
+            p.total_rows = total_rows;
+            p.partials_slot = @intCast(used);
+            const groups: u32 = @intCast((total_rows / 16) * splits);
+            try self.dispatch(.matvec_segments_split, &bindings, p, groups, 128, .{ .rows = total_rows, .columns = p.columns, .bytes = bytes * splits });
+            try self.dispatch(.segment_reduce_splits, &bindings, p, perElement(total_rows), 256, .{});
+            return;
+        }
         const groups = if (mode == .plain) total_rows / 16 else p.segments[0].rows / 8;
         try self.dispatch(.matvec_segments, &bindings, p, groups, 128, .{ .rows = total_rows, .columns = p.columns, .bytes = bytes });
     }

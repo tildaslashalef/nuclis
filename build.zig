@@ -71,6 +71,10 @@ pub fn build(b: *std.Build) void {
     matvec_bench.addArg("--matvec-bench");
     if (b.args) |args| matvec_bench.addArgs(args);
     b.step("bench-kernels", "Achieved weight bandwidth of the matvec kernels (-Dmetal=true)").dependOn(&matvec_bench.step);
+    const matvec_split_bench = b.addRunArtifact(inference.artifact("metal-check"));
+    matvec_split_bench.addArg("--matvec-split");
+    if (b.args) |args| matvec_split_bench.addArgs(args);
+    b.step("bench-matvec-split", "Split-K matvec bandwidth on the row-poor shapes at 1/2/4/8 splits (-Dmetal=true)").dependOn(&matvec_split_bench.step);
     const matmul_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matmul_bench.addArg("--matmul-bench");
     if (b.args) |args| matmul_bench.addArgs(args);

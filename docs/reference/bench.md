@@ -869,8 +869,10 @@ four families and is spread over the large Q4_K matvecs
 has the per-kernel profile); the 4K row's decode drifted from 9.14 tok/s
 on its warmup to 8.12 on its third sample within four minutes, which no
 other length showed and which was not investigated (thermal is the
-obvious suspect). Both are the performance theme's material
-(KERN-15 in [TODO.md](../../TODO.md)), not this unit's.
+obvious suspect). Both are the performance theme's material: KERN-15
+measured the matvec half of the gap and closed negative
+([§ Split-K matvec sweep](#split-k-matvec-sweep-kern-15-2026-09-21)),
+not this unit's.
 
 **Memory.** The session block is 1,744,830,464 bytes (1.63 GiB) at
 32,768 capacity: 52 layers × 2 × 256 halves per position, every sliding
@@ -1167,7 +1169,9 @@ Prefill in the same run: the 32-token matmul tile runs at 25–29 GB/s on a
 few threadgroups), not a Q4_0 property.
 
 Follow-ups from this profile are in the plan
-([TODO.md](../../TODO.md): KERN-15, ENGN-18); none was scheduled before TERM-01.
+([TODO.md](../../TODO.md): ENGN-18 for the norms and the launch count; the
+split-K candidate for the matvecs was KERN-15 and measured behind the
+single pass); none was scheduled before TERM-01.
 
 ## Kernel micro-benchmark
 
@@ -1331,6 +1335,51 @@ GB/s bar. The 16×8 tile stays the verify control; the full-model verify
 latency is unchanged (262–297 ms per batch, the ENGN-15 pass above), since
 production routing never selects the candidate. Verdict in
 [metal-backend.md § The wide 32×8 tile](metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative).
+
+## Split-K matvec sweep (KERN-15, 2026-09-21)
+
+The row-poor decode matvec experiment: split-K twins of the Q4_K/Q5_K
+specialized matvec (`nu_matvec_q4_k_split`, `nu_matvec_q5_k_split`) and of
+the plain segment merge (`nu_matvec_segments_split`), each writing a
+`[split][row]` partial buffer reduced by `nu_reduce_splits` /
+`nu_segment_reduce_splits`, measured by `make bench-matvec-split` against
+the single-pass kernel (splits 1 is the control). Nothing routes to the
+split path: only `Backend.matvecSplits` / `matvecSegmentsSplits` force it,
+and the `make test-metal` exactness fixture holds it against the F64 CPU
+reference at 6,656 rows and at the four-segment merge for every split.
+Apple M4 Pro (48 GiB), Zig 0.16.0, ReleaseSafe, `10cf6ba` plus the unit's
+change; five command buffers per case (two warm-ups) with 64 dispatches per
+buffer below 8,192 rows and 8 above (the clock policy of `--matvec-bench`),
+best of three measured rounds, synthetic quantization fixtures, no model
+loaded. Rates are logical weight bytes per GPU second; single pass →
+2 / 4 / 8 splits:
+
+| encoding | shape | 1 (control) | 2 | 4 | 8 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Q4_K | 6,656×19,968 (Muse ffn_down) | 151.0 | 145.9 | 148.1 | 138.8 |
+| Q4_K | 6,656×4,096 (Muse attention output) | 157.7 | 150.7 | 135.5 | 124.3 |
+| Q4_K | 5,120×17,408 (Qwen ffn_down) | 152.8 | 146.1 | 146.6 | 134.5 |
+| Q4_K | 8,704×6,656 (Muse q/k/v/gate merge, four segments) | 152.1 | 157.4 | 150.3 | 158.5 |
+| Q5_K | 6,656×19,968 | 193.0 | 193.4 | 198.4 | 193.3 |
+| Q5_K | 6,656×4,096 | 175.0 | 170.3 | 159.0 | 130.6 |
+| Q5_K | 5,120×17,408 | 191.2 | 190.9 | 184.8 | 172.6 |
+
+**Reading.** The unit's hypothesis — a 6,656–8,704-row matrix launches too
+few 16-row groups to keep the weight bus busy — is refuted. Splitting K
+multiplies the group count and the partial traffic is 0.2 % of the weight
+bytes, yet every Q4_K plain shape loses 2–10 % and the loss grows with the
+split count: the signature of a per-group cost (the `simd_sum`/store tail
+and the second launch), not of insufficient parallelism. Q5_K's single win
+is +2.8 % at 4 splits on a shape Muse uses as Q4_K, and its other cells are
+within noise. The merged projection's ~4 % at 2 and 8 splits is the only
+reproducible gain — the segment kernel's groups are three times shorter
+than the plain matvec's — but it is far below the unit's ≥ 190 GB/s bar,
+and that bucket is global: routing it would touch the other families'
+merges, which were not measured. No bucket routes. The Q4_K rate is the
+kernel's ~0.9 ns per 256-value block (144 bytes) against Q5_K's 176, not
+the row count; reaching the bar needs per-block arithmetic, not more K
+parallelism. Verdict in
+[metal-backend.md § Split-K](metal-backend.md#split-k-kern-15-2026-09-21-closed-negative).
 
 ## The ENGN-16 quick pass (2026-09-20)
 

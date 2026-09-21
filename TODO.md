@@ -37,8 +37,16 @@ wide 32×8 small-batch tile) closed negative, keeping the 16×8 control. The
 deferred CPU speculative check was run and passed (12 tokens identical to
 ordinary greedy).
 
-**Next: KERN-15** (split-K decode matvec for row-poor shapes), then KERN-16
-and ENGN-17's full record.
+KERN-15 (split-K decode matvec for the row-poor shapes) closed negative on
+2026-09-21: the split bodies measure behind the single pass on every row
+bucket (Q4_K 6,656×19,968 151.0 → 145.9 / 148.1 / 138.8 GB/s at 2/4/8
+splits; the four-segment merge 152.1 → 157.4 / 150.3 / 158.5, below the
+≥ 190 bar), so nothing routes to them and the Q4_K kernels' ~0.9 ns per
+256-value block stands as Muse's decode limiter
+([bench.md § Split-K matvec sweep](docs/reference/bench.md#split-k-matvec-sweep-kern-15-2026-09-21)).
+
+**Next: KERN-16** (long-context prefill attention), then ENGN-17's full
+record.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -78,33 +86,34 @@ draft 4; prose 512 greedy 0.76 / 0.96 / 1.06×, instruct 0.90 / 1.00 / 1.03×.
 Both sampled paths are free of host work and the proposal is trimmed;
 what remains is the batch's model time. At draft 4 the code prompt advances
 3.17 tokens for a 256 ms verify (81 ms/token against ~118), prose 2.49 for
-254 (102 against ~119). KERN-14 closed negative, so the 512-token verify
-stays where it is; KERN-16's long-context attention is the remaining kernel
-lever. Nothing here claims a final speedup before ENGN-17 measures it.
+254 (102 against ~119). KERN-14 and KERN-15 closed negative, so the
+512-token verify and the row-poor matvecs stay where they are; KERN-16's
+long-context attention is the remaining kernel lever. Nothing here claims a
+final speedup before ENGN-17 measures it.
 
-Order: KERN-15 → KERN-16 →
+Order: KERN-16 →
 ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 → MODL-19 → MODL-20 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
-KERN-14's small-batch tile closed negative, so verify stays on the 16×8
-tile at 512; KERN-15/KERN-16 are the remaining kernel levers. **KERN-15 and KERN-16 sit before ENGN-17
-because they change the Qwen path the verdict measures**: the split-K
-matvec touches Qwen's row-poor shapes, and the long-context attention is
+KERN-14's small-batch tile and KERN-15's split-K matvec closed negative, so
+verify stays on the 16×8 tile at 512 and the row-poor shapes on the
+single-pass kernel; KERN-16 is the remaining kernel lever. **KERN-16 sits
+before ENGN-17 because it changes the Qwen path the verdict measures**: the
+long-context attention is
 every verify batch at 16K–32K (and the 32K acceptance's largest deficit).
 ENGN-18 (Gemma's launch-bound decode), ENGN-19 (the ring layout: memory,
 not speed), and KERN-17 (the ternary experiment) are other-family or
 experimental and sit after the verdict, grouped so the performance theme
 finishes in one stretch; TERM-10 (chat polish) and the vision units follow.
 The performance group closes in the order of measured leverage: the
-row-poor matvecs (two thirds of Muse's gap, and every family's small
-projections), the long-context prefill attention, Gemma's decode, the ring
-layout, and last the ternary arithmetic, which is the least certain and may
-close negative; the small-batch tile led the order and closed negative. AGNT-12 (background commands) and
+long-context prefill attention, Gemma's decode, the ring layout, and last
+the ternary arithmetic, which is the least certain and may close negative;
+the small-batch tile and the split-K matvec led the order and closed
+negative. AGNT-12 (background commands) and
 APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-15 | Split-K decode matvec for row-poor shapes (Muse's gap, every family's small projections) | 1–2 |
 | KERN-16 | Long-context prefill attention, second attempt (register-level reuse) | 2 |
 | ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
 | ENGN-18 | Gemma 4 12B decode: fused norms and fewer launches | 1–2 |
@@ -787,43 +796,6 @@ next step boundary. The parts, all bounded by the agent rules:
 profile's tool fixtures (`scripts/profile-tools-fixtures.py`), transcript
 rows, and cancellation tests. The risk is an orphaned process; the
 mitigation is the workspace owning every pid. Decide after TERM-10.
-
-## KERN-15 — Split-K decode matvec for row-poor shapes
-
-**Facts (from the Muse Glimmer profile, MODL-12/13).** The decode matvecs'
-bandwidth tracks the matrix's row count, not its encoding: the 202,048-row
-head streams at 208 GB/s, the 39,936-row FFN pair at 175, and the two
-shapes with 6,656 to 8,704 rows (the FFN down projection over 19,968
-columns, the merged q/k/v/gate) at 145 to 147, because a matrix with few
-rows launches too few threadgroups to keep the bus busy; Muse's 6,656-wide
-residual puts more than a third of its bytes in those shapes, and at the
-head's rate its token would take 84 ms instead of 100 (two thirds of its
-66–71 % gap to the reference). Qwen's 5,120-row shapes (`ffn_down`,
-`attn_output`, the DeltaNet output) and Gemma's have the same profile at a
-smaller share. Launch count is the rest: 922 dispatches per Muse token
-with six RMS-norm launches per layer (≈ 9 ms).
-([muse-glimmer.md § Metal plan](docs/reference/muse-glimmer.md#metal-plan-modl-12-2026-09-19),
-[bench.md](docs/reference/bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19)).
-The 4K row's decode drift within one run (9.14 to 8.12 tok/s in four
-minutes) is reproduced first, with the GPU clock watched
-(`powermetrics --samplers gpu_power`), before anything is measured.
-
-**Design.** Split-K on the specialized matvecs for shapes below
-`split_k_rows = 16,384` rows: several threadgroups per row block, each
-summing a column range, reduced by a second tiny kernel or an atomic-free
-partial buffer (`[splits][rows]`, reduced in the consumer's next launch
-where one exists, else `nu_reduce_splits`); the split count from a
-`bench-kernels` sweep (2, 4, 8) per shape. Shares the per-lane decode
-loops with KERN-12's multi-row kernel (one template, `NU_ROWS` and
-`NU_SPLITS`). Files: `kernels.metal`, `backends/metal/root.zig`
-(`specializedMatvec` gains the split tier), `metal-check.zig` (exactness
-at every encoding for a 6,656-row shape; the sweep), the family plans
-unchanged.
-
-**Acceptance.** The two row-poor Muse shapes ≥ 190 GB/s on
-`bench-kernels`; Muse decode at 512 ≥ 10.5 tok/s (from 9.60; the
-reference 13.69); Qwen decode not slower; `make compare` and every family's
-compare target unchanged; the acceptance records re-run for Muse.
 
 ## KERN-16 — Long-context prefill attention, second attempt
 

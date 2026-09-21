@@ -33,7 +33,7 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([generation.md](generat
 | `backends/metal/bridge.m` | Device, queue, shader library, pipelines, buffers, one open command buffer. A generic recording API: `begin`, `dispatch(pipeline, bindings, constants, grid)`, `commit`. Opt-in profiling: timestamp counter sample buffers and one encoder per dispatch, resolved to seconds per dispatch at commit. Knows nothing about models, shapes, or encodings. |
 | `backends/metal/root.zig` | `Backend`: compiles the kernel set, hands out `Buffer` handles (`create`/`wrap`/`slice`), and exposes one typed encoder per kernel that validates shapes before recording. `Profile` accumulates timed dispatches by kernel, encoding, and shape. Knows kernel contracts, not layer schedules. |
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
-| `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair), embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
+| `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
 | `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule (MODL-06) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](gemma4.md#metal-plan-modl-06-2026-09-11)). |
 | `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule (MODL-12) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19)). |
@@ -310,7 +310,8 @@ memory, and leave the rest to the grid.
   hence the 32×32 set for short chunks; short prompts remain far from the
   weight-bandwidth floor (KERN-12's multi-row matvec closes below its target —
   see [§ Multi-row matvec](#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target)
-  — and KERN-15's split-K remains in [TODO.md](../../TODO.md)).
+  — and KERN-15's split-K measured behind the single pass; see
+  [§ Split-K](#split-k-kern-15-2026-09-21-closed-negative)).
 - Mixture of experts (KERN-09; see [§ Gathered expert kernels](#gathered-expert-kernels-kern-09)):
   `nu_route` (softmax and top-k with renormalized weights per logit row),
   `nu_matvec_experts` (a matvec over the selected experts' slices of a 3-D
@@ -463,6 +464,39 @@ values with one scale and no group coefficients to unpack: 0.9 ns per
 256-value stride is 144 bytes here against 176 for Q5_K), and the
 generic kernel on Q4_0 is also the fastest generic case for the same
 reason. In the QAT Gemma file every matrix takes this kernel.
+
+### Split-K (KERN-15, 2026-09-21; closed negative)
+
+The row-poor decode matvec experiment. `nu_matvec_q4_k_split` and
+`nu_matvec_q5_k_split` instantiate the shared Q4_K/Q5_K decode body with a
+`[first, last)` 256-value K bound (the standalone kernels pass the whole
+row, so their code is unchanged), `nu_matvec_segments_split` does the same
+for a plain segment merge, and each writes one `[split][row]` partial
+buffer that `nu_reduce_splits` / `nu_segment_reduce_splits` sum into the
+output. The unit's hypothesis was that a 6,656–8,704-row matrix launches
+too few 16-row threadgroups to keep the weight bus busy; splitting K
+multiplies the groups without re-reading a weight byte. Measured by
+`make bench-matvec-split` against the single-pass control, the hypothesis
+is refuted: every Q4_K plain shape loses at every split count (6,656×19,968
+151.0 → 145.9 / 148.1 / 138.8 GB/s at 2/4/8; 6,656×4,096 157.7 → 150.7 /
+135.5 / 124.3; 5,120×17,408 152.8 → 146.1 / 146.6 / 134.5), and the loss
+grows with the split count — the per-group reduction tail and the second
+launch, not a lack of parallelism. Q5_K's only wins are inside noise or on
+a shape the model uses as Q4_K (6,656×19,968: 193.0 → 193.4 / 198.4 /
+193.3). The one reproducible gain is the four-segment merge at 2 and 8
+splits (152.1 → 157.4 / 150.3 / 158.5), ~4 %, far below the unit's
+≥ 190 GB/s bar, and that bucket is global — it would route the other
+families' merges with it — so no row bucket routes. The Q4_K rate is the
+kernel's ~0.9 ns per 256-value block (144 bytes) against Q5_K's 176, not
+the row count: the remaining lever is per-block arithmetic, not more K
+parallelism. Production keeps the single-pass kernels; the split kernels,
+the scratch, and the forcing API (`Backend.matvecSplits` /
+`matvecSegmentsSplits`, strict about split-capable encodings) stay as the
+measured fixture, the exactness of which `make test-metal` holds at 2/4/8
+splits against the F64 CPU reference. The sweep and its reading are in
+[bench.md § Split-K matvec sweep](bench.md#split-k-matvec-sweep-kern-15-2026-09-21);
+the family-facing note in
+[muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19).
 
 ### Ternary matvecs and tiles (KERN-10, 2026-09-18)
 

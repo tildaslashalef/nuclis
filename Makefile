@@ -21,7 +21,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
         compare-draft compare-draft-metal compare-draft-cpu draft-stats \
         speculative-check speculative-check-metal speculative-record \
-        test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matmul bench-matvec-rows bench-hadamard bench-experts \
+        test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts \
         baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b agent model-ls trace compare compare-f32 compare-f16 \
         compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
         compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
@@ -150,6 +150,9 @@ baseline-muse-glimmer: metal ## The same workload on muse-glimmer-30b with its o
 
 bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, or one with ARGS=<ENCODING> (no model)
 	$(ZIG) build bench-kernels $(METAL) $(if $(ARGS),-- $(ARGS))
+
+bench-matvec-split: ## Split-K matvec GB/s on the row-poor shapes at 1/2/4/8 splits, or ARGS=<ENCODING> (no model)
+	$(ZIG) build bench-matvec-split $(METAL) $(if $(ARGS),-- $(ARGS))
 
 bench-matmul: ## Throughput of the batched prefill matmul on model shapes, 256 tokens or ARGS=<tokens> (no model)
 	$(ZIG) build bench-matmul $(METAL) $(if $(ARGS),-- $(ARGS))

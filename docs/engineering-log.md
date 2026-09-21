@@ -102,6 +102,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-15 | Sampled acceptance on the GPU top-k readback | 2026-09-20 |
 | KERN-14 | The wide 32×8 small-batch tile: measured, closed negative | 2026-09-20 |
 | ENGN-16 | Draft proposal policy: the `p_min` early stop shipped, the adaptive length dropped | 2026-09-20 |
+| KERN-15 | Split-K decode matvec for row-poor shapes: measured behind the single pass, closed negative | 2026-09-21 |
 
 ## Context
 
@@ -3575,3 +3576,70 @@ is the batch (234–260 ms). A better proposal policy than "stop at the first
 low-probability position" — one that keeps the chain's tail without paying
 its verify rows — is unmeasured; the adaptive length's negative result is
 the evidence against the obvious variant.
+
+### KERN-15 — Split-K decode matvec: measured behind the single pass, closed negative (2026-09-21)
+
+**Outcome.** The row-poor matvec experiment closed negative and nothing
+routes to the split path. The unit's premise — a 6,656–8,704-row matrix
+launches too few 16-row threadgroups to keep the weight bus busy, so
+splitting K should recover the head's rate — was refuted by measurement:
+the split bodies run behind the single-pass kernel on every Q4_K shape at
+2/4/8 splits, and the loss grows with the split count, the signature of the
+per-group reduction tail and the extra dispatch rather than of insufficient
+parallelism. Shipped as the measured fixture: `nu_matvec_q4_k_split`,
+`nu_matvec_q5_k_split`, `nu_matvec_segments_split`, `nu_reduce_splits`,
+`nu_segment_reduce_splits`, reachable only through `Backend.matvecSplits` /
+`matvecSegmentsSplits` (both refuse a split for an encoding without a split
+body), a lazily created 512 KB row-partial scratch, `make bench-matvec-split`
+(`metal-check --matvec-split [ENCODING]`), and the `make test-metal`
+exactness fixture at 2/4/8 splits. `MatvecBlockParams` keeps its four
+fields: the Q4_K/Q5_K decode body takes the `[first, last)` K bounds as
+arguments, so the standalone kernels pass compile-time constants and their
+code is unchanged; the three bodies without a split twin were left
+untouched. The auto-routing the WIP carried (Qwen's 5,120-row shapes and
+the merged projections) was removed with the negative verdict.
+
+**Evidence.** `make bench-matvec-split` (Apple M4 Pro 48 GiB, Zig 0.16.0,
+ReleaseSafe, `10cf6ba` plus the change; five command buffers, 64 dispatches
+per buffer below 8,192 rows and 8 above, best of three measured rounds;
+table and reading in
+[bench.md § Split-K matvec sweep](reference/bench.md#split-k-matvec-sweep-kern-15-2026-09-21)).
+Single pass → 2/4/8 splits, GB/s of weight bytes: Q4_K 6,656×19,968 151.0 →
+145.9/148.1/138.8; Q4_K 6,656×4,096 157.7 → 150.7/135.5/124.3; Q4_K
+5,120×17,408 152.8 → 146.1/146.6/134.5; the four-segment 8,704×6,656 merge
+152.1 → 157.4/150.3/158.5; Q5_K 6,656×19,968 193.0 → 193.4/198.4/193.3;
+Q5_K 6,656×4,096 175.0 → 170.3/159.0/130.6; Q5_K 5,120×17,408 191.2 →
+190.9/184.8/172.6. The acceptance bar (the two row-poor Muse shapes
+≥ 190 GB/s) is missed: Q4_K's 144 bytes per 256-value block cap the kernel
+at 150–175 where Q5_K's 176 reach 190–210 at the same geometry, so the
+lever is per-block arithmetic, not K parallelism. Muse decode at 512 is
+9.65 tok/s (prefill 93.14) against the MODL-13 record's 9.60/93.2 — the
+acceptance's ≥ 10.5 is not met, and the record stands; the full four-length
+acceptance record was not re-run because production is unchanged (the
+negative close keeps the KERN-14 precedent). Qwen decode is
+10.49 tok/s at 512 (prefill 88.19; the record is 10.62, the 2026-09-19
+same-day check 10.44), not slower. Gates: `make check`; `make test-metal`
+holds the split path at 6,656 rows for Q4_K/Q5_K at 2/4/8 splits and the
+four-segment merge at 2/4/8 against the F64 CPU reference within
+Σ|w·x|·4e-6; `make test-generation-metal` and
+`make test-generation-muse-glimmer-metal` pass; `make speculative-check-metal`
+passes (12 tokens identical, loop, budget, EOS, cancellation, context); all
+twelve family compares pass unchanged (Qwen f32 6.1e-5 / 7.7e-7, f16
+2.5e-2 / 1.9e-4; Muse f32 1.5e-4 / 8.0e-7, f16 7.3e-2 / 2.0e-4; Gemma 4
+QAT, Gemma 4, Gemma 4 26B-A4B, and Bonsai at their pinned bounds).
+
+**Files.** `inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
+`build.zig`, `Makefile`,
+`docs/reference/{bench,metal-backend,muse-glimmer}.md`, `docs/llm-guide.md`,
+`TODO.md`, and this log.
+
+**Remaining.** The Q4_K kernel's ~0.9 ns per 256-value block is Muse's
+decode limiter (159 GB/s effective against the reference's 223); the lever
+this unit leaves untested is per-block arithmetic, and the catalogue's Q4_K
+files are what it would pay for. The merged projection's ~4 % at 2 and 8
+splits is the one lead, unshipped because the bar was not met and the
+segment bucket is global (it would route the other families' merges
+unmeasured). The split machinery stays as the measured fixture, as the
+wide 32×8 tile does, in case an encoding or a fused-consumer reduction
+changes the balance.
