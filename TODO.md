@@ -177,10 +177,12 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: TERM-10 →
-AGNT-11 → MODL-21 → MODL-22 → MODL-23 (AGNT-11 moved ahead of the
-vision engine on 2026-09-21, the user's call: the chat side lands first,
-and its turn step waits for the projector). KERN-13, ENGN-15, and ENGN-16 landed
+Order: TERM-10 → AGNT-13 → AGNT-12 → AGNT-11 → MODL-21 → MODL-22 →
+MODL-23 (decided 2026-09-21, the user's call: every agent unit lands
+before the vision engine, because the goal is efficient agentic work on
+this engine and each agent unit has a measurable before and after on the
+playground task list; AGNT-11's chat side lands first and its turn step
+waits for the projector). APPS-14 stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
 register-reuse attention closed negative, so
@@ -220,12 +222,12 @@ manifest.
 | Unit | Title | Sessions |
 | --- | --- | --- |
 | TERM-10 | Chat polish: the tmux/Ghostty harness, the repaint tick and visible warm-up, header box, status bar, input box, operation dots, diff bands, markdown hardening | 2 |
+| AGNT-13 | The system prompt as sections (ordered 2026-09-21; see its section) | 1 |
+| AGNT-12 | Background commands (ordered 2026-09-21; see its section) | 1 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
-| AGNT-12 | Background commands (drafted for decision; see its section) | — |
-| AGNT-13 | The system prompt as sections (drafted for decision; see its section) | — |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
 
 ## Working a unit here
@@ -830,7 +832,7 @@ K-quant). Memory: the 896 × 896 grid is 4,096 patches before the shuffle.
 the Muse compare targets unchanged; the mask fixture; captions recorded;
 `make check`.
 
-## AGNT-12 — Background commands (drafted 2026-09-20 for decision)
+## AGNT-12 — Background commands (drafted 2026-09-20; ordered 2026-09-21)
 
 **What the screenshot shows.** A long-running command moves to the
 background; the transcript keeps its row with a pulsing dot, the model gets
@@ -869,9 +871,9 @@ next step boundary. The parts, all bounded by the agent rules:
 `src/agent/loop.zig` and `tools/bash.zig`, a new tool definition in every
 profile's tool fixtures (`scripts/profile-tools-fixtures.py`), transcript
 rows, and cancellation tests. The risk is an orphaned process; the
-mitigation is the workspace owning every pid. Decide after TERM-10.
+mitigation is the workspace owning every pid. Follows AGNT-13.
 
-## AGNT-13 — The system prompt as sections (drafted 2026-09-21 for decision)
+## AGNT-13 — The system prompt as sections (drafted and ordered 2026-09-21)
 
 **What pi does** (`packages/coding-agent/src/core/system-prompt.ts`, read
 2026-09-21): the system block is built from replaceable sections — a
@@ -902,7 +904,7 @@ this product.
 **Check.** The playground task list (the twelve tasks of the 2026-09-20
 screenshots) run through `nuclis agent --print` before and after, with the
 failed-edit count and the tokens per turn compared; `make check` for the
-section builder and the cap. One session; decide after TERM-10.
+section builder and the cap. One session; follows TERM-10.
 
 ## APPS-14 — Teacher-forced `eval` (drafted 2026-09-20 for decision)
 
