@@ -288,10 +288,10 @@ def main():
     if args.gate:
         selected = []
         for pattern in args.gate:
-            hits = [g for g in doc['gates'] if fnmatch.fnmatchcase(g['name'], pattern) and g not in selected]
+            hits = [g for g in doc['gates'] if fnmatch.fnmatchcase(g['name'], pattern)]
             if not hits:
                 sys.exit(f"no gate matches {pattern!r}; --list shows them")
-            selected.extend(hits)
+            selected.extend(g for g in hits if g not in selected)
     elif args.tier:
         selected = [g for g in doc['gates'] if g['tier'] == args.tier]
     elif args.changed is not None:

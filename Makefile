@@ -20,7 +20,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal test test-metal check verify verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
-        baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b baseline-muse-glimmer baseline-bonsai speculative-record \
+        workload workloads-list workloads-validate \
         agent model-ls trace clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
@@ -49,7 +49,7 @@ test: ## Default unit tests (no model, no GPU)
 test-metal: ## GPU kernel fixture/lifecycle checks (needs a Metal device, no model)
 	$(ZIG) build test-metal $(METAL)
 
-check: fmt-check test test-metal gates-validate ## Format check + unit tests + GPU fixtures + the gate manifest (seconds)
+check: fmt-check test test-metal gates-validate workloads-validate ## Format check + unit tests + GPU fixtures + the two manifests (seconds)
 
 # ---- gates (gates.json; docs/development.md § Gates) ----------------------
 # Every model-specific numerical check is a gate in the manifest: a tier
@@ -76,6 +76,21 @@ gates-list: ## Every gate with its tier, family, model, and evidence
 gates-validate: ## Validate gates.json and run the runner's self-test (no model)
 	python3 scripts/gates.py --validate
 
+# ---- workloads (workloads.json; docs/development.md § The record) ---------
+# Every benchmark workload is data: one `nuclis bench` invocation (or the
+# acceptance script) with its model from gates.json; reports are saved under
+# .zig-cache/bench/<workload>/ and scripts/bench-report.py makes the tables.
+
+workload: ## Run workloads by name or glob: make workload NAME=gemma4-qat/prose512-draft, NAME='qwen38/spec/*' (ARGS=--dry-run)
+	python3 scripts/workloads.py --run $(NAME) $(ARGS)
+
+workloads-list: ## Every workload with its model's status, shape, and evidence
+	python3 scripts/workloads.py --list
+
+workloads-validate: ## Validate workloads.json and run the driver's and the report script's self-tests (no model)
+	python3 scripts/workloads.py --validate
+	python3 scripts/bench-report.py --self-test
+
 # ---- formatting ------------------------------------------------------------
 
 fmt: ## Format Zig sources and build files in place
@@ -100,32 +115,6 @@ bench: metal ## Repeated prefill/decode measurement (see docs/reference/bench.md
 
 bench-profile: metal ## Per-kernel GPU time per token from GPU timestamps (diagnostic; see docs/reference/bench.md)
 	$(BIN) bench --backend metal --model "$(MODEL)" --prompt "$(PROMPT)" --max-tokens 64 --ctx-size 2048 --profile $(ARGS)
-
-# ---- model files for the record and workload recipes (the gates read gates.json) --
-BONSAI_MODEL ?= $(HOME)/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf
-GEMMA_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf
-GEMMA_QAT_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf
-GEMMA_26B_A4B_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
-MUSE_MODEL ?= $(HOME)/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf
-
-baseline: metal ## The reference workload (512/4K/16K/32,639 tokens, 128 out) on the committed token arrays; writes docs/benchmarks/nuclis-<date>.json (see docs/reference/bench.md § Acceptance runs)
-	python3 scripts/nuclis-baseline.py --model "$(MODEL)" --nuclis $(BIN) $(ARGS)
-
-baseline-gemma4-qat: metal ## The same workload on gemma-4-12b-qat (Q4_0) with its own reference arrays (tests/fixtures/run-2026-09-12-gemma4-qat); writes docs/benchmarks/nuclis-<date>-gemma4-qat.json
-	python3 scripts/nuclis-baseline.py --model "$(GEMMA_QAT_MODEL)" --nuclis $(BIN) --run run-2026-09-12-gemma4-qat \
-	  --reference-records reference-2026-09-12-gemma4-qat.json --output docs/benchmarks/nuclis-$$(date +%F)-gemma4-qat.json $(ARGS)
-
-baseline-gemma4: metal ## The same on gemma-4-12b (the K-quant entry) (tests/fixtures/run-2026-09-12-gemma4); writes docs/benchmarks/nuclis-<date>-gemma4.json
-	python3 scripts/nuclis-baseline.py --model "$(GEMMA_MODEL)" --nuclis $(BIN) --run run-2026-09-12-gemma4 \
-	  --reference-records reference-2026-09-12-gemma4.json --output docs/benchmarks/nuclis-$$(date +%F)-gemma4.json $(ARGS)
-
-baseline-gemma4-26b-a4b: metal ## The same on gemma-4-26b-a4b (the mixture of experts) with its own reference arrays (tests/fixtures/run-2026-09-18-gemma4-26b-a4b); writes docs/benchmarks/nuclis-<date>-gemma4-26b-a4b.json
-	python3 scripts/nuclis-baseline.py --model "$(GEMMA_26B_A4B_MODEL)" --nuclis $(BIN) --run run-2026-09-18-gemma4-26b-a4b \
-	  --reference-records reference-2026-09-18-gemma4-26b-a4b.json --output docs/benchmarks/nuclis-$$(date +%F)-gemma4-26b-a4b.json $(ARGS)
-
-baseline-muse-glimmer: metal ## The same workload on muse-glimmer-30b with its own reference arrays (tests/fixtures/run-2026-09-19-muse-glimmer); writes docs/benchmarks/nuclis-<date>-muse-glimmer.json
-	python3 scripts/nuclis-baseline.py --model "$(MUSE_MODEL)" --nuclis $(BIN) --run run-2026-09-19-muse-glimmer \
-	  --reference-records reference-2026-09-19-muse-glimmer.json --output docs/benchmarks/nuclis-$$(date +%F)-muse-glimmer.json $(ARGS)
 
 bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, or one with ARGS=<ENCODING> (no model)
 	$(ZIG) build bench-kernels $(METAL) $(if $(ARGS),-- $(ARGS))
@@ -164,13 +153,6 @@ trace: metal ## Metal System Trace of one `bench` run under xctrace (needs Xcode
 	  --output "$(TRACE_OUT)" --no-prompt --launch -- $(BIN) bench --backend metal --model "$(MODEL)" \
 	  --prompt "$(PROMPT)" --max-tokens 64 --ctx-size 2048 --repeat 1 --warmup 1 $(ARGS)
 	DEVELOPER_DIR=$(XCODE_DEV) xcrun xctrace export --input "$(TRACE_OUT)" --toc | grep -o '<table schema="metal-gpu[^"]*"' | sort -u
-
-speculative-record: metal ## The speculative-decoding record on Qwen3.8-27B: off/on pairs and the no-drafter baseline over the corpus arrays and the code prompt, greedy and instruct, draft 2/4/7; JSON under .zig-cache/bench/spec (docs/reference/bench.md § Speculative record)
-	python3 scripts/nuclis-speculative.py --model "$(MODEL)" --nuclis $(BIN) --baseline $(ARGS)
-
-baseline-bonsai: metal ## The reference workload on bonsai-2-27b against the PrismML fork's records (tests/fixtures/run-2026-09-18-bonsai, whose token arrays are the Qwen run's); writes docs/benchmarks/nuclis-<date>-bonsai.json
-	python3 scripts/nuclis-baseline.py --model "$(BONSAI_MODEL)" --nuclis $(BIN) --run run-2026-09-18-bonsai \
-	  --reference-records reference-2026-09-18-bonsai.json --output docs/benchmarks/nuclis-$$(date +%F)-bonsai.json $(ARGS)
 
 # ---- huggingface package (a path dependency of the root build since MODL-02) -----
 

@@ -69,15 +69,14 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   tests, `test-metal`, the gate manifest's validation; about 75 s). Per
   unit: `make verify`, the Metal tier of the gate registry
   ([§ Gates](#gates)), and `make verify-cpu` when `make verify-changed`
-  selects a CPU gate. `make bench` when performance is claimed. The record
-  and workload recipes (`baseline`, `baseline-gemma4*`,
-  `baseline-muse-glimmer`, `baseline-bonsai`, `speculative-record`) and the
-  kernel micro-benchmarks (`bench-kernels`, `bench-matmul` with
-  `ARGS=<tokens>`, `bench-matvec-split`, `bench-matvec-rows`,
-  `bench-hadamard`, `bench-experts`, `bench-attention`, `bench-profile`,
-  `trace`) measure and never gate; [bench.md](reference/bench.md) says what
-  each records. `generate --prompt-tokens <json>` feeds a token array
-  untokenized, as `bench` does.
+  selects a CPU gate. `make bench` when performance is claimed; a
+  workload of [§ The record](#the-record) (`make workload NAME=…`) when a
+  record is claimed. The kernel micro-benchmarks (`bench-kernels`,
+  `bench-matmul` with `ARGS=<tokens>`, `bench-matvec-split`,
+  `bench-matvec-rows`, `bench-hadamard`, `bench-experts`,
+  `bench-attention`, `bench-profile`, `trace`) measure and never gate;
+  [bench.md](reference/bench.md) says what each records. `generate
+  --prompt-tokens <json>` feeds a token array untokenized, as `bench` does.
 
 ## Gates
 
@@ -124,6 +123,49 @@ Gemma's in [gemma4.md](reference/gemma4.md), Muse's in
 [muse-glimmer.md](reference/muse-glimmer.md), Bonsai's in
 [bonsai.md](reference/bonsai.md)); the CPU rows and the F32 cache run at
 the bring-up thresholds (max abs 2e-3, relative RMS 1e-4).
+
+## The record
+
+Every benchmark workload is a named entry in [`workloads.json`](../workloads.json),
+run by `scripts/workloads.py` (`make workload NAME=<name or glob>`,
+`make workloads-list`, `make workloads-validate` inside `make check`), and
+its model path is one lookup into `gates.json`'s `models`. A `bench`
+workload is one `nuclis bench --json` invocation: the prompt array
+(`tests/fixtures/run-*/prompt-<n>.json`) or a raw text prompt, `max_tokens`,
+`ctx`, `kv`, `warmup`, `repeat`, an optional `sampling` map (the instruct
+profile's flags), `pair: true` with `draft_length` for the off/on pair on
+one loaded model (`--speculative on`, which is how `bench` already
+measures both ways; the pair names the catalogue entry so the `mtp`
+companion resolves), and `baseline: true` for a second run with the switch
+off, the no-drafter baseline. Reports are saved as
+`.zig-cache/bench/<workload>/<rev>-<n>[-baseline].json` (`<rev>` the short
+git revision, `<n>` a sequence per revision); nothing under `.zig-cache`
+is committed, so a record's JSON is copied to `docs/benchmarks/` when the
+document cites it. An `acceptance` workload delegates to
+`scripts/nuclis-baseline.py` (the four-length arrays, `/usr/bin/time`,
+hardware, the reference rows) and writes the dated record under
+`docs/benchmarks/` as before. The workloads: `qwen38/{prose512,
+prose4096, code}` and their `-draft` pairs, `qwen38/spec/*` (the twelve
+configurations of the speculative record, pair plus baseline each),
+`gemma4-12b/prose512`, `gemma4-qat/prose512{,-draft}`,
+`gemma4-26b-a4b/prose512`, `muse/prose512{,-draft}`, `bonsai/prose512`,
+and one `<entry>/acceptance` per pinned file.
+
+`scripts/bench-report.py` turns saved reports into the documents' tables:
+`--table FILE...` prints one row per report, the acceptance form (prefill
+and decode with sample standard deviation, first token, session, load) for
+plain runs and the record form (accepted and proposed per batch, the
+per-batch costs, prefill and decode off → on, the no-drafter baseline when
+a `-baseline` sibling exists, the speedup) for pairs; `--write-doc DOC
+--name NAME` replaces the region between `<!-- bench:NAME -->` and
+`<!-- /bench:NAME -->` in a document with that table and a provenance line,
+so a generated table is committed and never transcribed; `--compare PREV
+CUR` prints the deltas; `--check WORKLOAD FILE` tests a report against the
+workload's `bars` (`{metric: {min, max}}` on the decode rate, the prefill
+rate, or the speedup) and exits non-zero on a miss. Bars are sparse and
+mean a verdict's condition (`muse/prose512-draft` carries `decode_speedup
+≥ 1.0`, the reason its entry turns speculation on), not a regression
+threshold: run noise is stated by the record, not enforced by the driver.
 
 ## Toolchain
 
@@ -710,7 +752,8 @@ conditions. Separate nuclis load time, prompt processing, and generated-token
 latency. Preserve raw measurements outside the source tree unless deliberately
 publishing a small, reviewed benchmark report; recorded artifacts live under
 [benchmarks/](benchmarks/). Comparable runs against the reference use its
-exact token arrays (`bench --prompt-tokens`, `scripts/nuclis-baseline.py`),
+exact token arrays (`bench --prompt-tokens`; the `<entry>/acceptance`
+workloads run `scripts/nuclis-baseline.py` on them, [§ The record](#the-record)),
 never a re-tokenized rendering of them; `nuclis tokenize` shows what a text
 prompt becomes before a model runs.
 

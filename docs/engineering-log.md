@@ -109,6 +109,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-20 | Muse Glimmer DFlash drafter: the companion, the CPU reference and its trace, the Metal plan, a positive verdict at 1.16–1.23× | 2026-09-21 (two sessions) |
 | ENGN-17 | The speculative verdict: Qwen and Gemma off, Muse on; the full record and `bench`'s true baseline | 2026-09-21 |
 | REPO-09 | One gate registry: tiers, change triggers, and the model-specific checks as data | 2026-09-21 |
+| REPO-10 | Benchmark workloads as data and generated record tables | 2026-09-21 |
 
 ## Context
 
@@ -4077,3 +4078,66 @@ Metal one (its constants are fixed in `generation-check.zig`), so
 `gemma4-generation-cpu` and `qwen38-speculative-cpu` stay hours-class.
 `draft-stats` is an `exit` gate that prints a table for the eye, not a
 bound.
+
+## REPO-10 — Benchmark workloads as data and generated record tables (2026-09-21)
+
+**Outcome.** The benchmark workloads are data. `workloads.json` names 30
+of them: per family the acceptance run (`<entry>/acceptance`, delegating
+to `scripts/nuclis-baseline.py` with the run directory, the reference
+records, and the record suffix the deleted `baseline*` recipes carried),
+the 512-token prose run (`qwen38/prose4096` and `qwen38/code` too), a
+`-draft` pair where the family has a draft source, and the twelve
+`qwen38/spec/*` configurations of the speculative record (pair plus a
+no-drafter baseline run each). A `bench` workload resolves into one
+`nuclis bench --json` command (prompt array or raw text, budget, context,
+cache precision, sampling map, `--speculative on` with the draft length for
+a pair); `scripts/workloads.py` (`make workload NAME=…`, names or globs;
+`--list` with each model's status; `--validate` in `make check`) builds,
+runs, and saves the report as `.zig-cache/bench/<workload>/<rev>-<n>.json`.
+`scripts/bench-report.py` renders the tables from saved reports: the
+acceptance form for plain runs and the record form for pairs (per-batch
+costs, off → on, the baseline column when a `-baseline` sibling exists),
+`--write-doc DOC --name NAME` replaces the region between
+`<!-- bench:NAME -->` markers, `--compare PREV CUR` prints deltas, and
+`--check WORKLOAD FILE` tests a workload's `bars` (sparse: a verdict's
+condition, `muse/prose512-draft` at `decode_speedup ≥ 1.0`). The Makefile
+lost the five `baseline*` recipes, `speculative-record`, and the model
+variables (40 targets); `scripts/nuclis-speculative.py` is deleted, its
+table now `bench-report.py`'s record form, which regenerates the ENGN-17
+rows from the committed JSON with the same numbers.
+
+**Two design changes from the plan.** `nuclis bench` is unchanged: no
+`--workload`, `--list`, `--pair`, or `--save`. The pair already existed
+(`--speculative on` measures both ways on one loaded model), and the
+workload manifest is a repository convention like the gate registry, so
+its reader is the Python driver beside `gates.py` rather than the binary,
+which must not learn repo-relative paths. A pair names the catalogue
+entry (`--model gemma-4-12b-qat`) rather than the file, because the
+`mtp` companion resolves through the entry; `<KEY>_MODEL` still overrides
+with a path.
+
+**Evidence.** `make workload NAME=gemma4-qat/prose512-draft` on `7eeeac7`
+(70 s): 2.26 accepted / 3.38 proposed per batch, 3.26 tokens per batch,
+verify 133.9 ms, 25.74 → 23.17 tok/s, 0.90× — MODL-19's row read 2.256 /
+3.385 / 3.256, 135.9 ms, 25.40 → 22.83, 0.899×. The generated table is in
+[bench.md § The Gemma 4 draft pair](reference/bench.md#the-gemma-4-draft-pair-modl-19-2026-09-21)
+between markers, from
+[benchmarks/gemma4-qat-prose512-draft-2026-09-21.json](../benchmarks/gemma4-qat-prose512-draft-2026-09-21.json).
+`--check muse/prose512-draft` on that Gemma report misses its bar (0.900
+against 1.0) and exits 1; `--compare` prints deltas. `make check` green
+(the two manifests' validation and the scripts' self-tests: 6 workload
+tests, 4 report tests, 7 gate tests).
+
+**Files.** `workloads.json` (new), `scripts/workloads.py` (new),
+`scripts/bench-report.py` (new), `scripts/nuclis-speculative.py`
+(deleted), `Makefile`, `docs/development.md` (§ The record),
+`docs/reference/{bench,speculative-decoding}.md`,
+`tests/fixtures/provenance.md`,
+`docs/benchmarks/gemma4-qat-prose512-draft-2026-09-21.json` (new),
+`TODO.md`, and this log.
+
+**Remaining.** The bench.md split by family is REPO-11, drafted for
+decision. Only the Gemma QAT pair was re-run; the other workloads were
+dry-run and validated, not measured. `bars` exist on one workload; the
+acceptance workloads compare against the reference rows inside
+`nuclis-baseline.py` as before, not through `--check`.

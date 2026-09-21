@@ -627,7 +627,7 @@ acceptance*): the target-draw rule replaces `min(1, p/q)`, and the draft
 contract lost its logits rows. `Timing.accept` isolates the host decision.
 
 **The record** is in [bench.md § Speculative decoding record](bench.md#speculative-decoding-record-engn-12-2026-09-20)
-(`make speculative-record`): off by default for the Qwen entry; the
+(`make workload NAME='qwen38/spec/*'`): off by default for the Qwen entry; the
 per-batch costs — verify 225–250 ms at 512 and ≈ 342 ms at 4K, recovery
 99–272 ms on rejection, the sampled decision 46–78 ms, proposal 6.2 ms per
 draft, commit 6.2 ms per token, the prefill at 2.9–3.3× — are the cost
@@ -794,7 +794,7 @@ fallback skips the sampler's own penalties when the vector already carries
 them. The Qwen, Gemma 4, and Muse Glimmer plans all upload and apply the
 penalty (each on the final logits, after Gemma's and Muse's soft-cap).
 
-Measured 2026-09-20, `make speculative-record ARGS="--only prose512 code"`,
+Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 code"`,
 Qwen3.8-27B UD-Q4_K_M, Metal, F16 KV, ctx 32768, 128 output tokens, one
 warmup and three measured runs per configuration, off/on pairs on one
 loaded model (`d31c5cd`; the full table is in
@@ -846,7 +846,7 @@ decides from the readback as it already did on the step path. The greedy
 sampled path still uses `verifyGreedy`; only the temperature-0-with-penalty
 configuration falls back to full rows.
 
-Measured 2026-09-20, `make speculative-record ARGS="--only prose512 code"`,
+Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 code"`,
 same workload and methodology as the KERN-13 pass above
 ([bench.md § The ENGN-15 quick pass](bench.md#the-engn-15-quick-pass-2026-09-20)):
 

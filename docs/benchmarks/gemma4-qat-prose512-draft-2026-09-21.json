@@ -1,0 +1,607 @@
+{
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+  "config": "/Users/alef/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "ReleaseSafe",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 11274289152,
+  "max_tokens": 128,
+  "sampling": "greedy",
+  "sampling_options": {
+    "temperature": 0,
+    "top_k": 0,
+    "top_p": 1,
+    "min_p": 0,
+    "presence_penalty": 0,
+    "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 3759.814625,
+  "samples": [
+    {
+      "warmup": true,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2923.624416,
+      "first_token_milliseconds": 2923.63,
+      "decode_milliseconds": 4925.765416,
+      "prefill_tokens_per_second": 175.12509376991056,
+      "decode_tokens_per_second": 25.782795012420866,
+      "gpu_busy_milliseconds": 7436.13937497139,
+      "speculative": false
+    },
+    {
+      "warmup": true,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2538.501583,
+      "first_token_milliseconds": 2538.734875,
+      "decode_milliseconds": 5533.616791,
+      "prefill_tokens_per_second": 201.69378795301702,
+      "decode_tokens_per_second": 22.950631530277935,
+      "gpu_busy_milliseconds": 7921.286499593407,
+      "topk_fallbacks": 0,
+      "speculative": true,
+      "draft_length": 4,
+      "speculative_steps": 39,
+      "accepted_per_step": 2.2564102564102564,
+      "proposed_per_step": 3.3846153846153846,
+      "propose_milliseconds": 348.92608,
+      "verify_milliseconds": 5184.552209,
+      "accept_milliseconds": 0.005255,
+      "recover_milliseconds": 0.021499,
+      "checkpoint_milliseconds": 0.010131,
+      "recover_rewind_milliseconds": 0,
+      "recover_replay_milliseconds": 0,
+      "recover_by_length": [
+        {
+          "accepted": 0,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 1,
+          "calls": 6,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 2,
+          "calls": 11,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 3,
+          "calls": 4,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 4,
+          "calls": 3,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 5,
+          "calls": 15,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 6,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 7,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 8,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 9,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 10,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 11,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 12,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 13,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 14,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 15,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 16,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        }
+      ],
+      "commit_milliseconds": 0.052629
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2547.47625,
+      "first_token_milliseconds": 2547.476667,
+      "decode_milliseconds": 4935.574542,
+      "prefill_tokens_per_second": 200.9832280085045,
+      "decode_tokens_per_second": 25.731553422863893,
+      "gpu_busy_milliseconds": 7425.5529581569135,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2539.564667,
+      "first_token_milliseconds": 2539.797584,
+      "decode_milliseconds": 5443.723833,
+      "prefill_tokens_per_second": 201.6093571678283,
+      "decode_tokens_per_second": 23.329618455315934,
+      "gpu_busy_milliseconds": 7926.483209594153,
+      "topk_fallbacks": 0,
+      "speculative": true,
+      "draft_length": 4,
+      "speculative_steps": 39,
+      "accepted_per_step": 2.2564102564102564,
+      "proposed_per_step": 3.3846153846153846,
+      "propose_milliseconds": 258.697166,
+      "verify_milliseconds": 5184.883417,
+      "accept_milliseconds": 0.005372,
+      "recover_milliseconds": 0.022415,
+      "checkpoint_milliseconds": 0.009953,
+      "recover_rewind_milliseconds": 0,
+      "recover_replay_milliseconds": 0,
+      "recover_by_length": [
+        {
+          "accepted": 0,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 1,
+          "calls": 6,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 2,
+          "calls": 11,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 3,
+          "calls": 4,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 4,
+          "calls": 3,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 5,
+          "calls": 15,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 6,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 7,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 8,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 9,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 10,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 11,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 12,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 13,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 14,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 15,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 16,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        }
+      ],
+      "commit_milliseconds": 0.056543
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2547.010834,
+      "first_token_milliseconds": 2547.01125,
+      "decode_milliseconds": 4944.918917,
+      "prefill_tokens_per_second": 201.01995372980812,
+      "decode_tokens_per_second": 25.682928705542615,
+      "gpu_busy_milliseconds": 7433.087124954909,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2548.685292,
+      "first_token_milliseconds": 2548.939708,
+      "decode_milliseconds": 5439.704792,
+      "prefill_tokens_per_second": 200.88788584730452,
+      "decode_tokens_per_second": 23.346855179857343,
+      "gpu_busy_milliseconds": 7931.183457840234,
+      "topk_fallbacks": 0,
+      "speculative": true,
+      "draft_length": 4,
+      "speculative_steps": 39,
+      "accepted_per_step": 2.2564102564102564,
+      "proposed_per_step": 3.3846153846153846,
+      "propose_milliseconds": 256.892833,
+      "verify_milliseconds": 5182.686833,
+      "accept_milliseconds": 0.004002,
+      "recover_milliseconds": 0.017753,
+      "checkpoint_milliseconds": 0.009461,
+      "recover_rewind_milliseconds": 0,
+      "recover_replay_milliseconds": 0,
+      "recover_by_length": [
+        {
+          "accepted": 0,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 1,
+          "calls": 6,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 2,
+          "calls": 11,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 3,
+          "calls": 4,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 4,
+          "calls": 3,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 5,
+          "calls": 15,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 6,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 7,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 8,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 9,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 10,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 11,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 12,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 13,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 14,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 15,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 16,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        }
+      ],
+      "commit_milliseconds": 0.052833
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2541.259458,
+      "first_token_milliseconds": 2541.260166,
+      "decode_milliseconds": 4924.238709,
+      "prefill_tokens_per_second": 201.4749018988206,
+      "decode_tokens_per_second": 25.79078868940348,
+      "gpu_busy_milliseconds": 7405.447791912593,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 2537.901875,
+      "first_token_milliseconds": 2538.164916,
+      "decode_milliseconds": 5564.935417,
+      "prefill_tokens_per_second": 201.74144833712296,
+      "decode_tokens_per_second": 22.821468801243412,
+      "gpu_busy_milliseconds": 8009.406000026502,
+      "topk_fallbacks": 0,
+      "speculative": true,
+      "draft_length": 4,
+      "speculative_steps": 39,
+      "accepted_per_step": 2.2564102564102564,
+      "proposed_per_step": 3.3846153846153846,
+      "propose_milliseconds": 264.903041,
+      "verify_milliseconds": 5299.815708,
+      "accept_milliseconds": 0.00879,
+      "recover_milliseconds": 0.03421,
+      "checkpoint_milliseconds": 0.019251,
+      "recover_rewind_milliseconds": 0,
+      "recover_replay_milliseconds": 0,
+      "recover_by_length": [
+        {
+          "accepted": 0,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 1,
+          "calls": 6,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 2,
+          "calls": 11,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 3,
+          "calls": 4,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 4,
+          "calls": 3,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 5,
+          "calls": 15,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 6,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 7,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 8,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 9,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 10,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 11,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 12,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 13,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 14,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 15,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        },
+        {
+          "accepted": 16,
+          "calls": 0,
+          "rewind_milliseconds": 0,
+          "replay_milliseconds": 0
+        }
+      ],
+      "commit_milliseconds": 0.077587
+    }
+  ],
+  "mean_prefill_tokens_per_second": 201.15936121237772,
+  "mean_decode_tokens_per_second": 25.73509027260333,
+  "mean_first_token_milliseconds": 2545.249361,
+  "speculative_draft_length": 4,
+  "mean_speculative_decode_tokens_per_second": 23.165980812138898,
+  "mean_accepted_per_step": 2.2564102564102564,
+  "mean_proposed_per_step": 3.3846153846153846,
+  "decode_speedup": 0.9001709559496119
+}

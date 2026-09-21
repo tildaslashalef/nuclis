@@ -89,15 +89,25 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
-**Next: REPO-10** (benchmark workloads and generated records; the bench.md
-split optional). REPO-09 closed on 2026-09-21: the 37 model-specific checks
-are gates in `gates.json` with a tier (`verify` 26 on Metal, `verify-cpu`
-11 on the CPU reference at ReleaseFast) and source globs, run by
+**Next: TERM-10** (chat polish). REPO-10 closed on 2026-09-21: the 30
+benchmark workloads are data in `workloads.json` (the acceptance runs per
+pinned file, the prose/code runs and their draft pairs per family, the
+twelve `qwen38/spec/*` configurations of the speculative record), run by
+`scripts/workloads.py` through `make workload NAME=…` with reports saved
+under `.zig-cache/bench/<workload>/<rev>-<n>.json`, and
+`scripts/bench-report.py` renders the record tables from saved JSON and
+writes them between `<!-- bench:NAME -->` markers; the Gemma QAT draft pair
+reproduced MODL-19's row (0.90× against 0.899×) and its table in bench.md
+is the first generated one. The bench.md split is REPO-11, drafted for
+decision. REPO-09 closed the same day: the 37 model-specific checks are
+gates in `gates.json` with a tier and source globs, run by
 `scripts/gates.py` through `make verify`, `verify-cpu`, `verify-changed`,
-and `gate NAME=`; the Makefile went from 82 targets to 44 and
-`make check` gained the manifest's validation
-([development.md § Gates](docs/development.md#gates), the
-[log](docs/engineering-log.md#repo-09--one-gate-registry-tiers-change-triggers-and-the-model-specific-checks-as-data-2026-09-21)).
+and `gate NAME=`; the Makefile is down to 40 targets
+([development.md § Gates](docs/development.md#gates) and
+[§ The record](docs/development.md#the-record); the log entries
+[REPO-09](docs/engineering-log.md#repo-09--one-gate-registry-tiers-change-triggers-and-the-model-specific-checks-as-data-2026-09-21)
+and
+[REPO-10](docs/engineering-log.md#repo-10--benchmark-workloads-as-data-and-generated-record-tables-2026-09-21)).
 ENGN-17 closed on 2026-09-21 with the speculative plan's
 verdict and the full record: Qwen **off** (code greedy 1.20–1.30×, prose
 512 0.81–0.97×, 4K 0.73×), Gemma **off** (0.899× at draft 4, 1.017× at 7),
@@ -152,7 +162,7 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: REPO-10 → TERM-10 →
+Order: TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -179,8 +189,7 @@ the full capacity
 ([gemma4.md § Metal plan](docs/reference/gemma4.md#metal-plan-modl-06-2026-09-11)),
 and the ternary matvec keeps its current arithmetic
 ([bench.md § Bonsai 2](docs/reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18))
-— but no unit carries them. The performance group's remaining unit is
-REPO-10; the small-batch tile, the split-K matvec, the
+— but no unit carries them. The performance group has no unit left; the small-batch tile, the split-K matvec, the
 long-context attention, and the fused norms led the order and closed below
 their targets. AGNT-12
 (background commands) and
@@ -193,7 +202,6 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| REPO-10 | Benchmark workloads and generated records; bench.md split by family | 1 (+1 optional) |
 | TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
@@ -201,6 +209,7 @@ manifest.
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
 | AGNT-12 | Background commands (drafted for decision; see its section) | — |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
+| REPO-11 | The bench.md split by family (drafted for decision; see its section) | — |
 
 ## Working a unit here
 
@@ -214,35 +223,20 @@ the block's forward or its commit reproduces `make gate
 NAME=qwen38-draft-stats` within one draft per cell (MODL-18's 90/80/69/64 %
 and 94/83/83/86 % at depths 0–3). The log entry names the tiers run.
 
-**The record.** `make speculative-record` runs
-`scripts/nuclis-speculative.py`: the reference corpus arrays at 512 and 4,096
-tokens and the fixed code prompt, greedy and with the instruct profile's
-sampling (`--temperature 0.7 --top-p 0.8 --top-k 20 --presence-penalty
-1.5`), draft lengths 2, 4, 7, 128 output tokens, context 32,768, F16 KV,
-one warmup, three measured repetitions (two at 4K), each run as an off/on
-pair on one loaded model; JSON per configuration under
-`.zig-cache/bench/spec/`. Per-batch costs are the sample's
-`verify_milliseconds`, `accept_milliseconds`, `recover_milliseconds` divided
-by `speculative_steps`; tokens per batch is `(generated_tokens − 1) /
-speculative_steps`; the speedup is `decode_tokens_per_second` on vs off in
-the same pair. **The full 12-configuration record runs once per path, at
-ENGN-17.** Units before it gate on a quick pass —
-`make speculative-record ARGS="--only prose512 code"` — and their measured
-numbers go into the reference docs as they are taken. A single
-configuration by hand:
-
-```sh
-M=$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
-./zig-out/bin/nuclis bench --backend metal --model "$M" \
-  --prompt-tokens tests/fixtures/run-2026-09-06/prompt-512.json \
-  --max-tokens 128 --ctx-size 32768 --kv f16 --warmup 1 --repeat 3 \
-  --speculative on --draft-length 4 --json
-```
-
-Ordinary decode on this workload is 10.62 tok/s at 512 (94.2 ms/step) and
-10.20 at 4K, prefill 90.45 and 83.70 tok/s (the 2026-09-10 record). Nothing
-else may use the GPU during a record; state the git revision, and never
-present an estimate as a measurement.
+**The record.** Every benchmark is a workload in [workloads.json](workloads.json):
+`make workload NAME=…` runs it (a name or a glob: `qwen38/prose512`,
+`gemma4-qat/prose512-draft`, `'qwen38/spec/*'` for the twelve
+configurations of the speculative record, `muse/acceptance` for the
+four-length acceptance run) and saves the report under
+`.zig-cache/bench/<workload>/<rev>-<n>.json`; `scripts/bench-report.py
+--table` renders the table and `--write-doc DOC --name NAME` writes it
+between the document's `<!-- bench:NAME -->` markers, with the JSON copied
+to `docs/benchmarks/` when the document cites it
+([development.md § The record](docs/development.md#the-record)). Ordinary
+decode on the Qwen 512 workload is 10.62 tok/s (94.2 ms/step) and 10.20 at
+4K, prefill 90.45 and 83.70 tok/s (the 2026-09-10 record). Nothing else may
+use the GPU during a record; state the git revision, and never present an
+estimate as a measurement.
 
 **Where the facts go.** Each unit's measured numbers go into
 [speculative-decoding.md](docs/reference/speculative-decoding.md) (a section
@@ -327,82 +321,6 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
-
-## REPO-10 — Benchmark workloads and generated records; bench.md split by family (optional second session)
-
-**Order.** After REPO-09: the gate runner owns execution, this unit owns the
-workload data and the documents the records land in; a gate may then name a
-workload instead of a hand-written command.
-
-**Facts (session 1 reads, then rewrites this section).** `src/bench.zig`'s
-`Sample` and report fields (the ones ENGN-17's record reads;
-`schema_version` stays 1); `scripts/nuclis-speculative.py` (the 12
-configurations and the off/on pair) and `scripts/nuclis-baseline.py` (the
-reference comparisons); `docs/reference/bench.md`'s 1,567 lines —
-definitions (35), Qwen acceptance records (91–488), Gemma 4 (489–711),
-Bonsai 2 (712–800), Muse Glimmer (801–886), the speculative record
-(887–1025), the per-kernel profile (1026–1176), kernel micro-benchmarks
-(1177–1237), and the unit sweeps (1238–1567); the prompt arrays under
-`tests/fixtures/run-*`.
-
-**Session 1 — workloads and generated records (the unit's deliverable).**
-1. `benchmarks/workloads.json`: `{name, family, model, prompt, max_tokens,
-   ctx, kv, sampling, pair, draft_length, warmup, repeat, bars, evidence}`,
-   with names `qwen38/prose512`, `qwen38/prose4096`, `qwen38/code`,
-   `gemma4-12b/prose512`, `gemma4-qat/prose512`, `gemma4-26b-a4b/prose512`,
-   `muse/prose512`, and a `-draft` variant per family that turns the pair
-   on. `models` comes from REPO-09's manifest (one lookup, no duplicated
-   paths).
-2. `nuclis bench` gains `--workload NAME`, `--list`, and `--pair` (the
-   existing off/on pair in one invocation); a workload resolves into the
-   options the command already takes, so no measurement code is added, and
-   `--save DIR` writes `.zig-cache/bench/<workload>/<rev>-<n>.json`.
-   `scripts/nuclis-baseline.py` becomes the `*/acceptance` workloads (the
-   four-length arrays per family, reference comparison kept as its input);
-   the `baseline` / `baseline-gemma4*` / `baseline-muse-glimmer` /
-   `baseline-bonsai` recipes are deleted in the same edit.
-3. `scripts/bench-report.py`: `--table` renders the per-batch markdown table
-   from saved JSON, `--compare PREV` prints the delta against the workload's
-   `bars` and exits non-zero on a missed bar, `--write-doc` replaces the
-   region between `<!-- bench:NAME -->` markers in the target document.
-   Record tables stop being transcribed by hand.
-4. `scripts/nuclis-speculative.py` becomes the `speculative-record` workload
-   set (12 configurations) driven by `bench --workload … --pair --json`. It
-   is a record, not a gate: it stays a make target outside the tiers.
-
-**Session 2 — the bench.md split (optional; decided at the end of session
-1).** Worth doing only if session 1's generated sections make the
-1,567-line file harder to work in, since most of its cost is the anchor
-stubs. `docs/reference/bench.md` keeps the introduction, `Definitions`,
-`What to record with results`, and a record index; every other section
-moves, with its heading text intact so its slug survives:
-   - `bench-qwen38.md`: `Acceptance runs` (the warm record and the
-     cold-start row), `Speculative decoding record` (ENGN-12), `Recovery by
-     row checkpoints` (ENGN-14), and the KERN-13 / ENGN-15 / ENGN-16 quick
-     passes.
-   - `bench-gemma4.md`: the 12B first look (MODL-06), the 12B, QAT, and
-     26B-A4B acceptance records (MODL-07/08/10), the 12B QAT per-kernel
-     profile, and the draft pair (MODL-19).
-   - `bench-muse.md`: the Muse first look and acceptance record
-     (MODL-12/13); `bench-bonsai.md`: the Bonsai 2 record (MODL-17).
-   - `bench-kernels.md`: `Observations so far` (the 2026-09-07 bring-up
-     records plus KERN-03…KERN-12, MODL-01, ENGN-02…05, KERN-07/08/11),
-     `Per-kernel profile`, `Kernel micro-benchmark`, and the KERN-14/15/16/18
-     sweeps.
-   The log cites specific `bench.md#anchor` paths and is append-only, so
-   every anchor it names keeps a one-line stub in `bench.md` under the same
-   heading, pointing at its new home (the list comes from
-   `rg -o 'bench\.md#[a-z0-9-]+' docs/engineering-log.md | sort -u`);
-   `docs/architecture.md` links the five files.
-
-**Acceptance (session 1).** `nuclis bench --workload gemma4-qat/prose512
---pair --json` reproduces MODL-19's numbers within run noise and
-`bench-report.py --table --write-doc` generates that section from the saved
-JSON (the generated table is what is committed); `--list` shows every
-workload and its model's status; `make check` still green;
-`docs/development.md § The record` and the `bench.md` introduction point at
-the manifest and the report script. **Session 2**, if taken: the split
-leaves no dead anchor (`rg` over the old paths).
 
 ## TERM-10 — Chat polish: operation dots, the running pulse, write summaries with a file view
 
@@ -749,6 +667,36 @@ K-quant). Memory: the 896 × 896 grid is 4,096 patches before the shuffle.
 **Acceptance.** Trace within tolerance on both executors; greedy tokens;
 the Muse compare targets unchanged; the mask fixture; captions recorded;
 `make check`.
+
+## REPO-11 — The bench.md split by family (drafted 2026-09-21 for decision)
+
+**What it is.** The 1,700-line `docs/reference/bench.md` split by family,
+headings intact so every slug survives. REPO-10 left it optional: the
+generated sections now land between markers, and most of the split's cost
+is the anchor stubs the append-only log needs. `docs/reference/bench.md` keeps the introduction, `Definitions`,
+`What to record with results`, and a record index; every other section
+moves, with its heading text intact so its slug survives:
+   - `bench-qwen38.md`: `Acceptance runs` (the warm record and the
+     cold-start row), `Speculative decoding record` (ENGN-12), `Recovery by
+     row checkpoints` (ENGN-14), and the KERN-13 / ENGN-15 / ENGN-16 quick
+     passes.
+   - `bench-gemma4.md`: the 12B first look (MODL-06), the 12B, QAT, and
+     26B-A4B acceptance records (MODL-07/08/10), the 12B QAT per-kernel
+     profile, and the draft pair (MODL-19).
+   - `bench-muse.md`: the Muse first look and acceptance record
+     (MODL-12/13); `bench-bonsai.md`: the Bonsai 2 record (MODL-17).
+   - `bench-kernels.md`: `Observations so far` (the 2026-09-07 bring-up
+     records plus KERN-03…KERN-12, MODL-01, ENGN-02…05, KERN-07/08/11),
+     `Per-kernel profile`, `Kernel micro-benchmark`, and the KERN-14/15/16/18
+     sweeps.
+   The log cites specific `bench.md#anchor` paths and is append-only, so
+   every anchor it names keeps a one-line stub in `bench.md` under the same
+   heading, pointing at its new home (the list comes from
+   `rg -o 'bench\.md#[a-z0-9-]+' docs/engineering-log.md | sort -u`);
+   `docs/architecture.md` links the five files.
+
+**Acceptance.** The split leaves no dead anchor (`rg` over the old paths);
+`docs/architecture.md` links the five files; `make check`. One session.
 
 ## AGNT-12 — Background commands (drafted 2026-09-20 for decision)
 
