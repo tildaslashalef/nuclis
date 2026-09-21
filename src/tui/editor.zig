@@ -68,6 +68,63 @@ pub const Options = struct {
     theme: theme.Theme,
 };
 
+/// How the box is framed. `width` is the frame's outer width; the text area
+/// inside is `width - frame_cells`, which is what `layout` must have been
+/// given.
+pub const Frame = struct {
+    width: usize,
+    theme: theme.Theme,
+    /// The frame's colour: the effort ramp, chosen by the caller.
+    style: theme.Style = .frame_off,
+    /// Drawn in the top edge after the corner while a turn runs; empty when
+    /// idle.
+    spinner: []const u8 = "",
+};
+
+/// Cells the frame and the prompt take from a row: the two edges, a space
+/// inside each, and the two-cell prompt.
+pub const frame_cells: usize = 6;
+/// Cells before the first text cell of a framed row: edge, space, prompt.
+pub const frame_lead: usize = 4;
+
+/// The framed box: the top edge, every layout row between two edges, and the
+/// bottom edge. Rows are raw and carry the editor background inside the
+/// frame; the caller places the cursor `frame_lead` cells in on row
+/// `1 + cursor_row`.
+pub fn frame(a: Allocator, layout: Layout, options: Frame) ![]const screen.Row {
+    const th = options.theme;
+    const gl = th.glyphs();
+    var rows: std.ArrayList(screen.Row) = .empty;
+    const inner = options.width -| 2;
+    var top: std.Io.Writer.Allocating = .init(a);
+    try top.writer.print("{s}{s}", .{ th.paint(options.style), gl.box_tl });
+    var drawn: usize = 0;
+    if (options.spinner.len > 0 and inner >= 3) {
+        try top.writer.print("{s}{s}{s}", .{ gl.box_h, options.spinner, gl.box_h });
+        drawn = 3;
+    }
+    for (drawn..inner) |_| try top.writer.writeAll(gl.box_h);
+    try top.writer.print("{s}{s}", .{ gl.box_tr, theme.reset });
+    try rows.append(a, .{ .text = top.written(), .raw = true });
+    for (layout.rows) |row| {
+        var w: std.Io.Writer.Allocating = .init(a);
+        try w.writer.print("{s}{s}{s}{s} {s}{s}{s}{s} {s}{s}{s}", .{
+            th.paint(options.style), gl.box_v,             theme.reset,
+            th.paint(.editor_bg),    row.prefix,           row.text,
+            theme.reset,             th.paint(.editor_bg), theme.reset,
+            th.paint(options.style), gl.box_v,
+        });
+        try w.writer.writeAll(theme.reset);
+        try rows.append(a, .{ .text = w.written(), .raw = true });
+    }
+    var bottom: std.Io.Writer.Allocating = .init(a);
+    try bottom.writer.print("{s}{s}", .{ th.paint(options.style), gl.box_bl });
+    for (0..inner) |_| try bottom.writer.writeAll(gl.box_h);
+    try bottom.writer.print("{s}{s}", .{ gl.box_br, theme.reset });
+    try rows.append(a, .{ .text = bottom.written(), .raw = true });
+    return rows.items;
+}
+
 /// A row of the wrapped buffer, as byte offsets. `end` excludes the newline
 /// or the space a wrap broke on, so rendering a span never shows it.
 const Span = struct { start: usize, end: usize };
@@ -1005,4 +1062,73 @@ test "a 5 KB bracketed paste arrives in read-sized chunks and lays out as one ch
     // The whole paste is one token, so the cursor sits just past the chip.
     try testing.expectEqual(@as(usize, 0), l.cursor_row);
     try testing.expectEqual(@as(usize, 24), l.cursor_col);
+}
+
+/// A row's text without its escapes: these goldens pin the cells, the
+/// styles are pinned in theme.zig.
+fn stripped(a: Allocator, text: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (text[i] == 0x1b) {
+            i += 1;
+            while (i < text.len and text[i] != 'm') i += 1;
+            continue;
+        }
+        try out.append(a, text[i]);
+    }
+    return out.items;
+}
+
+test "the frame wraps the box: edges around every row, the spinner in the top edge while busy" {
+    var e = editor();
+    defer e.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try typeText(&e, "hello\nworld");
+    const plain: theme.Theme = .{ .kind = .plain };
+    const l = try e.layout(a, .{ .width = 30 - frame_cells, .min_rows = 3, .max_rows = 6, .theme = plain });
+    const idle = try frame(a, l, .{ .width = 30, .theme = plain });
+    try testing.expectEqual(@as(usize, 5), idle.len);
+    for (idle) |row| {
+        try testing.expect(row.raw);
+        try testing.expectEqual(@as(usize, 30), view.styledWidth(row.text));
+    }
+    try testing.expectEqualStrings("╭" ++ ("─" ** 28) ++ "╮", try stripped(a, idle[0].text));
+    try testing.expectEqualStrings("│ > hello" ++ (" " ** 19) ++ " │", try stripped(a, idle[1].text));
+    try testing.expectEqualStrings("│   world" ++ (" " ** 19) ++ " │", try stripped(a, idle[2].text));
+    try testing.expectEqualStrings("│  " ++ (" " ** 25) ++ " │", try stripped(a, idle[3].text));
+    try testing.expectEqualStrings("╰" ++ ("─" ** 28) ++ "╯", try stripped(a, idle[4].text));
+    // The cursor sits after "world": row 1 of the layout, column 5.
+    try testing.expectEqual(@as(usize, 1), l.cursor_row);
+    try testing.expectEqual(@as(usize, 5), l.cursor_col);
+
+    const busy = try frame(a, l, .{ .width = 30, .theme = plain, .spinner = "⠋", .style = .frame_high });
+    try testing.expectEqualStrings("╭─⠋" ++ ("─" ** 26) ++ "╮", try stripped(a, busy[0].text));
+    try testing.expectEqual(@as(usize, 30), view.styledWidth(busy[0].text));
+
+    const ascii = try frame(a, l, .{ .width = 30, .theme = .{ .kind = .plain, .glyph_set = .ascii }, .spinner = "|" });
+    try testing.expectEqualStrings("+-|" ++ ("-" ** 26) ++ "+", try stripped(a, ascii[0].text));
+    try testing.expectEqualStrings("| > hello" ++ (" " ** 19) ++ " |", try stripped(a, ascii[1].text));
+
+    // A coloured theme paints the frame and the box background; the width holds.
+    const styled = try frame(a, l, .{ .width = 30, .theme = .{ .kind = .truecolor }, .style = .frame_low });
+    try testing.expect(std.mem.indexOf(u8, styled[1].text, "\x1b[") != null);
+    try testing.expectEqual(@as(usize, 30), view.styledWidth(styled[1].text));
+}
+
+test "a scrolled box keeps its indicator row inside the frame" {
+    var e = editor();
+    defer e.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try typeText(&e, "1\n2\n3\n4\n5\n6");
+    const plain: theme.Theme = .{ .kind = .plain };
+    const l = try e.layout(a, .{ .width = 24, .min_rows = 3, .max_rows = 3, .theme = plain });
+    const boxed = try frame(a, l, .{ .width = 30, .theme = plain });
+    try testing.expectEqual(@as(usize, 5), boxed.len);
+    try testing.expect(std.mem.startsWith(u8, try stripped(a, boxed[1].text), "│   … 4 lines above"));
+    try testing.expectEqualStrings("│   6" ++ (" " ** 23) ++ " │", try stripped(a, boxed[3].text));
 }

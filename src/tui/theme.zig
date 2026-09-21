@@ -73,6 +73,19 @@ pub const Style = enum {
     progress,
     /// The selected row of an inline choice list (picker, completion).
     choice_selected,
+    /// The dot before an operation in the transcript: settled well, failed,
+    /// still running, and a write to the workspace.
+    op_ok,
+    op_error,
+    op_running,
+    op_write,
+    /// The editor's frame, by reasoning effort: a ramp from quiet to loud, so
+    /// the box says what the next turn will think with.
+    frame_off,
+    frame_low,
+    frame_medium,
+    frame_high,
+    frame_xhigh,
 };
 
 pub const reset = "\x1b[0m";
@@ -372,6 +385,15 @@ fn role(style: Style) Role {
         .chip => .{ .fg = .fg1, .bg = .bg2, .plain = .{ .reverse = true } },
         .progress => .{ .fg = .yellow },
         .choice_selected => .{ .fg = .orange, .bg = .bg2, .attrs = .{ .bold = true }, .plain = .{ .reverse = true } },
+        .op_ok => .{ .fg = .green },
+        .op_error => .{ .fg = .red, .attrs = .{ .bold = true } },
+        .op_running => .{ .fg = .yellow },
+        .op_write => .{ .fg = .blue },
+        .frame_off => .{ .fg = .gray, .plain = .{ .dim = true } },
+        .frame_low => .{ .fg = .green },
+        .frame_medium => .{ .fg = .aqua },
+        .frame_high => .{ .fg = .yellow },
+        .frame_xhigh => .{ .fg = .orange, .attrs = .{ .bold = true } },
     };
 }
 

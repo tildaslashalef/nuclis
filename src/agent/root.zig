@@ -51,10 +51,10 @@ const Profile = inference.profiles;
 
 /// Idle height of the highlighted input box, in rows.
 const min_editor_rows = 3;
-/// Rows of the idle live region: the spacer, the editor, the hint, the rule,
-/// and the bar. `anchor` walks down exactly this far, so the first paint
-/// never scrolls the header off the top.
-const idle_region_rows = min_editor_rows + 4;
+/// Rows of the idle live region: the spacer, the framed editor (its rows
+/// plus two edges), the hint, and the bar. `anchor` walks down exactly this
+/// far, so the first paint never scrolls the header off the top.
+const idle_region_rows = min_editor_rows + 5;
 
 /// One paintable row. The type is the screen module's: the agent builds
 /// rows, `tui.screen` decides how they reach the terminal.
@@ -200,14 +200,14 @@ const Ui = struct {
         rows.shrinkRetainingCapacity(max);
     }
 
-    /// A full-width separator rule, from the theme's glyph set (one cell per
-    /// repetition in both tables).
-    fn rule(a: std.mem.Allocator, cells_w: usize, th: theme.Theme) ![]const u8 {
-        const separator = th.glyphs().rule;
-        const bytes = try a.alloc(u8, separator.len * cells_w);
-        var i: usize = 0;
-        while (i < cells_w) : (i += 1) @memcpy(bytes[separator.len * i ..][0..separator.len], separator);
-        return bytes;
+    fn frameStyle(effort: Profile.Effort) theme.Style {
+        return switch (effort) {
+            .off => .frame_off,
+            .low => .frame_low,
+            .medium => .frame_medium,
+            .high => .frame_high,
+            .xhigh => .frame_xhigh,
+        };
     }
 
     /// The bar's value for this frame: the measured state the events left in
@@ -291,12 +291,19 @@ const Ui = struct {
         try rows.append(a, .{ .text = "" });
         const editor_base = rows.items.len;
         const layout = try self.ed.layout(a, .{
-            .width = columns -| 3,
+            .width = columns -| editor.frame_cells,
             .min_rows = min_editor_rows,
             .max_rows = editor_cap,
             .theme = self.th,
         });
-        try rows.appendSlice(a, layout.rows);
+        // The frame says what the next turn thinks with, and that one is
+        // running: the effort's colour, the spinner in its top edge.
+        try rows.appendSlice(a, try editor.frame(a, layout, .{
+            .width = columns,
+            .theme = self.th,
+            .style = frameStyle(self.effort),
+            .spinner = if (self.busy) self.spinnerFrame() else "",
+        }));
         // Only the few shortcuts worth remembering sit under the input box;
         // the full key list is one `/help` away, so the line never overruns.
         const hint = if (self.th.glyph_set == .ascii)
@@ -304,8 +311,7 @@ const Ui = struct {
         else
             "Enter send · Shift-Enter newline · ↑↓ history · Tab complete · /help";
         const hint_rows = try view.lines(a, hint, columns - 1, .character);
-        try rows.append(a, .{ .text = hint_rows[0], .style = .dim });
-        try rows.append(a, .{ .text = try rule(a, columns, self.th), .style = .dim });
+        try rows.append(a, .{ .text = try std.mem.concat(a, u8, &.{ " ", hint_rows[0] }), .style = .dim });
         try rows.append(a, .{ .text = try self.statusLine(a, columns), .bar = true, .raw = true });
         if (self.busy) self.frame += 1;
         // The cursor is parked after the editor's insertion point (two cells
@@ -316,8 +322,8 @@ const Ui = struct {
         const unchanged = if (resized) 0 else self.unchangedPrefix(rows.items);
         try self.rememberFrame(rows.items);
         try self.scr.paintFrom(rows.items, .{
-            .row = editor_base + layout.cursor_row,
-            .column = 3 + layout.cursor_col,
+            .row = editor_base + 1 + layout.cursor_row,
+            .column = editor.frame_lead + 1 + layout.cursor_col,
         }, unchanged);
     }
 
@@ -1382,18 +1388,4 @@ test {
     _ = tools;
     _ = loop;
     _ = stream;
-}
-
-test "rule fills the requested cell width in either glyph set" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const th: theme.Theme = .{ .kind = .plain };
-    for ([_]usize{ 1, 2, 10, 80, 199, 400 }) |cells_w| {
-        const r = try Ui.rule(arena.allocator(), cells_w, th);
-        try std.testing.expectEqual(3 * cells_w, r.len);
-        try std.testing.expectEqualStrings("─", r[0..3]);
-        try std.testing.expectEqualStrings("─", r[r.len - 3 ..]);
-        const ascii = try Ui.rule(arena.allocator(), cells_w, .{ .kind = .plain, .glyph_set = .ascii });
-        try std.testing.expectEqual(cells_w, ascii.len);
-    }
 }
