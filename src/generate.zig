@@ -165,9 +165,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // before the model loads.
     var sampler = try inference.sampling.Sampler.init(options.seed orelse 0, settings.samplingOptions());
     // The switch decides the load: a drafter is loaded only when speculation
-    // is on, and a family without an embedded block then reports
-    // `DraftSourceMissing` rather than running silently.
-    const draft: inference.engine.DraftRequest = if (settings.speculative) .embedded else .none;
+    // is on, and a missing source then reports `DraftSourceMissing` rather
+    // than running silently. The entry's preference is its own embedded block
+    // (Qwen) or the companion it names (Gemma 4, Muse Glimmer).
+    const draft_path = try engine.draftPath(alloc, model_path, if (settings.entry) |entry| entry.mtp else null);
+    defer if (draft_path) |path| alloc.free(path);
+    const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
     var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);
     defer eng.deinit();
     // The configuration resolved the profile from the catalogue name (a

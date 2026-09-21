@@ -1429,6 +1429,38 @@ ENGN-15 pass), while code holds: 1.35× instruct and 1.33× greedy at draft 7
 points short of the unit's 30 % bar, while its decode rate rose — the bar's
 purpose. Verify (234–260 ms) is still the whole batch.
 
+## The Gemma 4 draft pair (MODL-19, 2026-09-21)
+
+The `gemma4-assistant` companion's off/on pair on the Gemma acceptance
+workload: `gemma-4-12b-qat` (QAT, every matrix Q4_0), Metal, F16 KV, ctx
+32768, `tests/fixtures/run-2026-09-12-gemma4-qat/prompt-512.json`, 128
+output tokens, greedy, the companion loaded (`--speculative on`), one warmup
+and three measured runs per configuration on one loaded model. Nuclis
+`0.2.0-dev` at `4bc7b8d` plus the MODL-19 change; reports under
+`.zig-cache/bench/gemma-modl19*.json`. Per-batch costs are the sample fields
+divided by `speculative_steps`; `tokens/batch` is
+`(generated_tokens − 1) / speculative_steps`; the speedup is the pair's
+`decode_tokens_per_second` on/off. Every sample stopped on `token_budget`.
+Ordinary decode on this workload is 25.2–25.4 tok/s (39.5 ms per token).
+
+| draft | accepted/step | proposed/step | tokens/batch | verify ms | propose ms | accept µs | recover ms | commit ms | checkpoint ms | decode off → on tok/s | speedup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 1.510 | 1.941 | 2.490 | 136.0 | 3.9 | 0.1 | 0.001 | 0.001 | 0.000 | 25.24 → 17.80 | 0.705× |
+| 4 | 2.256 | 3.385 | 3.256 | 135.9 | 6.8 | 0.1 | 0.001 | 0.002 | 0.000 | 25.40 → 22.83 | 0.899× |
+| 7 | 2.735 | 4.971 | 3.735 | 136.2 | 9.8 | 0.2 | 0.001 | 0.002 | 0.000 | 25.16 → 25.60 | 1.017× |
+
+**Reading.** The drafter's proposals are accurate (55 % acceptance per
+position at draft 7) and every non-verify cost is negligible: the head reads
+the target's caches rather than owning one, so `commit` is a row copy and
+recovery is the position rewind alone (1 µs per batch against Qwen's 12.7 ms
+slot copy). The verify batch is flat at 136 ms across draft 2, 4, and 7 —
+3 to 8 rows cost the same because that batch measures the 512-row attention
+and the per-layer dispatches, not the row work — so the pair's break-even
+sits at about 3.7 tokens per batch and only draft 7 reaches it. The Gemma
+head is therefore a correct adapter with a negative default at the plan's
+draft length; the levers are `max_draft_length` (the 8-row tile bound) or a
+cheaper small-batch verify, both ENGN-17's call.
+
 ## Prefill attention sweep (KERN-16, 2026-09-21)
 
 The register-reuse chunk attention (`nu_attention_chunk_reuse` /

@@ -105,6 +105,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-15 | Split-K decode matvec for row-poor shapes: measured behind the single pass, closed negative | 2026-09-21 |
 | KERN-16 | Long-context prefill attention: register-level reuse measured 2–5 % at chunk sizes, closed negative; the verify-shaped window shipped | 2026-09-21 |
 | KERN-18 | Fused decode norms: −182…−192 dispatches per decode step shipped, the speed bars missed; closed below its target | 2026-09-21 |
+| MODL-19 | Gemma 4 draft heads: the `gemma4-assistant` companion adapter, traces at 1.1e-4, a negative default at draft 4 (1.017× only at draft 7) | 2026-09-21 |
 
 ## Context
 
@@ -3773,3 +3774,76 @@ adapter yet, and the route to a real decode win is epilogue fusion (the
 post norm inside the projection or attention kernel that produces its
 input), not merging two memory-bound dispatches.
 
+
+### MODL-19 — Gemma 4 draft heads: the `gemma4-assistant` companion as a second GGUF, correct but a negative default at the plan's draft length (2026-09-21)
+
+**Outcome.** The Gemma 4 entries can speculate with their pinned companion
+heads, and the unit closes with a **negative verdict at the plan's draft
+length**: the adapter is correct (its rows match the reference trace at
+1.1e-4 max abs on the CPU and 1.5e-4 on Metal, and greedy decoding with the
+switch on is token-identical to ordinary greedy), acceptance is high (2.26
+drafts per batch at draft 4, 2.74 at draft 7, ~55 % per proposed position),
+and every non-verify cost is negligible (propose 6.8 ms, accept 0.1 µs,
+recover/commit/checkpoint ≤ 0.002 ms per batch) — but the verify batch is
+136 ms whether it carries 3 or 8 rows, so the pair breaks even only at
+draft 7 (1.017×: 25.16 → 25.60 tok/s) and loses at drafts 2 and 4 (0.705×,
+0.899×) against 25.2–25.4 tok/s ordinary decode. The row-flat verify says
+the lever is `max_draft_length` (the 8-row tile bound), not the drafter;
+that is ENGN-17's call, not this unit's.
+
+**What shipped.** `inference/src/models/gemma4_assistant.zig`: the
+companion's own binder (49 tensors, `embedding_length_out` 3840/2816, four
+blocks of pattern `[1,1,1,0]`, no `attn_k`/`attn_v`). `Engine.open`'
+`DraftRequest.{file,preferred}` maps a second GGUF, checks architecture,
+target width, vocabulary count, and the global-layer RoPE factors the Metal
+plan reuses, and reports `DraftSourceMissing`/`DraftSourceMismatch`;
+`generate`, `agent`, and `bench` resolve `.preferred` from
+`models.<name>.mtp` (Qwen keeps its embedded block via
+`family.embedded_draft`). The head itself: `gemma4_runtime.Runtime` and
+`gemma4_metal.Plan` gain `propose`/`commit`/`reset`/`bytes`/`drafter` and a
+`draftForwardTrace`; the head reads the target's layer-46 (sliding: visible
+`position − 1023 … position − 1`) or layer-47 (global: `0 … position − 1`)
+cache rows and writes none, pairs `[sqrt(3840)·embed_target; h]` through
+`nextn.pre_projection`, and classifies with its own tied `token_embd`;
+`commit` is the last target hidden and recovery is the position rewind
+alone. Gemma's runtime gained `prefill` hidden rows, `verify`, and
+`verifyGreedy`; the plan gained `verify`/`verifyGreedy`/`readVerifyRow` and
+`prefill` hidden rows over a shared `recordLayers`. The role name stays
+`mtp`. `scripts/reference-generation.cpp` gained `--assistant-draft` (runs
+each head row before the target decodes that position, the driver's
+`draft()` moment) and the trace is pinned under
+`inference/src/models/fixtures/gemma4-mtp/` (2 rows, greedy 2613 and
+236764); `make compare-draft-gemma4` checks it.
+
+**Evidence.** `make compare-draft-gemma4` (CPU and Metal):
+max abs 1.097e-4 / 9.829e-5 (CPU positions 1/2) and 1.535e-4 / 1.202e-4
+(Metal) against rel RMS 3.6e-6 / 3.1e-6 / 5.4e-6 / 4.5e-6, bounds 1e-2 /
+1e-4; `propose` from the committed prefix returns the pinned draft.
+Greedy off/on identity over 64 tokens (`Write a haiku about the sea.`,
+Metal, template prompt). Load errors through a temporary `NUCLIS_HOME`:
+missing companion → `DraftSourceMissing`, `clip` projector → mismatch, 26B
+head on the 12B target → mismatch. Bench pair in
+[bench.md § The Gemma 4 draft pair](reference/bench.md#the-gemma-4-draft-pair-modl-19-2026-09-21);
+the facts, trace, and verdict in
+[speculative-decoding.md § The Gemma 4 assistant heads](reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
+`make check` passes (455/455) with the machine quiet; note that the Metal
+profile fixture's 20 µs encoder-jitter allowance tripped twice under load
+(`profile check` read 95 µs over the command-buffer span at load average
+~6) before passing at 58.5 vs 48.9 µs — pre-existing, not this change.
+Per the session's gate policy `make compare`, the generation and speculative
+checks, `draft-stats`, and the Gemma acceptance records are deferred to
+ENGN-17.
+
+**Files.** `inference/src/models/gemma4_assistant.zig` (new),
+`inference/src/models/{gemma4,gemma4_runtime,gemma4_metal}.zig`,
+`inference/src/engine.zig`, `inference/generation-check.zig`,
+`inference/src/models/fixtures/gemma4-{mtp,head-12b}` (new),
+`scripts/reference-generation.cpp`, `src/{engine,generate,bench}.zig`,
+`src/agent/root.zig`, `Makefile`, `docs/reference/{speculative-decoding,bench}.md`,
+`TODO.md`, and this log.
+
+**Remaining.** The 26B-A4B head is bound and width-checked by the same code
+but never measured (it needs the MoE target's 2816-wide residual); its trace
+is MODL-19's unfinished second half if the user wants it before ENGN-17.
+The verifier's row-flat cost and `max_draft_length = 7` bound the Gemma
+speedup, so a longer draft window is the measured lever.

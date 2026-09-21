@@ -29,6 +29,7 @@
 //! session-layout unit of its own (ENGN-19).
 const std = @import("std");
 const model = @import("gemma4.zig");
+const assistant = @import("gemma4_assistant.zig");
 const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
 const sampling = @import("../sampling/root.zig");
@@ -41,6 +42,9 @@ pub const Observer = @import("../runtime/observer.zig").Observer;
 
 pub const vocabulary = model.vocabulary;
 const heads = model.heads;
+/// Rows a verify batch may hold: `engine.max_draft_length` plus the seed, the
+/// Qwen plan's bound.
+pub const max_verify_rows = 8;
 /// The widest per-layer geometry; sliding layers use a prefix of each buffer.
 const q_width = model.Kind.global.queryWidth(); // 16 × 512
 const kv_width = model.max_kv_width; // 8 × 256
@@ -88,6 +92,116 @@ const ExpertBuffers = struct {
     hidden_c: Buffer, // padded·k × ff
     down_c: Buffer, // padded·k × hidden
     out_c: Buffer, // padded × hidden
+};
+
+/// One draft block's device constants.
+const HeadConstants = struct {
+    attention_norm: Buffer,
+    post_attention_norm: Buffer,
+    ffn_norm: Buffer,
+    post_ffn_norm: Buffer,
+    query_norm: Buffer,
+    output_scale: f32,
+};
+
+/// The companion `gemma4-assistant` head's device workspace. It owns no
+/// attention layout: every block reads the target plan's layer-46 (sliding)
+/// and layer-47 (global) cache slices, and its only state is `pending_h`, the
+/// target hidden of the last committed token. The rope tables are the target
+/// plan's (same bases, widths, and frequency factors; `bindDraft` refuses a
+/// mismatch).
+const Head = struct {
+    binding: assistant.Binding,
+    constants: [assistant.block_count]HeadConstants,
+    output_norm: Buffer,
+    row: Buffer, // embedding_out
+    x: Buffer, // 1024
+    normalized: Buffer, // 1024
+    concat: Buffer, // 2 × embedding_out
+    projected: Buffer, // 1024
+    q: Buffer, // 8192
+    mixed: Buffer, // 8192
+    gate: Buffer, // 8192
+    up: Buffer, // 8192
+    logits: Buffer, // vocabulary
+    h_next: Buffer, // embedding_out
+    chain: Buffer, // embedding_out
+    pending_h: Buffer, // embedding_out
+    partials: Buffer,
+    topk: metal.Backend.TopKBuffers,
+    argmax_values: Buffer,
+    argmax_indices: Buffer,
+    argmax_result: Buffer,
+
+    fn init(plan: *Plan, binding: assistant.Binding) !Head {
+        const out = binding.config.embedding_out;
+        var result: Head = undefined;
+        result.binding = binding;
+        for (&result.constants, binding.layers) |*c, layer| {
+            c.* = .{
+                .attention_norm = try Head.constant(plan, binding.view, layer.attention_norm),
+                .post_attention_norm = try Head.constant(plan, binding.view, layer.post_attention_norm),
+                .ffn_norm = try Head.constant(plan, binding.view, layer.ffn_norm),
+                .post_ffn_norm = try Head.constant(plan, binding.view, layer.post_ffn_norm),
+                .query_norm = try Head.constant(plan, binding.view, layer.query_norm),
+                .output_scale = try binding.view.scalar(layer.output_scale, 0),
+            };
+            if (!std.math.isFinite(c.output_scale)) return error.InvalidShape;
+        }
+        const b = plan.backend;
+        result.output_norm = try Head.constant(plan, binding.view, binding.output_norm);
+        result.row = try b.create(out * 4);
+        result.x = try b.create(assistant.embedding * 4);
+        result.normalized = try b.create(assistant.embedding * 4);
+        result.concat = try b.create(2 * out * 4);
+        result.projected = try b.create(assistant.embedding * 4);
+        result.q = try b.create(assistant.Kind.global.queryWidth() * 4);
+        result.mixed = try b.create(assistant.Kind.global.queryWidth() * 4);
+        result.gate = try b.create(assistant.feed_forward * 4);
+        result.up = try b.create(assistant.feed_forward * 4);
+        result.logits = try b.create(vocabulary * 4);
+        result.h_next = try b.create(out * 4);
+        result.chain = try b.create(out * 4);
+        result.pending_h = try b.create(out * 4);
+        result.partials = try b.create(metal.Backend.attentionDecodePartials(assistant.heads, assistant.Kind.global.headSize()) * 4);
+        result.topk = try b.topkBuffers(1);
+        result.argmax_values = try b.create(metal.Backend.argmax_partials * 4);
+        result.argmax_indices = try b.create(metal.Backend.argmax_partials * 4);
+        result.argmax_result = try b.create(4);
+        @memset(result.pending_h.floats(), 0);
+        return result;
+    }
+
+    /// A small F32 tensor copied into its own device buffer from the head's
+    /// own file (the plan's `constant` reads the target's).
+    fn constant(plan: *Plan, view: weights.View, tensor: *const Tensor) !Buffer {
+        const values = try view.vector(plan.alloc, tensor);
+        defer plan.alloc.free(values);
+        if (values.len == 0) return error.InvalidShape;
+        const buffer = try plan.backend.create(values.len * 4);
+        @memcpy(buffer.floats(), values);
+        return buffer;
+    }
+
+    /// A head projection: the head's file is the weight source.
+    fn mm(self: *Head, backend: *metal.Backend, tensor: *const Tensor, input: Buffer, output: Buffer) !void {
+        const matrix = try self.binding.view.matrix(tensor);
+        try backend.matvec(try backend.wrap(matrix.bytes), matrix, input, output);
+    }
+
+    fn bytes(self: *const Head) usize {
+        var total: usize = self.output_norm.len +
+            self.row.len + self.x.len + self.normalized.len + self.concat.len + self.projected.len +
+            self.q.len + self.mixed.len + self.gate.len + self.up.len + self.logits.len +
+            self.h_next.len + self.chain.len + self.pending_h.len +
+            self.partials.len + self.argmax_values.len + self.argmax_indices.len + self.argmax_result.len +
+            self.topk.partial_values.len + self.topk.partial_indices.len + self.topk.values.len +
+            self.topk.indices.len + self.topk.sums.len + self.topk.flags.len;
+        for (self.constants) |c| {
+            total += c.attention_norm.len + c.post_attention_norm.len + c.ffn_norm.len + c.post_ffn_norm.len + c.query_norm.len;
+        }
+        return total;
+    }
 };
 
 /// A weight matrix ready for dispatch: its GPU range and CPU-side descriptor.
@@ -152,6 +266,21 @@ pub const Plan = struct {
     mixed_out_c: Buffer, // padded × q_width
     /// Present on the expert configuration only.
     experts: ?ExpertBuffers,
+    /// A verify batch's output head over every row: `max_verify_rows`
+    /// vocabulary rows, its per-row argmax results, and the post-`output_norm`
+    /// hidden rows the drafter's `commit` consumes. `topk_rows` holds one
+    /// partial top-k scratch set per row for the sampled acceptance path; the
+    /// logits stay resident for `readVerifyRow`'s fallback.
+    verify_logits: Buffer,
+    verify_argmax: Buffer,
+    verify_hidden: Buffer,
+    topk_rows: [max_verify_rows]metal.Backend.TopKBuffers,
+    /// Post-`output_norm` rows of a prefill chunk when `prefill` is asked for
+    /// them; the drafter's prompt commit consumes them.
+    prefill_hidden: Buffer,
+    /// The companion head, present when one was bound and asked for.
+    draft: ?Head,
+    has_draft: bool,
 
     /// The prompt chunk the engine should ask for: `default` on the dense
     /// configuration; 512 on the expert one, where a chunk's slot rows fill
@@ -167,7 +296,6 @@ pub const Plan = struct {
     /// token of expert slot rows on the 26B-A4B). `kv` is the attention
     /// cache precision of every layer.
     pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool, draft: bool) !Plan {
-        _ = draft;
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
         const config = binding.config;
         const hidden = config.embedding;
@@ -250,6 +378,24 @@ pub const Plan = struct {
         self.q_c_h = try backend.create(n * q_width * 2);
         self.mixed_out_c = try backend.create(n * q_width * 4);
         self.experts = if (config.experts) |spec| try self.expertBuffers(spec) else null;
+        self.has_draft = draft and binding.draft != null;
+        if (self.has_draft) {
+            // The verify scratch exists only with a drafter (the loop's only
+            // caller); `matmul` writes `matmulPadded(tokens)` output rows, so
+            // the logits buffer is sized by the tile, not the batch.
+            self.verify_logits = try backend.create(metal.Backend.matmulPadded(max_verify_rows) * vocabulary * 4);
+            self.verify_argmax = try backend.create(max_verify_rows * 4);
+            self.verify_hidden = try backend.create(max_verify_rows * hidden * 4);
+            for (&self.topk_rows) |*scratch| scratch.* = try backend.topkBuffers(sampling.TopK.capacity);
+            self.prefill_hidden = try backend.create(chunk * hidden * 4);
+            self.draft = try Head.init(&self, binding.draft.?);
+        } else {
+            self.verify_logits = try backend.create(4);
+            self.verify_argmax = try backend.create(4);
+            self.verify_hidden = try backend.create(4);
+            self.prefill_hidden = try backend.create(4);
+            self.draft = null;
+        }
         return self;
     }
     fn expertBuffers(self: *Plan, spec: model.Experts) !ExpertBuffers {
@@ -286,6 +432,7 @@ pub const Plan = struct {
     }
     pub fn reset(self: *Plan) void {
         self.state.reset();
+        if (self.draft) |*head| @memset(head.pending_h.floats(), 0);
     }
 
     /// Small F32 tensor copied into its own GPU buffer once at init.
@@ -588,12 +735,15 @@ pub const Plan = struct {
     /// from `step` (tile accumulation), so results agree within a tolerance,
     /// not bit for bit; `generation-check --metal` measures it.
     pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
-        if (hidden_rows != null) return error.HiddenUnsupported;
         if (tokens.len == 0) return error.InvalidShape;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
+        if (hidden_rows) |h| {
+            if (!self.has_draft) return error.HiddenUnsupported;
+            if (h.len != tokens.len * self.binding.config.embedding) return error.InvalidShape;
+        }
         // The whole prompt must fit: a prompt is never half-consumed.
         if (self.state.status != .ready) return error.SessionNotReady;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
@@ -601,7 +751,7 @@ pub const Plan = struct {
         while (offset < tokens.len) {
             const count = @min(self.chunk, tokens.len - offset);
             const last = offset + count == tokens.len;
-            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, observer);
+            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, if (hidden_rows) |h| h[offset * self.binding.config.embedding ..][0 .. count * self.binding.config.embedding] else null, observer);
             offset += count;
             // The whole prompt is one `step` for the loop's hooks, so this is
             // the only place a caller can learn how far a long prefill has got.
@@ -609,7 +759,7 @@ pub const Plan = struct {
         }
     }
 
-    fn prefillChunk(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
+    fn prefillChunk(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
         const count = tokens.len;
         std.debug.assert(count >= 1 and count <= self.chunk);
         if (penalties) |p| try self.syncPenalties(p);
@@ -618,8 +768,36 @@ pub const Plan = struct {
         const b = self.backend;
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
-        const embedding = try self.weight(self.binding.token_embedding);
+        try self.recordLayers(tokens, count, observer);
         const hidden = self.binding.config.embedding;
+        if (hidden_rows != null) {
+            // Normalize every row, as `verify` does; the last row also serves
+            // the output head when a readback was asked for.
+            try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+            try b.copy(self.prefill_hidden, self.normalized_c, count * hidden);
+            if (logits != null or greedy != null or topk != null) {
+                try b.copy(self.normalized, self.normalized_c.slice((count - 1) * hidden * 4, hidden * 4), hidden);
+                try self.recordOutputs(greedy, topk, penalties);
+            }
+        } else if (logits != null or greedy != null or topk != null) {
+            const last_row = self.x_c.slice((count - 1) * hidden * 4, hidden * 4);
+            try b.rmsNorm(last_row, self.output_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+            try self.recordOutputs(greedy, topk, penalties);
+        }
+        try b.commit();
+        try self.readOutputs(logits, greedy, topk, penalties != null);
+        try self.state.commitChunk(count);
+        if (hidden_rows) |dest| @memcpy(dest, self.prefill_hidden.floats()[0 .. count * hidden]);
+    }
+
+    /// Records the embedding gather and every decoder layer over one admitted
+    /// chunk of `count` tokens, leaving the final hidden rows in `x_c`. The
+    /// caller owns the command buffer and the state admission; `prefillChunk`
+    /// and `verify` share it.
+    fn recordLayers(self: *Plan, tokens: []const u32, count: usize, observer: ?Observer) !void {
+        const b = self.backend;
+        const hidden = self.binding.config.embedding;
+        const embedding = try self.weight(self.binding.token_embedding);
         for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
         try b.scale(self.x_c, count * hidden, self.binding.config.embeddingScale());
         const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
@@ -632,14 +810,110 @@ pub const Plan = struct {
             try b.addScale(self.x_c, self.projected_c, count * hidden, c.output_scale);
             if (observer) |o| if (o.check) |check| try check(o.context);
         }
-        if (logits != null or greedy != null or topk != null) {
-            const last_row = self.x_c.slice((count - 1) * hidden * 4, hidden * 4);
-            try b.rmsNorm(last_row, self.output_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
-            try self.recordOutputs(greedy, topk, penalties);
+    }
+
+    /// Verifies a batch: records the layer stack once and computes the output
+    /// head for every row. Exactly one of `rows` (`tokens.len × vocabulary`)
+    /// and `tops` (one `sampling.TopK` per row) is given; the logits stay
+    /// resident either way, so `readVerifyRow` serves a fallback. `h_rows`
+    /// receives the rows' post-`output_norm` hidden.
+    pub fn verify(self: *Plan, tokens: []const u32, rows: ?[]f32, tops: ?[]sampling.TopK, h_rows: ?[]f32, observer: ?Observer) !void {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        if (tokens.len == 0 or tokens.len > self.chunk or tokens.len > max_verify_rows) return error.InvalidShape;
+        if (rows == null and tops == null) return error.InvalidShape;
+        if (rows != null and tops != null) return error.InvalidShape;
+        const hidden = self.binding.config.embedding;
+        if (rows) |r| if (r.len != tokens.len * vocabulary) return error.InvalidShape;
+        if (tops) |t| {
+            if (t.len != tokens.len) return error.InvalidShape;
+            for (t) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
+        }
+        if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        const count = tokens.len;
+        try self.state.beginChunk(count);
+        errdefer self.state.fail();
+        const b = self.backend;
+        try b.begin();
+        errdefer if (b.recording) b.commit() catch {};
+        try self.recordLayers(tokens, count, observer);
+        try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+        if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
+        const head = try self.weight(self.binding.token_embedding);
+        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
+        if (tops) |out| {
+            for (out, 0..) |top, i| try b.topk(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, sampling.TopK.capacity, top.temperature, self.topk_rows[i]);
         }
         try b.commit();
-        try self.readOutputs(logits, greedy, topk, penalties != null);
+        if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
+        if (rows) |r| @memcpy(r, self.verify_logits.floats()[0 .. count * vocabulary]);
+        if (tops) |out| {
+            for (out, 0..) |*top, i| try self.readVerifyTopK(i, top);
+        }
         try self.state.commitChunk(count);
+    }
+
+    /// `verify`'s greedy sibling: per-row argmax read back, no logit readback.
+    pub fn verifyGreedy(self: *Plan, tokens: []const u32, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        if (tokens.len == 0 or tokens.len > self.chunk or tokens.len > max_verify_rows) return error.InvalidShape;
+        if (out.len != tokens.len) return error.InvalidShape;
+        const hidden = self.binding.config.embedding;
+        if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        const count = tokens.len;
+        try self.state.beginChunk(count);
+        errdefer self.state.fail();
+        const b = self.backend;
+        try b.begin();
+        errdefer if (b.recording) b.commit() catch {};
+        try self.recordLayers(tokens, count, observer);
+        try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+        if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
+        const head = try self.weight(self.binding.token_embedding);
+        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
+        for (0..count) |i| try b.argmax(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, self.argmax_values, self.argmax_indices, self.verify_argmax.slice(i * 4, 4));
+        try b.commit();
+        if (h_rows) |h| @memcpy(h, self.verify_hidden.floats()[0 .. count * hidden]);
+        const ids = @as([*]const u32, @ptrCast(@alignCast(self.verify_argmax.host)))[0..count];
+        for (ids, out) |id, *token| {
+            if (id >= vocabulary) return error.NonFiniteResult;
+            token.* = id;
+        }
+        try self.state.commitChunk(count);
+    }
+
+    /// One verify row's partial top-k readback from its own scratch set.
+    fn readVerifyTopK(self: *Plan, row: usize, top: *sampling.TopK) !void {
+        const scratch = self.topk_rows[row];
+        const ids = @as([*]const u32, @ptrCast(@alignCast(scratch.indices.host)))[0..sampling.TopK.capacity];
+        for (ids) |id| if (id >= vocabulary) return error.NonFiniteResult;
+        @memcpy(top.ids[0..], ids);
+        @memcpy(top.values[0..], scratch.values.floats()[0..sampling.TopK.capacity]);
+        top.count = sampling.TopK.capacity;
+        var total: f64 = 0;
+        for (scratch.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
+        top.total = total;
+        top.finite = true;
+        for (@as([*]const u32, @ptrCast(@alignCast(scratch.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
+            top.finite = false;
+        };
+        top.penalized = false;
+    }
+
+    /// Copies one row of the last `verify`'s logits out of the shared buffer:
+    /// the fallback for a row whose readback could not decide.
+    pub fn readVerifyRow(self: *Plan, row: usize, out: []f32) !void {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (row >= max_verify_rows or out.len != vocabulary) return error.InvalidShape;
+        @memcpy(out, self.verify_logits.floats()[row * vocabulary ..][0..vocabulary]);
+        for (out) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;
     }
 
     fn attentionChunk(self: *Plan, layer: model.Layer, c: LayerConstants, il: usize, count: usize) !void {
@@ -684,6 +958,174 @@ pub const Plan = struct {
         const total = position + count - first;
         try b.attentionChunk(self.stateSlice(cache.keys.range(first, total)), self.stateSlice(cache.values.range(first, total)), queries, self.mixed_out_c, .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = precision, .window = if (kind == .sliding) model.window else 0 });
         try self.mmRows(layer.output, self.mixed_out_c, qw, self.projected_c, hidden, count);
+    }
+
+    // --- the draft head (MODL-19) --------------------------------------
+
+    /// The target cache layer a head block reads: the target's last sliding
+    /// layer for a sliding block, its last (global) layer otherwise.
+    fn sourceLayer(self: *const Plan, kind: assistant.Kind) usize {
+        const n = self.binding.config.layer_count;
+        return if (kind == .sliding) n - 2 else n - 1;
+    }
+
+    /// One proposed position in one command buffer: the target's scaled
+    /// embedding paired with `h_prev`, the four blocks over the target's
+    /// caches at `position`, the head's classifier (`greedy`/`pmax`/`logits`
+    /// read only when asked) and its `h_next` in the head's workspace.
+    pub fn draftForward(self: *Plan, h_prev: Buffer, token: u32, position: usize, greedy: ?*u32, pmax: ?*f32, logits: ?[]f32) !void {
+        const head = &(self.draft orelse return error.NoDraftBlock);
+        const out = head.binding.config.embedding_out;
+        if (token >= vocabulary or position == 0 or position > self.state.capacity) return error.InvalidShape;
+        if (h_prev.len < out * 4) return error.InvalidShape;
+        if (logits) |values| if (values.len != vocabulary) return error.InvalidShape;
+        const b = self.backend;
+        try b.begin();
+        errdefer if (b.recording) b.commit() catch {};
+        const embedding = try self.weight(self.binding.token_embedding);
+        try b.embed(embedding.buffer, embedding.matrix, token, head.row);
+        try b.scale(head.row, out, @sqrt(@as(f32, @floatFromInt(out))));
+        try b.copy(head.concat.slice(0, out * 4), head.row, out);
+        try b.copy(head.concat.slice(out * 4, out * 4), h_prev, out);
+        try head.mm(b, head.binding.pre_projection, head.concat, head.x);
+        const single: metal.Backend.Norm = .{ .rows = 1, .width = assistant.embedding, .in_stride = assistant.embedding, .out_stride = assistant.embedding };
+        for (head.binding.layers, head.constants) |layer, c| {
+            try b.rmsNorm(head.x, c.attention_norm, head.normalized, single);
+            try self.draftAttention(head, layer, c, position);
+            try b.rmsNormAdd(head.x, head.projected, c.post_attention_norm, 1.0, single);
+            try b.rmsNorm(head.x, c.ffn_norm, head.normalized, single);
+            try head.mm(b, layer.ffn_gate, head.normalized, head.gate);
+            try head.mm(b, layer.ffn_up, head.normalized, head.up);
+            try b.geluMul(head.gate, head.up, assistant.feed_forward);
+            try head.mm(b, layer.ffn_down, head.gate, head.projected);
+            try b.rmsNormAdd(head.x, head.projected, c.post_ffn_norm, c.output_scale, single);
+        }
+        try b.rmsNorm(head.x, head.output_norm, head.normalized, single);
+        try head.mm(b, head.binding.post_projection, head.normalized, head.h_next);
+        // The head's own tied classifier, not the target's head.
+        try head.mm(b, head.binding.classifier, head.normalized, head.logits);
+        if (greedy != null or logits != null or pmax != null) try b.argmax(head.logits, vocabulary, head.argmax_values, head.argmax_indices, head.argmax_result);
+        if (pmax != null) try b.topk(head.logits, vocabulary, 1, 1.0, head.topk);
+        try b.commit();
+        if (greedy) |value| {
+            value.* = @as(*const u32, @ptrCast(@alignCast(head.argmax_result.host))).*;
+            if (value.* >= vocabulary) return error.NonFiniteResult;
+        }
+        if (pmax) |value| {
+            var total: f64 = 0;
+            for (head.topk.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
+            var finite = true;
+            for (@as([*]const u32, @ptrCast(@alignCast(head.topk.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
+                finite = false;
+            };
+            value.* = if (finite and total > 0) @floatCast(1.0 / total) else 1.0;
+        }
+        if (logits) |values| {
+            @memcpy(values, head.logits.floats());
+            for (values) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;
+        }
+    }
+
+    /// `draftForward` with a host `h_prev`, staged through the head's chain
+    /// buffer.
+    pub fn draftForwardHost(self: *Plan, h_prev: []const f32, token: u32, position: usize, greedy: ?*u32, pmax: ?*f32, logits: ?[]f32) !void {
+        const head = &(self.draft orelse return error.NoDraftBlock);
+        if (h_prev.len != head.binding.config.embedding_out) return error.InvalidShape;
+        @memcpy(head.chain.floats()[0..head.binding.config.embedding_out], h_prev);
+        try self.draftForward(head.chain, token, position, greedy, pmax, logits);
+    }
+
+    fn draftAttention(self: *Plan, head: *Head, layer: assistant.Layer, c: HeadConstants, position: usize) !void {
+        const b = self.backend;
+        const kind = layer.kind;
+        const hd = layer.kind.headSize();
+        const qw = layer.queryWidth();
+        const q = head.q.slice(0, qw * 4);
+        try head.mm(b, layer.query, head.normalized, q);
+        const dims = if (kind == .global) assistant.Kind.global.headSize() else assistant.Kind.sliding.headSize();
+        const table = if (kind == .global) self.rope_global else self.rope_sliding;
+        try b.rmsNormRope(q, c.query_norm, table, q, .{ .rows = assistant.heads, .width = hd, .in_stride = hd, .out_stride = hd }, dims, position, .split_half);
+        // The target's own rows at the proposal position; the proposal's row
+        // does not exist, and the reference's sliding mask is `query − key >=
+        // window`.
+        const cache = self.state.layers[self.sourceLayer(kind)].attention;
+        const first = if (kind == .sliding and position >= model.window - 1) position - (model.window - 1) else 0;
+        const visible = position - first;
+        if (visible == 0) return error.EmptySupport;
+        const out = head.mixed.slice(0, qw * 4);
+        try b.attentionDecode(self.stateSlice(cache.keys.range(first, visible)), self.stateSlice(cache.values.range(first, visible)), q, head.partials, out, .{ .query_heads = assistant.heads, .kv_heads = layer.kv_heads, .key_width = hd, .value_width = hd, .visible = visible, .scale = 1.0, .precision = cache.keys.precision });
+        try head.mm(b, layer.output, out, head.projected);
+    }
+
+    /// One head row for a trace: as `draftForwardHost`, plus the head's
+    /// `h_next` copied out. The target session must already hold rows
+    /// `0 .. position − 1`.
+    pub fn draftForwardTrace(self: *Plan, h_prev: []const f32, token: u32, position: usize, h_out: []f32, greedy: ?*u32, logits: ?[]f32) !void {
+        const head = &(self.draft orelse return error.NoDraftBlock);
+        const out = head.binding.config.embedding_out;
+        if (h_out.len != out) return error.InvalidShape;
+        try self.draftForwardHost(h_prev, token, position, greedy, null, logits);
+        @memcpy(h_out, head.h_next.floats()[0..out]);
+    }
+
+    /// Greedy candidates from the state after the last committed token, each
+    /// block step at the target's current position and chained through the
+    /// head's own `h_next`; `out.len` bounds the count.
+    pub fn propose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
+        if (!self.has_draft) return error.NoDraftBlock;
+        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        const head = &self.draft.?;
+        const position = self.state.position;
+        var h_prev = head.pending_h;
+        var next = token;
+        var count: usize = 0;
+        while (count < out.len) : (count += 1) {
+            var greedy: u32 = 0;
+            var pmax: f32 = 0;
+            try self.draftForward(h_prev, next, position, &greedy, if (p_min > 0) &pmax else null, null);
+            out[count] = greedy;
+            if (p_min > 0 and pmax < p_min) {
+                count += 1;
+                break;
+            }
+            next = greedy;
+            h_prev = head.h_next;
+        }
+        return count;
+    }
+
+    /// Advances the head over the committed prefix: its only state is the
+    /// target hidden of the last committed token, which the next `propose`
+    /// pairs with the next seed.
+    pub fn commit(self: *Plan, tokens: []const u32, h_rows: []const f32) !void {
+        const head = &(self.draft orelse return error.NoDraftBlock);
+        const width = head.binding.config.embedding_out;
+        if (h_rows.len != tokens.len * width) return error.InvalidShape;
+        if (tokens.len == 0) return;
+        @memcpy(head.pending_h.floats()[0..width], h_rows[h_rows.len - width ..][0..width]);
+    }
+
+    /// The contract value the engine holds, or null when no head is loaded.
+    pub fn drafter(self: *Plan) ?@import("../runtime/draft.zig").Drafter {
+        if (!self.has_draft) return null;
+        return .{ .host = self, .hidden = self.draft.?.binding.config.embedding_out, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+    }
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        return self.propose(token, out, p_min);
+    }
+    fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        return self.commit(tokens, h_rows);
+    }
+    fn resetDraftFn(host: *anyopaque) void {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        if (self.draft) |*head| @memset(head.pending_h.floats(), 0);
+    }
+    fn draftBytes(host: *anyopaque) usize {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        if (self.draft) |*head| return head.bytes();
+        return 0;
     }
 };
 

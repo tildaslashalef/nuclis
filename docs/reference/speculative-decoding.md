@@ -248,6 +248,78 @@ reference's greedy drafts are 2613 (position 1) and 236764 (position 2).
 The reference driver's own run on `Hello,` at `--spec-draft-n-max 4`
 drafted 26 tokens and accepted 4 over 12 generated tokens.
 
+**Implemented (2026-09-21).** `inference/src/models/gemma4_assistant.zig` binds
+the companion (arch `gemma4-assistant`, 49 tensors, two pinned widths: the
+12B's `embedding_length_out` 3840 and the 26B-A4B's 2816, both with four
+blocks and patterns `[1,1,1,0]`). The binding carries **its own
+`weights.View`** (the companion's mapping, not the target's) — reading its
+tensors through the target's view silently reinterprets the main file at
+companion offsets, which is the one wiring mistake this adapter has cost.
+`Engine.open`'s `draft = .{ .file = path }` / `.preferred` maps the
+companion, requires the architecture, the target width, and the target's
+vocabulary count, and refuses a head whose global-layer `rope_freqs.weight`
+differs from the target's (the Metal plan reuses the target's rope tables);
+missing is `DraftSourceMissing`, everything else `DraftSourceMismatch`.
+`gemma4_runtime.zig` and `gemma4_metal.zig` run the head: `propose` runs one
+block per position at the target's current position, `[sqrt(3840)·embed; h]`
+through `nextn.pre_projection`, the target's layer-46 (sliding, visible
+`position − 1023 … position − 1`) or layer-47 (global, `0 … position − 1`)
+cache rows, `nextn.post_projection` for chaining, and the head's own tied
+`token_embd` for the greedy candidate; `commit` copies the last target
+hidden into `pending_h` and owns no cache, so recovery is the attention
+rewind alone (`recover` measured 1 µs per batch). `generate`/`agent`/`bench`
+resolve `.preferred` from the entry's `models.<name>.mtp`; a family with an
+embedded block (Qwen) keeps its own.
+
+**Trace.** The harness's `--assistant-draft DRAFT_MODEL` mode
+(`scripts/reference-generation.cpp`) runs each row *before* the target
+decodes that position, which is the driver's `draft()` moment; `Hello,
+world` (9259, 236764, 1902) pinned two rows under
+`inference/src/models/fixtures/gemma4-mtp/` with greedy drafts 2613 and
+236764 (the 26B head is bound and width-checked by the same tests but not
+traced). `make compare-draft-gemma4` checks them on both backends:
+
+| backend | position | max abs | relative RMS | greedy |
+| --- | ---: | ---: | ---: | ---: |
+| CPU reference (F32 cache) | 1 | 1.097e-4 | 3.625e-6 | 2613 |
+| CPU reference | 2 | 9.829e-5 | 3.056e-6 | 236764 |
+| Metal (F32 cache) | 1 | 1.535e-4 | 5.390e-6 | 2613 |
+| Metal | 2 | 1.202e-4 | 4.490e-6 | 236764 |
+
+The check's bounds are 1e-2 / 1e-4; `propose` from the committed prefix
+returns the pinned 236764, and greedy decoding with the switch on is
+token-identical to ordinary greedy over 64 tokens (`Write a haiku about the
+sea.`, Metal, template prompt). Load errors were exercised through a
+temporary `NUCLIS_HOME`: a missing companion is `DraftSourceMissing`, the
+`clip` projector and the 26B head on the 12B target are
+`DraftSourceMismatch`.
+
+**Measured (2026-09-21, `4bc7b8d` + this change).** Gemma 4 12B QAT, Metal,
+F16 KV, ctx 32768, the 512-token Gemma acceptance prompt, 128 output tokens,
+greedy, one warmup and three measured runs per configuration on one loaded
+model (`--speculative on` runs the off/on pair); per-batch costs divide the
+sample's fields by `speculative_steps`. Table in
+[bench.md § The Gemma 4 draft pair](bench.md#the-gemma-4-draft-pair-modl-19-2026-09-21).
+
+| draft | accepted/step | proposed/step | tokens/batch | verify ms | propose ms | decode off → on tok/s | speedup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 1.510 | 1.941 | 2.490 | 136.0 | 3.9 | 25.24 → 17.80 | 0.705× |
+| 4 | 2.256 | 3.385 | 3.256 | 135.9 | 6.8 | 25.40 → 22.83 | 0.899× |
+| 7 | 2.735 | 4.971 | 3.735 | 136.2 | 9.8 | 25.16 → 25.60 | **1.017×** |
+
+**The verdict is negative at the plan's draft length.** Acceptance is high
+(55 % per position at draft 7, 3.7 tokens per batch), the proposal is cheap
+(3.9–9.8 ms), the acceptance decision, recovery, commit, and checkpoint are
+microseconds — and the verify batch is 136 ms regardless of whether it
+carries 3 or 8 rows, because at these counts it is the 512-row attention and
+the per-layer dispatches, not the row work. Break-even needs `tokens/batch`
+above `(verify + propose) / 39.5 ms` ≈ 3.7, which only draft 7 reaches
+(1.017×). Two facts for ENGN-17: the record's default for the Gemma entries
+is off at draft 4 and no better than parity at draft 7; and the row-flat
+verify cost says the lever is `max_draft_length` (the 8-row tile bound)
+rather than anything in the drafter, which ENGN-17 may raise if the head is
+ever to pay.
+
 ## The verify batch and the loop (ENGN-12, session 1)
 
 Implemented and checked on 2026-09-20; the configuration and the benchmark

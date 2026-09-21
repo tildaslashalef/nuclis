@@ -35,9 +35,28 @@ pub const DraftRequest = union(enum) {
     /// The embedded block when the family has one, otherwise no drafter:
     /// `bench` measures what is available rather than failing.
     optional_embedded,
-    /// A separate companion file, opened by MODL-19/20.
+    /// A separate companion file, mapped by `open`.
     file: []const u8,
+    /// The entry's preference when the switch is on: the artifact's own
+    /// block when the family binds one, otherwise the companion at this
+    /// path (null when the entry names none). Neither is
+    /// `DraftSourceMissing`.
+    preferred: ?[]const u8,
 };
+/// Whether a family's own file carries a prediction block (`models`
+/// registry). Families with a companion-only source declare `bindDraft`
+/// and `draft_architecture` instead.
+fn hasEmbeddedDraft(comptime Family: type) bool {
+    return @hasDecl(Family, "embedded_draft") and Family.embedded_draft;
+}
+/// The `tokenizer.ggml.tokens` count of a document, or null when absent;
+/// the companion's vocabulary must be the target's.
+fn vocabularyCount(doc: *const inference.gguf.Document) ?u64 {
+    return switch (doc.get("tokenizer.ggml.tokens") orelse return null) {
+        .array => |a| a.count,
+        else => null,
+    };
+}
 /// Attention cache precision. A GPU option: the CPU reference runtime
 /// keeps F32 whatever is requested, and `Engine.kv_precision` reports what
 /// the session actually uses.
@@ -95,7 +114,9 @@ pub fn Executor(comptime Family: type) type {
             switch (self.*) {
                 .cpu => |*runtime| {
                     if (tokens.len > runtime.state.capacity - runtime.state.position) return error.ContextFull;
-                    if (hidden) |out| {
+                    if (comptime @hasDecl(Family.Runtime, "prefill")) {
+                        try runtime.prefill(tokens, logits, hidden, observer);
+                    } else if (hidden) |out| {
                         if (comptime @hasField(Family.Runtime, "h")) {
                             const width = runtime.h.len;
                             if (out.len != tokens.len * width) return error.InvalidShape;
@@ -560,14 +581,9 @@ fn chunkFor(comptime Family: type, binding: Family.Binding) usize {
 /// Builds one family's executor for the backend. Heap-allocates the Metal
 /// backend so the plan's pointer stays valid when the Engine value is
 /// returned by value; its diagnostic text is logged on failure.
-fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference.weights.View, binding: Family.Binding, backend: Backend, capacity: usize, kv: KvPrecision, draft: DraftRequest) !Executor(Family) {
+fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference.weights.View, binding: Family.Binding, backend: Backend, capacity: usize, kv: KvPrecision, want_draft: bool) !Executor(Family) {
     // A checkpoint region is sized only when a caller needs to undo a verify
     // batch, which is exactly when a drafter is loaded.
-    const want_draft = switch (draft) {
-        .none => false,
-        .embedded, .optional_embedded => true,
-        .file => return error.DraftSourceUnsupported,
-    };
     return switch (backend) {
         .cpu => .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, want_draft, want_draft) },
         .metal => blk: {
@@ -618,6 +634,9 @@ pub const Engine = struct {
     kv_precision: KvPrecision,
     /// Speculative-step scratch, allocated exactly when a drafter is loaded.
     spec: ?SpeculativeScratch,
+    /// The companion draft file's mapping, owned here so the drafter's tensor
+    /// references stay valid; null when the family's own file carries the block.
+    draft_mapped: ?inference.weights.Mapped,
     /// `general.name` from the artifact metadata, borrowed from the mapping.
     name: []const u8,
     /// Wall time spent in `open`, including directory parsing and mapping.
@@ -634,6 +653,8 @@ pub const Engine = struct {
         if (capacity == 0 or capacity > 32768) return error.InvalidGenerationBudget;
         var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
         errdefer mapped.deinit(io);
+        var draft_mapped: ?inference.weights.Mapped = null;
+        errdefer if (draft_mapped) |*m| m.deinit(io);
         const adapter = try models.select(mapped.document.string("general.architecture") orelse "");
         var vocab = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
         errdefer vocab.deinit();
@@ -655,14 +676,45 @@ pub const Engine = struct {
         var model: Model = switch (adapter) {
             inline else => |a| blk: {
                 const Family = models.registry.family(a);
-                const binding = try Family.bind(alloc, &mapped.document);
-                break :blk .{ .exec = @unionInit(Executors, @tagName(a), try openExecutor(Family, alloc, mapped.view(), binding, backend, capacity, kv, draft)) };
+                var binding = try Family.bind(alloc, &mapped.document);
+                // A companion draft source is a second GGUF of its own
+                // architecture; it is mapped here and must outlive the model.
+                const companion_path: ?[]const u8 = switch (draft) {
+                    .file => |path| path,
+                    .preferred => |path| if (comptime hasEmbeddedDraft(Family)) null else path,
+                    else => null,
+                };
+                if (companion_path) |path| {
+                    if (comptime @hasDecl(Family, "bindDraft")) {
+                        const companion = inference.weights.Mapped.open(alloc, io, path) catch |err| switch (err) {
+                            error.FileNotFound => return error.DraftSourceMissing,
+                            else => return err,
+                        };
+                        draft_mapped = companion;
+                        const arch = companion.document.string("general.architecture") orelse "";
+                        if (!std.mem.eql(u8, arch, Family.draft_architecture)) return error.DraftSourceMismatch;
+                        const target_tokens = vocabularyCount(&mapped.document) orelse return error.DraftSourceMismatch;
+                        if (vocabularyCount(&companion.document) != target_tokens) return error.DraftSourceMismatch;
+                        binding.draft = try Family.bindDraft(alloc, &companion.document, companion.view(), mapped.view(), &binding);
+                    } else return error.DraftSourceUnsupported;
+                }
+                const want_draft = switch (draft) {
+                    .none => false,
+                    .embedded, .optional_embedded => true,
+                    .file => true,
+                    .preferred => if (comptime hasEmbeddedDraft(Family)) true else companion_path != null,
+                };
+                break :blk .{ .exec = @unionInit(Executors, @tagName(a), try openExecutor(Family, alloc, mapped.view(), binding, backend, capacity, kv, want_draft)) };
             },
         };
         errdefer model.deinit(alloc);
-        // A required embedded block that the family does not bind is a typed
+        // A required draft source that the family does not bind is a typed
         // load error, never a silent non-speculative run.
-        if (std.meta.activeTag(draft) == .embedded and model.drafter() == null) return error.DraftSourceMissing;
+        const required = switch (draft) {
+            .none, .optional_embedded => false,
+            else => true,
+        };
+        if (required and model.drafter() == null) return error.DraftSourceMissing;
         // The verify scratch is part of the load plan: it exists exactly when a
         // drafter was requested, so a plain run pays nothing.
         var spec: ?SpeculativeScratch = null;
@@ -684,6 +736,7 @@ pub const Engine = struct {
             .stop_count = stop_count,
             .kv_precision = if (backend == .cpu) .f32 else kv,
             .spec = spec,
+            .draft_mapped = draft_mapped,
             .name = mapped.document.string("general.name") orelse "unnamed model",
             .load = started.durationTo(std.Io.Clock.awake.now(io)),
         };
@@ -692,6 +745,7 @@ pub const Engine = struct {
     pub fn deinit(self: *Engine) void {
         self.model.deinit(self.alloc);
         if (self.spec) |*s| s.deinit(self.alloc);
+        if (self.draft_mapped) |*m| m.deinit(self.io);
         self.encoder.deinit();
         self.vocab.deinit();
         self.mapped.deinit(self.io);

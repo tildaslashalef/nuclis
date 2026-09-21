@@ -72,6 +72,20 @@ compare-draft-metal: metal ## Native GPU prediction-block rows vs the pinned ref
 	python3 scripts/compare-generation.py "$(TRACE)-draft-metal" inference/src/models/fixtures/qwen35-mtp --positions 2 --draft \
 	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("draft metal", "passed", d["passed"], "rows", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c), "greedy", d["native_greedy"])'
 
+# The Gemma 4 assistant head's `Hello, world` rows against the pinned
+# reference trace (`inference/src/models/fixtures/gemma4-mtp/`): the companion
+# file's four blocks read the target's layer-46/47 caches, so the check needs
+# both files (MODL-19).
+GEMMA_MTP_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/mtp-gemma-4-12B-it.gguf
+
+compare-draft-gemma4: compare-draft-gemma4-metal ## The Gemma 4 assistant trace vs the reference (MODL-19; add compare-draft-gemma4-cpu explicitly)
+
+compare-draft-gemma4-metal: metal ## Native GPU assistant-head rows vs the pinned reference trace
+	$(ZIG) build test-generation $(METAL) -- "$(GEMMA_QAT_MODEL)" --metal --draft-trace "$(TRACE)-gemma4-mtp-metal" --draft-model "$(GEMMA_MTP_MODEL)"
+
+compare-draft-gemma4-cpu: ## Native CPU reference assistant-head rows vs the pinned reference trace
+	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(GEMMA_QAT_MODEL)" --draft-trace "$(TRACE)-gemma4-mtp-cpu" --draft-model "$(GEMMA_MTP_MODEL)"
+
 compare-draft-cpu: ## Native CPU reference prediction-block rows vs the pinned reference trace
 	rm -rf "$(TRACE)-draft-cpu" && mkdir -p "$(TRACE)-draft-cpu"
 	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(MODEL)" --draft-trace "$(TRACE)-draft-cpu"

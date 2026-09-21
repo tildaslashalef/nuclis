@@ -1017,7 +1017,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     var sampler = try inference.sampling.Sampler.init(seed orelse 0, settings.samplingOptions());
     try out.writeAll("Loading model…\n");
     try out.flush();
-    const draft: inference.engine.DraftRequest = if (settings.speculative) .embedded else .none;
+    const draft_path = try engine.draftPath(alloc, model_path, if (settings.entry) |entry| entry.mtp else null);
+    defer if (draft_path) |path| alloc.free(path);
+    const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
     var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, kv, settings.forced_profile, draft);
     defer eng.deinit();
     // The file's own profile from here on: the configuration guessed one

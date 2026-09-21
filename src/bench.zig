@@ -347,7 +347,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // Bench measures what the model offers: the drafter is loaded when the
     // family has one (`--speculative on` makes it required), and each
     // measured run is done both ways on the same loaded model.
-    const draft: inference.engine.DraftRequest = if (settings.speculative) .embedded else .optional_embedded;
+    const draft_path = try engine.draftPath(alloc, model_path, if (settings.entry) |entry| entry.mtp else null);
+    defer if (draft_path) |path| alloc.free(path);
+    const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .optional_embedded;
     var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);
     defer eng.deinit();
     const speculate = eng.model.drafter() != null;

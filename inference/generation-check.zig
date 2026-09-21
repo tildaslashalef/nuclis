@@ -93,6 +93,7 @@ pub fn main(init: std.process.Init) !void {
     var draft_stats = false;
     var speculative_check = false;
     var draft_trace: ?[]const u8 = null;
+    var draft_model: ?[]const u8 = null;
     var path: ?[]const u8 = null;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -107,6 +108,10 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedTraceDirectory;
             draft_trace = args[i];
+        } else if (std.mem.eql(u8, arg, "--draft-model")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedDraftModel;
+            draft_model = args[i];
         } else if (path == null) {
             path = arg;
         } else return error.UnknownOption;
@@ -124,7 +129,9 @@ pub fn main(init: std.process.Init) !void {
             try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal)
         else
             try run(qwen35_spec, alloc, init.io, &mapped, use_metal),
-        .gemma4 => if (draft_stats or speculative_check or draft_trace != null) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
+        .gemma4 => if (draft_trace != null)
+            try gemmaDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal)
+        else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
         .@"muse-glimmer" => if (draft_stats or speculative_check or draft_trace != null) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
     }
 }
@@ -1357,6 +1364,80 @@ fn compareDraft(label: []const u8, expected: []const u8, actual: []const f32, ma
     const rel_rms = @sqrt(sum_sq / ref_sq);
     std.debug.print("Draft block ({s}): max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0})\n", .{ label, max_abs, rel_rms, max_abs_bound, rel_rms_bound });
     if (!(max_abs <= max_abs_bound) or !(rel_rms <= rel_rms_bound)) return error.DraftBlockMismatch;
+}
+
+/// The Gemma 4 assistant head against the pinned trace: the target consumes
+/// `Hello, world` (9259, 236764, 1902) one token at a time, and before each
+/// token the head runs at that token's proposal position with the previous
+/// position's target hidden (the pinned `hprev` rows). Both the head's
+/// `h_next` and its greedy token must match, and a `propose` seeded from the
+/// committed prefix must return the pinned draft.
+fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: []const u8, use_metal: bool) !void {
+    const Family = inference.models.gemma4.family;
+    var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
+    defer mapped.deinit(io);
+    var draft_mapped = try inference.weights.Mapped.open(alloc, io, draft_path);
+    defer draft_mapped.deinit(io);
+    var binding = try Family.bind(alloc, &mapped.document);
+    binding.draft = try Family.bindDraft(alloc, &draft_mapped.document, draft_mapped.view(), mapped.view(), &binding);
+    const tokens = [3]u32{ 9259, 236764, 1902 };
+    const greedy = [2]u32{ 2613, 236764 };
+    const hprev_files = [2][]const u8{ @embedFile("src/models/fixtures/gemma4-mtp/token-1-mtp-hprev.f32"), @embedFile("src/models/fixtures/gemma4-mtp/token-2-mtp-hprev.f32") };
+    const h_files = [2][]const u8{ @embedFile("src/models/fixtures/gemma4-mtp/token-1-mtp-h.f32"), @embedFile("src/models/fixtures/gemma4-mtp/token-2-mtp-h.f32") };
+    const hidden = 3840;
+    const h_prev = try alloc.alloc(f32, hidden);
+    defer alloc.free(h_prev);
+    const h_out = try alloc.alloc(f32, hidden);
+    defer alloc.free(h_out);
+    var runtime = try Family.Runtime.init(alloc, mapped.view(), binding, 32, false, true);
+    defer runtime.deinit();
+    var plan: ?Family.Plan = null;
+    var gpu: ?*inference.metal.Backend = null;
+    defer if (plan) |*p| p.deinit();
+    defer if (gpu) |b| {
+        b.deinit();
+        alloc.destroy(b);
+    };
+    if (use_metal) {
+        var diagnostic: [8192]u8 = @splat(0);
+        gpu = try alloc.create(inference.metal.Backend);
+        gpu.?.* = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+        plan = try Family.Plan.init(alloc, gpu.?, mapped.view(), binding, 32, 32, .f32, false, true);
+    }
+    for (0..2) |row| {
+        for (h_prev, 0..) |*v, j| v.* = std.mem.bytesToValue(f32, hprev_files[row][j * 4 ..][0..4]);
+        // The row's proposal position is `row + 1`, so the target consumes
+        // tokens `0 .. row` first: its cache must hold those rows, exactly as
+        // it does in the driver when `draft()` runs.
+        try runtime.step(tokens[row], null, null);
+        var token_greedy: u32 = 0;
+        try runtime.draftForwardTrace(h_prev, tokens[row + 1], row + 1, h_out, &token_greedy, null);
+        try compareDraft(if (row == 0) "gemma cpu position 1" else "gemma cpu position 2", h_files[row], h_out, 1e-2, 1e-4);
+        if (token_greedy != greedy[row]) return error.DraftGreedyMismatch;
+        if (plan) |*p| {
+            try p.step(tokens[row], null, null, null, null, null);
+            var metal_greedy: u32 = 0;
+            try p.draftForwardTrace(h_prev, tokens[row + 1], row + 1, h_out, &metal_greedy, null);
+            try compareDraft(if (row == 0) "gemma metal position 1" else "gemma metal position 2", h_files[row], h_out, 1e-2, 1e-4);
+            if (metal_greedy != greedy[row]) return error.DraftGreedyMismatch;
+        }
+    }
+    // `propose` from the committed prefix equals the pinned draft at row 2:
+    // the prompt's hidden rows come from `prefill`, as the loop's prompt
+    // commit supplies them.
+    var proposed: [4]u32 = undefined;
+    const prompt_hidden = try alloc.alloc(f32, 2 * hidden);
+    defer alloc.free(prompt_hidden);
+    var fresh = try Family.Runtime.init(alloc, mapped.view(), binding, 32, false, true);
+    defer fresh.deinit();
+    try fresh.prefill(tokens[0..2], null, prompt_hidden, null);
+    try fresh.commit(tokens[0..2], prompt_hidden);
+    const count = try fresh.propose(tokens[2], &proposed, 0);
+    if (count < 1 or proposed[0] != greedy[1]) return error.DraftGreedyMismatch;
+    std.debug.print("Gemma assistant draft check passed ({s}): both rows match the pinned trace; propose returns {d}.\n", .{ if (use_metal) "cpu and metal" else "cpu", proposed[0] });
 }
 
 fn argmax(values: []const f32) u32 {

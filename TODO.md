@@ -68,14 +68,28 @@ work, not a launch floor, so fusing two memory-bound passes saves only the
 removed launch. The pairs stay behind `Backend.fused_norms` /
 `bench --unfused-norms`, and ENGN-17's record measures the shipped path
 ([bench.md § Fused norm sweep](docs/reference/bench.md#fused-norm-sweep-kern-18-2026-09-21)).
-**Two facts for MODL-19/20:** `bench` on the Gemma and Muse entries fails
-with `DraftSourceMissing` while `generation.speculative` is true and their
-registry companions have no adapter, and the route to a real decode win is
-epilogue fusion (the norm inside the kernel that produces its input), not
-merging dispatches.
+**Two facts for MODL-19/20:** the route to a real decode win is epilogue
+fusion (the norm inside the kernel that produces its input), not merging
+dispatches, and `bench` on a family whose companion has no adapter fails
+with `DraftSourceMissing` while the switch is on (fixed for Gemma by
+MODL-19, still true for Muse until MODL-20).
 
-**Next: MODL-19** (Gemma 4 draft heads), then MODL-20 (Muse's DFlash
-drafter), then ENGN-17's full record.
+MODL-19 (Gemma 4 draft heads) closed on 2026-09-21: the
+`gemma4-assistant` companion is a second GGUF that `Engine.open` maps and
+validates, the CPU and Metal plans read the target's layer-46/47 caches
+without owning one, and the pinned trace matches at 1.1e-4 max abs / 3.6e-6
+rel RMS (CPU) and 1.5e-4 / 5.4e-6 (Metal) with greedy 2613 and 236764. The
+verdict is **negative at draft 4**: 2.26 accepted per batch, every non-verify
+cost negligible, but the verify batch is 136 ms at 3–8 rows, so the pair
+runs 0.899× at draft 4 and only 1.017× at draft 7 against 25.2–25.4 tok/s
+ordinary decode. Facts and the table:
+[speculative-decoding.md § The Gemma 4 assistant heads](docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19)
+and [bench.md § The Gemma 4 draft pair](docs/reference/bench.md#the-gemma-4-draft-pair-modl-19-2026-09-21).
+The 26B-A4B head is bound and width-checked but not measured. The verifier's
+row-flat cost is the lever, not the drafter: `max_draft_length` (the 8-row
+tile bound) is ENGN-17's call.
+
+**Next: MODL-20** (Muse's DFlash drafter), then ENGN-17's full record.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -123,7 +137,7 @@ window, the fused norms behind their flag). The kernel levers the plan
 ordered are exhausted; nothing here claims a
 final speedup before ENGN-17 measures it.
 
-Order: MODL-19 → MODL-20 →
+Order: MODL-20 →
 ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
@@ -137,7 +151,7 @@ verify-shaped routing landed before ENGN-17 because the verdict measures
 the Qwen path it changes**: the reuse body takes the 1–64-row chunk
 attention of every verify batch at 16K–32K context, measured 11–16 %
 faster at the kernel.
-**MODL-19 and MODL-20 moved ahead of ENGN-17 on 2026-09-21** (the user's
+**MODL-19 and MODL-20 were moved ahead of ENGN-17 on 2026-09-21** (the user's
 call): the draft contract, the verify batch, both acceptance rules, the
 recovery schemes, the loop, and the switch are family-independent and
 already in the tree, so each family's speculative support is its adapter
@@ -161,7 +175,6 @@ APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-19 | Gemma 4 draft heads: the companion file as a second GGUF, 12B and 26B-A4B | 1–2 |
 | MODL-20 | Muse Glimmer DFlash drafter: facts, contract fit, acceptance loop | 2 |
 | ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
 | ENGN-18 | Gemma 4 12B decode and prefill: the Q4_0 tile and fewer launches | 1–2 |
@@ -290,8 +303,10 @@ the file per registry entry (`models.<name>.mtp`, a typed load error when
 missing or mismatched), `generation.speculative` and `--speculative on|off`
 on `generate`, `agent`, and `bench`, `generation.draft_length` and
 `--draft-length` capped by `engine.max_draft_length` = 7; the acceptance
-rule and the recovery scheme are not exposed. Whether the `mtp` role is
-renamed to a mechanism-neutral `draft` is decided in MODL-19.
+rule and the recovery scheme are not exposed. The role name stays `mtp`
+(MODL-19): the spec's "the `mtp` role names the draft source whatever its
+mechanism" already carries the meaning, and a rename would migrate every
+sidecar for no behavior.
 
 **The oracle.** The pinned llama.cpp checkout (`7620399f5`, built by `make
 compare` under `.zig-cache/reference/llama.cpp`) implements speculative
@@ -309,67 +324,32 @@ its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
 
-## MODL-19 — Gemma 4 draft heads: the companion file as a second GGUF
-
-**Facts read on 2026-09-21** (session 1). The four questions are answered and
-recorded with provenance in
-[speculative-decoding.md § The Gemma 4 assistant heads](docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19):
-each head block reads the **target's** layer-46 (sliding blocks) or layer-47
-(global block) KV cache and writes none; the 1024-wide `token_embd` is the
-head's own tied *classifier* (logits over the vocabulary), while the input
-embedding is the target's `token_embd` scaled by `sqrt(3840)`; the pair is
-`[embed; h]` with **no** norm on either half, projected by
-`nextn.pre_projection`; `nextn.post_projection` of the output-norm'd hidden is
-`h_next` (chaining only, never the target's head); `layer_output_scale`
-multiplies the whole block output after the FFN residual. Traces are pinned
-under `inference/src/models/fixtures/gemma4-mtp/` (captured with the harness's
-new `--assistant-draft` mode; `Hello, world`, rows at proposal positions 1 and
-2, greedy 2613 and 236764). The 26B-A4B head is the same architecture at width
-2816 with 2 global KV heads: **in scope**, the same code driven by its own
-config. The registry role stays `mtp` (it names the draft source of any
-mechanism; a rename would migrate every sidecar for no behavior).
-
-**Design.**
-- `inference/src/models/gemma4_assistant.zig`: the head's own binding (49
-  tensors, config `embedding` 1024, `embedding_out` 3840/2816, four blocks of
-  pattern `[1,1,1,0]`, global KV heads 1/2), validation by architecture key and
-  width, `executableEncoding` shared with the main adapter. The family
-  registry gains a `draft` sub-adapter: `Family.bindDraft(doc)`.
-- `Engine.open`'s `draft = .{ .file = path }` maps the companion, checks
-  `general.architecture == "gemma4-assistant"`, the target width against
-  `embedding_length_out`, and the vocabulary size, else
-  `DraftSourceMismatch`; a missing file is `DraftSourceMissing`. The engine
-  owns the companion mapping for the drafter's lifetime (`draft_mapped`).
-- CPU reference: `gemma4_runtime.zig` gains the assistant runtime whose
-  `step`-like forward reads `self.state.layers[46/47]`; `propose` runs one
-  block per position at the proposal position, `commit` copies the last
-  target hidden into `pending_h`, `reset` zeroes it, `bytes` reports the
-  workspace. Gemma's runtime also gains `verify` (rows + post-`output_norm`
-  hidden) and `verifyGreedy`, which the speculative loop needs.
-- Metal: `gemma4_metal.zig` gains `verify`/`verifyGreedy`/`readVerifyRow` over
-  the chunked layer stack (the `recordLayers` split Qwen's plan already has),
-  `prefill` hidden rows, and the head plan: buffers for one 8192-wide query
-  row and the 1024-wide residuals, the head weights, per-block Q/K norm and
-  RoPE at the proposal position, `attentionDecode` over the target's
-  layer-46/47 cache slices (visible 1023 sliding rows, full global), the FFN,
-  and a device argmax/top-1 over the head's `token_embd`.
-- Fixture check: `generation-check --draft-trace` gains the Gemma path
-  (CPU and Metal, F32 cache), comparing the two pinned rows and the greedy
-  tokens; load-error unit tests (missing path, the projector file, the Qwen
-  head width).
-
-**Acceptance (this session's gates).** `make build`; the pinned trace on both
-backends; greedy equivalence and the load errors; one Gemma off/on bench pair;
-the per-batch table in bench.md and the verdict here; `make check`.
-`make compare`, `test-generation-metal`, `speculative-check*`, `draft-stats`,
-and the Muse record are deferred to ENGN-17 by the session's gate policy.
-
 ## MODL-20 — Muse Glimmer DFlash drafter
 
 **Order (revised 2026-09-21).** Moved ahead of ENGN-17 with MODL-19 at the
 user's request; the same family-independent framework applies, and this is
 the larger of the two adapters (the block proposal, the feature retention,
 the drafter's own windowed cache).
+
+**Session 0 note (2026-09-21, MODL-19's close).** This unit did not start:
+MODL-19 consumed its session (and produced the negative draft-4 verdict in
+*Where we are*), so the facts below are still the 2026-09-19 reading and only
+the first design step — session 1's reference read — is complete. What
+MODL-19 now hands over, proven end to end and worth copying before re-reading
+the reference: `Engine.open`'s `DraftRequest.{file,preferred}` companion
+mapping with `DraftSourceMissing`/`DraftSourceMismatch` and the engine-owned
+`draft_mapped`; `Family.bindDraft` (companion architecture, target width,
+vocabulary count, shared RoPE factors) and the rule that a companion binding
+**carries its own `weights.View`** — reading its tensors through the target's
+view reinterprets the main file at companion offsets and is silent; the
+per-family `propose`/`commit`/`reset`/`bytes` plus a `draftForwardTrace`
+used by `generation-check --draft-trace --draft-model`; and
+`scripts/reference-generation.cpp`'s per-row capture order (the head row
+before the target decodes that position). What Muse adds on top: five
+retained target residuals per position, the `fc.weight` projection, the
+block proposal with a mask token, and the drafter's own windowed (2048)
+cache — no part of MODL-19's loading or loop work is reusable beyond
+`DraftRequest.file`, which now exists.
 
 **Facts read on 2026-09-19** (`nuclis inspect` and the inventory script on
 `dflash-kquant.gguf`; to be confirmed from the reference's `dflash`

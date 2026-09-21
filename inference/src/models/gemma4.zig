@@ -21,6 +21,8 @@
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
+const weights = @import("../runtime/weights.zig");
+const gemma4_assistant = @import("gemma4_assistant.zig");
 const Tensor = gguf.Tensor;
 
 pub const architecture = "gemma4";
@@ -191,6 +193,8 @@ pub const Layer = struct {
 /// keep the source Document alive for the entire binding lifetime.
 pub const Binding = struct {
     config: *const Config,
+    /// The draft head when a companion was loaded; null for the main file.
+    draft: ?gemma4_assistant.Binding = null,
     /// Also the output projection (tied): logits = token_embedding · y.
     token_embedding: *const Tensor,
     output_norm: *const Tensor,
@@ -207,6 +211,9 @@ pub const Binding = struct {
 };
 
 pub const Error = models.BindError;
+/// `bindDraft` adds the companion's mismatch, the typed error `Engine.open`
+/// surfaces.
+pub const DraftError = models.BindError || error{ DraftSourceMismatch, InvalidShape, TensorOutOfBounds };
 
 /// The registry entry (`models.table`).
 pub const family = struct {
@@ -216,7 +223,32 @@ pub const family = struct {
     pub const bind = @import("gemma4.zig").bind;
     pub const Runtime = @import("gemma4_runtime.zig").Runtime;
     pub const Plan = @import("gemma4_metal.zig").Plan;
+    /// The draft source is the `gemma4-assistant` companion file.
+    pub const draft_architecture = gemma4_assistant.architecture;
+    pub const bindDraft = @import("gemma4.zig").bindDraft;
 };
+
+/// The companion head for a bound target: the head's architecture and
+/// target-width checks already ran in `Engine.open`; this binds the file and
+/// refuses a head whose width is not the target's.
+/// The companion head for a bound target: `view` is the companion file's byte
+/// source, `target_view` the target's. A head of another width is refused, and
+/// so is one whose global-layer RoPE factors differ from the target's — the
+/// Metal plan reuses the target's rope tables.
+pub fn bindDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, target_view: weights.View, target: *const Binding) DraftError!gemma4_assistant.Binding {
+    var head = gemma4_assistant.bind(alloc, doc) catch |err| switch (err) {
+        error.UnsupportedArchitecture, error.UnsupportedConfiguration, error.MissingMetadata, error.InvalidMetadata => return error.DraftSourceMismatch,
+        else => return err,
+    };
+    if (head.config.embedding_out != target.config.embedding) return error.DraftSourceMismatch;
+    const head_factors = view.vector(alloc, head.rope_factors) catch return error.DraftSourceMismatch;
+    defer alloc.free(head_factors);
+    const target_factors = target_view.vector(alloc, target.rope_factors) catch return error.DraftSourceMismatch;
+    defer alloc.free(target_factors);
+    if (!std.mem.eql(f32, head_factors, target_factors)) return error.DraftSourceMismatch;
+    head.view = view;
+    return head;
+}
 
 const IntegerSetting = struct { key: []const u8, value: u64 };
 /// Keys with one value across the pinned configurations.
@@ -418,6 +450,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     }
     var result: Binding = undefined;
     result.config = config;
+    result.draft = null;
     result.token_embedding = try binder.take("token_embd.weight", &.{ config.embedding, vocabulary }, .matrix);
     result.output_norm = try binder.take("output_norm.weight", &.{config.embedding}, .f32);
     result.rope_factors = try binder.take("rope_freqs.weight", &.{256}, .f32);

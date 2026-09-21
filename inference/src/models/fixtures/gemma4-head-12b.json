@@ -1,0 +1,447 @@
+{
+ "metadata": {
+  "general.architecture": "gemma4-assistant",
+  "general.type": "model",
+  "general.sampling.top_k": 64,
+  "general.sampling.top_p": 0.949999988079071,
+  "general.sampling.temp": 1.0,
+  "general.name": "12B Assistant",
+  "general.finetune": "12B-assistant",
+  "general.size_label": "423M",
+  "gemma4-assistant.block_count": 4,
+  "gemma4-assistant.context_length": 262144,
+  "gemma4-assistant.embedding_length": 1024,
+  "gemma4-assistant.feed_forward_length": 8192,
+  "gemma4-assistant.attention.head_count": 16,
+  "gemma4-assistant.attention.head_count_kv": {
+   "count": 4,
+   "offset": 675,
+   "type": 5,
+   "values": [8,8,8,1]
+  },
+  "gemma4-assistant.rope.freq_base": 1000000.0,
+  "gemma4-assistant.rope.freq_base_swa": 10000.0,
+  "gemma4-assistant.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+  "gemma4-assistant.attention.key_length": 512,
+  "gemma4-assistant.attention.value_length": 512,
+  "general.file_type": 32,
+  "gemma4-assistant.attention.sliding_window": 1024,
+  "gemma4-assistant.attention.shared_kv_layers": 4,
+  "gemma4-assistant.embedding_length_per_layer_input": 0,
+  "gemma4-assistant.attention.sliding_window_pattern": {
+   "count": 4,
+   "offset": 1249,
+   "type": 7,
+   "values": [1,1,1,0]
+  },
+  "gemma4-assistant.attention.key_length_swa": 256,
+  "gemma4-assistant.attention.value_length_swa": 256,
+  "gemma4-assistant.rope.dimension_count": 512,
+  "gemma4-assistant.rope.dimension_count_swa": 256,
+  "gemma4-assistant.embedding_length_out": 3840,
+  "gemma4-assistant.nextn_predict_layers": 4,
+  "general.quantization_version": 2,
+  "tokenizer.ggml.model": "gemma4",
+  "tokenizer.ggml.tokens": {
+   "count": 262144,
+   "offset": 1720,
+   "type": 8
+  },
+  "tokenizer.ggml.scores": {
+   "count": 262144,
+   "offset": 4415212,
+   "type": 6
+  },
+  "tokenizer.ggml.token_type": {
+   "count": 262144,
+   "offset": 5463837,
+   "type": 5
+  },
+  "tokenizer.ggml.merges": {
+   "count": 514906,
+   "offset": 6512458,
+   "type": 8
+  },
+  "tokenizer.ggml.bos_token_id": 2,
+  "tokenizer.ggml.eos_token_id": 1,
+  "tokenizer.ggml.unknown_token_id": 3,
+  "tokenizer.ggml.padding_token_id": 0,
+  "tokenizer.ggml.mask_token_id": 4,
+  "tokenizer.ggml.add_space_prefix": false,
+  "tokenizer.ggml.add_bos_token": true,
+  "tokenizer.chat_template": {
+   "length": 18924,
+   "offset": 15764529,
+   "sha256": "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b",
+   "head": "{%- macro format_parameters(properties, required, filter_keys=fa"
+  }
+ },
+ "tensors": [
+  [
+   "rope_freqs.weight",
+   [
+    256
+   ],
+   0
+  ],
+  [
+   "token_embd.weight",
+   [
+    1024,
+    262144
+   ],
+   2
+  ],
+  [
+   "blk.0.attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.0.layer_output_scale.weight",
+   [
+    1
+   ],
+   0
+  ],
+  [
+   "blk.0.ffn_down.weight",
+   [
+    8192,
+    1024
+   ],
+   2
+  ],
+  [
+   "blk.0.ffn_gate.weight",
+   [
+    1024,
+    8192
+   ],
+   2
+  ],
+  [
+   "blk.0.ffn_up.weight",
+   [
+    1024,
+    8192
+   ],
+   2
+  ],
+  [
+   "blk.0.post_attention_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.0.post_ffw_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.0.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.0.attn_output.weight",
+   [
+    4096,
+    1024
+   ],
+   2
+  ],
+  [
+   "blk.0.attn_q_norm.weight",
+   [
+    256
+   ],
+   0
+  ],
+  [
+   "blk.0.attn_q.weight",
+   [
+    1024,
+    4096
+   ],
+   2
+  ],
+  [
+   "blk.1.attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.1.layer_output_scale.weight",
+   [
+    1
+   ],
+   0
+  ],
+  [
+   "blk.1.ffn_down.weight",
+   [
+    8192,
+    1024
+   ],
+   2
+  ],
+  [
+   "blk.1.ffn_gate.weight",
+   [
+    1024,
+    8192
+   ],
+   2
+  ],
+  [
+   "blk.1.ffn_up.weight",
+   [
+    1024,
+    8192
+   ],
+   2
+  ],
+  [
+   "blk.1.post_attention_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.1.post_ffw_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.1.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.1.attn_output.weight",
+   [
+    4096,
+    1024
+   ],
+   2
+  ],
+  [
+   "blk.1.attn_q_norm.weight",
+   [
+    256
+   ],
+   0
+  ],
+  [
+   "blk.1.attn_q.weight",
+   [
+    1024,
+    4096
+   ],
+   2
+  ],
+  [
+   "blk.2.attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.2.layer_output_scale.weight",
+   [
+    1
+   ],
+   0
+  ],
+  [
+   "blk.2.ffn_down.weight",
+   [
+    8192,
+    1024
+   ],
+   2
+  ],
+  [
+   "blk.2.ffn_gate.weight",
+   [
+    1024,
+    8192
+   ],
+   2
+  ],
+  [
+   "blk.2.ffn_up.weight",
+   [
+    1024,
+    8192
+   ],
+   2
+  ],
+  [
+   "blk.2.post_attention_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.2.post_ffw_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.2.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.2.attn_output.weight",
+   [
+    4096,
+    1024
+   ],
+   2
+  ],
+  [
+   "blk.2.attn_q_norm.weight",
+   [
+    256
+   ],
+   0
+  ],
+  [
+   "blk.2.attn_q.weight",
+   [
+    1024,
+    4096
+   ],
+   2
+  ],
+  [
+   "blk.3.attn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.3.layer_output_scale.weight",
+   [
+    1
+   ],
+   0
+  ],
+  [
+   "blk.3.ffn_down.weight",
+   [
+    8192,
+    1024
+   ],
+   2
+  ],
+  [
+   "blk.3.ffn_gate.weight",
+   [
+    1024,
+    8192
+   ],
+   2
+  ],
+  [
+   "blk.3.ffn_up.weight",
+   [
+    1024,
+    8192
+   ],
+   2
+  ],
+  [
+   "blk.3.post_attention_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.3.post_ffw_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.3.ffn_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "blk.3.attn_output.weight",
+   [
+    8192,
+    1024
+   ],
+   2
+  ],
+  [
+   "blk.3.attn_q_norm.weight",
+   [
+    512
+   ],
+   0
+  ],
+  [
+   "blk.3.attn_q.weight",
+   [
+    1024,
+    8192
+   ],
+   2
+  ],
+  [
+   "output_norm.weight",
+   [
+    1024
+   ],
+   0
+  ],
+  [
+   "nextn.post_projection.weight",
+   [
+    1024,
+    3840
+   ],
+   2
+  ],
+  [
+   "nextn.pre_projection.weight",
+   [
+    7680,
+    1024
+   ],
+   2
+  ]
+ ]
+}

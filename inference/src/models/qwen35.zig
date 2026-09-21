@@ -133,6 +133,8 @@ pub const family = struct {
     pub const bind = @import("qwen35.zig").bind;
     pub const Runtime = @import("qwen35_runtime.zig").Runtime;
     pub const Plan = @import("qwen35_metal.zig").Plan;
+    /// The artifact's own file carries the prediction block.
+    pub const embedded_draft = true;
 };
 
 // This first profile is deliberately narrow. Reject unimplemented variants

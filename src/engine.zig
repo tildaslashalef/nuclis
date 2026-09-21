@@ -50,6 +50,16 @@ pub fn readPromptTokens(alloc: std.mem.Allocator, io: std.Io, path: []const u8, 
     return alloc.dupe(u32, parsed.value);
 }
 
+/// The companion draft file's path: `mtp` (a name relative to the model
+/// file's directory, or an absolute path) resolved against `model_path`'s
+/// directory. Null when the entry names none; caller owns the result.
+pub fn draftPath(alloc: std.mem.Allocator, model_path: []const u8, mtp: ?[]const u8) !?[]u8 {
+    const file = mtp orelse return null;
+    if (std.fs.path.isAbsolute(file)) return try alloc.dupe(u8, file);
+    const parent = std.fs.path.dirname(model_path) orelse return error.MissingModelDirectory;
+    return try std.fs.path.join(alloc, &.{ parent, file });
+}
+
 pub fn milliseconds(duration: std.Io.Duration) f64 {
     return @as(f64, @floatFromInt(duration.nanoseconds)) / std.time.ns_per_ms;
 }
