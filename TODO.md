@@ -89,7 +89,10 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
-**Next: TERM-10** (chat polish). v0.2.0 was tagged on 2026-09-21
+**Next: TERM-10** (chat polish, two sessions; its scope was widened on
+2026-09-21 to the harness, the repaint tick, the warm-up, the header box,
+the status bar, and the input box, the user's call — session 1 starts at
+its item 0). v0.2.0 was tagged on 2026-09-21
 (`142fa81`, 133 changelog entries since v0.1.0), pushed, and published by
 `release.yml` with its three assets; the tree is `0.3.0-dev`. APPS-16
 (output budget default 4096, cap 16384) closed the same day
@@ -214,7 +217,7 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
+| TERM-10 | Chat polish: the tmux/Ghostty harness, the repaint tick and visible warm-up, header box, status bar, input box, operation dots, diff bands, markdown hardening | 2 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
@@ -333,9 +336,9 @@ its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
 
-## TERM-10 — Chat polish: operation dots, the running pulse, write summaries with a file view
+## TERM-10 — Chat polish: seeing the surface, the warm-up, the frame, and the operation rows (2 sessions; scope agreed 2026-09-21)
 
-**Facts (read 2026-09-20).** The agent emits typed events
+**Facts (read 2026-09-20/21).** The agent emits typed events
 (`src/tui/event.zig`: `tool_call { id, name, summary, detail }`,
 `tool_result { id, text, truncated, is_error, summary }`, `diff`, `status`,
 `notice`, `turn_end`); `src/tui/transcript.zig` turns them into blocks
@@ -345,15 +348,100 @@ under `glyphs.detail`; the `Ui` in `src/agent/root.zig` advances one
 spinner frame per repaint while a turn runs (`spinnerFrame`, shared by the
 thinking label and a running call). Themes are `src/tui/theme.zig` (`Style`
 roles, `Glyphs` per `GlyphSet` unicode/ascii; the escape stream is pinned by
-golden tests without a TTY). The tools are `bash`, `edit_file`, `glob`,
-`grep`, `read_file`, `write_file` (`src/agent/tools/`); `bash` bounds output
-at 1 MiB and 300 s. The model of the polish is the screenshot of 2026-09-20:
+golden tests without a TTY; the palette is chosen from `COLORTERM`/`TERM`
+at `theme.zig:396`). The tools are `bash`, `edit_file`, `glob`, `grep`,
+`read_file`, `write_file` (`src/agent/tools/`); `bash` bounds output at
+1 MiB and 300 s. The model of the polish is the screenshots of 2026-09-20/21:
 a coloured dot per operation, a pulsing dot while one runs, `Write(path)`
 with `Wrote N lines to path` and a numbered, truncated file view, and
 `Read 1 file, ran 1 shell command` summaries between assistant blocks.
 
-**Design.**
-1. Operation dots. `Glyphs` gains `dot` (`●` / `*`) and `Style` gains
+**Why the warm-up looks stalled.** `primeSession` (`root.zig:770`) blocks
+inside `Completer.prime` and the surface repaints only from the engine's
+`step` hook (`root.zig:748`), one beat per 256-token prefill chunk — one
+frame every ~3 s at 75 tok/s, so the ten-frame spinner never reads as
+motion, and the same holds for every turn's prefill. The Metal executor
+blocks in `waitUntilCompleted` once per committed chunk
+(`inference/src/backends/metal/bridge.m:238`, `Backend.commit` at
+`root.zig:404`), a few commits per step. The user's terminal is Ghostty
+(`COLORTERM=truecolor`, kitty keyboard level, synchronized output, focus
+reports, OSC notifications all supported).
+
+**Session 1.**
+
+0. The harness — how the implementer sees the surface without the user.
+   `scripts/tui-shot.py` (`make shot ARGS=…`): starts `./zig-out/bin/nuclis
+   agent` in a detached tmux session (`tmux -L nuclis new-session -d -x W -y
+   H`, tmux 3.7c installed 2026-09-21) with `COLORTERM=truecolor` and
+   `terminal-overrides ',*:RGB'` so the theme resolves as it does in Ghostty;
+   a step list of `keys <text>`, `enter`, `wait <s>`, `capture <name>`,
+   `burst <name> <seconds> <hz>` (frames every 1/hz s, for animation
+   cadence); each capture is `tmux capture-pane -p -e` saved under
+   `.zig-cache/tui/<name>.txt` and, beside it, a `.tagged.txt` form where
+   every SGR run becomes `[fg=#hex bg=#hex bold dim]…[/]` so a colour or a
+   band is readable in text. `--ghostty` additionally opens one Ghostty window
+   attached to the session (`open -na Ghostty --args -e tmux -L nuclis attach
+   -t shot`) and each `capture` also runs `screencapture -l <window id>` to
+   `<name>.png` (needs the screen-recording permission once; falls back to
+   text with a note). A `burst` report prints the frames that differ from
+   their predecessor and the measured interval. Nothing in the harness is
+   tested by `make check`; it is documented in `development.md § The agent's
+   transcript` as the way to look.
+1. The repaint tick. `inference/src/backends/metal/root.zig` `Backend`
+   gains `tick: ?Tick` (`{ context, call }`, the shape of `tools.Tick`);
+   `nu_metal_commit` takes a callback and polls `command.status` with a
+   20 ms sleep, calling it every ≥ 100 ms until completion (no callback:
+   `waitUntilCompleted` as today). `inference/src/engine.zig` exposes
+   `Model.setTick(?Tick)` (CPU executor: stored and ignored); the `Ui` sets
+   it to `toolTick` at startup, so `draw` runs at ~10 Hz through every
+   prefill and decode wait and the tick must never re-enter the engine (it
+   polls keys and paints; a Ctrl-C sets the interrupt the loop consults, as
+   the bash tick does). At 10 Hz the region must not be rewritten whole:
+   `Screen.paint` keeps the rows of the last frame and rewrites from the
+   first row that differs (the cursor move, clear-to-end, and the changed
+   rows only; a resize or a height change repaints all), which is what
+   keeps a long transcript tail cheap on every tick. Tests: a Metal test
+   with a counting tick over a deliberately long dispatch asserts ≥ 2 calls;
+   `screen.zig` goldens pin the escape stream of an unchanged frame (empty),
+   a one-row change, and a height change; `make gate
+   NAME='qwen38-trace-*'` proves the numbers are untouched.
+2. The visible warm-up. While `primeSession` runs, the live region shows
+   one row in the thinking-label position: `⠋ warming up · system prompt and
+   tools 256/934 ~23s` (the bar's countdown text, `op_running` dot, spinner
+   from the tick), and on completion the transcript gets a `dim` notice row
+   `warmed up in 12.4s · 934 tokens` written above the region; a skipped
+   warm-up keeps today's notice. The bar's text is unchanged.
+3. The header box. `banner.rows` draws the wordmark and the two description
+   rows inside a box (`Glyphs.box_{tl,tr,bl,br,h,v}`: `╭╮╰╯─│`, ascii `+ + +
+   + - |`) two cells wider than the widest content row, `header` style on
+   the frame; below `wordmark_width + margin + 4` columns the unboxed
+   single-line header stays. The first-row cropping in the 2026-09-21
+   screenshot is reproduced in the harness at that size before the fix is
+   chosen (suspects: `anchor` walking past the header on a tall window;
+   `clear` racing the tab bar). Goldens at 60, 80, and 160 columns.
+4. The status bar. `Status.paint` becomes two groups: measurements on the
+   left (`◆ ready · ctx 6608/16384 · in 9070 out 2947 · pp 74.5 t/s · tg
+   10.4 t/s`, the live prefill/decode words and `step n/m` as today) and
+   settings on the right (`think low · spec on 3.13/step` or `spec off` ·
+   `kv f16` · `metal` · `qwen3.8-27b`), right-aligned, with the settings
+   dropped from the right on a narrow bar and the measurements truncated
+   last. `Status` gains `speculative: bool`, `draft_length`, `kv`, `backend`
+   fields filled from the settings at startup; `accepted_per_step` renders
+   inside the `spec` cell. Tests: every field present at 200 columns, the
+   drop order at 100 / 60 / 40, width exact.
+5. The input box. The editor's rows are framed (`box_*` glyphs, `editor`
+   background inside, the prompt `> ` on the first inner row, the hint row
+   directly under the frame); the region grows by 2 rows and `draw`'s
+   `editor_cap`/`max_live` arithmetic takes the frame into account
+   (`min_editor_rows` stays 3 inner rows). The frame carries state, as pi's
+   editor border does: its colour is the effort's (`Style.effort_off/low/
+   medium/high/xhigh`, a dim-to-accent ramp; `plain` none) and while a turn
+   runs the spinner frame is drawn in the top border after the corner, so
+   the box itself says busy. The completion list keeps its place above the
+   box. Goldens for one, three, and scrolled inputs, idle and busy, at
+   unicode and ascii; `screen.zig`'s cursor test covers the framed
+   position.
+6. Operation dots. `Glyphs` gains `dot` (`●` / `*`) and `Style` gains
    `op_ok`, `op_error`, `op_running`, `op_write` (green, red, dim/accent,
    blue in the truecolor and c256 themes; the c16 theme maps them onto its
    palette, `plain` drops colour). The transcript's tool-call row becomes
@@ -362,68 +450,111 @@ with `Wrote N lines to path` and a numbered, truncated file view, and
    the tool's own `summary` moves to the detail row. The dot's style is
    `op_running` while `running`, then `op_ok` or `op_error` from
    `is_error`; a `write_file`/`edit_file` result uses `op_write`.
-2. The running pulse. A running call's dot alternates between `op_running`
-   and `dim` on the repaint cadence the spinner already uses (the `frame`
-   counter; two phases, not the ten-frame spinner), so a long `bash` shows
-   a slow blink; the thinking label keeps the spinner. The status bar's
-   running-tool text is unchanged.
-3. Write summaries. `write_file` returns `summary = "Wrote {lines} lines to
+7. The running pulse. A running call's dot alternates between `op_running`
+   and `dim` on the repaint cadence (the `frame` counter; two phases, not the
+   ten-frame spinner; with the tick of item 1 a phase is ~500 ms), so a long
+   `bash` shows a slow blink; the thinking label keeps the spinner. The
+   status bar's running-tool text is unchanged.
+8. Write summaries. `write_file` returns `summary = "Wrote {lines} lines to
    {path}"` (and `edit_file` `"Edited {path}: +{added} −{removed} lines"`),
    and the transcript renders the result of a write as the summary row plus
    a numbered file view of the first `write_preview_lines = 10` lines
    (`dim` line numbers, code style) and `… +N lines` when longer; a
    `read_file` result keeps today's rows. The view is derived from the
    result text the model already receives, never from a second read.
-4. Turn summaries. On `turn_end`, when a turn had tool calls, the transcript
+9. Turn summaries. On `turn_end`, when a turn had tool calls, the transcript
    writes one `dim` row `Read 2 files, ran 1 shell command, wrote 1 file`
    (counts by tool kind, in that order, singular/plural) between the tool
    blocks and the next assistant text; a turn without tools writes nothing.
-5. Golden tests in `transcript.zig` for each row form at unicode and ascii,
-   a running-then-settled call at both pulse phases, a write with 3 and
-   with 40 lines, and the turn summary; the theme test asserts every new
-   style has a value in all four kinds.
-6. The edit diff. Today `transcript.renderDiff` draws `diff.Row`s
-   (`old_line`, `new_line`, `kind` context/add/remove, `text`, a changed
-   `Span`) side by side from 96 columns (`side_by_side_min_width`) and
-   unified below, with `diff_add` green, `diff_remove` red, `diff_change`
-   reverse video, and no line numbers or markers. The polish: a gutter of
-   right-aligned old and new line numbers in `dim` (width from the largest
-   number in the rows, per side in the side-by-side form), a marker cell
-   after the gutter (`Glyphs.diff_add` `+`, `diff_remove` `−`, context a
-   space; the ascii set uses `+`/`-`), and two new background styles
-   `diff_add_bg`/`diff_remove_bg` (a dark green and a dark red in truecolor
-   and c256; the c16 theme keeps foreground colour only; `plain` none) that
-   fill the row to the pane width so a change reads as a band, with the
-   changed span still highlighted inside it (`diff_change` becomes a
-   brighter background of the same hue instead of reverse video); a header
-   row `path` with `+N −M` counts in `diff_header`; the side-by-side form
-   pads both panes to equal width and separates them with `Glyphs.table_bar`;
-   the unified form keeps one gutter with both numbers. Goldens: an
-   insertion, a deletion, a paired replacement with a changed span, CRLF
-   context, at 80 and at 120 columns, unicode and ascii.
-7. The markdown renderer (`src/tui/markdown.zig`, 818 lines, eight tests).
-   Resilience: a fuzz-style test feeds truncated prefixes of every fixture
-   document (every byte boundary) through `split` and `render` and asserts
-   no error, no control byte in the output, and a bounded row count;
-   pathological inputs get pinned goldens: a 10,000-character line without
-   spaces, 64 nested list levels, an unclosed fence at end of stream, a
-   table with 40 columns, a heading of only `#`, a link whose URL contains
-   an escape, and mixed CRLF. Efficiency: `render` is called on every
-   token for the streaming tail, so the closed part must not be re-rendered
-   — the transcript caches the rows of the blocks `split` has closed (by
-   the byte offset `split` returns) and renders only the open tail; a test
-   counts `render` calls over a streamed fixture and the cache's hit rate.
-   Behaviour: inline code inside headings and list items, `***bold
-   italic***`, nested quotes, ordered lists that start at a number other
-   than 1, and a table cell that is empty, each with a golden.
+10. Golden tests in `transcript.zig` for each row form at unicode and ascii,
+    a running-then-settled call at both pulse phases, a write with 3 and
+    with 40 lines, and the turn summary; the theme test asserts every new
+    style and glyph has a value in all four kinds.
 
-**Acceptance.** `make check` with the golden tests and the prefix fuzz; a
-manual `nuclis agent` session on a small task shows the four elements of
-the screenshot and an edit's banded diff with numbers; the streaming test
-shows the closed-block cache holds (no re-render of closed blocks);
-`docs/development.md § The agent's transcript` and `docs/agent-spec.md`
-(the rendering section) describe the rows. No tool contract changes except
-the summaries' text.
+Session 1 ends with a harness run recorded in the log: a burst over the
+warm-up showing the ~10 Hz cadence, and captures of the header box, the
+bar, the input box, and a turn with the four screenshot elements, at 160
+columns in tmux and one Ghostty PNG.
+
+**Session 2.**
+
+11. The edit diff. Today `transcript.renderDiff` draws `diff.Row`s
+    (`old_line`, `new_line`, `kind` context/add/remove, `text`, a changed
+    `Span`) side by side from 96 columns (`side_by_side_min_width`) and
+    unified below, with `diff_add` green, `diff_remove` red, `diff_change`
+    reverse video, and no line numbers or markers. The polish: a gutter of
+    right-aligned old and new line numbers in `dim` (width from the largest
+    number in the rows, per side in the side-by-side form), a marker cell
+    after the gutter (`Glyphs.diff_add` `+`, `diff_remove` `−`, context a
+    space; the ascii set uses `+`/`-`), and two new background styles
+    `diff_add_bg`/`diff_remove_bg` (a dark green and a dark red in truecolor
+    and c256; the c16 theme keeps foreground colour only; `plain` none) that
+    fill the row to the pane width so a change reads as a band, with the
+    changed span still highlighted inside it (`diff_change` becomes a
+    brighter background of the same hue instead of reverse video); a header
+    row `path` with `+N −M` counts in `diff_header`; the side-by-side form
+    pads both panes to equal width and separates them with `Glyphs.table_bar`;
+    the unified form keeps one gutter with both numbers. Goldens: an
+    insertion, a deletion, a paired replacement with a changed span, CRLF
+    context, at 80 and at 120 columns, unicode and ascii.
+12. The markdown renderer (`src/tui/markdown.zig`, 818 lines, eight tests).
+    Resilience: a fuzz-style test feeds truncated prefixes of every fixture
+    document (every byte boundary) through `split` and `render` and asserts
+    no error, no control byte in the output, and a bounded row count;
+    pathological inputs get pinned goldens: a 10,000-character line without
+    spaces, 64 nested list levels, an unclosed fence at end of stream, a
+    table with 40 columns, a heading of only `#`, a link whose URL contains
+    an escape, and mixed CRLF. Efficiency: `render` is called on every
+    token for the streaming tail, so the closed part must not be re-rendered
+    — the transcript caches the rows of the blocks `split` has closed (by
+    the byte offset `split` returns) and renders only the open tail; a test
+    counts `render` calls over a streamed fixture and the cache's hit rate.
+    Behaviour: inline code inside headings and list items, `***bold
+    italic***`, nested quotes, ordered lists that start at a number other
+    than 1, and a table cell that is empty, each with a golden.
+
+13. Shell from the editor. A prompt that starts with `!` runs the rest as a
+    command through the `bash` tool's runner (same bounds, same workspace,
+    the tick for cancel) and shows it in the transcript as a `Bash(cmd)`
+    block whose output is sent to the model as a user message prefixed
+    `$ cmd` with the output; `!!` runs it and shows it without sending.
+    The command goes into the prompt history. Tests in `commands.zig` for
+    both forms and the empty command; a transcript golden.
+14. Folding tool output. Ctrl-O toggles the detail rows of every tool block
+    of the last turn (the mechanism the thinking fold's Tab uses, with the
+    same replay above the region); the folded row keeps the dot, the name,
+    and the summary. A golden for a folded and an unfolded block.
+15. Two small keys. Ctrl-X copies the last assistant message to the
+    clipboard through OSC 52 (Ghostty supports it; the hint row is
+    unchanged); Ctrl-G opens the buffer in `$VISUAL`/`$EDITOR` through the
+    terminal lease (raw mode restored around the child, the region
+    repainted after), the edited text replacing the buffer. Tests for the
+    OSC 52 payload and for the editor round trip with `EDITOR=true`.
+
+**Inspirations from pi (pi.dev, read 2026-09-21).** Its editor border
+carries the thinking level and the working indicator (item 5), it rewrites
+the screen from the first changed line (item 1), `!`/`!!` run shell
+commands from the editor (item 13), Ctrl-O folds tool output (item 14),
+Ctrl-X/Ctrl-G (item 15), inline images over the kitty graphics protocol
+(noted for AGNT-11), and steering versus follow-up queueing of messages
+typed during a turn (noted for AGNT-12). Its session tree and forking are
+deferred: the sessions here are durable files already, and replaying a
+branch through the profile into a fresh session is `--resume`'s model.
+
+**Deferred, recorded here so it is not lost.** A replay mode that drives the
+surface from a recorded event file with no engine open (deterministic,
+seconds per run) was discussed on 2026-09-21 and deferred: the `Ui` is built
+around a live engine and the tmux harness with the real model (~25 s a run)
+is judged enough. Revisit if session 1's iteration cost says otherwise.
+
+**Acceptance.** `make check` with the golden tests and the prefix fuzz; the
+harness captures listed at the end of session 1 and a session-2 capture of
+a banded diff with numbers, all cited in the log; the tick's Metal test and
+the Qwen trace gates unchanged; the streaming test shows the closed-block
+cache holds; `docs/development.md § The agent's transcript` (the rows and
+the harness) and `docs/agent-spec.md` (the rendering section, the bar, the
+warm-up, the `!` commands, the keys) describe the result. No tool contract changes except the
+summaries' text.
 
 ## Vision through the companion projectors — fixed before the units (decided 2026-09-20)
 
@@ -616,6 +747,11 @@ labels it with its source path.
 4. The model without a projector (`models.<name>.mmproj` unset or the
    family has none yet): the chip is refused at attach time with a notice
    naming the reason, never silently dropped.
+5. Inline preview. On a terminal that answers the kitty graphics query
+   (Ghostty does), the transcript's user turn shows the attached image
+   scaled to at most 12 rows through the protocol's direct transmission,
+   below the `image #N` detail row; other terminals keep the row alone.
+   Bounded by the decoded size limits; never part of the golden tests.
 
 **Acceptance.** Editor tests for the three ways in, chip deletion, index
 renumbering, and the bounds; a session round trip with an attachment;
@@ -705,6 +841,14 @@ next step boundary. The parts, all bounded by the agent rules:
    runs and settles with the exit status.
 4. The UI: `/jobs` lists them; a job's row keeps its dot; the status bar
    counts running jobs.
+
+5. Typed during a turn (pi's steering and follow-up). Today Enter while
+   busy queues the prompt for after the turn. Two kinds instead: Enter
+   *steers* — the text is delivered as a user message before the next model
+   step, after the tool call in flight — and Alt-Enter *follows up* after
+   the turn ends; Escape aborts and returns the queued text to the editor;
+   the status bar counts queued messages. This is the same loop seam as the
+   job delivery in item 3, which is why it belongs here.
 
 **Cost.** Roughly the size of AGNT-11: the job table and delivery in
 `src/agent/loop.zig` and `tools/bash.zig`, a new tool definition in every
