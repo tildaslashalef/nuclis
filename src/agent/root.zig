@@ -115,6 +115,10 @@ const Ui = struct {
     /// The model's short name for the bar: the name it was reached through,
     /// else the artifact's own.
     model_label: []const u8 = "",
+    /// The settings the bar states: the draft length behind the speculative
+    /// switch and the cache precision's name.
+    draft_length: usize = 0,
+    kv_label: []const u8 = "",
     busy: bool = false,
     /// The session is being primed: the live region shows the warm-up row
     /// instead of a turn, and the bar carries no loop step.
@@ -218,6 +222,10 @@ const Ui = struct {
         bar.context_capacity = session.capacity;
         bar.effort = @tagName(self.effort);
         bar.model = self.model_label;
+        bar.speculative = self.eng.model.drafter() != null;
+        bar.draft_length = self.draft_length;
+        bar.kv = self.kv_label;
+        bar.backend = @tagName(self.eng.backend);
         if (self.busy and !self.warming) {
             bar.prompt_tokens = self.stats.prompt_tokens;
             bar.generated = self.stats.generated;
@@ -1179,6 +1187,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // read and the running call's spinner advances during a long `bash`.
     workspace.tick = .{ .context = &ui, .call = toolTick };
     installTick(&ui);
+    ui.draft_length = settings.draft_length;
+    ui.kv_label = @tagName(kv);
     // The observer carries both cancellation (`interrupt.check`, `Ctrl-C`) and
     // the progress beats the bar animates from.
     var trace: generate.Trace = .{

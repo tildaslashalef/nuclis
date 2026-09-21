@@ -7,16 +7,18 @@
 //! from a constant.
 //!
 //! The value is filled from the turn's `status` events (`apply`) plus the
-//! settings the agent knows (context window, effort, the word on the left).
-//! `paint` is pure: give it a width, a palette, a spinner frame, and the
-//! seconds elapsed, and it returns the row. That is what lets the bar's layout
-//! be tested without a model, a clock, or a terminal.
+//! settings the agent knows (context window, effort, the speculative switch,
+//! the cache precision, the backend, the word on the left). `paint` is pure:
+//! give it a width, a palette, a spinner frame, and the seconds elapsed, and
+//! it returns the row. That is what lets the bar's layout be tested without a
+//! model, a clock, or a terminal.
 //!
-//! Zig note. The row is padded to exactly `width` display cells with the
-//! escape-aware width (`view.styledWidth`), so the painted background spans
-//! the row and the cursor arithmetic in `screen.zig` still adds up. It is
-//! truncated rather than wrapped, at the column rather than at a word: a
-//! wrapped bar would occupy two rows and break that arithmetic.
+//! Two groups: the measurements on the left, the settings on the right,
+//! right-aligned. A bar too narrow for both drops settings cells from the
+//! right end, then truncates the measurements at the column; a wrapped bar
+//! would occupy two rows and break the cursor arithmetic in `screen.zig`.
+//! The row is padded to exactly `width` display cells with the escape-aware
+//! width (`view.styledWidth`), so the painted background spans it.
 const std = @import("std");
 const theme = @import("theme.zig");
 const view = @import("view.zig");
@@ -64,8 +66,15 @@ pub const Status = struct {
     /// The turn had to replay the conversation into a fresh session.
     replayed: bool = false,
     /// Mean accepted drafts per verify batch, from the turn's engine timing;
-    /// null on an ordinary run. Shown only while non-null.
+    /// null on an ordinary run. Shown inside the `spec` cell while non-null.
     accepted_per_step: ?f64 = null,
+    /// The speculative switch as the session runs it: on only when a draft
+    /// source is loaded. `draft_length` is shown beside it when on.
+    speculative: bool = false,
+    draft_length: usize = 0,
+    /// The cache precision and the executor, as their names.
+    kv: []const u8 = "",
+    backend: []const u8 = "",
 
     /// Folds a turn event into the bar. Only two kinds say anything about it:
     /// the progress beat and the end of a turn.
@@ -104,33 +113,69 @@ pub const Status = struct {
     pub fn paint(self: Status, a: std.mem.Allocator, options: Paint) ![]const u8 {
         const th = options.th;
         const gl = th.glyphs();
-        var w: std.Io.Writer.Allocating = .init(a);
+        var left: std.Io.Writer.Allocating = .init(a);
         const spin: []const u8 = if (self.busy) gl.spinner[options.frame % gl.spinner.len] else gl.idle;
-        try w.writer.print(" {s} {s}", .{ spin, self.message });
+        try left.writer.print(" {s} {s}", .{ spin, self.message });
         if (self.busy and self.phase == .prefill and self.target > 0 and self.position < self.target) {
-            try w.writer.print(" {s}{d}/{d}{s}", .{ th.paint(.progress), self.position, self.target, theme.fg_default });
-            if (self.eta(options.elapsed_seconds)) |seconds_left| try w.writer.print(" ~{d:.0}s", .{seconds_left});
+            try left.writer.print(" {s}{d}/{d}{s}", .{ th.paint(.progress), self.position, self.target, theme.fg_default });
+            if (self.eta(options.elapsed_seconds)) |seconds_left| try left.writer.print(" ~{d:.0}s", .{seconds_left});
         } else if (self.busy and self.phase == .decode) {
-            try w.writer.print(" {s}{d}{s} out, {d:.0}s", .{ th.paint(.progress), self.generated, theme.fg_default, options.elapsed_seconds });
+            try left.writer.print(" {s}{d}{s} out, {d:.0}s", .{ th.paint(.progress), self.generated, theme.fg_default, options.elapsed_seconds });
         }
         if (self.busy and self.budget > 0)
-            try w.writer.print(" {s} step {d}/{d}", .{ gl.table_bar, self.step, self.budget });
-        try w.writer.print(" {s} {s} ctx {s}{d}/{d}{s} {s} {s} in {d} out {d} {s} {s} pp ", .{
+            try left.writer.print(" {s} step {d}/{d}", .{ gl.table_bar, self.step, self.budget });
+        try left.writer.print(" {s} {s} ctx {s}{d}/{d}{s} {s} {s} in {d} out {d} {s} {s} pp ", .{
             gl.table_bar, gl.context, th.paint(.accent),  self.context_used, self.context_capacity, theme.fg_default,
             gl.table_bar, gl.tokens,  self.prompt_tokens, self.generated,    gl.table_bar,          gl.prefill,
         });
-        try rate(&w.writer, self.rates.prefill);
-        try w.writer.print(" t/s {s} {s} tg ", .{ gl.table_bar, gl.decode });
-        try rate(&w.writer, self.rates.decode);
-        try w.writer.print(" t/s {s} {s} think {s}{s}{s}", .{ gl.table_bar, gl.effort, th.paint(.accent), self.effort, theme.fg_default });
-        if (self.accepted_per_step) |accepted| try w.writer.print(" {s} spec {d:.2}/step", .{ gl.table_bar, accepted });
-        if (self.replayed) try w.writer.print(" {s} replayed", .{gl.table_bar});
-        if (self.model.len != 0) try w.writer.print(" {s} {s}", .{ gl.table_bar, self.model });
-        const wrapped = try view.wrapStyled(a, w.written(), options.width, .character);
+        try rate(&left.writer, self.rates.prefill);
+        try left.writer.print(" t/s {s} {s} tg ", .{ gl.table_bar, gl.decode });
+        try rate(&left.writer, self.rates.decode);
+        try left.writer.writeAll(" t/s");
+        if (self.replayed) try left.writer.print(" {s} replayed", .{gl.table_bar});
+
+        // The settings, each cell its own string so the narrow bar can drop
+        // them one at a time from the right.
+        var cells: std.ArrayList([]const u8) = .empty;
+        try cells.append(a, try std.fmt.allocPrint(a, "{s} think {s}{s}{s}", .{ gl.effort, th.paint(.accent), self.effort, theme.fg_default }));
+        if (self.speculative) {
+            if (self.accepted_per_step) |accepted|
+                try cells.append(a, try std.fmt.allocPrint(a, "spec {s}on{s} {d} · {d:.2}/step", .{ th.paint(.accent), theme.fg_default, self.draft_length, accepted }))
+            else
+                try cells.append(a, try std.fmt.allocPrint(a, "spec {s}on{s} {d}", .{ th.paint(.accent), theme.fg_default, self.draft_length }));
+        } else try cells.append(a, "spec off");
+        if (self.kv.len != 0) try cells.append(a, try std.fmt.allocPrint(a, "kv {s}", .{self.kv}));
+        if (self.backend.len != 0) try cells.append(a, self.backend);
+        if (self.model.len != 0) try cells.append(a, self.model);
+
+        const left_width = view.styledWidth(left.written());
+        var keep = cells.items.len;
+        var right: []const u8 = "";
+        while (keep > 0) : (keep -= 1) {
+            right = try joinCells(a, cells.items[0..keep], gl.table_bar);
+            // One cell of gap at least, and one of margin at the right edge.
+            if (left_width + 1 + view.styledWidth(right) + 1 <= options.width) break;
+        }
+        if (keep == 0) right = "";
+        const right_width = view.styledWidth(right);
+        const body = if (right.len == 0) left.written() else blk: {
+            const gap = options.width - left_width - right_width - 1;
+            break :blk try std.mem.concat(a, u8, &.{ left.written(), spaces[0..@min(gap, spaces.len)], right, " " });
+        };
+        const wrapped = try view.wrapStyled(a, body, options.width, .character);
         const pad = options.width -| view.styledWidth(wrapped[0]);
         return std.mem.concat(a, u8, &.{ wrapped[0], spaces[0..@min(pad, spaces.len)] });
     }
 };
+
+fn joinCells(a: std.mem.Allocator, cells: []const []const u8, bar: []const u8) ![]const u8 {
+    var w: std.Io.Writer.Allocating = .init(a);
+    for (cells, 0..) |cell, i| {
+        if (i > 0) try w.writer.print(" {s} ", .{bar});
+        try w.writer.writeAll(cell);
+    }
+    return w.written();
+}
 
 fn rate(w: *std.Io.Writer, value: ?f64) !void {
     if (value) |v| try w.print("{d:.2}", .{v}) else try w.writeAll("—");
@@ -174,14 +219,58 @@ test "an idle bar states the settings and no rate it did not measure" {
     try testing.expect(std.mem.indexOf(u8, row, "pp — t/s") != null);
     try testing.expect(std.mem.indexOf(u8, row, "tg — t/s") != null);
     try testing.expect(std.mem.indexOf(u8, row, "think low") != null);
-    var named = status;
-    named.model = "hauhau";
-    const with_model = try named.paint(a, .{ .width = 120, .th = .{ .kind = .plain }, .frame = 0, .elapsed_seconds = 0 });
-    try testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, with_model, " "), " hauhau"));
-    try testing.expect(std.mem.indexOf(u8, with_model, "think low") != null);
+    try testing.expect(std.mem.indexOf(u8, row, "spec off") != null);
     try testing.expect(std.mem.indexOf(u8, row, "replayed") == null);
     // The row is exactly as wide as the bar, so its background spans it.
     try testing.expectEqual(@as(usize, 100), view.styledWidth(try status.paint(a, .{ .width = 100, .th = .{ .kind = .plain } })));
+}
+
+test "the settings sit at the right edge, every one of them on a wide bar" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const status: Status = .{ .context_used = 934, .context_capacity = 16384, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b" };
+    const row = try painted(a, status, .{ .width = 200, .th = .{ .kind = .plain } });
+    try testing.expectEqual(@as(usize, 200), view.width(row));
+    try testing.expect(std.mem.endsWith(u8, row, "✦ think low │ spec on 4 │ kv f16 │ metal │ qwen3.8-27b "));
+    try testing.expect(std.mem.startsWith(u8, row, " ◆ ready │ ▤ ctx 934/16384 │ ⇅ in 0 out 0 │ ⇤ pp — t/s │ ⇥ tg — t/s"));
+    // The gap between the groups is blank.
+    const left_end = std.mem.lastIndexOf(u8, row, "t/s").? + 3;
+    const right_start = std.mem.indexOf(u8, row, "✦").?;
+    try testing.expect(std.mem.allEqual(u8, row[left_end..right_start], ' '));
+    // The accepted rate joins the spec cell after a speculative turn.
+    var measured = status;
+    measured.accepted_per_step = 3.13;
+    const after = try painted(a, measured, .{ .width = 200, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, after, "spec on 4 · 3.13/step") != null);
+}
+
+test "a narrow bar drops settings from the right, then truncates the measurements" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const status: Status = .{ .context_used = 934, .context_capacity = 16384, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b" };
+    // The measurements are 67 cells; the settings need 1 cell of gap and 1
+    // of margin: 110 holds up to the backend, 100 up to the switch, 80 the
+    // effort alone.
+    const at110 = try painted(a, status, .{ .width = 110, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, at110, "kv f16 │ metal") != null);
+    try testing.expect(std.mem.indexOf(u8, at110, "qwen3.8-27b") == null);
+    const at100 = try painted(a, status, .{ .width = 100, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, at100, "spec on 4") != null);
+    try testing.expect(std.mem.indexOf(u8, at100, "kv f16") == null);
+    const at80 = try painted(a, status, .{ .width = 80, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, at80, "think low") != null);
+    try testing.expect(std.mem.indexOf(u8, at80, "spec on") == null);
+    const at60 = try painted(a, status, .{ .width = 60, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, at60, "think") == null);
+    try testing.expect(std.mem.indexOf(u8, at60, "⇤ pp") != null);
+    const at40 = try painted(a, status, .{ .width = 40, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.startsWith(u8, at40, " ◆ ready │ ▤ ctx 934/16384"));
+    try testing.expect(std.mem.indexOf(u8, at40, "tg") == null);
+    for ([_]usize{ 200, 100, 80, 60, 40, 20 }) |width| {
+        try testing.expectEqual(width, view.styledWidth(try status.paint(a, .{ .width = width, .th = .{ .kind = .truecolor } })));
+    }
 }
 
 test "a prefilling bar counts tokens and marks its estimate" {
@@ -206,7 +295,7 @@ test "a decoding bar shows the live count, and the end freezes the measurements"
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var status: Status = .{ .busy = true, .message = "generating", .generated = 12 };
+    var status: Status = .{ .busy = true, .message = "generating", .generated = 12, .speculative = true, .draft_length = 4 };
     status.apply(.{ .status = .{ .phase = .decode, .position = 12, .target = 400, .rates = .{ .prefill = 84.26, .decode = 26.1 } } });
     const row = try painted(a, status, .{ .width = 120, .th = .{ .kind = .plain }, .elapsed_seconds = 2.4 });
     try testing.expect(std.mem.indexOf(u8, row, "12 out, 2s") != null);
@@ -226,7 +315,7 @@ test "a decoding bar shows the live count, and the end freezes the measurements"
     try testing.expect(std.mem.indexOf(u8, done, "in 31 out 400") != null);
     try testing.expect(std.mem.indexOf(u8, done, "pp 62.00 t/s") != null); // 31 / 0.5
     try testing.expect(std.mem.indexOf(u8, done, "tg 39.90 t/s") != null); // 399 / 10
-    try testing.expect(std.mem.indexOf(u8, done, "spec 2.33/step") != null);
+    try testing.expect(std.mem.indexOf(u8, done, "spec on 4 · 2.33/step") != null);
     try testing.expect(std.mem.indexOf(u8, done, "replayed") != null);
 
     // A turn that produced one token has no decode interval to divide by.
