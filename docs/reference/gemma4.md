@@ -277,7 +277,7 @@ global layers) and `gemma4_runtime.zig` executes the forward pass above on
 the CPU. Compared against the reference's per-layer outputs on
 `<bos>Hello,` (tokens `[2, 9259, 236764]`, three positions, the traces
 pinned under `tests/fixtures/gemma4-hello-comma/`; since MODL-08 that target
-is `make compare-gemma4`):
+is `make gate NAME='gemma4-trace-f*'`):
 
 | Comparison | Measured | Threshold |
 | --- | --- | --- |
@@ -351,7 +351,7 @@ session is 11.3 GB (40 × 2 × 2,048 + 8 × 2 × 512 halves per position). A
 ring layout for the 40 windowed layers would cut that to about 0.35 GB and
 is a session-layout change of its own.
 
-**Against the pinned traces** (`make compare-gemma4`,
+**Against the pinned traces** (`make gate NAME='gemma4-trace-f*'`,
 three positions of `<bos>Hello,`, 145 files, 2026-09-11):
 
 | Path | Max absolute | Max relative RMS | Threshold | Greedy / top-5 |
@@ -376,7 +376,7 @@ from the F32 traces by 0.75 / 3.3e-2, the same as the Metal F16 plan
 1.1e-3, so the sensitivity is prompt-dependent. `--kv f32` is available
 for numerical work; the default stays `f16` as for Qwen.
 
-**Generation check** (`make test-generation-gemma4-metal`, 2026-09-11):
+**Generation check** (`make gate NAME=gemma4-generation-metal`, 2026-09-11):
 sessions bit-identical, cancellation and reset, snapshot/restore bit-exact
 (688,128 bytes at position 1); chunked prefill vs per-token steps on 70
 tokens: chunks of 64 / 48 / 32 at 8.6e-2 / 8.6e-2 / 2.6e-2 max abs and
@@ -444,7 +444,7 @@ tree gained, each pinned by the reference's own fixture:
 
 **Against its own pinned traces** (`tests/fixtures/gemma4-qat-hello-comma/`,
 the reference harness on the QAT file, `<bos>Hello,`, three positions,
-145 files; `make compare-gemma4`, 2026-09-12):
+145 files; `make gate NAME='gemma4-trace-f*'`, 2026-09-12):
 
 | Path | Max absolute | Max relative RMS | Threshold | Greedy / top-5 |
 | --- | --- | --- | --- | --- |
@@ -456,11 +456,11 @@ Tighter than the K-quant file on every path (1.8e-4 / 3.4e-4 / 0.73),
 and the F16 cache in particular: the key-rounding sensitivity measured on
 the K-quant file is prompt- and checkpoint-dependent, and the tolerance
 stays the family's recorded one. The K-quant comparisons are unchanged
-and run as `make compare-gemma4` (they were `compare-gemma4-kquant` until
-the entries were split on 2026-09-12).
+and run as `make gate NAME='gemma4-trace-*'` (one make target per entry until
+the gate registry of 2026-09-21).
 
-**Generation check** (`make test-generation-gemma4-qat-metal`, then named
-`test-generation-gemma4-metal`, on the QAT file, 2026-09-12): sessions bit-identical, cancellation and reset,
+**Generation check** (`make gate NAME=gemma4-qat-generation-metal` on the QAT
+file, 2026-09-12): sessions bit-identical, cancellation and reset,
 snapshot/restore bit-exact (688,128 bytes at position 1). Chunked prefill
 against per-token steps on the 70 random tokens: chunks of 64 / 48 / 32
 at 4.4e-1 / 4.2e-1 / 1.5e-1 max abs and 1.4e-2 / 1.3e-2 / 4.7e-3
@@ -570,7 +570,7 @@ files of 2,816 floats and the 262,144 logits).
 
 **CPU reference against the oracle (session 1, 2026-09-18).**
 `gemma4_runtime.zig` runs both configurations from one schedule; the
-expert layer is `Runtime.feedForward`. `make compare-gemma4-26b-a4b-cpu`
+expert layer is `Runtime.feedForward`. `make gate NAME=gemma4-26b-a4b-trace-cpu`
 (`--positions 3 --embedding 2816 --layers 30`):
 
 | Comparison | Measured | Threshold |
@@ -619,7 +619,7 @@ geometry through both (F32 3.0e-6, F16 over rounded operands 1.9e-4;
 decode 2.4e-7). The session at 32,768 tokens is 7.4 GB in F16
 (25 × 2 × 2,048 + 5 × 2 × 1,024 halves per position).
 
-**Against the pinned traces** (`make compare-gemma4-26b-a4b`, three
+**Against the pinned traces** (`make gate NAME='gemma4-26b-a4b-trace-f*'`, three
 positions of `<bos>Hello,`, 91 files, 2026-09-18):
 
 | Path | Max absolute | Max relative RMS | Threshold | Greedy / top-5 |
@@ -631,7 +631,7 @@ positions of `<bos>Hello,`, 91 files, 2026-09-18):
 The F16 cache is far less sensitive here than on the 12B (0.73 / 3.2e-2):
 30 layers instead of 48, and two global KV heads instead of one.
 
-**Generation check** (`make test-generation-gemma4-26b-a4b-metal`,
+**Generation check** (`make gate NAME=gemma4-26b-a4b-generation-metal`,
 2026-09-18): sessions bit-identical, cancellation and reset,
 snapshot/restore bit-exact (450,560 bytes at position 1). Chunked prefill
 vs per-token steps on the 70-random-token prompt: chunks of 64 / 48 / 32

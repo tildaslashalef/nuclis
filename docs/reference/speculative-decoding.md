@@ -65,8 +65,8 @@ rewind](session.md#checkpoint-and-rewind-engn-11). `engine.Model.recover`
 is the accepted-prefix operation, and `generation-check` exercises it per
 accepted length on every family, on both executors: replay is bit-identical
 to sequential decoding on the CPU, and within the family's
-chunk-versus-step bound on Metal (`make test-generation` /
-`test-generation-metal`, recorded in the log).
+chunk-versus-step bound on Metal (the generation check, `make gate
+NAME='qwen38-generation-*'`, recorded in the log).
 
 Measured costs on Qwen 27B (2026-09-19): region 156,893,184 bytes;
 checkpoint and rewind 3 ms per batch on Metal and 2 ms on the CPU
@@ -153,7 +153,7 @@ trace captured from the pinned reference through the extended harness
 4.9e-7 relative RMS) and its greedy draft token equals the reference's
 (9419, 271). The vectors are pinned under
 `inference/src/models/fixtures/qwen35-mtp/` and checked by `checkDraft` in
-`make test-generation` / `test-generation-metal`. As a sanity figure for
+the generation check (`make gate NAME='qwen38-generation-*'`). As a sanity figure for
 the acceptance the theme cares about, the reference's own
 `llama-speculative-simple --spec-type draft-mtp --spec-draft-n-max 4` on
 `Hello,` accepted 8 of 33 drafts (24.2 %) over 16 generated tokens.
@@ -168,8 +168,8 @@ hidden, argmaxed on the device. `Plan.init`'s `draft` flag is honored and
 the same pinned trace the Metal rows match at 1.5e-5 max abs / 5.8e-7
 relative RMS at position 0 and 1.5e-5 / 7.2e-7 at position 1 (F32 cache);
 with the F16 cache the keys and values round within the family's recorded
-`half_*` bound (8.5e-3 / 3.1e-4 and 2.5e-3 / 2.4e-4). `compare-draft-metal` / `-cpu` write the native rows and
-run `compare-generation.py --draft` against the pinned directory; both pass
+`half_*` bound (8.5e-3 / 3.1e-4 and 2.5e-3 / 2.4e-4). `make gate NAME='qwen38-draft-trace-*'` writes the native rows and
+runs `compare-generation.py --draft` against the pinned directory; both executors pass
 on all three rows (block `h` at positions 0 and 1, and the target `hprev`).
 `draftRecoveryCheck` (generation-check, both executors) resets the block
 and takes a checkpoint/rewind across a block row: the hidden is
@@ -277,7 +277,7 @@ decodes that position, which is the driver's `draft()` moment; `Hello,
 world` (9259, 236764, 1902) pinned two rows under
 `inference/src/models/fixtures/gemma4-mtp/` with greedy drafts 2613 and
 236764 (the 26B head is bound and width-checked by the same tests but not
-traced). `make compare-draft-gemma4` checks them on both backends:
+traced). `make gate NAME=gemma4-qat-draft-trace-metal` checks them on both backends:
 
 | backend | position | max abs | relative RMS | greedy |
 | --- | ---: | ---: | ---: | ---: |
@@ -410,7 +410,7 @@ caches, one target token per decode, dumping each position's residual rows
 and the block before the target decodes the next token — the driver's
 `draft()` moment. The rows are pinned under
 `inference/src/models/fixtures/muse-dflash/` and checked by
-`make compare-draft-muse-cpu` and `make compare-draft-muse-metal` (the
+`make gate NAME=muse-draft-trace-cpu` and `make gate NAME=muse-draft-trace-metal` (the
 `museDraftTrace` pass in `generation-check`; the `--metal` run also runs
 the CPU reference over the same rows, so one invocation checks both):
 
@@ -557,15 +557,15 @@ one full-vocabulary sort per row on the host (`Timing.accept`, the bench's
 ordinary decoding; a per-row top-k readback in `verify` is the follow-up.
 
 **Evidence.** `generation-check --speculative-check`
-(`make speculative-check`, `make speculative-check-metal`) runs the model
+(`make gate NAME=qwen38-speculative-cpu`, `make gate NAME=qwen38-speculative-metal`) runs the model
 primitives and, on Metal, the engine loop: 12 greedy tokens equal ordinary
 greedy decoding token for token on both executors (7 of 24 drafts accepted on
-the pinned `Hello,` seed on Metal). `make check`, `make compare`, and
-`make test-generation-metal` pass; `make test-generation` is unchanged (the
+the pinned `Hello,` seed on Metal). `make check`, `make gate NAME='qwen38-trace-*'`, and
+`make gate NAME=qwen38-generation-metal` pass; `make gate NAME=qwen38-generation-cpu` is unchanged (the
 speculative check is its own target because the CPU reference is slow).
 
 **Acceptance statistic (2026-09-20).** `generation-check --draft-stats`
-(the `make draft-stats` target) decodes each fixed coding prompt greedily,
+(the `qwen38-draft-stats` gate) decodes each fixed coding prompt greedily,
 records every step's target hidden, commits the drafter over the prefix,
 proposes four chained candidates at every step and compares draft `i` to
 the token the target chose `i + 1` steps after the seed. On Metal, four
@@ -665,11 +665,11 @@ Both meet the unit's targets (≤ 1.10× at 512, ≤ 1.15× at 4K, and
 `commit_milliseconds / speculative_steps` ≤ 8 ms at 512). Accepted drafts per
 batch was 1.667 at 512 and 1.977 at 4K. The serial prompt commit measured
 1.59× at `db9cf80` and the ENGN-12 record's old `verify`-per-8-rows path
-2.85×. `make draft-stats` reproduces MODL-18 (28/31, 24/30, 20/29, 18/28 and
-29/31, 25/30, 24/29, 24/28), `make speculative-check-metal` is unchanged
-(7/24 and 6/21 accepted), `make compare-draft-metal` unchanged (3 rows,
-1.5e-5 / 7.9e-7), and `make check`, `make compare` (f32 6.1e-5 / 7.7e-7,
-f16 2.5e-2 / 1.9e-4), `make test-generation-metal` pass. `engine.Timing`
+2.85×. `make gate NAME=qwen38-draft-stats` reproduces MODL-18 (28/31, 24/30, 20/29, 18/28 and
+29/31, 25/30, 24/29, 24/28), `make gate NAME=qwen38-speculative-metal` is unchanged
+(7/24 and 6/21 accepted), `make gate NAME=qwen38-draft-trace-metal` unchanged (3 rows,
+1.5e-5 / 7.9e-7), and `make check`, `make gate NAME='qwen38-trace-*'` (f32 6.1e-5 / 7.7e-7,
+f16 2.5e-2 / 1.9e-4), `make gate NAME=qwen38-generation-metal` pass. `engine.Timing`
 now separates `propose` and `commit`, and `bench.Sample` carries
 `propose_milliseconds` and `commit_milliseconds`.
 
@@ -709,10 +709,10 @@ speculative_steps` 232–288 ms and `recover_milliseconds / speculative_steps`
 170–217 ms. These are aggregate costs per speculative step, mixing accepted
 lengths and steps without replay; they do not establish two-row recovery latency
 or the effect of its routing. ENGN-14 must measure recovery by accepted length
-before and after replacing replay with recurrent-state copies. `make compare`
-(f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4), `make test-generation-metal`,
-`make speculative-check-metal` (12 tokens greedy, the loop edge cases), and
-`make draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29, 24/28)
+before and after replacing replay with recurrent-state copies. `make gate NAME='qwen38-trace-*'`
+(f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4), `make gate NAME=qwen38-generation-metal`,
+`make gate NAME=qwen38-speculative-metal` (12 tokens greedy, the loop edge cases), and
+`make gate NAME=qwen38-draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29, 24/28)
 are unchanged.
 
 ## Recovery by accepted length (ENGN-14, 2026-09-20)

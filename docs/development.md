@@ -57,7 +57,7 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   `.zig-cache/reference/prism-llama.cpp` with the same recipe
   ([reference-baseline.md § The second oracle](reference/reference-baseline.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
   The reference oracle itself is committed under `tests/fixtures/`
-  ([provenance](../tests/fixtures/provenance.md)); `make compare` reads
+  ([provenance](../tests/fixtures/provenance.md)); `make gate NAME='qwen38-trace-*'` reads
   `tests/fixtures/reference-hello-comma`. Accepted reference warm rates
   (prefill/decode tok/s): 512 in = 89.19/9.66; 4K = 89.26/9.21;
   16K = 74.07/7.32; 32,639 = 67.28/6.71
@@ -65,72 +65,65 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   same token arrays (ENGN-07 record, 2026-09-10): 512 = 90.45/10.62; 4K =
   83.70/10.20; 16K = 62.70/8.27; 32,639 = 49.55/7.55
   ([bench.md § Acceptance runs](reference/bench.md#acceptance-runs)).
-- `make help` lists all tasks. Per-commit gate: `make check` (fmt-check, unit
-  tests, `test-metal`), `make compare` (both cache precisions: `compare-f32`,
-  129 trace files, measured max abs 6.1e-5 at the bring-up
-  thresholds; `compare-f16` at the F16 tolerance, max abs 0.03 / relative
-  RMS 0.0002, measured 0.0250 / 0.00019), `make bench` when performance is claimed,
-  `make test-generation-metal` when session state or the step contract
-  changed; `make compare-gemma4` (`compare-gemma4-cpu`, `-f32`, `-f16`: the
-  Gemma 4 12B CPU reference and the Metal plan in both cache precisions
-  against the pinned traces of the catalogue's `gemma-4-12b`, three positions;
-  the CPU and F32 rows at the bring-up thresholds, F16 at the model's own
-  tolerance 1.0 / 0.05, [gemma4.md](reference/gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12);
-  `GEMMA_MODEL` overrides the file's path) and `make compare-gemma4-qat`
-  (the same three on `gemma-4-12b-qat` and its own traces,
-  `GEMMA_QAT_MODEL`) and `make compare-gemma4-26b-a4b` (the same three on
-  the expert configuration `gemma-4-26b-a4b` and its traces,
-  `GEMMA_26B_A4B_MODEL`; `-cpu`, `-f32`, `-f16` singly) when the second
-  adapter, the expert kernels, or shared math changed, `make
-  compare-bonsai` (`compare-bonsai-cpu`, `-f32`, `-f16`: the Qwen CPU
-  reference and the Metal plan in both cache precisions on
-  `bonsai-2-27b`'s ternary, Hadamard-rotated file against the PrismML
-  fork's traces, the F16 row at the Qwen tolerance, `BONSAI_MODEL`;
-  [bonsai.md](reference/bonsai.md)) when the ternary decoders, the
-  transform, or the Qwen runtime or plan changed, `make
-  test-generation-bonsai-metal` with it, `make compare-muse-glimmer`
-  (`compare-muse-glimmer-cpu`, `-f32`, `-f16`: the Muse Glimmer CPU
-  reference and the Metal plan in both cache precisions against its
-  traces, the F16 row at the family's own tolerance, `MUSE_MODEL`;
-  [muse-glimmer.md](reference/muse-glimmer.md)) when the third adapter
-  or shared math changed, `make test-generation-muse-glimmer-metal`
-  with it, `make test-metal`
-  (with `bench-kernels`, `bench-matmul`, and `bench-hadamard` for the
-  numbers in metal-backend.md) when a kernel changed, and
-  `make test-generation-gemma4-metal`
-  (the generation check on the Gemma plan; `-qat-metal` runs it on the QAT
-  entry, whose Q4_0 path amplifies the chunk rounding, `-26b-a4b-metal` on
-  the expert entry, whose routing amplifies it further, and
-  `test-generation-gemma4` is the CPU run at ~35 s per token) with it; `make test-vocabulary` on either
-  pinned Gemma file and on the Muse Glimmer file (`MODEL=<path>`) when the
-  tokenizer or a profile fixture changed, `make baseline-muse-glimmer` for
-  the Muse acceptance workload
-  ([bench.md](reference/bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19)),
-  and `make baseline-gemma4-qat` for the Gemma acceptance
-  workload on the QAT entry
-  ([bench.md](reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12);
-  `baseline-gemma4` for the K-quant entry's, `baseline-gemma4-26b-a4b` for
-  the expert entry's,
-  [bench.md](reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18),
-  `baseline-bonsai` for the ternary entry's on the Qwen token arrays
-  against the fork's records,
-  [bench.md](reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)). `generate --prompt-tokens <json>` feeds a token
-  array untokenized, as `bench` does. `make bench-kernels` ranks matvec kernel variants without a model,
-  `make bench-matmul` the prefill tile per encoding (generic and specialized;
-  `ARGS=<tokens>` for a chunk other than 256), `make bench-experts` the
-  gathered expert kernels on the 26B-A4B shape (decode, then the prefill
-  tiles over `ARGS=<chunk>` tokens, 256 by default), `make bench-attention`
-  the prefill chunk attention's row-split and register-reuse bodies from
-  4K to 32K visible rows and at the verify-shaped counts;
-  `make bench-profile` times every dispatch inside real tokens (diagnostic,
-  ~8 % perturbation); `make trace` records a Metal System Trace;
-  `make baseline` runs the reference workload on the committed token arrays
-  and writes the dated record under `docs/benchmarks/`
-  ([bench.md § Acceptance runs](reference/bench.md#acceptance-runs));
-  `make speculative-record` (`scripts/nuclis-speculative.py`) runs the
-  speculative off/on pairs on Qwen3.8-27B and `--summarize` prints the
-  record's table
-  ([bench.md § Speculative record](reference/bench.md#speculative-decoding-record-engn-12-2026-09-20)).
+- `make help` lists all tasks. Per-commit: `make check` (fmt-check, unit
+  tests, `test-metal`, the gate manifest's validation; about 75 s). Per
+  unit: `make verify`, the Metal tier of the gate registry
+  ([§ Gates](#gates)), and `make verify-cpu` when `make verify-changed`
+  selects a CPU gate. `make bench` when performance is claimed. The record
+  and workload recipes (`baseline`, `baseline-gemma4*`,
+  `baseline-muse-glimmer`, `baseline-bonsai`, `speculative-record`) and the
+  kernel micro-benchmarks (`bench-kernels`, `bench-matmul` with
+  `ARGS=<tokens>`, `bench-matvec-split`, `bench-matvec-rows`,
+  `bench-hadamard`, `bench-experts`, `bench-attention`, `bench-profile`,
+  `trace`) measure and never gate; [bench.md](reference/bench.md) says what
+  each records. `generate --prompt-tokens <json>` feeds a token array
+  untokenized, as `bench` does.
+
+## Gates
+
+Every model-specific numerical check is a *gate* in [`gates.json`](../gates.json),
+run by `scripts/gates.py`; bounds, model paths, and evidence anchors live
+there and nowhere else. A gate is one command (an argv with the
+placeholders `{nuclis}`, `{nuclis-cpu}`, `{zig-metal}`, `{zig-cpu}`,
+`{model}`, `{mtp}`, `{trace}`) and a comparator: `exit` (the command's
+status decides: the generation checks, the speculative checks, the Gemma
+and Muse draft checks that compare their own rows, `draft-stats`, the
+vocabulary checks) or `trace` (the `{trace}` directory goes through
+`scripts/compare-generation.py` against the gate's `bounds`). Two things
+make the registry cheaper than the recipes it replaced:
+
+| | tier `verify` | tier `verify-cpu` |
+| --- | --- | --- |
+| executor | the Metal plan (and the tokenizer) | the CPU reference |
+| cost | minutes (26 gates, one `make verify` per unit) | hours (11 gates; `qwen38-speculative-cpu` alone is about 20 min) |
+| build | `ReleaseSafe`, `./zig-out/bin/nuclis` | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
+| when | every unit | when a change touches the CPU runtime files, when a family or a draft source is brought up, and to tell a wrong kernel from wrong model semantics after a Metal trace fails |
+
+Each gate lists the source globs (`paths`) that make it relevant, so
+`make verify-changed BASE=<rev>` runs the gates whose paths match `git diff
+--name-only <rev>` plus untracked files: a commit under `src/tui/` selects
+nothing, one under `inference/src/models/gemma4*.zig` selects the Gemma
+gates, one under `inference/src/backends/cpu/` the CPU tier. The other
+commands: `make verify` / `make verify-cpu` (a tier), `make gate
+NAME=<name or glob>` (`gemma4-qat-trace-f16`, `'muse-*'`; `ARGS=--dry-run`
+prints the commands), `make gates-list`, and `make gates-validate` (part of
+`make check`: the manifest's schema and the runner's self-test, no model).
+`python3 scripts/gates.py --json` returns the results with the git
+revision for a log entry. Gate names are `<entry>-<check>-<executor>`:
+`qwen38`, `gemma4`, `gemma4-qat`, `gemma4-26b-a4b`, `muse`, `bonsai`;
+`trace-{cpu,f32,f16}`, `generation-{cpu,metal}`, `speculative-{cpu,metal}`,
+`draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`. A model path is
+overridden per key by `<KEY>_MODEL` (`GEMMA4_QAT_MODEL=…`). Traces are
+written under `.zig-cache/gates/trace/<gate>/`.
+
+Adding a family adds its gates to the manifest and nothing to the
+Makefile ([new-model-guide.md](reference/new-model-guide.md)). The
+manifest's numbers are the accepted tolerances the reference documents
+justify (Qwen's F16 bound in [metal-backend.md](reference/metal-backend.md),
+Gemma's in [gemma4.md](reference/gemma4.md), Muse's in
+[muse-glimmer.md](reference/muse-glimmer.md), Bonsai's in
+[bonsai.md](reference/bonsai.md)); the CPU rows and the F32 cache run at
+the bring-up thresholds (max abs 2e-3, relative RMS 1e-4).
 
 ## Toolchain
 
@@ -566,7 +559,7 @@ check on `build.zig.zon`'s version, `zig build test`, a
 `-Dmetal=true -Doptimize=ReleaseSafe` build with `--version`/`--help`
 on the result, and a `-Dmetal=false` build so the non-Metal path keeps
 linking. That is `make check` minus the GPU. **Not** in CI: `test-metal`,
-`compare`, `bench`, and anything that pulls a model — they need the pinned
+`verify`, `bench`, and anything that pulls a model — they need the pinned
 artifacts and the real M4 Pro, and a rate measured on a virtualised GPU is a
 number nobody should trust. Those gates stay local and their evidence stays
 in the engineering log.
@@ -661,7 +654,7 @@ build options.
   It runs `make check`, writes the release's section into `CHANGELOG.md` from
   Conventional Commits, commits `chore(release): vX.Y.Z`, creates the
   annotated tag, then commits the next `X.(Y+1).0-dev`. It never pushes.
-  1. `make compare` passes on the tree (needs the pinned model); commit any
+  1. `make verify` passes on the tree (needs the pinned models); commit any
      fix that turns up.
   2. `make release`.
   3. Push the branch and the tag to publish. Tags are annotated; sign them

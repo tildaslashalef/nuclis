@@ -18,17 +18,10 @@ BIN      := ./zig-out/bin/nuclis
 METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 
 .DEFAULT_GOAL := build
-.PHONY: help build debug build-cpu metal test test-metal test-generation test-generation-metal \
-        compare-draft compare-draft-metal compare-draft-cpu compare-draft-muse compare-draft-muse-cpu compare-draft-muse-metal draft-stats \
-        speculative-check speculative-check-metal speculative-record \
-        test-vocabulary check fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts \
-        baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b agent model-ls trace compare compare-f32 compare-f16 \
-        compare-gemma4-qat compare-gemma4-qat-cpu compare-gemma4-qat-f32 compare-gemma4-qat-f16 \
-        compare-gemma4 compare-gemma4-cpu compare-gemma4-f32 compare-gemma4-f16 \
-        compare-gemma4-26b-a4b compare-gemma4-26b-a4b-cpu compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 \
-        compare-bonsai compare-bonsai-cpu compare-bonsai-f32 compare-bonsai-f16 test-generation-bonsai-metal baseline-bonsai \
-        compare-muse-glimmer compare-muse-glimmer-cpu compare-muse-glimmer-f32 compare-muse-glimmer-f16 test-generation-muse-glimmer-metal baseline-muse-glimmer \
-        test-generation-gemma4 test-generation-gemma4-metal test-generation-gemma4-qat-metal test-generation-gemma4-26b-a4b-metal clean distclean hf-downloader test-hf changelog release
+.PHONY: help build debug build-cpu metal test test-metal check verify verify-cpu verify-changed gate gates-list gates-validate \
+        fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
+        baseline baseline-gemma4-qat baseline-gemma4 baseline-gemma4-26b-a4b baseline-muse-glimmer baseline-bonsai speculative-record \
+        agent model-ls trace clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -56,83 +49,32 @@ test: ## Default unit tests (no model, no GPU)
 test-metal: ## GPU kernel fixture/lifecycle checks (needs a Metal device, no model)
 	$(ZIG) build test-metal $(METAL)
 
-test-generation: ## Full-model session isolation/reset check on the CPU reference (slow)
-	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(MODEL)"
+check: fmt-check test test-metal gates-validate ## Format check + unit tests + GPU fixtures + the gate manifest (seconds)
 
-test-generation-metal: ## Same protocol on the GPU plan
-	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal
+# ---- gates (gates.json; docs/development.md § Gates) ----------------------
+# Every model-specific numerical check is a gate in the manifest: a tier
+# (verify = Metal, minutes; verify-cpu = the CPU reference, hours) and the
+# source globs that make it relevant. `make verify-changed BASE=<rev>` runs
+# what a change needs.
 
-# The embedded prediction block's `Hello,` rows against the pinned reference
-# trace (`inference/src/models/fixtures/qwen35-mtp/`), on each backend.
-compare-draft: compare-draft-metal ## The prediction block's trace rows vs the reference (MODL-18; add compare-draft-cpu explicitly)
+BASE ?= HEAD
+verify: ## The Metal tier: every trace, generation, speculative, and vocabulary gate (once per unit)
+	python3 scripts/gates.py --tier verify $(ARGS)
 
-compare-draft-metal: metal ## Native GPU prediction-block rows vs the pinned reference trace
-	rm -rf "$(TRACE)-draft-metal" && mkdir -p "$(TRACE)-draft-metal"
-	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal --draft-trace "$(TRACE)-draft-metal"
-	python3 scripts/compare-generation.py "$(TRACE)-draft-metal" inference/src/models/fixtures/qwen35-mtp --positions 2 --draft \
-	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("draft metal", "passed", d["passed"], "rows", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c), "greedy", d["native_greedy"])'
+verify-cpu: ## The CPU-reference tier (hours); run when verify-changed selects one of its gates
+	python3 scripts/gates.py --tier verify-cpu $(ARGS)
 
-# The Gemma 4 assistant head's `Hello, world` rows against the pinned
-# reference trace (`inference/src/models/fixtures/gemma4-mtp/`): the companion
-# file's four blocks read the target's layer-46/47 caches, so the check needs
-# both files (MODL-19).
-GEMMA_MTP_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/mtp-gemma-4-12B-it.gguf
+verify-changed: ## The gates whose paths match `git diff --name-only $(BASE)` plus untracked files (BASE=HEAD)
+	python3 scripts/gates.py --changed $(BASE) $(ARGS)
 
-compare-draft-gemma4: compare-draft-gemma4-metal ## The Gemma 4 assistant trace vs the reference (MODL-19; add compare-draft-gemma4-cpu explicitly)
+gate: ## Gates by name or glob: make gate NAME=gemma4-qat-trace-f16, NAME='muse-*' (ARGS=--dry-run prints the commands)
+	python3 scripts/gates.py --gate $(NAME) $(ARGS)
 
-compare-draft-gemma4-metal: metal ## Native GPU assistant-head rows vs the pinned reference trace
-	$(ZIG) build test-generation $(METAL) -- "$(GEMMA_QAT_MODEL)" --metal --draft-trace "$(TRACE)-gemma4-mtp-metal" --draft-model "$(GEMMA_MTP_MODEL)"
+gates-list: ## Every gate with its tier, family, model, and evidence
+	python3 scripts/gates.py --list
 
-compare-draft-gemma4-cpu: ## Native CPU reference assistant-head rows vs the pinned reference trace
-	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(GEMMA_QAT_MODEL)" --draft-trace "$(TRACE)-gemma4-mtp-cpu" --draft-model "$(GEMMA_MTP_MODEL)"
-
-compare-draft-cpu: ## Native CPU reference prediction-block rows vs the pinned reference trace
-	rm -rf "$(TRACE)-draft-cpu" && mkdir -p "$(TRACE)-draft-cpu"
-	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(MODEL)" --draft-trace "$(TRACE)-draft-cpu"
-	python3 scripts/compare-generation.py "$(TRACE)-draft-cpu" inference/src/models/fixtures/qwen35-mtp --positions 2 --draft \
-	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("draft cpu", "passed", d["passed"], "rows", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c), "greedy", d["native_greedy"])'
-
-# The Muse Glimmer DFlash drafter's rows against the pinned reference trace
-# (`inference/src/models/fixtures/muse-dflash/`): the companion's encoder fuses
-# the target's layer-2/14/26/38/50 input residuals and a 16-row mask block
-# proposes, so the check needs both files (MODL-20).
-MUSE_MTP_MODEL ?= $(HOME)/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/dflash-kquant.gguf
-
-compare-draft-muse: compare-draft-muse-cpu compare-draft-muse-metal ## The Muse DFlash drafter vs the reference on both executors (MODL-20)
-
-compare-draft-muse-cpu: ## Native CPU reference DFlash rows vs the pinned reference trace
-	rm -rf "$(TRACE)-muse-dflash-cpu" && mkdir -p "$(TRACE)-muse-dflash-cpu"
-	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(MUSE_MODEL)" --draft-trace "$(TRACE)-muse-dflash-cpu" --draft-model "$(MUSE_MTP_MODEL)"
-
-compare-draft-muse-metal: metal ## Native GPU DFlash rows vs the pinned reference trace
-	rm -rf "$(TRACE)-muse-dflash-metal" && mkdir -p "$(TRACE)-muse-dflash-metal"
-	$(ZIG) build test-generation $(METAL) -- "$(MUSE_MODEL)" --metal --draft-trace "$(TRACE)-muse-dflash-metal" --draft-model "$(MUSE_MTP_MODEL)"
-
-draft-stats: metal ## Per-depth acceptance of the embedded prediction head on the fixed prompts (MODL-18)
-	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal --draft-stats
-
-speculative-check: ## Greedy speculation vs ordinary greedy on the CPU reference (very slow)
-	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(MODEL)" --speculative-check
-
-speculative-check-metal: metal ## Greedy speculation vs ordinary greedy on the Metal plan (ENGN-12)
-	$(ZIG) build test-generation $(METAL) -- "$(MODEL)" --metal --speculative-check
-
-test-generation-gemma4: ## The generation check on gemma-4-12b, CPU reference (very slow: ~35 s per token)
-	$(ZIG) build test-generation -Doptimize=$(OPT) $(CACHE) -- "$(GEMMA_MODEL)"
-
-test-generation-gemma4-metal: ## The generation check on gemma-4-12b, Metal plan (MODL-06)
-	$(ZIG) build test-generation $(METAL) -- "$(GEMMA_MODEL)" --metal
-
-test-generation-gemma4-qat-metal: ## The same on gemma-4-12b-qat, whose Q4_0 path amplifies the half-operand rounding (MODL-08)
-	$(ZIG) build test-generation $(METAL) -- "$(GEMMA_QAT_MODEL)" --metal
-
-test-generation-gemma4-26b-a4b-metal: ## The generation check on gemma-4-26b-a4b (mixture of experts), Metal plan (MODL-09)
-	$(ZIG) build test-generation $(METAL) -- "$(GEMMA_26B_A4B_MODEL)" --metal
-
-test-vocabulary: ## Tokenizer check against the real artifact
-	$(ZIG) build test-vocabulary -Doptimize=$(OPT) $(CACHE) -- "$(MODEL)"
-
-check: fmt-check test test-metal ## Format check + unit tests + GPU fixtures
+gates-validate: ## Validate gates.json and run the runner's self-test (no model)
+	python3 scripts/gates.py --validate
 
 # ---- formatting ------------------------------------------------------------
 
@@ -158,6 +100,13 @@ bench: metal ## Repeated prefill/decode measurement (see docs/reference/bench.md
 
 bench-profile: metal ## Per-kernel GPU time per token from GPU timestamps (diagnostic; see docs/reference/bench.md)
 	$(BIN) bench --backend metal --model "$(MODEL)" --prompt "$(PROMPT)" --max-tokens 64 --ctx-size 2048 --profile $(ARGS)
+
+# ---- model files for the record and workload recipes (the gates read gates.json) --
+BONSAI_MODEL ?= $(HOME)/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf
+GEMMA_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf
+GEMMA_QAT_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf
+GEMMA_26B_A4B_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
+MUSE_MODEL ?= $(HOME)/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf
 
 baseline: metal ## The reference workload (512/4K/16K/32,639 tokens, 128 out) on the committed token arrays; writes docs/benchmarks/nuclis-<date>.json (see docs/reference/bench.md § Acceptance runs)
 	python3 scripts/nuclis-baseline.py --model "$(MODEL)" --nuclis $(BIN) $(ARGS)
@@ -216,135 +165,12 @@ trace: metal ## Metal System Trace of one `bench` run under xctrace (needs Xcode
 	  --prompt "$(PROMPT)" --max-tokens 64 --ctx-size 2048 --repeat 1 --warmup 1 $(ARGS)
 	DEVELOPER_DIR=$(XCODE_DEV) xcrun xctrace export --input "$(TRACE_OUT)" --toc | grep -o '<table schema="metal-gpu[^"]*"' | sort -u
 
-# ---- numerical comparison against the pinned reference ---------------------
-
-TRACE ?= .zig-cache/generation/make-check
-# $(1) cache precision, $(2) max absolute, $(3) max relative RMS per trace file.
-define compare_run
-	rm -rf "$(TRACE)-$(1)" && mkdir -p "$(TRACE)-$(1)"
-	$(BIN) generate --backend $(BACKEND) --model "$(MODEL)" --raw --prompt 'Hello,' --max-tokens 1 --ctx-size 8 --kv $(1) \
-	  --logits "$(TRACE)-$(1)/logits.f32" --trace-dir "$(TRACE)-$(1)" $(ARGS) > /dev/null
-	python3 scripts/compare-generation.py "$(TRACE)-$(1)" tests/fixtures/reference-hello-comma --positions 2 --max-absolute $(2) --max-relative-rms $(3) \
-	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("$(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
-endef
-compare: compare-f32 compare-f16 ## Layer/logit trace comparison of `Hello,` vs the reference traces, both cache precisions (needs docs/reference/generation.md setup)
-
-compare-f32: metal ## The F32 cache at the bring-up thresholds (max abs 2e-3, relative RMS 1e-4)
-	$(call compare_run,f32,0.002,0.0001)
-
-compare-f16: metal ## The F16 cache at its own tolerance (max abs 3e-2, relative RMS 2e-4; see docs/reference/metal-backend.md)
-	$(call compare_run,f16,0.03,0.0002)
-
-# `bonsai-2-27b`: Qwen3.8-27B re-encoded ternary in a Hadamard-rotated basis
-# (docs/reference/bonsai.md), with its own traces from the PrismML fork
-# (captured from the PQ2_0 packing, which the catalogue's PTQ1_0 file of the
-# same weights matches at the same thresholds).
-BONSAI_MODEL ?= $(HOME)/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf
-# $(1) label, $(2) backend flags, $(3) max absolute, $(4) max relative RMS per trace file.
-define compare_bonsai_run
-	rm -rf "$(TRACE)-bonsai-$(1)" && mkdir -p "$(TRACE)-bonsai-$(1)"
-	$(BIN) generate $(2) --model "$(BONSAI_MODEL)" --raw --prompt 'Hello,' --max-tokens 1 --ctx-size 8 \
-	  --logits "$(TRACE)-bonsai-$(1)/logits.f32" --trace-dir "$(TRACE)-bonsai-$(1)" $(ARGS) > /dev/null
-	python3 scripts/compare-generation.py "$(TRACE)-bonsai-$(1)" tests/fixtures/bonsai-hello-comma --positions 2 --max-absolute $(3) --max-relative-rms $(4) \
-	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("bonsai $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
-endef
-compare-bonsai: compare-bonsai-f32 compare-bonsai-f16 ## bonsai-2-27b vs the PrismML fork's traces: Metal F32 and F16 caches (add the -cpu target explicitly) (docs/reference/bonsai.md)
-
-compare-bonsai-cpu: metal ## The Qwen CPU reference on the Bonsai file (ternary weights, the Hadamard transform) vs the fork's traces at the bring-up thresholds
-	$(call compare_bonsai_run,cpu,--backend cpu,0.002,0.0001)
-
-compare-bonsai-f32: metal ## The Qwen Metal plan on the Bonsai file with the F32 cache at the bring-up thresholds
-	$(call compare_bonsai_run,f32,--backend metal --kv f32,0.002,0.0001)
-
-compare-bonsai-f16: metal ## The Qwen Metal plan on the Bonsai file with the F16 cache at its own tolerance
-	$(call compare_bonsai_run,f16,--backend metal --kv f16,0.03,0.0002)
-
-test-generation-bonsai-metal: ## The generation check on bonsai-2-27b, Metal plan
-	$(ZIG) build test-generation $(METAL) -- "$(BONSAI_MODEL)" --metal
-
 speculative-record: metal ## The speculative-decoding record on Qwen3.8-27B: off/on pairs and the no-drafter baseline over the corpus arrays and the code prompt, greedy and instruct, draft 2/4/7; JSON under .zig-cache/bench/spec (docs/reference/bench.md § Speculative record)
 	python3 scripts/nuclis-speculative.py --model "$(MODEL)" --nuclis $(BIN) --baseline $(ARGS)
 
 baseline-bonsai: metal ## The reference workload on bonsai-2-27b against the PrismML fork's records (tests/fixtures/run-2026-09-18-bonsai, whose token arrays are the Qwen run's); writes docs/benchmarks/nuclis-<date>-bonsai.json
 	python3 scripts/nuclis-baseline.py --model "$(BONSAI_MODEL)" --nuclis $(BIN) --run run-2026-09-18-bonsai \
 	  --reference-records reference-2026-09-18-bonsai.json --output docs/benchmarks/nuclis-$$(date +%F)-bonsai.json $(ARGS)
-
-# The catalogue's Gemma 4 12B file (QAT, every matrix Q4_0; MODL-08) and the
-# K-quant file the adapter was brought up on (MODL-05–MODL-07); both stay pinned in
-# docs/reference/artifacts.md and each has its own trace fixtures.
-# One variable per catalogue entry, named after it: `gemma-4-12b` is the
-# K-quant release the adapter was brought up on, `gemma-4-12b-qat` Google's
-# quantization-aware-trained checkpoint. Each has its own pinned traces.
-GEMMA_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf
-GEMMA_QAT_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf
-# `gemma-4-26b-a4b` is the QAT mixture of experts (MODL-09), with its own traces.
-GEMMA_26B_A4B_MODEL ?= $(HOME)/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
-# $(1) label, $(2) model file, $(3) fixture directory, $(4) backend flags, $(5) max absolute, $(6) max relative RMS per trace file,
-# $(7) embedding width and $(8) layer count of the traces (3840 and 48 for the 12B files).
-define compare_gemma4_run
-	rm -rf "$(TRACE)-gemma4-$(1)" && mkdir -p "$(TRACE)-gemma4-$(1)"
-	$(BIN) generate $(4) --model "$(2)" --prompt-tokens $(3)/prompt-tokens.json \
-	  --max-tokens 1 --ctx-size 8 --temperature 0 --logits "$(TRACE)-gemma4-$(1)/logits.f32" --trace-dir "$(TRACE)-gemma4-$(1)" $(ARGS) > /dev/null
-	python3 scripts/compare-generation.py "$(TRACE)-gemma4-$(1)" $(3) --positions 3 --embedding $(or $(7),3840) --layers $(or $(8),48) --vocab 262144 \
-	  --max-absolute $(5) --max-relative-rms $(6) \
-	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("gemma4 $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
-endef
-MUSE_MODEL ?= $(HOME)/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf
-# $(1) label, $(2) backend flags, $(3) max absolute, $(4) max relative RMS per trace file.
-define compare_muse_glimmer_run
-	rm -rf "$(TRACE)-muse-glimmer-$(1)" && mkdir -p "$(TRACE)-muse-glimmer-$(1)"
-	$(BIN) generate $(2) --model "$(MUSE_MODEL)" --prompt-tokens tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json \
-	  --max-tokens 1 --ctx-size 8 --temperature 0 --logits "$(TRACE)-muse-glimmer-$(1)/logits.f32" --trace-dir "$(TRACE)-muse-glimmer-$(1)" $(ARGS) > /dev/null
-	python3 scripts/compare-generation.py "$(TRACE)-muse-glimmer-$(1)" tests/fixtures/muse-glimmer-hello-comma --positions 3 --embedding 6656 --layers 52 --vocab 202048 \
-	  --max-absolute $(3) --max-relative-rms $(4) \
-	  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["comparisons"]; print("muse-glimmer $(1)", "passed", d["passed"], "files", len(c), "max abs", max(x["max_absolute"] for x in c), "max rel rms", max(x["relative_rms"] for x in c))'
-endef
-compare-muse-glimmer: compare-muse-glimmer-f32 compare-muse-glimmer-f16 ## muse-glimmer-30b vs its pinned llama.cpp traces (`<|begin_of_text|>Hello,`, three positions): Metal F32 and F16 caches (add the -cpu target explicitly) (docs/reference/muse-glimmer.md)
-
-compare-muse-glimmer-cpu: metal ## The Muse Glimmer CPU reference at the bring-up thresholds (max abs 2e-3, relative RMS 1e-4)
-	$(call compare_muse_glimmer_run,cpu,--backend cpu,0.002,0.0001)
-
-compare-muse-glimmer-f32: metal ## The Muse Glimmer Metal plan with the F32 cache at the bring-up thresholds
-	$(call compare_muse_glimmer_run,f32,--backend metal --kv f32,0.002,0.0001)
-
-compare-muse-glimmer-f16: metal ## The Muse Glimmer Metal plan with the F16 cache at the family's tolerance (max abs 0.1, relative RMS 3e-4; docs/reference/muse-glimmer.md)
-	$(call compare_muse_glimmer_run,f16,--backend metal --kv f16,0.1,0.0003)
-
-test-generation-muse-glimmer-metal: ## The generation check on muse-glimmer-30b, Metal plan
-	$(ZIG) build test-generation $(METAL) -- "$(MUSE_MODEL)" --metal
-
-compare-gemma4-26b-a4b: compare-gemma4-26b-a4b-f32 compare-gemma4-26b-a4b-f16 ## gemma-4-26b-a4b (mixture of experts) vs its pinned traces: Metal F32 and F16 caches (add the -cpu target explicitly) (MODL-09, docs/reference/gemma4.md)
-
-compare-gemma4-26b-a4b-cpu: metal ## The Gemma CPU reference on the 26B-A4B (expert) file vs its pinned traces at the bring-up thresholds
-	$(call compare_gemma4_run,26b-a4b-cpu,$(GEMMA_26B_A4B_MODEL),tests/fixtures/gemma4-26b-a4b-hello-comma,--backend cpu,0.002,0.0001,2816,30)
-
-compare-gemma4-26b-a4b-f32: metal ## The Gemma Metal plan on the 26B-A4B file with the F32 cache at the bring-up thresholds
-	$(call compare_gemma4_run,26b-a4b-f32,$(GEMMA_26B_A4B_MODEL),tests/fixtures/gemma4-26b-a4b-hello-comma,--backend metal --kv f32,0.002,0.0001,2816,30)
-
-compare-gemma4-26b-a4b-f16: metal ## The Gemma Metal plan on the 26B-A4B file with the F16 cache at the family's tolerance
-	$(call compare_gemma4_run,26b-a4b-f16,$(GEMMA_26B_A4B_MODEL),tests/fixtures/gemma4-26b-a4b-hello-comma,--backend metal --kv f16,1.0,0.05,2816,30)
-
-compare-gemma4-qat: compare-gemma4-qat-f32 compare-gemma4-qat-f16 ## gemma-4-12b-qat vs its pinned llama.cpp traces (`<bos>Hello,`, three positions): Metal F32 and F16 caches (add the -cpu target explicitly) (MODL-08, docs/reference/gemma4.md)
-
-compare-gemma4-qat-cpu: metal ## The Gemma CPU reference on the QAT file at the bring-up thresholds (max abs 2e-3, relative RMS 1e-4)
-	$(call compare_gemma4_run,qat-cpu,$(GEMMA_QAT_MODEL),tests/fixtures/gemma4-qat-hello-comma,--backend cpu,0.002,0.0001)
-
-compare-gemma4-qat-f32: metal ## The Gemma Metal plan on the QAT file with the F32 cache at the bring-up thresholds
-	$(call compare_gemma4_run,qat-f32,$(GEMMA_QAT_MODEL),tests/fixtures/gemma4-qat-hello-comma,--backend metal --kv f32,0.002,0.0001)
-
-compare-gemma4-qat-f16: metal ## The Gemma Metal plan on the QAT file with the F16 cache at its own tolerance (the model's key-rounding sensitivity; see docs/reference/gemma4.md)
-	$(call compare_gemma4_run,qat-f16,$(GEMMA_QAT_MODEL),tests/fixtures/gemma4-qat-hello-comma,--backend metal --kv f16,1.0,0.05)
-
-compare-gemma4: compare-gemma4-f32 compare-gemma4-f16 ## gemma-4-12b (K-quant) vs its pinned traces (MODL-05/MODL-06)
-
-compare-gemma4-cpu: metal ## The Gemma CPU reference on the K-quant file at the bring-up thresholds
-	$(call compare_gemma4_run,cpu,$(GEMMA_MODEL),tests/fixtures/gemma4-hello-comma,--backend cpu,0.002,0.0001)
-
-compare-gemma4-f32: metal ## The Gemma Metal plan on the K-quant file with the F32 cache at the bring-up thresholds
-	$(call compare_gemma4_run,f32,$(GEMMA_MODEL),tests/fixtures/gemma4-hello-comma,--backend metal --kv f32,0.002,0.0001)
-
-compare-gemma4-f16: metal ## The Gemma Metal plan on the K-quant file with the F16 cache at its own tolerance
-	$(call compare_gemma4_run,f16,$(GEMMA_MODEL),tests/fixtures/gemma4-hello-comma,--backend metal --kv f16,1.0,0.05)
 
 # ---- huggingface package (a path dependency of the root build since MODL-02) -----
 

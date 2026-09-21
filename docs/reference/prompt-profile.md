@@ -292,8 +292,8 @@ need JSON escaping (quotes, a backslash, a tab, a newline, non-ASCII, `<`,
 `<|begin_of_text|>` and removes the synthesized turn's date line as the
 text test does.
 
-`make test-vocabulary` (`inference/vocabulary-check.zig`; `MODEL=<path>`
-for the Gemma file) is the opt-in check against the real artifact: it
+`make gate NAME='*-vocabulary'` (`inference/vocabulary-check.zig`; one gate
+per pinned Qwen, Gemma QAT, and Muse file, `<KEY>_MODEL=<path>` overriding) is the opt-in check against the real artifact: it
 selects the profile from the file's template, asserts the vocabulary
 facts (size, merges, BOS/EOS, selected ids, the stop set resolving), and
 encodes every captured string and prompt to the reference's ids (Qwen3.8:

@@ -108,6 +108,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-19 | Gemma 4 draft heads: the `gemma4-assistant` companion adapter, traces at 1.1e-4, a negative default at draft 4 (1.017× only at draft 7) | 2026-09-21 |
 | MODL-20 | Muse Glimmer DFlash drafter: the companion, the CPU reference and its trace, the Metal plan, a positive verdict at 1.16–1.23× | 2026-09-21 (two sessions) |
 | ENGN-17 | The speculative verdict: Qwen and Gemma off, Muse on; the full record and `bench`'s true baseline | 2026-09-21 |
+| REPO-09 | One gate registry: tiers, change triggers, and the model-specific checks as data | 2026-09-21 |
 
 ## Context
 
@@ -3993,3 +3994,86 @@ verify or a longer draft window changes the arithmetic; the 26B-A4B Gemma
 head is still bound but unmeasured; `bench`'s per-entry defaults only reach
 a fresh `config init` (an existing file keeps its own values, by design).
 REPO-09 and REPO-10 turn the gates and records into data next.
+
+## REPO-09 — One gate registry: tiers, change triggers, and the model-specific checks as data (2026-09-21)
+
+**Outcome.** The 37 model-specific checks that were Makefile recipes are
+gates in `gates.json`: each names its model (and `mtp` companion), a tier
+(`verify`, 26 gates on the Metal plan and the tokenizer; `verify-cpu`, 11 on
+the CPU reference), the source globs that make it relevant, one argv with
+placeholders, a comparator (`trace` through `scripts/compare-generation.py`
+with the gate's bounds, or `exit`), and the reference document that
+justifies its bound. `scripts/gates.py` validates the manifest, selects by
+tier, by name or glob, or by `--changed REV` (`git diff --name-only` plus
+untracked files against the globs), builds what the selection needs
+(`ReleaseSafe` into `zig-out/`; the CPU tier at `ReleaseFast` into
+`.zig-cache/gates/cpu/`), runs each gate, prints one line with the
+measured maxima against the bound, and reports JSON with the revision.
+The Makefile went from 82 targets to 44: `check` gained `gates-validate`
+(schema plus the runner's seven self-tests, 0.03 s); `verify`,
+`verify-cpu`, `verify-changed BASE=`, `gate NAME=`, and `gates-list` are
+new; every `compare*`, `test-generation*`, `speculative-check*`,
+`draft-stats`, `compare-draft*`, and `test-vocabulary` recipe and the
+`compare_*_run` macros are gone, with the record and workload recipes
+(`baseline*`, `speculative-record`) and the kernel micro-benchmarks kept.
+The reason the unit changed shape on the day it opened: `make check` was
+already seconds, and the slowness was a per-unit protocol that ran the CPU
+tier without a rule saying when it is needed; the rule is now the
+manifest's `paths`, and `development.md § Gates` states the three moments
+the CPU reference earns its cost.
+
+**Mapping.** `compare{,-f32,-f16}` → `qwen38-trace-{f32,f16}`;
+`compare-gemma4{,-cpu,-f32,-f16}` → `gemma4-trace-{cpu,f32,f16}`, the same
+for `gemma4-qat` and `gemma4-26b-a4b`, `compare-bonsai*` → `bonsai-trace-*`,
+`compare-muse-glimmer*` → `muse-trace-*`; `test-generation{,-metal}` →
+`qwen38-generation-{cpu,metal}`, `test-generation-gemma4{,-metal}` →
+`gemma4-generation-{cpu,metal}`, `-gemma4-qat-metal`, `-gemma4-26b-a4b-metal`,
+`-bonsai-metal`, `-muse-glimmer-metal` → `<entry>-generation-metal`;
+`speculative-check{,-metal}` → `qwen38-speculative-{cpu,metal}`;
+`compare-draft{,-cpu,-metal}` → `qwen38-draft-trace-{cpu,metal}`,
+`compare-draft-gemma4{,-cpu,-metal}` → `gemma4-qat-draft-trace-{cpu,metal}`,
+`compare-draft-muse{,-cpu,-metal}` → `muse-draft-trace-{cpu,metal}`;
+`draft-stats` → `qwen38-draft-stats`; `test-vocabulary MODEL=` →
+`{qwen38,gemma4-qat,muse}-vocabulary`. The Make variables `MODEL`,
+`GEMMA_*`, `MUSE_*`, `BONSAI_MODEL` survive only for the record recipes;
+a gate's path is overridden by `<KEY>_MODEL`.
+
+**Evidence.** Spot checks reproduce the recipes' numbers: `qwen38-trace-f16`
+max abs 2.496e-2 / relative RMS 1.915e-4 on 129 files (the documented
+0.0250 / 0.00019), `gemma4-qat-draft-trace-metal` both rows and propose
+236764, `muse-draft-trace-metal` 30 greedy rows. The ReleaseFast
+measurement on `gemma4-qat-trace-cpu` (145 files, max abs 4.363e-5 /
+2.579e-6 at both modes): 34.7 s at ReleaseSafe, 29.4 s at ReleaseFast, so
+the CPU tier builds ReleaseFast. `make verify` on `8d75efb` plus this
+change: 25 of 26 gates green in 438 s, the one failure
+`bonsai-generation-metal` pre-existing (the old
+`test-generation-bonsai-metal` recipe failed the same way with
+`NoDraftBlock`: the Qwen generation check has loaded the embedded draft
+block since MODL-18 and Bonsai 2's file has none). The check now follows
+the file, not the family (`has_draft = binding.draft != null`, the
+draft-only blocks skipped with a printed note), after which
+`bonsai-generation-metal` passes in 53.7 s and `qwen38-generation-metal`
+still runs its with-draft path in 57.6 s. `make check` 74.8 s. Selection:
+before the check's fix, this unit's working tree (Makefile, docs,
+`gates.json`, the script) selected no gate; after it, the
+`inference/generation-check.zig` glob selects the 17 generation, draft,
+and speculative gates. The self-test pins a `src/tui/` change selecting
+nothing and a models/backends change selecting its family; `--dry-run`
+prints every command a selection would run.
+
+**Files.** `gates.json` (new), `scripts/gates.py` (new), `Makefile`,
+`inference/generation-check.zig` (the draft checks follow the file),
+`AGENTS.md`, `docs/development.md` (§ Environment, § Gates, the release
+recipe), `docs/reference/{bonsai,gemma4,generation,metal-backend,
+muse-glimmer,new-model-guide,prompt-profile,session,speculative-decoding,
+tokenizer}.md`, `docs/llm-guide.md`, `tests/fixtures/provenance.md`
+(the make targets renamed to gate names), `TODO.md`, and this log.
+
+**Remaining.** No pass cache: re-running a tier after a change outside its
+paths re-runs everything (the optional item; `--changed` is the cheap
+substitute). The `greedy` and `report` comparators of the plan are not
+built; no gate needs them. The generation check's CPU protocol is the
+Metal one (its constants are fixed in `generation-check.zig`), so
+`gemma4-generation-cpu` and `qwen38-speculative-cpu` stay hours-class.
+`draft-stats` is an `exit` gate that prints a table for the eye, not a
+bound.

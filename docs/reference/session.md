@@ -77,7 +77,7 @@ chat and the agent loop are the intended callers (turn-boundary
 checkpoints instead of replaying the conversation after a cancel), wired
 in the agent's phase 2.
 
-**Evidence** (`make test-generation` and `make test-generation-metal`,
+**Evidence** (`make gate NAME=qwen38-generation-cpu` and `make gate NAME=qwen38-generation-metal`,
 2026-09-10): step token 1, snapshot (157,024,256 bytes at position 1),
 step token 2 → logits A; restore, step token 2 → logits B; A equals B bit
 for bit on both backends; a third step after the restore equals the same
@@ -132,7 +132,7 @@ drafter is loaded, so the checkpoint/rewind/truncate contract above covers
 it with no second mechanism: the block's rows are rewritten by `commit`
 after a rewind, and `reset` memsets them with the rest.
 
-**Costs** (`make test-generation` / `test-generation-metal`, Qwen 27B,
+**Costs** (the generation check, `make gate NAME='qwen38-generation-*'`, Qwen 27B,
 2026-09-19): the region is 156,893,184 bytes (150 MB) on Qwen and on
 Bonsai; `checkpoint` and `rewind` 3 ms each on Metal and 2 ms each on the
 CPU reference (one 150 MB copy in each direction, the block quiescent
@@ -190,6 +190,6 @@ the 150 MB checkpoint region and the 2.15 GiB attention/recurrent block.
 length (against 97–220 ms for the step/prefill replay); the slot writes add
 21 ms per verify batch. `make test-metal` checks every slot against the
 CPU's sequential state (7.7e-7 worst) and the per-row history against the
-exact gather; `make test-generation-metal` compares restore-by-slot with
+exact gather; `make gate NAME=qwen38-generation-metal` compares restore-by-slot with
 the CPU's replay through the next step's logits at every accepted length
 (exact) and exercises the refusals.

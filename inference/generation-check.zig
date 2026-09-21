@@ -245,7 +245,11 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     // batch; 16 positions hold the header, an 8-row batch, and its correction.
     // The Metal plan also takes a drafter when the family has one, so the
     // recovery check can run verify batches and restore their row checkpoints.
-    const first_draft = use_metal and spec.draft != null;
+    // The family may embed a draft block that a particular file drops
+    // (Bonsai 2's re-encoding of Qwen3.8 has none), so the draft checks
+    // follow the file, not the family.
+    const has_draft = if (comptime spec.draft != null) binding.draft != null else false;
+    const first_draft = use_metal and has_draft;
     var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, first_draft) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, false) };
     defer first.deinit();
     var second: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, false) };
@@ -262,7 +266,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     // A loaded drafter must not perturb decode while it is never asked to
     // propose: the block's cache and workspace are idle, so the same two
     // tokens decode identically (both executors).
-    if (comptime spec.draft != null) {
+    if (comptime spec.draft != null) if (has_draft) {
         var with_draft: Model = if (backend) |*b|
             .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, true) }
         else
@@ -270,7 +274,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         defer with_draft.deinit();
         try with_draft.sequence(actual);
         if (!std.mem.eql(f32, expected, actual)) return error.DraftLoadedDecodeMismatch;
-    }
+    };
     var context: u8 = 0;
     // Both cancellation paths must poison the session and recover on reset.
     for ([_]Observer{
@@ -293,11 +297,11 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     var other: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 8, 4, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 8, true, false) };
     defer other.deinit();
     try checkSnapshot(spec, Model, alloc, &first, &second, &other, expected, actual);
-    if (comptime spec.draft != null) {
+    if (comptime spec.draft != null) if (has_draft) {
         try checkDraft(spec, alloc, mapped.view(), binding, spec.draft.?, if (backend) |*b| b else null);
         try draftRecoveryCheck(spec, alloc, if (backend) |*b| b else null, mapped.view(), binding, spec.draft.?);
         if (backend) |*b| try draftBatchCommitCheck(spec, alloc, b, mapped.view(), binding);
-    }
+    } else std.debug.print("Draft block checks skipped: the file carries no embedded block.\n", .{});
     try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal);
     if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true);
     if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual);

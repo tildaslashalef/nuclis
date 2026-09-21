@@ -282,7 +282,7 @@ tokenizes with special tokens parsed, so BOS is the text marker), Metal,
 F32 cache, one token per decode: 156 layer files (three positions × 52
 layers × 6,656 floats) and the 202,048 logits, greedy token 372.
 
-`make compare-muse-glimmer-cpu` (`nuclis generate --backend cpu
+`make gate NAME=muse-trace-cpu` (`nuclis generate --backend cpu
 --prompt-tokens …`, then `scripts/compare-generation.py` at the bring-up
 thresholds, max abs 2e-3 and relative RMS 1e-4 per file), 2026-09-19:
 
@@ -330,7 +330,7 @@ caches add 5 × 2 × 1024 halves per position (640 MiB at the same
 capacity). A ring layout for the 39 windowed layers is a session-layout
 change of its own.
 
-**Against the pinned traces** (`make compare-muse-glimmer`, three
+**Against the pinned traces** (`make gate NAME='muse-trace-f*'`, three
 positions of `<|begin_of_text|>Hello,`, 157 files, 2026-09-19):
 
 | Path | Max absolute | Max relative RMS | Threshold | Greedy / top-5 |
@@ -347,7 +347,7 @@ of the CPU over the rounded operands; the residual stream of the late
 layers is simply large. `--kv f32` is available for numerical work; the
 default stays `f16` as for the other families.
 
-**Generation check** (`make test-generation-muse-glimmer-metal`,
+**Generation check** (`make gate NAME=muse-generation-metal`,
 2026-09-19): sessions bit-identical, cancellation and reset through both
 observer callbacks, snapshot/restore bit-exact (106,496 bytes at position
 1); chunked prefill vs per-token steps on 70 tokens: chunks of 64 / 48 /

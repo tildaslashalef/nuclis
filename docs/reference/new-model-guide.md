@@ -114,7 +114,8 @@ writes every layer's output and the final logits for a short prompt; it
 does not add BOS, so write `<bos>` in the prompt text. Run it once,
 commit the traces under `tests/fixtures/<family>-<prompt>/` with a row in
 [provenance.md](../../tests/fixtures/provenance.md), and add a
-`make compare-<family>-cpu` target:
+`<family>-trace-cpu` gate to `gates.json` (tier `verify-cpu`, the family's
+source globs in `paths`; [development.md § Gates](../development.md#gates)):
 
 ```sh
 nuclis generate --backend cpu --model <file> --prompt-tokens <ids.json> \
@@ -145,12 +146,12 @@ family's geometry.
 When the first step produces garbage, commit after each operation and
 scan for non-finite values before comparing traces (Metal's `tanh`
 overflows past about ±44; the clamp at ±20 came from that probe). Then
-`make compare-<family>-f32` at the bring-up thresholds and
-`compare-<family>-f16` at a tolerance you *justify*: run the CPU
+the `<family>-trace-f32` gate at the bring-up thresholds and
+`<family>-trace-f16` at a tolerance you *justify*: run the CPU
 reference with its keys and values rounded to F16 and show the deviation
 is the model's, not the kernels' (Gemma: 0.75 on the CPU with rounded
-keys, 0.73 on Metal). Extend `generation-check` (`make
-test-generation-<family>-metal`) with per-family tolerances for the
+keys, 0.73 on Metal). Extend `generation-check` (the
+`<family>-generation-metal` gate) with per-family tolerances for the
 chunked-versus-stepped comparison; it also exercises snapshot/restore,
 cancellation, and isolation, and it found a backend bug on the first run
 (`Backend.unwrap`).
@@ -186,7 +187,7 @@ channels; add fake-token decoder tests before exercising a live completion.
 Sampling defaults come with provenance (a model card table, or
 the file's `general.sampling.*` hint recorded as a claim). Add the
 family's expectations to `inference/vocabulary-check.zig` and run
-`make test-vocabulary MODEL=<file>`: every captured prompt must encode to
+a `<family>-vocabulary` gate: every captured prompt must encode to
 the reference's ids.
 
 ## 7. Catalogue, CLI, and the acceptance record
@@ -215,11 +216,11 @@ The engineering log entry (design deviations, measured numbers, gate
 results, what was left out), the reference documents the unit changed,
 a llm-guide section if a concept was new, `THIRD_PARTY_NOTICES.md` for
 the template's origin, and the diff checked against the extension rule.
-Gates: `make check`, `make compare` (the first family must be unchanged),
-`make compare-<family>` (one target per pinned file when the family has
-two, as Gemma's `compare-gemma4` and `compare-gemma4-qat`), `make
-test-generation-metal` and `-<family>-metal`, `make bench` (the first
-family's rate unchanged).
+Gates: `make check`, then `make verify` (the first family's gates must be
+unchanged; the new family's `<family>-trace-*` and `<family>-generation-metal`
+gates, one set per pinned file when the family has two, as Gemma's
+`gemma4-*` and `gemma4-qat-*`), and `make bench` (the first family's rate
+unchanged).
 
 ## Mistakes already made once
 

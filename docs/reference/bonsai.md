@@ -231,7 +231,7 @@ Runs on 2026-09-18 (M4 Pro, Metal, the PQ2_0 file):
   greedy token 353 (` I`) — the same token the Qwen3.8 oracle picks, with
   logit 11.51 against Qwen's 12.41; the layer-63 residual at position 1
   has RMS 7.03 (Qwen 5.46) and a peak of 327 (Qwen 91). The payload of
-  `make compare-bonsai-cpu` (session 2).
+  `make gate NAME=bonsai-trace-cpu` (session 2).
 
 ## CPU reference against the fork (MODL-16, 2026-09-18)
 
@@ -254,7 +254,7 @@ mixer), and `value_grouped` says the fold used the grouped order
 (`nk · 3 + rep`), so the permutation is a real gather. A plain Qwen file
 takes none of these paths.
 
-`make compare-bonsai-cpu` (`generate --backend cpu --raw --prompt 'Hello,'`
+`make gate NAME=bonsai-trace-cpu` (`generate --backend cpu --raw --prompt 'Hello,'`
 on the PQ2_0 file, then `compare-generation.py` against
 `tests/fixtures/bonsai-hello-comma` at the bring-up thresholds 2e-3 /
 1e-4) **passes on the first run**: 129 files, max abs 2.44e-4 (at
@@ -285,13 +285,13 @@ transformed there. Nothing changes on a plain Qwen file (`make bench` on
 `qwen3.8-27b` after the change: 10.42 tok/s decode, 39.3 prefill on the
 22-token prompt, its usual numbers).
 
-`make compare-bonsai` on 2026-09-18, the fork's traces, 129 files each:
+`make gate NAME='bonsai-trace-f*'` on 2026-09-18, the fork's traces, 129 files each:
 
 | Row | Max abs | Max relative RMS | Thresholds |
 | --- | ---: | ---: | --- |
-| `compare-bonsai-cpu` | 2.44e-4 | 5.4e-6 | 2e-3 / 1e-4 |
-| `compare-bonsai-f32` | 4.27e-4 | 5.4e-6 | 2e-3 / 1e-4 |
-| `compare-bonsai-f16` | 1.34e-2 | 7.4e-5 | 3e-2 / 2e-4 (the Qwen F16 tolerance) |
+| `bonsai-trace-cpu` | 2.44e-4 | 5.4e-6 | 2e-3 / 1e-4 |
+| `bonsai-trace-f32` | 4.27e-4 | 5.4e-6 | 2e-3 / 1e-4 |
+| `bonsai-trace-f16` | 1.34e-2 | 7.4e-5 | 3e-2 / 2e-4 (the Qwen F16 tolerance) |
 
 The greedy token is 353 (` I`) on every row, the fork's. `make
 test-generation-bonsai-metal` passes: identical two-token logits across
@@ -328,7 +328,7 @@ acceptance record](bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
 rounds): **13.05 / 13.01 tok/s decode**, 39.3 / 39.2 prefill, first token
 560 ms — not slower than PQ2_0's 12.87 despite the micro-benchmark's 88
 against 119 GB/s (17 % fewer bytes at a lower byte rate come out even on
-the whole token), and `make compare-bonsai-f32` / `-f16` on it against
+the whole token), and `make gate NAME=bonsai-trace-f32` / `-f16` on it against
 the PQ2_0 traces pass at max abs 2.29e-4 / 1.29e-2 (relative RMS 5.5e-6 /
 7.3e-5), the same weights in another packing. **Decided 2026-09-18: the
 catalogue entry is the PTQ1_0 file** (5,946,648,928 B, SHA-256

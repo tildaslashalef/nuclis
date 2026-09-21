@@ -980,7 +980,7 @@ alone on the feed-forward shapes it reaches 2.3–3.1 TFLOP/s, a ceiling of
 products in a different order than the matvec, so a chunked prompt and the
 same prompt stepped token by token do not agree bit for bit: max abs 3.1e-5
 on the final logits, same argmax. The trace comparison against the reference
-(`make compare`) therefore keeps the per-token path, and the equivalence
+(`make gate NAME='qwen38-trace-*'`) therefore keeps the per-token path, and the equivalence
 between the two paths is its own recorded check. This is the general rule
 from section 7 again: a faster path is accepted when its difference from the
 slow one is measured and bounded, never because the output reads well.
@@ -1488,7 +1488,7 @@ move by 9e-4 and the greedy token does not move at all. Loosening the
 global threshold would hide regressions in the F32 path, which is the
 reference the GPU is checked against; so the F16 mode gets its own
 tolerance (3e-2 / 2e-4 on layer files, logits inside the bring-up numbers),
-`make compare` runs both precisions, and the F32 numbers stay where they
+`make gate NAME='qwen38-trace-*'` runs both precisions, and the F32 numbers stay where they
 were. The rule generalizes: a documented tolerance per numerical mode,
 never one loosened number that covers all of them.
 

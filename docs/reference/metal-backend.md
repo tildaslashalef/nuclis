@@ -900,7 +900,7 @@ Contract: the whole prompt must fit the remaining context (refused before any
 work), the observer's `check` runs between layers of every chunk, and a
 per-layer `layer` observer is refused because it is a per-token contract —
 `Model.prefill` steps token by token in that case, which is how `--trace-dir`
-and `make compare` keep their exact per-token semantics. The tile matmul
+and `make gate NAME='qwen38-trace-*'` keep their exact per-token semantics. The tile matmul
 accumulates in a different order than the matvec, so a chunked prompt and the
 same prompt stepped agree within a tolerance rather than bit for bit:
 `generation-check --metal` runs a 70-token prompt both ways with 32-token
@@ -962,7 +962,7 @@ prompts; the 16K row was not rerun because ENGN-05 does not touch attention:
 and 32 so both tile sets are exercised): max abs 2.37e-3 / 2.32e-3 /
 2.59e-3, relative RMS 1.1–1.2e-4, identical argmax (bound 2e-2 / 1e-3). The
 step from 2.8e-5 to 2.5e-3 is the half rounding of both operands; the
-CPU-vs-GPU `make compare` (stepped, matvec path) is unchanged at 1.22e-4.
+CPU-vs-GPU `make gate NAME='qwen38-trace-*'` (stepped, matvec path) is unchanged at 1.22e-4.
 Prefill is within 6–9 % of the reference at 512 and 4K; the remaining gap
 is spread over attention, DeltaNet, norms, and the generic-tile tensors
 (7 IQ4_NL and 106 Q8_0 tensors in this artifact).
@@ -1282,14 +1282,14 @@ against the CPU over the original floats 1.2e-5 max abs, 2.1e-4 relative
 RMS (the rounding's cost on N(0, 0.5²) data); half chunk attention on the
 ENGN-03 cases against the CPU over the rounded operands 1.8e-4 max abs (bound
 1e-3: a 2^-11 weight perturbation over values up to about 2, reached only
-when few keys are visible). Full model: `make compare-f16` (raw `Hello,`,
+when few keys are visible). Full model: `make gate NAME=qwen38-trace-f16` (raw `Hello,`,
 position 2) passes at its own tolerance, **max abs 3e-2 and relative RMS
 2e-4 per layer file** (measured 2.5e-2 at layer 59 of token 1 and 1.9e-4 at
 layer 51 of token 0; the residual stream's outlier channels carry the
 absolute error), with the logits inside the bring-up thresholds (9.2e-4 /
 5.3e-5) and the greedy token unchanged (353). The bring-up thresholds
 (2e-3 / 1e-4) stay the accepted numbers for the F32 cache
-(`make compare-f32`, unchanged at 1.22e-4); `make compare` runs both.
+(`make gate NAME=qwen38-trace-f32`, unchanged at 1.22e-4); `make gate NAME='qwen38-trace-*'` runs both.
 `test-generation --metal`: 70 tokens through an F16 cache against the F32
 stepped logits, 4.3e-4 max abs / 2.3e-5 relative RMS stepped and
 2.6e-3 / 1.3e-4 chunked (chunk 32), argmax identical; greedy tokens on the
@@ -1335,7 +1335,7 @@ Evidence (`test-metal`, 2026-09-10): the six pinned attention fixtures
 (tiny widths, one split, mostly empty SIMD groups) within 1e-5; the model
 shape at 257 visible (two splits, the second short), 1,021, 16,385 (64
 uneven splits), and 32,000 rows against the F64 CPU reference: F32 cache 2.2e-8 / 1.2e-8 / 7.5e-9 / 4.7e-9 max abs, F16 cache over the rounded rows 1.9e-8 / 1.3e-8 / 5.1e-9 / 4.2e-9 (bounds 2e-5 up to 1,021 rows and 1e-4 above); shape rejections (a group of 9, a width of 264, a short partial buffer, a short cache).
-Full model: `make compare-f32` 129 files, max abs 6.1e-5 (was 1.22e-4: each row is now accumulated once in F32 rather than through a stored score), `make compare-f16` 2.50e-2 / 1.9e-4 at the F16 tolerance, greedy unchanged. `test-generation --metal` unchanged
+Full model: `make gate NAME=qwen38-trace-f32` 129 files, max abs 6.1e-5 (was 1.22e-4: each row is now accumulated once in F32 rather than through a stored score), `make gate NAME=qwen38-trace-f16` 2.50e-2 / 1.9e-4 at the F16 tolerance, greedy unchanged. `test-generation --metal` unchanged
 (bit-identical sessions, snapshot round trip). Performance:
 [bench.md § Observations](bench.md#observations-so-far) (KERN-08 rows).
 
@@ -1537,11 +1537,11 @@ Full-model comparison, raw `Hello,`, GPU-resident plan, against the llama.cpp
 pass the bring-up thresholds (max absolute 0.002, relative RMS 1e-4). Observed
 maxima with the generic matvec: absolute `7.0e-4`, relative RMS `2.9e-6`;
 logits absolute `1.6e-5`, identical top five, greedy `[353, 2688]` (` I'm`).
-With the specialized matvec kernels (`make compare`, 2026-09-07): maximum
+With the specialized matvec kernels (`make gate NAME='qwen38-trace-*'`, 2026-09-07): maximum
 absolute `9.2e-5` over the 129 files — tighter, since the factored form
 rounds fewer times. With KERN-03 Q3_K/IQ3_S (2026-09-08), all 129 files
 still pass, maximum absolute error `0.0001220703125`. KERN-04 merged projections
-retain that maximum; `make test-generation-metal` was rerun on 2026-09-08.
+retain that maximum; `make gate NAME=qwen38-generation-metal` was rerun on 2026-09-08.
 With the F16 cache (KERN-07, 2026-09-10) the same comparison holds at the F16
 tolerance stated in [§ F16 KV cache](#f16-kv-cache-kern-07): layer files up
 to 2.5e-2 absolute / 1.9e-4 relative RMS, logits 9.2e-4 / 5.3e-5, greedy

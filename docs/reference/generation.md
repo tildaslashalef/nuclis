@@ -203,8 +203,8 @@ or `presence < 0` defers), and a row that cannot be decided reads its
 resident logits back and takes `distribution` (counted in
 `topk_fallbacks`). Greedy
 speculation must equal ordinary greedy token for token, checked by
-`generation-check --speculative-check` (`make speculative-check`,
-`make speculative-check-metal`); the two verify modes are compared row by row
+`generation-check --speculative-check` (`make gate NAME=qwen38-speculative-cpu`,
+`make gate NAME=qwen38-speculative-metal`); the two verify modes are compared row by row
 on real logits there as well.
 
 The output budget is 1–4,096 tokens and context is 1–32,768, with
@@ -285,14 +285,14 @@ is not what the block consumes: its `h` input is the target's
 `output_norm`-applied hidden, which is why the helper reads
 `llama_get_embeddings_nextn`. The small vectors are pinned under
 `inference/src/models/fixtures/qwen35-mtp/` and checked by
-`make test-generation` (the `checkDraft` pass in `generation-check`).
+`make gate NAME=qwen38-generation-cpu` (the `checkDraft` pass in `generation-check`).
 
 `generation-check` can write the same rows natively: `--draft-trace DIR`
 steps the pinned `Hello,` tokens through the block on the CPU reference or
 the Metal plan (`--metal`) and writes `p0-h.f32`, `p1-h.f32`,
 `p1-hprev.f32`, and `greedy.txt`. `compare-generation.py --draft` compares
 those rows and the greedy tokens against the pinned directory
-(`make compare-draft`, both backends). `--draft-stats` instead reports the
+(`make gate NAME=qwen38-draft-trace-metal`, both backends). `--draft-stats` instead reports the
 per-depth acceptance statistic and draft latency
 ([speculative-decoding.md § Acceptance statistic](speculative-decoding.md#the-qwen38-draft-head-modl-18)).
 
@@ -307,7 +307,7 @@ and `llama_get_logits_ith`. The noise rows are removed afterwards
 (`llama_memory_seq_rm`), as the driver's checkpoint reset does. The
 `museDraftTrace` pass of `generation-check` checks the rows against the
 pinned `inference/src/models/fixtures/muse-dflash/`
-(`make compare-draft-muse-cpu`) and writes its native rows and greedy ids
+(`make gate NAME=muse-draft-trace-cpu`) and writes its native rows and greedy ids
 into the trace directory. Two environment variables aid the diagnosis of a
 mismatch: `DFLASH_DRAFT_CPU=1` leaves the drafter's model off the GPU, and
 `DFLASH_DUMP_LAYERS=1` also writes the decoder graph's `l_out-N` rows per
@@ -319,9 +319,9 @@ The comparison checks every requested layer and final logits, rejecting missing,
 wrong-sized, or nonfinite files. Initial bring-up tolerances are maximum absolute
 error 0.002 and relative RMS error 0.0001 for every tensor. These are local
 full-model smoke thresholds, not general per-kernel or quality acceptance limits.
-They are the accepted numbers for the F32 cache (`make compare-f32`); the
+They are the accepted numbers for the F32 cache (`make gate NAME=qwen38-trace-f32`); the
 F16 cache (KERN-07) has its own documented tolerance, 0.03 / 0.0002 on the layer
-files with the logits inside the bring-up numbers (`make compare-f16`;
+files with the logits inside the bring-up numbers (`make gate NAME=qwen38-trace-f16`;
 [metal-backend.md § F16 KV cache](metal-backend.md#f16-kv-cache-kern-07)).
 
 The accepted outputs of this procedure are committed as fixtures under
@@ -335,8 +335,8 @@ working copies for reproducing or extending the traces; the compiled
 Since MODL-05 the harness accepts any F32 layer width and the comparison
 script takes the geometry as flags (`--embedding`, `--layers`, `--vocab`;
 the defaults are Qwen3.8's), so the same pair serves Gemma 4
-(`make compare-gemma4` on the K-quant entry, `compare-gemma4-qat`
-on the bring-up file, each against its own traces;
+(`make gate NAME='gemma4-trace-*'` on the K-quant entry, `gemma4-qat-trace-*`
+on the QAT file, each against its own traces;
 [gemma4.md](gemma4.md#cpu-reference-against-the-oracle-modl-05-2026-09-11)).
 Top-five IDs and reference greedy margin are reported for diagnosis. The
 harness also builds unchanged against the PrismML fork (the include and

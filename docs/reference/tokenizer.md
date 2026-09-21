@@ -184,7 +184,8 @@ zig build test-vocabulary --global-cache-dir .zig-cache/global -- \
   "$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf"
 ```
 
-The inference package also exposes `test-vocabulary` independently. The helper
+The inference package also exposes `zig build test-vocabulary` independently
+(the `*-vocabulary` gates of `gates.json` run it per pinned file). The helper
 is separate from the shipped nuclis CLI; inspection and structural validation
 do not automatically load the vocabulary.
 
