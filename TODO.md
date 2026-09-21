@@ -482,11 +482,15 @@ class, and the doc anchor that holds its evidence.
    the repo root, prints one line per gate with the measured numbers and the
    bound, exits non-zero on any failure. Bounds exist nowhere else.
 3. `Makefile`: `check` = `fmt-check` + the package unit tests +
-   `gates.py --class cheap`; `gate NAME=…` = `gates.py --gate $(NAME)`;
-   the model-specific recipes are deleted. The kernel micro-benchmark steps
+   `gates.py --class cheap`; `gate NAME=…` = `gates.py --gate $(NAME)`.
+   This unit deletes the *gate* recipes — every `compare*`,
+   `test-generation*`, `speculative-check*`, `draft-stats`, and
+   `compare-draft*` target — and leaves the record and workload recipes
+   (`baseline*`, `speculative-record`) to REPO-10, which replaces them with
+   `bench --workload` invocations. The kernel micro-benchmark steps
    (`bench-kernels`, `bench-matvec-*`, `bench-matmul`, `bench-hadamard`,
    `bench-experts`, `bench-attention`, `bench-profile`) stay explicit: they
-   measure, they do not gate.
+   measure, they do not gate. `help` stays generated from the `##` comments.
 4. `generation-check` gains a one-line JSON summary (`--json`) for the
    `trace`/`draft` comparators instead of stderr scraping, if session 1
    finds the printed numbers insufficient; its existing `--draft-trace`
@@ -532,6 +536,10 @@ Bonsai 2 (712–800), Muse Glimmer (801–886), the speculative record
    existing off/on pair in one invocation); a workload resolves into the
    options the command already takes, so no measurement code is added, and
    `--save DIR` writes `.zig-cache/bench/<workload>/<rev>-<n>.json`.
+   `scripts/nuclis-baseline.py` becomes the `*/acceptance` workloads (the
+   four-length arrays per family, reference comparison kept as its input);
+   the `baseline` / `baseline-gemma4*` / `baseline-muse-glimmer` /
+   `baseline-bonsai` recipes are deleted in the same edit.
 3. `scripts/bench-report.py`: `--table` renders the per-batch markdown table
    from saved JSON, `--compare PREV` prints the delta against the workload's
    `bars` and exits non-zero on a missed bar, `--write-doc` replaces the
@@ -540,12 +548,28 @@ Bonsai 2 (712–800), Muse Glimmer (801–886), the speculative record
 4. `scripts/nuclis-speculative.py` becomes the `speculative-record` workload
    set (12 configurations) driven by `bench --workload … --pair --json`; its
    make target becomes a heavy gate (REPO-09).
-5. Documents: `docs/reference/bench.md` keeps the definitions, the
-   methodology, and a table of contents, and the records move to
-   `docs/reference/bench-qwen38.md`, `bench-gemma4.md`, `bench-muse.md`,
-   `bench-bonsai.md`, and `bench-kernels.md` (profile and micro-benchmarks).
-   Anchors cited by the log are preserved by keeping the heading text or by
-   a redirect heading; `docs/architecture.md` links the five.
+5. Documents: `docs/reference/bench.md` (1,560 lines, 25 sections) keeps
+   the introduction, `Definitions`, `What to record with results`, and a
+   record index; every other section moves, with its heading text intact so
+   its slug survives:
+   - `bench-qwen38.md`: `Acceptance runs` (the warm record and the
+     cold-start row), `Speculative decoding record` (ENGN-12), `Recovery by
+     row checkpoints` (ENGN-14), and the KERN-13 / ENGN-15 / ENGN-16 quick
+     passes.
+   - `bench-gemma4.md`: the 12B first look (MODL-06), the 12B, QAT, and
+     26B-A4B acceptance records (MODL-07/08/10), the 12B QAT per-kernel
+     profile, and the draft pair (MODL-19).
+   - `bench-muse.md`: the Muse first look and acceptance record
+     (MODL-12/13); `bench-bonsai.md`: the Bonsai 2 record (MODL-17).
+   - `bench-kernels.md`: `Observations so far` (the 2026-09-07 bring-up
+     records plus KERN-03…KERN-12, MODL-01, ENGN-02…05, KERN-07/08/11),
+     `Per-kernel profile`, `Kernel micro-benchmark`, and the KERN-14/15/16/18
+     sweeps.
+   The log cites specific `bench.md#anchor` paths and is append-only, so
+   every anchor it names keeps a one-line stub in `bench.md` under the same
+   heading, pointing at its new home (the list comes from
+   `rg -o 'bench\.md#[a-z0-9-]+' docs/engineering-log.md | sort -u`);
+   `docs/architecture.md` links the five files.
 
 **Acceptance.** `nuclis bench --workload gemma4-qat/prose512 --pair --json`
 reproduces MODL-19's numbers within run noise and `bench-report.py --table
