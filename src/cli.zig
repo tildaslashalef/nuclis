@@ -148,6 +148,9 @@ pub fn parseArgs(args: []const []const u8) !Options {
         } else if (command == .bench and std.mem.eql(u8, args[i], "--profile")) {
             if (options.benchmark.profile) return error.DuplicateOption;
             options.benchmark.profile = true;
+        } else if (command == .bench and std.mem.eql(u8, args[i], "--unfused-norms")) {
+            if (options.benchmark.unfused_norms) return error.DuplicateOption;
+            options.benchmark.unfused_norms = true;
         } else if (generates or command == .tokenize) {
             const flag = args[i];
             i += 1;

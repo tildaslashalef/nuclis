@@ -104,6 +104,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-16 | Draft proposal policy: the `p_min` early stop shipped, the adaptive length dropped | 2026-09-20 |
 | KERN-15 | Split-K decode matvec for row-poor shapes: measured behind the single pass, closed negative | 2026-09-21 |
 | KERN-16 | Long-context prefill attention: register-level reuse measured 2–5 % at chunk sizes, closed negative; the verify-shaped window shipped | 2026-09-21 |
+| KERN-18 | Fused decode norms: −182…−192 dispatches per decode step shipped, the speed bars missed; closed below its target | 2026-09-21 |
 
 ## Context
 
@@ -3707,3 +3708,68 @@ confirm it on the real batch (the kernel-level window is −11 % at 512 and
 −15 % at 16K context). The three untried levers above are the material for
 a third attempt, which the plan does not currently order; the benchmark
 harness and the fixture make it cheap to test them.
+
+### KERN-18 — Fused decode norms: −182…−192 dispatches per decode step shipped, the speed bars missed; closed below its target (2026-09-21)
+
+**Outcome.** Three fused norm kernels replace the plan pairs the three
+families dispatch every layer, and the unit closes below its target: the
+dispatch-count bars pass on Qwen and Gemma and miss narrowly on Muse, and
+all three decode-rate bars miss because the unit's premise — that the norm
+dispatches pay a launch floor rather than bytes — was refuted by
+measurement. `nu_rmsnorm_add` (`(destination + norm(input)·w) · scale`, the
+`rmsNorm` + `addScale` pair of every post norm), `nu_add_rmsnorm`
+(`residual += input` then `output = norm(residual)·w`, the `add` +
+`rmsNorm` pair where the norm consumes the updated residual, Qwen's
+post-attention norm), and `nu_rmsnorm_rope` (the `rmsNorm` + `rope` pair of
+every q/k norm, split-half or adjacent, strided input or in place). Each is
+reached through a Backend helper (`rmsNormAdd`, `addRmsNorm`,
+`rmsNormRope`) that runs the pair it replaces when `Backend.fused_norms` is
+false; `bench --unfused-norms` forces that control. The plans wired: Qwen's
+step add+RMSNorm (64 per token) and full-attention q/k norms (32), Gemma's
+attention and FFN post norms (96) and q/k norms (96), Muse's post norms
+(104) and sliding q/k norms (78; its 13 global layers have no rotation).
+The design, the kernels, and the reading are in
+[metal-backend.md § KERN-18](reference/metal-backend.md#fused-decode-norms-kern-18-2026-09-21-closed-below-its-target).
+
+**Evidence.** `make test-metal` (new `checkFusedNorms`): every fused kernel
+against the pair it replaces and against `cpu.rmsNorm`/`cpu.rope` over the
+model widths and strides — max abs **4.8e-7** for both comparisons (bounds
+2e-5 fused-vs-unfused, 2e-4 against the CPU); a fused `generate` on
+Qwen3.8-27B reproduces the greedy text. `bench --profile` (canonical
+workload, drafter not loaded, `1d82c18` plus the change) dispatches per
+step: Qwen 938.8 → 844.3 (rmsnorm 209.0 → 114.5, add 128.0 → 65.0,
+add_rmsnorm 63.0, rmsnorm_rope 31.5), Gemma 4 12B QAT 882.2 → 693.2
+(rmsnorm 337.0 → 148.0, add_scale 95.3 → 0, rmsnorm_add 94.5, rmsnorm_rope
+94.5), Muse 922.9 → 743.8 (rmsnorm 314.0 → 134.8, add_scale 102.4 → 0,
+rmsnorm_add 102.4, rmsnorm_rope 76.8): −94.5 / −189.0 / −179.2 per step
+blended by three prefill command buffers, −96 / −192 / −182 per decode step
+by design. The bars (≥ −86 / −177 / −185) are met on Qwen and Gemma and
+missed on Muse by three dispatches, whose 20 % bar assumed all 52 layers
+rotate q/k. `bench` decode at 512 (128 tokens, F16, greedy, interleaved
+off/on pairs, drafter not loaded): Qwen 10.814/10.742 → 10.788/10.744
+(**1.000×**), Gemma 27.387/27.379 → 27.517/27.515 (**1.005×**), Muse
+9.993/9.936 → 10.018/9.975 (**1.004×**) against the ≥ 1.01 / 1.04 / 1.02
+bars; prefill unchanged. The reading: the 2026-09-07 profile's ~13 µs per
+`rmsnorm` dispatch was kernel time, not launch overhead — a norm dispatch
+costs ~7–10 µs of which ~2–4 µs is the launch, and the fused kernel does
+the same memory passes in one dispatch, so the win is the removed launch
+(~0.4 ms of Gemma's 39 ms step). The fusion ships: correct, a small
+consistent win, and the pairs stay one flag away. `make check` passes; per
+the session's gate policy `make compare`, the generation and speculative
+checks, and the Muse/Gemma acceptance records were deferred to ENGN-17.
+
+**Files.** `inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`,
+`inference/src/models/{qwen35,gemma4,muse_glimmer}_metal.zig`,
+`inference/metal-check.zig`, `src/bench.zig`, `src/cli.zig`, `src/help.zig`,
+`docs/reference/{bench,metal-backend}.md`, `TODO.md`, and this log.
+
+**Remaining.** ENGN-17's record measures the shipped path end to end; the
+Qwen profile there will be taken with the default open the unit defines.
+Two facts to carry into MODL-19/20: `bench` on the Gemma and Muse entries
+fails with `DraftSourceMissing` while the config's
+`generation.speculative` is true and their registry companions have no
+adapter yet, and the route to a real decode win is epilogue fusion (the
+post norm inside the projection or attention kernel that produces its
+input), not merging two memory-bound dispatches.
+

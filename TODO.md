@@ -58,8 +58,24 @@ start from the untried levers in
 [metal-backend.md § KERN-16](docs/reference/metal-backend.md#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative)
 ([bench.md § Prefill attention sweep](docs/reference/bench.md#prefill-attention-sweep-kern-16-2026-09-21)).
 
-**Next: KERN-18** (fused norms for the decode step), then MODL-19 and
-MODL-20 (the Gemma 4 and Muse drafters), then ENGN-17's full record.
+KERN-18 (fused decode norms) closed below its target on 2026-09-21: the
+three fused kernels ship (Qwen's add+post norm and full-attention q/k
+norms, Gemma's post norms and q/k norms, Muse's post norms and sliding q/k
+norms) at −96 / −192 / −182 dispatches per decode step, but the speed bars
+miss — decode at 512 reads 1.000× Qwen, 1.005× Gemma, 1.004× Muse against
+≥ 1.01 / 1.04 / 1.02× — because the profile's per-dispatch time was kernel
+work, not a launch floor, so fusing two memory-bound passes saves only the
+removed launch. The pairs stay behind `Backend.fused_norms` /
+`bench --unfused-norms`, and ENGN-17's record measures the shipped path
+([bench.md § Fused norm sweep](docs/reference/bench.md#fused-norm-sweep-kern-18-2026-09-21)).
+**Two facts for MODL-19/20:** `bench` on the Gemma and Muse entries fails
+with `DraftSourceMissing` while `generation.speculative` is true and their
+registry companions have no adapter, and the route to a real decode win is
+epilogue fusion (the norm inside the kernel that produces its input), not
+merging dispatches.
+
+**Next: MODL-19** (Gemma 4 draft heads), then MODL-20 (Muse's DFlash
+drafter), then ENGN-17's full record.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -99,23 +115,24 @@ draft 4; prose 512 greedy 0.76 / 0.96 / 1.06×, instruct 0.90 / 1.00 / 1.03×.
 Both sampled paths are free of host work and the proposal is trimmed;
 what remains is the batch's model time. At draft 4 the code prompt advances
 3.17 tokens for a 256 ms verify (81 ms/token against ~118), prose 2.49 for
-254 (102 against ~119). KERN-14, KERN-15, and KERN-16 closed negative, so the
-512-token verify, the row-poor matvecs, and the prefill attention stay where
-they are (KERN-16 keeps its verify-shaped routing); KERN-18's fused norms are
-the remaining kernel lever. Nothing here claims a
+254 (102 against ~119). KERN-14, KERN-15, KERN-16, and KERN-18 all closed below their
+targets, so the 512-token verify, the row-poor matvecs, the prefill
+attention, and the decode norms stay where they are (each keeping its
+measured partial win: the 2-row matvec route, the verify-shaped attention
+window, the fused norms behind their flag). The kernel levers the plan
+ordered are exhausted; nothing here claims a
 final speedup before ENGN-17 measures it.
 
-Order: KERN-18 → MODL-19 → MODL-20 →
+Order: MODL-19 → MODL-20 →
 ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
 register-reuse attention closed negative, so
 verify stays on the 16×8 tile at 512 and the row-poor shapes on the
-single-pass kernel; KERN-18 is the remaining kernel lever
-(KERN-18 added 2026-09-21: the norm launches pay on all three families and
-on every verify batch, so it sits before the family drafters and the
-verdict, and ENGN-18 keeps only the Gemma tile work). **KERN-16's
+single-pass kernel; KERN-18 closed below its target with the fused norms
+shipped, and its dispatch counts are live in every verify batch's layer
+passes. **KERN-16's
 verify-shaped routing landed before ENGN-17 because the verdict measures
 the Qwen path it changes**: the reuse body takes the 1–64-row chunk
 attention of every verify batch at 16K–32K context, measured 11–16 %
@@ -133,17 +150,17 @@ layout: memory,
 not speed), and KERN-17 (the ternary experiment) are other-family or
 experimental and sit after the verdict, grouped so the performance theme
 finishes in one stretch; TERM-10 (chat polish) and the vision units follow.
-The performance group closes in the order of measured leverage: the
-fused norms, Gemma's decode and
+The performance group closes in the order of measured leverage: Gemma's
+decode and
 prefill, the ring layout, and last
 the ternary arithmetic, which is the least certain and may close negative;
-the small-batch tile, the split-K matvec, and the long-context attention
-led the order and closed negative. AGNT-12 (background commands) and
+the small-batch tile, the split-K matvec, the long-context attention, and
+the fused norms led the order and closed below their targets. AGNT-12
+(background commands) and
 APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-18 | Fused norms for the decode step (post-norm into the residual add, q/k norm into RoPE) | 1 |
 | MODL-19 | Gemma 4 draft heads: the companion file as a second GGUF, 12B and 26B-A4B | 1–2 |
 | MODL-20 | Muse Glimmer DFlash drafter: facts, contract fit, acceptance loop | 2 |
 | ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
@@ -291,49 +308,6 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
-
-## KERN-18 — Fused norms for the decode step: post-norm into the residual add, q/k norm into RoPE
-
-**Facts (the three per-kernel profiles).** Every family's decode step pays
-its norm launches at the launch floor, not in bytes: Qwen 209 `rmsnorm`
-dispatches of ~13 µs (2.7 ms, 2.7 % of the ~101 ms step; the 2026-09-07
-profile in [bench.md § Per-kernel profile](docs/reference/bench.md#per-kernel-profile)),
-Muse 314 (4.3 ms, 4.0 % of 107.5 ms;
-[muse-glimmer.md § Metal plan](docs/reference/muse-glimmer.md#metal-plan-modl-12-2026-09-19)),
-Gemma 4 12B 337 of ~8 µs (2.7 ms, 7 % of the 36.5 ms decode step;
-[bench.md § Gemma 4 12B QAT decode](docs/reference/bench.md#gemma-4-12b-qat-decode-first-per-kernel-profile-2026-09-12)).
-The shapes are the same three kinds everywhere: the per-layer pre norms
-(which feed a mixer and stay), the per-layer post norms (which are added
-into the residual — a dispatch and a full memory round trip), and the
-per-head q/k norms (which feed RoPE — another dispatch and round trip);
-Qwen's DeltaNet gate norm is already fused with its SiLU multiply through
-`nu_rmsnorm`'s `silu_multiplier`. Gemma and Muse have six norms per layer
-over 48 and 52 layers, so the two fusable kinds are ~192 Gemma and ~208
-Muse dispatches per token; Qwen's post norms plus the q/k norms of its
-full-attention layers are ~96 of its 1,236.
-
-**Design.** Two kernels, each a variant of an existing one, recorded by the
-three plans in place of the pair it replaces, with a diagnostic flag that
-forces the unfused pair so the sweep and the acceptance can take an
-interleaved control (as KERN-14/15 forced their candidates):
-1. `nu_rmsnorm_add`: normalize a row with its weight and write
-   `destination + norm(x)·w` into the destination, replacing the
-   `rmsNorm` + `add` pair of every post norm; the reduction is the existing
-   kernel's, the epilogue writes the sum.
-2. `nu_rmsnorm_rope` (or a `norm` prologue on `nu_rope`/`nu_rope_rows`):
-   normalize each head of a row with its weight, then rotate with the same
-   table and pairing, replacing the q/k `rmsNorm` + `rope` pair. The
-   per-head reduction needs the threadgroup barrier the standalone norm has;
-   budget the geometry and the registers before writing it.
-The CPU references and the plans' semantics are unchanged; each family's
-compare proves the rounding stays inside its pinned bounds.
-
-**Acceptance.** Dispatches per token down ≥ 20 % on Gemma (882 → ≤ 705) and
-Muse (922 → ≤ 737) and ≥ 7 % on Qwen (1,236 → ≤ 1,150) in `bench --profile`;
-decode at 512 ≥ 1.04× Gemma, ≥ 1.02× Muse, ≥ 1.01× Qwen against the
-interleaved unfused control; every family's compare target unchanged;
-`make check`; the Qwen record lands in ENGN-17 with it, and the Muse and
-Gemma acceptance records re-run.
 
 ## MODL-19 — Gemma 4 draft heads: the companion file as a second GGUF
 
@@ -899,7 +873,9 @@ activations in F32 belongs here too (the QAT checkpoint amplifies
 half-operand rounding about five times more than the K-quant file)
 ([bench.md](docs/reference/bench.md), [gemma4.md](docs/reference/gemma4.md)).
 The RMS-norm launches led this list and moved to KERN-18, ahead of this
-unit; the dispatch bar moved with them.
+unit; they measured 0.5 % of the step there (not the launch floor the
+profile suggested), so the dispatch bar moved back with nothing and this
+unit owns the tile work.
 
 **Design.** One experiment per session, each judged on the acceptance
 record: the Q4_0 tile's staged block decode and the F32-activation prefill

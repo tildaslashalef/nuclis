@@ -1665,6 +1665,70 @@ kernel void nu_rmsnorm(device const float * input [[buffer(0)]],
     }
 }
 
+// The post-norm fusion, norm first: `destination = (destination +
+// norm(input)·w) · scale`, the exact pair `rmsNorm` then `addScale` (whose
+// factor is applied after the sum). Same reduction and geometry as
+// nu_rmsnorm; `input` and `destination` must not overlap (the unfused pair
+// normalizes `input` in place).
+struct NormAddParams { uint width; uint in_stride; uint out_stride; float eps; float scale; };
+kernel void nu_rmsnorm_add(device const float * input [[buffer(0)]],
+                           device const float * weight [[buffer(1)]],
+                           device float * destination [[buffer(2)]],
+                           constant NormAddParams & p [[buffer(7)]],
+                           uint row [[threadgroup_position_in_grid]],
+                           uint tid [[thread_position_in_threadgroup]],
+                           uint lane [[thread_index_in_simdgroup]],
+                           uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float partial[8];
+    device const float * x = input + ulong(row) * p.in_stride;
+    float sum = 0;
+    for (uint i = tid; i < p.width; i += 256) sum += x[i] * x[i];
+    sum = simd_sum(sum);
+    if (lane == 0) partial[sg] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total = 0;
+    for (uint i = 0; i < 8; ++i) total += partial[i];
+    float inv = rsqrt(total / float(p.width) + p.eps);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    device float * y = destination + ulong(row) * p.out_stride;
+    for (uint i = tid; i < p.width; i += 256) y[i] = (y[i] + x[i] * inv * weight[i]) * p.scale;
+}
+
+// The post-norm fusion, add first: `residual += input` then
+// `output = norm(residual)·w`, replacing the `add` + `rmsNorm` pair when the
+// norm consumes the updated residual. The first pass stores the sum it
+// accumulates, so the reduction divides by the mean square of the stored
+// residual exactly as the unfused pair does. `output` must not alias
+// `input`.
+struct AddNormParams { uint width; uint in_stride; uint out_stride; float eps; };
+kernel void nu_add_rmsnorm(device float * residual [[buffer(0)]],
+                           device const float * input [[buffer(1)]],
+                           device const float * weight [[buffer(2)]],
+                           device float * output [[buffer(3)]],
+                           constant AddNormParams & p [[buffer(7)]],
+                           uint row [[threadgroup_position_in_grid]],
+                           uint tid [[thread_position_in_threadgroup]],
+                           uint lane [[thread_index_in_simdgroup]],
+                           uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float partial[8];
+    device float * x = residual + ulong(row) * p.in_stride;
+    device const float * s = input + ulong(row) * p.in_stride;
+    float sum = 0;
+    for (uint i = tid; i < p.width; i += 256) {
+        const float t = x[i] + s[i];
+        x[i] = t;
+        sum += t * t;
+    }
+    sum = simd_sum(sum);
+    if (lane == 0) partial[sg] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total = 0;
+    for (uint i = 0; i < 8; ++i) total += partial[i];
+    float inv = rsqrt(total / float(p.width) + p.eps);
+    device float * y = output + ulong(row) * p.out_stride;
+    for (uint i = tid; i < p.width; i += 256) y[i] = x[i] * inv * weight[i];
+}
+
 // L2 normalization in place: x / max(sqrt(sum(x^2)), eps). One SIMD group per
 // row; rows are grouped `heads` per token row of `row_stride` floats (a
 // single token passes heads = rows, row_stride = 0).
@@ -1715,6 +1779,43 @@ kernel void nu_rope_rows(device float * data [[buffer(0)]],
     uint row = index / per_row, rest = index % per_row, head = rest / half_dims, i = rest % half_dims;
     float2 cs = table[ulong(p.position + row) * half_dims + i];
     nu_rotate_pair(data + ulong(row) * p.row_stride + ulong(head) * p.head_stride, i, half_dims, p.pairing, cs);
+}
+
+// The q/k fusion: `output = norm(input)·w` then the leading `dims` channels
+// of every row are rotated at `position` with the same table, pairing, and
+// arithmetic as nu_rope, replacing the `rmsNorm` + `rope` pair. One
+// 256-thread group per row; the rotation runs after the normalized row is
+// written and visible (`mem_device` barrier), so `output` may alias `input`.
+struct NormRopeParams { uint width; uint in_stride; uint out_stride; uint dims; uint position; uint pairing; float eps; };
+kernel void nu_rmsnorm_rope(device const float * input [[buffer(0)]],
+                            device const float * weight [[buffer(1)]],
+                            device const float2 * table [[buffer(2)]],
+                            device float * output [[buffer(3)]],
+                            constant NormRopeParams & p [[buffer(7)]],
+                            uint row [[threadgroup_position_in_grid]],
+                            uint tid [[thread_position_in_threadgroup]],
+                            uint lane [[thread_index_in_simdgroup]],
+                            uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float partial[8];
+    device const float * x = input + ulong(row) * p.in_stride;
+    float sum = 0;
+    for (uint i = tid; i < p.width; i += 256) sum += x[i] * x[i];
+    sum = simd_sum(sum);
+    if (lane == 0) partial[sg] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total = 0;
+    for (uint i = 0; i < 8; ++i) total += partial[i];
+    float inv = rsqrt(total / float(p.width) + p.eps);
+    device float * y = output + ulong(row) * p.out_stride;
+    // Every lane finished reading x before any write: rows may alias in place.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = tid; i < p.width; i += 256) y[i] = x[i] * inv * weight[i];
+    threadgroup_barrier(mem_flags::mem_device);
+    const uint half_dims = p.dims / 2;
+    if (tid < half_dims) {
+        const float2 cs = table[ulong(p.position) * half_dims + tid];
+        nu_rotate_pair(y, tid, half_dims, p.pairing, cs);
+    }
 }
 
 // Elementwise helpers.

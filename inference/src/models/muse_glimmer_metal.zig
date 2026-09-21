@@ -287,10 +287,9 @@ pub const Plan = struct {
         for (self.binding.active(), self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, normOf(1, model.rms_epsilon));
             try self.attention(layer, c, il);
-            try b.rmsNorm(self.projected, c.post_attention_norm, self.projected, normOf(1, model.post_norm_epsilon));
-            try b.add(self.x, self.projected, hidden);
+            try b.rmsNormAdd(self.x, self.projected, c.post_attention_norm, 1.0, normOf(1, model.post_norm_epsilon));
             try self.feedForward(layer, c);
-            try b.add(self.x, self.projected, hidden);
+            try b.rmsNormAdd(self.x, self.projected, c.post_ffn_norm, 1.0, normOf(1, model.post_norm_epsilon));
             if (observer) |o| {
                 if (o.check) |check| try check(o.context);
                 if (o.layer) |report| {
@@ -321,14 +320,13 @@ pub const Plan = struct {
     }
 
     /// The feed-forward block over the residual `x` (the attention output
-    /// already added) into `projected`, post-normed and ready to add: the
-    /// CPU reference's `feedForward`.
+    /// already added) into `projected`, ready for the caller's post norm and
+    /// add: the CPU reference's `feedForward`.
     fn feedForward(self: *Plan, layer: model.Layer, c: LayerConstants) !void {
         const b = self.backend;
         try b.rmsNorm(self.x, c.ffn_norm, self.normalized, normOf(1, model.rms_epsilon));
         try self.projections(&.{ layer.ffn_gate, layer.ffn_up }, &.{ self.gate, self.up }, .silu_mul_pair);
         try self.mm(layer.ffn_down, self.gate, self.projected);
-        try b.rmsNorm(self.projected, c.post_ffn_norm, self.projected, normOf(1, model.post_norm_epsilon));
     }
 
     /// `feedForward` over the chunk's `count` rows of `x_c` into `projected_c`.
@@ -408,11 +406,12 @@ pub const Plan = struct {
         const k_row = if (precision == .f32) k_slot else self.k;
         const v_row = if (precision == .f32) v_slot else self.v;
         try self.projections(&.{ layer.query, layer.key, layer.value, layer.gate }, &.{ self.q, k_row, v_row, self.attention_gate }, .plain);
-        try b.rmsNorm(self.q, c.query_norm, self.q, headNorm(heads));
-        try b.rmsNorm(k_row, c.key_norm, k_row, headNorm(kv_heads));
         if (layer.kind == .sliding) {
-            try b.rope(self.q, self.rope_table, heads, hd, hd, position, .adjacent);
-            try b.rope(k_row, self.rope_table, kv_heads, hd, hd, position, .adjacent);
+            try b.rmsNormRope(self.q, c.query_norm, self.rope_table, self.q, headNorm(heads), hd, position, .adjacent);
+            try b.rmsNormRope(k_row, c.key_norm, self.rope_table, k_row, headNorm(kv_heads), hd, position, .adjacent);
+        } else {
+            try b.rmsNorm(self.q, c.query_norm, self.q, headNorm(heads));
+            try b.rmsNorm(k_row, c.key_norm, k_row, headNorm(kv_heads));
         }
         if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = kv_width }, .{ .dst = v_slot, .src = v_row, .count = kv_width } });
         const first = firstVisible(layer.kind, position);

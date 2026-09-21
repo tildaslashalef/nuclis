@@ -379,10 +379,9 @@ pub const Plan = struct {
         for (self.binding.active(), self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, norm);
             try self.attention(layer, c, il);
-            try b.rmsNorm(self.projected, c.post_attention_norm, self.projected, norm);
-            try b.add(self.x, self.projected, hidden);
+            try b.rmsNormAdd(self.x, self.projected, c.post_attention_norm, 1.0, norm);
             try self.feedForward(layer, c);
-            try b.addScale(self.x, self.projected, hidden, c.output_scale);
+            try b.rmsNormAdd(self.x, self.projected, c.post_ffn_norm, c.output_scale, norm);
             if (observer) |o| {
                 if (o.check) |check| try check(o.context);
                 if (o.layer) |report| {
@@ -413,7 +412,7 @@ pub const Plan = struct {
     }
 
     /// The feed-forward block over the residual `x` (the attention output
-    /// already added) into `projected`, post-normed and ready for the
+    /// already added) into `projected`, ready for the caller's post norm and
     /// scaled add: the CPU reference's `feedForward`. On an expert layer the
     /// dense FFN is the shared branch, and the router input is `rms(x)`
     /// weighted by `router_scale` then scaled by 1/sqrt(width); the
@@ -444,10 +443,8 @@ pub const Plan = struct {
             try b.geluMulRows(e.gate_up, e.gate_up.slice(ff * 4, e.gate_up.len - ff * 4), e.hidden, ff, k, 2 * ff, 2 * ff, ff);
             try b.matvecExperts(down.buffer, down.tensor, e.indices, k, e.hidden, ff, e.down, hidden);
             try b.combineExperts(e.down, e.route_weights, e.indices, ec.down_scale, e.out, .{ .columns = hidden, .slots = k, .rows = 1, .experts = spec.count, .in_stride = hidden, .out_stride = hidden });
-            try b.rmsNorm(e.out, ec.post_ffn_norm_2, e.out, norm);
-            try b.add(self.projected, e.out, hidden);
+            try b.rmsNormAdd(self.projected, e.out, ec.post_ffn_norm_2, 1.0, norm);
         }
-        try b.rmsNorm(self.projected, c.post_ffn_norm, self.projected, norm);
     }
 
     /// `feedForward` over the chunk's `count` rows of `x_c` into
@@ -569,10 +566,8 @@ pub const Plan = struct {
             try b.copy(v_row, k_row, kvw);
         }
         const rope = self.ropeOf(kind);
-        try b.rmsNorm(q, c.query_norm, q, .{ .rows = heads, .width = hd, .in_stride = hd, .out_stride = hd });
-        try b.rope(q, rope.table, heads, hd, rope.dims, position, .split_half);
-        try b.rmsNorm(k_row, c.key_norm, k_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
-        try b.rope(k_row, rope.table, kv_heads, hd, rope.dims, position, .split_half);
+        try b.rmsNormRope(q, c.query_norm, rope.table, q, .{ .rows = heads, .width = hd, .in_stride = hd, .out_stride = hd }, rope.dims, position, .split_half);
+        try b.rmsNormRope(k_row, c.key_norm, rope.table, k_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd }, rope.dims, position, .split_half);
         try b.rmsNorm(v_row, self.ones, v_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
         if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = kvw }, .{ .dst = v_slot, .src = v_row, .count = kvw } });
         const first = firstVisible(kind, position);

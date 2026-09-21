@@ -1436,6 +1436,60 @@ loads (the ENGN-08 variant done with double buffering rather than 16
 barriers and scalar copies), and an ablation that removes one phase at a
 time to identify the per-tile limiter rather than guessing at it.
 
+## Fused decode norms (KERN-18, 2026-09-21, closed below its target)
+
+The 2026-09-07 profile showed every family's decode step paying 200–340
+`rmsnorm` dispatches (2.1–3.6 ms of a 37–110 ms step) and read the
+per-dispatch time as a launch floor: two fused variants would remove one
+dispatch from each post norm and each q/k norm. They were built and
+measured; the launches were real but mostly kernel work, and the fusion
+buys ~0.25–0.5 % of the step.
+
+**Kernels** (one threadgroup per row, 256 threads, the `nu_rmsnorm`
+reduction):
+1. `nu_rmsnorm_add` — `destination = (destination + norm(input)·w) · scale`,
+   the exact `rmsNorm` + `addScale` pair (whose factor applies after the
+   sum) of every post norm. The plans' helper `Backend.rmsNormAdd` runs the
+   pair when `fused_norms` is false.
+2. `nu_add_rmsnorm` — `residual += input` then `output = norm(residual)·w`,
+   the `add` + `rmsNorm` pair where the norm consumes the updated residual
+   (Qwen's post-attention norm). The first pass stores the sum it
+   accumulates, so the reduction divides by the stored residual's mean
+   square exactly as the pair does. `Backend.addRmsNorm` is the helper.
+3. `nu_rmsnorm_rope` — `output = norm(input)·w` then the rotation of the
+   leading `dims` channels at `position`, the `rmsNorm` + `rope` pair of
+   every q/k norm (split-half for Qwen and Gemma, adjacent for Muse, an
+   optional strided input for Qwen's packed query-and-gate projection).
+   The rotation runs after a `mem_device` barrier, so it may sit in place.
+   `Backend.rmsNormRope` is the helper.
+`Backend.fused_norms` (default true; `bench --unfused-norms` forces false)
+makes each helper run the pair it replaces, so a sweep can take the
+interleaved control.
+
+**Numerical evidence.** `test-metal`: the fused kernels against the pair
+they replace and against `cpu.rmsNorm`/`cpu.rope` over the model widths
+(5,120 and 3,840-shaped rows, strided destinations at 264, Qwen's packed
+24-head query at stride 512, Muse's adjacent in-place rotation) — max abs
+4.8e-7 for both comparisons (bounds 2e-5 fused-vs-unfused and 2e-4 against
+the CPU). A fused `generate` on Qwen3.8-27B reproduces the greedy text.
+
+**Measured verdict.** Dispatch counts and decode rates are in
+[bench.md § Fused norm sweep](bench.md#fused-norm-sweep-kern-18-2026-09-21);
+in brief, `bench --profile` reads 938.8 → 844.3 dispatches per step on
+Qwen, 882.2 → 693.2 on Gemma 4 12B, 922.9 → 743.8 on Muse (per decode step
+−96, −192, −182, the design counts; the profile averages dilute them with
+three prefill buffers), while the decode rate at 512 improves 1.000 /
+1.005 / 1.004× against the interleaved unfused control. The unit's bars
+(≥ 1.01 / 1.04 / 1.02× and Muse's ≥ 20 % dispatches) are not met, so it
+closes below its target; the fusion stays shipped because it is a small
+consistent win with the pair still available behind the flag. The reading:
+the profile's per-dispatch times were mostly kernel time, not launch
+overhead. A norm dispatch costs ~7–10 µs of which ~2–4 µs is the launch,
+and the fused kernel does the same memory passes in one dispatch, so the
+saving is the removed launch — ~0.4 ms of a 39 ms Gemma step. Muse's 20 %
+bar assumed all 52 layers rotate q/k; its 13 global layers do not, so only
+182 of the assumed 208 dispatches fuse.
+
 ## Numerical evidence
 
 `test-metal` (ReleaseSafe, Apple M4 Pro, last checked 2026-09-10):
@@ -1462,6 +1516,7 @@ time to identify the per-tile limiter rather than guessing at it.
 | Flash-decoding attention (KERN-08): six pinned fixtures; model shape at 257 / 1,021 / 16,385 / 32,000 visible, F32 and F16 cache | vs fixtures; vs F64 CPU `attention.apply` (F16: over the rounded rows) | 1e-5; 2e-5 up to 1,021 and 1e-4 above (measured ≤ 2.3e-8) |
 | Windowed and wide chunk attention (MODL-06): windows of 1,024 and 8 on the 16/8/256 geometry, 16/1/512 with two value splits, F32 and F16 | vs F64 CPU per row over the window's key slice (F16: rounded operands) | 1e-5 (measured 3.0e-6); 2e-3 (measured 1.9e-4) |
 | Register-reuse chunk attention (KERN-16): the same MODL-06 cases and the model geometry at counts 1–256 over a poison-filled future range (1e30 F32 / 6e4 F16 past `position + count`) | vs F64 CPU per row, both bodies | 1e-5 (measured 3.0e-6); 1e-3 (measured 2.7e-4) |
+| Fused norms (KERN-18): `rmsNormAdd` (1 and 3 strided rows), `addRmsNorm` (1 and 5 rows), `rmsNormRope` (24 packed heads at stride 512, 8 adjacent in place) | vs the unfused pair and `cpu.rmsNorm`/`cpu.rope` | 2e-5 fused-vs-unfused; 2e-4 vs CPU (measured 4.8e-7 both) |
 | Wide (`_w`/`_wh`) and grouped decode attention (MODL-06), 16/1/512 and 16/8/256 at 257 and 1,021 visible, both precisions | vs F64 CPU `attention.apply` (F16: rounded rows) | 5e-5 (measured 2.4e-7) |
 | RoPE over a 512-wide head with factors (64 ones, 192 × 1e30) at 32,767 | vs CPU `rope.apply` with factors; unrotated pairs exact | 2e-6 relative; **exact** |
 | `nu_gelu_mul` (with ±60, 200, −3e3), `nu_scale`, `nu_add_scale`, `nu_softcap` (with ±3e3) | vs `cpu.gelu`, F32 arithmetic, `std.math.tanh` | 2e-6 relative; exact; exact; 2e-6 relative |

@@ -1645,6 +1645,237 @@ fn checkChunkAttentionReuse(alloc: std.mem.Allocator, b: *Backend) !void {
     std.debug.print("Chunk attention over a poisoned future range, both bodies, model geometry, up to 256-row chunks: F32 max abs {e:.3} (bound 1e-5), F16 over the rounded operands {e:.3} (bound 1e-3)\n", .{ worst_f32, worst_f16 });
 }
 
+/// The fused norm kernels against the CPU reference and against the unfused
+/// pair they replace: `rmsNormAdd` (a post norm folded into the residual add
+/// and scale), `addRmsNorm` (an add folded into the norm that consumes the
+/// updated residual), and `rmsNormRope` (a q/k norm folded into the rotation).
+/// Each case runs both paths on identical inputs; the printed worst absolute
+/// differences are the fused-vs-unfused spread and the CPU agreement.
+fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
+    var prng = std.Random.DefaultPrng.init(0x18e4);
+    const random = prng.random();
+    const saved = b.fused_norms;
+    defer b.fused_norms = saved;
+    const positions: usize = 32768;
+    var worst_fused: f32 = 0;
+    var worst_cpu: f32 = 0;
+
+    // rmsNormAdd: the post-norm pattern `(destination + norm(input)·w) ·
+    // scale`, over the 5,120-wide hidden with a scale, then a strided
+    // three-row case (destination stride 264 over a 256-wide input).
+    {
+        const width = 5120;
+        const input = try b.create(width * 4);
+        const weight = try b.create(width * 4);
+        const base = try alloc.alloc(f32, width);
+        defer alloc.free(base);
+        for (input.floats()) |*v| v.* = random.floatNorm(f32) * 3;
+        for (weight.floats()) |*v| v.* = random.float(f32) + 0.5;
+        for (base) |*v| v.* = random.floatNorm(f32);
+        const expected = try alloc.alloc(f32, width);
+        defer alloc.free(expected);
+        try inference.cpu.rmsNorm(input.floats(), expected, 1e-6);
+        for (expected, weight.floats(), base) |*e, w, d| e.* = (d + e.* * w) * 0.7;
+        const fused = try b.create(width * 4);
+        const unfused = try b.create(width * 4);
+        @memcpy(fused.floats(), base);
+        @memcpy(unfused.floats(), base);
+        const spec: Backend.Norm = .{ .rows = 1, .width = width, .in_stride = width, .out_stride = width };
+        b.fused_norms = true;
+        try b.begin();
+        try b.rmsNormAdd(fused, input, weight, 0.7, spec);
+        try b.commit();
+        b.fused_norms = false;
+        try b.begin();
+        try b.rmsNormAdd(unfused, input, weight, 0.7, spec);
+        try b.commit();
+        b.fused_norms = saved;
+        for (fused.floats(), unfused.floats(), expected) |f, u, e| {
+            worst_fused = @max(worst_fused, @abs(f - u));
+            worst_cpu = @max(worst_cpu, @abs(f - e));
+        }
+    }
+    {
+        const rows = 3;
+        const width = 256;
+        const in_stride = 256;
+        const out_stride = 264;
+        const input = try b.create(rows * in_stride * 4);
+        const weight = try b.create(width * 4);
+        const base = try alloc.alloc(f32, rows * out_stride);
+        defer alloc.free(base);
+        for (input.floats()) |*v| v.* = random.floatNorm(f32);
+        for (weight.floats()) |*v| v.* = random.float(f32) + 0.5;
+        for (base) |*v| v.* = random.floatNorm(f32);
+        const expected = try alloc.alloc(f32, rows * out_stride);
+        defer alloc.free(expected);
+        @memcpy(expected, base);
+        for (0..rows) |r| {
+            const normed = expected[r * out_stride ..][0..width];
+            try inference.cpu.rmsNorm(input.floats()[r * in_stride ..][0..width], normed, 1e-6);
+            for (normed, weight.floats(), base[r * out_stride ..][0..width]) |*e, w, d| e.* = (d + e.* * w) * 0.5;
+        }
+        const fused = try b.create(rows * out_stride * 4);
+        const unfused = try b.create(rows * out_stride * 4);
+        @memcpy(fused.floats(), base);
+        @memcpy(unfused.floats(), base);
+        const spec: Backend.Norm = .{ .rows = rows, .width = width, .in_stride = in_stride, .out_stride = out_stride };
+        b.fused_norms = true;
+        try b.begin();
+        try b.rmsNormAdd(fused, input, weight, 0.5, spec);
+        try b.commit();
+        b.fused_norms = false;
+        try b.begin();
+        try b.rmsNormAdd(unfused, input, weight, 0.5, spec);
+        try b.commit();
+        b.fused_norms = saved;
+        for (fused.floats(), unfused.floats(), expected) |f, u, e| {
+            worst_fused = @max(worst_fused, @abs(f - u));
+            worst_cpu = @max(worst_cpu, @abs(f - e));
+        }
+    }
+    // addRmsNorm: `residual += input` then `output = norm(residual)·w`, over
+    // the 5,120-wide hidden (residual restored between the two runs) and over
+    // five 128-rows.
+    {
+        const width = 5120;
+        const residual = try b.create(width * 4);
+        const input = try b.create(width * 4);
+        const weight = try b.create(width * 4);
+        for (residual.floats()) |*v| v.* = random.floatNorm(f32);
+        for (input.floats()) |*v| v.* = random.floatNorm(f32) * 0.5;
+        for (weight.floats()) |*v| v.* = random.float(f32) + 0.5;
+        const expected = try alloc.alloc(f32, width);
+        defer alloc.free(expected);
+        for (expected, residual.floats(), input.floats()) |*e, x, s| e.* = x + s;
+        try inference.cpu.rmsNorm(expected, expected, 1e-6);
+        for (expected, weight.floats()) |*e, w| e.* *= w;
+        const residual0 = try alloc.alloc(f32, width);
+        defer alloc.free(residual0);
+        @memcpy(residual0, residual.floats());
+        const fused_out = try b.create(width * 4);
+        const unfused_out = try b.create(width * 4);
+        const spec: Backend.Norm = .{ .rows = 1, .width = width, .in_stride = width, .out_stride = width };
+        b.fused_norms = true;
+        try b.begin();
+        try b.addRmsNorm(residual, input, weight, fused_out, spec);
+        try b.commit();
+        var fused_residual: [5120]f32 = undefined;
+        @memcpy(&fused_residual, residual.floats());
+        @memcpy(residual.floats(), residual0);
+        b.fused_norms = false;
+        try b.begin();
+        try b.addRmsNorm(residual, input, weight, unfused_out, spec);
+        try b.commit();
+        b.fused_norms = saved;
+        for (fused_residual, residual.floats()) |f, u| worst_fused = @max(worst_fused, @abs(f - u));
+        for (fused_out.floats(), unfused_out.floats(), expected) |f, u, e| {
+            worst_fused = @max(worst_fused, @abs(f - u));
+            worst_cpu = @max(worst_cpu, @abs(f - e));
+        }
+    }
+    {
+        const rows = 5;
+        const width = 128;
+        const residual = try b.create(rows * width * 4);
+        const input = try b.create(rows * width * 4);
+        const weight = try b.create(width * 4);
+        for (residual.floats()) |*v| v.* = random.floatNorm(f32);
+        for (input.floats()) |*v| v.* = random.floatNorm(f32) * 0.5;
+        for (weight.floats()) |*v| v.* = random.float(f32) + 0.5;
+        const expected = try alloc.alloc(f32, rows * width);
+        defer alloc.free(expected);
+        for (0..rows) |r| {
+            const row = expected[r * width ..][0..width];
+            for (row, residual.floats()[r * width ..][0..width], input.floats()[r * width ..][0..width]) |*e, x, s| e.* = x + s;
+            try inference.cpu.rmsNorm(row, row, 1e-6);
+            for (row, weight.floats()) |*e, w| e.* *= w;
+        }
+        const out = try b.create(rows * width * 4);
+        const spec: Backend.Norm = .{ .rows = rows, .width = width, .in_stride = width, .out_stride = width };
+        b.fused_norms = true;
+        try b.begin();
+        try b.addRmsNorm(residual, input, weight, out, spec);
+        try b.commit();
+        b.fused_norms = saved;
+        for (out.floats(), expected) |f, e| worst_cpu = @max(worst_cpu, @abs(f - e));
+    }
+    // rmsNormRope: the Qwen query geometry (24 heads packed with gates,
+    // stride 512 -> 256, 64 rotated channels) and an in-place adjacent
+    // rotation over 8 heads of 128.
+    {
+        const rows = 24;
+        const width = 256;
+        const in_stride = 512;
+        const input = try b.create(rows * in_stride * 4);
+        const weight = try b.create(width * 4);
+        for (input.floats()) |*v| v.* = random.floatNorm(f32);
+        for (weight.floats()) |*v| v.* = random.float(f32) + 0.5;
+        const table = try b.create(positions * 32 * 8);
+        try Backend.ropeTable(table, positions, 64, 1e7, null);
+        const expected = try alloc.alloc(f32, rows * width);
+        defer alloc.free(expected);
+        for (0..rows) |h| {
+            const row = expected[h * width ..][0..width];
+            try inference.cpu.rmsNorm(input.floats()[h * in_stride ..][0..width], row, 1e-6);
+            for (row, weight.floats()) |*e, w| e.* *= w;
+            try inference.cpu.rope.apply(row, row, .{ .dimensions = 64, .base = 1e7, .position = 32767 });
+        }
+        const out_fused = try b.create(rows * width * 4);
+        const out_unfused = try b.create(rows * width * 4);
+        const spec: Backend.Norm = .{ .rows = rows, .width = width, .in_stride = in_stride, .out_stride = width };
+        b.fused_norms = true;
+        try b.begin();
+        try b.rmsNormRope(input, weight, table, out_fused, spec, 64, 32767, .split_half);
+        try b.commit();
+        b.fused_norms = false;
+        try b.begin();
+        try b.rmsNormRope(input, weight, table, out_unfused, spec, 64, 32767, .split_half);
+        try b.commit();
+        b.fused_norms = saved;
+        for (out_fused.floats(), out_unfused.floats(), expected) |f, u, e| {
+            worst_fused = @max(worst_fused, @abs(f - u));
+            worst_cpu = @max(worst_cpu, @abs(f - e));
+        }
+    }
+    {
+        const rows = 8;
+        const width = 128;
+        const data = try b.create(rows * width * 4);
+        const weight = try b.create(width * 4);
+        for (data.floats()) |*v| v.* = random.floatNorm(f32);
+        for (weight.floats()) |*v| v.* = random.float(f32) + 0.5;
+        const table = try b.create(positions * 64 * 8);
+        try Backend.ropeTable(table, positions, 128, 5e5, null);
+        const expected = try alloc.alloc(f32, rows * width);
+        defer alloc.free(expected);
+        for (0..rows) |h| {
+            const row = expected[h * width ..][0..width];
+            try inference.cpu.rmsNorm(data.floats()[h * width ..][0..width], row, 1e-6);
+            for (row, weight.floats()) |*e, w| e.* *= w;
+            try inference.cpu.rope.apply(row, row, .{ .dimensions = 128, .base = 5e5, .position = 100, .pairing = .adjacent });
+        }
+        const spec: Backend.Norm = .{ .rows = rows, .width = width, .in_stride = width, .out_stride = width };
+        b.fused_norms = true;
+        try b.begin();
+        try b.rmsNormRope(data, weight, table, data, spec, 128, 100, .adjacent);
+        try b.commit();
+        b.fused_norms = saved;
+        for (data.floats(), expected) |f, e| worst_cpu = @max(worst_cpu, @abs(f - e));
+    }
+    // Contract: shapes the fused kernels cannot take are refused.
+    const small = try b.create(4096);
+    b.fused_norms = true;
+    try std.testing.expectError(error.InvalidShape, b.rmsNormRope(small, small, small, small, .{ .rows = 1, .width = 256, .in_stride = 256, .out_stride = 256 }, 300, 0, .split_half));
+    try std.testing.expectError(error.InvalidShape, b.rmsNormAdd(small, small, small, std.math.nan(f32), .{ .rows = 1, .width = 256, .in_stride = 256, .out_stride = 256 }));
+    b.fused_norms = saved;
+    if (worst_fused > 2e-5 or worst_cpu > 2e-4) {
+        std.debug.print("fused norm bounds missed: fused {e:.3}, cpu {e:.3}\n", .{ worst_fused, worst_cpu });
+        return error.MetalMismatch;
+    }
+    std.debug.print("Fused norms vs the unfused pair and the CPU: max abs fused-vs-unfused {e:.3} (bound 2e-5), vs CPU {e:.3} (bound 2e-4)\n", .{ worst_fused, worst_cpu });
+}
+
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -2513,6 +2744,7 @@ pub fn main(init: std.process.Init) !void {
     try checkWindowedAndWideAttention(alloc, b, false);
     try checkWindowedAndWideAttention(alloc, b, true);
     try checkChunkAttentionReuse(alloc, b);
+    try checkFusedNorms(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
     // 32, 32, and 6) on the model shape (16 Q/K heads broadcast to 48 value

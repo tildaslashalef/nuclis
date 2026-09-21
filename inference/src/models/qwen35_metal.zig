@@ -421,8 +421,7 @@ pub const Plan = struct {
                 .full_attention => |attn| try self.fullAttention(attn, c.mixer.full_attention, il, self.state.position),
                 .delta_net => |linear| try self.linearAttention(linear, c.mixer.delta_net, il),
             }
-            try b.add(self.x, self.projected, hidden);
-            try b.rmsNorm(self.x, c.post_attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+            try b.addRmsNorm(self.x, self.projected, c.post_attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
             try self.rotate(self.normalized, hidden, 1);
             try self.projections(&.{ layer.ffn_gate, layer.ffn_up }, &.{ self.gate, self.up }, .silu_mul_pair);
             try self.rotate(self.gate, ffn, 1);
@@ -964,8 +963,7 @@ pub const Plan = struct {
         try self.mmRows(block.eh_proj, self.draft_concat_c, 2 * hidden, self.x_c, hidden, count);
         try b.rmsNorm(self.x_c, constants.attention_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
         try self.attentionChunk(block.layer.mixer.full_attention, constants.mixer.full_attention, self.draft_layer, count, start);
-        try b.add(self.x_c, self.projected_c, count * hidden);
-        try b.rmsNorm(self.x_c, constants.post_attention_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+        try b.addRmsNorm(self.x_c, self.projected_c, constants.post_attention_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
         try self.mmRows(block.layer.ffn_gate, self.normalized_c, hidden, self.gate_c, ffn, count);
         try self.mmRows(block.layer.ffn_up, self.normalized_c, hidden, self.up_c, ffn, count);
         try b.siluMul(self.gate_c, self.up_c, count * ffn);
@@ -1010,10 +1008,8 @@ pub const Plan = struct {
         try self.rotate(self.normalized, hidden, 1);
         try self.projections(&.{ attn.query_and_gate, attn.key, attn.value }, &.{ self.qg, k_row, v_row }, .plain);
         // Each projected head stores query then gate; the gate is applied after attention.
-        try b.rmsNorm(self.qg, c.query_norm, self.q, .{ .rows = 24, .width = 256, .in_stride = 512, .out_stride = 256 });
-        try b.rope(self.q, self.rope_table, 24, 256, 64, position, .split_half);
-        try b.rmsNorm(k_row, c.key_norm, k_row, .{ .rows = 4, .width = 256, .in_stride = 256, .out_stride = 256 });
-        try b.rope(k_row, self.rope_table, 4, 256, 64, position, .split_half);
+        try b.rmsNormRope(self.qg, c.query_norm, self.rope_table, self.q, .{ .rows = 24, .width = 256, .in_stride = 512, .out_stride = 256 }, 64, position, .split_half);
+        try b.rmsNormRope(k_row, c.key_norm, self.rope_table, k_row, .{ .rows = 4, .width = 256, .in_stride = 256, .out_stride = 256 }, 64, position, .split_half);
         if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = 1024 }, .{ .dst = v_slot, .src = v_row, .count = 1024 } });
         const visible = position + 1;
         try b.attentionDecode(self.stateSlice(cache.keys.range(0, visible)), self.stateSlice(cache.values.range(0, visible)), self.q, self.partials, self.mixed_out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = visible, .scale = 1.0 / 16.0, .precision = precision });

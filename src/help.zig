@@ -201,6 +201,7 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--repeat <n>", "measured runs, default 3");
     try row(out, sty, "--warmup <n>", "unmeasured runs first, default 1");
     try row(out, sty, "--profile", "per-kernel GPU time (Metal); perturbs the rates");
+    try row(out, sty, "--unfused-norms", "run the norm pairs the fused kernels replace (diagnostic control)");
 
     try heading(out, sty, "behaviour");
     try plain(out, "Greedy by default — never the file's sampling, never a profile — with 32");

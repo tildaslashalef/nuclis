@@ -26,6 +26,9 @@ pub const Options = struct {
     /// Per-kernel GPU timing (Metal only). Changes how work is recorded, so
     /// the whole-run rates of a profiled run are not comparable with unprofiled ones.
     profile: bool = false,
+    /// Run the norm pairs the fused kernels replace instead of the fused
+    /// ones: the interleaved control for the KERN-18 acceptance.
+    unfused_norms: bool = false,
 };
 
 /// Dispatches a Qwen token records (~1,240) with margin; the plan is not asked
@@ -349,6 +352,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     defer eng.deinit();
     const speculate = eng.model.drafter() != null;
     const gpu: ?*inference.metal.Backend = eng.model.gpu();
+    if (gpu) |backend| backend.fused_norms = !options.unfused_norms;
     if (options.profile) {
         const backend = gpu orelse return error.ProfileRequiresMetal;
         var diagnostic: [1024]u8 = @splat(0);

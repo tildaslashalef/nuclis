@@ -71,6 +71,7 @@ const kernel_names = [_][:0]const u8{
     "nu_matvec_rows_iq4_xs_t7", "nu_matvec_rows_iq4_xs_t8", "nu_matmul_q3_k_w8",        "nu_matmul_q4_k_w8",        "nu_matmul_q5_k_w8",        "nu_matmul_q6_k_w8",
     "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",      "nu_matvec_q4_k_split",
     "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits", "nu_attention_chunk_reuse", "nu_attention_chunk_reuse_h",
+    "nu_rmsnorm_add",           "nu_add_rmsnorm",           "nu_rmsnorm_rope",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -205,6 +206,9 @@ pub const Kernel = enum(u32) {
     segment_reduce_splits,
     attention_chunk_reuse,
     attention_chunk_reuse_h,
+    rmsnorm_add,
+    add_rmsnorm,
+    rmsnorm_rope,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -292,6 +296,10 @@ pub const Backend = struct {
     /// way). Zero forces the row-split body everywhere; other widths keep it
     /// because the column split leaves SIMD groups idle below 256.
     attention_reuse_max_rows: usize = 64,
+    /// Whether the post-norm and q/k-norm fusions dispatch (`rmsNormAdd`,
+    /// `addRmsNorm`, `rmsNormRope`). False makes each helper run the pair it
+    /// replaces, so a benchmark can take the interleaved unfused control.
+    fused_norms: bool = true,
     /// Present after `enableProfiling`; read it after `commit()`.
     profile: ?Profile = null,
 
@@ -1036,6 +1044,64 @@ pub const Backend = struct {
         }
         const p: NormParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .mult_stride = @intCast(mult_stride), .eps = spec.eps, .flags = flags };
         try self.dispatch(.rmsnorm, &.{ input, weight, output, mult }, p, @intCast(spec.rows), 256, .{});
+    }
+    pub const NormAddParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32, scale: f32 };
+    /// `(destination + norm(input)·w) · factor` over `rows` rows in one
+    /// dispatch, where the plans would run `rmsNorm` + `addScale` (`input`
+    /// and `destination` must not overlap; the fallback normalizes `input`
+    /// in place row by row, as the plans do).
+    pub fn rmsNormAdd(self: *Backend, destination: Buffer, input: Buffer, weight: Buffer, factor: f32, spec: Norm) !void {
+        if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0) or !std.math.isFinite(factor)) return error.InvalidShape;
+        if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or destination.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4) return error.InvalidShape;
+        if (!self.fused_norms) {
+            try self.rmsNorm(input, weight, input, .{ .rows = spec.rows, .width = spec.width, .in_stride = spec.in_stride, .out_stride = spec.in_stride, .eps = spec.eps });
+            for (0..spec.rows) |row| {
+                const dst = destination.slice(row * spec.out_stride * 4, spec.width * 4);
+                const src = input.slice(row * spec.in_stride * 4, spec.width * 4);
+                try self.addScale(dst, src, spec.width, factor);
+            }
+            return;
+        }
+        const p: NormAddParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .eps = spec.eps, .scale = factor };
+        try self.dispatch(.rmsnorm_add, &.{ input, weight, destination }, p, @intCast(spec.rows), 256, .{});
+    }
+    pub const AddNormParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32 };
+    /// `residual += input` and `output = norm(residual)·w` over `rows` rows
+    /// in one dispatch, where the plans would run `add` + `rmsNorm`. `input`
+    /// shares the residual's stride and must not overlap `output`.
+    pub fn addRmsNorm(self: *Backend, residual: Buffer, input: Buffer, weight: Buffer, output: Buffer, spec: Norm) !void {
+        if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0)) return error.InvalidShape;
+        if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or residual.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or output.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4) return error.InvalidShape;
+        if (!self.fused_norms) {
+            if (spec.in_stride == spec.width) {
+                try self.add(residual, input, spec.rows * spec.width);
+            } else {
+                for (0..spec.rows) |row| {
+                    const dst = residual.slice(row * spec.in_stride * 4, spec.width * 4);
+                    const src = input.slice(row * spec.in_stride * 4, spec.width * 4);
+                    try self.add(dst, src, spec.width);
+                }
+            }
+            return self.rmsNorm(residual, weight, output, spec);
+        }
+        const p: AddNormParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .eps = spec.eps };
+        try self.dispatch(.add_rmsnorm, &.{ residual, input, weight, output }, p, @intCast(spec.rows), 256, .{});
+    }
+    pub const NormRopeParams = extern struct { width: u32, in_stride: u32, out_stride: u32, dims: u32, position: u32, pairing: u32, eps: f32 };
+    /// `output = norm(input)·w` over `rows` rows followed by the rotation of
+    /// the leading `dims` channels at `position`, in one dispatch where the
+    /// plans would run `rmsNorm` + `rope`. `output` may alias `input`.
+    pub fn rmsNormRope(self: *Backend, input: Buffer, weight: Buffer, table: Buffer, output: Buffer, spec: Norm, dims: usize, position: usize, pairing: Pairing) !void {
+        if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0)) return error.InvalidShape;
+        if (dims == 0 or dims % 2 != 0 or dims > spec.width) return error.InvalidShape;
+        if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or output.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4) return error.InvalidShape;
+        if (table.len < (position + 1) * (dims / 2) * 8) return error.InvalidShape;
+        if (!self.fused_norms) {
+            try self.rmsNorm(input, weight, output, spec);
+            return self.rope(output, table, spec.rows, spec.out_stride, dims, position, pairing);
+        }
+        const p: NormRopeParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .dims = @intCast(dims), .position = @intCast(position), .pairing = @intFromEnum(pairing), .eps = spec.eps };
+        try self.dispatch(.rmsnorm_rope, &.{ input, weight, table, output }, p, @intCast(spec.rows), 256, .{});
     }
     pub const HadamardParams = extern struct { width: u32, stride: u32, rows: u32, blocks: u32, inverse: u32 };
     /// The block the transform is written for (`cpu.hadamard`'s contract).

@@ -1477,3 +1477,59 @@ routing uses (`attention_reuse_max_rows = 64`, 256-wide values only).
 Run-to-run spread is ~1.5 % (the same 32,512/256 case measured 281.2 ms
 then 282.2 ms for the row-split body in two sweeps). Verdict in
 [metal-backend.md § KERN-16](metal-backend.md#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative).
+
+## Fused norm sweep (KERN-18, 2026-09-21)
+
+The fused norm kernels (`nu_rmsnorm_add`, `nu_add_rmsnorm`,
+`nu_rmsnorm_rope`) against the pairs they replace, forced off by
+`bench --unfused-norms` (`Backend.fused_norms = false`). Apple M4 Pro
+(48 GiB), Zig 0.16.0, ReleaseSafe, `1d82c18` plus the unit's change.
+**Measurement note:** the profile and rate runs were taken with the
+drafter *not* loaded (a local `.none` open) because the shipped `bench`
+now loads Qwen's embedded block and measures the off/on pair, and because
+`bench` on the Gemma and Muse entries currently fails with
+`DraftSourceMissing` (their registry companions wait on MODL-19/20 while
+the config's `generation.speculative` is true). This is the 2026-09-07
+profile's condition, the one the unit's baselines came from; ENGN-17's
+default change re-measures consistently.
+
+`bench --profile`, canonical workload (ctx 2,048, 64 tokens, F16 KV,
+greedy), dispatch counts per step (192 measured command buffers, three of
+them prefill; the per-decode-step count is `dispatches − prefill·savings`
+and is the design's layer count):
+
+| model | body | total/step | rmsnorm | add / add_scale | rope | fused kernels |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Qwen3.8-27B | unfused | 938.8 | 209.0 | 128.0 | 31.5 | — |
+| Qwen3.8-27B | fused | 844.3 | 114.5 | 65.0 | — | add_rmsnorm 63.0, rmsnorm_rope 31.5 |
+| Gemma 4 12B QAT | unfused | 882.2 | 337.0 | 95.3 | 94.5 | — |
+| Gemma 4 12B QAT | fused | 693.2 | 148.0 | — | — | rmsnorm_add 94.5, rmsnorm_rope 94.5 |
+| Muse Glimmer 30B | unfused | 922.9 | 314.0 | 102.4 | 76.8 | — |
+| Muse Glimmer 30B | fused | 743.8 | 134.8 | — | — | rmsnorm_add 102.4, rmsnorm_rope 76.8 |
+
+Per decode step the fusion removes 96 dispatches on Qwen (64 post norms,
+32 q/k norms), 192 on Gemma, and 182 on Muse; the blended totals move
+−94.5, −189.0, and −179.2. The bars were ≤ 1,150 (−86) on Qwen, ≤ 705
+(−177) on Gemma, and ≤ 737 (−185, 20 %) on Muse: Qwen and Gemma pass,
+Muse misses by three because its 13 global layers do not rotate q/k and
+only 182 of the assumed 208 dispatches pair.
+
+`bench` decode at 512 (128 tokens, F16 KV, greedy, two or three
+interleaved off/on pairs; the best and mean of the off path):
+
+| model | unfused tok/s | fused tok/s | ratio | bar |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.8-27B | 10.814 / 10.742 | 10.788 / 10.744 | 1.000× | ≥ 1.01× ✗ |
+| Gemma 4 12B QAT | 27.387 / 27.379 | 27.517 / 27.515 | 1.005× | ≥ 1.04× ✗ |
+| Muse Glimmer 30B | 9.993 / 9.936 | 10.018 / 9.975 | 1.004× | ≥ 1.02× ✗ |
+
+With the drafter loaded, Qwen's shipped path reads 10.814 unfused against
+10.788 fused (0.998×) — the same conclusion within the run-to-run spread
+(~0.5 %). Prefill is unchanged (43.8 / 104.3 / 72.9 tok/s both ways).
+**Reading.** The 2026-09-07 profile's ~13 µs per `rmsnorm` dispatch was
+kernel work, not a launch floor: the norm kernels move their row twice and
+the fused kernel moves it the same way in one dispatch, so the saving is
+the removed launch (~2–4 µs of ~7–10 µs), about 0.4 ms of Gemma's 39 ms
+step. The dispatch reduction is real (10–21 %) and shipped; the speed bars
+are missed and the unit closes below its target. Verdict in
+[metal-backend.md § KERN-18](metal-backend.md#fused-decode-norms-kern-18-2026-09-21-closed-below-its-target).
