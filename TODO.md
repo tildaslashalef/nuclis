@@ -138,7 +138,7 @@ ordered are exhausted; nothing here claims a
 final speedup before ENGN-17 measures it.
 
 Order: MODL-20 →
-ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 →
+ENGN-17 → REPO-09 → REPO-10 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -172,11 +172,18 @@ the small-batch tile, the split-K matvec, the long-context attention, and
 the fused norms led the order and closed below their targets. AGNT-12
 (background commands) and
 APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
+**REPO-09 and REPO-10 were ordered on 2026-09-21** (the user's call): the
+gate registry and the benchmark workloads are written once against the
+finished set of families and records, so they follow ENGN-17 rather than
+preceding it, and REPO-09's manifest is what carries ENGN-17's per-entry
+verdicts as data.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
 | MODL-20 | Muse Glimmer DFlash drafter: facts, contract fit, acceptance loop | 2 |
 | ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
+| REPO-09 | One gate registry: the model-specific checks become a data manifest | 1 |
+| REPO-10 | Benchmark workloads and generated records; bench.md split by family | 2 |
 | ENGN-18 | Gemma 4 12B decode and prefill: the Q4_0 tile and fewer launches | 1–2 |
 | ENGN-19 | A ring layout for windowed attention caches | 2 |
 | KERN-17 | The ternary matvec's arithmetic (experiment; may close negative) | 1 |
@@ -440,6 +447,113 @@ comparable across records. The per-entry verdict lives in `src/catalog.zig`
 **Acceptance.** The record with both baselines; the entry's defaults from
 it; `make check`; `config init` / `config show` tests cover the new entry
 fields; the spec's measured result cites the record.
+
+## REPO-09 — One gate registry: the model-specific checks become data
+
+**Order.** After ENGN-17: the verdict settles the per-entry defaults and the
+last records the hand-written recipes must carry, and the manifest is then
+written once against the finished set of families.
+
+**Facts (session 1 reads, then rewrites this section).** `Makefile` is 355
+lines with 85 targets; the model-specific ones are `compare{,-f32,-f16,-cpu}`,
+`compare-gemma4*`, `compare-gemma4-26b-a4b*`, `compare-muse-glimmer*`,
+`compare-bonsai*`, `compare-draft*`, `test-generation*`,
+`speculative-check*`, `draft-stats`, and `baseline-*`. Their commands are
+`./zig-out/bin/nuclis generate …` plus `scripts/compare-generation.py`
+(`--positions`, `--embedding`, `--layers`, `--vocab`, `--max-absolute`,
+`--max-relative-rms`, `--draft`), `zig build test-generation -- …` with
+`--metal`/`--draft-trace`/`--draft-model`, and `scripts/nuclis-*.py`.
+Session 1 lists every target with its command, comparator, bounds, cost
+class, and the doc anchor that holds its evidence.
+
+**Design.**
+1. `gates.json` (repo root): `models` (pinned paths keyed by name, each
+   overridable by an environment variable of the same upper-case name) and
+   `gates[]` of `{name, family, class, command[], comparator, bounds,
+   evidence}`. Comparators: `trace` and `draft` (shell to
+   `compare-generation.py` with the gate's bounds), `greedy` (two `generate`
+   runs must be text-identical), `exit` (a load-error or refusal case),
+   `report` (a `bench --json` sample field against a bar). Commands are argv
+   arrays with `{model}`, `{mtp}`, `{prompt}`, `{trace}` placeholders so no
+   shell quoting survives into the data.
+2. `scripts/gates.py`: `--list`, `--plan NAME|--class cheap`, `--gate NAME`,
+   `--class cheap|heavy`, `--json`; validates the manifest (unknown
+   comparator, missing model key, duplicate name), runs each command from
+   the repo root, prints one line per gate with the measured numbers and the
+   bound, exits non-zero on any failure. Bounds exist nowhere else.
+3. `Makefile`: `check` = `fmt-check` + the package unit tests +
+   `gates.py --class cheap`; `gate NAME=…` = `gates.py --gate $(NAME)`;
+   the model-specific recipes are deleted. The kernel micro-benchmark steps
+   (`bench-kernels`, `bench-matvec-*`, `bench-matmul`, `bench-hadamard`,
+   `bench-experts`, `bench-attention`, `bench-profile`) stay explicit: they
+   measure, they do not gate.
+4. `generation-check` gains a one-line JSON summary (`--json`) for the
+   `trace`/`draft` comparators instead of stderr scraping, if session 1
+   finds the printed numbers insufficient; its existing `--draft-trace`
+   fixtures are the `draft` gates' commands.
+5. Cost classes: cheap = unit tests, the Gemma 12B `Hello,` traces, the two
+   draft traces (≤ 32 positions), the load-error cases; heavy = the CPU
+   full-model traces and checks, the speculative checks, and the acceptance
+   records.
+
+**Acceptance.** Every deleted target has a gate entry and the mapping is in
+the log; `make gate NAME=gemma4-qat-draft-metal` and the other trace gates
+reproduce the numbers their recipes printed; `make check` is green with its
+wall time measured before and after; unit tests for the manifest validation
+and `--plan`; `docs/development.md § Gates` describes the manifest and names
+the two commands.
+
+## REPO-10 — Benchmark workloads, generated records, and bench.md split by family
+
+**Order.** After REPO-09: the gate runner owns execution, this unit owns the
+workload data and the documents the records land in; a gate may then name a
+workload instead of a hand-written command.
+
+**Facts (session 1 reads, then rewrites this section).** `src/bench.zig`'s
+`Sample` and report fields (the ones ENGN-17's record reads;
+`schema_version` stays 1); `scripts/nuclis-speculative.py` (the 12
+configurations and the off/on pair) and `scripts/nuclis-baseline.py` (the
+reference comparisons); `docs/reference/bench.md`'s 1,567 lines —
+definitions (35), Qwen acceptance records (91–488), Gemma 4 (489–711),
+Bonsai 2 (712–800), Muse Glimmer (801–886), the speculative record
+(887–1025), the per-kernel profile (1026–1176), kernel micro-benchmarks
+(1177–1237), and the unit sweeps (1238–1567); the prompt arrays under
+`tests/fixtures/run-*`.
+
+**Design.**
+1. `benchmarks/workloads.json`: `{name, family, model, prompt, max_tokens,
+   ctx, kv, sampling, pair, draft_length, warmup, repeat, bars, evidence}`,
+   with names `qwen38/prose512`, `qwen38/prose4096`, `qwen38/code`,
+   `gemma4-12b/prose512`, `gemma4-qat/prose512`, `gemma4-26b-a4b/prose512`,
+   `muse/prose512`, and a `-draft` variant per family that turns the pair
+   on. `models` comes from REPO-09's manifest (one lookup, no duplicated
+   paths).
+2. `nuclis bench` gains `--workload NAME`, `--list`, and `--pair` (the
+   existing off/on pair in one invocation); a workload resolves into the
+   options the command already takes, so no measurement code is added, and
+   `--save DIR` writes `.zig-cache/bench/<workload>/<rev>-<n>.json`.
+3. `scripts/bench-report.py`: `--table` renders the per-batch markdown table
+   from saved JSON, `--compare PREV` prints the delta against the workload's
+   `bars` and exits non-zero on a missed bar, `--write-doc` replaces the
+   region between `<!-- bench:NAME -->` markers in the target document.
+   Record tables stop being transcribed by hand.
+4. `scripts/nuclis-speculative.py` becomes the `speculative-record` workload
+   set (12 configurations) driven by `bench --workload … --pair --json`; its
+   make target becomes a heavy gate (REPO-09).
+5. Documents: `docs/reference/bench.md` keeps the definitions, the
+   methodology, and a table of contents, and the records move to
+   `docs/reference/bench-qwen38.md`, `bench-gemma4.md`, `bench-muse.md`,
+   `bench-bonsai.md`, and `bench-kernels.md` (profile and micro-benchmarks).
+   Anchors cited by the log are preserved by keeping the heading text or by
+   a redirect heading; `docs/architecture.md` links the five.
+
+**Acceptance.** `nuclis bench --workload gemma4-qat/prose512 --pair --json`
+reproduces MODL-19's numbers within run noise and `bench-report.py --table
+--write-doc` generates that section from the saved JSON (the generated table
+is what is committed); `--list` shows every workload and its model's status;
+the doc split leaves no dead anchor (`rg` over the old paths); `make check`
+still green; `docs/development.md § The record` and the `bench.md`
+introduction point at the manifest and the report script.
 
 ## TERM-10 — Chat polish: operation dots, the running pulse, write summaries with a file view
 
