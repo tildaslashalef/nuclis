@@ -118,7 +118,22 @@ pub const Screen = struct {
     /// Rewrites the live region in place: the one frame the agent paints on
     /// every tick. `rows` is the whole region, top to bottom.
     pub fn paint(self: *Screen, rows: []const Row, cursor: ?Cursor) !void {
+        return self.paintFrom(rows, cursor, 0);
+    }
+
+    /// `paint` for a caller that kept the previous frame: the first
+    /// `unchanged` rows are identical to what the region already shows and
+    /// are skipped when the region's geometry is the same, so a frame that
+    /// only advanced the bar rewrites one row. A frame with nothing changed
+    /// and the cursor in place writes nothing at all. Any geometry change
+    /// (height, slack, a region rebuilt from nothing) rewrites every row.
+    pub fn paintFrom(self: *Screen, rows: []const Row, cursor: ?Cursor, unchanged: usize) !void {
         const out = self.out;
+        const same_geometry = self.region_rows == rows.len and unchanged > 0;
+        if (same_geometry and unchanged >= rows.len) {
+            const target = cursor orelse Cursor{ .row = rows.len -| 1, .column = 1 };
+            if (@min(target.row, rows.len -| 1) == self.cursor_row and target.column == self.cursor_col) return;
+        }
         try self.beginFrame();
         try out.writeAll("\x1b[?25l");
         if (self.region_rows > 0 and self.cursor_row > 0) {
@@ -147,8 +162,15 @@ pub const Screen = struct {
             }
         }
         const top = self.at;
-        for (rows, 0..) |row, i| {
-            try self.writeRow(row);
+        // Rows the region already shows are stepped over, never rewritten;
+        // moving down inside the region cannot scroll.
+        const skip = if (same_geometry) @min(unchanged, rows.len -| 1) else 0;
+        if (skip > 0) {
+            try out.print("\x1b[{d}B", .{skip});
+            self.at += skip;
+        }
+        for (rows[skip..], skip..) |row, i| {
+            if (i >= unchanged or !same_geometry) try self.writeRow(row);
             if (i + 1 < rows.len) try self.newline();
         }
         // A taller previous region leaves rows below the last one written.
@@ -341,6 +363,44 @@ test "a repaint is one synchronized frame that rewrites the region in place" {
     try testing.expect(std.mem.startsWith(u8, buffer.written(), "\x1b[?2026h\x1b[?25l\x1b[1A\r"));
     try testing.expectEqual(@as(usize, 0), screen.cursor_row);
     try testing.expectEqual(@as(usize, 1), screen.region_top);
+}
+
+test "a frame rewrites only the rows after the unchanged prefix, and nothing when nothing changed" {
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
+    var screen = testScreen(&buffer.writer, .{});
+    const rows = [_]Row{ .{ .text = "one" }, .{ .text = "two" }, .{ .text = "bar" } };
+    try screen.paintFrom(&rows, .{ .row = 1, .column = 3 }, 0);
+    try testing.expectEqual(@as(usize, 1), screen.region_top);
+    try testing.expectEqual(@as(usize, 2), screen.at);
+
+    // Only the bar changed: up to the top, two rows down, one row written.
+    buffer.clearRetainingCapacity();
+    const bar = [_]Row{ .{ .text = "one" }, .{ .text = "two" }, .{ .text = "BAR" } };
+    try screen.paintFrom(&bar, .{ .row = 1, .column = 3 }, 2);
+    try testing.expectEqualStrings(
+        "\x1b[?2026h\x1b[?25l\x1b[1A\r\x1b[2B\x1b[2K\rBAR\x1b[0J\x1b[1A\x1b[3G\x1b[?25h\x1b[?2026l",
+        buffer.written(),
+    );
+    try testing.expectEqual(@as(usize, 1), screen.region_top);
+    try testing.expectEqual(@as(usize, 1), screen.cursor_row);
+
+    // Nothing changed and the cursor is in place: no bytes.
+    buffer.clearRetainingCapacity();
+    try screen.paintFrom(&bar, .{ .row = 1, .column = 3 }, 3);
+    try testing.expectEqualStrings("", buffer.written());
+
+    // Nothing changed but the cursor moved: a reposition without a rewrite.
+    try screen.paintFrom(&bar, .{ .row = 0, .column = 2 }, 3);
+    try testing.expectEqualStrings("\x1b[?2026h\x1b[?25l\x1b[1A\r\x1b[2B\x1b[0J\x1b[2A\x1b[2G\x1b[?25h\x1b[?2026l", buffer.written());
+    try testing.expectEqual(@as(usize, 0), screen.cursor_row);
+
+    // A height change ignores the prefix and rewrites every row.
+    buffer.clearRetainingCapacity();
+    const taller = [_]Row{ .{ .text = "one" }, .{ .text = "two" }, .{ .text = "x" }, .{ .text = "BAR" } };
+    try screen.paintFrom(&taller, .{ .row = 3, .column = 1 }, 2);
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "\x1b[2K\rone\r\n\x1b[2K\rtwo") != null);
+    try testing.expectEqual(@as(usize, 4), screen.region_rows);
 }
 
 test "a shorter region keeps its bottom and releases the rows above it" {

@@ -224,7 +224,12 @@ static void resolveProfile(NuMetal * m) {
 }
 
 // Ends the pass, submits, waits, and accounts GPU time. Returns 0 on completion.
-int nu_metal_commit(void * opaque) {
+// With a `tick`, the wait is a semaphore the completion handler signals, timed
+// out every `tick_interval_ns` to call back: completion still returns at once,
+// so only a wait longer than the interval ever pays for the callback.
+static const int64_t tick_interval_ns = 100 * 1000 * 1000;
+
+int nu_metal_commit(void * opaque, void (*tick)(void *), void * tick_context) {
     @autoreleasepool {
         NuMetal * m = opaque;
         if (!m->command || (!m->encoder && !m->samples)) return 1;
@@ -234,8 +239,16 @@ int nu_metal_commit(void * opaque) {
         m->resolved = 0;
         int status = 0;
         if (m->dispatches) {
-            [command commit];
-            [command waitUntilCompleted];
+            if (tick) {
+                dispatch_semaphore_t done = dispatch_semaphore_create(0);
+                [command addCompletedHandler:^(id<MTLCommandBuffer> finished) { (void)finished; dispatch_semaphore_signal(done); }];
+                [command commit];
+                while (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, tick_interval_ns)) != 0) tick(tick_context);
+                dispatch_release(done);
+            } else {
+                [command commit];
+                [command waitUntilCompleted];
+            }
             if (command.status != MTLCommandBufferStatusCompleted) status = 1;
             else {
                 m->gpu_seconds += command.GPUEndTime - command.GPUStartTime;

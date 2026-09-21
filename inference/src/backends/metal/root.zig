@@ -29,7 +29,7 @@ extern fn nu_metal_buffer_wrap(*anyopaque, [*]const u8, usize, *u32, *usize) c_i
 extern fn nu_metal_buffer_contents(*anyopaque, u32) ?[*]u8;
 extern fn nu_metal_begin(*anyopaque) c_int;
 extern fn nu_metal_dispatch(*anyopaque, u32, [*]const Binding, u32, ?*const anyopaque, usize, u32, u32, u32, u32) c_int;
-extern fn nu_metal_commit(*anyopaque) c_int;
+extern fn nu_metal_commit(*anyopaque, ?*const fn (?*anyopaque) callconv(.c) void, ?*anyopaque) c_int;
 extern fn nu_metal_gpu_seconds(*anyopaque) f64;
 extern fn nu_metal_profile_enable(*anyopaque, u32, [*]u8, usize) c_int;
 extern fn nu_metal_profile_read(*anyopaque, [*]f64, u32) u32;
@@ -277,9 +277,19 @@ pub const Profile = struct {
 /// kernels pass `.{}`.
 const Shape = struct { encoding: ?u32 = null, rows: u32 = 0, columns: u32 = 0, bytes: u64 = 0 };
 
+/// A cooperative beat during a GPU wait longer than ~100 ms: an interactive
+/// caller reads its keyboard and repaints here. It must not touch the backend
+/// or the model — the command buffer it interrupts is still in flight.
+pub const Tick = struct {
+    context: *anyopaque,
+    call: *const fn (context: *anyopaque) void,
+};
+
 pub const Backend = struct {
     alloc: std.mem.Allocator,
     handle: *anyopaque,
+    /// Called from `commit` while a submitted buffer runs; null waits silently.
+    tick: ?Tick = null,
     pipelines: [kernel_names.len]u32,
     wrapped: std.AutoHashMapUnmanaged(usize, Buffer) = .empty,
     /// Row-partial buffer of the split-K matvec, created on first use.
@@ -406,9 +416,14 @@ pub const Backend = struct {
         if (!self.recording) return error.MetalNotRecording;
         self.recording = false;
         const gpu_before = nu_metal_gpu_seconds(self.handle);
-        const completed = nu_metal_commit(self.handle) == 0;
+        const completed = nu_metal_commit(self.handle, if (self.tick != null) tickTrampoline else null, self) == 0;
         if (self.profile != null) try self.account(gpu_before, completed);
         if (!completed) return error.MetalExecutionFailed;
+    }
+
+    fn tickTrampoline(context: ?*anyopaque) callconv(.c) void {
+        const self: *Backend = @ptrCast(@alignCast(context.?));
+        if (self.tick) |t| t.call(t.context);
     }
 
     fn dispatch(self: *Backend, kernel: Kernel, buffers: []const Buffer, params: anytype, groups: u32, threads: u32, shape: Shape) !void {

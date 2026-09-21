@@ -134,6 +134,10 @@ const Ui = struct {
     submit: bool = false,
     /// Spinner frame, advanced on every paint while a turn runs.
     frame: usize = 0,
+    /// The rows of the last painted frame, one key per row (style, flags,
+    /// prefix, text), so the next frame rewrites only from the first row
+    /// that differs. Owned; emptied by a resize.
+    last_frame: std.ArrayList([]u8) = .empty,
     /// Incomplete key sequence carried between reads.
     pending: [16]u8 = undefined,
     pending_len: usize = 0,
@@ -158,6 +162,8 @@ const Ui = struct {
     resume_request: ?[]u8 = null,
 
     fn deinit(self: *Ui) void {
+        self.forgetFrame();
+        self.last_frame.deinit(self.alloc);
         self.queued.deinit(self.alloc);
         for (self.resume_paths.items) |path| self.alloc.free(path);
         self.resume_paths.deinit(self.alloc);
@@ -294,10 +300,42 @@ const Ui = struct {
         // running: since step 9 the editor stays live while the model works,
         // so hiding the cursor would hide where the next message is being
         // typed.
-        try self.scr.paint(rows.items, .{
+        const unchanged = if (resized) 0 else self.unchangedPrefix(rows.items);
+        try self.rememberFrame(rows.items);
+        try self.scr.paintFrom(rows.items, .{
             .row = editor_base + layout.cursor_row,
             .column = 3 + layout.cursor_col,
-        });
+        }, unchanged);
+    }
+
+    /// One comparable key per row: every field the screen paints from.
+    fn rowKey(a: std.mem.Allocator, row: Row) ![]u8 {
+        const style: u8 = if (row.style) |s| @intFromEnum(s) + 1 else 0;
+        const flags: u8 = (@as(u8, @intFromBool(row.raw)) << 0) | (@as(u8, @intFromBool(row.bar)) << 1) | (@as(u8, @intFromBool(row.editor)) << 2);
+        return std.mem.concat(a, u8, &.{ &.{ style, flags }, row.prefix, "\x00", row.text });
+    }
+
+    /// How many leading rows equal the last frame's.
+    fn unchangedPrefix(self: *Ui, rows: []const Row) usize {
+        var n: usize = 0;
+        var key_buffer: [4096]u8 = undefined;
+        while (n < rows.len and n < self.last_frame.items.len) : (n += 1) {
+            var fixed = std.heap.FixedBufferAllocator.init(&key_buffer);
+            const key = rowKey(fixed.allocator(), rows[n]) catch break;
+            if (!std.mem.eql(u8, key, self.last_frame.items[n])) break;
+        }
+        return n;
+    }
+
+    fn rememberFrame(self: *Ui, rows: []const Row) !void {
+        self.forgetFrame();
+        try self.last_frame.ensureTotalCapacity(self.alloc, rows.len);
+        for (rows) |row| self.last_frame.appendAssumeCapacity(try rowKey(self.alloc, row));
+    }
+
+    fn forgetFrame(self: *Ui) void {
+        for (self.last_frame.items) |key| self.alloc.free(key);
+        self.last_frame.clearRetainingCapacity();
     }
 
     /// Writes the blocks that closed since the last frame above the live
@@ -814,6 +852,14 @@ fn toolTick(context: *anyopaque) void {
     self.draw() catch {};
 }
 
+/// The GPU wait reaches back into the driver the same way a polling tool
+/// does, so a prefill chunk or a slow step repaints at the tick's cadence
+/// instead of once per chunk. Re-installed whenever the engine is re-opened;
+/// the CPU executor has no wait to interrupt and gets nothing.
+fn installTick(ui: *Ui) void {
+    if (ui.eng.model.gpu()) |gpu| gpu.tick = .{ .context = ui, .call = toolTick };
+}
+
 /// Runs one user turn through the loop: prepares the display state, hands the
 /// prompt to the agent, and notifies once it is done if the window was
 /// elsewhere. The loop owns everything the model saw and produced.
@@ -1105,6 +1151,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // A polling tool reaches back into the driver while it runs, so keys are
     // read and the running call's spinner advances during a long `bash`.
     workspace.tick = .{ .context = &ui, .call = toolTick };
+    installTick(&ui);
     // The observer carries both cancellation (`interrupt.check`, `Ctrl-C`) and
     // the progress beats the bar animates from.
     var trace: generate.Trace = .{
@@ -1184,6 +1231,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 if (engine.Engine.open(alloc, io, model_path, backend, newcap, kv, settings.forced_profile, draft)) |opened| {
                     eng = opened;
                     ui.eng = &eng;
+                    installTick(&ui);
                     ui.completer.reset();
                     ui.tokens_seen.reset(); // same artifact, same vocabulary; a fresh session
                     ui.agent.result_budget = loop.resultBudget(newcap);
@@ -1197,6 +1245,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     // session over an allocation failure.
                     eng = try engine.Engine.open(alloc, io, model_path, backend, old_capacity, kv, settings.forced_profile, draft);
                     ui.eng = &eng;
+                    installTick(&ui);
                     ui.status = @errorName(err);
                 }
                 continue;

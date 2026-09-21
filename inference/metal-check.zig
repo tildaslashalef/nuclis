@@ -1166,6 +1166,53 @@ fn expertsBench(alloc: std.mem.Allocator, chunk: usize) !void {
 /// Merging must preserve each standalone reduction, including heterogeneous
 /// encodings and the generic alignment fallback. Packed outputs also exercise
 /// multiple byte offsets into one binding, as used by DeltaNet and KV state.
+/// The tick fires while a long command buffer runs and stays silent for a
+/// short one: 600 back-to-back matvecs over a 200 MB Q4_0 matrix hold the GPU
+/// about 600 ms, past several intervals; a single one completes before the first.
+fn checkTick(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/simple.json"), .{ .ignore_unknown_fields = true });
+    defer fixtures.deinit();
+    var sample_bytes: ?[]const u8 = null;
+    for (fixtures.value.rows) |sample| if (sample.encoding == 2) {
+        sample_bytes = sample.bytes;
+        break;
+    };
+    const rows: usize = 69632;
+    const columns: usize = 5120;
+    const region = try tiledMatrixRows(alloc, sample_bytes orelse return error.FixtureMissing, 2, rows, columns);
+    defer alloc.free(region);
+    const weights = try b.create(region.len);
+    @memcpy(weights.host[0..region.len], region);
+    const matrix: inference.cpu.Matrix = .{ .rows = rows, .columns = columns, .encoding = 2, .bytes = region };
+    const input = try b.create(columns * 4);
+    for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
+    const output = try b.create(rows * 4);
+    const Counter = struct {
+        calls: usize = 0,
+        fn tick(context: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+        }
+    };
+    var counter: Counter = .{};
+    b.tick = .{ .context = &counter, .call = Counter.tick };
+    try b.begin();
+    for (0..600) |_| try b.matvec(weights, matrix, input, output);
+    try b.commit();
+    const long_calls = counter.calls;
+    counter.calls = 0;
+    try b.begin();
+    try b.matvec(weights, matrix, input, output);
+    try b.commit();
+    b.tick = null;
+    std.debug.print("tick: {d} calls over 600 matvecs ({d:.0} ms of GPU time), {d} over one\n", .{ long_calls, b.gpuSeconds() * 1e3, counter.calls });
+    if (long_calls < 4) return error.TickDidNotFire;
+    if (counter.calls != 0) return error.TickFiredOnShortWait;
+}
+
 fn checkSegments(alloc: std.mem.Allocator) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
@@ -1891,6 +1938,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--attention-bench")) return attentionBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len != 1) return error.UnknownOption;
+    try checkTick(alloc);
     try checkSegments(alloc);
     try checkHadamard(alloc);
     try checkGatherRows(alloc);
