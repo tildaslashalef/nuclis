@@ -72,7 +72,7 @@ removed launch. The pairs stay behind `Backend.fused_norms` /
 fusion (the norm inside the kernel that produces its input), not merging
 dispatches, and `bench` on a family whose companion has no adapter fails
 with `DraftSourceMissing` while the switch is on (fixed for Gemma by
-MODL-19, still true for Muse until MODL-20).
+MODL-19 and for Muse by MODL-20).
 
 MODL-19 (Gemma 4 draft heads) closed on 2026-09-21: the
 `gemma4-assistant` companion is a second GGUF that `Engine.open` maps and
@@ -86,15 +86,23 @@ ordinary decode. Facts and the table:
 [speculative-decoding.md § The Gemma 4 assistant heads](docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19)
 and [bench.md § The Gemma 4 draft pair](docs/reference/bench.md#the-gemma-4-draft-pair-modl-19-2026-09-21).
 The 26B-A4B head is bound and width-checked but not measured. The verifier's
-row-flat cost is the lever, not the drafter: `max_draft_length` (the 8-row
-tile bound) is ENGN-17's call.
+row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
+ENGN-17's call.
 
-**Next: MODL-20 session 2** (the DFlash drafter's Metal plan, its trace, the
-Muse benchmark and verdict), then ENGN-17's full record. Session 1 closed on
-2026-09-21 with the facts, the companion binding, the CPU drafter, and the
-pinned trace (residuals ≤ 6.9e-5, encoder 9.5e-7, block 1.05e-2 / 4.4e-3,
-30 greedy rows) — the section below says what remains; **on Metal
-`--speculative on` for this family is `DraftSourceMissing` until then**.
+**Next: ENGN-17** (the verdict, the defaults, and the full record). MODL-20
+closed on 2026-09-21 with a **positive verdict** on Muse Glimmer: the Metal
+plan (five draft layouts, the five-residual capture, the batched encoder and
+block, the non-causal block attention as one decode per row), the trace on
+both executors (`compare-draft-muse`: residuals ≤ 1.1e-3, encoder ≤ 1.4e-4,
+block ≤ 1.02e-2, 30/30 greedy rows), and the acceptance pair at draft
+lengths 4 / 8 / 15: **1.234× / 1.163× / 1.222×**, 73–77 % of proposed
+positions accepted, verify the cost at 172.9–188.2 ms per batch. The
+draft-length cap moved with it: `Drafter.max_proposals` (Muse 15) is the
+effective bound, the host constant is 15. Facts:
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](docs/reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20),
+the table in
+[bench.md § The Muse Glimmer DFlash draft pair](docs/reference/bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21),
+and the [log](docs/engineering-log.md#modl-20--muse-glimmer-dflash-drafter-the-companion-the-cpu-reference-and-its-trace-the-metal-plan-a-positive-verdict-2026-09-21-two-sessions).
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -142,8 +150,7 @@ window, the fused norms behind their flag). The kernel levers the plan
 ordered are exhausted; nothing here claims a
 final speedup before ENGN-17 measures it.
 
-Order: MODL-20 →
-ENGN-17 → REPO-09 → REPO-10 → TERM-10 →
+Order: ENGN-17 → REPO-09 → REPO-10 → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -157,13 +164,11 @@ the Qwen path it changes**: the reuse body takes the 1–64-row chunk
 attention of every verify batch at 16K–32K context, measured 11–16 %
 faster at the kernel.
 **MODL-19 and MODL-20 were moved ahead of ENGN-17 on 2026-09-21** (the user's
-call): the draft contract, the verify batch, both acceptance rules, the
-recovery schemes, the loop, and the switch are family-independent and
-already in the tree, so each family's speculative support is its adapter
-plus its own record, and the two are wanted before the performance theme's
-last units. The verdict is Qwen-only, so it does not wait on them; its
-`bench` default change lands after them and sets each entry from the
-family's own record.
+call) and closed the same day: Gemma's heads measured negative at the plan's
+draft length, Muse's DFlash drafter positive (1.16–1.23×), so each family now
+has its own record and ENGN-17's per-entry default is set from it. The Qwen
+verdict is independent of them; its `bench` default change lands first and
+sets each entry from the family's own record.
 TERM-10 (chat polish) and the vision units follow.
 **Three units were dropped from the plan on 2026-09-21** (the user's call):
 Gemma's launch-bound decode and prefill (the Q4_0 tile and fewer launches),
@@ -188,7 +193,6 @@ verdicts as data.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-20 | Muse Glimmer DFlash drafter: facts, contract fit, acceptance loop | 2 |
 | ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
 | REPO-09 | One gate registry: the model-specific checks become a data manifest | 1 |
 | REPO-10 | Benchmark workloads and generated records; bench.md split by family | 2 |
@@ -336,72 +340,14 @@ its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
 
-## MODL-20 — Muse Glimmer DFlash drafter
-
-**Order (revised 2026-09-21).** Moved ahead of ENGN-17 with MODL-19 at the
-user's request; the same family-independent framework applies, and this is
-the larger of the two adapters (the block proposal, the feature retention,
-the drafter's own windowed cache).
-
-**Session 1 delivered (2026-09-21).** The reference read is done and the
-facts are recorded in
-[speculative-decoding.md § The Muse Glimmer DFlash drafter](docs/reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20):
-the companion is anchor-first and non-causal (the file carries neither
-`dflash.sample_from_anchor` nor `dflash.attention.causal`), the encoder
-fuses the *input* residuals of layers 2/14/26/38/50 through `fc` +
-`enc.output_norm`, the block is one 16-row forward that proposes up to 15
-drafts, and the cache is filled by `process()` = our `commit` with five
-residuals per row (`Drafter.hidden = 33280`). The contract fit holds with no
-new contract surface. On disk: `inference/src/models/dflash.zig` (the
-companion binder: metadata, 58 tensors, the mask token, the target layers,
-unknown-`dflash.*`-key refusals), `muse_glimmer.zig`'s `bindDraft` (own
-view, `DraftSourceMismatch` mapping), the inventory fixture
-`fixtures/dflash-kquant.json`, the CPU drafter in `muse_glimmer_runtime.zig`
-(five extra session layouts when a drafter is bound, residual capture in
-`prefill`/`verify`/`verifyGreedy`, `draftEncode`/`draftInject`,
-`draftBlock` in two passes so the block's K/V all precede attention,
-`propose`/`commit`/`reset`/`bytes`), `museDraftTrace` in
-`generation-check.zig`, `--dflash-draft` + `DFLASH_DRAFT_CPU`/
-`DFLASH_DUMP_LAYERS` in `scripts/reference-generation.cpp`, and
-`make compare-draft-muse-cpu` (+ `compare-draft-muse`). The pinned trace
-(`fixtures/muse-dflash/`, `The capital of France is`) matches: residuals
-≤ 6.9e-5 max abs, encoder 9.5e-7, block 1.05e-2 max abs / 4.4e-3 rel RMS
-(position 1) against bounds 2e-2 / 1e-2, and all 30 greedy rows. Greedy
-`generate --speculative on` vs off on the registry entry is byte-identical
-over 6 tokens (`Hello,`, CPU); missing / wrong-architecture /
-target-as-drafter companions are
-`DraftSourceMissing` / `DraftSourceMismatch`; `make check`,
-`compare-muse-glimmer` (f32 2.4e-4 / 8.1e-7, f16 7.3e-2 / 2.0e-4), and
-`test-generation-muse-glimmer-metal` are unchanged. **Metal is not
-implemented yet**: `muse_glimmer_metal.zig` ignores the `draft` flag, so
-`--speculative on` on Metal is `DraftSourceMissing` until session 2.
-
-**Session 2 (next).** The Metal plan: `Plan.init` opens the five draft
-layouts when a drafter is bound (F16 by default like the language model, so
-the draft cache is ~671 MB at 32,768 tokens), retains the five layer inputs
-per batch row device-resident for `commit`, and runs the encoder and the
-block with the existing kernels — the block's attention needs the
-verify-shaped non-causal windowed form (all block rows visible to every row,
-the prefix back to `position − 2047`), which KERN-16's reuse body takes at
-`attention_reuse_max_rows = 64`; the two-pass K/V-then-attention order must
-hold on the device too. Then `compare-draft-muse-metal` with the same pinned
-rows, `make test-generation-muse-glimmer-metal` (the recovery check now has
-five more attention layouts to rewind), and the benchmark record on the Muse
-acceptance workload (`--speculative on` pairs, draft lengths 4, 8, 15) with
-the per-batch cost table, the catalogue verdict, and the log entry that
-closes the unit.
-
-**Acceptance.** Traces at the tolerances on both backends; the contract
-decision documented; the benchmark record with the per-batch cost table;
-the verdict, negative if the drafter does not pay for its verification;
-`make check`, the Muse compare targets unchanged.
-
 ## ENGN-17 — The verdict, the defaults, and the bench baseline without the drafter
 
-**Facts.** This unit runs after MODL-19 and MODL-20 (moved ahead of it on
-2026-09-21): the Qwen verdict does not depend on them, but each family
-entry's default does, and by then all three families have their own record
-to set it from. `bench` opens the model with `DraftRequest.optional_embedded`
+**Facts.** MODL-19 and MODL-20 closed on 2026-09-21 (both moved ahead of
+this unit), so all three families now have their own record: Qwen negative
+at the plan's lengths, Gemma negative at draft 4, Muse positive
+(1.16–1.23×). The Qwen verdict does not depend on them, but each family
+entry's default does, and each is set from its own record. `bench` opens
+the model with `DraftRequest.optional_embedded`
 whatever the switch, so there is no in-process measurement without the
 drafter loaded, and the MODL-18 acceptance item "decode rate unchanged with
 the drafter loaded but switched off" (carried through ENGN-12) is only

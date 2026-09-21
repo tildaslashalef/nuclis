@@ -576,7 +576,7 @@ pub const Runtime = struct {
     pub fn drafter(self: *Runtime) ?@import("../runtime/draft.zig").Drafter {
         if (!self.has_draft) return null;
         const head = &self.draft.?;
-        return .{ .host = self, .hidden = head.binding.config.embedding_out, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = head.binding.config.embedding_out, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));

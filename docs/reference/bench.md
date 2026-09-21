@@ -1458,6 +1458,49 @@ head is therefore a correct adapter with a negative default at the plan's
 draft length; the levers are `max_draft_length` (the 8-row tile bound) or a
 cheaper small-batch verify, both ENGN-17's call.
 
+## The Muse Glimmer DFlash draft pair (MODL-20, 2026-09-21)
+
+The `dflash-kquant` companion's off/on pair on the Muse acceptance workload:
+`muse-glimmer-30b`, Metal, F16 KV, ctx 32768,
+`tests/fixtures/run-2026-09-19-muse-glimmer/prompt-512.json`, 128 output
+tokens, greedy, the companion loaded (`--speculative on`), one warmup and
+three measured runs per configuration on one loaded model. Nuclis
+`0.2.0-dev` at `316accc` plus the MODL-20 change; reports under
+`.zig-cache/bench/muse-modl20-draft{4,8,15}.json`. Per-batch costs are the
+sample fields divided by `speculative_steps`; `tokens/batch` is
+`(generated_tokens − 1) / speculative_steps`; the speedup is the pair's
+`decode_tokens_per_second` on/off. Every sample stopped on `token_budget`.
+Each pair is interleaved on one loaded model, which is what the ratio uses;
+the off baselines drift down across the three configurations (9.67, 9.35,
+9.13 tok/s at 512) over the ten-minute sequence.
+
+| draft | accepted/step | proposed/step | tokens/batch | verify ms | propose ms | accept µs | recover ms | commit ms | checkpoint ms | decode off → on tok/s | speedup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 1.415 | 1.830 | 2.396 | 172.9 | 26.0 | 0.1 | 0.001 | 1.99 | 0.001 | 9.67 → 11.93 | 1.234× |
+| 8 | 1.560 | 2.120 | 2.540 | 183.0 | 48.5 | 0.1 | 0.001 | 2.04 | 0.001 | 9.35 → 10.88 | 1.163× |
+| 15 | 1.723 | 2.362 | 2.702 | 188.2 | 51.8 | 0.1 | 0.001 | 2.11 | 0.001 | 9.13 → 11.16 | 1.222× |
+
+**Reading.** The drafter pays on every length — the first positive family
+verdict, 1.16–1.23× — and the proposals are accurate: 73–77 % of the
+positions it does propose are accepted, and the early stop (`draft_p_min =
+0.7`, ENGN-16) trims hard, so only 1.83 / 2.12 / 2.36 positions of the 4 / 8
+/ 15 requested are ever forwarded. Every non-verify cost is negligible:
+recovery is the position rewind alone (1 µs per batch; Muse Glimmer is
+attention-only), `accept` is 0.1 µs (sampled acceptance's device readback
+is not used on the greedy path), and the prompt commit adds 1.2–2.9 % to
+the prefill (1.012–1.029×). The verify batch is the cost and the lever:
+172.9–188.2 ms for 2.8–3.4 rows, 1.7–1.8 ordinary decode steps, because the
+batch's matmuls run the padded small-chunk tiles; the block proposal grows
+with the requested length (5 / 9 / 16 rows through the small-batch tiles:
+26.0 / 48.5 / 51.8 ms). Draft 8 is the worst of the three — 22 ms more
+proposal and 10 ms more verify than draft 4 for 0.14 more tokens per batch —
+while draft 15's longer batches recover the ground (1.222×). The best
+measured length is 4 (1.234×) with 15 statistically tied; ENGN-17 sets the
+entry's default from this record. Memory: the session is 2,415,919,104
+bytes (2304 MiB) at 32,768 with the five draft caches (640 MiB of it), the
+drafter's device workspace is 149,861,504 bytes, and the verify scratch
+53,862,464 bytes.
+
 ## Prefill attention sweep (KERN-16, 2026-09-21)
 
 The register-reuse chunk attention (`nu_attention_chunk_reuse` /

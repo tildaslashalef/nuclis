@@ -500,10 +500,12 @@ pub const Model = struct {
     }
 };
 
-/// The host bound on a draft block: KERN-11's 8-row token tile less the seed
-/// row. A requested length above it is refused; the switch and the length are
-/// the only speculative knobs exposed (docs/spec.md § Speculative decoding).
-pub const max_draft_length = 7;
+/// The host bound on a draft block: the largest proposal count any shipped
+/// family declares (Muse's DFlash block proposes 15 in one forward; the MTP
+/// heads declare 7). The static configuration and flag validation use it;
+/// the effective bound of a loaded drafter is its own `max_proposals`, which
+/// `runLoop` enforces (docs/spec.md § Speculative decoding).
+pub const max_draft_length = 15;
 
 /// The drafter's proposal threshold: a position whose top candidate's
 /// probability falls below it stops the chain (the position itself is still
@@ -536,9 +538,9 @@ const SpeculativeScratch = struct {
     choices: []u32,
     p: []inference.sampling.Candidate,
 
-    fn init(alloc: std.mem.Allocator, vocabulary: usize, hidden_width: usize) !SpeculativeScratch {
-        const rows = max_draft_length + 1;
-        const drafts = try alloc.alloc(u32, max_draft_length);
+    fn init(alloc: std.mem.Allocator, vocabulary: usize, hidden_width: usize, proposals: usize) !SpeculativeScratch {
+        const rows = proposals + 1;
+        const drafts = try alloc.alloc(u32, proposals);
         errdefer alloc.free(drafts);
         const logits = try alloc.alloc(f32, rows * vocabulary);
         errdefer alloc.free(logits);
@@ -719,7 +721,7 @@ pub const Engine = struct {
         // drafter was requested, so a plain run pays nothing.
         var spec: ?SpeculativeScratch = null;
         errdefer if (spec) |*s| s.deinit(alloc);
-        if (model.drafter()) |drafter| spec = try SpeculativeScratch.init(alloc, vocab.tokens.len, drafter.hidden);
+        if (model.drafter()) |drafter| spec = try SpeculativeScratch.init(alloc, vocab.tokens.len, drafter.hidden, drafter.max_proposals);
         var encoder = try inference.tokenizer.Encoder.init(alloc, &vocab);
         errdefer encoder.deinit();
         return .{
@@ -974,6 +976,8 @@ pub fn runLoop(
     // shortcuts are off while it runs and the loop materializes every seed's
     // logits. A per-layer observer is a per-token contract and disables it.
     const can_speculate = settings.enabled and drafter != null and (observer == null or observer.?.layer == null);
+    // The loaded family's block, not the host maximum, is the effective cap.
+    if (can_speculate and settings.draft_length > drafter.?.max_proposals) return error.InvalidDraftLength;
     // Greedy acceptance compares the target's argmax without penalties, so a
     // penalized greedy run takes the sampled path (its point masses).
     const greedy_verify = sampler.options.temperature == 0 and !sampler.options.penaltiesActive();

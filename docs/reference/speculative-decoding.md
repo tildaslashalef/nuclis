@@ -410,26 +410,34 @@ caches, one target token per decode, dumping each position's residual rows
 and the block before the target decodes the next token — the driver's
 `draft()` moment. The rows are pinned under
 `inference/src/models/fixtures/muse-dflash/` and checked by
-`make compare-draft-muse-cpu` (the `museDraftTrace` pass in
-`generation-check`):
+`make compare-draft-muse-cpu` and `make compare-draft-muse-metal` (the
+`museDraftTrace` pass in `generation-check`; the `--metal` run also runs
+the CPU reference over the same rows, so one invocation checks both):
 
-| rows | max abs | relative RMS |
+| rows | CPU max abs / rel RMS | Metal max abs / rel RMS |
 | --- | ---: | ---: |
-| five residuals, position 0 | 7.6e-6 … 6.1e-5 | 1.1e-7 … 2.3e-7 |
-| five residuals, position 1 | 5.2e-6 … 6.9e-5 | 2.6e-7 … 4.9e-7 |
-| encoder output, positions 0 / 1 | 9.5e-7 / 9.5e-7 | 2.6e-7 / 2.3e-7 |
-| block hidden (4 rows), position 1 / 2 | 1.05e-2 / 4.8e-3 | 4.4e-3 / 1.5e-3 |
+| five residuals, position 0 | 7.6e-6 … 6.1e-5 / 1.1e-7 … 2.3e-7 | 1.5e-4 … 1.1e-3 / 9.2e-7 … 3.0e-6 |
+| five residuals, position 1 | 5.2e-6 … 6.9e-5 / 2.6e-7 … 4.9e-7 | 4.9e-5 … 3.1e-4 / 2.2e-6 … 3.1e-6 |
+| encoder output, positions 0 / 1 | 9.5e-7 / 9.5e-7 / 2.6e-7 / 2.3e-7 | 2.9e-4 / 2.2e-4 / 8.2e-5 / 1.4e-4 |
+| block hidden (4 rows), position 1 / 2 | 1.05e-2 / 4.8e-3 / 4.4e-3 / 1.5e-3 | 1.02e-2 / 4.7e-3 / 4.4e-3 / 1.5e-3 |
 
-All 30 pinned greedy drafts match (15 rows per proposal). The check's bounds
-are 2e-2 / 1e-2 on the block and 1e-3 / 1e-5 on the residual rows. The
-block's larger figure is the reference's own backend spread, not ours: the
-block's residual stream reaches magnitudes of hundreds before the output
-norm, and the reference's CPU path quantizes activations to Q8_K while its
-Metal path does not, so the two differ by 2.0e-2 (layer 0) to 4.8e-2
-(layer 3) relative RMS per layer while the native CPU reference sits
-2.3e-3…4.4e-3 from the pinned Metal rows. `DFLASH_DRAFT_CPU=1` and
-`DFLASH_DUMP_LAYERS=1` in the harness reproduce that comparison; the trace
-checked in is the Metal run, as for the other families.
+All 30 pinned greedy drafts match on both executors. The check's bounds are
+2e-2 / 1e-2 on the block; on the residual rows 1e-3 / 1e-5 on the CPU and
+5e-3 / 1e-5 on Metal, and on the encoder 1e-2 / 1e-4 on the CPU and
+1e-2 / 2e-3 on Metal. Two Metal facts set those bounds: the trace's
+capture runs the generic F32 tile (the production chunked path's
+half-operand tiles round activations to F16, which would mask the
+drafter's own numerics), and the encoder's `fc` runs the shipped half tile
+over residual rows of magnitudes in the hundreds, so its F16 input
+rounding sits an order above the CPU's. The block's larger figure is the
+reference's own backend spread, not ours: the block's residual stream
+reaches magnitudes of hundreds before the output norm, and the
+reference's CPU path quantizes activations to Q8_K while its Metal path
+does not, so the two differ by 2.0e-2 (layer 0) to 4.8e-2 (layer 3)
+relative RMS per layer while the native CPU reference sits 2.3e-3…4.4e-3
+from the pinned Metal rows. `DFLASH_DRAFT_CPU=1` and `DFLASH_DUMP_LAYERS=1`
+in the harness reproduce that comparison; the trace checked in is the
+Metal run, as for the other families.
 
 **Load errors.** `Engine.open` maps the companion through the same
 `DraftRequest.{file,preferred}` path as MODL-19 and requires the `dflash`
@@ -453,10 +461,46 @@ attention layouts when a drafter is bound, and runs the encoder and the
 block on the CPU. The drafter's workspace is 2,309,376 bytes; its cache is
 part of the session (5 × 2 × 1024 values per position; full capacity, as the
 language model's sliding layers are, so 1.34 GB F32 at 32,768 tokens and
-half that with the F16 cache). **Session 2 is the Metal plan, the acceptance
-workload with draft lengths 4, 8, and 15, and the catalogue verdict**; until
-then a `--speculative on` run of this family on Metal is `DraftSourceMissing`
-by contract.
+half that with the F16 cache).
+
+**The Metal plan (session 2, 2026-09-21).** `muse_glimmer_metal.zig` opens
+the five draft layouts when a companion is bound (the same `kv` precision as
+the language model, F16 by default) and runs the same equations with the
+shipped kernels. The language model captures each target layer's input rows
+into one device slab per slot during `prefill`/`verify`/`verifyGreedy`
+(contiguous copies), the plan assembles them into the row-major `h_rows` the
+engine's `commit` consumes, and `commit` uploads them back through a staging
+buffer for the encoder's batched `fc` matmul and its per-layer key/value
+projections (batched over rows, one cache write per layer). The block is one
+batched forward over 1 + k rows: batched q/k/v, per-head norms, split-half
+RoPE at each row's own position, and the non-causal block attention as one
+`attentionDecode` per row — the causal chunk kernels cannot express the
+block's mask, so each row attends to the slice from its own window start to
+the block's last position. The proposal's head runs over every block row
+(the anchor included) and reads each draft row's top candidate and its
+full-vocabulary softmax denominator through the existing `topk` with `k = 1`.
+A `--speculative on` run on Metal is byte-identical to `--speculative off`
+over 12 greedy tokens on the registry entry, and the sampled paths (device
+top-k and the penalized full-rows fallback) complete on the same entry.
+
+**The verdict (2026-09-21).** Positive at every measured length on the Muse
+acceptance workload: 1.234× at draft 4, 1.163× at 8, 1.222× at 15, with
+73–77 % of the proposed positions accepted and the early stop trimming the
+proposals to 1.83 / 2.12 / 2.36 per step (of 4 / 8 / 15 requested). The
+verify batch (172.9–188.2 ms for 2.8–3.4 rows) is the cost; recovery is the
+position rewind alone (1 µs) and `commit` ~2 ms. Facts and the table:
+[bench.md § The Muse Glimmer DFlash draft pair](bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21).
+Memory on Metal: the session is 2,415,919,104 bytes (2304 MiB) at 32,768
+with the five draft caches (640 MiB of it), the drafter's device workspace
+149,861,504 bytes, and the verify scratch 53,862,464 bytes.
+
+**The draft-length cap (2026-09-21).** Muse's block proposes 15 in one
+forward, so the host's static bound moved from 7 (KERN-11's 8-row verify
+tile) to 15, and the effective bound is now the loaded drafter's own
+`Drafter.max_proposals` (Qwen 7, Gemma 7, Muse 15), enforced by `runLoop`
+and used to size the engine's speculative scratch. The configuration and
+`--draft-length` validate against the host bound; a length above a family's
+block is a typed `InvalidDraftLength` at run time.
 
 ## The verify batch and the loop (ENGN-12, session 1)
 

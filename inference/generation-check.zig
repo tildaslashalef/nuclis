@@ -1393,13 +1393,15 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     defer alloc.free(h_out);
     var runtime = try Family.Runtime.init(alloc, mapped.view(), binding, 32, false, true);
     defer runtime.deinit();
-    var plan: ?Family.Plan = null;
+    // The plan must go before the backend it borrows (LIFO defers: register
+    // the backend's first).
     var gpu: ?*inference.metal.Backend = null;
-    defer if (plan) |*p| p.deinit();
     defer if (gpu) |b| {
         b.deinit();
         alloc.destroy(b);
     };
+    var plan: ?Family.Plan = null;
+    defer if (plan) |*p| p.deinit();
     if (use_metal) {
         var diagnostic: [8192]u8 = @splat(0);
         gpu = try alloc.create(inference.metal.Backend);
@@ -1459,7 +1461,6 @@ fn argmax(values: []const f32) u32 {
 /// draft of every row must match the reference (`--dflash-draft` in
 /// scripts/reference-generation.cpp).
 fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: []const u8, use_metal: bool, directory: []const u8) !void {
-    if (use_metal) return error.MetalDraftUnsupported;
     const Family = inference.models.muse_glimmer.family;
     const D = inference.models.dflash;
     var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
@@ -1474,6 +1475,24 @@ fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, 
     const capacity = 32;
     var runtime = try Family.Runtime.init(alloc, mapped.view(), binding, capacity, false, true);
     defer runtime.deinit();
+    // The Metal plan runs the same pinned rows with F32 caches, the
+    // precision the reference trace was captured with.
+    var gpu: ?*inference.metal.Backend = null;
+    defer if (gpu) |b| {
+        b.deinit();
+        alloc.destroy(b);
+    };
+    var plan: ?Family.Plan = null;
+    defer if (plan) |*p| p.deinit();
+    if (use_metal) {
+        var diagnostic: [8192]u8 = @splat(0);
+        gpu = try alloc.create(inference.metal.Backend);
+        gpu.?.* = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+        plan = try Family.Plan.init(alloc, gpu.?, mapped.view(), binding, capacity, 32, .f32, false, true);
+    }
     const tokens = [5]u32{ 954, 7963, 323, 11698, 373 };
     const hidden = try alloc.alloc(f32, D.hidden_width);
     defer alloc.free(hidden);
@@ -1484,6 +1503,19 @@ fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, 
     const block = try alloc.alloc(f32, D.block_size * D.embedding);
     defer alloc.free(block);
     var greedy: [D.block_size]u32 = undefined;
+    var label_buffer: [96]u8 = undefined;
+    // The Metal capture runs the generic F32 tile, whose accumulation order
+    // differs from the reference decode; its relative RMS still pins the
+    // slots (measured ~1.4e-6 against the CPU's ~4.9e-7), and the relaxed
+    // max-abs bound covers the residual stream's magnitudes of hundreds.
+    const residual_max_abs: f64 = if (use_metal) 5e-3 else 1e-3;
+    const residual_rel_rms: f64 = 1e-5;
+    // The encoder's `fc` runs the shipped half-operand tile over residual
+    // rows of magnitudes in the hundreds, so its F16 input rounding sits an
+    // order above the CPU reference (measured 1.4e-4 relative RMS on Metal
+    // against 2.6e-7 on the CPU); the bound still catches a wiring error,
+    // and the greedy rows pin the behaviour.
+    const encoder_rel_rms: f64 = if (use_metal) 2e-3 else 1e-4;
 
     const residual_files = [2][D.block_count][]const u8{
         .{
@@ -1513,53 +1545,105 @@ fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, 
 
     // Position 0: the target's residual capture, then the encoder over the
     // same pinned rows (so a capture error is not charged to the encoder).
+    // The CPU reference always runs; `--metal` runs the plan's protocol over
+    // the same pinned rows, and the trace directory receives the plan's rows.
     try runtime.prefill(tokens[0..1], null, hidden, null);
-    try compareResiduals("residuals position 0", residual_files[0], hidden);
+    try compareResiduals("cpu residuals position 0", residual_files[0], hidden, residual_max_abs, residual_rel_rms);
+    if (plan) |*p| {
+        try museStepCapture(p, gpu.?, tokens[0..1], hidden);
+        try compareResiduals("metal residuals position 0", residual_files[0], hidden, residual_max_abs, residual_rel_rms);
+    }
     try assemblePinned(residual_files[0], pinned_row);
     try runtime.draftEncodeTrace(pinned_row, encoder);
-    try compareDraft("encoder position 0", encoder_files[0], encoder, 1e-2, 1e-4);
+    try compareDraft("cpu encoder position 0", encoder_files[0], encoder, 1e-2, encoder_rel_rms);
+    if (plan) |*p| {
+        try p.draftEncodeTrace(pinned_row, encoder);
+        try compareDraft("metal encoder position 0", encoder_files[0], encoder, 1e-2, encoder_rel_rms);
+    }
     try writeFloats(io, directory, "token-0-encoder.f32", encoder);
     try runtime.commit(tokens[0..1], hidden);
+    if (plan) |*p| try p.commit(tokens[0..1], hidden);
 
     for (0..2) |row| {
         const label_position = row + 1;
+        const block_label: []const u8 = if (row == 0) "block position 1" else "block position 2";
+        const greedy_label: []const u8 = if (row == 0) "greedy position 1" else "greedy position 2";
         try runtime.draftBlockTrace(tokens[label_position], D.block_size, block, &greedy, null);
-        {
-            var name: [64]u8 = undefined;
-            const text = try std.fmt.bufPrint(&name, "token-{d}-block-h.f32", .{label_position});
-            try writeFloats(io, directory, text, block[0 .. 4 * D.embedding]);
-        }
         // The block's residual stream magnifies the reference backends' own
         // spread (its CPU quantizes activations, its Metal does not; the two
         // differ by 2-5 % per layer here). The native rows sit 4.4e-3 from
         // the pinned Metal ones, inside that spread; the 30 greedy rows pin
         // the block's behaviour exactly.
         try compareDraft(
-            if (row == 0) "block position 1" else "block position 2",
+            try std.fmt.bufPrint(&label_buffer, "cpu {s}", .{block_label}),
             block_files[row],
             block[0 .. 4 * D.embedding],
             2e-2,
             1e-2,
         );
         try compareGreedy(
-            if (row == 0) "greedy position 1" else "greedy position 2",
+            try std.fmt.bufPrint(&label_buffer, "cpu {s}", .{greedy_label}),
             pinned_greedy,
             row,
             greedy[1..D.block_size],
         );
+        if (plan) |*p| {
+            try p.draftBlockTrace(tokens[label_position], D.block_size, block, &greedy, null);
+            {
+                var name: [64]u8 = undefined;
+                const text = try std.fmt.bufPrint(&name, "token-{d}-block-h.f32", .{label_position});
+                try writeFloats(io, directory, text, block[0 .. 4 * D.embedding]);
+            }
+            try compareDraft(
+                try std.fmt.bufPrint(&label_buffer, "metal {s}", .{block_label}),
+                block_files[row],
+                block[0 .. 4 * D.embedding],
+                2e-2,
+                1e-2,
+            );
+            try compareGreedy(
+                try std.fmt.bufPrint(&label_buffer, "metal {s}", .{greedy_label}),
+                pinned_greedy,
+                row,
+                greedy[1..D.block_size],
+            );
+        } else {
+            var name: [64]u8 = undefined;
+            const text = try std.fmt.bufPrint(&name, "token-{d}-block-h.f32", .{label_position});
+            try writeFloats(io, directory, text, block[0 .. 4 * D.embedding]);
+        }
         if (row == 0) {
             // The next position: capture token 1's residuals and inject them,
             // then the second proposal reads both injected rows.
             try runtime.prefill(tokens[1..2], null, hidden, null);
-            try compareResiduals("residuals position 1", residual_files[1], hidden);
+            try compareResiduals("cpu residuals position 1", residual_files[1], hidden, residual_max_abs, residual_rel_rms);
+            if (plan) |*p| {
+                try museStepCapture(p, gpu.?, tokens[1..2], hidden);
+                try compareResiduals("metal residuals position 1", residual_files[1], hidden, residual_max_abs, residual_rel_rms);
+            }
             try writeFloats(io, directory, "token-1-residuals.f32", hidden);
             try assemblePinned(residual_files[1], pinned_row);
             try runtime.draftEncodeTrace(pinned_row, encoder);
-            try compareDraft("encoder position 1", encoder_files[1], encoder, 1e-2, 1e-4);
+            try compareDraft("cpu encoder position 1", encoder_files[1], encoder, 1e-2, encoder_rel_rms);
+            if (plan) |*p| {
+                try p.draftEncodeTrace(pinned_row, encoder);
+                try compareDraft("metal encoder position 1", encoder_files[1], encoder, 1e-2, encoder_rel_rms);
+            }
             try runtime.commit(tokens[1..2], hidden);
+            if (plan) |*p| try p.commit(tokens[1..2], hidden);
         }
     }
-    std.debug.print("Muse DFlash draft check passed: residuals, encoder, two blocks, and {d} greedy rows match the pinned trace.\n", .{2 * (D.block_size - 1)});
+    std.debug.print("Muse DFlash draft check passed ({s}): residuals, encoder, two blocks, and {d} greedy rows match the pinned trace.\n", .{ if (use_metal) "cpu and metal" else "cpu", 2 * (D.block_size - 1) });
+}
+
+/// The pinned residual rows are the reference's per-token target decode; the
+/// chunked path's half-operand tiles round their inputs to F16 and would mask
+/// the drafter's own numerics, so the trace's capture runs the same schedule
+/// and capture path through the generic F32 tile.
+fn museStepCapture(plan: anytype, gpu: *inference.metal.Backend, tokens: []const u32, hidden: []f32) !void {
+    gpu.generic_only = true;
+    defer gpu.generic_only = false;
+    try plan.prefill(tokens, null, null, null, null, hidden, null);
 }
 
 /// Concatenates the five pinned residual rows into one `commit` row.
@@ -1575,12 +1659,12 @@ fn assemblePinned(files: [inference.models.dflash.block_count][]const u8, out: [
 
 /// The captured residual row is `block_count` slots of `embedding` values in
 /// `target_layers` order; each is pinned as its own file.
-fn compareResiduals(label: []const u8, files: [inference.models.dflash.block_count][]const u8, row: []const f32) !void {
+fn compareResiduals(label: []const u8, files: [inference.models.dflash.block_count][]const u8, row: []const f32, max_abs: f64, rel_rms: f64) !void {
     const width = inference.models.dflash.embedding;
     for (files, 0..) |file, slot| {
         var name: [96]u8 = undefined;
         const text = try std.fmt.bufPrint(&name, "{s} slot {d}", .{ label, slot });
-        try compareDraft(text, file, row[slot * width ..][0..width], 1e-3, 1e-5);
+        try compareDraft(text, file, row[slot * width ..][0..width], max_abs, rel_rms);
     }
 }
 

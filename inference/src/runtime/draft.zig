@@ -17,6 +17,11 @@ pub const Drafter = struct {
     host: *anyopaque,
     /// The target hidden width `commit` consumes and `verify` reports per row.
     hidden: usize,
+    /// The family's block bound: `propose` never returns more than this and
+    /// `verify` refuses a batch above `max_proposals + 1` rows. The engine
+    /// caps a requested draft length by it (Muse's DFlash block proposes 15
+    /// per forward, the MTP heads 7).
+    max_proposals: usize,
     /// Greedy candidates from the state after the last committed token, using
     /// `token` (the last chosen token not yet fed) as the block's seed.
     /// Returns the count proposed, at most `out.len`. Verification needs no

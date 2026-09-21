@@ -509,7 +509,9 @@ pub const Runtime = struct {
         if (self.draft == null) return error.NoDraftBlock;
         if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
         if (out.len == 0) return 0;
-        const count_max = @min(out.len, dflash.block_size - 1);
+        // The explicit type keeps Zig's comptime-operand narrowing from
+        // making this a `u4` (15 + 1 would overflow).
+        const count_max: usize = @min(out.len, dflash.block_size - 1);
         try self.draftBlock(token, 1 + count_max);
         const d = &self.draft.?;
         var count: usize = 0;
@@ -557,7 +559,7 @@ pub const Runtime = struct {
     /// The contract value the engine holds, or null when no companion bound.
     pub fn drafter(self: *Runtime) ?draft_contract.Drafter {
         if (self.draft == null) return null;
-        return .{ .host = self, .hidden = dflash.hidden_width, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = dflash.hidden_width, .max_proposals = dflash.block_size - 1, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));

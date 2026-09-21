@@ -468,9 +468,11 @@ Three settings, because they answer three different questions:
   checkpoint copy, recovery, per-row state writes) is gated behind the
   switch and must not run, or change an ordinary dispatch, when it is off.
 - **The draft length** (positions proposed per step): a second generation
-  setting with a per-family default from the same measurement, capped by
-  a host constant. Its best value depends on the prompt mix, so it sits
-  beside the switch, not in the load plan.
+  setting with a per-family default from the same measurement, capped by a
+  host constant (15, the largest block any family ships) and, at run time,
+  by the loaded drafter's own block bound (the engine refuses a longer
+  request with a typed error). Its best value depends on the prompt mix, so
+  it sits beside the switch, not in the load plan.
 
 Not exposed: the acceptance rule (greedy or sampled follows from whether
 sampling is on) and the recovery scheme (an internal correctness
@@ -492,6 +494,14 @@ per batch; a verify batch costs 2.4–2.6 ordinary steps at 512 and 3.6 at
 2.9–3.3× the ordinary one. The Qwen entry therefore ships with the switch
 off and `draft_length` 4; the performance units planned from these costs
 are in `TODO.md`, and ENGN-17 re-measures and sets the defaults.
+
+Measured (2026-09-21, [reference/bench.md § The Muse Glimmer DFlash draft pair](reference/bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)):
+on Muse Glimmer 30B with its DFlash companion, greedy speculation decodes
+at 1.234× the ordinary rate at draft 4, 1.163× at 8, and 1.222× at 15 on
+the acceptance workload's 512-token prompt, with 73–77 % of proposed
+positions accepted; the early stop trims the proposals to 1.8–2.4 per
+step. The verify batch (1.7–1.8 ordinary steps for 2.8–3.4 rows) is the
+cost and the lever; ENGN-17 sets the entry's default from this record.
 
 ## Remaining discussion
 

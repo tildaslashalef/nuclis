@@ -314,10 +314,21 @@ the schedule needed from the backend, and what it reused unchanged
 | Attention output gate `o ⊙ sigmoid(g)` | `nu_sigmoid_gate` | reused (the Qwen3.5 gate epilogue; here the gate is its own projection, stride 128, offset 0) |
 | Logit scale and soft-cap | `nu_scale`, `nu_softcap` | reused; the scale is one rounding before the tanh, where the reference folds it into the argument |
 
+The DFlash drafter (MODL-20) adds no kernel: the encoder and the block's
+projections are the same batched matmuls, the injected keys use the same
+`nu_rope_rows` with the NeoX (split-half) pairing at the file's 5e5 base,
+and the block's **non-causal** attention — every row sees the anchor and
+all mask rows — runs one `nu_attention_decode` per block row, because the
+causal chunk kernels' mask cannot express it and the block is only 16 rows
+(facts in
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
+
 Every cache is allocated for the full session capacity, sliding layers
 included (the CPU reference does the same): 52 × 2 × 256 halves per
-position, 1.7 GB at 32,768 tokens with the F16 cache. A ring layout for
-the 39 windowed layers is a session-layout change of its own.
+position, 1.7 GB at 32,768 tokens with the F16 cache; the five draft
+caches add 5 × 2 × 1024 halves per position (640 MiB at the same
+capacity). A ring layout for the 39 windowed layers is a session-layout
+change of its own.
 
 **Against the pinned traces** (`make compare-muse-glimmer`, three
 positions of `<|begin_of_text|>Hello,`, 157 files, 2026-09-19):
@@ -429,8 +440,11 @@ decoder, the `high` effort), the catalogue pin, and the acceptance record
 9.60 tok/s decode at 512 tokens, 6.62 at 32,639, against the reference's
 13.69 and 9.98), and AGNT-10 with the ATEM tool protocol
 ([tool-calling.md](tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).
-The family is complete for text; the vision projector and the DFlash
-drafter's Metal plan are planned (MODL-23 and MODL-20's second session in
-[TODO.md](../../TODO.md)); the drafter's CPU reference and its pinned trace
-closed in MODL-20 session 1
-([speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
+The family is complete for text; the vision projector is planned (MODL-23
+in [TODO.md](../../TODO.md)). The DFlash drafter closed in MODL-20
+(2026-09-21): the CPU reference and its pinned trace in session 1, the
+Metal plan and the acceptance record in session 2 — the pair measures
+1.163–1.234× at draft lengths 4, 8, and 15
+([bench.md § The Muse Glimmer DFlash draft pair](bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21);
+facts in
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).

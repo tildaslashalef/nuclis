@@ -617,7 +617,7 @@ test "agent parses sampling and effort flags without a prompt" {
     try std.testing.expectEqual(@as(usize, 2), (try parseArgs(&.{ "agent", "--speculative", "on", "--draft-length", "2" })).flags.draft_length.?);
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--speculative", "maybe" }));
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "0" }));
-    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "8" }));
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "16" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "generate", "--prompt", "a", "--speculative", "on", "--speculative", "off" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "2", "--draft-length", "3" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "tokenize", "--prompt", "a", "--speculative", "on" }));

@@ -42,9 +42,8 @@ pub const Observer = @import("../runtime/observer.zig").Observer;
 
 pub const vocabulary = model.vocabulary;
 const heads = model.heads;
-/// Rows a verify batch may hold: `engine.max_draft_length` plus the seed, the
-/// Qwen plan's bound.
-pub const max_verify_rows = 8;
+/// Rows a verify batch may hold: the adapter's proposal bound plus the seed.
+pub const max_verify_rows = model.max_draft_proposals + 1;
 /// The widest per-layer geometry; sliding layers use a prefix of each buffer.
 const q_width = model.Kind.global.queryWidth(); // 16 × 512
 const kv_width = model.max_kv_width; // 8 × 256
@@ -1108,7 +1107,7 @@ pub const Plan = struct {
     /// The contract value the engine holds, or null when no head is loaded.
     pub fn drafter(self: *Plan) ?@import("../runtime/draft.zig").Drafter {
         if (!self.has_draft) return null;
-        return .{ .host = self, .hidden = self.draft.?.binding.config.embedding_out, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = self.draft.?.binding.config.embedding_out, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));

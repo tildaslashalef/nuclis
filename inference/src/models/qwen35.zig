@@ -57,6 +57,12 @@ pub const DraftBlock = struct {
 /// The `general.architecture` id this adapter binds.
 pub const architecture = "qwen35";
 
+/// The embedded prediction block's proposal bound: the block forward chains
+/// one draft per position and the Metal plan's verify tile holds 8 rows (the
+/// seed plus 7). Declared by the adapter so both executors cap a requested
+/// draft length the same way.
+pub const max_draft_proposals = 7;
+
 /// Whether a weight matrix of this encoding can be bound: the storage
 /// layouts the CPU reference and the Metal kernels execute. Layout support
 /// in `formats/gguf` (which also stores Q4_0) is not this claim. BF16 and the

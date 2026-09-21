@@ -27,6 +27,12 @@ const Tensor = gguf.Tensor;
 
 pub const architecture = "gemma4";
 
+/// The assistant draft heads' proposal bound: a head forward chains one
+/// draft per position and the Metal plan's verify tile holds 8 rows (the
+/// seed plus 7). Declared by the adapter so both executors cap a requested
+/// draft length the same way.
+pub const max_draft_proposals = 7;
+
 pub const heads = 16;
 pub const vocabulary = 262144;
 pub const window = 1024;

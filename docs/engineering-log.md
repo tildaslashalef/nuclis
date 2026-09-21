@@ -106,6 +106,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-16 | Long-context prefill attention: register-level reuse measured 2–5 % at chunk sizes, closed negative; the verify-shaped window shipped | 2026-09-21 |
 | KERN-18 | Fused decode norms: −182…−192 dispatches per decode step shipped, the speed bars missed; closed below its target | 2026-09-21 |
 | MODL-19 | Gemma 4 draft heads: the `gemma4-assistant` companion adapter, traces at 1.1e-4, a negative default at draft 4 (1.017× only at draft 7) | 2026-09-21 |
+| MODL-20 | Muse Glimmer DFlash drafter: the companion, the CPU reference and its trace, the Metal plan, a positive verdict at 1.16–1.23× | 2026-09-21 (two sessions) |
 
 ## Context
 
@@ -3847,3 +3848,88 @@ but never measured (it needs the MoE target's 2816-wide residual); its trace
 is MODL-19's unfinished second half if the user wants it before ENGN-17.
 The verifier's row-flat cost and `max_draft_length = 7` bound the Gemma
 speedup, so a longer draft window is the measured lever.
+
+### MODL-20 — Muse Glimmer DFlash drafter: the companion, the CPU reference and its trace, the Metal plan, a positive verdict (2026-09-21, two sessions)
+
+**Outcome.** Muse Glimmer 30B can speculate with its pinned `dflash-kquant`
+companion, and the unit closes with a **positive verdict at every measured
+length**: on the acceptance workload's 512-token prompt (Metal, F16 KV, ctx
+32768, greedy, one warmup and three measured off/on pairs per configuration
+on one loaded model) the pair decodes at 1.234× ordinary at draft 4, 1.163×
+at 8, and 1.222× at 15, with 73–77 % of proposed positions accepted and the
+early stop trimming proposals to 1.83 / 2.12 / 2.36 per step. The verify
+batch is the cost (172.9–188.2 ms for 2.8–3.4 rows, 1.7–1.8 ordinary
+steps); recovery is the position rewind alone (1 µs per batch; the family is
+attention-only) and the prompt commit adds 1.2–2.9 % to prefill. Session 1
+(CPU reference, contract fit, pinned trace) is recorded in
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20);
+session 2 delivered the Metal plan, the trace on both executors, the
+record, and this verdict. ENGN-17 sets the entry's default from the record.
+
+**What shipped (session 2).** `muse_glimmer_metal.zig`: the plan opens five
+draft attention layouts when a companion is bound (the same `kv` precision
+as the language model); `prefill`/`verify`/`verifyGreedy` capture each
+target layer's input residual rows into one device slab per slot (the
+shared `recordChunkLayers`), the plan assembles them into the row-major
+`h_rows` the contract's `commit` consumes, and `commit` uploads them back
+through a staging buffer for the encoder's batched `fc` and per-layer key
+projections (chunked when the prefix is longer than the plan's chunk). The
+block is one batched forward over 1 + k rows (batched q/k/v, per-head
+norms, split-half RoPE at each row's own position, batched output and FFN)
+with the **non-causal** block attention as one `attentionDecode` per row —
+the causal chunk kernels' mask cannot express it and the block is 16 rows;
+the proposal's head runs over every block row and reads each draft row's
+top candidate plus its full-vocabulary softmax denominator through `topk`
+with `k = 1`, so `p_min` is the same full-vocabulary probability as the
+CPU's. `generation-check`'s `museDraftTrace` runs the CPU reference and the
+Metal plan over the same pinned rows in one `--metal` invocation (the
+trace's capture uses the generic F32 tile; the production half tiles would
+mask the drafter's own numerics); `make compare-draft-muse` now runs both
+`compare-draft-muse-cpu` and `compare-draft-muse-metal`. The draft-length
+cap moved with the family: `Drafter` gained `max_proposals` (Qwen 7, Gemma
+7, Muse 15) and the host `engine.max_draft_length` is 15, with `runLoop`
+enforcing the loaded family's own bound and sizing the speculative scratch
+from it; `config`/`--draft-length` validate against the host bound. A
+latent `@min`-narrowing overflow in the Muse proposers (`u4` `count_max`
+from a comptime operand, 15 + 1) was found by the draft-15 run and fixed on
+both executors.
+
+**Evidence.** `make compare-draft-muse-metal` (also runs the CPU pass):
+residuals 1.5e-4…1.1e-3 max abs / 9.2e-7…3.1e-6 rel RMS (bounds 5e-3 /
+1e-5), encoder 2.9e-4 / 8.2e-5 and 2.2e-4 / 1.4e-4 (bounds 1e-2 / 2e-3,
+the `fc` half tile over large residual rows), block hidden 1.02e-2 /
+4.4e-3 and 4.7e-3 / 1.5e-3 (bounds 2e-2 / 1e-2), all 30 pinned greedy rows
+on both executors; `make compare-draft-muse-cpu` unchanged. Greedy
+`generate --speculative on` vs `off` on the registry entry is byte-identical
+over 12 tokens on Metal, and both sampled paths (the device top-k readback
+and the penalized full-rows fallback) complete on the same entry.
+`make test-generation-muse-glimmer-metal` passes with the plan's changes,
+`make compare-muse-glimmer` is unchanged (f32 2.4e-4 / 8.1e-7, f16 7.3e-2 /
+2.0e-4, also with the drafter loaded and the switch on), and the Qwen gates
+the shared cap change touches stay green: `make compare` (f32 6.1e-5 /
+7.7e-7, f16 2.5e-2 / 1.9e-4), `make test-generation-metal`,
+`make speculative-check-metal` (12 greedy tokens identical, the loop edge
+cases, the penalty and verify-top-k checks), `make compare-draft-metal`
+(1.5e-5 / 7.9e-7, greedy 9419/271), and `make check` (all green).
+Record and table:
+[bench.md § The Muse Glimmer DFlash draft pair](reference/bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21);
+memory: session 2,415,919,104 bytes (2304 MiB, the five draft caches 640 MiB
+of it), workspace 149,861,504 bytes, verify scratch 53,862,464 bytes.
+Reports under `.zig-cache/bench/muse-modl20-draft{4,8,15}.json`.
+
+**Files.** `inference/src/models/{dflash.zig,muse_glimmer.zig,muse_glimmer_runtime.zig,muse_glimmer_metal.zig}`,
+`inference/src/models/fixtures/muse-dflash/`, `inference/src/runtime/draft.zig`,
+`inference/src/models/{qwen35,qwen35_metal,qwen35_runtime,gemma4,gemma4_metal,gemma4_runtime}.zig`,
+`inference/src/engine.zig`, `inference/generation-check.zig`,
+`scripts/reference-generation.cpp`, `src/cli.zig`, `Makefile`,
+`docs/reference/{speculative-decoding,bench,muse-glimmer}.md`, `docs/spec.md`,
+`TODO.md`, and this log.
+
+**Remaining.** The verify batch's row-flat cost is the speedup's lever (the
+same observation as MODL-19): 172.9–188.2 ms for 2.8–3.4 rows because the
+small-chunk matmul tiles pad to their tile bound, so a cheaper small-batch
+verify or a longer draft window is ENGN-17's call. The block's non-causal
+attention runs 16 `attentionDecode` calls per layer per proposal; a batched
+non-causal block kernel is an untried kernel lever, recorded for a future
+attempt. The 26B-A4B assistant head and the vision projectors are other
+units' work.

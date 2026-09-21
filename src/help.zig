@@ -107,7 +107,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU, default f16");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh — what the profile supports");
     try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source, default off");
-    try row(out, sty, "--draft-length <n>", "drafts per step, 1..7, default 4");
+    try row(out, sty, "--draft-length <n>", "drafts per step, 1..15 (the loaded drafter's block caps it), default 4");
     try row(out, sty, "--prompt-profile <p>", "qwen38, gemma4, or muse_glimmer: force the prompt profile on a file whose");
     try out.print("{s}chat template is not the pinned one (a finetune); default: by digest\n", .{continuation});
     try row(out, sty, "--seed <n>", "sampler seed, default 0");
