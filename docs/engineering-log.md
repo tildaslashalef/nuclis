@@ -111,6 +111,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-09 | One gate registry: tiers, change triggers, and the model-specific checks as data | 2026-09-21 |
 | REPO-10 | Benchmark workloads as data and generated record tables | 2026-09-21 |
 | APPS-15 | `config init --discover` and self-contained help pages | 2026-09-21 |
+| APPS-16 | Output budget: default 4096, cap 16384 | 2026-09-21 |
 
 ## Context
 
@@ -4196,3 +4197,27 @@ log.
 **Remaining.** A discovered entry's name is derived and cannot be renamed
 by `config set` (edit the file); no `--name` for a single discovery. The
 help's flag table in the test is maintained by hand beside the parser.
+
+## APPS-16 — Output budget: default 4096, cap 16384 (2026-09-21)
+
+**Outcome.** `generation.max_tokens` defaults to 4096 (was 2048) and its
+range is 1..16384 (was 1..4096; `config.max_output_tokens`). The budget
+bounds one model completion, thinking included, and the agent gives each
+of its tool steps the budget again; at `think medium` and above Qwen3.8
+and Gemma 4 reason for two to four thousand tokens before answering, so
+2048 ended turns mid-thought and 4096 could not be raised. The budget is a
+stop against runaway decode, not a quality knob: the context window and
+the prompt-plus-budget check remain the real bounds, and a runaway at 4096
+tokens costs minutes on a local model. `bench` keeps its 32. The user's
+call after the assessment of 2026-09-21.
+
+**Evidence.** `make check` green with the range tests moved to the new
+bound (0 and 20000 refused, naming the key); the help row and
+`development.md`'s example and range text follow.
+
+**Files.** `src/config.zig`, `src/help.zig`, `docs/development.md`, and
+this log.
+
+**Remaining.** A default tied to the reasoning effort was considered and
+not built; a per-entry `generation.max_tokens` covers a model that needs
+another value.

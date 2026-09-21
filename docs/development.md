@@ -375,7 +375,7 @@ bring-up file. The example:
   "schema_version": 1,
   "engine":   { "model": "qwen3.8-27b", "backend": "metal", "ctx_size": 16384,
                 "kv_precision": "f16" },
-  "generation": { "max_tokens": 2048, "think": "off", "speculative": false, "draft_length": 4,
+  "generation": { "max_tokens": 4096, "think": "off", "speculative": false, "draft_length": 4,
                 "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,
                               "presence_penalty": null, "repetition_penalty": null } },
   "agent":    { "think": "low", "fold_thinking": true },
@@ -464,7 +464,7 @@ applies to models with no entry, and `--speculative` overrides either.
   keys as `models.<name>.<key>`, so an unknown companion such as
   `imatrix` is named), wrong types and enum values name the key and the
   accepted form, ranges are the same as for flags (context 1..32768,
-  tokens 1..4096, sampling options through the sampler's rules), an entry
+  tokens 1..16384, sampling options through the sampler's rules), an entry
   must locate its model one way, the file is bounded at 64 KiB, and a
   `schema_version` other than 1 is an error that states the migration
   (move the file aside, `config init`, copy settings back). Adding a key

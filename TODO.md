@@ -90,8 +90,10 @@ row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
 **Next: TERM-10** (chat polish). v0.2.0 was tagged on 2026-09-21
-(`142fa81`, 133 changelog entries since v0.1.0; not pushed) and the tree is
-`0.3.0-dev`.
+(`142fa81`, 133 changelog entries since v0.1.0), pushed, and published by
+`release.yml` with its three assets; the tree is `0.3.0-dev`. APPS-16
+(output budget default 4096, cap 16384) closed the same day
+([log](docs/engineering-log.md#apps-16--output-budget-default-4096-cap-16384-2026-09-21)).
 APPS-15 closed on 2026-09-21: `nuclis config init --discover [--dry-run]
 [--json]` registers the runnable GGUF files the catalogue does not name
 (the HauhauCS Gemma 4 finetune with its projector and a forced `gemma4`

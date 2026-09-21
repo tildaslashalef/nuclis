@@ -83,7 +83,7 @@ fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--backend cpu|metal", "default metal");
     try row(out, sty, "--ctx-size <n>", "context window in tokens, 1..32768; default 16384");
     try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU; default f16");
-    try row(out, sty, "--max-tokens <n>", "output budget, 1..4096; default 2048 (bench: 32)");
+    try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 4096 (bench: 32)");
     try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source; the");
     try more(out, "default is the model entry's verdict, else off");
     try row(out, sty, "--draft-length <n>", "drafts per verify batch, 1..7; default 4");

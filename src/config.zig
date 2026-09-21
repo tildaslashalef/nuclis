@@ -44,7 +44,10 @@ pub const max_file_bytes = 64 * 1024;
 /// Range rules shared with the command-line flags (`generate`, `bench`, and
 /// the chat check their resolved values against the same bounds).
 pub const max_context = 32768;
-pub const max_output_tokens = 4096;
+/// The output budget is a stop against runaway decode, not a quality knob:
+/// reasoning modes think for thousands of tokens before answering, so the
+/// cap is the context's half and the default one completion's worth.
+pub const max_output_tokens = 16384;
 /// The largest draft block: KERN-11's 8-row token tile less the seed row.
 /// One host constant, the engine's.
 pub const max_draft_length = inference.engine.max_draft_length;
@@ -79,7 +82,7 @@ pub const Config = struct {
         kv_precision: KvPrecision = .f16,
     };
     pub const Generation = struct {
-        max_tokens: usize = 2048,
+        max_tokens: usize = 4096,
         think: Effort = .off,
         /// Speculative decoding: propose drafts with the model's draft source
         /// and verify them in batches (docs/spec.md § Speculative decoding).
@@ -1175,7 +1178,7 @@ test "file values override defaults per key and the source is recorded" {
     try std.testing.expectEqual(@as(f32, 0), loaded.config.generation.sampling.temperature.?);
     try std.testing.expectEqual(@as(usize, 40), loaded.config.generation.sampling.top_k.?);
     try std.testing.expect(loaded.config.generation.sampling.top_p == null);
-    try std.testing.expectEqual(@as(usize, 2048), loaded.config.generation.max_tokens);
+    try std.testing.expectEqual(@as(usize, 4096), loaded.config.generation.max_tokens);
     try std.testing.expect(!loaded.config.agent.fold_thinking);
     try std.testing.expectEqual(@as(usize, 0), loaded.config.models.entries.len);
     try std.testing.expectEqual(.file, loaded.source("engine.model"));
@@ -1247,7 +1250,7 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"ctx_size\": 65536 } }", .err = error.InvalidConfigValue, .needle = "engine.ctx_size must be 1..32768" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": { \"model\": \"\" } }", .err = error.InvalidConfigValue, .needle = "engine.model must not be empty" },
         .{ .text = "{ \"schema_version\": 1, \"engine\": \"metal\" }", .err = error.InvalidConfigValue, .needle = "engine must be an object" },
-        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"max_tokens\": 0 } }", .err = error.InvalidConfigValue, .needle = "generation.max_tokens must be 1..4096" },
+        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"max_tokens\": 0 } }", .err = error.InvalidConfigValue, .needle = "generation.max_tokens must be 1..16384" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"think\": \"loud\" } }", .err = error.InvalidConfigValue, .needle = "generation.think must be one of off|low|medium|high|xhigh" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"top_p\": 0 } } }", .err = error.InvalidConfigValue, .needle = "generation.sampling.top_p is out of range" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"temperature\": \"hot\" } } }", .err = error.InvalidConfigValue, .needle = "generation.sampling.temperature must be null or a number" },
@@ -1264,7 +1267,7 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"sampling\": { \"top_q\": 1 } } } } }", .err = error.UnknownConfigKey, .needle = "unknown key models.g.generation.sampling.top_q" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"ctx_size\": \"big\" } } }", .err = error.InvalidConfigValue, .needle = "models.g.ctx_size must be null or a non-negative integer" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"ctx_size\": 0 } } }", .err = error.InvalidConfigValue, .needle = "models.g.ctx_size must be 1..32768" },
-        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"max_tokens\": 5000 } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generation.max_tokens must be 1..4096" },
+        .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"max_tokens\": 20000 } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generation.max_tokens must be 1..16384" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"generation\": { \"sampling\": { \"top_p\": 2 } } } } }", .err = error.InvalidConfigValue, .needle = "models.g.generation.sampling.top_p is out of range" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": { \"path\": \"x\", \"agent\": { \"think\": \"loud\" } } } }", .err = error.InvalidConfigValue, .needle = "models.g.agent.think must be null or one of off|low|medium|high|xhigh" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": {} } }", .err = error.InvalidConfigValue, .needle = "models.g: needs path, or repo and file" },
@@ -1353,7 +1356,7 @@ test "resolve applies defaults < file < flags per command and records the source
     const plain = resolve(&none, null, .{}, .generate);
     try std.testing.expectEqual((Config.Engine{}).backend, plain.backend);
     try std.testing.expectEqual(@as(usize, 16384), plain.ctx_size);
-    try std.testing.expectEqual(@as(usize, 2048), plain.max_tokens);
+    try std.testing.expectEqual(@as(usize, 4096), plain.max_tokens);
     try std.testing.expectEqual(.off, plain.think);
     try std.testing.expectEqual(.qwen38, plain.profile);
     try std.testing.expectEqual(inference.profiles.Profile.qwen38.samplingDefaults(.off), plain.samplingOptions());
