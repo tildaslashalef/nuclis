@@ -89,7 +89,9 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
-**Next: the 0.2.0 release** (`make release`), then TERM-10 (chat polish).
+**Next: TERM-10** (chat polish). v0.2.0 was tagged on 2026-09-21
+(`142fa81`, 133 changelog entries since v0.1.0; not pushed) and the tree is
+`0.3.0-dev`.
 APPS-15 closed on 2026-09-21: `nuclis config init --discover [--dry-run]
 [--json]` registers the runnable GGUF files the catalogue does not name
 (the HauhauCS Gemma 4 finetune with its projector and a forced `gemma4`
@@ -170,7 +172,7 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: (release 0.2.0) → TERM-10 →
+Order: TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
