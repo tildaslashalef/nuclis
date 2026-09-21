@@ -311,78 +311,58 @@ generation, and bench references gain their sections;
 
 ## MODL-19 — Gemma 4 draft heads: the companion file as a second GGUF
 
-**Order (revised 2026-09-21).** Moved ahead of ENGN-17 at the user's
-request. The draft contract, the batched verify, both acceptance rules, the
-recovery, and the loop are family-independent and already in the tree, so
-this unit is the Gemma adapter plus its own record; it lands before
-ENGN-17's `bench` default change, so its record forces the pair with
-`--speculative on`.
-
-**Facts read on 2026-09-19** (`nuclis inspect` and the inventory script on
-the 12B's `mtp-gemma-4-12B-it.gguf`; the 26B-A4B's
-`MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf` is inspected in session 1):
-- `general.architecture = gemma4-assistant`, 4 blocks, embedding 1024,
-  FFN 8192, 16 query heads, `head_count_kv = [8, 8, 8, 1]`, key/value
-  length 512 (256 on sliding), sliding window 1024 with pattern
-  `[1, 1, 1, 0]`, RoPE bases 1e6 / 1e4, `nextn_predict_layers = 4`,
-  `attention.shared_kv_layers = 4`, `embedding_length_out = 3840`
-  (the target's width), `rope_freqs.weight` [256]. 49 tensors, Q4_0:
-  `nextn.pre_projection` [7680 → 1024] (the concatenation of the 3840-wide
-  token embedding and the 3840-wide target residual, projected into the
-  head's width), `nextn.post_projection` [1024 → 3840] (back to the
-  target's width for its output head), an own `token_embd` [1024 ×
-  262144], `output_norm`, and per block `attn_norm`, `attn_q` [1024 →
-  4096], `attn_q_norm` [256], `attn_output` [4096 → 1024], the three FFN
-  matrices and their norms, `layer_output_scale` [1] — and **no `attn_k`
-  or `attn_v`**: with `shared_kv_layers = 4` the head's layers attend
-  through the target's own key/value cache, which is why the KV head
-  counts mirror the target's layer kinds. In the reference this is the
-  `chain_heads` mode: four trained heads, one per draft step, selected
-  by `llama_set_nextn_layer_offset`, so the drafter proposes at most four
-  positions per step and each position is one layer's forward.
-- What session 1 must read from the reference's `gemma4-assistant` graph
-  before code: which target layers' caches each head layer reads (the
-  mapping of 4 head layers onto the 48 target layers), what the 1024-wide
-  `token_embd` is for (the drafted token's input at the head's width,
-  or a tied output), where `layer_output_scale` applies, and whether the
-  head reuses the target's `output` head after `post_projection`.
+**Facts read on 2026-09-21** (session 1). The four questions are answered and
+recorded with provenance in
+[speculative-decoding.md § The Gemma 4 assistant heads](docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19):
+each head block reads the **target's** layer-46 (sliding blocks) or layer-47
+(global block) KV cache and writes none; the 1024-wide `token_embd` is the
+head's own tied *classifier* (logits over the vocabulary), while the input
+embedding is the target's `token_embd` scaled by `sqrt(3840)`; the pair is
+`[embed; h]` with **no** norm on either half, projected by
+`nextn.pre_projection`; `nextn.post_projection` of the output-norm'd hidden is
+`h_next` (chaining only, never the target's head); `layer_output_scale`
+multiplies the whole block output after the FFN residual. Traces are pinned
+under `inference/src/models/fixtures/gemma4-mtp/` (captured with the harness's
+new `--assistant-draft` mode; `Hello, world`, rows at proposal positions 1 and
+2, greedy 2613 and 236764). The 26B-A4B head is the same architecture at width
+2816 with 2 global KV heads: **in scope**, the same code driven by its own
+config. The registry role stays `mtp` (it names the draft source of any
+mechanism; a rename would migrate every sidecar for no behavior).
 
 **Design.**
-- Loading a second GGUF: `Engine.open`'s `draft = .{ .file = path }` opens
-  it with `inference.weights.Mapped.open`, validates `general.architecture
-  == "gemma4-assistant"`, `embedding_length_out ==` the main file's
-  embedding width, and the vocabulary size, else `DraftSourceMismatch`;
-  a missing file is `DraftSourceMissing`; both are typed load errors
-  reported by `generate`/`agent`/`bench` and never a fallback. The path
-  comes from `models.<name>.mtp` (already a registry field, filled by
-  `config init` from the catalogue); `nuclis model ls` shows the
-  companion as loaded-by "the draft unit".
-- `gemma4.zig` gains `bindDraft(doc) !DraftBinding` for the head; the
-  Gemma runtime and plan implement the draft contract: the drafter reads
-  the target session's attention rows (read-only) for the shared layers,
-  keeps the target's pre-norm residual per position as the Qwen drafter
-  does, runs one head layer per proposed position, and shares the
-  target's embedding and output head. CPU reference first with pinned
-  traces from the reference (`llama-completion --spec-type draft-mtp -md
-  mtp-gemma-4-12B-it.gguf`), then Metal on the existing kernel set. The
-  prompt commit and the batched commit follow ENGN-13's shape (hidden
-  rows from `prefill`, one chunked forward per commit).
-- The 26B-A4B head: inspected first; if it is the same architecture at
-  its own width it is the same code with the MoE main model's residual;
-  if not, the difference is recorded and the 26B-A4B is measured only if
-  it fits the unit's second session.
-- The role name: decided here. Recommendation: keep `mtp` (the registry
-  key, the sidecar role, `--with mtp`) and document that it names the
-  draft source of any mechanism; a rename migrates every sidecar for no
-  behavior.
+- `inference/src/models/gemma4_assistant.zig`: the head's own binding (49
+  tensors, config `embedding` 1024, `embedding_out` 3840/2816, four blocks of
+  pattern `[1,1,1,0]`, global KV heads 1/2), validation by architecture key and
+  width, `executableEncoding` shared with the main adapter. The family
+  registry gains a `draft` sub-adapter: `Family.bindDraft(doc)`.
+- `Engine.open`'s `draft = .{ .file = path }` maps the companion, checks
+  `general.architecture == "gemma4-assistant"`, the target width against
+  `embedding_length_out`, and the vocabulary size, else
+  `DraftSourceMismatch`; a missing file is `DraftSourceMissing`. The engine
+  owns the companion mapping for the drafter's lifetime (`draft_mapped`).
+- CPU reference: `gemma4_runtime.zig` gains the assistant runtime whose
+  `step`-like forward reads `self.state.layers[46/47]`; `propose` runs one
+  block per position at the proposal position, `commit` copies the last
+  target hidden into `pending_h`, `reset` zeroes it, `bytes` reports the
+  workspace. Gemma's runtime also gains `verify` (rows + post-`output_norm`
+  hidden) and `verifyGreedy`, which the speculative loop needs.
+- Metal: `gemma4_metal.zig` gains `verify`/`verifyGreedy`/`readVerifyRow` over
+  the chunked layer stack (the `recordLayers` split Qwen's plan already has),
+  `prefill` hidden rows, and the head plan: buffers for one 8192-wide query
+  row and the 1024-wide residuals, the head weights, per-block Q/K norm and
+  RoPE at the proposal position, `attentionDecode` over the target's
+  layer-46/47 cache slices (visible 1023 sliding rows, full global), the FFN,
+  and a device argmax/top-1 over the head's `token_embd`.
+- Fixture check: `generation-check --draft-trace` gains the Gemma path
+  (CPU and Metal, F32 cache), comparing the two pinned rows and the greedy
+  tokens; load-error unit tests (missing path, the projector file, the Qwen
+  head width).
 
-**Acceptance.** Draft traces at the tolerances on both backends for the
-12B (and the 26B-A4B if in scope); the load errors tested with a missing
-path, a wrong architecture (the projector file), and a mismatched width
-(the Qwen head); greedy equivalence on the pinned prompts on both
-backends; the benchmark record on the Gemma acceptance workload with the
-per-batch cost table and the entries' verdicts; `make check`, the Gemma
-compare targets unchanged for the main model.
+**Acceptance (this session's gates).** `make build`; the pinned trace on both
+backends; greedy equivalence and the load errors; one Gemma off/on bench pair;
+the per-batch table in bench.md and the verdict here; `make check`.
+`make compare`, `test-generation-metal`, `speculative-check*`, `draft-stats`,
+and the Muse record are deferred to ENGN-17 by the session's gate policy.
 
 ## MODL-20 — Muse Glimmer DFlash drafter
 

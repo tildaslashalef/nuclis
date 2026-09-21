@@ -1,0 +1,18 @@
+{
+  "reference": "llama.cpp",
+  "revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "tool": "scripts/reference-generation.cpp --assistant-draft",
+  "model": "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+  "draft_model": "mtp-gemma-4-12B-it.gguf",
+  "prompt": "Hello, world",
+  "tokens": [9259, 236764, 1902],
+  "greedy_draft": [2613, 236764],
+  "block": "gemma4-assistant, 4 layers, nextn_proj_pre/post",
+  "files": {
+    "token-1-mtp-hprev.f32": "the target hidden after position 0, fed as h to the position-1 row",
+    "token-1-mtp-h.f32": "the head's h_nextn at position 1 (nextn.post_projection of the output_norm'd hidden)",
+    "token-2-mtp-hprev.f32": "the target hidden after position 1",
+    "token-2-mtp-h.f32": "the head's h_nextn at position 2"
+  },
+  "note": "Captured on Metal with an F32 cache and flash attention off, one token per decode. The assistant context shares the target's layer-46 (sliding) and layer-47 (global) KV caches and writes none of its own; each row was captured before the target decoded that position, which is the driver's draft() moment. The target hidden is the output_norm-applied final hidden (llama_get_embeddings_nextn)."
+}

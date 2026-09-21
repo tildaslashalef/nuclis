@@ -4,6 +4,11 @@
 // context and dumps, per prompt position, the prediction block's pair inputs
 // (target h_{p-1}, token x_p), its greedy draft token, and its output h — the
 // pinned oracle for the Qwen draft head (docs/reference/speculative-decoding.md).
+// `--assistant-draft DRAFT_MODEL` is the Gemma 4 companion form: it loads the
+// gemma4-assistant file, points its context at the target (`ctx_other`) so the
+// head reads the target's layer-46/47 caches, and dumps the same rows for the
+// query position *before* the target decodes that token, which is where
+// `propose` runs.
 #include "llama.h"
 #include "llama-ext.h" // staging: llama_set/get_embeddings_nextn for MTP
 #include "ggml-backend.h"
@@ -40,9 +45,11 @@ static bool write_f32(const std::string & path, const float * data, size_t count
 }
 
 int main(int argc, char ** argv) {
-    const bool mtp = argc == 5 && std::strcmp(argv[4], "--mtp-draft") == 0;
-    if (argc != 4 && !mtp) {
-        std::fprintf(stderr, "usage: reference-generation MODEL RAW_PROMPT EXISTING_TRACE_DIR [--mtp-draft]\n");
+    const bool mtp = argc >= 5 && std::strcmp(argv[4], "--mtp-draft") == 0;
+    const bool assistant = argc == 6 && std::strcmp(argv[4], "--assistant-draft") == 0;
+    const bool draft = mtp || assistant;
+    if (argc != 4 && !draft) {
+        std::fprintf(stderr, "usage: reference-generation MODEL RAW_PROMPT EXISTING_TRACE_DIR [--mtp-draft [DRAFT_MODEL]]\n");
         return 2;
     }
     ggml_backend_load_all();
@@ -56,6 +63,13 @@ int main(int argc, char ** argv) {
     mp.load_mtp = mtp; // the MTP tensors are skipped unless asked for
     auto * model = llama_model_load_from_file(argv[1], mp);
     if (!model) return 1;
+    // The Gemma assistant is a second model file whose context shares the
+    // target's KV cache layers.
+    auto * model_dft = model;
+    if (assistant) {
+        model_dft = llama_model_load_from_file(argv[5], mp);
+        if (!model_dft) { llama_model_free(model); return 1; }
+    }
 
     Trace trace{argv[3]};
     auto cp = llama_context_default_params();
@@ -65,7 +79,7 @@ int main(int argc, char ** argv) {
     cp.cb_eval = observe; cp.cb_eval_user_data = &trace;
     auto * ctx = llama_init_from_model(model, cp);
     if (!ctx) { llama_model_free(model); return 1; }
-    if (mtp) llama_set_embeddings_nextn(ctx, true, /*masked*/ false);
+    if (draft) llama_set_embeddings_nextn(ctx, true, /*masked*/ false);
 
     // The prediction block runs in its own context over the same file with its
     // own attention cache; the target exposes each position's hidden.
@@ -77,12 +91,13 @@ int main(int argc, char ** argv) {
     FILE * greedy = nullptr;
     FILE * tokens_out = nullptr;
     std::vector<float> h_prev(static_cast<size_t>(n_embd), 0.0f);
-    if (mtp) {
+    if (draft) {
         batch.token = static_cast<llama_token *>(std::malloc(sizeof(llama_token)));
         auto cp_mtp = cp;
         cp_mtp.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        cp_mtp.ctx_other = assistant ? ctx : nullptr;
         cp_mtp.cb_eval = nullptr; cp_mtp.cb_eval_user_data = nullptr;
-        ctx_mtp = llama_init_from_model(model, cp_mtp);
+        ctx_mtp = llama_init_from_model(model_dft, cp_mtp);
         if (!batch.token || !ctx_mtp) {
             fprintf(stderr, "MTP context or batch allocation failed\n");
             llama_batch_free(batch);
@@ -110,35 +125,63 @@ int main(int argc, char ** argv) {
         if (tokens_out) std::fprintf(tokens_out, "%d\n", tokens[i]);
         trace.position = i;
         std::fprintf(stderr, "input[%d]=%d\n", i, tokens[i]);
+        // The assistant's head never writes KV: it is a pure reader of the
+        // target's caches, so its query sits at the position of the token to
+        // propose, before that token is in the target cache. That is the
+        // driver's `draft()` moment, and it is what the native `propose`
+        // reproduces.
+        if (assistant && i > 0) {
+            batch.n_tokens = 1;
+            batch.token[0] = tokens[i];
+            std::memcpy(batch.embd, h_prev.data(), sizeof(float) * static_cast<size_t>(n_embd));
+            batch.pos[0] = i;
+            batch.n_seq_id[0] = 1;
+            batch.seq_id[0][0] = 0;
+            batch.logits[0] = 1;
+            if (llama_decode(ctx_mtp, batch)) { result = 1; break; }
+            const float * logits = llama_get_logits_ith(ctx_mtp, 0);
+            const int size = llama_vocab_n_tokens(vocab);
+            int best = 0;
+            for (int k = 1; k < size; ++k) if (logits[k] > logits[best]) best = k;
+            const float * h_mtp = llama_get_embeddings_nextn(ctx_mtp);
+            if (!h_mtp) { result = 1; break; }
+            const std::string base = trace.directory + "/token-" + std::to_string(i) + "-mtp-";
+            if (!write_f32(base + "hprev.f32", h_prev.data(), h_prev.size())) { result = 1; break; }
+            if (!write_f32(base + "h.f32", h_mtp, static_cast<size_t>(n_embd))) { result = 1; break; }
+            std::fprintf(greedy, "%d\n", best);
+            std::fflush(greedy);
+        }
         if (llama_decode(ctx, llama_batch_get_one(&tokens[i], 1)) || trace.failed) { result = 1; break; }
-        if (!mtp) continue;
+        if (!draft) continue;
         // Position i pairs the token with the previous position's target
         // hidden; the first position pairs with zeros, as the driver does.
         const float * h_cur = llama_get_embeddings_nextn(ctx);
         if (!h_cur) { result = 1; break; }
         std::vector<float> h_now(h_cur, h_cur + n_embd);
-        batch.n_tokens = 1;
-        batch.token[0] = tokens[i];
-        std::memcpy(batch.embd, h_prev.data(), sizeof(float) * static_cast<size_t>(n_embd));
-        batch.pos[0] = i;
-        batch.n_seq_id[0] = 1;
-        batch.seq_id[0][0] = 0;
-        batch.logits[0] = 1;
-        if (llama_decode(ctx_mtp, batch)) { result = 1; break; }
-        const float * logits = llama_get_logits_ith(ctx_mtp, 0);
-        const int size = llama_vocab_n_tokens(vocab);
-        int best = 0;
-        for (int k = 1; k < size; ++k) if (logits[k] > logits[best]) best = k;
-        const float * h_mtp = llama_get_embeddings_nextn(ctx_mtp);
-        if (!h_mtp) { result = 1; break; }
-        const std::string base = trace.directory + "/token-" + std::to_string(i) + "-mtp-";
-        if (!write_f32(base + "hprev.f32", h_prev.data(), h_prev.size())) { result = 1; break; }
-        if (!write_f32(base + "h.f32", h_mtp, static_cast<size_t>(n_embd))) { result = 1; break; }
-        std::fprintf(greedy, "%d\n", best);
-        std::fflush(greedy);
+        if (mtp) {
+            batch.n_tokens = 1;
+            batch.token[0] = tokens[i];
+            std::memcpy(batch.embd, h_prev.data(), sizeof(float) * static_cast<size_t>(n_embd));
+            batch.pos[0] = i;
+            batch.n_seq_id[0] = 1;
+            batch.seq_id[0][0] = 0;
+            batch.logits[0] = 1;
+            if (llama_decode(ctx_mtp, batch)) { result = 1; break; }
+            const float * logits = llama_get_logits_ith(ctx_mtp, 0);
+            const int size = llama_vocab_n_tokens(vocab);
+            int best = 0;
+            for (int k = 1; k < size; ++k) if (logits[k] > logits[best]) best = k;
+            const float * h_mtp = llama_get_embeddings_nextn(ctx_mtp);
+            if (!h_mtp) { result = 1; break; }
+            const std::string base = trace.directory + "/token-" + std::to_string(i) + "-mtp-";
+            if (!write_f32(base + "hprev.f32", h_prev.data(), h_prev.size())) { result = 1; break; }
+            if (!write_f32(base + "h.f32", h_mtp, static_cast<size_t>(n_embd))) { result = 1; break; }
+            std::fprintf(greedy, "%d\n", best);
+            std::fflush(greedy);
+        }
         h_prev = std::move(h_now);
     }
-    if (!result && mtp) std::printf("mtp draft trace written to %s\n", argv[3]);
+    if (!result && draft) std::printf("draft trace written to %s\n", argv[3]);
     if (!result) {
         auto * logits = llama_get_logits_ith(ctx, -1);
         int size = llama_vocab_n_tokens(vocab), best = 0;
@@ -152,6 +195,8 @@ int main(int argc, char ** argv) {
     if (greedy) std::fclose(greedy);
     if (tokens_out) std::fclose(tokens_out);
     if (ctx_mtp) llama_free(ctx_mtp);
-    llama_free(ctx); llama_batch_free(batch); llama_model_free(model); llama_backend_free();
+    llama_free(ctx); llama_batch_free(batch);
+    if (model_dft != model) llama_model_free(model_dft);
+    llama_model_free(model); llama_backend_free();
     return result;
 }

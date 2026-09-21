@@ -176,6 +176,78 @@ and takes a checkpoint/rewind across a block row: the hidden is
 reproduced byte for byte and two independently reset drafters propose the
 same greedy chain.
 
+## The Gemma 4 assistant heads (MODL-19)
+
+Facts confirmed on 2026-09-21 from the pinned reference (`7620399f5`): the
+graph `src/models/gemma4-assistant.cpp` (200 lines, all of it), the KV
+sharing setup `src/llama-model.cpp:2633-2641`, the context rule
+`src/llama-context.cpp:146-151`, and the MTP driver
+`common/speculative.cpp:1324-1760` (the `is_mem_shared` branches at
+1425-1426, 1513 and 1710-1717). The companion file is a second GGUF of
+architecture `gemma4-assistant`: four trained heads, one per draft step,
+selected by `llama_set_nextn_layer_offset` (chain_heads) in the reference;
+here each step runs the corresponding block of our own forward.
+
+**The pair.** The head consumes the *target's* token embedding,
+`get_rows(model_other->tok_embd, x_p)`, scaled by `sqrt(n_embd_out)`, and
+the target's post-`output_norm` hidden `h_{p-1}` (the same `t_h_nextn` row
+our `verify`/`prefill` hidden reports), concatenated `[embed; h]` along the
+feature axis, and projected by `nextn.pre_projection` [2·3840 → 1024].
+Neither half is normalized; only the embedding scale is applied.
+
+**The layer.** The head has no `attn_k`/`attn_v`: with `attention.shared_kv_layers
+= 4` every block reads the target's own cache, block `il`'s kind deciding
+the source — the pattern `[1,1,1,0]` maps the three sliding blocks onto
+the target's layer `n_layer − 2` (46) and the one global block onto
+`n_layer − 1` (47), and the head's KV geometry equals those layers' (8
+heads of 256 on the sliding cache, 1 head of 512 on the global one, which
+is why `head_count_kv` is `[8,8,8,1]` and the key/value lengths differ).
+The graph passes `k_cur = v_cur = nullptr` to `build_attn`, so a head row
+never writes the shared cache; it is a pure reader. Query: `attn_q`
+[1024 → 4096 or 8192], reshaped to 16 heads, per-head RMS `attn_q_norm`,
+RoPE over the whole head (split-half, base 1e4/256 channels on sliding
+blocks, base 1e6/512 with `rope_freqs.weight` on the global one) at the
+*proposal* position. Attention scores are unscaled
+(`f_attention_scale = 1.0`). Sliding blocks see the target cache rows
+`P − 1023 … P − 1` (the reference's mask is `query − key >= 1024`, and the
+proposal's own row does not exist); the global block sees `0 … P − 1`.
+Then `post_attention_norm`, residual, `ffn_norm`, a tanh-GELU gated FFN
+(`LLM_FFN_GELU`, `LLM_FFN_PAR`: `gelu(gate)·up`) of the target's 8192
+width, `post_ffw_norm`, residual, and `layer_output_scale` multiplying the
+block's whole output.
+
+**The outputs.** After the four blocks, `output_norm` (1024) feeds two
+matmuls: `logits = token_embd · cur` — the head's **own** tied
+`token_embd` [1024 × 262144], not the target's head, and with no soft-cap
+— and `h_next = nextn.post_projection · cur` [1024 → 3840], the *same*
+normalized hidden, which chains the next block's `h` input. The drafted
+token's candidates come from the head's logits (the reference samples
+`top_k = 10` there and stops below `p_min`); the target's own `output` is
+never touched.
+
+**The draft driver.** `process()` is skipped entirely for the shared
+memory (`if (!is_mem_shared)` at speculative.cpp:1513) because there is no
+private cache to advance; `draft()` feeds each of the four chain steps at
+**the same position** `n_past` (the proposal position, comment at
+1710-1717), chaining `h_next` into `[embed; h]`, and `accept()` only
+carries the target hidden of the accepted row as the next `pending_h`.
+`commit` on our side therefore reduces to `pending_h = h_rows.last`; the
+drafter owns no attention cache and needs no checkpoint beyond the
+target's.
+
+**Measured.** The companion's 12B head binds 49 tensors (F32 norms/rope
+factors, Q4_0 matrices), `embedding_length_out = 3840`, vocabulary
+262144, 4 blocks of 1024/8192; the 26B-A4B head is the same architecture
+at width 2816 (`pre_projection` [5632 → 1024], `post_projection`
+[1024 → 2816], global KV heads 2) and is in scope as the same code with
+its own config. Traces were captured with the harness's new
+`--assistant-draft` mode (below) on `Hello, world` (9259, 236764, 1902),
+one row per proposal position *before* the target decoded it: the rows are
+pinned under `inference/src/models/fixtures/gemma4-mtp/`, and the
+reference's greedy drafts are 2613 (position 1) and 236764 (position 2).
+The reference driver's own run on `Hello,` at `--spec-draft-n-max 4`
+drafted 26 tokens and accepted 4 over 12 generated tokens.
+
 ## The verify batch and the loop (ENGN-12, session 1)
 
 Implemented and checked on 2026-09-20; the configuration and the benchmark
