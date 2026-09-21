@@ -552,6 +552,27 @@ passed in by the agent, which has both), and no knowledge of tokens or
 models. That is what lets its tests drive a whole turn — including a
 byte-by-byte stream — with `std.testing.allocator` and no TTY.
 
+### Looking at the agent without a person at the keyboard
+
+`make shot ARGS='<steps>'` (`scripts/tui-shot.py`) starts `nuclis agent`
+in a detached tmux session (`tmux -L nuclis`, 160×45 by default, the status
+bar off so the pane is the whole window, `COLORTERM=truecolor` as Ghostty
+sets it so the theme resolves to the same palette) and runs the steps in
+order: `keys=<text>`, `enter`, `key=<tmux key>` (`C-c`, `Tab`, `Escape`),
+`wait=<s>`, `until=<text>,<s>` (wait for the text on screen), `capture=<name>`,
+and `burst=<name>,<seconds>,<hz>`. A capture writes `<name>.txt`,
+`<name>.ansi`, and `<name>.tagged.txt` (every styled run as
+`[fg=#hex bg=#hex bold]…[/]`, so a colour is readable as text) under
+`.zig-cache/tui/`; a burst captures at the given rate, keeps the frames that
+differ from their predecessor, and reports the mean interval between them
+in `<name>.burst.json` — the way an animation's cadence is measured rather
+than eyeballed. `--ghostty` also opens one Ghostty window attached to the
+session and photographs it to `<name>.png` on each capture (`screencapture`
+needs the screen-recording permission once). The session stays up unless
+`--stop` is given; `tmux -L nuclis attach -t shot` joins it. Captures are
+evidence for the log, never fixtures: the goldens in `src/tui/` stay the
+contract.
+
 ### The agent without a terminal
 
 `nuclis agent -p "<prompt>"` (or `--print --prompt-file <path>`) runs one

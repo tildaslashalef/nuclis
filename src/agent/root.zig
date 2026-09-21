@@ -51,6 +51,10 @@ const Profile = inference.profiles;
 
 /// Idle height of the highlighted input box, in rows.
 const min_editor_rows = 3;
+/// Rows of the idle live region: the spacer, the editor, the hint, the rule,
+/// and the bar. `anchor` walks down exactly this far, so the first paint
+/// never scrolls the header off the top.
+const idle_region_rows = min_editor_rows + 4;
 
 /// One paintable row. The type is the screen module's: the agent builds
 /// rows, `tui.screen` decides how they reach the terminal.
@@ -1145,7 +1149,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             }, term.size().columns);
             try scr.insertAbove(welcome);
         }
-        try scr.anchor(min_editor_rows + 3);
+        try scr.anchor(idle_region_rows);
         primeSession(&ui);
         // A forced profile renders the pinned protocol onto a file whose own
         // template says something else: worth one line, every time.

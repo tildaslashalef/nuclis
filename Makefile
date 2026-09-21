@@ -140,6 +140,9 @@ bench-attention: ## Prefill chunk attention, row-split vs register-reuse, 4K-32K
 agent: metal ## Interactive agent surface on the engine (Metal by default; ARGS="--think low")
 	$(BIN) agent --backend $(BACKEND) --model "$(MODEL)" $(ARGS)
 
+shot: metal ## Drive `nuclis agent` in tmux and capture its screen: make shot ARGS='until=ready,60 capture=idle --stop' (scripts/tui-shot.py --help)
+	python3 scripts/tui-shot.py --command "$(BIN) agent --backend $(BACKEND) --model $(MODEL)" $(ARGS)
+
 model-ls: build ## List the GGUF files under <root>/models with their provenance sidecars
 	$(BIN) model ls $(ARGS)
 
