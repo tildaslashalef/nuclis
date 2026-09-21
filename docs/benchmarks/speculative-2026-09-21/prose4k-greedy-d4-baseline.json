@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "config": "/Users/alef/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "ReleaseSafe",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 2304376832,
+  "max_tokens": 128,
+  "sampling": "greedy",
+  "sampling_options": {
+    "temperature": 0,
+    "top_k": 0,
+    "top_p": 1,
+    "min_p": 0,
+    "presence_penalty": 0,
+    "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 2,
+  "load_milliseconds": 783.047083,
+  "samples": [
+    {
+      "warmup": true,
+      "prompt_tokens": 4096,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 50051.227,
+      "first_token_milliseconds": 50051.227666,
+      "decode_milliseconds": 12727.44875,
+      "prefill_tokens_per_second": 81.83615558515679,
+      "decode_tokens_per_second": 9.978433423273458,
+      "gpu_busy_milliseconds": 62496.7559161596,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 4096,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 50010.578792,
+      "first_token_milliseconds": 50010.5795,
+      "decode_milliseconds": 12776.337125,
+      "prefill_tokens_per_second": 81.90267137350591,
+      "decode_tokens_per_second": 9.940251165687679,
+      "gpu_busy_milliseconds": 62585.813374840654,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 4096,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 49917.022166,
+      "first_token_milliseconds": 49917.023,
+      "decode_milliseconds": 12401.214291,
+      "prefill_tokens_per_second": 82.0561768764706,
+      "decode_tokens_per_second": 10.240932623200326,
+      "gpu_busy_milliseconds": 62165.36091733724,
+      "speculative": false
+    }
+  ],
+  "mean_prefill_tokens_per_second": 81.97942412498826,
+  "mean_decode_tokens_per_second": 10.090591894444003,
+  "mean_first_token_milliseconds": 49963.801250000004
+}

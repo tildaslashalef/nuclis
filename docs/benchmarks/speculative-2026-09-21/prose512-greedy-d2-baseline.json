@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "config": "/Users/alef/.nuclis/nuclis.json",
+  "prompt_source": "tokens",
+  "build_mode": "ReleaseSafe",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 2304376832,
+  "max_tokens": 128,
+  "sampling": "greedy",
+  "sampling_options": {
+    "temperature": 0,
+    "top_k": 0,
+    "top_p": 1,
+    "min_p": 0,
+    "presence_penalty": 0,
+    "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 792.935208,
+  "samples": [
+    {
+      "warmup": true,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 5944.93975,
+      "first_token_milliseconds": 5944.943625,
+      "decode_milliseconds": 12074.037083,
+      "prefill_tokens_per_second": 86.12366508844771,
+      "decode_tokens_per_second": 10.518437133078995,
+      "gpu_busy_milliseconds": 17776.797708123922,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 5805.597416,
+      "first_token_milliseconds": 5805.598125,
+      "decode_milliseconds": 12127.181666,
+      "prefill_tokens_per_second": 88.19075166820006,
+      "decode_tokens_per_second": 10.472342502797632,
+      "gpu_busy_milliseconds": 17783.66670839023,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 5795.27675,
+      "first_token_milliseconds": 5795.27725,
+      "decode_milliseconds": 12064.080416,
+      "prefill_tokens_per_second": 88.34780841139295,
+      "decode_tokens_per_second": 10.527118157432549,
+      "gpu_busy_milliseconds": 17768.390916869976,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 512,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 5801.321417,
+      "first_token_milliseconds": 5801.322,
+      "decode_milliseconds": 12079.363959,
+      "prefill_tokens_per_second": 88.25575471471934,
+      "decode_tokens_per_second": 10.51379860984947,
+      "gpu_busy_milliseconds": 17769.279458210804,
+      "speculative": false
+    }
+  ],
+  "mean_prefill_tokens_per_second": 88.26477159810412,
+  "mean_decode_tokens_per_second": 10.504419756693217,
+  "mean_first_token_milliseconds": 5800.732458333333
+}

@@ -46,7 +46,7 @@ first-touch page-in of the mapped weights and is normally the warmup.
 | `kv_precision`, `session_bytes` | The attention cache layout the session used (`f16` or `f32`; always `f32` on the CPU reference) and the session block's size, page-padded (KV cache plus recurrent state). Records taken in different precisions are not comparable without stating this. |
 | `profile` | Present with `--profile`: per-kernel GPU time per step (see below). |
 | `stop_reason` | `eos`, `token_budget`, `context_limit`, or `cancelled`; a run that stops early changes the token counts, so the reason is always reported. Ctrl-C ends the benchmark after the current run, which is reported but excluded from means. |
-| `speculative`, `draft_length` | With `--speculative on` (or a drafter in the file) every run is an off/on pair on the same loaded model; the on sample carries the draft length. |
+| `speculative`, `draft_length` | With the switch off the drafter is not loaded at all — no weights, no scratch, no draft cache — which is the true baseline. With `--speculative on` (or the entry's `generation.speculative`) the family's source loads and every run is an off/on pair on that one loaded model, so the pair's off sample is the loaded-but-off case and the on sample carries the draft length. The catalogue entry carries the measured verdict (ENGN-17). |
 | `speculative_steps`, `accepted_per_step` | Verify batches the run made and the mean accepted drafts per batch; tokens per batch is `(generated_tokens − 1) / speculative_steps`. |
 | `verify_milliseconds`, `accept_milliseconds`, `recover_milliseconds` | The run's time in the model's verify batches, in the host acceptance decision (the sampled path's per-row distributions), and in recovery (rewind and replay, including the final recover to the emitted count when a batch crosses the budget); divide by `speculative_steps` for the per-batch cost. |
 | `checkpoint_milliseconds`, `recover_rewind_milliseconds`, `recover_replay_milliseconds` | The verify batch's checkpoint copy, and recovery split into the copy back to the checkpoint and the forward over the accepted prefix; they sum to `recover_milliseconds` less clock overhead. |
@@ -954,6 +954,86 @@ record within the sequence's drift (10.43 against 10.62 tok/s at 512 with
 the drafter loaded, its cache and checkpoint region allocated) and gets an
 in-process baseline in ENGN-17. The per-batch costs above are the plan's
 cost table; the targets are in `TODO.md`.
+
+## The speculative verdict record (ENGN-17, 2026-09-21)
+
+The final measurement of Qwen3.8-27B's embedded draft head on the finished
+path (ENGN-13 through ENGN-16, KERN-13 through KERN-18), taken to set the
+catalogue entries' defaults and to close the performance theme's plan. Two
+baselines are measured: the true baseline with the switch off — `bench` now
+opens `.none`, so no drafter weights, scratch, or draft cache are loaded —
+and the pair's loaded-but-off sample. `make speculative-record`
+(`scripts/nuclis-speculative.py --baseline`; reports under
+[benchmarks/speculative-2026-09-21/](../benchmarks/speculative-2026-09-21/))
+ran the twelve configurations of the ENGN-12 record as off/on pairs on one
+loaded model plus a no-drafter baseline pass per configuration: the
+reference corpus arrays at 512 and 4,096 tokens and the fixed code prompt
+`Write a Zig function that reverses a string.` (`--raw`, 10 tokens), greedy
+and with the instruct profile's sampling (`--temperature 0.7 --top-p 0.8
+--top-k 20 --presence-penalty 1.5`, seed 0), draft lengths 2, 4, 7, 128
+output tokens, context 32,768, F16 KV, one warmup, three measured
+repetitions (two at 4K). Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB,
+macOS 26.6.2 (25G83), AC power, Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev`
+at `981f74d` plus the ENGN-17 change, artifact SHA-256 `322e194f…`, backend
+metal, one 52-minute sequence (18:39–19:32) with nothing else on the GPU.
+Means over the measured runs; per-batch costs are the run's milliseconds
+divided by its verify batches; every sample stopped on `token_budget`:
+
+| configuration | prompt | draft | accepted/step | proposed/step | drafts/accepted | tokens/batch | propose ms | verify ms | accept ms | recover ms | checkpoint ms | commit ms | prefill off → on (s) | decode baseline → off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code, greedy | 10 | 2 | 1.35 | 1.81 | 1.34 | 2.35 | 11.2 | 218.5 | 0.00 | 6.0 | 3.15 | 4.38 | 0.35 → 0.37 | 10.27 → 10.47 → 9.67 | 0.92× |
+| code, greedy | 10 | 4 | 2.17 | 2.92 | 1.34 | 3.17 | 18.0 | 225.0 | 0.00 | 6.2 | 2.81 | 4.41 | 0.35 → 0.38 | 10.11 → 10.35 → 12.39 | 1.20× |
+| code, greedy | 10 | 7 | 2.53 | 3.75 | 1.48 | 3.53 | 23.1 | 227.7 | 0.00 | 8.7 | 3.00 | 4.33 | 0.35 → 0.39 | 10.16 → 10.21 → 13.22 | 1.30× |
+| code, instruct | 10 | 4 | 2.53 | 3.14 | 1.24 | 3.50 | 19.3 | 229.0 | 0.03 | 6.4 | 2.88 | 4.27 | 0.35 → 0.38 | 10.26 → 10.42 → 13.37 | 1.28× |
+| prose 512, greedy | 512 | 2 | 1.12 | 1.62 | 1.45 | 2.12 | 10.1 | 222.9 | 0.00 | 7.7 | 3.60 | 5.32 | 5.78 → 5.89 | 10.50 → 10.53 → 8.48 | 0.81× |
+| prose 512, greedy | 512 | 4 | 1.49 | 2.27 | 1.53 | 2.49 | 14.2 | 227.2 | 0.00 | 9.8 | 3.25 | 5.31 | 5.77 → 5.89 | 10.62 → 10.54 → 9.59 | 0.91× |
+| prose 512, greedy | 512 | 7 | 1.70 | 2.68 | 1.57 | 2.70 | 16.6 | 227.6 | 0.00 | 10.7 | 3.12 | 5.28 | 5.75 → 5.86 | 10.62 → 10.62 → 10.26 | 0.97× |
+| prose 512, instruct | 512 | 2 | 1.22 | 1.69 | 1.39 | 2.22 | 10.4 | 226.0 | 0.02 | 6.0 | 3.22 | 4.89 | 5.75 → 5.86 | 10.56 → 10.58 → 8.85 | 0.84× |
+| prose 512, instruct | 512 | 4 | 1.56 | 2.45 | 1.57 | 2.55 | 15.1 | 228.2 | 0.03 | 8.2 | 2.89 | 5.10 | 5.75 → 5.86 | 10.57 → 10.56 → 9.82 | 0.93× |
+| prose 512, instruct | 512 | 7 | 1.68 | 2.90 | 1.73 | 2.68 | 18.0 | 229.1 | 0.03 | 10.5 | 3.05 | 5.14 | 5.74 → 5.85 | 10.55 → 10.56 → 10.07 | 0.95× |
+| prose 4K, greedy | 4,096 | 4 | 1.51 | 2.06 | 1.36 | 2.49 | 13.2 | 309.1 | 0.00 | 6.3 | 2.90 | 9.39 | 49.83 → 50.99 | 10.09 → 10.07 → 7.30 | 0.73× |
+| prose 4K, instruct | 4,096 | 4 | 1.53 | 2.40 | 1.56 | 2.51 | 15.4 | 319.2 | 0.02 | 10.0 | 3.07 | 9.52 | 49.86 → 51.07 | 10.21 → 9.63 → 7.04 | 0.73× |
+
+**Verdict: off for the Qwen entry, `draft_length` 4.** Code greedy reads
+0.92 / 1.20 / 1.30× at drafts 2 / 4 / 7 and code instruct 1.28× at draft 4;
+prose 512 reads 0.81 / 0.91 / 0.97× greedy and 0.84 / 0.93 / 0.95× instruct;
+4K reads 0.73× both. The bar was code ≥ 1.5× and prose ≥ 0.9× at the chosen
+length: code tops at 1.30× and prose never reaches 0.9 at 4K, so the switch
+stays off. What the performance units bought over the ENGN-12 record is
+visible in the cost columns — the sampled decision 46–78 ms → 0.00–0.03 ms
+(ENGN-15's device readback), recovery 99–272 ms → 6.0–10.7 ms (ENGN-14's
+row checkpoints; the 150 MB copy is 2.8–3.6 ms of it), the prompt commit
+2.9–3.3× → 1.02–1.03× (ENGN-13's plan chunk), the proposal policy's
+drafts/accepted 1.24–1.73 and tokens/batch 2.12–3.53 (ENGN-16) — but the
+verify batch stays the verdict's cost: 218.5–229.1 ms at 512 and 309.2–319.2
+ms at 4K for 2.1–3.5 tokens, 1.6–1.8 ordinary decode steps, with the
+small-chunk tiles' row-flat work and the chunk attention over the visible
+cache. Every other batch cost is now negligible; the levers left are a
+cheaper small-batch verify (KERN-12's 2-row route, KERN-14's tile, and
+KERN-16's window were the measured attempts, all closed below their
+targets) and the proposal policy, which the record shows is already near
+its ceiling (63–81 % of proposed positions accepted, highest on the code
+prompt with the instruct profile).
+
+**Both baselines.** The pair's loaded-but-off decode equals the no-drafter
+baseline within ±2.4 % on eleven of the twelve configurations; the twelfth
+(`prose 4K, instruct`) read 9.63 against its baseline's 10.21, which a
+focused repeat at 4K did not reproduce (loaded-off 10.25–10.32 vs baseline
+10.24–10.27 tok/s over two pairs each, same flags): the MODL-18 item
+"decode rate unchanged with the drafter loaded but switched off" holds, and
+that configuration's pair-off samples were the drifted ones. Loading the
+drafter costs memory and load time, not rate: the session grows 2,304 →
+3,851 MB (the 640 MB draft cache and the 150 MB checkpoint region among
+it) and `load_milliseconds` 790 → 1,247 ms. The sequence's baselines read
+10.1–10.6 tok/s; the ENGN-12 sequence read 10.43 early and 8.5 at 4K, so
+the path's rate improvement is real but partly a cooler sequence.
+
+**The cost table** of *Where we are* in [TODO.md](../../TODO.md) is
+refreshed from this record; the catalogue defaults it sets are Qwen off
+(this record), Gemma off
+([§ The Gemma 4 draft pair](#the-gemma-4-draft-pair-modl-19-2026-09-21)),
+Muse on ([§ The Muse Glimmer DFlash draft pair](#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)),
+each at `draft_length` 4.
 
 ## Recovery by row checkpoints (ENGN-14, 2026-09-20)
 

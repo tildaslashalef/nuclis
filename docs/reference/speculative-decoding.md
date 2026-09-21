@@ -589,15 +589,22 @@ The block's own `attn_k`/`attn_v` are Q8_0, already in
 
 **Configuration.** `generation.speculative` (default off) and
 `generation.draft_length` (default 4, 1 ≤ n ≤ `engine.max_draft_length` =
-7, `InvalidNumber` above it) in `nuclis.json`, per-entry overrides under
-`models.<name>.generation`, and `--speculative on|off` / `--draft-length N`
+15 — the host bound, the largest block any family ships; the loaded
+drafter's `max_proposals` is the effective cap, `InvalidNumber` above the
+host bound and `InvalidDraftLength` above the family's) in `nuclis.json`,
+per-entry overrides under `models.<name>.generation`, and
+`--speculative on|off` / `--draft-length N`
 on `generate`, `agent`, and `bench`, resolved defaults → entry → flag with
-`config show` provenance (`src/config.zig`, `src/cli.zig`). `generate` and
-`agent` open the model with `DraftRequest.embedded` when the switch is on
-(`DraftSourceMissing` when the family has no embedded block: Gemma, Muse,
-Bonsai) and `.none` otherwise; `bench` opens with `.optional_embedded`
-whatever the switch and measures every run as an off/on pair on the one
-loaded model, so the pair's ratio is the speedup claim
+`config show` provenance (`src/config.zig`, `src/cli.zig`). `generate`,
+`agent`, and `bench` all open the model with the family's source when the
+switch is on (`.preferred`: the entry's `mtp` path for a companion family,
+the embedded block for Qwen; a required source the family does not bind is
+`DraftSourceMissing`) and `.none` otherwise; `bench` opens with `.none` when the switch
+is off — no drafter weights, scratch, or cache — and with the family's
+source (`.preferred`, the entry's `mtp` path or the embedded block) when
+it is on, measuring every run as an off/on pair on the one loaded model,
+so the pair's ratio is the speedup claim and the pair's off sample is the
+loaded-but-off case
 (`src/bench.zig`: `speculative`, `draft_length`, `speculative_steps`,
 `accepted_per_step`, `verify_milliseconds`, `accept_milliseconds`,
 `recover_milliseconds` per sample; `speculative_draft_length`,

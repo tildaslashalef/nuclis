@@ -483,17 +483,17 @@ the drafter, so a drafter loaded but switched off costs memory only, as
 only where its measured acceptance rate pays for verification; negative
 results are recorded.
 
-Measured (2026-09-20, [reference/bench.md § Speculative decoding record](reference/bench.md#speculative-decoding-record-engn-12-2026-09-20)):
+Measured (2026-09-21, [reference/bench.md § The speculative verdict record](reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21)):
 on Qwen3.8-27B with its embedded draft head, greedy speculation decodes at
-0.56–0.67× the ordinary rate on the 512-token corpus prompt and 0.85–0.88×
-on the code prompt at draft lengths 4 and 7, 0.54× at 4K; with the
-instruct profile's sampling 0.63–0.67× on prose and 1.04× on code (the
-baseline there pays the penalty readback). Acceptance is 1.2–3.0 drafts
-per batch; a verify batch costs 2.4–2.6 ordinary steps at 512 and 3.6 at
-4K, recovery up to 2.9 steps on rejection, and the speculative prefill
-2.9–3.3× the ordinary one. The Qwen entry therefore ships with the switch
-off and `draft_length` 4; the performance units planned from these costs
-are in `TODO.md`, and ENGN-17 re-measures and sets the defaults.
+0.81–0.97× the ordinary rate on the 512-token corpus prompt and 1.20–1.30×
+on the code prompt at draft lengths 2, 4, 7; with the instruct profile's
+sampling 0.84–0.95× on prose and 1.28× on code at draft 4; at 4K 0.73×
+both. Acceptance is 1.12–2.53 drafts per batch of 1.62–3.75 proposed; a
+verify batch costs 1.6–1.8 ordinary steps at 512 and 4K, recovery 6–11 ms
+on rejection, the sampled decision is free of host work, and the prompt
+commit 1.02–1.03× the ordinary prefill. The measured bar (code ≥ 1.5× and
+prose ≥ 0.9× at the chosen length) is not met, so the Qwen entry ships
+with the switch off and `draft_length` 4.
 
 Measured (2026-09-21, [reference/bench.md § The Muse Glimmer DFlash draft pair](reference/bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)):
 on Muse Glimmer 30B with its DFlash companion, greedy speculation decodes
@@ -501,7 +501,14 @@ at 1.234× the ordinary rate at draft 4, 1.163× at 8, and 1.222× at 15 on
 the acceptance workload's 512-token prompt, with 73–77 % of proposed
 positions accepted; the early stop trims the proposals to 1.8–2.4 per
 step. The verify batch (1.7–1.8 ordinary steps for 2.8–3.4 rows) is the
-cost and the lever; ENGN-17 sets the entry's default from this record.
+cost and the lever.
+
+The catalogue entries carry these verdicts: Qwen and Gemma off, Muse on,
+each at `draft_length` 4 (`src/catalog.zig`; a fresh `config init` writes
+them into the entries' `generation`). The loaded-but-off decode rate is
+unchanged against a no-drafter baseline within ±2.4 % on eleven of the
+twelve recorded configurations (the twelfth was drift, re-measured), so
+the switch's cost is memory and load time only.
 
 ## Remaining discussion
 

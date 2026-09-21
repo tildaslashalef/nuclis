@@ -344,12 +344,14 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     const repeat = options.repeat orelse 3;
     const warmup = options.warmup orelse 1;
     if (limit == 0 or limit > config.max_output_tokens or capacity == 0 or capacity > config.max_context or repeat == 0 or repeat > 100 or warmup > 100) return error.InvalidGenerationBudget;
-    // Bench measures what the model offers: the drafter is loaded when the
-    // family has one (`--speculative on` makes it required), and each
-    // measured run is done both ways on the same loaded model.
+    // Bench measures what the model offers: with the switch off the drafter
+    // is not loaded at all (its weights and scratch are part of the load
+    // plan), which is the true baseline; `--speculative on` loads the
+    // family's source and each measured run is done both ways on that one
+    // loaded model, so the pair's off sample is the loaded-but-off case.
     const draft_path = try engine.draftPath(alloc, model_path, if (settings.entry) |entry| entry.mtp else null);
     defer if (draft_path) |path| alloc.free(path);
-    const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .optional_embedded;
+    const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
     var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);
     defer eng.deinit();
     const speculate = eng.model.drafter() != null;

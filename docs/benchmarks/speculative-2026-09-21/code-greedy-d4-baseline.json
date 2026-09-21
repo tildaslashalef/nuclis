@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "backend": "metal",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "config": "/Users/alef/.nuclis/nuclis.json",
+  "prompt_source": "text",
+  "build_mode": "ReleaseSafe",
+  "context": 32768,
+  "kv_precision": "f16",
+  "session_bytes": 2304376832,
+  "max_tokens": 128,
+  "sampling": "greedy",
+  "sampling_options": {
+    "temperature": 0,
+    "top_k": 0,
+    "top_p": 1,
+    "min_p": 0,
+    "presence_penalty": 0,
+    "repetition_penalty": 1
+  },
+  "seed": 0,
+  "warmup_runs": 1,
+  "measured_runs": 3,
+  "load_milliseconds": 790.596959,
+  "samples": [
+    {
+      "warmup": true,
+      "prompt_tokens": 10,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 515.469625,
+      "first_token_milliseconds": 515.470583,
+      "decode_milliseconds": 11963.013792,
+      "prefill_tokens_per_second": 19.399785195878415,
+      "decode_tokens_per_second": 10.616053965007415,
+      "gpu_busy_milliseconds": 12236.864291713573,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 10,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 368.618,
+      "first_token_milliseconds": 368.618625,
+      "decode_milliseconds": 12527.5085,
+      "prefill_tokens_per_second": 27.12835509931691,
+      "decode_tokens_per_second": 10.137690187957167,
+      "gpu_busy_milliseconds": 12815.43729128316,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 10,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 374.544208,
+      "first_token_milliseconds": 374.544542,
+      "decode_milliseconds": 12541.025,
+      "prefill_tokens_per_second": 26.699117985025683,
+      "decode_tokens_per_second": 10.126763960681044,
+      "gpu_busy_milliseconds": 12841.459667426534,
+      "speculative": false
+    },
+    {
+      "warmup": false,
+      "prompt_tokens": 10,
+      "generated_tokens": 128,
+      "stop_reason": "token_budget",
+      "prefill_milliseconds": 376.8565,
+      "first_token_milliseconds": 376.857125,
+      "decode_milliseconds": 12633.246667,
+      "prefill_tokens_per_second": 26.535299245203415,
+      "decode_tokens_per_second": 10.052839412353414,
+      "gpu_busy_milliseconds": 12934.781582909636,
+      "speculative": false
+    }
+  ],
+  "mean_prefill_tokens_per_second": 26.787590776515334,
+  "mean_decode_tokens_per_second": 10.105764520330542,
+  "mean_first_token_milliseconds": 373.3400973333333
+}

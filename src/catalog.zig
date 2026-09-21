@@ -51,6 +51,13 @@ pub const Entry = struct {
     /// pin a protocol onto a file whose own template digest is not).
     profile: Profile,
     companions: []const Companion,
+    /// The measured speculative verdict (ENGN-17): whether the switch is on
+    /// by default for this entry and the draft length the record chose. The
+    /// entry's value wins over the global default (a user's `--speculative`
+    /// still overrides it), because the verdict is a property of the family's
+    /// drafter, not of the user's preference.
+    speculative: bool,
+    draft_length: usize,
 
     pub fn companion(self: *const Entry, role: Role) ?*const Companion {
         for (self.companions) |*c| if (c.role == role) return c;
@@ -69,6 +76,9 @@ pub const entries = [_]Entry{
         .quantization = "UD-Q4_K_M",
         .architecture = "qwen35",
         .profile = .qwen38,
+        // The embedded block's best is code 1.30x at draft 7 (1.28x instruct at 4), below the 1.5x bar; off.
+        .speculative = false,
+        .draft_length = 4,
         .companions = &.{
             .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 931_146_432, .sha256 = "83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53", .loaded_by = "the vision unit" },
             .{ .role = .mtp, .file = "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .size = 1_369_590_656, .sha256 = "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e", .loaded_by = "the MTP unit" },
@@ -92,6 +102,9 @@ pub const entries = [_]Entry{
         .quantization = "UD-Q4_K_XL",
         .architecture = "gemma4",
         .profile = .gemma4,
+        // The QAT sibling measured the heads: 0.899x at draft 4, 1.017x at 7; off.
+        .speculative = false,
+        .draft_length = 4,
         .companions = &.{
             .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 175_115_840, .sha256 = "2e269f906eb15169ee9ce880ea649bd6d42d4964c21f8ede10d0d0efc738bcbb", .loaded_by = "the vision unit" },
             .{ .role = .mtp, .file = "mtp-gemma-4-12b-it.gguf", .size = 465_109_248, .sha256 = "145db9094bc0f85f1701e255a2ed216dcc9800fc8bc8631ad00905b456bd451b", .loaded_by = "the MTP unit" },
@@ -109,6 +122,9 @@ pub const entries = [_]Entry{
         .quantization = "Q4_0 (QAT)",
         .architecture = "gemma4",
         .profile = .gemma4,
+        // The assistant heads measured 0.899x at draft 4 and 1.017x at 7; off.
+        .speculative = false,
+        .draft_length = 4,
         .companions = &.{
             .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 175_115_840, .sha256 = "dcb8103adad042b1bf99df767aaf34eb37c5a73a4a2f0417e4d7ba557e91664f", .loaded_by = "the vision unit" },
             .{ .role = .mtp, .file = "mtp-gemma-4-12B-it.gguf", .size = 253_708_800, .sha256 = "fcb35dea42c71333db904cee11baac525c9ef872818ee3753f6cb156f3c6f4f6", .loaded_by = "the MTP unit" },
@@ -128,6 +144,9 @@ pub const entries = [_]Entry{
         .quantization = "Q4_0 (QAT)",
         .architecture = "gemma4",
         .profile = .gemma4,
+        // The 26B-A4B head is bound but not measured; off until it is.
+        .speculative = false,
+        .draft_length = 4,
         .companions = &.{
             .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 1_194_828_256, .sha256 = "7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744", .loaded_by = "the vision unit" },
             .{ .role = .mtp, .file = "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", .size = 251_939_328, .sha256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a", .loaded_by = "the MTP unit" },
@@ -148,6 +167,9 @@ pub const entries = [_]Entry{
         .quantization = "UD-Q4_K_XL",
         .architecture = "muse-glimmer",
         .profile = .muse_glimmer,
+        // The DFlash drafter measured 1.234x at draft 4 (1.163x at 8, 1.222x at 15); on.
+        .speculative = true,
+        .draft_length = 4,
         .companions = &.{
             .{ .role = .mmproj, .file = "mmproj-kquant.gguf", .size = 1_400_328_928, .sha256 = "f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6", .loaded_by = "the vision unit" },
             .{ .role = .mtp, .file = "dflash-kquant.gguf", .size = 1_631_205_312, .sha256 = "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc", .loaded_by = "the speculative-decoding unit (a DFlash drafter)" },
@@ -173,6 +195,9 @@ pub const entries = [_]Entry{
         .quantization = "PTQ1_0 (ternary g128)",
         .architecture = "qwen35",
         .profile = .qwen38,
+        // The file drops the prediction block and the entry pins no companion; off.
+        .speculative = false,
+        .draft_length = 4,
         .companions = &.{
             .{ .role = .mmproj, .file = "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf", .size = 629_246_976, .sha256 = "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903", .loaded_by = "the vision unit" },
         },
@@ -271,6 +296,11 @@ test "the table is well formed: unique names, 40-character commits, 64-character
     try std.testing.expectEqual(Profile.qwen38, find("bonsai-2-27b").?.profile);
     try std.testing.expectEqualStrings("qwen35", find("bonsai-2-27b").?.architecture);
     try std.testing.expect(find("bonsai-2-27b").?.companion(.mtp) == null);
+    // The measured speculative verdicts (ENGN-17): only Muse's drafter pays.
+    try std.testing.expect(!find("qwen3.8-27b").?.speculative);
+    try std.testing.expect(!find("gemma-4-12b-qat").?.speculative);
+    try std.testing.expect(find("muse-glimmer-30b").?.speculative);
+    for (&entries) |e| try std.testing.expectEqual(@as(usize, 4), e.draft_length);
     try std.testing.expectEqualStrings("muse-glimmer", find("muse-glimmer-30b").?.architecture);
     try std.testing.expectEqual(Role.mtp, findFile("unsloth/Muse-Glimmer-30B-GGUF", "dflash-kquant.gguf").?.role);
     try std.testing.expectEqual(Role.mtp, findFile("unsloth/gemma-4-12B-it-qat-GGUF", "mtp-gemma-4-12B-it.gguf").?.role);

@@ -107,6 +107,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-18 | Fused decode norms: −182…−192 dispatches per decode step shipped, the speed bars missed; closed below its target | 2026-09-21 |
 | MODL-19 | Gemma 4 draft heads: the `gemma4-assistant` companion adapter, traces at 1.1e-4, a negative default at draft 4 (1.017× only at draft 7) | 2026-09-21 |
 | MODL-20 | Muse Glimmer DFlash drafter: the companion, the CPU reference and its trace, the Metal plan, a positive verdict at 1.16–1.23× | 2026-09-21 (two sessions) |
+| ENGN-17 | The speculative verdict: Qwen and Gemma off, Muse on; the full record and `bench`'s true baseline | 2026-09-21 |
 
 ## Context
 
@@ -3933,3 +3934,62 @@ attention runs 16 `attentionDecode` calls per layer per proposal; a batched
 non-causal block kernel is an untried kernel lever, recorded for a future
 attempt. The 26B-A4B assistant head and the vision projectors are other
 units' work.
+
+### ENGN-17 — The speculative verdict: Qwen and Gemma off, Muse on; the full record and `bench`'s true baseline (2026-09-21)
+
+**Outcome.** The speculative plan closes with measured defaults, and the
+answer to its question is family-shaped: the Qwen entry's embedded head does
+not pay (code greedy 0.92 / 1.20 / 1.30× at drafts 2 / 4 / 7, code instruct
+1.28× at 4, prose 512 0.81–0.97× greedy and 0.84–0.95× instruct, 4K 0.73×
+both, against the code ≥ 1.5× and prose ≥ 0.9× bar), the Gemma heads do not
+pay at the plan's length (0.899× at draft 4, 1.017× at 7), and the Muse
+DFlash drafter does (1.234 / 1.163 / 1.222× at drafts 4 / 8 / 15). The
+catalogue entries therefore ship Qwen and Gemma off and Muse on, each at
+`draft_length` 4, and a fresh `config init` writes those verdicts into the
+entries' `generation` sections. The record also settles the MODL-18 item
+carried through ENGN-12: with the drafter loaded but the switch off, decode
+equals a no-drafter baseline within ±2.4 % on eleven of the twelve
+configurations (the twelfth, prose 4K instruct, was drift and a focused
+repeat did not reproduce it: loaded-off 10.25–10.32 vs baseline 10.24–10.27
+tok/s over two pairs each); what loading costs is memory and time, not rate
+(session 2,304 → 3,851 MB, `load_milliseconds` 790 → 1,247 ms).
+
+**What shipped.** `bench` opens the model with `DraftRequest.none` when the
+switch is off — no drafter weights, scratch, or draft cache, which is the
+true baseline — and with the family's source (`.preferred`) when it is on,
+so each measured run is still an off/on pair on one loaded model and the
+pair's off sample is the loaded-but-off case. `catalog.Entry` gained
+`speculative: bool` and `draft_length: usize` (the measured verdict, with
+the reason in each entry's comment); `config.registryEntry` fills the
+entry's `generation.speculative`/`generation.draft_length`, so `config init`
+writes them and `config show` reports them with `model` provenance; a
+user's `--speculative` still overrides. `scripts/nuclis-speculative.py`
+gained `--baseline` (a no-drafter pass per configuration) and its
+`--summarize` table now carries the baseline, propose, checkpoint, and
+commit columns; `make speculative-record` passes `--baseline`. The record's
+twelve pairs and twelve baselines are committed under
+`docs/benchmarks/speculative-2026-09-21/`.
+
+**Evidence.** The record in
+[bench.md § The speculative verdict record](reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21)
+(`981f74d` plus the change, one 52-minute sequence): per-batch costs propose
+10.1–23.1 ms, checkpoint 2.8–3.6 ms, verify 218.5–229.1 ms at 512 and
+309.2–319.2 ms at 4K, accept 0.00–0.03 ms (was 46–78), recover 6.0–10.7 ms
+(was 99–272), commit 4.3–9.5 ms, prompt commit 1.02–1.03× (was 2.9–3.3),
+tokens/batch 2.12–3.53; the speedups above. `make check` green with the new
+catalog/config tests (`config init`/`config show` cover the entry fields);
+the per-family records and the plan's cost table are refreshed in
+`TODO.md`. The verify batch remains the verdict's cost (1.6–1.8 ordinary
+steps for 2.1–3.5 tokens) and every kernel attempt at it (KERN-12's 2-row
+route, KERN-14's tile, KERN-16's window) closed below its target.
+
+**Files.** `src/{bench,catalog,config,help}.zig`, `scripts/nuclis-speculative.py`,
+`Makefile`, `docs/benchmarks/speculative-2026-09-21/` (new),
+`docs/reference/{bench,speculative-decoding}.md`, `docs/development.md`,
+`docs/spec.md`, `TODO.md`, and this log.
+
+**Remaining.** The Qwen default can be revisited if a future small-batch
+verify or a longer draft window changes the arithmetic; the 26B-A4B Gemma
+head is still bound but unmeasured; `bench`'s per-entry defaults only reach
+a fresh `config init` (an existing file keeps its own values, by design).
+REPO-09 and REPO-10 turn the gates and records into data next.

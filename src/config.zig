@@ -654,7 +654,8 @@ const initial_models = blk: {
 };
 
 /// A catalogue entry as a registry entry: repository, file, pinned commit,
-/// and companion file names; every override left to the global sections.
+/// companion file names, and the entry's speculative verdict (the measured
+/// default of ENGN-17); every other override left to the global sections.
 pub fn registryEntry(entry: *const catalog.Entry) ModelEntry {
     return .{
         .repo = entry.repo,
@@ -662,6 +663,7 @@ pub fn registryEntry(entry: *const catalog.Entry) ModelEntry {
         .revision = entry.revision,
         .mmproj = if (entry.companion(.mmproj)) |c| c.file else null,
         .mtp = if (entry.companion(.mtp)) |c| c.file else null,
+        .generation = .{ .speculative = entry.speculative, .draft_length = entry.draft_length },
     };
 }
 
@@ -1580,4 +1582,12 @@ test "the written initial file parses back exactly and shows the entry shape" {
     try std.testing.expect(gen.entry != null);
     try std.testing.expectEqual(.qwen38, gen.profile);
     try std.testing.expectEqual(@as(usize, 16384), gen.ctx_size);
+    // The entry carries the measured speculative verdict (ENGN-17): Qwen's
+    // record does not pay for verification, Muse's does.
+    try std.testing.expectEqual(false, gen.entry.?.generation.speculative.?);
+    try std.testing.expectEqual(@as(usize, 4), gen.entry.?.generation.draft_length.?);
+    const muse = resolve(&loaded, "muse-glimmer-30b", .{}, .generate);
+    try std.testing.expectEqual(true, muse.entry.?.generation.speculative.?);
+    try std.testing.expect(muse.speculative);
+    try std.testing.expect(!gen.speculative);
 }

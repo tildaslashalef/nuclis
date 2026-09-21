@@ -87,25 +87,24 @@ ordinary decode. Facts and the table:
 and [bench.md § The Gemma 4 draft pair](docs/reference/bench.md#the-gemma-4-draft-pair-modl-19-2026-09-21).
 The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
-ENGN-17's call.
+an untaken lever (ENGN-17's record kept the default off).
 
-**Next: ENGN-17** (the verdict, the defaults, and the full record). MODL-20
-closed on 2026-09-21 with a **positive verdict** on Muse Glimmer: the Metal
-plan (five draft layouts, the five-residual capture, the batched encoder and
-block, the non-causal block attention as one decode per row), the trace on
-both executors (`compare-draft-muse`: residuals ≤ 1.1e-3, encoder ≤ 1.4e-4,
-block ≤ 1.02e-2, 30/30 greedy rows), and the acceptance pair at draft
-lengths 4 / 8 / 15: **1.234× / 1.163× / 1.222×**, 73–77 % of proposed
-positions accepted, verify the cost at 172.9–188.2 ms per batch. The
-draft-length cap moved with it: `Drafter.max_proposals` (Muse 15) is the
-effective bound, the host constant is 15. Facts:
-[speculative-decoding.md § The Muse Glimmer DFlash drafter](docs/reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20),
-the table in
-[bench.md § The Muse Glimmer DFlash draft pair](docs/reference/bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21),
-and the [log](docs/engineering-log.md#modl-20--muse-glimmer-dflash-drafter-the-companion-the-cpu-reference-and-its-trace-the-metal-plan-a-positive-verdict-2026-09-21-two-sessions).
+**Next: REPO-09** (one gate registry: the model-specific checks become a
+data manifest). ENGN-17 closed on 2026-09-21 with the speculative plan's
+verdict and the full record: Qwen **off** (code greedy 1.20–1.30×, prose
+512 0.81–0.97×, 4K 0.73×), Gemma **off** (0.899× at draft 4, 1.017× at 7),
+Muse **on** (1.163–1.234×); the catalogue entries carry the verdicts and
+`config init` writes them into each entry's `generation`. `bench` opens with
+no drafter at all when the switch is off — the true baseline — and the
+loaded-but-off rate equals it within ±2.4 % on eleven of twelve
+configurations (session 2,304 → 3,851 MB, load 790 → 1,247 ms). Facts:
+[bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21),
+[spec.md § Speculative decoding](docs/spec.md#speculative-decoding), and the
+[log](docs/engineering-log.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21).
 
-Speculative decoding works end to end on Qwen3.8-27B and is not yet a
-speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
+Speculative decoding works end to end on all three families; it is a
+speedup worth switching on by default only for Muse (ENGN-17's verdict).
+ENGN-11 (recovery), MODL-18 (the
 embedded draft head), ENGN-12 (batched verification, the speculative
 loop, greedy and sampled acceptance, the switch and the draft length, the
 benchmark record), and ENGN-13 (the prompt commit at the plan's chunk and
@@ -122,35 +121,30 @@ tile.
 
 This plan is the path to the speed benefit, as measured costs per verify
 batch on Metal (Qwen 27B, F16 KV, 512-token context unless noted; ordinary
-decode step ≈ 95–105 ms; the ENGN-14 record's numbers, see *Working a unit
-here* for how to refresh them):
+decode step ≈ 95–105 ms; ENGN-17's final record, see *Working a unit here*
+for how to refresh them):
 
-| cost per batch | measured (record, 2026-09-20) | cause | unit | target |
+| cost per batch | measured (record, 2026-09-21) | cause | unit | target |
 | --- | ---: | --- | --- | ---: |
-| propose `k` drafts | 10.5–24.9 ms (quick pass; trimmed by `p_min`) | one block forward per draft | ENGN-16 ✓ (early stop; adaptive dropped) | fewer forwards, same accepted tokens |
-| checkpoint | 2.8–5.2 ms | one 150 MB copy | — | — |
-| verify `1 + k` rows | 262–297 ms at 512, 362–372 ms at 4K | the 16×8 prefill tile at small row counts; the chunk attention over the visible cache | KERN-16 ✗ (attention −2–5 % at chunk sizes; the verify-shaped routing lives, ENGN-17 measures it) | ≤ 130 ms |
-| accept (sampled) | 18.8–36.9 µs (quick pass) | one draw per row on the device readback | ENGN-15 ✓ | ≤ 5 ms |
-| recover (on rejection) | 6–22 ms (was 150–182) | one 150 MB slot copy | ENGN-14 ✓ | ≤ 40 ms |
-| commit `a + 1` tokens | 4.7–15.3 ms | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
-| prompt commit (prefill) | 1.02× ordinary prefill | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
-| tokens per batch | 2.12–3.53 (1.12–2.53 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-16 ✓ (drafts/accepted −27…−45 %) | more accepted per proposed |
+| propose `k` drafts | 10.1–23.1 ms | one block forward per draft, trimmed by `p_min` | ENGN-16 ✓ (early stop; adaptive dropped) | fewer forwards, same accepted tokens |
+| checkpoint | 2.8–3.6 ms | one 150 MB copy | — | — |
+| verify `1 + k` rows | 218.5–229.1 ms at 512, 309.2–319.2 ms at 4K | the small-chunk tiles' row-flat work and the chunk attention over the visible cache | KERN-16 ✗ (attention −2–5 % at chunk sizes; the verify-shaped routing lives) | ≤ 130 ms |
+| accept (sampled) | 0.00–0.03 ms | one draw per row on the device readback | ENGN-15 ✓ | ≤ 5 ms |
+| recover (on rejection) | 6.0–10.7 ms (was 150–182) | one 150 MB slot copy | ENGN-14 ✓ | ≤ 40 ms |
+| commit `a + 1` tokens | 4.3–9.5 ms | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
+| prompt commit (prefill) | 1.02–1.03× ordinary prefill (was 2.9–3.3×) | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
+| tokens per batch | 2.12–3.53 (1.12–2.53 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-16 ✓ (drafts/accepted 1.24–1.73) | more accepted per proposed |
 
-Measured speedups (ENGN-16 quick pass, `d31c5cd` plus the change): code
-greedy 0.97 / 1.24 / 1.33× at drafts 2 / 4 / 7, code instruct 1.35× at
-draft 4; prose 512 greedy 0.76 / 0.96 / 1.06×, instruct 0.90 / 1.00 / 1.03×.
-Both sampled paths are free of host work and the proposal is trimmed;
-what remains is the batch's model time. At draft 4 the code prompt advances
-3.17 tokens for a 256 ms verify (81 ms/token against ~118), prose 2.49 for
-254 (102 against ~119). KERN-14, KERN-15, KERN-16, and KERN-18 all closed below their
-targets, so the 512-token verify, the row-poor matvecs, the prefill
-attention, and the decode norms stay where they are (each keeping its
-measured partial win: the 2-row matvec route, the verify-shaped attention
-window, the fused norms behind their flag). The kernel levers the plan
-ordered are exhausted; nothing here claims a
-final speedup before ENGN-17 measures it.
+The verdict is ENGN-17's record: code greedy 0.92 / 1.20 / 1.30× at drafts
+2 / 4 / 7, code instruct 1.28× at 4, prose 512 greedy 0.81 / 0.91 / 0.97×,
+instruct 0.84 / 0.93 / 0.95×, 4K 0.73× both — below the code ≥ 1.5× and
+prose ≥ 0.9× bars, so the Qwen entry stays off at `draft_length` 4. The
+batch's model time is what remains (the verify), and every kernel lever the
+plan ordered closed below its target; the record's numbers and the
+per-family defaults are in
+[bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: ENGN-17 → REPO-09 → REPO-10 → TERM-10 →
+Order: REPO-09 → REPO-10 → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -163,12 +157,10 @@ verify-shaped routing landed before ENGN-17 because the verdict measures
 the Qwen path it changes**: the reuse body takes the 1–64-row chunk
 attention of every verify batch at 16K–32K context, measured 11–16 %
 faster at the kernel.
-**MODL-19 and MODL-20 were moved ahead of ENGN-17 on 2026-09-21** (the user's
-call) and closed the same day: Gemma's heads measured negative at the plan's
-draft length, Muse's DFlash drafter positive (1.16–1.23×), so each family now
-has its own record and ENGN-17's per-entry default is set from it. The Qwen
-verdict is independent of them; its `bench` default change lands first and
-sets each entry from the family's own record.
+**MODL-19 and MODL-20 closed on 2026-09-21**: Gemma's heads measured
+negative at the plan's draft length, Muse's DFlash drafter positive
+(1.16–1.23×), and ENGN-17 set each entry's default from its own record
+(Qwen and Gemma off, Muse on).
 TERM-10 (chat polish) and the vision units follow.
 **Three units were dropped from the plan on 2026-09-21** (the user's call):
 Gemma's launch-bound decode and prefill (the Q4_0 tile and fewer launches),
@@ -180,9 +172,9 @@ the full capacity
 and the ternary matvec keeps its current arithmetic
 ([bench.md § Bonsai 2](docs/reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18))
 — but no unit carries them. The performance group's remaining units are
-ENGN-17 and the two REPO units; the small-batch tile, the split-K matvec,
-the long-context attention, and the fused norms led the order and closed
-below their targets. AGNT-12
+the two REPO units; the small-batch tile, the split-K matvec, the
+long-context attention, and the fused norms led the order and closed below
+their targets. AGNT-12
 (background commands) and
 APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 **REPO-09 and REPO-10 were ordered on 2026-09-21** (the user's call): the
@@ -193,7 +185,6 @@ verdicts as data.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
 | REPO-09 | One gate registry: the model-specific checks become a data manifest | 1 |
 | REPO-10 | Benchmark workloads and generated records; bench.md split by family | 2 |
 | TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
@@ -339,46 +330,6 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
-
-## ENGN-17 — The verdict, the defaults, and the bench baseline without the drafter
-
-**Facts.** MODL-19 and MODL-20 closed on 2026-09-21 (both moved ahead of
-this unit), so all three families now have their own record: Qwen negative
-at the plan's lengths, Gemma negative at draft 4, Muse positive
-(1.16–1.23×). The Qwen verdict does not depend on them, but each family
-entry's default does, and each is set from its own record. `bench` opens
-the model with `DraftRequest.optional_embedded`
-whatever the switch, so there is no in-process measurement without the
-drafter loaded, and the MODL-18 acceptance item "decode rate unchanged with
-the drafter loaded but switched off" (carried through ENGN-12) is only
-comparable across records. The per-entry verdict lives in `src/catalog.zig`
-(`Entry`) and is written into `models.<name>.generation` by `config init`
-(`src/config.zig`); the built-in defaults are `Config.Generation.speculative
-= false`, `draft_length = 4`.
-
-**Design.**
-1. `bench`: the default opens with `.none` and runs no pair; `--speculative
-   on` opens with `.embedded` and runs the off/on pair. The "off" sample of
-   a pair is then the loaded-but-off case, and the default the true
-   baseline; report both in the record.
-2. Re-run `make speculative-record` on the finished path (after ENGN-13
-   through KERN-16; MODL-19/20 change only the other families' paths),
-   write the record in `bench.md` with the per-batch cost
-   table of *Where we are* refreshed, and the spec's measured result.
-3. `catalog.Entry` gains `speculative: bool` and `draft_length: usize`;
-   `config init` writes them into the entry's `generation`; set Qwen's from
-   the record: on if code ≥ 1.5× and prose ≥ 0.9× at the chosen length,
-   else off with the reason in the log. Set Gemma's and Muse's from the
-   MODL-19 and MODL-20 records the same way, off with the reason when the
-   drafter did not pay for its verification.
-4. Documentation: `docs/development.md § Configuration file`,
-   `docs/reference/bench.md § Definitions` (the speculative fields),
-   `docs/spec.md § Speculative decoding` (the measured result and the
-   defaults).
-
-**Acceptance.** The record with both baselines; the entry's defaults from
-it; `make check`; `config init` / `config show` tests cover the new entry
-fields; the spec's measured result cites the record.
 
 ## REPO-09 — One gate registry: the model-specific checks become data
 

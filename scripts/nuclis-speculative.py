@@ -4,7 +4,9 @@
 Runs `nuclis bench --speculative on` as off/on pairs on one loaded model over
 the reference corpus arrays (512 and 4,096 tokens) and the fixed code prompt,
 greedy and with the instruct profile's sampling, at draft lengths 2, 4, 7,
-writing one JSON per configuration; `--summarize` turns a directory of them
+writing one JSON per configuration; `--baseline` also runs each configuration
+with the switch off, which loads no drafter at all (the true baseline, against
+the pair's loaded-but-off sample). `--summarize` turns a directory of them
 into the markdown table the record uses (per-batch costs are the run's
 milliseconds divided by its verify batches).
 """
@@ -49,6 +51,13 @@ def run(args):
             with open(out / f"{label}.json", "w") as f, open(out / f"{label}.err", "w") as e:
                 code = subprocess.call(cmd, stdout=f, stderr=e, cwd=ROOT)
             print(f"{datetime.now():%H:%M:%S} done {label} exit {code}", flush=True)
+            if args.baseline:
+                base = list(cmd)
+                base[base.index("--speculative") + 1] = "off"
+                print(f"{datetime.now():%H:%M:%S} start {label}-baseline", flush=True)
+                with open(out / f"{label}-baseline.json", "w") as f, open(out / f"{label}-baseline.err", "w") as e:
+                    code = subprocess.call(base, stdout=f, stderr=e, cwd=ROOT)
+                print(f"{datetime.now():%H:%M:%S} done {label}-baseline exit {code}", flush=True)
 
 
 def mean(values):
@@ -72,8 +81,16 @@ def summarize(directory):
         on = [s for s in measured if s["speculative"]]
         if not on or not off:
             continue
-        steps = [s["speculative_steps"] for s in on]
         per_batch = lambda key: mean([s[key] / s["speculative_steps"] for s in on if s.get(key) is not None and s["speculative_steps"]])
+        plain = path.with_name(path.stem + "-baseline.json")
+        baseline = None
+        if plain.exists():
+            try:
+                breport = json.load(open(plain))
+                bsamples = [s for s in breport["samples"] if not s["warmup"] and s["stop_reason"] != "cancelled"]
+                baseline = mean([s["decode_tokens_per_second"] for s in bsamples if s["decode_tokens_per_second"]])
+            except (json.JSONDecodeError, KeyError):
+                baseline = None
         rows.append({
             "config": path.stem,
             "sampling": report["sampling"].split(":")[0],
@@ -83,23 +100,27 @@ def summarize(directory):
             "accepted": mean([s["accepted_per_step"] for s in on]),
             "proposed": mean([s["proposed_per_step"] for s in on if s.get("proposed_per_step") is not None]),
             "tokens_per_batch": mean([(s["generated_tokens"] - 1) / s["speculative_steps"] for s in on if s["speculative_steps"]]),
+            "propose": per_batch("propose_milliseconds"),
             "verify": per_batch("verify_milliseconds"),
             "accept": per_batch("accept_milliseconds"),
             "recover": per_batch("recover_milliseconds"),
+            "checkpoint": per_batch("checkpoint_milliseconds"),
+            "commit": per_batch("commit_milliseconds"),
             "prefill_off": mean([s["prefill_milliseconds"] for s in off]),
             "prefill_on": mean([s["prefill_milliseconds"] for s in on]),
+            "decode_baseline": baseline,
             "decode_off": mean([s["decode_tokens_per_second"] for s in off if s["decode_tokens_per_second"]]),
             "decode_on": mean([s["decode_tokens_per_second"] for s in on if s["decode_tokens_per_second"]]),
             "speedup": report.get("decode_speedup"),
         })
-    print("| configuration | prompt | draft | accepted/step | proposed/step | drafts/accepted | tokens/batch | verify ms | accept ms | recover ms | prefill off → on (s) | decode off → on tok/s | speedup |")
-    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    print("| configuration | prompt | draft | accepted/step | proposed/step | drafts/accepted | tokens/batch | propose ms | verify ms | accept ms | recover ms | checkpoint ms | commit ms | prefill off → on (s) | decode baseline → off → on tok/s | speedup |")
+    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for r in rows:
         per_token = (r["proposed"] / r["accepted"]) if (r["proposed"] is not None and r["accepted"]) else None
         print(f"| {r['config']} | {r['prompt']:,} | {r['draft']} | {fmt(r['accepted'], 2)} | {fmt(r['proposed'], 2)} | {fmt(per_token, 2)} | {fmt(r['tokens_per_batch'], 2)} | "
-              f"{fmt(r['verify'])} | {fmt(r['accept'], 2)} | {fmt(r['recover'])} | "
+              f"{fmt(r['propose'])} | {fmt(r['verify'])} | {fmt(r['accept'], 2)} | {fmt(r['recover'])} | {fmt(r['checkpoint'], 2)} | {fmt(r['commit'], 2)} | "
               f"{fmt(r['prefill_off'] / 1000, 2)} → {fmt(r['prefill_on'] / 1000, 2)} | "
-              f"{fmt(r['decode_off'], 2)} → {fmt(r['decode_on'], 2)} | {fmt(r['speedup'], 2)}× |")
+              f"{fmt(r['decode_baseline'], 2)} → {fmt(r['decode_off'], 2)} → {fmt(r['decode_on'], 2)} | {fmt(r['speedup'], 2)}× |")
 
 
 def main():
@@ -108,6 +129,7 @@ def main():
     parser.add_argument("--nuclis", default="./zig-out/bin/nuclis")
     parser.add_argument("--out", default=".zig-cache/bench/spec")
     parser.add_argument("--only", nargs="*", help="configuration name prefixes to run (prose512, code, prose4k)")
+    parser.add_argument("--baseline", action="store_true", help="also run each configuration with the switch off (no drafter loaded)")
     parser.add_argument("--summarize", metavar="DIR", help="print the record table from a directory of reports")
     args = parser.parse_args()
     if args.summarize:

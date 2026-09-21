@@ -327,10 +327,16 @@ and the `nuclis model pull <name>` to run next:
                                  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
                                  "mmproj": "mmproj-BF16.gguf", "mtp": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
                                  "profile": null, "ctx_size": null,
-                                 "generation": { "max_tokens": null, "think": null, "speculative": null, "draft_length": null, "sampling": { "…": null } },
+                                 "generation": { "max_tokens": null, "think": null, "speculative": false, "draft_length": 4, "sampling": { "…": null } },
                                  "agent": { "think": null, "fold_thinking": null } } }
 }
 ```
+
+Each entry's `generation.speculative` / `generation.draft_length` is the
+family's measured verdict (`src/catalog.zig`; [bench.md § Definitions](reference/bench.md#definitions)),
+so a fresh file already turns speculation on for the family whose record
+pays and off for the rest; a user's global `generation.speculative` still
+applies to models with no entry, and `--speculative` overrides either.
 
 - Precedence: built-in defaults < the model's sampling profile < the
   file's global sections < the registry entry the model names < command-line

@@ -262,8 +262,8 @@ compare-bonsai-f16: metal ## The Qwen Metal plan on the Bonsai file with the F16
 test-generation-bonsai-metal: ## The generation check on bonsai-2-27b, Metal plan
 	$(ZIG) build test-generation $(METAL) -- "$(BONSAI_MODEL)" --metal
 
-speculative-record: metal ## The speculative-decoding record on Qwen3.8-27B: off/on pairs over the corpus arrays and the code prompt, greedy and instruct, draft 2/4/7; JSON under .zig-cache/bench/spec (docs/reference/bench.md § Speculative record)
-	python3 scripts/nuclis-speculative.py --model "$(MODEL)" --nuclis $(BIN) $(ARGS)
+speculative-record: metal ## The speculative-decoding record on Qwen3.8-27B: off/on pairs and the no-drafter baseline over the corpus arrays and the code prompt, greedy and instruct, draft 2/4/7; JSON under .zig-cache/bench/spec (docs/reference/bench.md § Speculative record)
+	python3 scripts/nuclis-speculative.py --model "$(MODEL)" --nuclis $(BIN) --baseline $(ARGS)
 
 baseline-bonsai: metal ## The reference workload on bonsai-2-27b against the PrismML fork's records (tests/fixtures/run-2026-09-18-bonsai, whose token arrays are the Qwen run's); writes docs/benchmarks/nuclis-<date>-bonsai.json
 	python3 scripts/nuclis-baseline.py --model "$(BONSAI_MODEL)" --nuclis $(BIN) --run run-2026-09-18-bonsai \
