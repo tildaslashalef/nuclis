@@ -223,6 +223,7 @@ manifest.
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
 | AGNT-12 | Background commands (drafted for decision; see its section) | — |
+| AGNT-13 | The system prompt as sections (drafted for decision; see its section) | — |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
 
 ## Working a unit here
@@ -855,6 +856,39 @@ next step boundary. The parts, all bounded by the agent rules:
 profile's tool fixtures (`scripts/profile-tools-fixtures.py`), transcript
 rows, and cancellation tests. The risk is an orphaned process; the
 mitigation is the workspace owning every pid. Decide after TERM-10.
+
+## AGNT-13 — The system prompt as sections (drafted 2026-09-21 for decision)
+
+**What pi does** (`packages/coding-agent/src/core/system-prompt.ts`, read
+2026-09-21): the system block is built from replaceable sections — a
+preamble, the tool list with one guideline per tool, rules, the project's
+instructions file wrapped in `<project_instructions>`, the working
+directory, the date — so a section can change without re-priming the rest.
+nuclis's block (`src/agent/loop.zig` `systemPrompt`) is one paragraph
+already tuned for a small context (page-by-page reads, no reconstruction
+from memory, say when only part was seen), which pi's is not.
+
+**Worth adopting, bounded.**
+1. Project instructions: `agent.instructions` (default `AGENTS.md`, then
+   `CLAUDE.md`; `false` to disable; a path) read from the workspace at
+   startup, capped at `max_instructions_bytes = 8192` with a marked cut,
+   appended as its own section; the warm-up notice reports its tokens
+   (`warmed up in 12.4s · 934 tokens, 1,210 of them AGENTS.md`).
+2. One guideline per tool, rendered under the tool list: keep `old_string`
+   as small as still unique; `read_file` over `cat`; `write_file` only for
+   a new file or a full rewrite; `grep` before `read_file` for a question
+   about a whole tree; report the exit status of a failed `bash`.
+3. The cost rule: "Every line you write costs the user about a second;
+   answer with what was asked and nothing decorative."
+4. The date and the shell (`!` commands arrive as `$ cmd` with the output).
+
+**Not adopted.** pi's docs section, skills, and the RPC/SDK surfaces: not
+this product.
+
+**Check.** The playground task list (the twelve tasks of the 2026-09-20
+screenshots) run through `nuclis agent --print` before and after, with the
+failed-edit count and the tokens per turn compared; `make check` for the
+section builder and the cap. One session; decide after TERM-10.
 
 ## APPS-14 — Teacher-forced `eval` (drafted 2026-09-20 for decision)
 
