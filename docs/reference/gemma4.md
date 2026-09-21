@@ -349,7 +349,7 @@ Every cache is allocated for the full session capacity, sliding layers
 included (the CPU reference does the same): at 32,768 tokens the F16
 session is 11.3 GB (40 × 2 × 2,048 + 8 × 2 × 512 halves per position). A
 ring layout for the 40 windowed layers would cut that to about 0.35 GB and
-is a session-layout unit of its own (ENGN-19 in [TODO.md](../../TODO.md)).
+is a session-layout change of its own.
 
 **Against the pinned traces** (`make compare-gemma4`,
 three positions of `<bos>Hello,`, 145 files, 2026-09-11):
@@ -473,8 +473,7 @@ The family's chunk bound moved from 1e-1 / 4e-3 to 6e-1 / 2e-2 to cover
 both files, recorded in `generation-check.zig`; the F16 cache on this
 prompt is 8.2e-2 / 3.1e-3 stepped and 2.2e-1 / 7.1e-3 chunked (bound
 2.0 / 6e-2). A prefill tile that keeps Gemma's activations in F32 is a
-performance-versus-precision choice for the plan (ENGN-18), not a correctness
-gap.
+performance-versus-precision choice, not a correctness gap.
 
 **Catalogue and pull.** `gemma-4-12b` names the QAT file (commit
 `980b060c…`, SHA-256 `90fd44e2…`, 6,716,356,800 B) with `mmproj-BF16.gguf`

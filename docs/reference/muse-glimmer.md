@@ -315,8 +315,7 @@ the schedule needed from the backend, and what it reused unchanged
 Every cache is allocated for the full session capacity, sliding layers
 included (the CPU reference does the same): 52 × 2 × 256 halves per
 position, 1.7 GB at 32,768 tokens with the F16 cache. A ring layout for
-the 39 windowed layers is a session-layout unit of its own
-(ENGN-19 in [TODO.md](../../TODO.md)).
+the 39 windowed layers is a session-layout change of its own.
 
 **Against the pinned traces** (`make compare-muse-glimmer`, three
 positions of `<|begin_of_text|>Hello,`, 157 files, 2026-09-19):
@@ -406,8 +405,7 @@ bytes in it (`matvec_q4_k` here at 146.9 and 151.8 GB/s) — not the 6,656
 row count the unit suspected (Q5_K's 176-byte blocks stream 175–208 at the
 same geometry). Nothing routes to the split path; the kernels stay as the
 measured fixture and the exactness gates. The remaining per-family lever is
-per-block arithmetic on the Q4_K kernels (KERN-17 works only the ternary
-arm), and the unit's acceptance — the two row-poor shapes ≥ 190 GB/s and
+per-block arithmetic on the Q4_K kernels, and the unit's acceptance — the two row-poor shapes ≥ 190 GB/s and
 Muse decode at 512 ≥ 10.5 tok/s — was not met, so the MODL-13 acceptance
 record above stays the current one. The sweep is
 [bench.md § Split-K matvec sweep](bench.md#split-k-matvec-sweep-kern-15-2026-09-21);

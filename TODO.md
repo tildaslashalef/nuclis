@@ -138,7 +138,7 @@ ordered are exhausted; nothing here claims a
 final speedup before ENGN-17 measures it.
 
 Order: MODL-20 →
-ENGN-17 → REPO-09 → REPO-10 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 →
+ENGN-17 → REPO-09 → REPO-10 → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -159,17 +159,20 @@ plus its own record, and the two are wanted before the performance theme's
 last units. The verdict is Qwen-only, so it does not wait on them; its
 `bench` default change lands after them and sets each entry from the
 family's own record.
-ENGN-18 (Gemma's launch-bound decode and prefill), ENGN-19 (the ring
-layout: memory,
-not speed), and KERN-17 (the ternary experiment) are other-family or
-experimental and sit after the verdict, grouped so the performance theme
-finishes in one stretch; TERM-10 (chat polish) and the vision units follow.
-The performance group closes in the order of measured leverage: Gemma's
-decode and
-prefill, the ring layout, and last
-the ternary arithmetic, which is the least certain and may close negative;
-the small-batch tile, the split-K matvec, the long-context attention, and
-the fused norms led the order and closed below their targets. AGNT-12
+TERM-10 (chat polish) and the vision units follow.
+**Three units were dropped from the plan on 2026-09-21** (the user's call):
+Gemma's launch-bound decode and prefill (the Q4_0 tile and fewer launches),
+the ring layout for windowed caches, and the ternary matvec arithmetic.
+Their observations stay in the reference docs as measured limits — the
+Q4_0 prefill tile is untaken, the sliding caches are still allocated for
+the full capacity
+([gemma4.md § Metal plan](docs/reference/gemma4.md#metal-plan-modl-06-2026-09-11)),
+and the ternary matvec keeps its current arithmetic
+([bench.md § Bonsai 2](docs/reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18))
+— but no unit carries them. The performance group's remaining units are
+ENGN-17 and the two REPO units; the small-batch tile, the split-K matvec,
+the long-context attention, and the fused norms led the order and closed
+below their targets. AGNT-12
 (background commands) and
 APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 **REPO-09 and REPO-10 were ordered on 2026-09-21** (the user's call): the
@@ -184,9 +187,6 @@ verdicts as data.
 | ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
 | REPO-09 | One gate registry: the model-specific checks become a data manifest | 1 |
 | REPO-10 | Benchmark workloads and generated records; bench.md split by family | 2 |
-| ENGN-18 | Gemma 4 12B decode and prefill: the Q4_0 tile and fewer launches | 1–2 |
-| ENGN-19 | A ring layout for windowed attention caches | 2 |
-| KERN-17 | The ternary matvec's arithmetic (experiment; may close negative) | 1 |
 | TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
@@ -933,79 +933,6 @@ next step boundary. The parts, all bounded by the agent rules:
 profile's tool fixtures (`scripts/profile-tools-fixtures.py`), transcript
 rows, and cancellation tests. The risk is an orphaned process; the
 mitigation is the workspace owning every pid. Decide after TERM-10.
-
-## ENGN-18 — Gemma 4 12B decode and prefill: the Q4_0 tile and fewer launches
-
-**Facts (MODL-07/08 profile).** On the QAT file decode is 78–87 % of the
-reference and prefill 80 % at 512 falling to 51 % at 32,639, with nothing
-tuned for Gemma; the per-kernel profile says where the 5.6 ms/step gap is
-not: the Q4_0 matvecs hold their isolated bandwidth and are 85 % of the
-step. What is left, in order: the matvecs' share of the bus, the Q4_0
-prefill tile (two 16-value segments per block), the tied Q4_0 head, the
-sliding decode, and the wide global-layer attention; a prefill tile keeping
-activations in F32 belongs here too (the QAT checkpoint amplifies
-half-operand rounding about five times more than the K-quant file)
-([bench.md](docs/reference/bench.md), [gemma4.md](docs/reference/gemma4.md)).
-The RMS-norm launches led this list and moved to KERN-18, ahead of this
-unit; they measured 0.5 % of the step there (not the launch floor the
-profile suggested), so the dispatch bar moved back with nothing and this
-unit owns the tile work.
-
-**Design.** One experiment per session, each judged on the acceptance
-record: the Q4_0 tile's staged block decode and the F32-activation prefill
-tile (they share the tile and its fixtures), then the tied head, the
-sliding decode, or the wide attention if the profile still puts them on
-top. Stop when a step is within 5 % of the reference or the remaining items
-are the matvecs themselves.
-
-**Acceptance.** Prefill at 32,639 ≥ 65 % of the reference (from 51 %) and
-at 512 ≥ 85 % (from 80 %); decode at 512 ≥ 93 % of the reference (from
-78–87 %); the Gemma compare targets unchanged; the QAT acceptance record
-re-run.
-
-## ENGN-19 — A ring layout for windowed attention caches
-
-**Facts.** Gemma 4's 40 sliding layers see 1,024 positions but their caches
-are allocated for the full session capacity on both backends: 11.3 GB of a
-32K F16 session, of which a ring would keep 0.35 GB; Muse's 2,048-row
-windows are the same shape at 1.63 GiB per 32K session
-([gemma4.md](docs/reference/gemma4.md), [muse-glimmer.md](docs/reference/muse-glimmer.md)).
-
-**Design.** A `session.Layout` variant `.windowed_attention { window }`
-with a modulo row index, touching the CPU reference's slice, the decode
-slice, the chunk kernel's key loop (wraparound inside a chunk: two ranges
-per chunk), `snapshot`/`restore`, `checkpoint`/`truncate` (a rewind past
-the window's oldest row is refused), and `bytes()`; a session-layout unit
-with its own fixtures (a window smaller than a chunk, a chunk straddling
-the wrap, a rewind at the wrap). Memory is the deliverable; the speed
-must not regress.
-
-**Acceptance.** The Gemma 32K session under 3 GB and Muse's under 1 GB
-with decode and prefill within 2 % of before; every compare and
-generation check unchanged; the memory rows of both records refreshed.
-
-## KERN-17 — The ternary matvec's arithmetic (experiment)
-
-**Facts (KERN-10, MODL-17).** Bonsai 2 27B decodes at 1.3× the
-Qwen3.8-27B rate where its byte count promises 2–3×, and at 80–87 % of
-the PrismML fork: the PQ2_0 / PTQ1_0 matvecs move about 100 GB/s of
-weight bytes because they are at the kernel set's multiply-rate ceiling
-(one field mask per four values, one integer-to-float conversion, one FMA
-per value; a ternary byte carries twice the values of a 4-bit byte). The
-transform and the gather are 2.3 % of the step and not the lever
-([metal-backend.md](docs/reference/metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18),
-[bench.md](docs/reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
-
-**Design.** Two experiments in one session, on `bench-kernels`: packed
-integer products (several trits against several inputs in one
-integer multiply-add, the inputs pre-quantized to int8 per block) and one
-decoded weight shared across several inputs (the multi-row idea of
-KERN-12 applied to the ternary decode). Keep the one that measures above
-150 GB/s; close negative with the numbers if neither does — Bonsai is one
-entry and the payoff is uncertain.
-
-**Acceptance.** A measured verdict either way; if positive, Bonsai decode
-≥ 1.6× Qwen's on the record; the Bonsai compare targets unchanged.
 
 ## APPS-14 — Teacher-forced `eval` (drafted 2026-09-20 for decision)
 

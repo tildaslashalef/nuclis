@@ -549,17 +549,16 @@ Prefill is at 92 % at 512 and falls with length (78 % at 4K, 67 % at 16K,
 52 % at 32K): the reference's own rate falls too (210 → 143), but
 nuclis's falls faster, as Qwen's did before ENGN-08 found the chunk attention
 kernel latency-bound. Nothing in MODL-06 or MODL-07 was tuned for Gemma; the
-per-kernel profile on this file is the follow-up already planned (ENGN-18
-in [TODO.md](../../TODO.md)), and the 512-wide global layers'
-chunk attention (scores recomputed per value split, MODL-06) is the first
-thing to profile.
+per-kernel profile on this file is the follow-up this record points at,
+and the 512-wide global layers' chunk attention (scores recomputed per
+value split, MODL-06) is the first thing to profile.
 
 **Memory.** The session block is 11,274,289,152 bytes (10.5 GiB) at
 32,768 capacity: every one of the 40 sliding layers is allocated for the
 full capacity although it reads only the last 1,024 rows ([gemma4.md §
 Metal plan](gemma4.md#metal-plan-modl-06-2026-09-11)); a ring layout for
-those layers would cut it to about 0.35 GB and is the plan's
-session-layout unit (ENGN-19). Peak resident set of the `bench` process was
+those layers would cut it to about 0.35 GB and is a session-layout change
+of its own. Peak resident set of the `bench` process was
 10.75 GiB at every length and its peak footprint 11.74–11.80 GB; the
 7.37 GB weight file is memory-mapped and charged to wired memory, so the
 headroom is a calculation: 48 GiB − 7.37 GB − 11.8 GB ≈ 29 GiB at 32K
@@ -605,7 +604,7 @@ at 32K: the Q4_0 matmul tile decodes two 16-value segments per 32-value
 block with two 8-byte loads and a scale read each, where the K-quant
 tiles amortize their loads over 256 values, and the long-context fall is
 the chunk attention latency already named for the K-quant file. Both are
-the per-kernel profile's first targets (ENGN-18 in [TODO.md](../../TODO.md)).
+the per-kernel profile's first targets.
 The reference's own 16K row has a 15 % spread this time (132–175 tok/s),
 so ratios at that length are indicative.
 
@@ -764,8 +763,8 @@ The byte count alone projected two to three times the Qwen rate; the
 kernel set delivers 1.3×, and the fork's own kernels 1.6× over the
 mainline Qwen record (17.05 against 9.66 at 512). Closing the rest is a
 different ternary arithmetic in the matvec (packed integer products, or
-one decoded weight across several inputs), a kernel unit the plan
-carries (KERN-17), not a plan change. From 512 to 32K nuclis adds 25.9 ms per step
+one decoded weight across several inputs), a kernel experiment of its
+own. From 512 to 32K nuclis adds 25.9 ms per step
 and the fork 19.9: the same attention-and-recurrent growth as the Qwen
 record (KERN-08's flash-decoding kernel over 16 attention layers, the 48
 DeltaNet states), on a smaller base.
@@ -877,7 +876,7 @@ not this unit's.
 **Memory.** The session block is 1,744,830,464 bytes (1.63 GiB) at
 32,768 capacity: 52 layers × 2 × 256 halves per position, every sliding
 layer allocated for the full capacity although it reads only the last
-2,048 rows (a ring layout is the plan's session-layout unit, ENGN-19). Peak
+2,048 rows (a ring layout would be a session-layout change of its own). Peak
 resident set of the `bench` process was 1.80 GiB at every length and its
 peak footprint 2.17–2.22 GB; the 15.88 GB weight file is memory-mapped and
 charged to wired memory, so the headroom is a calculation: 48 GiB −
@@ -1168,11 +1167,9 @@ Prefill in the same run: the 32-token matmul tile runs at 25–29 GB/s on a
 22-token prompt, the known small-M case (ENGN-05; one token tile leaves too
 few threadgroups), not a Q4_0 property.
 
-Follow-ups from this profile are in the plan
-([TODO.md](../../TODO.md): the norm launches are KERN-18 across all three
-families, and ENGN-18 keeps the Q4_0 prefill tile; the
-split-K candidate for the matvecs was KERN-15 and measured behind the
-single pass); none was scheduled before TERM-01.
+Follow-ups from this profile: the norm launches became KERN-18 across all
+three families, the split-K candidate for the matvecs was KERN-15 and
+measured behind the single pass, and the Q4_0 prefill tile is untaken.
 
 ## Kernel micro-benchmark
 
