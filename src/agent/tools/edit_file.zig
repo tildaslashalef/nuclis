@@ -20,6 +20,7 @@ pub const tool: root.Tool = .{
     .description = "Replace one exact, unique text sequence in a workspace file. Fails without writing on zero or multiple matches; `new_string` may be empty to delete.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"old_string\":{\"type\":\"string\"},\"new_string\":{\"type\":\"string\"}},\"required\":[\"path\",\"old_string\",\"new_string\"]}",
     .label = "Editing",
+    .display = "Edit",
     .subject = "path",
     .run = run,
 };
@@ -89,7 +90,9 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
 
     const text = try std.fmt.allocPrint(alloc, "edited {s}: 1 replacement", .{path});
     errdefer alloc.free(text);
-    const summary = try root.changeSummary(alloc, change.diff.rows);
+    const counts = try root.changeSummary(alloc, change.diff.rows);
+    defer alloc.free(counts);
+    const summary = try std.fmt.allocPrint(alloc, "Edited {s}: {s} lines", .{ path, counts });
     keep = true;
     return .{ .text = text, .change = change, .summary = summary };
 }
@@ -125,7 +128,7 @@ test "edit_file replaces one unique match and diffs the change" {
     try testing.expect(std.mem.indexOf(u8, result.text, "1 replacement") != null);
     try testing.expect(std.mem.indexOf(u8, result.change.?.diff.unified, "-two") != null);
     try testing.expect(std.mem.indexOf(u8, result.change.?.diff.unified, "+TWO") != null);
-    try testing.expectEqualStrings("+1 −1", result.summary.?);
+    try testing.expect(std.mem.endsWith(u8, result.summary.?, ": +1 −1 lines"));
     const contents = try fixture.tmp.dir.readFileAlloc(testing.io, "a.txt", alloc, .limited(1024));
     defer alloc.free(contents);
     try testing.expectEqualStrings("one\nTWO\nthree\n", contents);

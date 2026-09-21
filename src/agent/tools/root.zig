@@ -167,6 +167,8 @@ pub const Tool = struct {
     /// The gerund the call row starts with (`Reading`, `Running`, …).
     /// Presentation only; the model still sees `name`.
     label: []const u8,
+    /// The short name the transcript's call row uses (`Read`, `Bash`).
+    display: []const u8,
     /// The primary parameter: the first property of `parameters`, shown
     /// after the label, or on the detail row when `detail_prefix` is set.
     subject: []const u8,
@@ -202,36 +204,33 @@ pub const Described = struct {
     }
 };
 
-/// Humanizes one call for the transcript: the label and the subject, the
-/// other arguments left to the result's detail row. The model-facing name
-/// and raw JSON are untouched. Anything unparseable falls back to
-/// `label <raw arguments>`.
-pub fn describe(alloc: Allocator, name: []const u8, arguments: []const u8) !Described {
-    const tool = find(name) orelse return .{ .summary = try std.fmt.allocPrint(alloc, "{s} {s}", .{ name, arguments }) };
-    const parsed = std.json.parseFromSlice(std.json.Value, alloc, arguments, .{}) catch
-        return .{ .summary = try std.fmt.allocPrint(alloc, "{s} {s}", .{ tool.label, arguments }) };
-    defer parsed.deinit();
-    if (parsed.value != .object) return .{ .summary = try std.fmt.allocPrint(alloc, "{s} {s}", .{ tool.label, arguments }) };
-    const subject = parsed.value.object.get(tool.subject);
+/// Cells of the argument shown on the call row before it is cut.
+pub const max_argument_cells: usize = 72;
 
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-    try out.writer.writeAll(tool.label);
-    if (tool.detail_prefix) |prefix| {
-        const summary = try out.toOwnedSlice();
-        errdefer alloc.free(summary);
-        const value = subject orelse return .{ .summary = summary };
-        var detail: std.Io.Writer.Allocating = .init(alloc);
-        errdefer detail.deinit();
-        try detail.writer.writeAll(prefix);
-        try writeDisplayValue(&detail.writer, value);
-        return .{ .summary = summary, .detail = try detail.toOwnedSlice() };
-    }
-    if (subject) |value| {
-        try out.writer.writeByte(' ');
-        try writeDisplayValue(&out.writer, value);
-    }
-    return .{ .summary = try out.toOwnedSlice() };
+/// Humanizes one call for the transcript: `Name(argument)`, the argument
+/// being the subject parameter, cut to `max_argument_cells`; a cut argument
+/// is repeated in full on the detail row (`$ ` before a command). The
+/// model-facing name and raw JSON are untouched. Anything unparseable falls
+/// back to `Name(<raw arguments>)`.
+pub fn describe(alloc: Allocator, name: []const u8, arguments: []const u8) !Described {
+    const tool = find(name) orelse return .{ .summary = try std.fmt.allocPrint(alloc, "{s}({s})", .{ name, arguments }) };
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, arguments, .{}) catch
+        return .{ .summary = try std.fmt.allocPrint(alloc, "{s}({s})", .{ tool.display, arguments }) };
+    defer parsed.deinit();
+    if (parsed.value != .object) return .{ .summary = try std.fmt.allocPrint(alloc, "{s}({s})", .{ tool.display, arguments }) };
+    const subject = parsed.value.object.get(tool.subject) orelse return .{ .summary = try std.fmt.allocPrint(alloc, "{s}()", .{tool.display}) };
+
+    var full: std.Io.Writer.Allocating = .init(alloc);
+    defer full.deinit();
+    try writeDisplayValue(&full.writer, subject);
+    // `fit` borrows: the cut is a prefix of the full text.
+    const shown = try tui.view.fit(alloc, full.written(), max_argument_cells);
+    const cut = shown.len < full.written().len;
+    const summary = try std.fmt.allocPrint(alloc, "{s}({s}{s})", .{ tool.display, shown, if (cut) "…" else "" });
+    errdefer alloc.free(summary);
+    if (!cut) return .{ .summary = summary };
+    const detail = try std.fmt.allocPrint(alloc, "{s}{s}", .{ tool.detail_prefix orelse "", full.written() });
+    return .{ .summary = summary, .detail = detail };
 }
 
 /// A parameter value on the one-line display: strings are literal, everything
@@ -275,30 +274,44 @@ test "every tool's subject is the first property of its schema" {
     }
 }
 
-test "describe humanizes a call: label and subject, a command on its own row" {
+test "describe humanizes a call: Name(argument), a long argument cut and repeated in full below" {
     const alloc = std.testing.allocator;
     var read = try describe(alloc, "read_file", "{\"path\":\"TODO.md\",\"count\":24,\"offset\":126}");
     defer read.deinit(alloc);
-    try std.testing.expectEqualStrings("Reading TODO.md", read.summary);
+    try std.testing.expectEqualStrings("Read(TODO.md)", read.summary);
     try std.testing.expect(read.detail == null);
 
     var bash_line = try describe(alloc, "bash", "{\"command\":\"ls -la\"}");
     defer bash_line.deinit(alloc);
-    try std.testing.expectEqualStrings("Running command", bash_line.summary);
-    try std.testing.expectEqualStrings("$ ls -la", bash_line.detail.?);
+    try std.testing.expectEqualStrings("Bash(ls -la)", bash_line.summary);
+    try std.testing.expect(bash_line.detail == null);
 
     // A multi-line command stays on one display row.
     var multiline = try describe(alloc, "bash", "{\"command\":\"echo a\\necho b\"}");
     defer multiline.deinit(alloc);
-    try std.testing.expectEqualStrings("$ echo a echo b", multiline.detail.?);
+    try std.testing.expectEqualStrings("Bash(echo a echo b)", multiline.summary);
+
+    // A long command is cut on the row and given in full underneath.
+    var long = try describe(alloc, "bash", "{\"command\":\"cd /Users/alef/Code/playground && python3 -m pytest tests/test_shapes.py -v 2>/dev/null || python3 -m unittest\"}");
+    defer long.deinit(alloc);
+    try std.testing.expectEqualStrings("Bash(cd /Users/alef/Code/playground && python3 -m pytest tests/test_shapes.py…)", long.summary);
+    try std.testing.expectEqualStrings("$ cd /Users/alef/Code/playground && python3 -m pytest tests/test_shapes.py -v 2>/dev/null || python3 -m unittest", long.detail.?);
+
+    var grep_call = try describe(alloc, "grep", "{\"pattern\":\"needle\"}");
+    defer grep_call.deinit(alloc);
+    try std.testing.expectEqualStrings("Grep(needle)", grep_call.summary);
+
+    var missing = try describe(alloc, "read_file", "{\"count\":1}");
+    defer missing.deinit(alloc);
+    try std.testing.expectEqualStrings("Read()", missing.summary);
 
     var bad = try describe(alloc, "read_file", "not json");
     defer bad.deinit(alloc);
-    try std.testing.expectEqualStrings("Reading not json", bad.summary);
+    try std.testing.expectEqualStrings("Read(not json)", bad.summary);
 
     var unknown = try describe(alloc, "nope", "{\"x\":1}");
     defer unknown.deinit(alloc);
-    try std.testing.expectEqualStrings("nope {\"x\":1}", unknown.summary);
+    try std.testing.expectEqualStrings("nope({\"x\":1})", unknown.summary);
 }
 
 test "resolve accepts inside the workspace and refuses escapes" {

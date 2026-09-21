@@ -19,6 +19,7 @@ pub const tool: root.Tool = .{
     .description = "Search workspace files for a literal, case-sensitive string. Returns matching lines as `path:line: text`; bounded and sorted.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}",
     .label = "Searching",
+    .display = "Grep",
     .subject = "pattern",
     .run = run,
 };

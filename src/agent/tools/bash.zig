@@ -22,6 +22,7 @@ pub const tool: root.Tool = .{
     .description = "Run one shell command in the workspace. Combined stdout and stderr is bounded and the exit status is reported.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}",
     .label = "Running command",
+    .display = "Bash",
     .subject = "command",
     .detail_prefix = "$ ",
     .run = run,

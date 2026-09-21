@@ -227,6 +227,8 @@ pub const Glyphs = struct {
     /// Before a settled tool call, and before the detail row under it.
     done: []const u8,
     detail: []const u8,
+    /// The operation dot: one cell, coloured by the call's state.
+    dot: []const u8,
     /// Status-bar decorations: the idle marker, the labels of context,
     /// token counts, prefill, decode, and reasoning effort.
     idle: []const u8,
@@ -264,6 +266,7 @@ pub const unicode_glyphs: Glyphs = .{
     .fold_closed = "▸",
     .done = "●",
     .detail = "└",
+    .dot = "●",
     .idle = "◆",
     .context = "▤",
     .tokens = "⇅",
@@ -295,6 +298,7 @@ pub const ascii_glyphs: Glyphs = .{
     .fold_closed = ">",
     .done = "*",
     .detail = "\\",
+    .dot = "*",
     .idle = "*",
     .context = "#",
     .tokens = "=",

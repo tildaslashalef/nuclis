@@ -46,7 +46,7 @@ pub const Block = union(enum) {
     user: []u8,
     thinking: Thinking,
     answer: Answer,
-    tool_call: struct { id: event_mod.Id, name: []u8, summary: []u8, detail: ?[]u8 = null, running: bool = true },
+    tool_call: struct { id: event_mod.Id, name: []u8, summary: []u8, detail: ?[]u8 = null, running: bool = true, failed: bool = false },
     tool_result: struct { id: event_mod.Id, text: []u8, truncated: bool, is_error: bool, summary: []u8 },
     diff: Diff,
     notice: []u8,
@@ -55,6 +55,9 @@ pub const Block = union(enum) {
     /// The end of a turn: its stop marker, if it needs one, and the blank row
     /// that separates it from the next turn.
     turn_end: struct { stop: event_mod.StopReason },
+    /// What a run of tool calls amounted to (`Read 2 files, ran 1 shell
+    /// command`), written where the model's text resumes after them.
+    ops: []u8,
 
     pub const Thinking = struct {
         text: std.ArrayList(u8) = .empty,
@@ -77,7 +80,7 @@ pub const Block = union(enum) {
 
     fn deinit(self: *Block, alloc: Allocator) void {
         switch (self.*) {
-            .user, .notice, .info => |text| alloc.free(text),
+            .user, .notice, .info, .ops => |text| alloc.free(text),
             .thinking => |*t| t.text.deinit(alloc),
             .answer => |*a| a.text.deinit(alloc),
             .tool_call => |c| {
@@ -111,6 +114,45 @@ pub const Block = union(enum) {
     }
 };
 
+/// Tool calls counted by what they did, for the `ops` row.
+pub const OpsCount = struct {
+    reads: usize = 0,
+    searches: usize = 0,
+    commands: usize = 0,
+    writes: usize = 0,
+
+    fn any(self: OpsCount) bool {
+        return self.reads + self.searches + self.commands + self.writes > 0;
+    }
+
+    fn add(self: *OpsCount, name: []const u8) void {
+        if (std.mem.eql(u8, name, "read_file")) self.reads += 1 else if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "glob")) self.searches += 1 else if (std.mem.eql(u8, name, "bash")) self.commands += 1 else if (isWrite(name)) self.writes += 1 else self.commands += 1;
+    }
+
+    /// `Read 2 files, searched 3 times, ran 1 shell command, wrote 1 file`.
+    fn text(self: OpsCount, a: Allocator) ![]u8 {
+        var w: std.Io.Writer.Allocating = .init(a);
+        var parts: usize = 0;
+        if (self.reads > 0) try part(&w.writer, &parts, "Read {d} file{s}", self.reads);
+        if (self.searches > 0) try part(&w.writer, &parts, "searched {d} time{s}", self.searches);
+        if (self.commands > 0) try part(&w.writer, &parts, "ran {d} shell command{s}", self.commands);
+        if (self.writes > 0) try part(&w.writer, &parts, "wrote {d} file{s}", self.writes);
+        const out = try w.toOwnedSlice();
+        if (out.len > 0) out[0] = std.ascii.toUpper(out[0]);
+        return out;
+    }
+
+    fn part(w: *std.Io.Writer, parts: *usize, comptime fmt: []const u8, n: usize) !void {
+        if (parts.* > 0) try w.writeAll(", ");
+        try w.print(fmt, .{ n, if (n == 1) "" else "s" });
+        parts.* += 1;
+    }
+};
+
+fn isWrite(name: []const u8) bool {
+    return std.mem.eql(u8, name, "write_file") or std.mem.eql(u8, name, "edit_file");
+}
+
 /// What every rendering needs: the width to wrap at and the palette.
 pub const Render = struct { width: usize, th: theme.Theme };
 
@@ -126,10 +168,15 @@ pub const Live = struct {
     /// because it advances from a clock; the transcript has no `Io`. Empty
     /// falls back to the settled call glyph.
     spinner: []const u8 = "",
+    /// The running dot's phase: lit or dim. The caller alternates it on its
+    /// repaint cadence, so a long call blinks slowly.
+    pulse: bool = true,
 };
 
 pub const Transcript = struct {
     alloc: Allocator,
+    /// Tool calls since the last `ops` row, by kind, for the next one.
+    ops: OpsCount = .{},
     blocks: std.ArrayList(Block) = .empty,
     /// Blocks fully written above the live region.
     written: usize = 0,
@@ -151,6 +198,7 @@ pub const Transcript = struct {
         self.clear();
         self.written = 0;
         self.rows = 0;
+        self.ops = .{};
     }
 
     fn clear(self: *Transcript) void {
@@ -183,6 +231,7 @@ pub const Transcript = struct {
             .notice => |text| try self.blocks.append(self.alloc, .{ .notice = try self.alloc.dupe(u8, text) }),
             .info => |text| try self.blocks.append(self.alloc, .{ .info = try self.alloc.dupe(u8, text) }),
             .thinking_delta => |text| {
+                try self.summarizeOps();
                 const block = try self.openThinking();
                 try block.text.appendSlice(self.alloc, text);
             },
@@ -192,6 +241,7 @@ pub const Transcript = struct {
                 block.closed = true;
             },
             .answer_delta => |text| {
+                try self.summarizeOps();
                 const block = try self.openAnswer();
                 try block.text.appendSlice(self.alloc, text);
             },
@@ -207,12 +257,16 @@ pub const Transcript = struct {
                 const detail: ?[]u8 = if (call.detail) |detail| try self.alloc.dupe(u8, detail) else null;
                 errdefer if (detail) |d| self.alloc.free(d);
                 try self.blocks.append(self.alloc, .{ .tool_call = .{ .id = call.id, .name = name, .summary = summary, .detail = detail } });
+                self.ops.add(call.name);
             },
             .tool_result => |result| {
                 // The call this result answers is settled now: its line stops
                 // animating and can be written to the scrollback.
                 for (self.blocks.items) |*block| {
-                    if (block.* == .tool_call and block.tool_call.id == result.id) block.tool_call.running = false;
+                    if (block.* == .tool_call and block.tool_call.id == result.id) {
+                        block.tool_call.running = false;
+                        block.tool_call.failed = result.is_error;
+                    }
                 }
                 const text = try self.alloc.dupe(u8, result.text);
                 errdefer self.alloc.free(text);
@@ -238,9 +292,20 @@ pub const Transcript = struct {
                     .answer => |*a| a.closed = true,
                     else => {},
                 };
+                try self.summarizeOps();
                 try self.blocks.append(self.alloc, .{ .turn_end = .{ .stop = end.stop } });
             },
         }
+    }
+
+    /// Writes the `ops` row for the calls made since the last one, if any.
+    /// Called where the model's text resumes and at the end of a turn.
+    fn summarizeOps(self: *Transcript) !void {
+        if (!self.ops.any()) return;
+        const text = try self.ops.text(self.alloc);
+        errdefer self.alloc.free(text);
+        try self.blocks.append(self.alloc, .{ .ops = text });
+        self.ops = .{};
     }
 
     /// The open thinking block, created when there is none. Only the *last*
@@ -326,13 +391,11 @@ pub const Transcript = struct {
                     try pushRaw(a, &produced, ans.text.items[ans.flushed..], options.width);
                 },
                 .tool_call => |call| {
-                    // A running call keeps its spinner here, in the region,
-                    // until the result settles it into the scrollback.
+                    // A running call keeps its dot pulsing here, in the
+                    // region, until the result settles it into the scrollback.
                     if (call.running) {
-                        const gl = options.th.glyphs();
-                        const lead = if (options.spinner.len > 0) options.spinner else gl.done;
-                        try produced.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {s}", .{ lead, call.summary }), .style = .tool_call });
-                        if (call.detail) |detail| try pushDetail(a, &produced, gl, detail, options.width, .tool_result);
+                        try produced.append(a, try callRow(a, call, options.th, options.pulse));
+                        if (call.detail) |detail| try pushDetail(a, &produced, options.th.glyphs(), detail, options.width, .tool_result);
                     } else try self.render(a, &produced, block, shape, .remainder);
                 },
                 else => try self.render(a, &produced, block, shape, .remainder),
@@ -391,10 +454,10 @@ pub const Transcript = struct {
                 .written => ans.text.items[0..ans.flushed],
             }, options),
             .tool_call => |call| {
-                const text = try std.fmt.allocPrint(a, "{s} {s}", .{ gl.done, call.summary });
-                try out.append(a, .{ .text = text, .style = .tool_call });
+                try out.append(a, try callRow(a, call, th, true));
                 if (call.detail) |detail| try pushDetail(a, out, gl, detail, options.width, .tool_result);
             },
+            .ops => |text| try pushWrapped(a, out, text, options.width, .dim),
             .tool_result => |result| {
                 // The result text is the model's; the reader gets one row
                 // (the tool's summary), or the message when the call failed.
@@ -614,6 +677,25 @@ fn foldLabel(a: Allocator, t: Block.Thinking, expanded: bool, th: theme.Theme) !
 const max_error_rows: usize = 3;
 
 /// One detail row under a tool call: the corner glyph and the text.
+/// The call's row: the dot in the state's colour, then `Name(argument)`.
+/// Raw, since the dot and the name carry different styles; the summary is
+/// the model's argument and is sanitized here.
+fn callRow(a: Allocator, call: anytype, th: theme.Theme, pulse: bool) !Row {
+    const dot: theme.Style = if (call.running)
+        (if (pulse) .op_running else .dim)
+    else if (call.failed)
+        .op_error
+    else if (isWrite(call.name))
+        .op_write
+    else
+        .op_ok;
+    var w: std.Io.Writer.Allocating = .init(a);
+    try w.writer.print("{s}{s}{s} {s}", .{ th.paint(dot), th.glyphs().dot, theme.reset, th.paint(.tool_call) });
+    try view.safe(&w.writer, call.summary);
+    try w.writer.writeAll(theme.reset);
+    return .{ .text = w.written(), .raw = true };
+}
+
 fn pushDetail(a: Allocator, out: *std.ArrayList(Row), gl: theme.Glyphs, text: []const u8, width: usize, style: ?theme.Style) !void {
     try pushWrapped(a, out, try std.fmt.allocPrint(a, "{s} {s}", .{ gl.detail, text }), width, style);
 }
@@ -653,15 +735,29 @@ fn transcript() Transcript {
     return .{ .alloc = testing.allocator };
 }
 
-/// The text of every row, joined: the tests assert on content and order, and
-/// the escape sequences are pinned in `theme.zig`.
+/// The text of every row, joined and stripped of escapes: the tests assert
+/// on content and order, and the styles are pinned in `theme.zig`.
 fn texts(a: Allocator, rows: []const Row) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     for (rows) |row| {
-        try out.appendSlice(a, row.text);
+        try out.appendSlice(a, try stripped(a, row.text));
         try out.append(a, '\n');
     }
     return out.toOwnedSlice(a);
+}
+
+fn stripped(a: Allocator, text: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (text[i] == 0x1b) {
+            i += 1;
+            while (i < text.len and text[i] != 'm') i += 1;
+            continue;
+        }
+        try out.append(a, text[i]);
+    }
+    return out.items;
 }
 
 test "a closed block is written exactly once" {
@@ -791,7 +887,7 @@ test "every block kind renders, including the ones phase 2 produces" {
     try tr.apply(.{ .turn_end = .{ .stop = .token_budget } });
     const rows = try tr.takeClosed(a, options);
     const s = try texts(a, rows);
-    try testing.expect(std.mem.indexOf(u8, s, "● Reading src/main.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, s, "● Reading src/main.zig") != null); // the summary as given; describe() shapes the real one
     // The result's text is the model's; the reader sees the tool's one row.
     try testing.expect(std.mem.indexOf(u8, s, "line one") == null);
     try testing.expect(std.mem.indexOf(u8, s, "└ lines 1 to 2 of 9 · truncated, continue with offset=3") != null);
@@ -807,37 +903,105 @@ test "every block kind renders, including the ones phase 2 produces" {
     }
     try testing.expect(std.mem.indexOf(u8, s, "output budget reached") != null);
     // The styles a reader needs to tell them apart, in the order rendered.
-    // The diff's `+`/`-` styles are embedded in its `raw` rows rather than set
-    // on the row, so only the header appears here.
+    // The call row's and the diff's styles are embedded in their `raw` rows
+    // rather than set on the row, so only the header appears here.
     var styles: std.ArrayList(theme.Style) = .empty;
     for (rows) |row| if (row.style) |style| try styles.append(a, style);
-    try testing.expect(std.mem.indexOfScalar(theme.Style, styles.items, .tool_call) != null);
     try testing.expect(std.mem.indexOfScalar(theme.Style, styles.items, .diff_header) != null);
     try testing.expect(std.mem.indexOfScalar(theme.Style, styles.items, .error_text) != null);
 }
 
-test "a tool call keeps a spinner while running and settles to the done glyph" {
+test "a running call's dot pulses in the region and settles to the state's colour" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const th: theme.Theme = .{ .kind = .truecolor };
+    const options: Render = .{ .width = 80, .th = th };
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "bash", .summary = "Bash(make test)", .detail = "$ make test" } });
+    // Running: the dot is lit in one phase and dim in the other, the text the same.
+    const lit = try tr.liveRows(a, .{ .width = 80, .th = th, .budget = 10, .pulse = true });
+    const dimmed = try tr.liveRows(a, .{ .width = 80, .th = th, .budget = 10, .pulse = false });
+    try testing.expectEqualStrings("● Bash(make test)", try stripped(a, lit[0].text));
+    try testing.expectEqualStrings("● Bash(make test)", try stripped(a, dimmed[0].text));
+    try testing.expect(std.mem.startsWith(u8, lit[0].text, th.paint(.op_running)));
+    try testing.expect(std.mem.startsWith(u8, dimmed[0].text, th.paint(.dim)));
+    try testing.expect(!std.mem.eql(u8, lit[0].text, dimmed[0].text));
+    try testing.expectEqualStrings("└ $ make test", lit[1].text);
+    // Nothing has closed: the line is still in flight.
+    try testing.expectEqual(@as(usize, 0), (try tr.takeClosed(a, options)).len);
+    // The result settles it: a clean run's dot is green and it is written once.
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "ok\n", .truncated = false, .is_error = false } });
+    const closed = try tr.takeClosed(a, options);
+    try testing.expectEqual(@as(usize, 2), closed.len);
+    try testing.expect(std.mem.startsWith(u8, closed[0].text, th.paint(.op_ok)));
+    try testing.expectEqualStrings("● Bash(make test)", try stripped(a, closed[0].text));
+    try testing.expectEqualStrings("└ $ make test", closed[1].text);
+
+    // A failed call is red, a write is blue; the ascii set uses a star.
+    try tr.apply(.{ .tool_call = .{ .id = 2, .name = "bash", .summary = "Bash(false)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 2, .text = "", .truncated = false, .is_error = true, .summary = "exit 1 · 0 lines" } });
+    try tr.apply(.{ .tool_call = .{ .id = 3, .name = "write_file", .summary = "Write(a.txt)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 3, .text = "created a.txt (6 bytes)", .truncated = false, .is_error = false, .summary = "Wrote 1 line to a.txt" } });
+    const more = try tr.takeClosed(a, options);
+    try testing.expect(std.mem.startsWith(u8, more[0].text, th.paint(.op_error)));
+    try testing.expect(std.mem.startsWith(u8, more[2].text, th.paint(.op_write)));
+    try testing.expectEqualStrings("└ Wrote 1 line to a.txt", more[3].text);
+    var ascii = transcript();
+    defer ascii.deinit();
+    try ascii.apply(.{ .tool_call = .{ .id = 1, .name = "read_file", .summary = "Read(x)" } });
+    try ascii.apply(.{ .tool_result = .{ .id = 1, .text = "", .truncated = false, .is_error = false } });
+    const star = try ascii.takeClosed(a, .{ .width = 80, .th = .{ .kind = .plain, .glyph_set = .ascii } });
+    try testing.expectEqualStrings("* Read(x)", try stripped(a, star[0].text));
+    // The summary is the model's argument: control bytes never reach the row.
+    try ascii.apply(.{ .tool_call = .{ .id = 2, .name = "bash", .summary = "Bash(\x1b[2Jls)" } });
+    try ascii.apply(.{ .tool_result = .{ .id = 2, .text = "", .truncated = false, .is_error = false } });
+    const clean = try ascii.takeClosed(a, .{ .width = 80, .th = .{ .kind = .plain, .glyph_set = .ascii } });
+    try testing.expect(std.mem.indexOf(u8, clean[0].text, "\x1b[2J") == null);
+    try testing.expectEqualStrings("* Bash([2Jls)", try stripped(a, clean[0].text));
+}
+
+test "a run of tool calls is summed up where the text resumes, and at the end of the turn" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var tr = transcript();
     defer tr.deinit();
     const options: Render = .{ .width = 80, .th = .{ .kind = .plain } };
-    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "bash", .summary = "Running command", .detail = "$ make test" } });
-    // Running: the live region shows the spinner frame, not the settled
-    // glyph, and the command is already under it.
-    const live = try tr.liveRows(a, .{ .width = 80, .th = options.th, .budget = 10, .spinner = "⠋" });
-    try testing.expectEqualStrings("⠋ Running command", live[0].text);
-    try testing.expectEqualStrings("└ $ make test", live[1].text);
-    // Nothing has closed: the line is still in flight.
-    try testing.expectEqual(@as(usize, 0), (try tr.takeClosed(a, options)).len);
-    // The result with the same id settles it, and it is written once. A
-    // clean run adds no row of its own.
-    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "ok\n", .truncated = false, .is_error = false } });
-    const closed = try tr.takeClosed(a, options);
-    try testing.expectEqual(@as(usize, 2), closed.len);
-    try testing.expectEqualStrings("● Running command", closed[0].text);
-    try testing.expectEqualStrings("└ $ make test", closed[1].text);
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "read_file", .summary = "Read(a)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "", .truncated = false, .is_error = false } });
+    try tr.apply(.{ .tool_call = .{ .id = 2, .name = "read_file", .summary = "Read(b)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 2, .text = "", .truncated = false, .is_error = false } });
+    try tr.apply(.{ .tool_call = .{ .id = 3, .name = "grep", .summary = "Grep(x)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 3, .text = "", .truncated = false, .is_error = false } });
+    try tr.apply(.{ .tool_call = .{ .id = 4, .name = "bash", .summary = "Bash(ls)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 4, .text = "", .truncated = false, .is_error = false } });
+    try tr.apply(.{ .tool_call = .{ .id = 5, .name = "edit_file", .summary = "Edit(a)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 5, .text = "", .truncated = false, .is_error = false } });
+    try tr.apply(.{ .answer_delta = "Done." });
+    try tr.apply(.{ .turn_end = .{ .stop = .eos } });
+    const rows = try tr.takeClosed(a, options);
+    const s = try texts(a, rows);
+    const summary = std.mem.indexOf(u8, s, "Read 2 files, searched 1 time, ran 1 shell command, wrote 1 file").?;
+    try testing.expect(summary > std.mem.indexOf(u8, s, "Edit(a)").?);
+    try testing.expect(summary < std.mem.indexOf(u8, s, "Done.").?);
+    for (rows) |row| if (std.mem.indexOf(u8, row.text, "Read 2 files") != null) try testing.expectEqual(theme.Style.dim, row.style.?);
+    // One summary per run: the next turn's counters start empty, and a turn
+    // that ends on a call still gets its row.
+    tr.reset();
+    try tr.apply(.{ .tool_call = .{ .id = 6, .name = "bash", .summary = "Bash(make)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 6, .text = "", .truncated = false, .is_error = false } });
+    try tr.apply(.{ .turn_end = .{ .stop = .cancelled } });
+    const cancelled = try texts(a, try tr.takeClosed(a, options));
+    try testing.expect(std.mem.indexOf(u8, cancelled, "Ran 1 shell command") != null);
+    try testing.expect(std.mem.indexOf(u8, cancelled, "Read 2") == null);
+    // A turn without tools writes nothing of the kind.
+    tr.reset();
+    try tr.apply(.{ .answer_delta = "Just text." });
+    try tr.apply(.{ .turn_end = .{ .stop = .eos } });
+    const plain = try texts(a, try tr.takeClosed(a, options));
+    try testing.expect(std.mem.indexOf(u8, plain, "shell command") == null);
 }
 
 test "a failed tool shows its message under the call, bounded to three rows" {

@@ -13,6 +13,7 @@ pub const tool: root.Tool = .{
     .description = "Read a bounded region of a UTF-8 text file in the workspace. `offset` is a 1-based line, `count` the number of lines (default 200, at most 2000); the result says where to continue.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"path\"]}",
     .label = "Reading",
+    .display = "Read",
     .subject = "path",
     .run = run,
 };

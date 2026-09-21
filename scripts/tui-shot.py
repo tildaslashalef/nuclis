@@ -317,7 +317,12 @@ def run(args):
     out_dir = ROOT / args.out
     out_dir.mkdir(parents=True, exist_ok=True)
     columns, rows = (int(x) for x in args.size.lower().split('x'))
-    session = Session(args.session, (columns, rows), args.command, ROOT / args.cwd)
+    command = args.command
+    if command.startswith('./'):
+        # A repository-relative binary, whatever --cwd the app runs in.
+        head, _, tail = command.partition(' ')
+        command = str(ROOT / head[2:]) + (' ' + tail if tail else '')
+    session = Session(args.session, (columns, rows), command, ROOT / args.cwd)
     session.start()
     ghostty = Ghostty(session) if args.ghostty else None
     if ghostty:

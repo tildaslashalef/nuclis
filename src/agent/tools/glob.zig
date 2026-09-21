@@ -13,6 +13,7 @@ pub const tool: root.Tool = .{
     .description = "List workspace-relative file paths matching one glob pattern (`*`, `?`, `[...]`, `**`). Hidden entries are excluded unless the pattern names them.",
     .parameters = "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}},\"required\":[\"pattern\"]}",
     .label = "Listing",
+    .display = "Glob",
     .subject = "pattern",
     .run = run,
 };

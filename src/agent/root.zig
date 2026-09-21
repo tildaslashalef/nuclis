@@ -281,6 +281,8 @@ const Ui = struct {
                 .budget = @max(max_live, 1),
                 .thinking_label = try self.busyThinkingLabel(a),
                 .spinner = self.spinnerFrame(),
+                // Five frames a phase: about half a second at the tick's cadence.
+                .pulse = (self.frame / 5) % 2 == 0,
             });
             try rows.appendSlice(a, live);
             clampTop(&rows, max_live);

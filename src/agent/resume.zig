@@ -314,14 +314,14 @@ test "the replay renders the saved conversation, tool call and result included" 
     const s = text.items;
     try testing.expect(std.mem.indexOf(u8, s, "add a greeting") != null);
     try testing.expect(std.mem.indexOf(u8, s, "Let me look.") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "Reading main.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, s, "Read(main.zig)") != null);
     // The result's text stays in the file; the transcript shows its summary.
     try testing.expect(std.mem.indexOf(u8, s, "pub fn main() {}") == null);
     try testing.expect(std.mem.indexOf(u8, s, "lines 1 to 1 of 1") != null);
     try testing.expect(std.mem.indexOf(u8, s, "Added it.") != null);
     // The tool result follows the call it answers.
     const answer_at = std.mem.indexOf(u8, s, "Let me look.") orelse return error.TestUnexpectedResult;
-    const call_at = std.mem.indexOf(u8, s, "Reading main.zig") orelse return error.TestUnexpectedResult;
+    const call_at = std.mem.indexOf(u8, s, "Read(main.zig)") orelse return error.TestUnexpectedResult;
     const result_at = std.mem.indexOf(u8, s, "lines 1 to 1 of 1") orelse return error.TestUnexpectedResult;
     try testing.expect(answer_at < call_at);
     try testing.expect(call_at < result_at);
