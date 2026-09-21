@@ -547,10 +547,20 @@ them into blocks and offers three views of those blocks:
   rewrite when the turn is taller than the space above the region: those
   rows are in the scrollback and cannot be reached.
 
-The transcript is pure: no `Io`, no clock (the animated thinking label is
-passed in by the agent, which has both), and no knowledge of tokens or
-models. That is what lets its tests drive a whole turn — including a
-byte-by-byte stream — with `std.testing.allocator` and no TTY.
+The transcript is pure: no `Io`, no clock (the animated thinking label and
+the running dot's pulse phase are passed in by the agent, which has both),
+and no knowledge of tokens or models. That is what lets its tests drive a
+whole turn — including a byte-by-byte stream — with `std.testing.allocator`
+and no TTY. The rows it produces for a tool call are the dot in the call's
+state colour (`op_running` pulsing against `dim`, then `op_ok`, `op_error`,
+or `op_write`) and `Name(argument)` from `tools.describe`, the tool's
+one-sentence result under `└`, and, where the model's text resumes, the
+dim `ops` row counting the run (`Read 2 files, ran 1 shell command`). The
+repaint cadence comes from the Metal backend's `tick`: `commit` waits on a
+semaphore its completion handler signals and calls back every 100 ms, and
+the surface installs its poll-and-draw there (`installTick`), so a prefill
+chunk repaints ten times a second instead of once. `Screen.paintFrom`
+rewrites only from the first row that differs from the last frame.
 
 ### Looking at the agent without a person at the keyboard
 

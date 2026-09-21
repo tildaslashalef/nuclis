@@ -120,10 +120,12 @@ holds the APPS-02 outcome.
   least 60 columns wide, then the version, the model reached through its
   registry or catalogue name with the artifact's own name, backend, profile
   and whether it was forced, context, effort, and the workspace with the
-  home directory as `~`; a one-line header below that width), and anchors
-  the live region (active turn, input box, hint, separator, status bar) at
-  the bottom. The welcome scrolls away like any transcript row; the status
-  bar carries the model's short name as its last segment.
+  home directory as `~`, all of it in a rounded box; the plain lines below
+  that width), and anchors the live region (active turn, the framed input
+  box, hint, status bar) at the bottom. The welcome scrolls away like any
+  transcript row; the status bar carries the model's short name as its last
+  segment. The input box's frame carries the reasoning effort as its colour
+  and, while a turn runs, the spinner in its top edge.
 - Multi-turn without replay: the process keeps the text the session has
   consumed (rendered prompt plus generated tokens except the final
   stop/budget token). Each turn renders the whole conversation with the
@@ -344,6 +346,16 @@ at the last space that fits, and only rows truncated to one line (the
 status bar, the hint) still break at the column.
 
 #### Status and progress (proposed)
+
+*The bar's layout (2026-09-21).* Two groups: the measurements on the left
+(the state word, prefill or decode progress, the loop step, context, token
+counts, the prefill and decode rates, `replayed`) and the settings on the
+right, right-aligned (`✦ think low │ spec on 4 · 3.13/step` or `spec off`
+`│ kv f16 │ metal │ qwen3.8-27b`). A narrow bar drops settings from the
+right end one cell at a time, then truncates the measurements at the
+column. `spec` states the switch as the session runs it: on only when a
+draft source is loaded, with the draft length, and the accepted drafts per
+step after a speculative turn.
 
 The engine's between-layer `check` callback gains a sibling `progress`
 callback carrying phase, position, and target (additive; `generate` and
@@ -702,14 +714,20 @@ the response:
    (default 16); publish the stop reason to the transcript.
 
 A tool call renders as two rows and its result text never reaches the
-transcript: the call row is a gerund and the tool's subject (`● Reading
-TODO.md`; `● Running command`, whose command is a detail row of its own,
-`└ $ make test`), and the detail row is one sentence the tool supplies with
-its result (`└ lines 1 to 40 of 96 · truncated, continue with offset=41`,
-`└ 16 files`, `└ 3 matches in 2 files`, `└ +12 −3`; a clean `bash` run adds
-nothing). A failed call shows its message in error style, bounded to three
-rows. While the call runs the row carries a spinner advanced by an optional
-tick, so a long command stays cancellable from the keyboard. The result text
+transcript: the call row is a dot and `Name(argument)` (`● Read(TODO.md)`,
+`● Bash(make test)`, `● Grep(needle)`; an argument longer than 72 cells is
+cut on the row and repeated in full on a detail row, `└ $ …` for a command),
+and the detail row is one sentence the tool supplies with its result
+(`└ lines 1 to 40 of 96 · truncated, continue with offset=41`, `└ 16
+files`, `└ 3 matches in 2 files`, `└ Wrote 12 lines to a.py`, `└ Edited
+a.py: +12 −3 lines`; a clean `bash` run adds nothing). The dot's colour is
+the call's state: green settled well, red failed, blue for a write or an
+edit, and while the call runs it pulses between yellow and dim on the
+repaint cadence, so a long command stays visibly alive and cancellable from
+the keyboard. Where the model's text resumes after a run of calls, and at
+the end of a turn that made any, one dim row sums them up (`Read 2 files,
+searched 1 time, ran 1 shell command, wrote 1 file`). A failed call shows
+its message in error style, bounded to three rows. The result text
 goes to the model and the session file, whose `tool_result` entries keep the
 summary so a resumed session renders the same rows (TERM-05). For
 `write_file`/`edit_file` a diff derived by a pure function before execution
@@ -727,8 +745,12 @@ without a generation prompt, pinned as a byte prefix of every rendering by
 each profile — prefills it, records it as consumed, and keeps a snapshot of
 the session. The first turn then prefills only its own message; a new
 session, a resume, and the replay after elision restore the snapshot instead
-of prefilling the prefix again. The bar shows the warm-up (`warming up
-256/841`), Enter queues meanwhile, and a window too small for the prefix
+of prefilling the prefix again. The warm-up is visible: the live region
+shows `⠋ warming up… system prompt and tools 256/934 ~14s` with the bar's
+own estimate, repainted at the engine tick's cadence (about 10 Hz through
+every GPU wait, not once per prefill chunk), and the transcript gets `—
+warmed up in 11.2s · 934 tokens` when it is done; Enter queues meanwhile,
+and a window too small for the prefix
 plus the output budget is a notice at startup (an error diagnostic in print
 mode), not a `ContextFull` on the first Enter. A `/ctx` change re-opens the
 engine and primes again; a `/think` change alters the system block and

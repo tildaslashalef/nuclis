@@ -89,10 +89,10 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
-**Next: TERM-10** (chat polish, two sessions; its scope was widened on
-2026-09-21 to the harness, the repaint tick, the warm-up, the header box,
-the status bar, and the input box, the user's call — session 1 starts at
-its item 0). v0.2.0 was tagged on 2026-09-21
+**Next: TERM-10 session 2** (the diff gutter and bands, the markdown
+hardening, `!` commands, Ctrl-O, Ctrl-X/Ctrl-G; then the log entry with
+the harness captures). Session 1 closed its items 0–10 on 2026-09-21 in
+eight commits; see the unit's section for what each landed and where. v0.2.0 was tagged on 2026-09-21
 (`142fa81`, 133 changelog entries since v0.1.0), pushed, and published by
 `release.yml` with its three assets; the tree is `0.3.0-dev`. APPS-16
 (output budget default 4096, cap 16384) closed the same day
@@ -476,10 +476,28 @@ reports, OSC notifications all supported).
     with 40 lines, and the turn summary; the theme test asserts every new
     style and glyph has a value in all four kinds.
 
-Session 1 ends with a harness run recorded in the log: a burst over the
-warm-up showing the ~10 Hz cadence, and captures of the header box, the
-bar, the input box, and a turn with the four screenshot elements, at 160
-columns in tmux and one Ghostty PNG.
+**Session 1 delivered (2026-09-21), all committed.** Items 0–10 are in:
+`scripts/tui-shot.py` and `make shot` (the Ghostty PNG path is written but
+was not exercised: the text captures were enough); the tick in
+`bridge.m`/`metal/root.zig` (`Backend.tick`, `checkTick` in metal-check: 5
+calls over a 568 ms wait, 0 over a short one) and `installTick` in the
+surface, with `Screen.paintFrom` rewriting from the first changed row (the
+warm-up burst went from 4 frames in 40 s to one every 109 ms); the warm-up
+row and its notice; the boxed header (`banner.rows` takes the theme) with
+two slack fixes in `screen.zig` (`anchor` records the blank rows it walks,
+and a first frame taller than the anchor walked for takes rows from the
+slack) that were the real cause of the cropped wordmark; the two-group bar
+(`Status.speculative/draft_length/kv/backend`); the framed editor
+(`editor.frame`, `frame_cells = 6`, `frame_lead = 4`, the rule row dropped);
+the dots (`callRow`, `Block.tool_call.failed`, `Live.pulse`, five frames a
+phase), `tools.describe` as `Name(argument)` with a 72-cell cut, the write
+and edit summaries, and the `ops` block. `make check` passes (476 tests);
+`make gate NAME='qwen38-trace-*'` passes after the Metal wait change.
+Evidence captures for the log are under `.zig-cache/tui/` (`warm2.burst.json`,
+`box3`, `bar`, `fr-warm`, `ops-done`); rerun them at session 2's end for
+the log entry with `make shot`. Item 8's separate numbered file view was
+folded into item 11: a new file's diff is that view once the gutter lands,
+so no second rendering of the same content.
 
 **Session 2.**
 
@@ -516,7 +534,10 @@ columns in tmux and one Ghostty PNG.
     counts `render` calls over a streamed fixture and the cache's hit rate.
     Behaviour: inline code inside headings and list items, `***bold
     italic***`, nested quotes, ordered lists that start at a number other
-    than 1, and a table cell that is empty, each with a golden.
+    than 1, a table cell that is empty, and soft line breaks kept as line
+    breaks inside a paragraph (a model that writes one item per line is
+    read that way; seen on 2026-09-21 when `1\n2\n3` rendered as one
+    paragraph), each with a golden.
 
 13. Shell from the editor. A prompt that starts with `!` runs the rest as a
     command through the `bash` tool's runner (same bounds, same workspace,
