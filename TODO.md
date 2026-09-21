@@ -89,7 +89,9 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
-**Next: TERM-10** (chat polish). REPO-10 closed on 2026-09-21: the 30
+**Next: APPS-15** (`config init --discover` and self-contained help), then
+the 0.2.0 release (`make release`) before TERM-10; REPO-11 (the bench.md
+split) was dropped on 2026-09-21, the user's call. REPO-10 closed on 2026-09-21: the 30
 benchmark workloads are data in `workloads.json` (the acceptance runs per
 pinned file, the prose/code runs and their draft pairs per family, the
 twelve `qwen38/spec/*` configurations of the speculative record), run by
@@ -98,8 +100,7 @@ under `.zig-cache/bench/<workload>/<rev>-<n>.json`, and
 `scripts/bench-report.py` renders the record tables from saved JSON and
 writes them between `<!-- bench:NAME -->` markers; the Gemma QAT draft pair
 reproduced MODL-19's row (0.90× against 0.899×) and its table in bench.md
-is the first generated one. The bench.md split is REPO-11, drafted for
-decision. REPO-09 closed the same day: the 37 model-specific checks are
+is the first generated one. REPO-09 closed the same day: the 37 model-specific checks are
 gates in `gates.json` with a tier and source globs, run by
 `scripts/gates.py` through `make verify`, `verify-cpu`, `verify-changed`,
 and `gate NAME=`; the Makefile is down to 40 targets
@@ -162,7 +163,7 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: TERM-10 →
+Order: APPS-15 → (release 0.2.0) → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -202,6 +203,7 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
+| APPS-15 | `config init --discover` and self-contained help pages | 1 |
 | TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
@@ -209,7 +211,6 @@ manifest.
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
 | AGNT-12 | Background commands (drafted for decision; see its section) | — |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
-| REPO-11 | The bench.md split by family (drafted for decision; see its section) | — |
 
 ## Working a unit here
 
@@ -321,6 +322,65 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
+
+## APPS-15 — `config init --discover` and self-contained help pages
+
+**Facts (read 2026-09-21).** `~/.nuclis/models/HauhauCS/Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced/`
+holds a Gemma 4 12B finetune (`Gemma4-…-Q4_K_M.gguf`, sidecar role `main`,
+repo and revision recorded) and its `mmproj-…-BF16.gguf`; `nuclis model ls`
+already walks the layout (`model.list` → `Listing.other`: files the
+catalogue does not name, with sidecar and the registry entry that locates
+them) and `model inspect` already judges a directory (`judge`:
+`inference.models.adapterFor(architecture)`, the executable-encoding check,
+`registry.validate`). The profile is chosen by template digest
+(`profiles.forDocument`), null for a finetune whose template is not the
+pinned one, which is exactly what an entry's forced `profile` is for. The
+registry is edited through `config.Document` (`register` for `model pull
+--register`). Help is `src/help.zig`: one page per command, each ending in
+a `see docs/…` pointer, the overview too.
+
+**Design.**
+1. `src/discover.zig`: `discover(arena, gpa, io, root, registry) !Report`
+   walks `Listing.other`, skips files a registry entry already locates and
+   companions (sidecar role `mmproj`/`mtp`/`imatrix`, or a name carrying
+   `mmproj`, `mtp`, or `dflash`), opens each remaining file's GGUF directory,
+   and judges it as `model inspect` does; a runnable file becomes a
+   candidate: name from the repository's last path segment (lower-case,
+   `-gguf` stripped, `[a-z0-9._-]` kept; a taken name gains the file's
+   quantization suffix, then a counter), the entry as `repo` + `file` +
+   `revision` from the sidecar (or `path` when there is none), companions
+   from the same directory, `profile` forced to the family's when the
+   template digest matches no profile, and `generation.speculative` /
+   `draft_length` from the catalogue entry of the same architecture (off
+   when the family needs a companion that is absent). Every skipped file is
+   reported with its reason; a file whose header fails to parse is a
+   skipped row, never an abort. Bounds are `model ls`'s.
+2. `config.registerDiscovered(gpa, current, path, candidates, diag)` writes
+   the entries into the file's text as `register` does (stated keys and
+   order kept, the result validated before writing).
+3. `nuclis config init --discover [--dry-run] [--json]`: creates the file
+   as `init` does when absent (an existing file is kept), runs the
+   discovery, writes the new entries unless `--dry-run`, and prints one
+   row per registered file (name, path, adapter, profile and whether it is
+   forced, companions) and one per skipped file with its reason; `--json`
+   is the same report. Plain `init` is unchanged.
+4. `src/help.zig`: every page self-contained in the modern form — a
+   one-line description, `Usage:`, `Arguments:`/`Options:` with every flag
+   the parser accepts for that command and its default, `Examples:`, and
+   `Notes:` for the surprises; no `see docs/…` anywhere, the overview
+   included. The config page documents `--discover`. Tests: no page
+   contains `docs/`; every page has `Usage:` and `Examples:`; every flag
+   `cli.zig` parses for a command appears on that command's page (a table
+   in the test); lines ≤ 80 columns; the overview stays one screen.
+5. Docs: `development.md § Configuration file` (the discover paragraph),
+   `spec.md` (the CLI line and bullet), the log.
+
+**Acceptance.** `nuclis config init --discover --dry-run` on the user's
+tree reports the HauhauCS file as a candidate with its mmproj and a forced
+`gemma4` profile and skips nothing it should register; without `--dry-run`
+the entry lands and `nuclis agent --model <name>` opens it; `make check`
+with the new tests; `nuclis <command> --help` for every command shows the
+new form and no document pointer.
 
 ## TERM-10 — Chat polish: operation dots, the running pulse, write summaries with a file view
 
@@ -667,36 +727,6 @@ K-quant). Memory: the 896 × 896 grid is 4,096 patches before the shuffle.
 **Acceptance.** Trace within tolerance on both executors; greedy tokens;
 the Muse compare targets unchanged; the mask fixture; captions recorded;
 `make check`.
-
-## REPO-11 — The bench.md split by family (drafted 2026-09-21 for decision)
-
-**What it is.** The 1,700-line `docs/reference/bench.md` split by family,
-headings intact so every slug survives. REPO-10 left it optional: the
-generated sections now land between markers, and most of the split's cost
-is the anchor stubs the append-only log needs. `docs/reference/bench.md` keeps the introduction, `Definitions`,
-`What to record with results`, and a record index; every other section
-moves, with its heading text intact so its slug survives:
-   - `bench-qwen38.md`: `Acceptance runs` (the warm record and the
-     cold-start row), `Speculative decoding record` (ENGN-12), `Recovery by
-     row checkpoints` (ENGN-14), and the KERN-13 / ENGN-15 / ENGN-16 quick
-     passes.
-   - `bench-gemma4.md`: the 12B first look (MODL-06), the 12B, QAT, and
-     26B-A4B acceptance records (MODL-07/08/10), the 12B QAT per-kernel
-     profile, and the draft pair (MODL-19).
-   - `bench-muse.md`: the Muse first look and acceptance record
-     (MODL-12/13); `bench-bonsai.md`: the Bonsai 2 record (MODL-17).
-   - `bench-kernels.md`: `Observations so far` (the 2026-09-07 bring-up
-     records plus KERN-03…KERN-12, MODL-01, ENGN-02…05, KERN-07/08/11),
-     `Per-kernel profile`, `Kernel micro-benchmark`, and the KERN-14/15/16/18
-     sweeps.
-   The log cites specific `bench.md#anchor` paths and is append-only, so
-   every anchor it names keeps a one-line stub in `bench.md` under the same
-   heading, pointing at its new home (the list comes from
-   `rg -o 'bench\.md#[a-z0-9-]+' docs/engineering-log.md | sort -u`);
-   `docs/architecture.md` links the five files.
-
-**Acceptance.** The split leaves no dead anchor (`rg` over the old paths);
-`docs/architecture.md` links the five files; `make check`. One session.
 
 ## AGNT-12 — Background commands (drafted 2026-09-20 for decision)
 
