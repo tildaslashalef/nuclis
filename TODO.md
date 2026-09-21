@@ -45,8 +45,9 @@ splits; the four-segment merge 152.1 → 157.4 / 150.3 / 158.5, below the
 256-value block stands as Muse's decode limiter
 ([bench.md § Split-K matvec sweep](docs/reference/bench.md#split-k-matvec-sweep-kern-15-2026-09-21)).
 
-**Next: KERN-16** (long-context prefill attention), then ENGN-17's full
-record.
+**Next: KERN-16** (long-context prefill attention), then MODL-19 and
+MODL-20 (the Gemma 4 and Muse drafters, moved ahead of ENGN-17 on
+2026-09-21), then ENGN-17's full record.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -91,8 +92,8 @@ what remains is the batch's model time. At draft 4 the code prompt advances
 long-context attention is the remaining kernel lever. Nothing here claims a
 final speedup before ENGN-17 measures it.
 
-Order: KERN-16 →
-ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 → MODL-19 → MODL-20 →
+Order: KERN-16 → MODL-19 → MODL-20 →
+ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 →
 MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile and KERN-15's split-K matvec closed negative, so
@@ -101,6 +102,14 @@ single-pass kernel; KERN-16 is the remaining kernel lever. **KERN-16 sits
 before ENGN-17 because it changes the Qwen path the verdict measures**: the
 long-context attention is
 every verify batch at 16K–32K (and the 32K acceptance's largest deficit).
+**MODL-19 and MODL-20 moved ahead of ENGN-17 on 2026-09-21** (the user's
+call): the draft contract, the verify batch, both acceptance rules, the
+recovery schemes, the loop, and the switch are family-independent and
+already in the tree, so each family's speculative support is its adapter
+plus its own record, and the two are wanted before the performance theme's
+last units. The verdict is Qwen-only, so it does not wait on them; its
+`bench` default change lands after them and sets each entry from the
+family's own record.
 ENGN-18 (Gemma's launch-bound decode), ENGN-19 (the ring layout: memory,
 not speed), and KERN-17 (the ternary experiment) are other-family or
 experimental and sit after the verdict, grouped so the performance theme
@@ -115,13 +124,13 @@ APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 | Unit | Title | Sessions |
 | --- | --- | --- |
 | KERN-16 | Long-context prefill attention, second attempt (register-level reuse) | 2 |
+| MODL-19 | Gemma 4 draft heads: the companion file as a second GGUF, 12B and 26B-A4B | 1–2 |
+| MODL-20 | Muse Glimmer DFlash drafter: facts, contract fit, acceptance loop | 2 |
 | ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
 | ENGN-18 | Gemma 4 12B decode: fused norms and fewer launches | 1–2 |
 | ENGN-19 | A ring layout for windowed attention caches | 2 |
 | KERN-17 | The ternary matvec's arithmetic (experiment; may close negative) | 1 |
 | TERM-10 | Chat polish: operation dots, the running pulse, write summaries with a file view | 1 |
-| MODL-19 | Gemma 4 draft heads: the companion file as a second GGUF, 12B and 26B-A4B | 1–2 |
-| MODL-20 | Muse Glimmer DFlash drafter: facts, contract fit, acceptance loop | 2 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
@@ -263,40 +272,40 @@ its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
 
-## ENGN-17 — The verdict, the defaults, and the bench baseline without the drafter
+## KERN-16 — Long-context prefill attention, second attempt
 
-**Facts.** `bench` opens the model with `DraftRequest.optional_embedded`
-whatever the switch, so there is no in-process measurement without the
-drafter loaded, and the MODL-18 acceptance item "decode rate unchanged with
-the drafter loaded but switched off" (carried through ENGN-12) is only
-comparable across records. The per-entry verdict lives in `src/catalog.zig`
-(`Entry`) and is written into `models.<name>.generation` by `config init`
-(`src/config.zig`); the built-in defaults are `Config.Generation.speculative
-= false`, `draft_length = 4`.
+**Facts (ENGN-05, ENGN-08).** The 32K acceptance record measured prefill
+below the reference (−6 % at 4K, −15 % at 16K, −26 % at 32,639) and the
+profile put the chunk attention kernel at 30 % of the 16K prefill, running
+at 0.7 TFLOP/s: latency-bound with one `simdgroup_load` per multiply, not
+cache-bound. Sharing the cache tiles across the six heads of a KV group
+did not help (three variants, all slower; the re-reads were cache hits).
+The speculative verify batch reads the whole visible cache once per batch
+through the same kernel, so at 16K–32K context this kernel bounds
+speculation too ([metal-backend.md § ENGN-08](docs/reference/metal-backend.md#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change)).
 
-**Design.**
-1. `bench`: the default opens with `.none` and runs no pair; `--speculative
-   on` opens with `.embedded` and runs the off/on pair. The "off" sample of
-   a pair is then the loaded-but-off case, and the default the true
-   baseline; report both in the record.
-2. Re-run `make speculative-record` on the finished path (after ENGN-13
-   through KERN-16), write the record in `bench.md` with the per-batch cost
-   table of *Where we are* refreshed, and the spec's measured result.
-3. `catalog.Entry` gains `speculative: bool` and `draft_length: usize`;
-   `config init` writes them into the entry's `generation`; set Qwen's from
-   the record: on if code ≥ 1.5× and prose ≥ 0.9× at the chosen length,
-   else off with the reason in the log. Gemma and Muse entries stay off
-   until MODL-19/20 measure them.
-4. Documentation: `docs/development.md § Configuration file`,
-   `docs/reference/bench.md § Definitions` (the speculative fields),
-   `docs/spec.md § Speculative decoding` (the measured result and the
-   defaults).
+**Design.** Register-level reuse as in the matmul tiles: split the value
+columns across the four SIMD groups of a (head, 32-query) tile so each V
+block serves four row blocks, share the probability tiles through
+threadgroup memory, and budget the registers (48 live matrices per SIMD
+group) on paper before writing it; `attention_chunk` and its half
+variant; the F64 fixture with poisoned future rows; `bench-attention`
+(new, no model) sweeping visible rows 4K–32K. Measure at 16K and 32,639
+on the reference arrays (`make baseline`).
 
-**Acceptance.** The record with both baselines; the entry's defaults from
-it; `make check`; `config init` / `config show` tests cover the new entry
-fields; the spec's measured result cites the record.
+**Acceptance.** Prefill at 32,639 within 10 % of the reference (from
+−26 %); 16K within 8 %; `make test-metal`, `make compare`, the acceptance
+record re-run; the verify batch at 16K context measurably faster on the
+speculative record's 4K/16K rows.
 
 ## MODL-19 — Gemma 4 draft heads: the companion file as a second GGUF
+
+**Order (revised 2026-09-21).** Moved ahead of ENGN-17 at the user's
+request. The draft contract, the batched verify, both acceptance rules, the
+recovery, and the loop are family-independent and already in the tree, so
+this unit is the Gemma adapter plus its own record; it lands before
+ENGN-17's `bench` default change, so its record forces the pair with
+`--speculative on`.
 
 **Facts read on 2026-09-19** (`nuclis inspect` and the inventory script on
 the 12B's `mtp-gemma-4-12B-it.gguf`; the 26B-A4B's
@@ -366,6 +375,11 @@ compare targets unchanged for the main model.
 
 ## MODL-20 — Muse Glimmer DFlash drafter
 
+**Order (revised 2026-09-21).** Moved ahead of ENGN-17 with MODL-19 at the
+user's request; the same family-independent framework applies, and this is
+the larger of the two adapters (the block proposal, the feature retention,
+the drafter's own windowed cache).
+
 **Facts read on 2026-09-19** (`nuclis inspect` and the inventory script on
 `dflash-kquant.gguf`; to be confirmed from the reference's `dflash`
 graph and `draft-dflash` driver in session 1):
@@ -417,6 +431,44 @@ acceptance workload with draft lengths 4, 8, 15, the catalogue verdict.
 decision documented; the benchmark record with the per-batch cost table;
 the verdict, negative if the drafter does not pay for its verification;
 `make check`, the Muse compare targets unchanged.
+
+## ENGN-17 — The verdict, the defaults, and the bench baseline without the drafter
+
+**Facts.** This unit runs after MODL-19 and MODL-20 (moved ahead of it on
+2026-09-21): the Qwen verdict does not depend on them, but each family
+entry's default does, and by then all three families have their own record
+to set it from. `bench` opens the model with `DraftRequest.optional_embedded`
+whatever the switch, so there is no in-process measurement without the
+drafter loaded, and the MODL-18 acceptance item "decode rate unchanged with
+the drafter loaded but switched off" (carried through ENGN-12) is only
+comparable across records. The per-entry verdict lives in `src/catalog.zig`
+(`Entry`) and is written into `models.<name>.generation` by `config init`
+(`src/config.zig`); the built-in defaults are `Config.Generation.speculative
+= false`, `draft_length = 4`.
+
+**Design.**
+1. `bench`: the default opens with `.none` and runs no pair; `--speculative
+   on` opens with `.embedded` and runs the off/on pair. The "off" sample of
+   a pair is then the loaded-but-off case, and the default the true
+   baseline; report both in the record.
+2. Re-run `make speculative-record` on the finished path (after ENGN-13
+   through KERN-16; MODL-19/20 change only the other families' paths),
+   write the record in `bench.md` with the per-batch cost
+   table of *Where we are* refreshed, and the spec's measured result.
+3. `catalog.Entry` gains `speculative: bool` and `draft_length: usize`;
+   `config init` writes them into the entry's `generation`; set Qwen's from
+   the record: on if code ≥ 1.5× and prose ≥ 0.9× at the chosen length,
+   else off with the reason in the log. Set Gemma's and Muse's from the
+   MODL-19 and MODL-20 records the same way, off with the reason when the
+   drafter did not pay for its verification.
+4. Documentation: `docs/development.md § Configuration file`,
+   `docs/reference/bench.md § Definitions` (the speculative fields),
+   `docs/spec.md § Speculative decoding` (the measured result and the
+   defaults).
+
+**Acceptance.** The record with both baselines; the entry's defaults from
+it; `make check`; `config init` / `config show` tests cover the new entry
+fields; the spec's measured result cites the record.
 
 ## TERM-10 — Chat polish: operation dots, the running pulse, write summaries with a file view
 
@@ -796,32 +848,6 @@ next step boundary. The parts, all bounded by the agent rules:
 profile's tool fixtures (`scripts/profile-tools-fixtures.py`), transcript
 rows, and cancellation tests. The risk is an orphaned process; the
 mitigation is the workspace owning every pid. Decide after TERM-10.
-
-## KERN-16 — Long-context prefill attention, second attempt
-
-**Facts (ENGN-05, ENGN-08).** The 32K acceptance record measured prefill
-below the reference (−6 % at 4K, −15 % at 16K, −26 % at 32,639) and the
-profile put the chunk attention kernel at 30 % of the 16K prefill, running
-at 0.7 TFLOP/s: latency-bound with one `simdgroup_load` per multiply, not
-cache-bound. Sharing the cache tiles across the six heads of a KV group
-did not help (three variants, all slower; the re-reads were cache hits).
-The speculative verify batch reads the whole visible cache once per batch
-through the same kernel, so at 16K–32K context this kernel bounds
-speculation too ([metal-backend.md § ENGN-08](docs/reference/metal-backend.md#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change)).
-
-**Design.** Register-level reuse as in the matmul tiles: split the value
-columns across the four SIMD groups of a (head, 32-query) tile so each V
-block serves four row blocks, share the probability tiles through
-threadgroup memory, and budget the registers (48 live matrices per SIMD
-group) on paper before writing it; `attention_chunk` and its half
-variant; the F64 fixture with poisoned future rows; `bench-attention`
-(new, no model) sweeping visible rows 4K–32K. Measure at 16K and 32,639
-on the reference arrays (`make baseline`).
-
-**Acceptance.** Prefill at 32,639 within 10 % of the reference (from
-−26 %); 16K within 8 %; `make test-metal`, `make compare`, the acceptance
-record re-run; the verify batch at 16K context measurably faster on the
-speculative record's 4K/16K rows.
 
 ## ENGN-18 — Gemma 4 12B decode: fused norms and fewer launches
 
