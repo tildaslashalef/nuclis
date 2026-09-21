@@ -1169,7 +1169,8 @@ Prefill in the same run: the 32-token matmul tile runs at 25–29 GB/s on a
 few threadgroups), not a Q4_0 property.
 
 Follow-ups from this profile are in the plan
-([TODO.md](../../TODO.md): ENGN-18 for the norms and the launch count; the
+([TODO.md](../../TODO.md): the norm launches are KERN-18 across all three
+families, and ENGN-18 keeps the Q4_0 prefill tile; the
 split-K candidate for the matvecs was KERN-15 and measured behind the
 single pass); none was scheduled before TERM-01.
 
