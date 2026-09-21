@@ -81,6 +81,7 @@ def summarize(directory):
             "prompt": on[0]["prompt_tokens"],
             "runs": len(on),
             "accepted": mean([s["accepted_per_step"] for s in on]),
+            "proposed": mean([s["proposed_per_step"] for s in on if s.get("proposed_per_step") is not None]),
             "tokens_per_batch": mean([(s["generated_tokens"] - 1) / s["speculative_steps"] for s in on if s["speculative_steps"]]),
             "verify": per_batch("verify_milliseconds"),
             "accept": per_batch("accept_milliseconds"),
@@ -91,10 +92,11 @@ def summarize(directory):
             "decode_on": mean([s["decode_tokens_per_second"] for s in on if s["decode_tokens_per_second"]]),
             "speedup": report.get("decode_speedup"),
         })
-    print("| configuration | prompt | draft | accepted/step | tokens/batch | verify ms | accept ms | recover ms | prefill off → on (s) | decode off → on tok/s | speedup |")
-    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    print("| configuration | prompt | draft | accepted/step | proposed/step | drafts/accepted | tokens/batch | verify ms | accept ms | recover ms | prefill off → on (s) | decode off → on tok/s | speedup |")
+    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for r in rows:
-        print(f"| {r['config']} | {r['prompt']:,} | {r['draft']} | {fmt(r['accepted'], 2)} | {fmt(r['tokens_per_batch'], 2)} | "
+        per_token = (r["proposed"] / r["accepted"]) if (r["proposed"] is not None and r["accepted"]) else None
+        print(f"| {r['config']} | {r['prompt']:,} | {r['draft']} | {fmt(r['accepted'], 2)} | {fmt(r['proposed'], 2)} | {fmt(per_token, 2)} | {fmt(r['tokens_per_batch'], 2)} | "
               f"{fmt(r['verify'])} | {fmt(r['accept'], 2)} | {fmt(r['recover'])} | "
               f"{fmt(r['prefill_off'] / 1000, 2)} → {fmt(r['prefill_on'] / 1000, 2)} | "
               f"{fmt(r['decode_off'], 2)} → {fmt(r['decode_on'], 2)} | {fmt(r['speedup'], 2)}× |")

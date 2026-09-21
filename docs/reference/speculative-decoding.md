@@ -553,3 +553,56 @@ and [bench.md § Small-batch tile sweep](bench.md#small-batch-tile-sweep-kern-14
 The verify lever that remains is KERN-16's long-context attention (and, for
 the short-context batch, ENGN-16's proposal policy, which trims what the
 verify is asked to do rather than making it cheaper).
+
+## The proposal policy (ENGN-16, 2026-09-20)
+
+The drafter asked for `k = draft_length` positions every batch, at ~6.3 ms
+per block forward (12.7–43.5 ms per batch). Two policies were in the plan:
+a `p_min` early stop on the block's top-candidate probability, as the
+reference MTP driver does, and an adaptive length (`k = accepted + 1` after
+a rejection). The first is shipped at **`engine.draft_p_min = 0.7`**; the
+second closed negative and is not.
+
+**The bins.** `generation-check --draft-stats` now proposes position by
+position, computes each position's top-candidate probability (the device
+top-1 pass's `1 / Σ exp(l − max)` on Metal, the host softmax on the CPU —
+they agree to 2.6e-7 worst), and bins the draft's acceptance (whether it
+equals the target's token at that depth). On the two fixed prompts:
+acceptance is 90/80/69/64 % and 94/83/83/86 % by depth, and by `p_max`:
+
+| prompt | ≥ 0.9 | 0.7–0.9 | 0.5–0.7 | < 0.5 |
+| --- | ---: | ---: | ---: | ---: |
+| code, 128 drafts | 93.1 % (81/87) | 42.9 % (6/14) | 22.2 % (2/9) | 12.5 % (1/8) |
+| code, `def fibonacci(n):` | 92.5 % (98/106) | 100 % (2/2) | 14.3 % (1/7) | 33.3 % (1/3) |
+
+Below 0.7 the drafts pay for neither their forward nor their verify row, so
+`draft_p_min = 0.7` stops the chain after the first such position (the
+position itself is still proposed; `0` proposes every requested position).
+A threshold of 0.8 trims more prose but costs code 4.4 % of its decode rate
+(see below), so 0.7 is the measured choice.
+
+**The adaptive length is dropped.** `k = accepted + 1` after a rejection
+loses the chain's tail — positions after a rejection are still accepted at
+the high per-depth rates above. Measured interleaved in one session, code
+draft 7 with adaptive-only: accepted/step 1.91 against the control's 2.97
+and the policed 2.53; speedup 1.02 against 1.32.
+
+**Measured effect** (interleaved A/B in one session, off/on pairs, three
+repeats; control = `p_min = 0`; Apple M4 Pro, F16 KV, ctx 32768, 128
+output tokens):
+
+| configuration | control drafts/accepted | p_min 0.7 | control speedup | p_min 0.7 | p_min 0.8 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| prose 512, instruct, d4 | 2.16 | 1.57 (−27 %) | 0.872 / 0.907 | 0.951 / 0.942 | 0.925 / 1.009 |
+| code, greedy, d7 | 2.31 | 1.48 (−36 %) | 1.312 / 1.323 | 1.330 / 1.332 | 1.252 / 1.258 |
+
+The shipped configuration's gate pass (`--only prose512 code`; table in
+[bench.md § The ENGN-16 quick pass](bench.md#the-engn-16-quick-pass-2026-09-20))
+reads code instruct 1.35×, code greedy 1.33× at draft 7 (within 1 % of the
+control), prose instruct 1.00 / 1.03× at drafts 4 / 7 (was 0.98 / 1.01),
+and drafts per accepted token of 1.24–1.73. The acceptance's prose bar of
+a 30 % fall in drafts per accepted token is missed by three points against
+the measured control (27 %); the bar's purpose — the decode rate not
+lower — is met with an 8–10 % gain, and every other criterion passes.
+`bench.Sample` gained `proposed_per_step`, so the record's tables print
+proposed, accepted, and drafts per accepted token.

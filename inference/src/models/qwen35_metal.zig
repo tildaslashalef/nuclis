@@ -818,8 +818,9 @@ pub const Plan = struct {
     /// FFN, `shared_head_norm`, and the shared output head. The block's
     /// `h_nextn` lands in `draft_h`, its own hidden for chaining in
     /// `draft_chain`. `h_prev` is a device row of `hidden` floats; `greedy`
-    /// and `logits` are read only when given.
-    pub fn draftForward(self: *Plan, h_prev: Buffer, token: u32, position: usize, greedy: ?*u32, logits: ?[]f32) !void {
+    /// and `logits` are read only when given, and `pmax` (the top candidate's
+    /// softmax probability, `1 / Σ exp(l − max)` at temperature 1) with them.
+    pub fn draftForward(self: *Plan, h_prev: Buffer, token: u32, position: usize, greedy: ?*u32, pmax: ?*f32, logits: ?[]f32) !void {
         const block = self.binding.draft orelse return error.NoDraftBlock;
         const constants = self.draft_constants orelse return error.NoDraftBlock;
         if (token >= vocabulary or position >= self.state.capacity or h_prev.len < hidden * 4) return error.InvalidShape;
@@ -849,11 +850,23 @@ pub const Plan = struct {
         // The block's own hidden chains the next proposed position.
         try b.copy(self.draft_chain, self.draft_h, hidden);
         try self.mm(self.binding.output, self.draft_h, self.draft_logits);
-        if (greedy != null or logits != null) try b.argmax(self.draft_logits, vocabulary, self.argmax_values, self.argmax_indices, self.argmax_result);
+        // `pmax` needs the argmax and one top-1 top-k pass (whose F64 sum of
+        // the partials is Σ exp(l − max) at T = 1) in the same command buffer.
+        if (greedy != null or logits != null or pmax != null) try b.argmax(self.draft_logits, vocabulary, self.argmax_values, self.argmax_indices, self.argmax_result);
+        if (pmax != null) try b.topk(self.draft_logits, vocabulary, 1, 1.0, self.topk);
         try b.commit();
         if (greedy) |out| {
             out.* = @as(*const u32, @ptrCast(@alignCast(self.argmax_result.host))).*;
             if (out.* >= vocabulary) return error.NonFiniteResult;
+        }
+        if (pmax) |out| {
+            var total: f64 = 0;
+            for (self.topk.sums.floats()[0..metal.Backend.topk_partials]) |partial| total += partial;
+            var finite = true;
+            for (@as([*]const u32, @ptrCast(@alignCast(self.topk.flags.host)))[0..metal.Backend.topk_partials]) |flag| if (flag != 0) {
+                finite = false;
+            };
+            out.* = if (finite and total > 0) @floatCast(1.0 / total) else 1.0;
         }
         if (logits) |out| {
             @memcpy(out, self.draft_logits.floats());
@@ -862,24 +875,33 @@ pub const Plan = struct {
     }
 
     /// `draftForward` with a host `h_prev`, staged through `draft_chain`.
-    pub fn draftForwardHost(self: *Plan, h_prev: []const f32, token: u32, position: usize, greedy: ?*u32, logits: ?[]f32) !void {
+    pub fn draftForwardHost(self: *Plan, h_prev: []const f32, token: u32, position: usize, greedy: ?*u32, pmax: ?*f32, logits: ?[]f32) !void {
         if (h_prev.len != hidden) return error.InvalidShape;
         @memcpy(self.draft_chain.floats()[0..hidden], h_prev);
-        try self.draftForward(self.draft_chain, token, position, greedy, logits);
+        try self.draftForward(self.draft_chain, token, position, greedy, pmax, logits);
     }
 
     /// Greedy candidates from the state after the last committed token, each
     /// chained through the block's own hidden; `out.len` bounds the count.
-    pub fn propose(self: *Plan, token: u32, out: []u32) !usize {
+    /// `p_min > 0` stops after a position whose top candidate's probability
+    /// (the device top-1 pass) is below it; the first position is always
+    /// proposed.
+    pub fn propose(self: *Plan, token: u32, out: []u32, p_min: f32) !usize {
         if (!self.has_draft) return error.NoDraftBlock;
+        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
         const start = self.state.position;
         var h_prev = self.draft_pending_h;
         var next = token;
         var count: usize = 0;
         while (count < out.len) : (count += 1) {
             var greedy: u32 = 0;
-            try self.draftForward(h_prev, next, start + count, &greedy, null);
+            var pmax: f32 = 0;
+            try self.draftForward(h_prev, next, start + count, &greedy, if (p_min > 0) &pmax else null, null);
             out[count] = greedy;
+            if (p_min > 0 and pmax < p_min) {
+                count += 1;
+                break;
+            }
             next = greedy;
             h_prev = self.draft_chain;
         }
@@ -900,7 +922,7 @@ pub const Plan = struct {
         if (self.state.position < tokens.len) return error.InvalidShape;
         const start = self.state.position - tokens.len;
         if (tokens.len == 1) {
-            try self.draftForward(self.draft_pending_h, tokens[0], start, null, null);
+            try self.draftForward(self.draft_pending_h, tokens[0], start, null, null, null);
         } else {
             var base: usize = 0;
             while (base < tokens.len) {
@@ -957,9 +979,9 @@ pub const Plan = struct {
         if (!self.has_draft) return null;
         return .{ .host = self, .hidden = hidden, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
     }
-    fn proposeFn(host: *anyopaque, token: u32, out: []u32) anyerror!usize {
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
-        return self.propose(token, out);
+        return self.propose(token, out, p_min);
     }
     fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
         const self: *Plan = @ptrCast(@alignCast(host));

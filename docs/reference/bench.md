@@ -1331,3 +1331,39 @@ GB/s bar. The 16×8 tile stays the verify control; the full-model verify
 latency is unchanged (262–297 ms per batch, the ENGN-15 pass above), since
 production routing never selects the candidate. Verdict in
 [metal-backend.md § The wide 32×8 tile](metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative).
+
+## The ENGN-16 quick pass (2026-09-20)
+
+The proposal policy's gate pass: `engine.draft_p_min = 0.7` (the early stop
+on the block's top-candidate probability; the adaptive-length half closed
+negative and is not shipped). Same methodology and revision line as the
+KERN-13 and ENGN-15 quick passes above — the runs were taken after the
+ENGN-15 pass, `nuclis 0.2.0-dev` at `d31c5cd` plus the ENGN-16 change,
+artifact SHA-256 `322e194f…`; reports under `.zig-cache/bench/spec/`.
+`proposed/step` and `drafts/accepted` are new columns from
+`Sample.proposed_per_step`; the unpoliced control's drafts/accepted is
+`draft_length / accepted` except for the final partial batch (measured
+2.16 for prose d4 and 2.31 for code d7 in the interleaved A/B). Every
+sample stopped on `token_budget`.
+
+| configuration | draft | accepted/step | proposed/step | drafts/accepted | tokens/batch | verify ms | propose ms | recover ms | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code, greedy | 2 | 1.35 | 1.81 | 1.34 | 2.35 | 249.8 | 12.1 | 12.0 | 8.44 → 8.20 | 0.97× |
+| code, greedy | 4 | 2.17 | 2.92 | 1.34 | 3.17 | 255.7 | 19.5 | 13.8 | 8.47 → 10.54 | 1.24× |
+| code, greedy | 7 | 2.53 | 3.75 | 1.48 | 3.53 | 258.6 | 24.9 | 17.2 | 8.50 → 11.31 | 1.33× |
+| code, instruct | 4 | 2.53 | 3.14 | 1.24 | 3.50 | 259.4 | 21.0 | 13.6 | 8.50 → 11.44 | 1.35× |
+| prose 512, greedy | 2 | 1.12 | 1.62 | 1.45 | 2.12 | 233.9 | 10.5 | 16.4 | 10.04 → 7.67 | 0.76× |
+| prose 512, greedy | 4 | 1.49 | 2.27 | 1.53 | 2.49 | 253.6 | 15.2 | 21.0 | 8.59 → 8.23 | 0.96× |
+| prose 512, greedy | 7 | 1.70 | 2.68 | 1.57 | 2.70 | 260.0 | 17.9 | 22.5 | 8.17 → 8.64 | 1.06× |
+| prose 512, instruct | 2 | 1.22 | 1.69 | 1.39 | 2.22 | 250.7 | 11.3 | 13.2 | 8.48 → 7.65 | 0.90× |
+| prose 512, instruct | 4 | 1.56 | 2.45 | 1.57 | 2.54 | 254.0 | 16.2 | 19.0 | 8.41 → 8.44 | 1.00× |
+| prose 512, instruct | 7 | 1.68 | 2.90 | 1.73 | 2.66 | 256.4 | 19.1 | 20.3 | 8.46 → 8.68 | 1.03× |
+
+**Reading.** The policy trims 25–45 % of the proposed positions (propose
+10–25 ms per batch against 13–45 unpoliced) and gives prose instruct its
+first ≥ 1× rows (1.00 / 1.03× at drafts 4 / 7 against 0.98 / 1.01× in the
+ENGN-15 pass), while code holds: 1.35× instruct and 1.33× greedy at draft 7
+(1.33× unpoliced). Drafts per accepted token fall on every row; prose draft
+4 reads 1.57 against the interleaved control's measured 2.16 (−27 %), three
+points short of the unit's 30 % bar, while its decode rate rose — the bar's
+purpose. Verify (234–260 ms) is still the whole batch.

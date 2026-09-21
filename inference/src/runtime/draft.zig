@@ -20,16 +20,19 @@ pub const Drafter = struct {
     /// Greedy candidates from the state after the last committed token, using
     /// `token` (the last chosen token not yet fed) as the block's seed.
     /// Returns the count proposed, at most `out.len`. Verification needs no
-    /// draft distribution: acceptance draws from the target alone.
-    propose_fn: *const fn (host: *anyopaque, token: u32, out: []u32) anyerror!usize,
+    /// draft distribution: acceptance draws from the target alone. `p_min`
+    /// > 0 stops after a position whose top candidate's probability is below
+    /// it (the first position is always proposed); 0 proposes every position
+    /// `out` has room for.
+    propose_fn: *const fn (host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize,
     /// Advances the drafter over `tokens`, whose target hidden rows are
     /// `h_rows` (`tokens.len * hidden` values), as committed by `recover`.
     commit_fn: *const fn (host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void,
     reset_fn: *const fn (host: *anyopaque) void,
     bytes_fn: *const fn (host: *anyopaque) usize,
 
-    pub fn propose(self: Drafter, token: u32, out: []u32) !usize {
-        return self.propose_fn(self.host, token, out);
+    pub fn propose(self: Drafter, token: u32, out: []u32, p_min: f32) !usize {
+        return self.propose_fn(self.host, token, out, p_min);
     }
     pub fn commit(self: Drafter, tokens: []const u32, h_rows: []const f32) !void {
         return self.commit_fn(self.host, tokens, h_rows);

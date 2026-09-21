@@ -101,6 +101,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-13 | A GPU penalty kernel: the token history applied on the device before the top-k | 2026-09-20 |
 | ENGN-15 | Sampled acceptance on the GPU top-k readback | 2026-09-20 |
 | KERN-14 | The wide 32×8 small-batch tile: measured, closed negative | 2026-09-20 |
+| ENGN-16 | Draft proposal policy: the `p_min` early stop shipped, the adaptive length dropped | 2026-09-20 |
 
 ## Context
 
@@ -3516,3 +3517,61 @@ what the verify is asked to do. The wide kernels stay instantiated as the
 measured fixture (`matmulTile32`); removing them would remove the record
 from the tree, which the repo's convention keeps (KERN-12's unused token
 counts).
+
+### ENGN-16 — Draft proposal policy: the `p_min` early stop shipped, the adaptive length dropped (2026-09-20)
+
+**Outcome.** `Drafter.propose` gained a `p_min` threshold: on Metal the
+block's row records the argmax and one top-1 top-k pass (`1 / Σ exp(l −
+max)` at T = 1) in the same command buffer and stops after the first
+position whose top-candidate probability falls below the threshold; on the
+CPU the same quantity is the host softmax maximum. `engine.draft_p_min =
+0.7`, chosen from the `--draft-stats` p_max bins; 0 proposes every
+requested position. The plan's second half, an adaptive length
+(`k = accepted + 1` after a rejection), **closed negative and is not
+shipped**: it loses the chain's tail, whose positions are still accepted at
+the per-depth rates. `bench.Sample` gained `proposed_per_step` and the
+record script two columns (proposed/step, drafts/accepted);
+`--draft-stats` now proposes position by position, bins each draft by its
+`p_max` (≥ 0.9, 0.7–0.9, 0.5–0.7, < 0.5), and reports the device-versus-host
+`p_max` difference.
+
+**Evidence.** `make draft-stats` (Metal, `d31c5cd` plus the change): code
+depth acceptance 90.3/80.0/69.0/64.3 %, bins ≥ 0.9 93.1 % (81/87), 0.7–0.9
+42.9 % (6/14), 0.5–0.7 22.2 % (2/9), < 0.5 12.5 % (1/8); `def
+fibonacci(n):` 93.5/83.3/82.8/85.7 % and 92.5/100/14.3/33.3 %; device p_max
+against the host softmax within 2.6e-7. Interleaved A/B in one session
+(control `p_min = 0`): prose 512 instruct draft 4 drafts/accepted 2.16 →
+1.57 (−27 %), speedup 0.872/0.907 → 0.951/0.942; code greedy draft 7 2.31 →
+1.48 (−36 %), speedup 1.312/1.323 → 1.330/1.332 (+1.3 %). `p_min = 0.8`
+trims more prose (−34 %) but costs code 4.4 %. The adaptive length alone
+(code draft 7): accepted/step 1.91 against 2.97 and speedup 1.02 against
+1.32. The unit's gate pass (`--only prose512 code`, reports under
+`.zig-cache/bench/spec/`; table in
+[bench.md § The ENGN-16 quick pass](reference/bench.md#the-engn-16-quick-pass-2026-09-20)):
+code instruct 1.35×, code greedy 1.33× at draft 7 (within 1 % of the
+control), prose instruct 1.00 / 1.03× at drafts 4 / 7 (was 0.98 / 1.01×),
+drafts/accepted 1.24–1.73. `make check`, `make compare` (f32 6.1e-5 /
+7.7e-7, f16 2.5e-2 / 1.9e-4), and `make speculative-check-metal` (all
+phases; the loop check still shows partial acceptance) pass.
+
+**The near miss, stated plainly.** The acceptance asked prose 512 draft 4
+for a ≥ 30 % fall in drafts per accepted token; the measured control value
+is 2.16 (not the arithmetic 4/1.82 = 2.20, since the final batch is
+truncated) and the policed value 1.57, a 27 % fall — three points short.
+The other half of that criterion, the decode rate not lower, is met with an
+8–10 % gain (0.87 → 0.94/0.95 interleaved; 1.00× in the gate pass), and
+every code criterion passes. Shipped at 0.7; 0.8 would pass prose and fail
+code.
+
+**Files.** `inference/src/runtime/draft.zig`,
+`inference/src/models/{qwen35_metal,qwen35_runtime}.zig`,
+`inference/src/engine.zig`, `inference/generation-check.zig`,
+`src/bench.zig`, `scripts/nuclis-speculative.py`,
+`docs/reference/{speculative-decoding,bench,generation}.md`, `TODO.md`, and
+this log.
+
+**Remaining.** Prose stays below 1× at draft 2 and near 1× at 4–7; verify
+is the batch (234–260 ms). A better proposal policy than "stop at the first
+low-probability position" — one that keeps the chain's tail without paying
+its verify rows — is unmeasured; the adaptive length's negative result is
+the evidence against the obvious variant.

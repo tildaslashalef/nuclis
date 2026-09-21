@@ -16,26 +16,29 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-KERN-14 closed on 2026-09-20 **negative**: the wide 32×8 variant of the
-small-batch tile loses 8–26 % on the Qwen FFN encodings at 5 rows (Q4_K
-96.8 → 88.7, Q6_K 114.0 → 84.6, Q3_K 63.0 → 47.1 GB/s), ties on Q5_K, and
-wins only 5–8 % on the wide head — the best tile at 5 rows is 110 GB/s
-against the ≤ 150 bar. Nothing routes to it; the 16×8 tile and the two-row
-matvec routing stand, so full-model verify latency is unchanged (262–297 ms
-per batch). The wide kernels stay as the measured fixture. Verdict:
-[metal-backend.md § The wide 32×8 tile](docs/reference/metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative),
-sweep in
-[bench.md § Small-batch tile sweep](docs/reference/bench.md#small-batch-tile-sweep-kern-14-2026-09-20),
-[log](docs/engineering-log.md#kern-14--the-wide-328-small-batch-tile-measured-closed-negative-2026-09-20).
-Before it in the same session, KERN-13 (the device penalty kernel) and
-ENGN-15 (sampled acceptance on the per-row top-k) closed positive: `accept`
-fell from 62.8–91.3 ms per batch to **18.8–36.9 µs**, code instruct (draft
-4) rose to **1.36×**, prose 512 instruct to **0.92 / 0.98 / 1.01×** at
-drafts 2 / 4 / 7. The deferred CPU speculative check was run and passed (12
-tokens identical to ordinary greedy).
+ENGN-16 closed on 2026-09-20: the drafter's `p_min` early stop is shipped
+at `engine.draft_p_min = 0.7` (a position whose top candidate is below it
+ends the chain), while the adaptive length closed negative and is not. The
+gate pass (`--only prose512 code`) reads code instruct **1.35×**, code
+greedy **1.33×** at draft 7 (within 1 % of the control), prose instruct
+**1.00 / 1.03×** at drafts 4 / 7 (was 0.98 / 1.01×), and drafts/accepted
+1.24–1.73; the unit's prose 30 % bar is missed by three points (−27 %
+against the interleaved control) while its decode rate rises. Facts:
+[speculative-decoding.md § The proposal policy](docs/reference/speculative-decoding.md#the-proposal-policy-engn-16-2026-09-20),
+the table in
+[bench.md § The ENGN-16 quick pass](docs/reference/bench.md#the-engn-16-quick-pass-2026-09-20),
+and the [log](docs/engineering-log.md#engn-16--draft-proposal-policy-the-p_min-early-stop-shipped-the-adaptive-length-dropped-2026-09-20).
 
-**Next: ENGN-16** (the proposal policy: `p_min` early stop and an adaptive
-length), then KERN-15 and KERN-16, then ENGN-17's full record.
+Before it in the same session: KERN-13 (device penalty kernel) and ENGN-15
+(sampled acceptance on the per-row top-k) closed positive — `accept` fell
+from 62.8–91.3 ms per batch to **18.8–36.9 µs**, code instruct 1.36×,
+prose instruct 0.92 / 0.98 / 1.01× at drafts 2 / 4 / 7 — and KERN-14 (the
+wide 32×8 small-batch tile) closed negative, keeping the 16×8 control. The
+deferred CPU speculative check was run and passed (12 tokens identical to
+ordinary greedy).
+
+**Next: KERN-15** (split-K decode matvec for row-poor shapes), then KERN-16
+and ENGN-17's full record.
 
 Speculative decoding works end to end on Qwen3.8-27B and is not yet a
 speedup worth switching on by default. ENGN-11 (recovery), MODL-18 (the
@@ -60,33 +63,31 @@ here* for how to refresh them):
 
 | cost per batch | measured (record, 2026-09-20) | cause | unit | target |
 | --- | ---: | --- | --- | ---: |
-| propose `k` drafts | 12.7–43.5 ms (≈ 6.3 ms per draft) | one block forward per draft | ENGN-16 | fewer forwards, same accepted tokens |
+| propose `k` drafts | 10.5–24.9 ms (quick pass; trimmed by `p_min`) | one block forward per draft | ENGN-16 ✓ (early stop; adaptive dropped) | fewer forwards, same accepted tokens |
 | checkpoint | 2.8–5.2 ms | one 150 MB copy | — | — |
 | verify `1 + k` rows | 262–297 ms at 512, 362–372 ms at 4K | the 16×8 prefill tile at small row counts; the chunk attention over the visible cache | KERN-16 at long context (KERN-14 closed negative) | ≤ 130 ms |
 | accept (sampled) | 18.8–36.9 µs (quick pass) | one draw per row on the device readback | ENGN-15 ✓ | ≤ 5 ms |
 | recover (on rejection) | 6–22 ms (was 150–182) | one 150 MB slot copy | ENGN-14 ✓ | ≤ 40 ms |
 | commit `a + 1` tokens | 4.7–15.3 ms | one batched forward per committed prefix | ENGN-13 ✓ | ≤ 8 ms |
 | prompt commit (prefill) | 1.02× ordinary prefill | the plan's own chunk, not 8-row verify chunks | ENGN-13 ✓ | ≤ 1.10 × |
-| tokens per batch | 2.23–3.97 (1.23–2.97 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-16 | more accepted per proposed |
+| tokens per batch | 2.12–3.53 (1.12–2.53 accepted) | acceptance 42 % per draft on prose, 58–68 % on code | ENGN-16 ✓ (drafts/accepted −27…−45 %) | more accepted per proposed |
 
-Measured speedups (ENGN-15 quick pass, `d31c5cd` plus the unit's change):
-code greedy 0.96 / 1.20 / 1.33× at drafts 2 / 4 / 7, code instruct 1.36× at
-draft 4; prose 512 greedy 0.81 / 0.93 / 1.07×, instruct 0.92 / 0.98 / 1.01×.
-Both sampled paths are now free of host work; what remains is the batch's
-model time. At draft 4 the code prompt advances 3.34 tokens for a 272 ms
-verify (81 ms/token against ~115), prose 2.65 for 291 (110 against ~120).
-KERN-14 closed negative, so the 512-token verify stays where it is;
-KERN-16's long-context attention is the remaining kernel lever, and
-ENGN-16 trims the proposal and the wasted rows on prose. Nothing here
-claims a final speedup before ENGN-17 measures it.
+Measured speedups (ENGN-16 quick pass, `d31c5cd` plus the change): code
+greedy 0.97 / 1.24 / 1.33× at drafts 2 / 4 / 7, code instruct 1.35× at
+draft 4; prose 512 greedy 0.76 / 0.96 / 1.06×, instruct 0.90 / 1.00 / 1.03×.
+Both sampled paths are free of host work and the proposal is trimmed;
+what remains is the batch's model time. At draft 4 the code prompt advances
+3.17 tokens for a 256 ms verify (81 ms/token against ~118), prose 2.49 for
+254 (102 against ~119). KERN-14 closed negative, so the 512-token verify
+stays where it is; KERN-16's long-context attention is the remaining kernel
+lever. Nothing here claims a final speedup before ENGN-17 measures it.
 
-Order: ENGN-16 → KERN-15 → KERN-16 →
+Order: KERN-15 → KERN-16 →
 ENGN-17 → ENGN-18 → ENGN-19 → KERN-17 → TERM-10 → MODL-19 → MODL-20 →
-MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13 and ENGN-15 landed first
-because the instruct profile's presence penalty defeated the GPU top-k
-readback path otherwise. KERN-14's small-batch tile closed negative, so
-verify stays on the 16×8 tile at 512; ENGN-16 is cheap and trims the prose
-waste, and KERN-15/KERN-16 are the remaining kernel levers. **KERN-15 and KERN-16 sit before ENGN-17
+MODL-21 → AGNT-11 → MODL-22 → MODL-23. KERN-13, ENGN-15, and ENGN-16 landed
+first (the penalty kernel, the sampled readback, the proposal policy).
+KERN-14's small-batch tile closed negative, so verify stays on the 16×8
+tile at 512; KERN-15/KERN-16 are the remaining kernel levers. **KERN-15 and KERN-16 sit before ENGN-17
 because they change the Qwen path the verdict measures**: the split-K
 matvec touches Qwen's row-poor shapes, and the long-context attention is
 every verify batch at 16K–32K (and the 32K acceptance's largest deficit).
@@ -103,7 +104,6 @@ APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| ENGN-16 | Draft proposal policy: `p_min` early stop and an adaptive length | 1 |
 | KERN-15 | Split-K decode matvec for row-poor shapes (Muse's gap, every family's small projections) | 1–2 |
 | KERN-16 | Long-context prefill attention, second attempt (register-level reuse) | 2 |
 | ENGN-17 | The verdict, the defaults, and the bench baseline without the drafter | 1 |
@@ -253,52 +253,6 @@ holds the recovery contract, the draft contract, each family's source with
 its facts and provenance, and the measurements; the session, Metal,
 generation, and bench references gain their sections;
 [llm-guide.md](docs/llm-guide.md) is extended only when the user asks.
-
-## ENGN-16 — Draft proposal policy: `p_min` early stop and an adaptive length
-
-**Facts (read 2026-09-20; updated from the ENGN-14 record).**
-- `propose` (`qwen35_metal.zig` / `qwen35_runtime.zig`) always proposes
-  `k = draft_length` positions at ≈ 6.3 ms per block forward: 12.7–43.5 ms
-  per batch at drafts 2–7 (5–12 % of a batch). Per-depth acceptance on code
-  falls 90 → 64 % across depths 0–3 (MODL-18) and is 22 % overall on prose.
-- The reference MTP driver (`common/speculative.cpp:1602–1700`) stops
-  drafting when the block's top candidate has `p < p_min` (default 0 =
-  off, `--spec-draft-p-min`; a top-k 10 sampler on the block's logits) and
-  has no adaptive length.
-- `Backend.topk` returns Σ exp((l − max) / T) as partial sums (`sums`) with
-  the top ids and values, so `p_max = 1 / total` at T = 1 with no logit
-  readback; `sampling.TopK.total` is the F64 sum of the partials.
-- Verify barely scales with rows, so the policy's value is the skipped
-  block forwards and the avoided hopeless rows on prose, not a big verify
-  cut.
-
-**Design.**
-1. `Drafter.propose(token, out, p_min: f32)`: on Metal, when `p_min > 0`,
-   record `b.topk(draft_logits, vocabulary, 1, 1.0, self.topk)` in the
-   same command buffer as the block forward and read `total`; stop after a
-   draft whose `p_max = 1 / total < p_min`. On the CPU, the softmax
-   maximum over `draft_logits` (exact). The first draft is always proposed
-   (count ≥ 1 when `out.len ≥ 1`).
-2. The adaptive length in `runLoop`: `k_next = draft_length` after full
-   acceptance, `k_next = clamp(accepted + 1, 1, draft_length)` after a
-   rejection; `settings.draft_length` stays the cap and the only exposed
-   knob (spec).
-3. `p_min` is a host constant `engine.draft_p_min`, chosen from data:
-   extend `generation-check --draft-stats` to bin each proposed draft by
-   the block's `p_max` (≥ 0.9, 0.7–0.9, 0.5–0.7, < 0.5) and report the
-   acceptance rate per bin and depth; set the threshold at the bin where
-   acceptance falls below 50 % (a draft costs one block forward plus one
-   verify row; at 50 % it pays). Record the table in
-   `speculative-decoding.md`.
-4. `bench.Sample` gains `proposed_per_step`, so drafts per accepted token
-   is derivable from the record.
-
-**Acceptance.** Prose 512, draft 4: proposed drafts per accepted token
-falls by ≥ 30 % and `decode_tokens_per_second` (on) is not lower; code 512,
-draft 7: within 2 % of the unpoliced run. `make speculative-check-metal`
-still passes (the policy changes which drafts are proposed, never the
-tokens emitted); `make check`, `make draft-stats`. Gate with
-`make speculative-record ARGS="--only prose512 code"`.
 
 ## ENGN-17 — The verdict, the defaults, and the bench baseline without the drafter
 

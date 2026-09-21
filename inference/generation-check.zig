@@ -463,10 +463,10 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
         const Plan = spec.Family.Plan;
         var plan = try Plan.init(alloc, b, view, binding, 4, 4, .f32, false, true);
         defer plan.deinit();
-        try plan.draftForwardHost(zeros, draft.tokens[0], 0, null, logits);
+        try plan.draftForwardHost(zeros, draft.tokens[0], 0, null, null, logits);
         try compareDraft("metal f32 position 0", p0_h, plan.draft_h.floats()[0..hidden], 2e-2, 1e-3);
         if (argmax(logits) != draft.greedy[0]) return error.DraftGreedyMismatch;
-        try plan.draftForwardHost(h_prev, draft.tokens[1], 1, null, logits);
+        try plan.draftForwardHost(h_prev, draft.tokens[1], 1, null, null, logits);
         try compareDraft("metal f32 position 1", p1_h, plan.draft_h.floats()[0..hidden], 2e-2, 1e-3);
         if (argmax(logits) != draft.greedy[1]) return error.DraftGreedyMismatch;
 
@@ -475,10 +475,10 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
         const bounds = spec.bounds;
         var half = try Plan.init(alloc, b, view, binding, 4, 4, .f16, false, true);
         defer half.deinit();
-        try half.draftForwardHost(zeros, draft.tokens[0], 0, null, logits);
+        try half.draftForwardHost(zeros, draft.tokens[0], 0, null, null, logits);
         try compareDraft("metal f16 position 0", p0_h, half.draft_h.floats()[0..hidden], bounds.half_max_abs, bounds.half_rel_rms);
         if (argmax(logits) != draft.greedy[0]) return error.DraftGreedyMismatch;
-        try half.draftForwardHost(h_prev, draft.tokens[1], 1, null, logits);
+        try half.draftForwardHost(h_prev, draft.tokens[1], 1, null, null, logits);
         try compareDraft("metal f16 position 1", p1_h, half.draft_h.floats()[0..hidden], bounds.half_max_abs, bounds.half_rel_rms);
         if (argmax(logits) != draft.greedy[1]) return error.DraftGreedyMismatch;
 
@@ -536,20 +536,20 @@ fn draftRecoveryCheck(comptime spec: Spec, alloc: std.mem.Allocator, backend: ?*
     defer second.deinit();
 
     // Reset clears both the block's cache and its pending target hidden.
-    try first.forward(zeros, draft.tokens[0], 0, null);
+    try first.forward(zeros, draft.tokens[0], 0, null, null);
     @memcpy(before, first.blockHidden());
     first.reset();
-    try first.forward(zeros, draft.tokens[0], 0, null);
+    try first.forward(zeros, draft.tokens[0], 0, null, null);
     if (!std.mem.eql(f32, before, first.blockHidden())) return error.DraftResetMismatch;
 
     // A checkpoint/rewind leaves the block's row rewritable to the same bytes.
     first.reset();
-    try first.forward(zeros, draft.tokens[0], 0, null);
+    try first.forward(zeros, draft.tokens[0], 0, null, null);
     try first.checkpoint();
-    try first.forward(h_prev, draft.tokens[1], 1, null);
+    try first.forward(h_prev, draft.tokens[1], 1, null, null);
     @memcpy(before, first.blockHidden());
     try first.rewind();
-    try first.forward(h_prev, draft.tokens[1], 1, null);
+    try first.forward(h_prev, draft.tokens[1], 1, null, null);
     if (!std.mem.eql(f32, before, first.blockHidden())) return error.DraftRewindMismatch;
 
     // Two reset runners propose the same greedy chain.
@@ -557,8 +557,8 @@ fn draftRecoveryCheck(comptime spec: Spec, alloc: std.mem.Allocator, backend: ?*
     var two: [4]u32 = undefined;
     first.reset();
     second.reset();
-    _ = try first.propose(draft.tokens[0], &one);
-    _ = try second.propose(draft.tokens[0], &two);
+    _ = try first.propose(draft.tokens[0], &one, 0);
+    _ = try second.propose(draft.tokens[0], &two, 0);
     if (!std.mem.eql(u32, &one, &two)) return error.DraftProposeMismatch;
     std.debug.print("Draft recovery check passed ({s}): reset and rewind reproduce the block's hidden; propose is deterministic.\n", .{if (backend != null) "metal" else "cpu"});
 }
@@ -593,23 +593,23 @@ fn draftBatchCommitCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *infe
     try batched.commit(tokens, hidden_rows);
     for (tokens, 0..) |token, i| {
         const h_prev: []const f32 = if (i == 0) serial.draft_pending_h.floats()[0..hidden] else hidden_rows[(i - 1) * hidden ..][0..hidden];
-        try serial.draftForwardHost(h_prev, token, i, null, null);
+        try serial.draftForwardHost(h_prev, token, i, null, null, null);
     }
     @memcpy(serial.draft_pending_h.floats()[0..hidden], hidden_rows[hidden_rows.len - hidden ..][0..hidden]);
 
     const seed_token = tokens[count - 1];
     var a: [draft_n]u32 = undefined;
     var c: [draft_n]u32 = undefined;
-    const na = try batched.propose(seed_token, &a);
-    const nc = try serial.propose(seed_token, &c);
+    const na = try batched.propose(seed_token, &a, 0);
+    const nc = try serial.propose(seed_token, &c, 0);
     if (na != nc or !std.mem.eql(u32, a[0..na], c[0..nc])) return error.BatchedCommitDraftMismatch;
 
     const logits_a = try alloc.alloc(f32, spec.vocabulary);
     defer alloc.free(logits_a);
     const logits_b = try alloc.alloc(f32, spec.vocabulary);
     defer alloc.free(logits_b);
-    try batched.draftForwardHost(batched.draft_pending_h.floats()[0..hidden], seed_token, count, null, logits_a);
-    try serial.draftForwardHost(serial.draft_pending_h.floats()[0..hidden], seed_token, count, null, logits_b);
+    try batched.draftForwardHost(batched.draft_pending_h.floats()[0..hidden], seed_token, count, null, null, logits_a);
+    try serial.draftForwardHost(serial.draft_pending_h.floats()[0..hidden], seed_token, count, null, null, logits_b);
     try compareDraft("batched vs serial commit", std.mem.sliceAsBytes(logits_b), logits_a, 2e-2, 1e-3);
     std.debug.print("Batched commit check passed: {d} tokens batched match the serial commit ({d} drafts identical).\n", .{ count, na });
 }
@@ -701,7 +701,7 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
         carried = false;
         const room = speculative.state().capacity - speculative.state().position - 1;
         const k = @min(block_drafts, room);
-        const n = try speculative.propose(seed, drafts[0..k]);
+        const n = try speculative.propose(seed, drafts[0..k], 0);
         try speculative.checkpoint();
         batch[0] = seed;
         @memcpy(batch[1 .. 1 + n], drafts[0..n]);
@@ -990,6 +990,26 @@ const draft_prompts = [_][]const u8{
     "def fibonacci(n):",
 };
 
+/// The block's top-candidate probability at temperature 1: the exact F64
+/// softmax maximum over the row. The Metal policy reads the same quantity
+/// from one top-1 pass (`1 / Σ exp(l − max)`).
+fn draftPmax(logits: []const f32) f64 {
+    var maximum: f64 = -std.math.inf(f64);
+    for (logits) |v| maximum = @max(maximum, v);
+    var total: f64 = 0;
+    for (logits) |v| total += @exp(@as(f64, v) - maximum);
+    return if (total > 0) 1.0 / total else 1.0;
+}
+
+/// The proposal policy's probability bins: `≥ 0.9`, `0.7–0.9`, `0.5–0.7`,
+/// `< 0.5`.
+fn pmaxBin(p: f64) u8 {
+    if (p >= 0.9) return 0;
+    if (p >= 0.7) return 1;
+    if (p >= 0.5) return 2;
+    return 3;
+}
+
 /// Either executor behind one step/hidden/propose surface for the draft
 /// statistics and traces.
 fn DraftRunner(comptime spec: Spec) type {
@@ -1012,11 +1032,16 @@ fn DraftRunner(comptime spec: Spec) type {
             };
         }
         /// Runs one block row with a host `h_prev`, the block's hidden
-        /// landing in `blockHidden`.
-        fn forward(self: *@This(), h_prev: []const f32, token: u32, position: usize, logits: ?[]f32) !void {
+        /// landing in `blockHidden`. `pmax`, when given, receives the row's
+        /// top-candidate probability (the device's top-1 readback on Metal,
+        /// the host softmax on the CPU).
+        fn forward(self: *@This(), h_prev: []const f32, token: u32, position: usize, logits: ?[]f32, pmax: ?*f32) !void {
             switch (self.*) {
-                .cpu => |*r| try r.draftForward(h_prev, token, position, logits),
-                .metal => |*p| try p.draftForwardHost(h_prev, token, position, null, logits),
+                .cpu => |*r| {
+                    try r.draftForward(h_prev, token, position, logits);
+                    if (pmax) |out| out.* = @floatCast(draftPmax(logits.?));
+                },
+                .metal => |*p| try p.draftForwardHost(h_prev, token, position, null, pmax, logits),
             }
         }
         fn blockHidden(self: *@This()) []const f32 {
@@ -1025,10 +1050,18 @@ fn DraftRunner(comptime spec: Spec) type {
                 .metal => |*p| p.draft_h.floats()[0..hidden],
             };
         }
-        fn propose(self: *@This(), token: u32, out: []u32) !usize {
+        /// The target hidden of the last committed token: the first proposed
+        /// position's `h_prev`.
+        fn pendingHidden(self: *@This()) []const f32 {
             return switch (self.*) {
-                .cpu => |*r| r.propose(token, out),
-                .metal => |*p| p.propose(token, out),
+                .cpu => |*r| r.draft_pending_h,
+                .metal => |*p| p.draft_pending_h.floats()[0..hidden],
+            };
+        }
+        fn propose(self: *@This(), token: u32, out: []u32, p_min: f32) !usize {
+            return switch (self.*) {
+                .cpu => |*r| r.propose(token, out, p_min),
+                .metal => |*p| p.propose(token, out, p_min),
             };
         }
         fn commit(self: *@This(), tokens: []const u32, h_rows: []const f32) !void {
@@ -1155,6 +1188,15 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
         const counts = try alloc.alloc(usize, draft_generated);
         defer alloc.free(counts);
         @memset(counts, 0);
+        // The proposal policy's bins: each proposed position's probability
+        // bin, kept per draft so the acceptance loop can count both.
+        const bins = 4;
+        var bin_total = [_]usize{0} ** bins;
+        var bin_accepted = [_]usize{0} ** bins;
+        const bin_of_draft = try alloc.alloc(u8, draft_generated * max_drafts);
+        defer alloc.free(bin_of_draft);
+        @memset(bin_of_draft, 0);
+        var pmax_worst: f64 = 0;
 
         // The prompt, then the greedy continuation; every step's target
         // hidden is kept for the drafter's `commit`.
@@ -1172,7 +1214,24 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
         var j: usize = 0;
         while (j < draft_generated) : (j += 1) {
             const start = std.Io.Clock.awake.now(io);
-            const k = try runner.propose(next, drafts[j * max_drafts ..][0..max_drafts]);
+            // Propose position by position so each draft's p_max is known:
+            // the device's top-1 probability on Metal, the host softmax on
+            // the CPU; the proposed chain is the same greedy one `propose`
+            // builds.
+            var h_prev: []const f32 = runner.pendingHidden();
+            var next_draft = next;
+            var k: usize = 0;
+            while (k < max_drafts) : (k += 1) {
+                var device_pmax: f32 = 0;
+                try runner.forward(h_prev, next_draft, len + k, logits, &device_pmax);
+                const pmax = draftPmax(logits);
+                pmax_worst = @max(pmax_worst, @abs(@as(f64, device_pmax) - pmax));
+                const draft = argmax(logits);
+                drafts[j * max_drafts + k] = draft;
+                bin_of_draft[j * max_drafts + k] = pmaxBin(pmax);
+                next_draft = draft;
+                h_prev = runner.blockHidden();
+            }
             propose_ns += @intCast(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds());
             proposed += k;
             counts[j] = k;
@@ -1192,7 +1251,12 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
                 const at = seeds[step] + 1 + i;
                 if (at >= len) break;
                 total[i] += 1;
-                if (drafts[step * max_drafts + i] == sequence[at]) accepted[i] += 1;
+                const bin = bin_of_draft[step * max_drafts + i];
+                bin_total[bin] += 1;
+                if (drafts[step * max_drafts + i] == sequence[at]) {
+                    accepted[i] += 1;
+                    bin_accepted[bin] += 1;
+                }
             }
         }
         std.debug.print("Draft acceptance ({s}, \"{s}\", {d} prompt + {d} greedy):\n", .{ if (use_metal) "metal" else "cpu", text, prompt.len, draft_generated });
@@ -1200,8 +1264,14 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
             const rate: f64 = if (t == 0) 0 else @as(f64, @floatFromInt(a)) / @as(f64, @floatFromInt(t));
             std.debug.print("  depth {d}: {d}/{d} = {d:.1} %\n", .{ depth, a, t, rate * 100 });
         }
+        const bin_names = [_][]const u8{ ">= 0.9", "0.7-0.9", "0.5-0.7", "< 0.5" };
+        std.debug.print("  p_max bins (draft vs the target's next token):\n", .{});
+        for (bin_names, bin_total, bin_accepted) |bin_name, t, a| {
+            const rate: f64 = if (t == 0) 0 else @as(f64, @floatFromInt(a)) / @as(f64, @floatFromInt(t));
+            std.debug.print("    {s:<8} {d}/{d} = {d:.1} %\n", .{ bin_name, a, t, rate * 100 });
+        }
         const millis = @as(f64, @floatFromInt(propose_ns)) / std.time.ns_per_ms;
-        std.debug.print("  drafts {d}, propose {d:.3} ms total, {d:.3} ms/position; block workspace {d} bytes.\n", .{ proposed, millis, millis / @as(f64, @floatFromInt(@max(proposed, 1))), runner.bytes() });
+        std.debug.print("  drafts {d}, propose {d:.3} ms total, {d:.3} ms/position; device vs host p_max worst |diff| {e:.2}; block workspace {d} bytes.\n", .{ proposed, millis, millis / @as(f64, @floatFromInt(@max(proposed, 1))), pmax_worst, runner.bytes() });
     }
 }
 
@@ -1241,12 +1311,12 @@ fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
 
     try runner.step(tokens[0], logits);
     @memcpy(h_prev, runner.lastHidden());
-    try runner.forward(zeros, tokens[0], 0, logits);
+    try runner.forward(zeros, tokens[0], 0, logits, null);
     try writeFloats(io, directory, "p0-h.f32", runner.blockHidden());
     greedy[0] = argmax(logits);
 
     try runner.step(tokens[1], logits);
-    try runner.forward(h_prev, tokens[1], 1, logits);
+    try runner.forward(h_prev, tokens[1], 1, logits, null);
     try writeFloats(io, directory, "p1-h.f32", runner.blockHidden());
     try writeFloats(io, directory, "p1-hprev.f32", h_prev);
     greedy[1] = argmax(logits);

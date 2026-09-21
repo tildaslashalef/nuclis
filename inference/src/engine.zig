@@ -400,9 +400,9 @@ pub const Model = struct {
             inline else => |*e| return e.drafter(),
         }
     }
-    pub fn propose(self: *Model, token: u32, out: []u32) !usize {
+    pub fn propose(self: *Model, token: u32, out: []u32, p_min: f32) !usize {
         const d = self.drafter() orelse return error.NoDrafter;
-        return d.propose(token, out);
+        return d.propose(token, out, p_min);
     }
     pub fn commitDraft(self: *Model, tokens: []const u32, h_rows: []const f32) !void {
         const d = self.drafter() orelse return error.NoDrafter;
@@ -483,6 +483,16 @@ pub const Model = struct {
 /// row. A requested length above it is refused; the switch and the length are
 /// the only speculative knobs exposed (docs/spec.md § Speculative decoding).
 pub const max_draft_length = 7;
+
+/// The drafter's proposal threshold: a position whose top candidate's
+/// probability falls below it stops the chain (the position itself is still
+/// proposed). 0 proposes every requested position. Chosen from the
+/// `--draft-stats` p_max bins: below 0.7 the drafts' acceptance measured
+/// 14–22 %, while stopping there trims ~38 % of prose's proposed positions
+/// and improves its decode rate; the adaptive-length half of the policy
+/// closed negative and is not shipped. Not exposed, like the acceptance rule
+/// and the recovery scheme.
+pub const draft_p_min: f32 = 0.7;
 
 /// Runtime speculative settings, resolved by the caller from the
 /// configuration file and flags. `enabled` alone does nothing without a
@@ -1141,7 +1151,7 @@ fn speculativeBatch(
     drafter: inference.draft.Drafter,
 ) !BatchResult {
     const propose_start = std.Io.Clock.awake.now(eng.io);
-    const n = try eng.model.propose(seed_token, s.drafts[0..k]);
+    const n = try eng.model.propose(seed_token, s.drafts[0..k], draft_p_min);
     const propose = propose_start.durationTo(std.Io.Clock.awake.now(eng.io));
     const checkpoint_start = std.Io.Clock.awake.now(eng.io);
     try eng.model.checkpoint();

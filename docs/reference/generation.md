@@ -177,7 +177,9 @@ decide. The plan requires a batch no larger than its chunk and
 
 `runLoop` commits the prompt to the drafter first, in verify-sized chunks, so
 the block's cache holds the target hidden of every committed position. Each
-speculative step then: proposes `k` drafts (`drafter.propose`), checkpoints the
+speculative step then: proposes up to `k` drafts (`drafter.propose`, which
+stops after a position whose top-candidate probability is below
+`engine.draft_p_min`), checkpoints the
 session, verifies `[seed] ++ drafts`, accepts the longest matching prefix
 (greedy: row argmax equals the draft; sampled: the row's own draw from its
 shaped distribution equals the draft), recovers the accepted prefix, commits

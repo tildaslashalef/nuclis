@@ -91,6 +91,9 @@ pub const Sample = struct {
     /// (divide by the batches for the per-batch cost); speculative samples only.
     speculative_steps: ?usize = null,
     accepted_per_step: ?f64 = null,
+    /// Drafts proposed per verify batch; with `accepted_per_step`, drafts per
+    /// accepted token is `proposed / accepted` (the proposal policy's lever).
+    proposed_per_step: ?f64 = null,
     propose_milliseconds: ?f64 = null,
     verify_milliseconds: ?f64 = null,
     accept_milliseconds: ?f64 = null,
@@ -140,6 +143,7 @@ pub const Report = struct {
     speculative_draft_length: ?usize = null,
     mean_speculative_decode_tokens_per_second: ?f64 = null,
     mean_accepted_per_step: ?f64 = null,
+    mean_proposed_per_step: ?f64 = null,
     decode_speedup: ?f64 = null,
     profile: ?ProfileReport = null,
 
@@ -174,7 +178,11 @@ pub const Report = struct {
             try out.print(" vs baseline ", .{});
             if (self.mean_decode_tokens_per_second) |v| try out.print("{d:.2} tok/s", .{v}) else try out.writeAll("—");
             if (self.decode_speedup) |x| try out.print(", {s}{d:.2}x{s}", .{ sty.on(.number), x, off }) else try out.writeAll(", —x");
-            if (self.mean_accepted_per_step) |v| try out.print(", accepted {d:.2} drafts/step\n", .{v}) else try out.writeAll(", accepted —\n");
+            if (self.mean_accepted_per_step) |v| {
+                try out.print(", accepted {d:.2} drafts/step", .{v});
+                if (self.mean_proposed_per_step) |p| try out.print(" of {d:.2} proposed", .{p});
+                try out.writeByte('\n');
+            } else try out.writeAll(", accepted —\n");
         }
         if (self.profile) |p| try renderProfile(p, out, sty);
     }
@@ -266,6 +274,7 @@ pub const Summary = struct {
     measured: usize,
     speculative_decode: ?f64,
     accepted_per_step: ?f64,
+    proposed_per_step: ?f64,
     speculative_measured: usize,
 };
 
@@ -280,6 +289,8 @@ pub fn summarize(samples: []const Sample) Summary {
     var spec_decode_n: usize = 0;
     var accepted_sum: f64 = 0;
     var accepted_n: usize = 0;
+    var proposed_sum: f64 = 0;
+    var proposed_n: usize = 0;
     var speculative_measured: usize = 0;
     for (samples) |s| {
         if (s.warmup or std.mem.eql(u8, s.stop_reason, "cancelled")) continue;
@@ -292,6 +303,10 @@ pub fn summarize(samples: []const Sample) Summary {
             if (s.accepted_per_step) |v| {
                 accepted_sum += v;
                 accepted_n += 1;
+            }
+            if (s.proposed_per_step) |v| {
+                proposed_sum += v;
+                proposed_n += 1;
             }
             continue;
         }
@@ -313,6 +328,7 @@ pub fn summarize(samples: []const Sample) Summary {
         .measured = measured,
         .speculative_decode = if (spec_decode_n > 0) spec_decode_sum / @as(f64, @floatFromInt(spec_decode_n)) else null,
         .accepted_per_step = if (accepted_n > 0) accepted_sum / @as(f64, @floatFromInt(accepted_n)) else null,
+        .proposed_per_step = if (proposed_n > 0) proposed_sum / @as(f64, @floatFromInt(proposed_n)) else null,
         .speculative_measured = speculative_measured,
     };
 }
@@ -399,6 +415,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 .draft_length = if (on) settings.draft_length else null,
                 .speculative_steps = if (on) t.speculative_steps else null,
                 .accepted_per_step = if (on and t.speculative_steps > 0) @as(f64, @floatFromInt(t.accepted_drafts)) / @as(f64, @floatFromInt(t.speculative_steps)) else null,
+                .proposed_per_step = if (on and t.speculative_steps > 0) @as(f64, @floatFromInt(t.proposed_drafts)) / @as(f64, @floatFromInt(t.speculative_steps)) else null,
                 .propose_milliseconds = if (on) engine.milliseconds(t.propose) else null,
                 .verify_milliseconds = if (on) engine.milliseconds(t.verify) else null,
                 .accept_milliseconds = if (on) engine.milliseconds(t.accept) else null,
@@ -453,6 +470,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         .speculative_draft_length = if (speculate) settings.draft_length else null,
         .mean_speculative_decode_tokens_per_second = stats.speculative_decode,
         .mean_accepted_per_step = stats.accepted_per_step,
+        .mean_proposed_per_step = stats.proposed_per_step,
         .decode_speedup = if (stats.decode != null and stats.speculative_decode != null) stats.speculative_decode.? / stats.decode.? else null,
         .profile = profile,
     };
