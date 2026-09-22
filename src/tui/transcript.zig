@@ -1286,3 +1286,40 @@ test "reset drops the blocks and the counters, not the scrollback" {
     try testing.expectEqual(@as(usize, 0), tr.written);
     try testing.expect(!tr.pending());
 }
+
+test "the closed part of a streamed answer is rendered once; the open tail never goes through markdown" {
+    // The cache is the answer's `flushed` offset: everything before it is in
+    // the scrollback and is never handed to the renderer again. A render
+    // happens only when `split` closes a block, plus one for the tail at the
+    // end of the turn; the live region shows the open tail as raw text.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 30, .th = .{ .kind = .plain } };
+    const live: Live = .{ .width = 30, .th = options.th, .budget = 10 };
+    const document = "# Heading\n\nA paragraph that is long enough to wrap twice over.\n\n- one\n- two\n\n```zig\nconst x = 1;\n```\n\nDone.\n";
+    // The renders the stream should cost: one per prefix at which the closed
+    // part grows, and one for the remainder at the end of the turn.
+    var expected: usize = 1;
+    var closed: usize = 0;
+    for (1..document.len + 1) |n| {
+        const now = markdown.split(document[0..n]).closed.len;
+        if (now > closed) expected += 1;
+        closed = now;
+    }
+    markdown.render_calls = 0;
+    for (document) |byte| {
+        try tr.apply(.{ .answer_delta = &.{byte} });
+        _ = try tr.takeClosed(a, options);
+        const before = markdown.render_calls;
+        _ = try tr.liveRows(a, live);
+        try testing.expectEqual(before, markdown.render_calls);
+    }
+    try tr.apply(.{ .turn_end = .{ .stop = .eos } });
+    _ = try tr.takeClosed(a, options);
+    try testing.expectEqual(expected, markdown.render_calls);
+    // Nine block closes for ninety-odd bytes: the hit rate of the cache.
+    try testing.expect(markdown.render_calls * 8 < document.len);
+}

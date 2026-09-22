@@ -6,12 +6,14 @@
 //! model-supplied ANSI can never reach stdout, and unclosed markers degrade
 //! to literal text.
 //!
-//! Supported: `#`..`######` headings, `**bold**`, `*italic*`, `~~strike~~`,
-//! `` `code` ``, `[text](url)` links (an http(s) URL becomes an OSC 8
-//! hyperlink, anything else keeps the styled label), `>` quotes,
-//! `-`/`*`/`+` unordered lists with nesting, `1.` ordered lists,
-//! `- [ ]`/`- [x]` task lists, fenced code blocks with a language label,
-//! `---` rules, and pipe tables with per-column alignment.
+//! Supported: `#`..`######` headings, `**bold**`, `*italic*`, `***both***`,
+//! `~~strike~~`, `` `code` ``, `[text](url)` links (an http(s) URL becomes an
+//! OSC 8 hyperlink, anything else keeps the styled label), `>` quotes with
+//! nesting, `-`/`*`/`+` unordered lists with nesting, `1.` ordered lists
+//! from any number, `- [ ]`/`- [x]` task lists, fenced code blocks with a
+//! language label, `---` rules, and pipe tables with per-column alignment.
+//! A soft line break inside a paragraph stays a line break. No row is ever
+//! wider than the width asked for, whatever the input.
 //!
 //! Streaming. A turn is rendered while it arrives, and the last
 //! block of a partial document is still being written: a paragraph may gain
@@ -25,6 +27,7 @@
 //! the block background, and the language is a caption row above them, so
 //! selecting a block in the terminal copies the code and nothing else.
 const std = @import("std");
+const builtin = @import("builtin");
 const theme_mod = @import("theme.zig");
 const view = @import("view.zig");
 const highlight = @import("highlight.zig");
@@ -69,7 +72,13 @@ fn continues(line: []const u8) bool {
     return listMarker(line, theme_mod.unicode_glyphs) == null;
 }
 
+/// Test instrumentation: how many times `render` ran, so a streaming test
+/// can prove the closed part of a turn is rendered once and the open tail
+/// never through here.
+pub var render_calls: usize = 0;
+
 pub fn render(alloc: std.mem.Allocator, text: []const u8, columns: usize, th: theme_mod.Theme) ![][]const u8 {
+    if (builtin.is_test) render_calls += 1;
     var rows: std.ArrayList([]const u8) = .empty;
     errdefer rows.deinit(alloc);
     var para: std.ArrayList(u8) = .empty;
@@ -141,21 +150,25 @@ pub fn render(alloc: std.mem.Allocator, text: []const u8, columns: usize, th: th
             try appendWrapped(alloc, &rows, styled.items, columns);
         } else if (isRule(line)) {
             try rows.append(alloc, try ruleRow(alloc, @min(columns, 40), th));
-        } else if (quoteBody(line)) |body| {
+        } else if (quoteBody(line)) |quote| {
             var styled: std.ArrayList(u8) = .empty;
             defer styled.deinit(alloc);
             try styled.appendSlice(alloc, th.paint(.quote));
-            try styled.appendSlice(alloc, th.glyphs().quote);
-            try styled.appendSlice(alloc, " ");
-            try inlineSpan(alloc, &styled, body, th, 0);
+            for (0..quote.level) |_| {
+                try styled.appendSlice(alloc, th.glyphs().quote);
+                try styled.appendSlice(alloc, " ");
+            }
+            try inlineSpan(alloc, &styled, quote.body, th, 0);
             try styled.appendSlice(alloc, theme_mod.reset);
             try appendWrapped(alloc, &rows, styled.items, columns);
         } else if (listMarker(line, th.glyphs())) |marker| {
             try flushPara(alloc, &para, &rows, columns, th);
             try listItem(alloc, &rows, marker, indentLevel(raw_line), columns, th);
         } else {
+            // A soft line break stays a line break: a model that writes one
+            // item per line without markers is read that way.
             try para.appendSlice(alloc, line);
-            try para.append(alloc, ' ');
+            try para.append(alloc, '\n');
         }
     }
     try flushPara(alloc, &para, &rows, columns, th);
@@ -164,7 +177,7 @@ pub fn render(alloc: std.mem.Allocator, text: []const u8, columns: usize, th: th
 }
 
 fn flushPara(alloc: std.mem.Allocator, para: *std.ArrayList(u8), rows: *std.ArrayList([]const u8), columns: usize, th: theme_mod.Theme) !void {
-    const body = std.mem.trimEnd(u8, para.items, " ");
+    const body = std.mem.trimEnd(u8, para.items, " \n");
     if (body.len == 0) return;
     var styled: std.ArrayList(u8) = .empty;
     defer styled.deinit(alloc);
@@ -251,10 +264,20 @@ fn isRule(line: []const u8) bool {
     return true;
 }
 
-/// A single `>` quote line; nested markers are stripped once.
-fn quoteBody(line: []const u8) ?[]const u8 {
+const Quote = struct { level: usize, body: []const u8 };
+
+/// A `>` quote line: every leading `>` (spaces between them allowed) is one
+/// level of nesting, drawn as one bar each, capped so a pasted mail thread
+/// cannot push the text off the row.
+fn quoteBody(line: []const u8) ?Quote {
     if (line.len < 2 or line[0] != '>') return null;
-    return std.mem.trim(u8, line[1..], " ");
+    var level: usize = 0;
+    var rest = line;
+    while (rest.len > 0 and rest[0] == '>') {
+        level += 1;
+        rest = std.mem.trimStart(u8, rest[1..], " ");
+    }
+    return .{ .level = @min(level, 4), .body = rest };
 }
 
 const Marker = struct {
@@ -394,7 +417,7 @@ fn flushTable(alloc: std.mem.Allocator, table: *std.ArrayList([]const u8), rows:
         }
         for (0..bands) |band| {
             var line: std.ArrayList(u8) = .empty;
-            errdefer line.deinit(alloc);
+            defer line.deinit(alloc);
             for (wrapped_cells.items, 0..) |cell_lines, i| {
                 const text = if (band < cell_lines.len) cell_lines[band] else "";
                 if (i > 0) try line.appendSlice(alloc, th.glyphs().table_bar);
@@ -412,20 +435,29 @@ fn flushTable(alloc: std.mem.Allocator, table: *std.ArrayList([]const u8), rows:
                 try padCells(alloc, &line, room - before);
                 try line.append(alloc, ' ');
             }
-            try rows.append(alloc, try line.toOwnedSlice(alloc));
+            try tableRow(alloc, rows, line.items, columns);
         }
         if (header) {
             var divider: std.ArrayList(u8) = .empty;
-            errdefer divider.deinit(alloc);
+            defer divider.deinit(alloc);
             for (widths, 0..) |w, i| {
                 if (i > 0) try divider.appendSlice(alloc, th.glyphs().table_joint);
                 const seg = try fill(alloc, th.glyphs().rule, w + 2);
                 defer alloc.free(seg);
                 try divider.appendSlice(alloc, seg);
             }
-            try rows.append(alloc, try divider.toOwnedSlice(alloc));
+            try tableRow(alloc, rows, divider.items, columns);
         }
     }
+}
+
+/// One table row, cut at the terminal's edge. A table with more columns than
+/// the width has cells cannot be narrowed further; its rows break at the
+/// edge so nothing is lost and no row is ever wider than the screen.
+fn tableRow(alloc: std.mem.Allocator, rows: *std.ArrayList([]const u8), line: []const u8, columns: usize) !void {
+    const wrapped = try view.wrapStyled(alloc, line, @max(columns, 1), .character);
+    defer alloc.free(wrapped);
+    try rows.appendSlice(alloc, wrapped);
 }
 
 /// A paragraph-shaped fallback for pipe lines that do not form a table.
@@ -520,6 +552,21 @@ fn inlineSpan(alloc: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u
                 continue;
             }
         }
+        if (depth < 3 and i + 2 < text.len and (b == '*' or b == '_') and text[i + 1] == b and text[i + 2] == b) {
+            // ***bold italic*** / ___bold italic___: the triple before the
+            // double, or the double would swallow one star of each end.
+            const close = i + 3;
+            if (findSeq(text, close, text[i .. i + 3])) |j| {
+                if (j > close) {
+                    try out.appendSlice(alloc, th.paint(.bold));
+                    try out.appendSlice(alloc, th.paint(.italic));
+                    try inlineSpan(alloc, out, text[close..j], th, depth + 1);
+                    try out.appendSlice(alloc, theme_mod.reset);
+                    i = j + 3;
+                    continue;
+                }
+            }
+        }
         if (depth < 3 and i + 1 < text.len and text[i + 1] == b and (b == '*' or b == '_' or b == '~')) {
             // **bold** / __bold__ / ~~strike~~ (double markers first).
             const close = i + 2;
@@ -592,8 +639,10 @@ fn putSanitized(alloc: std.mem.Allocator, out: *std.ArrayList(u8), text: []const
     for (text) |b| try putSanitizedByte(alloc, out, b);
 }
 
+/// Every control byte but the line break is dropped: the break is the one
+/// the paragraph kept on purpose, and the wrapper turns it into a row.
 fn putSanitizedByte(alloc: std.mem.Allocator, out: *std.ArrayList(u8), b: u8) !void {
-    if (b >= 32 and b != 127) try out.append(alloc, b);
+    if ((b >= 32 and b != 127) or b == '\n') try out.append(alloc, b);
 }
 
 test "inline styles, links, and sanitization" {
@@ -815,4 +864,206 @@ test "a streamed document renders the same as the finished one, block by block" 
         try std.testing.expect(std.mem.startsWith(u8, whole, rendered));
     }
     try std.testing.expectEqual(document.len, seen);
+}
+
+test "inline code in headings and items, bold italic, nested quotes, numbered starts, empty cells, soft breaks" {
+    const alloc = std.testing.allocator;
+    const th = theme_mod.Theme{ .kind = .plain };
+    const s = try joined(alloc,
+        \\## Use `zig build`
+        \\- run `make check` first
+        \\- ***all three***
+        \\> > deep
+        \\> > > deeper
+        \\3. third
+        \\4. fourth
+        \\
+        \\| a |  | c |
+        \\| --- | --- | --- |
+        \\| 1 |  | 3 |
+        \\
+        \\one
+        \\two
+        \\three
+    , 40, th);
+    defer alloc.free(s);
+    const expected =
+        "Use zig build\n" ++
+        "• run make check first\n" ++
+        "• all three\n" ++
+        "▌ ▌ deep\n" ++
+        "▌ ▌ ▌ deeper\n" ++
+        "3. third\n" ++
+        "4. fourth\n" ++
+        "\n" ++
+        " a │   │ c \n" ++
+        "───┼───┼───\n" ++
+        " 1 │   │ 3 \n" ++
+        "\n" ++
+        "one\n" ++
+        "two\n" ++
+        "three\n";
+    try std.testing.expectEqualStrings(expected, s);
+    // The triple marker is bold and italic at once, closed as one span.
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    try inlineSpan(alloc, &out, "***all three*** and *one*", th, 0);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[1m\x1b[3mall three\x1b[0m and \x1b[3mone\x1b[0m") != null);
+    // Inline code keeps its style inside a heading.
+    const rows = try render(alloc, "# Use `zig build`", 40, th);
+    defer {
+        for (rows) |r| alloc.free(r);
+        alloc.free(rows);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, rows[0], "\x1b[4mzig build\x1b[0m") != null);
+}
+
+/// The documents every pathological golden and the prefix fuzz are run on.
+const pathological = struct {
+    const nested_lists = blk: {
+        var text: []const u8 = "";
+        for (0..64) |level| {
+            text = text ++ " " ** (2 * level) ++ "- x\n";
+        }
+        break :blk text;
+    };
+    const wide_table = blk: {
+        var head: []const u8 = "|";
+        var divider: []const u8 = "|";
+        var body: []const u8 = "|";
+        for (0..40) |_| {
+            head = head ++ " c |";
+            divider = divider ++ " --- |";
+            body = body ++ " v |";
+        }
+        break :blk head ++ "\n" ++ divider ++ "\n" ++ body ++ "\n";
+    };
+    const unclosed_fence = "```zig\nconst x = 1;\n";
+    const only_hash = "#\n# \n##\n";
+    const escaped_link = "[x](http://a\x1bb) [y](http://ok)\n";
+    const mixed_crlf = "a\r\nb\nc\r\n\r\n- d\r\n";
+};
+
+test "pathological input: a long word, deep nesting, an open fence, a wide table, bare hashes, an escaped link, mixed CRLF" {
+    const alloc = std.testing.allocator;
+    const th = theme_mod.Theme{ .kind = .plain };
+    // A 10,000-character word breaks at the edge, 250 full rows, nothing lost.
+    const long_word = try alloc.alloc(u8, 10_000);
+    defer alloc.free(long_word);
+    @memset(long_word, 'a');
+    const word_rows = try render(alloc, long_word, 40, th);
+    defer {
+        for (word_rows) |r| alloc.free(r);
+        alloc.free(word_rows);
+    }
+    try std.testing.expectEqual(@as(usize, 250), word_rows.len);
+    for (word_rows) |r| try std.testing.expectEqual(@as(usize, 40), view.styledWidth(r));
+
+    // 64 nesting levels: the indent stops at level three, the glyph cycles.
+    const lists = try joined(alloc, pathological.nested_lists, 40, th);
+    defer alloc.free(lists);
+    var list_rows = std.mem.splitScalar(u8, std.mem.trimEnd(u8, lists, "\n"), '\n');
+    var count: usize = 0;
+    var last: []const u8 = "";
+    while (list_rows.next()) |r| : (count += 1) last = r;
+    try std.testing.expectEqual(@as(usize, 64), count);
+    try std.testing.expectEqualStrings("      • x", last);
+
+    // An unclosed fence at the end of the stream is code to the end.
+    const fence = try joined(alloc, pathological.unclosed_fence, 40, th);
+    defer alloc.free(fence);
+    try std.testing.expect(std.mem.startsWith(u8, fence, " zig"));
+    try std.testing.expect(std.mem.indexOf(u8, fence, "const x = 1;") != null);
+
+    // Forty columns in sixty cells: the rows break at the edge, none wider.
+    const table = try render(alloc, pathological.wide_table, 60, th);
+    defer {
+        for (table) |r| alloc.free(r);
+        alloc.free(table);
+    }
+    try std.testing.expect(table.len >= 3 and table.len <= 9);
+    for (table) |r| try std.testing.expect(view.styledWidth(r) <= 60);
+
+    // A heading of only `#` is text, not an empty heading.
+    const hashes = try joined(alloc, pathological.only_hash, 40, th);
+    defer alloc.free(hashes);
+    try std.testing.expectEqualStrings("#\n#\n##\n", hashes);
+
+    // An escape in a link target never becomes a hyperlink; a clean one does.
+    const links = try render(alloc, pathological.escaped_link, 60, th);
+    defer {
+        for (links) |r| alloc.free(r);
+        alloc.free(links);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, links[0], "\x1b]8;;http://a") == null);
+    try std.testing.expect(std.mem.indexOf(u8, links[0], "\x1b]8;;http://ok\x1b\\") != null);
+    try std.testing.expect(std.mem.indexOf(u8, links[0], "\x1bb") == null);
+
+    // CRLF and LF lines mix: no `\r` survives, and the soft breaks hold.
+    const crlf = try joined(alloc, pathological.mixed_crlf, 40, th);
+    defer alloc.free(crlf);
+    try std.testing.expectEqualStrings("a\nb\nc\n\n• d\n", crlf);
+}
+
+/// The fixture documents: every golden's source and the pathological set.
+const fixtures = [_][]const u8{
+    "# Heading\n\nA paragraph.\n\n- one\n- two\n",
+    "## Title\n- plain\n- [x] done\n- [ ] todo\n1. first\n> quoted\n```zig\nx = y;\n```\n| a | bb |\n| --- | --- |\n| 1 | long cell |\n",
+    "## Use `zig build`\n- run `make check` first\n- ***all three***\n> > deep\n3. third\n\n| a |  | c |\n| --- | --- | --- |\n| 1 |  | 3 |\n\none\ntwo\n",
+    "**b** *i* ~~s~~ `c` [t](http://x) \x1b[31mred\x1b[0m a ** b\n\n---\n\n\t- tabbed\n",
+    pathological.nested_lists,
+    pathological.wide_table,
+    pathological.unclosed_fence,
+    pathological.only_hash,
+    pathological.escaped_link,
+    pathological.mixed_crlf,
+};
+
+/// Fails on a control byte outside an escape sequence: the one thing the
+/// renderer must never let a model write to the terminal.
+fn expectNoControlBytes(row: []const u8) !void {
+    var i: usize = 0;
+    while (i < row.len) {
+        const b = row[i];
+        if (b == 0x1b) {
+            i += 1;
+            if (i < row.len and row[i] == '[') {
+                i += 1;
+                while (i < row.len and row[i] >= 0x20 and row[i] <= 0x3f) i += 1;
+                i += 1;
+            } else if (i < row.len and row[i] == ']') {
+                while (i < row.len and row[i] != 0x07 and !(row[i] == 0x1b and i + 1 < row.len and row[i + 1] == '\\')) i += 1;
+                i += if (i < row.len and row[i] == 0x07) 1 else 2;
+            } else i += 1;
+            continue;
+        }
+        try std.testing.expect(b >= 0x20 and b != 0x7f);
+        i += 1;
+    }
+}
+
+test "every prefix of every fixture renders: no error, no control byte, bounded rows, no row past the edge" {
+    // Thousands of renders: an arena, reset per prefix, keeps the run in
+    // seconds; the goldens above hold the leak checks.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const th = theme_mod.Theme{ .kind = .truecolor };
+    const columns: usize = 32;
+    for (fixtures) |document| {
+        for (0..document.len + 1) |n| {
+            _ = arena.reset(.retain_capacity);
+            const alloc = arena.allocator();
+            const prefix = document[0..n];
+            const parts = split(prefix);
+            try std.testing.expectEqual(n, parts.closed.len + parts.open.len);
+            for ([_][]const u8{ prefix, parts.closed }) |text| {
+                const rows = try render(alloc, text, columns, th);
+                try std.testing.expect(rows.len <= text.len + 2);
+                for (rows) |r| {
+                    try expectNoControlBytes(r);
+                    try std.testing.expect(view.styledWidth(r) <= columns);
+                }
+            }
+        }
+    }
 }
