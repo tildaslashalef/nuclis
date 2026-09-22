@@ -4236,7 +4236,13 @@ draft contract in § 1 and § 10, the Metal `tick` in § 7 and § 12, the three
 families and their companions in § 2 and § 10, 477 tests in § 8, the gate
 and workload registries, the performance chain through the penalty kernel
 and the speculative verdict with the kernel levers that closed below their
-targets, and the speculation and ring-layout facts in § 12.
+targets, and the speculation and ring-layout facts in § 12. The guide is
+then restructured as a map rather than a narrative, the user's call after
+reading the first version: diagrams, ownership tables, a family table, a
+"you add / you do not touch" table, a record table, short bullets, and
+**Read** pointers into `reference/` in place of paragraphs that restated
+the reference documents, and no unit identifiers or dates in its prose
+(774 → 516 lines).
 `docs/llm-guide.md` is rewritten from its 49 accreted sections (2,343
 lines) into a 27-section narrative in ten parts (1,051 lines), the
 user's request: the numbers that decide everything, the file, text, one
