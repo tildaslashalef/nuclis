@@ -1,1604 +1,1669 @@
 {
-  "$comment": "The gate registry: docs/development.md \u00a7 Gates. Run with scripts/gates.py (make verify, verify-cpu, verify-changed, gate).",
-  "build": {
-    "metal_optimize": "ReleaseSafe",
-    "cpu_optimize": "ReleaseFast",
-    "cache": ".zig-cache/global"
+ "$comment": "The gate registry: docs/development.md \u00a7 Gates. Run with scripts/gates.py (make verify, verify-cpu, verify-changed, gate).",
+ "build": {
+  "metal_optimize": "ReleaseSafe",
+  "cpu_optimize": "ReleaseFast",
+  "cache": ".zig-cache/global"
+ },
+ "models": {
+  "qwen38": {
+   "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+   "entry": "qwen3.8-27b",
+   "mmproj": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/mmproj-BF16.gguf"
   },
-  "models": {
-    "qwen38": {
-      "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
-      "entry": "qwen3.8-27b"
-    },
-    "gemma4": {
-      "path": "~/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf",
-      "entry": "gemma-4-12b"
-    },
-    "gemma4_qat": {
-      "path": "~/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
-      "entry": "gemma-4-12b-qat"
-    },
-    "gemma4_qat_mtp": {
-      "path": "~/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/mtp-gemma-4-12B-it.gguf",
-      "entry": "gemma-4-12b-qat (mtp companion)"
-    },
-    "gemma4_26b_a4b": {
-      "path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
-      "entry": "gemma-4-26b-a4b"
-    },
-    "muse": {
-      "path": "~/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
-      "entry": "muse-glimmer-30b"
-    },
-    "muse_mtp": {
-      "path": "~/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/dflash-kquant.gguf",
-      "entry": "muse-glimmer-30b (mtp companion)"
-    },
-    "bonsai": {
-      "path": "~/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
-      "entry": "bonsai-2-27b"
-    }
+  "gemma4": {
+   "path": "~/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf",
+   "entry": "gemma-4-12b"
   },
-  "gates": [
-    {
-      "name": "qwen38-trace-f32",
-      "family": "qwen38",
-      "tier": "verify",
-      "model": "qwen38",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f32",
-        "--raw",
-        "--prompt",
-        "Hello,",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/reference-hello-comma",
-        "positions": 2
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/generation.md#numerical-traces"
-    },
-    {
-      "name": "qwen38-trace-f16",
-      "family": "qwen38",
-      "tier": "verify",
-      "model": "qwen38",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f16",
-        "--raw",
-        "--prompt",
-        "Hello,",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/reference-hello-comma",
-        "positions": 2
-      },
-      "bounds": {
-        "max_absolute": 0.03,
-        "max_relative_rms": 0.0002
-      },
-      "evidence": "docs/reference/generation.md#numerical-traces"
-    },
-    {
-      "name": "qwen38-generation-metal",
-      "family": "qwen38",
-      "tier": "verify",
-      "model": "qwen38",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/engine.zig",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/sampling/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/session.md"
-    },
-    {
-      "name": "qwen38-generation-cpu",
-      "family": "qwen38",
-      "tier": "verify-cpu",
-      "model": "qwen38",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/engine.zig",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/sampling/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-cpu}",
-        "test-generation",
-        "--",
-        "{model}"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/session.md"
-    },
-    {
-      "name": "qwen38-speculative-metal",
-      "family": "qwen38",
-      "tier": "verify",
-      "model": "qwen38",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/engine.zig",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/sampling/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal",
-        "--speculative-check"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/speculative-decoding.md"
-    },
-    {
-      "name": "qwen38-speculative-cpu",
-      "family": "qwen38",
-      "tier": "verify-cpu",
-      "model": "qwen38",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/engine.zig",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/sampling/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-cpu}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--speculative-check"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "note": "about 20 minutes",
-      "evidence": "docs/reference/speculative-decoding.md"
-    },
-    {
-      "name": "qwen38-draft-trace-metal",
-      "family": "qwen38",
-      "tier": "verify",
-      "model": "qwen38",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal",
-        "--draft-trace",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "inference/src/models/fixtures/qwen35-mtp",
-        "positions": 2,
-        "draft": true
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18"
-    },
-    {
-      "name": "qwen38-draft-trace-cpu",
-      "family": "qwen38",
-      "tier": "verify-cpu",
-      "model": "qwen38",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-cpu}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--draft-trace",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "inference/src/models/fixtures/qwen35-mtp",
-        "positions": 2,
-        "draft": true
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18"
-    },
-    {
-      "name": "qwen38-draft-stats",
-      "family": "qwen38",
-      "tier": "verify",
-      "model": "qwen38",
-      "paths": [
-        "inference/generation-check.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/qwen35_runtime.zig"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal",
-        "--draft-stats"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "note": "prints the per-depth acceptance table; a change to the block's forward or commit must reproduce it within one draft per cell",
-      "evidence": "docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18"
-    },
-    {
-      "name": "qwen38-vocabulary",
-      "family": "qwen38",
-      "tier": "verify",
-      "model": "qwen38",
-      "paths": [
-        "inference/src/profiles/**",
-        "inference/src/tokenizer/**",
-        "inference/vocabulary-check.zig"
-      ],
-      "command": [
-        "{zig-cpu}",
-        "test-vocabulary",
-        "--",
-        "{model}"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/prompt-profile.md"
-    },
-    {
-      "name": "gemma4-trace-cpu",
-      "family": "gemma4",
-      "tier": "verify-cpu",
-      "model": "gemma4",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis-cpu}",
-        "generate",
-        "--backend",
-        "cpu",
-        "--model",
-        "{model}",
-        "--prompt-tokens",
-        "tests/fixtures/gemma4-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/gemma4-hello-comma",
-        "positions": 3,
-        "embedding": 3840,
-        "layers": 48,
-        "vocab": 262144
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-trace-f32",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f32",
-        "--prompt-tokens",
-        "tests/fixtures/gemma4-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/gemma4-hello-comma",
-        "positions": 3,
-        "embedding": 3840,
-        "layers": 48,
-        "vocab": 262144
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-trace-f16",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f16",
-        "--prompt-tokens",
-        "tests/fixtures/gemma4-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/gemma4-hello-comma",
-        "positions": 3,
-        "embedding": 3840,
-        "layers": 48,
-        "vocab": 262144
-      },
-      "bounds": {
-        "max_absolute": 1.0,
-        "max_relative_rms": 0.05
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-generation-metal",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-qat-trace-cpu",
-      "family": "gemma4",
-      "tier": "verify-cpu",
-      "model": "gemma4_qat",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis-cpu}",
-        "generate",
-        "--backend",
-        "cpu",
-        "--model",
-        "{model}",
-        "--prompt-tokens",
-        "tests/fixtures/gemma4-qat-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/gemma4-qat-hello-comma",
-        "positions": 3,
-        "embedding": 3840,
-        "layers": 48,
-        "vocab": 262144
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-qat-trace-f32",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4_qat",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f32",
-        "--prompt-tokens",
-        "tests/fixtures/gemma4-qat-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/gemma4-qat-hello-comma",
-        "positions": 3,
-        "embedding": 3840,
-        "layers": 48,
-        "vocab": 262144
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-qat-trace-f16",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4_qat",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f16",
-        "--prompt-tokens",
-        "tests/fixtures/gemma4-qat-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/gemma4-qat-hello-comma",
-        "positions": 3,
-        "embedding": 3840,
-        "layers": 48,
-        "vocab": 262144
-      },
-      "bounds": {
-        "max_absolute": 1.0,
-        "max_relative_rms": 0.05
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-qat-generation-metal",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4_qat",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-26b-a4b-trace-cpu",
-      "family": "gemma4",
-      "tier": "verify-cpu",
-      "model": "gemma4_26b_a4b",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis-cpu}",
-        "generate",
-        "--backend",
-        "cpu",
-        "--model",
-        "{model}",
-        "--prompt-tokens",
-        "tests/fixtures/gemma4-26b-a4b-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/gemma4-26b-a4b-hello-comma",
-        "positions": 3,
-        "embedding": 2816,
-        "layers": 30,
-        "vocab": 262144
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-26b-a4b-trace-f32",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4_26b_a4b",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f32",
-        "--prompt-tokens",
-        "tests/fixtures/gemma4-26b-a4b-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/gemma4-26b-a4b-hello-comma",
-        "positions": 3,
-        "embedding": 2816,
-        "layers": 30,
-        "vocab": 262144
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-26b-a4b-trace-f16",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4_26b_a4b",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f16",
-        "--prompt-tokens",
-        "tests/fixtures/gemma4-26b-a4b-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/gemma4-26b-a4b-hello-comma",
-        "positions": 3,
-        "embedding": 2816,
-        "layers": 30,
-        "vocab": 262144
-      },
-      "bounds": {
-        "max_absolute": 1.0,
-        "max_relative_rms": 0.05
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-26b-a4b-generation-metal",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4_26b_a4b",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-generation-cpu",
-      "family": "gemma4",
-      "tier": "verify-cpu",
-      "model": "gemma4",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-cpu}",
-        "test-generation",
-        "--",
-        "{model}"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "note": "about 35 s per token",
-      "evidence": "docs/reference/gemma4.md"
-    },
-    {
-      "name": "gemma4-qat-draft-trace-metal",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4_qat",
-      "mtp": "gemma4_qat_mtp",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal",
-        "--draft-trace",
-        "{trace}",
-        "--draft-model",
-        "{mtp}"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "note": "the check compares its rows against inference/src/models/fixtures/gemma4-mtp itself",
-      "evidence": "docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
-    },
-    {
-      "name": "gemma4-qat-draft-trace-cpu",
-      "family": "gemma4",
-      "tier": "verify-cpu",
-      "model": "gemma4_qat",
-      "mtp": "gemma4_qat_mtp",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/formats/**",
-        "inference/src/models/gemma4*.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-cpu}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--draft-trace",
-        "{trace}",
-        "--draft-model",
-        "{mtp}"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
-    },
-    {
-      "name": "gemma4-qat-vocabulary",
-      "family": "gemma4",
-      "tier": "verify",
-      "model": "gemma4_qat",
-      "paths": [
-        "inference/src/profiles/**",
-        "inference/src/tokenizer/**",
-        "inference/vocabulary-check.zig"
-      ],
-      "command": [
-        "{zig-cpu}",
-        "test-vocabulary",
-        "--",
-        "{model}"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/prompt-profile.md"
-    },
-    {
-      "name": "muse-trace-cpu",
-      "family": "muse",
-      "tier": "verify-cpu",
-      "model": "muse",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/formats/**",
-        "inference/src/models/dflash.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/muse_glimmer*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis-cpu}",
-        "generate",
-        "--backend",
-        "cpu",
-        "--model",
-        "{model}",
-        "--prompt-tokens",
-        "tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/muse-glimmer-hello-comma",
-        "positions": 3,
-        "embedding": 6656,
-        "layers": 52,
-        "vocab": 202048
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/muse-glimmer.md"
-    },
-    {
-      "name": "muse-trace-f32",
-      "family": "muse",
-      "tier": "verify",
-      "model": "muse",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/dflash.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/muse_glimmer*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f32",
-        "--prompt-tokens",
-        "tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/muse-glimmer-hello-comma",
-        "positions": 3,
-        "embedding": 6656,
-        "layers": 52,
-        "vocab": 202048
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/muse-glimmer.md"
-    },
-    {
-      "name": "muse-trace-f16",
-      "family": "muse",
-      "tier": "verify",
-      "model": "muse",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/dflash.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/muse_glimmer*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f16",
-        "--prompt-tokens",
-        "tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--temperature",
-        "0",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/muse-glimmer-hello-comma",
-        "positions": 3,
-        "embedding": 6656,
-        "layers": 52,
-        "vocab": 202048
-      },
-      "bounds": {
-        "max_absolute": 0.1,
-        "max_relative_rms": 0.0003
-      },
-      "evidence": "docs/reference/muse-glimmer.md"
-    },
-    {
-      "name": "muse-generation-metal",
-      "family": "muse",
-      "tier": "verify",
-      "model": "muse",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/dflash.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/muse_glimmer*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/muse-glimmer.md"
-    },
-    {
-      "name": "muse-draft-trace-metal",
-      "family": "muse",
-      "tier": "verify",
-      "model": "muse",
-      "mtp": "muse_mtp",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/dflash.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/muse_glimmer*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal",
-        "--draft-trace",
-        "{trace}",
-        "--draft-model",
-        "{mtp}"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "note": "the check compares its rows against inference/src/models/fixtures/muse-dflash itself",
-      "evidence": "docs/reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20"
-    },
-    {
-      "name": "muse-draft-trace-cpu",
-      "family": "muse",
-      "tier": "verify-cpu",
-      "model": "muse",
-      "mtp": "muse_mtp",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/formats/**",
-        "inference/src/models/dflash.zig",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/muse_glimmer*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-cpu}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--draft-trace",
-        "{trace}",
-        "--draft-model",
-        "{mtp}"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20"
-    },
-    {
-      "name": "muse-vocabulary",
-      "family": "muse",
-      "tier": "verify",
-      "model": "muse",
-      "paths": [
-        "inference/src/profiles/**",
-        "inference/src/tokenizer/**",
-        "inference/vocabulary-check.zig"
-      ],
-      "command": [
-        "{zig-cpu}",
-        "test-vocabulary",
-        "--",
-        "{model}"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/prompt-profile.md"
-    },
-    {
-      "name": "bonsai-trace-cpu",
-      "family": "bonsai",
-      "tier": "verify-cpu",
-      "model": "bonsai",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/cpu/**",
-        "inference/src/backends/cpu/hadamard.zig",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis-cpu}",
-        "generate",
-        "--backend",
-        "cpu",
-        "--model",
-        "{model}",
-        "--raw",
-        "--prompt",
-        "Hello,",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/bonsai-hello-comma",
-        "positions": 2
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/bonsai.md"
-    },
-    {
-      "name": "bonsai-trace-f32",
-      "family": "bonsai",
-      "tier": "verify",
-      "model": "bonsai",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/cpu/hadamard.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f32",
-        "--raw",
-        "--prompt",
-        "Hello,",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/bonsai-hello-comma",
-        "positions": 2
-      },
-      "bounds": {
-        "max_absolute": 0.002,
-        "max_relative_rms": 0.0001
-      },
-      "evidence": "docs/reference/bonsai.md"
-    },
-    {
-      "name": "bonsai-trace-f16",
-      "family": "bonsai",
-      "tier": "verify",
-      "model": "bonsai",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/src/backends/cpu/hadamard.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{nuclis}",
-        "generate",
-        "--backend",
-        "metal",
-        "--model",
-        "{model}",
-        "--kv",
-        "f16",
-        "--raw",
-        "--prompt",
-        "Hello,",
-        "--max-tokens",
-        "1",
-        "--ctx-size",
-        "8",
-        "--logits",
-        "{trace}/logits.f32",
-        "--trace-dir",
-        "{trace}"
-      ],
-      "comparator": {
-        "kind": "trace",
-        "reference": "tests/fixtures/bonsai-hello-comma",
-        "positions": 2
-      },
-      "bounds": {
-        "max_absolute": 0.03,
-        "max_relative_rms": 0.0002
-      },
-      "evidence": "docs/reference/bonsai.md"
-    },
-    {
-      "name": "bonsai-generation-metal",
-      "family": "bonsai",
-      "tier": "verify",
-      "model": "bonsai",
-      "paths": [
-        "build.zig",
-        "inference/build.zig",
-        "inference/generation-check.zig",
-        "inference/src/backends/cpu/hadamard.zig",
-        "inference/src/backends/metal/**",
-        "inference/src/formats/**",
-        "inference/src/models/inventory.zig",
-        "inference/src/models/qwen35*.zig",
-        "inference/src/models/registry.zig",
-        "inference/src/models/root.zig",
-        "inference/src/quant/**",
-        "inference/src/root.zig",
-        "inference/src/runtime/**",
-        "inference/src/tensor/**"
-      ],
-      "command": [
-        "{zig-metal}",
-        "test-generation",
-        "--",
-        "{model}",
-        "--metal"
-      ],
-      "comparator": {
-        "kind": "exit"
-      },
-      "evidence": "docs/reference/bonsai.md"
-    }
-  ]
+  "gemma4_qat": {
+   "path": "~/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+   "entry": "gemma-4-12b-qat"
+  },
+  "gemma4_qat_mtp": {
+   "path": "~/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/mtp-gemma-4-12B-it.gguf",
+   "entry": "gemma-4-12b-qat (mtp companion)"
+  },
+  "gemma4_26b_a4b": {
+   "path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+   "entry": "gemma-4-26b-a4b"
+  },
+  "muse": {
+   "path": "~/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+   "entry": "muse-glimmer-30b"
+  },
+  "muse_mtp": {
+   "path": "~/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/dflash-kquant.gguf",
+   "entry": "muse-glimmer-30b (mtp companion)"
+  },
+  "bonsai": {
+   "path": "~/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+   "entry": "bonsai-2-27b"
+  }
+ },
+ "gates": [
+  {
+   "name": "qwen38-trace-f32",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f32",
+    "--raw",
+    "--prompt",
+    "Hello,",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/reference-hello-comma",
+    "positions": 2
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/generation.md#numerical-traces"
+  },
+  {
+   "name": "qwen38-trace-f16",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f16",
+    "--raw",
+    "--prompt",
+    "Hello,",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/reference-hello-comma",
+    "positions": 2
+   },
+   "bounds": {
+    "max_absolute": 0.03,
+    "max_relative_rms": 0.0002
+   },
+   "evidence": "docs/reference/generation.md#numerical-traces"
+  },
+  {
+   "name": "qwen38-generation-metal",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/session.md"
+  },
+  {
+   "name": "qwen38-generation-cpu",
+   "family": "qwen38",
+   "tier": "verify-cpu",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/session.md"
+  },
+  {
+   "name": "qwen38-vision-metal",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/profiles/qwen38.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**",
+    "inference/src/vision/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--vision-check",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/vision.md#the-qwen3-vl-projector-modl-21"
+  },
+  {
+   "name": "qwen38-vision-cpu",
+   "family": "qwen38",
+   "tier": "verify-cpu",
+   "model": "qwen38",
+   "paths": [
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/engine.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/profiles/qwen38.zig",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/vision/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--vision-check",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/vision.md#the-qwen3-vl-projector-modl-21"
+  },
+  {
+   "name": "qwen38-speculative-metal",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--speculative-check"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/speculative-decoding.md"
+  },
+  {
+   "name": "qwen38-speculative-cpu",
+   "family": "qwen38",
+   "tier": "verify-cpu",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--speculative-check"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "about 20 minutes",
+   "evidence": "docs/reference/speculative-decoding.md"
+  },
+  {
+   "name": "qwen38-draft-trace-metal",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-trace",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "inference/src/models/fixtures/qwen35-mtp",
+    "positions": 2,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18"
+  },
+  {
+   "name": "qwen38-draft-trace-cpu",
+   "family": "qwen38",
+   "tier": "verify-cpu",
+   "model": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--draft-trace",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "inference/src/models/fixtures/qwen35-mtp",
+    "positions": 2,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18"
+  },
+  {
+   "name": "qwen38-draft-stats",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "paths": [
+    "inference/generation-check.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/qwen35_runtime.zig"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-stats"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "prints the per-depth acceptance table; a change to the block's forward or commit must reproduce it within one draft per cell",
+   "evidence": "docs/reference/speculative-decoding.md#the-qwen38-draft-head-modl-18"
+  },
+  {
+   "name": "qwen38-vocabulary",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "paths": [
+    "inference/src/profiles/**",
+    "inference/src/tokenizer/**",
+    "inference/vocabulary-check.zig"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-vocabulary",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/prompt-profile.md"
+  },
+  {
+   "name": "gemma4-trace-cpu",
+   "family": "gemma4",
+   "tier": "verify-cpu",
+   "model": "gemma4",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--model",
+    "{model}",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-hello-comma",
+    "positions": 3,
+    "embedding": 3840,
+    "layers": 48,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-trace-f32",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f32",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-hello-comma",
+    "positions": 3,
+    "embedding": 3840,
+    "layers": 48,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-trace-f16",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f16",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-hello-comma",
+    "positions": 3,
+    "embedding": 3840,
+    "layers": 48,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 1.0,
+    "max_relative_rms": 0.05
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-generation-metal",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-qat-trace-cpu",
+   "family": "gemma4",
+   "tier": "verify-cpu",
+   "model": "gemma4_qat",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--model",
+    "{model}",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-qat-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-qat-hello-comma",
+    "positions": 3,
+    "embedding": 3840,
+    "layers": 48,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-qat-trace-f32",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_qat",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f32",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-qat-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-qat-hello-comma",
+    "positions": 3,
+    "embedding": 3840,
+    "layers": 48,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-qat-trace-f16",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_qat",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f16",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-qat-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-qat-hello-comma",
+    "positions": 3,
+    "embedding": 3840,
+    "layers": 48,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 1.0,
+    "max_relative_rms": 0.05
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-qat-generation-metal",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_qat",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-26b-a4b-trace-cpu",
+   "family": "gemma4",
+   "tier": "verify-cpu",
+   "model": "gemma4_26b_a4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--model",
+    "{model}",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-26b-a4b-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-26b-a4b-hello-comma",
+    "positions": 3,
+    "embedding": 2816,
+    "layers": 30,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-26b-a4b-trace-f32",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_26b_a4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f32",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-26b-a4b-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-26b-a4b-hello-comma",
+    "positions": 3,
+    "embedding": 2816,
+    "layers": 30,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-26b-a4b-trace-f16",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_26b_a4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f16",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-26b-a4b-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-26b-a4b-hello-comma",
+    "positions": 3,
+    "embedding": 2816,
+    "layers": 30,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 1.0,
+    "max_relative_rms": 0.05
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-26b-a4b-generation-metal",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_26b_a4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-generation-cpu",
+   "family": "gemma4",
+   "tier": "verify-cpu",
+   "model": "gemma4",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "about 35 s per token",
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-qat-draft-trace-metal",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_qat",
+   "mtp": "gemma4_qat_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the check compares its rows against inference/src/models/fixtures/gemma4-mtp itself",
+   "evidence": "docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
+  },
+  {
+   "name": "gemma4-qat-draft-trace-cpu",
+   "family": "gemma4",
+   "tier": "verify-cpu",
+   "model": "gemma4_qat",
+   "mtp": "gemma4_qat_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
+  },
+  {
+   "name": "gemma4-qat-vocabulary",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_qat",
+   "paths": [
+    "inference/src/profiles/**",
+    "inference/src/tokenizer/**",
+    "inference/vocabulary-check.zig"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-vocabulary",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/prompt-profile.md"
+  },
+  {
+   "name": "muse-trace-cpu",
+   "family": "muse",
+   "tier": "verify-cpu",
+   "model": "muse",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/dflash.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/muse_glimmer*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--model",
+    "{model}",
+    "--prompt-tokens",
+    "tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/muse-glimmer-hello-comma",
+    "positions": 3,
+    "embedding": 6656,
+    "layers": 52,
+    "vocab": 202048
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/muse-glimmer.md"
+  },
+  {
+   "name": "muse-trace-f32",
+   "family": "muse",
+   "tier": "verify",
+   "model": "muse",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/dflash.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/muse_glimmer*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f32",
+    "--prompt-tokens",
+    "tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/muse-glimmer-hello-comma",
+    "positions": 3,
+    "embedding": 6656,
+    "layers": 52,
+    "vocab": 202048
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/muse-glimmer.md"
+  },
+  {
+   "name": "muse-trace-f16",
+   "family": "muse",
+   "tier": "verify",
+   "model": "muse",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/dflash.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/muse_glimmer*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f16",
+    "--prompt-tokens",
+    "tests/fixtures/muse-glimmer-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/muse-glimmer-hello-comma",
+    "positions": 3,
+    "embedding": 6656,
+    "layers": 52,
+    "vocab": 202048
+   },
+   "bounds": {
+    "max_absolute": 0.1,
+    "max_relative_rms": 0.0003
+   },
+   "evidence": "docs/reference/muse-glimmer.md"
+  },
+  {
+   "name": "muse-generation-metal",
+   "family": "muse",
+   "tier": "verify",
+   "model": "muse",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/dflash.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/muse_glimmer*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/muse-glimmer.md"
+  },
+  {
+   "name": "muse-draft-trace-metal",
+   "family": "muse",
+   "tier": "verify",
+   "model": "muse",
+   "mtp": "muse_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/dflash.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/muse_glimmer*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the check compares its rows against inference/src/models/fixtures/muse-dflash itself",
+   "evidence": "docs/reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20"
+  },
+  {
+   "name": "muse-draft-trace-cpu",
+   "family": "muse",
+   "tier": "verify-cpu",
+   "model": "muse",
+   "mtp": "muse_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/dflash.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/muse_glimmer*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20"
+  },
+  {
+   "name": "muse-vocabulary",
+   "family": "muse",
+   "tier": "verify",
+   "model": "muse",
+   "paths": [
+    "inference/src/profiles/**",
+    "inference/src/tokenizer/**",
+    "inference/vocabulary-check.zig"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-vocabulary",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/prompt-profile.md"
+  },
+  {
+   "name": "bonsai-trace-cpu",
+   "family": "bonsai",
+   "tier": "verify-cpu",
+   "model": "bonsai",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/backends/cpu/hadamard.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--model",
+    "{model}",
+    "--raw",
+    "--prompt",
+    "Hello,",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/bonsai-hello-comma",
+    "positions": 2
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/bonsai.md"
+  },
+  {
+   "name": "bonsai-trace-f32",
+   "family": "bonsai",
+   "tier": "verify",
+   "model": "bonsai",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/cpu/hadamard.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f32",
+    "--raw",
+    "--prompt",
+    "Hello,",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/bonsai-hello-comma",
+    "positions": 2
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/bonsai.md"
+  },
+  {
+   "name": "bonsai-trace-f16",
+   "family": "bonsai",
+   "tier": "verify",
+   "model": "bonsai",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/cpu/hadamard.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f16",
+    "--raw",
+    "--prompt",
+    "Hello,",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/bonsai-hello-comma",
+    "positions": 2
+   },
+   "bounds": {
+    "max_absolute": 0.03,
+    "max_relative_rms": 0.0002
+   },
+   "evidence": "docs/reference/bonsai.md"
+  },
+  {
+   "name": "bonsai-generation-metal",
+   "family": "bonsai",
+   "tier": "verify",
+   "model": "bonsai",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/hadamard.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/bonsai.md"
+  }
+ ]
 }

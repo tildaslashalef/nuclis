@@ -78,6 +78,16 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
             .system, .developer => unreachable,
             .user => {
                 try builder.add("<|im_start|>user\n");
+                // Qwen3-VL markers, one run per image, before the text: the
+                // vision boundary and `count` image placeholders the engine's
+                // spans overwrite with projector rows.
+                for (message.images) |image| {
+                    try builder.add("<|vision_start|>");
+                    var n: usize = 0;
+                    const count = @as(usize, image.width_tokens) * image.height_tokens;
+                    while (n < count) : (n += 1) try builder.add("<|image_pad|>");
+                    try builder.add("<|vision_end|>");
+                }
                 try builder.add(trim(message.content));
                 try builder.add("<|im_end|>\n");
             },

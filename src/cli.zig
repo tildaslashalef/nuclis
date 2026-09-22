@@ -250,6 +250,10 @@ pub fn parseArgs(args: []const []const u8) !Options {
                 if (g.seed != null) return error.DuplicateOption;
                 g.seed = std.fmt.parseInt(u64, value, 10) catch return error.InvalidNumber;
                 b.seed = g.seed;
+            } else if (command == .generate and std.mem.eql(u8, flag, "--image")) {
+                if (g.image_count >= g.images.len) return error.TooManyImages;
+                g.images[g.image_count] = value;
+                g.image_count += 1;
             } else if (command == .generate and std.mem.eql(u8, flag, "--logits")) {
                 if (g.logits_path != null) return error.DuplicateOption;
                 g.logits_path = value;

@@ -209,6 +209,8 @@ fn generate(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--prompt-file <path>", "the same, read from a file");
     try row(out, sty, "--prompt-tokens <json>", "a JSON array of token ids fed untokenized");
     try row(out, sty, "--raw", "skip the chat template; send the text as written");
+    try row(out, sty, "--image <path>", "attach an image (repeatable, up to 8); needs a");
+    try more(out, "projector (models.<name>.mmproj) for the model");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh; default off");
     try row(out, sty, "--logits <path>", "write the final prompt logits, F32 little-endian");
     try row(out, sty, "--trace-dir <dir>", "write every layer's output as F32 (slow)");
@@ -482,7 +484,7 @@ test "every page is self-contained, has the standard sections, and fits 80 colum
 test "every flag the parser accepts for a command is on its page" {
     const Flags = struct { topic: Topic, flags: []const []const u8 };
     const table = [_]Flags{
-        .{ .topic = .generate, .flags = &.{ "--prompt", "--prompt-file", "--prompt-tokens", "--raw", "--logits", "--trace-dir", "--think", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--json", "--temperature", "--top-k", "--top-p", "--min-p", "--presence-penalty", "--repetition-penalty" } },
+        .{ .topic = .generate, .flags = &.{ "--prompt", "--prompt-file", "--prompt-tokens", "--raw", "--image", "--logits", "--trace-dir", "--think", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--json", "--temperature", "--top-k", "--top-p", "--min-p", "--presence-penalty", "--repetition-penalty" } },
         .{ .topic = .bench, .flags = &.{ "--prompt", "--prompt-file", "--prompt-tokens", "--raw", "--repeat", "--warmup", "--profile", "--unfused-norms", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--json", "--temperature" } },
         .{ .topic = .agent, .flags = &.{ "-p", "--prompt", "--print", "--prompt-file", "--json", "--session", "--resume", "--think", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--temperature" } },
         .{ .topic = .tokenize, .flags = &.{ "--prompt", "--prompt-file", "--raw", "--think", "--prompt-profile", "--model", "--json" } },

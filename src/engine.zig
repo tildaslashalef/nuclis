@@ -60,6 +60,18 @@ pub fn draftPath(alloc: std.mem.Allocator, model_path: []const u8, mtp: ?[]const
     return try std.fs.path.join(alloc, &.{ parent, file });
 }
 
+/// The companion projector's path: `mmproj` (relative to the model file's
+/// directory, or absolute) resolved against `model_path`'s directory. Null
+/// when the entry names none; caller owns the result.
+pub fn visionPath(alloc: std.mem.Allocator, model_path: []const u8, mmproj: ?[]const u8) !?[]u8 {
+    return draftPath(alloc, model_path, mmproj);
+}
+
+/// Reads an image file's bytes, bounded by the vision contract's limit.
+pub fn readImage(alloc: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(inference.vision.image.max_bytes));
+}
+
 pub fn milliseconds(duration: std.Io.Duration) f64 {
     return @as(f64, @floatFromInt(duration.nanoseconds)) / std.time.ns_per_ms;
 }

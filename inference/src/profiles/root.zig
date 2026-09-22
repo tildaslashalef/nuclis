@@ -48,9 +48,16 @@ pub const ToolDefinition = struct {
     parameters: []const u8,
 };
 
+/// An image attached to a user message: its merged token grid, so the
+/// profile renders the family's markers with the right placeholder count.
+/// The projector's feature rows replace those placeholders at prefill.
+pub const ImageRef = struct { width_tokens: u32, height_tokens: u32 };
+
 pub const Message = struct {
     role: Role,
     content: []const u8,
+    /// Images on a user message, rendered as marker tokens before the text.
+    images: []const ImageRef = &.{},
     /// Assistant reasoning, supplied separately and never extracted from
     /// `content`; profiles that keep no reasoning in history ignore it.
     reasoning_content: []const u8 = "",

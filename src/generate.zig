@@ -19,6 +19,10 @@ pub const Options = struct {
     seed: ?u64 = null,
     logits_path: ?[]const u8 = null,
     trace_dir: ?[]const u8 = null,
+    /// Image files attached to the prompt (`--image`, repeatable), fed to the
+    /// model's projector; at most the vision contract's per-turn bound.
+    images: [8][]const u8 = undefined,
+    image_count: usize = 0,
 };
 
 /// Layer observer: enforces the wall-clock bound and propagates Io and Ctrl-C
@@ -92,6 +96,7 @@ pub fn runLoop(
     sampler: *inference.sampling.Sampler,
     history: ?*inference.sampling.History,
     settings: inference.engine.Speculative,
+    images: ?inference.engine.ImagePrefill,
     logits: []f32,
     candidates: []inference.sampling.Candidate,
     generated: []u32,
@@ -99,7 +104,7 @@ pub fn runLoop(
     hooks: ?Hooks,
 ) !Outcome {
     var bridge: Bridge = .{ .trace = trace, .hooks = hooks };
-    return inference.engine.runLoop(eng, tokens, limit, sampler, history, settings, logits, candidates, generated, trace.observer(), .{
+    return inference.engine.runLoop(eng, tokens, limit, sampler, history, settings, images, logits, candidates, generated, trace.observer(), .{
         .context = &bridge,
         .prefill = if (hooks != null and hooks.?.prefill != null) Bridge.prefill else null,
         .token = if (hooks != null and hooks.?.token != null) Bridge.token else null,
@@ -177,7 +182,59 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // bare path takes the first profile); the file's own template decides.
     if (eng.profile) |profile| if (profile != settings.profile) try sampler.setOptions(profile.samplingOptions(settings.think, settings.sampling));
     interrupt.install();
-    const tokens = if (options.prompt_tokens) |path| try engine.readPromptTokens(alloc, io, path, eng.vocab.tokens.len) else blk: {
+    // Images attach to the prompt through the model's projector: each is
+    // decoded and encoded to feature rows, the profile renders its markers,
+    // and the engine locates the placeholder runs to pair them with the rows.
+    var prepared: []inference.engine.PreparedImage = &.{};
+    var image_prefill: ?inference.engine.ImagePrefill = null;
+    var image_features: []f32 = &.{};
+    var image_spans: []inference.vision.Span = &.{};
+    defer {
+        for (prepared) |p| alloc.free(p.features);
+        alloc.free(prepared);
+        alloc.free(image_features);
+        alloc.free(image_spans);
+    }
+    if (options.image_count > 0) {
+        if (options.raw or options.prompt_tokens != null) return error.ImagesNeedChatPrompt;
+        const projector = try engine.visionPath(alloc, model_path, if (settings.entry) |entry| entry.mmproj else null) orelse return error.NoProjector;
+        defer alloc.free(projector);
+        try eng.loadVision(projector);
+        prepared = try alloc.alloc(inference.engine.PreparedImage, options.image_count);
+        var loaded: usize = 0;
+        errdefer for (prepared[0..loaded]) |p| alloc.free(p.features);
+        var total_rows: usize = 0;
+        for (options.images[0..options.image_count], 0..) |path, idx| {
+            const bytes = engine.readImage(alloc, io, path) catch |err| {
+                std.log.err("could not read image {d} ({s}): {s}", .{ idx + 1, path, @errorName(err) });
+                return err;
+            };
+            defer alloc.free(bytes);
+            prepared[idx] = try eng.encodeImage(bytes);
+            loaded += 1;
+            total_rows += prepared[idx].tokens();
+        }
+    }
+    const tokens = if (options.prompt_tokens) |path| try engine.readPromptTokens(alloc, io, path, eng.vocab.tokens.len) else if (options.image_count > 0) blk: {
+        const refs = try alloc.alloc(inference.profiles.ImageRef, prepared.len);
+        defer alloc.free(refs);
+        for (refs, prepared) |*r, p| r.* = .{ .width_tokens = p.width_tokens, .height_tokens = p.height_tokens };
+        const prompt = try eng.render(&.{.{ .role = .user, .content = user.?, .images = refs }}, &.{}, settings.think);
+        defer alloc.free(prompt);
+        const ids = try eng.encode(prompt);
+        errdefer alloc.free(ids);
+        image_spans = try eng.locateImageSpans(ids, prepared);
+        var rows: usize = 0;
+        for (prepared) |p| rows += p.tokens();
+        image_features = try alloc.alloc(f32, rows * inference.vision.qwen3vl.output_width);
+        var off: usize = 0;
+        for (prepared) |p| {
+            @memcpy(image_features[off..][0..p.features.len], p.features);
+            off += p.features.len;
+        }
+        image_prefill = .{ .spans = image_spans, .features = image_features };
+        break :blk ids;
+    } else blk: {
         const prompt = try eng.prompt(user.?, options.raw, settings.think);
         defer alloc.free(prompt);
         break :blk try eng.encode(prompt);
@@ -196,7 +253,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // Final prompt logits are written before decoding so a later failure
     // still leaves the comparison artifact behind.
     var presenter: Presenter = .{ .eng = &eng, .writer = writer, .enabled = !json, .logits_path = options.logits_path };
-    const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, .{ .enabled = settings.speculative, .draft_length = settings.draft_length }, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
+    const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, .{ .enabled = settings.speculative, .draft_length = settings.draft_length }, image_prefill, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
     const count = outcome.timing.generated_tokens;
     const decoded = try inference.bpe.decode(alloc, &eng.vocab, generated[0..count], false, .{});
     defer alloc.free(decoded);

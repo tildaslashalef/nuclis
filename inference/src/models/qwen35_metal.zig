@@ -73,6 +73,12 @@ pub const Plan = struct {
     constants: []LayerConstants,
     output_norm: Buffer,
     rope_table: Buffer,
+    chunk_rope: Buffer,
+    /// Set for a chunk of image feature rows, cleared otherwise; recordLayers
+    /// copies these rows into `x_c` instead of embedding tokens.
+    image_rows: ?Buffer = null,
+    /// Device staging for a chunk's uploaded feature rows.
+    image_scratch: Buffer,
     // Activations (F32 counts in comments).
     x: Buffer, // hidden
     normalized: Buffer, // hidden
@@ -206,6 +212,12 @@ pub const Plan = struct {
         self.output_norm = try self.constant(binding.output_norm);
         self.rope_table = try backend.create(capacity * 32 * 8);
         try metal.Backend.ropeTable(self.rope_table, capacity, 64, 1e7, null);
+        // A per-row rotary table for chunks that contain image spans: the
+        // scalar-position table above cannot express the M-RoPE triples, so
+        // when a span exists the chunk fills this and rotates at position 0.
+        self.chunk_rope = try backend.create(chunk * 32 * 8);
+        self.image_rows = null;
+        self.image_scratch = try backend.create(chunk * hidden * 4);
         self.x = try backend.create(hidden * 4);
         self.normalized = try backend.create(hidden * 4);
         self.projected = try backend.create(hidden * 4);
@@ -418,7 +430,7 @@ pub const Plan = struct {
         for (self.binding.layers, self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
             switch (layer.mixer) {
-                .full_attention => |attn| try self.fullAttention(attn, c.mixer.full_attention, il, self.state.position),
+                .full_attention => |attn| try self.fullAttention(attn, c.mixer.full_attention, il, self.state.ropePosition(self.state.position)),
                 .delta_net => |linear| try self.linearAttention(linear, c.mixer.delta_net, il),
             }
             try b.addRmsNorm(self.x, self.projected, c.post_attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
@@ -514,6 +526,51 @@ pub const Plan = struct {
     /// `hidden_rows`, when given (`tokens.len × hidden`), receives every
     /// row's post-`output_norm` hidden — the rows the drafter's `commit`
     /// consumes — and requires the block.
+    /// Prefills a prompt with image spans: text runs and image spans are
+    /// chunked separately (a span never straddles a chunk), each span
+    /// registered in the session so its rows carry M-RoPE positions, and the
+    /// span's rows fed the projector's feature rows (`features`,
+    /// `Σ span.count × hidden`) instead of token embeddings. `logits`, when
+    /// given, receives the last row's. Speculation is off on this path.
+    pub fn prefillVision(self: *Plan, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        var i: usize = 0;
+        var si: usize = 0;
+        var frow: usize = 0;
+        while (i < tokens.len) {
+            if (si < spans.len and spans[si].start == i) {
+                const sp = spans[si];
+                if (frow + sp.count > features.len / hidden) return error.InvalidShape;
+                try self.state.addSpan(.{ .row = self.state.position, .count = sp.count, .advance = @max(sp.width_tokens, sp.height_tokens), .columns = sp.width_tokens });
+                var done: usize = 0;
+                while (done < sp.count) {
+                    const c = @min(self.chunk, sp.count - done);
+                    const last = i + c == tokens.len;
+                    @memcpy(self.image_scratch.floats()[0 .. c * hidden], features[(frow + done) * hidden ..][0 .. c * hidden]);
+                    self.image_rows = self.image_scratch;
+                    defer self.image_rows = null;
+                    try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, null, observer);
+                    done += c;
+                    i += c;
+                }
+                frow += sp.count;
+                si += 1;
+            } else {
+                const run_end = if (si < spans.len) spans[si].start else tokens.len;
+                while (i < run_end) {
+                    const c = @min(self.chunk, run_end - i);
+                    const last = i + c == tokens.len;
+                    try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, null, observer);
+                    i += c;
+                }
+            }
+        }
+    }
+
     pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
         if (tokens.len == 0) return error.InvalidShape;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
@@ -577,9 +634,16 @@ pub const Plan = struct {
     /// share it so the schedule is written once.
     fn recordLayers(self: *Plan, tokens: []const u32, count: usize, observer: ?Observer, row_states: usize) !void {
         const b = self.backend;
-        const embedding = try self.weight(self.binding.token_embedding);
-        for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
-        if (self.rotation) |rotation| try b.hadamard(self.x_c, try rotation.signsFor(hidden), hidden, count, hidden, true);
+        if (self.image_rows) |features| {
+            // A chunk of image span rows: the projector's feature rows are
+            // already in the model's width and basis, so they are copied in
+            // (no embed, no rotation), exactly the CPU runtime's `stepImage`.
+            try b.copy(self.x_c.slice(0, count * hidden * 4), features.slice(0, count * hidden * 4), count * hidden);
+        } else {
+            const embedding = try self.weight(self.binding.token_embedding);
+            for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
+            if (self.rotation) |rotation| try b.hadamard(self.x_c, try rotation.signsFor(hidden), hidden, count, hidden, true);
+        }
         const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
         for (self.binding.layers, self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x_c, c.attention_norm, self.normalized_c, norm);
@@ -729,6 +793,27 @@ pub const Plan = struct {
         return count;
     }
 
+    /// The M-RoPE sections of `qwen35.rope.dimension_sections`: t, h, w over
+    /// the 32 rotary pairs (11, 11, 10), the same as the CPU runtime's.
+    const rope_sections = [3]usize{ 11, 11, 10 };
+    /// Fills `chunk_rope` with each row's (cos, sin) pairs from its M-RoPE
+    /// triple: pair `i` takes axis `i % 3`'s position (t, h, or w) and turns
+    /// at `1e7^(-i/32)`, matching `cpu.rope.applyMultiAxis` and the plain
+    /// table where the triple is uniform. F64 angles, as the shared table.
+    fn fillChunkRope(self: *Plan, position: usize, count: usize) !void {
+        const out = self.chunk_rope.floats();
+        for (0..count) |r| {
+            const triple = self.state.ropeTriple(position + r);
+            for (0..32) |i| {
+                const axis = i % 3;
+                const p: f64 = if (i < 3 * rope_sections[axis]) @floatFromInt(triple[axis]) else 0;
+                const theta = p * std.math.pow(f64, 1e7, -@as(f64, @floatFromInt(i)) / 32.0);
+                out[(r * 32 + i) * 2] = @floatCast(@cos(theta));
+                out[(r * 32 + i) * 2 + 1] = @floatCast(@sin(theta));
+            }
+        }
+    }
+
     fn attentionChunk(self: *Plan, attn: model.FullAttention, c: anytype, il: usize, count: usize, position: usize) !void {
         const b = self.backend;
         const cache = self.state.layers[il].attention;
@@ -737,9 +822,19 @@ pub const Plan = struct {
         try self.mmRows(attn.key, self.normalized_c, hidden, self.k_c, 1024, count);
         try self.mmRows(attn.value, self.normalized_c, hidden, self.v_c, 1024, count);
         try b.rmsNorm(self.qg_c, c.query_norm, self.q_c, .{ .rows = count * 24, .width = 256, .in_stride = 512, .out_stride = 256 });
-        try b.ropeRows(self.q_c, self.rope_table, 24, 256, 64, position, count, 24 * 256, .split_half);
         try b.rmsNorm(self.k_c, c.key_norm, self.k_c, .{ .rows = count * 4, .width = 256, .in_stride = 256, .out_stride = 256 });
-        try b.ropeRows(self.k_c, self.rope_table, 4, 256, 64, position, count, 1024, .split_half);
+        if (self.state.span_count == 0) {
+            // The text fast path: consecutive positions from one shared table,
+            // bit-identical to the pre-vision schedule (the trace gates).
+            try b.ropeRows(self.q_c, self.rope_table, 24, 256, 64, position, count, 24 * 256, .split_half);
+            try b.ropeRows(self.k_c, self.rope_table, 4, 256, 64, position, count, 1024, .split_half);
+        } else {
+            // A chunk that overlaps an image span: each row's M-RoPE triple
+            // (`Session.ropeTriple`) into the per-row table, rotated at 0.
+            try self.fillChunkRope(position, count);
+            try b.ropeRows(self.q_c, self.chunk_rope, 24, 256, 64, 0, count, 24 * 256, .split_half);
+            try b.ropeRows(self.k_c, self.chunk_rope, 4, 256, 64, 0, count, 1024, .split_half);
+        }
         // The chunk's keys and values are contiguous in the cache; padding rows never leave the chunk buffers.
         const precision = cache.keys.precision;
         const k_rows = self.stateSlice(cache.keys.range(position, count));

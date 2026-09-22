@@ -57,6 +57,10 @@ pub const DraftBlock = struct {
 /// The `general.architecture` id this adapter binds.
 pub const architecture = "qwen35";
 
+/// One image span in a prompt (the shared vision contract's `Span`), used by
+/// the CPU runtime and the Metal plan.
+pub const VisionSpan = @import("../vision/root.zig").Span;
+
 /// The embedded prediction block's proposal bound: the block forward chains
 /// one draft per position and the Metal plan's verify tile holds 8 rows (the
 /// seed plus 7). Declared by the adapter so both executors cap a requested

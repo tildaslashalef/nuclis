@@ -109,6 +109,23 @@ pub fn Executor(comptime Family: type) type {
         /// `hidden`, when given (`tokens.len × hidden`), receives every row's
         /// post-`output_norm` hidden on both executors; a family with no such
         /// hidden refuses it (`error.HiddenUnsupported`).
+        /// Prefills a prompt whose `spans` place projector `features` in place
+        /// of placeholder token embeddings (`inference.vision.Span`). Only a
+        /// family with a `prefillVision` refuses otherwise (`VisionUnsupported`);
+        /// the GPU selection shortcuts are off, as for a chunked prefill.
+        pub fn prefillVision(self: *Self, tokens: []const u32, spans: []const inference.vision.Span, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, penalties: ?inference.sampling.Penalties, observer: ?Observer) !void {
+            if (tokens.len == 0) return error.InvalidShape;
+            switch (self.*) {
+                .cpu => |*runtime| if (comptime @hasDecl(Family.Runtime, "prefillVision"))
+                    try runtime.prefillVision(tokens, spans, features, logits, observer)
+                else
+                    return error.VisionUnsupported,
+                .metal => |*m| if (comptime @hasDecl(Family.Plan, "prefillVision"))
+                    try m.plan.prefillVision(tokens, spans, features, logits, greedy, topk, penalties, observer)
+                else
+                    return error.VisionUnsupported,
+            }
+        }
         pub fn prefill(self: *Self, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, penalties: ?inference.sampling.Penalties, hidden: ?[]f32, observer: ?Observer) !void {
             if (tokens.len == 0) return error.InvalidShape;
             switch (self.*) {
@@ -320,6 +337,11 @@ pub const Model = struct {
     pub fn prefill(self: *Model, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, penalties: ?inference.sampling.Penalties, hidden: ?[]f32, observer: ?Observer) !void {
         switch (self.exec) {
             inline else => |*e| try e.prefill(tokens, logits, greedy, topk, penalties, hidden, observer),
+        }
+    }
+    pub fn prefillVision(self: *Model, tokens: []const u32, spans: []const inference.vision.Span, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, penalties: ?inference.sampling.Penalties, observer: ?Observer) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.prefillVision(tokens, spans, features, logits, greedy, topk, penalties, observer),
         }
     }
     pub fn verify(self: *Model, tokens: []const u32, vocabulary: usize, out: VerifyOutput, h_rows: ?[]f32, observer: ?Observer) !void {
@@ -610,6 +632,35 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference
 /// A profile lists at most this many stop tokens (both today list two).
 pub const max_stop_tokens = 4;
 
+/// A loaded companion projector on the engine's backend. Heap-allocated so
+/// `binding` has a stable address for the executor to borrow.
+pub const Vision = struct {
+    mapped: inference.weights.Mapped,
+    binding: inference.vision.qwen3vl.Binding,
+    exec: union(enum) {
+        cpu: inference.vision.qwen3vl.Runtime,
+        metal: inference.vision.qwen3vl.Plan,
+    },
+    pub fn deinit(self: *Vision, alloc: std.mem.Allocator, io: std.Io) void {
+        switch (self.exec) {
+            inline else => |*e| e.deinit(),
+        }
+        self.mapped.deinit(io);
+        alloc.destroy(self);
+    }
+};
+
+/// One image after preprocessing and the projector: its merged token grid and
+/// the feature rows (`width_tokens · height_tokens × 5120`), caller-owned.
+pub const PreparedImage = struct {
+    width_tokens: u32,
+    height_tokens: u32,
+    features: []f32,
+    pub fn tokens(self: PreparedImage) usize {
+        return @as(usize, self.width_tokens) * self.height_tokens;
+    }
+};
+
 pub const Engine = struct {
     alloc: std.mem.Allocator,
     io: std.Io,
@@ -643,6 +694,8 @@ pub const Engine = struct {
     name: []const u8,
     /// Wall time spent in `open`, including directory parsing and mapping.
     load: std.Io.Duration,
+    /// A companion vision projector, loaded on demand (`loadVision`).
+    vision: ?*Vision = null,
 
     /// Opens the artifact, selects its adapter and binds it, loads the
     /// vocabulary, and prepares a session of `capacity` tokens with an
@@ -741,10 +794,12 @@ pub const Engine = struct {
             .draft_mapped = draft_mapped,
             .name = mapped.document.string("general.name") orelse "unnamed model",
             .load = started.durationTo(std.Io.Clock.awake.now(io)),
+            .vision = null,
         };
     }
 
     pub fn deinit(self: *Engine) void {
+        if (self.vision) |v| v.deinit(self.alloc, self.io);
         self.model.deinit(self.alloc);
         if (self.spec) |*s| s.deinit(self.alloc);
         if (self.draft_mapped) |*m| m.deinit(self.io);
@@ -770,6 +825,83 @@ pub const Engine = struct {
         return profile.render(self.alloc, messages, tools, effort, .{});
     }
 
+    /// Loads a companion projector (`models.<name>.mmproj`) on the engine's
+    /// backend. Only the Qwen3-VL projector is bound today; a projector whose
+    /// output width differs from the model's is `VisionSourceMismatch`.
+    pub fn loadVision(self: *Engine, path: []const u8) !void {
+        if (self.vision != null) return error.VisionAlreadyLoaded;
+        const qwen3vl = inference.vision.qwen3vl;
+        const v = try self.alloc.create(Vision);
+        errdefer self.alloc.destroy(v);
+        v.mapped = try inference.weights.Mapped.open(self.alloc, self.io, path);
+        errdefer v.mapped.deinit(self.io);
+        v.binding = try qwen3vl.bind(self.alloc, &v.mapped.document);
+        if (qwen3vl.output_width != self.vocab_hidden()) return error.VisionSourceMismatch;
+        v.exec = switch (self.backend) {
+            .cpu => .{ .cpu = try qwen3vl.Runtime.init(self.alloc, v.mapped.view(), &v.binding) },
+            .metal => .{ .metal = try qwen3vl.Plan.init(self.alloc, self.model.gpu() orelse return error.MetalNotEnabled, v.mapped.view(), &v.binding) },
+        };
+        self.vision = v;
+    }
+    /// The language model's embedding width (5120 for Qwen3.8), the width a
+    /// projector must output.
+    fn vocab_hidden(self: *const Engine) usize {
+        _ = self;
+        return 5120;
+    }
+    /// Preprocesses and encodes an image's bytes through the loaded projector.
+    /// Caller owns `PreparedImage.features`.
+    pub fn encodeImage(self: *Engine, bytes: []const u8) !PreparedImage {
+        const v = self.vision orelse return error.NoVision;
+        const qwen3vl = inference.vision.qwen3vl;
+        const preprocess = inference.vision.preprocess;
+        var decoded = try inference.vision.image.decode(self.alloc, bytes);
+        defer decoded.deinit(self.alloc);
+        const grid = qwen3vl.gridFor(.{ .width = decoded.width, .height = decoded.height });
+        const target: preprocess.Size = .{ .width = grid.width_patches * qwen3vl.patch, .height = grid.height_patches * qwen3vl.patch };
+        const resized = try preprocess.resizeLetterbox(self.alloc, decoded, target);
+        defer self.alloc.free(resized);
+        var patches = try preprocess.patches(self.alloc, resized, target, .{ .patch = qwen3vl.patch, .merge = qwen3vl.merge, .mean = v.binding.mean, .std = v.binding.std });
+        defer patches.deinit(self.alloc);
+        const features = try self.alloc.alloc(f32, grid.tokens() * qwen3vl.output_width);
+        errdefer self.alloc.free(features);
+        switch (v.exec) {
+            inline else => |*e| try e.encode(patches, features),
+        }
+        return .{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens(), .features = features };
+    }
+    /// The image marker id (`<|image_pad|>`), or null if the vocabulary lacks it.
+    pub fn imagePadId(self: *const Engine) ?u32 {
+        return self.vocab.tokenId("<|image_pad|>");
+    }
+    /// Pairs the runs of `<|image_pad|>` in `tokens` with `prepared`, in order,
+    /// into spans (`inference.vision.Span`); the run lengths must equal the
+    /// prepared token counts. Caller owns the returned slice.
+    pub fn locateImageSpans(self: *const Engine, tokens: []const u32, prepared: []const PreparedImage) ![]inference.vision.Span {
+        const pad = self.imagePadId() orelse return error.MissingImageToken;
+        var spans = try self.alloc.alloc(inference.vision.Span, prepared.len);
+        errdefer self.alloc.free(spans);
+        var found: usize = 0;
+        var i: usize = 0;
+        while (i < tokens.len) {
+            if (tokens[i] != pad) {
+                i += 1;
+                continue;
+            }
+            var run: usize = 0;
+            while (i + run < tokens.len and tokens[i + run] == pad) run += 1;
+            if (found >= prepared.len) return error.ImageSpanMismatch;
+            if (run != prepared[found].tokens()) return error.ImageSpanMismatch;
+            spans[found] = .{ .start = i, .count = run, .width_tokens = prepared[found].width_tokens, .height_tokens = prepared[found].height_tokens };
+            found += 1;
+            i += run;
+        }
+        if (found != prepared.len) return error.ImageSpanMismatch;
+        return spans;
+    }
+
+    /// The system block every rendering of these leading messages and tools
+    /// starts with (`profiles.Profile.prefix`). Caller owns the result.
     /// The system block every rendering of these leading messages and tools
     /// starts with (`profiles.Profile.prefix`). Caller owns the result.
     pub fn prefix(self: *const Engine, messages: []const profiles.Message, tools: []const profiles.ToolDefinition, effort: profiles.Effort) ![]u8 {
@@ -917,7 +1049,7 @@ pub fn complete(
     };
     var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, &eng.vocab, buffers.effort), .sink = sink };
     defer bridge.decoder.deinit();
-    const outcome = try runLoop(eng, tokens, limit, sampler, history, settings, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token });
+    const outcome = try runLoop(eng, tokens, limit, sampler, history, settings, null, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token });
     try bridge.decoder.end(outcome, sink);
     return outcome;
 }
@@ -955,6 +1087,10 @@ pub fn commitPrompt(eng: *Engine, tokens: []const u32, logits: ?[]f32, observer:
 /// generated token as it is chosen, and resets it whenever it resets the
 /// session. Required when a penalty is active; a caller that never uses
 /// penalties may pass null.
+/// Image spans and their projector features for a vision prompt, consumed at
+/// prefill. Speculation is off on this path; the decode loop is unchanged.
+pub const ImagePrefill = struct { spans: []const inference.vision.Span, features: []const f32 };
+
 pub fn runLoop(
     eng: *Engine,
     tokens: []const u32,
@@ -962,6 +1098,7 @@ pub fn runLoop(
     sampler: *inference.sampling.Sampler,
     history: ?*inference.sampling.History,
     settings: Speculative,
+    images: ?ImagePrefill,
     logits: []f32,
     candidates: []inference.sampling.Candidate,
     generated: []u32,
@@ -1010,8 +1147,22 @@ pub fn runLoop(
     var top: inference.sampling.TopK = .{ .temperature = sampler.options.temperature };
     const want_logits = !gpu_greedy and !gpu_topk;
     const vocabulary = logits.len;
-    const spec: ?*SpeculativeScratch = if (can_speculate) &(eng.spec orelse return error.NoSpeculativeScratch) else null;
-    if (spec != null) {
+    const spec: ?*SpeculativeScratch = if (can_speculate and images == null) &(eng.spec orelse return error.NoSpeculativeScratch) else null;
+    if (images) |img| {
+        // The vision prefill substitutes the projector's rows for the span's
+        // placeholders and gives every row its M-RoPE position; speculation is
+        // off on this path.
+        if (hooks) |h| if (h.before_step) |call| try call(h.context, eng.model.session().position);
+        eng.model.prefillVision(tokens, img.spans, img.features, if (want_logits) logits else null, if (gpu_greedy) &chosen else null, if (gpu_topk) &top else null, penalties, observer) catch |err| switch (err) {
+            error.Cancelled => {
+                resetAll(eng, history);
+                timing.prefill = prefill_start.durationTo(std.Io.Clock.awake.now(io));
+                return .{ .stop = .cancelled, .timing = timing };
+            },
+            else => return err,
+        };
+        if (hooks) |h| if (h.step) |call| try call(h.context, eng.model.session().position);
+    } else if (spec != null) {
         // Speculation commits the prompt to the drafter too: the block's cache
         // is filled from the target hidden of every committed position, not
         // just the accepted drafts. The last chunk's logits seed decoding.

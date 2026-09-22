@@ -264,7 +264,7 @@ Read: [development.md § Configuration file](development.md#configuration-file).
 nuclis agent [--model <m>] [--think <e>] [--resume [<id>]] [--system-prompt <path>]
 nuclis agent -p "<prompt>" [--json] [--session <path>]
 nuclis agent ls [--json]
-nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
+nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--image <path>]... [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
 nuclis bench --model <m> (--prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32] [--speculative on|off] [--json]
 nuclis tokenize --model <m> --prompt-file <path> [--raw] [--json]
 nuclis inspect --model <m> [--json]
@@ -553,9 +553,12 @@ Read: [development.md § Gates](development.md#gates) and
 
 ## 10. Deferred work and non-goals
 
-Deferred, to be taken through the existing seams as concrete requirements
-arrive: vision input through the companion projectors (planned in
-[TODO.md](../TODO.md)), HTTP serving with an OpenAI-compatible protocol,
+Vision input through the companion projectors is in progress: the Qwen3.8
+projector ships (`generate --image`, the shared `inference/src/vision/`
+contract, [reference/vision.md](reference/vision.md)); the Gemma 4 and Muse
+Glimmer projectors and the chat-side image attachment are planned in
+[TODO.md](../TODO.md). Deferred, to be taken through the existing seams as
+concrete requirements arrive: HTTP serving with an OpenAI-compatible protocol,
 persistent prefix caches, concurrent request batching, additional GPU
 backends, and a teacher-forced `eval` command. A local server would wrap
 the library; tool execution and permissions would stay with the consuming

@@ -221,6 +221,36 @@ pub const Runtime = struct {
         if (token >= 248320) return error.InvalidTokenId;
         return self.stepRow(.{ .token = token }, logits, observer);
     }
+    /// Prefills a prompt with image spans, token by token: a span's rows are
+    /// registered so they carry M-RoPE positions, then fed the projector's
+    /// feature rows (`features`, `Σ span.count × 5120`) in place of token
+    /// embeddings. `logits`, when given, receives the last row's.
+    pub fn prefillVision(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        var i: usize = 0;
+        var si: usize = 0;
+        var frow: usize = 0;
+        while (i < tokens.len) {
+            const last = i + 1 == tokens.len;
+            if (si < spans.len and spans[si].start == i) {
+                const sp = spans[si];
+                if (frow + sp.count > features.len / 5120) return error.InvalidShape;
+                try self.state.addSpan(.{ .row = self.state.position, .count = sp.count, .advance = @max(sp.width_tokens, sp.height_tokens), .columns = sp.width_tokens });
+                for (0..sp.count) |r| {
+                    const row_last = i + 1 == tokens.len;
+                    try self.stepImage(features[(frow + r) * 5120 ..][0..5120], if (row_last) logits else null, observer);
+                    i += 1;
+                }
+                frow += sp.count;
+                si += 1;
+            } else {
+                try self.step(tokens[i], if (last) logits else null, observer);
+                i += 1;
+            }
+        }
+    }
+
     /// `step` for an image row: the row's embedding is a projector feature
     /// row (`5120` values) instead of a token's, and its rotary triple comes
     /// from the session's span (`Session.ropeTriple`).

@@ -932,9 +932,9 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     const no_candidates: []inference.sampling.Candidate = &.{};
 
     resetForRun(&eng);
-    const first = try engine.runLoop(&eng, prompt, generated, &sampler, null, .{}, logits, no_candidates, a, null, null);
+    const first = try engine.runLoop(&eng, prompt, generated, &sampler, null, .{}, null, logits, no_candidates, a, null, null);
     resetForRun(&eng);
-    const second = try engine.runLoop(&eng, prompt, generated, &sampler, null, .{ .enabled = true, .draft_length = 4 }, logits, no_candidates, b, null, null);
+    const second = try engine.runLoop(&eng, prompt, generated, &sampler, null, .{ .enabled = true, .draft_length = 4 }, null, logits, no_candidates, b, null, null);
     if (first.timing.generated_tokens != second.timing.generated_tokens) return error.SpeculativeLoopLengthMismatch;
     if (!std.mem.eql(u32, a[0..first.timing.generated_tokens], b[0..second.timing.generated_tokens])) return error.SpeculativeLoopMismatch;
     // Partial acceptance: the run rejected at least one draft, so the
@@ -946,7 +946,7 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
 
     // Budget inside a batch: a limit below what the first batch would emit.
     resetForRun(&eng);
-    const short = try engine.runLoop(&eng, prompt, 3, &sampler, null, spec, logits, no_candidates, a, null, null);
+    const short = try engine.runLoop(&eng, prompt, 3, &sampler, null, spec, null, logits, no_candidates, a, null, null);
     if (short.stop != .token_budget or short.timing.generated_tokens != 3) return error.SpeculativeBudgetMismatch;
     std.debug.print("Speculative budget passed: stopped at {d} tokens inside a batch.\n", .{short.timing.generated_tokens});
 
@@ -957,7 +957,7 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     const eos_tokens = try eng.encode(rendered);
     defer alloc.free(eos_tokens);
     resetForRun(&eng);
-    const eos = try engine.runLoop(&eng, eos_tokens, 24, &sampler, null, spec, logits, no_candidates, a, null, null);
+    const eos = try engine.runLoop(&eng, eos_tokens, 24, &sampler, null, spec, null, logits, no_candidates, a, null, null);
     if (eos.stop != .eos) return error.SpeculativeEosMismatch;
     std.debug.print("Speculative EOS passed: stopped after {d} tokens.\n", .{eos.timing.generated_tokens});
 
@@ -966,7 +966,7 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     // the loop resets the poisoned session and reports cancellation.
     var canceller = CancelAt{ .eng = &eng, .at = prompt.len };
     resetForRun(&eng);
-    const cancelled = try engine.runLoop(&eng, prompt, 24, &sampler, null, spec, logits, no_candidates, a, .{ .context = &canceller, .check = CancelAt.check }, null);
+    const cancelled = try engine.runLoop(&eng, prompt, 24, &sampler, null, spec, null, logits, no_candidates, a, .{ .context = &canceller, .check = CancelAt.check }, null);
     if (cancelled.stop != .cancelled) return error.SpeculativeCancellationMismatch;
     if (eng.model.session().position != 0) return error.SpeculativeCancellationNotReset;
     std.debug.print("Speculative cancellation passed: a cancelled verify reset the session.\n", .{});
@@ -975,7 +975,7 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     // tokens cannot hold a verify batch plus its correction.
     var small = try engine.Engine.open(alloc, io, model_path, backend, prompt.len + 2, .f32, null, .embedded);
     defer small.deinit();
-    const full = try engine.runLoop(&small, prompt, 24, &sampler, null, spec, logits, no_candidates, a, null, null);
+    const full = try engine.runLoop(&small, prompt, 24, &sampler, null, spec, null, logits, no_candidates, a, null, null);
     if (full.stop != .context_limit) return error.SpeculativeContextMismatch;
     std.debug.print("Speculative context passed: stopped at the {d}-token context.\n", .{prompt.len + 2});
 }
@@ -1862,7 +1862,39 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     // The bounds: the reference's own CPU and Metal projectors differ by
     // 0.36 max abs / 4.6e-3 relative RMS on this fixture (vision.md).
     try compareRows("projector rows", expected, features, 0.5, 1e-2);
-    _ = model_path;
+
+    // The language-model path, isolated from the projector's tolerance: the
+    // pinned feature rows are prefilled into the image span and the first
+    // eight greedy tokens must equal the oracle's (`greedy.txt`).
+    const pinned = try alloc.alloc(f32, rows * qwen3vl.output_width);
+    defer alloc.free(pinned);
+    for (pinned, 0..) |*v, i| v.* = std.mem.bytesToValue(f32, expected[i * 4 ..][0..4]);
+    var eng = try inference.engine.Engine.open(alloc, io, model_path, if (use_metal) .metal else .cpu, 64, .f32, null, .none);
+    defer eng.deinit();
+    const refs = [_]inference.profiles.ImageRef{.{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens() }};
+    const prompt = try eng.render(&.{.{ .role = .user, .content = "describe this image", .images = &refs }}, &.{}, .off);
+    defer alloc.free(prompt);
+    const tokens = try eng.encode(prompt);
+    defer alloc.free(tokens);
+    const spans = try eng.locateImageSpans(tokens, &.{.{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens(), .features = pinned }});
+    defer alloc.free(spans);
+    const logits = try alloc.alloc(f32, eng.vocab.tokens.len);
+    defer alloc.free(logits);
+    const generated = try alloc.alloc(u32, 8);
+    defer alloc.free(generated);
+    var sampler = try inference.sampling.Sampler.init(0, .{ .temperature = 0, .top_p = 1, .top_k = 0, .min_p = 0, .presence_penalty = 0, .repetition_penalty = 1 });
+    const outcome = try inference.engine.runLoop(&eng, tokens, 8, &sampler, null, .{}, .{ .spans = spans, .features = pinned }, logits, &.{}, generated, null, null);
+    const greedy_text = @embedFile("src/vision/fixtures/qwen3vl-synthetic/greedy.txt");
+    var it = std.mem.tokenizeScalar(u8, greedy_text, '\n');
+    var mismatch = false;
+    std.debug.print("Vision greedy ({s}):", .{if (use_metal) "metal" else "cpu"});
+    for (generated[0..outcome.timing.generated_tokens]) |got| {
+        const want = std.fmt.parseInt(u32, it.next() orelse break, 10) catch break;
+        std.debug.print(" {d}{s}", .{ got, if (got == want) "" else "!" });
+        if (got != want) mismatch = true;
+    }
+    std.debug.print("\n", .{});
+    if (mismatch) return error.VisionGreedyMismatch;
 }
 
 fn compareRows(label: []const u8, expected: []const u8, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {

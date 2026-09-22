@@ -404,7 +404,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length } else .{};
             // Decode covers the steps after the first sampled token; the first
             // token's latency (prefill included) is reported separately.
-            const outcome = try generate.runLoop(&eng, tokens, limit, &sampler, &history, spec, logits, candidates, generated, &trace, null);
+            const outcome = try generate.runLoop(&eng, tokens, limit, &sampler, &history, spec, null, logits, candidates, generated, &trace, null);
             const t = outcome.timing;
             const decode_steps = if (t.generated_tokens > 1) t.generated_tokens - 1 else 0;
             samples[completed] = .{

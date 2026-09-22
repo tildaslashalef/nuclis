@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / 'gates.json'
 TIERS = ('verify', 'verify-cpu')
 COMPARATORS = ('exit', 'trace')
-PLACEHOLDERS = ('{nuclis}', '{nuclis-cpu}', '{zig-metal}', '{zig-cpu}', '{model}', '{mtp}', '{trace}')
+PLACEHOLDERS = ('{nuclis}', '{nuclis-cpu}', '{zig-metal}', '{zig-cpu}', '{model}', '{mtp}', '{mmproj}', '{trace}')
 TRACE_ROOT = '.zig-cache/gates/trace'
 CPU_PREFIX = '.zig-cache/gates/cpu'
 
@@ -71,6 +71,8 @@ def validate(doc):
                         problems.append(f'{name}: unknown placeholder {token}')
             if '{mtp}' in ' '.join(command) and 'mtp' not in gate:
                 problems.append(f'{name}: command uses {{mtp}} but the gate names no mtp')
+            if '{mmproj}' in ' '.join(command) and 'mmproj' not in models.get(gate.get('model'), {}):
+                problems.append(f'{name}: command uses {{mmproj}} but model "{gate.get("model")}" names no mmproj')
         comparator = gate.get('comparator', {})
         kind = comparator.get('kind')
         if kind not in COMPARATORS:
@@ -136,6 +138,9 @@ def expand(argv, gate, doc, env=None):
     for key in ('model', 'mtp'):
         if key in gate:
             scalars['{' + key + '}'] = model_path(doc, gate[key], env)
+    entry = doc['models'].get(gate.get('model'), {})
+    if 'mmproj' in entry:
+        scalars['{mmproj}'] = os.path.expanduser(entry['mmproj'])
     out = []
     for arg in argv:
         if arg in table:
