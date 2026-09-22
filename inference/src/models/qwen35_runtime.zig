@@ -219,11 +219,29 @@ pub const Runtime = struct {
     /// commits one token; a callback/error after begin requires reset.
     pub fn step(self: *Runtime, token: u32, logits: ?[]f32, observer: ?Observer) !void {
         if (token >= 248320) return error.InvalidTokenId;
+        return self.stepRow(.{ .token = token }, logits, observer);
+    }
+    /// `step` for an image row: the row's embedding is a projector feature
+    /// row (`5120` values) instead of a token's, and its rotary triple comes
+    /// from the session's span (`Session.ropeTriple`).
+    pub fn stepImage(self: *Runtime, features: []const f32, logits: ?[]f32, observer: ?Observer) !void {
+        if (features.len != 5120) return error.InvalidShape;
+        return self.stepRow(.{ .features = features }, logits, observer);
+    }
+    const RowSource = union(enum) { token: u32, features: []const f32 };
+    fn stepRow(self: *Runtime, source: RowSource, logits: ?[]f32, observer: ?Observer) !void {
         if (logits) |out| if (out.len != 248320) return error.InvalidShape;
         try self.state.begin();
         errdefer self.state.fail();
-        try self.view.row(self.binding.token_embedding, token, self.x);
-        if (self.rotation) |rotation| try cpu.hadamard.inverse(self.x, try rotation.signsFor(5120), rotation.block);
+        switch (source) {
+            .token => |token| {
+                try self.view.row(self.binding.token_embedding, token, self.x);
+                if (self.rotation) |rotation| try cpu.hadamard.inverse(self.x, try rotation.signsFor(5120), rotation.block);
+            },
+            // A feature row is already in the model's width and basis: the
+            // reference feeds it as an embedding, unrotated.
+            .features => |row| @memcpy(self.x, row),
+        }
         for (self.binding.layers, self.constants, 0..) |layer, constants, il| {
             try norm(self.x, self.normalized, constants.attention_norm);
             switch (layer.mixer) {
@@ -259,6 +277,19 @@ pub const Runtime = struct {
         try self.state.commit();
     }
 
+    /// The rotary sections of `qwen35.rope.dimension_sections`: pairs
+    /// interleave t, h, w over the 32 rotary pairs (11, 11, and 10 of them).
+    const rope_sections = [3]usize{ 11, 11, 10 };
+    /// Rotates one head at row `position`: the plain rotation at the row's
+    /// text position, or the multi-axis one inside an image span.
+    fn ropeHead(self: *Runtime, head: []f32, position: usize) !void {
+        const triple = self.state.ropeTriple(position);
+        if (triple[0] == triple[1] and triple[1] == triple[2]) {
+            try cpu.rope.apply(head, head, .{ .dimensions = 64, .base = 1e7, .position = @intCast(triple[0]) });
+        } else {
+            try cpu.rope.applyMultiAxis(head, head, .{ .dimensions = 64, .base = 1e7, .position = 0 }, .{ @intCast(triple[0]), @intCast(triple[1]), @intCast(triple[2]) }, rope_sections);
+        }
+    }
     /// One full-attention layer over `keys`/`values` at `position`, reading
     /// `self.normalized`. `rotated` applies the file's activation transform:
     /// the text schedule's projections are rotated, the prediction block's are
@@ -273,12 +304,12 @@ pub const Runtime = struct {
             // Each projected head stores query then gate, not all queries then
             // all gates. The gate remains untouched until after attention.
             try norm(self.qg[h * 512 ..][0..256], q, query_norm);
-            try cpu.rope.apply(q, q, .{ .dimensions = 64, .base = 1e7, .position = @intCast(position) });
+            try self.ropeHead(q, position);
         }
         for (0..4) |h| {
             const k = self.k[h * 256 ..][0..256];
             try norm(k, k, key_norm);
-            try cpu.rope.apply(k, k, .{ .dimensions = 64, .base = 1e7, .position = @intCast(position) });
+            try self.ropeHead(k, position);
         }
         // The reference cache is F32 by decision: the views assert it.
         @memcpy(keys.floats(position, 1), self.k);

@@ -89,11 +89,13 @@ pub const Snapshot = struct {
 };
 
 /// A run of rows whose rotary positions do not advance one per row: an
-/// image span under multi-axis RoPE occupies `count` rows but moves the
-/// text position by `advance` (the larger grid side). Rows after it carry
-/// the rotary position `row - Σ (count - advance)` of the spans before them;
-/// the rows inside are positioned by the model adapter from the span's grid.
-pub const PositionSpan = struct { row: usize, count: usize, advance: usize };
+/// image span under multi-axis RoPE occupies `count` rows (a grid of
+/// `columns` per line) but moves the text position by `advance` (the larger
+/// grid side). Rows after it carry the rotary position
+/// `row - Σ (count - advance)` of the spans before them; row `i` inside
+/// carries the triple `(t, t + i / columns, t + i % columns)` with `t` the
+/// span's own position (`ropeTriple`).
+pub const PositionSpan = struct { row: usize, count: usize, advance: usize, columns: usize };
 /// Spans a session can hold at once (images across a conversation).
 pub const max_spans = 64;
 
@@ -148,7 +150,7 @@ pub const Session = struct {
     /// Records a span whose rows `[row, row + count)` are about to be
     /// committed; spans are added in row order and never overlap.
     pub fn addSpan(self: *Session, span: PositionSpan) !void {
-        if (span.count == 0 or span.advance > span.count or span.row + span.count > self.capacity) return error.InvalidShape;
+        if (span.count == 0 or span.advance > span.count or span.row + span.count > self.capacity or span.columns == 0) return error.InvalidShape;
         if (self.span_count == max_spans) return error.TooManySpans;
         if (self.span_count > 0) {
             const last = self.spans[self.span_count - 1];
@@ -173,6 +175,21 @@ pub const Session = struct {
             delta += span.count - span.advance;
         }
         return row - delta;
+    }
+    /// The rotary triple `(t, h, w)` of a row: equal components outside a
+    /// span (the text position), the span's grid inside.
+    pub fn ropeTriple(self: *const Session, row: usize) [3]usize {
+        var delta: usize = 0;
+        for (self.positionSpans()) |span| {
+            if (row < span.row) break;
+            if (row < span.row + span.count) {
+                const t = span.row - delta;
+                const i = row - span.row;
+                return .{ t, t + i / span.columns, t + i % span.columns };
+            }
+            delta += span.count - span.advance;
+        }
+        return .{ row - delta, row - delta, row - delta };
     }
     /// The span containing `row`, if any.
     pub fn spanAt(self: *const Session, row: usize) ?PositionSpan {
@@ -571,8 +588,8 @@ test "position spans: rope positions, truncation, rewind, and snapshots" {
     try s.beginChunk(4);
     try s.commitChunk(4);
     try s.checkpoint();
-    try s.addSpan(.{ .row = 4, .count = 12, .advance = 4 });
-    try std.testing.expectError(error.InvalidShape, s.addSpan(.{ .row = 10, .count = 2, .advance = 1 }));
+    try s.addSpan(.{ .row = 4, .count = 12, .advance = 4, .columns = 4 });
+    try std.testing.expectError(error.InvalidShape, s.addSpan(.{ .row = 10, .count = 2, .advance = 1, .columns = 1 }));
     try s.beginChunk(14);
     try s.commitChunk(14);
     try std.testing.expectEqual(@as(usize, 3), s.ropePosition(3));
@@ -582,10 +599,13 @@ test "position spans: rope positions, truncation, rewind, and snapshots" {
     try std.testing.expectEqual(@as(usize, 9), s.ropePosition(17));
     try std.testing.expect(s.spanAt(10) != null);
     try std.testing.expect(s.spanAt(16) == null);
+    try std.testing.expectEqual([3]usize{ 4, 5, 6 }, s.ropeTriple(10));
+    try std.testing.expectEqual([3]usize{ 4, 4, 4 }, s.ropeTriple(4));
+    try std.testing.expectEqual([3]usize{ 8, 8, 8 }, s.ropeTriple(16));
     try std.testing.expectError(error.SpanStraddlesPosition, s.truncate(10));
     var snap = try s.snapshot(a);
     defer snap.deinit();
-    try s.addSpan(.{ .row = 18, .count = 6, .advance = 2 });
+    try s.addSpan(.{ .row = 18, .count = 6, .advance = 2, .columns = 3 });
     try s.beginChunk(6);
     try s.commitChunk(6);
     try std.testing.expectEqual(@as(usize, 12), s.ropePosition(24));

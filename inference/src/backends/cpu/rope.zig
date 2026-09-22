@@ -64,6 +64,52 @@ pub fn apply(input: []const f32, output: []f32, options: Options) Error!void {
     for (input[options.dimensions..], output[options.dimensions..]) |x, *y| y.* = x;
 }
 
+/// Multi-axis RoPE (the GGUF `IMROPE` type): pair `i` takes its position
+/// from `positions[0]` (t), `[1]` (h), or `[2]` (w) by `i % 3`, while `i`
+/// is below `3 · sections[axis]`; a pair past every section stays at
+/// position 0. The frequencies are `apply`'s, so equal positions give
+/// `apply`'s result exactly (the text rows of a model that carries images).
+/// Pairing is split-half; `factors` are not supported.
+pub fn applyMultiAxis(input: []const f32, output: []f32, options: Options, positions: [3]i32, sections: [3]usize) Error!void {
+    if (input.len == 0 or input.len != output.len or options.dimensions == 0 or
+        options.dimensions % 2 != 0 or options.dimensions > input.len or options.pairing != .split_half or options.factors != null) return error.InvalidShape;
+    if (!std.math.isFinite(options.base) or options.base < 1) return error.InvalidFrequencyBase;
+    for (input) |x| if (!std.math.isFinite(x)) return error.NonFiniteInput;
+    const half = options.dimensions / 2;
+    for (0..half) |i| {
+        const axis = i % 3;
+        const position: f64 = if (i < 3 * sections[axis]) @floatFromInt(positions[axis]) else 0;
+        const exponent = -@as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(half));
+        const theta = position * std.math.pow(f64, options.base, exponent);
+        const cosine = @cos(theta);
+        const sine = @sin(theta);
+        const a: f64 = input[i];
+        const b: f64 = input[i + half];
+        output[i] = @floatCast(a * cosine - b * sine);
+        output[i + half] = @floatCast(a * sine + b * cosine);
+    }
+    for (input[options.dimensions..], output[options.dimensions..]) |x, *y| y.* = x;
+}
+
+test "multi-axis RoPE with equal positions matches apply, and axes select pairs" {
+    var values: [8]f32 = .{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    var expected = values;
+    try apply(&expected, &expected, .{ .dimensions = 6, .base = 100, .position = 3 });
+    try applyMultiAxis(&values, &values, .{ .dimensions = 6, .base = 100, .position = 0 }, .{ 3, 3, 3 }, .{ 1, 1, 1 });
+    try std.testing.expectEqualSlices(f32, &expected, &values);
+    // Pair 1 is the h axis: position 0 leaves it in place, pair 0 (t) and pair 2 (w) turn.
+    var mixed: [8]f32 = .{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    try applyMultiAxis(&mixed, &mixed, .{ .dimensions = 6, .base = 100, .position = 0 }, .{ 3, 0, 3 }, .{ 1, 1, 1 });
+    try std.testing.expectEqual(@as(f32, 2), mixed[1]);
+    try std.testing.expectEqual(@as(f32, 5), mixed[4]);
+    try std.testing.expectEqual(expected[0], mixed[0]);
+    try std.testing.expectEqual(expected[2], mixed[2]);
+    // A pair past its section stays at position 0.
+    var capped: [8]f32 = .{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    try applyMultiAxis(&capped, &capped, .{ .dimensions = 6, .base = 100, .position = 0 }, .{ 3, 3, 3 }, .{ 0, 1, 1 });
+    try std.testing.expectEqual(@as(f32, 1), capped[0]);
+}
+
 test "RoPE split-half pairs, independent frequencies, and untouched tail" {
     var values = [_]f32{ 1, 2, 3, 4, 9, -0.0 };
     try apply(&values, &values, .{ .dimensions = 4, .base = 100, .position = 2 });
