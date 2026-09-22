@@ -19,6 +19,7 @@ pub const draft = @import("runtime/draft.zig");
 pub const observer = @import("runtime/observer.zig");
 pub const events = @import("events.zig");
 pub const engine = @import("engine.zig");
+pub const vision = @import("vision/root.zig");
 
 test {
     _ = gguf;
@@ -37,4 +38,5 @@ test {
     _ = speculative;
     _ = engine;
     _ = events;
+    _ = vision;
 }

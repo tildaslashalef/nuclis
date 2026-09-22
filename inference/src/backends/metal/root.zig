@@ -71,7 +71,8 @@ const kernel_names = [_][:0]const u8{
     "nu_matvec_rows_iq4_xs_t7", "nu_matvec_rows_iq4_xs_t8", "nu_matmul_q3_k_w8",        "nu_matmul_q4_k_w8",        "nu_matmul_q5_k_w8",        "nu_matmul_q6_k_w8",
     "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",      "nu_matvec_q4_k_split",
     "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits", "nu_attention_chunk_reuse", "nu_attention_chunk_reuse_h",
-    "nu_rmsnorm_add",           "nu_add_rmsnorm",           "nu_rmsnorm_rope",
+    "nu_rmsnorm_add",           "nu_add_rmsnorm",           "nu_rmsnorm_rope",          "nu_layernorm",             "nu_add_bias_rows",         "nu_gelu_inplace",
+    "nu_attention_full",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -209,6 +210,10 @@ pub const Kernel = enum(u32) {
     rmsnorm_add,
     add_rmsnorm,
     rmsnorm_rope,
+    layernorm,
+    add_bias_rows,
+    gelu_inplace,
+    attention_full,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -1059,6 +1064,44 @@ pub const Backend = struct {
         }
         const p: NormParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .mult_stride = @intCast(mult_stride), .eps = spec.eps, .flags = flags };
         try self.dispatch(.rmsnorm, &.{ input, weight, output, mult }, p, @intCast(spec.rows), 256, .{});
+    }
+    pub const LayerNormParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32 };
+    /// LayerNorm with weight and bias over `rows` rows of `width`
+    /// (`spec.silu_multiplier` unused); input and output may alias exactly.
+    pub fn layerNorm(self: *Backend, input: Buffer, weight: Buffer, bias: Buffer, output: Buffer, spec: Norm) !void {
+        if (spec.rows == 0 or spec.width == 0 or spec.in_stride < spec.width or spec.out_stride < spec.width or !(spec.eps > 0)) return error.InvalidShape;
+        if (input.len < ((spec.rows - 1) * spec.in_stride + spec.width) * 4 or output.len < ((spec.rows - 1) * spec.out_stride + spec.width) * 4 or weight.len < spec.width * 4 or bias.len < spec.width * 4) return error.InvalidShape;
+        const p: LayerNormParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .eps = spec.eps };
+        try self.dispatch(.layernorm, &.{ input, weight, bias, output }, p, @intCast(spec.rows), 256, .{});
+    }
+    pub const BiasRowsParams = extern struct { width: u32, rows: u32, stride: u32 };
+    /// `x[row · stride + i] += bias[i]` over `rows` rows of `width`.
+    pub fn addBiasRows(self: *Backend, x: Buffer, bias: Buffer, width: usize, rows: usize, stride: usize) !void {
+        if (width == 0 or rows == 0 or stride < width or x.len < ((rows - 1) * stride + width) * 4 or bias.len < width * 4) return error.InvalidShape;
+        const p: BiasRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .stride = @intCast(stride) };
+        try self.dispatch(.add_bias_rows, &.{ x, bias }, p, perElement(width * rows), 256, .{});
+    }
+    /// x = gelu(x) (the tanh form of `cpu.gelu`) over `count` values.
+    pub fn gelu(self: *Backend, x: Buffer, count: usize) !void {
+        if (count == 0 or x.len < count * 4) return error.InvalidShape;
+        try self.dispatch(.gelu_inplace, &.{x}, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
+    }
+    pub const AttentionFullParams = extern struct { heads: u32, width: u32, rows: u32, q_stride: u32, kv_stride: u32, out_stride: u32, scale: f32 };
+    pub const AttentionFullShape = struct { heads: usize, width: usize, rows: usize, q_stride: usize, kv_stride: usize, out_stride: usize, scale: f32 };
+    /// Maximum rows one bidirectional attention can cover (threadgroup memory).
+    pub const attention_full_max_rows = 4096;
+    /// Bidirectional attention over `rows` rows: every row attends to every
+    /// row, `heads` heads of `width` (at most 256) per row. Queries, keys, and
+    /// values are separate buffers (or slices of one) with their own row
+    /// strides; the output is `heads · width` wide at `out_stride`.
+    pub fn attentionFull(self: *Backend, queries: Buffer, keys: Buffer, values: Buffer, output: Buffer, s: AttentionFullShape) !void {
+        if (s.heads == 0 or s.width == 0 or s.width > 256 or s.rows == 0 or s.rows > attention_full_max_rows) return error.InvalidShape;
+        const row_floats = s.heads * s.width;
+        if (s.q_stride < row_floats or s.kv_stride < row_floats or s.out_stride < row_floats) return error.InvalidShape;
+        if (queries.len < ((s.rows - 1) * s.q_stride + row_floats) * 4 or keys.len < ((s.rows - 1) * s.kv_stride + row_floats) * 4 or values.len < ((s.rows - 1) * s.kv_stride + row_floats) * 4 or output.len < ((s.rows - 1) * s.out_stride + row_floats) * 4) return error.InvalidShape;
+        if (overlaps(output, ((s.rows - 1) * s.out_stride + row_floats) * 4, queries, ((s.rows - 1) * s.q_stride + row_floats) * 4) or overlaps(output, ((s.rows - 1) * s.out_stride + row_floats) * 4, keys, ((s.rows - 1) * s.kv_stride + row_floats) * 4) or overlaps(output, ((s.rows - 1) * s.out_stride + row_floats) * 4, values, ((s.rows - 1) * s.kv_stride + row_floats) * 4)) return error.InvalidShape;
+        const p: AttentionFullParams = .{ .heads = @intCast(s.heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale };
+        try self.dispatch(.attention_full, &.{ queries, keys, values, output }, p, @intCast(s.rows * s.heads), 256, .{});
     }
     pub const NormAddParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32, scale: f32 };
     /// `(destination + norm(input)·w) · factor` over `rows` rows in one

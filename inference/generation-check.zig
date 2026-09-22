@@ -94,6 +94,7 @@ pub fn main(init: std.process.Init) !void {
     var speculative_check = false;
     var draft_trace: ?[]const u8 = null;
     var draft_model: ?[]const u8 = null;
+    var vision_check: ?[]const u8 = null;
     var path: ?[]const u8 = null;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -112,6 +113,10 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedDraftModel;
             draft_model = args[i];
+        } else if (std.mem.eql(u8, arg, "--vision-check")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedProjectorPath;
+            vision_check = args[i];
         } else if (path == null) {
             path = arg;
         } else return error.UnknownOption;
@@ -121,7 +126,9 @@ pub fn main(init: std.process.Init) !void {
     defer mapped.deinit(init.io);
     const architecture = mapped.document.string("general.architecture") orelse return error.MissingMetadata;
     switch (try inference.models.select(architecture)) {
-        .qwen35 => if (draft_trace) |dir|
+        .qwen35 => if (vision_check) |projector|
+            try visionCheck(alloc, init.io, model_path, projector, use_metal)
+        else if (draft_trace) |dir|
             try draftTrace(qwen35_spec, alloc, init.io, &mapped, use_metal, dir)
         else if (draft_stats)
             try draftStats(qwen35_spec, alloc, init.io, &mapped, use_metal)
@@ -1808,4 +1815,68 @@ fn compareRecovery(rows: usize, expected: []const f32, actual: []const f32, max_
     const d = Difference.of(expected, actual);
     std.debug.print("Recovery (batch {d} rows) vs sequential F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ rows, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
     if (!d.within(max_abs_bound, rel_rms_bound)) return error.RecoveryMismatch;
+}
+
+/// The Qwen3-VL projector against the pinned oracle: the synthetic fixture
+/// image's feature rows (the reference's Metal projector, llama.cpp
+/// `7620399f5`, 2026-09-22) on the executor under test, then the first
+/// greedy tokens of `describe this image` through the language model with
+/// the rows substituted for the image span, against the pinned eight.
+fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, projector_path: []const u8, use_metal: bool) !void {
+    const vision = inference.vision;
+    const qwen3vl = vision.qwen3vl;
+    var projector = try inference.weights.Mapped.open(alloc, io, projector_path);
+    defer projector.deinit(io);
+    const binding = try qwen3vl.bind(alloc, &projector.document);
+    var source = try vision.image.decodePpm(alloc, @embedFile("src/vision/fixtures/synthetic-96x64.ppm"));
+    defer source.deinit(alloc);
+    const grid = qwen3vl.gridFor(.{ .width = source.width, .height = source.height });
+    const target: vision.preprocess.Size = .{ .width = grid.width_patches * qwen3vl.patch, .height = grid.height_patches * qwen3vl.patch };
+    const resized = try vision.preprocess.resizeLetterbox(alloc, source, target);
+    defer alloc.free(resized);
+    var patches = try vision.preprocess.patches(alloc, resized, target, .{ .patch = qwen3vl.patch, .merge = qwen3vl.merge, .mean = binding.mean, .std = binding.std });
+    defer patches.deinit(alloc);
+    const expected = @embedFile("src/vision/fixtures/qwen3vl-synthetic/features.f32");
+    const rows = grid.tokens();
+    if (expected.len != rows * qwen3vl.output_width * 4) return error.FixtureMismatch;
+    const features = try alloc.alloc(f32, rows * qwen3vl.output_width);
+    defer alloc.free(features);
+    const started = std.Io.Clock.awake.now(io);
+    if (use_metal) {
+        var diagnostic: [8192]u8 = @splat(0);
+        var backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+        defer backend.deinit();
+        var plan = try qwen3vl.Plan.init(alloc, &backend, projector.view(), &binding);
+        defer plan.deinit();
+        try plan.encode(patches, features);
+    } else {
+        var runtime = try qwen3vl.Runtime.init(alloc, projector.view(), &binding);
+        defer runtime.deinit();
+        try runtime.encode(patches, features);
+    }
+    const seconds = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_s;
+    std.debug.print("Projector ({s}): {d} patches -> {d} rows in {d:.3} s.\n", .{ if (use_metal) "metal" else "cpu", grid.patches(), rows, seconds });
+    // The bounds: the reference's own CPU and Metal projectors differ by
+    // 0.36 max abs / 4.6e-3 relative RMS on this fixture (vision.md).
+    try compareRows("projector rows", expected, features, 0.5, 1e-2);
+    _ = model_path;
+}
+
+fn compareRows(label: []const u8, expected: []const u8, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
+    var max_abs: f64 = 0;
+    var sum_sq: f64 = 0;
+    var ref_sq: f64 = 0;
+    for (actual, 0..) |a, i| {
+        const e: f32 = std.mem.bytesToValue(f32, expected[i * 4 ..][0..4]);
+        const d = @abs(@as(f64, e) - a);
+        max_abs = @max(max_abs, d);
+        sum_sq += d * d;
+        ref_sq += @as(f64, e) * e;
+    }
+    const rel_rms = @sqrt(sum_sq / ref_sq);
+    std.debug.print("{s}: max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0})\n", .{ label, max_abs, rel_rms, max_abs_bound, rel_rms_bound });
+    if (!(max_abs <= max_abs_bound) or !(rel_rms <= rel_rms_bound)) return error.VisionMismatch;
 }

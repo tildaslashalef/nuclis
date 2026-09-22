@@ -125,8 +125,9 @@ serves the first MiB of a larger file with the size stated, and Enter
 steers a running turn (Alt-Enter queues); `newfile` fell from 10–12 steps
 and 240–346 s to 8–9 steps and 138–190 s
 ([log](docs/engineering-log.md#agnt-14--three-measured-fixes-the-qwen-decoder-keeps-a-values-trailing-newline-read_file-serves-the-first-mib-enter-steers-a-running-turn-2026-09-22)).
-**Next: AGNT-16** (AGNT-14's three follow-ups, one unit; its section
-below), then AGNT-15.
+**Next: MODL-21** (the vision contract, image input, and the Qwen3.8
+projector; its section below), reordered ahead of the agent units on
+2026-09-22 (the user's call), then AGNT-16 and AGNT-15.
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so
 the model has nothing to do while a command runs in the background, no
@@ -220,12 +221,11 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: AGNT-16 → AGNT-15 → MODL-21 → MODL-22 →
-MODL-23 (decided 2026-09-21, the user's call: every agent unit lands
-before the vision engine, because the goal is efficient agentic work on
-this engine and each agent unit has a measurable before and after on the
-playground task list; AGNT-15's chat side lands first and its turn step
-waits for the projector). APPS-14 stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
+Order: MODL-21 → AGNT-16 → AGNT-15 → MODL-22 →
+MODL-23 (reordered 2026-09-22, the user's call: the vision engine lands
+first so AGNT-15's turn step has its projector and the image chip ships
+end to end in one unit; the 2026-09-21 order had every agent unit before
+it). APPS-14 stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
 register-reuse attention closed negative, so
@@ -262,9 +262,9 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
+| MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-16 | AGNT-14's follow-ups: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline (ordered 2026-09-22; see its section) | 1 |
 | AGNT-15 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip (was numbered AGNT-11 in the plan; that identifier is closed in the log) | 1 |
-| MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |

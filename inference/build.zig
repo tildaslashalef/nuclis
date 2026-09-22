@@ -16,6 +16,10 @@ pub fn build(b: *std.Build) void {
         mod.addCSourceFile(.{ .file = b.path("src/backends/metal/bridge.m"), .flags = &.{"-fno-objc-arc"} });
         mod.linkFramework("Foundation", .{});
         mod.linkFramework("Metal", .{});
+        // The image decoder is the other macOS bridge (vision/image.zig).
+        mod.addCSourceFile(.{ .file = b.path("src/vision/image_bridge.m"), .flags = &.{"-fno-objc-arc"} });
+        mod.linkFramework("CoreGraphics", .{});
+        mod.linkFramework("ImageIO", .{});
         mod.link_libc = true;
     }
     const tests = b.addTest(.{ .root_module = mod });

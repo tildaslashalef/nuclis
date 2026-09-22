@@ -75,6 +75,8 @@ pub const Snapshot = struct {
     position: usize,
     capacity: usize,
     layout_digest: u64,
+    spans: [max_spans]PositionSpan = undefined,
+    span_count: usize = 0,
 
     pub fn deinit(self: *Snapshot) void {
         self.gpa.free(self.memory);
@@ -85,6 +87,15 @@ pub const Snapshot = struct {
         return self.memory.len;
     }
 };
+
+/// A run of rows whose rotary positions do not advance one per row: an
+/// image span under multi-axis RoPE occupies `count` rows but moves the
+/// text position by `advance` (the larger grid side). Rows after it carry
+/// the rotary position `row - Σ (count - advance)` of the spans before them;
+/// the rows inside are positioned by the model adapter from the span's grid.
+pub const PositionSpan = struct { row: usize, count: usize, advance: usize };
+/// Spans a session can hold at once (images across a conversation).
+pub const max_spans = 64;
 
 pub const page = 16384;
 /// Every region starts on a 16-byte boundary so its F32 view is aligned and
@@ -128,6 +139,57 @@ pub const Session = struct {
     /// Slots the last forward wrote and that are still valid; any new chunk
     /// clears it. `restoreRow` is the only reader.
     row_checkpoint_rows: usize = 0,
+    /// Position spans in row order (`PositionSpan`); `span_count` are live.
+    spans: [max_spans]PositionSpan = undefined,
+    span_count: usize = 0,
+    /// `span_count` when `checkpoint` ran, restored by `rewind`.
+    checkpoint_span_count: usize = 0,
+
+    /// Records a span whose rows `[row, row + count)` are about to be
+    /// committed; spans are added in row order and never overlap.
+    pub fn addSpan(self: *Session, span: PositionSpan) !void {
+        if (span.count == 0 or span.advance > span.count or span.row + span.count > self.capacity) return error.InvalidShape;
+        if (self.span_count == max_spans) return error.TooManySpans;
+        if (self.span_count > 0) {
+            const last = self.spans[self.span_count - 1];
+            if (span.row < last.row + last.count) return error.InvalidShape;
+        }
+        if (span.row < self.position) return error.InvalidShape;
+        self.spans[self.span_count] = span;
+        self.span_count += 1;
+    }
+    /// The live spans, in row order.
+    pub fn positionSpans(self: *const Session) []const PositionSpan {
+        return self.spans[0..self.span_count];
+    }
+    /// The rotary position of a row outside every span: the row minus the
+    /// rows the spans before it did not advance. Inside a span the caller
+    /// positions the row from the span's grid; this returns the span's start.
+    pub fn ropePosition(self: *const Session, row: usize) usize {
+        var delta: usize = 0;
+        for (self.positionSpans()) |span| {
+            if (row < span.row) break;
+            if (row < span.row + span.count) return span.row - delta;
+            delta += span.count - span.advance;
+        }
+        return row - delta;
+    }
+    /// The span containing `row`, if any.
+    pub fn spanAt(self: *const Session, row: usize) ?PositionSpan {
+        for (self.positionSpans()) |span| if (row >= span.row and row < span.row + span.count) return span;
+        return null;
+    }
+    /// Drops the spans that start at or after `position`; a span straddling it
+    /// is refused (`SpanStraddlesPosition`), since no row of it can stay alone.
+    fn truncateSpans(self: *Session, position: usize) !void {
+        var keep: usize = 0;
+        while (keep < self.span_count) : (keep += 1) {
+            const span = self.spans[keep];
+            if (span.row >= position) break;
+            if (span.row + span.count > position) return error.SpanStraddlesPosition;
+        }
+        self.span_count = keep;
+    }
 
     pub fn init(gpa: std.mem.Allocator, layouts: []const Layout, capacity: usize, want_checkpoint: bool, row_checkpoints: usize) !Session {
         if (capacity == 0 or capacity > 32768 or layouts.len == 0 or layouts.len > 1024) return error.InvalidShape;
@@ -308,6 +370,7 @@ pub const Session = struct {
         };
         std.debug.assert(cursor == self.checkpoint_region.len);
         self.checkpoint_position = self.position;
+        self.checkpoint_span_count = self.span_count;
         self.row_checkpoint_rows = 0;
     }
     /// Returns to the last `checkpoint`: the recurrent copy is restored and
@@ -328,6 +391,7 @@ pub const Session = struct {
         };
         std.debug.assert(cursor == self.checkpoint_region.len);
         self.position = at;
+        self.span_count = self.checkpoint_span_count;
         self.row_checkpoint_rows = 0;
     }
     /// Returns to the state after row `slot` of the last verify batch: slot `r`
@@ -354,6 +418,7 @@ pub const Session = struct {
             },
         };
         std.debug.assert(cursor == self.row_slot_bytes);
+        self.span_count = self.checkpoint_span_count;
         self.position = at + slot + 1;
         for (self.layers, 0..) |layer, i| switch (layer) {
             .attention => {},
@@ -409,6 +474,7 @@ pub const Session = struct {
         const at = self.checkpoint_position orelse return error.NoCheckpoint;
         if (position < self.position and self.hasRecurrent()) return error.RecurrentStateNotRewindable;
         if (position < at or position > self.position) return error.RewindOutOfRange;
+        try self.truncateSpans(position);
         self.position = position;
         self.row_checkpoint_rows = 0;
     }
@@ -418,6 +484,8 @@ pub const Session = struct {
         self.status = .ready;
         self.checkpoint_position = null;
         self.row_checkpoint_rows = 0;
+        self.span_count = 0;
+        self.checkpoint_span_count = 0;
     }
 
     /// The used extent of each layer, in layer order: attention rows
@@ -455,7 +523,7 @@ pub const Session = struct {
             },
         };
         std.debug.assert(cursor == memory.len);
-        return .{ .gpa = gpa, .memory = memory, .position = self.position, .capacity = self.capacity, .layout_digest = self.layout_digest };
+        return .{ .gpa = gpa, .memory = memory, .position = self.position, .capacity = self.capacity, .layout_digest = self.layout_digest, .spans = self.spans, .span_count = self.span_count };
     }
     /// Copies a snapshot back and sets the position. The session must be
     /// ready (reset a failed one first) and byte-compatible: same capacity
@@ -485,12 +553,51 @@ pub const Session = struct {
         };
         if (cursor != snap.memory.len) return error.SnapshotMismatch;
         self.position = snap.position;
+        self.spans = snap.spans;
+        self.span_count = snap.span_count;
         // The rewrite leaves the region stale: it is only read after a fresh
         // `checkpoint`, and no recorded position may point at it.
         self.checkpoint_position = null;
         self.row_checkpoint_rows = 0;
     }
 };
+
+test "position spans: rope positions, truncation, rewind, and snapshots" {
+    const a = std.testing.allocator;
+    const layouts = [_]Layout{.{ .attention = .{ .key_row = 2, .value_row = 2, .precision = .f32 } }};
+    var s = try Session.init(a, &layouts, 64, true, 0);
+    defer s.deinit();
+    // Four text rows, a checkpoint, a 12-row image advancing by 4, then text.
+    try s.beginChunk(4);
+    try s.commitChunk(4);
+    try s.checkpoint();
+    try s.addSpan(.{ .row = 4, .count = 12, .advance = 4 });
+    try std.testing.expectError(error.InvalidShape, s.addSpan(.{ .row = 10, .count = 2, .advance = 1 }));
+    try s.beginChunk(14);
+    try s.commitChunk(14);
+    try std.testing.expectEqual(@as(usize, 3), s.ropePosition(3));
+    try std.testing.expectEqual(@as(usize, 4), s.ropePosition(4));
+    try std.testing.expectEqual(@as(usize, 4), s.ropePosition(15));
+    try std.testing.expectEqual(@as(usize, 8), s.ropePosition(16));
+    try std.testing.expectEqual(@as(usize, 9), s.ropePosition(17));
+    try std.testing.expect(s.spanAt(10) != null);
+    try std.testing.expect(s.spanAt(16) == null);
+    try std.testing.expectError(error.SpanStraddlesPosition, s.truncate(10));
+    var snap = try s.snapshot(a);
+    defer snap.deinit();
+    try s.addSpan(.{ .row = 18, .count = 6, .advance = 2 });
+    try s.beginChunk(6);
+    try s.commitChunk(6);
+    try std.testing.expectEqual(@as(usize, 12), s.ropePosition(24));
+    try s.rewind();
+    try std.testing.expectEqual(@as(usize, 4), s.position);
+    try std.testing.expectEqual(@as(usize, 0), s.positionSpans().len);
+    try s.restore(&snap);
+    try std.testing.expectEqual(@as(usize, 1), s.positionSpans().len);
+    try std.testing.expectEqual(@as(usize, 8), s.ropePosition(16));
+    s.reset();
+    try std.testing.expectEqual(@as(usize, 0), s.positionSpans().len);
+}
 
 fn snapshotRoundTrip(a: std.mem.Allocator) !void {
     const layouts = [_]Layout{ .{ .attention = .{ .key_row = 2, .value_row = 2, .precision = .f16 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } };

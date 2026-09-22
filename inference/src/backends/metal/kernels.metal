@@ -2865,3 +2865,120 @@ kernel void nu_argmax_final(device const float * values [[buffer(0)]],
     for (uint i = 0; i < p.partials; ++i) if (values[i] > v || (values[i] == v && indices[i] < idx)) { v = values[i]; idx = indices[i]; }
     result[0] = idx;
 }
+
+// ---- The vision projectors' kernels (docs/reference/vision.md) ----------
+// LayerNorm over `rows` rows of `width`: y = (x - mean) / sqrt(var + eps) · w
+// + b, the population variance in F32 over a two-pass reduction. One
+// 256-thread group per row; `output` may alias `input` exactly.
+struct LayerNormParams { uint width; uint in_stride; uint out_stride; float eps; };
+kernel void nu_layernorm(device const float * input [[buffer(0)]],
+                         device const float * weight [[buffer(1)]],
+                         device const float * bias [[buffer(2)]],
+                         device float * output [[buffer(3)]],
+                         constant LayerNormParams & p [[buffer(7)]],
+                         uint row [[threadgroup_position_in_grid]],
+                         uint tid [[thread_position_in_threadgroup]],
+                         uint lane [[thread_index_in_simdgroup]],
+                         uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float partial[8];
+    device const float * x = input + ulong(row) * p.in_stride;
+    float sum = 0;
+    for (uint i = tid; i < p.width; i += 256) sum += x[i];
+    sum = simd_sum(sum);
+    if (lane == 0) partial[sg] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total = 0;
+    for (uint i = 0; i < 8; ++i) total += partial[i];
+    const float mean = total / float(p.width);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float sq = 0;
+    for (uint i = tid; i < p.width; i += 256) { float d = x[i] - mean; sq += d * d; }
+    sq = simd_sum(sq);
+    if (lane == 0) partial[sg] = sq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float variance = 0;
+    for (uint i = 0; i < 8; ++i) variance += partial[i];
+    const float scale = rsqrt(variance / float(p.width) + p.eps);
+    device float * y = output + ulong(row) * p.out_stride;
+    // Every lane finished reading x before any write: rows may alias in place.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = tid; i < p.width; i += 256) y[i] = (x[i] - mean) * scale * weight[i] + bias[i];
+}
+
+// x[row · stride + i] += bias[i] over `rows` rows of `width`.
+struct BiasRowsParams { uint width, rows, stride; };
+kernel void nu_add_bias_rows(device float * x [[buffer(0)]], device const float * bias [[buffer(1)]],
+                             constant BiasRowsParams & p [[buffer(7)]], uint id [[thread_position_in_grid]]) {
+    if (id >= p.width * p.rows) return;
+    uint row = id / p.width, i = id % p.width;
+    x[ulong(row) * p.stride + i] += bias[i];
+}
+kernel void nu_gelu_inplace(device float * x [[buffer(0)]],
+                            constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i < p.count) x[i] = nu_gelu(x[i]);
+}
+
+// Bidirectional attention over `rows` rows (an image's patches): every row
+// attends to every row. Queries, keys, and values are `heads` heads of
+// `width` at `q_stride`/`kv_stride` per row; the output is `heads · width`
+// wide at `out_stride`. One 256-thread group per (row, head): the scores
+// over all keys land in threadgroup memory (at most NU_FULL_MAX_ROWS), the
+// softmax reduces there, and the value pass splits the keys across the
+// threads that share a dimension.
+#define NU_FULL_MAX_ROWS 4096
+struct AttentionFullParams { uint heads; uint width; uint rows; uint q_stride; uint kv_stride; uint out_stride; float scale; };
+kernel void nu_attention_full(device const float * queries [[buffer(0)]],
+                              device const float * keys [[buffer(1)]],
+                              device const float * values [[buffer(2)]],
+                              device float * output [[buffer(3)]],
+                              constant AttentionFullParams & p [[buffer(7)]],
+                              uint group [[threadgroup_position_in_grid]],
+                              uint tid [[thread_position_in_threadgroup]],
+                              uint lane [[thread_index_in_simdgroup]],
+                              uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float scores[NU_FULL_MAX_ROWS];
+    threadgroup float partial[8];
+    threadgroup float acc[256];
+    const uint row = group / p.heads, head = group % p.heads;
+    device const float * q = queries + ulong(row) * p.q_stride + ulong(head) * p.width;
+    device const float * k = keys + ulong(head) * p.width;
+    device const float * v = values + ulong(head) * p.width;
+    float local_max = -INFINITY;
+    for (uint j = tid; j < p.rows; j += 256) {
+        device const float * kj = k + ulong(j) * p.kv_stride;
+        float dot = 0;
+        for (uint d = 0; d < p.width; ++d) dot += q[d] * kj[d];
+        dot *= p.scale;
+        scores[j] = dot;
+        local_max = max(local_max, dot);
+    }
+    local_max = simd_max(local_max);
+    if (lane == 0) partial[sg] = local_max;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float m = partial[0];
+    for (uint i = 1; i < 8; ++i) m = max(m, partial[i]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float local_sum = 0;
+    for (uint j = tid; j < p.rows; j += 256) { float e = exp(scores[j] - m); scores[j] = e; local_sum += e; }
+    local_sum = simd_sum(local_sum);
+    if (lane == 0) partial[sg] = local_sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float denominator = 0;
+    for (uint i = 0; i < 8; ++i) denominator += partial[i];
+    const float inv = 1.0f / denominator;
+    // Value pass: thread t owns dimension t % width for the keys j ≡ t / width
+    // modulo the number of key groups that fit in 256 threads.
+    const uint key_groups = 256 / p.width;
+    const uint d = tid % p.width, kg = tid / p.width;
+    float sum = 0;
+    if (kg < key_groups) {
+        for (uint j = kg; j < p.rows; j += key_groups) sum += scores[j] * v[ulong(j) * p.kv_stride + d];
+    }
+    acc[tid] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < p.width) {
+        float total = 0;
+        for (uint g = 0; g < key_groups; ++g) total += acc[g * p.width + d];
+        output[ulong(row) * p.out_stride + ulong(head) * p.width + d] = total * inv;
+    }
+}
