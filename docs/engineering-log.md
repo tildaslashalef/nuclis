@@ -116,6 +116,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-13 | One specification: `spec.md` rewritten as a technical specification with the agent spec merged in | 2026-09-22 |
 | TERM-10 | Chat polish: the repaint tick, the frame, the operation rows, the banded diff, and the editor's shell and keys | 2026-09-21 / 2026-09-22 |
 | AGNT-13 | The system prompt as sections, measured: the playground task list, the guidelines that changed behaviour, the instructions file | 2026-09-22 |
+| AGNT-14 | Three measured fixes: the Qwen decoder keeps a value's trailing newline, `read_file` serves the first MiB, Enter steers a running turn | 2026-09-22 |
 
 ## Context
 
@@ -4515,3 +4516,70 @@ the bound and the way around it (a side fix for the tools, not this unit).
 `write_file` content never ends with a newline because the Qwen decoder trims every trailing `" \t\r\n"` before `</parameter>` (`qwen38.zig`, the `parseTool` value trim) rather than the one delimiter newline the template wraps a value in, so the model cannot write a final newline and, told by an instructions file that files end with one, spends two to four steps appending it: a profile fix of its own (a candidate side unit), and the reason the `write_file` guideline's newline clause did nothing. The replay rate rose from 5 of 115 steps (baseline) to 9–11 of ~110 on the sectioned prompts, unexplained and unmeasured here. The one-line scope slip and the miscount each happened once in 24 runs and
 were answered with a sentence; whether the sentence holds is the next
 pass's question.
+
+## AGNT-14 — Three measured fixes: the Qwen decoder keeps a value's trailing newline, `read_file` serves the first MiB, Enter steers a running turn (2026-09-22)
+
+**Outcome.** The three costs AGNT-13's task list put a number on, taken
+together and closed with one before-and-after on the same list.
+
+1. *The Qwen decoder keeps a value's trailing newline.* `parseTool` trimmed
+   every `" \t\r\n"` around a parameter value, so `write_file` content
+   could never end with a newline and the model, told by an instructions
+   file that files end with one, spent two to four steps appending it. The
+   reference's grammar (`common/chat.cpp:1249-1252`) makes the delimiters
+   exactly `>\n` and `\n</parameter>\n`; the decoder now removes those two
+   and nothing else (`delimited`), while the JSON typing looks at the
+   whitespace-trimmed text so ` 20 ` is still the number 20. A rendered call
+   round-trips its content byte for byte.
+2. *`read_file` over its bound serves the first MiB.*
+   `readFileAlloc(.limited(max_bytes + 1))` failed with `StreamTooLong` on a
+   larger file, so the specified "first 1 MiB" branch never ran and the model
+   retried with smaller counts. The size now comes from `stat` and the read
+   stays within the bound; the summary reads `first 1048576 of 1136020 bytes
+   only; use bash (head, wc, grep) for the rest`, and a directory is a typed
+   result.
+3. *Enter steers.* During a turn, Enter delivers the editor's text as a user
+   message before the model's next step, after the tool calls in flight
+   (`Agent.steer`, drained by `deliverSteering` after `execute`; at most
+   four pending, a fifth is `TooManySteered` and the bar says so); it is
+   shown and recorded where the model saw it, and what a turn ends without
+   delivering is reclaimed into the queue. Alt-Enter (`tui/keys.zig`: legacy
+   `ESC CR`/`ESC LF`, kitty and modifyOtherKeys Enter with the alt bit) keeps
+   the old behaviour, a follow-up after the turn. The bar shows `steering
+   ×N`. Escape is not bound: a lone ESC cannot be told from a split sequence
+   without a timer. Print mode has no steering. AGNT-12's job table was
+   dropped (see TODO's *Where we are* of 2026-09-22): on this engine the
+   model is the slow part, so backgrounding a command buys little and its
+   second tool would cost every turn.
+
+**Evidence.** `make check` green (495 tests: the delimiter cases and the
+round trip, the over-bound read, the steer-between-steps loop test with the
+leftover taken back, the three Alt-Enter encodings, the bar's count); the
+three vocabulary gates `make verify-changed` selected pass. The task list,
+same binary path and seeds as AGNT-13's `final` variant:
+
+| task | before (`final`) | after (`agnt14`) |
+| --- | --- | --- |
+| newfile s1 | 10 steps, 1 error, 346 s, the newline detour (identical-strings edit, `printf >>`, `od -c`) | 8 steps, 0 errors, 190 s, no detour |
+| newfile s2 | 12 steps, 2 errors, 240 s | 9 steps, 1 error (a guessed `tests/test_circle.py`), 138 s |
+| big s1 / s2 | 4 steps each, the model went to the shell at once | 4 steps each, identical |
+
+The `big` task no longer exercises the read bound because AGNT-13's
+guideline sends the model to the shell first; the unit test carries that
+fix. The harness capture `.zig-cache/tui/steer.txt`: "Run scripts/slow.sh
+and tell me its last line", then "Also say hello at the very end of your
+answer" typed twelve seconds in — the bar reads `step 2/16 │ steering ×1`
+while the command runs, the steered row appears after the `Bash` row, and
+the answer ends with `hello`.
+
+**Files.** `inference/src/profiles/qwen38.zig`, `src/agent/tools/read_file.zig`,
+`src/agent/loop.zig`, `src/agent/root.zig`, `src/tui/keys.zig`,
+`src/tui/editor.zig`, `src/tui/status.zig`, `src/help.zig`, `docs/spec.md`
+§ 7.2 and § 7.6, `docs/reference/tool-calling.md`, `TODO.md`, and this log.
+
+**Remaining.** Muse's ATEM parser has its own delimiters and trims as
+before; it was not measured. A steered message is delivered only at a step
+boundary, so during a long single step (a 4,000-token reasoning) it waits;
+cancelling with Ctrl-C reclaims it into the queue like any other. The
+guessed test-file read on `newfile` seed 2 is a habit the prompt does not
+name yet.

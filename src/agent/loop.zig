@@ -201,6 +201,13 @@ pub const Agent = struct {
 
     /// Reusable `Profile.Message` scratch for one step.
     messages: std.ArrayList(Profile.Message) = .empty,
+    /// Messages typed during the turn, delivered as user messages before
+    /// the next model step (`deliverSteering`). Owned; what the turn did
+    /// not deliver is the driver's to take back (`takeSteering`).
+    steering: std.ArrayList([]u8) = .empty,
+
+    /// Steered messages a turn holds at once; a host constant.
+    pub const max_steering: usize = 4;
 
     pub fn init(alloc: Allocator, io: std.Io, workspace: tools.Workspace, model: Model, events: Events, budget: usize, prompt: system_prompt.Options) !Agent {
         var agent: Agent = .{
@@ -233,9 +240,42 @@ pub const Agent = struct {
         self.messages.deinit(self.alloc);
         self.clearCalls();
         self.calls.deinit(self.alloc);
+        for (self.steering.items) |text| self.alloc.free(text);
+        self.steering.deinit(self.alloc);
         self.thinking.deinit();
         self.answer.deinit();
         self.* = undefined;
+    }
+
+    /// Keeps `text` for delivery before the next model step of the turn in
+    /// progress. `TooManySteered` past `max_steering`.
+    pub fn steer(self: *Agent, text: []const u8) !void {
+        if (self.steering.items.len >= max_steering) return error.TooManySteered;
+        const owned = try self.alloc.dupe(u8, text);
+        errdefer self.alloc.free(owned);
+        try self.steering.append(self.alloc, owned);
+    }
+
+    pub fn pendingSteering(self: *const Agent) usize {
+        return self.steering.items.len;
+    }
+
+    /// The steered messages the turn ended without delivering, in order;
+    /// the caller owns the slice and its strings.
+    pub fn takeSteering(self: *Agent) Allocator.Error![][]u8 {
+        return self.steering.toOwnedSlice(self.alloc);
+    }
+
+    /// Appends every pending steered message as a user message, shown and
+    /// recorded where the model sees it: after the step's tool results.
+    fn deliverSteering(self: *Agent) !void {
+        for (self.steering.items) |text| {
+            try self.appendItem(.user, text, "", &.{}, null);
+            try self.events.send(self.events.context, .{ .user = text });
+            try self.events.record(self.events.context, .{ .user = text });
+        }
+        for (self.steering.items) |text| self.alloc.free(text);
+        self.steering.clearRetainingCapacity();
     }
 
     /// Forgets the conversation but keeps the engine usable as it is: the next
@@ -356,6 +396,7 @@ pub const Agent = struct {
             try self.appendItem(.assistant, self.answer.written(), self.thinking.written(), calls, null);
             if (calls.len == 0) return .done;
             try self.execute(calls);
+            try self.deliverSteering();
         }
     }
 
@@ -1086,6 +1127,49 @@ const Fixture = struct {
 const read_hello: Profile.ToolCall = .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"hello.txt\"}" };
 const read_a: Profile.ToolCall = .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"a.txt\"}" };
 const write_new: Profile.ToolCall = .{ .id = 0, .name = "write_file", .arguments = "{\"path\":\"new.txt\",\"content\":\"hello\"}" };
+
+test "a steered message lands after the step's tool results; one left over is taken back" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "hello.txt", .data = "hi there" });
+    var stub: Stub = .{
+        .answers = &.{ "Reading.\n", "Done." },
+        .calls = &.{&.{read_hello}},
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    // Typed while the first step ran: delivered after its tool result.
+    try agent.steer("also count the words");
+    try testing.expectEqual(@as(usize, 1), agent.pendingSteering());
+    const stop = try agent.turn("what is in hello.txt?");
+    try testing.expectEqual(Stop.done, stop);
+    // user, assistant(call), tool, user(steered), assistant(answer).
+    try testing.expectEqual(@as(usize, 5), agent.history.items.len);
+    try testing.expectEqual(Profile.Role.tool, agent.history.items[2].role);
+    try testing.expectEqual(Profile.Role.user, agent.history.items[3].role);
+    try testing.expectEqualStrings("also count the words", agent.history.items[3].content);
+    try testing.expectEqual(@as(usize, 0), agent.pendingSteering());
+
+    // Steered after the last step: nothing delivers it, the driver takes it back.
+    try agent.steer("one more");
+    try testing.expectError(error.TooManySteered, blk: {
+        try agent.steer("2");
+        try agent.steer("3");
+        try agent.steer("4");
+        break :blk agent.steer("5");
+    });
+    const left = try agent.takeSteering();
+    defer {
+        for (left) |text| alloc.free(text);
+        alloc.free(left);
+    }
+    try testing.expectEqual(@as(usize, 4), left.len);
+    try testing.expectEqualStrings("one more", left[0]);
+    try testing.expectEqual(@as(usize, 0), agent.pendingSteering());
+}
 
 test "one call then an answer: the loop executes the call and sends the result back" {
     const alloc = testing.allocator;

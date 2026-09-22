@@ -204,7 +204,7 @@ pub const Editor = struct {
         }
         switch (key) {
             .text => |t| try self.insert(t),
-            .enter => return .submit,
+            .enter, .alt_enter => return .submit,
             .newline => try self.insert("\n"),
             .backspace => try self.backspace(),
             .delete => try self.deleteForward(),

@@ -315,7 +315,8 @@ fn writeJsonString(w: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void
 /// `</tool_call>` control tokens — into an owned `ToolCall`, or null when the
 /// body is not one complete, well-formed call. This is the inverse of
 /// `renderCall`: a value that parses as JSON keeps its type, anything else is
-/// a literal string, and the delimiter whitespace around a value is trimmed.
+/// a literal string, and only the template's delimiters around a value are
+/// removed (`delimited`), so content keeps its own trailing newline.
 pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.Error!?profiles.ToolCall {
     const function_marker = "<function=";
     const parameter_marker = "<parameter=";
@@ -341,7 +342,7 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
         const value_end = std.mem.indexOfPos(u8, body, value_start, parameter_close) orelse break;
         if (key.len > 0) {
             json.objectField(key) catch return error.OutOfMemory;
-            try writeArgumentValue(&json, alloc, std.mem.trim(u8, body[value_start..value_end], " \t\r\n"));
+            try writeArgumentValue(&json, alloc, delimited(body[value_start..value_end]));
         }
         cursor = value_end + parameter_close.len;
     }
@@ -353,9 +354,22 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
 
 /// A parameter value on the wire: JSON when it parses as JSON, a literal
 /// string otherwise — the template's own rule.
+/// A parameter value with the template's delimiters removed — one newline
+/// after `>` and one before `</parameter>`, the reference's grammar — and
+/// nothing else: a value keeps its own leading spaces and trailing newline.
+fn delimited(raw: []const u8) []const u8 {
+    var text = raw;
+    if (std.mem.startsWith(u8, text, "\n")) text = text[1..];
+    if (std.mem.endsWith(u8, text, "\n")) text = text[0 .. text.len - 1];
+    return text;
+}
+
+/// The JSON typing looks at the whitespace-trimmed text, so ` 20 ` is the
+/// number 20; a value that is not JSON is written as the string it is.
 fn writeArgumentValue(json: *std.json.Stringify, alloc: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error!void {
-    if (raw.len > 0) {
-        if (std.json.parseFromSlice(std.json.Value, alloc, raw, .{})) |parsed| {
+    const typed = std.mem.trim(u8, raw, " \t\r\n");
+    if (typed.len > 0) {
+        if (std.json.parseFromSlice(std.json.Value, alloc, typed, .{})) |parsed| {
             defer parsed.deinit();
             json.write(parsed.value) catch return error.OutOfMemory;
             return;
@@ -498,6 +512,37 @@ test "parseTool round-trips a rendered call and rejects malformed bodies" {
     try std.testing.expect((try parseTool(alloc, "no markers here")) == null);
     try std.testing.expect((try parseTool(alloc, "<parameter=x>1</parameter>")) == null);
     try std.testing.expect((try parseTool(alloc, "<function=>\n")) == null);
+}
+
+test "parseTool strips only the delimiters: a value keeps its trailing newline and leading spaces, a padded number is still a number" {
+    const alloc = std.testing.allocator;
+    const body = "<function=write_file>\n<parameter=path>\nnote.txt\n</parameter>\n<parameter=content>\n  indented\nlast line\n\n</parameter>\n<parameter=count>\n 20 \n</parameter>\n</function>";
+    const parsed = (try parseTool(alloc, body)).?;
+    defer {
+        alloc.free(parsed.name);
+        alloc.free(parsed.arguments);
+    }
+    try std.testing.expectEqualStrings("{\"path\":\"note.txt\",\"content\":\"  indented\\nlast line\\n\",\"count\":20}", parsed.arguments);
+
+    // A rendered call round-trips its content byte for byte, newline included.
+    const calls = [_]profiles.ToolCall{.{ .id = 1, .name = "write_file", .arguments = "{\"path\":\"n.txt\",\"content\":\"a\\n\"}" }};
+    const messages = [_]Message{
+        .{ .role = .user, .content = "write" },
+        .{ .role = .assistant, .content = "", .tool_calls = &calls },
+        .{ .role = .tool, .content = "ok", .tool_call_id = 1 },
+        .{ .role = .user, .content = "again" },
+    };
+    const prompt = try render(alloc, &messages, &.{}, .off, .{});
+    defer alloc.free(prompt);
+    const open_marker = "<tool_call>\n";
+    const open = std.mem.indexOf(u8, prompt, open_marker).? + open_marker.len;
+    const close = std.mem.indexOf(u8, prompt, "</tool_call>").?;
+    const back = (try parseTool(alloc, prompt[open..close])).?;
+    defer {
+        alloc.free(back.name);
+        alloc.free(back.arguments);
+    }
+    try std.testing.expectEqualStrings(calls[0].arguments, back.arguments);
 }
 
 test "invalid conversations and bounded rendering return typed errors" {

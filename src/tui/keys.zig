@@ -16,6 +16,10 @@ const std = @import("std");
 pub const Key = union(enum) {
     text: []const u8,
     enter,
+    /// Alt-Enter: legacy `ESC CR`/`ESC LF`, or the kitty/modifyOtherKeys
+    /// form of Enter with the alt bit. Submits when idle; during a turn it
+    /// queues the text for after the turn where Enter steers.
+    alt_enter,
     newline,
     backspace,
     delete,
@@ -62,6 +66,7 @@ pub fn next(bytes: []const u8) ?Decoded {
 
 fn escape(bytes: []const u8) ?Decoded {
     if (bytes.len < 2) return null; // lone ESC or split sequence: wait
+    if (bytes[1] == '\r' or bytes[1] == '\n') return .{ .key = .alt_enter, .consumed = 2 };
     if (bytes[1] != '[' and bytes[1] != 'O') return .{ .key = .ignored, .consumed = 2 }; // Alt+key
     // CSI: parameters (0x30-0x3f), intermediates (0x20-0x2f), final (0x40-0x7e).
     var i: usize = 2;
@@ -118,9 +123,11 @@ fn escape(bytes: []const u8) ?Decoded {
 }
 
 const shift: u32 = 1;
+const alt: u32 = 2;
 const ctrl: u32 = 4;
 
 fn kitty(code: u32, modifiers: u32) Key {
+    if (modifiers == alt and code == 13) return .alt_enter;
     const plain = modifiers & ~(shift | ctrl) == 0;
     if (!plain) return .ignored; // alt/super/hyper/meta combinations
     if (modifiers & ctrl != 0) {
@@ -181,7 +188,11 @@ test "kitty protocol distinguishes shift+enter and encodes ctrl letters" {
     try std.testing.expectEqual(Key{ .ctrl = 'c' }, next("\x1b[99;5u").?.key);
     try std.testing.expectEqual(Key{ .ctrl = 'j' }, next("\x1b[106;5u").?.key);
     try std.testing.expectEqual(Key{ .ctrl = 'n' }, next("\x1b[110;5:1u").?.key); // with event type
-    try std.testing.expectEqual(Key.ignored, next("\x1b[13;3u").?.key); // alt+enter
+    try std.testing.expectEqual(Key.alt_enter, next("\x1b[13;3u").?.key); // alt+enter (kitty)
+    try std.testing.expectEqual(Key.alt_enter, next("\x1b[27;3;13~").?.key); // alt+enter (modifyOtherKeys)
+    try std.testing.expectEqual(Key.alt_enter, next("\x1b\r").?.key); // alt+enter (legacy)
+    try std.testing.expectEqual(@as(usize, 2), next("\x1b\r").?.consumed);
+    try std.testing.expectEqual(Key.ignored, next("\x1b[13;7u").?.key); // ctrl+alt+enter stays unused
     try std.testing.expectEqual(Key.newline, next("\x1b[27;2;13~").?.key); // xterm modifyOtherKeys
 }
 

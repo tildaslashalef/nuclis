@@ -27,7 +27,12 @@ The [upstream template](https://huggingface.co/Qwen/Qwen3.8-27B/raw/main/chat_te
 places JSON tool declarations inside a system tools block. Calls use an outer
 `<tool_call>` block, an inner `<function=NAME>` block, and one
 `<parameter=NAME>` block per argument. String values are literal content;
-non-string values are JSON. This is not a Hermes JSON call payload.
+non-string values are JSON. The value's delimiters are exactly one newline
+after `>` and one before `</parameter>` (the reference's grammar,
+`common/chat.cpp`, read 2026-09-22); the decoder removes those two and
+nothing else, so a file's content keeps its trailing newline and its first
+line's indentation, while the JSON typing looks at the whitespace-trimmed
+text (` 20 ` is the number 20). This is not a Hermes JSON call payload.
 Consecutive logical tool messages become response blocks in one user turn.
 Assistant history preserves structured calls separately from answer and
 reasoning; calls do not serialize a call ID. Thinking can remain across

@@ -165,7 +165,9 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try samplingOptions(out, sty);
 
     try heading(out, sty, "Keys:");
-    try row(out, sty, "Enter", "send; while a turn runs, queue it for the next one");
+    try row(out, sty, "Enter", "send; while a turn runs, steer it: the text reaches");
+    try more(out, "the model before its next step");
+    try row(out, sty, "Alt-Enter", "while a turn runs, queue the text for after it");
     try row(out, sty, "Shift-Enter, Ctrl-J", "newline");
     try row(out, sty, "Up, Down", "move in the input; history at its first and last row");
     try row(out, sty, "Tab", "complete a /command or an @path, else fold thinking");

@@ -242,6 +242,7 @@ const Ui = struct {
             bar.generated = self.stats.generated;
             bar.replayed = self.stats.replayed;
             bar.step = @min(self.agent.steps_done + 1, self.agent.budget);
+            bar.steering = self.agent.pendingSteering();
             bar.budget = self.agent.budget;
         }
         return bar.paint(a, .{
@@ -573,10 +574,15 @@ const Ui = struct {
                     else => {},
                 }
             }
+            // Alt-Enter queues for after the turn; Enter steers: the text
+            // reaches the model before its next step, after the tool calls
+            // in flight.
+            if (key == .alt_enter) {
+                try self.queue();
+                return;
+            }
             switch (try self.ed.handleKey(key)) {
-                // Enter queues rather than sends: the turn in flight finishes
-                // first, and the message goes out as the next one.
-                .submit => try self.queue(),
+                .submit => try self.steer(),
                 .none => {},
                 // The folds apply to what is rendered next; the rows already
                 // written are rewritten when the turn is over.
@@ -715,6 +721,21 @@ const Ui = struct {
         self.ed.clear();
         try self.comp.set(&.{});
         self.status = "queued";
+    }
+
+    /// Hands the editor's text to the turn in progress for its next step.
+    /// A full steering queue keeps the text in the editor and says so.
+    fn steer(self: *Ui) !void {
+        if (self.ed.isEmpty()) return;
+        self.agent.steer(self.ed.text()) catch |err| switch (err) {
+            error.TooManySteered => {
+                self.status = "steering queue full";
+                return;
+            },
+            else => return err,
+        };
+        self.ed.clear();
+        try self.comp.set(&.{});
     }
 
     /// Opens the `/resume` picker from the sessions of this workspace. The
@@ -1001,6 +1022,9 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8) !voi
     ui.status = "prefill";
     interrupt.clear();
     defer ui.busy = false;
+    // Steered text the turn ended without delivering goes out as the next
+    // message, whatever ended the turn.
+    defer reclaimSteering(ui) catch {};
     const stop = try ui.agent.turn(user);
     ui.status = switch (stop) {
         .done => "ready",
@@ -1010,6 +1034,21 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8) !voi
     if (terminal.shouldNotify(ui.focused, ui.notify, stop != .cancelled)) {
         try ui.term.notify("nuclis: response ready");
     }
+}
+
+/// Moves the steered messages a turn left undelivered into the queue, joined
+/// by blank lines, so they go out as the next message.
+fn reclaimSteering(ui: *Ui) !void {
+    const left = try ui.agent.takeSteering();
+    defer {
+        for (left) |text| ui.alloc.free(text);
+        ui.alloc.free(left);
+    }
+    for (left) |text| {
+        if (ui.queued.items.len > 0) try ui.queued.appendSlice(ui.alloc, "\n\n");
+        try ui.queued.appendSlice(ui.alloc, text);
+    }
+    if (left.len > 0) ui.status = "queued";
 }
 
 /// Executes a slash command. Everything it can do, a key can do too (the

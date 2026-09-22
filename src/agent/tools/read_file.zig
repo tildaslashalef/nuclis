@@ -44,14 +44,26 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     };
     defer alloc.free(abs);
 
-    // One byte past the bound distinguishes "exactly at the limit" from
-    // "larger", without reading the whole file.
-    const bytes = workspace.dir.readFileAlloc(workspace.io, abs, alloc, .limited(max_bytes + 1)) catch |err| {
+    // The first `max_bytes` of a larger file are served, never a refusal:
+    // the size comes from `stat`, so the read itself stays within the bound.
+    const file = workspace.dir.openFile(workspace.io, abs, .{}) catch |err| {
         return root.fail(alloc, "read_file: {s}: {s}", .{ parsed.value.path, @errorName(err) });
     };
+    defer file.close(workspace.io);
+    const stat = file.stat(workspace.io) catch |err| {
+        return root.fail(alloc, "read_file: {s}: {s}", .{ parsed.value.path, @errorName(err) });
+    };
+    if (stat.kind == .directory) return root.fail(alloc, "read_file: {s} is a directory", .{parsed.value.path});
+    const size: usize = @intCast(stat.size);
+    const byte_truncated = size > max_bytes;
+    const bytes = try alloc.alloc(u8, @min(size, max_bytes));
     defer alloc.free(bytes);
-    const byte_truncated = bytes.len > max_bytes;
-    const content = if (byte_truncated) bytes[0..max_bytes] else bytes;
+    var buffer: [16 * 1024]u8 = undefined;
+    var reader = file.reader(workspace.io, &buffer);
+    const read_len = reader.interface.readSliceShort(bytes) catch |err| {
+        return root.fail(alloc, "read_file: {s}: {s}", .{ parsed.value.path, @errorName(err) });
+    };
+    const content = bytes[0..read_len];
     if (!std.unicode.utf8ValidateSlice(content)) {
         return root.fail(alloc, "read_file: {s} is not valid UTF-8 text", .{parsed.value.path});
     }
@@ -80,14 +92,14 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         line += 1;
     }
     const total = if (content.len == 0) 0 else std.mem.count(u8, body, "\n") + 1;
-    const summary = try summarize(alloc, offset, taken, total, line_truncated, byte_truncated);
+    const summary = try summarize(alloc, offset, taken, total, line_truncated, if (byte_truncated) size else null);
     errdefer alloc.free(summary);
     return .{ .text = try out.toOwnedSlice(alloc), .truncated = byte_truncated or line_truncated, .summary = summary, .lines = .{ .first = offset, .total = total } };
 }
 
 /// The detail row: the range shown, the file's length, and, when the read
 /// stopped early, the offset that continues it.
-fn summarize(alloc: std.mem.Allocator, offset: usize, taken: usize, total: usize, line_truncated: bool, byte_truncated: bool) std.mem.Allocator.Error![]u8 {
+fn summarize(alloc: std.mem.Allocator, offset: usize, taken: usize, total: usize, line_truncated: bool, file_size: ?usize) std.mem.Allocator.Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
     if (taken == 0) {
@@ -96,7 +108,7 @@ fn summarize(alloc: std.mem.Allocator, offset: usize, taken: usize, total: usize
         try out.print(alloc, "lines {d} to {d} of {d}", .{ offset, offset + taken - 1, total });
     }
     if (line_truncated) try out.print(alloc, " · truncated, continue with offset={d}", .{offset + taken});
-    if (byte_truncated) try out.print(alloc, " · first {d} bytes only", .{max_bytes});
+    if (file_size) |size| try out.print(alloc, " · first {d} of {d} bytes only; use bash (head, wc, grep) for the rest", .{ max_bytes, size });
     return out.toOwnedSlice(alloc);
 }
 
@@ -150,6 +162,29 @@ test "read_file returns the addressed lines and marks truncation" {
     try testing.expectEqualStrings("no lines at offset 1; the file has 0", empty.summary.?);
 
     try testing.expectError(error.OutsideWorkspace, @as(root.Workspace, w.ws).resolve(testing.allocator, "/"));
+}
+
+test "a file over the byte bound serves its first MiB with the size in the summary" {
+    const alloc = testing.allocator;
+    var f = testWorkspace();
+    defer alloc.free(f.root_path);
+    defer f.tmp.cleanup();
+    // One byte over the bound: 32-byte lines, the last one cut by the bound.
+    const line = "0123456789abcdef0123456789abcde\n";
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(alloc);
+    while (data.items.len < max_bytes + 1) try data.appendSlice(alloc, line);
+    try f.tmp.dir.writeFile(testing.io, .{ .sub_path = "big.txt", .data = data.items });
+
+    var result = try tool.run(f.ws, alloc, "{\"path\":\"big.txt\",\"count\":2}");
+    defer result.deinit(alloc);
+    try testing.expect(!result.is_error);
+    try testing.expect(result.truncated);
+    try testing.expect(std.mem.startsWith(u8, result.text, line[0 .. line.len - 1]));
+    const expected = try std.fmt.allocPrint(alloc, "first {d} of {d} bytes only", .{ max_bytes, data.items.len });
+    defer alloc.free(expected);
+    try testing.expect(std.mem.indexOf(u8, result.summary.?, expected) != null);
+    try testing.expect(std.mem.indexOf(u8, result.summary.?, "use bash") != null);
 }
 
 test "read_file reports bad arguments, missing files, and non-UTF-8 as results" {

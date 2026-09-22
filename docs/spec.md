@@ -357,9 +357,13 @@ one command; the evaluation CLI stays separate.
   `Bash(cmd)` block with the output under it, bounded to 40 rows, and the
   full output goes to the model as the next message, `$ cmd` first. `!!`
   runs and shows without sending. Both forms enter the prompt history.
-- The editor stays live while a turn runs; Enter queues the message and
-  it is submitted when the turn ends. A queued message is not in the
-  transcript until it is sent.
+- The editor stays live while a turn runs. Enter *steers*: the text is
+  delivered as a user message before the model's next step, after the
+  tool calls in flight, and appears in the transcript and the session
+  where the model saw it; at most four wait at once, and what a turn ends
+  without delivering goes out as the next message. Alt-Enter *queues* the
+  text for after the turn; a queued message is not in the transcript
+  until it is sent. Print mode has no steering.
 - The input box is framed; the frame's colour is the reasoning effort and
   its top edge carries the spinner while a turn runs.
 
@@ -468,7 +472,7 @@ marked; exceeding a limit is a typed result, not an abort.
 
 | Tool | Contract |
 | --- | --- |
-| `read_file` | a line-addressed region: offset and count, 200 lines by default, at most 2,000 lines or 1 MiB; the result says where to continue; non-UTF-8 is a typed error |
+| `read_file` | a line-addressed region: offset and count, 200 lines by default, at most 2,000 lines; a file over 1 MiB serves its first MiB with the size stated and the shell named for the rest; the result says where to continue; non-UTF-8 is a typed error |
 | `write_file` | create or replace a UTF-8 text file, at most 1 MiB, by atomic replacement |
 | `edit_file` | replace one exact, unique, non-empty sequence; zero or several matches change nothing |
 | `glob` | one pattern (`*`, `?`, classes, `**`); hidden entries only when named; at most 200 results in stable order |

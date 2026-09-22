@@ -63,6 +63,8 @@ pub const Status = struct {
     /// turn runs. `budget == 0` means the surface has no loop to report.
     step: usize = 0,
     budget: usize = 0,
+    /// Messages typed during the turn and waiting for its next step.
+    steering: usize = 0,
     /// The turn had to replay the conversation into a fresh session.
     replayed: bool = false,
     /// Mean accepted drafts per verify batch, from the turn's engine timing;
@@ -124,6 +126,8 @@ pub const Status = struct {
         }
         if (self.busy and self.budget > 0)
             try left.writer.print(" {s} step {d}/{d}", .{ gl.table_bar, self.step, self.budget });
+        if (self.busy and self.steering > 0)
+            try left.writer.print(" {s} steering ×{d}", .{ gl.table_bar, self.steering });
         try left.writer.print(" {s} {s} ctx {s}{d}/{d}{s} {s} {s} in {d} out {d} {s} {s} pp ", .{
             gl.table_bar, gl.context, th.paint(.accent),  self.context_used, self.context_capacity, theme.fg_default,
             gl.table_bar, gl.tokens,  self.prompt_tokens, self.generated,    gl.table_bar,          gl.prefill,
@@ -332,6 +336,10 @@ test "a busy bar shows the loop's step against its budget" {
     status.apply(.{ .status = .{ .phase = .prefill, .position = 10, .target = 100 } });
     const row = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } });
     try testing.expect(std.mem.indexOf(u8, row, "step 3/16") != null);
+    try testing.expect(std.mem.indexOf(u8, row, "steering") == null);
+    status.steering = 2;
+    const steering_row = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, steering_row, "steering ×2") != null);
     // An idle bar carries no step: the loop is not running.
     const idle: Status = .{};
     const idle_row = try painted(a, idle, .{ .width = 160, .th = .{ .kind = .plain } });

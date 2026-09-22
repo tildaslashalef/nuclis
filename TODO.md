@@ -119,7 +119,13 @@ Five variants were measured; the shipped text removed the regex-to-`grep`,
 `pytest`, and `cd` habits and cut the answer length a fifth, at 23–24 of
 24 passes on every variant
 ([log](docs/engineering-log.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22)).
-**Next: AGNT-14** (three measured fixes, one unit; its section below).
+AGNT-14 closed on 2026-09-22: the Qwen decoder strips only the two
+delimiter newlines (a value keeps its trailing newline), `read_file`
+serves the first MiB of a larger file with the size stated, and Enter
+steers a running turn (Alt-Enter queues); `newfile` fell from 10–12 steps
+and 240–346 s to 8–9 steps and 138–190 s
+([log](docs/engineering-log.md#agnt-14--three-measured-fixes-the-qwen-decoder-keeps-a-values-trailing-newline-read_file-serves-the-first-mib-enter-steers-a-running-turn-2026-09-22)).
+**Next: AGNT-15** (images in the chat; its section below).
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so
 the model has nothing to do while a command runs in the background, no
@@ -213,11 +219,11 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: AGNT-14 → AGNT-15 → MODL-21 → MODL-22 →
+Order: AGNT-15 → MODL-21 → MODL-22 →
 MODL-23 (decided 2026-09-21, the user's call: every agent unit lands
 before the vision engine, because the goal is efficient agentic work on
 this engine and each agent unit has a measurable before and after on the
-playground task list; AGNT-11's chat side lands first and its turn step
+playground task list; AGNT-15's chat side lands first and its turn step
 waits for the projector). APPS-14 stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -246,9 +252,7 @@ and the ternary matvec keeps its current arithmetic
 ([bench.md § Bonsai 2](docs/reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18))
 — but no unit carries them. The performance group has no unit left; the small-batch tile, the split-K matvec, the
 long-context attention, and the fused norms led the order and closed below
-their targets. AGNT-12
-(background commands) and
-APPS-14 (teacher-forced `eval`) are drafted for decision, not ordered.
+their targets. APPS-14 (teacher-forced `eval`) is drafted for decision, not ordered.
 **REPO-09 and REPO-10 were ordered on 2026-09-21** (the user's call): the
 gate registry and the benchmark workloads are written once against the
 finished set of families and records, so they follow ENGN-17 rather than
@@ -257,7 +261,6 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| AGNT-14 | Three measured fixes: the decoder's trailing newline, `read_file`'s bound, and steering (ordered 2026-09-22; see its section) | 1 |
 | AGNT-15 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip (was numbered AGNT-11 in the plan; that identifier is closed in the log) | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
@@ -645,61 +648,6 @@ K-quant). Memory: the 896 × 896 grid is 4,096 patches before the shuffle.
 **Acceptance.** Trace within tolerance on both executors; greedy tokens;
 the Muse compare targets unchanged; the mask fixture; captions recorded;
 `make check`.
-
-## AGNT-14 — Three measured fixes: the decoder's trailing newline, `read_file`'s bound, and steering (ordered 2026-09-22)
-
-The three costs AGNT-13's task list put a number on, taken together in one
-session and closed with one before-and-after on the same list.
-
-**1. The Qwen decoder keeps a value's trailing newline.** `parseTool` in
-`inference/src/profiles/qwen38.zig` trims every `" \t\r\n"` around a
-parameter value, so `write_file` content can never end with a newline; the
-`newfile` task then spends two to four steps appending one (an
-identical-strings `edit_file`, `printf >>`, an `od -c` check). The
-reference's grammar (`common/chat.cpp:1249-1252`, read 2026-09-22) makes
-the delimiters exactly `>\n` and `\n</parameter>\n`: the value is
-everything between. Change: strip one leading `\n` and one trailing `\n`
-from the raw value and nothing else; keep the JSON typing on the
-whitespace-trimmed text so `<parameter=count> 20 </parameter>` still types
-as 20. Tests: a content ending in `\n` round-trips through `renderCall`
-and `parseTool`; leading spaces on the first line survive; the numeric case.
-Muse's ATEM parser has its own delimiters (`muse_glimmer.zig:355`) and is
-not touched; Gemma's calls are JSON.
-
-**2. `read_file` over its bound truncates as specified.**
-`readFileAlloc(.limited(max_bytes + 1))` fails with `StreamTooLong` on a
-file over 1 MiB, so the "first 1 MiB" branch never runs and the model
-retried `data/big.txt` with smaller counts three times. Change: read
-`.limited(max_bytes)` and take the size from `stat`, so the region
-requested by `offset`/`count` is served from the first MiB with the summary
-`lines 1 to 200 of 32,000 · first 1,048,576 of 1,136,020 bytes only`; a
-line-addressed read past the kept bytes says so. Test: a 1 MiB + 1 file.
-
-**3. Steering.** Enter during a turn delivers the text as a user message
-before the next model step, after the tool calls in flight; Alt-Enter
-keeps today's behaviour (follow-up after the turn). `Agent` gains
-`steer(text)` (owned, at most 4 pending, a fifth is refused with a status)
-and drains the queue in `steps()` after `execute` and before the next
-`runStep`, emitting the `.user` event and record so the transcript and the
-session show it where the model saw it; a steered message left over when
-the turn ends without another step returns to the driver (`takeSteering`)
-and is queued as before. `tui/keys.zig` decodes Alt-Enter (legacy
-`ESC CR`/`ESC LF`, kitty code 13 with the alt bit) as `.alt_enter`; the
-editor treats it as a submit; the driver's busy branch routes Enter to
-`steer` and Alt-Enter to `queue`. The status bar's message reads
-`steering ×N` while any is pending. Escape is not bound: a lone ESC cannot
-be told from a split sequence without a timer. Print mode has no steering.
-Tests: a stub-model loop test where a steer lands between two steps and
-one is left over; the key decoder's two forms.
-
-**Check.** `make check`; `make agent-eval VARIANT=agnt14 ARGS='--tasks newfile'`
-and `--tasks big` on seeds 1 and 2 against the `final` variant of AGNT-13
-(newfile 10–12 steps, 240–346 s; big 3–4 steps): the newline detour and the
-`StreamTooLong` retries gone; a harness capture (`make shot`) of a message
-typed during `scripts/slow.sh` arriving mid-turn. No tier: the executable
-and one profile's decoder, proven by its unit tests and the pinned tool
-fixtures (`make gate NAME=…` if a profile fixture gate is selected by
-`make verify-changed`).
 
 ## APPS-14 — Teacher-forced `eval` (drafted 2026-09-20 for decision)
 
