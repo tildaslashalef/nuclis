@@ -182,9 +182,12 @@ For code changes, once build scaffolding exists:
    `./zig-out/bin/nuclis`, never an installed copy.
 4. Run broader checks when shared code or unresolved risks justify them.
    The model-specific checks are gates in `gates.json`, tiered by cost and
-   selected by changed paths (`make verify-changed`; `make verify` once per
-   unit; the CPU tier only when selected), see
-   [docs/development.md § Gates](docs/development.md#gates).
+   selected by changed paths (`make verify-changed`; the CPU tier only when
+   selected), see [docs/development.md § Gates](docs/development.md#gates).
+   `make verify` (the Metal tier) once per unit that touched the inference
+   stack — judge by the work: a unit confined to the executable, the
+   documents, or the scripts changes no numerical behaviour and needs no
+   tier.
 5. Update relevant specifications, command help, and operational documentation.
 6. Report what changed, validation performed, and material remaining limitations.
 
