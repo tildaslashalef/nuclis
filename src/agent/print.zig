@@ -137,7 +137,11 @@ pub fn run(
     };
     defer completer.deinit();
     const workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
-    var agent = try loop.Agent.init(alloc, io, workspace, completer.model(), turn.events(), loop.budget_default);
+    var instructions = try loop.system_prompt.load(alloc, io, .cwd(), settings.instructions);
+    defer if (instructions) |*ins| ins.deinit(alloc);
+    const override: ?[]u8 = if (options.system_prompt) |path| try engine.readPrompt(alloc, io, null, path) else null;
+    defer if (override) |text| alloc.free(text);
+    var agent = try loop.Agent.init(alloc, io, workspace, completer.model(), turn.events(), loop.budget_default, .{ .root = cwd, .date = now[0..10], .instructions = instructions, .override = override });
     defer agent.deinit();
     agent.result_budget = loop.resultBudget(capacity);
     _ = completer.prime(agent.system, agent.tool_defs) catch |err| {
@@ -192,6 +196,8 @@ pub const Options = struct {
     /// A saved session id to replay before this turn (`--resume`).
     resume_id: ?[]const u8 = null,
     seed: ?u64 = null,
+    /// `--system-prompt`: a file whose text replaces the built prompt sections.
+    system_prompt: ?[]const u8 = null,
 };
 
 /// The sink the loop drives: terminal events become what print mode writes,

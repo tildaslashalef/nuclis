@@ -247,7 +247,7 @@ Read: [reference/new-model-guide.md](reference/new-model-guide.md).
 One file, `~/.nuclis/nuclis.json`, with sections `engine` (model, backend,
 `ctx_size`, `kv_precision`), `generation` (`max_tokens`, `think`,
 `speculative`, `draft_length`, sampling overrides), `agent` (`think`,
-`fold_thinking`, `theme`), and a `models` registry of named entries that
+`fold_thinking`, `theme`, `instructions`), and a `models` registry of named entries that
 locate a file (path, or repository and file with a pinned revision), name
 its companions, force a profile, and override any generation or agent key
 for that model only. Precedence is defaults < profile < file < registry
@@ -261,7 +261,7 @@ Read: [development.md § Configuration file](development.md#configuration-file).
 ## 6. Command-line interface
 
 ```text
-nuclis agent [--model <m>] [--think <e>] [--resume [<id>]]
+nuclis agent [--model <m>] [--think <e>] [--resume [<id>]] [--system-prompt <path>]
 nuclis agent -p "<prompt>" [--json] [--session <path>]
 nuclis agent ls [--json]
 nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
@@ -430,10 +430,19 @@ A turn is a loop over steps, at most 16 per turn:
 5. Stop on cancellation, an unrecoverable failure, or the step budget,
    and publish the reason.
 
-- The system block is minimal: identity, workspace, the rendered tool
-  definitions, and a few behavioural lines. The session is primed with it
-  before the first prompt and the snapshot restored on a new session, a
-  resume, or a replay; a window too small for it is a notice at startup.
+- The system block is built from sections (`src/agent/system_prompt.zig`):
+  identity and workspace, the working rules, one guideline per tool under
+  the rendered tool definitions, the cost rule, the date and the `$ `
+  convention for the user's own shell commands, and the project's
+  instructions file (`agent.instructions`: `auto` reads `AGENTS.md`, then
+  `CLAUDE.md`; `off`; or a path), cut at 8 KiB with a marked cut. Every
+  sentence is judged on the playground task list
+  ([development.md § The agent's task list](development.md#the-agents-task-list));
+  `--system-prompt <file>` replaces the built sections for that purpose.
+  The session is primed with the block before the first prompt and the
+  snapshot restored on a new session, a resume, or a replay; a window too
+  small for it is a notice at startup, and the warm-up notice counts the
+  instructions file's tokens.
 - Multi-turn without replay: the loop keeps the text the session has
   consumed and prefills only the increment; an effort change, a cancelled
   turn, or compaction resets and replays, and the bar says so.

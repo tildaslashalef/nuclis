@@ -115,6 +115,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-12 | The architecture guide follows the KV cache end to end; the inference guide rewritten as one narrative | 2026-09-22 |
 | REPO-13 | One specification: `spec.md` rewritten as a technical specification with the agent spec merged in | 2026-09-22 |
 | TERM-10 | Chat polish: the repaint tick, the frame, the operation rows, the banded diff, and the editor's shell and keys | 2026-09-21 / 2026-09-22 |
+| AGNT-13 | The system prompt as sections, measured: the playground task list, the guidelines that changed behaviour, the instructions file | 2026-09-22 |
 
 ## Context
 
@@ -4404,3 +4405,113 @@ within the tool's own bounds. The replay mode discussed in session 1 —
 driving the surface from a recorded event file with no engine open — stays
 deferred; the harness with the real model costs about 25 s a run, which
 was enough for both sessions.
+
+## AGNT-13 — The system prompt as sections, measured: the playground task list, the guidelines that changed behaviour, the instructions file (2026-09-22)
+
+**Outcome.** The agent's system prompt lives in `src/agent/system_prompt.zig`
+as sections — identity and workspace, the working rules, one guideline per
+tool, the cost rule, the date and the `$ ` convention for the user's own
+shell commands, and the project's instructions file — and every sentence in
+it was measured before it shipped. The measurement is
+`scripts/agent-eval.py` (`make agent-eval VARIANT=…`): twelve tasks against
+the playground project, each one `nuclis agent --print` turn from the
+committed baseline at a fixed seed, checked by its own predicate and scored
+on steps, tool calls, tool errors, failed edits, prompt and generated
+tokens, the model's seconds, the answer's length, and four counted habits
+(a regex handed to the literal `grep`, a guessed `pytest`, a file re-read
+right after its own edit, a `cd` before a command). `--system-prompt <file>`
+runs a candidate text without a rebuild (the instructions section still
+follows it), `--instructions <file>` plants the playground's `AGENTS.md`
+(the fixture under `tests/fixtures/agent-eval/`), and `--compare a b …`
+renders the variants side by side. `agent.instructions` (`auto`: `AGENTS.md`
+then `CLAUDE.md`; `off`; a path) is read once at startup, cut at 8 KiB on a
+line boundary with a marked cut, tagged `<project_instructions
+file="…">`, and the warm-up notice counts its tokens (`warmed up in 12.4s ·
+2,144 tokens (310 from AGENTS.md)`). The shipped text is pinned byte for
+byte to `src/agent/fixtures/system_prompt.txt`; a change is re-measured,
+then re-pinned (AGENTS.md § Validation, item 5).
+
+**What the list showed.** Qwen3.8-27B at `think low`, seeds 1 and 2, 24
+runs per variant; the baseline is the one-paragraph prompt at `ad89a71`.
+Correctness is at the ceiling on this list (every variant passes 23 or 24
+of 24), so the measure is cost and habits, and the run-to-run variance of a
+sampled turn is large (the `json` task ran 147–541 s across seeds and
+variants, one step reasoning for 10 KB at `think low`), so the counted
+habits are the stable signal and the seconds are not:
+
+| metric (mean per turn unless a count) | baseline | sections | sections + AGENTS.md | v3 + AGENTS.md | shipped (v4 + AGENTS.md) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| passed | 24/24 | 23/24 | 24/24 | 23/24 | 24/24 |
+| steps | 4.79 | 4.50 | 4.88 | 4.58 | 4.62 |
+| tool errors (sum) | 3 | 2 | 5 | 5 | 3 |
+| prompt tokens (increments) | 1,044 | 1,166 | 1,323 | 1,390 | 1,268 |
+| generated tokens | 825 | 682 | 744 | 736 | 876 |
+| model seconds | 97.3 | 86.3 | 96.6 | 96.8 | 111.6 |
+| answer characters | 404 | 323 | 309 | 325 | 338 |
+| regex to `grep` (sum) | 2 | 2 | 2 | 0 | 0 |
+| `pytest` guessed (sum) | 2 | 2 | 0 | 0 | 0 |
+| re-read after own edit (sum) | 1 | 1 | 1 | 1 | 0 |
+| `cd` before a command (sum) | 12 | 2 | 1 | 0 | 0 |
+| median steps / generated / model seconds | 4 / 384 / 52 | 4 / 458 / 54 | 4 / 381 / 48 | 4 / 383 / 49 | 4 / 410 / 51 |
+
+- *sections* is the plan's design: the same rules split into sections, a
+  guideline per tool, the cost rule, the date and the shell line. It cut
+  generated tokens 17 %, model seconds 11 %, and answer length 20 % against
+  the baseline, and the `cd` habit from 12 to 2; its one failure was a
+  scope slip — while adding validation to `polygon_area` the model noticed
+  the fixture's deliberately wrong area formula and "fixed" it.
+- *+ AGENTS.md* (layout, conventions, `make test`, no pytest) removed the
+  `pytest` guesses and the pass returned to 24/24, but one line of the
+  fixture — "files end with a newline" — cost the `newfile` task four to
+  five steps on every seed (an identical-strings `edit_file`, `printf >>`,
+  an `od -c` check): an instruction the model cannot verify cheaply is paid
+  in steps, which is the argument for the 8 KiB cap and for writing that
+  file with care.
+- *v3* rewrote the guidelines from the observed habits: `grep` is a
+  literal string and never a regex (the alternation `a\|b` returned empty
+  on both earlier prompts and was read as "no callers"), `read_file` refused
+  means `head`/`wc`/`grep` in bash rather than smaller reads, `edit_file`'s
+  result shows the diff so the file is not re-read, `bash` runs from the
+  workspace and the project's own test runner, and the rules open with
+  "nothing beyond the task: an unrelated bug is one sentence, not an
+  edit". The regex and `cd` habits went to zero; its one failure was new —
+  the model listed the 48 headings with `grep -n` and counted them by eye
+  as 41.
+- *v4*, the shipped text, adds to v3 the clause "let the shell count
+  (`wc -l`, `grep -c`) rather than counting lines yourself" and, to the
+  `write_file` guideline, "the whole content at once and ending with a
+  newline". It passes 24/24 with every counted habit at zero and the median turn at 4 steps / 410 generated tokens / 51 s against the baseline's 4.5 / 384 / 52 — the same cost at the median, with the habits gone and the answers a sixth shorter; its means are worse than the baseline's on generated tokens and seconds because two of its 24 turns were the long ones (`json` at 4,060 generated tokens and 459 s on seed 2, `newfile` at 346 s on seed 1 with the trailing-newline detour), which is the variance the medians and the habit counts are there to see through. The two `edit_errors` are the identical-strings `edit_file` of that detour.
+
+**Evidence.** `make check` green (492 tests: the section order, the
+instructions tag, the override, the 8 KiB clip at a line boundary, `load`'s
+`off`/`auto`/fallback/named/missing cases, the CLI flag in both modes, the
+pinned text); the five variant passes under `.zig-cache/agent-eval/` with
+their session files, the shipped pass run on the built binary with no
+override (`--variant final`) so the wiring — `auto` finding the planted
+`AGENTS.md`, the date — is what was measured. The help pages stay within 80
+columns. In this repository, whose `AGENTS.md` is over the cap, the
+interactive warm-up reads `warmed up in 39.9s · 3216 tokens (1918 from
+AGENTS.md)` (`.zig-cache/tui/warmup.txt`): the cut lands on a line
+boundary and the notice makes the cost visible. No tier: the unit is confined to the executable and the scripts.
+
+**Files.** `src/agent/system_prompt.zig` and `src/agent/fixtures/system_prompt.txt`
+(new), `src/agent/loop.zig` (the builder replaces `systemPrompt`; `Agent.init`
+takes the prompt options), `src/agent/print.zig` and `src/agent/root.zig`
+(the instructions file, the date, the override, the warm-up count),
+`src/cli.zig` (`--system-prompt`), `src/config.zig` (`agent.instructions`),
+`src/help.zig`, `scripts/agent-eval.py` and `tests/fixtures/agent-eval/AGENTS.md`
+(new), `Makefile` (`agent-eval`), `AGENTS.md`, `docs/spec.md` § 5.8 and § 7.5,
+`docs/development.md` (the configuration file, *The agent's task list*), and
+this log.
+
+**Remaining.** The twelve tasks are one project and one model; a second
+family (Gemma 4, Muse) and a second workspace would show whether the
+guidelines are Qwen's habits or the loop's. Two seeds cannot resolve a
+10 % difference in seconds; the counted habits can, and a change that
+targets one should be judged on that count. `read_file` answers a file
+over its bound with `StreamTooLong`, which the model read as "try fewer
+lines" three times before turning to the shell: the message should name
+the bound and the way around it (a side fix for the tools, not this unit).
+`write_file` content never ends with a newline because the Qwen decoder trims every trailing `" \t\r\n"` before `</parameter>` (`qwen38.zig`, the `parseTool` value trim) rather than the one delimiter newline the template wraps a value in, so the model cannot write a final newline and, told by an instructions file that files end with one, spends two to four steps appending it: a profile fix of its own (a candidate side unit), and the reason the `write_file` guideline's newline clause did nothing. The replay rate rose from 5 of 115 steps (baseline) to 9–11 of ~110 on the sectioned prompts, unexplained and unmeasured here. The one-line scope slip and the miscount each happened once in 24 runs and
+were answered with a sentence; whether the sentence holds is the next
+pass's question.

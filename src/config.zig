@@ -101,6 +101,10 @@ pub const Config = struct {
         /// changes colour, never layout, so it is a display key with no
         /// per-model meaning (registry entries do not carry one).
         theme: ThemeName = tui_theme.default_name,
+        /// The project instructions file the agent's prompt carries: `auto`
+        /// (AGENTS.md, then CLAUDE.md, whichever the workspace has), `off`,
+        /// or a workspace-relative path (`agent/system_prompt.zig`).
+        instructions: []const u8 = "auto",
     };
 };
 
@@ -557,6 +561,9 @@ pub const Resolved = struct {
     fold_thinking: bool,
     /// The agent's palette; the other commands ignore it.
     theme: ThemeName,
+    /// `agent.instructions`: the instructions file setting, a workspace
+    /// matter with no per-model override.
+    instructions: []const u8,
     /// The file the values came from; null when only defaults and flags applied.
     config_file: ?[]const u8,
     origin: Origin,
@@ -613,6 +620,7 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
         .sampling = if (bench) flags.sampling else cfg.generation.sampling.merge(e.generation.sampling).merge(flags.sampling),
         .fold_thinking = e.agent.fold_thinking orelse cfg.agent.fold_thinking,
         .theme = cfg.agent.theme,
+        .instructions = cfg.agent.instructions,
         .config_file = if (loaded.found) loaded.path else null,
         .origin = loaded.origin,
         .command = command,
@@ -1000,7 +1008,7 @@ pub const Effective = struct {
     profile: Profile,
     engine: struct { model: []const u8, backend: Backend, ctx_size: usize, kv_precision: KvPrecision },
     generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, sampling: inference.sampling.Options },
-    agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName },
+    agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8 },
     origin: Origin,
 
     pub fn from(loaded: *const Loaded) Effective {
@@ -1014,7 +1022,7 @@ pub const Effective = struct {
             .profile = gen.profile,
             .engine = .{ .model = gen.model, .backend = gen.backend, .ctx_size = gen.ctx_size, .kv_precision = gen.kv_precision },
             .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .sampling = gen.samplingOptions() },
-            .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme },
+            .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions },
             .origin = origin,
         };
     }

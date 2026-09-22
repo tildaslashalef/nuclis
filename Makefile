@@ -12,6 +12,7 @@ CACHE    ?= --global-cache-dir .zig-cache/global
 OPT      ?= ReleaseSafe
 MODEL    ?= $(HOME)/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
 BACKEND  ?= metal
+VARIANT  ?= baseline
 PROMPT   ?= Write a Zig function that reverses a string.
 ARGS     ?=
 BIN      := ./zig-out/bin/nuclis
@@ -21,7 +22,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .PHONY: help build debug build-cpu metal test test-metal check verify verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate \
-        agent model-ls trace clean distclean hf-downloader test-hf changelog release
+        agent agent-eval model-ls trace clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -139,6 +140,9 @@ bench-attention: ## Prefill chunk attention, row-split vs register-reuse, 4K-32K
 
 agent: metal ## Interactive agent surface on the engine (Metal by default; ARGS="--think low")
 	$(BIN) agent --backend $(BACKEND) --model "$(MODEL)" $(ARGS)
+
+agent-eval: build ## The agent's task list against the playground: make agent-eval VARIANT=name ARGS='--system-prompt p.txt --seeds 1,2' (scripts/agent-eval.py --help)
+	python3 scripts/agent-eval.py --variant $(VARIANT) $(ARGS)
 
 shot: metal ## Drive `nuclis agent` in tmux and capture its screen: make shot ARGS='until=ready,60 capture=idle --stop' (scripts/tui-shot.py --help)
 	python3 scripts/tui-shot.py --command "$(BIN) agent --backend $(BACKEND) --model $(MODEL)" $(ARGS)

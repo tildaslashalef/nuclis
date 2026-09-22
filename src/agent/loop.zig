@@ -30,6 +30,7 @@ const engine = @import("../engine.zig");
 const tui = @import("../tui/root.zig");
 const tools = @import("tools/root.zig");
 const stream = @import("stream.zig");
+pub const system_prompt = @import("system_prompt.zig");
 
 const Allocator = std.mem.Allocator;
 const Profile = inference.profiles;
@@ -150,7 +151,7 @@ pub const Agent = struct {
     workspace: tools.Workspace,
     model: Model,
     events: Events,
-    /// The leading system message: identity and workspace. Built once, owned.
+    /// The leading system message (`system_prompt.build`). Built once, owned.
     /// The profile renders the tool definitions into this block; the loop
     /// never spells the wire format.
     system: []u8,
@@ -201,7 +202,7 @@ pub const Agent = struct {
     /// Reusable `Profile.Message` scratch for one step.
     messages: std.ArrayList(Profile.Message) = .empty,
 
-    pub fn init(alloc: Allocator, io: std.Io, workspace: tools.Workspace, model: Model, events: Events, budget: usize) !Agent {
+    pub fn init(alloc: Allocator, io: std.Io, workspace: tools.Workspace, model: Model, events: Events, budget: usize, prompt: system_prompt.Options) !Agent {
         var agent: Agent = .{
             .alloc = alloc,
             .io = io,
@@ -218,7 +219,7 @@ pub const Agent = struct {
         };
         errdefer agent.thinking.deinit();
         errdefer agent.answer.deinit();
-        agent.system = try systemPrompt(alloc, workspace.root);
+        agent.system = try system_prompt.build(alloc, prompt);
         errdefer alloc.free(agent.system);
         agent.tool_defs = try toolDefs(alloc);
         return agent;
@@ -722,26 +723,6 @@ pub const Agent = struct {
     }
 };
 
-/// The leading system message: identity and workspace. The profile renders
-/// the tool definitions into this block itself, so the loop never spells the
-/// wire format.
-fn systemPrompt(alloc: Allocator, root: []const u8) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-    try out.writer.print(
-        "You are nuclis, a coding agent working in {s}. " ++
-            "Complete the user's task with the available tools. Read a file before you change it, " ++
-            "make one change at a time, and say what you did when you are finished. " ++
-            "Never invent a tool result: wait for the output before you continue. " ++
-            "Your context is small and a long file arrives in pages: for a question about a whole file " ++
-            "prefer one shell command (grep, sort, awk, wc) over reading it page by page, and say when you saw only part of it. " ++
-            "Quote file contents only from tool output you received in this turn; never reconstruct a file from memory. " ++
-            "When a request needs more than the context can hold, say so and offer a summary or a command instead.\n",
-        .{root},
-    );
-    return out.toOwnedSlice();
-}
-
 /// The tool definitions handed to the profile, in registry order. The names,
 /// descriptions, and schemas borrow the static registry; the slice is owned.
 fn toolDefs(alloc: Allocator) Allocator.Error![]Profile.ToolDefinition {
@@ -1118,7 +1099,7 @@ test "one call then an answer: the loop executes the call and sends the result b
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
     const stop = try agent.turn("what is in hello.txt?");
@@ -1159,7 +1140,7 @@ test "a call whose result is empty still reaches the answer" {
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
     const stop = try agent.turn("any python files?");
@@ -1182,7 +1163,7 @@ test "a mutation sends a diff event and the model reads the unified change" {
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
     try testing.expectEqual(Stop.done, try agent.turn("create it"));
@@ -1212,7 +1193,7 @@ test "a result over the context budget is cut at a line and told how to continue
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
     agent.result_budget = 50; // 200 bytes: 20 lines of the 90 the read returns
 
@@ -1242,7 +1223,7 @@ test "a single line over the budget is cut inside the line at a code point" {
     var stub: Stub = .{ .answers = &.{"x"} };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
     agent.result_budget = 4;
     // 40 bytes of two-byte code points on one line: 10 stub tokens.
@@ -1265,7 +1246,7 @@ test "the step budget stops a model that keeps calling" {
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), 2);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), 2, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
     try testing.expectEqual(Stop.budget, try agent.turn("go"));
@@ -1288,7 +1269,7 @@ test "a cancelled step stops the loop before any call runs" {
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
     try testing.expectEqual(Stop.cancelled, try agent.turn("go"));
@@ -1307,7 +1288,7 @@ test "an unknown tool is an error result the model reads, not a failure" {
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
     try testing.expectEqual(Stop.done, try agent.turn("go"));
@@ -1332,7 +1313,7 @@ test "restore rebuilds the conversation and continues the correlation ids" {
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
     const restored = [_]Profile.Message{
         .{ .role = .user, .content = "first" },
@@ -1360,7 +1341,7 @@ test "the tools block the profile renders is pinned to its measured size" {
     defer arena.deinit();
     const a = arena.allocator();
     const defs = try toolDefs(a);
-    const sys = try systemPrompt(a, "/w");
+    const sys = try system_prompt.build(a, .{ .root = "/w" });
     const messages = [_]Profile.Message{
         .{ .role = .system, .content = sys },
         .{ .role = .user, .content = "read a then run it" },
@@ -1389,7 +1370,7 @@ test "every step that reasoned closes its own thinking block" {
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
     try testing.expectEqual(Stop.done, try agent.turn("go"));
     try testing.expectEqual(@as(usize, 3), capture.thinking_ends);
@@ -1401,7 +1382,7 @@ test "every step that reasoned closes its own thinking block" {
     var cut: Stub = .{ .answers = &.{"partial"}, .stops = &.{.token_budget} };
     var cut_capture = Capture.init(alloc);
     defer cut_capture.deinit();
-    var cut_agent = try Agent.init(alloc, testing.io, fixture.ws, cut.model(), cut_capture.eventsSeam(), budget_default);
+    var cut_agent = try Agent.init(alloc, testing.io, fixture.ws, cut.model(), cut_capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer cut_agent.deinit();
     try testing.expectEqual(Stop.done, try cut_agent.turn("go"));
     try testing.expectEqual(tui.event.StopReason.token_budget, cut_capture.last_turn_stop.?);
@@ -1410,7 +1391,7 @@ test "every step that reasoned closes its own thinking block" {
     var silent: Stub = .{ .answers = &.{"hi"} };
     var quiet = Capture.init(alloc);
     defer quiet.deinit();
-    var plain = try Agent.init(alloc, testing.io, fixture.ws, silent.model(), quiet.eventsSeam(), budget_default);
+    var plain = try Agent.init(alloc, testing.io, fixture.ws, silent.model(), quiet.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer plain.deinit();
     try testing.expectEqual(Stop.done, try plain.turn("hello"));
     try testing.expectEqual(@as(usize, 0), quiet.thinking_ends);
@@ -1429,7 +1410,7 @@ test "a full window first elides the turn's older tool results, keeping the last
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
     try testing.expectEqual(Stop.done, try agent.turn("read it four times"));
@@ -1455,7 +1436,7 @@ test "with nothing left to elide, a full window is the caller's error" {
     var stub: Stub = .{ .answers = &.{"never"}, .context_full_at = 0 };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
     try testing.expectError(error.ContextFull, agent.turn("hello"));
     try testing.expectEqual(@as(usize, 0), capture.compactions);
@@ -1466,7 +1447,7 @@ test "the primed prefix is what the first turn's rendering starts with" {
     defer arena.deinit();
     const a = arena.allocator();
     const defs = try toolDefs(a);
-    const sys = try systemPrompt(a, "/w");
+    const sys = try system_prompt.build(a, .{ .root = "/w" });
     inline for (.{ .off, .low, .xhigh }) |effort| {
         const head = try Profile.qwen38.prefix(a, &.{.{ .role = .system, .content = sys }}, defs, effort, .{});
         const full = try Profile.qwen38.render(a, &.{ .{ .role = .system, .content = sys }, .{ .role = .user, .content = "hello" } }, defs, effort, .{});
@@ -1488,7 +1469,7 @@ test "compaction drops a whole prior turn, tool response included" {
     };
     var capture = Capture.init(alloc);
     defer capture.deinit();
-    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default);
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
     try testing.expectEqual(Stop.done, try agent.turn("one"));

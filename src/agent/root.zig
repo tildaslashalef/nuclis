@@ -128,6 +128,9 @@ const Ui = struct {
     warming: bool = false,
     /// A `!` command is running: busy, but no loop step on the bar.
     shell: bool = false,
+    /// The project instructions file in the prompt, for the warm-up notice.
+    instructions_name: ?[]const u8 = null,
+    instructions_tokens: usize = 0,
     /// The next user event is not shown: a `!` command's output goes to the
     /// model as the message, and the transcript already shows the command.
     quiet_user: bool = false,
@@ -942,9 +945,12 @@ fn primeSession(ui: *Ui) void {
         return;
     };
     if (primed > 0) {
-        var note: [96]u8 = undefined;
+        var note: [192]u8 = undefined;
         const elapsed = seconds(ui.turn_started, std.Io.Clock.awake.now(ui.io));
-        const text = std.fmt.bufPrint(&note, "  — warmed up in {d:.1}s · {d} tokens", .{ elapsed, primed }) catch "  — warmed up";
+        const text = if (ui.instructions_name) |name|
+            std.fmt.bufPrint(&note, "  — warmed up in {d:.1}s · {d} tokens ({d} from {s})", .{ elapsed, primed, ui.instructions_tokens, name }) catch "  — warmed up"
+        else
+            std.fmt.bufPrint(&note, "  — warmed up in {d:.1}s · {d} tokens", .{ elapsed, primed }) catch "  — warmed up";
         ui.emit(.{ .notice = text }) catch {};
     }
 }
@@ -1242,7 +1248,7 @@ fn newSessionLog(alloc: std.mem.Allocator, io: std.Io, root_dir: ?[]const u8, cw
 /// almost always ends the turn earlier; the 2,048 default keeps long code
 /// answers whole), the backend, the starting effort, the sampling
 /// overrides, and the initial thinking fold.
-pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, model_path: []const u8, root_dir: ?[]const u8, settings: config.Resolved, seed: ?u64, resume_id: ?[]const u8, out: *std.Io.Writer) !void {
+pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, model_path: []const u8, root_dir: ?[]const u8, settings: config.Resolved, seed: ?u64, resume_id: ?[]const u8, system_prompt_file: ?[]const u8, out: *std.Io.Writer) !void {
     const capacity = settings.ctx_size;
     const limit = settings.max_tokens;
     if (capacity == 0 or capacity > config.max_context or limit == 0 or limit > config.max_output_tokens) return error.InvalidGenerationBudget;
@@ -1349,9 +1355,26 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .progress = .{ .context = &ui, .call = Ui.onProgress },
     };
     completer.observer = trace.observer();
-    agent = try loop.Agent.init(alloc, io, workspace, completer.model(), ui.events(), loop.budget_default);
+    // The project's instructions file and the date are read once: the
+    // prompt is primed into every session this process opens.
+    var instructions = try loop.system_prompt.load(alloc, io, .cwd(), settings.instructions);
+    defer if (instructions) |*ins| ins.deinit(alloc);
+    const override: ?[]u8 = if (system_prompt_file) |path| try engine.readPrompt(alloc, io, null, path) else null;
+    defer if (override) |text| alloc.free(text);
+    var date: [20]u8 = undefined;
+    agent = try loop.Agent.init(alloc, io, workspace, completer.model(), ui.events(), loop.budget_default, .{
+        .root = cwd,
+        .date = model.rfc3339(&date, std.Io.Timestamp.now(io, .real).toSeconds())[0..10],
+        .instructions = instructions,
+        .override = override,
+    });
     agent.result_budget = loop.resultBudget(capacity);
     defer agent.deinit();
+    if (instructions) |ins| {
+        const m = completer.model();
+        ui.instructions_name = ins.name;
+        ui.instructions_tokens = m.count(m.context, ins.text) catch 0;
+    }
     {
         defer term.deinit();
         // Exit leaves the transcript and nothing else: the live region is

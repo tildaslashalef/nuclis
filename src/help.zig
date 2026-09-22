@@ -159,6 +159,8 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--session <path>", "record a printed turn to this session file");
     try row(out, sty, "--resume [<id>]", "replay a saved session first; the latest without <id>");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh; default low");
+    try row(out, sty, "--system-prompt <path>", "the file's text replaces the built prompt");
+    try more(out, "sections (for tuning); AGENTS.md still follows");
     try engineOptions(out, sty);
     try samplingOptions(out, sty);
 
@@ -410,7 +412,8 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "sampling.{temperature,top_k,top_p,min_p,");
     try more(out, "presence_penalty,repetition_penalty}; null takes");
     try more(out, "the profile's value");
-    try row(out, sty, "agent.*", "think, fold_thinking, theme");
+    try row(out, sty, "agent.*", "think, fold_thinking, theme, instructions (auto:");
+    try more(out, "AGENTS.md then CLAUDE.md; off; or a path)");
     try row(out, sty, "models.<name>.*", "path, or repo + file + revision; mmproj, mtp, profile,");
     try more(out, "ctx_size, generation.*, agent.* for that model only.");
     try more(out, "Entries are created by init --discover and model pull");

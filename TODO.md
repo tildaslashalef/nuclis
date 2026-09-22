@@ -109,9 +109,18 @@ answer, and Ctrl-G editing the input in `$VISUAL`/`$EDITOR`. 487 tests,
 the Metal tier green, the captures under `.zig-cache/tui/`
 ([log](docs/engineering-log.md#term-10--chat-polish-the-repaint-tick-the-frame-the-operation-rows-the-banded-diff-and-the-editors-shell-and-keys-2026-09-21--2026-09-22)).
 
-**Next: AGNT-13** (the system prompt as sections: the project's
-instructions file, a guideline per tool, the cost rule, the date and the
-shell; measured by the playground task list before and after). v0.2.0 was tagged on 2026-09-21
+AGNT-13 closed on 2026-09-22: the system prompt is sections in
+`src/agent/system_prompt.zig`, pinned byte for byte to a fixture, with
+`agent.instructions` (`auto`/`off`/a path, 8 KiB cap) and `--system-prompt
+<file>` for tuning; the playground task list (`scripts/agent-eval.py`,
+`make agent-eval VARIANT=…`, twelve tasks, two seeds, counted habits) is
+how prompt changes are judged from now on (AGENTS.md § Validation item 5).
+Five variants were measured; the shipped text removed the regex-to-`grep`,
+`pytest`, and `cd` habits and cut the answer length a fifth, at 23–24 of
+24 passes on every variant
+([log](docs/engineering-log.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22)).
+**Next: AGNT-12** (background commands; its section below is the design).
+v0.2.0 was tagged on 2026-09-21
 (`142fa81`, 133 changelog entries since v0.1.0), pushed, and published by
 `release.yml` with its three assets; the tree is `0.3.0-dev`. APPS-16
 (output budget default 4096, cap 16384) closed the same day
@@ -196,7 +205,7 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: AGNT-13 → AGNT-12 → AGNT-11 → MODL-21 → MODL-22 →
+Order: AGNT-12 → AGNT-11 → MODL-21 → MODL-22 →
 MODL-23 (decided 2026-09-21, the user's call: every agent unit lands
 before the vision engine, because the goal is efficient agentic work on
 this engine and each agent unit has a measurable before and after on the
@@ -240,7 +249,6 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| AGNT-13 | The system prompt as sections (ordered 2026-09-21; see its section) | 1 |
 | AGNT-12 | Background commands (ordered 2026-09-21; see its section) | 1 |
 | AGNT-11 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
@@ -669,40 +677,7 @@ next step boundary. The parts, all bounded by the agent rules:
 `src/agent/loop.zig` and `tools/bash.zig`, a new tool definition in every
 profile's tool fixtures (`scripts/profile-tools-fixtures.py`), transcript
 rows, and cancellation tests. The risk is an orphaned process; the
-mitigation is the workspace owning every pid. Follows AGNT-13.
-
-## AGNT-13 — The system prompt as sections (drafted and ordered 2026-09-21)
-
-**What pi does** (`packages/coding-agent/src/core/system-prompt.ts`, read
-2026-09-21): the system block is built from replaceable sections — a
-preamble, the tool list with one guideline per tool, rules, the project's
-instructions file wrapped in `<project_instructions>`, the working
-directory, the date — so a section can change without re-priming the rest.
-nuclis's block (`src/agent/loop.zig` `systemPrompt`) is one paragraph
-already tuned for a small context (page-by-page reads, no reconstruction
-from memory, say when only part was seen), which pi's is not.
-
-**Worth adopting, bounded.**
-1. Project instructions: `agent.instructions` (default `AGENTS.md`, then
-   `CLAUDE.md`; `false` to disable; a path) read from the workspace at
-   startup, capped at `max_instructions_bytes = 8192` with a marked cut,
-   appended as its own section; the warm-up notice reports its tokens
-   (`warmed up in 12.4s · 934 tokens, 1,210 of them AGENTS.md`).
-2. One guideline per tool, rendered under the tool list: keep `old_string`
-   as small as still unique; `read_file` over `cat`; `write_file` only for
-   a new file or a full rewrite; `grep` before `read_file` for a question
-   about a whole tree; report the exit status of a failed `bash`.
-3. The cost rule: "Every line you write costs the user about a second;
-   answer with what was asked and nothing decorative."
-4. The date and the shell (`!` commands arrive as `$ cmd` with the output).
-
-**Not adopted.** pi's docs section, skills, and the RPC/SDK surfaces: not
-this product.
-
-**Check.** The playground task list (the twelve tasks of the 2026-09-20
-screenshots) run through `nuclis agent --print` before and after, with the
-failed-edit count and the tokens per turn compared; `make check` for the
-section builder and the cap. One session; it is the next unit.
+mitigation is the workspace owning every pid. The first agent unit after AGNT-13; measured on the task list before and after, as every agent unit now is.
 
 ## APPS-14 — Teacher-forced `eval` (drafted 2026-09-20 for decision)
 

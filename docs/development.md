@@ -336,7 +336,7 @@ and the `models` registry) with a `schema_version`. The sections name a
 *scope*, not a command: `engine` (the artifact and its session) and
 `generation` (how tokens are produced: budget, effort, speculative decoding,
 sampling) are shared by `generate` and `agent`; `agent` holds only the chat
-surface's own settings (`think`, `fold_thinking`, `theme`, and was named
+surface's own settings (`think`, `fold_thinking`, `theme`, `instructions`, and was named
 `chat` until 2026-09-11, see
 [spec.md § Configuration](spec.md#58-configuration)); `bench` reads `engine` plus
 its own flags. The section was named `generate` until 2026-09-20, when the
@@ -378,7 +378,7 @@ bring-up file. The example:
   "generation": { "max_tokens": 4096, "think": "off", "speculative": false, "draft_length": 4,
                 "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,
                               "presence_penalty": null, "repetition_penalty": null } },
-  "agent":    { "think": "low", "fold_thinking": true },
+  "agent":    { "think": "low", "fold_thinking": true, "theme": "gruvbox-dark", "instructions": "auto" },
   "models":   { "qwen3.8-27b": { "path": null,
                                  "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
                                  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
@@ -613,6 +613,35 @@ needs the screen-recording permission once). The session stays up unless
 `--stop` is given; `tmux -L nuclis attach -t shot` joins it. Captures are
 evidence for the log, never fixtures: the goldens in `src/tui/` stay the
 contract.
+
+### The agent's task list
+
+`scripts/agent-eval.py` (`make agent-eval VARIANT=<name> ARGS='…'`) runs
+twelve small tasks against the playground project (`~/Code/playground`, a
+separate repository with `make reset`): whole-file questions (a line count
+and a maximum, the release list), edits (a rename, the repeated heading,
+a planted bug, a validation with its test), a new module with tests, a
+flag added to the CLI, a silent `exit 7`, a tree-wide `grep`, a three-bullet
+summary, and the 1 MiB file. Each task is one `nuclis agent --print` turn
+with a fixed seed from the committed baseline, checked by its own
+predicate (file contents, a command's output, the answer's text) and
+scored on steps, tool calls, tool errors, failed edits, prompt and
+generated tokens, the model's seconds, the answer's length, and four
+counted habits read from the session (a regex handed to the literal
+`grep`, a guessed `pytest`, a file re-read right after its own edit, a
+`cd` before a command); the records land under
+`.zig-cache/agent-eval/<variant>/` with their session files, and
+`--compare a b …` renders the variants side by side. `--system-prompt
+<file>` runs a candidate prompt without a rebuild (the instructions
+section still follows it), `--instructions <file>` plants the playground's
+`AGENTS.md` (`tests/fixtures/agent-eval/AGENTS.md` by default, `none` for
+no file), and `--seeds 1,2` is the default because a sampled turn varies:
+two seeds cannot resolve a 10 % difference in seconds, so a change is
+judged on the pass marks, the habit counts, and the medians rather than
+the means. This is how a change to the system prompt, a tool description,
+or the loop is judged: before and after, on the same list and seeds, and
+the log entry cites the table; the first record is
+[AGNT-13](engineering-log.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22).
 
 ### The agent without a terminal
 

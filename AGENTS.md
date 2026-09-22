@@ -188,8 +188,13 @@ For code changes, once build scaffolding exists:
    stack — judge by the work: a unit confined to the executable, the
    documents, or the scripts changes no numerical behaviour and needs no
    tier.
-5. Update relevant specifications, command help, and operational documentation.
-6. Report what changed, validation performed, and material remaining limitations.
+5. A change to the agent's system prompt (`src/agent/system_prompt.zig`),
+   a tool description, or the loop's behaviour is measured on the
+   playground task list before and after (`make agent-eval VARIANT=…`,
+   [docs/development.md § The agent's task list](docs/development.md#the-agents-task-list));
+   the pinned prompt text is re-pinned only with the new table.
+6. Update relevant specifications, command help, and operational documentation.
+7. Report what changed, validation performed, and material remaining limitations.
 
 Unit tests live alongside source in `test` blocks and use
 `std.testing.allocator`. Default tests must not require live network, real

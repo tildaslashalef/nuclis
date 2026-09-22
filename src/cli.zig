@@ -48,6 +48,9 @@ pub const Options = struct {
     resume_id: ?[]const u8 = null,
     /// `agent ls` lists the workspace's sessions instead of running one.
     agent_action: enum { run, ls } = .run,
+    /// `agent --system-prompt <path>`: the file's text replaces the built
+    /// prompt sections (a tuning aid; the instructions file still follows).
+    system_prompt_file: ?[]const u8 = null,
     model: ?[]const u8 = null,
     json: bool = false,
 };
@@ -125,6 +128,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
         } else if (command == .agent and std.mem.eql(u8, args[i], "--print")) {
             if (options.printing) return error.DuplicateOption;
             options.printing = true;
+        } else if (command == .agent and std.mem.eql(u8, args[i], "--system-prompt")) {
+            if (options.system_prompt_file != null) return error.DuplicateOption;
+            i += 1;
+            if (i == args.len) return error.MissingOptionValue;
+            options.system_prompt_file = args[i];
         } else if (command == .agent and std.mem.eql(u8, args[i], "--resume")) {
             if (options.resume_id != null) return error.DuplicateOption;
             // The id is optional: alone, the flag means the newest session.
@@ -260,6 +268,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
         options.print.json = options.json;
         options.print.seed = options.generation.seed;
         options.print.resume_id = options.resume_id;
+        options.print.system_prompt = options.system_prompt_file;
     }
     if (command == .config and options.config_action == .init and !options.discover and (options.json or options.dry_run)) return error.UnknownOption;
     const token_prompt = options.benchmark.prompt_tokens != null or options.generation.prompt_tokens != null;
@@ -500,7 +509,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .agent => if (options.printing)
             agent.print_mode.run(alloc, io, environ, path, config.resolve(&loaded, options.model, options.flags, .agent), options.print, out, diag)
         else
-            agent.run(alloc, io, environ, path, root, config.resolve(&loaded, options.model, options.flags, .agent), options.generation.seed, options.resume_id, out),
+            agent.run(alloc, io, environ, path, root, config.resolve(&loaded, options.model, options.flags, .agent), options.generation.seed, options.resume_id, options.system_prompt_file, out),
         .inspect, .validate => blk: {
             var document = try inference.gguf.open(alloc, io, path, .{});
             defer document.deinit();
@@ -628,6 +637,13 @@ test "agent print mode takes a prompt, JSON lines, and a session file" {
     try std.testing.expect((try parseArgs(&.{"agent"})).agent_action == .run);
     // A flag after a bare `--resume` is parsed as itself: print mode still wants its prompt.
     try std.testing.expectError(error.MissingPrompt, parseArgs(&.{ "agent", "--resume", "--print" }));
+    // `--system-prompt` reaches both modes; it needs a value and is given once.
+    const tuned = try parseArgs(&.{ "agent", "-p", "hi", "--system-prompt", "p.txt" });
+    try std.testing.expectEqualStrings("p.txt", tuned.print.system_prompt.?);
+    try std.testing.expectEqualStrings("p.txt", (try parseArgs(&.{ "agent", "--system-prompt", "p.txt" })).system_prompt_file.?);
+    try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "agent", "--system-prompt" }));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "agent", "--system-prompt", "a", "--system-prompt", "b" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--system-prompt", "a" }));
 }
 
 test "agent parses sampling and effort flags without a prompt" {
