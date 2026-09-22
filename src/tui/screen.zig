@@ -289,6 +289,11 @@ pub const Screen = struct {
     /// slack above the region as well, so the rows land right after the
     /// transcript; `extra` moves the start further up, over rows that are
     /// being replaced.
+    /// The cursor-up rewrite: over the region, the slack, and the `extra`
+    /// rows being replaced; the new rows, then the slack again so the region
+    /// keeps its place. Rows the block grew by come out of the slack (the
+    /// region scrolls only past it); rows it shrank by join it, so a fold
+    /// never lifts the editor off the bottom of the screen.
     fn rewriteAbove(self: *Screen, rows: []const Row, extra: usize) !void {
         const out = self.out;
         try self.beginFrame();
@@ -300,10 +305,12 @@ pub const Screen = struct {
             try self.writeRow(row);
             try self.newline();
         }
+        self.slack = (self.slack + (extra -| rows.len)) -| (rows.len -| extra);
+        for (0..self.slack) |_| try out.writeAll("\x1b[2K\r\n");
+        self.at = @min(self.at + self.slack, self.size.rows);
         try out.writeAll("\x1b[0J");
         self.region_rows = 0;
         self.region_top = 0;
-        self.slack = 0;
         self.cursor_row = 0;
         self.cursor_col = 1;
         try self.endFrame();
@@ -446,6 +453,36 @@ test "the startup anchor records the blank rows it walks as slack, so an inserti
     try testing.expectEqual(@as(usize, 3), fresh.slack);
 }
 
+test "a fold toggle rewrites the turn and keeps the region at the bottom, the slack between them" {
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
+    var screen = testScreen(&buffer.writer, .{});
+    // A two-row turn, the anchor, a two-row region at rows 9..10: five blank
+    // rows of slack between them.
+    try screen.insertAbove(&.{ .{ .text = "prompt" }, .{ .text = "folded" } });
+    try screen.anchor(2);
+    try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" } }, .{ .row = 0, .column = 1 });
+    try testing.expectEqual(@as(usize, 9), screen.region_top);
+    try testing.expectEqual(@as(usize, 6), screen.slack);
+    // Unfolding replaces two rows with four: the slack absorbs the growth and
+    // the next paint lands on the same rows.
+    buffer.clearRetainingCapacity();
+    try screen.replaceAbove(&.{ .{ .text = "prompt" }, .{ .text = "open" }, .{ .text = "t1" }, .{ .text = "t2" } }, 2);
+    try testing.expectEqual(@as(usize, 4), screen.slack);
+    try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" } }, .{ .row = 0, .column = 1 });
+    try testing.expectEqual(@as(usize, 9), screen.region_top);
+    // Folding back gives the rows to the slack; the region stays put.
+    try screen.replaceAbove(&.{ .{ .text = "prompt" }, .{ .text = "folded" } }, 4);
+    try testing.expectEqual(@as(usize, 6), screen.slack);
+    try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" } }, .{ .row = 0, .column = 1 });
+    try testing.expectEqual(@as(usize, 9), screen.region_top);
+    // A turn taller than the slack pushes the region down the normal way.
+    try screen.replaceAbove(&.{ .{ .text = "1" }, .{ .text = "2" }, .{ .text = "3" }, .{ .text = "4" }, .{ .text = "5" }, .{ .text = "6" }, .{ .text = "7" }, .{ .text = "8" }, .{ .text = "9" } }, 2);
+    try testing.expectEqual(@as(usize, 0), screen.slack);
+    try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" } }, .{ .row = 0, .column = 1 });
+    try testing.expectEqual(@as(usize, 9), screen.region_top);
+}
+
 test "a shorter region keeps its bottom and releases the rows above it" {
     var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
     defer buffer.deinit();
@@ -526,19 +563,20 @@ test "finish and the rewrite fallback walk over the slack as well" {
     try screen.paint(&.{ .{ .text = "x" }, .{ .text = "y" } }, .{ .row = 1, .column = 1 });
     buffer.clearRetainingCapacity();
     // One region row above the cursor plus two rows of slack: the inserted
-    // row lands on row 6, right after the transcript.
+    // row lands on row 6, right after the transcript, and the remaining
+    // slack row is walked again so the region keeps its place.
     try screen.insertAbove(&.{.{ .text = "turn" }});
-    try testing.expect(std.mem.startsWith(u8, buffer.written(), "\x1b[?2026h\x1b[3A\r\x1b[2K\rturn\r\n\x1b[0J"));
-    try testing.expectEqual(@as(usize, 0), screen.slack);
-    try testing.expectEqual(@as(usize, 7), screen.at);
+    try testing.expect(std.mem.startsWith(u8, buffer.written(), "\x1b[?2026h\x1b[3A\r\x1b[2K\rturn\r\n\x1b[2K\r\n\x1b[0J"));
+    try testing.expectEqual(@as(usize, 1), screen.slack);
+    try testing.expectEqual(@as(usize, 8), screen.at);
 
     // The same walk on exit leaves the cursor right after the transcript.
     try screen.paint(&.{ .{ .text = "a" }, .{ .text = "b" }, .{ .text = "c" } }, .{ .row = 2, .column = 1 });
     try screen.paint(&.{.{ .text = "x" }}, .{ .row = 0, .column = 1 });
-    try testing.expectEqual(@as(usize, 2), screen.slack);
+    try testing.expectEqual(@as(usize, 3), screen.slack);
     buffer.clearRetainingCapacity();
     try screen.finish();
-    try testing.expectEqualStrings("\x1b[2A\r\x1b[0J\x1b[r\x1b[?25h", buffer.written());
+    try testing.expectEqualStrings("\x1b[3A\r\x1b[0J\x1b[r\x1b[?25h", buffer.written());
     try testing.expectEqual(@as(usize, 7), screen.at);
 }
 
@@ -611,12 +649,14 @@ test "replacing rows above the region walks over them and erases the rest" {
     screen.at = 9;
     try screen.paint(&.{ .{ .text = "editor" }, .{ .text = "bar" } }, .{ .row = 1, .column = 1 });
     buffer.clearRetainingCapacity();
-    // One row of region above the cursor plus the three rows being replaced.
+    // One row of region above the cursor plus the three rows being replaced;
+    // the row the block shrank by becomes slack and is walked blank.
     try screen.replaceAbove(&.{ .{ .text = "new" }, .{ .text = "rows" } }, 3);
     try testing.expectEqualStrings(
-        "\x1b[?2026h\x1b[4A\r\x1b[2K\rnew\r\n\x1b[2K\rrows\r\n\x1b[0J\x1b[?2026l",
+        "\x1b[?2026h\x1b[4A\r\x1b[2K\rnew\r\n\x1b[2K\rrows\r\n\x1b[2K\r\n\x1b[0J\x1b[?2026l",
         buffer.written(),
     );
+    try testing.expectEqual(@as(usize, 1), screen.slack);
 }
 
 test "a paint never walks above the first row" {

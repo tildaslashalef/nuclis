@@ -350,10 +350,10 @@ status bar, the hint) still break at the column.
 *The bar's layout (2026-09-21).* Two groups: the measurements on the left
 (the state word, prefill or decode progress, the loop step, context, token
 counts, the prefill and decode rates, `replayed`) and the settings on the
-right, right-aligned (`✦ think low │ spec on 4 · 3.13/step` or `spec off`
-`│ kv f16 │ metal │ qwen3.8-27b`). A narrow bar drops settings from the
+right, right-aligned (`✦ think low │ speculative on 4 · 3.13/step` or
+`speculative off` `│ kv f16 │ metal │ qwen3.8-27b`). A narrow bar drops settings from the
 right end one cell at a time, then truncates the measurements at the
-column. `spec` states the switch as the session runs it: on only when a
+column. `speculative` states the switch as the session runs it: on only when a
 draft source is loaded, with the draft length, and the accepted drafts per
 step after a speculative turn.
 

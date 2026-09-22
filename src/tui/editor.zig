@@ -88,8 +88,7 @@ pub const frame_cells: usize = 6;
 pub const frame_lead: usize = 4;
 
 /// The framed box: the top edge, every layout row between two edges, and the
-/// bottom edge. Rows are raw and carry the editor background inside the
-/// frame; the caller places the cursor `frame_lead` cells in on row
+/// bottom edge. Rows are raw; the frame is the only decoration; the caller places the cursor `frame_lead` cells in on row
 /// `1 + cursor_row`.
 pub fn frame(a: Allocator, layout: Layout, options: Frame) ![]const screen.Row {
     const th = options.theme;
@@ -108,13 +107,11 @@ pub fn frame(a: Allocator, layout: Layout, options: Frame) ![]const screen.Row {
     try rows.append(a, .{ .text = top.written(), .raw = true });
     for (layout.rows) |row| {
         var w: std.Io.Writer.Allocating = .init(a);
-        try w.writer.print("{s}{s}{s}{s} {s}{s}{s}{s} {s}{s}{s}", .{
-            th.paint(options.style), gl.box_v,             theme.reset,
-            th.paint(.editor_bg),    row.prefix,           row.text,
-            theme.reset,             th.paint(.editor_bg), theme.reset,
-            th.paint(options.style), gl.box_v,
+        try w.writer.print("{s}{s}{s} {s}{s} {s}{s}{s}", .{
+            th.paint(options.style), gl.box_v,    theme.reset,
+            row.prefix,              row.text,    th.paint(options.style),
+            gl.box_v,                theme.reset,
         });
-        try w.writer.writeAll(theme.reset);
         try rows.append(a, .{ .text = w.written(), .raw = true });
     }
     var bottom: std.Io.Writer.Allocating = .init(a);
@@ -1112,7 +1109,7 @@ test "the frame wraps the box: edges around every row, the spinner in the top ed
     try testing.expectEqualStrings("+-|" ++ ("-" ** 26) ++ "+", try stripped(a, ascii[0].text));
     try testing.expectEqualStrings("| > hello" ++ (" " ** 19) ++ " |", try stripped(a, ascii[1].text));
 
-    // A coloured theme paints the frame and the box background; the width holds.
+    // A coloured theme paints the frame; the width holds.
     const styled = try frame(a, l, .{ .width = 30, .theme = .{ .kind = .truecolor }, .style = .frame_low });
     try testing.expect(std.mem.indexOf(u8, styled[1].text, "\x1b[") != null);
     try testing.expectEqual(@as(usize, 30), view.styledWidth(styled[1].text));

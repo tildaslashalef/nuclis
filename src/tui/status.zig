@@ -140,10 +140,10 @@ pub const Status = struct {
         try cells.append(a, try std.fmt.allocPrint(a, "{s} think {s}{s}{s}", .{ gl.effort, th.paint(.accent), self.effort, theme.fg_default }));
         if (self.speculative) {
             if (self.accepted_per_step) |accepted|
-                try cells.append(a, try std.fmt.allocPrint(a, "spec {s}on{s} {d} · {d:.2}/step", .{ th.paint(.accent), theme.fg_default, self.draft_length, accepted }))
+                try cells.append(a, try std.fmt.allocPrint(a, "speculative {s}on{s} {d} · {d:.2}/step", .{ th.paint(.accent), theme.fg_default, self.draft_length, accepted }))
             else
-                try cells.append(a, try std.fmt.allocPrint(a, "spec {s}on{s} {d}", .{ th.paint(.accent), theme.fg_default, self.draft_length }));
-        } else try cells.append(a, "spec off");
+                try cells.append(a, try std.fmt.allocPrint(a, "speculative {s}on{s} {d}", .{ th.paint(.accent), theme.fg_default, self.draft_length }));
+        } else try cells.append(a, "speculative off");
         if (self.kv.len != 0) try cells.append(a, try std.fmt.allocPrint(a, "kv {s}", .{self.kv}));
         if (self.backend.len != 0) try cells.append(a, self.backend);
         if (self.model.len != 0) try cells.append(a, self.model);
@@ -219,7 +219,7 @@ test "an idle bar states the settings and no rate it did not measure" {
     try testing.expect(std.mem.indexOf(u8, row, "pp — t/s") != null);
     try testing.expect(std.mem.indexOf(u8, row, "tg — t/s") != null);
     try testing.expect(std.mem.indexOf(u8, row, "think low") != null);
-    try testing.expect(std.mem.indexOf(u8, row, "spec off") != null);
+    try testing.expect(std.mem.indexOf(u8, row, "speculative off") != null);
     try testing.expect(std.mem.indexOf(u8, row, "replayed") == null);
     // The row is exactly as wide as the bar, so its background spans it.
     try testing.expectEqual(@as(usize, 100), view.styledWidth(try status.paint(a, .{ .width = 100, .th = .{ .kind = .plain } })));
@@ -232,7 +232,7 @@ test "the settings sit at the right edge, every one of them on a wide bar" {
     const status: Status = .{ .context_used = 934, .context_capacity = 16384, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b" };
     const row = try painted(a, status, .{ .width = 200, .th = .{ .kind = .plain } });
     try testing.expectEqual(@as(usize, 200), view.width(row));
-    try testing.expect(std.mem.endsWith(u8, row, "✦ think low │ spec on 4 │ kv f16 │ metal │ qwen3.8-27b "));
+    try testing.expect(std.mem.endsWith(u8, row, "✦ think low │ speculative on 4 │ kv f16 │ metal │ qwen3.8-27b "));
     try testing.expect(std.mem.startsWith(u8, row, " ◆ ready │ ▤ ctx 934/16384 │ ⇅ in 0 out 0 │ ⇤ pp — t/s │ ⇥ tg — t/s"));
     // The gap between the groups is blank.
     const left_end = std.mem.lastIndexOf(u8, row, "t/s").? + 3;
@@ -242,7 +242,7 @@ test "the settings sit at the right edge, every one of them on a wide bar" {
     var measured = status;
     measured.accepted_per_step = 3.13;
     const after = try painted(a, measured, .{ .width = 200, .th = .{ .kind = .plain } });
-    try testing.expect(std.mem.indexOf(u8, after, "spec on 4 · 3.13/step") != null);
+    try testing.expect(std.mem.indexOf(u8, after, "speculative on 4 · 3.13/step") != null);
 }
 
 test "a narrow bar drops settings from the right, then truncates the measurements" {
@@ -251,17 +251,17 @@ test "a narrow bar drops settings from the right, then truncates the measurement
     const a = arena.allocator();
     const status: Status = .{ .context_used = 934, .context_capacity = 16384, .effort = "low", .speculative = true, .draft_length = 4, .kv = "f16", .backend = "metal", .model = "qwen3.8-27b" };
     // The measurements are 67 cells; the settings need 1 cell of gap and 1
-    // of margin: 110 holds up to the backend, 100 up to the switch, 80 the
+    // of margin: 120 holds up to the backend, 100 up to the switch, 80 the
     // effort alone.
-    const at110 = try painted(a, status, .{ .width = 110, .th = .{ .kind = .plain } });
-    try testing.expect(std.mem.indexOf(u8, at110, "kv f16 │ metal") != null);
-    try testing.expect(std.mem.indexOf(u8, at110, "qwen3.8-27b") == null);
+    const at120 = try painted(a, status, .{ .width = 120, .th = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, at120, "kv f16 │ metal") != null);
+    try testing.expect(std.mem.indexOf(u8, at120, "qwen3.8-27b") == null);
     const at100 = try painted(a, status, .{ .width = 100, .th = .{ .kind = .plain } });
-    try testing.expect(std.mem.indexOf(u8, at100, "spec on 4") != null);
+    try testing.expect(std.mem.indexOf(u8, at100, "speculative on 4") != null);
     try testing.expect(std.mem.indexOf(u8, at100, "kv f16") == null);
     const at80 = try painted(a, status, .{ .width = 80, .th = .{ .kind = .plain } });
     try testing.expect(std.mem.indexOf(u8, at80, "think low") != null);
-    try testing.expect(std.mem.indexOf(u8, at80, "spec on") == null);
+    try testing.expect(std.mem.indexOf(u8, at80, "speculative") == null);
     const at60 = try painted(a, status, .{ .width = 60, .th = .{ .kind = .plain } });
     try testing.expect(std.mem.indexOf(u8, at60, "think") == null);
     try testing.expect(std.mem.indexOf(u8, at60, "⇤ pp") != null);
@@ -315,7 +315,7 @@ test "a decoding bar shows the live count, and the end freezes the measurements"
     try testing.expect(std.mem.indexOf(u8, done, "in 31 out 400") != null);
     try testing.expect(std.mem.indexOf(u8, done, "pp 62.00 t/s") != null); // 31 / 0.5
     try testing.expect(std.mem.indexOf(u8, done, "tg 39.90 t/s") != null); // 399 / 10
-    try testing.expect(std.mem.indexOf(u8, done, "spec on 4 · 2.33/step") != null);
+    try testing.expect(std.mem.indexOf(u8, done, "speculative on 4 · 2.33/step") != null);
     try testing.expect(std.mem.indexOf(u8, done, "replayed") != null);
 
     // A turn that produced one token has no decode interval to divide by.
