@@ -343,10 +343,20 @@ one command; the evaluation CLI stays separate.
   expands it; the text itself is what is sent. Input limit 128 KiB.
 - Up/Down move inside a multi-line input and recall history from the
   first and last rows; history persists across sessions (200 entries).
-- Tab completes a `/command` or an `@path`, else folds thinking; Ctrl-T
-  cycles effort; Ctrl-W cycles the context window (2K to 32K, re-opening
-  the engine); Ctrl-N starts a new session; Ctrl-C cancels a turn, twice
-  quits, or quits when idle; Ctrl-D quits.
+- Tab completes a `/command` or an `@path`, else folds thinking; Ctrl-O
+  folds the tool output of the last turn (the call rows stay, their detail,
+  result, and diff rows go); Ctrl-T cycles effort; Ctrl-W cycles the
+  context window (2K to 32K, re-opening the engine); Ctrl-N starts a new
+  session; Ctrl-C cancels a turn, twice quits, or quits when idle; Ctrl-D
+  quits.
+- Ctrl-X copies the last answer to the clipboard through OSC 52 (at most
+  256 KiB); Ctrl-G opens the input in `$VISUAL` or `$EDITOR` with the
+  terminal released around the child and takes the edited text back.
+- A line that starts with `!` runs the rest through the `bash` tool (same
+  bounds, same workspace, Ctrl-C cancels): the transcript shows a
+  `Bash(cmd)` block with the output under it, bounded to 40 rows, and the
+  full output goes to the model as the next message, `$ cmd` first. `!!`
+  runs and shows without sending. Both forms enter the prompt history.
 - The editor stays live while a turn runs; Enter queues the message and
   it is submitted when the turn ends. A queued message is not in the
   transcript until it is sent.
@@ -365,11 +375,17 @@ one command; the evaluation CLI stays separate.
   (running pulses; settled well, failed, or a write), with the tool's
   one-sentence result under it; a failed call shows its message, bounded.
   A run of calls is summed up in one dim row where the model's text
-  resumes. A mutation is followed by its diff, side by side when the width
-  allows and unified below that, folded when long.
+  resumes. A mutation is followed by its diff: a header with the path and
+  the `+N −M` counts, a gutter of old and new line numbers, a marker cell,
+  and the text on a band of its hue (dark green, dark red; the changed
+  bytes on a brighter tint) padded to the width; side by side from 96
+  columns and unified below that, folded when long. Sixteen-colour
+  terminals keep the accent without the band.
 - Answers render as markdown (headings, emphasis, inline code, links as
-  hyperlinks, quotes, lists with task boxes, fenced code with a heuristic
-  highlighter, rules, tables); model-supplied control bytes are stripped.
+  hyperlinks, nested quotes, lists with task boxes, fenced code with a
+  heuristic highlighter, rules, tables); a soft line break inside a
+  paragraph stays a line break; model-supplied control bytes are stripped;
+  no rendered row is ever wider than the terminal, whatever the input.
 - The status bar shows measurements on the left (state, progress, the
   loop step, context use, token counts, prefill and decode rates) and
   settings on the right (effort, the speculative switch and draft length,

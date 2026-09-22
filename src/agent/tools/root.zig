@@ -13,7 +13,7 @@ const tui = @import("../../tui/root.zig");
 const read_file = @import("read_file.zig");
 const glob = @import("glob.zig");
 const grep = @import("grep.zig");
-const bash = @import("bash.zig");
+pub const bash = @import("bash.zig");
 const write_file = @import("write_file.zig");
 const edit_file = @import("edit_file.zig");
 

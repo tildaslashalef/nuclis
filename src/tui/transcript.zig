@@ -186,6 +186,10 @@ pub const Transcript = struct {
     /// is rendered next; blocks already scrolled out of reach keep what they
     /// were printed with, which is the rendering model's rule.
     expanded: bool = false,
+    /// Fold state of tool output, toggled by Ctrl-O: a folded call keeps
+    /// its row and loses the detail under it, the result rows, and the
+    /// diff's rows (the diff keeps its header). The same rule as `expanded`.
+    tools_folded: bool = false,
 
     pub fn deinit(self: *Transcript) void {
         self.clear();
@@ -395,7 +399,7 @@ pub const Transcript = struct {
                     // region, until the result settles it into the scrollback.
                     if (call.running) {
                         try produced.append(a, try callRow(a, call, options.th, options.pulse));
-                        if (call.detail) |detail| try pushDetail(a, &produced, options.th.glyphs(), detail, options.width, .tool_result);
+                        if (call.detail) |detail| if (!self.tools_folded) try pushDetail(a, &produced, options.th.glyphs(), detail, options.width, .tool_result);
                     } else try self.render(a, &produced, block, shape, .remainder);
                 },
                 else => try self.render(a, &produced, block, shape, .remainder),
@@ -455,13 +459,13 @@ pub const Transcript = struct {
             }, options),
             .tool_call => |call| {
                 try out.append(a, try callRow(a, call, th, true));
-                if (call.detail) |detail| try pushDetail(a, out, gl, detail, options.width, .tool_result);
+                if (call.detail) |detail| if (!self.tools_folded) try pushDetail(a, out, gl, detail, options.width, .tool_result);
             },
             .ops => |text| try pushWrapped(a, out, text, options.width, .dim),
             .tool_result => |result| {
                 // The result text is the model's; the reader gets one row
                 // (the tool's summary), or the message when the call failed.
-                if (result.is_error) {
+                if (self.tools_folded) {} else if (result.is_error) {
                     var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, result.text, "\n"), '\n');
                     var shown: usize = 0;
                     while (lines.next()) |line| : (shown += 1) {
@@ -502,7 +506,6 @@ pub const Transcript = struct {
     /// Wide terminals get the two-pane view, narrow ones the unified form;
     /// a diff taller than `max_diff_rows` folds under an `… N lines` marker.
     fn renderDiff(self: *const Transcript, a: Allocator, out: *std.ArrayList(Row), d: Block.Diff, options: Render) !void {
-        _ = self;
         const gl = options.th.glyphs();
         var added: usize = 0;
         var removed: usize = 0;
@@ -511,7 +514,9 @@ pub const Transcript = struct {
             .remove => removed += 1,
             .context => {},
         };
-        try out.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {s}  {s}{d} {s}{d}", .{ gl.fold_open, d.path, gl.diff_add, added, gl.diff_remove, removed }), .style = .diff_header });
+        const arrow = if (self.tools_folded) gl.fold_closed else gl.fold_open;
+        try out.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {s}  {s}{d} {s}{d}", .{ arrow, d.path, gl.diff_add, added, gl.diff_remove, removed }), .style = .diff_header });
+        if (self.tools_folded) return;
         var produced: std.ArrayList(Row) = .empty;
         if (options.width >= side_by_side_min_width) {
             try renderSideBySide(a, &produced, d.rows, options);
@@ -774,7 +779,8 @@ fn transcript() Transcript {
 fn texts(a: Allocator, rows: []const Row) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     for (rows) |row| {
-        try out.appendSlice(a, try stripped(a, row.text));
+        // A banded diff row is padded to the width; the pad says nothing.
+        try out.appendSlice(a, std.mem.trimEnd(u8, try stripped(a, row.text), " "));
         try out.append(a, '\n');
     }
     return out.toOwnedSlice(a);
@@ -1322,4 +1328,73 @@ test "the closed part of a streamed answer is rendered once; the open tail never
     try testing.expectEqual(expected, markdown.render_calls);
     // Nine block closes for ninety-odd bytes: the hit rate of the cache.
     try testing.expect(markdown.render_calls * 8 < document.len);
+}
+
+test "a `!` command is a Bash block with its output under it, never summed up as the model's" {
+    // The agent emits the same events a tool call does, then the output as
+    // an `info` block (bounded there), and clears the ops counter.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const th: theme.Theme = .{ .kind = .truecolor };
+    const options: Render = .{ .width = 80, .th = th };
+    try tr.apply(.{ .tool_call = .{ .id = 9, .name = "bash", .summary = "Bash(ls src)" } });
+    const running = try tr.liveRows(a, .{ .width = 80, .th = th, .budget = 10 });
+    try testing.expectEqualStrings("● Bash(ls src)", try stripped(a, running[0].text));
+    try tr.apply(.{ .tool_result = .{ .id = 9, .text = "agent\ntui\n", .truncated = false, .is_error = false, .summary = "" } });
+    tr.ops = .{};
+    try tr.apply(.{ .info = "agent\ntui" });
+    const rows = try tr.takeClosed(a, options);
+    try testing.expectEqual(@as(usize, 4), rows.len);
+    try testing.expect(std.mem.startsWith(u8, rows[0].text, th.paint(.op_ok)));
+    try testing.expectEqualStrings("agent", rows[1].text);
+    try testing.expectEqualStrings("tui", rows[2].text);
+    try testing.expect(rows[1].style == null);
+    try testing.expectEqualStrings("", rows[3].text);
+    // The next turn starts clean: no `Ran 1 shell command` row appears.
+    try tr.apply(.{ .answer_delta = "ok" });
+    try tr.apply(.{ .turn_end = .{ .stop = .eos } });
+    const next = try texts(a, try tr.takeClosed(a, options));
+    try testing.expect(std.mem.indexOf(u8, next, "shell command") == null);
+    // A failed command settles red and shows its message.
+    try tr.apply(.{ .tool_call = .{ .id = 10, .name = "bash", .summary = "Bash(false)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 10, .text = "\n[bash: exit code 1]", .truncated = false, .is_error = true, .summary = "exit 1 · 0 lines" } });
+    const failed = try tr.takeClosed(a, options);
+    try testing.expect(std.mem.startsWith(u8, failed[0].text, th.paint(.op_error)));
+}
+
+test "Ctrl-O folds tool output: the call row stays, the detail, result, and diff rows go" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    const options: Render = .{ .width = 80, .th = .{ .kind = .plain } };
+    const changed = [_]diff.Row{
+        .{ .old_line = 1, .kind = .remove, .text = "old" },
+        .{ .new_line = 1, .kind = .add, .text = "new" },
+    };
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "bash", .summary = "Bash(make)", .detail = "$ make" } });
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = "boom", .truncated = false, .is_error = true, .summary = "exit 2 · 1 line" } });
+    try tr.apply(.{ .tool_call = .{ .id = 2, .name = "edit_file", .summary = "Edit(a.zig)" } });
+    try tr.apply(.{ .diff = .{ .path = "a.zig", .rows = &changed } });
+    try tr.apply(.{ .tool_result = .{ .id = 2, .text = "edited", .truncated = false, .is_error = false, .summary = "Edited a.zig: +1 −1 lines" } });
+    try tr.apply(.{ .turn_end = .{ .stop = .eos } });
+    _ = try tr.takeClosed(a, options);
+    const open = try texts(a, try tr.replayRows(a, options));
+    try testing.expectEqualStrings(
+        "● Bash(make)\n└ $ make\n└ boom\n● Edit(a.zig)\n▾ a.zig  +1 −1\n1   − old\n  1 + new\n└ Edited a.zig: +1 −1 lines\nRan 1 shell command, wrote 1 file\n\n",
+        open,
+    );
+    const rows_open = tr.rows;
+    tr.tools_folded = true;
+    const folded = try texts(a, try tr.replayRows(a, options));
+    try testing.expectEqualStrings("● Bash(make)\n● Edit(a.zig)\n▸ a.zig  +1 −1\nRan 1 shell command, wrote 1 file\n\n", folded);
+    try testing.expect(tr.rows < rows_open);
+    // A running call folds its detail too.
+    try tr.apply(.{ .tool_call = .{ .id = 3, .name = "bash", .summary = "Bash(sleep 9)", .detail = "$ sleep 9" } });
+    const live = try tr.liveRows(a, .{ .width = 80, .th = options.th, .budget = 10 });
+    try testing.expectEqual(@as(usize, 1), live.len);
 }

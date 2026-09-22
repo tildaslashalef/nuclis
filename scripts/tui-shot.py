@@ -21,6 +21,8 @@ Steps, in order, as arguments:
   capture=<name>         capture the screen now
   burst=<name>,<s>,<hz>  capture every 1/hz seconds for s seconds
   until=<text>,<s>       wait up to s seconds for the text to appear on screen
+  buffer=<name>          save tmux's paste buffer (what an OSC 52 copy set)
+                         to <name>.buffer.txt
 
 `--ghostty` also opens one Ghostty window attached to the session and, on
 each capture, photographs it to `<name>.png` with `screencapture` (needs the
@@ -56,6 +58,7 @@ set -g focus-events on
 set -g history-limit 10000
 set -g remain-on-exit on
 set -g window-size latest
+set -g set-clipboard on
 """
 
 # ---- the SGR tagger (pure; covered by --self-test) --------------------------
@@ -167,11 +170,12 @@ def plain(ansi):
 # ---- tmux --------------------------------------------------------------------
 
 class Session:
-    def __init__(self, name, size, command, cwd, keep_conf=False):
+    def __init__(self, name, size, command, cwd, keep_conf=False, env=()):
         self.name = name
         self.columns, self.rows = size
         self.command = command
         self.cwd = cwd
+        self.env = list(env)
         conf = tempfile.NamedTemporaryFile('w', suffix='.tmux.conf', delete=False)
         conf.write(TMUX_CONF)
         conf.close()
@@ -184,6 +188,8 @@ class Session:
     def start(self):
         self.tmux('kill-session', '-t', self.name, check=False, capture=True)
         env = ['-e', 'COLORTERM=truecolor', '-e', 'NUCLIS_NO_NOTIFY=1']
+        for pair in self.env:
+            env += ['-e', pair]
         self.tmux('new-session', '-d', '-s', self.name, '-x', str(self.columns), '-y', str(self.rows),
                   '-c', str(self.cwd), *env, self.command)
         # The pane must be exactly the requested size: the status bar is off
@@ -200,6 +206,12 @@ class Session:
 
     def screen(self):
         return self.tmux('capture-pane', '-t', self.name, '-p', '-e', capture=True).stdout
+
+    def buffer(self):
+        """tmux's newest paste buffer: with `set-clipboard on`, an OSC 52
+        from the pane lands here, so a Ctrl-X can be read back as text."""
+        r = self.tmux('show-buffer', check=False, capture=True)
+        return r.stdout if r.returncode == 0 else ''
 
     def alive(self):
         return self.tmux('has-session', '-t', self.name, check=False, capture=True).returncode == 0
@@ -300,7 +312,7 @@ def parse_step(arg):
     if '=' not in arg:
         raise SystemExit('bad step: %s' % arg)
     kind, value = arg.split('=', 1)
-    if kind in ('keys', 'key', 'capture'):
+    if kind in ('keys', 'key', 'capture', 'buffer'):
         return (kind, value)
     if kind == 'wait':
         return (kind, float(value))
@@ -322,7 +334,7 @@ def run(args):
         # A repository-relative binary, whatever --cwd the app runs in.
         head, _, tail = command.partition(' ')
         command = str(ROOT / head[2:]) + (' ' + tail if tail else '')
-    session = Session(args.session, (columns, rows), command, ROOT / args.cwd)
+    session = Session(args.session, (columns, rows), command, ROOT / args.cwd, env=args.env)
     session.start()
     ghostty = Ghostty(session) if args.ghostty else None
     if ghostty:
@@ -345,6 +357,9 @@ def run(args):
             burst(session, out_dir, *value)
         elif kind == 'until':
             ok = wait_for(session, *value) and ok
+        elif kind == 'buffer':
+            (out_dir / (value + '.buffer.txt')).write_text(session.buffer())
+            print('buffer %s' % value)
     if args.stop:
         session.stop()
     else:
@@ -376,6 +391,7 @@ class TaggerTest(unittest.TestCase):
         self.assertEqual(parse_step('burst=warm,30,10'), ('burst', ('warm', 30.0, 10.0)))
         self.assertEqual(parse_step('until=ready,40'), ('until', ('ready', 40.0)))
         self.assertEqual(parse_step('keys=a=b'), ('keys', 'a=b'))
+        self.assertEqual(parse_step('buffer=clip'), ('buffer', 'clip'))
 
 
 def main():
@@ -387,6 +403,7 @@ def main():
     ap.add_argument('--cwd', default='.', help='working directory of the command, relative to the repository')
     ap.add_argument('--out', default=str(OUT_DIR.relative_to(ROOT)), help='where captures go')
     ap.add_argument('--ghostty', action='store_true', help='also attach a Ghostty window and photograph it on capture')
+    ap.add_argument('--env', action='append', default=[], metavar='KEY=VALUE', help='an environment variable for the command (repeatable)')
     ap.add_argument('--stop', action='store_true', help='kill the session at the end')
     ap.add_argument('--self-test', action='store_true')
     args = ap.parse_args()

@@ -15,9 +15,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
 pub const Size = struct { rows: usize = 24, columns: usize = 80 };
+/// Kitty "disambiguate", bracketed paste, and focus in/out reports so a
+/// finished turn can notify when the window is elsewhere.
+const enter_modes = "\x1b[>1u\x1b[?2004h\x1b[?1004h";
+const leave_modes = "\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[0m\x1b[?25h";
+
 pub const Terminal = struct {
     io: std.Io,
     saved: std.posix.termios,
+    raw: std.posix.termios,
     out: *std.Io.Writer,
     pub fn init(io: std.Io, out: *std.Io.Writer) !Terminal {
         if (!try std.Io.File.stdin().isTty(io) or !try std.Io.File.stdout().isTty(io)) return error.ChatRequiresTerminal;
@@ -31,20 +37,42 @@ pub const Terminal = struct {
         raw.iflag.ICRNL = false;
         raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
         raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
-        try std.posix.tcsetattr(0, .FLUSH, raw);
-        errdefer std.posix.tcsetattr(0, .FLUSH, saved) catch {};
-        // Kitty "disambiguate", bracketed paste, and focus in/out reports so a
-        // finished turn can notify when the window is elsewhere.
-        try out.writeAll("\x1b[>1u\x1b[?2004h\x1b[?1004h");
-        try out.flush();
-        return .{ .io = io, .saved = saved, .out = out };
+        var term: Terminal = .{ .io = io, .saved = saved, .raw = raw, .out = out };
+        try term.acquire();
+        return term;
     }
     pub fn deinit(self: *Terminal) void {
         // The trailing CRLF puts the shell prompt on a fresh line: the drawer
         // leaves the cursor at the end of the status bar, mid-row.
-        self.out.writeAll("\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[0m\x1b[?25h\r\n") catch {};
+        self.out.writeAll(leave_modes ++ "\r\n") catch {};
         self.out.flush() catch {};
         std.posix.tcsetattr(0, .FLUSH, self.saved) catch {};
+    }
+
+    /// Raw mode and the modes above, on. Also how the lease is taken back
+    /// after `release`.
+    pub fn acquire(self: *Terminal) !void {
+        try std.posix.tcsetattr(0, .FLUSH, self.raw);
+        errdefer std.posix.tcsetattr(0, .FLUSH, self.saved) catch {};
+        try self.out.writeAll(enter_modes);
+        try self.out.flush();
+    }
+
+    /// Hands the terminal to a child (an external editor) as it was found:
+    /// cooked mode, no protocol modes. `acquire` takes it back.
+    pub fn release(self: *Terminal) !void {
+        try self.out.writeAll(leave_modes);
+        try self.out.flush();
+        try std.posix.tcsetattr(0, .FLUSH, self.saved);
+    }
+
+    /// Puts `text` on the clipboard through OSC 52. Ghostty and most modern
+    /// terminals honour it; the rest ignore it.
+    pub fn copy(self: Terminal, alloc: std.mem.Allocator, text: []const u8) !void {
+        const sequence = try osc52(alloc, text);
+        defer alloc.free(sequence);
+        try self.out.writeAll(sequence);
+        try self.out.flush();
     }
     pub fn size(_: Terminal) Size {
         var value: std.posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
@@ -74,6 +102,64 @@ pub const Terminal = struct {
         try self.out.flush();
     }
 };
+
+/// The most a Ctrl-X puts on the clipboard: terminals cap the OSC payload,
+/// and an answer past this is not something to paste anyway.
+pub const max_clipboard: usize = 256 * 1024;
+
+/// The OSC 52 sequence that sets the clipboard (`c`) to `text`, base64 as
+/// the protocol requires. Caller owns the result.
+pub fn osc52(alloc: std.mem.Allocator, text: []const u8) ![]u8 {
+    const encoder = std.base64.standard.Encoder;
+    const out = try alloc.alloc(u8, "\x1b]52;c;".len + encoder.calcSize(text.len) + 1);
+    @memcpy(out[0.."\x1b]52;c;".len], "\x1b]52;c;");
+    _ = encoder.encode(out["\x1b]52;c;".len .. out.len - 1], text);
+    out[out.len - 1] = 0x07;
+    return out;
+}
+
+/// The most an external editor may hand back, the editor's own input limit.
+pub const max_external_edit: usize = 128 * 1024;
+
+/// Runs `command` (the `$VISUAL`/`$EDITOR` value, possibly with arguments)
+/// on a temporary file holding `text`, and returns the file's content when
+/// the editor exits, one trailing newline removed (editors add it). The
+/// caller has released the terminal lease and takes it back afterwards; a
+/// non-zero exit is an error and the text is left as it was. Caller owns
+/// the result.
+pub fn editExternally(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, command: []const u8, text: []const u8) ![]u8 {
+    var random: [8]u8 = undefined;
+    io.randomSecure(&random) catch io.random(&random);
+    const tmp = environ.get("TMPDIR") orelse "/tmp";
+    const path = try std.fmt.allocPrintSentinel(alloc, "{s}/nuclis-edit-{x}.md", .{ std.mem.trimEnd(u8, tmp, "/"), &random }, 0);
+    defer alloc.free(path);
+    {
+        const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, text);
+    }
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    // `$0` is the file: the value may carry its own arguments (`code -w`).
+    const script = try std.fmt.allocPrint(alloc, "{s} \"$0\"", .{command});
+    defer alloc.free(script);
+    const argv = [_][]const u8{ "/bin/sh", "-c", script, path };
+    var child = try std.process.spawn(io, .{
+        .argv = &argv,
+        .environ_map = environ,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+        .expand_arg0 = .no_expand,
+    });
+    const term = try child.wait(io);
+    switch (term) {
+        .exited => |code| if (code != 0) return error.EditorFailed,
+        else => return error.EditorFailed,
+    }
+    const edited = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(max_external_edit));
+    if (edited.len > 0 and edited[edited.len - 1] == '\n') return alloc.realloc(edited, edited.len - 1);
+    return edited;
+}
 
 /// Whether to send desktop notifications: off for a dumb terminal or when
 /// `NUCLIS_NO_NOTIFY` is set to anything but `0`.
@@ -106,4 +192,35 @@ test "focus and notification decisions" {
     try std.testing.expect(!notificationsEnabled(&map));
     try map.put("NUCLIS_NO_NOTIFY", "0");
     try std.testing.expect(notificationsEnabled(&map));
+}
+
+test "the clipboard sequence is OSC 52 with the text in base64" {
+    const alloc = std.testing.allocator;
+    const hi = try osc52(alloc, "hi");
+    defer alloc.free(hi);
+    try std.testing.expectEqualStrings("\x1b]52;c;aGk=\x07", hi);
+    const empty = try osc52(alloc, "");
+    defer alloc.free(empty);
+    try std.testing.expectEqualStrings("\x1b]52;c;\x07", empty);
+    // A newline and a non-ASCII byte are payload, never a break in the sequence.
+    const multi = try osc52(alloc, "a\n中");
+    defer alloc.free(multi);
+    try std.testing.expect(std.mem.indexOfScalar(u8, multi[0 .. multi.len - 1], '\n') == null);
+    try std.testing.expect(std.mem.endsWith(u8, multi, "\x07"));
+}
+
+test "an external editor round trip: `true` returns the text, a writer replaces it, a failure keeps it" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var environ = std.process.Environ.Map.init(alloc);
+    defer environ.deinit();
+    try environ.put("PATH", "/usr/bin:/bin");
+    const same = try editExternally(alloc, io, &environ, "true", "keep\nme");
+    defer alloc.free(same);
+    try std.testing.expectEqualStrings("keep\nme", same);
+    // The editor's argument is the file, whatever else the value carries.
+    const replaced = try editExternally(alloc, io, &environ, "sh -c 'printf \"new text\\n\" > \"$0\"'", "old");
+    defer alloc.free(replaced);
+    try std.testing.expectEqualStrings("new text", replaced);
+    try std.testing.expectError(error.EditorFailed, editExternally(alloc, io, &environ, "false", "old"));
 }

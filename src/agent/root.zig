@@ -80,6 +80,9 @@ const Stats = struct {
 const Ui = struct {
     alloc: std.mem.Allocator,
     io: std.Io,
+    /// The process environment, for the external editor (`$VISUAL`,
+    /// `$EDITOR`) and the child it spawns.
+    environ: *const std.process.Environ.Map,
     eng: *engine.Engine,
     term: *terminal.Terminal,
     /// The live region: every row the agent paints goes through it.
@@ -123,6 +126,11 @@ const Ui = struct {
     /// The session is being primed: the live region shows the warm-up row
     /// instead of a turn, and the bar carries no loop step.
     warming: bool = false,
+    /// A `!` command is running: busy, but no loop step on the bar.
+    shell: bool = false,
+    /// The next user event is not shown: a `!` command's output goes to the
+    /// model as the message, and the transcript already shows the command.
+    quiet_user: bool = false,
     quit: bool = false,
     /// Whether the terminal has focus; a turn that ends unfocused notifies.
     focused: bool = true,
@@ -226,7 +234,7 @@ const Ui = struct {
         bar.draft_length = self.draft_length;
         bar.kv = self.kv_label;
         bar.backend = @tagName(self.eng.backend);
-        if (self.busy and !self.warming) {
+        if (self.busy and !self.warming and !self.shell) {
             bar.prompt_tokens = self.stats.prompt_tokens;
             bar.generated = self.stats.generated;
             bar.replayed = self.stats.replayed;
@@ -428,6 +436,10 @@ const Ui = struct {
     /// turn boundary also settles the bar. The high-frequency progress beats
     /// arrive through `onProgress` instead, because they repaint.
     pub fn send(self: *Ui, e: tui.event.Event) !void {
+        if (e == .user and self.quiet_user) {
+            self.quiet_user = false;
+            return;
+        }
         try self.tr.apply(e);
         switch (e) {
             .status, .turn_end => self.bar.apply(e),
@@ -563,8 +575,14 @@ const Ui = struct {
                 // first, and the message goes out as the next one.
                 .submit => try self.queue(),
                 .none => {},
-                .ignored => if (key == .tab) {
-                    self.tr.expanded = !self.tr.expanded;
+                // The folds apply to what is rendered next; the rows already
+                // written are rewritten when the turn is over.
+                .ignored => switch (key) {
+                    .tab => self.tr.expanded = !self.tr.expanded,
+                    .ctrl => |c| if (c == 'o') {
+                        self.tr.tools_folded = !self.tr.tools_folded;
+                    },
+                    else => {},
                 },
             }
             try self.refreshCompletion();
@@ -607,6 +625,12 @@ const Ui = struct {
                     self.record(.{ .effort = .{ .effort = @tagName(self.effort) } });
                 },
                 'n' => self.newSession(),
+                'o' => {
+                    self.tr.tools_folded = !self.tr.tools_folded;
+                    try self.rewriteTurn();
+                },
+                'x' => try self.copyLastAnswer(),
+                'g' => try self.editExternally(),
                 'w' => {
                     // Cycle the context window; the main loop re-opens the
                     // engine because KV capacity is allocated at open time.
@@ -620,15 +644,61 @@ const Ui = struct {
             },
             .tab => {
                 self.tr.expanded = !self.tr.expanded;
-                // The last turn is rewritten with the new state so unfolding
-                // works after the answer is already on screen; turns that
-                // scrolled away keep what they were printed with.
-                var arena = std.heap.ArenaAllocator.init(self.alloc);
-                defer arena.deinit();
-                try self.replayTurn(arena.allocator());
+                try self.rewriteTurn();
             },
             else => {},
         }
+    }
+
+    /// Ctrl-X: the last answer, as the model wrote it, onto the clipboard.
+    fn copyLastAnswer(self: *Ui) !void {
+        const answer = self.agent.lastAnswer() orelse {
+            try self.emit(.{ .notice = "  — nothing to copy yet" });
+            return;
+        };
+        if (answer.len > terminal.max_clipboard) {
+            var note: [96]u8 = undefined;
+            try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — the last answer is {d} KB, above the {d} KB clipboard limit", .{ answer.len / 1024, terminal.max_clipboard / 1024 }) catch "  — the last answer is too long to copy" });
+            return;
+        }
+        try self.term.copy(self.alloc, answer);
+        self.status = "copied";
+    }
+
+    /// Ctrl-G: the input in `$VISUAL` or `$EDITOR`. The lease is released
+    /// around the child and the whole region repainted after it, since the
+    /// editor owned the screen meanwhile.
+    fn editExternally(self: *Ui) !void {
+        const command = self.environ.get("VISUAL") orelse self.environ.get("EDITOR") orelse {
+            try self.emit(.{ .notice = "  — set $VISUAL or $EDITOR to edit the input externally" });
+            return;
+        };
+        if (command.len == 0) {
+            try self.emit(.{ .notice = "  — set $VISUAL or $EDITOR to edit the input externally" });
+            return;
+        }
+        try self.term.release();
+        const edited = terminal.editExternally(self.alloc, self.io, self.environ, command, self.ed.text());
+        try self.term.acquire();
+        self.forgetFrame();
+        if (edited) |text| {
+            defer self.alloc.free(text);
+            self.ed.clear();
+            try self.ed.insert(text);
+            try self.refreshCompletion();
+        } else |err| {
+            var note: [96]u8 = undefined;
+            try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {s}: the input is unchanged", .{@errorName(err)}) catch "  — the editor failed: the input is unchanged" });
+        }
+    }
+
+    /// The last turn rewritten with the current fold state, so a fold works
+    /// after the answer is already on screen; turns that scrolled away keep
+    /// what they were printed with.
+    fn rewriteTurn(self: *Ui) !void {
+        var arena = std.heap.ArenaAllocator.init(self.alloc);
+        defer arena.deinit();
+        try self.replayTurn(arena.allocator());
     }
 
     /// Keeps a message typed during a turn for the next one. The prompt is
@@ -941,7 +1011,7 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8) !voi
 /// size that is not on the cycle, an effort by name — and `/save`, which has
 /// no key at all. Every outcome is a dim notice in the transcript, so the
 /// conversation records what was asked of the agent as well as of the model.
-fn runCommand(ui: *Ui, parsed: commands.Result, root_dir: ?[]const u8, cwd: []const u8) !void {
+fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Result, root_dir: ?[]const u8, cwd: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(ui.alloc);
     defer arena.deinit();
     const a = arena.allocator();
@@ -955,7 +1025,7 @@ fn runCommand(ui: *Ui, parsed: commands.Result, root_dir: ?[]const u8, cwd: []co
             }
             try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — /{s} is not a command; known: {s}", .{ word, names.items }) });
         },
-        .usage => |spec| try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — usage: /{s} {s} — {s}", .{ spec.name, spec.argument, spec.summary }) }),
+        .usage => |spec| try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — usage: {s}{s} {s} — {s}", .{ if (spec.kind == .shell) "" else "/", spec.name, spec.argument, spec.summary }) }),
         .command => |command| switch (command) {
             .help => {
                 const rows = try commands.help(a, ui.th.glyph_set == .ascii);
@@ -987,8 +1057,81 @@ fn runCommand(ui: *Ui, parsed: commands.Result, root_dir: ?[]const u8, cwd: []co
                 }
             },
             .save => |where| try saveSession(ui, a, root_dir, where),
+            .shell => |shell| try runShell(ui, sampler, shell),
         },
     }
+}
+
+/// Rows of a `!` command's output shown in the transcript; the rest is
+/// still the model's when the output is sent.
+const max_shell_rows: usize = 40;
+
+/// `!cmd` and `!!cmd`: the command runs through the `bash` tool (same
+/// bounds, same workspace, the tick for the keyboard and a Ctrl-C), shows as
+/// a `Bash(cmd)` block with its output under it, and with `!` its output
+/// goes to the model as the next message, `$ cmd` first.
+fn runShell(ui: *Ui, sampler: *inference.sampling.Sampler, shell: commands.Shell) !void {
+    var arena = std.heap.ArenaAllocator.init(ui.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var args: std.Io.Writer.Allocating = .init(a);
+    try std.json.Stringify.value(.{ .command = shell.command }, .{}, &args.writer);
+    var described = try tools.describe(a, "bash", args.written());
+    defer described.deinit(a);
+    const id = ui.agent.next_id;
+    ui.agent.next_id += 1;
+
+    // The block is this "turn's": the running dot pulses in the region until
+    // the result settles it into the scrollback.
+    ui.tr.reset();
+    ui.busy = true;
+    ui.shell = true;
+    ui.cancel_pending = false;
+    ui.turn_started = std.Io.Clock.awake.now(ui.io);
+    ui.status = "running command";
+    interrupt.clear();
+    try ui.emit(.{ .tool_call = .{ .id = id, .name = "bash", .summary = described.summary, .detail = described.detail } });
+    try ui.draw();
+    var result = try tools.bash.tool.run(ui.agent.workspace, ui.alloc, args.written());
+    defer result.deinit(ui.alloc);
+    ui.busy = false;
+    ui.shell = false;
+    interrupt.clear();
+    ui.status = if (result.is_error) "command failed" else "ready";
+    // A failed call's rows are its text; here the summary says it once
+    // (`exit 1 · 0 lines`) and the output follows in full below.
+    const summary = result.summary orelse "";
+    try ui.emit(.{ .tool_result = .{ .id = id, .text = if (result.is_error) summary else result.text, .truncated = result.truncated, .is_error = result.is_error, .summary = summary } });
+    // The user ran it, so the user sees it: the output's head, and the count
+    // of what was left out. The trailing `[bash: …]` marker is the model's;
+    // the summary row already said it. A run of `!` commands is not a run
+    // of tool calls the model made, so it is never summed up as one.
+    ui.tr.ops = .{};
+    var output = std.mem.trimEnd(u8, result.text, "\n");
+    if (std.mem.lastIndexOfScalar(u8, output, '\n')) |cut| {
+        if (std.mem.startsWith(u8, output[cut + 1 ..], "[bash: ")) output = std.mem.trimEnd(u8, output[0..cut], "\n");
+    } else if (std.mem.startsWith(u8, output, "[bash: ")) output = "";
+    if (output.len > 0) {
+        var shown: std.ArrayList(u8) = .empty;
+        var lines = std.mem.splitScalar(u8, output, '\n');
+        var count: usize = 0;
+        var hidden: usize = 0;
+        while (lines.next()) |line| : (count += 1) {
+            if (count < max_shell_rows) {
+                if (count > 0) try shown.append(a, '\n');
+                try shown.appendSlice(a, line);
+            } else hidden += 1;
+        }
+        if (hidden > 0) try shown.print(a, "\n{s} {d} more line{s}", .{ ui.th.glyphs().ellipsis, hidden, if (hidden == 1) "" else "s" });
+        try ui.emit(.{ .info = shown.items });
+    } else try ui.emit(.{ .turn_end = .{ .stop = .eos } });
+    if (!shell.send) return;
+
+    const message = try std.fmt.allocPrint(ui.alloc, "$ {s}\n{s}", .{ shell.command, result.text });
+    defer ui.alloc.free(message);
+    ui.quiet_user = true;
+    defer ui.quiet_user = false;
+    try runTurn(ui, sampler, message);
 }
 
 /// `/save`: the session file as markdown. It is derived from the entries, not
@@ -1189,7 +1332,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
     var agent: loop.Agent = undefined;
-    var ui: Ui = .{ .alloc = alloc, .io = io, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ) };
+    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ) };
     defer ui.deinit();
     // A polling tool reaches back into the driver while it runs, so keys are
     // read and the running call's spinner advances during a long `bash`.
@@ -1338,18 +1481,18 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             ed.clear();
             try ed.remember(user);
             // A slash command is an instruction to the agent, not a turn: it
-            // never reaches the model, and the loop starts over.
-            if (commands.parse(user)) |parsed| {
-                try runCommand(&ui, parsed, root_dir, cwd);
-                continue;
-            }
-            if (history_path) |path| {
+            // never reaches the model, and the loop starts over. A `!` line
+            // is worth recalling like a prompt; a `/command` is not.
+            const parsed = commands.parse(user);
+            const shell = parsed != null and parsed.? == .command and parsed.?.command == .shell;
+            if (history_path != null and (parsed == null or shell)) {
                 var stamp: [20]u8 = undefined;
                 const now = model.rfc3339(&stamp, std.Io.Timestamp.now(io, .real).toSeconds());
                 // A history write is a convenience, never a reason to lose a turn.
-                prompt_history.append(io, std.Io.Dir.cwd(), path, user, now) catch {};
+                prompt_history.append(io, std.Io.Dir.cwd(), history_path.?, user, now) catch {};
             }
-            runTurn(&ui, &sampler, user) catch |err| {
+            const outcome = if (parsed) |command| runCommand(&ui, &sampler, command, root_dir, cwd) else runTurn(&ui, &sampler, user);
+            outcome catch |err| {
                 ui.agent.abortTurn();
                 ui.eng.model.reset();
                 ui.tokens_seen.reset();

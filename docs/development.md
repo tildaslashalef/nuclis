@@ -562,6 +562,34 @@ the surface installs its poll-and-draw there (`installTick`), so a prefill
 chunk repaints ten times a second instead of once. `Screen.paintFrom`
 rewrites only from the first row that differs from the last frame.
 
+A mutation's diff is a header row (the path, `+N −M`), then rows of a
+`dim` gutter (old and new line numbers, right-aligned), a marker cell
+(`+`, `−`, or a space), and the text on its band — `diff_add` and
+`diff_remove` are the accent on a dark shade of the same hue, the changed
+bytes of a paired line on the brighter `diff_add_change`/`diff_remove_change`
+tint — padded to the width so the band reads as one. Side by side from
+`side_by_side_min_width` (96) columns, the two panes separated by the table
+bar; unified below that. A theme role marked `wide_bg` drops its
+background at sixteen colours, where a dark band cannot be painted, and
+takes its `plain` attributes instead.
+
+Two folds, both applied to whatever is rendered next and replayed over the
+last turn: Tab folds thinking, Ctrl-O folds tool output (`tools_folded`: a
+call keeps its row and loses the detail under it, the result rows, and the
+diff's rows). A `!` line from the editor runs through the `bash` tool and
+shows as the same `Bash(cmd)` block followed by the output as an `info`
+block (40 rows, then `… N more lines`); with `!` the output is also the
+next user message, which the surface does not echo (`quiet_user`).
+
+The answer's markdown is rendered once per closed block: the transcript
+keeps the byte offset up to which the answer has been flushed to the
+scrollback (`Answer.flushed`), hands `markdown.split` only the remainder,
+and renders the closed prefix it returns; the open tail is shown raw. A
+test streams a document byte by byte and counts the renders — one per
+block boundary, never one per token — and a prefix fuzz feeds every byte
+prefix of every fixture through `split` and `render`, asserting no error,
+no control byte, a bounded row count, and no row wider than the width.
+
 ### Looking at the agent without a person at the keyboard
 
 `make shot ARGS='<steps>'` (`scripts/tui-shot.py`) starts `nuclis agent`
@@ -570,7 +598,10 @@ bar off so the pane is the whole window, `COLORTERM=truecolor` as Ghostty
 sets it so the theme resolves to the same palette) and runs the steps in
 order: `keys=<text>`, `enter`, `key=<tmux key>` (`C-c`, `Tab`, `Escape`),
 `wait=<s>`, `until=<text>,<s>` (wait for the text on screen), `capture=<name>`,
-and `burst=<name>,<seconds>,<hz>`. A capture writes `<name>.txt`,
+`burst=<name>,<seconds>,<hz>`, and `buffer=<name>` (tmux's paste buffer,
+where an OSC 52 copy lands, to `<name>.buffer.txt`); `--env KEY=VALUE`
+sets a variable for the agent (`EDITOR`, to drive Ctrl-G). A step with a
+space is one quoted argument. A capture writes `<name>.txt`,
 `<name>.ansi`, and `<name>.tagged.txt` (every styled run as
 `[fg=#hex bg=#hex bold]…[/]`, so a colour is readable as text) under
 `.zig-cache/tui/`; a burst captures at the given rate, keeps the frames that

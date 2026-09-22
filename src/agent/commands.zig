@@ -4,6 +4,8 @@
 //! it starts with `/`, and its first word is nothing but ASCII letters. That
 //! rule is what keeps `/usr/bin/env is fine` a question and `/ctx 16384` an
 //! instruction, without a mode, a prefix key, or an escape (docs/spec.md § Editor).
+//! A line that starts with `!` is a shell command: `!cmd` runs it and sends
+//! its output to the model, `!!cmd` runs it for the user alone.
 //!
 //! Parsing is pure and lives here; executing belongs to the agent, which owns
 //! the engine and the session. The table below is also the help text and the
@@ -14,7 +16,7 @@ const Allocator = std.mem.Allocator;
 
 /// The commands this phase implements. The table below is also the help text
 /// and the completion list.
-pub const Kind = enum { new, resume_session, ctx, think, save, help };
+pub const Kind = enum { new, resume_session, ctx, think, save, help, shell };
 
 pub const Spec = struct {
     kind: Kind,
@@ -33,6 +35,14 @@ pub const table = [_]Spec{
     .{ .kind = .help, .name = "help", .summary = "keys and commands" },
 };
 
+/// The `!` form, described like a command but not in the table: it is not
+/// a `/word`, so it is neither completed nor listed among them.
+pub const shell_spec: Spec = .{ .kind = .shell, .name = "!", .argument = "<command>", .summary = "run a shell command and send its output; !! runs it without sending" };
+
+/// A shell line: the command after the `!`, and whether its output is
+/// sent to the model as the next message (`!`) or only shown (`!!`).
+pub const Shell = struct { command: []const u8, send: bool };
+
 pub const Command = union(enum) {
     new,
     /// Open the session picker; the choice is made interactively.
@@ -44,6 +54,7 @@ pub const Command = union(enum) {
     /// A path, or null for the default under `~/.nuclis/agent/exports/`.
     save: ?[]const u8,
     help,
+    shell: Shell,
 };
 
 pub const Result = union(enum) {
@@ -57,6 +68,12 @@ pub const Result = union(enum) {
 /// Parses a submitted line. Null means "this is a prompt, not a command".
 pub fn parse(line: []const u8) ?Result {
     const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (trimmed.len >= 1 and trimmed[0] == '!') {
+        const send = !(trimmed.len >= 2 and trimmed[1] == '!');
+        const command = std.mem.trim(u8, trimmed[if (send) 1 else 2..], " \t");
+        if (command.len == 0) return .{ .usage = shell_spec };
+        return .{ .command = .{ .shell = .{ .command = command, .send = send } } };
+    }
     if (trimmed.len < 2 or trimmed[0] != '/') return null;
     const word_end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
     const word = trimmed[1..word_end];
@@ -76,6 +93,7 @@ pub fn parse(line: []const u8) ?Result {
                 .{ .usage = spec },
             .think => if (rest.len == 0) .{ .usage = spec } else .{ .command = .{ .think = rest } },
             .save => .{ .command = .{ .save = if (rest.len == 0) null else rest } },
+            .shell => unreachable, // never in the table
         };
     }
     return .{ .unknown = word };
@@ -110,7 +128,10 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
         .{ "Shift-Enter", "newline (Ctrl-J too)" },
         .{ "Up / Down", "move in the input; history at the first and last row" },
         .{ "Tab", "complete a /command or an @path, otherwise fold thinking" },
+        .{ "Ctrl-O", "fold and unfold the tool output of the last turn" },
         .{ "Ctrl-E", "expand a paste chip into editable text" },
+        .{ "Ctrl-G", "edit the input in $VISUAL or $EDITOR" },
+        .{ "Ctrl-X", "copy the last answer to the clipboard" },
         .{ "Ctrl-T / Ctrl-W", "cycle reasoning effort / context window" },
         .{ "Ctrl-N", "new session" },
         .{ "Ctrl-C / Ctrl-D", "cancel a turn, or quit" },
@@ -125,6 +146,7 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
             try std.fmt.allocPrint(alloc, "/{s}", .{spec.name});
         try rows.append(alloc, try std.fmt.allocPrint(alloc, "    {s: <17}  {s}", .{ name, spec.summary }));
     }
+    try rows.append(alloc, try std.fmt.allocPrint(alloc, "    {s: <17}  {s}", .{ "!<command>", shell_spec.summary }));
     return rows.toOwnedSlice(alloc);
 }
 
@@ -187,6 +209,23 @@ test "a line is a command only when it is unmistakably one" {
     try testing.expectEqual(Kind.think, parse("/think").?.usage.kind);
 }
 
+test "a line that starts with ! is a shell command, sent or shown" {
+    const sent = parse("!ls -la").?.command.shell;
+    try testing.expectEqualStrings("ls -la", sent.command);
+    try testing.expect(sent.send);
+    const shown = parse("!! make check ").?.command.shell;
+    try testing.expectEqualStrings("make check", shown.command);
+    try testing.expect(!shown.send);
+    // Leading space is trimmed on both forms; the marker is not a command.
+    try testing.expectEqualStrings("git status", parse("!  git status").?.command.shell.command);
+    try testing.expectEqual(Kind.shell, parse("!").?.usage.kind);
+    try testing.expectEqual(Kind.shell, parse("!!").?.usage.kind);
+    try testing.expectEqual(Kind.shell, parse("!!   ").?.usage.kind);
+    // Only at the start: an exclamation elsewhere is prose.
+    try testing.expect(parse("what!") == null);
+    try testing.expect(parse("really? ! yes") == null);
+}
+
 test "completion offers the commands that start with what was typed" {
     var buffer: [table.len]Spec = undefined;
     try testing.expectEqual(table.len, matching("", &buffer).len);
@@ -211,6 +250,10 @@ test "the help text names every key and every command once" {
     }
     try testing.expect(std.mem.indexOf(u8, joined.items, "Shift-Enter") != null);
     try testing.expect(std.mem.indexOf(u8, joined.items, "queue the message") != null);
+    try testing.expect(std.mem.indexOf(u8, joined.items, "!<command>") != null);
+    try testing.expect(std.mem.indexOf(u8, joined.items, "Ctrl-O") != null);
+    try testing.expect(std.mem.indexOf(u8, joined.items, "Ctrl-G") != null);
+    try testing.expect(std.mem.indexOf(u8, joined.items, "Ctrl-X") != null);
 }
 
 test "path completion is workspace-relative, bounded, and hides dotfiles unless asked" {

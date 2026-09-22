@@ -261,6 +261,17 @@ pub const Agent = struct {
         self.turn_start = self.history.items.len;
     }
 
+    /// The last assistant message with any answer text, for the clipboard;
+    /// null before the first answer.
+    pub fn lastAnswer(self: *const Agent) ?[]const u8 {
+        var i = self.history.items.len;
+        while (i > 0) : (i -= 1) {
+            const item = self.history.items[i - 1];
+            if (item.role == .assistant and item.content.len > 0) return item.content;
+        }
+        return null;
+    }
+
     /// Drops the turn in progress after a failure, leaving the earlier
     /// conversation intact. The driver has already shown the prompt; the model
     /// never saw a completed answer, so nothing of it is kept.
