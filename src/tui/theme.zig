@@ -60,13 +60,16 @@ pub const Style = enum {
     /// and the structured diff rows.
     tool_call,
     tool_result,
+    /// A diff row that was added or removed: the accent on a dark band of
+    /// the same hue that fills the row. Sixteen colours keep the accent
+    /// alone; plain keeps nothing, and the `+`/`−` marker carries it.
     diff_add,
     diff_remove,
     diff_header,
-    /// The bytes that changed within a paired diff line: a reverse video
-    /// highlight, so it reads at every colour level (attributes are the one
-    /// axis that never goes away).
-    diff_change,
+    /// The bytes that changed within a paired diff line: a brighter band of
+    /// the row's hue; reverse video where there is no band to brighten.
+    diff_add_change,
+    diff_remove_change,
     /// An inline pill: the editor's paste chip.
     chip,
     /// The prefill/decode counter in the status bar.
@@ -133,6 +136,13 @@ pub const Palette = struct {
     aqua_dim: Color,
     orange: Color,
     orange_dim: Color,
+    /// Diff bands, ours rather than the theme's: a dark shade of green and
+    /// red for a whole added or removed row, and a brighter tint of each for
+    /// the bytes that changed inside it. Chosen against `bg0`.
+    green_shade: Color,
+    red_shade: Color,
+    green_tint: Color,
+    red_tint: Color,
 };
 
 /// Which palette slot a role reads.
@@ -181,6 +191,10 @@ pub const gruvbox_dark: Palette = .{
     .aqua_dim = .{ .hex = 0x689d6a, .index = 72, .ansi = 6 },
     .orange = .{ .hex = 0xfe8019, .index = 208, .ansi = 11 },
     .orange_dim = .{ .hex = 0xd65d0e, .index = 166, .ansi = 3 },
+    .green_shade = .{ .hex = 0x2f3a1e, .index = 22, .ansi = 2 },
+    .red_shade = .{ .hex = 0x3f2222, .index = 52, .ansi = 1 },
+    .green_tint = .{ .hex = 0x4a5c2a, .index = 28, .ansi = 2 },
+    .red_tint = .{ .hex = 0x652c2c, .index = 88, .ansi = 1 },
 };
 
 /// The themes this build knows, by their configuration name (`agent.theme`).
@@ -227,6 +241,9 @@ pub const Glyphs = struct {
     /// Before a settled tool call, and before the detail row under it.
     done: []const u8,
     detail: []const u8,
+    /// The marker cell of an added and a removed diff row.
+    diff_add: []const u8,
+    diff_remove: []const u8,
     /// The operation dot: one cell, coloured by the call's state.
     dot: []const u8,
     /// Status-bar decorations: the idle marker, the labels of context,
@@ -266,6 +283,8 @@ pub const unicode_glyphs: Glyphs = .{
     .fold_closed = "▸",
     .done = "●",
     .detail = "└",
+    .diff_add = "+",
+    .diff_remove = "−",
     .dot = "●",
     .idle = "◆",
     .context = "▤",
@@ -298,6 +317,8 @@ pub const ascii_glyphs: Glyphs = .{
     .fold_closed = ">",
     .done = "*",
     .detail = "\\",
+    .diff_add = "+",
+    .diff_remove = "-",
     .dot = "*",
     .idle = "*",
     .context = "#",
@@ -343,6 +364,10 @@ const Role = struct {
     /// dropped: a role whose meaning is carried by colour alone names a
     /// substitute here (underline for inline code, reverse for a bar).
     plain: Attrs = .{},
+    /// The background exists only where the palette is wide enough to hold
+    /// a dark shade (truecolor, 256 colours). Sixteen colours cannot paint a
+    /// band that is not glaring, so they drop it and take `plain` instead.
+    wide_bg: bool = false,
 };
 
 fn role(style: Style) Role {
@@ -382,10 +407,11 @@ fn role(style: Style) Role {
         .label => .{ .fg = .fg4 },
         .tool_call => .{ .fg = .blue, .attrs = .{ .bold = true } },
         .tool_result => .{ .fg = .fg2 },
-        .diff_add => .{ .fg = .green },
-        .diff_remove => .{ .fg = .red },
+        .diff_add => .{ .fg = .green, .bg = .green_shade, .wide_bg = true },
+        .diff_remove => .{ .fg = .red, .bg = .red_shade, .wide_bg = true },
         .diff_header => .{ .fg = .yellow, .attrs = .{ .bold = true } },
-        .diff_change => .{ .attrs = .{ .reverse = true } },
+        .diff_add_change => .{ .fg = .green, .bg = .green_tint, .wide_bg = true, .plain = .{ .reverse = true } },
+        .diff_remove_change => .{ .fg = .red, .bg = .red_tint, .wide_bg = true, .plain = .{ .reverse = true } },
         .chip => .{ .fg = .fg1, .bg = .bg2, .plain = .{ .reverse = true } },
         .progress => .{ .fg = .yellow },
         .choice_selected => .{ .fg = .orange, .bg = .bg2, .attrs = .{ .bold = true }, .plain = .{ .reverse = true } },
@@ -494,7 +520,8 @@ fn color(comptime palette: Palette, comptime slot: Slot) Color {
 fn sgr(comptime palette: Palette, comptime kind: Kind, comptime r: Role) []const u8 {
     comptime {
         var params: []const u8 = "";
-        const attrs = if (kind == .plain) r.attrs.merge(r.plain) else r.attrs;
+        const no_band = kind == .c16 and r.wide_bg;
+        const attrs = if (kind == .plain or no_band) r.attrs.merge(r.plain) else r.attrs;
         if (attrs.bold) params = param(params, "1");
         if (attrs.dim) params = param(params, "2");
         if (attrs.italic) params = param(params, "3");
@@ -502,7 +529,9 @@ fn sgr(comptime palette: Palette, comptime kind: Kind, comptime r: Role) []const
         if (attrs.reverse) params = param(params, "7");
         if (kind != .plain) {
             if (r.fg) |slot| params = param(params, channel(color(palette, slot), kind, 38));
-            if (r.bg) |slot| params = param(params, channel(color(palette, slot), kind, 48));
+            if (r.bg) |slot| if (!no_band) {
+                params = param(params, channel(color(palette, slot), kind, 48));
+            };
         }
         return if (params.len == 0) "" else "\x1b[" ++ params ++ "m";
     }
@@ -544,7 +573,12 @@ test "styles resolve to static sequences per support level" {
     try std.testing.expectEqualStrings("\x1b[90m", ansi.paint(.dim)); // gray → bright black
     try std.testing.expectEqualStrings("\x1b[37;100m", ansi.paint(.code_block)); // fg2 on bg1
     try std.testing.expectEqualStrings("\x1b[1;96m", ansi.paint(.header)); // aqua → bright cyan
-    try std.testing.expectEqualStrings("\x1b[91m", ansi.paint(.diff_remove)); // red → bright red
+    try std.testing.expectEqualStrings("\x1b[91m", ansi.paint(.diff_remove)); // red → bright red, no band
+    try std.testing.expectEqualStrings("\x1b[7;92m", ansi.paint(.diff_add_change)); // the band's substitute
+    // The diff bands: accent on a dark shade, the changed bytes on its tint.
+    try std.testing.expectEqualStrings("\x1b[38;2;184;187;38;48;2;47;58;30m", th.paint(.diff_add));
+    try std.testing.expectEqualStrings("\x1b[38;2;251;73;52;48;2;101;44;44m", th.paint(.diff_remove_change));
+    try std.testing.expectEqualStrings("\x1b[38;5;167;48;5;52m", dim.paint(.diff_remove));
     const bare = Theme{ .kind = .plain };
     // …and the attribute is what carries it where there is none.
     try std.testing.expectEqualStrings("\x1b[2m", bare.paint(.dim));
@@ -554,6 +588,8 @@ test "styles resolve to static sequences per support level" {
     try std.testing.expectEqualStrings("\x1b[4m", bare.paint(.code));
     try std.testing.expectEqualStrings("\x1b[7m", bare.paint(.status_bg));
     try std.testing.expectEqualStrings("\x1b[1;7m", bare.paint(.choice_selected));
+    try std.testing.expectEqualStrings("", bare.paint(.diff_add)); // the marker cell says it
+    try std.testing.expectEqualStrings("\x1b[7m", bare.paint(.diff_add_change));
     for (std.enums.values(Style)) |style| {
         for (std.enums.values(Kind)) |kind| {
             for (std.enums.values(Name)) |name| {

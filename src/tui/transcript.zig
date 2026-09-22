@@ -504,12 +504,19 @@ pub const Transcript = struct {
     fn renderDiff(self: *const Transcript, a: Allocator, out: *std.ArrayList(Row), d: Block.Diff, options: Render) !void {
         _ = self;
         const gl = options.th.glyphs();
-        try out.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {s}", .{ gl.fold_open, d.path }), .style = .diff_header });
+        var added: usize = 0;
+        var removed: usize = 0;
+        for (d.rows) |row| switch (row.kind) {
+            .add => added += 1,
+            .remove => removed += 1,
+            .context => {},
+        };
+        try out.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {s}  {s}{d} {s}{d}", .{ gl.fold_open, d.path, gl.diff_add, added, gl.diff_remove, removed }), .style = .diff_header });
         var produced: std.ArrayList(Row) = .empty;
         if (options.width >= side_by_side_min_width) {
             try renderSideBySide(a, &produced, d.rows, options);
         } else {
-            try renderUnified(a, &produced, d.rows, options.th);
+            try renderUnified(a, &produced, d.rows, options);
         }
         if (produced.items.len > max_diff_rows and max_diff_rows > 1) {
             const hidden = produced.items.len - (max_diff_rows - 1);
@@ -525,24 +532,37 @@ pub const Transcript = struct {
     }
 };
 
-/// The unified single-column form: `-`/`+`/space before each row, coloured.
-fn renderUnified(a: Allocator, out: *std.ArrayList(Row), rows: []const diff.Row, th: theme.Theme) !void {
+/// The gutter's column widths: the widest old and new line number.
+const Gutter = struct {
+    old: usize,
+    new: usize,
+
+    fn measure(rows: []const diff.Row) Gutter {
+        var g: Gutter = .{ .old = 1, .new = 1 };
+        for (rows) |row| {
+            if (row.old_line) |n| g.old = @max(g.old, decimals(n));
+            if (row.new_line) |n| g.new = @max(g.new, decimals(n));
+        }
+        return g;
+    }
+};
+
+/// The unified single-column form: both line numbers in one gutter, the
+/// marker cell, then the text on its band.
+fn renderUnified(a: Allocator, out: *std.ArrayList(Row), rows: []const diff.Row, options: Render) !void {
+    const th = options.th;
+    const g = Gutter.measure(rows);
+    const gutter = g.old + 1 + g.new + 1;
+    const cells = options.width -| (gutter + 2);
     for (rows) |row| {
-        const sign: u8 = switch (row.kind) {
-            .context => ' ',
-            .remove => '-',
-            .add => '+',
-        };
-        const base: theme.Style = switch (row.kind) {
-            .context => .dim,
-            .remove => .diff_remove,
-            .add => .diff_add,
-        };
         var w: std.Io.Writer.Allocating = .init(a);
-        try w.writer.writeAll(th.paint(base));
-        try w.writer.writeByte(sign);
-        try writeHighlighted(&w.writer, row.text, row.change, base, th);
+        try w.writer.writeAll(th.paint(.dim));
+        try writeNumber(&w.writer, row.old_line, g.old);
+        try w.writer.writeByte(' ');
+        try writeNumber(&w.writer, row.new_line, g.new);
+        try w.writer.writeByte(' ');
         try w.writer.writeAll(theme.reset);
+        try writeBanded(&w.writer, a, row, cells, th);
         try out.append(a, .{ .text = w.written(), .raw = true });
     }
 }
@@ -550,19 +570,18 @@ fn renderUnified(a: Allocator, out: *std.ArrayList(Row), rows: []const diff.Row,
 /// The two-pane form: old line number and text on the left, new on the right,
 /// a removal paired with the addition it became on one display row.
 fn renderSideBySide(a: Allocator, out: *std.ArrayList(Row), rows: []const diff.Row, options: Render) !void {
-    var old_digits: usize = 1;
-    var new_digits: usize = 1;
-    for (rows) |row| {
-        if (row.old_line) |n| old_digits = @max(old_digits, decimals(n));
-        if (row.new_line) |n| new_digits = @max(new_digits, decimals(n));
-    }
-    const overhead = old_digits + new_digits + 1 + 3 + 1; // two numbers, spaces, " │ "
+    const g = Gutter.measure(rows);
+    // Two gutters with their spaces, two marker cells with theirs, ` │ `.
+    const overhead = g.old + 1 + g.new + 1 + 4 + 3;
     const pane = if (options.width > overhead + 8) (options.width - overhead) / 2 else 8;
+    // An odd width leaves one cell; the right pane takes it so the bands
+    // reach the edge.
+    const panes: [2]usize = .{ pane, if (options.width > overhead + 8) options.width - overhead - pane else pane };
 
     var i: usize = 0;
     while (i < rows.len) {
         if (rows[i].kind == .context) {
-            try sideRow(a, out, rows[i], rows[i], old_digits, new_digits, pane, options.th);
+            try sideRow(a, out, rows[i], rows[i], g, panes, options.th);
             i += 1;
             continue;
         }
@@ -576,47 +595,58 @@ fn renderSideBySide(a: Allocator, out: *std.ArrayList(Row), rows: []const diff.R
         for (0..pairs) |k| {
             const left: ?diff.Row = if (k < removes) rows[i + k] else null;
             const right: ?diff.Row = if (k < adds) rows[removes_end + k] else null;
-            try sideRow(a, out, left, right, old_digits, new_digits, pane, options.th);
+            try sideRow(a, out, left, right, g, panes, options.th);
         }
         i = adds_end;
     }
 }
 
-fn sideRow(a: Allocator, out: *std.ArrayList(Row), left: ?diff.Row, right: ?diff.Row, old_digits: usize, new_digits: usize, pane: usize, th: theme.Theme) !void {
+fn sideRow(a: Allocator, out: *std.ArrayList(Row), left: ?diff.Row, right: ?diff.Row, g: Gutter, panes: [2]usize, th: theme.Theme) !void {
     var w: std.Io.Writer.Allocating = .init(a);
     try w.writer.writeAll(th.paint(.dim));
-    try writeNumber(&w.writer, if (left) |row| row.old_line else null, old_digits);
+    try writeNumber(&w.writer, if (left) |row| row.old_line else null, g.old);
     try w.writer.writeByte(' ');
-    if (left) |row| try writePane(&w.writer, a, row, pane, th) else try writeBlankPane(&w.writer, pane);
+    try w.writer.writeAll(theme.reset);
+    if (left) |row| try writeBanded(&w.writer, a, row, panes[0], th) else try writeBlank(&w.writer, panes[0] + 2);
     try w.writer.writeAll(th.paint(.dim));
     try w.writer.writeByte(' ');
     try w.writer.writeAll(th.glyphs().table_bar);
     try w.writer.writeByte(' ');
-    try w.writer.writeAll(th.paint(.dim));
-    try writeNumber(&w.writer, if (right) |row| row.new_line else null, new_digits);
+    try writeNumber(&w.writer, if (right) |row| row.new_line else null, g.new);
     try w.writer.writeByte(' ');
-    if (right) |row| try writePane(&w.writer, a, row, pane, th) else try writeBlankPane(&w.writer, pane);
     try w.writer.writeAll(theme.reset);
+    if (right) |row| try writeBanded(&w.writer, a, row, panes[1], th) else try writeBlank(&w.writer, panes[1] + 2);
     try out.append(a, .{ .text = w.written(), .raw = true });
 }
 
-/// One pane's text: fitted to the pane width, the changed span reversed, then
-/// padded with spaces so the separator column lines up.
-fn writePane(w: *std.Io.Writer, a: Allocator, row: diff.Row, cells: usize, th: theme.Theme) !void {
-    const fitted = try view.fit(a, row.text, cells);
+/// The marker cell, a space, and the row's text fitted to `cells`, all on
+/// the row's band, padded to the full width so the band reads as one. A
+/// context row has no band and its text is dim.
+fn writeBanded(w: *std.Io.Writer, a: Allocator, row: diff.Row, cells: usize, th: theme.Theme) !void {
+    const gl = th.glyphs();
     const base: theme.Style = switch (row.kind) {
         .add => .diff_add,
         .remove => .diff_remove,
         .context => .dim,
     };
+    const marker = switch (row.kind) {
+        .add => gl.diff_add,
+        .remove => gl.diff_remove,
+        .context => " ",
+    };
+    // A CRLF file's rows keep their `\r`; the terminal must not see it.
+    const text = std.mem.trimEnd(u8, row.text, "\r");
+    const fitted = try view.fit(a, text, cells);
     try w.writeAll(th.paint(base));
+    try w.writeAll(marker);
+    try w.writeByte(' ');
     try writeHighlighted(w, fitted, clampSpan(row.change, fitted.len), base, th);
-    try w.writeAll(theme.reset);
     var pad = cells -| view.width(fitted);
     while (pad > 0) : (pad -= 1) try w.writeByte(' ');
+    try w.writeAll(theme.reset);
 }
 
-fn writeBlankPane(w: *std.Io.Writer, cells: usize) !void {
+fn writeBlank(w: *std.Io.Writer, cells: usize) !void {
     var pad = cells;
     while (pad > 0) : (pad -= 1) try w.writeByte(' ');
 }
@@ -629,17 +659,21 @@ fn writeNumber(w: *std.Io.Writer, number: ?usize, width: usize) !void {
     try w.writeAll(text);
 }
 
-/// Writes `text`, wrapping the changed bytes in the highlight style and
-/// returning to `base` afterwards. The bytes come from a file, so they are
-/// sanitized here: the row is `raw` and the screen will not do it.
+/// Writes `text`, wrapping the changed bytes in the row's highlight style
+/// and returning to `base` afterwards. The bytes come from a file, so they
+/// are sanitized here: the row is `raw` and the screen will not do it.
 fn writeHighlighted(w: *std.Io.Writer, text: []const u8, change: ?diff.Span, base: theme.Style, th: theme.Theme) !void {
     const span = change orelse return view.safe(w, text);
     const start = @min(span.start, text.len);
     const end = @min(span.start + span.len, text.len);
     if (end <= start) return view.safe(w, text);
+    const highlight: theme.Style = if (base == .diff_remove) .diff_remove_change else .diff_add_change;
     try view.safe(w, text[0..start]);
-    try w.writeAll(th.paint(.diff_change));
+    try w.writeAll(th.paint(highlight));
     try view.safe(w, text[start..end]);
+    // A reset, not just the base: at the plain level the highlight is an
+    // attribute and the base paints nothing that would clear it.
+    try w.writeAll(theme.reset);
     try w.writeAll(th.paint(base));
     try view.safe(w, text[end..]);
 }
@@ -891,9 +925,9 @@ test "every block kind renders, including the ones phase 2 produces" {
     // The result's text is the model's; the reader sees the tool's one row.
     try testing.expect(std.mem.indexOf(u8, s, "line one") == null);
     try testing.expect(std.mem.indexOf(u8, s, "└ lines 1 to 2 of 9 · truncated, continue with offset=3") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "▾ src/main.zig") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "-old") != null);
-    try testing.expect(std.mem.indexOf(u8, s, "+new") != null);
+    try testing.expect(std.mem.indexOf(u8, s, "▾ src/main.zig  +1 −1") != null);
+    try testing.expect(std.mem.indexOf(u8, s, "− old") != null);
+    try testing.expect(std.mem.indexOf(u8, s, "+ new") != null);
     try testing.expect(std.mem.indexOf(u8, s, "└ no such file") != null);
     try testing.expect(std.mem.indexOf(u8, s, "older turns dropped") != null);
     // A command's answer is content: it carries no style at all, so it is
@@ -1064,11 +1098,93 @@ test "a diff renders side by side when wide and unified when narrow" {
     const narrow = try texts(a, try tr.takeClosed(a, .{ .width = 60, .th = .{ .kind = .plain } }));
     // The unified form shows the change too, but as `-`/`+` rows with no
     // second pane.
-    try testing.expect(std.mem.indexOf(u8, narrow, "old value") != null);
-    try testing.expect(std.mem.indexOf(u8, narrow, "new value") != null);
+    try testing.expect(std.mem.indexOf(u8, narrow, "− old value") != null);
+    try testing.expect(std.mem.indexOf(u8, narrow, "+ new value") != null);
     try testing.expect(std.mem.indexOf(u8, narrow, "│") == null);
-    try testing.expect(std.mem.indexOf(u8, narrow, "+") != null);
-    try testing.expect(std.mem.indexOf(u8, narrow, "-") != null);
+}
+
+/// The rows of a diff as text: escapes stripped, trailing pad removed.
+fn diffTexts(a: Allocator, rows: []const Row) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (rows) |row| try out.append(a, std.mem.trimEnd(u8, try stripped(a, row.text), " "));
+    return out.items;
+}
+
+test "the diff gutter, marker, and bands: unified and side by side, unicode and ascii" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // An insertion, a deletion, a paired replacement with a changed span,
+    // CRLF context, and a two-digit gutter.
+    const rows = [_]diff.Row{
+        .{ .old_line = 9, .new_line = 9, .kind = .context, .text = "keep\r" },
+        .{ .old_line = 10, .kind = .remove, .text = "old value", .change = .{ .start = 0, .len = 3 } },
+        .{ .new_line = 10, .kind = .add, .text = "new value", .change = .{ .start = 0, .len = 3 } },
+        .{ .new_line = 11, .kind = .add, .text = "inserted" },
+        .{ .old_line = 11, .new_line = 12, .kind = .context, .text = "tail" },
+        .{ .old_line = 12, .kind = .remove, .text = "gone" },
+        .{ .old_line = 13, .new_line = 13, .kind = .context, .text = "end" },
+    };
+    const plain: theme.Theme = .{ .kind = .plain };
+    var tr = transcript();
+    defer tr.deinit();
+
+    // Unified at 80: one gutter with both numbers, the marker, the text.
+    try tr.apply(.{ .diff = .{ .path = "a.zig", .rows = &rows } });
+    const unified = try tr.takeClosed(a, .{ .width = 80, .th = plain });
+    const expected_unified = [_][]const u8{
+        "▾ a.zig  +2 −2",
+        " 9  9   keep",
+        "10    − old value",
+        "   10 + new value",
+        "   11 + inserted",
+        "11 12   tail",
+        "12    − gone",
+        "13 13   end",
+    };
+    const got_unified = try diffTexts(a, unified);
+    try testing.expectEqual(expected_unified.len, got_unified.len);
+    for (expected_unified, got_unified) |want, got| try testing.expectEqualStrings(want, got);
+    // Every diff row is padded to the full width, so a band spans it, and
+    // the CRLF row's `\r` never reaches the terminal.
+    for (unified[1..]) |row| try testing.expectEqual(@as(usize, 80), view.styledWidth(row.text));
+    try testing.expect(std.mem.indexOf(u8, unified[1].text, "\r") == null);
+
+    // Side by side at 120: the pair on one row, an unpaired side blank.
+    tr.reset();
+    try tr.apply(.{ .diff = .{ .path = "a.zig", .rows = &rows } });
+    const wide = try tr.takeClosed(a, .{ .width = 120, .th = plain });
+    const got_wide = try diffTexts(a, wide);
+    try testing.expectEqual(@as(usize, 7), got_wide.len);
+    try testing.expect(std.mem.startsWith(u8, got_wide[1], " 9   keep"));
+    try testing.expect(std.mem.endsWith(u8, got_wide[1], " │  9   keep"));
+    try testing.expect(std.mem.startsWith(u8, got_wide[2], "10 − old value"));
+    try testing.expect(std.mem.endsWith(u8, got_wide[2], " │ 10 + new value"));
+    try testing.expect(std.mem.startsWith(u8, got_wide[3], "    "));
+    try testing.expect(std.mem.endsWith(u8, got_wide[3], " │ 11 + inserted"));
+    try testing.expect(std.mem.startsWith(u8, got_wide[5], "12 − gone"));
+    try testing.expect(std.mem.endsWith(u8, got_wide[5], " │"));
+    for (wide[1..]) |row| try testing.expectEqual(@as(usize, 120), view.styledWidth(row.text));
+
+    // The styles: the gutter dim, the row on its band, the span on the tint.
+    const th: theme.Theme = .{ .kind = .truecolor };
+    tr.reset();
+    try tr.apply(.{ .diff = .{ .path = "a.zig", .rows = &rows } });
+    const styled = try tr.takeClosed(a, .{ .width = 80, .th = th });
+    try testing.expect(std.mem.startsWith(u8, styled[2].text, th.paint(.dim)));
+    try testing.expect(std.mem.indexOf(u8, styled[2].text, th.paint(.diff_remove)) != null);
+    try testing.expect(std.mem.indexOf(u8, styled[2].text, th.paint(.diff_remove_change)) != null);
+    try testing.expect(std.mem.indexOf(u8, styled[3].text, th.paint(.diff_add_change)) != null);
+    try testing.expect(std.mem.indexOf(u8, styled[4].text, th.paint(.diff_add)) != null);
+    try testing.expect(std.mem.indexOf(u8, styled[4].text, th.paint(.diff_add_change)) == null);
+
+    // ASCII: the markers and the bar from the other table.
+    tr.reset();
+    try tr.apply(.{ .diff = .{ .path = "a.zig", .rows = &rows } });
+    const ascii = try diffTexts(a, try tr.takeClosed(a, .{ .width = 120, .th = .{ .kind = .plain, .glyph_set = .ascii } }));
+    try testing.expectEqualStrings("v a.zig  +2 -2", ascii[0]);
+    try testing.expect(std.mem.startsWith(u8, ascii[2], "10 - old value"));
+    try testing.expect(std.mem.endsWith(u8, ascii[2], " | 10 + new value"));
 }
 
 test "a diff taller than the budget folds under a marker" {
