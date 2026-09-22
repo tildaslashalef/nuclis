@@ -663,7 +663,7 @@ handoff. Neither is a generic Hermes JSON payload.
   `runLoop` has today. Adapters register explicitly and the engine
   dispatches on `general.architecture` (landed as MODL-04 on 2026-09-11:
   `inference.models.table`, `profiles.Profile`;
-  [architecture § 9](architecture.md#9-adding-a-model)). The executable keeps presentation
+  [architecture § 10](architecture.md#10-adding-a-model)). The executable keeps presentation
   only: `generate` writes text, `bench` aggregates timings, the agent
   renders and executes. As of AGNT-01 session 2, `tools` are the shared
   `profiles.ToolDefinition` list. `profiles/qwen38.zig` renders the

@@ -62,7 +62,7 @@ event kind without rendering it is a compile error rather than a row that
 silently never appears.
 
 **The original hold-back.** A model writes one stream with its reasoning channel
-delimited by markers ([§46 of the inference companion](../llm-guide.md#46-a-prompt-profile-is-a-contract-template-stop-set-and-reasoning-markers)). Splitting it *incrementally* has a trap: while the
+delimited by markers ([§7 of the inference companion](../llm-guide.md#7-the-prompt-profile-is-a-contract)). Splitting it *incrementally* has a trap: while the
 channel is open, the first bytes of a half-arrived `</think>` look exactly like
 reasoning text, and a naive splitter puts `</thi` on the screen for one token
 before reclassing it. Keeping back one marker's length minus one byte makes
@@ -373,7 +373,7 @@ and no change to the loop: a second format is a second fixture set, not a
 branch in the loop. Its handoff is even a different mechanism — the model
 emits `<|tool_response>` after its calls, so that token is simply one more
 stop token in the profile's set.
-This is the same trade as [§43 of the inference companion](../llm-guide.md#43-a-registry-built-from-a-table-the-seam-before-the-second-model): the variation is named once, at the
+This is the same trade as [§24 of the inference companion](../llm-guide.md#24-the-registry-table): the variation is named once, at the
 seam, and the code above the seam stays single.
 
 ## 10. Resuming a session is a replay, not a restore
@@ -381,7 +381,7 @@ seam, and the code above the seam stays single.
 The intuition that saving a conversation means saving the model's state is the
 one to resist. A `Session` is a page-aligned block of attention rows and, for
 this hybrid, recurrent vectors; it cannot survive a process exit, and it cannot
-be rewound by truncating a cache ([§39 of the inference companion](../llm-guide.md#39-checkpoints-not-rewinds-why-a-hybrid-model-copies-its-state)). So `~/.nuclis/agent/sessions/*.jsonl`
+be rewound by truncating a cache ([§22 of the inference companion](../llm-guide.md#22-checkpoints-not-rewinds)). So `~/.nuclis/agent/sessions/*.jsonl`
 stores the other thing: the **conversation** — what the user typed, what the
 model reasoned and answered, which call it made, what the tool returned. That
 is exactly the input the render function needs, and nothing else.

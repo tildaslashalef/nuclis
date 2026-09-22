@@ -89,6 +89,11 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
+REPO-12 closed on 2026-09-22: the architecture guide follows the KV cache
+end to end and is current with the tree, and the inference guide is
+rewritten as a 27-section narrative
+([log](docs/engineering-log.md#repo-12--the-architecture-guide-follows-the-kv-cache-end-to-end-the-inference-guide-rewritten-as-one-narrative-2026-09-22)).
+
 **Next: TERM-10 session 2** (the diff gutter and bands, the markdown
 hardening, `!` commands, Ctrl-O, Ctrl-X/Ctrl-G; then the log entry with
 the harness captures). Session 1 closed its items 0–10 on 2026-09-21 in

@@ -112,6 +112,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-10 | Benchmark workloads as data and generated record tables | 2026-09-21 |
 | APPS-15 | `config init --discover` and self-contained help pages | 2026-09-21 |
 | APPS-16 | Output budget: default 4096, cap 16384 | 2026-09-21 |
+| REPO-12 | The architecture guide follows the KV cache end to end; the inference guide rewritten as one narrative | 2026-09-22 |
 
 ## Context
 
@@ -4221,3 +4222,46 @@ this log.
 **Remaining.** A default tied to the reasoning effort was considered and
 not built; a per-entry `generation.max_tokens` covers a model that needs
 another value.
+
+## REPO-12 — The architecture guide follows the KV cache end to end; the inference guide rewritten as one narrative (2026-09-22)
+
+**Outcome.** `docs/architecture.md` gains § 5, *The KV cache, end to end*:
+where the cache is declared (`session.Layout.attention`, `Rows`), written
+(`qwen35_runtime.fullAttention`; the Metal plan's direct slot or the
+`nu_pack_half` path), read (`nu_attention_decode`, `nu_attention_chunk`,
+`cpu.attention.apply`), and rewound (by position), with the F16 trade-off
+in the trace gates' numbers. The later sections renumber to 6–12 and the
+guide is brought to the tree as it stands: the speculative loop and the
+draft contract in § 1 and § 10, the Metal `tick` in § 7 and § 12, the three
+families and their companions in § 2 and § 10, 477 tests in § 8, the gate
+and workload registries, the performance chain through the penalty kernel
+and the speculative verdict with the kernel levers that closed below their
+targets, and the speculation and ring-layout facts in § 12.
+`docs/llm-guide.md` is rewritten from its 49 accreted sections (2,343
+lines) into a 27-section narrative in ten parts (1,051 lines), the
+user's request: the numbers that decide everything, the file, text, one
+token on the CPU, the GPU, prefill, long context, speculation, families,
+honesty, and a closing list of what it took. Every technique is one the
+tree implements, every number a measurement from it, and each section ends
+with the files to read; the agent and terminal material stays in
+`reference/agent-concepts.md`.
+
+**Evidence.** Documentation only. Every link in the two guides and in the
+files whose anchors moved (`agent-concepts.md`, `gemma4.md`,
+`metal-backend.md`, `agent-spec.md`) was checked by script against the
+target headings; the function and kernel names the new text cites
+(`speculativeBatch`, `nu_pack_half`, `nu_penalize`, `nu_topk_partial`,
+`Session.checkpoint/rewind/truncate`, `Backend.tick`) were grepped in the
+tree.
+
+**Files.** `docs/architecture.md`, `docs/llm-guide.md`,
+`docs/agent-spec.md`, `docs/reference/agent-concepts.md`,
+`docs/reference/gemma4.md`, `docs/reference/metal-backend.md`, `TODO.md`,
+and this log.
+
+**Remaining.** The guide has no section on the tokenizer's Unicode table
+generation or on the configuration schema's comptime reflection, both of
+which the old guide covered in detail; they are engineering technique
+rather than inference-stack technique and live in `development.md` and the
+module docs. The old guide's per-unit numbers that the narrative dropped
+remain in the log and the reference documents it points to.

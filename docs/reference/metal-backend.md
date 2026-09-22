@@ -108,7 +108,7 @@ Shapes come from parameters; nothing is hard-coded to Qwen.
 
 How each kernel maps onto threadgroups and SIMD groups (32 lanes), and
 which cross-lane operations it relies on. The concepts are explained in
-[llm-guide.md § 35](../llm-guide.md#35-simd-groups-which-layer-they-live-in);
+[llm-guide.md § 12](../llm-guide.md#12-lanes-simd-groups-and-where-they-live);
 the SIMD-level optimizations of the decode matvec are in
 [§ Specialized matvec](#specialized-matvec) and the negative results in
 [§ KERN-05](#kern-05--per-block-cost-research-2026-09-08-closed-without-a-kernel-change).

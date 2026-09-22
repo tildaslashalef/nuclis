@@ -226,7 +226,7 @@ both carry both. The chat splits the turn on `<|channel>thought\n` …
 `<channel|>` (both user-defined tokens, always decoded as text). The engine
 no longer assumes Qwen's "EOS or BOS" pair or the chat `</think>`: both
 were latent Qwen assumptions outside the profile, found by the second
-model ([llm-guide § 46](../llm-guide.md#46-a-prompt-profile-is-a-contract-template-stop-set-and-reasoning-markers)).
+model ([llm-guide § 7](../llm-guide.md#7-the-prompt-profile-is-a-contract)).
 
 **Sampling.** The profile's defaults are the file's own hint,
 `general.sampling.temp` 1.0 / `top_p` 0.95 / `top_k` 64, the same in both
