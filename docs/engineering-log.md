@@ -114,6 +114,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-16 | Output budget: default 4096, cap 16384 | 2026-09-21 |
 | REPO-12 | The architecture guide follows the KV cache end to end; the inference guide rewritten as one narrative | 2026-09-22 |
 | REPO-13 | One specification: `spec.md` rewritten as a technical specification with the agent spec merged in | 2026-09-22 |
+| TERM-10 | Chat polish: the repaint tick, the frame, the operation rows, the banded diff, and the editor's shell and keys | 2026-09-21 / 2026-09-22 |
 
 ## Context
 
@@ -4314,3 +4315,92 @@ edits only).
 **Remaining.** The spec names no minimum macOS or SDK version and no
 numerical tolerance values (they are per family and per mode in the
 gates); both were open questions in the old document and stay so.
+
+## TERM-10 — Chat polish: the repaint tick, the frame, the operation rows, the banded diff, and the editor's shell and keys (2026-09-21 / 2026-09-22)
+
+**Outcome.** The agent's surface was rewritten where it is looked at, in
+two sessions against a harness that drives it without a person at the
+keyboard.
+
+Session 1 (2026-09-21) delivered the tick and the frame. `scripts/tui-shot.py`
+(`make shot`) runs `nuclis agent` in a detached tmux session and captures
+its screen as text, as an escape stream, and as a tagged form where every
+styled run reads as `[fg=#hex bg=#hex bold]…[/]`; a burst captures at a
+fixed rate and reports which frames changed. The Metal backend's `commit`
+gained a `tick` that polls the command buffer and calls back every 100 ms
+instead of blocking in `waitUntilCompleted`, and the surface installs its
+poll-and-draw there, so a prefill chunk repaints ten times a second;
+`Screen.paintFrom` rewrites only from the first row that differs from the
+last frame, which is what makes that cadence cheap. The warm-up is a live
+row with a countdown and closes with a notice. The header is boxed, the
+input box is framed in the effort's colour with the spinner in its top
+edge while a turn runs, the status bar is two groups (measurements left,
+settings right), and a tool call is a coloured dot and `Name(argument)`
+that pulses while it runs and settles green, red, or blue, with write and
+edit summaries and a dim row counting each run of calls.
+
+Session 2 (2026-09-22) delivered the diff, the renderer's hardening, and
+the editor's shell and keys. A mutation's diff now has a header with the
+path and its `+N −M` counts, a dim gutter of old and new line numbers, a
+marker cell, and the row's text on a band of its hue padded to the full
+width, with the bytes that changed on a brighter tint of the same hue;
+side by side from 96 columns, unified below. The markdown renderer keeps a
+soft line break inside a paragraph as a line break, draws nested quotes as
+one bar per level, reads `***bold italic***`, and never emits a row wider
+than the width it was given. A line that starts with `!` runs through the
+`bash` tool and sends its output to the model as the next message, `!!`
+runs it for the user alone; Ctrl-O folds the tool output of the last turn,
+Ctrl-X copies the last answer through OSC 52, and Ctrl-G opens the input
+in `$VISUAL`/`$EDITOR` with the terminal lease released around the child.
+
+**Evidence.** `make check` passes with 487 tests (476 at the end of
+session 1). The session's own tests: goldens for every diff row form at
+both glyph sets and at 80 and 120 columns, asserting each row is padded
+to exactly the width; a prefix fuzz that feeds every byte prefix of ten
+fixture documents through `split` and `render` and asserts no error, no
+control byte outside an escape, a bounded row count, and no row past the
+edge (about 3 s); pathological goldens (a 10,000-character line becomes
+250 rows of exactly 40 cells, 64 nesting levels cap at three indents, an
+unclosed fence runs to the end of the stream, a 40-column table is cut at
+the width, a heading of only `#` stays text, an escape in a link target is
+refused while a clean target becomes a hyperlink, mixed CRLF loses every
+`\r`); and a streaming test that counts `markdown.render` calls over a
+document fed byte by byte, pinning one render per closed block rather than
+one per token. `make verify-changed BASE=22005bf` selects no gate, session 2 having
+touched only the surface; the Metal tier was started and stopped partway
+by the user for that reason, with 21 of its gates passed and none failed
+at the point it was stopped. Session 1's Metal wait change, the one engine
+change of the unit, was closed then by `checkTick` in metal-check (5 calls
+over a 568 ms wait, 0 over a short one) and by `make gate
+NAME='qwen38-trace-*'`.
+
+The live captures under `.zig-cache/tui/`, taken with `make shot` against
+Qwen3.8-27B on Metal: `idle` (the boxed header, the framed editor, the
+two-group bar), `warm2.burst.json` (61 frames, 53 changed, mean interval
+0.108 s, against one frame per 3 s before the tick), `shell-send` (a `!`
+command's block and the model's reply to its output), `tool` and
+`tool-folded`, `diff` and `diff-folded` (the banded side-by-side diff with
+its gutter, and the same diff folded to its header by Ctrl-O), `copied`
+with `clip.buffer.txt` (the bar reads `copied` and tmux's paste buffer
+holds the 13 bytes of the last answer), and `edited` (the input handed to
+Neovim and returned as the edited text, the region repainting cleanly
+after the child).
+
+**Files.** `src/tui/` (`transcript.zig`, `theme.zig`, `markdown.zig`,
+`terminal.zig`, `screen.zig`, `banner.zig`, `status.zig`, `editor.zig`),
+`src/agent/` (`root.zig`, `loop.zig`, `commands.zig`, `tools/root.zig`),
+`inference/src/backends/metal/` (`bridge.m`, `root.zig`),
+`inference/src/engine.zig`, `scripts/tui-shot.py`, `Makefile`,
+`docs/development.md`, `docs/spec.md`, `TODO.md`, and this log.
+
+**Remaining.** The harness's Ghostty path (a real window photographed with
+`screencapture`) is written but was never exercised; the text captures
+were enough. A fold or a resize still leaves a turn taller than the space
+above the live region alone, as before. Ctrl-G repaints the region in
+place when the child exits and relies on the terminal restoring the screen
+a full-screen editor took (verified with Neovim under tmux). A `!`
+command's output is shown to 40 rows, while the model receives all of it
+within the tool's own bounds. The replay mode discussed in session 1 —
+driving the surface from a recorded event file with no engine open — stays
+deferred; the harness with the real model costs about 25 s a run, which
+was enough for both sessions.
