@@ -18,7 +18,7 @@ tool and can inspect other architectures with recognized tensor layouts.
 ## Accepted profile
 
 The adapter accepts the metadata dimensions and tensor forms observed in the
-[pinned artifact](../spec.md#target-model-and-download). It verifies required
+[pinned artifact](../spec.md#4-supported-models-and-artifacts). It verifies required
 metadata types and values, including attention/SSM dimensions, normalization
 epsilon, RoPE base and sections, vocabulary size, and quantization version.
 Unknown `qwen35.*` metadata is rejected so an unimplemented schedule or RoPE

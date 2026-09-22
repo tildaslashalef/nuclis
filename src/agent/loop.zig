@@ -1,6 +1,6 @@
 //! The agent loop: a turn is a sequence of steps, and a step is one completion
 //! request followed by the sequential execution of every tool call in the
-//! response (docs/agent-spec.md § Agent loop).
+//! response (docs/spec.md § The loop).
 //!
 //! ```
 //! user message ──▶ render + complete ──▶ decoded calls
@@ -36,7 +36,7 @@ const Profile = inference.profiles;
 const Event = tui.event.Event;
 
 /// Model completions allowed in one turn before the loop stops. A host
-/// constant, never model-supplied (agent-spec § Design principles).
+/// constant, never model-supplied (docs/spec.md § The loop).
 pub const budget_default: usize = 16;
 
 /// User turns kept in one conversation, mirroring the surface's own limit.
@@ -560,7 +560,7 @@ pub const Agent = struct {
     }
 
     /// Looks up a registered tool and runs it. An unknown name is a typed
-    /// error result, not a failure (agent-spec § Design principles).
+    /// error result, not a failure (docs/spec.md § The loop).
     fn runTool(self: *Agent, call: Profile.ToolCall) Allocator.Error!tools.Result {
         const tool = tools.find(call.name) orelse
             return tools.fail(self.alloc, "{s} is not a tool I have", .{call.name});

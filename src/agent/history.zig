@@ -3,7 +3,7 @@
 //! the recall keys; this file is the only thing that touches the filesystem,
 //! because the terminal surface does no I/O.
 //!
-//! The rules, in the same spirit as the session files (agent-spec § Sessions
+//! The rules, in the same spirit as the session files (docs/spec.md § Sessions
 //! and storage):
 //!
 //! - **Append-only.** A submitted prompt is one `write` at the end of the

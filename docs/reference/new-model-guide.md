@@ -1,7 +1,7 @@
 # Bringing a new model family into nuclis
 
 The starter guide the spec asked for
-([spec § Interfaces and extension rules](../spec.md#interfaces-and-extension-rules)),
+([spec § Interfaces and extension rules](../spec.md#57-extension-rules)),
 written while Gemma 4 12B went through the seam (MODL-04–MODL-07, 2026-09-11 to
 2026-09-12) and validated by that use. It is the order of work, the
 commands, the gates, and the mistakes already made once. The extension

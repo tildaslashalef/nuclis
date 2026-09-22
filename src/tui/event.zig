@@ -1,5 +1,5 @@
 //! The typed events a turn is made of — the seam between what produces a
-//! conversation and what shows it (agent-spec § Transcript and events).
+//! conversation and what shows it (docs/spec.md § Transcript and status).
 //!
 //! Today the producer is the agent's generation loop; in phase 2 it is the
 //! engine's event stream and the tool loop, and the consumers are the
@@ -16,7 +16,7 @@
 //! of the call: the producer keeps them alive until `apply` returns, and a
 //! consumer that keeps text copies it. The one consumer that stores events —
 //! the session writer — serializes them immediately, so nothing outlives the
-//! call. This is recorded in agent-spec as the step-7 deviation.
+//! call.
 const std = @import("std");
 const diff = @import("diff.zig");
 

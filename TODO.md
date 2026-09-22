@@ -89,6 +89,9 @@ The 26B-A4B head is bound and width-checked but not measured. The verifier's
 row-flat cost is the lever, not the drafter: a cheaper small-batch verify is
 an untaken lever (ENGN-17's record kept the default off).
 
+REPO-13 closed on 2026-09-22: `spec.md` is rewritten as the one
+technical specification with the agent spec merged in and removed
+([log](docs/engineering-log.md#repo-13--one-specification-specmd-rewritten-as-a-technical-specification-with-the-agent-spec-merged-in-2026-09-22)).
 REPO-12 closed on 2026-09-22: the architecture guide follows the KV cache
 end to end and is current with the tree, and the inference guide is
 rewritten as a 27-section narrative

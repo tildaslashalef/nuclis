@@ -29,7 +29,7 @@ pub fn configPath(alloc: Allocator, root_dir: []const u8) ![]u8 {
 
 /// The agent's data root, `<root>/agent`, optionally joined with a relative
 /// path inside it (`"history.jsonl"`, `"sessions"`, `"exports"`; see
-/// docs/agent-spec.md § Sessions and storage). Nothing here creates a
+/// docs/spec.md § Sessions and storage). Nothing here creates a
 /// directory: the caller decides when the agent's state is written, so a
 /// command that never stores anything leaves the filesystem untouched.
 /// Caller-owned storage.

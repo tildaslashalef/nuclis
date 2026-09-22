@@ -113,6 +113,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-15 | `config init --discover` and self-contained help pages | 2026-09-21 |
 | APPS-16 | Output budget: default 4096, cap 16384 | 2026-09-21 |
 | REPO-12 | The architecture guide follows the KV cache end to end; the inference guide rewritten as one narrative | 2026-09-22 |
+| REPO-13 | One specification: `spec.md` rewritten as a technical specification with the agent spec merged in | 2026-09-22 |
 
 ## Context
 
@@ -4271,3 +4272,45 @@ which the old guide covered in detail; they are engineering technique
 rather than inference-stack technique and live in `development.md` and the
 module docs. The old guide's per-unit numbers that the narrative dropped
 remain in the log and the reference documents it points to.
+
+## REPO-13 — One specification: `spec.md` rewritten as a technical specification with the agent spec merged in (2026-09-22)
+
+**Outcome.** `docs/spec.md` is rewritten from the ground up as the one
+authoritative specification, and `docs/agent-spec.md` is removed. The new
+document states requirements and accepted decisions in must/should/may
+language and carries no status, no unit identifiers, no dates, and no
+measurements beyond acceptance criteria: purpose and scope; definitions;
+a decisions table with one reason each; the supported artifacts as the
+catalogue's table; engine requirements (interface, loading, the memory
+model, the session contract, execution, speculative decoding, the
+extension rules, configuration); the CLI with a contract per command and
+the output rules; the agent (surface, editor, transcript and status,
+sessions and storage, the loop, the tools with their limits, print mode,
+what is out of scope); performance requirements; verification; deferred
+work and non-goals; open questions. Both old files were chronologies:
+"implemented as of" annotations, closed milestone lists, planned-module
+layouts that never existed, inline numbers, and phases keyed by unit. The
+rationale that lived in the agent spec (the editor's chip rules, the
+rendering model's slack, the decisions each step made) is already in the
+module docs, `development.md`, and `reference/agent-concepts.md`, so it
+was not carried; the docs-lookup assessment survives as three lines under
+deferred work. 1,460 lines → 550. The user's call.
+
+**Evidence.** Documentation only. Every link into `spec.md` and the
+former `agent-spec.md` across `docs/`, `README.md`, `AGENTS.md`, and the
+module comments under `src/` was redirected to the new sections and
+checked by script against the headings; `make check` passes (the comment
+edits only).
+
+**Files.** `docs/spec.md` (rewritten), `docs/agent-spec.md` (removed),
+`docs/development.md`, `docs/architecture.md`, `docs/reference/`
+(`agent-concepts.md`, `bench.md`, `gguf-inspection.md`,
+`new-model-guide.md`, `qwen-validation.md`, `reference-baseline.md`,
+`speculative-decoding.md`), comments in `src/paths.zig`, `src/tui/`
+(`editor.zig`, `event.zig`, `transcript.zig`, `choice.zig`, `root.zig`),
+`src/agent/` (`root.zig`, `loop.zig`, `resume.zig`, `history.zig`,
+`commands.zig`, `print.zig`), `TODO.md`, and this log.
+
+**Remaining.** The spec names no minimum macOS or SDK version and no
+numerical tolerance values (they are per family and per mode in the
+gates); both were open questions in the old document and stay so.

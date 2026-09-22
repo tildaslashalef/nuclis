@@ -247,7 +247,7 @@ override is an error. Otherwise resolve the root from `HOME`.
                            one JSON object per line, tail-read at startup)
     sessions/<cwd-slug>/   one append-only JSONL file per session
     exports/               `/save` markdown exports
-                           ([agent-spec.md](agent-spec.md#sessions-and-storage))
+                           ([spec.md § Sessions and storage](spec.md#74-sessions-and-storage))
   cache/                   regenerable runtime data (planned)
 ```
 
@@ -338,7 +338,7 @@ and the `models` registry) with a `schema_version`. The sections name a
 sampling) are shared by `generate` and `agent`; `agent` holds only the chat
 surface's own settings (`think`, `fold_thinking`, `theme`, and was named
 `chat` until 2026-09-11, see
-[agent-spec.md](agent-spec.md#configuration)); `bench` reads `engine` plus
+[spec.md § Configuration](spec.md#58-configuration)); `bench` reads `engine` plus
 its own flags. The section was named `generate` until 2026-09-20, when the
 rename made the scope explicit;
 `src/config.zig` is its schema and the built-in defaults. `nuclis config
@@ -521,7 +521,7 @@ reach the scrollback) and scrolls only those, and the region's *bottom*
 stays anchored, so a turn that grows the region pushes the transcript up
 and one that shrinks it releases rows above the editor rather than
 leaving blanks beneath it. A resize replays only the last turn at the new
-width; older turns are left as the terminal reflowed them (agent-spec:
+width; older turns are left as the terminal reflowed them (spec § The agent:
 completed turns are immutable). `NUCLIS_NO_SCROLL_REGION=1` forces the
 cursor-up rewrite fallback for a terminal that mishandles `DECSTBM`, and a
 `dumb` or unset `TERM` turns both capabilities off. The escape stream of
@@ -811,7 +811,7 @@ never a re-tokenized rendering of them; `nuclis tokenize` shows what a text
 prompt becomes before a model runs.
 
 Store model weights and large datasets outside the repository. The initial
-download and checksum are in [spec.md](spec.md#target-model-and-download).
+download and checksum are in [spec.md](spec.md#4-supported-models-and-artifacts).
 Default build and test commands must not fetch them.
 
 Secrets are environment-only and excluded from logs and fixtures. Real session

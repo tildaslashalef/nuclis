@@ -3,7 +3,7 @@
 Companion to implementation, teaching the agent and terminal concepts behind
 `nuclis agent`: how a turn reaches the terminal, how model output becomes typed
 events, and how the tool loop executes a call. The design is in
-[agent-spec.md](../agent-spec.md); the inference stack is taught in the
+[spec.md § The agent](../spec.md#7-the-agent); the inference stack is taught in the
 companion [llm-guide.md](../llm-guide.md).
 
 ## 1. A terminal that is written once: events, blocks, and the line between them

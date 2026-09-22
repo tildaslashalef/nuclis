@@ -1,7 +1,7 @@
 # Speculative decoding: recovery contract, draft sources, measurements
 
 The reference document of the speculative-decoding theme. Its requirements
-are in the [spec](../spec.md#speculative-decoding); the units that fill it
+are in the [spec](../spec.md#56-speculative-decoding); the units that fill it
 in are planned in [TODO.md](../../TODO.md); closed outcomes are cited from
 the [engineering log](../engineering-log.md).
 

@@ -15,7 +15,7 @@
 //! allocator; `layout` borrows a short-lived allocator for the rows it
 //! returns, which die with the frame. `handleKey` returns an `Action` rather
 //! than mutating shared UI state, so a test drives it with keys and asserts
-//! on `layout`. See docs/agent-spec.md § Editor for the design.
+//! on `layout`. See docs/spec.md § Editor for the contract.
 const std = @import("std");
 const theme = @import("theme.zig");
 const screen = @import("screen.zig");

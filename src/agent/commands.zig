@@ -3,8 +3,7 @@
 //! A line the user submits is a prompt unless it is unmistakably a command:
 //! it starts with `/`, and its first word is nothing but ASCII letters. That
 //! rule is what keeps `/usr/bin/env is fine` a question and `/ctx 16384` an
-//! instruction, without a mode, a prefix key, or an escape (agent-spec § Keys
-//! and commands).
+//! instruction, without a mode, a prefix key, or an escape (docs/spec.md § Editor).
 //!
 //! Parsing is pure and lives here; executing belongs to the agent, which owns
 //! the engine and the session. The table below is also the help text and the

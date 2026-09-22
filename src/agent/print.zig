@@ -18,7 +18,7 @@
 //! execute tools: the model's call, each bounded result, and the final answer
 //! all appear in the event stream. A session file is written only when
 //! `--session <path>` names one, so a scripted turn leaves nothing behind
-//! unless it was asked to (agent-spec § Print mode).
+//! unless it was asked to (docs/spec.md § Print mode).
 const std = @import("std");
 const inference = @import("inference");
 const engine = @import("../engine.zig");

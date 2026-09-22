@@ -26,7 +26,7 @@ derive from the same snapshot. Declared dimensions are metadata, not verified
 runtime capabilities. Failures return a nonzero exit status and an error name on
 stderr. Unsupported layouts fail explicitly rather than producing guessed sizes.
 Inspection does not compute a checksum; use the command in the
-[model specification](../spec.md#target-model-and-download) to check identity.
+[model specification](../spec.md#4-supported-models-and-artifacts) to check identity.
 
 ## Verified artifact
 

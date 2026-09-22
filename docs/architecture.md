@@ -140,7 +140,7 @@ signals, and the network.
 | `src` | arguments, configuration, stdout, Ctrl-C, presentation, downloads | equations |
 | `huggingface` | the Hub API, Xet reconstruction, digests, atomic publication | what a GGUF means |
 
-**Read:** [spec.md § Module ownership](spec.md#module-ownership),
+**Read:** [spec.md § Extension rules](spec.md#57-extension-rules),
 [development.md](development.md).
 
 ## 3. Three kinds of memory

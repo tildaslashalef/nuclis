@@ -3,7 +3,7 @@
 //!
 //! A finished turn belongs to the terminal's scrollback and is never
 //! repainted, while a bounded live region at the bottom holds what is still
-//! moving (agent-spec § Rendering model). This module draws that line: it
+//! moving (docs/spec.md § The agent, Surface). This module draws that line: it
 //! keeps the current turn's blocks, each *closed* or open, and offers three
 //! views:
 //!

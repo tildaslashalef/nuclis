@@ -190,7 +190,7 @@ peak-throughput claim would require a separate experiment.
 | Compiler / SDK | Apple clang 21.0.0 (`clang-2100.1.1.101`), macOS SDK 26.5 |
 | Build | CMake 4.4.3, Release, native ARM CPU instructions, Metal and Accelerate |
 | Power | AC; `pmset -g custom` reports AC `powermode 0` |
-| Model | Pinned `Qwen3.8-27B-UD-Q4_K_M.gguf` from the [spec](../spec.md#target-model-and-download) |
+| Model | Pinned `Qwen3.8-27B-UD-Q4_K_M.gguf` from the [spec](../spec.md#4-supported-models-and-artifacts) |
 | Runtime device | Explicit `MTL0`, Apple M4 Pro |
 | Attention / recurrent state | F16 K/V, F32 recurrent state, flash attention enabled |
 

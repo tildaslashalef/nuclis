@@ -401,7 +401,7 @@ methodology, F16 cache. The 32K row is a 30,650-token prefix of the docs
 (`.zig-cache/prompts/p32k.txt`, 128,000 bytes of `docs/*.md` and
 `docs/reference/*.md` concatenated in the order architecture, spec,
 llm-guide, metal-backend, engineering-log, cpu-reference, development,
-agent-spec, cut at a UTF-8 boundary) at `--ctx-size 32768 --max-tokens 64
+the former agent spec, cut at a UTF-8 boundary) at `--ctx-size 32768 --max-tokens 64
 --repeat 1 --warmup 0`: no warmup, so its prefill includes the process's
 first-dispatch costs and the decode rate covers 63 steps. The three-pass
 row was taken with the KERN-07 binary the same day, alone on the GPU:

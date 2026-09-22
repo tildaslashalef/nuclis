@@ -2,7 +2,7 @@
 //! neither the editor nor the transcript.
 //!
 //! It renders *inside the live region* — nuclis has no alternate screen and no
-//! overlay windows (agent-spec § Inline rendering), so a picker is simply a
+//! overlay windows (docs/spec.md § The agent, Surface), so a picker is simply a
 //! few more rows above the prompt. One component serves every use: the slash
 //! command and `@` path completion of phase 1 session 2, the `/resume` session
 //! picker of phase 2, and — if a permission step is ever wanted — an approval

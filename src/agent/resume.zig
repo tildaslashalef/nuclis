@@ -3,7 +3,7 @@
 //! entries into a transcript.
 //!
 //! A resume is a **replay through the profile into a fresh session**, never a
-//! state restore (agent-spec § Sessions and storage). Nothing here touches the
+//! state restore (docs/spec.md § Sessions and storage). Nothing here touches the
 //! engine: the caller resets the session and hands the messages to
 //! `loop.Agent.restore`. Strings in `message` borrow the `Loaded` arena, so
 //! the caller keeps the load alive until the restore call returns.

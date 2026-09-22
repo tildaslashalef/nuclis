@@ -1,5 +1,5 @@
 //! `src/tui/` — the terminal surface of `nuclis agent`, as a module of the
-//! executable rather than a package (agent-spec § Module API). The rule that
+//! executable rather than a package (docs/spec.md § Decisions). The rule that
 //! defines it: **this module imports nothing from `inference`**. It knows
 //! about rows, cells, keys, colours, and escape sequences; it knows nothing
 //! about tokens, sessions, models, or prompts. `src/agent/` owns those and

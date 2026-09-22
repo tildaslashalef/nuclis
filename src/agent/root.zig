@@ -7,7 +7,7 @@
 //! engine-free terminal surface in `src/tui/`. The boundary is one-way —
 //! `src/tui/` never imports `inference` — which lets the surface be tested
 //! without a model and the engine without a terminal. Phase 2's design is in
-//! docs/agent-spec.md.
+//! docs/spec.md § The agent.
 //!
 //! Rendering model: the agent does not own a full-screen cell grid. Startup
 //! clears the visible screen (scrollback preserved), prints a header, and
@@ -244,7 +244,7 @@ const Ui = struct {
     fn draw(self: *Ui) !void {
         const size = self.term.size();
         // A resize invalidates the width every printed row was wrapped at.
-        // Completed turns are immutable (agent-spec § Rendering model): only
+        // Completed turns are immutable (docs/spec.md § The agent, Surface): only
         // the last one is replayed at the new width, older ones are left as
         // the terminal reflowed them, and the region is rebuilt below.
         const resized = self.scr.resized(size);
