@@ -601,3 +601,23 @@ fn allocationCase(alloc: std.mem.Allocator) !void {
 test "prompt rendering cleans up every allocation failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{});
 }
+
+test "a user image renders the vision markers before the text" {
+    const alloc = std.testing.allocator;
+    const refs = [_]profiles.ImageRef{.{ .width_tokens = 4, .height_tokens = 3 }};
+    const prompt = try render(alloc, &.{.{ .role = .user, .content = "describe this image", .images = &refs }}, &.{}, .off, .{});
+    defer alloc.free(prompt);
+    // The boundary, exactly 12 placeholders (4 × 3), the close, then the text.
+    const start = std.mem.indexOf(u8, prompt, "<|vision_start|>").?;
+    const end = std.mem.indexOf(u8, prompt, "<|vision_end|>").?;
+    try std.testing.expect(start < end);
+    var pads: usize = 0;
+    var scan = std.mem.indexOf(u8, prompt, "<|image_pad|>");
+    while (scan) |at| : (scan = std.mem.indexOfPos(u8, prompt, at + 1, "<|image_pad|>")) pads += 1;
+    try std.testing.expectEqual(@as(usize, 12), pads);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "<|vision_end|>describe this image") != null);
+    // No image: no markers.
+    const plain = try render(alloc, &.{.{ .role = .user, .content = "hi" }}, &.{}, .off, .{});
+    defer alloc.free(plain);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "<|vision_start|>") == null);
+}

@@ -125,9 +125,19 @@ serves the first MiB of a larger file with the size stated, and Enter
 steers a running turn (Alt-Enter queues); `newfile` fell from 10–12 steps
 and 240–346 s to 8–9 steps and 138–190 s
 ([log](docs/engineering-log.md#agnt-14--three-measured-fixes-the-qwen-decoder-keeps-a-values-trailing-newline-read_file-serves-the-first-mib-enter-steers-a-running-turn-2026-09-22)).
-**Next: MODL-21** (the vision contract, image input, and the Qwen3.8
-projector; its section below), reordered ahead of the agent units on
-2026-09-22 (the user's call), then AGNT-16 and AGNT-15.
+MODL-21 closed on 2026-09-22: the `inference/src/vision/` contract, the
+image decoders, the exact preprocessing, and the Qwen3.8 `qwen3vl_merger`
+projector on both executors, with image spans through the language model
+(M-RoPE per row, feature rows at prefill) and `generate --image`. The
+projector matches the pinned oracle at 0.39 max abs / 3.9e-3 relative RMS
+(the reference's own CPU/Metal spread is 0.36 / 4.6e-3), the eight greedy
+tokens on the pinned features are identical on both executors, `make
+verify` is 27/27 with every text trace gate unchanged, and `qwen38-vision-cpu`
+passed
+([log](docs/engineering-log.md#modl-21--the-vision-contract-image-input-and-the-qwen38-projector-on-both-executors-2026-09-22),
+[vision.md](docs/reference/vision.md)).
+**Next: AGNT-16** (AGNT-14's three follow-ups; its section below), then
+AGNT-15.
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so
 the model has nothing to do while a command runs in the background, no
@@ -221,11 +231,10 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: MODL-21 → AGNT-16 → AGNT-15 → MODL-22 →
-MODL-23 (reordered 2026-09-22, the user's call: the vision engine lands
-first so AGNT-15's turn step has its projector and the image chip ships
-end to end in one unit; the 2026-09-21 order had every agent unit before
-it). APPS-14 stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
+Order: AGNT-16 → AGNT-15 → MODL-22 →
+MODL-23 (MODL-21 closed first, 2026-09-22, so AGNT-15's turn step has its
+projector; the Gemma 4 and Muse projectors follow the agent units). APPS-14
+stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
 register-reuse attention closed negative, so
@@ -262,7 +271,6 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | AGNT-16 | AGNT-14's follow-ups: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline (ordered 2026-09-22; see its section) | 1 |
 | AGNT-15 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip (was numbered AGNT-11 in the plan; that identifier is closed in the log) | 1 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
@@ -466,63 +474,6 @@ per family, the traces, and the memory; `docs/spec.md` gains the vision
 requirements (moved from the deferred list when MODL-21 opens);
 `docs/spec.md` drops "image input" from *Not in scope* when AGNT-15
 opens.
-
-## MODL-21 — The vision contract, image input, and the Qwen3.8 projector
-
-**Session 1 (facts, then the section rewritten before code).** Read the
-reference's `qwen3vl.cpp` graph (patch embedding conv, the 2D position
-embedding resize, the 27 blocks, the 2×2 spatial merge into `n_embd × 4`
-then the merger MLP `mm_0`/`mm_1` to 5120), `clip.cpp`'s QWEN3VL hparams
-defaults (min/max pixels, `image_resize_algo`) and `set_input` positions
-(the merge-ordered `(y, x)` pairs at ≈ 4781), `mtmd-image.cpp`'s
-`calc_size_preserved_ratio` (align 32 = patch × merge, then min/max
-pixels), and the M-RoPE position build. Dump the reference's projector
-output for the fixture image (the `tools/mtmd/debug` tooling or a `cb`
-hook in `clip.cpp`), and its first 8 greedy tokens for `describe this
-image` on the fixture. Record everything in `vision.md` and rewrite this
-section with the tensor names, shapes, and the tolerance.
-
-**Design.**
-1. `inference/src/vision/`: `root.zig` (the contract above), `image.zig`
-   (P6 PPM; the ImageIO bridge with `-framework ImageIO -framework
-   CoreGraphics` added to `build.zig` beside the Metal bridge), `preprocess.zig`
-   (the smart resize and the reference's resize algorithm for this family,
-   normalize, the `[channel][y][x]` layout the conv expects), `qwen3vl.zig`
-   (the CPU reference: `bind(doc)` validates `clip.projector_type ==
-   "qwen3vl_merger"` and the shapes, `Runtime` runs the conv as a matmul
-   over patch vectors, the blocks with the existing `cpu` kernels, the
-   merge and the MLP), `qwen3vl_metal.zig` (the plan on the existing
-   kernel set: batched matmul tiles over the `n_patches` rows, the chunk
-   attention kernel with a full mask over the image, RMS/LayerNorm, GELU;
-   BF16 weights converted at load to F16 device buffers, recorded in the
-   memory plan).
-2. `Engine.open` gains `vision: ?[]const u8` (the projector path from
-   `models.<name>.mmproj`; `nuclis model ls` marks it loaded-by "the vision
-   unit"); `VisionSourceMismatch` on a projector whose `projection_dim`
-   differs from the model's width. Loading is a load-time decision like
-   the drafter.
-3. The prompt seam and M-RoPE: `Prompt`/`ImageSpan` in `engine.zig`,
-   `locateImageSpans`, the chunk alignment; `Runtime.step`/`Plan.prefill`
-   accept feature rows; `Backend.rope`/`ropeRows` gain a per-section
-   position triple (`(t, h, w)` with the sections [11, 11, 10, 0]; the
-   text path passes `(p, p, p)`, bit-identical to today by construction —
-   `make gate NAME='qwen38-trace-*'` proves it); the Qwen adapter computes the span positions.
-4. `generate --image <path>` (repeatable, ≤ 8) and the rendered prompt:
-   the profile's `render` replaces `[image #N]` with the marker tokens;
-   `tokenize --image` shows the spans; `nuclis validate` reports the
-   projector.
-5. `generation-check --vision-check` (Metal and CPU): the projector's
-   output rows for the fixture against the pinned trace, then greedy
-   tokens against the pinned first 8.
-
-**Acceptance.** The projector trace within the tolerance set in session 1
-on both executors; the 8 greedy tokens identical; the Qwen trace gates unchanged
-(text positions bit-identical); `make check` with unit tests for the PPM
-parser (bounds, malformed files), the smart resize against values computed
-by hand, `locateImageSpans`, and the profile's rendering; the memory record
-(projector weights, activation scratch at 768 × 768: 2,304 patches) in
-`vision.md`; `generate --image` on a photo produces a sensible caption
-(recorded, not asserted).
 
 ## AGNT-16 — AGNT-14's follow-ups: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline (ordered 2026-09-22)
 

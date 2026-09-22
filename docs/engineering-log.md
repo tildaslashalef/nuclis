@@ -117,6 +117,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | TERM-10 | Chat polish: the repaint tick, the frame, the operation rows, the banded diff, and the editor's shell and keys | 2026-09-21 / 2026-09-22 |
 | AGNT-13 | The system prompt as sections, measured: the playground task list, the guidelines that changed behaviour, the instructions file | 2026-09-22 |
 | AGNT-14 | Three measured fixes: the Qwen decoder keeps a value's trailing newline, `read_file` serves the first MiB, Enter steers a running turn | 2026-09-22 |
+| MODL-21 | The vision contract, image input, and the Qwen3.8 projector on both executors | 2026-09-22 |
 
 ## Context
 
@@ -4583,3 +4584,72 @@ boundary, so during a long single step (a 4,000-token reasoning) it waits;
 cancelling with Ctrl-C reclaims it into the queue like any other. The
 guessed test-file read on `newfile` seed 2 is a habit the prompt does not
 name yet.
+
+## MODL-21 — The vision contract, image input, and the Qwen3.8 projector on both executors (2026-09-22)
+
+**Outcome.** The `inference/src/vision/` package turns an image into
+embedding rows the Qwen3.8 language model consumes. `image.zig` decodes P6
+PPM everywhere and, on macOS, PNG/JPEG/HEIC/WebP/TIFF through an ImageIO
+bridge (`image_bridge.m`, the second macOS bridge beside Metal).
+`preprocess.zig` reproduces the reference's pipeline: the smart size
+(round each side to the patch·merge grid, then the pixel bounds), a
+Pillow-compatible separable bicubic resize in 22-bit fixed point with the
+`PAD_CEIL` letterbox, and the channel-planar patch layout normalized and
+rounded to F16 as the convolution reads it. `qwen3vl.zig` /
+`qwen3vl_metal.zig` bind and run the `qwen3vl_merger` projector on both
+executors: the summed 3-D patch convolution, the bilinearly resized learned
+positions, 27 pre-LayerNorm blocks with 2-D vision RoPE and full
+bidirectional attention, the 2×2 spatial merge, and the two-layer merger to
+5120. The language model gained M-RoPE for image spans: a session `Span`
+gives each row its `(t, h, w)` triple (`cpu.rope.applyMultiAxis` on CPU, a
+per-row `chunk_rope` table on Metal), the runtime feeds a feature row in
+place of a token embedding (`stepImage`, the Metal plan copies the chunk's
+rows into `x_c`), and the text rows stay `(p, p, p)`, bit-identical to the
+pre-vision schedule. Attention stays causal by slot: the merged raster
+token order equals the reference's 2-D causal mask, so no mask change was
+needed. `Engine.loadVision` / `encodeImage` / `locateImageSpans` and
+`runLoop`'s `images` argument carry it end to end; `generate --image`
+(repeatable, up to 8) attaches images, the profile renders the Qwen vision
+markers, and the engine substitutes the projector rows at prefill.
+
+**Evidence.** The projector's CPU (F32) and Metal (F16) rows match the
+pinned llama.cpp oracle (`7620399f5`, dumped by `scripts/reference-vision.cpp`
+against libmtmd) at **0.39 max abs / 3.9e-3 relative RMS** on the synthetic
+96×64 fixture — within the **0.36 / 4.6e-3** spread the reference itself
+shows between its two executors. The Pillow bicubic letterbox resize is
+byte-identical to the reference's 128×96 pixels. Feeding the pinned feature
+rows through the language model, the first eight greedy tokens are identical
+to the oracle on both executors (`1919 2099 369 264 4145 11 46596 1452`,
+"This image is a simple, stylized"). `make verify` is **27/27** including
+`qwen38-vision-metal`, with every text trace gate unchanged
+(`qwen38-trace-f32` max abs 6.1e-5); `qwen38-vision-cpu` passed
+(`make verify-cpu` selected it, projector 46.8 s, the eight tokens
+identical). `make check` is green (510 tests). A live
+`generate --image` on the fixture captions "This is a simple, stylized
+digital…", where the projector's own tolerance flips the second token, as
+the reference's two backends would.
+
+**Files.** `inference/src/vision/` (`root.zig`, `image.zig`,
+`image_bridge.m`, `preprocess.zig`, `qwen3vl.zig`, `qwen3vl_metal.zig`,
+`fixtures/`), `inference/build.zig` (the CoreGraphics/ImageIO frameworks),
+`inference/src/root.zig`, `inference/src/runtime/session.zig` (position
+spans and rope triples), `inference/src/backends/metal/kernels.metal` and
+`root.zig` (LayerNorm, bias, GELU, full attention), `inference/src/backends/cpu/rope.zig`
+(`applyMultiAxis`), `inference/src/models/qwen35.zig`, `qwen35_runtime.zig`,
+`qwen35_metal.zig`, `inference/src/engine.zig` (vision loading, image
+encoding, span location, the `runLoop` images path),
+`inference/src/profiles/root.zig` and `qwen38.zig` (the marker rendering),
+`inference/generation-check.zig` (`--vision-check`), `gates.json` and
+`scripts/gates.py` (the `{mmproj}` placeholder and the two vision gates),
+`scripts/reference-vision.cpp`, `src/generate.zig`, `src/engine.zig`,
+`src/cli.zig`, `src/help.zig`, `docs/reference/vision.md`, `docs/spec.md`,
+`TODO.md`, and this log.
+
+**Remaining.** The projector runs as its own command buffer, separate from
+the language model's. Deepstack projectors and dynamic
+`image_min/max_pixels` overrides are rejected, not handled. The chat-side
+image attachment (drop, paste, `/image`, the chip) is AGNT-15; the Gemma 4
+and Muse Glimmer projectors are MODL-22 and MODL-23. `locateImageSpans` and
+the profile marker rendering are covered by the vision gate and a profile
+unit test; there is no standalone unit test for `locateImageSpans` (it needs
+a vocabulary).
