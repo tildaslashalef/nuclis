@@ -125,7 +125,8 @@ serves the first MiB of a larger file with the size stated, and Enter
 steers a running turn (Alt-Enter queues); `newfile` fell from 10–12 steps
 and 240–346 s to 8–9 steps and 138–190 s
 ([log](docs/engineering-log.md#agnt-14--three-measured-fixes-the-qwen-decoder-keeps-a-values-trailing-newline-read_file-serves-the-first-mib-enter-steers-a-running-turn-2026-09-22)).
-**Next: AGNT-15** (images in the chat; its section below).
+**Next: AGNT-16** (AGNT-14's three follow-ups, one unit; its section
+below), then AGNT-15.
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so
 the model has nothing to do while a command runs in the background, no
@@ -219,7 +220,7 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: AGNT-15 → MODL-21 → MODL-22 →
+Order: AGNT-16 → AGNT-15 → MODL-21 → MODL-22 →
 MODL-23 (decided 2026-09-21, the user's call: every agent unit lands
 before the vision engine, because the goal is efficient agentic work on
 this engine and each agent unit has a measurable before and after on the
@@ -261,6 +262,7 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
+| AGNT-16 | AGNT-14's follow-ups: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline (ordered 2026-09-22; see its section) | 1 |
 | AGNT-15 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip (was numbered AGNT-11 in the plan; that identifier is closed in the log) | 1 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector | 2–3 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
@@ -521,6 +523,53 @@ by hand, `locateImageSpans`, and the profile's rendering; the memory record
 (projector weights, activation scratch at 768 × 768: 2,304 patches) in
 `vision.md`; `generate --image` on a photo produces a sensible caption
 (recorded, not asserted).
+
+## AGNT-16 — AGNT-14's follow-ups: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline (ordered 2026-09-22)
+
+**1. Muse's ATEM values.** Read on 2026-09-22: `muse_glimmer.zig`'s
+`parseTool` passes a parameter value verbatim (`value_start[0..value_end]`)
+and the reference's ATEM grammar (`common/chat.cpp:2261-2267`) takes a
+string value as `until(PARAM_END)`, so Muse never had the trimming defect;
+AGNT-14's note was wrong. Pin it: a test that a `content` value ending in
+`\n` round-trips through `renderCall` and `parseTool`; measure it: the
+`newfile` task on `muse-glimmer-30b`, seed 1, recorded in the log (the
+model's `write_file` content ends with a newline or not, and the steps).
+
+**2. Steering interrupts reasoning.** Today a steered message waits for the
+step boundary, so during a long reasoning step (4,000 tokens at `think
+low` happened on the list) it sits. Rule: reasoning is interruptible,
+output is not. In `Agent.feed`'s `.thinking` arm, when steering is pending
+and the step has produced no answer text and decoded no call, request the
+interrupt (`interrupt.request()`, the same flag Ctrl-C sets) and mark
+`steer_break`; in `steps()`, a `.cancelled` outcome with `steer_break` set
+is not the turn's end: clear the flag and the interrupt, drop the partial
+step (not appended to history, not recorded — the transcript already
+showed its deltas, and a notice `— steering: reasoning restarted` follows),
+deliver the steering, and continue; the step counts against the budget.
+Once an answer or a call has begun, the step runs to its boundary as
+before. The next completion replays from the primed prefix (a cancelled
+step clears the consumed text), which is the cost. Test: a stub whose
+`run` sends thinking, then consults `interrupt.requested()` and returns
+`.cancelled`; a steer placed before the turn lands after a restarted step
+whose partial reasoning is not in history; and a steer with answer text
+already streamed waits for the boundary. Print mode unaffected.
+
+**3. The guessed-path guideline.** `newfile` seed 2 read
+`tests/test_circle.py`, a name the model invented (a `FileNotFound`
+result, one step). Add to the `read_file` guideline: "never guess a path:
+when you are not sure a file exists, glob first". The pinned text is
+re-pinned with a full pass of the task list (`--variant agnt16`, seeds 1
+and 2) against AGNT-13's `final`; the change is judged on the habit
+(guessed reads, counted from the sessions as a `FileNotFound` on
+`read_file`) and the pass marks.
+
+**Also.** `agent.instructions` is written into the user's `nuclis.json`
+(`config set agent.instructions auto`, done 2026-09-22; user data, not a
+commit).
+
+**Check.** `make check`; the agnt16 pass; the Muse newfile run; a harness
+capture of a steer typed during reasoning (`think high` on a question,
+then a steer) showing the restart notice.
 
 ## AGNT-15 — Images in the chat: drop, paste, `/image`, the `[image #N]` chip
 
