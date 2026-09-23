@@ -18,6 +18,7 @@ pub const sigmoid = vector.sigmoid;
 pub const silu = vector.silu;
 pub const gelu = vector.gelu;
 pub const geluQuick = vector.geluQuick;
+pub const geluErf = vector.geluErf;
 pub const softplus = vector.softplus;
 
 /// Borrowed, contiguous row-major encoded weights. No padding or transpose is

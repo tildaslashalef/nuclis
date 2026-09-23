@@ -1,5 +1,6 @@
 //! One loaded companion projector, whatever its family: the file's
-//! projector type picks the adapter (Qwen3-VL, or either of Gemma 4's), and
+//! projector type picks the adapter (Qwen3-VL, either of Gemma 4's, or Muse
+//! Glimmer's), and
 //! the executor picks its CPU reference or Metal plan. The engine and the
 //! checks hold this value instead of naming an adapter; its methods are
 //! the contract of docs/reference/vision.md § The contract.
@@ -11,6 +12,7 @@ const image = @import("image.zig");
 const preprocess = @import("preprocess.zig");
 const qwen3vl = @import("qwen3vl.zig");
 const gemma4 = @import("gemma4.zig");
+const muse = @import("muse_glimmer.zig");
 
 /// An image's placeholder-token grid.
 pub const Grid = struct {
@@ -25,12 +27,15 @@ pub const Projector = struct {
     family: union(enum) {
         qwen3vl: qwen3vl.Binding,
         gemma4: gemma4.Binding,
+        muse: muse.Binding,
     },
     exec: union(enum) {
         qwen3vl_cpu: qwen3vl.Runtime,
         qwen3vl_metal: qwen3vl.Plan,
         gemma4_cpu: gemma4.Runtime,
         gemma4_metal: gemma4.Plan,
+        muse_cpu: muse.Runtime,
+        muse_metal: muse.Plan,
     },
     /// The token minimum an image is scaled up to; the reference's, unless
     /// a check pins a smaller fixture (`gemma4` only).
@@ -43,7 +48,13 @@ pub const Projector = struct {
     /// afterwards (the executor borrows the binding). `backend` selects
     /// Metal; the mapped file must outlive the projector.
     pub fn init(self: *Projector, alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, backend: ?*metal.Backend) !void {
-        if (gemma4.kindOf(doc) != null) {
+        if (muse.matches(doc)) {
+            self.family = .{ .muse = try muse.bind(alloc, doc) };
+            self.min_tokens = muse.min_tokens;
+            self.max_tokens = muse.max_tokens;
+            const binding = &self.family.muse;
+            self.exec = if (backend) |b| .{ .muse_metal = try muse.Plan.init(alloc, b, view, binding) } else .{ .muse_cpu = try muse.Runtime.init(alloc, view, binding) };
+        } else if (gemma4.kindOf(doc) != null) {
             self.family = .{ .gemma4 = try gemma4.bind(alloc, doc) };
             self.min_tokens = gemma4.min_tokens;
             self.max_tokens = gemma4.max_tokens;
@@ -69,6 +80,7 @@ pub const Projector = struct {
         return switch (self.family) {
             .qwen3vl => qwen3vl.output_width,
             .gemma4 => |b| b.output_width,
+            .muse => muse.output_width,
         };
     }
     /// The most tokens one image becomes (the cap in effect).
@@ -81,6 +93,7 @@ pub const Projector = struct {
         return switch (self.family) {
             .qwen3vl => .{ .min = qwen3vl.min_tokens, .max = qwen3vl.max_tokens },
             .gemma4 => .{ .min = gemma4.min_tokens, .max = gemma4.max_tokens },
+            .muse => .{ .min = muse.min_tokens, .max = muse.max_tokens },
         };
     }
     /// Sets the cap: `null` is the family's maximum, a number is clamped to
@@ -106,6 +119,10 @@ pub const Projector = struct {
                 const g = gemma4.gridFor(size, self.min_tokens, self.max_tokens);
                 break :blk .{ .width_tokens = g.width_tokens, .height_tokens = g.height_tokens };
             },
+            .muse => blk: {
+                const g = muse.gridFor(size, self.max_tokens);
+                break :blk .{ .width_tokens = g.widthTokens(), .height_tokens = g.heightTokens() };
+            },
         };
     }
 
@@ -125,6 +142,24 @@ pub const Projector = struct {
                 defer alloc.free(resized);
                 return preprocess.patches(alloc, resized, target, gemma4.patchOptions(b.kind, b.mean, b.std));
             },
+            .muse => |b| {
+                // A stretch to the grid, no letterbox.
+                const target: preprocess.Size = .{ .width = g.width_tokens * muse.token_side, .height = g.height_tokens * muse.token_side };
+                const resized = try preprocess.resizeLanczos(alloc, source, target);
+                defer alloc.free(resized);
+                return preprocess.patches(alloc, resized, target, muse.patchOptions(b.mean, b.std));
+            },
+        }
+    }
+
+    /// Muse Glimmer only, for the checks: the encoder's residual rows (window
+    /// order) after the first `count` blocks.
+    pub fn encodeResidual(self: *Projector, patches: preprocess.Patches, g: Grid, count: usize, rows: []f32) !void {
+        const muse_grid: muse.Grid = .{ .width_patches = g.width_tokens * muse.merge, .height_patches = g.height_tokens * muse.merge };
+        switch (self.exec) {
+            .muse_cpu => |*e| try e.encodeResidual(patches, muse_grid, count, rows),
+            .muse_metal => |*e| try e.encodeResidual(patches, muse_grid, count, rows),
+            else => return error.Unsupported,
         }
     }
 
@@ -132,11 +167,14 @@ pub const Projector = struct {
     /// (`g.tokens() × outputWidth()`).
     pub fn encode(self: *Projector, patches: preprocess.Patches, g: Grid, out: []f32) !void {
         const gemma_grid: gemma4.Grid = .{ .width_tokens = g.width_tokens, .height_tokens = g.height_tokens };
+        const muse_grid: muse.Grid = .{ .width_patches = g.width_tokens * muse.merge, .height_patches = g.height_tokens * muse.merge };
         switch (self.exec) {
             .qwen3vl_cpu => |*e| try e.encode(patches, out),
             .qwen3vl_metal => |*e| try e.encode(patches, out),
             .gemma4_cpu => |*e| try e.encode(patches, gemma_grid, out),
             .gemma4_metal => |*e| try e.encode(patches, gemma_grid, out),
+            .muse_cpu => |*e| try e.encode(patches, muse_grid, out),
+            .muse_metal => |*e| try e.encode(patches, muse_grid, out),
         }
     }
 };

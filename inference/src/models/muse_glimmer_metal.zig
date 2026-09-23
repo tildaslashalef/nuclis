@@ -211,6 +211,10 @@ pub const Plan = struct {
     output_norm: Buffer,
     /// A row of ones: the embedding norm has no weight.
     ones: Buffer, // hidden
+    /// Feature rows of the image span chunk being recorded (`padded ×
+    /// hidden`); `image_rows` marks that chunk.
+    image_scratch: Buffer,
+    image_rows: ?Buffer,
     /// (cos, sin) table: base 5e5 over the 128-wide head, sliding layers only.
     rope_table: Buffer,
     // Activations (F32 counts in comments).
@@ -339,6 +343,8 @@ pub const Plan = struct {
         self.padded = metal.Backend.matmulPadded(chunk);
         const n = self.padded;
         self.x_c = try backend.create(n * hidden * 4);
+        self.image_scratch = try backend.create(n * hidden * 4);
+        self.image_rows = null;
         self.normalized_c = try backend.create(n * hidden * 4);
         self.projected_c = try backend.create(n * hidden * 4);
         self.gate_c = try backend.create(n * ffn * 4);
@@ -630,6 +636,45 @@ pub const Plan = struct {
         }
     }
 
+    /// Prefills a prompt with image spans: text runs and image spans are
+    /// chunked separately (a span never shares a chunk with text), and a
+    /// span's rows are fed the projector's feature rows (`features`,
+    /// `Σ span.count × hidden`) instead of token embeddings. Positions are
+    /// plain: a span row's cache row, rotary position, and visible count are
+    /// one value, as for text. `logits`, when given, receives the last row's.
+    /// Speculation is off on this path (no drafter capture).
+    pub fn prefillVision(self: *Plan, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        var i: usize = 0;
+        var si: usize = 0;
+        var frow: usize = 0;
+        while (i < tokens.len) {
+            const in_span = si < spans.len and spans[si].start == i;
+            const end = if (in_span) i + spans[si].count else if (si < spans.len) spans[si].start else tokens.len;
+            if (end > tokens.len) return error.InvalidShape;
+            if (in_span and frow + spans[si].count > features.len / hidden) return error.InvalidShape;
+            while (i < end) {
+                const c = @min(self.chunk, end - i);
+                const last = i + c == tokens.len;
+                if (in_span) {
+                    @memcpy(self.image_scratch.floats()[0 .. c * hidden], features[frow * hidden ..][0 .. c * hidden]);
+                    self.image_rows = self.image_scratch;
+                    frow += c;
+                }
+                defer self.image_rows = null;
+                try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, null, observer);
+                i += c;
+                if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = i, .target = tokens.len });
+            }
+            if (in_span) si += 1;
+        }
+    }
+
     fn prefillChunk(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
         const count = tokens.len;
         std.debug.assert(count >= 1 and count <= self.chunk);
@@ -658,8 +703,15 @@ pub const Plan = struct {
     /// owns the command buffer, the state admission, and the readback.
     fn recordChunkLayers(self: *Plan, tokens: []const u32, count: usize, observer: ?Observer, capture: bool) !void {
         const b = self.backend;
-        const embedding = try self.weight(self.binding.token_embedding);
-        for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
+        if (self.image_rows) |features| {
+            // Image span rows take the projector's rows in place of the
+            // embedding gather; the weightless input norm below applies to
+            // them as to token rows (the reference's `embd_norm`).
+            try b.copy(self.x_c.slice(0, count * hidden * 4), features.slice(0, count * hidden * 4), count * hidden);
+        } else {
+            const embedding = try self.weight(self.binding.token_embedding);
+            for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
+        }
         try b.rmsNorm(self.x_c, self.ones, self.x_c, normOf(count, model.rms_epsilon));
         for (self.binding.active(), self.constants, 0..) |layer, c, il| {
             // The layer's input residual, before any of the layer's writes.

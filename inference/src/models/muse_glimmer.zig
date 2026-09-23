@@ -24,6 +24,10 @@ const Tensor = gguf.Tensor;
 
 pub const architecture = "muse-glimmer";
 
+/// One image span in a prompt (the shared vision contract's `Span`), used by
+/// the CPU runtime and the Metal plan.
+pub const VisionSpan = @import("../vision/root.zig").Span;
+
 /// The DFlash block's proposal bound: one 16-row forward proposes the anchor
 /// row plus up to 15 drafts, so a verify batch holds at most 16 rows.
 pub const max_draft_proposals = dflash.block_size - 1;

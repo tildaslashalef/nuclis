@@ -73,7 +73,7 @@ const kernel_names = [_][:0]const u8{
     "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",      "nu_matvec_q4_k_split",
     "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits", "nu_attention_chunk_reuse", "nu_attention_chunk_reuse_h",
     "nu_rmsnorm_add",           "nu_add_rmsnorm",           "nu_rmsnorm_rope",          "nu_layernorm",             "nu_add_bias_rows",         "nu_gelu_inplace",
-    "nu_attention_full",        "nu_gelu_quick_mul",
+    "nu_attention_full",        "nu_gelu_quick_mul",        "nu_gelu_erf_inplace",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -216,6 +216,7 @@ pub const Kernel = enum(u32) {
     gelu_inplace,
     attention_full,
     gelu_quick_mul,
+    gelu_erf_inplace,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -1283,6 +1284,11 @@ pub const Backend = struct {
     pub fn geluQuickMul(self: *Backend, gate: Buffer, up: Buffer, count: usize) !void {
         if (count == 0 or gate.len < count * 4 or up.len < count * 4) return error.InvalidShape;
         try self.dispatch(.gelu_quick_mul, &.{ gate, up }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
+    }
+    /// x = gelu(x), the exact (erf) form of `cpu.geluErf`, over `count` values.
+    pub fn geluErf(self: *Backend, x: Buffer, count: usize) !void {
+        if (count == 0 or x.len < count * 4) return error.InvalidShape;
+        try self.dispatch(.gelu_erf_inplace, &.{x}, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
     }
     pub const ScaleParams = extern struct { count: u32, factor: f32 };
     /// x[i] *= factor; the factor must be finite.

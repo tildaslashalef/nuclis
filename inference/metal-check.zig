@@ -1466,6 +1466,69 @@ fn checkGatherRows(alloc: std.mem.Allocator) !void {
     std.debug.print("row gather on the 48-head regrouping over strided rows: exact; overlap, short map, and short stride refused\n", .{});
 }
 
+/// Muse Glimmer's windowed encoder attention: `attentionFull` over one
+/// window's row slice of shared q/k/v buffers whose other rows are NaN,
+/// against F64 attention over the window alone; output rows outside the
+/// window keep their sentinel.
+fn checkWindowAttention(alloc: std.mem.Allocator, b: *Backend) !void {
+    const heads: usize = 2;
+    const width: usize = 96;
+    const stride = heads * width;
+    const total: usize = 70;
+    const begin: usize = 23;
+    const count: usize = 33;
+    var prng = std.Random.DefaultPrng.init(0x3a11);
+    const random = prng.random();
+    var host: [3][]f32 = undefined;
+    for (&host) |*h| {
+        h.* = try alloc.alloc(f32, total * stride);
+        for (h.*, 0..) |*x, i| x.* = if (i / stride >= begin and i / stride < begin + count) random.floatNorm(f32) else std.math.nan(f32);
+    }
+    defer for (host) |h| alloc.free(h);
+    const q = try upload(b, host[0]);
+    const k = try upload(b, host[1]);
+    const v = try upload(b, host[2]);
+    const out = try b.create(total * stride * 4);
+    @memset(out.floats(), -7);
+    const scale: f32 = @floatCast(1.0 / @sqrt(@as(f64, width)));
+    const offset = begin * stride * 4;
+    const len = count * stride * 4;
+    try b.begin();
+    try b.attentionFull(q.slice(offset, len), k.slice(offset, len), v.slice(offset, len), out.slice(offset, len), .{ .heads = heads, .width = width, .rows = count, .q_stride = stride, .kv_stride = stride, .out_stride = stride, .scale = scale });
+    try b.commit();
+    var worst: f64 = 0;
+    var scores: [count]f64 = undefined;
+    for (0..total) |row| for (0..heads) |h| {
+        const got = out.floats()[row * stride + h * width ..][0..width];
+        if (row < begin or row >= begin + count) {
+            for (got) |x| if (x != -7) return error.MetalMismatch;
+            continue;
+        }
+        var max: f64 = -std.math.inf(f64);
+        for (0..count) |j| {
+            var dot: f64 = 0;
+            for (0..width) |d| dot += @as(f64, host[0][row * stride + h * width + d]) * host[1][(begin + j) * stride + h * width + d];
+            scores[j] = dot * scale;
+            max = @max(max, scores[j]);
+        }
+        var sum: f64 = 0;
+        for (&scores) |*x| {
+            x.* = @exp(x.* - max);
+            sum += x.*;
+        }
+        for (got, 0..) |x, d| {
+            var want: f64 = 0;
+            for (0..count) |j| want += scores[j] * host[2][(begin + j) * stride + h * width + d];
+            worst = @max(worst, @abs(want / sum - x));
+        }
+    };
+    if (!(worst <= 1e-5)) {
+        std.debug.print("window attention: worst |difference| {e:.3}\n", .{worst});
+        return error.MetalMismatch;
+    }
+    std.debug.print("window attention on a {d}-row slice of 96-wide heads, NaN outside it, vs F64: worst |difference| {e:.3} (bound 1e-5); rows outside untouched\n", .{ count, worst });
+}
+
 fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: bool) !void {
     const saved_max_rows = b.attention_reuse_max_rows;
     defer b.attention_reuse_max_rows = saved_max_rows;
@@ -2828,6 +2891,7 @@ pub fn main(init: std.process.Init) !void {
     try checkWindowedAndWideAttention(alloc, b, false);
     try checkWindowedAndWideAttention(alloc, b, true);
     try checkChunkAttentionReuse(alloc, b);
+    try checkWindowAttention(alloc, b);
     try checkFusedNorms(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
@@ -3121,6 +3185,15 @@ pub fn main(init: std.process.Init) !void {
         try b.geluQuickMul(g, u, width);
         try b.commit();
         for (g.floats(), expected) |got, want| try expectClose("gelu_quick_mul", got, want, 2e-6 * @max(1, @abs(want)));
+        for (g.floats()) |*v| v.* = random.floatNorm(f32) * 4;
+        g.floats()[0] = 60;
+        g.floats()[1] = -60;
+        g.floats()[2] = 0;
+        for (expected, g.floats()) |*e, gg| e.* = inference.cpu.geluErf(gg);
+        try b.begin();
+        try b.geluErf(g, width);
+        try b.commit();
+        for (g.floats(), expected) |got, want| try expectClose("gelu_erf", got, want, 1e-6 * @max(1, @abs(want)));
         for (expected, x.floats()) |*e, xx| e.* = xx * 61.967735;
         try b.begin();
         try b.scale(x, width, 61.967735);
@@ -3511,5 +3584,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate and the exact erf GELU among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
 }

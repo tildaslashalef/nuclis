@@ -129,6 +129,52 @@ test "quick GELU is x times the logistic of 1.702x" {
     try std.testing.expectApproxEqAbs(@as(f32, -2.0 / (1.0 + @exp(3.404))), geluQuick(-2), 1e-7);
 }
 
+/// The exact GELU, 0.5·x·(1 + erf(x/√2)), in F64.
+pub fn geluErf(x: f32) f32 {
+    const v: f64 = x;
+    return @floatCast(0.5 * v * (1.0 + erf(v / std.math.sqrt2)));
+}
+
+/// The error function in F64: the Maclaurin series below |z| = 3, else
+/// 1 − erfc from its continued fraction; about 1e-14 absolute.
+pub fn erf(z: f64) f64 {
+    if (std.math.isNan(z)) return z;
+    const a = @abs(z);
+    if (a < 3.0) {
+        // Σ (−1)^n z^(2n+1) / (n!(2n+1)), ×2/√π; the largest term at 3 is ~170.
+        var term = a;
+        var sum = a;
+        var n: f64 = 0;
+        while (@abs(term) > 1e-17 * @abs(sum)) {
+            n += 1;
+            term *= -a * a / n;
+            sum += term / (2 * n + 1);
+        }
+        return std.math.copysign(sum * 2.0 / @sqrt(std.math.pi), z);
+    }
+    if (a > 6.0) return std.math.copysign(@as(f64, 1), z);
+    // erfc(a) = e^(−a²)/√π · 1/(a + (1/2)/(a + 1/(a + (3/2)/(a + …)))).
+    var t = a;
+    var k: f64 = 60;
+    while (k >= 1) : (k -= 1) t = a + (k / 2) / t;
+    const erfc = @exp(-a * a) / @sqrt(std.math.pi) / t;
+    return std.math.copysign(1.0 - erfc, z);
+}
+
+test "erf and the exact GELU match pinned values" {
+    // erf at pinned points (Abramowitz & Stegun table 7.1, extended).
+    const cases = [_][2]f64{
+        .{ 0, 0 },                  .{ 0.5, 0.5204998778130465 },   .{ 1, 0.8427007929497149 },
+        .{ 2, 0.9953222650189527 }, .{ 2.9, 0.9999589021219005 },   .{ 3, 0.9999779095030014 },
+        .{ 4, 0.9999999845827421 }, .{ -1.5, -0.9661051464753108 },
+    };
+    for (cases) |c| try std.testing.expectApproxEqAbs(c[1], erf(c[0]), 1e-13);
+    try std.testing.expectEqual(@as(f32, 0), geluErf(0));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8413447460685429), geluErf(1), 1e-7);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.04550026389635842), geluErf(-2), 1e-8);
+    try std.testing.expectEqual(@as(f32, 8), geluErf(8));
+}
+
 pub fn silu(x: f32) f32 {
     if (std.math.isNegativeInf(x)) return -0.0;
     return @floatCast(@as(f64, x) * logistic(x));

@@ -157,7 +157,12 @@ pub fn main(init: std.process.Init) !void {
         else if (draft_trace != null)
             try gemmaDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal)
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
-        .@"muse-glimmer" => if (draft_trace) |dir|
+        .@"muse-glimmer" => if (vision_check) |projector|
+            if (vision_image) |image|
+                try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
+            else
+                try visionCheck(alloc, init.io, model_path, projector, use_metal)
+        else if (draft_trace) |dir|
             try museDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal, dir)
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
     }
@@ -1852,6 +1857,14 @@ const VisionFixture = struct {
     logits_max_abs: f64 = 0,
     max_abs: f64,
     rel_rms: f64,
+    /// Whether the rows' bounds gate; false reports them only (Muse: the
+    /// reference's own encoders part at block 33, where sink patches form).
+    gate_rows: bool = true,
+    /// The oracle's encoder residual after `residual_blocks` blocks (window
+    /// order), compared within `residual_rel_rms`.
+    residual: ?[]const u8 = null,
+    residual_blocks: usize = 0,
+    residual_rel_rms: f64 = 0,
 };
 
 fn visionFixture(projector: *const inference.vision.Projector) VisionFixture {
@@ -1865,6 +1878,10 @@ fn visionFixture(projector: *const inference.vision.Projector) VisionFixture {
             .unified => .{ .features = @embedFile("src/vision/fixtures/gemma4uv-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4uv-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4uv-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4uv-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.4, .max_abs = 0.1, .rel_rms = 3e-3 },
             .siglip => .{ .features = @embedFile("src/vision/fixtures/gemma4v-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4v-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4v-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4v-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.1, .max_abs = 0.2, .rel_rms = 2.5e-2 },
         },
+        // 3×2 tokens at the reference's bounds. Its own CPU and Metal
+        // encoders differ by 1.8e-2 relative RMS after block 30 and 0.26 on
+        // the rows (vision.md § Muse Glimmer's projector).
+        .muse => .{ .features = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/top-logits.txt"), .logits_max_abs = 2e-2, .max_abs = 0, .rel_rms = 0, .gate_rows = false, .residual = @embedFile("src/vision/fixtures/muse-glimmer-synthetic/layer-out-30.f32"), .residual_blocks = 31, .residual_rel_rms = 2e-2 },
     };
 }
 
@@ -1938,7 +1955,18 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     if (fixture.features.len != rows * width * 4) return error.FixtureMismatch;
     const features = try loaded.encode(alloc, io, source, grid);
     defer alloc.free(features);
-    try compareRows("projector rows", fixture.features, features, fixture.max_abs, fixture.rel_rms);
+    if (fixture.gate_rows)
+        try compareRows("projector rows", fixture.features, features, fixture.max_abs, fixture.rel_rms)
+    else
+        compareRows("projector rows (reported)", fixture.features, features, 0, 0) catch {};
+    if (fixture.residual) |expected| {
+        var patches = try loaded.projector.prepare(alloc, source, grid);
+        defer patches.deinit(alloc);
+        const residual = try alloc.alloc(f32, expected.len / 4);
+        defer alloc.free(residual);
+        try loaded.projector.encodeResidual(patches, grid, fixture.residual_blocks, residual);
+        try compareRows("encoder residual after the pinned blocks", expected, residual, std.math.inf(f64), fixture.residual_rel_rms);
+    }
 
     const pinned = try alloc.alloc(f32, rows * width);
     defer alloc.free(pinned);
@@ -2106,10 +2134,52 @@ fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u
         }
         std.debug.print("\n", .{});
     }
+    if (loaded.projector.family == .muse) try museTraces(alloc, io, &loaded, source, grid, oracle);
     if (model_path) |mp| {
         try visionLanguageCompare(alloc, io, mp, oracle, std.mem.bytesAsSlice(f32, expected), grid, use_metal, "the oracle's rows");
         try visionLanguageCompare(alloc, io, mp, oracle, features, grid, use_metal, "our rows");
     }
+}
+
+/// Muse Glimmer's encoder against whichever reference traces the oracle
+/// directory holds (`reference-vision --trace`): the im2col patches
+/// (`node_0`, raster), then the residual after `pre_ln` and after block K
+/// (`layer_out-K`, window order). Reports; never gates.
+fn museTraces(alloc: std.mem.Allocator, io: std.Io, loaded: *LoadedProjector, source: inference.vision.image.Rgb8, grid: inference.vision.Grid, oracle: []const u8) !void {
+    var patches = try loaded.projector.prepare(alloc, source, grid);
+    defer patches.deinit(alloc);
+    const traces = [_]struct { name: []const u8, blocks: usize }{
+        .{ .name = "pre_ln", .blocks = 0 },        .{ .name = "layer_out-2", .blocks = 3 },   .{ .name = "layer_out-3", .blocks = 4 },
+        .{ .name = "layer_out-30", .blocks = 31 }, .{ .name = "layer_out-32", .blocks = 33 }, .{ .name = "layer_out-33", .blocks = 34 },
+    };
+    var name_buffer: [64]u8 = undefined;
+    if (readOracle(alloc, io, oracle, "node_0.f32")) |expected| {
+        defer alloc.free(expected);
+        if (expected.len == patches.values.len * 4) {
+            var differ: usize = 0;
+            for (patches.values, 0..) |v, i| {
+                if (v != std.mem.bytesToValue(f32, expected[i * 4 ..][0..4])) differ += 1;
+            }
+            std.debug.print("patches vs the oracle's im2col: {d} of {d} values differ\n", .{ differ, patches.values.len });
+            compareRows("patches", expected, patches.values, 0, 0) catch {};
+        }
+    } else |_| {}
+    for (traces) |t| {
+        const file = try std.fmt.bufPrint(&name_buffer, "{s}.f32", .{t.name});
+        const expected = readOracle(alloc, io, oracle, file) catch continue;
+        defer alloc.free(expected);
+        const rows = try alloc.alloc(f32, expected.len / 4);
+        defer alloc.free(rows);
+        try loaded.projector.encodeResidual(patches, grid, t.blocks, rows);
+        const label = try std.fmt.bufPrint(&name_buffer, "residual vs {s}", .{t.name});
+        compareRows(label, expected, rows, 0, 0) catch {};
+    }
+}
+
+fn readOracle(alloc: std.mem.Allocator, io: std.Io, oracle: []const u8, name: []const u8) ![]u8 {
+    const path = try std.fs.path.join(alloc, &.{ oracle, name });
+    defer alloc.free(path);
+    return std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(256 << 20));
 }
 
 /// The language model on the oracle's own prompt tokens and the given
@@ -2122,7 +2192,13 @@ fn visionLanguageCompare(alloc: std.mem.Allocator, io: std.Io, model_path: []con
     defer alloc.free(json_path);
     const json = try std.Io.Dir.cwd().readFileAlloc(io, json_path, alloc, .limited(16 << 20));
     defer alloc.free(json);
-    var eng = try inference.engine.Engine.open(alloc, io, model_path, if (use_metal) .metal else .cpu, 4096, .f32, null, .none);
+    // Room for the oracle's prompt and its continuation.
+    const oracle_positions: usize = blk: {
+        const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+        defer parsed.deinit();
+        break :blk @intCast(parsed.value.object.get("n_past").?.integer);
+    };
+    var eng = try inference.engine.Engine.open(alloc, io, model_path, if (use_metal) .metal else .cpu, @max(4096, oracle_positions + 512), .f32, null, .none);
     defer eng.deinit();
     const tokens = try oracleTokens(alloc, json, eng.imagePadId() orelse return error.MissingImageToken);
     defer alloc.free(tokens);

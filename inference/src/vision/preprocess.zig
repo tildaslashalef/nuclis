@@ -1,7 +1,8 @@
 //! Image preprocessing for the projectors, exact to the reference's
 //! pipeline (docs/reference/vision.md § Preprocessing): the smart size
 //! (round to the patch·merge grid, then the pixel bounds), a
-//! Pillow-compatible separable bicubic resize in 22-bit fixed point,
+//! Pillow-compatible separable resize (bicubic or Lanczos) in 22-bit fixed
+//! point,
 //! letterboxing with black, normalization by mean and standard deviation,
 //! and the patch layout the projector's convolution reads. Pure: no I/O.
 const std = @import("std");
@@ -74,12 +75,42 @@ pub fn resizeLetterbox(alloc: std.mem.Allocator, source: image.Rgb8, target: Siz
 }
 
 const precision_bits = 22;
-const bicubic_support = 2.0;
 
-/// Pillow's `ImagingResample` with the bicubic filter (a = −0.5): weights
-/// per output pixel normalized in F64 then rounded to 22-bit fixed point,
-/// a horizontal pass into an 8-bit intermediate, then a vertical pass.
+/// Pillow's resampling filters the projectors use.
+pub const Filter = enum {
+    /// Cubic convolution with a = −0.5, support 2.
+    bicubic,
+    /// `sinc(x)·sinc(x/3)`, support 3.
+    lanczos,
+
+    fn support(self: Filter) f64 {
+        return switch (self) {
+            .bicubic => 2.0,
+            .lanczos => 3.0,
+        };
+    }
+    fn weight(self: Filter, x: f64) f64 {
+        return switch (self) {
+            .bicubic => bicubic(x),
+            .lanczos => lanczos(x),
+        };
+    }
+};
+
+/// `resize` with the bicubic filter.
 pub fn resizeBicubic(alloc: std.mem.Allocator, source: image.Rgb8, target: Size) ![]u8 {
+    return resize(alloc, source, target, .bicubic);
+}
+/// `resize` with the Lanczos filter.
+pub fn resizeLanczos(alloc: std.mem.Allocator, source: image.Rgb8, target: Size) ![]u8 {
+    return resize(alloc, source, target, .lanczos);
+}
+
+/// Pillow's `ImagingResample`: weights per output pixel normalized in F64
+/// then rounded to 22-bit fixed point, a horizontal pass into an 8-bit
+/// intermediate, then a vertical pass. A pass whose size is unchanged is
+/// skipped. Caller owns the result.
+pub fn resize(alloc: std.mem.Allocator, source: image.Rgb8, target: Size, filter: Filter) ![]u8 {
     if (target.width == 0 or target.height == 0 or source.width == 0 or source.height == 0) return error.InvalidShape;
     if (source.width == target.width and source.height == target.height) return alloc.dupe(u8, source.pixels);
     var current = source.pixels;
@@ -87,7 +118,7 @@ pub fn resizeBicubic(alloc: std.mem.Allocator, source: image.Rgb8, target: Size)
     defer if (owned) |o| alloc.free(o);
     var width = source.width;
     if (target.width != source.width) {
-        const kernel = try Kernel.init(alloc, source.width, target.width);
+        const kernel = try Kernel.init(alloc, source.width, target.width, filter);
         defer kernel.deinit(alloc);
         const out = try alloc.alloc(u8, @as(usize, target.width) * source.height * 3);
         errdefer alloc.free(out);
@@ -110,7 +141,7 @@ pub fn resizeBicubic(alloc: std.mem.Allocator, source: image.Rgb8, target: Size)
         width = target.width;
     }
     if (target.height != source.height) {
-        const kernel = try Kernel.init(alloc, source.height, target.height);
+        const kernel = try Kernel.init(alloc, source.height, target.height, filter);
         defer kernel.deinit(alloc);
         const row = @as(usize, width) * 3;
         const out = try alloc.alloc(u8, row * target.height);
@@ -149,10 +180,10 @@ const Kernel = struct {
     bounds: []usize,
     weights: []i32,
 
-    fn init(alloc: std.mem.Allocator, in_size: u32, out_size: u32) !Kernel {
+    fn init(alloc: std.mem.Allocator, in_size: u32, out_size: u32, filter: Filter) !Kernel {
         const scale: f64 = @as(f64, @floatFromInt(in_size)) / @as(f64, @floatFromInt(out_size));
         const filterscale: f64 = @max(scale, 1.0);
-        const support = bicubic_support * filterscale;
+        const support = filter.support() * filterscale;
         const size: usize = @as(usize, @intFromFloat(@ceil(support))) * 2 + 1;
         const bounds = try alloc.alloc(usize, @as(usize, out_size) * 2);
         errdefer alloc.free(bounds);
@@ -171,7 +202,7 @@ const Kernel = struct {
             const count: usize = @intCast(xmax - xmin);
             var total: f64 = 0;
             for (0..count) |x| {
-                const w = bicubic((@as(f64, @floatFromInt(x)) + @as(f64, @floatFromInt(xmin)) - center + 0.5) * ss);
+                const w = filter.weight((@as(f64, @floatFromInt(x)) + @as(f64, @floatFromInt(xmin)) - center + 0.5) * ss);
                 pre[x] = w;
                 total += w;
             }
@@ -200,6 +231,17 @@ fn bicubic(distance: f64) f64 {
     if (x < 1.0) return ((a + 2.0) * x - (a + 3.0)) * x * x + 1;
     if (x < 2.0) return (((x - 5) * x + 8) * x - 4) * a;
     return 0.0;
+}
+
+/// Pillow's Lanczos-3 window, zero outside `[−3, 3)`.
+fn lanczos(x: f64) f64 {
+    if (!(-3.0 <= x and x < 3.0)) return 0.0;
+    return sinc(x) * sinc(x / 3.0);
+}
+fn sinc(x: f64) f64 {
+    if (x == 0.0) return 1.0;
+    const v = x * std.math.pi;
+    return @sin(v) / v;
 }
 
 pub const PatchOptions = struct {

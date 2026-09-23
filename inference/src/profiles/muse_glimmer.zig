@@ -45,8 +45,8 @@ pub const stop_tokens = [_][]const u8{ "<|eot|>", "<|end_of_text|>" };
 /// How the model delimits its reasoning: a message addressed to itself.
 /// The generation prompt ends at `<|start|>assistant`, so the first header
 /// (` to=self`) arrives as ordinary text and the decoder routes on it.
-/// No image rendering yet.
-pub const image_placeholder: ?[]const u8 = null;
+/// The image span placeholder, inside `<|image_start|>` … `<|image_end|>`.
+pub const image_placeholder: ?[]const u8 = "<|patch|>";
 pub const reasoning: profiles.Reasoning = .{ .open = "<|start|>assistant to=self<|message|>", .close = "<|eom|>" };
 pub const stream_markers: profiles.StreamMarkers = .{
     .open = "<|start|>",
@@ -67,9 +67,9 @@ const default_system = "You are a helpful AI assistant.\nKnowledge cutoff: 2026-
 /// cannot be smuggled past the profile; the assistant's own past text loses
 /// them instead.
 const markers = [_][]const u8{
-    "<|start|>",             "<|message|>",            "<|eom|>",      "<|eot|>",        "<|end_of_text|>", bos,
-    "<atem:function_calls>", "</atem:function_calls>", "<atem:invoke", "</atem:invoke>", "<atem:parameter", "</atem:parameter>",
-    "<tool_output",          "</tool_output>",
+    "<|start|>",             "<|message|>",            "<|eom|>",         "<|eot|>",        "<|end_of_text|>", bos,
+    "<atem:function_calls>", "</atem:function_calls>", "<atem:invoke",    "</atem:invoke>", "<atem:parameter", "</atem:parameter>",
+    "<tool_output",          "</tool_output>",         "<|image_start|>", "<|image_end|>",  "<|patch|>",
 };
 /// The template's tool instructions, verbatim, around the declarations.
 const tools_intro =
@@ -118,6 +118,16 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
         .user => {
             if (hasMarker(message.content)) return error.UnsupportedContent;
             try builder.add("<|start|>user<|message|>");
+            // The reference's markers around `count` placeholders the
+            // engine's spans overwrite with projector rows, one run per
+            // image, before the text and without newlines.
+            for (message.images) |image| {
+                try builder.add("<|image_start|>");
+                var n: usize = 0;
+                const count = @as(usize, image.width_tokens) * image.height_tokens;
+                while (n < count) : (n += 1) try builder.add(image_placeholder.?);
+                try builder.add("<|image_end|>");
+            }
             try builder.add(message.content);
             try builder.add("<|eot|>");
         },
@@ -509,6 +519,17 @@ test "text prompts match the pinned reference fixtures, BOS prepended, the date 
     }
     // The five conversations without a system message, at four strengths.
     try std.testing.expectEqual(@as(usize, 20), dated);
+}
+
+test "a user image renders the image markers before the text" {
+    const alloc = std.testing.allocator;
+    const refs = [_]profiles.ImageRef{.{ .width_tokens = 3, .height_tokens = 2 }};
+    const prompt = try render(alloc, &.{.{ .role = .user, .content = "describe this image", .images = &refs }}, &.{}, .off, .{});
+    defer alloc.free(prompt);
+    const expected = "<|start|>user<|message|><|image_start|>" ++ "<|patch|>" ** 6 ++ "<|image_end|>describe this image<|eot|><|start|>assistant";
+    try std.testing.expect(std.mem.endsWith(u8, prompt, expected));
+    // A user cannot type the markers.
+    try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{.{ .role = .user, .content = "a <|patch|> b" }}, &.{}, .off, .{}));
 }
 
 test "off renders as low; the strength line names every other level" {

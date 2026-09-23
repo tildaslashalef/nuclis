@@ -1845,6 +1845,18 @@ kernel void nu_gelu_quick_mul(device float * gate [[buffer(0)]], device const fl
                               constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) { const float x = gate[i]; gate[i] = x / (1.0f + exp(-1.702f * x)) * up[i]; }
 }
+// The exact GELU, 0.5·x·(1 + erf(x/√2)), of Muse Glimmer's vision encoder.
+// Metal has no erf: Abramowitz & Stegun 7.1.26, |error| ≤ 1.5e-7.
+inline float nu_erf(float z) {
+    const float a = fabs(z);
+    const float t = 1.0f / (1.0f + 0.3275911f * a);
+    const float poly = ((((1.061405429f * t - 1.453152027f) * t + 1.421413741f) * t - 0.284496736f) * t + 0.254829592f) * t;
+    return copysign(1.0f - poly * exp(-a * a), z);
+}
+kernel void nu_gelu_erf_inplace(device float * x [[buffer(0)]],
+                                constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i < p.count) { const float v = x[i]; x[i] = 0.5f * v * (1.0f + nu_erf(v * 0.7071067811865476f)); }
+}
 // Scalar epilogues (Gemma 4): x *= factor (the embedding scale);
 // x = (x + y) * factor (a residual add followed by a per-layer output
 // scale, one rounding after the add as the CPU reference does it); and

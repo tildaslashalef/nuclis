@@ -220,12 +220,24 @@ pub const Runtime = struct {
     /// residuals in `dflash.target_layers` order — the rows the DFlash
     /// drafter's `commit` consumes.
     fn forward(self: *Runtime, token: u32, logits: ?[]f32, capture: ?[]f32, observer: ?Observer) !void {
-        if (token >= model.vocabulary) return error.InvalidTokenId;
+        return self.forwardRow(.{ .token = token }, logits, capture, observer);
+    }
+    const RowSource = union(enum) { token: u32, features: []const f32 };
+    fn forwardRow(self: *Runtime, source: RowSource, logits: ?[]f32, capture: ?[]f32, observer: ?Observer) !void {
+        switch (source) {
+            .token => |token| if (token >= model.vocabulary) return error.InvalidTokenId,
+            .features => |row| if (row.len != model.embedding) return error.InvalidShape,
+        }
         if (logits) |out| if (out.len != model.vocabulary) return error.InvalidShape;
         if (capture) |c| if (c.len != dflash.hidden_width) return error.InvalidShape;
         try self.state.begin();
         errdefer self.state.fail();
-        try self.view.row(self.binding.token_embedding, token, self.x);
+        switch (source) {
+            .token => |token| try self.view.row(self.binding.token_embedding, token, self.x),
+            .features => |row| @memcpy(self.x, row),
+        }
+        // The weightless input norm applies to a feature row too (the
+        // reference's `embd_norm` after `build_inp_embd`).
         try cpu.rmsNorm(self.x, self.x, model.rms_epsilon);
         for (self.binding.active(), self.constants, 0..) |layer, constants, il| {
             // The layer's input residual, before any of the layer's own
@@ -321,6 +333,28 @@ pub const Runtime = struct {
         for (tokens, 0..) |token, i| {
             const capture: ?[]f32 = if (hidden) |h| h[i * dflash.hidden_width ..][0..dflash.hidden_width] else null;
             try self.forward(token, if (i + 1 == tokens.len) logits else null, capture, observer);
+        }
+    }
+
+    /// Reference prefill with image spans: token rows step as `prefill`'s,
+    /// a span's rows step with the projector's rows (`features`,
+    /// `Σ span.count × embedding`) in place of the embedding. Positions are
+    /// plain, so each row's cache row, rotary position, and visible count
+    /// are its position, as for text.
+    pub fn prefillVision(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        var si: usize = 0;
+        var frow: usize = 0;
+        var i: usize = 0;
+        while (i < tokens.len) : (i += 1) {
+            const last = if (i + 1 == tokens.len) logits else null;
+            if (si < spans.len and i >= spans[si].start and i < spans[si].start + spans[si].count) {
+                if ((frow + 1) * model.embedding > features.len) return error.InvalidShape;
+                try self.forwardRow(.{ .features = features[frow * model.embedding ..][0..model.embedding] }, last, null, observer);
+                frow += 1;
+                if (i + 1 == spans[si].start + spans[si].count) si += 1;
+            } else try self.forward(tokens[i], last, null, observer);
         }
     }
 
