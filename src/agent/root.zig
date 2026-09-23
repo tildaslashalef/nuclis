@@ -667,11 +667,13 @@ const Ui = struct {
                         'c' => {
                             // First press cancels the turn; a second quits.
                             interrupt.request();
+                            self.agent.userCancelled();
                             if (self.cancel_pending) self.quit = true else self.cancel_pending = true;
                             return;
                         },
                         'd' => {
                             interrupt.request();
+                            self.agent.userCancelled();
                             self.quit = true;
                             return;
                         },

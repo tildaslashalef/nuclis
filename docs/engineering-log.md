@@ -123,6 +123,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | TERM-11 | The region re-anchors on a resize from the terminal's cursor report; the preview fits above the region and is off under tmux | 2026-09-23 |
 | MODL-24 | Decode after an image: the Metal step's cache row and rotary position separated; the vision gate compares decode with one prefill | 2026-09-23 |
 | TERM-12 | A spinner row while the projector loads and images encode | 2026-09-23 |
+| AGNT-16 | AGNT-14's follow-ups: the Muse value contract pinned and measured, steering that restarts a reasoning-only step, the guessed-path guideline measured and dropped | 2026-09-23 |
 
 ## Context
 
@@ -4852,3 +4853,50 @@ the counter reaching 6.0 s (the encoding of 1,024 tokens). The projector
 load showed its row for under a second.
 
 **Files.** `src/agent/root.zig`.
+
+## AGNT-16 — AGNT-14's follow-ups: the Muse value contract pinned and measured, steering that restarts a reasoning-only step, the guessed-path guideline measured and dropped (2026-09-23)
+
+**Outcome.** Three parts, one of them negative.
+*Muse's parameter values.* The ATEM parser passes a value through
+unchanged (the reference's grammar reads it up to the closing tag), so the
+trailing-newline defect AGNT-14 fixed for Qwen never existed here; a test
+now pins that a `content` ending in `\n`, one starting with a blank line,
+and one that is only `\n` survive `renderCall` → `parseTool`.
+*Steering interrupts reasoning.* Reasoning is interruptible, output is
+not: when a steered message is pending and a thinking delta arrives before
+any answer text or decoded call, `Agent.feed` requests the interrupt and
+sets `steer_break`; `steps()` then drops the cancelled step (not in the
+history, not recorded), closes its reasoning label, shows `— steering:
+reasoning restarted`, delivers the steering, and runs the step again
+against the budget. The completer's cancelled path already clears the
+consumed text, so the next step replays from the primed prefix. The
+driver's Ctrl-C and Ctrl-D call `Agent.userCancelled`, which clears the
+break, so a real cancel in that window still ends the turn.
+*The guessed-path guideline* ("never guess a path: when you are not sure a
+file exists, glob first" under `read_file`) did not change the habit it
+targeted and was reverted; the pinned prompt is unchanged.
+
+**Evidence.** Muse (`muse-glimmer-30b`, `newfile`, seed 1, variant
+`agnt16-muse`): pass in 11 steps, 177.3 s, both `write_file` contents end
+with a newline. The task list with the guideline (`agnt16`, Qwen, stopped
+by the user at 19 of 24 runs: seed 1 complete, seed 2 through `exit`): 19
+of 19 passed, mean 4.89 steps against `final`'s 4.62, 0 edit errors
+against 2, 91.0 against 111.6 model seconds; `newfile` seed 2 still read
+the invented `tests/test_circle.py` first and globbed only after the
+`FileNotFound`, exactly as in `final`, and `json` seed 1 used `cd` twice
+(0 in `final`). Unit tests: a steer before a turn whose first step only
+reasons restarts it (history user, steered user, answer; one notice; no
+reasoning kept; the interrupt clear afterwards), a steer after answer text
+waits for the step boundary, and a Ctrl-C during the break ends the turn
+with the steering left to take back. 529 unit tests pass. The harness run
+(`steer-*` captures, `think high`, a steer typed at 128 s) caught the model
+already answering, so the steer waited for the boundary and was answered
+next (`steer-done`): the waiting rule observed live, the restart only in
+the unit tests. No gate (nothing numerical).
+
+**Files.** `src/agent/loop.zig`, `src/agent/root.zig`,
+`inference/src/profiles/muse_glimmer.zig`, `docs/spec.md`.
+
+**Remaining.** The restart has not been seen live in the chat; the user
+closed the unit before a capture with the steer typed during reasoning.
+The guessed read stays a known habit (1 of 2 `newfile` seeds).

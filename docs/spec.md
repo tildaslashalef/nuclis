@@ -380,7 +380,13 @@ one command; the evaluation CLI stays separate.
   delivered as a user message before the model's next step, after the
   tool calls in flight, and appears in the transcript and the session
   where the model saw it; at most four wait at once, and what a turn ends
-  without delivering goes out as the next message. Alt-Enter *queues* the
+  without delivering goes out as the next message. Reasoning is
+  interruptible, output is not: a steer that arrives while the step has
+  only reasoned (no answer text, no call) stops the step, drops it from
+  the history and the session (the transcript keeps what it showed, then
+  `— steering: reasoning restarted`), delivers the message, and runs the
+  step again against the step budget; Ctrl-C in that window still
+  cancels the turn. Alt-Enter *queues* the
   text for after the turn; a queued message is not in the transcript
   until it is sent. Print mode has no steering.
 - The input box is framed; the frame's colour is the reasoning effort and

@@ -156,7 +156,14 @@ re-anchors on a resize from the terminal's cursor report, the preview is
 capped to the room above the region and is off under tmux (tmux cannot
 scroll it). **One check is the user's:** in plain Ghostty (no tmux), drop
 an image, ask, and see that the picture scrolls with the text.
-**Next: AGNT-16** (AGNT-14's three follow-ups; its section below).
+AGNT-16 closed the same day
+([log](docs/engineering-log.md#agnt-16--agnt-14s-follow-ups-the-muse-value-contract-pinned-and-measured-steering-that-restarts-a-reasoning-only-step-the-guessed-path-guideline-measured-and-dropped-2026-09-23)):
+Muse's values were already verbatim (now pinned, `newfile` passes), a
+steer during a reasoning-only step restarts it, and the guessed-path
+guideline changed nothing and was reverted. **TERM-13** (a stale preview
+and header edge after exit, from the user's Ghostty screenshot) is
+drafted and deferred by the user; the harness gained `--direct` for it.
+**Next: MODL-22** (Gemma 4 vision; its section below).
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so
 the model has nothing to do while a command runs in the background, no
@@ -250,7 +257,7 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: AGNT-16 → MODL-22 → MODL-23 (MODL-21 and AGNT-15 closed first, so
+Order: MODL-22 → MODL-23, TERM-13 when the user takes it up (MODL-21 and AGNT-15 closed first, so
 the chat has its image path; the Gemma 4 and Muse projectors follow). APPS-14
 stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
@@ -289,10 +296,10 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| AGNT-16 | AGNT-14's follow-ups: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline (ordered 2026-09-22; see its section) | 1 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
+| TERM-13 | Exiting after an image preview leaves the picture and the header's top edge on screen (reported 2026-09-23, deferred by the user; see its section) | 1 |
 
 ## Working a unit here
 
@@ -517,53 +524,6 @@ contract, each family's projector facts and provenance, the preprocessing
 per family, the traces, and the memory; `docs/spec.md` carries the vision
 requirements (MODL-21) and the chat's attachment rules (AGNT-15).
 
-## AGNT-16 — AGNT-14's follow-ups: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline (ordered 2026-09-22)
-
-**1. Muse's ATEM values.** Read on 2026-09-22: `muse_glimmer.zig`'s
-`parseTool` passes a parameter value verbatim (`value_start[0..value_end]`)
-and the reference's ATEM grammar (`common/chat.cpp:2261-2267`) takes a
-string value as `until(PARAM_END)`, so Muse never had the trimming defect;
-AGNT-14's note was wrong. Pin it: a test that a `content` value ending in
-`\n` round-trips through `renderCall` and `parseTool`; measure it: the
-`newfile` task on `muse-glimmer-30b`, seed 1, recorded in the log (the
-model's `write_file` content ends with a newline or not, and the steps).
-
-**2. Steering interrupts reasoning.** Today a steered message waits for the
-step boundary, so during a long reasoning step (4,000 tokens at `think
-low` happened on the list) it sits. Rule: reasoning is interruptible,
-output is not. In `Agent.feed`'s `.thinking` arm, when steering is pending
-and the step has produced no answer text and decoded no call, request the
-interrupt (`interrupt.request()`, the same flag Ctrl-C sets) and mark
-`steer_break`; in `steps()`, a `.cancelled` outcome with `steer_break` set
-is not the turn's end: clear the flag and the interrupt, drop the partial
-step (not appended to history, not recorded — the transcript already
-showed its deltas, and a notice `— steering: reasoning restarted` follows),
-deliver the steering, and continue; the step counts against the budget.
-Once an answer or a call has begun, the step runs to its boundary as
-before. The next completion replays from the primed prefix (a cancelled
-step clears the consumed text), which is the cost. Test: a stub whose
-`run` sends thinking, then consults `interrupt.requested()` and returns
-`.cancelled`; a steer placed before the turn lands after a restarted step
-whose partial reasoning is not in history; and a steer with answer text
-already streamed waits for the boundary. Print mode unaffected.
-
-**3. The guessed-path guideline.** `newfile` seed 2 read
-`tests/test_circle.py`, a name the model invented (a `FileNotFound`
-result, one step). Add to the `read_file` guideline: "never guess a path:
-when you are not sure a file exists, glob first". The pinned text is
-re-pinned with a full pass of the task list (`--variant agnt16`, seeds 1
-and 2) against AGNT-13's `final`; the change is judged on the habit
-(guessed reads, counted from the sessions as a `FileNotFound` on
-`read_file`) and the pass marks.
-
-**Also.** `agent.instructions` is written into the user's `nuclis.json`
-(`config set agent.instructions auto`, done 2026-09-22; user data, not a
-commit).
-
-**Check.** `make check`; the agnt16 pass; the Muse newfile run; a harness
-capture of a steer typed during reasoning (`think high` on a question,
-then a steer) showing the restart notice.
-
 ## MODL-22 — Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B)
 
 **Session 1 (facts).** Read `gemma4uv.cpp` (the 12B: im2col patches →
@@ -660,3 +620,52 @@ corpus's first 4,096 tokens. One session.
 **Acceptance.** Perplexity on the corpus within 0.5 % of the reference's
 on the same file and context; `make check`; the spec's CLI section names
 the command.
+
+## TERM-13 — Exiting after an image preview leaves the picture and the header's top edge on screen (reported 2026-09-23, deferred)
+
+**The report.** The user's screenshot (plain Ghostty 1.3.1, no tmux, a
+session of about ten minutes with the photo previewed): after exit the
+screen holds the shell prompt at the top, a single box top edge on row 1
+(the banner's, by its indent and width), the photo still placed around rows
+15–26, and nothing else. The transcript is gone from the screen and the
+image outlived it.
+
+**What is known (2026-09-23).** Not reproduced on a short run. The tmux
+harness (preview forced on with `env -u TMUX TERM_PROGRAM=ghostty`): drop,
+one answer, Ctrl-C leaves the transcript intact (`.zig-cache/tui/x-exit.txt`).
+In a direct Ghostty window (`scripts/tui-shot.py --direct`, added for this
+unit; see [development.md § Looking at the agent without a person at the
+keyboard](docs/development.md#looking-at-the-agent-without-a-person-at-the-keyboard))
+the same run's recorded stream ends with `bye` on row 34 and `finish`
+walking 18 rows up from row 53 before `ESC[0J`, so only the region is
+erased. The photographs failed (`screencapture`: no screen-recording
+permission for the terminal running the agent session). The user's
+session-level details (several turns, a resize, exiting while busy, a
+fold toggle) are not yet known.
+
+**Suspects, in order.**
+1. *Ghostty does not move kitty placements when a partial scroll region
+   scrolls.* `Screen.insertAbove` scrolls with `DECSTBM` (top 1, bottom
+   above the region); if Ghostty only carries placements (and creates
+   scrollback) on a full-screen scroll, the picture stays on its rows while
+   the text moves past it, and later turns write over and around it.
+2. *The exit walks too far.* `Screen.finish` goes up `cursor_row + slack`;
+   the screenshot's cursor landed on row 2, i.e. the screen believed nearly
+   every row above the region was slack or region. Candidates: `resized`
+   adding slack from a cursor report, `rewriteAbove` (a replay after a
+   resize or a fold) re-sending the preview's raw row with its relative
+   `CSI n A`/`CSI n B`, or a busy region filling the screen at exit.
+3. *Erasing never deletes a placement.* `ESC[0J` leaves kitty images in
+   place, so any erase over a preview (exit, a replay, a resize) strands it.
+
+**Session 1.** Get the screen-recording permission (or the user's
+photograph) and reproduce with `--direct`: several turns after the image
+until the transcript scrolls past it, then a fold toggle, a resize, and an
+exit while busy, a capture after each; read `<name>.stream` for the escape
+sequence of each step. Fix what reproduces; the likely shape is to give
+each preview an image id, delete the placements whose rows an erase or
+rewrite covers (`a=d` by id, or `d=y` per row), and, if suspect 1 holds,
+not rely on a scroll region to carry a picture (scroll the whole screen
+while a preview is on it, or re-place it). **Check:** the `--direct`
+captures of each step, the golden escape tests of `finish` and the replay
+with a preview row, `make check`.

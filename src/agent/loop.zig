@@ -30,6 +30,7 @@ const engine = @import("../engine.zig");
 const tui = @import("../tui/root.zig");
 const tools = @import("tools/root.zig");
 const stream = @import("stream.zig");
+const interrupt = @import("../interrupt.zig");
 pub const system_prompt = @import("system_prompt.zig");
 
 const Allocator = std.mem.Allocator;
@@ -249,6 +250,10 @@ pub const Agent = struct {
     /// the next model step (`deliverSteering`). Owned; what the turn did
     /// not deliver is the driver's to take back (`takeSteering`).
     steering: std.ArrayList([]u8) = .empty,
+    /// Set when the step in progress was interrupted to deliver steering
+    /// (reasoning only, no answer or call yet); the driver clears it when
+    /// the user cancels, so a real Ctrl-C still ends the turn.
+    steer_break: bool = false,
 
     /// Steered messages a turn holds at once; a host constant.
     pub const max_steering: usize = 4;
@@ -299,6 +304,12 @@ pub const Agent = struct {
         const owned = try self.alloc.dupe(u8, text);
         errdefer self.alloc.free(owned);
         try self.steering.append(self.alloc, owned);
+    }
+
+    /// The driver's Ctrl-C: a steering break in flight becomes a real
+    /// cancellation, so the turn ends instead of restarting its step.
+    pub fn userCancelled(self: *Agent) void {
+        self.steer_break = false;
     }
 
     pub fn pendingSteering(self: *const Agent) usize {
@@ -421,6 +432,20 @@ pub const Agent = struct {
             // are not recorded, because a session cannot load an assistant
             // tool call whose result never followed.
             const cancelled = reply.outcome.stop == .cancelled;
+            if (self.steer_break) {
+                self.steer_break = false;
+                interrupt.clear();
+                // Reasoning is interruptible, output is not: the partial
+                // step is dropped (the transcript already showed it) and the
+                // steering goes in before the step runs again, which
+                // counts against the budget like any other.
+                if (cancelled) {
+                    if (self.thinking_open and !self.thinking_ended) try self.endThinking();
+                    try self.events.send(self.events.context, .{ .notice = "  — steering: reasoning restarted" });
+                    try self.deliverSteering();
+                    continue;
+                }
+            }
             // A step that ends in calls, or stops without an answer, closes
             // its reasoning here; a cancelled one keeps the bare label.
             if (!cancelled and self.thinking_open and !self.thinking_ended) try self.endThinking();
@@ -786,6 +811,13 @@ pub const Agent = struct {
                 self.thinking_open = true;
                 try self.thinking.writer.writeAll(text);
                 try self.events.send(self.events.context, .{ .thinking_delta = text });
+                // A message steered while the step only reasons stops it at
+                // the next checkpoint, so the model reasons again with it
+                // in view instead of finishing a line of thought first.
+                if (self.steering.items.len > 0 and !self.steer_break and self.answer.written().len == 0 and self.calls.items.len == 0) {
+                    self.steer_break = true;
+                    interrupt.request();
+                }
             },
             .answer => |text| {
                 if (self.thinking_open and !self.thinking_ended) try self.endThinking();
@@ -1147,6 +1179,14 @@ const Stub = struct {
     /// When set, the run at this answer index reports `ContextFull` once
     /// instead of answering, to exercise compaction.
     context_full_at: ?usize = null,
+    /// Reasoning per step sent after the answer, as a step that has begun
+    /// its output would.
+    late_thinking: []const []const u8 = &.{},
+    /// Stops a step as the engine does when the interrupt is requested
+    /// after its reasoning: cancelled, no answer, no calls.
+    honor_interrupt: bool = false,
+    /// Presses Ctrl-C on this agent right after the step's reasoning.
+    cancel_agent: ?*Agent = null,
 
     fn model(self: *Stub) Model {
         return .{ .context = self, .run = run, .count = count };
@@ -1171,12 +1211,21 @@ const Stub = struct {
         self.index += 1;
         const text = self.answers[i];
         if (i < self.thinking.len and self.thinking[i].len > 0) try sink.send(.{ .thinking = self.thinking[i] });
+        if (self.cancel_agent) |agent| {
+            interrupt.request();
+            agent.userCancelled();
+        }
+        if (self.honor_interrupt and interrupt.requested()) return .{ .outcome = .{
+            .stop = .cancelled,
+            .timing = .{ .prompt_tokens = 1, .generated_tokens = 1 },
+        } };
         // Feed in two pieces: the sink must survive a split piece.
         if (text.len > 0) {
             const half = text.len / 2;
             try sink.send(.{ .answer = text[0..half] });
             try sink.send(.{ .answer = text[half..] });
         }
+        if (i < self.late_thinking.len and self.late_thinking[i].len > 0) try sink.send(.{ .thinking = self.late_thinking[i] });
         if (i < self.calls.len) {
             for (self.calls[i]) |call| try sink.send(.{ .tool_call = call });
         }
@@ -1477,6 +1526,87 @@ test "the step budget stops a model that keeps calling" {
     // The status bar reads this against the budget.
     try testing.expectEqual(@as(usize, 2), agent.steps_done);
     try testing.expectEqual(@as(usize, 2), agent.budget);
+}
+
+test "a steer during reasoning restarts the step with the message in view" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{
+        .answers = &.{ "never shown", "Done." },
+        .thinking = &.{"pondering the wrong question"},
+        .honor_interrupt = true,
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    defer interrupt.clear();
+    try agent.steer("actually, the other file");
+    try testing.expectEqual(Stop.done, try agent.turn("look", &.{}));
+    // user, user(steered), assistant: the interrupted step left nothing.
+    try testing.expectEqual(@as(usize, 3), agent.history.items.len);
+    try testing.expectEqualStrings("actually, the other file", agent.history.items[1].content);
+    try testing.expectEqualStrings("Done.", agent.history.items[2].content);
+    try testing.expectEqualStrings("", agent.history.items[2].reasoning);
+    try testing.expectEqual(@as(usize, 1), capture.assistant_records);
+    try testing.expectEqual(@as(usize, 1), capture.notices);
+    try testing.expectEqual(@as(usize, 1), capture.thinking_ends);
+    try testing.expectEqualStrings("Done.", capture.answers.written());
+    try testing.expectEqual(@as(usize, 2), agent.steps_done);
+    try testing.expect(!interrupt.requested());
+    try testing.expect(!agent.steer_break);
+}
+
+test "a steer after the answer began waits for the step boundary" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "hello.txt", .data = "hi there" });
+    var stub: Stub = .{
+        .answers = &.{ "Reading.\n", "Done." },
+        .calls = &.{&.{read_hello}},
+        .late_thinking = &.{"more reasoning after the answer"},
+        .honor_interrupt = true,
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    defer interrupt.clear();
+    try agent.steer("also count the words");
+    try testing.expectEqual(Stop.done, try agent.turn("what is in hello.txt?", &.{}));
+    // user, assistant(call), tool, user(steered), assistant(answer).
+    try testing.expectEqual(@as(usize, 5), agent.history.items.len);
+    try testing.expectEqualStrings("also count the words", agent.history.items[3].content);
+    try testing.expectEqual(@as(usize, 0), capture.notices);
+    try testing.expect(!interrupt.requested());
+}
+
+test "a cancel during a steering break still ends the turn" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{
+        .answers = &.{"never shown"},
+        .thinking = &.{"pondering"},
+        .honor_interrupt = true,
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    defer interrupt.clear();
+    stub.cancel_agent = &agent;
+    try agent.steer("actually, the other file");
+    try testing.expectEqual(Stop.cancelled, try agent.turn("look", &.{}));
+    // Undelivered: the driver takes it back, as after any cancelled turn.
+    try testing.expectEqual(@as(usize, 1), agent.pendingSteering());
+    const left = try agent.takeSteering();
+    defer {
+        for (left) |text| alloc.free(text);
+        alloc.free(left);
+    }
 }
 
 test "a cancelled step stops the loop before any call runs" {

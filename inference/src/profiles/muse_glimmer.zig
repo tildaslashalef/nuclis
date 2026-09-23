@@ -684,6 +684,35 @@ test "parseTool round-trips a rendered call and keeps every value's type" {
     try std.testing.expectEqualStrings("{\"query\":\"a\\\"b\\nc\",\"limit\":3,\"ratio\":1.5,\"regex\":true,\"nothing\":null,\"paths\":[\"x\",\"y\"],\"options\":{\"case_sensitive\":false},\"path\":\"a.zig\",\"padded\":\" spaced \"}", parsed.arguments);
 }
 
+test "a string value's newlines at either end survive the round trip" {
+    const alloc = std.testing.allocator;
+    // The reference's grammar reads a value as everything up to the closing
+    // tag, so a file's trailing newline and a leading blank line are content.
+    const cases = [_][]const u8{
+        "{\"path\":\"a.txt\",\"content\":\"one\\ntwo\\n\"}",
+        "{\"path\":\"a.txt\",\"content\":\"\\nafter a blank line\\n\\n\"}",
+        "{\"path\":\"a.txt\",\"content\":\"\\n\"}",
+    };
+    for (cases) |arguments| {
+        const messages = [_]Message{
+            .{ .role = .user, .content = "write" },
+            .{ .role = .assistant, .content = "", .tool_calls = &.{.{ .id = 1, .name = "write_file", .arguments = arguments }} },
+            .{ .role = .tool, .content = "ok", .tool_call_id = 1 },
+        };
+        const prompt = try render(alloc, &messages, &.{}, .low, .{});
+        defer alloc.free(prompt);
+        const open_marker = "<|start|>assistant to=write_file<|message|>";
+        const open = std.mem.indexOf(u8, prompt, open_marker).? + open_marker.len;
+        const close = std.mem.indexOfPos(u8, prompt, open, "<|eot|>").?;
+        const parsed = (try parseTool(alloc, prompt[open..close])).?;
+        defer {
+            alloc.free(parsed.name);
+            alloc.free(parsed.arguments);
+        }
+        try std.testing.expectEqualStrings(arguments, parsed.arguments);
+    }
+}
+
 test "parseTool accepts the block's whitespace and refuses malformed, truncated, or multiple invokes" {
     const alloc = std.testing.allocator;
     const spaced = (try parseTool(alloc, "\n<atem:function_calls>\n\n<atem:invoke name=\"bash\">\n  <atem:parameter name=\"command\">ls -la</atem:parameter>\n\n</atem:invoke>\n</atem:function_calls>\n\n")).?;
