@@ -27,9 +27,12 @@
 //! where the cursor is. The region's **bottom** is the anchor: a region that
 //! shrinks moves its top down and the rows it released stay blank above it
 //! as `slack`, which the next growth takes back and the next insertion fills
-//! before it scrolls, so the transcript never keeps a gap. The one input the
-//! model cannot survive is a terminal reflowing rows under it, which is what
-//! `resized` reports.
+//! before it scrolls, so the transcript never keeps a gap. A resize moves the
+//! region's bottom to the new last row (`resized`): a taller terminal adds
+//! blank rows under it that become slack above it, a shorter one is taken to
+//! have kept its last rows in view, as tmux and Ghostty do. What the model
+//! cannot survive is the terminal reflowing rows under it, which is why the
+//! caller replays the last turn after a resize.
 //!
 //! `Screen` writes to a plain `std.Io.Writer` and never allocates, so its
 //! tests capture the exact escape stream with no TTY in sight.
@@ -255,13 +258,45 @@ pub const Screen = struct {
         return self.rewriteAbove(rows, replacing);
     }
 
-    /// Re-reads the terminal size. Returns true when it changed, which is
+    /// Takes the terminal's new size. Returns true when it changed, which is
     /// the agent's signal to rebuild its rows at the new width: after a
     /// reflow the recorded geometry describes rows the terminal has already
     /// moved, so only relative motion (the rewrite path) is trustworthy.
-    pub fn resized(self: *Screen, size: Size) bool {
+    /// moved. A painted region is erased where it stood and its bottom
+    /// walked to the new last row, so the next paint rebuilds it there.
+    /// `cursor` is the terminal's own answer to where the cursor is now (a
+    /// resize moves it: a shorter terminal trims its top to keep the cursor's
+    /// row, a taller one pulls lines back from the scrollback); without one,
+    /// the cursor is taken to be where it was, clamped to the last row.
+    pub fn resized(self: *Screen, size: Size, cursor: ?usize) !bool {
         if (size.rows == self.size.rows and size.columns == self.size.columns) return false;
         self.size = size;
+        if (self.region_rows == 0) return true;
+        const out = self.out;
+        try self.beginFrame();
+        self.at = @max(1, @min(cursor orelse self.at, size.rows));
+        if (self.cursor_row > 0) {
+            const up = @min(self.cursor_row, self.at - 1);
+            if (up > 0) try out.print("\x1b[{d}A", .{up});
+            self.at -= up;
+        }
+        try out.writeAll("\r\x1b[0J");
+        const target = size.rows -| (self.region_rows - 1);
+        if (self.at < target) {
+            self.slack += target - self.at;
+            while (self.at < target) try self.newline();
+        } else if (self.at > target) {
+            const up = self.at - target;
+            try out.print("\x1b[{d}A", .{up});
+            self.at -= up;
+            self.slack -|= up;
+        }
+        self.region_rows = 0;
+        self.region_top = 0;
+        self.cursor_row = 0;
+        self.cursor_col = 1;
+        try self.endFrame();
+        try out.flush();
         return true;
     }
 
@@ -719,8 +754,50 @@ test "a resize is reported once per change" {
     var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
     defer buffer.deinit();
     var screen = testScreen(&buffer.writer, .{});
-    try testing.expect(!screen.resized(.{ .rows = 10, .columns = 40 }));
-    try testing.expect(screen.resized(.{ .rows = 10, .columns = 60 }));
-    try testing.expect(!screen.resized(.{ .rows = 10, .columns = 60 }));
+    try testing.expect(!try screen.resized(.{ .rows = 10, .columns = 40 }, null));
+    try testing.expect(try screen.resized(.{ .rows = 10, .columns = 60 }, null));
+    try testing.expect(!try screen.resized(.{ .rows = 10, .columns = 60 }, null));
     try testing.expectEqual(@as(usize, 60), screen.size.columns);
+    // Nothing painted yet: nothing to move.
+    try testing.expectEqualStrings("", buffer.written());
+}
+
+test "a taller terminal walks the region's bottom down to the new last row" {
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
+    var screen = testScreen(&buffer.writer, .{});
+    // The region anchored at the bottom of 10 rows: rows 9 and 10.
+    screen.at = 1;
+    try screen.anchor(2);
+    const rows = [_]Row{ .{ .text = "editor" }, .{ .text = "bar" } };
+    try screen.paint(&rows, .{ .row = 0, .column = 3 });
+    try testing.expectEqual(@as(usize, 9), screen.region_top);
+    buffer.clearRetainingCapacity();
+    // Four rows appear at the bottom (the terminal keeps its top, the
+    // cursor still on row 9): the region is erased where it was and its
+    // bottom walked to row 14.
+    try testing.expect(try screen.resized(.{ .rows = 14, .columns = 40 }, 9));
+    try testing.expectEqualStrings("\x1b[?2026h\r\x1b[0J\r\n\r\n\r\n\r\n\x1b[?2026l", buffer.written());
+    try testing.expectEqual(@as(usize, 0), screen.region_rows);
+    try testing.expectEqual(@as(usize, 13), screen.at);
+    try testing.expectEqual(@as(usize, 12), screen.slack); // 8 walked at startup, 4 now
+    try screen.paint(&rows, .{ .row = 0, .column = 3 });
+    try testing.expectEqual(@as(usize, 13), screen.region_top);
+    try testing.expectEqual(@as(usize, 2), screen.region_rows);
+    // Back to 10 rows: the terminal trimmed its top to keep the cursor's
+    // row, which it reports on row 10; the region top follows.
+    buffer.clearRetainingCapacity();
+    try testing.expect(try screen.resized(.{ .rows = 10, .columns = 40 }, 10));
+    try testing.expectEqualStrings("\x1b[?2026h\r\x1b[0J\x1b[1A\x1b[?2026l", buffer.written());
+    try screen.paint(&rows, .{ .row = 0, .column = 3 });
+    try testing.expectEqual(@as(usize, 9), screen.region_top);
+    try testing.expectEqual(@as(usize, 10), screen.at + 1);
+    // Taller again, and the terminal pulled three lines back from its
+    // scrollback: the cursor is reported on row 12, so only one blank row
+    // lies under the region and only one is walked.
+    buffer.clearRetainingCapacity();
+    try testing.expect(try screen.resized(.{ .rows = 14, .columns = 40 }, 12));
+    try testing.expectEqualStrings("\x1b[?2026h\r\x1b[0J\r\n\x1b[?2026l", buffer.written());
+    try screen.paint(&rows, .{ .row = 0, .column = 3 });
+    try testing.expectEqual(@as(usize, 13), screen.region_top);
 }

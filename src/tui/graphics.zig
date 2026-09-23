@@ -4,8 +4,10 @@
 //! cursor left where it was (`C=1`). The transcript reserves the box's rows
 //! and carries the sequence as one raw row; nothing here touches the
 //! terminal. Whether a terminal draws it is decided by the environment, as
-//! the screen's other capabilities are; under tmux the sequence is wrapped
-//! in the DCS passthrough. Never part of the golden tests.
+//! the screen's other capabilities are. Not under tmux: tmux redraws lines
+//! itself and cannot scroll a picture it does not know about, so a
+//! passed-through image would stay put over the text. Never part of the
+//! golden tests.
 const std = @import("std");
 const inference = @import("inference");
 
@@ -21,25 +23,28 @@ pub const cell_aspect: f64 = 2.0;
 const chunk: usize = 4096;
 
 /// Whether the terminal is one that draws kitty graphics (Ghostty, kitty),
-/// by environment; `NUCLIS_NO_PREVIEW=1` turns it off.
+/// by environment; `NUCLIS_NO_PREVIEW=1` turns it off, and tmux is never one.
 pub fn enabled(environ: *const std.process.Environ.Map) bool {
     if (environ.get("NUCLIS_NO_PREVIEW")) |v| if (!std.mem.eql(u8, v, "0")) return false;
+    if (environ.get("TMUX") != null) return false;
     if (environ.get("GHOSTTY_RESOURCES_DIR") != null or environ.get("KITTY_WINDOW_ID") != null) return true;
     if (environ.get("TERM_PROGRAM")) |p| if (std.ascii.eqlIgnoreCase(p, "ghostty")) return true;
     const term = environ.get("TERM") orelse "";
     return std.mem.indexOf(u8, term, "ghostty") != null or std.mem.indexOf(u8, term, "kitty") != null;
 }
 
-/// The cell box a `width × height` image takes: at most `max_rows` tall and
-/// `max_columns` wide, aspect kept under `cell_aspect`.
+/// The cell box a `width × height` image takes: at most `max_rows_here`
+/// (itself at most `max_rows`) tall and `max_columns` wide, aspect kept
+/// under `cell_aspect`.
 pub const Box = struct { rows: usize, columns: usize };
 
-pub fn box(width: u32, height: u32, max_columns: usize) Box {
+pub fn box(width: u32, height: u32, max_columns: usize, max_rows_here: usize) Box {
     if (width == 0 or height == 0) return .{ .rows = 1, .columns = 1 };
     const w: f64 = @floatFromInt(width);
     const h: f64 = @floatFromInt(height);
     // Rows from the height at ~20 px a row, capped; columns from the aspect.
-    var rows: f64 = @min(@as(f64, @floatFromInt(max_rows)), @max(1.0, @ceil(h / 20.0)));
+    const cap_rows: f64 = @floatFromInt(@max(@min(max_rows, max_rows_here), 1));
+    var rows: f64 = @min(cap_rows, @max(1.0, @ceil(h / 20.0)));
     var columns: f64 = @max(1.0, @round(rows * cell_aspect * w / h));
     const cap: f64 = @floatFromInt(@max(max_columns, 1));
     if (columns > cap) {
@@ -85,8 +90,8 @@ pub fn scaleDown(alloc: Allocator, source: Rgb8) !Rgb8 {
 
 /// The transmission-and-placement sequence for `image` over `b`: the pixels
 /// as base64 in `chunk`-sized commands (`m=1` until the last), quiet (`q=2`),
-/// cursor kept (`C=1`). `tmux` wraps every command in the passthrough DCS.
-pub fn sequence(alloc: Allocator, image: Rgb8, b: Box, tmux: bool) ![]u8 {
+/// cursor kept (`C=1`).
+pub fn sequence(alloc: Allocator, image: Rgb8, b: Box) ![]u8 {
     const encoder = std.base64.standard.Encoder;
     const encoded = try alloc.alloc(u8, encoder.calcSize(image.pixels.len));
     defer alloc.free(encoded);
@@ -105,21 +110,11 @@ pub fn sequence(alloc: Allocator, image: Rgb8, b: Box, tmux: bool) ![]u8 {
         try command.writer.print("m={c};", .{more});
         try command.writer.writeAll(encoded[at..end]);
         try command.writer.writeAll("\x1b\\");
-        if (tmux) try passthrough(alloc, &out, command.written()) else try out.appendSlice(alloc, command.written());
+        try out.appendSlice(alloc, command.written());
         at = end;
         first = false;
     }
     return out.toOwnedSlice(alloc);
-}
-
-/// tmux's DCS passthrough: `ESC P tmux ; <body with ESC doubled> ESC \`.
-fn passthrough(alloc: Allocator, out: *std.ArrayList(u8), body: []const u8) !void {
-    try out.appendSlice(alloc, "\x1bPtmux;");
-    for (body) |c| {
-        if (c == 0x1b) try out.append(alloc, 0x1b);
-        try out.append(alloc, c);
-    }
-    try out.appendSlice(alloc, "\x1b\\");
 }
 
 // ----- tests -----
@@ -127,15 +122,19 @@ fn passthrough(alloc: Allocator, out: *std.ArrayList(u8), body: []const u8) !voi
 const testing = std.testing;
 
 test "the box keeps the aspect under the row cap and the width cap" {
-    const tall = box(400, 800, 120);
+    const tall = box(400, 800, 120, 40);
     try testing.expectEqual(max_rows, tall.rows);
     try testing.expectEqual(@as(usize, 12), tall.columns);
-    const wide = box(2000, 200, 40);
+    const wide = box(2000, 200, 40, 40);
     try testing.expectEqual(@as(usize, 40), wide.columns);
     try testing.expectEqual(@as(usize, 2), wide.rows);
-    const tiny = box(16, 16, 80);
+    const tiny = box(16, 16, 80, 40);
     try testing.expectEqual(@as(usize, 1), tiny.rows);
     try testing.expectEqual(@as(usize, 2), tiny.columns);
+    // The space above the region caps the rows before the global cap.
+    const cramped = box(400, 800, 120, 5);
+    try testing.expectEqual(@as(usize, 5), cramped.rows);
+    try testing.expectEqual(@as(usize, 5), cramped.columns);
 }
 
 test "a large image is box-filtered to the longest side, a small one copied" {
@@ -155,22 +154,18 @@ test "a large image is box-filtered to the longest side, a small one copied" {
     try testing.expectEqualSlices(u8, small.pixels, same.pixels);
 }
 
-test "the sequence is chunked, quiet, cursor-keeping, and tmux-wrapped on request" {
+test "the sequence is chunked, quiet, and cursor-keeping" {
     const a = testing.allocator;
     const pixels = try a.alloc(u8, 2000 * 3);
     defer a.free(pixels);
     @memset(pixels, 7);
     const image: Rgb8 = .{ .width = 2000, .height = 1, .pixels = pixels };
-    const plain = try sequence(a, image, .{ .rows = 3, .columns = 40 }, false);
+    const plain = try sequence(a, image, .{ .rows = 3, .columns = 40 });
     defer a.free(plain);
     try testing.expect(std.mem.startsWith(u8, plain, "\x1b_Ga=T,f=24,s=2000,v=1,c=40,r=3,C=1,q=2,m=1;"));
     // 6000 bytes → 8000 base64 → two chunks, the last with m=0.
     try testing.expectEqual(@as(usize, 2), std.mem.count(u8, plain, "\x1b_G"));
     try testing.expect(std.mem.indexOf(u8, plain, "\x1b_Gm=0;") != null);
-    const wrapped = try sequence(a, image, .{ .rows = 3, .columns = 40 }, true);
-    defer a.free(wrapped);
-    try testing.expect(std.mem.startsWith(u8, wrapped, "\x1bPtmux;\x1b\x1b_G"));
-    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, wrapped, "\x1bPtmux;"));
 }
 
 test "the preview is decided by the environment" {
@@ -181,4 +176,9 @@ test "the preview is decided by the environment" {
     try testing.expect(enabled(&environ));
     try environ.put("NUCLIS_NO_PREVIEW", "1");
     try testing.expect(!enabled(&environ));
+    var under_tmux = std.process.Environ.Map.init(testing.allocator);
+    defer under_tmux.deinit();
+    try under_tmux.put("TERM_PROGRAM", "ghostty");
+    try under_tmux.put("TMUX", "/tmp/tmux-501/default,1,0");
+    try testing.expect(!enabled(&under_tmux));
 }

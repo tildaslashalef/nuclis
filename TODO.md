@@ -144,9 +144,11 @@ resume by re-encoding; the caption of a dropped scene, the Gemma refusal,
 and the resume were captured in the harness, which gained a `paste=` step
 ([log](docs/engineering-log.md#agnt-15--images-and-text-files-in-the-chat-drop-image-the-chips-the-projector-turn-the-detail-row-and-preview-sessions-2026-09-23),
 [vision.md § Images in the chat](docs/reference/vision.md#images-in-the-chat-agnt-15-2026-09-23)).
-**One check is the user's:** the inline preview was not photographed (the
-harness's Ghostty lookup needs the screen-recording permission); drop an
-image in Ghostty and look under the prompt.
+TERM-11 closed the same day from the user's screenshots: the region
+re-anchors on a resize from the terminal's cursor report, the preview is
+capped to the room above the region and is off under tmux (tmux cannot
+scroll it). **One check is the user's:** in plain Ghostty (no tmux), drop
+an image, ask, and see that the picture scrolls with the text.
 **Next: AGNT-16** (AGNT-14's three follow-ups; its section below).
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so

@@ -182,10 +182,8 @@ const Ui = struct {
     /// loop's `user` event arrives (`send`). Borrowed from the agent's
     /// history for the turn.
     attachments_pending: []const loop.Image = &.{},
-    /// The terminal draws inline images (kitty graphics), by environment;
-    /// under tmux the sequence needs the passthrough wrapper.
+    /// The terminal draws inline images (kitty graphics), by environment.
     preview: bool = false,
-    tmux: bool = false,
     /// The entry's projector file, loaded on the first attachment; null when
     /// the entry names none, which is the refusal at attach time.
     mmproj: ?[]const u8 = null,
@@ -270,8 +268,14 @@ const Ui = struct {
         // A resize invalidates the width every printed row was wrapped at.
         // Completed turns are immutable (docs/spec.md § The agent, Surface): only
         // the last one is replayed at the new width, older ones are left as
-        // the terminal reflowed them, and the region is rebuilt below.
-        const resized = self.scr.resized(size);
+        // the terminal reflowed them, and the region is rebuilt below, at the
+        // bottom, from where the terminal says the cursor landed.
+        const changed = size.rows != self.scr.size.rows or size.columns != self.scr.size.columns;
+        const cursor: ?usize = if (changed and self.scr.region_rows > 0) blk: {
+            const report = self.term.cursorPosition(&self.pending, &self.pending_len, 300) catch null;
+            break :blk if (report) |r| r.row else null;
+        } else null;
+        const resized = try self.scr.resized(size, cursor);
         var arena = std.heap.ArenaAllocator.init(self.alloc);
         defer arena.deinit();
         const a = arena.allocator();
@@ -486,8 +490,10 @@ const Ui = struct {
         defer decoded.deinit(a);
         var small = try tui.graphics.scaleDown(a, decoded);
         defer small.deinit(a);
-        const b = tui.graphics.box(small.width, small.height, self.columnsFor() -| 4);
-        return .{ .sequence = try tui.graphics.sequence(a, small, b, self.tmux), .rows = b.rows };
+        // The picture must fit above the region it is written over.
+        const above = if (self.scr.region_top > 0) self.scr.region_top -| 2 else self.scr.size.rows / 3;
+        const b = tui.graphics.box(small.width, small.height, self.columnsFor() -| 4, @max(above, 1));
+        return .{ .sequence = try tui.graphics.sequence(a, small, b), .rows = b.rows };
     }
 
     /// The editor's file-system side of a drop: an existing regular file
@@ -1597,7 +1603,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
     var agent: loop.Agent = undefined;
-    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .tmux = environ.get("TMUX") != null, .mmproj = if (settings.entry) |entry| entry.mmproj else null, .model_path = model_path };
+    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .mmproj = if (settings.entry) |entry| entry.mmproj else null, .model_path = model_path };
     defer ui.deinit();
     ed.probe = .{ .context = &ui, .call = Ui.dropProbe };
     // A polling tool reaches back into the driver while it runs, so keys are

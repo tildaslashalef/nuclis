@@ -171,8 +171,12 @@ and, where `tui.graphics.enabled` finds Ghostty or kitty in the environment
 (`NUCLIS_NO_PREVIEW=1` disables it), a preview: the decoded image
 box-filtered to a longest side of 512 px, sent as one kitty direct
 transmission (`f=24`, base64 in 4096-byte chunks, `q=2`, `C=1`) over a box
-of at most 12 rows whose aspect assumes 1:2 cells, wrapped in the tmux DCS
-passthrough under `TMUX`. The session file records a user entry's images as
+of at most 12 rows, fewer when less room stands above the live region,
+whose aspect assumes 1:2 cells. Not under tmux (`TMUX` set): tmux redraws
+lines itself and cannot scroll a picture it does not know about, so a
+passed-through image stayed put over the text (seen 2026-09-23, TERM-11);
+the harness therefore shows the detail row only, and the preview is looked
+at by running the chat in Ghostty directly. The session file records a user entry's images as
 `{path, width, height, width_tokens, height_tokens}` and no pixels (a turn
 without images writes the older line); `/save` lists them under the prompt;
 a resumed session decodes and encodes each image again and leaves a
@@ -191,10 +195,11 @@ row replayed and the follow-up `What colour is the rectangle?` answered
 `red` from the re-encoded image. The captures are under `.zig-cache/tui/`
 (`chip`, `caption`, `filechip`, `imagecmd`, `refusal`, `replay`,
 `resumed`). The preview's sequence, box, and downscale are pinned by unit
-tests; its rendering was not photographed (the harness's Ghostty window
-lookup needs the screen-recording permission this session lacks).
+tests; its rendering was first seen the next day in a Ghostty window
+attached to the harness's tmux session (TERM-11), where it drew correctly
+and then failed to follow the scrolling text, which is why tmux is excluded.
 
 **Limits.** Clipboard images (Cmd-V of a bitmap) are not taken: reaching
 the macOS pasteboard is a bridge call. PDF is not extracted. A conversation
-that has fed an image runs without speculation. The preview assumes 1:2
-cells and is re-transmitted on a fold or resize replay.
+that has fed an image runs without speculation. The preview assumes 1:2 cells, is
+re-transmitted on a fold or resize replay, and is not drawn under tmux.

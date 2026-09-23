@@ -120,6 +120,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector on both executors | 2026-09-22 |
 | AGNT-15 | Images and text files in the chat: drop, `/image`, the chips, the projector turn, the detail row and preview, sessions | 2026-09-23 |
 | REPO-14 | The screenshot harness is the validation step for surface changes | 2026-09-23 |
+| TERM-11 | The region re-anchors on a resize from the terminal's cursor report; the preview fits above the region and is off under tmux | 2026-09-23 |
 
 ## Context
 
@@ -4751,3 +4752,49 @@ does not replay a kitty image to a later client). The harness's docstring
 had the `buffer=`/`paste=` lines crossed; fixed.
 
 **Files.** `AGENTS.md`, `docs/development.md`, `scripts/tui-shot.py`.
+
+## TERM-11 — The region re-anchors on a resize from the terminal's cursor report; the preview fits above the region and is off under tmux (2026-09-23)
+
+**Outcome.** Two defects the user's Ghostty screenshots of AGNT-15 showed.
+*The input box at the top.* The chat measured the terminal while the model
+loaded, the Ghostty window attached to the harness's tmux session changed
+the pane's size afterwards, and the resize path replayed the last turn at
+the new width but left the live region where it was: at row 15 of a
+45-row window, the transcript squeezed above it. The arithmetic could not
+be repaired from the screen's own bookkeeping — measured with a probe pane,
+tmux trims its top on a shrink to keep the cursor's row and pulls trimmed
+lines back from history on a grow, so the region's row after a resize
+depends on scrollback the app cannot see — so `Screen.resized` now takes
+the terminal's own answer: the chat sends the cursor-position query (`CSI
+6 n`, `Terminal.cursorPosition`, 300 ms, keys that arrive meanwhile kept
+in the pending buffer) and the screen erases the region from the reported
+row, walks its bottom to the new last row (blank rows under it become
+slack above it, as a shrunken region's do), and lets the next paint
+rebuild it. Without a report the cursor is taken to be where it was,
+clamped. *The picture over the text.* A 12-row preview placed with nine
+rows above the region clamped at row 1 and covered the transcript and the
+box; the chat now caps the box to the rows above the region. And under
+tmux the image never followed the scrolling text, since tmux redraws
+lines itself and knows nothing of the picture, so `graphics.enabled` is
+false when `TMUX` is set and the DCS passthrough is gone; the preview is
+looked at in Ghostty directly.
+
+**Evidence.** The harness at 160×45 with `/help` on screen, then
+`resize-window` to 38, 50, and 30 rows: the bar on the last row each
+time (38/38, 50/50, 30/30) and the help page intact above the box. Golden
+tests pin the escape stream of a grow with the cursor kept, a shrink with
+the cursor reported on the last row, and a grow where the terminal pulled
+lines back (one blank row walked, not four); the cursor-report parser is
+tested against a key sequence and a partial report. 525 unit tests; no
+gate (nothing numerical).
+
+**Files.** `src/tui/screen.zig` (`resized(size, cursor)`),
+`src/tui/terminal.zig` (`cursorPosition`, `findCursorReport`),
+`src/tui/graphics.zig` (`box` with the room above, no passthrough, tmux
+excluded), `src/agent/root.zig`, `scripts/tui-shot.py`, `docs/spec.md`,
+`docs/development.md`, `docs/reference/vision.md`.
+
+**Remaining.** The blank rows a grow leaves under the transcript are slack
+and stay until the next insertion fills them. A terminal that answers no
+cursor query keeps the clamped guess. The preview's scrolling in Ghostty
+without tmux is the user's check.

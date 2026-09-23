@@ -355,8 +355,9 @@ one command; the evaluation CLI stays separate.
   refuses the chip with a notice naming the reason; the paste stays text.
 - The transcript shows an attached image as a dim detail row under the
   prompt (`image #1: shot.png (320×240 → 10×8 tokens)`) and, on a terminal
-  that draws kitty graphics (Ghostty, kitty; by environment, off with
-  `NUCLIS_NO_PREVIEW=1`), a preview of at most 12 rows under it. Sessions
+  that draws kitty graphics (Ghostty, kitty; by environment, never under
+  tmux, off with `NUCLIS_NO_PREVIEW=1`), a preview of at most 12 rows under
+  it, fewer when less room stands above the input box. Sessions
   record an image's path and grid, never its pixels; a resumed session
   decodes it again and leaves a missing file out with a notice.
 - Up/Down move inside a multi-line input and recall history from the

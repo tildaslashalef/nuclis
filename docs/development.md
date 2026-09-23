@@ -522,7 +522,10 @@ stays anchored, so a turn that grows the region pushes the transcript up
 and one that shrinks it releases rows above the editor rather than
 leaving blanks beneath it. A resize replays only the last turn at the new
 width; older turns are left as the terminal reflowed them (spec § The agent:
-completed turns are immutable). `NUCLIS_NO_SCROLL_REGION=1` forces the
+completed turns are immutable), and the region's bottom follows the new
+last row: a taller terminal adds blank rows under the region that become
+slack above it, a shorter one is taken to have kept its last rows in view,
+as tmux and Ghostty do. `NUCLIS_NO_SCROLL_REGION=1` forces the
 cursor-up rewrite fallback for a terminal that mishandles `DECSTBM`, and a
 `dumb` or unset `TERM` turns both capabilities off. The escape stream of
 every operation is pinned by golden tests that need no TTY.
@@ -566,10 +569,11 @@ An attachment is an `attachment` event after the prompt's `user` event:
 the transcript keeps it as a detail of that user block and renders a dim
 `└ image #1: shot.png (320×240 → 10×8 tokens)` row under the prompt. When
 the event carries a preview (the chat builds one where
-`tui.graphics.enabled` says the terminal draws kitty graphics), the block
-also emits the preview's rows blank and then one raw row that climbs over
-them, places the image with the cursor kept, and comes back — the row
-model stays text, and the goldens never contain a sequence. A drop, a
+`tui.graphics.enabled` says the terminal draws kitty graphics, never under
+tmux), the block also emits the preview's rows blank and then one raw row
+that climbs over them, places the image with the cursor kept, and comes
+back — the row model stays text, and the goldens never contain a sequence.
+The chat caps the picture to the rows above the live region. A drop, a
 `/image`, and a typed path all reach the same `Editor.attachImage`; the
 chat's `dropProbe` is the editor's only view of the file system.
 
@@ -633,9 +637,11 @@ state worth looking at), the `.txt` for the layout and the `.tagged.txt`
 for the colours, then the fix and the same run again. A crash lands in the
 capture as the panic and its trace, since tmux keeps the dead pane
 (`remain-on-exit`), so a failure is read the same way as a success. To look
-at a run in a real terminal, leave `--stop` off and attach from Ghostty
-before the step that draws what you want to see: tmux does not replay a
-kitty-graphics image to a client that attaches afterwards.
+at a run in a real terminal, pass `--ghostty` (the harness opens the window
+attached) or leave `--stop` off and attach from Ghostty. One thing the
+harness cannot show is the inline image preview: it is off under tmux,
+which cannot scroll a picture it does not know about, so that one is looked
+at by running `./zig-out/bin/nuclis agent` in Ghostty directly.
 
 ### The agent's task list
 

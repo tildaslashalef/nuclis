@@ -93,6 +93,41 @@ pub const Terminal = struct {
         return n;
     }
 
+    /// Asks where the cursor is (`CSI 6 n`) and waits up to `timeout`
+    /// milliseconds for the report. Bytes that arrive before it (keys typed
+    /// meanwhile) are copied into `stash` as far as it holds; the rest are
+    /// dropped. Null when no report came, as on a terminal that does not
+    /// answer.
+    pub fn cursorPosition(self: Terminal, stash: *[16]u8, stashed: *usize, timeout: i32) !?CursorReport {
+        try self.out.writeAll("\x1b[6n");
+        try self.out.flush();
+        var buffer: [256]u8 = undefined;
+        var held: usize = 0;
+        var waited: i32 = 0;
+        while (waited <= timeout) {
+            const n = self.read(buffer[held..], 50) catch |err| switch (err) {
+                error.EndOfStream => return null,
+                else => return err,
+            };
+            waited += 50;
+            if (n == 0) continue;
+            held += n;
+            if (findCursorReport(buffer[0..held])) |found| {
+                var i: usize = 0;
+                while (i < held) : (i += 1) {
+                    if (i >= found.start and i < found.end) continue;
+                    if (stashed.* < stash.len) {
+                        stash[stashed.*] = buffer[i];
+                        stashed.* += 1;
+                    }
+                }
+                return found.report;
+            }
+            if (held == buffer.len) held = 0;
+        }
+        return null;
+    }
+
     /// One desktop notification (OSC 9). `message` is a host constant; the
     /// terminals that support OSC 9 show it, the rest ignore it.
     pub fn notify(self: Terminal, message: []const u8) !void {
@@ -102,6 +137,34 @@ pub const Terminal = struct {
         try self.out.flush();
     }
 };
+
+/// A cursor position report, 1-based.
+pub const CursorReport = struct { row: usize, column: usize };
+
+/// The first `CSI row ; col R` in `bytes`, with where it sits, or null.
+pub fn findCursorReport(bytes: []const u8) ?struct { report: CursorReport, start: usize, end: usize } {
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, bytes, start, "\x1b[")) |at| : (start = at + 1) {
+        var i = at + 2;
+        var row: usize = 0;
+        var col: usize = 0;
+        var digits: usize = 0;
+        while (i < bytes.len and std.ascii.isDigit(bytes[i])) : (i += 1) {
+            row = row * 10 + (bytes[i] - '0');
+            digits += 1;
+        }
+        if (digits == 0 or i >= bytes.len or bytes[i] != ';') continue;
+        i += 1;
+        digits = 0;
+        while (i < bytes.len and std.ascii.isDigit(bytes[i])) : (i += 1) {
+            col = col * 10 + (bytes[i] - '0');
+            digits += 1;
+        }
+        if (digits == 0 or i >= bytes.len or bytes[i] != 'R') continue;
+        return .{ .report = .{ .row = row, .column = col }, .start = at, .end = i + 1 };
+    }
+    return null;
+}
 
 /// The most a Ctrl-X puts on the clipboard: terminals cap the OSC payload,
 /// and an answer past this is not something to paste anyway.
@@ -192,6 +255,18 @@ test "focus and notification decisions" {
     try std.testing.expect(!notificationsEnabled(&map));
     try map.put("NUCLIS_NO_NOTIFY", "0");
     try std.testing.expect(notificationsEnabled(&map));
+}
+
+test "a cursor report is found among other bytes, and a key sequence is not one" {
+    const testing = std.testing;
+    const found = findCursorReport("ab\x1b[38;1Rcd").?;
+    try testing.expectEqual(@as(usize, 38), found.report.row);
+    try testing.expectEqual(@as(usize, 1), found.report.column);
+    try testing.expectEqual(@as(usize, 2), found.start);
+    try testing.expectEqual(@as(usize, 9), found.end);
+    try testing.expect(findCursorReport("\x1b[1;5A") == null); // Ctrl-Up, not a report
+    try testing.expect(findCursorReport("\x1b[38;") == null); // still arriving
+    try testing.expect(findCursorReport("plain") == null);
 }
 
 test "the clipboard sequence is OSC 52 with the text in base64" {
