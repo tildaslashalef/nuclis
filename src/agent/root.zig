@@ -190,6 +190,8 @@ const Ui = struct {
     /// The entry's projector file, loaded on the first attachment; null when
     /// the entry names none, which is the refusal at attach time.
     mmproj: ?[]const u8 = null,
+    /// The image token cap the projector loads with (null: its maximum).
+    image_max_tokens: ?usize = null,
     model_path: []const u8 = "",
 
     fn deinit(self: *Ui) void {
@@ -548,7 +550,7 @@ const Ui = struct {
             self.busy = was_busy;
             self.preparing = was_preparing;
         }
-        self.eng.loadVision(path) catch |err| {
+        self.eng.loadVision(path, self.image_max_tokens) catch |err| {
             var note: [160]u8 = undefined;
             self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — no vision support yet for this model: {s} loading the projector", .{@errorName(err)}) catch "  — no vision support yet for this model" }) catch {};
             return false;
@@ -1639,7 +1641,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
     var agent: loop.Agent = undefined;
-    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .mmproj = if (settings.entry) |entry| entry.mmproj else null, .model_path = model_path };
+    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .mmproj = if (settings.entry) |entry| entry.mmproj else null, .image_max_tokens = settings.image_max_tokens.count(), .model_path = model_path };
     defer ui.deinit();
     ed.probe = .{ .context = &ui, .call = Ui.dropProbe };
     // A polling tool reaches back into the driver while it runs, so keys are

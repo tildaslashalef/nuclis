@@ -199,7 +199,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         if (options.raw or options.prompt_tokens != null) return error.ImagesNeedChatPrompt;
         const projector = try engine.visionPath(alloc, model_path, if (settings.entry) |entry| entry.mmproj else null) orelse return error.NoProjector;
         defer alloc.free(projector);
-        try eng.loadVision(projector);
+        try eng.loadVision(projector, settings.image_max_tokens.count());
         prepared = try alloc.alloc(inference.engine.PreparedImage, options.image_count);
         var loaded: usize = 0;
         errdefer for (prepared[0..loaded]) |p| alloc.free(p.features);

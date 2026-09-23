@@ -6,6 +6,9 @@
 /// count)` whose embedding rows are a projector's feature rows, with the
 /// merged grid that sets its multi-axis RoPE positions.
 pub const Span = struct { start: usize, count: usize, width_tokens: u32, height_tokens: u32 };
+/// The largest token cap any family accepts (Muse Glimmer's); a setting
+/// above a family's own maximum is clamped to it.
+pub const max_image_tokens = 4096;
 
 pub const image = @import("image.zig");
 pub const preprocess = @import("preprocess.zig");

@@ -246,7 +246,8 @@ Read: [reference/new-model-guide.md](reference/new-model-guide.md).
 
 One file, `~/.nuclis/nuclis.json`, with sections `engine` (model, backend,
 `ctx_size`, `kv_precision`), `generation` (`max_tokens`, `think`,
-`speculative`, `draft_length`, sampling overrides), `agent` (`think`,
+`speculative`, `draft_length`, `image_max_tokens`, sampling overrides),
+`agent` (`think`,
 `fold_thinking`, `theme`, `instructions`), and a `models` registry of named entries that
 locate a file (path, or repository and file with a pinned revision), name
 its companions, force a profile, and override any generation or agent key
@@ -254,17 +255,21 @@ for that model only. Precedence is defaults < profile < file < registry
 entry < flags; `null` in the file means the profile's value. An unknown
 key or an out-of-range value is a typed error naming the key. `bench`
 ignores the file's sampling and budget so a measurement is reproducible
-from its command line.
+from its command line. `image_max_tokens` caps the tokens one image
+becomes: `"auto"` (the default) is the projector's own maximum (Qwen3.8
+1,024, Gemma 4 1,120), a count (1..4,096) is clamped to the loaded
+projector's range, and `--image-max-tokens` on `generate` and `agent`
+overrides both.
 
 Read: [development.md § Configuration file](development.md#configuration-file).
 
 ## 6. Command-line interface
 
 ```text
-nuclis agent [--model <m>] [--think <e>] [--resume [<id>]] [--system-prompt <path>]
+nuclis agent [--model <m>] [--think <e>] [--image-max-tokens auto|<n>] [--resume [<id>]] [--system-prompt <path>]
 nuclis agent -p "<prompt>" [--json] [--session <path>]
 nuclis agent ls [--json]
-nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--image <path>]... [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
+nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--image <path>]... [--image-max-tokens auto|<n>] [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
 nuclis bench --model <m> (--prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32] [--speculative on|off] [--json]
 nuclis tokenize --model <m> --prompt-file <path> [--raw] [--json]
 nuclis inspect --model <m> [--json]
@@ -359,7 +364,9 @@ one command; the evaluation CLI stays separate.
   tmux, off with `NUCLIS_NO_PREVIEW=1`), a preview of at most 12 rows under
   it, fewer when less room stands above the input box. Sessions
   record an image's path and grid, never its pixels; a resumed session
-  decodes it again and leaves a missing file out with a notice.
+  decodes and encodes it again at the current cap (the conversation is
+  prefilled anew, so the recorded grid binds nothing) and leaves a
+  missing file out with a notice.
 - Up/Down move inside a multi-line input and recall history from the
   first and last rows; history persists across sessions (200 entries).
 - Tab completes a `/command` or an `@path`, else folds thinking; Ctrl-O

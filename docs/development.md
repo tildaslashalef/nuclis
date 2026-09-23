@@ -376,6 +376,7 @@ bring-up file. The example:
   "engine":   { "model": "qwen3.8-27b", "backend": "metal", "ctx_size": 16384,
                 "kv_precision": "f16" },
   "generation": { "max_tokens": 4096, "think": "off", "speculative": false, "draft_length": 4,
+                "image_max_tokens": "auto",
                 "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,
                               "presence_penalty": null, "repetition_penalty": null } },
   "agent":    { "think": "low", "fold_thinking": true, "theme": "gruvbox-dark", "instructions": "auto" },
@@ -384,7 +385,7 @@ bring-up file. The example:
                                  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
                                  "mmproj": "mmproj-BF16.gguf", "mtp": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
                                  "profile": null, "ctx_size": null,
-                                 "generation": { "max_tokens": null, "think": null, "speculative": false, "draft_length": 4, "sampling": { "…": null } },
+                                 "generation": { "max_tokens": null, "think": null, "speculative": false, "draft_length": 4, "image_max_tokens": null, "sampling": { "…": null } },
                                  "agent": { "think": null, "fold_thinking": null } } }
 }
 ```
@@ -448,7 +449,7 @@ applies to models with no entry, and `--speculative` overrides either.
   optional `revision`; optional `mmproj` and `mtp` companion file names
   in the same directory (recorded for the units that will load them, the vision unit
   and the MTP unit, and used by `model pull <name> --with`); and optional
-  `ctx_size`, `generation` (`max_tokens`, `think`, `speculative`, `draft_length`, `sampling`), and `agent`
+  `ctx_size`, `generation` (`max_tokens`, `think`, `speculative`, `draft_length`, `image_max_tokens`, `sampling`), and `agent`
   (`think`, `fold_thinking`) overrides that apply only while that entry is
   the model, `null` meaning the global value. Entries pin no digest (a
   pull by entry name takes the Hub's). A registry name shadows a catalogue

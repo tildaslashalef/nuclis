@@ -51,6 +51,49 @@ pub const max_output_tokens = 16384;
 /// The largest draft block: KERN-11's 8-row token tile less the seed row.
 /// One host constant, the engine's.
 pub const max_draft_length = inference.engine.max_draft_length;
+/// The largest image token cap a setting may name.
+pub const max_image_tokens = inference.vision.max_image_tokens;
+
+/// `generation.image_max_tokens`: the most tokens one image becomes,
+/// `auto` (the projector's own maximum) or a count the projector clamps
+/// to its family's range when it loads. JSON `"auto"` or an integer.
+pub const ImageMaxTokens = union(enum) {
+    auto,
+    tokens: usize,
+
+    pub const description = "\"auto\" or a positive integer";
+    pub fn fromJson(value: std.json.Value) ?ImageMaxTokens {
+        return switch (value) {
+            .string => |s| if (std.mem.eql(u8, s, "auto")) .auto else null,
+            .integer => |n| if (std.math.cast(usize, n)) |c| .{ .tokens = c } else null,
+            else => null,
+        };
+    }
+    /// The flag's text: `auto` or a decimal count.
+    pub fn parse(text: []const u8) ?ImageMaxTokens {
+        if (std.mem.eql(u8, text, "auto")) return .auto;
+        return .{ .tokens = std.fmt.parseInt(usize, text, 10) catch return null };
+    }
+    /// The engine's form: null for `auto`.
+    pub fn count(self: ImageMaxTokens) ?usize {
+        return switch (self) {
+            .auto => null,
+            .tokens => |n| n,
+        };
+    }
+    pub fn format(self: ImageMaxTokens, buf: []u8) []const u8 {
+        return switch (self) {
+            .auto => "auto",
+            .tokens => |n| std.fmt.bufPrint(buf, "{d}", .{n}) catch "?",
+        };
+    }
+    pub fn jsonStringify(self: ImageMaxTokens, jws: anytype) !void {
+        switch (self) {
+            .auto => try jws.write("auto"),
+            .tokens => |n| try jws.write(n),
+        }
+    }
+};
 /// `bench` never takes its output budget from the file: the measurement
 /// workload is a command-line matter so runs stay comparable.
 pub const bench_max_tokens = 32;
@@ -89,6 +132,8 @@ pub const Config = struct {
         speculative: bool = false,
         /// Drafts proposed per step, 1..`max_draft_length`.
         draft_length: usize = 4,
+        /// The most tokens one image becomes (`ImageMaxTokens`).
+        image_max_tokens: ImageMaxTokens = .auto,
         /// Per-option overrides of the reasoning mode's profile; `null`
         /// keeps the profile's value.
         sampling: Overrides = .{},
@@ -135,6 +180,7 @@ pub const ModelEntry = struct {
         think: ?Effort = null,
         speculative: ?bool = null,
         draft_length: ?usize = null,
+        image_max_tokens: ?ImageMaxTokens = null,
         sampling: Overrides = .{},
     };
     pub const Agent = struct {
@@ -410,6 +456,7 @@ fn describe(comptime T: type) []const u8 {
         .float => "a number",
         .pointer => "a string",
         .optional => |o| "null or " ++ describe(o.child),
+        .@"union" => T.description,
         .@"enum" => |e| blk: {
             comptime var names: []const u8 = "one of ";
             inline for (e.fields, 0..) |f, i| names = names ++ (if (i > 0) "|" else "") ++ f.name;
@@ -445,6 +492,7 @@ fn parseValue(comptime T: type, comptime Described: type, value: std.json.Value,
             diag.set("{s} must not be empty", .{path});
             return error.InvalidConfigValue;
         },
+        .@"union" => if (T.fromJson(value)) |v| return v,
         else => @compileError("unsupported config key type " ++ @typeName(T)),
     }
     diag.set("{s} must be {s}", .{ path, comptime describe(Described) });
@@ -480,6 +528,7 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
     try validateRange(cfg.engine.ctx_size, "engine.ctx_size", max_context, diag);
     try validateRange(cfg.generation.max_tokens, "generation.max_tokens", max_output_tokens, diag);
     try validateRange(cfg.generation.draft_length, "generation.draft_length", max_draft_length, diag);
+    if (cfg.generation.image_max_tokens.count()) |n| try validateRange(n, "generation.image_max_tokens", max_image_tokens, diag);
     try validateSampling(cfg.generation.sampling, "generation.sampling", diag);
     for (cfg.models.entries) |named| {
         const e = named.entry;
@@ -511,6 +560,7 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
         if (e.ctx_size) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.ctx_size", .{prefix}) catch unreachable, max_context, diag);
         if (e.generation.max_tokens) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.max_tokens", .{prefix}) catch unreachable, max_output_tokens, diag);
         if (e.generation.draft_length) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.draft_length", .{prefix}) catch unreachable, max_draft_length, diag);
+        if (e.generation.image_max_tokens) |v| if (v.count()) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.image_max_tokens", .{prefix}) catch unreachable, max_image_tokens, diag);
         try validateSampling(e.generation.sampling, std.fmt.bufPrint(&key_buffer, "{s}.generation.sampling", .{prefix}) catch unreachable, diag);
     }
 }
@@ -526,6 +576,7 @@ pub const Flags = struct {
     think: ?Effort = null,
     speculative: ?bool = null,
     draft_length: ?usize = null,
+    image_max_tokens: ?ImageMaxTokens = null,
     /// `--prompt-profile`: see `ModelEntry.profile`.
     prompt_profile: ?Profile = null,
     sampling: Overrides = .{},
@@ -555,6 +606,8 @@ pub const Resolved = struct {
     /// Speculative decoding on this run, and the drafts proposed per step.
     speculative: bool,
     draft_length: usize,
+    /// The image token cap the projector loads with.
+    image_max_tokens: ImageMaxTokens,
     /// Overrides over the reasoning mode's profile (`generate`, the agent);
     /// for `bench`, the flags alone over neutral greedy options.
     sampling: Overrides,
@@ -617,6 +670,7 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
         },
         .speculative = flags.speculative orelse e.generation.speculative orelse cfg.generation.speculative,
         .draft_length = flags.draft_length orelse e.generation.draft_length orelse cfg.generation.draft_length,
+        .image_max_tokens = flags.image_max_tokens orelse e.generation.image_max_tokens orelse cfg.generation.image_max_tokens,
         .sampling = if (bench) flags.sampling else cfg.generation.sampling.merge(e.generation.sampling).merge(flags.sampling),
         .fold_thinking = e.agent.fold_thinking orelse cfg.agent.fold_thinking,
         .theme = cfg.agent.theme,
@@ -641,6 +695,8 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     if (flags.speculative != null) o[comptime leafIndex(Config, "generation.speculative")] = .flag;
     if (e.generation.draft_length != null) o[comptime leafIndex(Config, "generation.draft_length")] = .model;
     if (flags.draft_length != null) o[comptime leafIndex(Config, "generation.draft_length")] = .flag;
+    if (e.generation.image_max_tokens != null) o[comptime leafIndex(Config, "generation.image_max_tokens")] = .model;
+    if (flags.image_max_tokens != null) o[comptime leafIndex(Config, "generation.image_max_tokens")] = .flag;
     inline for (@typeInfo(Overrides).@"struct".fields) |field| {
         const index = comptime leafIndex(Config, "generation.sampling." ++ field.name);
         if (@field(flags.sampling, field.name) != null) o[index] = .flag else if (bench) o[index] = .default else if (@field(e.generation.sampling, field.name) != null) o[index] = .model else if (@field(cfg.generation.sampling, field.name) == null) o[index] = .profile;
@@ -994,6 +1050,7 @@ fn formatLeaf(buf: []u8, value: anytype) []const u8 {
         .int, .float => std.fmt.bufPrint(buf, "{d}", .{value}) catch "?",
         .@"enum" => @tagName(value),
         .pointer => value,
+        .@"union" => value.format(buf),
         else => @compileError("unsupported config key type " ++ @typeName(T)),
     };
 }
@@ -1007,7 +1064,7 @@ pub const Effective = struct {
     model_kind: enum { registry, catalogue, path },
     profile: Profile,
     engine: struct { model: []const u8, backend: Backend, ctx_size: usize, kv_precision: KvPrecision },
-    generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, sampling: inference.sampling.Options },
+    generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, image_max_tokens: ImageMaxTokens, sampling: inference.sampling.Options },
     agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8 },
     origin: Origin,
 
@@ -1021,7 +1078,7 @@ pub const Effective = struct {
             .model_kind = if (gen.entry != null) .registry else if (catalog.find(gen.model) != null) .catalogue else .path,
             .profile = gen.profile,
             .engine = .{ .model = gen.model, .backend = gen.backend, .ctx_size = gen.ctx_size, .kv_precision = gen.kv_precision },
-            .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .sampling = gen.samplingOptions() },
+            .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .image_max_tokens = gen.image_max_tokens, .sampling = gen.samplingOptions() },
             .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions },
             .origin = origin,
         };
@@ -1263,6 +1320,9 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"top_p\": 0 } } }", .err = error.InvalidConfigValue, .needle = "generation.sampling.top_p is out of range" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"temperature\": \"hot\" } } }", .err = error.InvalidConfigValue, .needle = "generation.sampling.temperature must be null or a number" },
         .{ .text = "{ \"schema_version\": 1, \"agent\": { \"fold_thinking\": 1 } }", .err = error.InvalidConfigValue, .needle = "agent.fold_thinking must be true or false" },
+        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": 0 } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be 1..4096 (found 0)" },
+        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": \"most\" } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be \"auto\" or a positive integer" },
+        .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": 5000 } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be 1..4096" },
         .{ .text = "{ \"schema_version\": 1, \"chat\": { \"think\": \"low\" } }", .err = error.UnknownConfigKey, .needle = "unknown key chat: the section is now agent" },
         .{ .text = "{ \"schema_version\": 1, \"agent\": { \"theme\": \"solarized\" } }", .err = error.InvalidConfigValue, .needle = "agent.theme must be one of gruvbox-dark" },
         // The registry: names, shape, unknown companion keys, ranges.
@@ -1436,6 +1496,42 @@ fn expectRow(text: []const u8, key: []const u8, value: []const u8, source: []con
     }
     std.debug.print("no row for {s} in:\n{s}", .{ key, text });
     return error.TestUnexpectedResult;
+}
+
+test "the image token cap: auto by default, an entry's count over it, the flag over both" {
+    const alloc = std.testing.allocator;
+    var diag: Diagnostic = .{};
+    var loaded = try fromText(alloc,
+        \\{ "schema_version": 1, "engine": { "model": "muse" },
+        \\  "models": { "muse": { "repo": "unsloth/Muse-Glimmer-30B-GGUF", "file": "m.gguf",
+        \\                        "generation": { "image_max_tokens": 1024 } } } }
+    , "t.json", &diag);
+    defer loaded.deinit();
+    const gen = resolve(&loaded, null, .{}, .generate);
+    try std.testing.expectEqual(ImageMaxTokens{ .tokens = 1024 }, gen.image_max_tokens);
+    try std.testing.expectEqual(@as(?usize, 1024), gen.image_max_tokens.count());
+    try std.testing.expectEqual(.model, gen.source("generation.image_max_tokens"));
+    const flagged = resolve(&loaded, null, .{ .image_max_tokens = .auto }, .agent);
+    try std.testing.expectEqual(ImageMaxTokens.auto, flagged.image_max_tokens);
+    try std.testing.expectEqual(@as(?usize, null), flagged.image_max_tokens.count());
+    try std.testing.expectEqual(.flag, flagged.source("generation.image_max_tokens"));
+    const other = resolve(&loaded, "qwen3.8-27b", .{}, .generate);
+    try std.testing.expectEqual(ImageMaxTokens.auto, other.image_max_tokens);
+    try std.testing.expectEqual(.default, other.source("generation.image_max_tokens"));
+    // A global count in the file, and `config set` of the word and a count.
+    var counted = try fromText(alloc, "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": 512 } }", "t.json", &diag);
+    defer counted.deinit();
+    try std.testing.expectEqual(ImageMaxTokens{ .tokens = 512 }, resolve(&counted, null, .{}, .generate).image_max_tokens);
+    var edit = try set(alloc, null, "t.json", "generation.image_max_tokens", "auto", &diag);
+    defer edit.deinit(alloc);
+    try std.testing.expect(std.mem.indexOf(u8, edit.text, "\"image_max_tokens\": \"auto\"") != null);
+    try std.testing.expectEqualStrings("\"auto\"", edit.previous.?);
+    var edit2 = try set(alloc, edit.text, "t.json", "models.muse-glimmer-30b.generation.image_max_tokens", "768", &diag);
+    defer edit2.deinit(alloc);
+    var reloaded = try fromText(alloc, edit2.text, "t.json", &diag);
+    defer reloaded.deinit();
+    try std.testing.expectEqual(ImageMaxTokens{ .tokens = 768 }, resolve(&reloaded, "muse-glimmer-30b", .{}, .generate).image_max_tokens);
+    try std.testing.expectError(error.InvalidConfigValue, set(alloc, edit.text, "t.json", "generation.image_max_tokens", "0", &diag));
 }
 
 test "set edits one key of the file's own text, validates it, and reports the previous value" {

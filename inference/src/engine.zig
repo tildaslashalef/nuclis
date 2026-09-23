@@ -838,10 +838,12 @@ pub const Engine = struct {
     /// Loads a companion projector (`models.<name>.mmproj`) on the engine's
     /// backend: the Qwen3-VL projector or either of Gemma 4's. A projector
     /// whose output width differs from the model's is `VisionSourceMismatch`.
-    /// One whose spans attend bidirectionally has the plan reserve rows for
-    /// its largest image (or the whole context, if shorter), so a span is
-    /// always one prefill chunk.
-    pub fn loadVision(self: *Engine, path: []const u8) !void {
+    /// `max_image_tokens` caps the tokens one image becomes (null: the
+    /// family's maximum; a number is clamped to the family's range). One
+    /// whose spans attend bidirectionally has the plan reserve rows for its
+    /// largest image at that cap (or the whole context, if shorter), so a
+    /// span is always one prefill chunk.
+    pub fn loadVision(self: *Engine, path: []const u8, max_image_tokens: ?usize) !void {
         if (self.vision != null) return error.VisionAlreadyLoaded;
         const v = try self.alloc.create(Vision);
         errdefer self.alloc.destroy(v);
@@ -853,6 +855,7 @@ pub const Engine = struct {
         };
         try v.projector.init(self.alloc, &v.mapped.document, v.mapped.view(), gpu);
         errdefer v.projector.deinit();
+        v.projector.limitTokens(max_image_tokens);
         if (v.projector.outputWidth() != try self.embeddingWidth()) return error.VisionSourceMismatch;
         if (v.projector.bidirectional()) try self.model.reserveVisionRows(@min(v.projector.maxTokens(), self.model.session().capacity));
         self.vision = v;

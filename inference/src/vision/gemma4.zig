@@ -83,10 +83,10 @@ pub const Grid = struct {
 };
 
 /// The token grid of an image: the reference's smart size on the 48-pixel
-/// grid within `[min, max_tokens]` tokens. `min` is the reference's 70
-/// except where a check pins a smaller fixture.
-pub fn gridFor(size: preprocess.Size, min: u32) Grid {
-    const target = preprocess.smartSize(size, .{ .align_size = token_side, .min_pixels = min * token_pixels, .max_pixels = max_tokens * token_pixels });
+/// grid within `[min, max]` tokens. `min` is the reference's 70 except
+/// where a check pins a smaller fixture; `max` is at most `max_tokens`.
+pub fn gridFor(size: preprocess.Size, min: u32, max: u32) Grid {
+    const target = preprocess.smartSize(size, .{ .align_size = token_side, .min_pixels = min * token_pixels, .max_pixels = max * token_pixels });
     return .{ .width_tokens = target.width / token_side, .height_tokens = target.height / token_side };
 }
 
@@ -595,12 +595,14 @@ test "bind refuses the Qwen projector and a missing tensor" {
 
 test "the grid follows the reference's bounds on the 48-pixel grid" {
     // The synthetic fixture at the reference's minimum and at a pinned 4.
-    try std.testing.expectEqual(Grid{ .width_tokens = 11, .height_tokens = 7 }, gridFor(.{ .width = 96, .height = 64 }, min_tokens));
-    try std.testing.expectEqual(Grid{ .width_tokens = 3, .height_tokens = 2 }, gridFor(.{ .width = 96, .height = 64 }, 4));
+    try std.testing.expectEqual(Grid{ .width_tokens = 11, .height_tokens = 7 }, gridFor(.{ .width = 96, .height = 64 }, min_tokens, max_tokens));
+    try std.testing.expectEqual(Grid{ .width_tokens = 3, .height_tokens = 2 }, gridFor(.{ .width = 96, .height = 64 }, 4, max_tokens));
     // The aerial photo: 3840×2160 → 44×25 tokens, under the 1,120 maximum.
-    const aerial = gridFor(.{ .width = 3840, .height = 2160 }, min_tokens);
+    const aerial = gridFor(.{ .width = 3840, .height = 2160 }, min_tokens, max_tokens);
     try std.testing.expectEqual(Grid{ .width_tokens = 44, .height_tokens = 25 }, aerial);
-    try std.testing.expect(gridFor(.{ .width = 9000, .height = 9000 }, min_tokens).tokens() <= max_tokens);
+    try std.testing.expect(gridFor(.{ .width = 9000, .height = 9000 }, min_tokens, max_tokens).tokens() <= max_tokens);
+    const capped = gridFor(.{ .width = 3840, .height = 2160 }, min_tokens, 280);
+    try std.testing.expect(capped.tokens() <= 280 and capped.tokens() > 200);
 }
 
 test "the rope tables turn the first half with x and the second with y" {

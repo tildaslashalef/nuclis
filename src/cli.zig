@@ -228,6 +228,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
                 const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
                 if (n == 0 or n > config.max_draft_length) return error.InvalidNumber;
                 f.draft_length = n;
+            } else if ((command == .generate or command == .agent) and std.mem.eql(u8, flag, "--image-max-tokens")) {
+                if (f.image_max_tokens != null) return error.DuplicateOption;
+                const cap = config.ImageMaxTokens.parse(value) orelse return error.InvalidNumber;
+                if (cap.count()) |n| if (n == 0 or n > config.max_image_tokens) return error.InvalidNumber;
+                f.image_max_tokens = cap;
             } else if (std.mem.eql(u8, flag, "--temperature")) {
                 if (f.sampling.temperature != null) return error.DuplicateOption;
                 f.sampling.temperature = std.fmt.parseFloat(f32, value) catch return error.InvalidNumber;
@@ -673,6 +678,12 @@ test "agent parses sampling and effort flags without a prompt" {
     try std.testing.expectEqual(@as(usize, 2), (try parseArgs(&.{ "agent", "--speculative", "on", "--draft-length", "2" })).flags.draft_length.?);
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--speculative", "maybe" }));
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "0" }));
+    try std.testing.expectEqual(config.ImageMaxTokens{ .tokens = 512 }, (try parseArgs(&.{ "generate", "--prompt", "a", "--image-max-tokens", "512" })).flags.image_max_tokens.?);
+    try std.testing.expectEqual(config.ImageMaxTokens.auto, (try parseArgs(&.{ "agent", "--image-max-tokens", "auto" })).flags.image_max_tokens.?);
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--image-max-tokens", "0" }));
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--image-max-tokens", "4097" }));
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--image-max-tokens", "most" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "bench", "--prompt", "a", "--image-max-tokens", "512" }));
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "16" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "generate", "--prompt", "a", "--speculative", "on", "--speculative", "off" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "2", "--draft-length", "3" }));

@@ -35,6 +35,9 @@ pub const Projector = struct {
     /// The token minimum an image is scaled up to; the reference's, unless
     /// a check pins a smaller fixture (`gemma4` only).
     min_tokens: u32,
+    /// The most tokens one image becomes: the family's maximum unless
+    /// `limitTokens` lowered it.
+    max_tokens: u32,
 
     /// Binds `doc` and builds the executor in place: `self` must not move
     /// afterwards (the executor borrows the binding). `backend` selects
@@ -43,11 +46,13 @@ pub const Projector = struct {
         if (gemma4.kindOf(doc) != null) {
             self.family = .{ .gemma4 = try gemma4.bind(alloc, doc) };
             self.min_tokens = gemma4.min_tokens;
+            self.max_tokens = gemma4.max_tokens;
             const binding = &self.family.gemma4;
             self.exec = if (backend) |b| .{ .gemma4_metal = try gemma4.Plan.init(alloc, b, view, binding) } else .{ .gemma4_cpu = try gemma4.Runtime.init(alloc, view, binding) };
         } else {
             self.family = .{ .qwen3vl = try qwen3vl.bind(alloc, doc) };
             self.min_tokens = qwen3vl.min_tokens;
+            self.max_tokens = qwen3vl.max_tokens;
             const binding = &self.family.qwen3vl;
             self.exec = if (backend) |b| .{ .qwen3vl_metal = try qwen3vl.Plan.init(alloc, b, view, binding) } else .{ .qwen3vl_cpu = try qwen3vl.Runtime.init(alloc, view, binding) };
         }
@@ -66,12 +71,23 @@ pub const Projector = struct {
             .gemma4 => |b| b.output_width,
         };
     }
-    /// The most tokens one image becomes.
+    /// The most tokens one image becomes (the cap in effect).
     pub fn maxTokens(self: *const Projector) usize {
+        return self.max_tokens;
+    }
+    /// The family's token range: the reference's bounds, which the plans'
+    /// buffers are sized for.
+    pub fn tokenRange(self: *const Projector) struct { min: u32, max: u32 } {
         return switch (self.family) {
-            .qwen3vl => qwen3vl.max_tokens,
-            .gemma4 => gemma4.max_tokens,
+            .qwen3vl => .{ .min = qwen3vl.min_tokens, .max = qwen3vl.max_tokens },
+            .gemma4 => .{ .min = gemma4.min_tokens, .max = gemma4.max_tokens },
         };
+    }
+    /// Sets the cap: `null` is the family's maximum, a number is clamped to
+    /// the family's range (a setting may name one value for every family).
+    pub fn limitTokens(self: *Projector, requested: ?usize) void {
+        const range = self.tokenRange();
+        self.max_tokens = capWithin(range.min, range.max, requested);
     }
     /// Whether the language model attends bidirectionally inside a span
     /// (Gemma 4 on its sliding layers), which needs the span in one chunk.
@@ -83,11 +99,11 @@ pub const Projector = struct {
     pub fn grid(self: *const Projector, size: preprocess.Size) Grid {
         return switch (self.family) {
             .qwen3vl => blk: {
-                const g = qwen3vl.gridFor(size);
+                const g = qwen3vl.gridFor(size, self.max_tokens);
                 break :blk .{ .width_tokens = g.widthTokens(), .height_tokens = g.heightTokens() };
             },
             .gemma4 => blk: {
-                const g = gemma4.gridFor(size, self.min_tokens);
+                const g = gemma4.gridFor(size, self.min_tokens, self.max_tokens);
                 break :blk .{ .width_tokens = g.width_tokens, .height_tokens = g.height_tokens };
             },
         };
@@ -124,3 +140,16 @@ pub const Projector = struct {
         }
     }
 };
+
+/// The cap for a family whose range is `[min, max]`: `max` for null, else
+/// the request clamped into the range.
+fn capWithin(min: u32, max: u32, requested: ?usize) u32 {
+    return @intCast(std.math.clamp(requested orelse max, min, max));
+}
+
+test "a requested cap is clamped into the family's range" {
+    try std.testing.expectEqual(@as(u32, 1120), capWithin(70, 1120, null));
+    try std.testing.expectEqual(@as(u32, 1120), capWithin(70, 1120, 4096));
+    try std.testing.expectEqual(@as(u32, 70), capWithin(70, 1120, 16));
+    try std.testing.expectEqual(@as(u32, 512), capWithin(8, 1024, 512));
+}

@@ -42,7 +42,6 @@ pub const token_pixels = patch * patch * merge * merge;
 pub const min_tokens = 8;
 pub const max_tokens = 1024;
 pub const max_patches = max_tokens * merge * merge;
-pub const size_options: preprocess.SizeOptions = .{ .align_size = patch * merge, .min_pixels = min_tokens * token_pixels, .max_pixels = max_tokens * token_pixels };
 
 pub const Error = error{
     MissingMetadata,
@@ -227,9 +226,10 @@ pub const Grid = struct {
     }
 };
 
-/// The image sizes this projector accepts, from the decoded size.
-pub fn gridFor(size: preprocess.Size) Grid {
-    const target = preprocess.smartSize(size, size_options);
+/// The patch grid of a decoded image of `size`, at most `max` tokens
+/// (`min_tokens..max_tokens`).
+pub fn gridFor(size: preprocess.Size, max: u32) Grid {
+    const target = preprocess.smartSize(size, .{ .align_size = patch * merge, .min_pixels = min_tokens * token_pixels, .max_pixels = max * token_pixels });
     return .{ .width_patches = target.width / patch, .height_patches = target.height / patch };
 }
 
@@ -555,7 +555,7 @@ test "bind rejects another projector type and a missing tensor" {
 }
 
 test "the grid, the merge walk, and the size bounds" {
-    const grid = gridFor(.{ .width = 96, .height = 64 });
+    const grid = gridFor(.{ .width = 96, .height = 64 }, max_tokens);
     try std.testing.expectEqual(Grid{ .width_patches = 8, .height_patches = 6 }, grid);
     try std.testing.expectEqual(@as(usize, 12), grid.tokens());
     const p5 = patchPosition(5, grid);
@@ -564,9 +564,12 @@ test "the grid, the merge walk, and the size bounds" {
     const p10 = patchPosition(10, grid);
     try std.testing.expectEqual(@as(u32, 4), p10.x);
     try std.testing.expectEqual(@as(u32, 1), p10.y);
-    const huge = gridFor(.{ .width = 4000, .height = 3000 });
+    const huge = gridFor(.{ .width = 4000, .height = 3000 }, max_tokens);
     try std.testing.expect(huge.patches() <= max_patches);
     try std.testing.expectEqual(@as(usize, 1024 * 4), max_patches);
+    // A lowered cap scales the image down on the same grid.
+    const capped = gridFor(.{ .width = 4000, .height = 3000 }, 256);
+    try std.testing.expect(capped.tokens() <= 256 and capped.tokens() > 200);
 }
 
 test "the 2-D rope table turns pairs by y then x" {
