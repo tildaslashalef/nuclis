@@ -575,23 +575,55 @@ labels it with its source path.
    below the `image #N` detail row; other terminals keep the row alone.
    Bounded by the decoded size limits; never part of the golden tests.
 
-**Ahead of MODL-21 (reordered 2026-09-21).** This unit lands before the
-vision engine, so it delivers items 1, 2, 4, and 5 in full and of item 3
-only the message shape: the user `Message` carries `images` and the chip
-text, the transcript's detail row reads `image #1: /path/to/file.png
-(48 KB)` from the file's size, and at submit every attachment is refused
-with the item-4 notice until a projector is loaded — the same code path,
-with the reason "no vision support yet for this model". Decoding, the
-grid in the detail row, and the projector call arrive with MODL-21, which
-takes over item 3; the inline preview (item 5) needs the decoder too and
-moves with it.
+**Decided in the unit's session (2026-09-23), MODL-21 having closed first
+so every item lands in full.**
+6. Text files drop too (the user's call, 2026-09-23): a bracketed paste
+   that is one existing regular file which is not an image, reads as UTF-8,
+   and fits the editor's 128 KiB limit becomes a `file` chip
+   (`[file README.md, 120 lines]`) whose bytes are the content in a fence
+   headed by the path, so the model reads a file `read_file` cannot reach
+   (outside the workspace). PDF is out: nothing in the tree extracts its
+   text, and doing it well is a PDFKit bridge (a follow-up in the log).
+7. The editor stays pure: `endPaste` asks a caller-supplied `Probe`
+   (`fn (context, path) ?Dropped`, set by the chat, absent in tests unless a
+   test supplies one) whether the trimmed paste names a droppable file and
+   what kind; the probe reads the file. The chip bytes are literally
+   `[image #N]`, so `text()` carries the marker; images are numbered among
+   image attachments, at most 8, all single-digit, so renumbering after a
+   deletion rewrites bytes of equal length in place.
+8. Features are owned by the agent's history, beside the message: `Item`
+   gains `images: []Image { path, pixels, bytes, prepared }` and the
+   profile's `ImageRef`s; `Model.run` takes the features of every rendered
+   message in order, `Model.encode_image` (null without a projector) runs
+   the projector, and freeing an item frees its features. The completer
+   pairs the placeholder runs of the *remainder* it prefills with the tail
+   of that list (compaction drops whole earlier turns, so the images still
+   rendered are always a suffix), concatenates their rows, and calls
+   `engine.complete` with an `ImagePrefill`. `PreparedImage` gains the
+   decoded pixel size for the detail row.
+9. Speculation and images: `runLoop` already runs an image prefill without
+   the drafter, whose cache is then stale for the rest of the conversation;
+   the completer turns speculation off for the session once an image has
+   been fed, and `reset` restores it. Documented as the limitation; no
+   entry with a projector has speculation on (ENGN-17).
+10. The preview's terminal test is the environment, not the graphics
+    query (`TERM_PROGRAM=ghostty`, `GHOSTTY_RESOURCES_DIR`,
+    `KITTY_WINDOW_ID`, or a `TERM` naming either), as `screen.Caps` already
+    decides scroll regions; under `TMUX` the sequence is wrapped in the
+    DCS passthrough. The transmission is direct RGB of a host-downscaled
+    copy (longest side ≤ 512 px), chunked at 4096 base64 bytes, placed with
+    `C=1` over the blank rows the transcript emits first. The row model
+    stays text: a `raw` row carries the sequence.
 
 **Acceptance.** Editor tests for the three ways in, chip deletion, index
-renumbering, and the bounds; a session round trip with an attachment; a
-harness capture of a dropped path becoming a chip and the refusal notice;
-`docs/agent-spec.md` and `docs/development.md § The agent's transcript`
-describe the chip. The end-to-end question about a dropped screenshot is
-MODL-21's acceptance.
+renumbering, and the bounds; a completer test that a remainder with two
+placeholder runs gets the last two feature sets; a session round trip
+with an attachment; a harness capture of a dropped path becoming a chip
+and the refusal notice on a model without a projector; the end-to-end
+caption of a dropped image on `qwen3.8-27b`; `docs/spec.md § Editor`,
+`docs/development.md § The agent's transcript`, and
+`docs/reference/vision.md` describe the chip, the detail row, and the
+preview.
 
 ## MODL-22 — Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B)
 
