@@ -22,8 +22,8 @@ Steps, in order, as arguments:
   burst=<name>,<s>,<hz>  capture every 1/hz seconds for s seconds
   until=<text>,<s>       wait up to s seconds for the text to appear on screen
   buffer=<name>          save tmux's paste buffer (what an OSC 52 copy set)
-  paste=<text>           a bracketed paste of the text (a dropped file's path)
                          to <name>.buffer.txt
+  paste=<text>           a bracketed paste of the text (a dropped file's path)
 
 `--ghostty` also opens one Ghostty window attached to the session and, on
 each capture, photographs it to `<name>.png` with `screencapture` (needs the

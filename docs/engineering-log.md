@@ -119,6 +119,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-14 | Three measured fixes: the Qwen decoder keeps a value's trailing newline, `read_file` serves the first MiB, Enter steers a running turn | 2026-09-22 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector on both executors | 2026-09-22 |
 | AGNT-15 | Images and text files in the chat: drop, `/image`, the chips, the projector turn, the detail row and preview, sessions | 2026-09-23 |
+| REPO-14 | The screenshot harness is the validation step for surface changes | 2026-09-23 |
 
 ## Context
 
@@ -4736,3 +4737,17 @@ downscale are pinned by tests, and it assumes 1:2 cells. Clipboard images
 not extracted (a PDFKit bridge if ever wanted). A conversation that has
 fed an image runs without speculation. A resumed image is re-encoded from
 its original path, so a moved file drops out of the model's view.
+
+## REPO-14 — The screenshot harness is the validation step for surface changes (2026-09-23)
+
+**Outcome.** A process decision, the user's on 2026-09-23 after AGNT-15
+was developed through it: a change to the chat surface (`src/tui/`,
+`src/agent/root.zig`) is exercised with `make shot` (`scripts/tui-shot.py`)
+— drive, capture, read, fix, repeat — and the log cites the captures.
+AGENTS.md § Validation item 3 names it; development.md's harness section
+gains the iteration loop, how a crash reads in a capture, and the rule for
+looking at a run in Ghostty (attach before the drawing step, since tmux
+does not replay a kitty image to a later client). The harness's docstring
+had the `buffer=`/`paste=` lines crossed; fixed.
+
+**Files.** `AGENTS.md`, `docs/development.md`, `scripts/tui-shot.py`.

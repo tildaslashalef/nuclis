@@ -179,7 +179,13 @@ For code changes, once build scaffolding exists:
 1. Build the affected package and run relevant tests, including error paths.
 2. Format/check changed Zig sources and build files.
 3. Exercise the applicable happy path with the freshly built
-   `./zig-out/bin/nuclis`, never an installed copy.
+   `./zig-out/bin/nuclis`, never an installed copy. A change to the chat
+   surface (`src/tui/`, `src/agent/root.zig`) is exercised through the
+   screenshot harness, `make shot ARGS='<steps>'` (`scripts/tui-shot.py`):
+   drive the keys, drops, and pastes in tmux, read the captures under
+   `.zig-cache/tui/`, fix, repeat; the log cites the captures as evidence
+   ([docs/development.md § Looking at the agent without a person at the
+   keyboard](docs/development.md#looking-at-the-agent-without-a-person-at-the-keyboard)).
 4. Run broader checks when shared code or unresolved risks justify them.
    The model-specific checks are gates in `gates.json`, tiered by cost and
    selected by changed paths (`make verify-changed`; the CPU tier only when

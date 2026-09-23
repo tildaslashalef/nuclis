@@ -626,6 +626,17 @@ needs the screen-recording permission once). The session stays up unless
 evidence for the log, never fixtures: the goldens in `src/tui/` stay the
 contract.
 
+This is the iteration loop for every change to the surface: `make build`,
+one `make shot` run that drives the feature (a `paste=` for a drop, `keys=`
+for a prompt, `until=ready,<s>` to wait out a turn, `capture=` at each
+state worth looking at), the `.txt` for the layout and the `.tagged.txt`
+for the colours, then the fix and the same run again. A crash lands in the
+capture as the panic and its trace, since tmux keeps the dead pane
+(`remain-on-exit`), so a failure is read the same way as a success. To look
+at a run in a real terminal, leave `--stop` off and attach from Ghostty
+before the step that draws what you want to see: tmux does not replay a
+kitty-graphics image to a client that attaches afterwards.
+
 ### The agent's task list
 
 `scripts/agent-eval.py` (`make agent-eval VARIANT=<name> ARGS='…'`) runs
