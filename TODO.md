@@ -526,36 +526,121 @@ requirements (MODL-21) and the chat's attachment rules (AGNT-15).
 
 ## MODL-22 — Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B)
 
-**Session 1 (facts).** Read `gemma4uv.cpp` (the 12B: im2col patches →
-LayerNorm `patch_norm_1` → `patch_embeddings_0` + `patch_bias` → LayerNorm
-`patch_norm_2` → learned `position_embeddings` tables (x then y) →
-LayerNorm `patch_norm_3` → RMSNorm → `mm_input_proj_w`; eps 1e-5 LayerNorm),
-`gemma4v.cpp` (the 26B-A4B: SigLIP blocks, `ggml_pool_2d` average by
-`n_merge`, RMSNorm, `mm_input_proj`), the GEMMA4V hparams defaults
-(`clip.cpp` ≈ 1627), `mtmd.cpp`'s gemma4 branch for the placeholder token
-inside `<|image>` … `<image|>` and the position handling, and the language
-model's `non_causal_type = SWA_ONLY` mask (`llama-graph.cpp`, the
-`LLAMA_NON_CAUSAL_TYPE_SWA_ONLY` case). Pin the fixture traces for both
-entries; rewrite this section.
+**Facts (read 2026-09-23 from the pinned `7620399f5` and the two files).**
 
-**Design.** `vision/gemma4.zig` with two adapters selected by
-`clip.vision.projector_type` (`gemma4uv`, `gemma4v`); the 12B's is a few
-matmuls and norms (no encoder), the 26B-A4B's reuses the SigLIP block code
-of MODL-21 (same shapes: 1152 / 4304 / 16 heads) with the pooling; the
-Gemma language model gains the span mask on sliding layers: the CPU
-`fullAttention` and the chunk attention kernel take an optional
-`bidirectional_spans` list (rows inside a span attend to every row of the
-same span on SWA layers; global layers stay causal), tested by a fixture
-with a poisoned future row outside the span. The profile renders the
-markers; `generate`/`agent` as MODL-21. The audio projector in the 12B
-file (`gemma4ua`) is not loaded.
+*The files.* 12B (`gemma-4-12b`, `-qat`): `mmproj-BF16.gguf`, 11 tensors,
+`clip.vision.projector_type = gemma4uv` (key under `clip.vision.`, not
+Qwen's `clip.projector_type`), mean 0 / std 1, eps 1e-6, patch 16 but
+`clip.cpp:1627-1640` sets patch = 16·3 = **48** and merge 1 for the unified
+variant; `v.patch_embd.weight` F32 [6912, 3840], `.bias` [3840],
+`v.patch_norm.{1,2,3}.{weight,bias}` F32 (6912, 3840, 3840),
+`v.position_embd.weight` F32 [3840, 1120, 2] (x table then y table),
+`mm.input_projection.weight` BF16 [3840, 3840]; the audio pair
+(`mm.a.input_projection.weight`, `gemma4ua`) is not loaded. 26B-A4B:
+`mmproj-BF16.gguf`, 356 tensors, `gemma4v`, 27 blocks × 13 tensors
+(`ln1`, `attn_q/k/v/out` BF16 1152², `attn_q_norm`/`attn_k_norm` [72],
+`attn_post_norm`, `ln2`, `ffn_gate/up` BF16 [1152, 4304], `ffn_down` BF16
+[4304, 1152], `ffn_post_norm`), `v.patch_embd.weight` F32 [16,16,3,1152],
+no patch bias, `v.position_embd.weight` F32 [1152, 10240, 2], `v.std_bias`,
+`v.std_scale` [1152], `mm.input_projection.weight` BF16 [1152, 2816]; no
+`input_max`/`output_min` clamp scalars (the clamps are ±FLT_MAX no-ops).
+
+*Preprocessing* (both): `mtmd_image_preprocessor_dyn_size` — the smart size
+with align 48, min 70 · 2304 and max 1120 · 2304 pixels
+(`set_limit_image_tokens(70, 1120)`), the PAD_CEIL bicubic letterbox,
+`(v/255 − mean)/std`: exactly `preprocess.smartSize` + `resizeLetterbox`.
+Tokens = (w/48) × (h/48), raster order. The 12B's im2col keeps the patches
+F32 (`inp_raw->type`); the 26B's `ggml_conv_2d` rounds them to F16 after
+`2x − 1` (`ggml_scale_bias`). Patch layout channel-planar as Qwen's.
+
+*`gemma4uv` graph* (`gemma4uv.cpp`): per patch (6912 values) LayerNorm
+`patch_norm_1` (eps **1e-5**, the PyTorch default) → `patch_embd` + bias →
+LayerNorm `patch_norm_2` → + x table row `i % cols` + y table row `i / cols`
+→ LayerNorm `patch_norm_3` → RMS norm (eps 1e-6, no weight) →
+`mm.input_projection`. No attention: the language model does the vision work.
+
+*`gemma4v` graph* (`gemma4v.cpp`, `clip.cpp` `build_vit`): conv (no bias) +
+x/y tables; 27 blocks, all norms RMS eps 1e-6: `x += rms(attn)·post_norm`
+where attn: `h = rms(x)·ln1`, q/k/v = W·h (no biases), per-head RMS of q
+and k with `attn_q_norm`/`attn_k_norm`, 2-D RoPE **NEOX** base **100**:
+channels [0,36) pairs (j, j+18) with the patch's x, channels [36,72) pairs
+(36+j, 54+j) with its y, v per-head RMS without weight, bidirectional
+attention scale **1.0**; then `x += rms(ffn)·ffn_post_norm` with ffn =
+`down(gelu_quick(gate·h) ⊙ up·h)`, h = rms(x)·ln2. **The FFN is
+`gelu_quick`** (x·σ(1.702x)): the file has no `clip.use_gelu`, so the
+reference's default applies (its log prints `ffn_op: gelu_quick`); we match
+the oracle. Then 3×3 average pool over the patch grid (raster tokens),
+× √1152, `(x − std_bias) ⊙ std_scale`, RMS norm (no weight),
+`mm.input_projection`. Patches up to 1120 · 9 = 10,080.
+
+*The language model.* Placeholder `<|image|>` (258880) inside `<|image>`
+(255999) … `<image|>` (258882), before the user text, no newlines
+(`mtmd.cpp:877-883`); image rows are **not** scaled by √width (only token
+rows are, `gemma4.cpp:160`). `mtmd_decode_use_non_causal` is true for both
+(`gemma4v` except E2B/E4B widths), so the image ubatch runs with
+`causal_attn = false`, and `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`
+(`llama-kv-cache.cpp:1757-1760`) makes only the sliding layers non-causal:
+a span row sees every row of its span (no window above it, since
+`is_masked_swa` only masks `p1 − p0 ≥ window`) and the window below it;
+global layers stay causal. The reference requires the image in one ubatch
+(`llama-context.cpp:1724`). Positions are plain: row = rotary position =
+cache index (no M-RoPE).
+
+*The oracle.* `scripts/reference-vision.cpp` gains `--image-min-tokens` /
+`--image-max-tokens` and a 2048-row ubatch; built with `clang++ -std=c++17
+-I{include,ggml/include,tools/mtmd} -L build/bin -lmtmd -lllama -lggml
+-lggml-base` into `.zig-cache/vision/reference-vision`. The synthetic
+96×64 fixture at `--image-min-tokens 4` becomes 144×96, **3×2 tokens**, on
+both entries; prompt `<bos><|turn>user\n<__media__>describe this
+image<turn|>\n<|turn>model\n<|channel>thought\n<channel|>` →
+tokens `2 105 2364 107 255999 [6] 258882 37016 672 2471 106 107 105 4368
+107 100 45518 107 101`. Greedy 12B `236776 51626 15017 18482 496 5139 3826
+1695` (top two logits 24.81 / 24.67: a close call), 26B-A4B `236776 3606
+15017 1702 18482 496 2214 3730`. The large real image is
+`/System/Library/Wallpapers/.default/DefaultAerial.jpg` (3840×2160, a lake
+with boulders): 44×25 = 1,100 tokens, near the 1,120 maximum.
+
+**Design.**
+- `vision/gemma4.zig`: `bindUnified` / `bind` by projector type, the grid
+  (`gridFor`, align 48, a caller's `min_tokens` override for the checks),
+  `patches` via `preprocess.patches` with merge 1 and a new `half` switch
+  (F32 for the 12B, F16 after `2x − 1` for the 26B), the x/y position rows,
+  the 2-D NEOX tables, and `Runtime` (CPU, F64 accumulation) for both.
+  `vision/gemma4_metal.zig`: `Plan` for both; the 26B's attention is the
+  chunk attention kernel with the whole patch set as one bidirectional
+  span; the pool runs on the host between two command buffers; the FFN
+  down matrix is padded 4304 → 4352; a `gelu_quick_mul` kernel.
+- `vision/root.zig`: `Projector`, a tagged union over the three adapters
+  (`load`, `outputWidth`, `grid`, `encode`) so the engine and the checks
+  stop naming `qwen3vl`; the projector type is read from either key.
+- The profile renders `<|image>` + count × `<|image|>` + `<image|>` before
+  the text; `Profile.imagePlaceholder` names each family's placeholder
+  (`engine.imagePadId` reads it).
+- **The span mask.** `AttentionChunkShape.span` `{ begin, end }`
+  (chunk-relative rows; the plan passes it on sliding layers only): a row
+  in the span sees keys up to `position + end`; everything else is
+  unchanged, and the reuse body is not taken while a span is set. The CPU
+  runtime's `prefillVision` runs a span as one batched pass per layer
+  (all rows project and write their cache rows, then each row attends over
+  `[first, span end)` on sliding layers, `[0, row]` on global ones).
+- **Indices each kernel receives** (lesson 3): Gemma has no M-RoPE, so the
+  cache row, the rotary position, and the visible count stay one value
+  (`state.position` + row); the span only moves a sliding row's *last
+  visible key* from its own row to the span's end. Decode after an image
+  is the ordinary step.
+- The Metal plan's chunk buffers hold `chunk` rows; a span must be one
+  chunk, so `loadVision` asks the plan to `reserveRows(1120)` (the
+  backend gains `release` to free the smaller set).
 
 **Acceptance.** The three checks of *The lesson of MODL-24* above (decode
-after an image equals one prefill on both executors; a large real image
-against the reference with teacher-forced agreement ≥ 97 %; the index
-each attention kernel receives named in this section). Traces within tolerance for both entries on both executors;
-the greedy tokens; the Gemma compare targets unchanged (text path); the
-mask fixture; `make check`; captions recorded.
+after an image equals one prefill on both executors; the aerial photo
+against the reference with teacher-forced agreement ≥ 97 %; the indices
+above). The synthetic fixture on both entries and both executors: the
+projector rows within the reference's own CPU/Metal spread, the prompt
+tokens equal to the oracle's, the top logits and greedy tokens on the
+pinned rows; the span-mask fixture (a poisoned row after the span) on the
+kernel; the Gemma text gates unchanged; `make check`; captions recorded;
+the chat's Gemma refusal replaced by a caption in the harness.
 
 ## MODL-23 — Muse Glimmer's windowed vision encoder
 

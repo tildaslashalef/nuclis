@@ -5,6 +5,7 @@
 //
 //   reference-vision MODEL MMPROJ IMAGE PROMPT OUTDIR [--cpu-vision]
 //                    [--n-predict N] [--trace NAME[,NAME...]]
+//                    [--image-min-tokens N] [--image-max-tokens N]
 //
 // PROMPT is the rendered prompt text (special tokens parsed) with the
 // marker <__media__> where the image goes. Written to OUTDIR:
@@ -71,11 +72,14 @@ int main(int argc, char ** argv) {
     const std::string model_path = argv[1], mmproj_path = argv[2], image_path = argv[3], prompt = argv[4], outdir = argv[5];
     bool cpu_vision = false;
     int n_predict = 8;
+    int image_min_tokens = -1, image_max_tokens = -1;
     Trace trace; trace.directory = outdir;
     for (int i = 6; i < argc; i++) {
         if (!std::strcmp(argv[i], "--cpu-vision")) cpu_vision = true;
         else if (!std::strcmp(argv[i], "--n-predict") && i + 1 < argc) n_predict = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--list-nodes")) trace.list = true;
+        else if (!std::strcmp(argv[i], "--image-min-tokens") && i + 1 < argc) image_min_tokens = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--image-max-tokens") && i + 1 < argc) image_max_tokens = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--trace") && i + 1 < argc) {
             std::string s = argv[++i];
             size_t start = 0;
@@ -96,7 +100,8 @@ int main(int argc, char ** argv) {
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = 4096;
     cparams.n_batch = 4096;
-    cparams.n_ubatch = 1024;
+    // A non-causal image (Gemma 4) must fit one ubatch: the largest is 1,120 tokens.
+    cparams.n_ubatch = 2048;
     cparams.type_k = GGML_TYPE_F32;
     cparams.type_v = GGML_TYPE_F32;
     cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
@@ -109,6 +114,8 @@ int main(int argc, char ** argv) {
     vparams.print_timings = false;
     vparams.warmup = false;
     vparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    vparams.image_min_tokens = image_min_tokens;
+    vparams.image_max_tokens = image_max_tokens;
     if (!trace.names.empty() || trace.list) { vparams.cb_eval = trace_cb; vparams.cb_eval_user_data = &trace; }
     mtmd_context * vctx = mtmd_init_from_file(mmproj_path.c_str(), model, vparams);
     if (!vctx) { std::fprintf(stderr, "mmproj load failed\n"); return 1; }
@@ -156,7 +163,7 @@ int main(int argc, char ** argv) {
             std::fprintf(stderr, "unexpected chunk type\n"); return 1;
         }
         llama_pos new_n_past = n_past;
-        if (mtmd_helper_eval_chunk_single(vctx, lctx, chunk, n_past, 0, 1024, i == n_chunks - 1, &new_n_past) != 0) {
+        if (mtmd_helper_eval_chunk_single(vctx, lctx, chunk, n_past, 0, 2048, i == n_chunks - 1, &new_n_past) != 0) {
             std::fprintf(stderr, "eval of chunk %zu failed\n", i); return 1;
         }
         n_past = new_n_past;
