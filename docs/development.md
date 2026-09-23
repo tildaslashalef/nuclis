@@ -625,7 +625,14 @@ differ from their predecessor, and reports the mean interval between them
 in `<name>.burst.json` — the way an animation's cadence is measured rather
 than eyeballed. `--ghostty` also opens one Ghostty window attached to the
 session and photographs it to `<name>.png` on each capture (`screencapture`
-needs the screen-recording permission once). The session stays up unless
+needs the screen-recording permission once). `--direct` runs the agent in a
+Ghostty window of its own with no tmux in between, for what only the
+terminal does (kitty image placements, its cursor reports and resizes): a
+pty relay in the window forwards the steps (through a FIFO) and the
+window's own keys, records every byte the agent writes to
+`<session>.stream`, `until=` searches that stream, and a capture writes the
+PNG and `<name>.stream`; the window stays open after the agent exits so its
+last screen can be photographed. The session stays up unless
 `--stop` is given; `tmux -L nuclis attach -t shot` joins it. Captures are
 evidence for the log, never fixtures: the goldens in `src/tui/` stay the
 contract.

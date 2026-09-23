@@ -30,18 +30,33 @@ each capture, photographs it to `<name>.png` with `screencapture` (needs the
 screen-recording permission for the terminal running this script; without
 it the PNG step reports and the text captures continue).
 
+`--direct` runs the command in a Ghostty window of its own, with no tmux
+in between, so what the terminal alone does (kitty image placements, its
+cursor reports, its resize) is what is photographed. A pty relay inside the
+window forwards the terminal's keys and the harness's steps (written to a
+FIFO) to the command, and records everything the command writes to
+`<session>.stream`; `until=` searches that stream, and a capture writes the
+PNG and the stream so far (`<name>.stream`). The window stays open after
+the command exits, so its last screen can be photographed.
+
 The session is left running unless `--stop` is given; attach to it with
 `tmux -L nuclis attach -t <session>`. See docs/development.md § The agent's
 transcript.
 """
 import argparse
+import fcntl
 import json
 import os
+import pty
 import re
+import select
+import signal
 import subprocess
 import sys
 import tempfile
+import termios
 import time
+import tty
 import unittest
 from pathlib import Path
 
@@ -271,6 +286,146 @@ class Ghostty:
         return True
 
 
+# ---- Ghostty without tmux ---------------------------------------------------
+
+# tmux key names to the bytes a terminal sends for them.
+KEY_BYTES = {
+    'Enter': b'\r', 'Tab': b'\t', 'Escape': b'\x1b', 'BSpace': b'\x7f', 'Space': b' ',
+    'Up': b'\x1b[A', 'Down': b'\x1b[B', 'Right': b'\x1b[C', 'Left': b'\x1b[D',
+    'M-Enter': b'\x1b\r',
+}
+
+
+def key_bytes(name):
+    if name in KEY_BYTES:
+        return KEY_BYTES[name]
+    if len(name) == 3 and name.startswith('C-'):
+        return bytes([ord(name[2].lower()) & 0x1f])
+    raise SystemExit('unknown key for --direct: %s' % name)
+
+
+def relay(fifo, record, argv):
+    """Runs inside the Ghostty window: the command on a pty sized like the
+    window, the window's keys and the FIFO's bytes to it, its output to the
+    window and to `record`. After the command exits the window is left as
+    the command left it, until the harness closes it."""
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvp(argv[0], argv)
+
+    def winch(*_):
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, fcntl.ioctl(0, termios.TIOCGWINSZ, b'\0' * 8))
+
+    signal.signal(signal.SIGWINCH, winch)
+    winch()
+    saved = termios.tcgetattr(0)
+    tty.setraw(0)
+    # Read-write keeps a writer open, so an idle FIFO blocks rather than
+    # reporting end of file on every poll.
+    steps = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+    with open(record, 'ab', buffering=0) as log:
+        while True:
+            try:
+                ready, _, _ = select.select([0, fd, steps], [], [])
+            except InterruptedError:
+                continue
+            if fd in ready:
+                try:
+                    data = os.read(fd, 65536)
+                except OSError:
+                    data = b''
+                if not data:
+                    break
+                os.write(1, data)
+                log.write(data)
+            for source in (0, steps):
+                if source in ready:
+                    data = os.read(source, 65536)
+                    if data:
+                        os.write(fd, data)
+    os.waitpid(pid, 0)
+    termios.tcsetattr(0, termios.TCSAFLUSH, saved)
+    signal.pause()
+
+
+class Direct:
+    """The command in its own Ghostty window, driven through the relay.
+    Stands in for `Session` and `Ghostty` together."""
+
+    def __init__(self, name, size, command, cwd, out_dir, env=()):
+        self.name = name
+        self.columns, self.rows = size
+        self.command = command
+        self.cwd = cwd
+        self.env = list(env)
+        self.fifo = Path(tempfile.gettempdir()) / ('nuclis-shot-%s.fifo' % name)
+        self.record = out_dir / (name + '.stream')
+        self.pidfile = Path(tempfile.gettempdir()) / ('nuclis-shot-%s.pid' % name)
+        self.window = None
+
+    def start(self):
+        self.stop()
+        os.mkfifo(self.fifo)
+        self.record.write_bytes(b'')
+        env = ['COLORTERM=truecolor', 'NUCLIS_NO_NOTIFY=1'] + self.env
+        inner = 'echo $$ > %s; cd %s && exec env %s python3 %s --relay %s %s -- %s' % (
+            self.pidfile, _q(str(self.cwd)), ' '.join(_q(e) for e in env), _q(str(Path(__file__).resolve())),
+            _q(str(self.fifo)), _q(str(self.record)), self.command)
+        subprocess.run(['open', '-na', 'Ghostty', '--args', '--title=%s' % self.name,
+                        '--window-width=%d' % self.columns, '--window-height=%d' % self.rows,
+                        '--confirm-close-surface=false', '-e', '/bin/sh', '-c', inner], check=True)
+        self.window = Ghostty(self)
+        deadline = time.time() + 10
+        while time.time() < deadline and self.window.window_id is None:
+            time.sleep(0.5)
+            self.window.window_id = self.window.find_window()
+        if self.window.window_id is None:
+            print('ghostty: window not found; PNG captures skipped', file=sys.stderr)
+
+    def write(self, data):
+        fd = os.open(self.fifo, os.O_WRONLY)
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+
+    def send_text(self, text):
+        self.write(text.encode())
+
+    def send_key(self, key):
+        self.write(key_bytes(key))
+
+    def paste(self, text):
+        self.write(b'\x1b[200~' + text.encode() + b'\x1b[201~')
+
+    def stream(self):
+        return self.record.read_bytes() if self.record.exists() else b''
+
+    def screen(self):
+        return self.stream().decode('utf-8', 'replace')
+
+    def buffer(self):
+        return ''
+
+    def capture(self, out_dir, name):
+        (out_dir / (name + '.stream')).write_bytes(self.stream())
+        self.window.shot(out_dir / (name + '.png'))
+
+    def stop(self):
+        if self.pidfile.exists():
+            try:
+                os.kill(int(self.pidfile.read_text().strip()), signal.SIGTERM)
+            except (ValueError, ProcessLookupError):
+                pass
+            self.pidfile.unlink()
+        if self.fifo.exists():
+            self.fifo.unlink()
+
+
+def _q(text):
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
 # ---- the run ----------------------------------------------------------------
 
 def write_capture(out_dir, name, ansi):
@@ -341,9 +496,12 @@ def run(args):
         # A repository-relative binary, whatever --cwd the app runs in.
         head, _, tail = command.partition(' ')
         command = str(ROOT / head[2:]) + (' ' + tail if tail else '')
-    session = Session(args.session, (columns, rows), command, ROOT / args.cwd, env=args.env)
+    if args.direct:
+        session = Direct(args.session, (columns, rows), command, ROOT / args.cwd, out_dir, env=args.env)
+    else:
+        session = Session(args.session, (columns, rows), command, ROOT / args.cwd, env=args.env)
     session.start()
-    ghostty = Ghostty(session) if args.ghostty else None
+    ghostty = Ghostty(session) if args.ghostty and not args.direct else None
     if ghostty:
         ghostty.open()
     ok = True
@@ -357,6 +515,8 @@ def run(args):
             session.paste(value)
         elif kind == 'wait':
             time.sleep(value)
+        elif kind == 'capture' and args.direct:
+            session.capture(out_dir, value)
         elif kind == 'capture':
             write_capture(out_dir, value, session.screen())
             if ghostty:
@@ -371,6 +531,8 @@ def run(args):
             print('buffer %s' % value)
     if args.stop:
         session.stop()
+    elif args.direct:
+        print('window left open: close it, or rerun with --stop')
     else:
         print('session left running: tmux -L %s attach -t %s' % (SOCKET, args.session))
     return 0 if ok else 1
@@ -412,9 +574,16 @@ def main():
     ap.add_argument('--cwd', default='.', help='working directory of the command, relative to the repository')
     ap.add_argument('--out', default=str(OUT_DIR.relative_to(ROOT)), help='where captures go')
     ap.add_argument('--ghostty', action='store_true', help='also attach a Ghostty window and photograph it on capture')
+    ap.add_argument('--direct', action='store_true', help='run in a Ghostty window of its own, no tmux (see above)')
+    ap.add_argument('--relay', nargs=2, metavar=('FIFO', 'RECORD'), help=argparse.SUPPRESS)
     ap.add_argument('--env', action='append', default=[], metavar='KEY=VALUE', help='an environment variable for the command (repeatable)')
     ap.add_argument('--stop', action='store_true', help='kill the session at the end')
     ap.add_argument('--self-test', action='store_true')
+    if '--relay' in sys.argv:
+        at = sys.argv.index('--relay')
+        split = sys.argv.index('--', at)
+        relay(sys.argv[at + 1], sys.argv[at + 2], sys.argv[split + 1:])
+        return 0
     args = ap.parse_args()
     if args.self_test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(TaggerTest)
