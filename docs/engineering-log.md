@@ -124,6 +124,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-24 | Decode after an image: the Metal step's cache row and rotary position separated; the vision gate compares decode with one prefill | 2026-09-23 |
 | TERM-12 | A spinner row while the projector loads and images encode | 2026-09-23 |
 | AGNT-16 | AGNT-14's follow-ups: the Muse value contract pinned and measured, steering that restarts a reasoning-only step, the guessed-path guideline measured and dropped | 2026-09-23 |
+| MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP encoder (26B-A4B) on both executors; bidirectional image spans | 2026-09-23 |
 
 ## Context
 
@@ -4900,3 +4901,87 @@ the unit tests. No gate (nothing numerical).
 **Remaining.** The restart has not been seen live in the chat; the user
 closed the unit before a capture with the steer typed during reasoning.
 The guessed read stays a known habit (1 of 2 `newfile` seeds).
+
+## MODL-22 — Gemma 4 vision: the unified embedder (12B) and the SigLIP encoder (26B-A4B) on both executors; bidirectional image spans (2026-09-23)
+
+**Outcome.** Both Gemma 4 entries read images: `generate --image`, a drop
+or `/image` in the chat, on the CPU reference and on Metal. The 12B's
+projector (`gemma4uv`) embeds 48-pixel patches with three LayerNorms, x/y
+position tables, and a projection, with no attention; the 26B-A4B's
+(`gemma4v`) is a 27-block SigLIP encoder with 2-D NEOX RoPE (base 100), a
+`gelu_quick` gate (the reference's default for a file without
+`clip.use_gelu`), a 3×3 pool, and a standardization. Both sit behind a new
+`vision.Projector`, so the engine and the checks no longer name an
+adapter; the profile names each family's placeholder
+(`Profile.imagePlaceholder`: `<|image|>` inside `<|image>` … `<image|>`).
+The language model attends bidirectionally inside an image span on its
+sliding layers only (the reference's `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`):
+the chunk attention takes a `span`, the Metal plan feeds a span as one
+chunk (growing its chunk buffers with `reserveRows`; the backend gained
+`release`), and the CPU runtime runs a span as one batched pass per layer.
+Gemma has no M-RoPE, so cache row, rotary position, and visible count stay
+one value; the span only moves a sliding row's last visible key to the
+span's end. The facts were read from the pinned reference and the two
+files first and committed as the unit's rewritten section (`f253d13`).
+Facts, tables, and traces:
+[vision.md § Gemma 4's projectors](reference/vision.md#gemma-4s-projectors-modl-22-2026-09-23).
+
+**Evidence.** The synthetic fixture at the reference's `--image-min-tokens
+4` (3×2 tokens), both entries, both executors: projector rows 6.3e-5 max
+abs (12B; the reference's own CPU/Metal spread is 0.058) and 6.2e-2 /
+6.6e-3 relative RMS (26B-A4B; its spread 0.092 / 1.26e-2); the rendered
+prompt's 24 tokens equal the oracle's; the best-16 last-position logits
+within 0.12 (12B) and 2.7e-3 (26B-A4B); the 8 greedy tokens identical;
+decode after the image against one prefill 1.1e-2 / 6.7e-3 on Metal and
+exactly 0 on the CPU; the engine loop's device greedy picks the same
+tokens. A planted fault (no span) moves the best logits by 1.80 (12B) and
+0.41 plus a greedy flip (26B-A4B); the logit bounds are 0.4 and 0.1. The
+large real image (the system wallpaper, 3840×2160, 44×25 = 1,100 tokens):
+teacher-forced agreement with the reference's answer 120/121 (12B) and
+90/91 (26B-A4B) on the oracle's rows, **120/121 and 89/91 on our own
+rows**, every miss below a 0.5 margin; `generate` and the chat describe
+the lake, the boulders, the mountains, and the pine tree on the right. The
+26B's SigLIP rows on that photo differ from the reference's by 0.30
+relative RMS (its own two backends by 0.049): fed the reference's input,
+each of our blocks matches its output to 1.3e-3 or better, so the gap is
+amplification through 27 blocks of ggml's BF16 activation rounding, which
+we do not do. `make test-metal`: bidirectional spans against the F64
+reference (a span inside a 300-row chunk with poisoned rows after it, past
+a window of 8, F16, and 16×72 heads at 200 and 9,900 rows), the quick
+GELU gate, and `release`'s refusals. `make check`: 536 unit tests. `make
+verify`: 29/29 in 501 s (the two new Metal vision gates among them). The
+CPU tier, run for the gates whose code this unit changed: 8/8 in 3,211 s
+(`qwen38-vision-cpu` 1,699 s with its restructured check, the three Gemma
+CPU traces unchanged after the runtime's `attention` became `project` +
+`attend`, `gemma4-generation-cpu`, `gemma4-qat-draft-trace-cpu`, and the
+two new vision gates, 642 s and 243 s, decode after the image exactly 0).
+The Qwen generation, speculative, and draft CPU gates and the Muse and
+Bonsai CPU traces were not run: their code is unchanged (the CPU backend
+only gained `geluQuick`; the engine's change is the vision path).
+The chat through the harness (`gemma-caption`, `gemma-followup`,
+`gemma12-caption` under `.zig-cache/tui/`): the 26B-A4B captioned the
+dropped photo and answered a follow-up about the right shore from it; the
+12B, which refused the drop in AGNT-15, captioned it.
+
+**Files.** `inference/src/vision/gemma4.zig`, `gemma4_metal.zig`,
+`projector.zig`, `root.zig`, `preprocess.zig`, `qwen3vl.zig`, the
+fixtures under `inference/src/vision/fixtures/` (two inventories,
+`gemma4uv-synthetic/`, `gemma4v-synthetic/`),
+`inference/src/models/gemma4.zig`, `gemma4_runtime.zig`,
+`gemma4_metal.zig`, `inference/src/backends/metal/root.zig`, `bridge.m`,
+`kernels.metal`, `inference/src/backends/cpu/vector.zig`, `root.zig`,
+`inference/src/engine.zig`, `inference/src/profiles/root.zig`,
+`gemma4.zig`, `qwen38.zig`, `muse_glimmer.zig`,
+`inference/generation-check.zig`, `inference/metal-check.zig`,
+`src/generate.zig`, `scripts/reference-vision.cpp`, `gates.json`,
+`docs/reference/vision.md`, `metal-backend.md`, `gemma4.md`,
+`docs/spec.md`, `README.md`, `TODO.md`.
+
+**Remaining.** The 26B's SigLIP encodes a 1,100-token image in 17.1 s
+(the reference: 10.6 s), 13.7 s of it the chunk attention on 72-wide heads.
+Its rows track the reference's only as far as F32 activations track BF16
+ones. Every Gemma chat turn after the first re-prefills the conversation
+(`replayed`, text chats too), so a follow-up pays an image's prefill again
+(2.9 s on the 26B-A4B, 6.8 s on the 12B). The 12B file's audio embedder is
+not loaded. The preview's scroll in plain Ghostty is still the user's
+check (TERM-11).

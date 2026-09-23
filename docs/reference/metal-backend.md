@@ -33,7 +33,7 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([generation.md](generat
 | `backends/metal/bridge.m` | Device, queue, shader library, pipelines, buffers, one open command buffer. A generic recording API: `begin`, `dispatch(pipeline, bindings, constants, grid)`, `commit`. Opt-in profiling: timestamp counter sample buffers and one encoder per dispatch, resolved to seconds per dispatch at commit. Knows nothing about models, shapes, or encodings. |
 | `backends/metal/root.zig` | `Backend`: compiles the kernel set, hands out `Buffer` handles (`create`/`wrap`/`slice`), and exposes one typed encoder per kernel that validates shapes before recording. `Profile` accumulates timed dispatches by kernel, encoding, and shape. Knows kernel contracts, not layer schedules. |
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
-| `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
+| `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
 | `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule (MODL-06) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](gemma4.md#metal-plan-modl-06-2026-09-11)). |
 | `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule (MODL-12) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19)). |
@@ -189,7 +189,7 @@ memory, and leave the rest to the grid.
   score −∞ (weight exactly 0). Contract (`Backend.attentionChunk`): widths
   multiples of 8, value width ≤ 512 (above 256 the grid adds one
   threadgroup per 256 value columns, each recomputing the scores; MODL-06),
-  `count` ≤ 4,096, query/output buffers
+  `count` ≤ 16,384 (`max_chunk_rows`; 4,096 before MODL-22), query/output buffers
   padded to a multiple of 8 rows (`attentionChunkRows`), the cache buffers
   cover `position + count` rows. Row `t` attends to `cache[0 .. position +
   t]`, or with a nonzero `window` (MODL-06) to `cache[position + t + 1 −
@@ -211,7 +211,17 @@ memory, and leave the rest to the grid.
   hidden tiles, and 16 heads of 512 over one KV head (two value splits),
   F32 within 3.0e-6 (bound 1e-5) and F16 over the rounded operands within
   1.9e-4 (bound 2e-3) of the F64 reference per row with the window applied
-  as a key slice.
+  as a key slice. MODL-22 adds `span { begin, end }`: chunk rows in the
+  span see keys up to `position + end` instead of their own row (the
+  window still bounds them from below), and a SIMD group with a row inside
+  walks keys to the span's end; the register-reuse body refuses a span.
+  Gemma 4 passes an image chunk's span on its sliding layers, and its
+  SigLIP projector runs a whole patch set as one span
+  ([vision.md § Gemma 4's projectors](vision.md#gemma-4s-projectors-modl-22-2026-09-23)).
+  Evidence: a span inside a 300-row chunk with poisoned keys and values
+  after it, a span longer than a window of 8, an F16 span, and the
+  projector's 16×72 geometry at 200 and 9,900 rows (every 97th compared),
+  F32 within 1e-5 (relative past 1) of the F64 reference per row.
 - `nu_delta_chunk` (ENGN-04): chunkwise DeltaNet for a prefill chunk in one
   dispatch per layer, the WY form of `cpu.recurrent.deltaChunk`
   ([cpu-reference.md § Chunkwise DeltaNet](cpu-reference.md#chunkwise-deltanet-engn-04-stage-1)).
@@ -1515,6 +1525,7 @@ bar assumed all 52 layers rotate q/k; its 13 global layers do not, so only
 | Half chunk attention, the ENGN-03 cases with half Q, K, V, and P (KERN-07) | vs CPU over the rounded operands per row | 1e-3 (measured 1.8e-4) |
 | Flash-decoding attention (KERN-08): six pinned fixtures; model shape at 257 / 1,021 / 16,385 / 32,000 visible, F32 and F16 cache | vs fixtures; vs F64 CPU `attention.apply` (F16: over the rounded rows) | 1e-5; 2e-5 up to 1,021 and 1e-4 above (measured ≤ 2.3e-8) |
 | Windowed and wide chunk attention (MODL-06): windows of 1,024 and 8 on the 16/8/256 geometry, 16/1/512 with two value splits, F32 and F16 | vs F64 CPU per row over the window's key slice (F16: rounded operands) | 1e-5 (measured 3.0e-6); 2e-3 (measured 1.9e-4) |
+| Bidirectional spans in the chunk attention (MODL-22): a 220-row span in a 300-row chunk with poisoned rows after it, a span past a window of 8, F16, and 16×72 heads at 200 and 9,900 rows | vs F64 CPU per row, the span's rows seeing to its end | 1e-5 relative past 1 (measured 3.1e-5 absolute on rows of magnitude ~13); 2e-3 F16 (measured 2.3e-4) |
 | Register-reuse chunk attention (KERN-16): the same MODL-06 cases and the model geometry at counts 1–256 over a poison-filled future range (1e30 F32 / 6e4 F16 past `position + count`) | vs F64 CPU per row, both bodies | 1e-5 (measured 3.0e-6); 1e-3 (measured 2.7e-4) |
 | Fused norms (KERN-18): `rmsNormAdd` (1 and 3 strided rows), `addRmsNorm` (1 and 5 rows), `rmsNormRope` (24 packed heads at stride 512, 8 adjacent in place) | vs the unfused pair and `cpu.rmsNorm`/`cpu.rope` | 2e-5 fused-vs-unfused; 2e-4 vs CPU (measured 4.8e-7 both) |
 | Wide (`_w`/`_wh`) and grouped decode attention (MODL-06), 16/1/512 and 16/8/256 at 257 and 1,021 visible, both precisions | vs F64 CPU `attention.apply` (F16: rounded rows) | 5e-5 (measured 2.4e-7) |
@@ -1627,6 +1638,11 @@ prompt, not the acceptance runs (ENGN-07).
   and another length can be wrapped), but the bridge keeps every
   `MTLBuffer` object until the backend is destroyed; a long-lived backend
   that opens and closes many plans accumulates no-copy buffer objects.
+  Created buffers can be freed with `release` (MODL-22: the Gemma plan
+  frees its chunk buffers when an image span grows them); the id is never
+  reused, and a dispatch that binds a released id fails.
+- The chunk attention runs 72-wide heads (Gemma 4's SigLIP) at under
+  1 TFLOP/s: 13.7 s of a 1,100-token image's 17.1 s encode (MODL-22).
 - Shader compiled from source at startup; no binary archive.
 - GPU resource cleanup is exercised by recreating the backend across fixture
   files in `metal-check`; Zig's testing allocator cannot observe Metal objects.

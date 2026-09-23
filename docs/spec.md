@@ -579,9 +579,11 @@ Read: [development.md § Gates](development.md#gates) and
 ## 10. Deferred work and non-goals
 
 Vision input through the companion projectors is in progress: the Qwen3.8
-projector ships (`generate --image`, the chat's image chip, the shared
+projector and Gemma 4's two (the 12B's unified embedder, the 26B-A4B's
+SigLIP encoder, with the language model's bidirectional image spans) ship
+(`generate --image`, the chat's image chip, the shared
 `inference/src/vision/` contract, [reference/vision.md](reference/vision.md));
-the Gemma 4 and Muse Glimmer projectors are planned in [TODO.md](../TODO.md).
+the Muse Glimmer projector is planned in [TODO.md](../TODO.md).
 PDF attachments are not planned: nothing in the tree extracts their text. Deferred, to be taken through the existing seams as
 concrete requirements arrive: HTTP serving with an OpenAI-compatible protocol,
 persistent prefix caches, concurrent request batching, additional GPU

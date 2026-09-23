@@ -11,7 +11,9 @@ and from the pinned llama.cpp reference `7620399` (`src/models/gemma4.cpp`,
 is read as a format and semantics reference and used as the numerical
 oracle, never copied. Where a fact comes from the reference source rather
 than the file, the sentence says so. Nothing below is from memory of the
-model card.
+model card. Images (the two projectors and the language model's
+bidirectional image spans on its sliding layers) are in
+[vision.md § Gemma 4's projectors](vision.md#gemma-4s-projectors-modl-22-2026-09-23).
 
 ## Artifacts
 

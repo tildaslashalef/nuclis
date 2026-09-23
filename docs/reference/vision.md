@@ -29,8 +29,16 @@ The package (`inference/src/vision/root.zig`):
   `patches`, the channel-planar `[c][ky][kx]` layout the convolution reads,
   normalized by mean/std and rounded to F16 as the reference's im2col does.
 - `qwen3vl.zig` / `qwen3vl_metal.zig` — the Qwen3-VL adapter (below).
+- `gemma4.zig` / `gemma4_metal.zig` — Gemma 4's two adapters (below).
+- `projector.zig` — `Projector`, one loaded projector whatever its family:
+  the file's projector type (`clip.projector_type` for Qwen,
+  `clip.vision.projector_type` for Gemma) picks the adapter and the
+  executor its CPU reference or Metal plan; `grid`, `prepare` (resize and
+  patch layout), `encode`, `outputWidth`, `maxTokens`, and `bidirectional`
+  are what the engine and the checks call.
 - `Span { start, count, width_tokens, height_tokens }` — one image span; the
-  engine's `locateImageSpans` pairs the runs of `<|image_pad|>` with the
+  engine's `locateImageSpans` pairs the runs of the profile's placeholder
+  (`Profile.imagePlaceholder`: `<|image_pad|>`, `<|image|>`) with the
   encoded images in order.
 
 The prompt seam is in `engine.zig`: `Engine.loadVision(path)` loads a
@@ -41,9 +49,12 @@ profile render the family's markers with the right placeholder count;
 `locateImageSpans` finds the runs; `runLoop`'s `images` argument carries the
 spans and their concatenated features into `Model.prefillVision`. The Qwen
 runtime substitutes a feature row for a token embedding per span row
-(`stepImage`); the Metal plan copies the chunk's feature rows into `x_c`
-instead of the embedding gather. Speculation is off on the vision prefill;
-after it, decode is unchanged.
+(`stepImage`); the Metal plans copy the chunk's feature rows into `x_c`
+instead of the embedding gather. Gemma 4's spans attend bidirectionally,
+so they are fed differently (below). The projector's output width must
+equal the artifact's `<architecture>.embedding_length`
+(`VisionSourceMismatch`). Speculation is off on the vision prefill; after
+it, decode is unchanged.
 
 ## The Qwen3-VL projector (MODL-21, 2026-09-22)
 
@@ -145,8 +156,8 @@ renumbering after a deletion rewrites bytes of equal length in place.
 completer's `Engine.encodeImage`), giving a `loop.Image` — path, file size,
 the `PreparedImage` with its grid, decoded size, and feature rows. The
 projector is loaded on the first attachment (`visionAvailable`), and an
-entry without one, or one whose projector cannot be bound (Gemma's
-`gemma4uv` today: `MissingMetadata`), refuses the chip with a notice and
+entry without one, or one whose projector cannot be bound (Muse's and Bonsai's
+today; Gemma's until MODL-22), refuses the chip with a notice and
 leaves the paste as text. A failure reading or encoding an image is a
 notice naming it and the turn is not sent. The agent owns the images beside
 the history item (`Item.images` and the profile's `ImageRef`s), frees them
@@ -190,7 +201,7 @@ the red rectangle (the ground it called a black strip); `/image` attached
 the same file as a chip after `/image nope.png` was refused; a dropped
 `README.md` became `[file README.md, 219 lines]`; the Gemma 4 12B entry
 refused the drop with `no vision support yet for this model: MissingMetadata
-loading the projector`; and the captioned session resumed with its detail
+loading the projector` (it captions since MODL-22); and the captioned session resumed with its detail
 row replayed and the follow-up `What colour is the rectangle?` answered
 `red` from the re-encoded image. The captures are under `.zig-cache/tui/`
 (`chip`, `caption`, `filechip`, `imagecmd`, `refusal`, `replay`,
@@ -239,3 +250,157 @@ steps through its greedy tokens and compares the logits with one batched
 prefill of the same tokens (bound 2e-2): 2.8e-3 with the fix, 0.82 with it
 reverted. The 4×3-token fixture alone could not catch the defect (a shift
 of 8 rows left the eight greedy tokens unchanged); the new check does.
+
+## Gemma 4's projectors (MODL-22, 2026-09-23)
+
+Two different companions, read from the pinned `7620399f5`
+(`tools/mtmd/models/gemma4uv.cpp`, `gemma4v.cpp`, `clip.cpp` `build_vit`
+and the GEMMA4V/GEMMA4UV hparams at 1627–1640, `mtmd.cpp` 877–883 and
+`mtmd_decode_use_non_causal`, `src/models/gemma4.cpp`,
+`src/llama-kv-cache.cpp` 1640–1760). Both place one token per 48×48 pixels
+in raster order, within the reference's bounds of 70 and 1,120 tokens
+(`set_limit_image_tokens(70, 1120)`), after the same smart size and PAD_CEIL
+bicubic letterbox as Qwen's (align 48); `gemma4.gridFor`.
+
+**The 12B: the unified embedder (`gemma4uv`).** `mmproj-BF16.gguf`, 175 MB:
+ten vision tensors (the file's audio pair, `gemma4ua`, is not loaded).
+`clip.cpp` turns the file's patch 16 into **48** with merge 1, so the
+"patch" is a whole token. Per token: its 6,912 F32 pixel values (the
+im2col keeps the input's F32; mean 0, std 1) → LayerNorm `patch_norm.1`
+(eps **1e-5**, PyTorch's default, not the file's 1e-6) → `patch_embd`
+(F32 3840×6912) + bias → LayerNorm `patch_norm.2` → + the x table's row
+`i % columns` + the y table's row `i / columns` (`position_embd` F32
+[3840, 1120, 2]) → LayerNorm `patch_norm.3` → RMS norm without a weight
+(eps 1e-6) → `mm.input_projection` (BF16 3840×3840). No attention: the
+language model does the vision work.
+
+**The 26B-A4B: the SigLIP encoder (`gemma4v`).** `mmproj-BF16.gguf`,
+1.19 GB, 356 tensors. 16-pixel patches of `2x − 1` rounded to F16 (the
+convolution's im2col), the F32 patch kernel (no bias), + x/y tables
+(`position_embd` [1152, 10240, 2]); 27 blocks, every norm RMS (eps 1e-6):
+`x += rms(W_o · attn(h))·attn_post_norm` with h = rms(x)·ln1, q/k/v
+without biases, per-head RMS of q and k with their 72-wide weights, **2-D
+NEOX RoPE base 100** (channels [0,36) pairs (j, j+18) turn with the patch's
+x, channels [36,72) with its y), v per-head RMS without a weight, and
+bidirectional attention at scale **1**; then
+`x += rms(W_down(gelu_quick(W_gate h) ⊙ W_up h))·ffn_post_norm` with
+h = rms(x)·ln2. The gate is **`gelu_quick`** (x·σ(1.702x)): the file
+carries no `clip.use_gelu`/`use_silu`, so the reference's default applies
+(its log says `ffn_op: gelu_quick`); `bind` refuses a file that names one.
+After the blocks: a 3×3 average pool over the patch grid, × √1152,
+`(x − std_bias) ⊙ std_scale`, RMS norm without a weight,
+`mm.input_projection` (BF16 1152×2816). The Metal plan runs the attention
+through the chunk attention kernel with the whole patch set as one
+bidirectional span, pools on the host between two command buffers, and
+pads the FFN down matrices to 4,352 columns; activations are sized for
+10,080 patches.
+
+**The language model.** The profile renders `<|image>` (255999) +
+`count × <|image|>` (258880) + `<image|>` (258882) before the user text, no
+newlines. Image rows are not scaled by √width (only token rows are,
+`gemma4.cpp:160`). The reference decodes an image as one ubatch with
+`causal_attn = false`, and Gemma's `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY` makes
+that non-causal on the **sliding layers only**: a span row sees every row of
+its span (the window never masks keys above it, since the reference masks
+only `query − key ≥ window`) and the window below it; the global layers
+stay causal. So:
+
+- `metal.Backend.attentionChunk` takes `span { begin, end }`: chunk rows in
+  it see keys up to `position + end` instead of their own row (the
+  row-split body; the register-reuse body refuses a span). The Metal plan
+  feeds a span as **one chunk** with the span on its sliding layers; the
+  chunk buffers are grown to the largest image (`reserveRows`, on
+  `loadVision` or the first larger span; the backend's new `release` frees
+  the old set).
+- The CPU runtime's `prefillVision` runs a span as one batched pass per
+  layer: every row projects and writes its cache row, then each row
+  attends over `[first, span end)` on a sliding layer and `[0, row]` on a
+  global one.
+- **The indices each kernel receives.** Gemma has no M-RoPE: the cache
+  row, the rotary position, and the visible count are one value
+  (`state.position` + row) on both executors, in the span and after it;
+  the span only moves a sliding row's *last visible key* from its own row
+  to the span's end. Decode after an image is the ordinary step.
+
+**The oracle and the fixtures.** `scripts/reference-vision.cpp` gains
+`--image-min-tokens`/`--image-max-tokens` and a 2,048-row ubatch (the
+reference requires a non-causal image in one ubatch); build it with
+`clang++ -std=c++17 -I<llama.cpp>/{include,ggml/include,tools/mtmd}
+-L<llama.cpp>/build/bin -lmtmd -lllama -lggml -lggml-base
+-Wl,-rpath,<llama.cpp>/build/bin`. The prompt is
+`<bos><|turn>user\n<__media__>describe this image<turn|>\n<|turn>model\n<|channel>thought\n<channel|>`,
+our rendering with thinking off. The synthetic 96×64 fixture at
+`--image-min-tokens 4` becomes 144×96, a **3×2-token** span on both
+entries, so the CPU tier stays in minutes; `fixtures/gemma4uv-synthetic/`
+and `gemma4v-synthetic/` hold the reference's Metal rows, its prompt
+tokens, its 16 best last-position logits, and its 8 greedy tokens. The
+large real image is the system wallpaper
+`/System/Library/Wallpapers/.default/DefaultAerial.jpg` (3840×2160, a lake
+with boulders, snow-capped mountains, pine trees on the right shore):
+44×25 = **1,100 tokens**, near the maximum; it is not committed.
+
+**The measurement (2026-09-23, Metal and CPU).**
+
+| check | 12B (`gemma4uv`) | 26B-A4B (`gemma4v`) |
+| --- | --- | --- |
+| the reference's own CPU vs Metal rows, fixture | 0.058 max abs, 1.2e-3 rel RMS | 0.092, 1.26e-2 |
+| our rows vs the reference's, fixture, Metal / CPU | 6.3e-5, 1.0e-6 / 1.5e-5, 2.4e-7 | 6.2e-2, 6.6e-3 / 6.2e-2, 6.6e-3 |
+| prompt tokens vs the oracle's | equal (24) | equal (24) |
+| best-16 logits on the pinned rows, Metal / CPU | 0.121 / 0.123 (argmax equal) | 2.6e-3 / 2.7e-3 |
+| 8 greedy tokens, both executors | identical | identical |
+| decode after the image vs one prefill, Metal / CPU | 1.1e-2 / 0 | 6.7e-3 / 0 |
+| planted fault: no bidirectional span | best-16 logits off by 1.80 | off by 0.41, greedy flips at 4 |
+| photo: our rows vs the reference's Metal rows | 0.36, 7.8e-3 (no block above 1.1e-2) | 16.8, 0.30 (see below) |
+| photo: last logits on the oracle's rows | 0.27, argmax equal | 0.14, argmax equal |
+| photo: teacher-forced agreement, the oracle's rows | **120/121** (miss at margin 0.03) | **90/91** (margin 0.00) |
+| photo: teacher-forced agreement, our rows | **120/121** (margin 0.11) | **89/91** (margins 0.46, 0.04) |
+
+The CPU tier (`gemma4-vision-cpu` 12 min, `gemma4-26b-a4b-vision-cpu`
+4.6 min) agrees with Metal on every line. In the chat (the harness,
+`--think off`, captures `gemma-caption`, `gemma-followup`, and
+`gemma12-caption` under `.zig-cache/tui/`), the photo dropped as
+`[image #1]` became a 44×25-token span; the 26B-A4B described the lake,
+the boulders, the mountains, and "a single tree on a rocky shoreline",
+and answered the follow-up "What stands on the right shore?" with "A
+single tree stands on the rocky shoreline on the right."; the 12B, which
+refused the drop before this unit, described the same scene with "a few
+pine trees visible on the right". The 12B embedder matches the
+reference to F32 rounding on the fixture; on the photo its 7.8e-3 is the
+reference's own Metal matmul precision at 1,100 rows.
+
+**The SigLIP rows on a large image.** On the photo our 26B rows sit 0.30
+relative RMS from the reference's Metal rows and 0.30 from its CPU rows,
+while those two differ by 4.9e-2. Traced block by block
+(`reference-vision --trace layer_out-N`), each of our blocks fed the
+reference's own input reproduces its output to 9e-5–1.3e-3 relative, far
+below the block's own change (0.11–0.51): the function is the same, and
+the gap is amplification through 27 blocks (7e-3 after the embedding,
+1.5e-2 at block 13, 0.25 at block 26, worst over the uniform sky). The
+reference's two backends share a systematic rounding we do not: ggml
+multiplies BF16 weights with activations converted to BF16 (its BF16 dot
+type), where we keep F32 activations. The caption is unaffected: 89/91
+teacher-forced with our rows, the same first 16 greedy tokens, and
+`generate` describes the lake, the boulders, the mountains, and the pine
+tree on the right shore.
+
+**Speed (Metal, the photo, 1,122-token prompt, `generate --json`).** The
+12B embedder encodes 1,100 tokens in 0.06 s; the 26B's SigLIP in **17.1 s**
+(the reference: 10.6 s), of which 13.7 s is the chunk attention kernel over
+9,900 72-wide rows at under 1 TFLOP/s. Prefill of the prompt: 6.8 s (12B),
+2.9 s (26B-A4B); decode 26 and 66 tok/s.
+
+**Memory.** The 12B plan: ~130 MB of activations; the 26B's: ~700 MB of
+activations for 10,080 patches plus the padded down matrices (270 MB).
+Reserving a 1,120-row chunk grows the language model's chunk buffers from
+the prompt chunk (256 or 512 rows) to 1,120 (~0.3 MB per row).
+
+**Gates.** `gemma4-vision-metal`, `gemma4-26b-a4b-vision-metal` (Metal
+tier), `gemma4-vision-cpu`, `gemma4-26b-a4b-vision-cpu` (CPU tier): each
+`generation-check --vision-check` against its fixture. The photo is a
+manual diagnostic (`--vision-image <file> --vision-oracle <dir>`), which
+now also teacher-forces the language model on our own rows.
+
+**Limits.** The SigLIP attention is the slow part of a large image. Its
+rows track the reference only as far as F32 activations track BF16 ones.
+The 12B file's audio embedder is not loaded. A span must fit the context
+(`ContextFull` otherwise).

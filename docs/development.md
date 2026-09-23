@@ -94,7 +94,7 @@ make the registry cheaper than the recipes it replaced:
 | | tier `verify` | tier `verify-cpu` |
 | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the CPU reference |
-| cost | minutes (26 gates, one `make verify` per unit) | hours (11 gates; `qwen38-speculative-cpu` alone is about 20 min) |
+| cost | minutes (29 gates, one `make verify` per unit, about 8.5 min) | hours (14 gates; `qwen38-speculative-cpu` alone is about 20 min) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | every unit | when a change touches the CPU runtime files, when a family or a draft source is brought up, and to tell a wrong kernel from wrong model semantics after a Metal trace fails |
 

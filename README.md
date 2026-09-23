@@ -93,8 +93,10 @@ adapter — `nuclis model inspect` says which of the two it is.
 | `bonsai-2-27b` | qwen35 (ternary, Hadamard-rotated) | `prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf` | 5.95 GB |
 
 Each entry carries the vision projector and the draft head of its
-repository as companions (`--all` fetches them; they are verified now and
-loaded by later units). The two 12B Gemma entries are the same model in
+repository as companions (`--all` fetches them). The Qwen3.8 and Gemma 4
+entries read images with theirs (`generate --image`, or an image dropped
+into the chat); Muse's and Bonsai's projectors are verified but not yet
+loaded. The two 12B Gemma entries are the same model in
 two quantizations: the plain K-quant release, and Google's
 quantization-aware-trained checkpoint, whose every weight matrix is Q4_0
 — the encoding it was trained for, which is why it is smaller *and*

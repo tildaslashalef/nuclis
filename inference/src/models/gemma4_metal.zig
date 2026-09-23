@@ -398,54 +398,79 @@ pub const Plan = struct {
         }
         return self;
     }
-    /// Creates the `_c` buffers for chunks of up to `rows` rows (the expert
-    /// block's chunk buffers are `expertBuffers`').
-    fn chunkBuffers(self: *Plan, rows: usize) !void {
+    /// The `_c` buffers for chunks of up to `rows` rows (the expert block's
+    /// chunk buffers are `expertBuffers`').
+    const ChunkBuffers = struct { padded: usize, x_c: Buffer, normalized_c: Buffer, projected_c: Buffer, gate_c: Buffer, up_c: Buffer, q_c: Buffer, k_c: Buffer, v_c: Buffer, q_c_h: Buffer, mixed_out_c: Buffer };
+    const chunk_fields = .{ "x_c", "normalized_c", "projected_c", "gate_c", "up_c", "q_c", "k_c", "v_c", "q_c_h", "mixed_out_c" };
+
+    /// Creates a full set, releasing what it made if any creation fails.
+    fn createChunkBuffers(self: *Plan, rows: usize) !ChunkBuffers {
         const b = self.backend;
         const hidden = self.binding.config.embedding;
         const ffn = self.binding.config.feed_forward;
-        self.padded = metal.Backend.matmulPadded(rows);
-        const n = self.padded;
-        self.x_c = try b.create(n * hidden * 4);
-        self.normalized_c = try b.create(n * hidden * 4);
-        self.projected_c = try b.create(n * hidden * 4);
-        self.gate_c = try b.create(n * ffn * 4);
-        self.up_c = try b.create(n * ffn * 4);
-        self.q_c = try b.create(n * q_width * 4);
-        self.k_c = try b.create(n * kv_width * 4);
-        self.v_c = try b.create(n * kv_width * 4);
-        self.q_c_h = try b.create(n * q_width * 2);
-        self.mixed_out_c = try b.create(n * q_width * 4);
+        const n = metal.Backend.matmulPadded(rows);
+        const sizes = [_]usize{ n * hidden * 4, n * hidden * 4, n * hidden * 4, n * ffn * 4, n * ffn * 4, n * q_width * 4, n * kv_width * 4, n * kv_width * 4, n * q_width * 2, n * q_width * 4 };
+        var made: [sizes.len]Buffer = undefined;
+        var count: usize = 0;
+        errdefer for (made[0..count]) |buffer| b.release(buffer) catch {};
+        for (sizes, &made) |size, *buffer| {
+            buffer.* = try b.create(size);
+            count += 1;
+        }
+        var set: ChunkBuffers = undefined;
+        set.padded = n;
+        inline for (chunk_fields, 0..) |field, i| @field(set, field) = made[i];
+        return set;
+    }
+    fn chunkBuffers(self: *Plan, rows: usize) !void {
+        self.useChunkBuffers(try self.createChunkBuffers(rows));
+    }
+    fn useChunkBuffers(self: *Plan, set: ChunkBuffers) void {
+        self.padded = set.padded;
+        inline for (chunk_fields) |field| @field(self, field) = @field(set, field);
     }
 
     /// Grows the chunk buffers so an image span of up to `rows` rows is one
-    /// chunk: they are recreated at the larger size and the old ones freed
-    /// (and the expert block's chunk set likewise). Text prompts keep
-    /// chunking at `chunk`. Valid between steps.
+    /// chunk: a larger set (and the expert block's chunk set, and the span's
+    /// feature rows) is created in full before the old one is freed, so a
+    /// failure leaves the plan as it was. Text prompts keep chunking at
+    /// `chunk`. Valid between steps.
     pub fn reserveRows(self: *Plan, rows: usize) !void {
         if (rows == 0 or rows > metal.Backend.max_chunk_rows or rows > self.state.capacity) return error.InvalidShape;
         if (rows <= self.span_rows) return;
         const b = self.backend;
-        const old = [_]Buffer{ self.x_c, self.normalized_c, self.projected_c, self.gate_c, self.up_c, self.q_c, self.k_c, self.v_c, self.q_c_h, self.mixed_out_c };
         const target = @max(rows, self.chunk);
-        try self.chunkBuffers(target);
-        for (old) |buffer| try b.release(buffer);
-        if (self.experts) |*e| {
-            const spec = self.binding.config.experts.?;
-            const fresh = try self.expertBuffers(spec);
-            for ([_]Buffer{ e.router_logits_c, e.indices_c, e.route_weights_c, e.lists, e.gate_up_c, e.hidden_c, e.down_c, e.out_c }) |buffer| try b.release(buffer);
-            for ([_]Buffer{ fresh.router_logits, fresh.indices, fresh.route_weights, fresh.gate_up, fresh.hidden, fresh.down, fresh.out }) |buffer| try b.release(buffer);
-            e.router_logits_c = fresh.router_logits_c;
-            e.indices_c = fresh.indices_c;
-            e.route_weights_c = fresh.route_weights_c;
-            e.lists = fresh.lists;
-            e.gate_up_c = fresh.gate_up_c;
-            e.hidden_c = fresh.hidden_c;
-            e.down_c = fresh.down_c;
-            e.out_c = fresh.out_c;
+        const set = try self.createChunkBuffers(target);
+        errdefer inline for (chunk_fields) |field| b.release(@field(set, field)) catch {};
+        const scratch = try b.create(set.padded * self.binding.config.embedding * 4);
+        errdefer b.release(scratch) catch {};
+        var fresh: ?ExpertBuffers = null;
+        if (self.experts != null) {
+            // `expertBuffers` sizes its chunk set by `padded`.
+            const previous = self.padded;
+            self.padded = set.padded;
+            defer self.padded = previous;
+            fresh = try self.expertBuffers(self.binding.config.experts.?);
         }
-        if (self.image_scratch) |buffer| try b.release(buffer);
-        self.image_scratch = try b.create(self.padded * self.binding.config.embedding * 4);
+        // Everything is created; from here nothing may fail, and a release
+        // that did would only leave the old buffer allocated.
+        inline for (chunk_fields) |field| b.release(@field(self, field)) catch {};
+        self.useChunkBuffers(set);
+        if (fresh) |f| {
+            const e = &self.experts.?;
+            for ([_]Buffer{ e.router_logits_c, e.indices_c, e.route_weights_c, e.lists, e.gate_up_c, e.hidden_c, e.down_c, e.out_c }) |buffer| b.release(buffer) catch {};
+            for ([_]Buffer{ f.router_logits, f.indices, f.route_weights, f.gate_up, f.hidden, f.down, f.out }) |buffer| b.release(buffer) catch {};
+            e.router_logits_c = f.router_logits_c;
+            e.indices_c = f.indices_c;
+            e.route_weights_c = f.route_weights_c;
+            e.lists = f.lists;
+            e.gate_up_c = f.gate_up_c;
+            e.hidden_c = f.hidden_c;
+            e.down_c = f.down_c;
+            e.out_c = f.out_c;
+        }
+        if (self.image_scratch) |old| b.release(old) catch {};
+        self.image_scratch = scratch;
         self.span_rows = target;
     }
 

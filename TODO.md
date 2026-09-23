@@ -163,7 +163,18 @@ steer during a reasoning-only step restarts it, and the guessed-path
 guideline changed nothing and was reverted. **TERM-13** (a stale preview
 and header edge after exit, from the user's Ghostty screenshot) is
 drafted and deferred by the user; the harness gained `--direct` for it.
-**Next: MODL-22** (Gemma 4 vision; its section below).
+MODL-22 closed the same day, in one session
+([log](docs/engineering-log.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23),
+[vision.md § Gemma 4's projectors](docs/reference/vision.md#gemma-4s-projectors-modl-22-2026-09-23)):
+both Gemma 4 entries read images on both executors and in the chat. On a
+3840×2160 photo (1,100 tokens) the teacher-forced agreement with the
+reference's answer is 120/121 (12B) and 89/91 (26B-A4B) on our own
+projector rows. **Two facts for MODL-23:** the chunk attention's `span`
+is one contiguous bidirectional range per dispatch, and the SigLIP
+attention at 9,900 rows of 72-wide heads runs under 1 TFLOP/s (13.7 of a
+17.1 s encode). Every Gemma chat turn after the first re-prefills the
+conversation (`replayed`), images included.
+**Next: MODL-23** (Muse Glimmer's vision; its section below).
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so
 the model has nothing to do while a command runs in the background, no
@@ -257,8 +268,9 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: MODL-22 → MODL-23, TERM-13 when the user takes it up (MODL-21 and AGNT-15 closed first, so
-the chat has its image path; the Gemma 4 and Muse projectors follow). APPS-14
+Order: MODL-23, TERM-13 when the user takes it up (MODL-21, AGNT-15, and
+MODL-22 closed first, so the chat has its image path and two families'
+projectors; Muse's follows). APPS-14
 stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -296,7 +308,6 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
 | TERM-13 | Exiting after an image preview leaves the picture and the header's top edge on screen (reported 2026-09-23, deferred by the user; see its section) | 1 |
@@ -440,9 +451,8 @@ bridge is. Bounds are host constants: image bytes ≤ 32 MiB, decoded pixels
 (`{ index, grid }`), and the chip text `[image #N]` in `content` is what a
 profile renders into its family's marker tokens: Qwen3.8 `<|vision_start|>`
 + `count × <|image_pad|>` + `<|vision_end|>` (ids 248053, 248056, 248054);
-Gemma 4 `<|image>` … `<image|>` (ids 255999, 258882; the placeholder id
-inside and any newline layout are read from the reference's `mtmd.cpp`
-gemma4 branch in MODL-22's session 1); Muse `<|image_start|>` …
+Gemma 4 `<|image>` + `count × <|image|>` + `<image|>` (ids 255999,
+258880, 258882; no newlines, MODL-22); Muse `<|image_start|>` …
 `<|image_end|>` with `<|patch|>` placeholders (ids 200080, 200081, 200092;
 the exact layout read in MODL-23). `Engine.encode` stays text-only; after
 encoding, `engine.locateImageSpans(tokens, placeholder_id)` finds the runs
@@ -466,7 +476,7 @@ position by `max(count_h, count_w)` (the reference's
 positions on both executors. Gemma 4's language model attends
 bidirectionally inside an image span on its sliding-window layers only
 (`hparams.non_causal_type = LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`, the reference's
-`gemma4.cpp:23-25`); MODL-22 adds a span mask to the chunk attention.
+`gemma4.cpp:23-25`); MODL-22 added the chunk attention's `span`.
 Muse's language model is unchanged by images.
 
 **The oracle.** The pinned checkout's `tools/mtmd/` (`clip.cpp`, the
@@ -524,124 +534,6 @@ contract, each family's projector facts and provenance, the preprocessing
 per family, the traces, and the memory; `docs/spec.md` carries the vision
 requirements (MODL-21) and the chat's attachment rules (AGNT-15).
 
-## MODL-22 — Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B)
-
-**Facts (read 2026-09-23 from the pinned `7620399f5` and the two files).**
-
-*The files.* 12B (`gemma-4-12b`, `-qat`): `mmproj-BF16.gguf`, 11 tensors,
-`clip.vision.projector_type = gemma4uv` (key under `clip.vision.`, not
-Qwen's `clip.projector_type`), mean 0 / std 1, eps 1e-6, patch 16 but
-`clip.cpp:1627-1640` sets patch = 16·3 = **48** and merge 1 for the unified
-variant; `v.patch_embd.weight` F32 [6912, 3840], `.bias` [3840],
-`v.patch_norm.{1,2,3}.{weight,bias}` F32 (6912, 3840, 3840),
-`v.position_embd.weight` F32 [3840, 1120, 2] (x table then y table),
-`mm.input_projection.weight` BF16 [3840, 3840]; the audio pair
-(`mm.a.input_projection.weight`, `gemma4ua`) is not loaded. 26B-A4B:
-`mmproj-BF16.gguf`, 356 tensors, `gemma4v`, 27 blocks × 13 tensors
-(`ln1`, `attn_q/k/v/out` BF16 1152², `attn_q_norm`/`attn_k_norm` [72],
-`attn_post_norm`, `ln2`, `ffn_gate/up` BF16 [1152, 4304], `ffn_down` BF16
-[4304, 1152], `ffn_post_norm`), `v.patch_embd.weight` F32 [16,16,3,1152],
-no patch bias, `v.position_embd.weight` F32 [1152, 10240, 2], `v.std_bias`,
-`v.std_scale` [1152], `mm.input_projection.weight` BF16 [1152, 2816]; no
-`input_max`/`output_min` clamp scalars (the clamps are ±FLT_MAX no-ops).
-
-*Preprocessing* (both): `mtmd_image_preprocessor_dyn_size` — the smart size
-with align 48, min 70 · 2304 and max 1120 · 2304 pixels
-(`set_limit_image_tokens(70, 1120)`), the PAD_CEIL bicubic letterbox,
-`(v/255 − mean)/std`: exactly `preprocess.smartSize` + `resizeLetterbox`.
-Tokens = (w/48) × (h/48), raster order. The 12B's im2col keeps the patches
-F32 (`inp_raw->type`); the 26B's `ggml_conv_2d` rounds them to F16 after
-`2x − 1` (`ggml_scale_bias`). Patch layout channel-planar as Qwen's.
-
-*`gemma4uv` graph* (`gemma4uv.cpp`): per patch (6912 values) LayerNorm
-`patch_norm_1` (eps **1e-5**, the PyTorch default) → `patch_embd` + bias →
-LayerNorm `patch_norm_2` → + x table row `i % cols` + y table row `i / cols`
-→ LayerNorm `patch_norm_3` → RMS norm (eps 1e-6, no weight) →
-`mm.input_projection`. No attention: the language model does the vision work.
-
-*`gemma4v` graph* (`gemma4v.cpp`, `clip.cpp` `build_vit`): conv (no bias) +
-x/y tables; 27 blocks, all norms RMS eps 1e-6: `x += rms(attn)·post_norm`
-where attn: `h = rms(x)·ln1`, q/k/v = W·h (no biases), per-head RMS of q
-and k with `attn_q_norm`/`attn_k_norm`, 2-D RoPE **NEOX** base **100**:
-channels [0,36) pairs (j, j+18) with the patch's x, channels [36,72) pairs
-(36+j, 54+j) with its y, v per-head RMS without weight, bidirectional
-attention scale **1.0**; then `x += rms(ffn)·ffn_post_norm` with ffn =
-`down(gelu_quick(gate·h) ⊙ up·h)`, h = rms(x)·ln2. **The FFN is
-`gelu_quick`** (x·σ(1.702x)): the file has no `clip.use_gelu`, so the
-reference's default applies (its log prints `ffn_op: gelu_quick`); we match
-the oracle. Then 3×3 average pool over the patch grid (raster tokens),
-× √1152, `(x − std_bias) ⊙ std_scale`, RMS norm (no weight),
-`mm.input_projection`. Patches up to 1120 · 9 = 10,080.
-
-*The language model.* Placeholder `<|image|>` (258880) inside `<|image>`
-(255999) … `<image|>` (258882), before the user text, no newlines
-(`mtmd.cpp:877-883`); image rows are **not** scaled by √width (only token
-rows are, `gemma4.cpp:160`). `mtmd_decode_use_non_causal` is true for both
-(`gemma4v` except E2B/E4B widths), so the image ubatch runs with
-`causal_attn = false`, and `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`
-(`llama-kv-cache.cpp:1757-1760`) makes only the sliding layers non-causal:
-a span row sees every row of its span (no window above it, since
-`is_masked_swa` only masks `p1 − p0 ≥ window`) and the window below it;
-global layers stay causal. The reference requires the image in one ubatch
-(`llama-context.cpp:1724`). Positions are plain: row = rotary position =
-cache index (no M-RoPE).
-
-*The oracle.* `scripts/reference-vision.cpp` gains `--image-min-tokens` /
-`--image-max-tokens` and a 2048-row ubatch; built with `clang++ -std=c++17
--I{include,ggml/include,tools/mtmd} -L build/bin -lmtmd -lllama -lggml
--lggml-base` into `.zig-cache/vision/reference-vision`. The synthetic
-96×64 fixture at `--image-min-tokens 4` becomes 144×96, **3×2 tokens**, on
-both entries; prompt `<bos><|turn>user\n<__media__>describe this
-image<turn|>\n<|turn>model\n<|channel>thought\n<channel|>` →
-tokens `2 105 2364 107 255999 [6] 258882 37016 672 2471 106 107 105 4368
-107 100 45518 107 101`. Greedy 12B `236776 51626 15017 18482 496 5139 3826
-1695` (top two logits 24.81 / 24.67: a close call), 26B-A4B `236776 3606
-15017 1702 18482 496 2214 3730`. The large real image is
-`/System/Library/Wallpapers/.default/DefaultAerial.jpg` (3840×2160, a lake
-with boulders): 44×25 = 1,100 tokens, near the 1,120 maximum.
-
-**Design.**
-- `vision/gemma4.zig`: `bindUnified` / `bind` by projector type, the grid
-  (`gridFor`, align 48, a caller's `min_tokens` override for the checks),
-  `patches` via `preprocess.patches` with merge 1 and a new `half` switch
-  (F32 for the 12B, F16 after `2x − 1` for the 26B), the x/y position rows,
-  the 2-D NEOX tables, and `Runtime` (CPU, F64 accumulation) for both.
-  `vision/gemma4_metal.zig`: `Plan` for both; the 26B's attention is the
-  chunk attention kernel with the whole patch set as one bidirectional
-  span; the pool runs on the host between two command buffers; the FFN
-  down matrix is padded 4304 → 4352; a `gelu_quick_mul` kernel.
-- `vision/root.zig`: `Projector`, a tagged union over the three adapters
-  (`load`, `outputWidth`, `grid`, `encode`) so the engine and the checks
-  stop naming `qwen3vl`; the projector type is read from either key.
-- The profile renders `<|image>` + count × `<|image|>` + `<image|>` before
-  the text; `Profile.imagePlaceholder` names each family's placeholder
-  (`engine.imagePadId` reads it).
-- **The span mask.** `AttentionChunkShape.span` `{ begin, end }`
-  (chunk-relative rows; the plan passes it on sliding layers only): a row
-  in the span sees keys up to `position + end`; everything else is
-  unchanged, and the reuse body is not taken while a span is set. The CPU
-  runtime's `prefillVision` runs a span as one batched pass per layer
-  (all rows project and write their cache rows, then each row attends over
-  `[first, span end)` on sliding layers, `[0, row]` on global ones).
-- **Indices each kernel receives** (lesson 3): Gemma has no M-RoPE, so the
-  cache row, the rotary position, and the visible count stay one value
-  (`state.position` + row); the span only moves a sliding row's *last
-  visible key* from its own row to the span's end. Decode after an image
-  is the ordinary step.
-- The Metal plan's chunk buffers hold `chunk` rows; a span must be one
-  chunk, so `loadVision` asks the plan to `reserveRows(1120)` (the
-  backend gains `release` to free the smaller set).
-
-**Acceptance.** The three checks of *The lesson of MODL-24* above (decode
-after an image equals one prefill on both executors; the aerial photo
-against the reference with teacher-forced agreement ≥ 97 %; the indices
-above). The synthetic fixture on both entries and both executors: the
-projector rows within the reference's own CPU/Metal spread, the prompt
-tokens equal to the oracle's, the top logits and greedy tokens on the
-pinned rows; the span-mask fixture (a poisoned row after the span) on the
-kernel; the Gemma text gates unchanged; `make check`; captions recorded;
-the chat's Gemma refusal replaced by a caption in the harness.
-
 ## MODL-23 — Muse Glimmer's windowed vision encoder
 
 **Session 1 (facts).** Read `muse-glimmer.cpp` (the host-computed inputs:
@@ -659,8 +551,10 @@ placeholders. Pin the fixture trace; rewrite this section.
 the window permutation and mask computed on the host as the reference
 does; 50 blocks with 2D RoPE (the existing RoPE kernel with a per-row
 position pair) and the chunk attention kernel with the block-diagonal
-mask on sparse layers and a full mask on global ones (the same optional
-mask input MODL-22 adds); pixel shuffle as a gather; the adapter MLP and
+mask on sparse layers and a full mask on global ones: MODL-22's
+`AttentionChunkShape.span` is one contiguous bidirectional range, so after
+the window permutation each window is one dispatch with its rows as the
+span (or the span generalizes to a window size); pixel shuffle as a gather; the adapter MLP and
 the projection through the existing Q4_K/Q6_K matmul tiles (the file is
 K-quant). Memory: the 896 × 896 grid is 4,096 patches before the shuffle.
 
