@@ -341,6 +341,24 @@ one command; the evaluation CLI stays separate.
 - A bracketed paste of at least 4 lines or 400 bytes becomes a chip
   (`[pasted 96 lines, 6.1 KB]`) that moves and deletes as one unit; Ctrl-E
   expands it; the text itself is what is sent. Input limit 128 KiB.
+- A paste that is one file's path (a file dropped onto the window) becomes
+  an attachment chip: an image (`.png .jpg .jpeg .gif .webp .heic .tiff
+  .bmp .ppm`, decoded by the vision contract) is `[image #N]`, whose bytes
+  in the prompt are that marker and whose file is read at submit; a UTF-8
+  text file within the input limit is `[file name, N lines]` over its
+  content, fenced and headed by the path. `/image <path>` attaches an image
+  the same way (completes like `@path`), and a typed image path in a
+  prompt is attached at submit for terminals that do not bracket pastes.
+  At most 8 images per prompt, numbered in attachment order and renumbered
+  on deletion; Backspace removes a chip and its file; Ctrl-E turns an
+  image chip back into its path. A model without a working projector
+  refuses the chip with a notice naming the reason; the paste stays text.
+- The transcript shows an attached image as a dim detail row under the
+  prompt (`image #1: shot.png (320×240 → 10×8 tokens)`) and, on a terminal
+  that draws kitty graphics (Ghostty, kitty; by environment, off with
+  `NUCLIS_NO_PREVIEW=1`), a preview of at most 12 rows under it. Sessions
+  record an image's path and grid, never its pixels; a resumed session
+  decodes it again and leaves a missing file out with a notice.
 - Up/Down move inside a multi-line input and recall history from the
   first and last rows; history persists across sessions (200 entries).
 - Tab completes a `/command` or an `@path`, else folds thinking; Ctrl-O
@@ -554,10 +572,10 @@ Read: [development.md § Gates](development.md#gates) and
 ## 10. Deferred work and non-goals
 
 Vision input through the companion projectors is in progress: the Qwen3.8
-projector ships (`generate --image`, the shared `inference/src/vision/`
-contract, [reference/vision.md](reference/vision.md)); the Gemma 4 and Muse
-Glimmer projectors and the chat-side image attachment are planned in
-[TODO.md](../TODO.md). Deferred, to be taken through the existing seams as
+projector ships (`generate --image`, the chat's image chip, the shared
+`inference/src/vision/` contract, [reference/vision.md](reference/vision.md));
+the Gemma 4 and Muse Glimmer projectors are planned in [TODO.md](../TODO.md).
+PDF attachments are not planned: nothing in the tree extracts their text. Deferred, to be taken through the existing seams as
 concrete requirements arrive: HTTP serving with an OpenAI-compatible protocol,
 persistent prefix caches, concurrent request batching, additional GPU
 backends, and a teacher-forced `eval` command. A local server would wrap

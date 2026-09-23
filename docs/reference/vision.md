@@ -121,6 +121,80 @@ loaded on demand. `nuclis model ls` still shows the projector as a companion.
 The gates are `qwen38-vision-metal` (Metal tier) and `qwen38-vision-cpu`
 (CPU tier), each `generation-check --vision-check`.
 
-**Limits.** Deepstack projectors, dynamic `image_min/max_pixels` overrides,
-and the chat-side image chip (AGNT-15) are not in this unit. The projector
-runs as its own command buffer, separate from the language model's.
+**Limits.** Deepstack projectors and dynamic `image_min/max_pixels`
+overrides are not in this unit. The projector runs as its own command
+buffer, separate from the language model's.
+
+## Images in the chat (AGNT-15, 2026-09-23)
+
+**The path in.** A file dropped onto the terminal arrives as a bracketed
+paste of its path (Terminal.app and iTerm2 backslash-escape spaces, some
+terminals prefix `file://`); `editor.droppedPath` undoes that and the chat's
+probe (`src/agent/root.zig` `dropProbe`) stats the file. An image by
+extension becomes an `[image #N]` chip whose bytes in the buffer are the
+marker and whose path waits in the editor's attachments; a UTF-8 text file
+within the 128 KiB input limit becomes a `[file name, N lines]` chip over
+its fenced content, so the model reads a file `read_file` cannot reach.
+`/image <path>` and a typed image path at submit reach the same
+`Editor.attachImage`. The editor never touches the file system: tests
+supply the probe. At most 8 images per prompt; markers are single-digit, so
+renumbering after a deletion rewrites bytes of equal length in place.
+
+**The turn.** At submit the chat reads each image (`engine.readImage`,
+32 MiB) and runs it through the loaded projector (`Model.encode_image`, the
+completer's `Engine.encodeImage`), giving a `loop.Image` — path, file size,
+the `PreparedImage` with its grid, decoded size, and feature rows. The
+projector is loaded on the first attachment (`visionAvailable`), and an
+entry without one, or one whose projector cannot be bound (Gemma's
+`gemma4uv` today: `MissingMetadata`), refuses the chip with a notice and
+leaves the paste as text. A failure reading or encoding an image is a
+notice naming it and the turn is not sent. The agent owns the images beside
+the history item (`Item.images` and the profile's `ImageRef`s), frees them
+with the item (compaction, a new session), and hands `Model.run` the images
+of every rendered message in order. The completer counts the placeholder
+runs (`<|image_pad|>`) in the remainder it prefills, pairs them with the
+tail of that list — consumed text is a prefix of the render and compaction
+drops whole earlier turns, so the images still rendered are always a
+suffix — concatenates their rows, and calls `engine.complete` with an
+`ImagePrefill`. The session's per-row rope positions carry the M-RoPE
+advance across later turns without engine changes.
+
+**Speculation.** `runLoop` runs an image prefill without the drafter, whose
+cache is stale from then on; the completer therefore turns speculation off
+for the session once an image has been fed (`images_fed`) and `reset`
+restores it. No entry with a projector has speculation on (ENGN-17), so
+nothing measurable changes today.
+
+**What is shown and stored.** The transcript's user block gets one dim
+detail row per image (`image #1: /path/shot.png (320×240 → 10×8 tokens)`)
+and, where `tui.graphics.enabled` finds Ghostty or kitty in the environment
+(`NUCLIS_NO_PREVIEW=1` disables it), a preview: the decoded image
+box-filtered to a longest side of 512 px, sent as one kitty direct
+transmission (`f=24`, base64 in 4096-byte chunks, `q=2`, `C=1`) over a box
+of at most 12 rows whose aspect assumes 1:2 cells, wrapped in the tmux DCS
+passthrough under `TMUX`. The session file records a user entry's images as
+`{path, width, height, width_tokens, height_tokens}` and no pixels (a turn
+without images writes the older line); `/save` lists them under the prompt;
+a resumed session decodes and encodes each image again and leaves a
+missing or unreadable one out of the model's view with a notice, the text
+keeping its marker.
+
+**The evidence (2026-09-23, `qwen3.8-27b`, Metal, ctx 16384).** A dropped
+320×240 synthetic scene (sky, sun, red rectangle, green ground) became
+`[image #1]` and a 10×8-token span; the caption named the sky, the sun, and
+the red rectangle (the ground it called a black strip); `/image` attached
+the same file as a chip after `/image nope.png` was refused; a dropped
+`README.md` became `[file README.md, 219 lines]`; the Gemma 4 12B entry
+refused the drop with `no vision support yet for this model: MissingMetadata
+loading the projector`; and the captioned session resumed with its detail
+row replayed and the follow-up `What colour is the rectangle?` answered
+`red` from the re-encoded image. The captures are under `.zig-cache/tui/`
+(`chip`, `caption`, `filechip`, `imagecmd`, `refusal`, `replay`,
+`resumed`). The preview's sequence, box, and downscale are pinned by unit
+tests; its rendering was not photographed (the harness's Ghostty window
+lookup needs the screen-recording permission this session lacks).
+
+**Limits.** Clipboard images (Cmd-V of a bitmap) are not taken: reaching
+the macOS pasteboard is a bridge call. PDF is not extracted. A conversation
+that has fed an image runs without speculation. The preview assumes 1:2
+cells and is re-transmitted on a fold or resize replay.

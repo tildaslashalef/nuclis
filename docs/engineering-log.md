@@ -118,6 +118,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-13 | The system prompt as sections, measured: the playground task list, the guidelines that changed behaviour, the instructions file | 2026-09-22 |
 | AGNT-14 | Three measured fixes: the Qwen decoder keeps a value's trailing newline, `read_file` serves the first MiB, Enter steers a running turn | 2026-09-22 |
 | MODL-21 | The vision contract, image input, and the Qwen3.8 projector on both executors | 2026-09-22 |
+| AGNT-15 | Images and text files in the chat: drop, `/image`, the chips, the projector turn, the detail row and preview, sessions | 2026-09-23 |
 
 ## Context
 
@@ -4653,3 +4654,85 @@ and Muse Glimmer projectors are MODL-22 and MODL-23. `locateImageSpans` and
 the profile marker rendering are covered by the vision gate and a profile
 unit test; there is no standalone unit test for `locateImageSpans` (it needs
 a vocabulary).
+
+## AGNT-15 — Images and text files in the chat: drop, `/image`, the chips, the projector turn, the detail row and preview, sessions (2026-09-23)
+
+**Outcome.** The chat takes images. A file dropped onto the window arrives
+as a bracketed paste of its path; `editor.droppedPath` undoes the
+terminal's escaping and the chat's `dropProbe` — the editor's only view of
+the file system, absent in tests unless a test supplies one — stats it. An
+image by extension becomes an `[image #N]` chip (its bytes in the buffer
+are the marker, its path waits in `Editor.attachments`); a UTF-8 text file
+within the 128 KiB input limit becomes a `[file name, N lines]` chip over
+its fenced content, the user's call in the unit's session so a file
+outside the workspace reaches the model. `/image <path>` (completing like
+`@path`) and a typed image path at submit reach the same
+`Editor.attachImage`; at most 8 images per prompt, markers single-digit so
+renumbering after a deletion rewrites bytes in place; Backspace removes a
+chip and its file, Ctrl-E turns an image chip back into its path. At
+submit each image is read (32 MiB) and run through the projector, loaded
+on the first attachment; an entry without one or whose projector cannot be
+bound refuses the chip with a notice and the paste stays text, and an
+image that fails to read or encode is a notice and the turn is not sent.
+The agent owns each turn's `loop.Image`s beside the history item and frees
+them with it; `Model.run` takes the rendered messages' images in order and
+the completer pairs the placeholder runs of the remainder it prefills with
+the tail of that list (compaction drops whole earlier turns, so the images
+still rendered are a suffix) into one `ImagePrefill` for `engine.complete`.
+Speculation is turned off for the session once an image has been fed, the
+drafter's cache being stale after an image prefill. The transcript shows a
+dim detail row per image under the prompt and, where the environment names
+Ghostty or kitty, a kitty-graphics preview (`tui/graphics.zig`: a
+box-filtered copy at 512 px, chunked direct transmission, cursor kept,
+placed over blank rows the transcript emits first, tmux passthrough under
+`TMUX`). Sessions record an image's path and grid, never pixels; `/save`
+lists them; a resumed session decodes each again and leaves a missing one
+out with a notice.
+
+**Evidence.** On `qwen3.8-27b` (Metal, ctx 16384): a dropped 320×240
+synthetic scene became `[image #1]` and a 10×8-token span, and the caption
+named the sky, the sun, and the red rectangle; `/image nope.png` was
+refused and `/image .zig-cache/tui/scene.png` attached the chip; a dropped
+`README.md` became `[file README.md, 219 lines]`; the Gemma 4 12B entry
+refused the drop with `no vision support yet for this model: MissingMetadata
+loading the projector`; the captioned session resumed with its detail row
+replayed and `What colour is the rectangle?` answered `red` from the
+re-encoded image (captures under `.zig-cache/tui/`: `chip`, `caption`,
+`filechip`, `imagecmd`, `refusal`, `replay`, `resumed`; the harness gained
+a `paste=` step and tmux passthrough for them). `make check` is green at
+523 unit tests (the editor's three ways in, chip deletion and renumbering,
+the bounds, the dropped-path parser, the placeholder-run count, the
+transcript's detail and preview rows, the session round trip, the
+graphics box, downscale, and sequence). The Metal tier (`make verify`,
+27/27 in 493 s) passed. The CPU-tier gates the changed `inference/src/engine.zig`
+selects were not run: the change is two fields on `PreparedImage` and an
+`images` parameter on `complete`, no numerical path. The first live run
+crashed on `@memcpy arguments alias`: the completer's `encodeImage` freed
+the copied features through a `defer` that read the field after the
+reassignment; fixed by binding the engine-owned slice first.
+
+**Files.** `src/tui/editor.zig` (chip kinds, attachments, the probe,
+`attachImage`/`attachFile`/`attachTypedImages`, `droppedPath`,
+`looksLikeImage`), `src/tui/graphics.zig` (new), `src/tui/event.zig`
+(`attachment`, `Preview`), `src/tui/transcript.zig` (the user block's
+details and preview rows), `src/agent/commands.zig` (`/image`),
+`src/agent/loop.zig` (`Image`, `Item.images`, `Model.run` with images and
+`encode_image`, `turn`/`restore` with images, the completer's
+`imagePrefill`, `placeholderRuns`, `images_fed`), `src/agent/root.zig`
+(the probe, `visionAvailable`, `loadImages`, `showAttachments`,
+`buildPreview`, `resumeImages`, the `/image` command and completion),
+`src/agent/session.zig` (`ImageEntry`), `src/agent/resume.zig`,
+`src/agent/print.zig`, `inference/src/engine.zig` (`PreparedImage.width/
+height`, `complete(images)`), `scripts/tui-shot.py` (`paste=`,
+`allow-passthrough`), `docs/spec.md` § Editor and § 10,
+`docs/development.md` § The agent's transcript and the harness,
+`docs/reference/vision.md` § Images in the chat.
+
+**Remaining.** The preview's rendering was not photographed: the harness's
+Ghostty window lookup needs the screen-recording permission this session
+lacks, so the on-screen check is the user's; its sequence, box, and
+downscale are pinned by tests, and it assumes 1:2 cells. Clipboard images
+(a bitmap under Cmd-V) need a pasteboard bridge and are not taken; PDF is
+not extracted (a PDFKit bridge if ever wanted). A conversation that has
+fed an image runs without speculation. A resumed image is re-encoded from
+its original path, so a moved file drops out of the model's view.

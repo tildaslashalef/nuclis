@@ -136,8 +136,18 @@ verify` is 27/27 with every text trace gate unchanged, and `qwen38-vision-cpu`
 passed
 ([log](docs/engineering-log.md#modl-21--the-vision-contract-image-input-and-the-qwen38-projector-on-both-executors-2026-09-22),
 [vision.md](docs/reference/vision.md)).
-**Next: AGNT-16** (AGNT-14's three follow-ups; its section below), then
-AGNT-15.
+AGNT-15 closed on 2026-09-23 (taken before AGNT-16, the user's call):
+images and text files drop into the chat as chips, `/image <path>`
+attaches one, the projector runs at submit, the transcript shows a detail
+row and (on Ghostty/kitty) a preview, sessions record path and grid and
+resume by re-encoding; the caption of a dropped scene, the Gemma refusal,
+and the resume were captured in the harness, which gained a `paste=` step
+([log](docs/engineering-log.md#agnt-15--images-and-text-files-in-the-chat-drop-image-the-chips-the-projector-turn-the-detail-row-and-preview-sessions-2026-09-23),
+[vision.md § Images in the chat](docs/reference/vision.md#images-in-the-chat-agnt-15-2026-09-23)).
+**One check is the user's:** the inline preview was not photographed (the
+harness's Ghostty lookup needs the screen-recording permission); drop an
+image in Ghostty and look under the prompt.
+**Next: AGNT-16** (AGNT-14's three follow-ups; its section below).
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so
 the model has nothing to do while a command runs in the background, no
@@ -231,9 +241,8 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: AGNT-16 → AGNT-15 → MODL-22 →
-MODL-23 (MODL-21 closed first, 2026-09-22, so AGNT-15's turn step has its
-projector; the Gemma 4 and Muse projectors follow the agent units). APPS-14
+Order: AGNT-16 → MODL-22 → MODL-23 (MODL-21 and AGNT-15 closed first, so
+the chat has its image path; the Gemma 4 and Muse projectors follow). APPS-14
 stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -272,7 +281,6 @@ manifest.
 | Unit | Title | Sessions |
 | --- | --- | --- |
 | AGNT-16 | AGNT-14's follow-ups: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline (ordered 2026-09-22; see its section) | 1 |
-| AGNT-15 | Images in the chat: drop, paste, `/image`, the `[image #N]` chip (was numbered AGNT-11 in the plan; that identifier is closed in the log) | 1 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B) | 2 |
 | MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
@@ -470,10 +478,8 @@ Output tokens for Qwen and Muse are `(w / patch / 2) × (h / patch / 2)`.
 
 **Where the detail goes.** A new `docs/reference/vision.md` holds the
 contract, each family's projector facts and provenance, the preprocessing
-per family, the traces, and the memory; `docs/spec.md` gains the vision
-requirements (moved from the deferred list when MODL-21 opens);
-`docs/spec.md` drops "image input" from *Not in scope* when AGNT-15
-opens.
+per family, the traces, and the memory; `docs/spec.md` carries the vision
+requirements (MODL-21) and the chat's attachment rules (AGNT-15).
 
 ## AGNT-16 — AGNT-14's follow-ups: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline (ordered 2026-09-22)
 
@@ -521,109 +527,6 @@ commit).
 **Check.** `make check`; the agnt16 pass; the Muse newfile run; a harness
 capture of a steer typed during reasoning (`think high` on a question,
 then a steer) showing the restart notice.
-
-## AGNT-15 — Images in the chat: drop, paste, `/image`, the `[image #N]` chip
-
-**Facts (read 2026-09-20).** The editor (`src/tui/editor.zig`) already turns
-a bracketed paste of ≥ 4 lines or ≥ 400 bytes into a `Chip { start, end,
-lines }` over the buffer, rendered as one token (`[pasted 96 lines, 6.1
-KB]`), deleted as one unit by backspace; a file dropped onto Terminal.app
-or iTerm2 arrives as its path (spaces backslash-escaped), inside a
-bracketed paste on terminals that support it and as plain typed text
-otherwise. Slash commands are parsed in `src/agent/commands.zig`
-(`Command`: `new`, `resume_session`, `ctx`, `think`, `save`, `help`). The
-agent renders `profiles.Message`s (`content` text) through the profile and
-`Completer.run` prefills the remainder; sessions persist messages
-(`src/agent/session.zig`). The screenshot's behaviour is the model: an
-attached image shows as `[Image #1]` in the prompt and the transcript
-labels it with its source path.
-
-**Design.**
-1. Attachment model: `Editor` gains `attachments: []Attachment { path, index
-   }` and an `image` chip kind (`Chip.kind: enum { paste, image }`), drawn
-   as `[image #N]` with the `op_write`-style accent; the chip's bytes in the
-   buffer are literally `[image #N]`, so the submitted text carries the
-   marker and nothing else changes downstream. Backspace removes the chip
-   and its attachment; indices are per prompt, in attachment order.
-2. Three ways in, one path: (a) a bracketed paste whose trimmed content is
-   one existing regular file with an image extension (`.png .jpg .jpeg
-   .gif .webp .heic .tiff .bmp`, case-insensitive; `file://` prefix and
-   backslash escapes removed) becomes an image chip instead of text; (b)
-   `/image <path>` (with the completion the other path commands use)
-   attaches and inserts the chip at the cursor; (c) at submit, any
-   whitespace-separated token that resolves the same way is attached and
-   replaced by a chip in the recorded prompt, for terminals that do not
-   bracket pastes — the transcript shows what was attached. Ctrl-V clipboard
-   images are not in this unit (macOS pasteboard access is a bridge call;
-   record as a follow-up).
-3. The turn: `Agent` decodes each attachment through `vision.image`
-   (a typed error becomes a `notice` — `could not read image #2: …` — and
-   the turn is not sent), runs the projector, and builds the user
-   `Message` with `images` and the `[image #N]` content; the profile
-   renders the markers; the engine attaches the spans. Bounds: 8 images per
-   turn, the host limits of the vision contract. The transcript renders
-   the user turn with the chip and a `dim` detail row `image #1:
-   /path/to/file.png (1024×768 → 24×18 tokens)`. Sessions persist the path
-   and the grid, not the pixels; a resumed session re-decodes on replay
-   and reports a missing file as a notice.
-4. The model without a projector (`models.<name>.mmproj` unset or the
-   family has none yet): the chip is refused at attach time with a notice
-   naming the reason, never silently dropped.
-5. Inline preview. On a terminal that answers the kitty graphics query
-   (Ghostty does), the transcript's user turn shows the attached image
-   scaled to at most 12 rows through the protocol's direct transmission,
-   below the `image #N` detail row; other terminals keep the row alone.
-   Bounded by the decoded size limits; never part of the golden tests.
-
-**Decided in the unit's session (2026-09-23), MODL-21 having closed first
-so every item lands in full.**
-6. Text files drop too (the user's call, 2026-09-23): a bracketed paste
-   that is one existing regular file which is not an image, reads as UTF-8,
-   and fits the editor's 128 KiB limit becomes a `file` chip
-   (`[file README.md, 120 lines]`) whose bytes are the content in a fence
-   headed by the path, so the model reads a file `read_file` cannot reach
-   (outside the workspace). PDF is out: nothing in the tree extracts its
-   text, and doing it well is a PDFKit bridge (a follow-up in the log).
-7. The editor stays pure: `endPaste` asks a caller-supplied `Probe`
-   (`fn (context, path) ?Dropped`, set by the chat, absent in tests unless a
-   test supplies one) whether the trimmed paste names a droppable file and
-   what kind; the probe reads the file. The chip bytes are literally
-   `[image #N]`, so `text()` carries the marker; images are numbered among
-   image attachments, at most 8, all single-digit, so renumbering after a
-   deletion rewrites bytes of equal length in place.
-8. Features are owned by the agent's history, beside the message: `Item`
-   gains `images: []Image { path, pixels, bytes, prepared }` and the
-   profile's `ImageRef`s; `Model.run` takes the features of every rendered
-   message in order, `Model.encode_image` (null without a projector) runs
-   the projector, and freeing an item frees its features. The completer
-   pairs the placeholder runs of the *remainder* it prefills with the tail
-   of that list (compaction drops whole earlier turns, so the images still
-   rendered are always a suffix), concatenates their rows, and calls
-   `engine.complete` with an `ImagePrefill`. `PreparedImage` gains the
-   decoded pixel size for the detail row.
-9. Speculation and images: `runLoop` already runs an image prefill without
-   the drafter, whose cache is then stale for the rest of the conversation;
-   the completer turns speculation off for the session once an image has
-   been fed, and `reset` restores it. Documented as the limitation; no
-   entry with a projector has speculation on (ENGN-17).
-10. The preview's terminal test is the environment, not the graphics
-    query (`TERM_PROGRAM=ghostty`, `GHOSTTY_RESOURCES_DIR`,
-    `KITTY_WINDOW_ID`, or a `TERM` naming either), as `screen.Caps` already
-    decides scroll regions; under `TMUX` the sequence is wrapped in the
-    DCS passthrough. The transmission is direct RGB of a host-downscaled
-    copy (longest side ≤ 512 px), chunked at 4096 base64 bytes, placed with
-    `C=1` over the blank rows the transcript emits first. The row model
-    stays text: a `raw` row carries the sequence.
-
-**Acceptance.** Editor tests for the three ways in, chip deletion, index
-renumbering, and the bounds; a completer test that a remainder with two
-placeholder runs gets the last two feature sets; a session round trip
-with an attachment; a harness capture of a dropped path becoming a chip
-and the refusal notice on a model without a projector; the end-to-end
-caption of a dropped image on `qwen3.8-27b`; `docs/spec.md § Editor`,
-`docs/development.md § The agent's transcript`, and
-`docs/reference/vision.md` describe the chip, the detail row, and the
-preview.
 
 ## MODL-22 — Gemma 4 vision: the unified embedder (12B) and the SigLIP projector (26B-A4B)
 

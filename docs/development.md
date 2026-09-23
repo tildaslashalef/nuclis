@@ -562,6 +562,17 @@ the surface installs its poll-and-draw there (`installTick`), so a prefill
 chunk repaints ten times a second instead of once. `Screen.paintFrom`
 rewrites only from the first row that differs from the last frame.
 
+An attachment is an `attachment` event after the prompt's `user` event:
+the transcript keeps it as a detail of that user block and renders a dim
+`└ image #1: shot.png (320×240 → 10×8 tokens)` row under the prompt. When
+the event carries a preview (the chat builds one where
+`tui.graphics.enabled` says the terminal draws kitty graphics), the block
+also emits the preview's rows blank and then one raw row that climbs over
+them, places the image with the cursor kept, and comes back — the row
+model stays text, and the goldens never contain a sequence. A drop, a
+`/image`, and a typed path all reach the same `Editor.attachImage`; the
+chat's `dropProbe` is the editor's only view of the file system.
+
 A mutation's diff is a header row (the path, `+N −M`), then rows of a
 `dim` gutter (old and new line numbers, right-aligned), a marker cell
 (`+`, `−`, or a space), and the text on its band — `diff_add` and
@@ -597,6 +608,7 @@ in a detached tmux session (`tmux -L nuclis`, 160×45 by default, the status
 bar off so the pane is the whole window, `COLORTERM=truecolor` as Ghostty
 sets it so the theme resolves to the same palette) and runs the steps in
 order: `keys=<text>`, `enter`, `key=<tmux key>` (`C-c`, `Tab`, `Escape`),
+`paste=<text>` (a bracketed paste, as a dropped file's path arrives),
 `wait=<s>`, `until=<text>,<s>` (wait for the text on screen), `capture=<name>`,
 `burst=<name>,<seconds>,<hz>`, and `buffer=<name>` (tmux's paste buffer,
 where an OSC 52 copy lands, to `<name>.buffer.txt`); `--env KEY=VALUE`
