@@ -185,6 +185,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     // Images attach to the prompt through the model's projector: each is
     // decoded and encoded to feature rows, the profile renders its markers,
     // and the engine locates the placeholder runs to pair them with the rows.
+    var image_encode: ?std.Io.Duration = null;
     var prepared: []inference.engine.PreparedImage = &.{};
     var image_prefill: ?inference.engine.ImagePrefill = null;
     var image_features: []f32 = &.{};
@@ -204,6 +205,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         var loaded: usize = 0;
         errdefer for (prepared[0..loaded]) |p| alloc.free(p.features);
         var total_rows: usize = 0;
+        const encode_started = std.Io.Clock.awake.now(io);
+        defer image_encode = encode_started.durationTo(std.Io.Clock.awake.now(io));
         for (options.images[0..options.image_count], 0..) |path, idx| {
             const bytes = engine.readImage(alloc, io, path) catch |err| {
                 std.log.err("could not read image {d} ({s}): {s}", .{ idx + 1, path, @errorName(err) });
@@ -281,6 +284,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             .stop_reason = @tagName(outcome.stop),
             .stopped_eos = outcome.stop == .eos,
             .load_milliseconds = engine.milliseconds(eng.load),
+            // Decoding and the projector over every image, before the prefill.
+            .image_milliseconds = if (image_encode) |d| @as(?f64, engine.milliseconds(d)) else null,
             .prefill_milliseconds = engine.milliseconds(outcome.timing.prefill),
             .first_token_milliseconds = engine.milliseconds(outcome.timing.first_token),
             .decode_milliseconds = engine.milliseconds(outcome.timing.decode),

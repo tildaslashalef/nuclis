@@ -1466,10 +1466,12 @@ fn checkGatherRows(alloc: std.mem.Allocator) !void {
     std.debug.print("row gather on the 48-head regrouping over strided rows: exact; overlap, short map, and short stride refused\n", .{});
 }
 
-/// Muse Glimmer's windowed encoder attention: `attentionFull` over one
-/// window's row slice of shared q/k/v buffers whose other rows are NaN,
-/// against F64 attention over the window alone; output rows outside the
-/// window keep their sentinel.
+/// Bidirectional attention over one window's row slice of shared q/k/v
+/// buffers whose other rows are NaN, against F64 attention over the window
+/// alone, on both kernels an image encoder uses: `attentionFull` (Qwen3-VL)
+/// and `attentionChunk` with the window as its span (Muse Glimmer's
+/// windows). Output rows outside the window keep their sentinel, except the
+/// chunk kernel's padding rows up to the next multiple of 8.
 fn checkWindowAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     const heads: usize = 2;
     const width: usize = 96;
@@ -1489,44 +1491,52 @@ fn checkWindowAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     const k = try upload(b, host[1]);
     const v = try upload(b, host[2]);
     const out = try b.create(total * stride * 4);
-    @memset(out.floats(), -7);
     const scale: f32 = @floatCast(1.0 / @sqrt(@as(f64, width)));
     const offset = begin * stride * 4;
     const len = count * stride * 4;
-    try b.begin();
-    try b.attentionFull(q.slice(offset, len), k.slice(offset, len), v.slice(offset, len), out.slice(offset, len), .{ .heads = heads, .width = width, .rows = count, .q_stride = stride, .kv_stride = stride, .out_stride = stride, .scale = scale });
-    try b.commit();
-    var worst: f64 = 0;
+    const padded_len = Backend.attentionChunkRows(count) * stride * 4;
     var scores: [count]f64 = undefined;
-    for (0..total) |row| for (0..heads) |h| {
-        const got = out.floats()[row * stride + h * width ..][0..width];
-        if (row < begin or row >= begin + count) {
-            for (got) |x| if (x != -7) return error.MetalMismatch;
-            continue;
+    for ([_]bool{ false, true }) |chunk| {
+        @memset(out.floats(), -7);
+        try b.begin();
+        if (chunk)
+            try b.attentionChunk(k.slice(offset, len), v.slice(offset, len), q.slice(offset, padded_len), out.slice(offset, padded_len), .{ .query_heads = heads, .kv_heads = heads, .key_width = width, .value_width = width, .position = 0, .count = count, .q_stride = stride, .out_stride = stride, .scale = scale, .span = .{ .begin = 0, .end = count } })
+        else
+            try b.attentionFull(q.slice(offset, len), k.slice(offset, len), v.slice(offset, len), out.slice(offset, len), .{ .heads = heads, .width = width, .rows = count, .q_stride = stride, .kv_stride = stride, .out_stride = stride, .scale = scale });
+        try b.commit();
+        const padding_end = begin + if (chunk) Backend.attentionChunkRows(count) else count;
+        var worst: f64 = 0;
+        for (0..total) |row| for (0..heads) |h| {
+            const got = out.floats()[row * stride + h * width ..][0..width];
+            if (row < begin or row >= padding_end) {
+                for (got) |x| if (x != -7) return error.MetalMismatch;
+                continue;
+            }
+            if (row >= begin + count) continue;
+            var max: f64 = -std.math.inf(f64);
+            for (0..count) |j| {
+                var dot: f64 = 0;
+                for (0..width) |d| dot += @as(f64, host[0][row * stride + h * width + d]) * host[1][(begin + j) * stride + h * width + d];
+                scores[j] = dot * scale;
+                max = @max(max, scores[j]);
+            }
+            var sum: f64 = 0;
+            for (&scores) |*x| {
+                x.* = @exp(x.* - max);
+                sum += x.*;
+            }
+            for (got, 0..) |x, d| {
+                var want: f64 = 0;
+                for (0..count) |j| want += scores[j] * host[2][(begin + j) * stride + h * width + d];
+                worst = @max(worst, @abs(want / sum - x));
+            }
+        };
+        if (!(worst <= 1e-5)) {
+            std.debug.print("window attention ({s}): worst |difference| {e:.3}\n", .{ if (chunk) "chunk" else "full", worst });
+            return error.MetalMismatch;
         }
-        var max: f64 = -std.math.inf(f64);
-        for (0..count) |j| {
-            var dot: f64 = 0;
-            for (0..width) |d| dot += @as(f64, host[0][row * stride + h * width + d]) * host[1][(begin + j) * stride + h * width + d];
-            scores[j] = dot * scale;
-            max = @max(max, scores[j]);
-        }
-        var sum: f64 = 0;
-        for (&scores) |*x| {
-            x.* = @exp(x.* - max);
-            sum += x.*;
-        }
-        for (got, 0..) |x, d| {
-            var want: f64 = 0;
-            for (0..count) |j| want += scores[j] * host[2][(begin + j) * stride + h * width + d];
-            worst = @max(worst, @abs(want / sum - x));
-        }
-    };
-    if (!(worst <= 1e-5)) {
-        std.debug.print("window attention: worst |difference| {e:.3}\n", .{worst});
-        return error.MetalMismatch;
+        std.debug.print("window attention ({s}) on a {d}-row slice of 96-wide heads, NaN outside it, vs F64: worst |difference| {e:.3} (bound 1e-5); rows outside untouched\n", .{ if (chunk) "chunk span" else "full", count, worst });
     }
-    std.debug.print("window attention on a {d}-row slice of 96-wide heads, NaN outside it, vs F64: worst |difference| {e:.3} (bound 1e-5); rows outside untouched\n", .{ count, worst });
 }
 
 fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: bool) !void {

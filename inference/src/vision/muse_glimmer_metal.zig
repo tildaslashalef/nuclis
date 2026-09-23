@@ -1,9 +1,11 @@
 //! The Muse Glimmer projector on Metal: the CPU reference's schedule
 //! (`muse_glimmer.Runtime.encode`) over the batched matmul tiles and the
-//! LayerNorm, bias, RoPE, and erf-GELU kernels. A windowed block runs the
-//! bidirectional attention kernel once per window on its row slice; a
-//! global block runs the chunk attention with the whole patch set as one
-//! span. The pixel shuffle runs on the host between two command buffers.
+//! LayerNorm, bias, RoPE, and erf-GELU kernels. Attention is the chunk
+//! kernel with a bidirectional span: once per window on its row slice in a
+//! windowed block (in window order, since each dispatch stores up to seven
+//! padding rows into the next window's output, which that window then
+//! overwrites), once over the whole patch set in a global block. The pixel
+//! shuffle runs on the host between two command buffers.
 //! Weights are the mapped file's bytes wrapped in place, except the patch
 //! kernel, zero-padded from 588 to the tile's 640 columns. Activations are
 //! sized for the largest image (16,384 patches).
@@ -190,12 +192,12 @@ pub const Plan = struct {
             }
             try b.ropeRows(self.q, self.rope, model.heads, model.head_dim, model.head_dim, 0, n, hidden, .adjacent);
             try b.ropeRows(self.k, self.rope, model.heads, model.head_dim, model.head_dim, 0, n, hidden, .adjacent);
-            if (model.isGlobal(il)) {
-                try b.attentionChunk(self.k, self.v, self.q, self.attn, .{ .query_heads = model.heads, .kv_heads = model.heads, .key_width = model.head_dim, .value_width = model.head_dim, .position = 0, .count = n, .q_stride = hidden, .out_stride = hidden, .scale = scale, .span = .{ .begin = 0, .end = n } });
-            } else for (layout.windows) |w| {
+            const whole = [_]model.Window{.{ .begin = 0, .count = @intCast(n) }};
+            for (if (model.isGlobal(il)) &whole else layout.windows) |w| {
                 const offset = @as(usize, w.begin) * hidden * 4;
-                const len = @as(usize, w.count) * hidden * 4;
-                try b.attentionFull(self.q.slice(offset, len), self.k.slice(offset, len), self.v.slice(offset, len), self.attn.slice(offset, len), .{ .heads = model.heads, .width = model.head_dim, .rows = w.count, .q_stride = hidden, .kv_stride = hidden, .out_stride = hidden, .scale = scale });
+                const keys = @as(usize, w.count) * hidden * 4;
+                const rows_len = Backend.attentionChunkRows(w.count) * hidden * 4;
+                try b.attentionChunk(self.k.slice(offset, keys), self.v.slice(offset, keys), self.q.slice(offset, rows_len), self.attn.slice(offset, rows_len), .{ .query_heads = model.heads, .kv_heads = model.heads, .key_width = model.head_dim, .value_width = model.head_dim, .position = 0, .count = w.count, .q_stride = hidden, .out_stride = hidden, .scale = scale, .span = .{ .begin = 0, .end = w.count } });
             }
             try b.matmul(l.output.buffer, l.output.matrix, self.attn, hidden, self.h, hidden, n);
             try b.addBiasRows(self.h, l.ob, hidden, n, hidden);

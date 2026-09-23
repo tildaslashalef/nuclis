@@ -123,6 +123,8 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedImagePath;
             vision_image = args[i];
+        } else if (std.mem.eql(u8, arg, "--vision-profile")) {
+            vision_profile = true;
         } else if (std.mem.eql(u8, arg, "--vision-oracle")) {
             i += 1;
             if (i >= args.len) return error.ExpectedOracleDirectory;
@@ -1885,6 +1887,10 @@ fn visionFixture(projector: *const inference.vision.Projector) VisionFixture {
     };
 }
 
+/// `--vision-profile`: time every projector dispatch on Metal and print the
+/// totals by kernel and shape after an encode.
+var vision_profile = false;
+
 /// A projector on the executor under test; `backend` is null on the CPU.
 const LoadedProjector = struct {
     mapped: inference.weights.Mapped,
@@ -1904,6 +1910,7 @@ const LoadedProjector = struct {
                 return err;
             };
             self.backend = b;
+            if (vision_profile) try b.enableProfiling(8192, &diagnostic);
         }
         errdefer if (self.backend) |b| {
             b.deinit();
@@ -1929,9 +1936,30 @@ const LoadedProjector = struct {
         try self.projector.encode(patches, grid, features);
         const seconds = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_s;
         std.debug.print("Projector ({s}): {d} patches -> {d}x{d} tokens in {d:.3} s.\n", .{ if (self.backend != null) "metal" else "cpu", patches.count(), grid.width_tokens, grid.height_tokens, seconds });
+        if (self.backend) |b| if (b.profile) |*p| printProfile(alloc, p);
         return features;
     }
 };
+
+/// The profiled dispatches, largest total first (kernel, encoding, shape).
+fn printProfile(alloc: std.mem.Allocator, p: *const inference.metal.Profile) void {
+    const Row = struct { key: inference.metal.Profile.Key, total: inference.metal.Profile.Total };
+    var rows: std.ArrayList(Row) = .empty;
+    defer rows.deinit(alloc);
+    var sum: f64 = 0;
+    var it = p.totals.iterator();
+    while (it.next()) |e| {
+        rows.append(alloc, .{ .key = e.key_ptr.*, .total = e.value_ptr.* }) catch return;
+        sum += e.value_ptr.seconds;
+    }
+    std.mem.sort(Row, rows.items, {}, struct {
+        fn less(_: void, a: Row, b: Row) bool {
+            return a.total.seconds > b.total.seconds;
+        }
+    }.less);
+    std.debug.print("Profile: {d:.3} s over {d} command buffers ({d:.3} s timed dispatches, {d} unsampled)\n", .{ p.gpu_seconds, p.command_buffers, sum, p.unsampled });
+    for (rows.items) |r| std.debug.print("  {s: <22} enc {?d: >3} {d: >6}x{d: <6} {d: >6} dispatches {d: >8.3} s {d: >5.1}%\n", .{ @tagName(r.key.kernel), r.key.encoding, r.key.rows, r.key.columns, r.total.dispatches, r.total.seconds, 100 * r.total.seconds / sum });
+}
 
 /// A projector against its pinned oracle fixture (llama.cpp `7620399f5`):
 /// the synthetic image's feature rows on the executor under test within
