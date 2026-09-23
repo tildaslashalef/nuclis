@@ -56,6 +56,7 @@ set -as terminal-overrides ",*:RGB"
 set -g status off
 set -g escape-time 0
 set -g focus-events on
+set -g allow-passthrough on
 set -g history-limit 10000
 set -g remain-on-exit on
 set -g window-size latest

@@ -1759,8 +1759,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 continue;
             }
             // A typed image path (a drop on a terminal that does not bracket
-            // pastes) is attached now, so the recorded prompt shows the chip.
-            _ = ed.attachTypedImages() catch 0;
+            // pastes) is attached now, so the recorded prompt shows the chip;
+            // a command's argument is the command's to read.
+            if (commands.parse(ed.text()) == null) _ = ed.attachTypedImages() catch 0;
             // The prompt outlives the editor's buffer: recall rewrites it.
             const user = try alloc.dupe(u8, ed.text());
             defer alloc.free(user);
