@@ -182,6 +182,10 @@ patches, not the 896² warm-up), the pixel shuffle interleaves channels
 (`c·4 + s`), and the reference's own CPU and Metal encoders part at block
 33, where the network turns one or two patches into sinks, so rows are
 compared tightly only through block 32.
+Folded in by the user on 2026-09-23: `generation.image_max_tokens`
+(`"auto"` = each projector's maximum; a per-model override and
+`--image-max-tokens`), for all three families; the section's design says
+where. If the session runs long, the setting is the part to land first.
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so
 the model has nothing to do while a command runs in the background, no
@@ -673,6 +677,28 @@ through block 32; past it, the check is the language model's output.
   `prefillVision`: text runs and spans chunk separately (Qwen's causal
   path); a span's rows copy the features into `x_c` in place of `embed`,
   then the same weightless `rmsNorm` runs over every row.
+- **The image token cap as a setting** (the user's call, 2026-09-23:
+  folded into this unit, default `auto`). `generation.image_max_tokens`
+  in `src/config.zig`: a new leaf type `ImageMaxTokens = union(enum) {
+  auto, tokens: usize }` (JSON `"auto"` or an integer), so `describe`,
+  `parseValue`, and `formatLeaf` gain a union case; global default
+  `.auto`, validated 1..4,096 (the largest family maximum); the entry's
+  `ModelEntry.Generation.image_max_tokens: ?ImageMaxTokens = null`
+  overrides it, and `--image-max-tokens auto|N` on `generate` and `agent`
+  (`src/cli.zig`, beside `--draft-length`) overrides both; `resolve` and
+  its origin marks (`leafIndex`, `.model` / `.flag`) as for
+  `draft_length`; `config init` writes `"auto"` into the global block and
+  nothing per entry. `Projector` (`inference/src/vision/projector.zig`)
+  gains `max_tokens`, set after `loadVision` from the resolved value:
+  `auto` is the family's maximum (Qwen 1,024, Gemma 1,120, Muse 4,096), a
+  number is clamped to `[min_tokens, maximum]` (Gemma's 70 floor
+  included); `qwen3vl.gridFor`, `gemma4.gridFor`, and
+  `muse_glimmer.gridFor` take the cap; a bidirectional family reserves
+  rows for the effective cap, not the maximum. A resumed session
+  re-encodes at its **recorded grid** (the cap may have changed since),
+  refused only above the family maximum. Callers: `src/generate.zig:202`
+  and `src/agent/root.zig:551`. Documented in `docs/spec.md`'s
+  configuration keys, the `generate`/`agent` help pages, and vision.md.
 - **Indices each kernel receives** (lesson 3). Encoder: the row index is
   the window-order index r, used for every matmul, norm, and attention
   row; the rotary position of row r is `(pos_w, pos_h)` = `(o % grid_w + 1,
@@ -702,7 +728,13 @@ through block 32; past it, the check is the language model's output.
    grid (partial windows) against a hand-computed permutation, Lanczos
    against a Pillow-computed fixture; the window attention on the kernel
    with a poisoned row outside the window.
-5. The Muse text gates unchanged (`make verify`), `make check`, a caption
+5. The cap: config tests (`"auto"`, an integer, `0` and a string other
+   than `auto` refused with the key's message, the model override and the
+   flag winning in that order, `config show` origins); grid tests at a
+   lowered cap per family (the photo at `--image-max-tokens 1024` on Muse
+   is 1,008 tokens); a resumed session keeps its recorded grid after the
+   cap changes.
+6. The Muse text gates unchanged (`make verify`), `make check`, a caption
    in the chat through the harness.
 
 ## APPS-14 — Teacher-forced `eval` (drafted 2026-09-20 for decision)
