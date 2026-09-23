@@ -289,6 +289,14 @@ pub fn Executor(comptime Family: type) type {
                 .metal => |*m| m.backend,
             };
         }
+        /// Readies the plan for image spans of up to `rows` rows that must
+        /// each be one chunk (a family whose plan declares `reserveRows`).
+        pub fn reserveVisionRows(self: *Self, rows: usize) !void {
+            switch (self.*) {
+                .cpu => {},
+                .metal => |*m| if (comptime @hasDecl(Family.Plan, "reserveRows")) try m.plan.reserveRows(rows),
+            }
+        }
         pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
             switch (self.*) {
                 .cpu => |*runtime| runtime.deinit(),
@@ -391,6 +399,11 @@ pub const Model = struct {
         return switch (self.exec) {
             inline else => |*e| e.sessionMut(),
         };
+    }
+    pub fn reserveVisionRows(self: *Model, rows: usize) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.reserveVisionRows(rows),
+        }
     }
     /// The Metal backend when the model executes on it, for profiling and
     /// GPU time; null on the CPU reference.
@@ -633,25 +646,19 @@ fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference
 pub const max_stop_tokens = 4;
 
 /// A loaded companion projector on the engine's backend. Heap-allocated so
-/// `binding` has a stable address for the executor to borrow.
+/// the projector's binding has a stable address for its executor to borrow.
 pub const Vision = struct {
     mapped: inference.weights.Mapped,
-    binding: inference.vision.qwen3vl.Binding,
-    exec: union(enum) {
-        cpu: inference.vision.qwen3vl.Runtime,
-        metal: inference.vision.qwen3vl.Plan,
-    },
+    projector: inference.vision.Projector,
     pub fn deinit(self: *Vision, alloc: std.mem.Allocator, io: std.Io) void {
-        switch (self.exec) {
-            inline else => |*e| e.deinit(),
-        }
+        self.projector.deinit();
         self.mapped.deinit(io);
         alloc.destroy(self);
     }
 };
 
-/// One image after preprocessing and the projector: its merged token grid and
-/// the feature rows (`width_tokens · height_tokens × 5120`), caller-owned,
+/// One image after preprocessing and the projector: its token grid and the
+/// feature rows (`width_tokens · height_tokens ×` the model width), caller-owned,
 /// with the decoded pixel size for the caller's display.
 pub const PreparedImage = struct {
     width_tokens: u32,
@@ -829,55 +836,60 @@ pub const Engine = struct {
     }
 
     /// Loads a companion projector (`models.<name>.mmproj`) on the engine's
-    /// backend. Only the Qwen3-VL projector is bound today; a projector whose
-    /// output width differs from the model's is `VisionSourceMismatch`.
+    /// backend: the Qwen3-VL projector or either of Gemma 4's. A projector
+    /// whose output width differs from the model's is `VisionSourceMismatch`.
+    /// One whose spans attend bidirectionally has the plan reserve rows for
+    /// its largest image (or the whole context, if shorter), so a span is
+    /// always one prefill chunk.
     pub fn loadVision(self: *Engine, path: []const u8) !void {
         if (self.vision != null) return error.VisionAlreadyLoaded;
-        const qwen3vl = inference.vision.qwen3vl;
         const v = try self.alloc.create(Vision);
         errdefer self.alloc.destroy(v);
         v.mapped = try inference.weights.Mapped.open(self.alloc, self.io, path);
         errdefer v.mapped.deinit(self.io);
-        v.binding = try qwen3vl.bind(self.alloc, &v.mapped.document);
-        if (qwen3vl.output_width != self.vocab_hidden()) return error.VisionSourceMismatch;
-        v.exec = switch (self.backend) {
-            .cpu => .{ .cpu = try qwen3vl.Runtime.init(self.alloc, v.mapped.view(), &v.binding) },
-            .metal => .{ .metal = try qwen3vl.Plan.init(self.alloc, self.model.gpu() orelse return error.MetalNotEnabled, v.mapped.view(), &v.binding) },
+        const gpu = switch (self.backend) {
+            .cpu => null,
+            .metal => self.model.gpu() orelse return error.MetalNotEnabled,
         };
+        try v.projector.init(self.alloc, &v.mapped.document, v.mapped.view(), gpu);
+        errdefer v.projector.deinit();
+        if (v.projector.outputWidth() != try self.embeddingWidth()) return error.VisionSourceMismatch;
+        if (v.projector.bidirectional()) try self.model.reserveVisionRows(@min(v.projector.maxTokens(), self.model.session().capacity));
         self.vision = v;
     }
-    /// The language model's embedding width (5120 for Qwen3.8), the width a
-    /// projector must output.
-    fn vocab_hidden(self: *const Engine) usize {
-        _ = self;
-        return 5120;
+    /// The language model's embedding width, the width a projector must
+    /// output: the artifact's `<architecture>.embedding_length`.
+    fn embeddingWidth(self: *const Engine) !usize {
+        const architecture = self.mapped.document.string("general.architecture") orelse return error.MissingMetadata;
+        var key: [96]u8 = undefined;
+        const name = std.fmt.bufPrint(&key, "{s}.embedding_length", .{architecture}) catch return error.MissingMetadata;
+        return switch (self.mapped.document.get(name) orelse return error.MissingMetadata) {
+            .unsigned => |n| @intCast(n),
+            else => error.MissingMetadata,
+        };
     }
     /// Preprocesses and encodes an image's bytes through the loaded projector.
     /// Caller owns `PreparedImage.features`.
     pub fn encodeImage(self: *Engine, bytes: []const u8) !PreparedImage {
         const v = self.vision orelse return error.NoVision;
-        const qwen3vl = inference.vision.qwen3vl;
-        const preprocess = inference.vision.preprocess;
         var decoded = try inference.vision.image.decode(self.alloc, bytes);
         defer decoded.deinit(self.alloc);
-        const grid = qwen3vl.gridFor(.{ .width = decoded.width, .height = decoded.height });
-        const target: preprocess.Size = .{ .width = grid.width_patches * qwen3vl.patch, .height = grid.height_patches * qwen3vl.patch };
-        const resized = try preprocess.resizeLetterbox(self.alloc, decoded, target);
-        defer self.alloc.free(resized);
-        var patches = try preprocess.patches(self.alloc, resized, target, .{ .patch = qwen3vl.patch, .merge = qwen3vl.merge, .mean = v.binding.mean, .std = v.binding.std });
+        const grid = v.projector.grid(.{ .width = decoded.width, .height = decoded.height });
+        var patches = try v.projector.prepare(self.alloc, decoded, grid);
         defer patches.deinit(self.alloc);
-        const features = try self.alloc.alloc(f32, grid.tokens() * qwen3vl.output_width);
+        const features = try self.alloc.alloc(f32, grid.tokens() * v.projector.outputWidth());
         errdefer self.alloc.free(features);
-        switch (v.exec) {
-            inline else => |*e| try e.encode(patches, features),
-        }
-        return .{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens(), .features = features, .width = decoded.width, .height = decoded.height };
+        try v.projector.encode(patches, grid, features);
+        return .{ .width_tokens = grid.width_tokens, .height_tokens = grid.height_tokens, .features = features, .width = decoded.width, .height = decoded.height };
     }
-    /// The image marker id (`<|image_pad|>`), or null if the vocabulary lacks it.
+    /// The image placeholder id the profile renders (`<|image_pad|>` for
+    /// Qwen3.8, `<|image|>` for Gemma 4), or null without a profile, a
+    /// placeholder, or its token.
     pub fn imagePadId(self: *const Engine) ?u32 {
-        return self.vocab.tokenId("<|image_pad|>");
+        const profile = self.profile orelse return null;
+        return self.vocab.tokenId(profile.imagePlaceholder() orelse return null);
     }
-    /// Pairs the runs of `<|image_pad|>` in `tokens` with `prepared`, in order,
+    /// Pairs the runs of the image placeholder in `tokens` with `prepared`, in order,
     /// into spans (`inference.vision.Span`); the run lengths must equal the
     /// prepared token counts. Caller owns the returned slice.
     pub fn locateImageSpans(self: *const Engine, tokens: []const u32, prepared: []const PreparedImage) ![]inference.vision.Span {

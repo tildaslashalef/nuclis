@@ -36,6 +36,9 @@ pub const max_draft_proposals = 7;
 pub const heads = 16;
 pub const vocabulary = 262144;
 pub const window = 1024;
+/// One image span in a prompt (the shared vision contract's `Span`), used by
+/// the CPU runtime and the Metal plan.
+pub const VisionSpan = @import("../vision/root.zig").Span;
 pub const rms_epsilon: f32 = 1e-6;
 pub const final_softcap: f32 = 30.0;
 /// The largest layer count of any pinned configuration; bindings carry

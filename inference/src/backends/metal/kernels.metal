@@ -1840,6 +1840,11 @@ kernel void nu_gelu_mul(device float * gate [[buffer(0)]], device const float * 
                         constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) gate[i] = nu_gelu(gate[i]) * up[i];
 }
+// The quick GELU gate, x·σ(1.702x), of Gemma 4's vision encoder.
+kernel void nu_gelu_quick_mul(device float * gate [[buffer(0)]], device const float * up [[buffer(1)]],
+                              constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i < p.count) { const float x = gate[i]; gate[i] = x / (1.0f + exp(-1.702f * x)) * up[i]; }
+}
 // Scalar epilogues (Gemma 4): x *= factor (the embedding scale);
 // x = (x + y) * factor (a residual add followed by a per-layer output
 // scale, one rounding after the add as the CPU reference does it); and
@@ -2190,6 +2195,10 @@ kernel void nu_attention_merge(device const float * partials [[buffer(0)]],
 // `query − window + 1`: the key loop starts at the tile holding the SIMD
 // group's first visible key, and a row whose keys are all hidden in a tile
 // keeps its running max at −∞ (its weights are exactly 0) until one shows.
+// A nonempty span `[span_begin, span_end)` of chunk rows (the row-split body
+// only) lifts those rows' upper bound to the span's last row: they attend
+// to each other bidirectionally, and the SIMD group's key loop runs to the
+// span's end when any of its rows is inside.
 //
 // `T` is the operand type: `float` reads an F32 cache with F32
 // queries; `half` reads an F16 cache with a half copy of the queries and
@@ -2197,7 +2206,7 @@ kernel void nu_attention_merge(device const float * partials [[buffer(0)]],
 // multiplies operands of one type into F32 accumulators (the matmul's
 // contract). Scores, the online softmax, the accumulators, and the output
 // stay F32 in both instantiations.
-struct AttentionChunkParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint position; uint count; uint q_stride; uint out_stride; float scale; uint window; };
+struct AttentionChunkParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint position; uint count; uint q_stride; uint out_stride; float scale; uint window; uint span_begin; uint span_end; };
 #define NU_ATTN_KEYS 32 // keys per tile; the score tile is 8 × NU_ATTN_KEYS per SIMD group
 template <typename T>
 inline void nu_load_rows_masked(thread simdgroup_matrix<T, 8, 8> & m, device const T * src, ulong stride, uint valid_rows, threadgroup T * stage, uint lane, bool transpose) {
@@ -2232,14 +2241,16 @@ kernel void nu_attention_chunk_t(device const T * keys [[buffer(0)]],
     if (q0 >= p.count) return; // whole SIMD group past the chunk; no threadgroup barriers follow
     const uint kv = head / (p.query_heads / p.kv_heads);
     const uint total = p.position + p.count;
-    const uint limit = min(total, p.position + q0 + 8); // exclusive key bound of this SIMD group's rows
+    const bool group_in_span = q0 < p.span_end && q0 + 8 > p.span_begin;
+    const uint limit = max(min(total, p.position + q0 + 8), group_in_span ? p.position + p.span_end : 0u); // exclusive key bound of this SIMD group's rows
     const ulong krow = ulong(p.kv_heads) * p.key_width, vrow = ulong(p.kv_heads) * p.value_width;
     const uint v0 = vs * 256; // this threadgroup's value columns: v0 .. v0 + 8 * vblocks
     device const T * q = queries + ulong(q0) * p.q_stride + ulong(head) * p.key_width;
     device const T * k = keys + ulong(kv) * p.key_width;
     device const T * v = values + ulong(kv) * p.value_width + v0;
     const uint row = lane >> 2, col0 = (lane & 3) * 8;
-    const uint row_limit = min(limit, p.position + q0 + row + 1); // exclusive, this lane's query row
+    const bool row_in_span = q0 + row >= p.span_begin && q0 + row < p.span_end;
+    const uint row_limit = row_in_span ? p.position + p.span_end : min(limit, p.position + q0 + row + 1); // exclusive, this lane's query row
     // Sliding window: the first visible key of this lane's row, and of the
     // SIMD group's first row rounded down to a key tile (0 without a window).
     const uint row_lo = (p.window != 0 && p.position + q0 + row + 1 > p.window) ? p.position + q0 + row + 1 - p.window : 0;

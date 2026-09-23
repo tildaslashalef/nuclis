@@ -4,7 +4,7 @@
 //! recorded in docs/reference/gemma4.md. Immutable weight views and the
 //! binding borrow the loaded model; this runtime owns the session (one
 //! attention cache per layer, F32) and its workspace. A failed step poisons
-//! the session. Text only: no vision. With a `gemma4-assistant` companion
+//! the session. With a `gemma4-assistant` companion
 //! bound the runtime also runs the draft head (`Head`), which reads the
 //! target's caches and owns no attention state of its own.
 //!
@@ -135,6 +135,8 @@ const Head = struct {
 };
 
 pub const Runtime = struct {
+    /// For an image span's per-call rows; the workspace lives in `storage`.
+    gpa: std.mem.Allocator,
     storage: std.heap.ArenaAllocator,
     state: session.Session,
     view: weights.View,
@@ -218,6 +220,7 @@ pub const Runtime = struct {
                 } else null,
             };
         }
+        result.gpa = gpa;
         result.storage = storage;
         result.state = state;
         result.view = view;
@@ -324,24 +327,38 @@ pub const Runtime = struct {
     }
 
     fn attention(self: *Runtime, layer: model.Layer, constants: LayerConstants, il: usize) !void {
+        const position = self.state.position;
+        const q = self.q[0..layer.queryWidth()];
+        try self.project(layer, constants, il, self.normalized, position, q);
+        try self.attend(layer, il, q, firstVisible(layer.kind, position), position + 1);
+    }
+
+    /// Sliding layers attend to the last `window` positions including the
+    /// current one; the visible rows are a contiguous suffix of the cache.
+    fn firstVisible(kind: model.Kind, position: usize) usize {
+        return if (kind == .sliding and position + 1 > model.window) position + 1 - model.window else 0;
+    }
+
+    /// One row's projections at cache row `position`: its query (normed and
+    /// rotated) into `q`, its key and value normed, rotated, and written to
+    /// the layer's cache row.
+    fn project(self: *Runtime, layer: model.Layer, constants: LayerConstants, il: usize, input: []const f32, position: usize, q: []f32) !void {
         const kind = layer.kind;
         const hd = layer.headSize();
         const kv_heads = layer.kv_heads;
-        const q = self.q[0..layer.queryWidth()];
         const k = self.k[0..layer.kvWidth()];
         const v = self.v[0..layer.kvWidth()];
-        const position = self.state.position;
         const rope: cpu.rope.Options = .{
             .dimensions = hd,
             .base = kind.ropeBase(),
             .position = @intCast(position),
             .factors = if (kind == .global) self.rope_factors else null,
         };
-        try self.mm(layer.query, self.normalized, q);
-        try self.mm(layer.key, self.normalized, k);
+        try self.mm(layer.query, input, q);
+        try self.mm(layer.key, input, k);
         // Global layers have no value projection: V is the raw key projection,
         // taken before the key norm and RoPE.
-        if (layer.value) |value| try self.mm(value, self.normalized, v) else @memcpy(v, k);
+        if (layer.value) |value| try self.mm(value, input, v) else @memcpy(v, k);
         for (0..model.heads) |h| {
             const head = q[h * hd ..][0..hd];
             try norm(head, head, constants.query_norm);
@@ -358,14 +375,18 @@ pub const Runtime = struct {
         // The reference cache is F32 by decision: the views assert it.
         @memcpy(cache.keys.floats(position, 1), k);
         @memcpy(cache.values.floats(position, 1), v);
-        // Sliding layers attend to the last `window` positions including the
-        // current one; the visible rows are a contiguous suffix of the cache.
-        const first = if (kind == .sliding and position + 1 > model.window) position + 1 - model.window else 0;
-        const visible = position + 1 - first;
+    }
+
+    /// Attention of `q` over the cache rows `[first, last)`, then the output
+    /// projection into `projected`.
+    fn attend(self: *Runtime, layer: model.Layer, il: usize, q: []const f32, first: usize, last: usize) !void {
+        const hd = layer.headSize();
+        const visible = last - first;
+        const cache = self.state.layers[il].attention;
         const out = self.mixed_out[0..layer.queryWidth()];
         try cpu.attention.apply(.{
             .query_heads = model.heads,
-            .kv_heads = kv_heads,
+            .kv_heads = layer.kv_heads,
             .key_width = hd,
             .value_width = hd,
             .tokens = visible,
@@ -376,6 +397,87 @@ pub const Runtime = struct {
             .values = cache.values.floats(first, visible),
         }, out, self.attention_scratch);
         try self.mm(layer.output, out, self.projected);
+    }
+
+    /// Prefills a prompt with image spans: text tokens step as usual; a
+    /// span's rows are the projector's feature rows (`features`,
+    /// `Σ span.count × embedding`, unscaled) and run as one batched pass
+    /// (`prefillSpan`). `logits`, when given, receives the last row's.
+    pub fn prefillVision(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, observer: ?Observer) !void {
+        const width = self.binding.config.embedding;
+        if (tokens.len == 0) return error.InvalidShape;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        var i: usize = 0;
+        var si: usize = 0;
+        var frow: usize = 0;
+        while (i < tokens.len) {
+            if (si < spans.len and spans[si].start == i) {
+                const sp = spans[si];
+                if (sp.count == 0 or frow + sp.count > features.len / width) return error.InvalidShape;
+                const last = i + sp.count == tokens.len;
+                try self.prefillSpan(features[frow * width ..][0 .. sp.count * width], if (last) logits else null, observer);
+                i += sp.count;
+                frow += sp.count;
+                si += 1;
+            } else {
+                try self.step(tokens[i], if (i + 1 == tokens.len) logits else null, observer);
+                i += 1;
+            }
+        }
+    }
+
+    /// One image span of `rows.len / embedding` rows at the current
+    /// position, layer by layer: every row projects and writes its cache
+    /// row, then each row attends over `[first, span end)` on a sliding
+    /// layer (the span is bidirectional there, the reference's
+    /// `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`) and over `[0, row]` on a global one.
+    /// Cache row, rotary position, and visible bound are the row's position.
+    fn prefillSpan(self: *Runtime, rows: []const f32, logits: ?[]f32, observer: ?Observer) !void {
+        const width = self.binding.config.embedding;
+        const count = rows.len / width;
+        if (count == 0 or rows.len != count * width) return error.InvalidShape;
+        if (logits) |out| if (out.len != model.vocabulary) return error.InvalidShape;
+        const q_stride = model.Kind.global.queryWidth();
+        const xs = try self.gpa.dupe(f32, rows);
+        defer self.gpa.free(xs);
+        const qs = try self.gpa.alloc(f32, count * q_stride);
+        defer self.gpa.free(qs);
+        try self.state.beginChunk(count);
+        errdefer self.state.fail();
+        const start = self.state.position;
+        for (self.binding.active(), self.constants, 0..) |layer, constants, il| {
+            const qw = layer.queryWidth();
+            for (0..count) |r| {
+                try norm(xs[r * width ..][0..width], self.normalized, constants.attention_norm);
+                try self.project(layer, constants, il, self.normalized, start + r, qs[r * q_stride ..][0..qw]);
+            }
+            for (0..count) |r| {
+                const position = start + r;
+                const last = if (layer.kind == .sliding) start + count else position + 1;
+                try self.attend(layer, il, qs[r * q_stride ..][0..qw], firstVisible(layer.kind, position), last);
+                const x = xs[r * width ..][0..width];
+                @memcpy(self.x, x);
+                try norm(self.projected, self.projected, constants.post_attention_norm);
+                for (self.x, self.projected) |*v, contribution| v.* += contribution;
+                try self.feedForward(layer, constants);
+                for (self.x, self.projected) |*v, contribution| {
+                    v.* = (v.* + contribution) * constants.output_scale;
+                    if (!std.math.isFinite(v.*)) return error.NonFiniteResult;
+                }
+                @memcpy(x, self.x);
+            }
+            if (observer) |o| if (o.check) |check| try check(o.context);
+        }
+        // `x` holds the last row: its post-`output_norm` hidden, as `step` keeps.
+        try norm(self.x, self.normalized, self.output_norm);
+        if (logits) |out| {
+            try self.mm(self.binding.token_embedding, self.normalized, out);
+            for (out) |*v| {
+                v.* = model.final_softcap * std.math.tanh(v.* / model.final_softcap);
+                if (!std.math.isFinite(v.*)) return error.NonFiniteResult;
+            }
+        }
+        try self.state.commitChunk(count);
     }
 
     /// Reference prefill: one step per token; `hidden`, when given

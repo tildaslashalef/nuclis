@@ -27,6 +27,7 @@ extern fn nu_metal_max_buffer_length(*anyopaque) usize;
 extern fn nu_metal_buffer_create(*anyopaque, usize, *u32) c_int;
 extern fn nu_metal_buffer_wrap(*anyopaque, [*]const u8, usize, *u32, *usize) c_int;
 extern fn nu_metal_buffer_contents(*anyopaque, u32) ?[*]u8;
+extern fn nu_metal_buffer_release(*anyopaque, u32) c_int;
 extern fn nu_metal_begin(*anyopaque) c_int;
 extern fn nu_metal_dispatch(*anyopaque, u32, [*]const Binding, u32, ?*const anyopaque, usize, u32, u32, u32, u32) c_int;
 extern fn nu_metal_commit(*anyopaque, ?*const fn (?*anyopaque) callconv(.c) void, ?*anyopaque) c_int;
@@ -72,7 +73,7 @@ const kernel_names = [_][:0]const u8{
     "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",      "nu_matvec_q4_k_split",
     "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits", "nu_attention_chunk_reuse", "nu_attention_chunk_reuse_h",
     "nu_rmsnorm_add",           "nu_add_rmsnorm",           "nu_rmsnorm_rope",          "nu_layernorm",             "nu_add_bias_rows",         "nu_gelu_inplace",
-    "nu_attention_full",
+    "nu_attention_full",        "nu_gelu_quick_mul",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -214,6 +215,7 @@ pub const Kernel = enum(u32) {
     add_bias_rows,
     gelu_inplace,
     attention_full,
+    gelu_quick_mul,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -383,6 +385,13 @@ pub const Backend = struct {
         if (nu_metal_buffer_create(self.handle, len, &id) != 0) return error.MetalBufferFailed;
         const host = nu_metal_buffer_contents(self.handle, id) orelse return error.MetalBufferFailed;
         return .{ .id = id, .offset = 0, .len = len, .host = host };
+    }
+    /// Frees a buffer `create` returned (whole, not a slice) while nothing is
+    /// recording; every slice of it becomes invalid.
+    pub fn release(self: *Backend, buffer: Buffer) !void {
+        if (!enabled) return error.MetalNotEnabled;
+        if (self.recording or buffer.offset != 0) return error.InvalidShape;
+        if (nu_metal_buffer_release(self.handle, buffer.id) != 0) return error.MetalBufferFailed;
     }
     /// Wraps borrowed page-backed memory; repeated wraps of the same start
     /// address reuse the buffer and must request the same length.
@@ -1270,6 +1279,11 @@ pub const Backend = struct {
         if (count == 0 or gate.len < count * 4 or up.len < count * 4) return error.InvalidShape;
         try self.dispatch(.gelu_mul, &.{ gate, up }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
     }
+    /// gate[i] = gelu_quick(gate[i]) * up[i], with gelu_quick(x) = x·σ(1.702x).
+    pub fn geluQuickMul(self: *Backend, gate: Buffer, up: Buffer, count: usize) !void {
+        if (count == 0 or gate.len < count * 4 or up.len < count * 4) return error.InvalidShape;
+        try self.dispatch(.gelu_quick_mul, &.{ gate, up }, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
+    }
     pub const ScaleParams = extern struct { count: u32, factor: f32 };
     /// x[i] *= factor; the factor must be finite.
     pub fn scale(self: *Backend, x: Buffer, count: usize, factor: f32) !void {
@@ -1454,7 +1468,12 @@ pub const Backend = struct {
         const p: PackParams = .{ .count0 = @intCast(pairs[0].count), .count1 = if (pairs.len == 2) @intCast(pairs[1].count) else 0 };
         try self.dispatch(.pack_half, &.{ pairs[0].dst, pairs[0].src, second.dst, second.src }, p, perElement(total), 256, .{});
     }
-    pub const AttentionChunkParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, position: u32, count: u32, q_stride: u32, out_stride: u32, scale: f32, window: u32 };
+    pub const AttentionChunkParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, position: u32, count: u32, q_stride: u32, out_stride: u32, scale: f32, window: u32, span_begin: u32, span_end: u32 };
+    /// Chunk rows `[begin, end)` that attend bidirectionally among
+    /// themselves: each sees keys up to `position + end` (exclusive) instead
+    /// of its own row, the window still bounding it from below. Gemma 4's
+    /// image span on sliding layers; an empty span is plain causal.
+    pub const Span = struct { begin: usize = 0, end: usize = 0 };
     /// `count` query rows at cache positions `position..position + count`,
     /// each attending causally over the cache rows `[0, position + t]`, or
     /// `[position + t + 1 - window, position + t]` when `window` is nonzero
@@ -1466,7 +1485,10 @@ pub const Backend = struct {
     /// the `f16` instantiation multiplies half operands into F32
     /// accumulators, so the caller packs its queries to half first
     /// (`packHalf`); the output is F32 either way.
-    pub const AttentionChunkShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, position: usize, count: usize, q_stride: usize, out_stride: usize, scale: f32, precision: Precision = .f32, window: usize = 0 };
+    pub const AttentionChunkShape = struct { query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize, position: usize, count: usize, q_stride: usize, out_stride: usize, scale: f32, precision: Precision = .f32, window: usize = 0, span: Span = .{} };
+    /// The most rows one chunk dispatch covers: a projector's whole patch
+    /// set (10,080 for Gemma 4's largest image) runs as one span.
+    pub const max_chunk_rows = 16384;
     /// Rows the query and output buffers must hold for `count` rows: the
     /// last SIMD-group tile computes and stores on the caller's padding.
     pub fn attentionChunkRows(count: usize) usize {
@@ -1482,7 +1504,8 @@ pub const Backend = struct {
         const p = attentionChunkParams(s);
         const tiles = (s.count + 31) / 32;
         const value_splits = (s.value_width + 255) / 256;
-        const reuse = s.value_width == 256 and s.count <= self.attention_reuse_max_rows;
+        // The register-reuse body has no span; a span takes the row-split body.
+        const reuse = s.value_width == 256 and s.count <= self.attention_reuse_max_rows and s.span.end == 0;
         const half = s.precision == .f16;
         const kernel: Kernel = if (reuse) (if (half) .attention_chunk_reuse_h else .attention_chunk_reuse) else if (half) .attention_chunk_h else .attention_chunk;
         try self.dispatch(kernel, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
@@ -1493,18 +1516,20 @@ pub const Backend = struct {
     /// multiplies. Measured against `attentionChunk` by `--attention-bench`.
     pub fn attentionChunkReuse(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, s: AttentionChunkShape) !void {
         try checkAttentionChunk(s, keys, values, queries, output);
+        if (s.span.end != 0) return error.InvalidShape;
         const p = attentionChunkParams(s);
         const tiles = (s.count + 31) / 32;
         const value_splits = (s.value_width + 255) / 256;
         try self.dispatch(if (s.precision == .f16) .attention_chunk_reuse_h else .attention_chunk_reuse, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
     }
     fn attentionChunkParams(s: AttentionChunkShape) AttentionChunkParams {
-        return .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = @intCast(s.window) };
+        return .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .key_width = @intCast(s.key_width), .value_width = @intCast(s.value_width), .position = @intCast(s.position), .count = @intCast(s.count), .q_stride = @intCast(s.q_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = @intCast(s.window), .span_begin = @intCast(s.span.begin), .span_end = @intCast(s.span.end) };
     }
     fn checkAttentionChunk(s: AttentionChunkShape, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer) !void {
         if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
         if (s.key_width == 0 or s.key_width % 8 != 0 or s.value_width == 0 or s.value_width % 8 != 0 or s.value_width > 512) return error.InvalidShape;
-        if (s.count == 0 or s.count > 4096 or s.position > 32768 - s.count) return error.InvalidShape;
+        if (s.count == 0 or s.count > max_chunk_rows or s.position > 32768 - s.count) return error.InvalidShape;
+        if (s.span.begin > s.span.end or s.span.end > s.count) return error.InvalidShape;
         if (s.q_stride < s.query_heads * s.key_width or s.out_stride < s.query_heads * s.value_width) return error.InvalidShape;
         const total = s.position + s.count;
         const rows = attentionChunkRows(s.count);

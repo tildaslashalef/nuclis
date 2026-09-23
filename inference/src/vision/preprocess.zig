@@ -207,6 +207,13 @@ pub const PatchOptions = struct {
     merge: u32,
     mean: [3]f32,
     std: [3]f32,
+    /// `normalized · scale + bias` after the mean/std step (Gemma 4's
+    /// SigLIP input is `2x − 1`).
+    scale: f32 = 1,
+    bias: f32 = 0,
+    /// Round each value to F16, as a convolution whose im2col is F16 reads
+    /// it; false keeps F32 (an im2col in the input's own type).
+    half: bool = true,
 };
 
 /// The patch grid of a resized image and its rows in the projector's
@@ -214,8 +221,8 @@ pub const PatchOptions = struct {
 /// blocks in raster order, inside a block top-left, top-right,
 /// bottom-left, bottom-right; each row is `patch · patch · 3` values laid
 /// out channel-planar (`c · patch² + ky · patch + kx`), normalized as
-/// `(v / 255 − mean) / std` and rounded to F16 as the reference's
-/// convolution reads them.
+/// `(v / 255 − mean) / std` (then `options.scale`/`bias`) and rounded to
+/// F16 when `options.half`, as the reference's convolution reads them.
 pub const Patches = struct {
     width_patches: u32,
     height_patches: u32,
@@ -255,9 +262,9 @@ pub fn patches(alloc: std.mem.Allocator, pixels: []const u8, size: Size, options
                     const x = px * options.patch + @as(u32, @intCast(kx));
                     const y = py * options.patch + @as(u32, @intCast(ky));
                     const v: f32 = @floatFromInt(pixels[(@as(usize, y) * size.width + x) * 3 + c]);
-                    const normalized = (v / 255.0 - options.mean[c]) / options.std[c];
-                    const half: f16 = @floatCast(normalized);
-                    out[c * options.patch * options.patch + ky * options.patch + kx] = @floatCast(half);
+                    const normalized = (v / 255.0 - options.mean[c]) / options.std[c] * options.scale + options.bias;
+                    const value: f32 = if (options.half) @floatCast(@as(f16, @floatCast(normalized))) else normalized;
+                    out[c * options.patch * options.patch + ky * options.patch + kx] = value;
                 };
                 t += 1;
             };

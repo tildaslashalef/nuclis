@@ -45,6 +45,8 @@ pub const stop_tokens = [_][]const u8{ "<|eot|>", "<|end_of_text|>" };
 /// How the model delimits its reasoning: a message addressed to itself.
 /// The generation prompt ends at `<|start|>assistant`, so the first header
 /// (` to=self`) arrives as ordinary text and the decoder routes on it.
+/// No image rendering yet.
+pub const image_placeholder: ?[]const u8 = null;
 pub const reasoning: profiles.Reasoning = .{ .open = "<|start|>assistant to=self<|message|>", .close = "<|eom|>" };
 pub const stream_markers: profiles.StreamMarkers = .{
     .open = "<|start|>",

@@ -115,6 +115,20 @@ test "tanh GELU matches the formula at pinned points and is odd-symmetric around
     try std.testing.expect(std.math.isNan(gelu(std.math.nan(f32))));
 }
 
+/// The quick GELU, x·σ(1.702x) (ggml's `gelu_quick`), in F64.
+pub fn geluQuick(x: f32) f32 {
+    const v: f64 = x;
+    const z = 1.702 * v;
+    const gate = if (z >= 0) 1 / (1 + @exp(-z)) else @exp(z) / (1 + @exp(z));
+    return @floatCast(v * gate);
+}
+
+test "quick GELU is x times the logistic of 1.702x" {
+    try std.testing.expectEqual(@as(f32, 0), geluQuick(0));
+    try std.testing.expectApproxEqAbs(@as(f32, @floatCast(1.0 / (1.0 + @exp(-1.702)))), geluQuick(1), 1e-7);
+    try std.testing.expectApproxEqAbs(@as(f32, -2.0 / (1.0 + @exp(3.404))), geluQuick(-2), 1e-7);
+}
+
 pub fn silu(x: f32) f32 {
     if (std.math.isNegativeInf(x)) return -0.0;
     return @floatCast(@as(f64, x) * logistic(x));

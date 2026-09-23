@@ -1476,11 +1476,22 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
     const sliding: Geometry = .{ .qh = 16, .kvh = 8, .hd = 256 };
     const global: Geometry = .{ .qh = 16, .kvh = 1, .hd = 512 };
     const global_two: Geometry = .{ .qh = 16, .kvh = 2, .hd = 512 };
-    const Case = struct { g: Geometry, position: usize, count: usize, window: usize, half: bool };
+    const projector: Geometry = .{ .qh = 16, .kvh = 16, .hd = 72 };
+    const Case = struct { g: Geometry, position: usize, count: usize, window: usize, half: bool, span: Backend.Span = .{}, sample: usize = 1 };
     // Chunk cases: a window entirely before the chunk, a window opening
     // inside the chunk, a tiny window with fully hidden key tiles (the −∞
     // guard), and the wide geometries without a window (two value splits).
+    // Then Gemma's image span (row-split body only): inside a long chunk
+    // with poisoned rows after it, longer than a tiny window (keys above a
+    // span row are not windowed), in F16, and a whole projector patch set
+    // as one span (72-wide heads, no window).
     const cases = [_]Case{
+        .{ .g = sliding, .position = 900, .count = 300, .window = 1024, .half = false, .span = .{ .begin = 40, .end = 260 } },
+        .{ .g = sliding, .position = 0, .count = 40, .window = 8, .half = false, .span = .{ .begin = 4, .end = 36 } },
+        .{ .g = sliding, .position = 33, .count = 70, .window = 8, .half = true, .span = .{ .begin = 10, .end = 64 } },
+        .{ .g = projector, .position = 0, .count = 200, .window = 0, .half = false, .span = .{ .begin = 0, .end = 200 } },
+        // The largest SigLIP patch set Gemma 4 feeds it, every 97th row compared.
+        .{ .g = projector, .position = 0, .count = 9900, .window = 0, .half = false, .span = .{ .begin = 0, .end = 9900 }, .sample = 97 },
         .{ .g = sliding, .position = 1023, .count = 256, .window = 1024, .half = false },
         .{ .g = sliding, .position = 900, .count = 300, .window = 1024, .half = false },
         .{ .g = sliding, .position = 0, .count = 40, .window = 8, .half = false },
@@ -1493,7 +1504,9 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
     };
     var worst_f32: f32 = 0;
     var worst_f16: f32 = 0;
+    var span_rows: usize = 0;
     for (cases) |case| {
+        if (reuse and case.span.end != 0) continue;
         const g = case.g;
         const qw = g.qh * g.hd;
         const kvw = g.kvh * g.hd;
@@ -1505,6 +1518,12 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
         for (k32.floats()) |*k| k.* = random.floatNorm(f32) * 0.3;
         for (v32.floats()) |*v| v.* = random.floatNorm(f32) * 0.5;
         for (q32.floats()) |*q| q.* = random.floatNorm(f32) * 0.3;
+        // Rows after the span: keys that would dominate and values far off,
+        // so a span row that saw one would miss by far more than the bound.
+        if (case.span.end != 0 and !case.half) for (case.position + case.span.end..total) |r| {
+            for (k32.floats()[r * kvw ..][0..kvw]) |*k| k.* *= 4;
+            for (v32.floats()[r * kvw ..][0..kvw]) |*v| v.* = 20;
+        };
         const out = try b.create(rows * qw * 4);
         for (out.floats()) |*o| o.* = std.math.nan(f32);
         var keys = k32;
@@ -1527,29 +1546,46 @@ fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: b
         if (reuse) {
             try b.attentionChunkReuse(keys, values, queries, out, .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = case.position, .count = case.count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = if (case.half) .f16 else .f32, .window = case.window });
         } else {
-            try b.attentionChunk(keys, values, queries, out, .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = case.position, .count = case.count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = if (case.half) .f16 else .f32, .window = case.window });
+            try b.attentionChunk(keys, values, queries, out, .{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .position = case.position, .count = case.count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = if (case.half) .f16 else .f32, .window = case.window, .span = case.span });
         }
         try b.commit();
+        span_rows += case.span.end - case.span.begin;
         const scratch = try alloc.alloc(f64, total);
         defer alloc.free(scratch);
         const expected = try alloc.alloc(f32, qw);
         defer alloc.free(expected);
-        for (0..case.count) |t| {
+        var t: usize = 0;
+        while (t < case.count) : (t += case.sample) {
             const pos = case.position + t;
             const lo = if (case.window != 0 and pos + 1 > case.window) pos + 1 - case.window else 0;
-            const visible = pos + 1 - lo;
+            const in_span = t >= case.span.begin and t < case.span.end;
+            const visible = (if (in_span) case.position + case.span.end else pos + 1) - lo;
             try inference.cpu.attention.apply(.{ .query_heads = g.qh, .kv_heads = g.kvh, .key_width = g.hd, .value_width = g.hd, .tokens = visible, .visible_tokens = visible, .scale = 1.0, .queries = q32.floats()[t * qw ..][0..qw], .keys = k32.floats()[lo * kvw ..][0 .. visible * kvw], .values = v32.floats()[lo * kvw ..][0 .. visible * kvw] }, expected, scratch);
             for (expected, out.floats()[t * qw ..][0..qw]) |e, a| {
                 const d = @abs(a - e);
                 if (case.half) worst_f16 = @max(worst_f16, d) else worst_f32 = @max(worst_f32, d);
-                expectClose(if (case.half) "windowed/wide half chunk attention" else "windowed/wide chunk attention", a, e, if (case.half) 2e-3 else 1e-5) catch |err| {
-                    std.debug.print("  geometry {d}/{d}/{d}, position {d}, count {d}, window {d}, row {d}\n", .{ g.qh, g.kvh, g.hd, case.position, case.count, case.window, t });
+                // Relative past 1: rows after a span average the poisoned values.
+                expectClose(if (case.half) "windowed/wide half chunk attention" else "windowed/wide chunk attention", a, e, if (case.half) 2e-3 else 1e-5 * @max(1, @abs(e))) catch |err| {
+                    std.debug.print("  geometry {d}/{d}/{d}, position {d}, count {d}, window {d}, span {d}..{d}, row {d}\n", .{ g.qh, g.kvh, g.hd, case.position, case.count, case.window, case.span.begin, case.span.end, t });
                     return err;
                 };
             }
         }
     }
-    std.debug.print("Windowed and wide chunk attention ({s} body) vs CPU F64 per row: F32 max abs {e:.3} (bound 1e-5), F16 over the rounded operands {e:.3} (bound 2e-3)\n", .{ if (reuse) "register-reuse" else "row-split", worst_f32, worst_f16 });
+    std.debug.print("Windowed and wide chunk attention ({s} body) vs CPU F64 per row: F32 max abs {e:.3} (bound 1e-5, relative past 1), F16 over the rounded operands {e:.3} (bound 2e-3); {d} rows in bidirectional spans\n", .{ if (reuse) "register-reuse" else "row-split", worst_f32, worst_f16, span_rows });
+    if (!reuse) {
+        // Contract: a span past the chunk, inverted, or on the reuse body is refused.
+        const any = try b.create(1 << 20);
+        const shape: Backend.AttentionChunkShape = .{ .query_heads = 16, .kv_heads = 8, .key_width = 256, .value_width = 256, .position = 0, .count = 8, .q_stride = 4096, .out_stride = 4096, .scale = 1.0, .span = .{ .begin = 0, .end = 9 } };
+        try std.testing.expectError(error.InvalidShape, b.attentionChunk(any, any, any, any, shape));
+        var inverted = shape;
+        inverted.span = .{ .begin = 5, .end = 4 };
+        try std.testing.expectError(error.InvalidShape, b.attentionChunk(any, any, any, any, inverted));
+        var fitting = shape;
+        fitting.span = .{ .begin = 0, .end = 8 };
+        try std.testing.expectError(error.InvalidShape, b.attentionChunkReuse(any, any, any, any, fitting));
+        try b.release(any);
+    }
     // Decode: the wide instantiation (16 heads of 512 over one KV head, four
     // head groups per split; over two, two groups per KV head) and the
     // sliding geometry (groups of 2), F32 and F16 (over the rounded rows),
@@ -3077,6 +3113,14 @@ pub fn main(init: std.process.Init) !void {
         try b.geluMul(g, u, width);
         try b.commit();
         for (g.floats(), expected) |got, want| try expectClose("gelu_mul", got, want, 2e-6 * @max(1, @abs(want)));
+        for (g.floats()) |*v| v.* = random.floatNorm(f32) * 4;
+        g.floats()[0] = 60;
+        g.floats()[1] = -60;
+        for (expected, g.floats(), u.floats()) |*e, gg, uu| e.* = inference.cpu.geluQuick(gg) * uu;
+        try b.begin();
+        try b.geluQuickMul(g, u, width);
+        try b.commit();
+        for (g.floats(), expected) |got, want| try expectClose("gelu_quick_mul", got, want, 2e-6 * @max(1, @abs(want)));
         for (expected, x.floats()) |*e, xx| e.* = xx * 61.967735;
         try b.begin();
         try b.scale(x, width, 61.967735);
@@ -3467,5 +3511,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation, norms, RoPE at 32767 with and without factors and in both pairings, activations and the epilogues, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
 }

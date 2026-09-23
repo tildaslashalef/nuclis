@@ -149,7 +149,12 @@ pub fn main(init: std.process.Init) !void {
             try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal)
         else
             try run(qwen35_spec, alloc, init.io, &mapped, use_metal),
-        .gemma4 => if (draft_trace != null)
+        .gemma4 => if (vision_check) |projector|
+            if (vision_image) |image|
+                try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
+            else
+                try visionCheck(alloc, init.io, model_path, projector, use_metal)
+        else if (draft_trace != null)
             try gemmaDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal)
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
         .@"muse-glimmer" => if (draft_trace) |dir|
@@ -1830,79 +1835,166 @@ fn compareRecovery(rows: usize, expected: []const f32, actual: []const f32, max_
     if (!d.within(max_abs_bound, rel_rms_bound)) return error.RecoveryMismatch;
 }
 
-/// The Qwen3-VL projector against the pinned oracle: the synthetic fixture
-/// image's feature rows (the reference's Metal projector, llama.cpp
-/// `7620399f5`, 2026-09-22) on the executor under test, then the first
-/// greedy tokens of `describe this image` through the language model with
-/// the rows substituted for the image span, against the pinned eight.
+/// A pinned vision fixture: the reference's projector rows for the
+/// synthetic image, its first greedy tokens, and (Gemma 4) its prompt
+/// tokens and best logits, with the bounds its own CPU/Metal spread sets.
+const VisionFixture = struct {
+    features: []const u8,
+    greedy: []const u8,
+    /// The oracle's `prompt-tokens.json`, compared with our rendering.
+    prompt_tokens: ?[]const u8 = null,
+    /// `id value` lines of the oracle's 16 best last-position logits.
+    top_logits: ?[]const u8 = null,
+    /// A token minimum below the reference's, pinned by the oracle run.
+    min_tokens: ?u32 = null,
+    /// Bound on the best logits' difference; a span that is not
+    /// bidirectional misses it (1.80 on the 12B, 0.41 on the 26B-A4B).
+    logits_max_abs: f64 = 0,
+    max_abs: f64,
+    rel_rms: f64,
+};
+
+fn visionFixture(projector: *const inference.vision.Projector) VisionFixture {
+    return switch (projector.family) {
+        // The reference's own CPU and Metal projectors differ by 0.36 max
+        // abs / 4.6e-3 relative RMS on this fixture (vision.md).
+        .qwen3vl => .{ .features = @embedFile("src/vision/fixtures/qwen3vl-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/qwen3vl-synthetic/greedy.txt"), .max_abs = 0.5, .rel_rms = 1e-2 },
+        // `--image-min-tokens 4`: 3×2 tokens. The reference's own spread is
+        // 0.058 / 1.2e-3 (12B) and 0.092 / 1.3e-2 (26B-A4B).
+        .gemma4 => |b| switch (b.kind) {
+            .unified => .{ .features = @embedFile("src/vision/fixtures/gemma4uv-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4uv-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4uv-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4uv-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.4, .max_abs = 0.1, .rel_rms = 3e-3 },
+            .siglip => .{ .features = @embedFile("src/vision/fixtures/gemma4v-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4v-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4v-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4v-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.1, .max_abs = 0.2, .rel_rms = 2.5e-2 },
+        },
+    };
+}
+
+/// A projector on the executor under test; `backend` is null on the CPU.
+const LoadedProjector = struct {
+    mapped: inference.weights.Mapped,
+    projector: inference.vision.Projector,
+    backend: ?*inference.metal.Backend,
+
+    fn open(self: *LoadedProjector, alloc: std.mem.Allocator, io: std.Io, path: []const u8, use_metal: bool) !void {
+        self.mapped = try inference.weights.Mapped.open(alloc, io, path);
+        errdefer self.mapped.deinit(io);
+        self.backend = null;
+        if (use_metal) {
+            const b = try alloc.create(inference.metal.Backend);
+            errdefer alloc.destroy(b);
+            var diagnostic: [8192]u8 = @splat(0);
+            b.* = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+                std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+                return err;
+            };
+            self.backend = b;
+        }
+        errdefer if (self.backend) |b| {
+            b.deinit();
+            alloc.destroy(b);
+        };
+        try self.projector.init(alloc, &self.mapped.document, self.mapped.view(), self.backend);
+    }
+    fn close(self: *LoadedProjector, alloc: std.mem.Allocator, io: std.Io) void {
+        self.projector.deinit();
+        if (self.backend) |b| {
+            b.deinit();
+            alloc.destroy(b);
+        }
+        self.mapped.deinit(io);
+    }
+    /// Decodes, resizes, and encodes `source` at `grid`, reporting the time.
+    fn encode(self: *LoadedProjector, alloc: std.mem.Allocator, io: std.Io, source: inference.vision.image.Rgb8, grid: inference.vision.Grid) ![]f32 {
+        var patches = try self.projector.prepare(alloc, source, grid);
+        defer patches.deinit(alloc);
+        const features = try alloc.alloc(f32, grid.tokens() * self.projector.outputWidth());
+        errdefer alloc.free(features);
+        const started = std.Io.Clock.awake.now(io);
+        try self.projector.encode(patches, grid, features);
+        const seconds = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_s;
+        std.debug.print("Projector ({s}): {d} patches -> {d}x{d} tokens in {d:.3} s.\n", .{ if (self.backend != null) "metal" else "cpu", patches.count(), grid.width_tokens, grid.height_tokens, seconds });
+        return features;
+    }
+};
+
+/// A projector against its pinned oracle fixture (llama.cpp `7620399f5`):
+/// the synthetic image's feature rows on the executor under test within
+/// the reference's own CPU/Metal spread; then, on the pinned rows (so the
+/// language-model path is isolated from the projector's tolerance), the
+/// rendered prompt's tokens against the oracle's, the last position's best
+/// logits, the first greedy tokens, and decode after the image against
+/// one batched prefill of the same tokens.
 fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, projector_path: []const u8, use_metal: bool) !void {
     const vision = inference.vision;
-    const qwen3vl = vision.qwen3vl;
-    var projector = try inference.weights.Mapped.open(alloc, io, projector_path);
-    defer projector.deinit(io);
-    const binding = try qwen3vl.bind(alloc, &projector.document);
+    var loaded: LoadedProjector = undefined;
+    try loaded.open(alloc, io, projector_path, use_metal);
+    defer loaded.close(alloc, io);
+    const fixture = visionFixture(&loaded.projector);
+    if (fixture.min_tokens) |m| loaded.projector.min_tokens = m;
     var source = try vision.image.decodePpm(alloc, @embedFile("src/vision/fixtures/synthetic-96x64.ppm"));
     defer source.deinit(alloc);
-    const grid = qwen3vl.gridFor(.{ .width = source.width, .height = source.height });
-    const target: vision.preprocess.Size = .{ .width = grid.width_patches * qwen3vl.patch, .height = grid.height_patches * qwen3vl.patch };
-    const resized = try vision.preprocess.resizeLetterbox(alloc, source, target);
-    defer alloc.free(resized);
-    var patches = try vision.preprocess.patches(alloc, resized, target, .{ .patch = qwen3vl.patch, .merge = qwen3vl.merge, .mean = binding.mean, .std = binding.std });
-    defer patches.deinit(alloc);
-    const expected = @embedFile("src/vision/fixtures/qwen3vl-synthetic/features.f32");
+    const grid = loaded.projector.grid(.{ .width = source.width, .height = source.height });
+    const width = loaded.projector.outputWidth();
     const rows = grid.tokens();
-    if (expected.len != rows * qwen3vl.output_width * 4) return error.FixtureMismatch;
-    const features = try alloc.alloc(f32, rows * qwen3vl.output_width);
+    if (fixture.features.len != rows * width * 4) return error.FixtureMismatch;
+    const features = try loaded.encode(alloc, io, source, grid);
     defer alloc.free(features);
-    const started = std.Io.Clock.awake.now(io);
-    if (use_metal) {
-        var diagnostic: [8192]u8 = @splat(0);
-        var backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
-            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
-            return err;
-        };
-        defer backend.deinit();
-        var plan = try qwen3vl.Plan.init(alloc, &backend, projector.view(), &binding);
-        defer plan.deinit();
-        try plan.encode(patches, features);
-    } else {
-        var runtime = try qwen3vl.Runtime.init(alloc, projector.view(), &binding);
-        defer runtime.deinit();
-        try runtime.encode(patches, features);
-    }
-    const seconds = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_s;
-    std.debug.print("Projector ({s}): {d} patches -> {d} rows in {d:.3} s.\n", .{ if (use_metal) "metal" else "cpu", grid.patches(), rows, seconds });
-    // The bounds: the reference's own CPU and Metal projectors differ by
-    // 0.36 max abs / 4.6e-3 relative RMS on this fixture (vision.md).
-    try compareRows("projector rows", expected, features, 0.5, 1e-2);
+    try compareRows("projector rows", fixture.features, features, fixture.max_abs, fixture.rel_rms);
 
-    // The language-model path, isolated from the projector's tolerance: the
-    // pinned feature rows are prefilled into the image span and the first
-    // eight greedy tokens must equal the oracle's (`greedy.txt`).
-    const pinned = try alloc.alloc(f32, rows * qwen3vl.output_width);
+    const pinned = try alloc.alloc(f32, rows * width);
     defer alloc.free(pinned);
-    for (pinned, 0..) |*v, i| v.* = std.mem.bytesToValue(f32, expected[i * 4 ..][0..4]);
+    for (pinned, 0..) |*v, i| v.* = std.mem.bytesToValue(f32, fixture.features[i * 4 ..][0..4]);
     var eng = try inference.engine.Engine.open(alloc, io, model_path, if (use_metal) .metal else .cpu, 64, .f32, null, .none);
     defer eng.deinit();
-    const refs = [_]inference.profiles.ImageRef{.{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens() }};
+    const refs = [_]inference.profiles.ImageRef{.{ .width_tokens = grid.width_tokens, .height_tokens = grid.height_tokens }};
     const prompt = try eng.render(&.{.{ .role = .user, .content = "describe this image", .images = &refs }}, &.{}, .off);
     defer alloc.free(prompt);
     const tokens = try eng.encode(prompt);
     defer alloc.free(tokens);
-    const spans = try eng.locateImageSpans(tokens, &.{.{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens(), .features = pinned }});
+    if (fixture.prompt_tokens) |json| {
+        const expected = try oracleTokens(alloc, json, eng.imagePadId() orelse return error.MissingImageToken);
+        defer alloc.free(expected);
+        if (!std.mem.eql(u32, expected, tokens)) {
+            std.debug.print("Prompt tokens differ from the oracle's: ours {any}\n  oracle {any}\n", .{ tokens, expected });
+            return error.VisionPromptMismatch;
+        }
+        std.debug.print("Prompt tokens equal the oracle's ({d}, a {d}-row span).\n", .{ tokens.len, rows });
+    }
+    const spans = try eng.locateImageSpans(tokens, &.{.{ .width_tokens = grid.width_tokens, .height_tokens = grid.height_tokens, .features = pinned }});
     defer alloc.free(spans);
-    const logits = try alloc.alloc(f32, eng.vocab.tokens.len);
+    const vocabulary = eng.vocab.tokens.len;
+    const logits = try alloc.alloc(f32, vocabulary);
     defer alloc.free(logits);
-    const generated = try alloc.alloc(u32, 8);
-    defer alloc.free(generated);
-    var sampler = try inference.sampling.Sampler.init(0, .{ .temperature = 0, .top_p = 1, .top_k = 0, .min_p = 0, .presence_penalty = 0, .repetition_penalty = 1 });
-    const outcome = try inference.engine.runLoop(&eng, tokens, 8, &sampler, null, .{}, .{ .spans = spans, .features = pinned }, logits, &.{}, generated, null, null);
-    const greedy_text = @embedFile("src/vision/fixtures/qwen3vl-synthetic/greedy.txt");
-    var it = std.mem.tokenizeScalar(u8, greedy_text, '\n');
+    const stepped = try alloc.alloc(f32, vocabulary);
+    defer alloc.free(stepped);
+
+    // One prefill, then greedy steps: the last position's best logits, the
+    // greedy tokens, and the logits after the last step for the check below.
+    const count = 8;
+    var generated: [count]u32 = undefined;
+    try eng.model.prefillVision(tokens, spans, pinned, stepped, null, null, null, null);
+    if (fixture.top_logits) |text| {
+        var lines = std.mem.tokenizeScalar(u8, text, '\n');
+        var max_abs: f64 = 0;
+        var first: ?u32 = null;
+        while (lines.next()) |line| {
+            var fields = std.mem.tokenizeScalar(u8, line, ' ');
+            const id = try std.fmt.parseInt(u32, fields.next() orelse return error.FixtureMismatch, 10);
+            const want = try std.fmt.parseFloat(f64, fields.next() orelse return error.FixtureMismatch);
+            if (first == null) first = id;
+            max_abs = @max(max_abs, @abs(want - stepped[id]));
+        }
+        std.debug.print("Last-position logits on the pinned rows: max abs {e:.3} over the oracle's best 16 (bound {e:.1}), argmax {d} vs {d}\n", .{ max_abs, fixture.logits_max_abs, argmaxOf(stepped), first.? });
+        if (!(max_abs <= fixture.logits_max_abs)) return error.VisionLogitsMismatch;
+    }
+    for (&generated, 0..) |*g, k| {
+        if (k > 0) try eng.model.step(generated[k - 1], stepped, null, null, null, null);
+        g.* = argmaxOf(stepped);
+    }
+    var it = std.mem.tokenizeScalar(u8, fixture.greedy, '\n');
     var mismatch = false;
     std.debug.print("Vision greedy ({s}):", .{if (use_metal) "metal" else "cpu"});
-    for (generated[0..outcome.timing.generated_tokens]) |got| {
-        const want = std.fmt.parseInt(u32, it.next() orelse break, 10) catch break;
+    for (generated) |got| {
+        const want = try std.fmt.parseInt(u32, it.next() orelse return error.FixtureMismatch, 10);
         std.debug.print(" {d}{s}", .{ got, if (got == want) "" else "!" });
         if (got != want) mismatch = true;
     }
@@ -1910,16 +2002,9 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     if (mismatch) return error.VisionGreedyMismatch;
 
     // Decode after an image: the steps through the greedy tokens must give
-    // the logits one batched prefill of the same tokens gives. The span
-    // advances the rotary position by less than its row count, so a step
-    // that confused the two would write and read the wrong cache rows.
-    const count = outcome.timing.generated_tokens;
-    if (count < 2) return error.VisionGreedyMismatch;
-    const stepped = try alloc.alloc(f32, eng.vocab.tokens.len);
-    defer alloc.free(stepped);
-    eng.model.reset();
-    try eng.model.prefillVision(tokens, spans, pinned, stepped, null, null, null, null);
-    for (generated[0 .. count - 1]) |t| try eng.model.step(t, stepped, null, null, null, null);
+    // the logits one batched prefill of the same tokens gives. A step that
+    // confused its cache row with its rotary position (Qwen's span advances
+    // the position by less than its rows) would differ here.
     var extended: std.ArrayList(u32) = .empty;
     defer extended.deinit(alloc);
     try extended.appendSlice(alloc, tokens);
@@ -1930,6 +2015,43 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     for (stepped, logits) |a, b| max_abs = @max(max_abs, @abs(@as(f64, a) - b));
     std.debug.print("Decode after the image, {d} steps vs one prefill: max abs {e:.3} (bound 2e-2)\n", .{ count - 1, max_abs });
     if (!(max_abs <= 2e-2)) return error.VisionDecodeMismatch;
+
+    // The engine's loop over the same prompt, with the device's greedy
+    // selection on Metal (the chat's path), must choose the same tokens.
+    if (use_metal) {
+        eng.model.reset();
+        var looped: [count]u32 = undefined;
+        var sampler = try inference.sampling.Sampler.init(0, .{ .temperature = 0, .top_p = 1, .top_k = 0, .min_p = 0, .presence_penalty = 0, .repetition_penalty = 1 });
+        const outcome = try inference.engine.runLoop(&eng, tokens, count, &sampler, null, .{}, .{ .spans = spans, .features = pinned }, logits, &.{}, &looped, null, null);
+        if (!std.mem.eql(u32, looped[0..outcome.timing.generated_tokens], generated[0..outcome.timing.generated_tokens])) return error.VisionGreedyMismatch;
+        std.debug.print("The engine loop chose the same {d} tokens.\n", .{outcome.timing.generated_tokens});
+    }
+}
+
+fn argmaxOf(values: []const f32) u32 {
+    var best: usize = 0;
+    for (values, 0..) |v, i| {
+        if (v > values[best]) best = i;
+    }
+    return @intCast(best);
+}
+
+/// The oracle's prompt tokens (`prompt-tokens.json`) with each image chunk
+/// expanded to `pad` placeholders, as our rendering encodes it. Caller owns.
+fn oracleTokens(alloc: std.mem.Allocator, json: []const u8, pad: u32) ![]u32 {
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    var tokens: std.ArrayList(u32) = .empty;
+    errdefer tokens.deinit(alloc);
+    for (parsed.value.object.get("chunks").?.array.items) |chunk| {
+        if (std.mem.eql(u8, chunk.object.get("type").?.string, "text")) {
+            for (chunk.object.get("tokens").?.array.items) |t| try tokens.append(alloc, @intCast(t.integer));
+        } else {
+            const n: usize = @intCast(chunk.object.get("n_tokens").?.integer);
+            try tokens.appendNTimes(alloc, pad, n);
+        }
+    }
+    return tokens.toOwnedSlice(alloc);
 }
 
 /// Any image against an oracle directory (`scripts/reference-vision.cpp`'s
@@ -1938,52 +2060,28 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
 /// row band shows where it is. Reports; never gates.
 fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u8, image_path: []const u8, oracle: []const u8, use_metal: bool, model_path: ?[]const u8) !void {
     const vision = inference.vision;
-    const qwen3vl = vision.qwen3vl;
-    var projector = try inference.weights.Mapped.open(alloc, io, projector_path);
-    defer projector.deinit(io);
-    const binding = try qwen3vl.bind(alloc, &projector.document);
+    var loaded: LoadedProjector = undefined;
+    try loaded.open(alloc, io, projector_path, use_metal);
+    defer loaded.close(alloc, io);
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, image_path, alloc, .limited(vision.image.max_bytes));
     defer alloc.free(bytes);
     var source = try vision.image.decode(alloc, bytes);
     defer source.deinit(alloc);
-    const grid = qwen3vl.gridFor(.{ .width = source.width, .height = source.height });
-    const target: vision.preprocess.Size = .{ .width = grid.width_patches * qwen3vl.patch, .height = grid.height_patches * qwen3vl.patch };
-    const resized = try vision.preprocess.resizeLetterbox(alloc, source, target);
-    defer alloc.free(resized);
-    var patches = try vision.preprocess.patches(alloc, resized, target, .{ .patch = qwen3vl.patch, .merge = qwen3vl.merge, .mean = binding.mean, .std = binding.std });
-    defer patches.deinit(alloc);
+    const grid = loaded.projector.grid(.{ .width = source.width, .height = source.height });
     const oracle_path = try std.fs.path.join(alloc, &.{ oracle, "image-embd.f32" });
     defer alloc.free(oracle_path);
     const expected = try std.Io.Dir.cwd().readFileAlloc(io, oracle_path, alloc, .limited(256 << 20));
     defer alloc.free(expected);
     const rows = grid.tokens();
-    const width = qwen3vl.output_width;
-    std.debug.print("Image {d}x{d} -> grid {d}x{d} tokens ({d} patches); oracle holds {d} rows.\n", .{ source.width, source.height, grid.widthTokens(), grid.heightTokens(), grid.patches(), expected.len / 4 / width });
+    const width = loaded.projector.outputWidth();
+    std.debug.print("Image {d}x{d} -> grid {d}x{d} tokens; oracle holds {d} rows.\n", .{ source.width, source.height, grid.width_tokens, grid.height_tokens, expected.len / 4 / width });
     if (expected.len != rows * width * 4) return error.FixtureMismatch;
-    const features = try alloc.alloc(f32, rows * width);
+    const features = try loaded.encode(alloc, io, source, grid);
     defer alloc.free(features);
-    const started = std.Io.Clock.awake.now(io);
-    if (use_metal) {
-        var diagnostic: [8192]u8 = @splat(0);
-        var backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
-            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
-            return err;
-        };
-        defer backend.deinit();
-        var plan = try qwen3vl.Plan.init(alloc, &backend, projector.view(), &binding);
-        defer plan.deinit();
-        try plan.encode(patches, features);
-    } else {
-        var runtime = try qwen3vl.Runtime.init(alloc, projector.view(), &binding);
-        defer runtime.deinit();
-        try runtime.encode(patches, features);
-    }
-    const seconds = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_s;
-    std.debug.print("Projector ({s}): {d} rows in {d:.3} s.\n", .{ if (use_metal) "metal" else "cpu", rows, seconds });
     compareRows("projector rows", expected, features, 0.5, 1e-2) catch {};
     // Relative RMS per block of the token grid, row-major like the rows.
-    const wt = grid.widthTokens();
-    const ht = grid.heightTokens();
+    const wt = grid.width_tokens;
+    const ht = grid.height_tokens;
     const block = @max(1, @max(wt, ht) / 8);
     var by: usize = 0;
     while (by < ht) : (by += block) {
@@ -2008,43 +2106,35 @@ fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u
         }
         std.debug.print("\n", .{});
     }
-    if (model_path) |mp| try visionLanguageCompare(alloc, io, mp, oracle, expected, grid, use_metal);
+    if (model_path) |mp| {
+        try visionLanguageCompare(alloc, io, mp, oracle, std.mem.bytesAsSlice(f32, expected), grid, use_metal, "the oracle's rows");
+        try visionLanguageCompare(alloc, io, mp, oracle, features, grid, use_metal, "our rows");
+    }
 }
 
-/// The language model on the oracle's own prompt tokens and feature rows:
-/// the last position's logits against `logits.f32` and the greedy tokens
-/// against `greedy.txt`, so the image span's positions are tested apart
-/// from the projector.
-fn visionLanguageCompare(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, oracle: []const u8, expected: []const u8, grid: inference.vision.qwen3vl.Grid, use_metal: bool) !void {
+/// The language model on the oracle's own prompt tokens and the given
+/// feature rows (the oracle's, which tests the span apart from the
+/// projector, or ours): the last position's logits against `logits.f32`,
+/// the greedy tokens, and teacher forcing through `greedy.txt`.
+fn visionLanguageCompare(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, oracle: []const u8, rows: []align(1) const f32, grid: inference.vision.Grid, use_metal: bool, label: []const u8) !void {
+    std.debug.print("-- the language model on {s}\n", .{label});
     const json_path = try std.fs.path.join(alloc, &.{ oracle, "prompt-tokens.json" });
     defer alloc.free(json_path);
     const json = try std.Io.Dir.cwd().readFileAlloc(io, json_path, alloc, .limited(16 << 20));
     defer alloc.free(json);
-    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
-    defer parsed.deinit();
-    var eng = try inference.engine.Engine.open(alloc, io, model_path, if (use_metal) .metal else .cpu, 2048, .f32, null, .none);
+    var eng = try inference.engine.Engine.open(alloc, io, model_path, if (use_metal) .metal else .cpu, 4096, .f32, null, .none);
     defer eng.deinit();
-    const pad = eng.imagePadId() orelse return error.MissingImageToken;
-    var tokens: std.ArrayList(u32) = .empty;
-    defer tokens.deinit(alloc);
-    for (parsed.value.object.get("chunks").?.array.items) |chunk| {
-        const kind = chunk.object.get("type").?.string;
-        if (std.mem.eql(u8, kind, "text")) {
-            for (chunk.object.get("tokens").?.array.items) |t| try tokens.append(alloc, @intCast(t.integer));
-        } else {
-            const n: usize = @intCast(chunk.object.get("n_tokens").?.integer);
-            for (0..n) |_| try tokens.append(alloc, pad);
-        }
-    }
-    const features = try alloc.alloc(f32, expected.len / 4);
+    const tokens = try oracleTokens(alloc, json, eng.imagePadId() orelse return error.MissingImageToken);
+    defer alloc.free(tokens);
+    const features = try alloc.alloc(f32, rows.len);
     defer alloc.free(features);
-    for (features, 0..) |*v, i| v.* = std.mem.bytesToValue(f32, expected[i * 4 ..][0..4]);
-    const prepared = [_]inference.engine.PreparedImage{.{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens(), .features = features }};
-    const spans = try eng.locateImageSpans(tokens.items, &prepared);
+    for (features, rows) |*v, r| v.* = r;
+    const prepared = [_]inference.engine.PreparedImage{.{ .width_tokens = grid.width_tokens, .height_tokens = grid.height_tokens, .features = features }};
+    const spans = try eng.locateImageSpans(tokens, &prepared);
     defer alloc.free(spans);
     const logits = try alloc.alloc(f32, eng.vocab.tokens.len);
     defer alloc.free(logits);
-    try eng.model.prefillVision(tokens.items, spans, features, logits, null, null, null, null);
+    try eng.model.prefillVision(tokens, spans, features, logits, null, null, null, null);
     const logits_path = try std.fs.path.join(alloc, &.{ oracle, "logits.f32" });
     defer alloc.free(logits_path);
     const want = try std.Io.Dir.cwd().readFileAlloc(io, logits_path, alloc, .limited(16 << 20));
@@ -2058,12 +2148,12 @@ fn visionLanguageCompare(alloc: std.mem.Allocator, io: std.Io, model_path: []con
         if (got > logits[best_ours]) best_ours = i;
         if (w > std.mem.bytesToValue(f32, want[best_ref * 4 ..][0..4])) best_ref = i;
     }
-    std.debug.print("Last-position logits on the oracle's rows ({d} tokens): max abs {e:.3}, argmax {d}/{d}\n", .{ tokens.items.len, max_abs, best_ours, best_ref });
+    std.debug.print("Last-position logits on the oracle's rows ({d} tokens): max abs {e:.3}, argmax {d}/{d}\n", .{ tokens.len, max_abs, best_ours, best_ref });
     eng.model.reset();
     const generated = try alloc.alloc(u32, 16);
     defer alloc.free(generated);
     var sampler = try inference.sampling.Sampler.init(0, .{ .temperature = 0, .top_p = 1, .top_k = 0, .min_p = 0, .presence_penalty = 0, .repetition_penalty = 1 });
-    const outcome = try inference.engine.runLoop(&eng, tokens.items, 16, &sampler, null, .{}, .{ .spans = spans, .features = features }, logits, &.{}, generated, null, null);
+    const outcome = try inference.engine.runLoop(&eng, tokens, 16, &sampler, null, .{}, .{ .spans = spans, .features = features }, logits, &.{}, generated, null, null);
     const greedy_path = try std.fs.path.join(alloc, &.{ oracle, "greedy.txt" });
     defer alloc.free(greedy_path);
     const greedy_text = try std.Io.Dir.cwd().readFileAlloc(io, greedy_path, alloc, .limited(1 << 16));
@@ -2079,34 +2169,18 @@ fn visionLanguageCompare(alloc: std.mem.Allocator, io: std.Io, model_path: []con
     var lines = std.mem.tokenizeScalar(u8, greedy_text, '\n');
     while (lines.next()) |line| try want_ids.append(alloc, try std.fmt.parseInt(u32, std.mem.trim(u8, line, " \r"), 10));
     eng.model.reset();
-    try eng.model.prefillVision(tokens.items, spans, features, logits, null, null, null, null);
+    try eng.model.prefillVision(tokens, spans, features, logits, null, null, null, null);
     var agree: usize = 0;
     for (want_ids.items, 0..) |next, k| {
         var best: usize = 0;
         for (logits, 0..) |v, i| if (v > logits[best]) {
             best = i;
         };
-        if (best == next) agree += 1 else std.debug.print("  step {d}: ours {d} ({d:.2}) vs oracle {d} ({d:.2})\n", .{ k, best, logits[best], next, logits[next] });
+        // The margin: how far the oracle's token is below our best.
+        if (best == next) agree += 1 else std.debug.print("  step {d}: ours {d} ({d:.2}) vs oracle {d} ({d:.2}), margin {d:.2}\n", .{ k, best, logits[best], next, logits[next], logits[best] - logits[next] });
         if (k + 1 < want_ids.items.len) try eng.model.step(next, logits, null, null, null, null);
     }
     std.debug.print("Teacher-forced agreement with the oracle's continuation: {d}/{d}\n", .{ agree, want_ids.items.len });
-    // The same positions through one batched prefill instead of steps: if
-    // these agree where the steps did not, the step path is at fault.
-    for ([_]usize{ 5, 7, 15, 22, 24, 84, 154 }) |k| {
-        if (k >= want_ids.items.len) continue;
-        var extended: std.ArrayList(u32) = .empty;
-        defer extended.deinit(alloc);
-        try extended.appendSlice(alloc, tokens.items);
-        try extended.appendSlice(alloc, want_ids.items[0..k]);
-        eng.model.reset();
-        try eng.model.prefillVision(extended.items, spans, features, logits, null, null, null, null);
-        var best: usize = 0;
-        for (logits, 0..) |v, i| if (v > logits[best]) {
-            best = i;
-        };
-        const next = want_ids.items[k];
-        std.debug.print("  prefill to step {d}: ours {d} ({d:.2}) vs oracle {d} ({d:.2})\n", .{ k, best, logits[best], next, logits[next] });
-    }
 }
 
 fn compareRows(label: []const u8, expected: []const u8, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {

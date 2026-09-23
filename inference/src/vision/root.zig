@@ -11,9 +11,15 @@ pub const image = @import("image.zig");
 pub const preprocess = @import("preprocess.zig");
 pub const qwen3vl = @import("qwen3vl.zig");
 pub const qwen3vl_metal = @import("qwen3vl_metal.zig");
+pub const gemma4 = @import("gemma4.zig");
+pub const projector = @import("projector.zig");
+pub const Projector = projector.Projector;
+pub const Grid = projector.Grid;
 
 test {
     _ = image;
     _ = preprocess;
     _ = qwen3vl;
+    _ = gemma4;
+    _ = projector;
 }

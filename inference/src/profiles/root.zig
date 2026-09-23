@@ -110,7 +110,7 @@ pub const StreamMarkers = struct {
 
 /// The profiles the tree implements. Each tag names a module with the same
 /// surface: `template_sha256`, `render`, `samplingDefaults`, `stop_tokens`,
-/// `reasoning`. Add a profile by adding its tag and module here; nothing
+/// `reasoning`, `image_placeholder`. Add a profile by adding its tag and module here; nothing
 /// else in the tree lists them.
 pub const Profile = enum {
     qwen38,
@@ -209,6 +209,15 @@ pub const Profile = enum {
     pub fn stopTokens(self: Profile) []const []const u8 {
         return switch (self) {
             inline else => |p| &p.module().stop_tokens,
+        };
+    }
+
+    /// The placeholder token an image span repeats in a rendered prompt
+    /// (the engine overwrites those rows with projector features), or null
+    /// for a profile that renders no images.
+    pub fn imagePlaceholder(self: Profile) ?[]const u8 {
+        return switch (self) {
+            inline else => |p| p.module().image_placeholder,
         };
     }
 

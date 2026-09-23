@@ -4,7 +4,9 @@
 //! reads back logits, a greedy token, or a partial top-k; every activation,
 //! norm, gate, routing decision, and cache write stays on the GPU. The
 //! schedule is `gemma4_runtime.zig`'s, which remains the CPU reference these
-//! results are compared against (docs/reference/gemma4.md).
+//! results are compared against (docs/reference/gemma4.md). An image span
+//! is one prefill chunk whose sliding-layer attention is bidirectional
+//! (`prefillVision`; docs/reference/vision.md).
 //!
 //! What this plan asks of the backend beyond the Qwen plan, all of it
 //! decided by the forward pass rather than by this file: the tanh-GELU gate
@@ -252,6 +254,13 @@ pub const Plan = struct {
     /// ([token][feature]); `step` keeps its own single-token buffers above.
     chunk: usize,
     padded: usize,
+    /// The longest image span one chunk takes (`reserveRows`); a span is
+    /// always one chunk, since its rows attend to each other.
+    span_rows: usize,
+    /// A span chunk's feature rows (`padded × hidden`), present once rows
+    /// are reserved; `image_rows` marks the chunk being recorded as a span.
+    image_scratch: ?Buffer,
+    image_rows: ?Buffer,
     x_c: Buffer, // padded × hidden
     normalized_c: Buffer,
     projected_c: Buffer,
@@ -364,18 +373,10 @@ pub const Plan = struct {
         self.penalty_history = try backend.create((vocabulary + 31) / 32 * 4);
         self.penalty_revision = std.math.maxInt(u64);
         self.chunk = chunk;
-        self.padded = metal.Backend.matmulPadded(chunk);
-        const n = self.padded;
-        self.x_c = try backend.create(n * hidden * 4);
-        self.normalized_c = try backend.create(n * hidden * 4);
-        self.projected_c = try backend.create(n * hidden * 4);
-        self.gate_c = try backend.create(n * ffn * 4);
-        self.up_c = try backend.create(n * ffn * 4);
-        self.q_c = try backend.create(n * q_width * 4);
-        self.k_c = try backend.create(n * kv_width * 4);
-        self.v_c = try backend.create(n * kv_width * 4);
-        self.q_c_h = try backend.create(n * q_width * 2);
-        self.mixed_out_c = try backend.create(n * q_width * 4);
+        self.span_rows = 0;
+        self.image_scratch = null;
+        self.image_rows = null;
+        try self.chunkBuffers(chunk);
         self.experts = if (config.experts) |spec| try self.expertBuffers(spec) else null;
         self.has_draft = draft and binding.draft != null;
         if (self.has_draft) {
@@ -397,6 +398,57 @@ pub const Plan = struct {
         }
         return self;
     }
+    /// Creates the `_c` buffers for chunks of up to `rows` rows (the expert
+    /// block's chunk buffers are `expertBuffers`').
+    fn chunkBuffers(self: *Plan, rows: usize) !void {
+        const b = self.backend;
+        const hidden = self.binding.config.embedding;
+        const ffn = self.binding.config.feed_forward;
+        self.padded = metal.Backend.matmulPadded(rows);
+        const n = self.padded;
+        self.x_c = try b.create(n * hidden * 4);
+        self.normalized_c = try b.create(n * hidden * 4);
+        self.projected_c = try b.create(n * hidden * 4);
+        self.gate_c = try b.create(n * ffn * 4);
+        self.up_c = try b.create(n * ffn * 4);
+        self.q_c = try b.create(n * q_width * 4);
+        self.k_c = try b.create(n * kv_width * 4);
+        self.v_c = try b.create(n * kv_width * 4);
+        self.q_c_h = try b.create(n * q_width * 2);
+        self.mixed_out_c = try b.create(n * q_width * 4);
+    }
+
+    /// Grows the chunk buffers so an image span of up to `rows` rows is one
+    /// chunk: they are recreated at the larger size and the old ones freed
+    /// (and the expert block's chunk set likewise). Text prompts keep
+    /// chunking at `chunk`. Valid between steps.
+    pub fn reserveRows(self: *Plan, rows: usize) !void {
+        if (rows == 0 or rows > metal.Backend.max_chunk_rows or rows > self.state.capacity) return error.InvalidShape;
+        if (rows <= self.span_rows) return;
+        const b = self.backend;
+        const old = [_]Buffer{ self.x_c, self.normalized_c, self.projected_c, self.gate_c, self.up_c, self.q_c, self.k_c, self.v_c, self.q_c_h, self.mixed_out_c };
+        const target = @max(rows, self.chunk);
+        try self.chunkBuffers(target);
+        for (old) |buffer| try b.release(buffer);
+        if (self.experts) |*e| {
+            const spec = self.binding.config.experts.?;
+            const fresh = try self.expertBuffers(spec);
+            for ([_]Buffer{ e.router_logits_c, e.indices_c, e.route_weights_c, e.lists, e.gate_up_c, e.hidden_c, e.down_c, e.out_c }) |buffer| try b.release(buffer);
+            for ([_]Buffer{ fresh.router_logits, fresh.indices, fresh.route_weights, fresh.gate_up, fresh.hidden, fresh.down, fresh.out }) |buffer| try b.release(buffer);
+            e.router_logits_c = fresh.router_logits_c;
+            e.indices_c = fresh.indices_c;
+            e.route_weights_c = fresh.route_weights_c;
+            e.lists = fresh.lists;
+            e.gate_up_c = fresh.gate_up_c;
+            e.hidden_c = fresh.hidden_c;
+            e.down_c = fresh.down_c;
+            e.out_c = fresh.out_c;
+        }
+        if (self.image_scratch) |buffer| try b.release(buffer);
+        self.image_scratch = try b.create(self.padded * self.binding.config.embedding * 4);
+        self.span_rows = target;
+    }
+
     fn expertBuffers(self: *Plan, spec: model.Experts) !ExpertBuffers {
         const b = self.backend;
         const hidden = self.binding.config.embedding;
@@ -758,9 +810,51 @@ pub const Plan = struct {
         }
     }
 
+    /// Prefills a prompt with image spans: text runs chunk at `chunk`, and
+    /// each span is one chunk of its projector rows (`features`,
+    /// `Σ span.count × hidden`, unscaled) whose sliding-layer attention is
+    /// bidirectional. Rows are reserved on first need (`reserveRows`).
+    /// `logits` and the selections, when given, refer to the last row.
+    pub fn prefillVision(self: *Plan, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
+        const hidden = self.binding.config.embedding;
+        if (tokens.len == 0) return error.InvalidShape;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        for (spans) |sp| if (sp.count > self.span_rows) try self.reserveRows(sp.count);
+        var i: usize = 0;
+        var si: usize = 0;
+        var frow: usize = 0;
+        while (i < tokens.len) {
+            if (si < spans.len and spans[si].start == i) {
+                const sp = spans[si];
+                if (sp.count == 0 or frow + sp.count > features.len / hidden) return error.InvalidShape;
+                const last = i + sp.count == tokens.len;
+                const scratch = self.image_scratch.?;
+                @memcpy(scratch.floats()[0 .. sp.count * hidden], features[frow * hidden ..][0 .. sp.count * hidden]);
+                self.image_rows = scratch;
+                defer self.image_rows = null;
+                try self.prefillChunk(tokens[i..][0..sp.count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, null, observer);
+                i += sp.count;
+                frow += sp.count;
+                si += 1;
+            } else {
+                const run_end = if (si < spans.len) spans[si].start else tokens.len;
+                while (i < run_end) {
+                    const c = @min(self.chunk, run_end - i);
+                    const last = i + c == tokens.len;
+                    try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, null, observer);
+                    i += c;
+                }
+            }
+        }
+    }
+
     fn prefillChunk(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
         const count = tokens.len;
-        std.debug.assert(count >= 1 and count <= self.chunk);
+        std.debug.assert(count >= 1 and count <= @max(self.chunk, self.span_rows));
         if (penalties) |p| try self.syncPenalties(p);
         try self.state.beginChunk(count);
         errdefer self.state.fail();
@@ -796,9 +890,15 @@ pub const Plan = struct {
     fn recordLayers(self: *Plan, tokens: []const u32, count: usize, observer: ?Observer) !void {
         const b = self.backend;
         const hidden = self.binding.config.embedding;
-        const embedding = try self.weight(self.binding.token_embedding);
-        for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
-        try b.scale(self.x_c, count * hidden, self.binding.config.embeddingScale());
+        if (self.image_rows) |features| {
+            // An image span: the projector's rows are the embeddings,
+            // unscaled (the reference scales token rows only).
+            try b.copy(self.x_c, features, count * hidden);
+        } else {
+            const embedding = try self.weight(self.binding.token_embedding);
+            for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
+            try b.scale(self.x_c, count * hidden, self.binding.config.embeddingScale());
+        }
         const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
         for (self.binding.active(), self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x_c, c.attention_norm, self.normalized_c, norm);
@@ -955,7 +1055,11 @@ pub const Plan = struct {
         // window mask hides the rest per row on sliding layers.
         const first = firstVisible(kind, position);
         const total = position + count - first;
-        try b.attentionChunk(self.stateSlice(cache.keys.range(first, total)), self.stateSlice(cache.values.range(first, total)), queries, self.mixed_out_c, .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = precision, .window = if (kind == .sliding) model.window else 0 });
+        // An image span chunk is bidirectional on sliding layers only (the
+        // reference's `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`); rows, rotary
+        // positions, and cache rows are the same positions either way.
+        const span: metal.Backend.Span = if (self.image_rows != null and kind == .sliding) .{ .begin = 0, .end = count } else .{};
+        try b.attentionChunk(self.stateSlice(cache.keys.range(first, total)), self.stateSlice(cache.values.range(first, total)), queries, self.mixed_out_c, .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = precision, .window = if (kind == .sliding) model.window else 0, .span = span });
         try self.mmRows(layer.output, self.mixed_out_c, qw, self.projected_c, hidden, count);
     }
 

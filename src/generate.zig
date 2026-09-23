@@ -224,9 +224,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         const ids = try eng.encode(prompt);
         errdefer alloc.free(ids);
         image_spans = try eng.locateImageSpans(ids, prepared);
-        var rows: usize = 0;
-        for (prepared) |p| rows += p.tokens();
-        image_features = try alloc.alloc(f32, rows * inference.vision.qwen3vl.output_width);
+        var floats: usize = 0;
+        for (prepared) |p| floats += p.features.len;
+        image_features = try alloc.alloc(f32, floats);
         var off: usize = 0;
         for (prepared) |p| {
             @memcpy(image_features[off..][0..p.features.len], p.features);

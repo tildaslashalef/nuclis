@@ -40,6 +40,8 @@ pub const stop_tokens = [_][]const u8{ "<turn|>", "<eos>", "<|tool_response>" };
 /// How the model delimits its reasoning in generated text: a thought
 /// channel opened by `<|channel>thought\n` and closed by `<channel|>`. Both
 /// markers are user-defined tokens the decoder always renders as text.
+/// The image span placeholder, inside `<|image>` … `<image|>`.
+pub const image_placeholder: ?[]const u8 = "<|image|>";
 pub const reasoning: profiles.Reasoning = .{ .open = "<|channel>thought\n", .close = "<channel|>" };
 pub const stream_markers: profiles.StreamMarkers = .{
     .open = "<|channel>",
@@ -140,6 +142,16 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
                 responded = true;
             }
         }
+        // Gemma 4's image markers, one run per image, before the text: the
+        // reference's `<|image>` … `<image|>` around `count` placeholders the
+        // engine's spans overwrite with projector rows.
+        if (message.role == .user) for (message.images) |image| {
+            try builder.add("<|image>");
+            var n: usize = 0;
+            const count = @as(usize, image.width_tokens) * image.height_tokens;
+            while (n < count) : (n += 1) try builder.add(image_placeholder.?);
+            try builder.add("<image|>");
+        };
         const content = trim(own_content orelse message.content);
         try builder.add(content);
         var next: ?Role = null;
@@ -724,6 +736,21 @@ const Fixture = struct {
     preserve_thinking: bool,
     prompt_cases: []const struct { name: []const u8, effort: Effort, messages: []const Message, prompt: []const u8, tokens: []const u32 },
 };
+
+test "a user image renders the image markers before the text" {
+    const alloc = std.testing.allocator;
+    const refs = [_]profiles.ImageRef{.{ .width_tokens = 3, .height_tokens = 2 }};
+    const prompt = try render(alloc, &.{.{ .role = .user, .content = "describe this image", .images = &refs }}, &.{}, .off, .{});
+    defer alloc.free(prompt);
+    var run: [6 * "<|image|>".len]u8 = undefined;
+    for (0..6) |i| @memcpy(run[i * 9 ..][0..9], "<|image|>");
+    const expected = "<bos><|turn>user\n<|image>" ++ run ++ "<image|>describe this image<turn|>\n<|turn>model\n<|channel>thought\n<channel|>";
+    try std.testing.expectEqualStrings(expected, prompt);
+    // Images on a message of another role are not rendered.
+    const plain = try render(alloc, &.{.{ .role = .user, .content = "describe this image" }}, &.{}, .off, .{});
+    defer alloc.free(plain);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "<|image") == null);
+}
 
 test "text prompts match the pinned reference fixtures, `<bos>` prepended" {
     const alloc = std.testing.allocator;

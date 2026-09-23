@@ -133,10 +133,24 @@ int nu_metal_buffer_wrap(void * opaque, const void * bytes, size_t length, uint3
     }
 }
 
+static bool released(NuMetal * m, uint32_t index) {
+    return [(id)m->buffers[index] isKindOfClass:[NSNull class]];
+}
+
 void * nu_metal_buffer_contents(void * opaque, uint32_t index) {
     NuMetal * m = opaque;
-    if (index >= m->buffers.count) return NULL;
+    if (index >= m->buffers.count || released(m, index)) return NULL;
     return m->buffers[index].contents;
+}
+
+// Frees a created buffer's memory before the handle is destroyed; its id is
+// never reused and binding it afterwards fails the dispatch. Only valid
+// after the last commit that used it (commit waits, so any time between).
+int nu_metal_buffer_release(void * opaque, uint32_t index) {
+    NuMetal * m = opaque;
+    if (m->command || index >= m->buffers.count || released(m, index)) return 1;
+    [m->buffers replaceObjectAtIndex:index withObject:(id)[NSNull null]];
+    return 0;
 }
 
 // Opens a command buffer with one serial compute pass: dispatches execute in
@@ -185,7 +199,7 @@ int nu_metal_dispatch(void * opaque, uint32_t pipeline, const NuBinding * bindin
         id<MTLComputePipelineState> state = m->pipelines[pipeline];
         if (threads_x * threads_y > state.maxTotalThreadsPerThreadgroup) return 1;
         for (uint32_t i = 0; i < count; ++i) {
-            if (bindings[i].buffer >= m->buffers.count) return 1;
+            if (bindings[i].buffer >= m->buffers.count || released(m, bindings[i].buffer)) return 1;
             id<MTLBuffer> buffer = m->buffers[bindings[i].buffer];
             if (bindings[i].offset >= buffer.length) return 1;
         }

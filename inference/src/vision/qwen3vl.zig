@@ -79,20 +79,20 @@ pub const Binding = struct {
     bytes: u64,
 };
 
-fn stringValue(doc: *const gguf.Document, key: []const u8) Error![]const u8 {
+pub fn stringValue(doc: *const gguf.Document, key: []const u8) Error![]const u8 {
     return switch (doc.get(key) orelse return error.MissingMetadata) {
         .string => |s| s,
         else => error.InvalidMetadata,
     };
 }
-fn unsignedValue(doc: *const gguf.Document, key: []const u8) Error!u64 {
+pub fn unsignedValue(doc: *const gguf.Document, key: []const u8) Error!u64 {
     return switch (doc.get(key) orelse return error.MissingMetadata) {
         .unsigned => |n| n,
         .signed => |n| if (n >= 0) @intCast(n) else error.InvalidMetadata,
         else => error.InvalidMetadata,
     };
 }
-fn floatTriple(doc: *const gguf.Document, key: []const u8) Error![3]f32 {
+pub fn floatTriple(doc: *const gguf.Document, key: []const u8) Error![3]f32 {
     const array = switch (doc.get(key) orelse return error.MissingMetadata) {
         .array => |a| a,
         else => return error.InvalidMetadata,
@@ -141,12 +141,12 @@ fn validateMetadata(doc: *const gguf.Document) Error!void {
     };
 }
 
-const Binder = struct {
+pub const Binder = struct {
     remaining: std.StringHashMap(*const Tensor),
     tensors: u32 = 0,
     bytes: u64 = 0,
 
-    fn take(self: *Binder, name: []const u8, dimensions: []const u64, f32_only: bool) Error!*const Tensor {
+    pub fn take(self: *Binder, name: []const u8, dimensions: []const u64, f32_only: bool) Error!*const Tensor {
         const entry = self.remaining.fetchRemove(name) orelse return error.MissingTensor;
         const tensor = entry.value;
         if (!std.mem.eql(u64, tensor.dimensions, dimensions)) return error.InvalidTensorShape;
@@ -158,14 +158,14 @@ const Binder = struct {
         self.bytes = std.math.add(u64, self.bytes, tensor.bytes) catch return error.InvalidTensorShape;
         return tensor;
     }
-    fn named(self: *Binder, comptime fmt: []const u8, args: anytype, dimensions: []const u64, f32_only: bool) Error!*const Tensor {
+    pub fn named(self: *Binder, comptime fmt: []const u8, args: anytype, dimensions: []const u64, f32_only: bool) Error!*const Tensor {
         var name: [96]u8 = undefined;
         return self.take(std.fmt.bufPrint(&name, fmt, args) catch unreachable, dimensions, f32_only);
     }
-    fn norm(self: *Binder, comptime prefix: []const u8, args: anytype, width: u64) Error!Norm {
+    pub fn norm(self: *Binder, comptime prefix: []const u8, args: anytype, width: u64) Error!Norm {
         return .{ .weight = try self.named(prefix ++ ".weight", args, &.{width}, true), .bias = try self.named(prefix ++ ".bias", args, &.{width}, true) };
     }
-    fn linear(self: *Binder, comptime prefix: []const u8, args: anytype, columns: u64, rows: u64) Error!Linear {
+    pub fn linear(self: *Binder, comptime prefix: []const u8, args: anytype, columns: u64, rows: u64) Error!Linear {
         return .{ .weight = try self.named(prefix ++ ".weight", args, &.{ columns, rows }, false), .bias = try self.named(prefix ++ ".bias", args, &.{rows}, true) };
     }
 };
@@ -466,6 +466,10 @@ pub const Runtime = struct {
 
 /// LayerNorm with weight and bias, statistics in F64.
 pub fn layerNorm(input: []const f32, output: []f32, weight: []const f32, bias: []const f32) void {
+    layerNormEpsilon(input, output, weight, bias, norm_epsilon);
+}
+/// `layerNorm` with a caller's epsilon.
+pub fn layerNormEpsilon(input: []const f32, output: []f32, weight: []const f32, bias: []const f32, epsilon: f32) void {
     var sum: f64 = 0;
     for (input) |v| sum += v;
     const mean = sum / @as(f64, @floatFromInt(input.len));
@@ -474,7 +478,7 @@ pub fn layerNorm(input: []const f32, output: []f32, weight: []const f32, bias: [
         const d = v - mean;
         sq += d * d;
     }
-    const scale = 1.0 / @sqrt(sq / @as(f64, @floatFromInt(input.len)) + @as(f64, norm_epsilon));
+    const scale = 1.0 / @sqrt(sq / @as(f64, @floatFromInt(input.len)) + @as(f64, epsilon));
     for (output, input, weight, bias) |*o, v, w, b| o.* = @floatCast((v - mean) * scale * w + b);
 }
 
