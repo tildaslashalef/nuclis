@@ -6,6 +6,11 @@
 //   reference-vision MODEL MMPROJ IMAGE PROMPT OUTDIR [--cpu-vision]
 //                    [--n-predict N] [--trace NAME[,NAME...]]
 //                    [--image-min-tokens N] [--image-max-tokens N]
+//                    [--n-ctx N] [--vision-flash]
+//
+// --vision-flash runs the projector's attention as the reference's flash
+// attention (F16 keys and values): without it a global layer over 16K
+// patches (Muse Glimmer's largest grid) materializes a 17 GB score matrix.
 //
 // PROMPT is the rendered prompt text (special tokens parsed) with the
 // marker <__media__> where the image goes. Written to OUTDIR:
@@ -66,13 +71,15 @@ static bool trace_cb(ggml_tensor * t, bool ask, void * opaque) {
 
 int main(int argc, char ** argv) {
     if (argc < 6) {
-        std::fprintf(stderr, "usage: %s MODEL MMPROJ IMAGE PROMPT OUTDIR [--cpu-vision] [--n-predict N] [--trace NAMES] [--list-nodes]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s MODEL MMPROJ IMAGE PROMPT OUTDIR [--cpu-vision] [--n-predict N] [--trace NAMES] [--list-nodes] [--image-min-tokens N] [--image-max-tokens N] [--n-ctx N] [--vision-flash]\n", argv[0]);
         return 2;
     }
     const std::string model_path = argv[1], mmproj_path = argv[2], image_path = argv[3], prompt = argv[4], outdir = argv[5];
     bool cpu_vision = false;
     int n_predict = 8;
     int image_min_tokens = -1, image_max_tokens = -1;
+    int n_ctx = 4096;
+    bool vision_flash = false;
     Trace trace; trace.directory = outdir;
     for (int i = 6; i < argc; i++) {
         if (!std::strcmp(argv[i], "--cpu-vision")) cpu_vision = true;
@@ -80,6 +87,8 @@ int main(int argc, char ** argv) {
         else if (!std::strcmp(argv[i], "--list-nodes")) trace.list = true;
         else if (!std::strcmp(argv[i], "--image-min-tokens") && i + 1 < argc) image_min_tokens = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--image-max-tokens") && i + 1 < argc) image_max_tokens = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--n-ctx") && i + 1 < argc) n_ctx = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--vision-flash")) vision_flash = true;
         else if (!std::strcmp(argv[i], "--trace") && i + 1 < argc) {
             std::string s = argv[++i];
             size_t start = 0;
@@ -98,8 +107,8 @@ int main(int argc, char ** argv) {
     llama_model * model = llama_model_load_from_file(model_path.c_str(), mparams);
     if (!model) { std::fprintf(stderr, "model load failed\n"); return 1; }
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = 4096;
-    cparams.n_batch = 4096;
+    cparams.n_ctx = n_ctx;
+    cparams.n_batch = n_ctx;
     // A non-causal image (Gemma 4) must fit one ubatch: the largest is 1,120 tokens.
     cparams.n_ubatch = 2048;
     cparams.type_k = GGML_TYPE_F32;
@@ -113,7 +122,7 @@ int main(int argc, char ** argv) {
     vparams.n_threads = 8;
     vparams.print_timings = false;
     vparams.warmup = false;
-    vparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    vparams.flash_attn_type = vision_flash ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
     vparams.image_min_tokens = image_min_tokens;
     vparams.image_max_tokens = image_max_tokens;
     if (!trace.names.empty() || trace.list) { vparams.cb_eval = trace_cb; vparams.cb_eval_user_data = &trace; }

@@ -174,7 +174,14 @@ is one contiguous bidirectional range per dispatch, and the SigLIP
 attention at 9,900 rows of 72-wide heads runs under 1 TFLOP/s (13.7 of a
 17.1 s encode). Every Gemma chat turn after the first re-prefills the
 conversation (`replayed`), images included.
-**Next: MODL-23** (Muse Glimmer's vision; its section below).
+**Next: MODL-23 session 2**, the implementation. Session 1 (the facts,
+2026-09-23) rewrote its section below, pinned the synthetic fixture, and
+left the aerial photo's oracle under `.zig-cache/vision/muse/photo-metal/`.
+Three facts change the earlier sketch: the cap is 4,096 tokens (16,384
+patches, not the 896² warm-up), the pixel shuffle interleaves channels
+(`c·4 + s`), and the reference's own CPU and Metal encoders part at block
+33, where the network turns one or two patches into sinks, so rows are
+compared tightly only through block 32.
 **AGNT-12 (background commands) was dropped on 2026-09-22**, the user's
 call after AGNT-13's measurement: a step costs 10–100 s on this engine, so
 the model has nothing to do while a command runs in the background, no
@@ -308,7 +315,7 @@ manifest.
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-23 | Muse Glimmer's windowed vision encoder | 2 |
+| MODL-23 | Muse Glimmer's windowed vision encoder (session 1, the facts, done) | 2 |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
 | TERM-13 | Exiting after an image preview leaves the picture and the header's top edge on screen (reported 2026-09-23, deferred by the user; see its section) | 1 |
 
@@ -452,9 +459,9 @@ bridge is. Bounds are host constants: image bytes ≤ 32 MiB, decoded pixels
 profile renders into its family's marker tokens: Qwen3.8 `<|vision_start|>`
 + `count × <|image_pad|>` + `<|vision_end|>` (ids 248053, 248056, 248054);
 Gemma 4 `<|image>` + `count × <|image|>` + `<image|>` (ids 255999,
-258880, 258882; no newlines, MODL-22); Muse `<|image_start|>` …
-`<|image_end|>` with `<|patch|>` placeholders (ids 200080, 200081, 200092;
-the exact layout read in MODL-23). `Engine.encode` stays text-only; after
+258880, 258882; no newlines, MODL-22); Muse `<|image_start|>` +
+`count × <|patch|>` + `<|image_end|>` (ids 200080, 200092, 200081; no
+newlines, MODL-23's facts). `Engine.encode` stays text-only; after
 encoding, `engine.locateImageSpans(tokens, placeholder_id)` finds the runs
 and pairs them in order with the features, giving `Prompt { tokens, spans:
 []ImageSpan { start, count, features, grid } }`. `Executor.prefill` /
@@ -477,7 +484,8 @@ positions on both executors. Gemma 4's language model attends
 bidirectionally inside an image span on its sliding-window layers only
 (`hparams.non_causal_type = LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`, the reference's
 `gemma4.cpp:23-25`); MODL-22 added the chunk attention's `span`.
-Muse's language model is unchanged by images.
+Muse's language model is causal with plain positions over an image; its
+weightless input norm applies to the feature rows too (MODL-23's facts).
 
 **The oracle.** The pinned checkout's `tools/mtmd/` (`clip.cpp`, the
 projector graphs under `models/qwen3vl.cpp`, `gemma4uv.cpp`, `gemma4v.cpp`,
@@ -495,7 +503,7 @@ projector files' facts, read on 2026-09-20 with `scripts/gguf-inventory.py`:
 | Qwen3.8-27B | `mmproj-BF16.gguf` (931 MB; 224 F32, 110 BF16) | `qwen3vl_merger` | 27 blocks, 1152 wide, FFN 4304, 16 heads, GELU, eps 1e-6, image_size 768 | 16 | 2 | 5120 | `is_deepstack_layers` all 0: no deepstack in this file; mean/std 0.5 |
 | Gemma 4 12B | `mmproj-BF16.gguf` (175 MB; 11 tensors) | `gemma4uv` (+ `gemma4ua` audio, not planned) | none: patches → LayerNorm → linear 768→3840 → LayerNorm → learned x/y tables → LayerNorm → RMSNorm → `mm_input_proj` | 16 | — | 3840 | image_size 224; the language model does the vision work (bidirectional SWA layers) |
 | Gemma 4 26B-A4B | `mmproj-BF16.gguf` (1.19 GB; 356 tensors) | `gemma4v` | 27 blocks, 1152 wide, FFN 4304 (SigLIP), avg-pool by merge, RMSNorm, `mm_input_proj` | 16 | read | 2816 | image_size 224 |
-| Muse Glimmer 30B | `mmproj-kquant.gguf` (1.4 GB; Q4_K 200, Q6_K 100, BF16 3, F32 506) | `muse-glimmer` | 50 blocks, 1536 wide, FFN 8960, 16 heads, 2D RoPE base 1e4, windowed attention (every 4th and the last layer global), pixel-shuffle ×2, adapter 6144→4096→4096 GELU, projection 4096→6656 | 14 | 2 | 6656 | image_size 896; grid by aspect-preserving search under a token cap |
+| Muse Glimmer 30B | `mmproj-kquant.gguf` (1.4 GB; Q4_K 200, Q6_K 100, BF16 3, F32 506) | `muse-glimmer` | 50 blocks, 1536 wide, FFN 8960, 16 heads, 2D RoPE base 1e4, windowed attention (every 4th and the last layer global), pixel-shuffle ×2, adapter 6144→4096→4096 erf GELU, projection 4096→6656 | 14 | 2 | 6656 | image_size 896 is the warm-up only; grid by aspect-preserving search under 4,096 tokens (16,384 patches), Lanczos stretch |
 
 None of the four files carries `image_min_pixels`/`image_max_pixels`; the
 reference's per-projector defaults (`clip.cpp` ≈ 1627 for gemma4v, 1653
@@ -536,33 +544,166 @@ requirements (MODL-21) and the chat's attachment rules (AGNT-15).
 
 ## MODL-23 — Muse Glimmer's windowed vision encoder
 
-**Session 1 (facts).** Read `muse-glimmer.cpp` (the host-computed inputs:
-`pos_w/pos_h` 1-indexed 2D RoPE positions in window order, `sp_perm` /
-`inv_perm` window grouping, `ds_perm` pixel-shuffle gather, `sp_mask`
-block-diagonal window mask on the sparse layers; the adapter and the
-projection), `clip.cpp`'s MUSE_GLIMMER branch (≈ 1683: `patch_temporal =
-2`, `sparse_factor = 4`; `set_input` ≈ 4582–4650 for the permutations),
-`mtmd-image.cpp:1678-1760` (`muse_glimmer_grid_size`: the aspect-preserving
-grid under `max_tokens = image_max_pixels / (14 · 14 · 4)`, a stretch
-resize without padding), and `mtmd.cpp`'s template with `<|patch|>`
-placeholders. Pin the fixture trace; rewrite this section.
+**Facts (read 2026-09-23 from the pinned `7620399f5` and the file).**
 
-**Design.** `vision/muse_glimmer.zig`: preprocessing per the grid search;
-the window permutation and mask computed on the host as the reference
-does; 50 blocks with 2D RoPE (the existing RoPE kernel with a per-row
-position pair) and the chunk attention kernel with the block-diagonal
-mask on sparse layers and a full mask on global ones: MODL-22's
-`AttentionChunkShape.span` is one contiguous bidirectional range, so after
-the window permutation each window is one dispatch with its rows as the
-span (or the span generalizes to a window size); pixel shuffle as a gather; the adapter MLP and
-the projection through the existing Q4_K/Q6_K matmul tiles (the file is
-K-quant). Memory: the 896 × 896 grid is 4,096 patches before the shuffle.
+*The file.* `mmproj-kquant.gguf` (1.40 GB), `clip.projector_type =
+muse-glimmer`, mean/std 0.5, LayerNorm eps **1e-5**
+(`clip.vision.attention.layer_norm_epsilon`), `image_size` 896 (the
+warm-up only), patch 14, merge 2 (`clip.vision.spatial_merge_size`).
+50 blocks × 16 tensors: `ln1`/`ln2` weight + bias F32 [1536];
+`attn_q`/`attn_k`/`attn_out` **Q4_K** and `attn_v` **Q6_K** [1536, 1536],
+each with an F32 bias; `ffn_up` Q4_K [1536, 8960] + bias, `ffn_down` Q6_K
+[8960, 1536] + bias, **no gate**. `v.pre_ln`/`v.post_ln` weight + bias;
+`v.patch_embd.weight` F32 [14, 14, 3, 1536], **no patch bias**;
+`v.position_embd.weight` F32 [1536, 1024] (a 32×32 grid); `mm.0` BF16
+[6144, 4096], `mm.1` BF16 [4096, 4096], `mm.2` BF16 [4096, 6656], no
+biases. `muse_glimmer_patch_temporal = 2` is set in `clip.cpp:1688` and
+read nowhere (the kernel is already 2-D).
 
-**Acceptance.** The three checks of *The lesson of MODL-24* above, at the
-896×896 grid (4,096 patches before the shuffle), with the window
-permutation's cache and rotary indices named in this section. Trace within tolerance on both executors; greedy tokens;
-the Muse compare targets unchanged; the mask fixture; captions recorded;
-`make check`.
+*Preprocessing* (`mtmd-image.cpp:1682-1739`). `max_tokens =
+image_max_pixels / (14·14·2·2)` with `set_limit_image_tokens(1, 4096)`:
+**up to 4,096 tokens, 16,384 patches** (not the 896² warm-up). The grid is
+transformers' `get_aspect_ratio_preserving_size` on 28-pixel units: scale
+`(h/28, w/28)` down to `max_tokens` keeping the ratio, try floor/ceil of
+each side, keep the pair under the cap closest to `h/w` (ties to more
+tokens; none fits → round and clamp at 1). Then a **stretch** resize to
+`(28·w, 28·h)` with Pillow's **Lanczos** (support 3, `sinc(x)·sinc(x/3)`,
+the same 22-bit separable resampler as our bicubic), no padding;
+`(v/255 − 0.5)/0.5` on the host; the im2col rounds the patch values to
+**F16** (`node_0 [588, …] f16`), channel-planar (588 = 3·14·14), raster.
+The synthetic 96×64 → 84×56 px, 6×4 patches, **3×2 tokens**; the aerial
+photo 3840×2160 → 2380×1344, 170×96 patches, **85×48 = 4,080 tokens**.
+
+*The graph* (`models/muse-glimmer.cpp`, `clip.cpp` `build_vit` and the
+`set_input` branch at 4582–4645). Per patch: conv (no bias) + the position
+table **bilinearly resized half-pixel** (`pixel_offset 0.5`, edges clamped,
+no antialias; not Qwen's aligned corners; returned as is when the grid is
+32×32), raster order. Then `sp_perm` groups the patches into **32×32-patch
+windows** (the table's side), windows in raster order and patches raster
+within each (edge windows partial), and every block runs in that order:
+`pre_ln` (LayerNorm + bias), then 50 × { `h = LN(x)·ln1 + b`; q/k/v =
+W·h + bias; **2-D RoPE, GGUF normal (adjacent pairs)**, base 1e4: channels
+[0,48) pairs (2i, 2i+1) turn by `pos_w·10000^(−i/24)`, channels [48,96)
+pairs (48+2i, 49+2i) by `pos_h·10000^(−i/24)`, i < 24, positions
+**1-indexed** from the patch's original grid cell; attention scale
+1/√96 over the **window's rows** on sparse layers and **all rows** on the
+13 global ones (`il = 49` or `(il + 1) % 4 == 0`: 3, 7, …, 47, 49);
+`x += W_o·attn + b`; `x += W_down·gelu_erf(W_up·LN(x)·ln2 + b) + b` }
+(exact **erf** GELU, not our tanh form); `post_ln`; `inv_perm` back to
+raster. The **pixel shuffle is interleaved**: merged token o = (oy, ox)
+has element **`c·4 + s`** = channel c of patch (2oy + ry, 2ox + rx),
+s = 2ry + rx (checked against the trace: exact, while Qwen's
+concatenation `s·1536 + c` is off by 7.4). Adapter: `mm.0` 6144→4096,
+erf GELU, `mm.1` 4096→4096, erf GELU, `mm.2` 4096→6656.
+
+*The language model.* The reference writes `<|image_start|>` (200080) +
+the rows + `<|image_end|>` (200081) where the media marker was, no
+newlines; the GGUF template's own image part (a single `<|patch|>`,
+200092) is not what the reference renders. Causal (`mtmd_decode_use_non_causal`
+is false), plain positions (`MTMD_POS_TYPE_NORMAL`: the synthetic span sat
+at 43–48): the cache row, the rotary position, and the visible count stay
+one value. `build_inp_embd` feeds the image rows through the same
+weightless **`embd_norm`** as token rows (`src/models/muse-glimmer.cpp:73-74`),
+so our feature rows go into `x_c` *before* that RMS norm.
+
+*The oracle.* `scripts/reference-vision.cpp` gains `--n-ctx N` (the photo
+needs 4,130 positions) and `--vision-flash` (the projector's attention as
+the reference's flash attention: without it a global layer over 16K
+patches materializes a 17 GB score matrix); rebuild as in
+[vision.md § Gemma 4's projectors](docs/reference/vision.md#gemma-4s-projectors-modl-22-2026-09-23).
+Prompt (our rendering, thinking off → `low`):
+`<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\nKnowledge cutoff: 2026-01-04.\n\nReasoning strength: low.\n\n# Valid recipients: "self", "user".<|eot|><|start|>user<|message|><__media__>describe this image<|eot|><|start|>assistant`.
+`inference/src/vision/fixtures/muse-glimmer-synthetic/` holds the
+reference's Metal rows (`features.f32`, 6 × 6656), `prompt-tokens.json`
+(43 text tokens ending 200080, the 6-row span at 43–48, then `200081 30402
+544 3371 200008 200022 140680`), the 16 best last logits (328 at 18.89,
+next −5.05: the first token barely depends on the image), 8 greedy tokens
+`328 19669 200023 30402 544 3371 368 954`, and `layer-out-30.f32` (24 ×
+1536, window order = raster here). `fixtures/muse-glimmer-mmproj.json` is
+the file's inventory. The photo's oracle directory is
+`.zig-cache/vision/muse/photo-metal/` (`--n-ctx 8192 --vision-flash`,
+200 greedy tokens; the answer names Lake Tahoe, turquoise water, granite
+boulders, snow-capped mountains, a pine on the shore; 116 s end to end,
+22 GB resident); not committed.
+
+*The reference disagrees with itself past layer 32.* Its CPU and Metal
+encoders on the synthetic fixture (relative RMS of the difference):
+`pre_ln` 7.6e-4, block 0 1.4e-2, 3 1.2e-2, 10 1.0e-2, 20 1.3e-2, 30
+1.8e-2, 32 7.6e-2, **33 0.63**, 49 0.18, `encoder_out` 0.44, rows 0.26 —
+yet the last logits agree to 3.8e-3 and all 12 greedy tokens match. At
+block 33 the FFN makes one or two patches **sinks** on channel 1082
+(Metal: patches 0 and 17 at −420/−396; CPU: patch 0 alone at −910), and
+which patches become sinks flips with rounding (the CPU's Q8_K
+activations against the Metal's F16). So rows can be compared tightly only
+through block 32; past it, the check is the language model's output.
+
+**Design.**
+- `preprocess.zig`: the resampler's filter becomes a parameter
+  (`bicubic`, `lanczos`); `resizeLanczos` beside `resizeBicubic`.
+- `vision/muse_glimmer.zig`: the constants above; `bind` (the types
+  listed; any other encoding is refused); `gridFor(size, max_tokens)` (the
+  search, with a caller's cap for the checks); `Layout` built once per
+  grid on the host: `order` (window order → raster patch), `windows`
+  (`{ begin, count }` in window order), and the pixel-shuffle gather;
+  `positionRows` (half-pixel bilinear); `ropeTable` (48 pairs per row:
+  pair j < 24 turns by `pos_w·10000^(−j/24)`, pair j ≥ 24 by
+  `pos_h·10000^(−(j−24)/24)`, `Pairing.adjacent`); `Runtime`, the CPU
+  reference in F64 accumulation, rows in window order throughout.
+- `vision/muse_glimmer_metal.zig`: `Plan`. The host writes the patch rows
+  and the position rows **already in window order** (the conv and the
+  table add are per row, so permuting their inputs replaces `sp_perm`);
+  the patch matmul (F32 kernel, F16-rounded values); 50 blocks of the
+  existing `layerNorm`, K-quant `matmul` + `addBiasRows` (q, k, v, out,
+  up, down), `ropeRows(.adjacent)`, attention (sparse: `attentionFull`
+  once per window on slices, ≤ 1,024 rows, width 96; global:
+  `attentionChunk` with `span = { 0, n }` over all rows, as Gemma's
+  SigLIP), and a new erf `geluErf` kernel (with `cpu.geluErf`);
+  `post_ln`; `inv_perm` + the interleaved shuffle as one host gather
+  between two command buffers (as Gemma's pool; a kernel only if it
+  measures slow); the BF16 adapter. Buffers sized for 16,384 patches:
+  x, h, q, k, v, attention 101 MB each, up 587 MB (≈ 1.2 GB with the
+  weights' 1.40 GB, an estimate).
+- `vision/root.zig`: `Projector` gains `.muse_glimmer`; `loadVision`
+  needs no row reservation (causal spans chunk like Qwen's).
+- Profile: `image_placeholder = "<|patch|>"`; a user message with images
+  renders `<|image_start|>` + `count × <|patch|>` + `<|image_end|>` before
+  its text (as Gemma's), and the three markers join the rejected content
+  markers.
+- `muse_glimmer_metal.zig` / `muse_glimmer_runtime.zig` gain
+  `prefillVision`: text runs and spans chunk separately (Qwen's causal
+  path); a span's rows copy the features into `x_c` in place of `embed`,
+  then the same weightless `rmsNorm` runs over every row.
+- **Indices each kernel receives** (lesson 3). Encoder: the row index is
+  the window-order index r, used for every matmul, norm, and attention
+  row; the rotary position of row r is `(pos_w, pos_h)` = `(o % grid_w + 1,
+  o / grid_w + 1)` with `o = order[r]`, never r; a sparse layer's keys are
+  its window's `[begin, begin + count)`, a global layer's `[0, n)`. The
+  gather reads row `order⁻¹[patch]`. Language model: cache row = rotary
+  position = visible count = `state.position` + row, as for text.
+- Speculation: `images_fed` (`src/agent/loop.zig`) already keeps it off
+  after an image until `reset`, so Muse (on by default) decodes an image
+  conversation without its drafter; keep that, record it in vision.md.
+  Feeding the image prefill's hidden rows to the drafter is a later unit.
+
+**Acceptance.**
+1. The synthetic fixture on both executors: prompt tokens equal to the
+   oracle's; `layer-out-30` within the reference's own spread there
+   (≤ 2e-2 relative RMS); the rows' relative RMS reported, not gated
+   (the sinks); the 16 top logits and the 8 greedy tokens on the pinned
+   rows and on our own rows.
+2. Decode after an image equals one prefill (bound 2e-2) on both
+   executors, the planted fault caught once.
+3. The aerial photo at 4,080 tokens (16,320 patches, 18 windows, the last
+   column 10 patches wide) against `photo-metal`: teacher-forced agreement
+   with the reference's 200-token answer ≥ 97 %, or explained by margins
+   under 0.3; the rows' relative RMS and the encode time recorded.
+4. Host-logic tests: `gridFor` against the reference's choices (the two
+   fixtures, a tall image, one over the cap), `Layout` on a 66×34-patch
+   grid (partial windows) against a hand-computed permutation, Lanczos
+   against a Pillow-computed fixture; the window attention on the kernel
+   with a poisoned row outside the window.
+5. The Muse text gates unchanged (`make verify`), `make check`, a caption
+   in the chat through the harness.
 
 ## APPS-14 — Teacher-forced `eval` (drafted 2026-09-20 for decision)
 
