@@ -126,6 +126,9 @@ const Ui = struct {
     /// The session is being primed: the live region shows the warm-up row
     /// instead of a turn, and the bar carries no loop step.
     warming: bool = false,
+    /// Work before a turn (the projector loading, an image encoding) is
+    /// running: busy with this label in the live region, no loop step.
+    preparing: ?[]const u8 = null,
     /// A `!` command is running: busy, but no loop step on the bar.
     shell: bool = false,
     /// The project instructions file in the prompt, for the warm-up notice.
@@ -247,7 +250,7 @@ const Ui = struct {
         bar.draft_length = self.draft_length;
         bar.kv = self.kv_label;
         bar.backend = @tagName(self.eng.backend);
-        if (self.busy and !self.warming and !self.shell) {
+        if (self.busy and !self.warming and !self.shell and self.preparing == null) {
             bar.prompt_tokens = self.stats.prompt_tokens;
             bar.generated = self.stats.generated;
             bar.replayed = self.stats.replayed;
@@ -302,6 +305,8 @@ const Ui = struct {
         const max_live = ((size.rows -| editor_cap) -| list.len) -| 5;
         if (self.busy and self.warming) {
             try rows.append(a, .{ .text = try self.warmingLabel(a), .style = .thinking_header });
+        } else if (self.busy and self.preparing != null) {
+            try rows.append(a, .{ .text = try self.preparingLabel(a), .style = .thinking_header });
         } else if (self.busy) {
             const live = try self.tr.liveRows(a, .{
                 .width = columns,
@@ -535,15 +540,19 @@ const Ui = struct {
         const resolved = engine.visionPath(self.alloc, self.model_path, mmproj) catch return false;
         const path = resolved orelse return false;
         defer self.alloc.free(path);
-        self.status = "loading projector…";
-        self.draw() catch {};
+        const was_busy = self.busy;
+        const was_preparing = self.preparing;
+        self.beginPreparing("loading the image projector");
+        defer {
+            self.endPreparing();
+            self.busy = was_busy;
+            self.preparing = was_preparing;
+        }
         self.eng.loadVision(path) catch |err| {
             var note: [160]u8 = undefined;
             self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — no vision support yet for this model: {s} loading the projector", .{@errorName(err)}) catch "  — no vision support yet for this model" }) catch {};
-            self.status = "ready";
             return false;
         };
-        self.status = "ready";
         return true;
     }
 
@@ -961,6 +970,28 @@ const Ui = struct {
 
     /// The warm-up's row in the region: what is being prefilled, how far,
     /// and the bar's own estimate of what is left.
+    fn preparingLabel(self: *Ui, a: std.mem.Allocator) ![]const u8 {
+        const gl = self.th.glyphs();
+        const spin = gl.spinner[self.frame % gl.spinner.len];
+        const elapsed = seconds(self.turn_started, std.Io.Clock.awake.now(self.io));
+        return std.fmt.allocPrint(a, "{s} {s}{s} {d:.1}s", .{ spin, self.preparing.?, gl.ellipsis, elapsed });
+    }
+
+    /// Enters the busy "preparing" state for work that happens before a
+    /// turn; the GPU wait's tick animates it. `endPreparing` leaves it.
+    fn beginPreparing(self: *Ui, label: []const u8) void {
+        self.preparing = label;
+        self.busy = true;
+        self.status = label;
+        self.turn_started = std.Io.Clock.awake.now(self.io);
+        self.draw() catch {};
+    }
+    fn endPreparing(self: *Ui) void {
+        self.preparing = null;
+        self.busy = false;
+        self.status = "ready";
+    }
+
     fn warmingLabel(self: *Ui, a: std.mem.Allocator) ![]const u8 {
         var w: std.Io.Writer.Allocating = .init(a);
         const gl = self.th.glyphs();
@@ -1153,13 +1184,16 @@ fn loadImages(ui: *Ui, image_paths: []const []const u8) ![]loop.Image {
     if (image_paths.len == 0) return &.{};
     var images: std.ArrayList(loop.Image) = .empty;
     errdefer loop.freeImages(ui.alloc, images.toOwnedSlice(ui.alloc) catch &.{});
+    defer ui.endPreparing();
+    var label: [48]u8 = undefined;
     for (image_paths, 1..) |path, n| {
-        ui.status = "encoding image…";
-        try ui.draw();
+        ui.beginPreparing(if (image_paths.len == 1)
+            "encoding image #1"
+        else
+            std.fmt.bufPrint(&label, "encoding image #{d} of {d}", .{ n, image_paths.len }) catch "encoding images");
         const image = loadImage(ui, path) catch |err| {
             var note: [256]u8 = undefined;
             try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — could not read image #{d}: {s}: {s}", .{ n, path, @errorName(err) }) catch "  — could not read an image" });
-            ui.status = "ready";
             return error.ImageUnreadable;
         };
         try images.append(ui.alloc, image);

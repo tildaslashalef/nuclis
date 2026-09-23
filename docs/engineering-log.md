@@ -121,6 +121,8 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-15 | Images and text files in the chat: drop, `/image`, the chips, the projector turn, the detail row and preview, sessions | 2026-09-23 |
 | REPO-14 | The screenshot harness is the validation step for surface changes | 2026-09-23 |
 | TERM-11 | The region re-anchors on a resize from the terminal's cursor report; the preview fits above the region and is off under tmux | 2026-09-23 |
+| MODL-24 | Decode after an image: the Metal step's cache row and rotary position separated; the vision gate compares decode with one prefill | 2026-09-23 |
+| TERM-12 | A spinner row while the projector loads and images encode | 2026-09-23 |
 
 ## Context
 
@@ -4798,3 +4800,55 @@ excluded), `src/agent/root.zig`, `scripts/tui-shot.py`, `docs/spec.md`,
 and stay until the next insertion fills them. A terminal that answers no
 cursor query keeps the clamped guess. The preview's scrolling in Ghostty
 without tmux is the user's check.
+
+## MODL-24 — Decode after an image: the Metal step's cache row and rotary position separated; the vision gate compares decode with one prefill (2026-09-23)
+
+**Outcome.** The user's photo was described with details the reference got
+right and we did not (hair pulled back, light skin, window on the wrong
+side). The Metal plan's decode step used the image-adjusted rotary position
+(`Session.ropePosition`) as the cache row and the visible count too, so
+after a 32×32 span every generated token was written 992 rows early and
+attended to too few rows; `fullAttention` now takes `row` and
+`rope_position` separately. The CPU reference was correct. The generation
+check gains a diagnostic mode (`--vision-image <file> --vision-oracle
+<dir>`: projector rows per block, last logits and greedy tokens on the
+oracle's rows, teacher-forced agreement) and the vision gate a permanent
+check that decode after an image equals one prefill. Facts:
+[vision.md § Decode after an image](reference/vision.md#decode-after-an-image-modl-24-2026-09-23).
+The Gemma 4 and Muse vision units (MODL-22, MODL-23) now carry the three
+checks this defect taught in their acceptance.
+
+**Evidence.** On the photo (1024×1024, 32×32 tokens), Metal, F32 cache:
+projector rows vs the reference 7.0e-3 relative RMS (max abs 4.0), last
+prompt logits max abs 0.13 with equal argmax, teacher-forced agreement
+with the reference CLI's answer 141/183 before and 182/183 after; the
+batched prefill agreed at all seven worst positions before the fix. The
+new gate check: 0.82 with the fix reverted, 2.8e-3 with it (bound 2e-2).
+The greedy caption now matches the reference's. `make verify-changed`
+selected the whole Metal tier: 27/27 in 484 s. The CPU tier was not run
+(the CPU runtime is unchanged; its vision gate now also runs the new
+check).
+
+**Files.** `inference/src/models/qwen35_metal.zig`,
+`inference/generation-check.zig`, `docs/reference/vision.md`, `TODO.md`.
+
+**Remaining.** The CPU vision gate with the new check is unrun. The oracle
+comparison on a real photo is a manual diagnostic, not a gate: the photo
+is the user's and is not committed.
+
+## TERM-12 — A spinner row while the projector loads and images encode (2026-09-23)
+
+**Outcome.** From the user's screenshot: the bar read `encoding image…`
+with no motion for several seconds and the chat looked frozen. The chat
+now enters a busy "preparing" state (`Ui.beginPreparing`) while the
+projector loads and while each image encodes: a live row `⠸ encoding
+image #1… 2.4s` (or `#2 of 3`), the bar's spinner, no loop step. The
+projector's GPU work waits through the ticking commit, so the row repaints
+at the tick's cadence; the CPU decode and resize before it do not tick.
+
+**Evidence.** The harness with a dropped 1024×1024 image and a burst
+capture during the turn: 57 changed frames in 61, mean interval 0.104 s,
+the counter reaching 6.0 s (the encoding of 1,024 tokens). The projector
+load showed its row for under a second.
+
+**Files.** `src/agent/root.zig`.

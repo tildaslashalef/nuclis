@@ -95,6 +95,8 @@ pub fn main(init: std.process.Init) !void {
     var draft_trace: ?[]const u8 = null;
     var draft_model: ?[]const u8 = null;
     var vision_check: ?[]const u8 = null;
+    var vision_image: ?[]const u8 = null;
+    var vision_oracle: ?[]const u8 = null;
     var path: ?[]const u8 = null;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -117,6 +119,14 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedProjectorPath;
             vision_check = args[i];
+        } else if (std.mem.eql(u8, arg, "--vision-image")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedImagePath;
+            vision_image = args[i];
+        } else if (std.mem.eql(u8, arg, "--vision-oracle")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedOracleDirectory;
+            vision_oracle = args[i];
         } else if (path == null) {
             path = arg;
         } else return error.UnknownOption;
@@ -127,7 +137,10 @@ pub fn main(init: std.process.Init) !void {
     const architecture = mapped.document.string("general.architecture") orelse return error.MissingMetadata;
     switch (try inference.models.select(architecture)) {
         .qwen35 => if (vision_check) |projector|
-            try visionCheck(alloc, init.io, model_path, projector, use_metal)
+            if (vision_image) |image|
+                try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
+            else
+                try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (draft_trace) |dir|
             try draftTrace(qwen35_spec, alloc, init.io, &mapped, use_metal, dir)
         else if (draft_stats)
@@ -1895,6 +1908,205 @@ fn visionCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, pro
     }
     std.debug.print("\n", .{});
     if (mismatch) return error.VisionGreedyMismatch;
+
+    // Decode after an image: the steps through the greedy tokens must give
+    // the logits one batched prefill of the same tokens gives. The span
+    // advances the rotary position by less than its row count, so a step
+    // that confused the two would write and read the wrong cache rows.
+    const count = outcome.timing.generated_tokens;
+    if (count < 2) return error.VisionGreedyMismatch;
+    const stepped = try alloc.alloc(f32, eng.vocab.tokens.len);
+    defer alloc.free(stepped);
+    eng.model.reset();
+    try eng.model.prefillVision(tokens, spans, pinned, stepped, null, null, null, null);
+    for (generated[0 .. count - 1]) |t| try eng.model.step(t, stepped, null, null, null, null);
+    var extended: std.ArrayList(u32) = .empty;
+    defer extended.deinit(alloc);
+    try extended.appendSlice(alloc, tokens);
+    try extended.appendSlice(alloc, generated[0 .. count - 1]);
+    eng.model.reset();
+    try eng.model.prefillVision(extended.items, spans, pinned, logits, null, null, null, null);
+    var max_abs: f64 = 0;
+    for (stepped, logits) |a, b| max_abs = @max(max_abs, @abs(@as(f64, a) - b));
+    std.debug.print("Decode after the image, {d} steps vs one prefill: max abs {e:.3} (bound 2e-2)\n", .{ count - 1, max_abs });
+    if (!(max_abs <= 2e-2)) return error.VisionDecodeMismatch;
+}
+
+/// Any image against an oracle directory (`scripts/reference-vision.cpp`'s
+/// `image-embd.f32`): the whole-image numbers, then the relative RMS per
+/// block of the token grid, so a fault that lives in one region or one
+/// row band shows where it is. Reports; never gates.
+fn visionCompare(alloc: std.mem.Allocator, io: std.Io, projector_path: []const u8, image_path: []const u8, oracle: []const u8, use_metal: bool, model_path: ?[]const u8) !void {
+    const vision = inference.vision;
+    const qwen3vl = vision.qwen3vl;
+    var projector = try inference.weights.Mapped.open(alloc, io, projector_path);
+    defer projector.deinit(io);
+    const binding = try qwen3vl.bind(alloc, &projector.document);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, image_path, alloc, .limited(vision.image.max_bytes));
+    defer alloc.free(bytes);
+    var source = try vision.image.decode(alloc, bytes);
+    defer source.deinit(alloc);
+    const grid = qwen3vl.gridFor(.{ .width = source.width, .height = source.height });
+    const target: vision.preprocess.Size = .{ .width = grid.width_patches * qwen3vl.patch, .height = grid.height_patches * qwen3vl.patch };
+    const resized = try vision.preprocess.resizeLetterbox(alloc, source, target);
+    defer alloc.free(resized);
+    var patches = try vision.preprocess.patches(alloc, resized, target, .{ .patch = qwen3vl.patch, .merge = qwen3vl.merge, .mean = binding.mean, .std = binding.std });
+    defer patches.deinit(alloc);
+    const oracle_path = try std.fs.path.join(alloc, &.{ oracle, "image-embd.f32" });
+    defer alloc.free(oracle_path);
+    const expected = try std.Io.Dir.cwd().readFileAlloc(io, oracle_path, alloc, .limited(256 << 20));
+    defer alloc.free(expected);
+    const rows = grid.tokens();
+    const width = qwen3vl.output_width;
+    std.debug.print("Image {d}x{d} -> grid {d}x{d} tokens ({d} patches); oracle holds {d} rows.\n", .{ source.width, source.height, grid.widthTokens(), grid.heightTokens(), grid.patches(), expected.len / 4 / width });
+    if (expected.len != rows * width * 4) return error.FixtureMismatch;
+    const features = try alloc.alloc(f32, rows * width);
+    defer alloc.free(features);
+    const started = std.Io.Clock.awake.now(io);
+    if (use_metal) {
+        var diagnostic: [8192]u8 = @splat(0);
+        var backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+            std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+        defer backend.deinit();
+        var plan = try qwen3vl.Plan.init(alloc, &backend, projector.view(), &binding);
+        defer plan.deinit();
+        try plan.encode(patches, features);
+    } else {
+        var runtime = try qwen3vl.Runtime.init(alloc, projector.view(), &binding);
+        defer runtime.deinit();
+        try runtime.encode(patches, features);
+    }
+    const seconds = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_s;
+    std.debug.print("Projector ({s}): {d} rows in {d:.3} s.\n", .{ if (use_metal) "metal" else "cpu", rows, seconds });
+    compareRows("projector rows", expected, features, 0.5, 1e-2) catch {};
+    // Relative RMS per block of the token grid, row-major like the rows.
+    const wt = grid.widthTokens();
+    const ht = grid.heightTokens();
+    const block = @max(1, @max(wt, ht) / 8);
+    var by: usize = 0;
+    while (by < ht) : (by += block) {
+        var bx: usize = 0;
+        while (bx < wt) : (bx += block) {
+            var d2: f64 = 0;
+            var r2: f64 = 0;
+            var y = by;
+            while (y < @min(by + block, ht)) : (y += 1) {
+                var x = bx;
+                while (x < @min(bx + block, wt)) : (x += 1) {
+                    const row = y * wt + x;
+                    for (0..width) |c| {
+                        const e: f64 = std.mem.bytesToValue(f32, expected[(row * width + c) * 4 ..][0..4]);
+                        const d = e - features[row * width + c];
+                        d2 += d * d;
+                        r2 += e * e;
+                    }
+                }
+            }
+            std.debug.print(" {d:6.3}", .{@sqrt(d2 / r2)});
+        }
+        std.debug.print("\n", .{});
+    }
+    if (model_path) |mp| try visionLanguageCompare(alloc, io, mp, oracle, expected, grid, use_metal);
+}
+
+/// The language model on the oracle's own prompt tokens and feature rows:
+/// the last position's logits against `logits.f32` and the greedy tokens
+/// against `greedy.txt`, so the image span's positions are tested apart
+/// from the projector.
+fn visionLanguageCompare(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, oracle: []const u8, expected: []const u8, grid: inference.vision.qwen3vl.Grid, use_metal: bool) !void {
+    const json_path = try std.fs.path.join(alloc, &.{ oracle, "prompt-tokens.json" });
+    defer alloc.free(json_path);
+    const json = try std.Io.Dir.cwd().readFileAlloc(io, json_path, alloc, .limited(16 << 20));
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    var eng = try inference.engine.Engine.open(alloc, io, model_path, if (use_metal) .metal else .cpu, 2048, .f32, null, .none);
+    defer eng.deinit();
+    const pad = eng.imagePadId() orelse return error.MissingImageToken;
+    var tokens: std.ArrayList(u32) = .empty;
+    defer tokens.deinit(alloc);
+    for (parsed.value.object.get("chunks").?.array.items) |chunk| {
+        const kind = chunk.object.get("type").?.string;
+        if (std.mem.eql(u8, kind, "text")) {
+            for (chunk.object.get("tokens").?.array.items) |t| try tokens.append(alloc, @intCast(t.integer));
+        } else {
+            const n: usize = @intCast(chunk.object.get("n_tokens").?.integer);
+            for (0..n) |_| try tokens.append(alloc, pad);
+        }
+    }
+    const features = try alloc.alloc(f32, expected.len / 4);
+    defer alloc.free(features);
+    for (features, 0..) |*v, i| v.* = std.mem.bytesToValue(f32, expected[i * 4 ..][0..4]);
+    const prepared = [_]inference.engine.PreparedImage{.{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens(), .features = features }};
+    const spans = try eng.locateImageSpans(tokens.items, &prepared);
+    defer alloc.free(spans);
+    const logits = try alloc.alloc(f32, eng.vocab.tokens.len);
+    defer alloc.free(logits);
+    try eng.model.prefillVision(tokens.items, spans, features, logits, null, null, null, null);
+    const logits_path = try std.fs.path.join(alloc, &.{ oracle, "logits.f32" });
+    defer alloc.free(logits_path);
+    const want = try std.Io.Dir.cwd().readFileAlloc(io, logits_path, alloc, .limited(16 << 20));
+    defer alloc.free(want);
+    var max_abs: f64 = 0;
+    var best_ours: usize = 0;
+    var best_ref: usize = 0;
+    for (logits, 0..) |got, i| {
+        const w = std.mem.bytesToValue(f32, want[i * 4 ..][0..4]);
+        max_abs = @max(max_abs, @abs(@as(f64, w) - got));
+        if (got > logits[best_ours]) best_ours = i;
+        if (w > std.mem.bytesToValue(f32, want[best_ref * 4 ..][0..4])) best_ref = i;
+    }
+    std.debug.print("Last-position logits on the oracle's rows ({d} tokens): max abs {e:.3}, argmax {d}/{d}\n", .{ tokens.items.len, max_abs, best_ours, best_ref });
+    eng.model.reset();
+    const generated = try alloc.alloc(u32, 16);
+    defer alloc.free(generated);
+    var sampler = try inference.sampling.Sampler.init(0, .{ .temperature = 0, .top_p = 1, .top_k = 0, .min_p = 0, .presence_penalty = 0, .repetition_penalty = 1 });
+    const outcome = try inference.engine.runLoop(&eng, tokens.items, 16, &sampler, null, .{}, .{ .spans = spans, .features = features }, logits, &.{}, generated, null, null);
+    const greedy_path = try std.fs.path.join(alloc, &.{ oracle, "greedy.txt" });
+    defer alloc.free(greedy_path);
+    const greedy_text = try std.Io.Dir.cwd().readFileAlloc(io, greedy_path, alloc, .limited(1 << 16));
+    defer alloc.free(greedy_text);
+    std.debug.print("Greedy, ours:  ", .{});
+    for (generated[0..outcome.timing.generated_tokens]) |t| std.debug.print(" {d}", .{t});
+    std.debug.print("\n", .{});
+    // Teacher forcing: the oracle's own greedy continuation fed one token at
+    // a time; where our argmax is not the oracle's next token, the margin
+    // says whether it was a close call.
+    var want_ids: std.ArrayList(u32) = .empty;
+    defer want_ids.deinit(alloc);
+    var lines = std.mem.tokenizeScalar(u8, greedy_text, '\n');
+    while (lines.next()) |line| try want_ids.append(alloc, try std.fmt.parseInt(u32, std.mem.trim(u8, line, " \r"), 10));
+    eng.model.reset();
+    try eng.model.prefillVision(tokens.items, spans, features, logits, null, null, null, null);
+    var agree: usize = 0;
+    for (want_ids.items, 0..) |next, k| {
+        var best: usize = 0;
+        for (logits, 0..) |v, i| if (v > logits[best]) {
+            best = i;
+        };
+        if (best == next) agree += 1 else std.debug.print("  step {d}: ours {d} ({d:.2}) vs oracle {d} ({d:.2})\n", .{ k, best, logits[best], next, logits[next] });
+        if (k + 1 < want_ids.items.len) try eng.model.step(next, logits, null, null, null, null);
+    }
+    std.debug.print("Teacher-forced agreement with the oracle's continuation: {d}/{d}\n", .{ agree, want_ids.items.len });
+    // The same positions through one batched prefill instead of steps: if
+    // these agree where the steps did not, the step path is at fault.
+    for ([_]usize{ 5, 7, 15, 22, 24, 84, 154 }) |k| {
+        if (k >= want_ids.items.len) continue;
+        var extended: std.ArrayList(u32) = .empty;
+        defer extended.deinit(alloc);
+        try extended.appendSlice(alloc, tokens.items);
+        try extended.appendSlice(alloc, want_ids.items[0..k]);
+        eng.model.reset();
+        try eng.model.prefillVision(extended.items, spans, features, logits, null, null, null, null);
+        var best: usize = 0;
+        for (logits, 0..) |v, i| if (v > logits[best]) {
+            best = i;
+        };
+        const next = want_ids.items[k];
+        std.debug.print("  prefill to step {d}: ours {d} ({d:.2}) vs oracle {d} ({d:.2})\n", .{ k, best, logits[best], next, logits[next] });
+    }
 }
 
 fn compareRows(label: []const u8, expected: []const u8, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {

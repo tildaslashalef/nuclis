@@ -203,3 +203,39 @@ and then failed to follow the scrolling text, which is why tmux is excluded.
 the macOS pasteboard is a bridge call. PDF is not extracted. A conversation
 that has fed an image runs without speculation. The preview assumes 1:2 cells, is
 re-transmitted on a fold or resize replay, and is not drawn under tmux.
+
+## Decode after an image (MODL-24, 2026-09-23)
+
+**The defect.** The Metal plan's decode step passed one number to its
+full-attention layers for three jobs: the rotary angle, the cache row the
+new key and value are written to, and the number of rows attended. Outside
+an image they are equal. After an image span they are not: a 32×32-token
+span occupies 1,024 rows but advances the rotary position by 32
+(`Session.ropePosition`), so every generated token after it was written 992
+rows early — over the image's own rows — and attended only to the rows
+before that. The prefill was right, so the prompt's last logits matched and
+the answer began plausibly, then drifted: a real portrait was described
+with its hair pulled back, light skin, and the window on the wrong side.
+The CPU reference kept the row and the rotary position apart and was never
+affected. The fix passes the cache row and the rotary position separately
+(`qwen35_metal.zig` `fullAttention(…, row, rope_position)`).
+
+**How it was found.** `test-generation -- <model> --metal --vision-check
+<mmproj> --vision-image <file> --vision-oracle <dir>` runs the projector on
+any image against an oracle directory from `scripts/reference-vision.cpp`
+and reports the rows' relative RMS with a per-block map of the token grid
+(7.0e-3 on the photo, within the reference's own CPU-to-Metal spread, no
+region above 2.5e-2: the projector was right), the prompt's last logits on
+the oracle's rows (max abs 0.13, argmax equal), the greedy tokens, and a
+teacher-forced pass over the oracle's continuation — the tool that isolated
+it: agreement was 141/183 with disagreements up to 5.4 logits, while one
+batched prefill of the same tokens agreed at every one of those positions.
+After the fix: 182/183 (the one left is a tokenization boundary at the
+end of the cut text, where the reference itself gives the token a logit
+of 4.2), and the greedy answer on the photo matches the reference CLI's.
+
+**The guard.** The vision gate (`qwen38-vision-metal`, `-cpu`) now also
+steps through its greedy tokens and compares the logits with one batched
+prefill of the same tokens (bound 2e-2): 2.8e-3 with the fix, 0.82 with it
+reverted. The 4×3-token fixture alone could not catch the defect (a shift
+of 8 rows left the eight greedy tokens unchanged); the new check does.

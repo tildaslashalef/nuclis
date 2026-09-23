@@ -144,7 +144,14 @@ resume by re-encoding; the caption of a dropped scene, the Gemma refusal,
 and the resume were captured in the harness, which gained a `paste=` step
 ([log](docs/engineering-log.md#agnt-15--images-and-text-files-in-the-chat-drop-image-the-chips-the-projector-turn-the-detail-row-and-preview-sessions-2026-09-23),
 [vision.md § Images in the chat](docs/reference/vision.md#images-in-the-chat-agnt-15-2026-09-23)).
-TERM-11 closed the same day from the user's screenshots: the region
+MODL-24 closed the same day: every Qwen decode step after an image wrote
+and read the wrong cache rows (the image-adjusted rotary position was also
+used as the cache row and the visible count), so a real photo was
+described with the wrong hair, skin, and window side; fixed, and the
+vision gate now compares decode after an image with one prefill. The
+reference's answer and ours now agree on 182 of 183 teacher-forced tokens.
+TERM-12 the same day: a spinner row while the projector loads and images
+encode. TERM-11 closed the same day from the user's screenshots: the region
 re-anchors on a resize from the terminal's cursor report, the preview is
 capped to the room above the region and is off under tmux (tmux cannot
 scroll it). **One check is the user's:** in plain Ghostty (no tmux), drop
@@ -478,6 +485,33 @@ reference's per-projector defaults (`clip.cpp` ≈ 1627 for gemma4v, 1653
 for qwen3vl, 1683 for muse-glimmer) are read in each unit's session 1.
 Output tokens for Qwen and Muse are `(w / patch / 2) × (h / patch / 2)`.
 
+**The lesson of MODL-24 (2026-09-23), binding on every vision unit.** A
+fixture that passes can still hide a broken decode. Qwen's vision gate
+matched eight greedy tokens on a 4×3-token image while every step *after*
+a 32×32 image wrote and read the wrong cache rows: the step used the
+image-adjusted rotary position as its cache row. On a 12-token image the
+two differ by 8 and the tokens happened not to flip; on a real photo the
+model described the wrong person. So each family's acceptance includes,
+beyond its trace:
+1. **Decode after an image equals one prefill** (the generation check's
+   step-versus-prefill comparison, already in `visionCheck` for Qwen):
+   reset, prefill the prompt, step through the greedy tokens, and compare
+   the logits with one batched prefill of prompt plus tokens, bound 2e-2.
+   Run it on both executors and prove it catches a planted fault once.
+2. **A large real image against the reference**, not only the synthetic
+   fixture: `test-generation -- <model> --metal --vision-check <mmproj>
+   --vision-image <file> --vision-oracle <dir>` with the oracle directory
+   from `scripts/reference-vision.cpp`, at the projector's largest grid.
+   Report the projector rows' relative RMS and per-block map, the last
+   position's logits, and the teacher-forced agreement with the reference
+   CLI's greedy answer; agreement below 97 % is a defect until explained
+   by margins under 0.3.
+3. **Anything that lets a row's position differ from its cache index**
+   (M-RoPE advances, Gemma's bidirectional span, Muse's windows or
+   permutations) names, in the unit's section, which index each kernel
+   receives: the cache row, the visible count, and the rotary position
+   are separate parameters, never one value reused.
+
 **Where the detail goes.** A new `docs/reference/vision.md` holds the
 contract, each family's projector facts and provenance, the preprocessing
 per family, the traces, and the memory; `docs/spec.md` carries the vision
@@ -556,7 +590,10 @@ with a poisoned future row outside the span. The profile renders the
 markers; `generate`/`agent` as MODL-21. The audio projector in the 12B
 file (`gemma4ua`) is not loaded.
 
-**Acceptance.** Traces within tolerance for both entries on both executors;
+**Acceptance.** The three checks of *The lesson of MODL-24* above (decode
+after an image equals one prefill on both executors; a large real image
+against the reference with teacher-forced agreement ≥ 97 %; the index
+each attention kernel receives named in this section). Traces within tolerance for both entries on both executors;
 the greedy tokens; the Gemma compare targets unchanged (text path); the
 mask fixture; `make check`; captions recorded.
 
@@ -582,7 +619,9 @@ mask input MODL-22 adds); pixel shuffle as a gather; the adapter MLP and
 the projection through the existing Q4_K/Q6_K matmul tiles (the file is
 K-quant). Memory: the 896 × 896 grid is 4,096 patches before the shuffle.
 
-**Acceptance.** Trace within tolerance on both executors; greedy tokens;
+**Acceptance.** The three checks of *The lesson of MODL-24* above, at the
+896×896 grid (4,096 patches before the shuffle), with the window
+permutation's cache and rotary indices named in this section. Trace within tolerance on both executors; greedy tokens;
 the Muse compare targets unchanged; the mask fixture; captions recorded;
 `make check`.
 

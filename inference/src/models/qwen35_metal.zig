@@ -430,7 +430,7 @@ pub const Plan = struct {
         for (self.binding.layers, self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
             switch (layer.mixer) {
-                .full_attention => |attn| try self.fullAttention(attn, c.mixer.full_attention, il, self.state.ropePosition(self.state.position)),
+                .full_attention => |attn| try self.fullAttention(attn, c.mixer.full_attention, il, self.state.position, self.state.ropePosition(self.state.position)),
                 .delta_net => |linear| try self.linearAttention(linear, c.mixer.delta_net, il),
             }
             try b.addRmsNorm(self.x, self.projected, c.post_attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
@@ -932,7 +932,9 @@ pub const Plan = struct {
         try b.copy(self.draft_concat.slice(hidden * 4, hidden * 4), self.draft_hnorm, hidden);
         try self.mm(block.eh_proj, self.draft_concat, self.x);
         try b.rmsNorm(self.x, constants.attention_norm, self.normalized, single);
-        try self.fullAttention(block.layer.mixer.full_attention, constants.mixer.full_attention, self.draft_layer, position);
+        // The drafter runs only on sessions without image spans, where the
+        // row is the rotary position.
+        try self.fullAttention(block.layer.mixer.full_attention, constants.mixer.full_attention, self.draft_layer, position, position);
         try b.add(self.x, self.projected, hidden);
         try b.rmsNorm(self.x, constants.post_attention_norm, self.normalized, single);
         try self.mm(block.layer.ffn_gate, self.normalized, self.gate);
@@ -1090,11 +1092,15 @@ pub const Plan = struct {
         return (self.draft_h.len + self.draft_hnorm.len + self.draft_chain.len + self.draft_pending_h.len + self.draft_concat.len + self.draft_logits.len);
     }
 
-    fn fullAttention(self: *Plan, attn: model.FullAttention, c: anytype, il: usize, position: usize) !void {
+    /// One decode step's full-attention layer: the new row is written at
+    /// cache row `row` and attends to rows `[0, row]`, rotated at
+    /// `rope_position`. The two differ after an image span, whose rows
+    /// advance the rotary position by less than their count.
+    fn fullAttention(self: *Plan, attn: model.FullAttention, c: anytype, il: usize, row: usize, rope_position: usize) !void {
         const b = self.backend;
         const cache = self.state.layers[il].attention;
-        const k_slot = self.stateSlice(cache.keys.range(position, 1));
-        const v_slot = self.stateSlice(cache.values.range(position, 1));
+        const k_slot = self.stateSlice(cache.keys.range(row, 1));
+        const v_slot = self.stateSlice(cache.values.range(row, 1));
         const precision = cache.keys.precision;
         // An F32 cache takes the projections directly; an F16 cache takes them
         // through F32 scratch rows and one pack dispatch.
@@ -1103,10 +1109,10 @@ pub const Plan = struct {
         try self.rotate(self.normalized, hidden, 1);
         try self.projections(&.{ attn.query_and_gate, attn.key, attn.value }, &.{ self.qg, k_row, v_row }, .plain);
         // Each projected head stores query then gate; the gate is applied after attention.
-        try b.rmsNormRope(self.qg, c.query_norm, self.rope_table, self.q, .{ .rows = 24, .width = 256, .in_stride = 512, .out_stride = 256 }, 64, position, .split_half);
-        try b.rmsNormRope(k_row, c.key_norm, self.rope_table, k_row, .{ .rows = 4, .width = 256, .in_stride = 256, .out_stride = 256 }, 64, position, .split_half);
+        try b.rmsNormRope(self.qg, c.query_norm, self.rope_table, self.q, .{ .rows = 24, .width = 256, .in_stride = 512, .out_stride = 256 }, 64, rope_position, .split_half);
+        try b.rmsNormRope(k_row, c.key_norm, self.rope_table, k_row, .{ .rows = 4, .width = 256, .in_stride = 256, .out_stride = 256 }, 64, rope_position, .split_half);
         if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = 1024 }, .{ .dst = v_slot, .src = v_row, .count = 1024 } });
-        const visible = position + 1;
+        const visible = row + 1;
         try b.attentionDecode(self.stateSlice(cache.keys.range(0, visible)), self.stateSlice(cache.values.range(0, visible)), self.q, self.partials, self.mixed_out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = visible, .scale = 1.0 / 16.0, .precision = precision });
         try b.sigmoidGate(self.mixed_out, self.qg, 24, 256, 512, 256);
         try self.rotate(self.mixed_out, 6144, 1);
