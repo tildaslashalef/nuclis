@@ -144,14 +144,14 @@ pub const Binder = struct {
     remaining: std.StringHashMap(*const Tensor),
     tensors: u32 = 0,
     bytes: u64 = 0,
+    /// The encodings a weight matrix may have; vectors are always F32.
+    weights: []const u32 = &.{ 0, 30 },
 
     pub fn take(self: *Binder, name: []const u8, dimensions: []const u64, f32_only: bool) Error!*const Tensor {
         const entry = self.remaining.fetchRemove(name) orelse return error.MissingTensor;
         const tensor = entry.value;
         if (!std.mem.eql(u64, tensor.dimensions, dimensions)) return error.InvalidTensorShape;
-        // Weights are F32 or BF16 (the generic decoders on both executors);
-        // vectors are F32.
-        const ok = if (f32_only) tensor.encoding_id == 0 else (tensor.encoding_id == 0 or tensor.encoding_id == 30);
+        const ok = if (f32_only) tensor.encoding_id == 0 else std.mem.indexOfScalar(u32, self.weights, tensor.encoding_id) != null;
         if (!ok) return error.UnsupportedTensorEncoding;
         self.tensors += 1;
         self.bytes = std.math.add(u64, self.bytes, tensor.bytes) catch return error.InvalidTensorShape;
@@ -169,11 +169,18 @@ pub const Binder = struct {
     }
 };
 
+/// Weight matrices: F32 and BF16 (Qwen3.8's file), F16 and Q8_0 (Bonsai 2's
+/// re-encoding of the same projector), all through the generic decoders on
+/// both executors. The FFN down matrices, which the Metal plan pads by
+/// element, are an element encoding (F32, F16, BF16).
+const weight_encodings = [_]u32{ 0, 1, 30, 8 };
+const element_encodings = [_]u32{ 0, 1, 30 };
+
 /// doc must come from successful GGUF parsing; the returned tensor references
 /// borrow it. Allocations are lookup storage freed before return.
 pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     try validateMetadata(doc);
-    var binder: Binder = .{ .remaining = .init(alloc) };
+    var binder: Binder = .{ .remaining = .init(alloc), .weights = &weight_encodings };
     defer binder.remaining.deinit();
     for (doc.tensors) |*tensor| {
         const slot = try binder.remaining.getOrPut(tensor.name);
@@ -198,6 +205,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
         .up = try binder.linear("v.blk.{d}.ffn_up", .{i}, hidden, ffn),
         .down = try binder.linear("v.blk.{d}.ffn_down", .{i}, ffn, hidden),
     };
+    for (result.layers) |layer| if (std.mem.indexOfScalar(u32, &element_encodings, layer.down.weight.encoding_id) == null) return error.UnsupportedTensorEncoding;
     result.post_norm = try binder.norm("v.post_ln", .{}, hidden);
     result.merger_0 = try binder.linear("mm.0", .{}, merged_width, merged_width);
     result.merger_2 = try binder.linear("mm.2", .{}, merged_width, output_width);
@@ -535,6 +543,25 @@ test "bind accepts the pinned projector inventory and reports its tensors" {
     try std.testing.expectEqual(@as(u32, 334), binding.tensors);
     try std.testing.expectEqual([3]f32{ 0.5, 0.5, 0.5 }, binding.mean);
     try std.testing.expectEqual(@as(u64, 4608), binding.merger_0.weight.dimensions[0]);
+}
+
+test "bind accepts Bonsai 2's Q8_0 re-encoding and refuses a Q8_0 down matrix" {
+    const alloc = std.testing.allocator;
+    var doc = try inventory.document(alloc, @embedFile("fixtures/bonsai2-mmproj.json"));
+    defer doc.storage.deinit();
+    const binding = try bind(alloc, &doc);
+    try std.testing.expectEqual(@as(u32, 334), binding.tensors);
+    try std.testing.expectEqual(@as(u32, 8), binding.layers[0].qkv.weight.encoding_id);
+    try std.testing.expectEqual(@as(u32, 1), binding.layers[0].down.weight.encoding_id);
+    try std.testing.expectEqual(@as(u32, 8), binding.merger_2.weight.encoding_id);
+    const tensors = try alloc.dupe(Tensor, doc.tensors);
+    defer alloc.free(tensors);
+    for (tensors) |*t| if (std.mem.eql(u8, t.name, "v.blk.3.ffn_down.weight")) {
+        t.encoding_id = 8;
+    };
+    var other = doc;
+    other.tensors = tensors;
+    try std.testing.expectError(error.UnsupportedTensorEncoding, bind(alloc, &other));
 }
 
 test "bind rejects another projector type and a missing tensor" {

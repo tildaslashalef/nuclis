@@ -155,6 +155,21 @@ The gates are `qwen38-vision-metal` (Metal tier) and `qwen38-vision-cpu`
 overrides are not in this unit. The projector runs as its own command
 buffer, separate from the language model's.
 
+**Bonsai 2 (MODL-25, 2026-09-23).** Its `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf`
+is this projector with the same metadata and tensors, re-encoded: the
+matrices Q8_0, `ffn_down` F16 (its 4,304 columns are not a multiple of
+Q8_0's 32-value block), vectors and the patch kernel F32. `bind` accepts
+F32, F16, BF16, and Q8_0 matrices (the generic decoders on both
+executors) and an element encoding for `ffn_down`, which the Metal plan
+pads by element; the Gemma adapters keep F32/BF16. Bonsai's language
+model is the Qwen3.8 adapter in a Hadamard-rotated basis: token rows are
+rotated back after the embedding, and feature rows are fed as they are,
+already in the model's basis. The aerial photo at the 1,024-token cap
+(1,029 prompt tokens): encode 18.1 s, prefill 13.7 s, and the caption
+names the turquoise water, the boulders, the snow-capped mountains, and
+the evergreens on the right shore. No oracle trace is pinned for this
+file.
+
 ## Images in the chat (AGNT-15, 2026-09-23)
 
 **The path in.** A file dropped onto the terminal arrives as a bracketed
@@ -175,8 +190,8 @@ renumbering after a deletion rewrites bytes of equal length in place.
 completer's `Engine.encodeImage`), giving a `loop.Image` — path, file size,
 the `PreparedImage` with its grid, decoded size, and feature rows. The
 projector is loaded on the first attachment (`visionAvailable`), and an
-entry without one, or one whose projector cannot be bound (Muse's and Bonsai's
-today; Gemma's until MODL-22), refuses the chip with a notice and
+entry without one, or one whose projector cannot be bound (Gemma's until
+MODL-22, Muse's until MODL-23, Bonsai's until MODL-25), refuses the chip with a notice and
 leaves the paste as text. A failure reading or encoding an image is a
 notice naming it and the turn is not sent. The agent owns the images beside
 the history item (`Item.images` and the profile's `ImageRef`s), frees them

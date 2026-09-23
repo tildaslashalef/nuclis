@@ -126,6 +126,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-16 | AGNT-14's follow-ups: the Muse value contract pinned and measured, steering that restarts a reasoning-only step, the guessed-path guideline measured and dropped | 2026-09-23 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP encoder (26B-A4B) on both executors; bidirectional image spans | 2026-09-23 |
 | MODL-23 | Muse Glimmer's windowed vision encoder on both executors; the image token cap for every family | 2026-09-23 (two sessions) |
+| MODL-25 | Bonsai 2's projector through the Qwen3-VL adapter: Q8_0 and F16 weights | 2026-09-23 |
 
 ## Context
 
@@ -5074,3 +5075,36 @@ rather than the recorded grid (the plan's choice was dropped: the
 conversation is prefilled anew, so nothing binds the old grid). Bonsai 2's
 projector (the Qwen3-VL architecture in Q8_0, F16 `ffn_down`) is refused
 by the Qwen3-VL binder. `muse-vision-cpu` has not passed end to end.
+
+## MODL-25 — Bonsai 2's projector through the Qwen3-VL adapter: Q8_0 and F16 weights (2026-09-23)
+
+**Outcome.** Bonsai 2 reads images. Its catalogued
+`Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` is Qwen3.8's `qwen3vl_merger`
+projector with the same metadata and 334 tensors, re-encoded: matrices
+Q8_0, `ffn_down` F16 (4,304 columns are not a multiple of Q8_0's 32-value
+block), vectors and the patch kernel F32. The Qwen3-VL binder refused it
+(`UnsupportedTensorEncoding`: it took F32 and BF16 only). `qwen3vl.bind`
+now accepts F32, F16, BF16, and Q8_0 matrices (the generic decoders of
+both executors and the matmul tiles) and requires an element encoding for
+`ffn_down`, which the Metal plan pads by element; the shared `Binder`
+carries the allowed set, so the Gemma adapters keep F32/BF16. No other
+code changed: Bonsai's language model is the Qwen3.8 adapter, whose
+residual stream is in the unrotated basis, so feature rows enter as they
+are. Facts: [vision.md § The Qwen3-VL projector](reference/vision.md#the-qwen3-vl-projector-modl-21-2026-09-22).
+
+**Evidence.** A unit test binds the file's committed inventory
+(`fixtures/bonsai2-mmproj.json`: 334 tensors, Q8_0 `attn_qkv` and
+`mm.2`, F16 `ffn_down`) and refuses a Q8_0 `ffn_down`; `make test` 547
+tests. The fresh binary, Metal: `nuclis generate --model bonsai-2-27b
+--image DefaultAerial.jpg` at the 1,024-token cap (1,029 prompt tokens)
+encoded in 18.1 s, prefilled in 13.7 s, and described the turquoise
+water, the boulders, the snow-capped mountains, and "a few small evergreen
+trees" on the right shore. No gate was run, the user's call.
+
+**Files.** `inference/src/vision/qwen3vl.zig`, `qwen3vl_metal.zig` (doc
+comments), `fixtures/bonsai2-mmproj.json`; `docs/reference/vision.md`,
+`docs/spec.md`, `TODO.md`.
+
+**Remaining.** No oracle trace is pinned for this file and no vision gate
+covers it; the CPU executor was not exercised on it. Bonsai's encode
+(18.1 s at 1,024 tokens) goes through the generic F32 tile for Q8_0.

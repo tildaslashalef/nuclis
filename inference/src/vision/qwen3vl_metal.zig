@@ -3,7 +3,8 @@
 //! matmul tiles, the LayerNorm, bias, GELU, and bidirectional attention
 //! kernels, and the per-row RoPE table. Weights are the mapped file's
 //! bytes wrapped in place, except the summed patch kernel and the FFN down
-//! matrices, whose 4,304 columns are zero-padded to the tile's 64.
+//! matrices (F32, F16, or BF16), whose 4,304 columns are zero-padded to the
+//! tile's 64.
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");
 const cpu = @import("../backends/cpu/root.zig");
@@ -38,7 +39,7 @@ const Layer = struct {
     up: Buffer,
     up_m: cpu.Matrix,
     up_b: Buffer,
-    /// The padded copy, `hidden × ffn_padded` BF16 or F32 as the file's.
+    /// The padded copy, `hidden × ffn_padded` in the file's element encoding.
     down: Buffer,
     down_m: cpu.Matrix,
     down_b: Buffer,

@@ -586,14 +586,13 @@ Read: [development.md § Gates](development.md#gates) and
 ## 10. Deferred work and non-goals
 
 Vision input through the companion projectors ships for every catalogue
-family with a projector: Qwen3.8's, Gemma 4's two (the 12B's unified
+entry with a projector: Qwen3.8's (and Bonsai 2's Q8_0 re-encoding of it),
+Gemma 4's two (the 12B's unified
 embedder, the 26B-A4B's SigLIP encoder, with the language model's
 bidirectional image spans), and Muse Glimmer's windowed encoder
 (`generate --image`, the chat's image chip, the shared
 `inference/src/vision/` contract, [reference/vision.md](reference/vision.md)).
-Bonsai 2's Q8_0 projector file is catalogued, but the Qwen3-VL adapter
-refuses its encoding (`UnsupportedTensorEncoding`), and speculation
-stays off in a conversation once an image is in it.
+Speculation stays off in a conversation once an image is in it.
 PDF attachments are not planned: nothing in the tree extracts their text. Deferred, to be taken through the existing seams as
 concrete requirements arrive: HTTP serving with an OpenAI-compatible protocol,
 persistent prefix caches, concurrent request batching, additional GPU

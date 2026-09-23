@@ -35,10 +35,14 @@ kernel), limited by the global blocks' attention. Folded into the unit:
 end at the user's call; the rest of the CPU tier's selection was not run
 ([log](docs/engineering-log.md#modl-23--muse-glimmers-windowed-vision-encoder-on-both-executors-the-image-token-cap-2026-09-23),
 [vision.md § Muse Glimmer's projector](docs/reference/vision.md#muse-glimmers-projector-modl-23-2026-09-23)).
-**Nothing is ordered next**: TERM-13 waits for the user, APPS-14 stays
-drafted for decision. Bonsai 2's projector is Qwen3.8's architecture in
-Q8_0 (F16 `ffn_down`), which the Qwen3-VL binder refuses; loading it is
-an unplanned candidate.
+MODL-25 closed the same day: Bonsai 2's projector (Qwen3.8's, re-encoded
+Q8_0 with an F16 `ffn_down`) binds through the Qwen3-VL adapter, which now
+accepts F32/F16/BF16/Q8_0 matrices, and Bonsai captions the photo; no
+gate was run, the user's call
+([log](docs/engineering-log.md#modl-25--bonsai-2s-projector-through-the-qwen3-vl-adapter-q8_0-and-f16-weights-2026-09-23)).
+**TERM-13 was dropped on 2026-09-23**, the user's call; the harness keeps
+`--direct`. **Nothing is ordered next**: APPS-14 stays drafted for
+decision.
 
 ENGN-16 closed on 2026-09-20: the drafter's `p_min` early stop is shipped
 at `engine.draft_p_min = 0.7` (a position whose top candidate is below it
@@ -184,9 +188,9 @@ AGNT-16 closed the same day
 ([log](docs/engineering-log.md#agnt-16--agnt-14s-follow-ups-the-muse-value-contract-pinned-and-measured-steering-that-restarts-a-reasoning-only-step-the-guessed-path-guideline-measured-and-dropped-2026-09-23)):
 Muse's values were already verbatim (now pinned, `newfile` passes), a
 steer during a reasoning-only step restarts it, and the guessed-path
-guideline changed nothing and was reverted. **TERM-13** (a stale preview
-and header edge after exit, from the user's Ghostty screenshot) is
-drafted and deferred by the user; the harness gained `--direct` for it.
+guideline changed nothing and was reverted. TERM-13 (a stale preview
+and header edge after exit, from the user's Ghostty screenshot) was
+drafted, then dropped; the harness gained `--direct` for it.
 MODL-22 closed the same day, in one session
 ([log](docs/engineering-log.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23),
 [vision.md § Gemma 4's projectors](docs/reference/vision.md#gemma-4s-projectors-modl-22-2026-09-23)):
@@ -288,8 +292,8 @@ plan ordered closed below its target; the record's numbers and the
 per-family defaults are in
 [bench.md § The speculative verdict record](docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
-Order: TERM-13 when the user takes it up (the vision units MODL-21,
-AGNT-15, MODL-22, and MODL-23 closed). APPS-14
+Order: nothing (the vision units MODL-21, AGNT-15, MODL-22, MODL-23, and
+MODL-25 closed; TERM-13 dropped). APPS-14
 stays drafted for decision on its own. KERN-13, ENGN-15, and ENGN-16 landed
 first (the penalty kernel, the sampled readback, the proposal policy).
 KERN-14's small-batch tile, KERN-15's split-K matvec, and KERN-16's
@@ -327,7 +331,6 @@ manifest.
 | Unit | Title | Sessions |
 | --- | --- | --- |
 | APPS-14 | Teacher-forced `eval` (drafted for decision; see its section) | — |
-| TERM-13 | Exiting after an image preview leaves the picture and the header's top edge on screen (reported 2026-09-23, deferred by the user; see its section) | 1 |
 
 ## Working a unit here
 
@@ -475,52 +478,3 @@ corpus's first 4,096 tokens. One session.
 **Acceptance.** Perplexity on the corpus within 0.5 % of the reference's
 on the same file and context; `make check`; the spec's CLI section names
 the command.
-
-## TERM-13 — Exiting after an image preview leaves the picture and the header's top edge on screen (reported 2026-09-23, deferred)
-
-**The report.** The user's screenshot (plain Ghostty 1.3.1, no tmux, a
-session of about ten minutes with the photo previewed): after exit the
-screen holds the shell prompt at the top, a single box top edge on row 1
-(the banner's, by its indent and width), the photo still placed around rows
-15–26, and nothing else. The transcript is gone from the screen and the
-image outlived it.
-
-**What is known (2026-09-23).** Not reproduced on a short run. The tmux
-harness (preview forced on with `env -u TMUX TERM_PROGRAM=ghostty`): drop,
-one answer, Ctrl-C leaves the transcript intact (`.zig-cache/tui/x-exit.txt`).
-In a direct Ghostty window (`scripts/tui-shot.py --direct`, added for this
-unit; see [development.md § Looking at the agent without a person at the
-keyboard](docs/development.md#looking-at-the-agent-without-a-person-at-the-keyboard))
-the same run's recorded stream ends with `bye` on row 34 and `finish`
-walking 18 rows up from row 53 before `ESC[0J`, so only the region is
-erased. The photographs failed (`screencapture`: no screen-recording
-permission for the terminal running the agent session). The user's
-session-level details (several turns, a resize, exiting while busy, a
-fold toggle) are not yet known.
-
-**Suspects, in order.**
-1. *Ghostty does not move kitty placements when a partial scroll region
-   scrolls.* `Screen.insertAbove` scrolls with `DECSTBM` (top 1, bottom
-   above the region); if Ghostty only carries placements (and creates
-   scrollback) on a full-screen scroll, the picture stays on its rows while
-   the text moves past it, and later turns write over and around it.
-2. *The exit walks too far.* `Screen.finish` goes up `cursor_row + slack`;
-   the screenshot's cursor landed on row 2, i.e. the screen believed nearly
-   every row above the region was slack or region. Candidates: `resized`
-   adding slack from a cursor report, `rewriteAbove` (a replay after a
-   resize or a fold) re-sending the preview's raw row with its relative
-   `CSI n A`/`CSI n B`, or a busy region filling the screen at exit.
-3. *Erasing never deletes a placement.* `ESC[0J` leaves kitty images in
-   place, so any erase over a preview (exit, a replay, a resize) strands it.
-
-**Session 1.** Get the screen-recording permission (or the user's
-photograph) and reproduce with `--direct`: several turns after the image
-until the transcript scrolls past it, then a fold toggle, a resize, and an
-exit while busy, a capture after each; read `<name>.stream` for the escape
-sequence of each step. Fix what reproduces; the likely shape is to give
-each preview an image id, delete the placements whose rows an erase or
-rewrite covers (`a=d` by id, or `d=y` per row), and, if suspect 1 holds,
-not rely on a scroll region to carry a picture (scroll the whole screen
-while a preview is on it, or re-place it). **Check:** the `--direct`
-captures of each step, the golden escape tests of `finish` and the replay
-with a preview row, `make check`.
