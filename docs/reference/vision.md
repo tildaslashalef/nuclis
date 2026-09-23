@@ -2,9 +2,10 @@
 
 How nuclis turns an image into embedding rows the language model consumes,
 family by family. The shared contract, the preprocessing, each projector's
-tensor facts and provenance, the pinned traces, and the memory. The plan
-that introduced it is [TODO.md](../../TODO.md)'s vision theme; the units are
-`MODL-21` (Qwen3.8), `MODL-22` (Gemma 4), and `MODL-23` (Muse Glimmer).
+tensor facts and provenance, the pinned traces, and the memory. The units
+that built it are in the [engineering log](../engineering-log.md): `MODL-21`
+(Qwen3.8), `AGNT-15` (the chat), `MODL-24` (decode after an image),
+`MODL-22` (Gemma 4), and `MODL-23` (Muse Glimmer).
 
 ## The contract
 
@@ -24,25 +25,29 @@ The package (`inference/src/vision/root.zig`):
   constants: image bytes ≤ 32 MiB, decoded pixels ≤ 64 M.
 - `preprocess.zig` — the reference's smart size (`smartSize`: round each side
   to the patch·merge grid, then scale to the pixel bounds), a
-  Pillow-compatible separable **bicubic** resize in 22-bit fixed point
-  (`resizeBicubic`, `resizeLetterbox` for the `PAD_CEIL` letterbox), and
+  Pillow-compatible separable resize in 22-bit fixed point with the
+  **bicubic** or the **Lanczos** filter (`resize`, `resizeBicubic`,
+  `resizeLanczos`; `resizeLetterbox` for the `PAD_CEIL` letterbox), and
   `patches`, the channel-planar `[c][ky][kx]` layout the convolution reads,
   normalized by mean/std and rounded to F16 as the reference's im2col does.
 - `qwen3vl.zig` / `qwen3vl_metal.zig` — the Qwen3-VL adapter (below).
 - `gemma4.zig` / `gemma4_metal.zig` — Gemma 4's two adapters (below).
+- `muse_glimmer.zig` / `muse_glimmer_metal.zig` — Muse Glimmer's adapter
+  (below).
 - `projector.zig` — `Projector`, one loaded projector whatever its family:
-  the file's projector type (`clip.projector_type` for Qwen,
+  the file's projector type (`clip.projector_type` for Qwen and Muse,
   `clip.vision.projector_type` for Gemma) picks the adapter and the
   executor its CPU reference or Metal plan; `grid`, `prepare` (resize and
   patch layout), `encode`, `outputWidth`, `maxTokens`, and `bidirectional`
   are what the engine and the checks call.
 - `Span { start, count, width_tokens, height_tokens }` — one image span; the
   engine's `locateImageSpans` pairs the runs of the profile's placeholder
-  (`Profile.imagePlaceholder`: `<|image_pad|>`, `<|image|>`) with the
+  (`Profile.imagePlaceholder`: `<|image_pad|>`, `<|image|>`, `<|patch|>`) with the
   encoded images in order.
 
-The prompt seam is in `engine.zig`: `Engine.loadVision(path)` loads a
-projector on the engine's backend; `encodeImage(bytes)` decodes, preprocesses,
+The prompt seam is in `engine.zig`: `Engine.loadVision(path, max_tokens)` loads a
+projector on the engine's backend with the image token cap in effect
+(below); `encodeImage(bytes)` decodes, preprocesses,
 and runs the projector to `PreparedImage { width_tokens, height_tokens,
 features }`; `profiles.Message.images` (a `[]const ImageRef`) makes the
 profile render the family's markers with the right placeholder count;
@@ -50,11 +55,25 @@ profile render the family's markers with the right placeholder count;
 spans and their concatenated features into `Model.prefillVision`. The Qwen
 runtime substitutes a feature row for a token embedding per span row
 (`stepImage`); the Metal plans copy the chunk's feature rows into `x_c`
-instead of the embedding gather. Gemma 4's spans attend bidirectionally,
-so they are fed differently (below). The projector's output width must
+instead of the embedding gather (Muse's before its weightless input norm,
+which the reference applies to image rows too). Gemma 4's spans attend
+bidirectionally, so they are fed differently (below). The projector's output width must
 equal the artifact's `<architecture>.embedding_length`
 (`VisionSourceMismatch`). Speculation is off on the vision prefill; after
 it, decode is unchanged.
+
+**The image token cap.** Each family has the reference's token range
+(`Projector.tokenRange`: Qwen3.8 8–1,024, Gemma 4 70–1,120, Muse Glimmer
+1–4,096), and the grid functions take the cap in effect.
+`generation.image_max_tokens` sets it (`"auto"`, the default, is the
+family's maximum; a count is clamped into the family's range, so one value
+serves every model), `models.<name>.generation.image_max_tokens` overrides
+it per model, and `--image-max-tokens auto|N` on `generate` and `agent`
+overrides both (`Projector.limitTokens`, called by `loadVision`). A lower
+cap is a smaller grid of the same image: fewer tokens, less detail, a
+faster encode and prefill (Muse's timings below). A resumed chat re-encodes
+its images at the current cap; the conversation is prefilled anew, so the
+recorded grid binds nothing.
 
 ## The Qwen3-VL projector (MODL-21, 2026-09-22)
 
@@ -404,3 +423,170 @@ now also teacher-forces the language model on our own rows.
 rows track the reference only as far as F32 activations track BF16 ones.
 The 12B file's audio embedder is not loaded. A span must fit the context
 (`ContextFull` otherwise).
+
+## Muse Glimmer's projector (MODL-23, 2026-09-23)
+
+Read from the pinned `7620399f5` (`tools/mtmd/models/muse-glimmer.cpp`,
+`clip.cpp` `build_vit` and its MUSE_GLIMMER hparams at 1683–1692 and
+`set_input` at 4582–4645, `mtmd-image.cpp` 1678–1739, `mtmd.cpp` 711–716,
+`src/models/muse-glimmer.cpp` 73–74) and the file.
+
+**The file.** `mmproj-kquant.gguf`, 1.40 GB, 809 tensors,
+`clip.projector_type = muse-glimmer`, mean/std 0.5, LayerNorm eps
+**1e-5**, patch 14, merge 2. Fifty blocks: `ln1`/`ln2` with biases,
+`attn_q`/`attn_k`/`attn_out` **Q4_K** and `attn_v` **Q6_K** (1536²) with
+biases, `ffn_up` Q4_K [1536 → 8960] and `ffn_down` Q6_K [8960 → 1536] with
+biases and **no gate**; `v.pre_ln`/`v.post_ln`; the patch kernel F32
+[14, 14, 3, 1536] without a bias; the position table F32 [1536, 1024], a
+32×32 grid; the adapter `mm.0`/`mm.1`/`mm.2` BF16 (6144 → 4096 → 4096 →
+6656) without biases. `bind` refuses any other encoding.
+`muse_glimmer_patch_temporal = 2` is set by the reference and read
+nowhere. The inventory is `fixtures/muse-glimmer-mmproj.json`.
+
+**Preprocessing.** Up to **4,096 tokens (16,384 patches)**
+(`set_limit_image_tokens(1, 4096)`; the file's `image_size` 896 is only
+the reference's warm-up). The grid is transformers'
+`get_aspect_ratio_preserving_size` on 28-pixel tokens
+(`muse_glimmer.gridFor`): scale the counts down to the cap keeping the
+ratio, try floor and ceil of each side, keep the pair under the cap whose
+`h/w` is closest to the image's (ties to more tokens). The image is then
+**stretched** to the grid with Pillow's **Lanczos** filter (support 3,
+`sinc(x)·sinc(x/3)`), not letterboxed, normalized on the host, and rounded
+to F16 by the im2col; patches raster, channel-planar. The synthetic
+96×64 fixture becomes 84×56 (3×2 tokens); the aerial photo 2380×1344
+(85×48 = 4,080 tokens), 588×336 at a 256 cap (21×12), 24×42 at 1,024.
+Our patches equal the reference's im2col **bit for bit** on the fixture
+(14,112 values, a unit test) and on the photo as a PNG (9.6 M values).
+
+**The encoder.** Per patch: conv + the position table resized to the patch
+grid **bilinearly with half-pixel centres** (`pixel_offset 0.5`, edges
+clamped; Qwen's is corners-aligned). Then the rows are put in **window
+order** (`Layout`): 32×32-patch windows in raster order, patches raster
+inside each, edge windows partial; every block runs in that order.
+`pre_ln`; fifty blocks of `x += W_o·attn(LN(x)·ln1 + b) + b`,
+`x += W_down·gelu_erf(W_up·(LN(x)·ln2 + b) + b) + b`, with q/k/v biased,
+**2-D RoPE in the GGUF normal (adjacent-pair) form**, base 1e4: pair
+j < 24 turns channels (2j, 2j+1) by the patch's column + 1 at
+`10000^(−j/24)`, pair j ≥ 24 by its row + 1 (positions 1-indexed from the
+patch's grid cell, never from its row), and bidirectional attention at
+scale 1/√96 over the **window's rows** on 37 blocks and over **all rows**
+on the 13 global ones (block 3, 7, …, 47 and 49); the **exact erf GELU**.
+`post_ln`, back to raster order, then the **interleaved pixel shuffle**:
+merged token (ox, oy) holds at element `c·4 + s` channel c of patch
+(2ox + rx, 2oy + ry), s = 2ry + rx (Qwen's merge concatenates, `s·1536 +
+c`; checked against the reference's trace). Adapter: `mm.0`, erf GELU,
+`mm.1`, erf GELU, `mm.2`.
+
+**Indices each kernel receives.** The encoder's row index is the
+window-order index r, used by every matmul, norm, and attention row; the
+rotary position of row r is `(order[r] % width + 1, order[r] / width + 1)`;
+a windowed block's keys are its window's `[begin, begin + count)`, a
+global block's `[0, n)`; the shuffle reads row `row_of[patch]`. The
+language model has plain positions: an image row's cache row, rotary
+position, and visible count are `state.position` + row, as for text.
+
+**Executors.** The CPU reference (`muse_glimmer.Runtime`) decodes each
+weight row once for all patch rows, F64 accumulation. The Metal plan
+(`muse_glimmer_metal.zig`) runs the batched K-quant and BF16 matmul tiles
+(the patch kernel zero-padded from 588 to 640 columns), LayerNorm, bias,
+`ropeRows(.adjacent)`, a new `nu_gelu_erf_inplace` (Abramowitz & Stegun
+7.1.26, |error| ≤ 1.5e-7; the CPU's `erf` is a series and continued
+fraction to ~1e-14), and the chunk attention kernel with a bidirectional
+span: once per window on its row slice, in window order (a dispatch
+stores up to seven padding rows into the next window's output, which that
+window then overwrites), and once over all rows in a global block. The
+shuffle runs on the host between two command buffers. Activations are
+sized for 16,384 patches: ~1.35 GB (input, six 101 MB row buffers, the
+587 MB FFN buffer reused for the adapter, the output).
+
+**The language model.** The profile renders `<|image_start|>` (200080) +
+`count × <|patch|>` (200092) + `<|image_end|>` (200081) before the user's
+text, no newlines, as the reference writes around the rows (the GGUF
+template's own image part, a single `<|patch|>`, is not what it renders);
+a user cannot type the markers. The spans are causal: both executors'
+`prefillVision` feed a span's rows the features in place of the embedding
+(the Metal plan chunks text runs and spans separately), and the weightless
+input norm applies to them as to token rows.
+
+**The reference disagrees with itself.** On the synthetic fixture its CPU
+and Metal encoders differ by 1.4e-2 relative RMS after block 0 and 1.8e-2
+after block 30, then **0.63 after block 33**: there the FFN turns one or
+two patches into *sinks* on channel 1082 (Metal: patches 0 and 17 at
+about −400; CPU: patch 0 alone at −910), and which patches become sinks
+flips with rounding (the CPU's Q8_K activations, the Metal's F16). Its
+final rows differ by 0.26. So rows are compared tightly only before block
+33, and the language model's output is the check after it. Its language
+model also differs from itself: a batched prompt (F16-rounded activations
+in the matmuls) against one row per decode moves the best 16 last logits
+by up to 0.59 with identical rows and greedy tokens. The fixture pins the
+**one-row** logits (`reference-vision --n-batch 1`, the path the text
+traces pin); our CPU and Metal agree with it, not with the batched run.
+
+**The oracle.** `scripts/reference-vision.cpp` gained `--n-ctx N`,
+`--vision-flash` (the projector's attention as the reference's flash
+attention; without it a global block over 16K patches materializes a 17 GB
+score matrix), and `--n-batch N`. Prompt: our rendering with thinking off
+(`low`), `<|begin_of_text|><|start|>system<|message|>You are a helpful AI
+assistant.\nKnowledge cutoff: 2026-01-04.\n\nReasoning strength:
+low.\n\n# Valid recipients: "self", "user".<|eot|><|start|>user<|message|><__media__>describe
+this image<|eot|><|start|>assistant`. `fixtures/muse-glimmer-synthetic/`
+holds the reference's Metal rows, `patches.f32` (its im2col),
+`layer-out-30.f32` (the residual after block 30, window order), the prompt
+tokens, the one-row run's best 16 logits, and 8 greedy tokens.
+
+**Measured** (M4 Pro, 2026-09-23; `muse-vision-metal`, one CPU run before
+the logits were re-pinned to the one-row run (26.9 s for the projector,
+about 30 s per language-model token), and `generation-check --vision-image
+… --vision-oracle …` on the photo). The `muse-vision-cpu` gate itself was
+not run to the end:
+
+| check | CPU | Metal |
+| --- | ---: | ---: |
+| fixture: patches vs the reference's im2col | bit-exact | bit-exact |
+| fixture: residual after block 30 (its own spread 1.8e-2) | 1.8e-3 | 1.8e-3 |
+| fixture: projector rows, reported (its own spread 0.26) | 0.12 | 0.11 |
+| fixture: prompt tokens | equal | equal |
+| fixture: best 16 last logits on the pinned rows | 0.587 from the batched run, as Metal's 0.586 | 6.9e-3 from the one-row run, argmax equal |
+| fixture: 8 greedy tokens | not run | equal |
+| decode after the image, 7 steps vs one prefill (bound 2e-2) | not run | 7.9e-3 |
+| planted fault: the step's rotary position + 1 | — | 1.57, greedy still equal |
+| photo (PNG): residual after `pre_ln` / block 2 / block 30 | — | 2.4e-6 / 8.6e-4 / 2.2e-3 |
+| photo (PNG): projector rows | — | 2.2e-2 |
+| photo (PNG): teacher-forced agreement, our rows | — | **198/200** (margins 0.06, 0.07) |
+| photo (PNG): teacher-forced agreement, the oracle's rows | — | 197/200 |
+
+**The JPEG.** On the photo as a JPEG our patches differ from the
+reference's in 24 % of values (max 0.024, relative RMS 9e-3): we decode
+with ImageIO, the reference with stb_image, and their chroma upsampling
+and IDCT differ by a few levels. That is 1.9e-2 after `pre_ln`, and the
+sink blocks grow it to 0.37 on the rows; teacher-forced agreement is then
+193/200 (margins 0.01–0.77), and the caption is unaffected. On identical
+pixels (the PNG) every stage matches.
+
+**Speed** (Metal, the photo, `generate --json`, which now reports
+`image_milliseconds`; ReleaseFast, F16 KV, quiet machine):
+
+| cap | prompt tokens | encode | language-model prefill |
+| ---: | ---: | ---: | ---: |
+| 1,024 | 1,062 | 10.1 s | 12.4 s |
+| 2,048 | 2,094 | 25.8 s | 24.5 s |
+| 4,096 (auto) | 4,134 | 47 s (was 67) | 51.0 s |
+
+Profiled at 16,320 patches (`generation-check --vision-profile`): the 13
+global blocks' chunk attention is 27.9 s (the kernel's ~0.76 TFLOP/s on
+96-wide heads, as Gemma's SigLIP measured), the 666 window dispatches 4.4 s
+(24.5 s on the scalar `attention_full` kernel, which the plan first used),
+the K-quant matmuls ~12 s. In the chat (the harness, captures
+`muse-chip`, `muse-encoding`, `muse-caption`, `muse-followup` under
+`.zig-cache/tui/`) the dropped JPEG became an 85×48-token span; Muse
+described the turquoise water of Lake Tahoe, the granite boulders, the
+snow-dusted mountains, and "a rocky outcrop with a solitary pine tree" on
+the right, and answered "What stands on the right shore?" from the image
+with 14 new prompt tokens (Muse keeps its session; nothing is replayed).
+
+**Limits.** The global blocks' attention is the encoder's limiter; a
+full-size image costs about 100 s before the first token (a lower
+`image_max_tokens` is the lever). Speculation stays off for the rest of a
+conversation once an image is in it (the drafter never saw the image
+rows), so Muse's default-on drafter is idle there. Rows track the
+reference only up to the sink blocks, and only on the same pixels.

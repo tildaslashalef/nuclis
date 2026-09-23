@@ -125,6 +125,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | TERM-12 | A spinner row while the projector loads and images encode | 2026-09-23 |
 | AGNT-16 | AGNT-14's follow-ups: the Muse value contract pinned and measured, steering that restarts a reasoning-only step, the guessed-path guideline measured and dropped | 2026-09-23 |
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP encoder (26B-A4B) on both executors; bidirectional image spans | 2026-09-23 |
+| MODL-23 | Muse Glimmer's windowed vision encoder on both executors; the image token cap for every family | 2026-09-23 (two sessions) |
 
 ## Context
 
@@ -4985,3 +4986,91 @@ ones. Every Gemma chat turn after the first re-prefills the conversation
 (2.9 s on the 26B-A4B, 6.8 s on the 12B). The 12B file's audio embedder is
 not loaded. The preview's scroll in plain Ghostty is still the user's
 check (TERM-11).
+
+## MODL-23 — Muse Glimmer's windowed vision encoder on both executors; the image token cap (2026-09-23)
+
+**Outcome.** Muse Glimmer reads images: `generate --image`, a drop or
+`/image` in the chat, on the CPU reference and on Metal, so every
+catalogue family with a working projector has vision. The projector
+(`muse-glimmer`, 1.40 GB, K-quant blocks, BF16 adapter) is a 50-block
+ViT whose rows run in window order: 32×32-patch windows on 37 blocks,
+all rows on the 13 global ones, 2-D adjacent-pair RoPE from each
+patch's 1-indexed grid cell, the exact erf GELU, then an interleaved 2×2
+pixel shuffle (`c·4 + s`) and a three-layer adapter. Preprocessing is the
+reference's aspect-preserving grid search under 4,096 tokens (16,384
+patches) and a Lanczos stretch (the resampler gained the filter). The
+profile renders `<|image_start|>` + `<|patch|>`s + `<|image_end|>`; the
+language model's spans are causal with plain positions, and the feature
+rows enter before its weightless input norm. Folded in by the user:
+`generation.image_max_tokens` (`"auto"` = each family's maximum, a count
+clamped to the family's range, a per-model override, `--image-max-tokens`
+on `generate` and `agent`) for all three families, and `generate --json`
+reports `image_milliseconds`. Session 1 read the facts and pinned the
+fixture (`e06b551`), the plan took the setting (`a73029e`). Facts, traces,
+and timings:
+[vision.md § Muse Glimmer's projector](reference/vision.md#muse-glimmers-projector-modl-23-2026-09-23).
+
+**Evidence.** Patches equal the reference's im2col bit for bit (the
+fixture, 14,112 values, a unit test; the photo as a PNG, 9.6 M values).
+The synthetic fixture (3×2 tokens) on Metal: the residual after block 30
+at 1.8e-3 relative RMS (the reference's own CPU/Metal spread there
+1.8e-2), the rows at 0.11 reported only (its own spread 0.26, from the
+sink patches block 33 creates), prompt tokens equal, the best 16 logits
+within 6.9e-3 of the reference's one-row run, 8 greedy tokens equal,
+decode after the image within 7.9e-3 of one prefill, and the engine
+loop's same 8 tokens; a planted fault (the step's rotary position + 1)
+reads 1.57 there while the greedy tokens still match. The reference's
+batched prompt differs from its own one-row run by 0.59 on those logits;
+our CPU (0.587) and Metal (0.586) sit the same distance from it, so the
+fixture pins the one-row logits. The photo as a PNG at 4,080 tokens (18
+windows): residual 2.4e-6 after `pre_ln`, 8.6e-4 after block 2, 2.2e-3
+after block 30, rows 2.2e-2, teacher-forced agreement with the reference's
+200-token answer **198/200** (margins 0.06, 0.07). As a JPEG the pixels
+differ (ImageIO against stb_image, 24 % of patch values by a few levels),
+the sink blocks amplify it to 0.37 on the rows, and agreement is 193/200.
+Kernel fixtures: the erf GELU against the CPU's F64 erf, and both
+bidirectional kernels on a window slice with NaN outside it (1.1e-6).
+`make check` (546 tests), `make verify` **30/30** (the new
+`muse-vision-metal` among them, every text trace unchanged). The CPU
+executor, one run before the logits were re-pinned: the same residual
+(1.84e-3), rows (0.12), prompt tokens, and logits as Metal; the
+`muse-vision-cpu` gate was stopped before its greedy and decode steps
+(about 30 s per CPU token), the user's call, and the other CPU gates
+`verify-changed` selects were not run: the CPU backend only gained
+`erf`/`geluErf`, and the Qwen and Gemma vision paths changed only in the
+resampler (its bicubic pixels test is exact) and the grid cap.
+Timing (the photo, `generate --json`): encode 10.1 / 25.8 / 47 s and
+prefill 12.4 / 24.5 / 51.0 s at caps 1,024 / 2,048 / 4,096; the windows
+moved from `attention_full` to the chunk kernel (encode 67 → 47 s),
+profiled with the new `generation-check --vision-profile`. The chat
+through the harness (`muse-chip`, `muse-encoding`, `muse-caption`,
+`muse-followup` under `.zig-cache/tui/`): the dropped JPEG became an
+85×48-token span, Muse described Lake Tahoe's turquoise water, the
+boulders, the mountains, and the pine on the right shore, and answered a
+follow-up about the right shore from the image with 14 new prompt tokens.
+
+**Files.** `inference/src/vision/muse_glimmer.zig`, `muse_glimmer_metal.zig`,
+`projector.zig`, `preprocess.zig`, `qwen3vl.zig`, `gemma4.zig`, `root.zig`,
+the fixtures `fixtures/muse-glimmer-mmproj.json` and
+`fixtures/muse-glimmer-synthetic/`; `inference/src/models/muse_glimmer.zig`,
+`muse_glimmer_runtime.zig`, `muse_glimmer_metal.zig`;
+`inference/src/profiles/muse_glimmer.zig`; `inference/src/engine.zig`;
+`inference/src/backends/cpu/vector.zig`, `root.zig`;
+`inference/src/backends/metal/root.zig`, `kernels.metal`;
+`inference/generation-check.zig`, `inference/metal-check.zig`;
+`src/config.zig`, `src/cli.zig`, `src/help.zig`, `src/generate.zig`,
+`src/agent/root.zig`; `scripts/reference-vision.cpp` (`--n-ctx`,
+`--vision-flash`, `--n-batch`); `gates.json`; `docs/reference/vision.md`,
+`docs/spec.md`, `docs/development.md`, `TODO.md`.
+
+**Remaining.** The global blocks' attention is the encoder's limiter
+(27.9 s of 47 s at 16,320 patches, the chunk kernel's ~0.76 TFLOP/s on
+96-wide heads): a full-size image costs about 100 s before the first
+token, and `image_max_tokens` is the lever. Speculation stays off for the
+rest of a conversation once an image is in it, so Muse's default-on
+drafter idles there. Rows track the reference only up to the sink blocks
+and only on the same pixels. A resumed chat re-encodes at the current cap
+rather than the recorded grid (the plan's choice was dropped: the
+conversation is prefilled anew, so nothing binds the old grid). Bonsai 2's
+projector (the Qwen3-VL architecture in Q8_0, F16 `ffn_down`) is refused
+by the Qwen3-VL binder. `muse-vision-cpu` has not passed end to end.

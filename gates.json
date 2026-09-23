@@ -1673,7 +1673,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "note": "about 25 minutes",
+   "note": "about an hour (about 30 s per language-model token on the CPU)",
    "evidence": "docs/reference/vision.md#muse-glimmers-projector-modl-23-2026-09-23"
   },
   {

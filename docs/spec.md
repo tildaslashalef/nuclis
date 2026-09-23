@@ -257,7 +257,7 @@ key or an out-of-range value is a typed error naming the key. `bench`
 ignores the file's sampling and budget so a measurement is reproducible
 from its command line. `image_max_tokens` caps the tokens one image
 becomes: `"auto"` (the default) is the projector's own maximum (Qwen3.8
-1,024, Gemma 4 1,120), a count (1..4,096) is clamped to the loaded
+1,024, Gemma 4 1,120, Muse Glimmer 4,096), a count (1..4,096) is clamped to the loaded
 projector's range, and `--image-max-tokens` on `generate` and `agent`
 overrides both.
 
@@ -585,12 +585,15 @@ Read: [development.md § Gates](development.md#gates) and
 
 ## 10. Deferred work and non-goals
 
-Vision input through the companion projectors is in progress: the Qwen3.8
-projector and Gemma 4's two (the 12B's unified embedder, the 26B-A4B's
-SigLIP encoder, with the language model's bidirectional image spans) ship
+Vision input through the companion projectors ships for every catalogue
+family with a projector: Qwen3.8's, Gemma 4's two (the 12B's unified
+embedder, the 26B-A4B's SigLIP encoder, with the language model's
+bidirectional image spans), and Muse Glimmer's windowed encoder
 (`generate --image`, the chat's image chip, the shared
-`inference/src/vision/` contract, [reference/vision.md](reference/vision.md));
-the Muse Glimmer projector is planned in [TODO.md](../TODO.md).
+`inference/src/vision/` contract, [reference/vision.md](reference/vision.md)).
+Bonsai 2's Q8_0 projector file is catalogued, but the Qwen3-VL adapter
+refuses its encoding (`UnsupportedTensorEncoding`), and speculation
+stays off in a conversation once an image is in it.
 PDF attachments are not planned: nothing in the tree extracts their text. Deferred, to be taken through the existing seams as
 concrete requirements arrive: HTTP serving with an OpenAI-compatible protocol,
 persistent prefix caches, concurrent request batching, additional GPU
