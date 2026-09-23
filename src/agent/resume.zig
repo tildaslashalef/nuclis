@@ -232,6 +232,11 @@ pub fn replay(alloc: Allocator, tr: *transcript.Transcript, loaded: session.Load
             .user => |u| {
                 if (open_turn) try tr.apply(.{ .turn_end = .{ .stop = .eos } });
                 try tr.apply(.{ .user = u.text });
+                for (u.images, 1..) |image, n| {
+                    const label = try std.fmt.allocPrint(alloc, "image #{d}: {s} ({d}×{d} → {d}×{d} tokens)", .{ n, image.path, image.width, image.height, image.width_tokens, image.height_tokens });
+                    defer alloc.free(label);
+                    try tr.apply(.{ .attachment = .{ .label = label } });
+                }
                 open_turn = true;
             },
             .assistant => |a| {

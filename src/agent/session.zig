@@ -82,7 +82,9 @@ pub const Stats = struct {
 /// One line of the file after the header. The tag is the entry's `type`, and
 /// the payload's fields are written beside `id`, `parent`, and `time`.
 pub const Entry = union(enum) {
-    user: struct { text: []const u8 },
+    /// `images` are the attachments by path and grid, never pixels: a
+    /// resumed session decodes them again (absent in older files).
+    user: struct { text: []const u8, images: []const ImageEntry = &.{} },
     assistant: struct {
         thinking: []const u8 = "",
         answer: []const u8 = "",
@@ -107,6 +109,15 @@ pub const Entry = union(enum) {
     context: struct { ctx_size: usize },
     compaction: struct { first_kept: usize, reason: []const u8 },
     notice: struct { text: []const u8 },
+};
+
+/// One attached image as the file records it.
+pub const ImageEntry = struct {
+    path: []const u8,
+    width: u32 = 0,
+    height: u32 = 0,
+    width_tokens: u32 = 0,
+    height_tokens: u32 = 0,
 };
 
 /// An entry with the chain fields a reader needs.
@@ -314,8 +325,13 @@ pub fn writeEntry(out: *std.Io.Writer, entry: Entry, id: u32, parent: ?u32, time
     switch (entry) {
         inline else => |payload| {
             inline for (@typeInfo(@TypeOf(payload)).@"struct".fields) |field| {
-                try s.objectField(field.name);
-                try s.write(@field(payload, field.name));
+                const value = @field(payload, field.name);
+                // A turn without images writes the line older readers know.
+                const skip = comptime std.mem.eql(u8, field.name, "images");
+                if (!skip or value.len != 0) {
+                    try s.objectField(field.name);
+                    try s.write(value);
+                }
             }
         },
     }
@@ -442,7 +458,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
     const parent: ?u32 = if (integer(object.get("parent"))) |value| @intCast(value) else null;
     const time = try a.dupe(u8, string(object.get("time")) orelse "");
     const entry: Entry = blk: {
-        if (std.mem.eql(u8, kind, "user")) break :blk .{ .user = .{ .text = try text(a, object, "text") } };
+        if (std.mem.eql(u8, kind, "user")) break :blk .{ .user = .{ .text = try text(a, object, "text"), .images = try readImages(a, object.get("images")) } };
         if (std.mem.eql(u8, kind, "assistant")) break :blk .{ .assistant = .{
             .thinking = try text(a, object, "thinking"),
             .answer = try text(a, object, "answer"),
@@ -488,6 +504,29 @@ fn readCalls(a: Allocator, value: ?std.json.Value) ![]const Profile.ToolCall {
         };
     }
     return calls;
+}
+
+fn readImages(a: Allocator, value: ?std.json.Value) ![]const ImageEntry {
+    const array = switch (value orelse .null) {
+        .array => |array| array,
+        .null => return &.{},
+        else => return error.MalformedSessionLine,
+    };
+    const images = try a.alloc(ImageEntry, array.items.len);
+    for (array.items, 0..) |element, i| {
+        const object = switch (element) {
+            .object => |object| object,
+            else => return error.MalformedSessionLine,
+        };
+        images[i] = .{
+            .path = try a.dupe(u8, string(object.get("path")) orelse ""),
+            .width = @intCast(integer(object.get("width")) orelse 0),
+            .height = @intCast(integer(object.get("height")) orelse 0),
+            .width_tokens = @intCast(integer(object.get("width_tokens")) orelse 0),
+            .height_tokens = @intCast(integer(object.get("height_tokens")) orelse 0),
+        };
+    }
+    return images;
 }
 
 fn readStats(value: ?std.json.Value) Stats {
@@ -554,6 +593,8 @@ pub fn exportMarkdown(loaded: Loaded, out: *std.Io.Writer) !void {
             .user => |u| {
                 try out.print("---\n\n### You — {s}\n\n", .{record.time});
                 try out.print("{s}\n\n", .{u.text});
+                for (u.images, 1..) |image, n| try out.print("- image #{d}: `{s}` ({d}×{d} → {d}×{d} tokens)\n", .{ n, image.path, image.width, image.height, image.width_tokens, image.height_tokens });
+                if (u.images.len > 0) try out.writeAll("\n");
             },
             .assistant => |assistant| {
                 try out.print("### nuclis — {s}\n\n", .{record.time});
@@ -756,4 +797,28 @@ test "an identifier is 128 random bits in hex" {
 
 test {
     _ = model;
+}
+
+test "a user entry with images round-trips its paths and grids, and older files load without them" {
+    const a = testing.allocator;
+    var buffer: std.Io.Writer.Allocating = .init(a);
+    defer buffer.deinit();
+    const images = [_]ImageEntry{.{ .path = "/tmp/a.png", .width = 640, .height = 480, .width_tokens = 16, .height_tokens = 12 }};
+    try writeEntry(&buffer.writer, .{ .user = .{ .text = "look [image #1]", .images = &images } }, 1, null, "t1");
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "\"images\":[{\"path\":\"/tmp/a.png\",\"width\":640,\"height\":480,\"width_tokens\":16,\"height_tokens\":12}]") != null);
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(a);
+    try source.appendSlice(a, "{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":8}\n");
+    try source.appendSlice(a, buffer.written());
+    try source.appendSlice(a, "{\"type\":\"user\",\"id\":2,\"parent\":1,\"time\":\"t2\",\"text\":\"older\"}\n");
+    const loaded = try parseText(a, source.items, null);
+    defer loaded.deinit();
+    try testing.expectEqual(@as(usize, 1), loaded.records[0].entry.user.images.len);
+    try testing.expectEqualStrings("/tmp/a.png", loaded.records[0].entry.user.images[0].path);
+    try testing.expectEqual(@as(u32, 12), loaded.records[0].entry.user.images[0].height_tokens);
+    try testing.expectEqual(@as(usize, 0), loaded.records[1].entry.user.images.len);
+    var document: std.Io.Writer.Allocating = .init(a);
+    defer document.deinit();
+    try exportMarkdown(loaded, &document.writer);
+    try testing.expect(std.mem.indexOf(u8, document.written(), "- image #1: `/tmp/a.png` (640×480 → 16×12 tokens)") != null);
 }

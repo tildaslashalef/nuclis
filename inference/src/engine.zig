@@ -651,11 +651,14 @@ pub const Vision = struct {
 };
 
 /// One image after preprocessing and the projector: its merged token grid and
-/// the feature rows (`width_tokens · height_tokens × 5120`), caller-owned.
+/// the feature rows (`width_tokens · height_tokens × 5120`), caller-owned,
+/// with the decoded pixel size for the caller's display.
 pub const PreparedImage = struct {
     width_tokens: u32,
     height_tokens: u32,
     features: []f32,
+    width: u32 = 0,
+    height: u32 = 0,
     pub fn tokens(self: PreparedImage) usize {
         return @as(usize, self.width_tokens) * self.height_tokens;
     }
@@ -868,7 +871,7 @@ pub const Engine = struct {
         switch (v.exec) {
             inline else => |*e| try e.encode(patches, features),
         }
-        return .{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens(), .features = features };
+        return .{ .width_tokens = grid.widthTokens(), .height_tokens = grid.heightTokens(), .features = features, .width = decoded.width, .height = decoded.height };
     }
     /// The image marker id (`<|image_pad|>`), or null if the vocabulary lacks it.
     pub fn imagePadId(self: *const Engine) ?u32 {
@@ -1029,6 +1032,7 @@ pub fn complete(
     history: ?*inference.sampling.History,
     settings: Speculative,
     buffers: CompletionBuffers,
+    images: ?ImagePrefill,
     observer: ?Observer,
     sink: anytype,
 ) !Outcome {
@@ -1049,7 +1053,7 @@ pub fn complete(
     };
     var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, &eng.vocab, buffers.effort), .sink = sink };
     defer bridge.decoder.deinit();
-    const outcome = try runLoop(eng, tokens, limit, sampler, history, settings, null, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token });
+    const outcome = try runLoop(eng, tokens, limit, sampler, history, settings, images, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token });
     try bridge.decoder.end(outcome, sink);
     return outcome;
 }

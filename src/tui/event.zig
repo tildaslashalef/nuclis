@@ -53,6 +53,8 @@ pub const TurnStats = struct {
     replayed: bool = false,
 };
 
+pub const Preview = struct { sequence: []const u8, rows: usize };
+
 pub const Event = union(enum) {
     /// A committed prompt. Enter emits this before anything can fail.
     user: []const u8,
@@ -79,6 +81,11 @@ pub const Event = union(enum) {
     diff: struct { path: []const u8, rows: []const diff.Row },
     status: struct { phase: Phase, position: usize = 0, target: usize = 0, rates: Rates = .{}, elapsed_ns: u64 = 0 },
     turn_end: struct { stop: StopReason, stats: TurnStats = .{} },
+    /// One attachment of the user message just sent: its detail row
+    /// (`image #1: shot.png (1024×768 → 24×18 tokens)`) and, on a terminal
+    /// that draws inline images, the preview's escape sequence with the rows
+    /// it occupies. The producer builds the sequence; the transcript places it.
+    attachment: struct { label: []const u8, preview: ?Preview = null },
     /// Dim system lines: a replay, dropped turns, a failure under a prompt.
     notice: []const u8,
     /// What a command *answered*, as opposed to what it remarked. `/help` is
@@ -110,6 +117,10 @@ pub const Event = union(enum) {
             .thinking_end => |seconds| {
                 try s.objectField("seconds");
                 try s.write(seconds);
+            },
+            .attachment => |a| {
+                try s.objectField("label");
+                try s.write(a.label);
             },
             .diff => |payload| {
                 try s.objectField("path");
@@ -197,7 +208,7 @@ test "every event kind has a JSON line, with its own fields beside the type" {
         .{ .tool_call = .{ .id = 1, .name = "n", .summary = "s" } }, .{ .tool_result = .{ .id = 1, .text = "r", .truncated = false, .is_error = false } },
         .{ .diff = .{ .path = "p", .rows = &.{} } },                 .{ .status = .{ .phase = .decode } },
         .{ .turn_end = .{ .stop = .eos } },                          .{ .notice = "n" },
-        .{ .info = "i" },
+        .{ .attachment = .{ .label = "image #1: a.png" } },          .{ .info = "i" },
     };
     for (kinds) |kind| {
         buffer.clearRetainingCapacity();
@@ -222,6 +233,7 @@ test "an event is a value: no allocation, and the payloads the turn needs" {
         .{ .turn_end = .{ .stop = .eos, .stats = .{ .generated = 12 } } },
         .{ .notice = "older turns dropped from context to fit" },
         .{ .info = "keys and commands" },
+        .{ .attachment = .{ .label = "image #1: shot.png" } },
     };
     try std.testing.expectEqual(@typeInfo(Event).@"union".fields.len, events.len);
     try std.testing.expectEqualStrings("hello", events[0].user);

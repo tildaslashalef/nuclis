@@ -57,12 +57,40 @@ pub const Events = struct {
 
 /// One session entry, in the shape the drivers map onto `session.Entry`.
 pub const Record = union(enum) {
-    user: []const u8,
+    user: UserRecord,
     assistant: Step,
     tool_result: Result,
     /// The model's view of the conversation shrank to fit the window.
     compaction: Compaction,
 };
+
+/// A user message and the images attached to it, for the session file.
+pub const UserRecord = struct { text: []const u8, images: []const Image = &.{} };
+
+/// One image attached to a user message: where it came from, its decoded
+/// size, and the projector's rows the completer substitutes at prefill.
+/// Owned by the history item that carries it.
+pub const Image = struct {
+    path: []u8,
+    /// The file's size in bytes, for the transcript's detail row.
+    bytes: u64,
+    prepared: inference.engine.PreparedImage,
+
+    pub fn ref(self: Image) Profile.ImageRef {
+        return .{ .width_tokens = self.prepared.width_tokens, .height_tokens = self.prepared.height_tokens };
+    }
+    pub fn deinit(self: *Image, alloc: Allocator) void {
+        alloc.free(self.path);
+        alloc.free(self.prepared.features);
+        self.* = undefined;
+    }
+};
+
+/// Frees a list of images and the list.
+pub fn freeImages(alloc: Allocator, images: []Image) void {
+    for (images) |*image| image.deinit(alloc);
+    if (images.len != 0) alloc.free(images);
+}
 
 pub const Compaction = struct {
     /// History index of the first item kept as it was.
@@ -115,12 +143,21 @@ pub const Reply = struct {
 /// `sink`.
 pub const Model = struct {
     context: *anyopaque,
-    run: *const fn (*anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, sink: *stream.Sink) anyerror!Reply,
+    /// `images` are the attachments of every rendered message, in order;
+    /// their `ImageRef`s are already on the messages.
+    run: *const fn (*anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, images: []const Image, sink: *stream.Sink) anyerror!Reply,
     /// Tokens `text` costs in the model's vocabulary; what the result budget
     /// is measured in. Empty text costs zero, never an error: tool results
     /// may be empty.
     count: *const fn (*anyopaque, text: []const u8) anyerror!usize,
+    /// Runs the projector over an image's encoded bytes; `NoVision` without
+    /// one. The features are allocated with the given allocator.
+    encode_image: *const fn (*anyopaque, Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage = noVision,
 };
+
+fn noVision(_: *anyopaque, _: Allocator, _: []const u8) anyerror!inference.engine.PreparedImage {
+    return error.NoVision;
+}
 
 /// Tokens one tool result may occupy: a fixed share of the context window,
 /// never below `min_result_budget`. The tools' own byte and line limits stay
@@ -143,6 +180,10 @@ const Item = struct {
     reasoning: []u8,
     tool_calls: []Profile.ToolCall = &.{},
     tool_call_id: ?u32 = null,
+    /// Attached images (user messages only), owned, with their grids as the
+    /// profile renders them.
+    images: []Image = &.{},
+    refs: []Profile.ImageRef = &.{},
 };
 
 pub const Agent = struct {
@@ -201,6 +242,9 @@ pub const Agent = struct {
 
     /// Reusable `Profile.Message` scratch for one step.
     messages: std.ArrayList(Profile.Message) = .empty,
+    /// The rendered messages' images in order, borrowed from the history,
+    /// rebuilt with `messages`.
+    image_scratch: std.ArrayList(Image) = .empty,
     /// Messages typed during the turn, delivered as user messages before
     /// the next model step (`deliverSteering`). Owned; what the turn did
     /// not deliver is the driver's to take back (`takeSteering`).
@@ -238,6 +282,7 @@ pub const Agent = struct {
         self.clearHistory();
         self.history.deinit(self.alloc);
         self.messages.deinit(self.alloc);
+        self.image_scratch.deinit(self.alloc);
         self.clearCalls();
         self.calls.deinit(self.alloc);
         for (self.steering.items) |text| self.alloc.free(text);
@@ -270,9 +315,9 @@ pub const Agent = struct {
     /// recorded where the model sees it: after the step's tool results.
     fn deliverSteering(self: *Agent) !void {
         for (self.steering.items) |text| {
-            try self.appendItem(.user, text, "", &.{}, null);
+            try self.appendItem(.user, text, "", &.{}, null, &.{});
             try self.events.send(self.events.context, .{ .user = text });
-            try self.events.record(self.events.context, .{ .user = text });
+            try self.events.record(self.events.context, .{ .user = .{ .text = text } });
         }
         for (self.steering.items) |text| self.alloc.free(text);
         self.steering.clearRetainingCapacity();
@@ -291,10 +336,12 @@ pub const Agent = struct {
     /// appended in order and the host correlation ids continue past the
     /// highest restored one. The caller has already reset the engine session:
     /// this is a replay, never a state restore.
-    pub fn restore(self: *Agent, messages: []const Profile.Message) !void {
+    /// `images[i]`, when present, are the attachments of `messages[i]` (owned
+    /// from here on, even on failure); the messages' own refs are ignored.
+    pub fn restore(self: *Agent, messages: []const Profile.Message, images: []const []Image) !void {
         var highest: u32 = 0;
-        for (messages) |message| {
-            try self.appendItem(message.role, message.content, message.reasoning_content, message.tool_calls, message.tool_call_id);
+        for (messages, 0..) |message, i| {
+            try self.appendItem(message.role, message.content, message.reasoning_content, message.tool_calls, message.tool_call_id, if (i < images.len) images[i] else &.{});
             for (message.tool_calls) |call| highest = @max(highest, call.id);
             if (message.tool_call_id) |id| highest = @max(highest, id);
         }
@@ -323,12 +370,17 @@ pub const Agent = struct {
 
     /// Runs one user turn to a stop. Emits the user event and every step's
     /// events; the caller only has to present them and handle the stop.
-    pub fn turn(self: *Agent, user: []const u8) !Stop {
+    /// `images` are the message's attachments, owned by the agent from here
+    /// on, even when the turn fails.
+    pub fn turn(self: *Agent, user: []const u8, images: []Image) !Stop {
         self.turn_start = self.history.items.len;
-        if (self.turnCount() >= self.max_turns) return error.ConversationLimit;
-        try self.appendItem(.user, user, "", &.{}, null);
+        if (self.turnCount() >= self.max_turns) {
+            freeImages(self.alloc, images);
+            return error.ConversationLimit;
+        }
+        try self.appendItem(.user, user, "", &.{}, null, images);
         try self.events.send(self.events.context, .{ .user = user });
-        try self.events.record(self.events.context, .{ .user = user });
+        try self.events.record(self.events.context, .{ .user = .{ .text = user, .images = images } });
 
         self.turn_started = std.Io.Clock.awake.now(self.io);
         self.steps_done = 0;
@@ -393,7 +445,7 @@ pub const Agent = struct {
                 .replayed = reply.replayed,
             } });
             if (cancelled) return .cancelled;
-            try self.appendItem(.assistant, self.answer.written(), self.thinking.written(), calls, null);
+            try self.appendItem(.assistant, self.answer.written(), self.thinking.written(), calls, null, &.{});
             if (calls.len == 0) return .done;
             try self.execute(calls);
             try self.deliverSteering();
@@ -410,7 +462,7 @@ pub const Agent = struct {
             self.beginStep();
             const messages = try self.buildMessages();
             var sink = self.engineSink();
-            const reply = self.model.run(self.model.context, messages, self.tool_defs, &sink) catch |err| switch (err) {
+            const reply = self.model.run(self.model.context, messages, self.tool_defs, self.image_scratch.items, &sink) catch |err| switch (err) {
                 error.ContextFull => {
                     if (try self.elideResults()) continue;
                     if (!try self.dropOldestTurn()) return err;
@@ -488,15 +540,18 @@ pub const Agent = struct {
 
     fn buildMessages(self: *Agent) ![]const Profile.Message {
         self.messages.clearRetainingCapacity();
+        self.image_scratch.clearRetainingCapacity();
         try self.messages.append(self.alloc, .{ .role = .system, .content = self.system });
         for (self.history.items) |item| {
             try self.messages.append(self.alloc, .{
                 .role = item.role,
                 .content = item.content,
+                .images = item.refs,
                 .reasoning_content = item.reasoning,
                 .tool_calls = item.tool_calls,
                 .tool_call_id = item.tool_call_id,
             });
+            try self.image_scratch.appendSlice(self.alloc, item.images);
         }
         return self.messages.items;
     }
@@ -562,7 +617,7 @@ pub const Agent = struct {
                 .is_error = result.is_error,
                 .summary = summary,
             } });
-            try self.appendItem(.tool, model_text, "", &.{}, id);
+            try self.appendItem(.tool, model_text, "", &.{}, id, &.{});
         }
     }
 
@@ -643,7 +698,12 @@ pub const Agent = struct {
         return true;
     }
 
-    fn appendItem(self: *Agent, role: Profile.Role, content: []const u8, reasoning: []const u8, tool_calls: []const Profile.ToolCall, tool_call_id: ?u32) !void {
+    /// Takes ownership of `images` whatever happens.
+    fn appendItem(self: *Agent, role: Profile.Role, content: []const u8, reasoning: []const u8, tool_calls: []const Profile.ToolCall, tool_call_id: ?u32, images: []Image) !void {
+        errdefer freeImages(self.alloc, images);
+        const refs = try self.alloc.alloc(Profile.ImageRef, images.len);
+        errdefer self.alloc.free(refs);
+        for (images, refs) |image, *ref| ref.* = image.ref();
         const owned_content = try self.alloc.dupe(u8, content);
         errdefer self.alloc.free(owned_content);
         const owned_reasoning = try self.alloc.dupe(u8, reasoning);
@@ -670,6 +730,8 @@ pub const Agent = struct {
             .reasoning = owned_reasoning,
             .tool_calls = calls,
             .tool_call_id = tool_call_id,
+            .images = images,
+            .refs = refs,
         });
     }
 
@@ -694,6 +756,8 @@ pub const Agent = struct {
             self.alloc.free(call.arguments);
         }
         if (item.tool_calls.len != 0) self.alloc.free(item.tool_calls);
+        freeImages(self.alloc, item.images);
+        self.alloc.free(item.refs);
     }
 
     fn turnCount(self: *const Agent) usize {
@@ -830,6 +894,9 @@ pub const Completer = struct {
     /// The system block and tools already consumed: restored instead of
     /// re-prefilled whenever a conversation starts from that prefix.
     primed: ?Primed = null,
+    /// An image prefill ran in this session: the drafter's cache is stale
+    /// from then on, so speculation stays off until `reset`.
+    images_fed: bool = false,
 
     const Primed = struct {
         text: []u8,
@@ -845,7 +912,18 @@ pub const Completer = struct {
     };
 
     pub fn model(self: *Completer) Model {
-        return .{ .context = self, .run = run, .count = count };
+        return .{ .context = self, .run = run, .count = count, .encode_image = encodeImage };
+    }
+
+    /// The projector over one image's bytes, with the features moved to the
+    /// caller's allocator. `NoVision` when no projector is loaded.
+    fn encodeImage(context: *anyopaque, alloc: Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage {
+        const self: *Completer = @ptrCast(@alignCast(context));
+        var prepared = try self.eng.encodeImage(bytes);
+        const engine_owned = prepared.features;
+        defer self.eng.alloc.free(engine_owned);
+        prepared.features = try alloc.dupe(f32, engine_owned);
+        return prepared;
     }
 
     /// Prefills the system block and tools now, so the first turn — and every
@@ -933,6 +1011,7 @@ pub const Completer = struct {
     /// empty session. Used when the engine is re-opened or a new conversation
     /// starts; the session itself is reset by `inference` on the next render.
     pub fn reset(self: *Completer) void {
+        self.images_fed = false;
         self.seen.clearRetainingCapacity();
     }
 
@@ -941,7 +1020,7 @@ pub const Completer = struct {
         self.seen.deinit(self.alloc);
     }
 
-    fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, sink: *stream.Sink) anyerror!Reply {
+    fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, images: []const Image, sink: *stream.Sink) anyerror!Reply {
         const self: *Completer = @ptrCast(@alignCast(context));
         var replayed = false;
         const full = try self.eng.render(messages, definitions, self.effort);
@@ -967,14 +1046,22 @@ pub const Completer = struct {
             self.overflow = .{ .needed = session.position + tokens.len + self.buffers.generated.len, .capacity = session.capacity };
             return error.ContextFull;
         }
+        // The remainder's placeholder runs are the last images rendered:
+        // consumed text is a prefix of the render and compaction drops whole
+        // earlier turns, so the images still rendered are a suffix.
+        var prefill = try self.imagePrefill(tokens, images);
+        defer prefill.deinit(self.alloc);
+        if (prefill.value != null) self.images_fed = true;
+        const settings: inference.engine.Speculative = if (self.images_fed) .{ .enabled = false, .draft_length = self.speculative.draft_length } else self.speculative;
         const outcome = try inference.engine.complete(
             self.eng,
             tokens,
             self.buffers.generated.len,
             self.sampler,
             self.history,
-            self.speculative,
+            settings,
             self.buffers,
+            prefill.value,
             self.observer,
             sink,
         );
@@ -989,7 +1076,57 @@ pub const Completer = struct {
         if (outcome.stop == .cancelled) self.seen.clearRetainingCapacity();
         return .{ .outcome = outcome, .replayed = replayed };
     }
+
+    const Prefill = struct {
+        value: ?inference.engine.ImagePrefill = null,
+        spans: []inference.vision.Span = &.{},
+        features: []f32 = &.{},
+        fn deinit(self: *Prefill, alloc: Allocator) void {
+            if (self.spans.len != 0) alloc.free(self.spans);
+            if (self.features.len != 0) alloc.free(self.features);
+        }
+    };
+
+    /// The spans and concatenated features for the placeholder runs in
+    /// `tokens`, paired with the tail of `images`; none when there are no
+    /// runs. `ImageSpanMismatch` when the runs outnumber the images or a run
+    /// is not an image's token count.
+    fn imagePrefill(self: *Completer, tokens: []const u32, images: []const Image) !Prefill {
+        const pad = self.eng.imagePadId() orelse return .{};
+        const runs = placeholderRuns(tokens, pad);
+        if (runs == 0) return .{};
+        if (runs > images.len) return error.ImageSpanMismatch;
+        const tail = images[images.len - runs ..];
+        const prepared = try self.alloc.alloc(inference.engine.PreparedImage, tail.len);
+        defer self.alloc.free(prepared);
+        var total: usize = 0;
+        for (tail, prepared) |image, *p| {
+            p.* = image.prepared;
+            total += image.prepared.features.len;
+        }
+        const spans = try self.eng.locateImageSpans(tokens, prepared);
+        errdefer self.alloc.free(spans);
+        const features = try self.alloc.alloc(f32, total);
+        var at: usize = 0;
+        for (tail) |image| {
+            @memcpy(features[at..][0..image.prepared.features.len], image.prepared.features);
+            at += image.prepared.features.len;
+        }
+        return .{ .value = .{ .spans = spans, .features = features }, .spans = spans, .features = features };
+    }
 };
+
+/// How many maximal runs of `pad` the tokens hold: one per image span.
+pub fn placeholderRuns(tokens: []const u32, pad: u32) usize {
+    var runs: usize = 0;
+    var inside = false;
+    for (tokens) |token| {
+        const is_pad = token == pad;
+        if (is_pad and !inside) runs += 1;
+        inside = is_pad;
+    }
+    return runs;
+}
 
 // ----- tests -----
 
@@ -1018,9 +1155,10 @@ const Stub = struct {
     fn count(_: *anyopaque, text: []const u8) anyerror!usize {
         return (text.len + 3) / 4;
     }
-    fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, sink: *stream.Sink) anyerror!Reply {
+    fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, images: []const Image, sink: *stream.Sink) anyerror!Reply {
         _ = messages;
         _ = definitions;
+        _ = images;
         const self: *Stub = @ptrCast(@alignCast(context));
         if (self.context_full_at) |at| {
             if (self.index == at) {
@@ -1144,7 +1282,7 @@ test "a steered message lands after the step's tool results; one left over is ta
     // Typed while the first step ran: delivered after its tool result.
     try agent.steer("also count the words");
     try testing.expectEqual(@as(usize, 1), agent.pendingSteering());
-    const stop = try agent.turn("what is in hello.txt?");
+    const stop = try agent.turn("what is in hello.txt?", &.{});
     try testing.expectEqual(Stop.done, stop);
     // user, assistant(call), tool, user(steered), assistant(answer).
     try testing.expectEqual(@as(usize, 5), agent.history.items.len);
@@ -1186,7 +1324,7 @@ test "one call then an answer: the loop executes the call and sends the result b
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
-    const stop = try agent.turn("what is in hello.txt?");
+    const stop = try agent.turn("what is in hello.txt?", &.{});
     try testing.expectEqual(Stop.done, stop);
     try testing.expectEqual(@as(usize, 1), capture.calls);
     try testing.expectEqual(@as(usize, 1), capture.results.items.len);
@@ -1227,7 +1365,7 @@ test "a call whose result is empty still reaches the answer" {
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
-    const stop = try agent.turn("any python files?");
+    const stop = try agent.turn("any python files?", &.{});
     try testing.expectEqual(Stop.done, stop);
     try testing.expectEqual(@as(usize, 1), capture.results.items.len);
     try testing.expectEqualStrings("", capture.results.items[0]);
@@ -1250,7 +1388,7 @@ test "a mutation sends a diff event and the model reads the unified change" {
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
-    try testing.expectEqual(Stop.done, try agent.turn("create it"));
+    try testing.expectEqual(Stop.done, try agent.turn("create it", &.{}));
     try testing.expectEqual(@as(usize, 1), capture.calls);
     try testing.expectEqual(@as(usize, 1), capture.diffs);
     try testing.expectEqual(@as(usize, 1), capture.results.items.len);
@@ -1281,7 +1419,7 @@ test "a result over the context budget is cut at a line and told how to continue
     defer agent.deinit();
     agent.result_budget = 50; // 200 bytes: 20 lines of the 90 the read returns
 
-    try testing.expectEqual(Stop.done, try agent.turn("read it"));
+    try testing.expectEqual(Stop.done, try agent.turn("read it", &.{}));
     const shown = capture.results.items[0];
     // The kept prefix ends on a line boundary and fits the budget.
     const note_at = std.mem.indexOf(u8, shown, "\n[truncated to fit the context: ") orelse return error.TestUnexpectedResult;
@@ -1333,7 +1471,7 @@ test "the step budget stops a model that keeps calling" {
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), 2, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
-    try testing.expectEqual(Stop.budget, try agent.turn("go"));
+    try testing.expectEqual(Stop.budget, try agent.turn("go", &.{}));
     try testing.expectEqual(@as(usize, 2), capture.calls); // two completions, each one call
     try testing.expectEqual(@as(usize, 2), capture.results.items.len);
     // The status bar reads this against the budget.
@@ -1356,7 +1494,7 @@ test "a cancelled step stops the loop before any call runs" {
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
-    try testing.expectEqual(Stop.cancelled, try agent.turn("go"));
+    try testing.expectEqual(Stop.cancelled, try agent.turn("go", &.{}));
     try testing.expectEqual(@as(usize, 0), capture.calls);
     try testing.expectEqual(@as(usize, 0), capture.results.items.len);
 }
@@ -1375,7 +1513,7 @@ test "an unknown tool is an error result the model reads, not a failure" {
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
-    try testing.expectEqual(Stop.done, try agent.turn("go"));
+    try testing.expectEqual(Stop.done, try agent.turn("go", &.{}));
     try testing.expectEqual(@as(usize, 1), capture.results.items.len);
     try testing.expectEqualStrings("nope is not a tool I have", capture.results.items[0]);
 }
@@ -1404,12 +1542,12 @@ test "restore rebuilds the conversation and continues the correlation ids" {
         .{ .role = .assistant, .content = "looking\n", .tool_calls = &.{.{ .id = 5, .name = "read_file", .arguments = "{\"path\":\"a.txt\"}" }} },
         .{ .role = .tool, .content = "data", .tool_call_id = 5 },
     };
-    try agent.restore(&restored);
+    try agent.restore(&restored, &.{});
     try testing.expectEqual(@as(usize, 3), agent.history.items.len);
     try testing.expectEqual(@as(u32, 6), agent.next_id);
     // The next turn continues the conversation: the restored items are its
     // prefix, and the host id picks up past the highest restored one.
-    try testing.expectEqual(Stop.done, try agent.turn("more"));
+    try testing.expectEqual(Stop.done, try agent.turn("more", &.{}));
     // user, assistant(call), tool, assistant — restored three first.
     try testing.expectEqual(@as(usize, 7), agent.history.items.len);
     try testing.expectEqualStrings("first", agent.history.items[0].content);
@@ -1456,7 +1594,7 @@ test "every step that reasoned closes its own thinking block" {
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
-    try testing.expectEqual(Stop.done, try agent.turn("go"));
+    try testing.expectEqual(Stop.done, try agent.turn("go", &.{}));
     try testing.expectEqual(@as(usize, 3), capture.thinking_ends);
     try testing.expectEqual(@as(usize, 3), capture.assistant_records);
 
@@ -1468,7 +1606,7 @@ test "every step that reasoned closes its own thinking block" {
     defer cut_capture.deinit();
     var cut_agent = try Agent.init(alloc, testing.io, fixture.ws, cut.model(), cut_capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer cut_agent.deinit();
-    try testing.expectEqual(Stop.done, try cut_agent.turn("go"));
+    try testing.expectEqual(Stop.done, try cut_agent.turn("go", &.{}));
     try testing.expectEqual(tui.event.StopReason.token_budget, cut_capture.last_turn_stop.?);
 
     // A step without reasoning sends no end at all.
@@ -1477,7 +1615,7 @@ test "every step that reasoned closes its own thinking block" {
     defer quiet.deinit();
     var plain = try Agent.init(alloc, testing.io, fixture.ws, silent.model(), quiet.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer plain.deinit();
-    try testing.expectEqual(Stop.done, try plain.turn("hello"));
+    try testing.expectEqual(Stop.done, try plain.turn("hello", &.{}));
     try testing.expectEqual(@as(usize, 0), quiet.thinking_ends);
 }
 
@@ -1497,7 +1635,7 @@ test "a full window first elides the turn's older tool results, keeping the last
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
-    try testing.expectEqual(Stop.done, try agent.turn("read it four times"));
+    try testing.expectEqual(Stop.done, try agent.turn("read it four times", &.{}));
     // [user, (assistant, tool) x4, assistant]: the two oldest results are
     // stubs, the two newest are what the tool returned.
     try testing.expectEqual(@as(usize, 10), agent.history.items.len);
@@ -1522,7 +1660,7 @@ test "with nothing left to elide, a full window is the caller's error" {
     defer capture.deinit();
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
-    try testing.expectError(error.ContextFull, agent.turn("hello"));
+    try testing.expectError(error.ContextFull, agent.turn("hello", &.{}));
     try testing.expectEqual(@as(usize, 0), capture.compactions);
 }
 
@@ -1556,12 +1694,12 @@ test "compaction drops a whole prior turn, tool response included" {
     var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
     defer agent.deinit();
 
-    try testing.expectEqual(Stop.done, try agent.turn("one"));
+    try testing.expectEqual(Stop.done, try agent.turn("one", &.{}));
     // Turn one is [user, assistant(call), tool, assistant].
     try testing.expectEqual(@as(usize, 4), agent.history.items.len);
     try testing.expectEqual(Profile.Role.tool, agent.history.items[2].role);
 
-    try testing.expectEqual(Stop.done, try agent.turn("two"));
+    try testing.expectEqual(Stop.done, try agent.turn("two", &.{}));
     // Compaction dropped all of turn one, including its tool result, so the
     // history is exactly the second turn and stays structurally valid.
     try testing.expectEqual(@as(usize, 2), agent.history.items.len);
@@ -1570,4 +1708,11 @@ test "compaction drops a whole prior turn, tool response included" {
     try testing.expectEqualStrings("second", agent.history.items[1].content);
     // The drop is in the session file, not only on the screen.
     try testing.expectEqual(@as(usize, 1), capture.compactions);
+}
+
+test "placeholder runs count image spans, not tokens" {
+    try testing.expectEqual(@as(usize, 0), placeholderRuns(&.{ 1, 2, 3 }, 9));
+    try testing.expectEqual(@as(usize, 1), placeholderRuns(&.{ 1, 9, 9, 9, 2 }, 9));
+    try testing.expectEqual(@as(usize, 2), placeholderRuns(&.{ 9, 9, 1, 9 }, 9));
+    try testing.expectEqual(@as(usize, 1), placeholderRuns(&.{9}, 9));
 }

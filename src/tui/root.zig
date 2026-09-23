@@ -46,6 +46,7 @@ pub const graphemes = @import("graphemes.zig");
 pub const markdown = @import("markdown.zig");
 pub const highlight = @import("highlight.zig");
 pub const diff = @import("diff.zig");
+pub const graphics = @import("graphics.zig");
 pub const theme = @import("theme.zig");
 pub const style = @import("style.zig");
 pub const banner = @import("banner.zig");
@@ -64,6 +65,7 @@ test {
     _ = markdown;
     _ = highlight;
     _ = diff;
+    _ = graphics;
     _ = theme;
     _ = style;
     _ = banner;

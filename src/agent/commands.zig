@@ -16,7 +16,7 @@ const Allocator = std.mem.Allocator;
 
 /// The commands this phase implements. The table below is also the help text
 /// and the completion list.
-pub const Kind = enum { new, resume_session, ctx, think, save, help, shell };
+pub const Kind = enum { new, resume_session, ctx, think, save, image, help, shell };
 
 pub const Spec = struct {
     kind: Kind,
@@ -32,6 +32,7 @@ pub const table = [_]Spec{
     .{ .kind = .ctx, .name = "ctx", .argument = "<n>", .summary = "context window in tokens (as Ctrl-W, with a value)" },
     .{ .kind = .think, .name = "think", .argument = "<effort>", .summary = "reasoning effort: off, low, medium, high, xhigh (as Ctrl-T)" },
     .{ .kind = .save, .name = "save", .argument = "[path]", .summary = "export this session as markdown" },
+    .{ .kind = .image, .name = "image", .argument = "<path>", .summary = "attach an image to the prompt (or drop the file onto the window)" },
     .{ .kind = .help, .name = "help", .summary = "keys and commands" },
 };
 
@@ -53,6 +54,8 @@ pub const Command = union(enum) {
     think: []const u8,
     /// A path, or null for the default under `~/.nuclis/agent/exports/`.
     save: ?[]const u8,
+    /// An image path to attach as a chip; the agent resolves and reads it.
+    image: []const u8,
     help,
     shell: Shell,
 };
@@ -93,6 +96,7 @@ pub fn parse(line: []const u8) ?Result {
                 .{ .usage = spec },
             .think => if (rest.len == 0) .{ .usage = spec } else .{ .command = .{ .think = rest } },
             .save => .{ .command = .{ .save = if (rest.len == 0) null else rest } },
+            .image => if (rest.len == 0) .{ .usage = spec } else .{ .command = .{ .image = rest } },
             .shell => unreachable, // never in the table
         };
     }
@@ -129,7 +133,7 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
         .{ "Up / Down", "move in the input; history at the first and last row" },
         .{ "Tab", "complete a /command or an @path, otherwise fold thinking" },
         .{ "Ctrl-O", "fold and unfold the tool output of the last turn" },
-        .{ "Ctrl-E", "expand a paste chip into editable text" },
+        .{ "Ctrl-E", "expand a paste, file, or image chip into editable text" },
         .{ "Ctrl-G", "edit the input in $VISUAL or $EDITOR" },
         .{ "Ctrl-X", "copy the last answer to the clipboard" },
         .{ "Ctrl-T / Ctrl-W", "cycle reasoning effort / context window" },
@@ -195,6 +199,8 @@ test "a line is a command only when it is unmistakably one" {
     try testing.expectEqualStrings("medium", parse("/think medium").?.command.think);
     try testing.expect(parse("/save").?.command.save == null);
     try testing.expectEqualStrings("out.md", parse("/save out.md").?.command.save.?);
+    try testing.expectEqualStrings("shots/a.png", parse("/image shots/a.png").?.command.image);
+    try testing.expectEqual(Kind.image, parse("/image").?.usage.kind);
     // Anything else is a prompt, including the paths that start with a slash.
     try testing.expect(parse("/usr/bin/env is fine") == null);
     try testing.expect(parse("/2 of them") == null);

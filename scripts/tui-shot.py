@@ -22,6 +22,7 @@ Steps, in order, as arguments:
   burst=<name>,<s>,<hz>  capture every 1/hz seconds for s seconds
   until=<text>,<s>       wait up to s seconds for the text to appear on screen
   buffer=<name>          save tmux's paste buffer (what an OSC 52 copy set)
+  paste=<text>           a bracketed paste of the text (a dropped file's path)
                          to <name>.buffer.txt
 
 `--ghostty` also opens one Ghostty window attached to the session and, on
@@ -204,6 +205,12 @@ class Session:
     def send_key(self, key):
         self.tmux('send-keys', '-t', self.name, key)
 
+    def paste(self, text):
+        """A bracketed paste, as a drop or Cmd-V arrives: tmux wraps the
+        buffer in the paste markers because the agent requested them."""
+        self.tmux('set-buffer', '-b', 'nuclis-paste', text)
+        self.tmux('paste-buffer', '-p', '-b', 'nuclis-paste', '-t', self.name)
+
     def screen(self):
         return self.tmux('capture-pane', '-t', self.name, '-p', '-e', capture=True).stdout
 
@@ -312,7 +319,7 @@ def parse_step(arg):
     if '=' not in arg:
         raise SystemExit('bad step: %s' % arg)
     kind, value = arg.split('=', 1)
-    if kind in ('keys', 'key', 'capture', 'buffer'):
+    if kind in ('keys', 'key', 'capture', 'buffer', 'paste'):
         return (kind, value)
     if kind == 'wait':
         return (kind, float(value))
@@ -346,6 +353,8 @@ def run(args):
             session.send_text(value)
         elif kind == 'key':
             session.send_key(value)
+        elif kind == 'paste':
+            session.paste(value)
         elif kind == 'wait':
             time.sleep(value)
         elif kind == 'capture':

@@ -11,8 +11,14 @@
 //! inside it expands it too. Up/Down move within a multi-line input and reach
 //! history only from the first or last row.
 //!
-//! The editor owns its buffer, chips, draft, and history through one
-//! allocator; `layout` borrows a short-lived allocator for the rows it
+//! A paste that is one file's path (a drop) is asked of the caller's `Probe`:
+//! an image becomes an `[image #N]` chip whose bytes are that marker and
+//! whose path waits in `attachments`; a text file becomes a `[file name, N
+//! lines]` chip over its content. The editor never touches the file system:
+//! the probe does, so the tests supply one.
+//!
+//! The editor owns its buffer, chips, attachments, draft, and history through
+//! one allocator; `layout` borrows a short-lived allocator for the rows it
 //! returns, which die with the frame. `handleKey` returns an `Action` rather
 //! than mutating shared UI state, so a test drives it with keys and asserts
 //! on `layout`. See docs/spec.md § Editor for the contract.
@@ -32,20 +38,83 @@ pub const max_history = 200;
 /// A paste at or above either bound becomes a chip instead of visible text.
 pub const chip_min_lines = 4;
 pub const chip_min_bytes = 400;
+/// Images one prompt may carry (the vision contract's per-turn bound); the
+/// markers stay single-digit, which `renumber` relies on.
+pub const max_images = 8;
 
-/// A pasted range of the buffer, shown as one token. `start`/`end` are byte
-/// offsets into `buffer` and move with every edit before them.
+/// A range of the buffer shown as one token. `start`/`end` are byte offsets
+/// into `buffer` and move with every edit before them.
 pub const Chip = struct {
     start: usize,
     end: usize,
-    /// Line count of the pasted text, for the label (counted once, at paste
-    /// time: the bytes never change while the chip exists).
+    /// Line count of the pasted text or file content, for the label (counted
+    /// once: the bytes never change while the chip exists).
     lines: usize,
+    kind: Kind = .paste,
+    /// Index into `attachments` for an image or file chip.
+    attachment: usize = 0,
+
+    pub const Kind = enum { paste, image, file };
 
     pub fn contains(self: Chip, offset: usize) bool {
         return offset > self.start and offset < self.end;
     }
 };
+
+/// A file behind an image or file chip, in the order it was attached.
+pub const Attachment = struct {
+    kind: enum { image, file },
+    /// Owned by the editor.
+    path: []u8,
+};
+
+/// What a dropped path turned out to be: an image, to attach by path, or a
+/// text file whose content (owned by the editor's allocator from then on)
+/// becomes a file chip.
+pub const Dropped = union(enum) { image, text: []u8 };
+
+/// The caller's file-system side of a drop: null means "not a droppable
+/// file", and the paste stays text.
+pub const Probe = struct {
+    context: *anyopaque,
+    call: *const fn (*anyopaque, Allocator, path: []const u8) ?Dropped,
+};
+
+/// Whether a path's extension names an image the vision contract decodes.
+pub fn looksLikeImage(path: []const u8) bool {
+    const dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse return false;
+    const ext = path[dot + 1 ..];
+    inline for (.{ "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "tif", "bmp", "ppm" }) |known| {
+        if (std.ascii.eqlIgnoreCase(ext, known)) return true;
+    }
+    return false;
+}
+
+/// The one path a drop pasted, or null when the text is not shaped like one:
+/// a single line, a `file://` prefix removed, backslash escapes and a pair of
+/// quotes (Terminal.app, iTerm2) undone. Caller owns the result.
+pub fn droppedPath(alloc: Allocator, pasted: []const u8) !?[]u8 {
+    var t = std.mem.trim(u8, pasted, " \t\r\n");
+    if (t.len == 0 or std.mem.indexOfScalar(u8, t, '\n') != null) return null;
+    if (std.mem.startsWith(u8, t, "file://")) t = t["file://".len..];
+    const quoted = t.len >= 2 and (t[0] == '\'' or t[0] == '"') and t[t.len - 1] == t[0];
+    if (quoted) t = t[1 .. t.len - 1];
+    if (t.len == 0 or t[0] != '/' and t[0] != '~' and t[0] != '.') return null;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var i: usize = 0;
+    while (i < t.len) : (i += 1) {
+        if (t[i] == '\\' and i + 1 < t.len) {
+            i += 1;
+        } else if (t[i] == ' ' and !quoted) {
+            // An unescaped space outside quotes: two words, not a path.
+            out.deinit(alloc);
+            return null;
+        }
+        try out.append(alloc, t[i]);
+    }
+    return try out.toOwnedSlice(alloc);
+}
 
 /// What a key did. `ignored` means the editor does not own that key and the
 /// caller should decide (the agent's Ctrl-T, Ctrl-W, Tab, quit keys).
@@ -133,6 +202,11 @@ pub const Editor = struct {
     /// strictly inside a chip.
     cursor: usize = 0,
     chips: std.ArrayList(Chip) = .empty,
+    /// The files behind image and file chips, in attachment order; an image's
+    /// marker number is its rank among the image attachments.
+    attachments: std.ArrayList(Attachment) = .empty,
+    /// Consulted by `endPaste` for a paste shaped like one path.
+    probe: ?Probe = null,
     /// Bytes of a bracketed paste in progress; committed by `endPaste`.
     pending: std.ArrayList(u8) = .empty,
     pasting: bool = false,
@@ -150,6 +224,8 @@ pub const Editor = struct {
     pub fn deinit(self: *Editor) void {
         self.buffer.deinit(self.alloc);
         self.chips.deinit(self.alloc);
+        self.dropAttachments();
+        self.attachments.deinit(self.alloc);
         self.pending.deinit(self.alloc);
         for (self.history.items) |item| self.alloc.free(item);
         self.history.deinit(self.alloc);
@@ -169,9 +245,149 @@ pub const Editor = struct {
     pub fn clear(self: *Editor) void {
         self.buffer.clearRetainingCapacity();
         self.chips.clearRetainingCapacity();
+        self.dropAttachments();
         self.cursor = 0;
         self.index = null;
         self.scroll = 0;
+    }
+
+    /// The files behind the prompt's chips, in attachment order; the image
+    /// ones, in this order, are what `[image #N]` numbers.
+    pub fn attachmentList(self: *const Editor) []const Attachment {
+        return self.attachments.items;
+    }
+
+    pub fn imageCount(self: *const Editor) usize {
+        var count: usize = 0;
+        for (self.attachments.items) |att| count += @intFromBool(att.kind == .image);
+        return count;
+    }
+
+    /// Attaches an image by path and inserts its `[image #N]` chip at the
+    /// cursor (`/image`, a drop). `TooManyImages` past `max_images`.
+    pub fn attachImage(self: *Editor, path: []const u8) !void {
+        if (self.imageCount() >= max_images) return error.TooManyImages;
+        const owned = try self.alloc.dupe(u8, path);
+        errdefer self.alloc.free(owned);
+        try self.attachments.append(self.alloc, .{ .kind = .image, .path = owned });
+        errdefer _ = self.attachments.pop();
+        var label: [16]u8 = undefined;
+        const marker = try std.fmt.bufPrint(&label, "[image #{d}]", .{self.imageCount()});
+        try self.insertChip(marker, .{ .start = 0, .end = 0, .lines = 1, .kind = .image, .attachment = self.attachments.items.len - 1 });
+    }
+
+    /// Attaches a text file: its content, fenced and headed by the path, is
+    /// the chip's bytes. Takes ownership of `content`. `LimitExceeded` when
+    /// the input limit would be passed; the content is freed either way.
+    pub fn attachFile(self: *Editor, path: []const u8, content: []u8) !void {
+        defer self.alloc.free(content);
+        const body = std.mem.trimEnd(u8, content, "\n");
+        const bytes = try std.fmt.allocPrint(self.alloc, "```{s}\n{s}\n```", .{ path, body });
+        defer self.alloc.free(bytes);
+        if (self.buffer.items.len + bytes.len > max_input) return error.LimitExceeded;
+        const owned = try self.alloc.dupe(u8, path);
+        errdefer self.alloc.free(owned);
+        try self.attachments.append(self.alloc, .{ .kind = .file, .path = owned });
+        errdefer _ = self.attachments.pop();
+        try self.insertChip(bytes, .{ .start = 0, .end = 0, .lines = std.mem.count(u8, body, "\n") + 1, .kind = .file, .attachment = self.attachments.items.len - 1 });
+    }
+
+    /// At submit, on a terminal that does not bracket pastes: every
+    /// whitespace-separated word outside a chip that the probe reports as an
+    /// image becomes an image chip in place, so what is recorded shows what
+    /// was attached. Returns how many were attached.
+    pub fn attachTypedImages(self: *Editor) !usize {
+        const probe = self.probe orelse return 0;
+        // The words first, so a replacement never moves one still to be
+        // scanned; then the replacements in prompt order, each shifting the
+        // ranges after it.
+        const Range = struct { start: usize, end: usize };
+        var words: std.ArrayList(Range) = .empty;
+        defer words.deinit(self.alloc);
+        var at: usize = 0;
+        while (at < self.buffer.items.len) {
+            const items = self.buffer.items;
+            if (self.chipStartingAt(at)) |i| {
+                at = self.chips.items[i].end;
+                continue;
+            }
+            if (std.ascii.isWhitespace(items[at])) {
+                at += 1;
+                continue;
+            }
+            var end = at;
+            while (end < items.len and !std.ascii.isWhitespace(items[end]) and self.chipStartingAt(end) == null) end += 1;
+            if (looksLikeImage(items[at..end])) try words.append(self.alloc, .{ .start = at, .end = end });
+            at = end;
+        }
+        var attached: usize = 0;
+        var shift_by: isize = 0;
+        for (words.items) |word| {
+            if (self.imageCount() >= max_images) break;
+            const start: usize = @intCast(@as(isize, @intCast(word.start)) + shift_by);
+            const end: usize = @intCast(@as(isize, @intCast(word.end)) + shift_by);
+            const path = (try droppedPath(self.alloc, self.buffer.items[start..end])) orelse continue;
+            defer self.alloc.free(path);
+            const dropped = probe.call(probe.context, self.alloc, path) orelse continue;
+            switch (dropped) {
+                .image => {
+                    try self.remove(start, end);
+                    self.cursor = start;
+                    try self.attachImage(path);
+                    shift_by += @as(isize, @intCast(self.cursor - start)) - @as(isize, @intCast(end - start));
+                    attached += 1;
+                },
+                .text => |content| self.alloc.free(content),
+            }
+        }
+        self.cursor = self.buffer.items.len;
+        return attached;
+    }
+
+    /// Inserts `bytes` at the cursor as one chip (`kind` and `attachment`
+    /// from `template`).
+    fn insertChip(self: *Editor, bytes: []const u8, template: Chip) !void {
+        if (self.buffer.items.len + bytes.len > max_input) return error.LimitExceeded;
+        const start = self.cursor;
+        self.expandAt(start);
+        try self.buffer.insertSlice(self.alloc, start, bytes);
+        self.shift(start, @intCast(bytes.len));
+        var chip = template;
+        chip.start = start;
+        chip.end = start + bytes.len;
+        try self.chips.append(self.alloc, chip);
+        std.mem.sort(Chip, self.chips.items, {}, lessThan);
+        self.cursor = start + bytes.len;
+        self.index = null;
+    }
+
+    /// Forgets attachment `index` and renumbers the image markers after it.
+    fn dropAttachment(self: *Editor, index: usize) void {
+        self.alloc.free(self.attachments.items[index].path);
+        _ = self.attachments.orderedRemove(index);
+        for (self.chips.items) |*chip| {
+            if (chip.kind != .paste and chip.attachment > index) chip.attachment -= 1;
+        }
+        self.renumber();
+    }
+
+    fn dropAttachments(self: *Editor) void {
+        for (self.attachments.items) |att| self.alloc.free(att.path);
+        self.attachments.clearRetainingCapacity();
+    }
+
+    /// Rewrites every image marker to its rank among the image attachments.
+    /// Markers are single-digit (`max_images`), so the bytes keep their
+    /// length and no offset moves.
+    fn renumber(self: *Editor) void {
+        for (self.chips.items) |chip| {
+            if (chip.kind != .image) continue;
+            var rank: usize = 0;
+            for (self.attachments.items[0 .. chip.attachment + 1]) |att| rank += @intFromBool(att.kind == .image);
+            var label: [16]u8 = undefined;
+            const marker = std.fmt.bufPrint(&label, "[image #{d}]", .{rank}) catch unreachable;
+            if (marker.len == chip.end - chip.start) @memcpy(self.buffer.items[chip.start..chip.end], marker);
+        }
     }
 
     // ----- keys -----
@@ -216,7 +432,7 @@ pub const Editor = struct {
             .down => try self.vertical(.down),
             .ctrl => |c| switch (c) {
                 'j' => try self.insert("\n"),
-                'e' => self.expandChip(),
+                'e' => try self.expandChip(),
                 else => return .ignored,
             },
             else => return .ignored,
@@ -246,6 +462,25 @@ pub const Editor = struct {
             self.pending.clearRetainingCapacity();
             return;
         }
+        // A drop: one path, which the probe turns into an image or a file
+        // chip. Anything it does not recognize is pasted as typed.
+        if (self.probe) |probe| if (try droppedPath(self.alloc, pasted)) |path| {
+            defer self.alloc.free(path);
+            if (probe.call(probe.context, self.alloc, path)) |dropped| {
+                defer self.pending.clearRetainingCapacity();
+                switch (dropped) {
+                    .image => self.attachImage(path) catch |err| switch (err) {
+                        error.TooManyImages, error.LimitExceeded => return,
+                        else => return err,
+                    },
+                    .text => |content| self.attachFile(path, content) catch |err| switch (err) {
+                        error.LimitExceeded => return,
+                        else => return err,
+                    },
+                }
+                return;
+            }
+        };
         const line_count = std.mem.count(u8, pasted, "\n") + 1;
         const chip = line_count >= chip_min_lines or pasted.len >= chip_min_bytes;
         const start = self.cursor;
@@ -285,6 +520,14 @@ pub const Editor = struct {
         _ = self.chips.orderedRemove(i);
         try self.remove(chip.start, chip.end);
         self.cursor = chip.start;
+        if (chip.kind != .paste) self.dropAttachment(chip.attachment);
+    }
+
+    /// Forgets chip `i` and, for an attachment, the file behind it; the
+    /// bytes stay in the buffer as ordinary text.
+    fn forgetChip(self: *Editor, i: usize) void {
+        const chip = self.chips.orderedRemove(i);
+        if (chip.kind != .paste) self.dropAttachment(chip.attachment);
     }
 
     /// Deletes `[from, to)` and moves every chip that outlives it.
@@ -297,7 +540,7 @@ pub const Editor = struct {
             // A chip the deletion touched at all is no longer what was
             // pasted: it becomes ordinary text.
             if (chip.start < to and from < chip.end) {
-                _ = self.chips.orderedRemove(i);
+                self.forgetChip(i);
                 continue;
             }
             if (chip.start >= to) {
@@ -318,18 +561,29 @@ pub const Editor = struct {
         }
     }
 
-    /// Ctrl-E on a chip: drop the range so the pasted text is editable.
-    fn expandChip(self: *Editor) void {
-        if (self.chipStartingAt(self.cursor) orelse self.chipEndingAt(self.cursor)) |i| {
+    /// Ctrl-E on a chip: drop the range so the pasted text is editable. An
+    /// image chip expands to its path, since its marker is not the file.
+    fn expandChip(self: *Editor) !void {
+        const i = self.chipStartingAt(self.cursor) orelse self.chipEndingAt(self.cursor) orelse return;
+        const chip = self.chips.items[i];
+        if (chip.kind == .image) {
+            const path = try self.alloc.dupe(u8, self.attachments.items[chip.attachment].path);
+            defer self.alloc.free(path);
             _ = self.chips.orderedRemove(i);
+            try self.remove(chip.start, chip.end);
+            self.cursor = chip.start;
+            self.dropAttachment(chip.attachment);
+            try self.insert(path);
+            return;
         }
+        self.forgetChip(i);
     }
 
     /// Any edit strictly inside a chip expands it first.
     fn expandAt(self: *Editor, offset: usize) void {
         for (self.chips.items, 0..) |chip, i| {
             if (chip.contains(offset)) {
-                _ = self.chips.orderedRemove(i);
+                self.forgetChip(i);
                 return;
             }
         }
@@ -465,6 +719,7 @@ pub const Editor = struct {
         const t = if (target) |i| self.history.items[i] else self.draft.items;
         self.buffer.clearRetainingCapacity();
         self.chips.clearRetainingCapacity();
+        self.dropAttachments();
         try self.buffer.appendSlice(self.alloc, t);
         self.cursor = self.buffer.items.len;
         self.scroll = 0;
@@ -488,7 +743,7 @@ pub const Editor = struct {
         var since_break: usize = 0;
         while (offset < items.len) {
             if (self.chipAt(offset)) |chip| {
-                const w = chipWidth(chip);
+                const w = self.chipWidth(chip);
                 if (used + w > columns and used > 0) {
                     try spans.append(a, .{ .start = start, .end = breakEnd(items, break_at, offset) });
                     start = break_at orelse offset;
@@ -543,13 +798,22 @@ pub const Editor = struct {
         return if (at > 0 and items[at - 1] == ' ') at - 1 else at;
     }
 
-    fn chipWidth(chip: Chip) usize {
-        var buffer: [48]u8 = undefined;
-        return view.width(chipLabel(&buffer, chip));
+    fn chipWidth(self: *const Editor, chip: Chip) usize {
+        var buffer: [96]u8 = undefined;
+        return view.width(self.chipLabel(&buffer, chip));
     }
 
-    fn chipLabel(buffer: []u8, chip: Chip) []const u8 {
+    fn chipLabel(self: *const Editor, buffer: []u8, chip: Chip) []const u8 {
         const bytes = chip.end - chip.start;
+        switch (chip.kind) {
+            // The marker is the buffer's own bytes.
+            .image => return self.buffer.items[chip.start..chip.end],
+            .file => {
+                const name = std.fs.path.basename(self.attachments.items[chip.attachment].path);
+                return std.fmt.bufPrint(buffer, "[file {s}, {d} line{s}]", .{ name, chip.lines, if (chip.lines == 1) "" else "s" }) catch "[file]";
+            },
+            .paste => {},
+        }
         if (bytes < 1024) return std.fmt.bufPrint(buffer, "[pasted {d} lines, {d} B]", .{ chip.lines, bytes }) catch "[pasted]";
         const kb = @as(f64, @floatFromInt(bytes)) / 1024.0;
         return std.fmt.bufPrint(buffer, "[pasted {d} lines, {d:.1} KB]", .{ chip.lines, kb }) catch "[pasted]";
@@ -573,7 +837,7 @@ pub const Editor = struct {
         const items = self.buffer.items;
         while (at < @min(offset, span.end)) {
             if (self.chipAt(at)) |chip| {
-                column += chipWidth(chip);
+                column += self.chipWidth(chip);
                 at = chip.end;
                 continue;
             }
@@ -592,8 +856,8 @@ pub const Editor = struct {
         const items = self.buffer.items;
         while (at < span.end) {
             if (self.chipAt(at)) |chip| {
-                if (used + chipWidth(chip) > column) return at;
-                used += chipWidth(chip);
+                if (used + self.chipWidth(chip) > column) return at;
+                used += self.chipWidth(chip);
                 at = chip.end;
                 continue;
             }
@@ -677,9 +941,9 @@ pub const Editor = struct {
         while (at < span.end) {
             if (self.chipAt(at)) |chip| {
                 try view.safe(&w.writer, self.buffer.items[plain..at]);
-                var buffer: [48]u8 = undefined;
-                try w.writer.writeAll(th.paint(.chip));
-                try w.writer.writeAll(chipLabel(&buffer, chip));
+                var buffer: [96]u8 = undefined;
+                try w.writer.writeAll(th.paint(if (chip.kind == .image) .op_write else .chip));
+                try w.writer.writeAll(self.chipLabel(&buffer, chip));
                 try w.writer.writeAll(theme.reset);
                 at = @min(chip.end, span.end);
                 plain = at;
@@ -1128,4 +1392,127 @@ test "a scrolled box keeps its indicator row inside the frame" {
     try testing.expectEqual(@as(usize, 5), boxed.len);
     try testing.expect(std.mem.startsWith(u8, try stripped(a, boxed[1].text), "│   … 4 lines above"));
     try testing.expectEqualStrings("│   6" ++ (" " ** 23) ++ " │", try stripped(a, boxed[3].text));
+}
+
+// ----- attachments -----
+
+/// A probe for the tests: `.png` paths are images, `.md` paths are text
+/// files with a fixed content, anything else is not a file.
+fn testProbe(_: *anyopaque, alloc: Allocator, path: []const u8) ?Dropped {
+    if (looksLikeImage(path)) return .image;
+    if (std.mem.endsWith(u8, path, ".md")) return .{ .text = alloc.dupe(u8, "# Title\n\nbody\n") catch return null };
+    return null;
+}
+
+fn probedEditor() Editor {
+    var e = editor();
+    var dummy: u8 = 0;
+    e.probe = .{ .context = @ptrCast(&dummy), .call = testProbe };
+    return e;
+}
+
+test "a dropped image path becomes an [image #N] chip whose marker is the text" {
+    var e = probedEditor();
+    defer e.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try typeText(&e, "what is this? ");
+    try paste(&e, "/tmp/shot\\ one.png ");
+    try paste(&e, "file:///tmp/two.PNG");
+    try testing.expectEqualStrings("what is this? [image #1][image #2]", e.text());
+    try testing.expectEqual(@as(usize, 2), e.attachmentList().len);
+    try testing.expectEqualStrings("/tmp/shot one.png", e.attachmentList()[0].path);
+    try testing.expectEqualStrings("/tmp/two.PNG", e.attachmentList()[1].path);
+    const l = try e.layout(arena.allocator(), .{ .width = 60, .min_rows = 3, .max_rows = 6, .theme = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, l.rows[0].text, "[image #1]") != null);
+    try testing.expect(std.mem.indexOf(u8, l.rows[0].text, "[image #2]") != null);
+    // A path the probe does not know stays a paste, as typed.
+    try paste(&e, "/tmp/notes.pdf");
+    try testing.expectEqualStrings("what is this? [image #1][image #2]/tmp/notes.pdf", e.text());
+    try testing.expectEqual(@as(usize, 2), e.attachmentList().len);
+}
+
+test "deleting an image chip drops its file and renumbers the markers after it" {
+    var e = probedEditor();
+    defer e.deinit();
+    try paste(&e, "/a.png");
+    try paste(&e, "/b.png");
+    try paste(&e, "/c.png");
+    try testing.expectEqualStrings("[image #1][image #2][image #3]", e.text());
+    // Backspace at the end of the first chip.
+    e.cursor = 10;
+    _ = try e.handleKey(.backspace);
+    try testing.expectEqualStrings("[image #1][image #2]", e.text());
+    try testing.expectEqual(@as(usize, 2), e.attachmentList().len);
+    try testing.expectEqualStrings("/b.png", e.attachmentList()[0].path);
+    try testing.expectEqual(@as(usize, 0), e.chips.items[0].attachment);
+    try testing.expectEqual(@as(usize, 1), e.chips.items[1].attachment);
+    // Clearing the prompt forgets the files too.
+    e.clear();
+    try testing.expectEqual(@as(usize, 0), e.attachmentList().len);
+}
+
+test "a dropped text file becomes a file chip over its fenced content" {
+    var e = probedEditor();
+    defer e.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try typeText(&e, "summarize ");
+    try paste(&e, "/docs/README.md");
+    try testing.expectEqualStrings("summarize ```/docs/README.md\n# Title\n\nbody\n```", e.text());
+    try testing.expectEqual(@as(usize, 1), e.attachmentList().len);
+    try testing.expect(e.attachmentList()[0].kind == .file);
+    const l = try e.layout(arena.allocator(), .{ .width = 60, .min_rows = 3, .max_rows = 6, .theme = .{ .kind = .plain } });
+    try testing.expect(std.mem.indexOf(u8, l.rows[0].text, "[file README.md, 3 lines]") != null);
+    // Ctrl-E leaves the content as editable text and forgets the file.
+    _ = try e.handleKey(.{ .ctrl = 'e' });
+    try testing.expectEqual(@as(usize, 0), e.chips.items.len);
+    try testing.expectEqual(@as(usize, 0), e.attachmentList().len);
+}
+
+test "Ctrl-E on an image chip leaves its path as text" {
+    var e = probedEditor();
+    defer e.deinit();
+    try paste(&e, "/tmp/a.png");
+    _ = try e.handleKey(.{ .ctrl = 'e' });
+    try testing.expectEqualStrings("/tmp/a.png", e.text());
+    try testing.expectEqual(@as(usize, 0), e.attachmentList().len);
+}
+
+test "typed image paths are attached at submit, and the ninth image is refused" {
+    var e = probedEditor();
+    defer e.deinit();
+    try typeText(&e, "compare /tmp/a.png and /tmp/b.png please");
+    try testing.expectEqual(@as(usize, 2), try e.attachTypedImages());
+    try testing.expectEqualStrings("compare [image #1] and [image #2] please", e.text());
+    try testing.expectEqualStrings("/tmp/a.png", e.attachmentList()[0].path);
+    try testing.expectEqualStrings("/tmp/b.png", e.attachmentList()[1].path);
+    var n: usize = 2;
+    while (n < max_images) : (n += 1) try e.attachImage("/tmp/more.png");
+    try testing.expectError(error.TooManyImages, e.attachImage("/tmp/nine.png"));
+    // A drop past the bound is refused silently: the prompt is unchanged.
+    const before = try testing.allocator.dupe(u8, e.text());
+    defer testing.allocator.free(before);
+    try paste(&e, "/tmp/nine.png");
+    try testing.expectEqualStrings(before, e.text());
+}
+
+test "a dropped path is one line, unescaped, with file:// and quotes removed" {
+    const alloc = testing.allocator;
+    const Case = struct { in: []const u8, want: ?[]const u8 };
+    for ([_]Case{
+        .{ .in = "/tmp/a b.png\n", .want = null },
+        .{ .in = "  file:///Users/me/Shot\\ 1.png  ", .want = "/Users/me/Shot 1.png" },
+        .{ .in = "'/tmp/x y.png'", .want = "/tmp/x y.png" },
+        .{ .in = "./rel.png", .want = "./rel.png" },
+        .{ .in = "two\nlines", .want = null },
+        .{ .in = "hello there", .want = null },
+        .{ .in = "", .want = null },
+    }) |case| {
+        const got = try droppedPath(alloc, case.in);
+        defer if (got) |g| alloc.free(g);
+        if (case.want) |want| try testing.expectEqualStrings(want, got.?) else try testing.expect(got == null);
+    }
+    try testing.expect(looksLikeImage("a/b.JPG"));
+    try testing.expect(!looksLikeImage("a/b.txt"));
 }

@@ -165,10 +165,10 @@ pub fn run(
         defer loaded.deinit();
         const built = try resume_mod.messages(alloc, loaded);
         defer alloc.free(built);
-        try agent.restore(built);
+        try agent.restore(built, &.{});
     }
 
-    const stop = agent.turn(prompt) catch |err| {
+    const stop = agent.turn(prompt, &.{}) catch |err| {
         if (err == error.ContextFull) {
             const overflow = completer.overflow orelse loop.Overflow{ .needed = 0, .capacity = capacity };
             diag.set("context window full: the step needed {d} tokens (prompt plus output budget) of {d}; raise --ctx-size or shorten the conversation", .{ overflow.needed, overflow.capacity });
@@ -223,7 +223,7 @@ const Turn = struct {
         const now = model.rfc3339(&stamp, std.Io.Timestamp.now(self.io, .real).toSeconds());
         var call: [16]u8 = undefined;
         const mapped: session_log.Entry = switch (entry) {
-            .user => |text| .{ .user = .{ .text = text } },
+            .user => |u| .{ .user = .{ .text = u.text } },
             .assistant => |step| .{ .assistant = .{
                 .thinking = step.thinking,
                 .answer = step.answer,

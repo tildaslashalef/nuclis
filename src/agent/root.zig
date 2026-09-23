@@ -178,6 +178,18 @@ const Ui = struct {
     /// A session path to replay on the next main-loop pass, set by the picker
     /// and consumed there because the loop owns the session file. Owned.
     resume_request: ?[]u8 = null,
+    /// The images of the turn being sent, shown under its prompt when the
+    /// loop's `user` event arrives (`send`). Borrowed from the agent's
+    /// history for the turn.
+    attachments_pending: []const loop.Image = &.{},
+    /// The terminal draws inline images (kitty graphics), by environment;
+    /// under tmux the sequence needs the passthrough wrapper.
+    preview: bool = false,
+    tmux: bool = false,
+    /// The entry's projector file, loaded on the first attachment; null when
+    /// the entry names none, which is the refusal at attach time.
+    mmproj: ?[]const u8 = null,
+    model_path: []const u8 = "",
 
     fn deinit(self: *Ui) void {
         self.forgetFrame();
@@ -445,10 +457,88 @@ const Ui = struct {
             return;
         }
         try self.tr.apply(e);
+        if (e == .user) try self.showAttachments();
         switch (e) {
             .status, .turn_end => self.bar.apply(e),
             else => {},
         }
+    }
+
+    /// The detail row per image of the turn just sent, with the inline
+    /// preview where the terminal draws one. A preview that cannot be built
+    /// (an unreadable file, a decode error) just leaves the row alone.
+    fn showAttachments(self: *Ui) !void {
+        const images = self.attachments_pending;
+        self.attachments_pending = &.{};
+        var arena = std.heap.ArenaAllocator.init(self.alloc);
+        defer arena.deinit();
+        const a = arena.allocator();
+        for (images, 1..) |image, n| {
+            const label = try std.fmt.allocPrint(a, "image #{d}: {s} ({d}×{d} → {d}×{d} tokens)", .{ n, image.path, image.prepared.width, image.prepared.height, image.prepared.width_tokens, image.prepared.height_tokens });
+            const preview: ?tui.event.Preview = if (self.preview) self.buildPreview(a, image.path) catch null else null;
+            try self.tr.apply(.{ .attachment = .{ .label = label, .preview = preview } });
+        }
+    }
+
+    fn buildPreview(self: *Ui, a: std.mem.Allocator, path: []const u8) !tui.event.Preview {
+        const bytes = try engine.readImage(a, self.io, path);
+        var decoded = try inference.vision.image.decode(a, bytes);
+        defer decoded.deinit(a);
+        var small = try tui.graphics.scaleDown(a, decoded);
+        defer small.deinit(a);
+        const b = tui.graphics.box(small.width, small.height, self.columnsFor() -| 4);
+        return .{ .sequence = try tui.graphics.sequence(a, small, b, self.tmux), .rows = b.rows };
+    }
+
+    /// The editor's file-system side of a drop: an existing regular file
+    /// that is an image (when the model can take one) or UTF-8 text within
+    /// the input limit. Anything else leaves the paste as typed.
+    fn dropProbe(context: *anyopaque, alloc: std.mem.Allocator, path: []const u8) ?editor.Dropped {
+        const self: *Ui = @ptrCast(@alignCast(context));
+        return self.probe(alloc, path) catch null;
+    }
+
+    fn probe(self: *Ui, alloc: std.mem.Allocator, path: []const u8) !?editor.Dropped {
+        const resolved = try expandHome(alloc, self.environ, path);
+        defer alloc.free(resolved);
+        const stat = std.Io.Dir.cwd().statFile(self.io, resolved, .{}) catch return null;
+        if (stat.kind != .file) return null;
+        if (editor.looksLikeImage(resolved)) {
+            if (!self.visionAvailable()) return null;
+            return .image;
+        }
+        if (stat.size > editor.max_input) return null;
+        const content = std.Io.Dir.cwd().readFileAlloc(self.io, resolved, alloc, .limited(editor.max_input)) catch return null;
+        errdefer alloc.free(content);
+        if (!std.unicode.utf8ValidateSlice(content)) {
+            alloc.free(content);
+            return null;
+        }
+        return .{ .text = content };
+    }
+
+    /// Loads the entry's projector on first use. False, with the reason as
+    /// a notice, when the entry has none or it cannot be bound: the chip is
+    /// refused, never silently dropped.
+    fn visionAvailable(self: *Ui) bool {
+        if (self.eng.vision != null) return true;
+        const mmproj = self.mmproj orelse {
+            self.emit(.{ .notice = "  — no vision support yet for this model: the entry names no projector" }) catch {};
+            return false;
+        };
+        const resolved = engine.visionPath(self.alloc, self.model_path, mmproj) catch return false;
+        const path = resolved orelse return false;
+        defer self.alloc.free(path);
+        self.status = "loading projector…";
+        self.draw() catch {};
+        self.eng.loadVision(path) catch |err| {
+            var note: [160]u8 = undefined;
+            self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — no vision support yet for this model: {s} loading the projector", .{@errorName(err)}) catch "  — no vision support yet for this model" }) catch {};
+            self.status = "ready";
+            return false;
+        };
+        self.status = "ready";
+        return true;
     }
 
     fn eventSend(context: *anyopaque, e: tui.event.Event) anyerror!void {
@@ -460,8 +550,9 @@ const Ui = struct {
     fn eventRecord(context: *anyopaque, entry: loop.Record) anyerror!void {
         const self: *Ui = @ptrCast(@alignCast(context));
         var call: [16]u8 = undefined;
+        var images: [editor.max_images]session_log.ImageEntry = undefined;
         const mapped: session_log.Entry = switch (entry) {
-            .user => |text| .{ .user = .{ .text = text } },
+            .user => |u| .{ .user = .{ .text = u.text, .images = imageEntries(&images, u.images) } },
             .assistant => |step| .{ .assistant = .{
                 .thinking = step.thinking,
                 .answer = step.answer,
@@ -820,6 +911,10 @@ const Ui = struct {
             for (try commands.workspacePaths(a, self.io, .cwd(), word[1..])) |path| {
                 try items.append(a, .{ .label = try std.fmt.allocPrint(a, "@{s}", .{path}) });
             }
+        } else if (std.ascii.startsWithIgnoreCase(self.ed.text(), "/image ") and !self.ed.atFirstWord()) {
+            // The command's argument completes like an `@path`, bare.
+            self.comp_kind = .path;
+            for (try commands.workspacePaths(a, self.io, .cwd(), word)) |path| try items.append(a, .{ .label = path });
         } else {
             self.comp_kind = .none;
         }
@@ -1003,7 +1098,14 @@ fn installTick(ui: *Ui) void {
 /// Runs one user turn through the loop: prepares the display state, hands the
 /// prompt to the agent, and notifies once it is done if the window was
 /// elsewhere. The loop owns everything the model saw and produced.
-fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8) !void {
+/// `image_paths` are the prompt's attachments in marker order: each is read
+/// and run through the projector before the turn; one that fails is a
+/// notice and the turn is not sent.
+fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, image_paths: []const []const u8) !void {
+    const images = loadImages(ui, image_paths) catch |err| switch (err) {
+        error.ImageUnreadable => return,
+        else => return err,
+    };
     // The effort may have changed since the last turn (Ctrl-T): rebuild the
     // sampling options from its profile, keeping the RNG's state.
     ui.completer.effort = ui.effort;
@@ -1025,7 +1127,9 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8) !voi
     // Steered text the turn ended without delivering goes out as the next
     // message, whatever ended the turn.
     defer reclaimSteering(ui) catch {};
-    const stop = try ui.agent.turn(user);
+    ui.attachments_pending = images;
+    defer ui.attachments_pending = &.{};
+    const stop = try ui.agent.turn(user, images);
     ui.status = switch (stop) {
         .done => "ready",
         .budget => "step budget",
@@ -1034,6 +1138,59 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8) !voi
     if (terminal.shouldNotify(ui.focused, ui.notify, stop != .cancelled)) {
         try ui.term.notify("nuclis: response ready");
     }
+}
+
+/// Reads and encodes each attached image through the loaded projector. Owned
+/// by the caller (the agent takes them). `ImageUnreadable` after a notice
+/// naming the image that failed.
+fn loadImages(ui: *Ui, image_paths: []const []const u8) ![]loop.Image {
+    if (image_paths.len == 0) return &.{};
+    var images: std.ArrayList(loop.Image) = .empty;
+    errdefer loop.freeImages(ui.alloc, images.toOwnedSlice(ui.alloc) catch &.{});
+    for (image_paths, 1..) |path, n| {
+        ui.status = "encoding image…";
+        try ui.draw();
+        const image = loadImage(ui, path) catch |err| {
+            var note: [256]u8 = undefined;
+            try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — could not read image #{d}: {s}: {s}", .{ n, path, @errorName(err) }) catch "  — could not read an image" });
+            ui.status = "ready";
+            return error.ImageUnreadable;
+        };
+        try images.append(ui.alloc, image);
+    }
+    return images.toOwnedSlice(ui.alloc);
+}
+
+fn loadImage(ui: *Ui, path: []const u8) !loop.Image {
+    if (!ui.visionAvailable()) return error.NoVision;
+    const resolved = try expandHome(ui.alloc, ui.environ, path);
+    errdefer ui.alloc.free(resolved);
+    const bytes = try engine.readImage(ui.alloc, ui.io, resolved);
+    defer ui.alloc.free(bytes);
+    const m = ui.completer.model();
+    const prepared = try m.encode_image(m.context, ui.alloc, bytes);
+    return .{ .path = resolved, .bytes = bytes.len, .prepared = prepared };
+}
+
+/// The session file's view of a turn's images (at most the editor's bound).
+fn imageEntries(buffer: *[editor.max_images]session_log.ImageEntry, images: []const loop.Image) []const session_log.ImageEntry {
+    const n = @min(images.len, buffer.len);
+    for (images[0..n], buffer[0..n]) |image, *entry| entry.* = .{
+        .path = image.path,
+        .width = image.prepared.width,
+        .height = image.prepared.height,
+        .width_tokens = image.prepared.width_tokens,
+        .height_tokens = image.prepared.height_tokens,
+    };
+    return buffer[0..n];
+}
+
+/// A leading `~` as the home directory; anything else copied as is.
+fn expandHome(alloc: std.mem.Allocator, environ: *const std.process.Environ.Map, path: []const u8) ![]u8 {
+    if (path.len > 0 and path[0] == '~' and (path.len == 1 or path[1] == '/')) {
+        if (environ.get("HOME")) |home| return std.fmt.allocPrint(alloc, "{s}{s}", .{ home, path[1..] });
+    }
+    return alloc.dupe(u8, path);
 }
 
 /// Moves the steered messages a turn left undelivered into the queue, joined
@@ -1102,6 +1259,21 @@ fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Re
                 }
             },
             .save => |where| try saveSession(ui, a, root_dir, where),
+            .image => |path| {
+                // The same probe a drop goes through; the chip lands in the
+                // emptied editor so the question can be typed after it.
+                const dropped = (ui.probe(a, path) catch null) orelse {
+                    if (ui.eng.vision != null or ui.mmproj != null and editor.looksLikeImage(path)) try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s}: not an image file I can read", .{path}) });
+                    return;
+                };
+                switch (dropped) {
+                    .image => ui.ed.attachImage(path) catch |err| try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s} attaching {s}", .{ @errorName(err), path }) }),
+                    .text => |content| {
+                        a.free(content);
+                        try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s} is not an image; drop it to attach it as text", .{path}) });
+                    },
+                }
+            },
             .shell => |shell| try runShell(ui, sampler, shell),
         },
     }
@@ -1176,7 +1348,7 @@ fn runShell(ui: *Ui, sampler: *inference.sampling.Sampler, shell: commands.Shell
     defer ui.alloc.free(message);
     ui.quiet_user = true;
     defer ui.quiet_user = false;
-    try runTurn(ui, sampler, message);
+    try runTurn(ui, sampler, message, &.{});
 }
 
 /// `/save`: the session file as markdown. It is derived from the entries, not
@@ -1256,12 +1428,60 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     ui.agent.resetConversation();
     ui.effort = effort;
     const built = try resume_mod.messages(a, loaded);
-    try ui.agent.restore(built);
+    const images = try resumeImages(ui, loaded);
+    try ui.agent.restore(built, images);
     ui.tr.reset();
     const rows = try resume_mod.replay(a, ui.tr, loaded, .{ .width = ui.columnsFor(), .th = ui.th });
     if (rows.len > 0) try ui.scr.insertAbove(rows);
     ui.bar = .{};
     ui.status = "resumed";
+}
+
+/// The attachments of each conversation entry of a stored session, parallel
+/// to `resume.messages`, decoded and encoded again from their paths: the
+/// file holds no pixels. One that cannot be read is a notice and is left out
+/// of the model's view (the text keeps its marker). Owned by the caller.
+fn resumeImages(ui: *Ui, loaded: session_log.Loaded) ![]const []loop.Image {
+    var out: std.ArrayList([]loop.Image) = .empty;
+    errdefer out.deinit(ui.alloc);
+    var turn: usize = 0;
+    for (loaded.records) |record| {
+        switch (record.entry) {
+            .user => |u| {
+                turn += 1;
+                var images: std.ArrayList(loop.Image) = .empty;
+                for (u.images, 1..) |entry, n| {
+                    const image = loadImage(ui, entry.path) catch |err| {
+                        var note: [256]u8 = undefined;
+                        try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — image #{d} of turn {d} left out: {s}: {s}", .{ n, turn, entry.path, @errorName(err) }) catch "  — a resumed image was left out" });
+                        continue;
+                    };
+                    try images.append(ui.alloc, image);
+                }
+                try out.append(ui.alloc, try images.toOwnedSlice(ui.alloc));
+            },
+            .assistant, .tool_result => try out.append(ui.alloc, &.{}),
+            else => {},
+        }
+    }
+    return out.toOwnedSlice(ui.alloc);
+}
+
+/// The editor's image attachments' paths, in marker order, copied so the
+/// editor can be cleared before the turn runs.
+fn imagePaths(alloc: std.mem.Allocator, ed: *const editor.Editor) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer freePaths(alloc, out.items);
+    for (ed.attachmentList()) |att| {
+        if (att.kind != .image) continue;
+        try out.append(alloc, try alloc.dupe(u8, att.path));
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+fn freePaths(alloc: std.mem.Allocator, list: []const []const u8) void {
+    for (list) |p| alloc.free(p);
+    alloc.free(list);
 }
 
 /// Names a new session file for this working directory. A session without a
@@ -1377,8 +1597,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
     var agent: loop.Agent = undefined;
-    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ) };
+    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .tmux = environ.get("TMUX") != null, .mmproj = if (settings.entry) |entry| entry.mmproj else null, .model_path = model_path };
     defer ui.deinit();
+    ed.probe = .{ .context = &ui, .call = Ui.dropProbe };
     // A polling tool reaches back into the driver while it runs, so keys are
     // read and the running call's spinner advances during a long `bash`.
     workspace.tick = .{ .context = &ui, .call = toolTick };
@@ -1537,9 +1758,14 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 ui.status = "invalid UTF-8 input";
                 continue;
             }
+            // A typed image path (a drop on a terminal that does not bracket
+            // pastes) is attached now, so the recorded prompt shows the chip.
+            _ = ed.attachTypedImages() catch 0;
             // The prompt outlives the editor's buffer: recall rewrites it.
             const user = try alloc.dupe(u8, ed.text());
             defer alloc.free(user);
+            const image_paths = try imagePaths(alloc, &ed);
+            defer freePaths(alloc, image_paths);
             ed.clear();
             try ed.remember(user);
             // A slash command is an instruction to the agent, not a turn: it
@@ -1553,7 +1779,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 // A history write is a convenience, never a reason to lose a turn.
                 prompt_history.append(io, std.Io.Dir.cwd(), history_path.?, user, now) catch {};
             }
-            const outcome = if (parsed) |command| runCommand(&ui, &sampler, command, root_dir, cwd) else runTurn(&ui, &sampler, user);
+            const outcome = if (parsed) |command| runCommand(&ui, &sampler, command, root_dir, cwd) else runTurn(&ui, &sampler, user, image_paths);
             outcome catch |err| {
                 ui.agent.abortTurn();
                 ui.eng.model.reset();

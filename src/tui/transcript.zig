@@ -43,7 +43,7 @@ pub const side_by_side_min_width: usize = 96;
 /// 2 produces the three this phase only renders (tool call, tool result,
 /// diff).
 pub const Block = union(enum) {
-    user: []u8,
+    user: User,
     thinking: Thinking,
     answer: Answer,
     tool_call: struct { id: event_mod.Id, name: []u8, summary: []u8, detail: ?[]u8 = null, running: bool = true, failed: bool = false },
@@ -58,6 +58,14 @@ pub const Block = union(enum) {
     /// What a run of tool calls amounted to (`Read 2 files, ran 1 shell
     /// command`), written where the model's text resumes after them.
     ops: []u8,
+
+    /// A prompt and the detail row per attachment under it; a detail may
+    /// carry an inline preview: a raw row placed over `rows` blank ones.
+    pub const User = struct {
+        text: []u8,
+        details: std.ArrayList(Detail) = .empty,
+    };
+    pub const Detail = struct { label: []u8, preview: ?[]u8 = null, rows: usize = 0 };
 
     pub const Thinking = struct {
         text: std.ArrayList(u8) = .empty,
@@ -80,7 +88,15 @@ pub const Block = union(enum) {
 
     fn deinit(self: *Block, alloc: Allocator) void {
         switch (self.*) {
-            .user, .notice, .info, .ops => |text| alloc.free(text),
+            .notice, .info, .ops => |text| alloc.free(text),
+            .user => |*u| {
+                alloc.free(u.text);
+                for (u.details.items) |d| {
+                    alloc.free(d.label);
+                    if (d.preview) |p| alloc.free(p);
+                }
+                u.details.deinit(alloc);
+            },
             .thinking => |*t| t.text.deinit(alloc),
             .answer => |*a| a.text.deinit(alloc),
             .tool_call => |c| {
@@ -231,7 +247,21 @@ pub const Transcript = struct {
 
     pub fn apply(self: *Transcript, e: Event) !void {
         switch (e) {
-            .user => |text| try self.blocks.append(self.alloc, .{ .user = try self.alloc.dupe(u8, text) }),
+            .user => |text| try self.blocks.append(self.alloc, .{ .user = .{ .text = try self.alloc.dupe(u8, text) } }),
+            .attachment => |a| {
+                // A detail belongs under the prompt it came with; anywhere
+                // else it is still worth a line.
+                if (self.blocks.items.len > 0 and self.blocks.items[self.blocks.items.len - 1] == .user) {
+                    const user = &self.blocks.items[self.blocks.items.len - 1].user;
+                    const label = try self.alloc.dupe(u8, a.label);
+                    errdefer self.alloc.free(label);
+                    const preview: ?[]u8 = if (a.preview) |p| try self.alloc.dupe(u8, p.sequence) else null;
+                    errdefer if (preview) |p| self.alloc.free(p);
+                    try user.details.append(self.alloc, .{ .label = label, .preview = preview, .rows = if (a.preview) |p| p.rows else 0 });
+                } else {
+                    try self.blocks.append(self.alloc, .{ .notice = try std.fmt.allocPrint(self.alloc, "  {s}", .{a.label}) });
+                }
+            },
             .notice => |text| try self.blocks.append(self.alloc, .{ .notice = try self.alloc.dupe(u8, text) }),
             .info => |text| try self.blocks.append(self.alloc, .{ .info = try self.alloc.dupe(u8, text) }),
             .thinking_delta => |text| {
@@ -442,8 +472,20 @@ pub const Transcript = struct {
         const th = options.th;
         const gl = th.glyphs();
         switch (block) {
-            .user => |text| {
-                try pushWrapped(a, out, text, options.width, .user);
+            .user => |u| {
+                try pushWrapped(a, out, u.text, options.width, .user);
+                for (u.details.items) |d| {
+                    try pushDetail(a, out, gl, d.label, options.width, .dim);
+                    if (d.preview) |p| {
+                        // The blank rows make room; the raw row climbs over
+                        // them, places the image, and comes back, so the
+                        // picture sits above the cursor and below the label.
+                        var n: usize = 0;
+                        while (n < d.rows) : (n += 1) try out.append(a, .{ .text = "" });
+                        try out.append(a, .{ .text = try std.fmt.allocPrint(a, "\x1b[{d}A{s}\x1b[{d}B", .{ d.rows, p, d.rows }), .raw = true });
+                        continue;
+                    }
+                }
                 try out.append(a, .{ .text = "" });
             },
             .thinking => |t| {
@@ -1397,4 +1439,34 @@ test "Ctrl-O folds tool output: the call row stays, the detail, result, and diff
     try tr.apply(.{ .tool_call = .{ .id = 3, .name = "bash", .summary = "Bash(sleep 9)", .detail = "$ sleep 9" } });
     const live = try tr.liveRows(a, .{ .width = 80, .th = options.th, .budget = 10 });
     try testing.expectEqual(@as(usize, 1), live.len);
+}
+
+test "an attachment is a dim detail row under its prompt, and a preview reserves its rows" {
+    const a = testing.allocator;
+    var tr: Transcript = .{ .alloc = a };
+    defer tr.deinit();
+    const th: theme.Theme = .{ .kind = .plain };
+    try tr.apply(.{ .user = "what is this?" });
+    try tr.apply(.{ .attachment = .{ .label = "image #1: shot.png (640×480 → 16×12 tokens)" } });
+    try tr.apply(.{ .attachment = .{ .label = "image #2: b.png (32×32 → 2×2 tokens)", .preview = .{ .sequence = "\x1b_Gq=2;\x1b\\", .rows = 3 } } });
+    try tr.apply(.{ .answer_delta = "a photo" });
+    try tr.apply(.{ .turn_end = .{ .stop = .eos } });
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const rows = try tr.takeClosed(arena.allocator(), .{ .width = 80, .th = th });
+    // Prompt, two details, three blank rows, the raw row, the blank.
+    try testing.expectEqualStrings("what is this?", rows[0].text);
+    try testing.expect(std.mem.indexOf(u8, rows[1].text, "image #1: shot.png") != null);
+    try testing.expectEqual(theme.Style.dim, rows[1].style.?);
+    try testing.expect(std.mem.indexOf(u8, rows[2].text, "image #2") != null);
+    try testing.expectEqualStrings("", rows[3].text);
+    try testing.expectEqualStrings("", rows[5].text);
+    try testing.expect(rows[6].raw);
+    try testing.expectEqualStrings("\x1b[3A\x1b_Gq=2;\x1b\\\x1b[3B", rows[6].text);
+    try testing.expectEqualStrings("", rows[7].text);
+    // A detail with no prompt before it is still shown, as a notice.
+    var lone: Transcript = .{ .alloc = a };
+    defer lone.deinit();
+    try lone.apply(.{ .attachment = .{ .label = "image #1: x.png" } });
+    try testing.expect(lone.blocks.items[0] == .notice);
 }
