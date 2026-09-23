@@ -68,8 +68,9 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
 - `make help` lists all tasks. Per-commit: `make check` (fmt-check, unit
   tests, `test-metal`, the gate manifest's validation; about 75 s). Per
   unit: `make verify`, the Metal tier of the gate registry
-  ([§ Gates](#gates)), and `make verify-cpu` when `make verify-changed`
-  selects a CPU gate. `make bench` when performance is claimed; a
+  ([§ Gates](#gates)); `make verify-cpu` only when the unit changes what
+  the CPU reference computes, and once before a release (AGENTS.md §
+  Validation). `make bench` when performance is claimed; a
   workload of [§ The record](#the-record) (`make workload NAME=…`) when a
   record is claimed. The kernel micro-benchmarks (`bench-kernels`,
   `bench-matmul` with `ARGS=<tokens>`, `bench-matvec-split`,
@@ -96,13 +97,15 @@ make the registry cheaper than the recipes it replaced:
 | executor | the Metal plan (and the tokenizer) | the CPU reference |
 | cost | minutes (29 gates, one `make verify` per unit, about 8.5 min) | hours (14 gates; `qwen38-speculative-cpu` alone is about 20 min) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
-| when | every unit | when a change touches the CPU runtime files, when a family or a draft source is brought up, and to tell a wrong kernel from wrong model semantics after a Metal trace fails |
+| when | every unit that touched the inference stack | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
 Each gate lists the source globs (`paths`) that make it relevant, so
-`make verify-changed BASE=<rev>` runs the gates whose paths match `git diff
---name-only <rev>` plus untracked files: a commit under `src/tui/` selects
-nothing, one under `inference/src/models/gemma4*.zig` selects the Gemma
-gates, one under `inference/src/backends/cpu/` the CPU tier. The other
+`make verify-changed BASE=<rev>` runs the Metal-tier gates whose paths
+match `git diff --name-only <rev>` plus untracked files: a commit under
+`src/tui/` selects nothing, one under `inference/src/models/gemma4*.zig`
+the Gemma gates. The CPU-tier gates that match are listed, not run; `make
+verify-changed BASE=<rev> ARGS='--tier verify-cpu'` runs them when the
+change alters what the CPU reference computes (the table above). The other
 commands: `make verify` / `make verify-cpu` (a tier), `make gate
 NAME=<name or glob>` (`gemma4-qat-trace-f16`, `'muse-*'`; `ARGS=--dry-run`
 prints the commands), `make gates-list`, and `make gates-validate` (part of

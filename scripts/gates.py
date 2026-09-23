@@ -6,7 +6,10 @@ A gate is one command (argv with placeholders) plus a comparator: `exit`
 through compare-generation.py against the gate's bounds). Gates carry a
 tier (`verify`: Metal, minutes; `verify-cpu`: the CPU reference, hours) and
 the source globs that make them relevant, so `--changed REV` selects by
-`git diff`. Bounds live in the manifest and nowhere else.
+`git diff`: the Metal tier's matches by default, the CPU tier's with
+`--tier verify-cpu` (the CPU tier runs only when a change alters what the
+CPU reference computes, and before a release). Bounds live in the manifest
+and nowhere else.
 See docs/development.md § Gates.
 """
 import argparse
@@ -269,10 +272,10 @@ def main():
     ap.add_argument('--list', action='store_true', help='print every gate with its tier, family, model, and evidence')
     ap.add_argument('--validate', action='store_true', help='validate the manifest and run the self-test; no model needed')
     ap.add_argument('--self-test', action='store_true', help='run the unit tests of the pure functions')
-    ap.add_argument('--tier', choices=TIERS, help='run every gate of a tier')
+    ap.add_argument('--tier', choices=TIERS, help='run every gate of a tier; with --changed, the selected gates of that tier')
     ap.add_argument('--gate', action='append', metavar='NAME', help="run gates by name or glob (repeatable): gemma4-qat-trace-f16, 'muse-*'")
     ap.add_argument('--changed', nargs='?', const='HEAD', metavar='REV',
-                    help='run the gates whose paths match `git diff --name-only REV` plus untracked files (default HEAD)')
+                    help='run the Metal-tier gates whose paths match `git diff --name-only REV` plus untracked files (default HEAD); the CPU tier\'s matches are listed, and run with --tier verify-cpu')
     ap.add_argument('--dry-run', action='store_true', help='print the commands instead of running them')
     ap.add_argument('--no-build', action='store_true', help='do not rebuild the binaries first')
     ap.add_argument('--json', action='store_true', help='print the results as JSON')
@@ -297,15 +300,21 @@ def main():
             if not hits:
                 sys.exit(f"no gate matches {pattern!r}; --list shows them")
             selected.extend(g for g in hits if g not in selected)
-    elif args.tier:
-        selected = [g for g in doc['gates'] if g['tier'] == args.tier]
     elif args.changed is not None:
         files = changed_files(args.changed)
-        selected = select(doc['gates'], files)
-        print(f"{len(files)} changed file(s) since {args.changed}; {len(selected)} gate(s) selected: "
+        matched = select(doc['gates'], files)
+        tier = args.tier or 'verify'
+        selected = [g for g in matched if g['tier'] == tier]
+        others = [g for g in matched if g['tier'] != tier]
+        print(f"{len(files)} changed file(s) since {args.changed}; {len(selected)} {tier} gate(s) selected: "
               + (', '.join(g['name'] for g in selected) or 'none'), flush=True)
+        if others and tier == 'verify':
+            print("CPU-tier gates matched, not run (they run when the change alters what the CPU reference "
+                  "computes, and before a release; `--tier verify-cpu` runs them): " + ', '.join(g['name'] for g in others), flush=True)
         if not selected:
             return
+    elif args.tier:
+        selected = [g for g in doc['gates'] if g['tier'] == args.tier]
     else:
         ap.error('one of --list, --validate, --tier, --gate, --changed is required')
 

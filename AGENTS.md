@@ -188,12 +188,18 @@ For code changes, once build scaffolding exists:
    keyboard](docs/development.md#looking-at-the-agent-without-a-person-at-the-keyboard)).
 4. Run broader checks when shared code or unresolved risks justify them.
    The model-specific checks are gates in `gates.json`, tiered by cost and
-   selected by changed paths (`make verify-changed`; the CPU tier only when
-   selected), see [docs/development.md § Gates](docs/development.md#gates).
+   selected by changed paths (`make verify-changed` runs the Metal tier's
+   matches), see [docs/development.md § Gates](docs/development.md#gates).
    `make verify` (the Metal tier) once per unit that touched the inference
    stack — judge by the work: a unit confined to the executable, the
    documents, or the scripts changes no numerical behaviour and needs no
-   tier.
+   tier. The CPU tier (`make verify-cpu`, hours) is not part of closing a
+   unit unless the unit changes what the CPU reference computes: the
+   arithmetic of an existing CPU kernel or quantized decoder, a family's
+   `*_runtime.zig` forward, or a projector's CPU `Runtime`, or it brings up
+   a family or a draft source. Additions nothing calls yet, refactors a
+   unit test pins, the check tool, and Metal code do not count. Otherwise
+   the CPU tier runs once before a release.
 5. A change to the agent's system prompt (`src/agent/system_prompt.zig`),
    a tool description, or the loop's behaviour is measured on the
    playground task list before and after (`make agent-eval VARIANT=…`,
@@ -246,6 +252,7 @@ stale references. Do not claim build/test execution when no code or build exists
   derived from `build.zig.zon`, never passed in), writes the CHANGELOG
   section, commits `chore(release): vX.Y.Z`, tags it (annotated), and bumps
   to the next `X.(Y+1).0-dev` in a follow-up commit. It never pushes.
+  Before it, `make verify-cpu` runs the CPU tier once, since units skip it.
 - Tag only forward, never retroactively. Benchmarks and test records cite the
   git revision, and published numbers cite the release tag once one exists.
 - `CHANGELOG.md` starts at the first tag, assembled from Conventional

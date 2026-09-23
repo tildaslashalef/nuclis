@@ -127,6 +127,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP encoder (26B-A4B) on both executors; bidirectional image spans | 2026-09-23 |
 | MODL-23 | Muse Glimmer's windowed vision encoder on both executors; the image token cap for every family | 2026-09-23 (two sessions) |
 | MODL-25 | Bonsai 2's projector through the Qwen3-VL adapter: Q8_0 and F16 weights | 2026-09-23 |
+| REPO-15 | The CPU tier leaves the unit routine: when a unit changes what the CPU reference computes, and before a release | 2026-09-23 |
 
 ## Context
 
@@ -5108,3 +5109,32 @@ comments), `fixtures/bonsai2-mmproj.json`; `docs/reference/vision.md`,
 **Remaining.** No oracle trace is pinned for this file and no vision gate
 covers it; the CPU executor was not exercised on it. Bonsai's encode
 (18.1 s at 1,024 tokens) goes through the generic F32 tile for Q8_0.
+
+## REPO-15 — The CPU tier leaves the unit routine: it runs when a unit changes what the CPU reference computes, and before a release (2026-09-23)
+
+**Outcome.** The CPU-reference tier (15 gates, 20 minutes to an hour each,
+the reference single-threaded at about 30 s per Muse token) no longer
+follows from path matches. Its globs match nearly every change to
+`backends/cpu/`, `runtime/`, `engine.zig`, `vision/`, or the check tool,
+so an unused addition (MODL-23's `erf`) or a Metal-only diagnostic
+selected the whole tier. The rule, the user's choice among four options
+(the narrower globs, lighter CPU workloads, and a faster multithreaded
+reference were not taken): the CPU tier runs when a unit changes what the
+CPU reference computes (an existing CPU kernel's or decoder's arithmetic,
+a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), brings up
+a family or a draft source, or needs to tell a wrong kernel from wrong
+model semantics, and once before a release. `scripts/gates.py --changed`
+runs the Metal tier's matches and lists the CPU tier's as not run;
+`--changed REV --tier verify-cpu` runs them.
+
+**Evidence.** `gates.py --changed e06b551 --dry-run` selects the 30 Metal
+gates and lists the 15 CPU gates as not run; with `--tier verify-cpu` it
+selects the 15; `make gates-validate` passes.
+
+**Files.** `scripts/gates.py`, `Makefile`, `AGENTS.md` (§ Validation, §
+Versioning and releases), `docs/development.md` (§ Gates and the per-unit
+line), `TODO.md` (§ Working a unit here).
+
+**Remaining.** A CPU-reference regression now surfaces at the release run
+rather than at the unit that caused it, unless that unit's author judged
+it CPU-relevant. The tier's cost is unchanged.

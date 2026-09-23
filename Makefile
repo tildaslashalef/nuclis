@@ -62,10 +62,10 @@ BASE ?= HEAD
 verify: ## The Metal tier: every trace, generation, speculative, and vocabulary gate (once per unit)
 	python3 scripts/gates.py --tier verify $(ARGS)
 
-verify-cpu: ## The CPU-reference tier (hours); run when verify-changed selects one of its gates
+verify-cpu: ## The CPU-reference tier (hours): when a unit changes what the CPU reference computes, and before a release
 	python3 scripts/gates.py --tier verify-cpu $(ARGS)
 
-verify-changed: ## The gates whose paths match `git diff --name-only $(BASE)` plus untracked files (BASE=HEAD)
+verify-changed: ## The Metal-tier gates whose paths match `git diff --name-only $(BASE)` plus untracked files (BASE=HEAD); ARGS='--tier verify-cpu' for the CPU tier's
 	python3 scripts/gates.py --changed $(BASE) $(ARGS)
 
 gate: ## Gates by name or glob: make gate NAME=gemma4-qat-trace-f16, NAME='muse-*' (ARGS=--dry-run prints the commands)

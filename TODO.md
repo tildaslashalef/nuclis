@@ -337,8 +337,8 @@ manifest.
 **Build and gates.** `make build` writes `./zig-out/bin/nuclis` (Metal on).
 `make check` (seconds) at every commit; `make verify` (the Metal tier of
 [gates.json](gates.json), about 7.5 minutes) once per unit, and `make
-verify-cpu` only when `make verify-changed BASE=<the unit's base commit>`
-selects a CPU gate; a single gate by name with `make gate NAME=…`
+verify-cpu` only when the unit changes what the CPU reference computes
+(AGENTS.md § Validation); a single gate by name with `make gate NAME=…`
 ([development.md § Gates](docs/development.md#gates)). A unit that touches
 the block's forward or its commit reproduces `make gate
 NAME=qwen38-draft-stats` within one draft per cell (MODL-18's 90/80/69/64 %
