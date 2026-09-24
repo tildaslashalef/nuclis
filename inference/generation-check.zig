@@ -1790,6 +1790,23 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         defer generic_chunked.deinit();
         try generic_chunked.prefill(&tokens, actual, null, null, null, null, null);
         try compareChunked("F32 tiles, chunk", 32, generic_expected, actual, 5e-3, 2e-4);
+        // The evaluation path keeps every row: each must be the stepped
+        // logits at its position, so the head (scale and soft-cap included)
+        // runs on every row as `step` runs it on one.
+        if (@hasDecl(Plan, "prefillRows")) {
+            const every_expected = try alloc.alloc(f32, tokens.len * spec.vocabulary);
+            defer alloc.free(every_expected);
+            const every_actual = try alloc.alloc(f32, tokens.len * spec.vocabulary);
+            defer alloc.free(every_actual);
+            var every_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
+            defer every_stepped.deinit();
+            for (tokens, 0..) |t, i| try every_stepped.step(t, every_expected[i * spec.vocabulary ..][0..spec.vocabulary], null, null, null, null);
+            var every_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
+            defer every_chunked.deinit();
+            try every_chunked.prefillRows(&tokens, every_actual, null);
+            if (every_chunked.state.position != tokens.len) return error.PositionMismatch;
+            try compareLogitRows("prefillRows (70 tokens, F32 tiles, chunk 32)", spec.vocabulary, every_expected, every_actual, 5e-3, 2e-4);
+        }
     }
     // The same 70 tokens through an F16 cache, stepped and chunked,
     // against the F32 stepped logits (the session holds half the bytes).

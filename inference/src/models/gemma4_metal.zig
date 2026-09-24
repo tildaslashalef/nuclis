@@ -283,6 +283,9 @@ pub const Plan = struct {
     verify_argmax: Buffer,
     verify_hidden: Buffer,
     topk_rows: [max_verify_rows]metal.Backend.TopKBuffers,
+    /// `prefillRows`' head output (`matmulPadded(chunk) × vocabulary`),
+    /// created on its first call so no other load pays for it.
+    rows_logits: ?Buffer = null,
     /// Post-`output_norm` rows of a prefill chunk when `prefill` is asked for
     /// them; the drafter's prompt commit consumes them.
     prefill_hidden: Buffer,
@@ -376,6 +379,7 @@ pub const Plan = struct {
         self.span_rows = 0;
         self.image_scratch = null;
         self.image_rows = null;
+        self.rows_logits = null;
         try self.chunkBuffers(chunk);
         self.experts = if (config.experts) |spec| try self.expertBuffers(spec) else null;
         self.has_draft = draft and binding.draft != null;
@@ -933,6 +937,40 @@ pub const Plan = struct {
             try self.feedForwardChunk(layer, c, count);
             try b.addScale(self.x_c, self.projected_c, count * hidden, c.output_scale);
             if (observer) |o| if (o.check) |check| try check(o.context);
+        }
+    }
+
+    /// Evaluation prefill: consumes `tokens` in chunks, as `prefill` does, and
+    /// runs the output head and soft-cap over every row, writing each row's
+    /// logits to `rows` (`tokens.len × vocabulary`). Admitted whole before
+    /// the first write.
+    pub fn prefillRows(self: *Plan, tokens: []const u32, rows: []f32, observer: ?Observer) !void {
+        if (tokens.len == 0 or rows.len != tokens.len * vocabulary) return error.InvalidShape;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        const hidden = self.binding.config.embedding;
+        const b = self.backend;
+        const out = self.rows_logits orelse try b.create(metal.Backend.matmulPadded(self.chunk) * vocabulary * 4);
+        self.rows_logits = out;
+        const head = try self.weight(self.binding.token_embedding);
+        var offset: usize = 0;
+        while (offset < tokens.len) {
+            const count = @min(self.chunk, tokens.len - offset);
+            try self.state.beginChunk(count);
+            errdefer self.state.fail();
+            try b.begin();
+            errdefer if (b.recording) b.commit() catch {};
+            try self.recordLayers(tokens[offset..][0..count], count, observer);
+            try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+            try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, out, vocabulary, count);
+            try b.softcap(out, count * vocabulary, model.final_softcap);
+            try b.commit();
+            @memcpy(rows[offset * vocabulary ..][0 .. count * vocabulary], out.floats()[0 .. count * vocabulary]);
+            try self.state.commitChunk(count);
+            offset += count;
+            if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = offset, .target = tokens.len });
         }
     }
 

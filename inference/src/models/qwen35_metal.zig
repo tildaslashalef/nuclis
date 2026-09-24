@@ -109,6 +109,9 @@ pub const Plan = struct {
     verify_logits: Buffer,
     verify_argmax: Buffer,
     verify_hidden: Buffer,
+    /// `prefillRows`' head output (`matmulPadded(chunk) × vocabulary`, about
+    /// 250 MB), created on its first call so no other load pays for it.
+    rows_logits: ?Buffer = null,
     topk_rows: [max_verify_rows]metal.Backend.TopKBuffers,
     argmax_values: Buffer,
     argmax_indices: Buffer,
@@ -217,6 +220,7 @@ pub const Plan = struct {
         // when a span exists the chunk fills this and rotates at position 0.
         self.chunk_rope = try backend.create(chunk * 32 * 8);
         self.image_rows = null;
+        self.rows_logits = null;
         self.image_scratch = try backend.create(chunk * hidden * 4);
         self.x = try backend.create(hidden * 4);
         self.normalized = try backend.create(hidden * 4);
@@ -625,6 +629,39 @@ pub const Plan = struct {
         try self.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commitChunk(count);
         if (hidden_rows) |dest| @memcpy(dest, self.prefill_hidden.floats()[0 .. count * hidden]);
+    }
+
+    /// Evaluation prefill: consumes `tokens` in chunks, as `prefill` does, and
+    /// runs the output head over every row, writing each row's logits to
+    /// `rows` (`tokens.len × vocabulary`). Admitted whole before the first
+    /// write.
+    pub fn prefillRows(self: *Plan, tokens: []const u32, rows: []f32, observer: ?Observer) !void {
+        if (tokens.len == 0 or rows.len != tokens.len * vocabulary) return error.InvalidShape;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        const b = self.backend;
+        const out = self.rows_logits orelse try b.create(metal.Backend.matmulPadded(self.chunk) * vocabulary * 4);
+        self.rows_logits = out;
+        const head = try self.weight(self.binding.output);
+        var offset: usize = 0;
+        while (offset < tokens.len) {
+            const count = @min(self.chunk, tokens.len - offset);
+            try self.state.beginChunk(count);
+            errdefer self.state.fail();
+            try b.begin();
+            errdefer if (b.recording) b.commit() catch {};
+            try self.recordLayers(tokens[offset..][0..count], count, observer, 0);
+            try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
+            try self.rotate(self.normalized_c, hidden, count);
+            try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, out, vocabulary, count);
+            try b.commit();
+            @memcpy(rows[offset * vocabulary ..][0 .. count * vocabulary], out.floats()[0 .. count * vocabulary]);
+            try self.state.commitChunk(count);
+            offset += count;
+            if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = offset, .target = tokens.len });
+        }
     }
 
     /// Records the embedding gather and every decoder layer over one admitted

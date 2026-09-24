@@ -9,6 +9,7 @@ const generate = @import("generate.zig");
 const bench = @import("bench.zig");
 const discover = @import("discover.zig");
 const tokenize = @import("tokenize.zig");
+const eval = @import("eval.zig");
 const engine = @import("engine.zig");
 const config = @import("config.zig");
 const agent = @import("agent/root.zig");
@@ -22,7 +23,7 @@ const help_text = @import("help.zig");
 pub const version = @import("build_options").version;
 pub const Diagnostic = config.Diagnostic;
 pub const Options = struct {
-    command: enum { help, version, inspect, validate, generate, bench, tokenize, agent, config, model },
+    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model },
     /// Which command's page `--help` asked for; null is the overview.
     help_topic: ?help_text.Topic = null,
     config_action: enum { init, show, set } = .show,
@@ -40,6 +41,7 @@ pub const Options = struct {
     flags: config.Flags = .{},
     generation: generate.Options = .{},
     benchmark: bench.Options = .{},
+    evaluation: eval.Options = .{},
     /// `agent --print`: one turn without a terminal.
     print: agent.print_mode.Options = .{},
     printing: bool = false,
@@ -71,6 +73,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
         .bench
     else if (std.mem.eql(u8, args[0], "tokenize"))
         .tokenize
+    else if (std.mem.eql(u8, args[0], "eval"))
+        .eval
     else if (std.mem.eql(u8, args[0], "agent"))
         .agent
     else if (std.mem.eql(u8, args[0], "config"))
@@ -170,6 +174,39 @@ pub fn parseArgs(args: []const []const u8) !Options {
         } else if (command == .bench and std.mem.eql(u8, args[i], "--unfused-norms")) {
             if (options.benchmark.unfused_norms) return error.DuplicateOption;
             options.benchmark.unfused_norms = true;
+        } else if (command == .eval) {
+            const flag = args[i];
+            i += 1;
+            if (i == args.len) return error.MissingOptionValue;
+            const value = args[i];
+            const e = &options.evaluation;
+            const f = &options.flags;
+            if (std.mem.eql(u8, flag, "--file")) {
+                if (e.file != null) return error.DuplicateOption;
+                e.file = value;
+            } else if (std.mem.eql(u8, flag, "--reference")) {
+                if (e.reference != null) return error.DuplicateOption;
+                e.reference = value;
+            } else if (std.mem.eql(u8, flag, "--ctx-size")) {
+                // The window, not the configuration's context: an evaluation
+                // is comparable from its command line alone.
+                if (e.ctx != null) return error.DuplicateOption;
+                e.ctx = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
+            } else if (std.mem.eql(u8, flag, "--chunks")) {
+                if (e.chunks != null) return error.DuplicateOption;
+                const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
+                if (n == 0) return error.InvalidNumber;
+                e.chunks = n;
+            } else if (std.mem.eql(u8, flag, "--backend")) {
+                if (f.backend != null) return error.DuplicateOption;
+                f.backend = std.meta.stringToEnum(engine.Backend, value) orelse return error.UnsupportedBackend;
+            } else if (std.mem.eql(u8, flag, "--kv")) {
+                if (f.kv != null) return error.DuplicateOption;
+                f.kv = std.meta.stringToEnum(config.KvPrecision, value) orelse return error.UnsupportedKvPrecision;
+            } else if (std.mem.eql(u8, flag, "--prompt-profile")) {
+                if (f.prompt_profile != null) return error.DuplicateOption;
+                f.prompt_profile = std.meta.stringToEnum(inference.profiles.Profile, value) orelse return error.UnknownPromptProfile;
+            } else return error.UnknownOption;
         } else if (generates or command == .tokenize) {
             const flag = args[i];
             i += 1;
@@ -280,6 +317,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
         options.print.system_prompt = options.system_prompt_file;
     }
     if (command == .config and options.config_action == .init and !options.discover and (options.json or options.dry_run)) return error.UnknownOption;
+    if (command == .eval and options.evaluation.file == null) return error.MissingTextFile;
     const token_prompt = options.benchmark.prompt_tokens != null or options.generation.prompt_tokens != null;
     const sources = @as(u8, @intFromBool(options.generation.prompt != null)) + @intFromBool(options.generation.prompt_file != null) + @intFromBool(token_prompt);
     if (prompts and sources == 0) return error.MissingPrompt;
@@ -515,6 +553,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             const resolved = config.resolve(&loaded, options.model, options.flags, .generate);
             break :blk tokenize.run(alloc, io, path, resolved.think, resolved.forced_profile, options.generation, options.json, out, sty);
         },
+        .eval => eval.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.evaluation, options.json, out, sty, diag),
         .agent => if (options.printing)
             agent.print_mode.run(alloc, io, environ, path, config.resolve(&loaded, options.model, options.flags, .agent), options.print, out, diag)
         else
@@ -913,6 +952,7 @@ test {
     _ = validation;
     _ = engine;
     _ = bench;
+    _ = eval;
     _ = discover;
     _ = @import("interrupt.zig");
     _ = style;
@@ -966,6 +1006,25 @@ test "generation parses bounds and rejects duplicate or malformed options" {
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "agent", "--kv", "f16", "--kv", "f32" }));
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--max-tokens", "-1" }));
     try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "generate", "--prompt" }));
+}
+
+test "eval takes a text file, its window, and the engine's precision flags" {
+    const options = try parseArgs(&.{ "eval", "--file", "wiki.test.raw", "--ctx-size", "512", "--chunks", "8", "--reference", "r.json", "--backend", "metal", "--kv", "f32", "--model", "m.gguf", "--json" });
+    try std.testing.expectEqual(.eval, options.command);
+    try std.testing.expectEqualStrings("wiki.test.raw", options.evaluation.file.?);
+    try std.testing.expectEqual(@as(usize, 512), options.evaluation.ctx.?);
+    try std.testing.expectEqual(@as(usize, 8), options.evaluation.chunks.?);
+    try std.testing.expectEqualStrings("r.json", options.evaluation.reference.?);
+    try std.testing.expectEqual(.f32, options.flags.kv.?);
+    // The window is the command's own, never the configuration's context.
+    try std.testing.expect(options.flags.ctx_size == null);
+    try std.testing.expect(options.json);
+    try std.testing.expectError(error.MissingTextFile, parseArgs(&.{"eval"}));
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "eval", "--file", "t", "--chunks", "0" }));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "eval", "--file", "t", "--file", "u" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "eval", "--file", "t", "--prompt", "a" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "eval", "--raw", "--file", "t" }));
+    try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "eval", "--file" }));
 }
 
 test "tokenize takes the prompt, the rendering, and the effort only" {

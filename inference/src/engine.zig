@@ -155,6 +155,22 @@ pub fn Executor(comptime Family: type) type {
                 },
             }
         }
+        /// Consumes `tokens` as a prefill and writes every row's logits to
+        /// `rows` (`tokens.len × vocabulary`), for teacher-forced evaluation.
+        /// A GPU plan that declares `prefillRows` runs its chunks with the
+        /// output head over every row; otherwise the executor steps token by
+        /// token. The whole batch must fit, as for `prefill`.
+        pub fn prefillRows(self: *Self, tokens: []const u32, vocabulary: usize, rows: []f32, observer: ?Observer) !void {
+            if (tokens.len == 0 or rows.len != tokens.len * vocabulary) return error.InvalidShape;
+            const state = self.session();
+            if (tokens.len > state.capacity - state.position) return error.ContextFull;
+            switch (self.*) {
+                .cpu => |*runtime| for (tokens, 0..) |token, i| try runtime.step(token, rows[i * vocabulary ..][0..vocabulary], observer),
+                .metal => |*m| if (comptime @hasDecl(Family.Plan, "prefillRows")) {
+                    try m.plan.prefillRows(tokens, rows, observer);
+                } else for (tokens, 0..) |token, i| try m.plan.step(token, rows[i * vocabulary ..][0..vocabulary], null, null, null, observer),
+            }
+        }
         /// Every row of a verify batch. The family's `verify` runs a chunk and
         /// the output head over all rows when it has one; otherwise the
         /// runtime steps token by token with full `rows` (a `.topk` request is
@@ -350,6 +366,11 @@ pub const Model = struct {
     pub fn prefillVision(self: *Model, tokens: []const u32, spans: []const inference.vision.Span, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*inference.sampling.TopK, penalties: ?inference.sampling.Penalties, observer: ?Observer) !void {
         switch (self.exec) {
             inline else => |*e| try e.prefillVision(tokens, spans, features, logits, greedy, topk, penalties, observer),
+        }
+    }
+    pub fn prefillRows(self: *Model, tokens: []const u32, vocabulary: usize, rows: []f32, observer: ?Observer) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.prefillRows(tokens, vocabulary, rows, observer),
         }
     }
     pub fn verify(self: *Model, tokens: []const u32, vocabulary: usize, out: VerifyOutput, h_rows: ?[]f32, observer: ?Observer) !void {
@@ -891,6 +912,17 @@ pub const Engine = struct {
     pub fn imagePadId(self: *const Engine) ?u32 {
         const profile = self.profile orelse return null;
         return self.vocab.tokenId(profile.imagePlaceholder() orelse return null);
+    }
+    /// The id a raw text starts with, which the encoder never adds: the
+    /// profile's opening token when a profile is loaded, else the file's BOS
+    /// when its `tokenizer.ggml.add_bos_token` says so; null for neither.
+    pub fn textBos(self: *const Engine) ?u32 {
+        if (self.profile) |profile| return self.vocab.tokenId(profile.bosToken() orelse return null);
+        const adds = switch (self.mapped.document.get("tokenizer.ggml.add_bos_token") orelse return null) {
+            .boolean => |b| b,
+            else => false,
+        };
+        return if (adds) self.vocab.bos else null;
     }
     /// Pairs the runs of the image placeholder in `tokens` with `prepared`, in order,
     /// into spans (`inference.vision.Span`); the run lengths must equal the

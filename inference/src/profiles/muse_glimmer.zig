@@ -58,6 +58,8 @@ pub const stream_markers: profiles.StreamMarkers = .{
 /// The template's opening text: the encoder never adds BOS, so the profile
 /// writes it (the reference server's `/apply-template` strips it).
 const bos = "<|begin_of_text|>";
+/// The token a raw text starts with: the template's opening one.
+pub const bos_token: ?[]const u8 = bos;
 /// The system turn the template synthesizes when no system message exists,
 /// without its date line.
 const default_system = "You are a helpful AI assistant.\nKnowledge cutoff: 2026-01-04.";

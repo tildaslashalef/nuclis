@@ -129,6 +129,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-25 | Bonsai 2's projector through the Qwen3-VL adapter: Q8_0 and F16 weights | 2026-09-23 |
 | REPO-15 | The CPU tier leaves the unit routine: when a unit changes what the CPU reference computes, and before a release | 2026-09-23 |
 | MODL-26 | Gemma 4's Metal `verify` rows carry the final soft-cap | 2026-09-24 |
+| APPS-14 | Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family | 2026-09-24 |
 
 ## Context
 
@@ -5168,3 +5169,88 @@ The top-k check (`verifyTopKCheck`) never saw the gap because it compares
 
 **Remaining.** No sampled Gemma speculative pair has been measured, before
 or after.
+
+## APPS-14 — Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family (2026-09-24)
+
+**Outcome.** `nuclis eval --file <text> [--ctx-size N] [--chunks N]
+[--reference <json>]` measures perplexity with the reference's
+`llama-perplexity` method. The text is tokenized raw with the model's BOS
+prepended. It is cut into windows of `ctx` (default 512), and each window
+runs from an empty session with BOS over its first token, its second half
+scored in F64. The command reports the running and final perplexity with
+its standard error, as text or JSON (schema 1). A pinned reference (its
+text's SHA-256 checked, its `ctx` and window count adopted) fails the run
+beyond 0.5 %, or beyond the bound the reference states.
+
+The engine gained `Model.prefillRows`, every row's logits from a prefill:
+each Metal plan runs its chunk's layers once and the head, with the
+family's logit shaping, over every row in one command buffer. The head
+buffer (about 250 MB) is created on first use. The CPU reference steps.
+`Profile.bosToken` and `Engine.textBos` give a raw text's BOS (none for Qwen3.8
+and Bonsai, `<bos>` for Gemma 4 whatever the file's flag,
+`<|begin_of_text|>` for Muse), which is the reference's choice. Gemma's
+whole-line BPE pieces exceed the chat's tokenizer work bounds on a corpus,
+so `eval` scales them with the text (capped at 16 MiB).
+
+The reference's batched run disagrees with its own per-token run by 1.2 %
+on Gemma 4 12B, so the pinned references are per-token runs (`-ub 1`). A
+first comparison against the batched run read −1.41 % and looked like a
+Gemma bug. Our step and prefill paths agreed with each other, and a
+48-layer × 25-position trace of the worst window agreed with the harness
+at 1e-5, so the discrepancy was the reference's batched path.
+`scripts/reference-perplexity.py` writes the references; `make eval-corpus`
+fetches wikitext-2-raw into `.zig-cache/eval/` and checks its digest, and
+the gate targets run it first. Building the seam surfaced MODL-26. Facts:
+[eval.md](reference/eval.md).
+
+**Evidence.** wikitext-2-raw `wiki.test.raw`, eight windows of 512 (4,096
+tokens, 2,040 scored), F16 cache, Metal, against llama.cpp `7620399`
+per-token:
+
+| Model | nuclis | reference | difference |
+| --- | ---: | ---: | ---: |
+| Qwen3.8-27B | 6.6696 | 6.6696 | −0.000 % |
+| Gemma 4 12B | 588.954 | 590.133 | −0.200 % |
+| Gemma 4 26B-A4B | 1107.838 | 1113.719 | −0.528 % (bound 1 %) |
+| Muse Glimmer 30B | 6.6250 | 6.6249 | +0.001 % |
+
+Token arrays equal the reference's exactly (4,096 ids, Qwen3.8 and Gemma 4
+12B, from its `--kl-divergence-base` dump). Per scored token, nuclis vs
+the reference: Qwen3.8 median 0.0018 nats (p99 0.037), Gemma 4 12B 0.006
+(p99 0.18). The 26B-A4B's 1 % bound is recorded in its fixture with its
+reason. The reference disagrees with itself there by 0.29 % and by the same
+per-token spread as ours (median 0.051 vs 0.053, p99 1.18 vs 1.12), which is
+routing near-ties; our step path reads 1106.03 (−0.69 %).
+`generation-check` now compares every `prefillRows` row over 70 tokens with
+the stepped logits through the generic F32 tiles, and every family passes
+(worst row relative RMS 3.8e-6 Qwen3.8, 2.8e-5 Gemma 12B, 7.3e-5 Gemma QAT,
+2.7e-5 26B-A4B, 2.6e-5 Muse, 2.2e-6 Bonsai; bound 2e-4).
+
+`make check`: 552 tests (the NLL, the accumulator's formulas, the windows,
+the CLI, the profiles' BOS). `make verify`: 34/34 in 810 s, the four new
+`*-perplexity` gates at 56.6 / 32.2 / 23.7 / 53.5 s. About three minutes of
+that run shared the GPU with a stray `eval` of the training text. The fresh
+binary: text and `--json` reports, the reference comparison, Ctrl-C
+(`Cancelled` after the printed windows), and the typed errors (a different
+text's digest, a `--ctx-size` conflict, a missing file, a malformed
+reference, no `--file`). The CPU tier was not run: no CPU arithmetic
+changed (the CPU executor's `prefillRows` steps).
+
+**Files.** `src/eval.zig` (new), `src/cli.zig`, `src/help.zig`;
+`inference/src/engine.zig`, `inference/src/models/qwen35_metal.zig`,
+`gemma4_metal.zig`, `muse_glimmer_metal.zig` (`recordHead` shared with
+`verify`), `inference/src/profiles/root.zig`, `qwen38.zig`, `gemma4.zig`,
+`muse_glimmer.zig`, `inference/generation-check.zig`;
+`scripts/reference-perplexity.py` (new), `Makefile`, `gates.json`,
+`tests/fixtures/perplexity/` (new), `tests/fixtures/provenance.md`;
+`docs/reference/eval.md` (new), `docs/spec.md`, `docs/architecture.md`,
+`docs/development.md`, `TODO.md`.
+
+**Remaining.** Bonsai 2 has no perplexity reference (its encodings decode
+only in the PrismML fork, not built with `llama-perplexity`); its
+`prefillRows` rows are pinned by the generation check. No CPU-reference
+record (hours at 11 s a token on the 12B). One corpus at one window size;
+long-context and code perplexity are not recorded. The scored rows are
+read back whole (250 MB per 256 rows) and reduced on the host.
+`nuclis tokenize` keeps the chat's work bounds and refuses 40 KB of
+wikitext on Gemma.

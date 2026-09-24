@@ -22,7 +22,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .PHONY: help build debug build-cpu metal test test-metal check verify verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate \
-        agent agent-eval model-ls trace clean distclean hf-downloader test-hf changelog release
+        agent agent-eval model-ls eval-corpus trace clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -59,23 +59,24 @@ check: fmt-check test test-metal gates-validate workloads-validate ## Format che
 # what a change needs.
 
 BASE ?= HEAD
-verify: ## The Metal tier: every trace, generation, speculative, and vocabulary gate (once per unit)
+verify: eval-corpus ## The Metal tier: every trace, generation, speculative, vocabulary, and perplexity gate (once per unit)
 	python3 scripts/gates.py --tier verify $(ARGS)
 
 verify-cpu: ## The CPU-reference tier (hours): when a unit changes what the CPU reference computes, and before a release
 	python3 scripts/gates.py --tier verify-cpu $(ARGS)
 
-verify-changed: ## The Metal-tier gates whose paths match `git diff --name-only $(BASE)` plus untracked files (BASE=HEAD); ARGS='--tier verify-cpu' for the CPU tier's
+verify-changed: eval-corpus ## The Metal-tier gates whose paths match `git diff --name-only $(BASE)` plus untracked files (BASE=HEAD); ARGS='--tier verify-cpu' for the CPU tier's
 	python3 scripts/gates.py --changed $(BASE) $(ARGS)
 
-gate: ## Gates by name or glob: make gate NAME=gemma4-qat-trace-f16, NAME='muse-*' (ARGS=--dry-run prints the commands)
+gate: eval-corpus ## Gates by name or glob: make gate NAME=gemma4-qat-trace-f16, NAME='muse-*' (ARGS=--dry-run prints the commands)
 	python3 scripts/gates.py --gate $(NAME) $(ARGS)
 
 gates-list: ## Every gate with its tier, family, model, and evidence
 	python3 scripts/gates.py --list
 
-gates-validate: ## Validate gates.json and run the runner's self-test (no model)
+gates-validate: ## Validate gates.json and run the runner's and the perplexity reference's self-tests (no model)
 	python3 scripts/gates.py --validate
+	python3 scripts/reference-perplexity.py --self-test
 
 # ---- workloads (workloads.json; docs/development.md § The record) ---------
 # Every benchmark workload is data: one `nuclis bench` invocation (or the
@@ -149,6 +150,19 @@ shot: metal ## Drive `nuclis agent` in tmux and capture its screen: make shot AR
 
 model-ls: build ## List the GGUF files under <root>/models with their provenance sidecars
 	$(BIN) model ls $(ARGS)
+
+# ---- the perplexity gates' text (docs/reference/eval.md) --------------------
+# Fetched, never committed; the pinned references name its SHA-256 and
+# `nuclis eval --reference` refuses any other file.
+
+EVAL_DIR := .zig-cache/eval
+EVAL_TEXT := $(EVAL_DIR)/wikitext-2-raw/wiki.test.raw
+eval-corpus: ## Fetch wikitext-2-raw (the perplexity gates' text) into .zig-cache/eval and check its SHA-256
+	@mkdir -p $(EVAL_DIR)
+	@test -f $(EVAL_TEXT) || (curl -fsSL -o $(EVAL_DIR)/wikitext-2-raw-v1.zip \
+	  https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip && \
+	  unzip -o -q $(EVAL_DIR)/wikitext-2-raw-v1.zip -d $(EVAL_DIR))
+	@echo "173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08  $(EVAL_TEXT)" | shasum -a 256 -c -
 
 # ---- GPU trace (Xcode Instruments via xctrace; see AGENTS.md § Local toolchain) --
 

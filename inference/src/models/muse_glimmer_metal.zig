@@ -276,6 +276,9 @@ pub const Plan = struct {
     verify_logits: Buffer,
     verify_argmax: Buffer,
     topk_rows: [max_verify_rows]metal.Backend.TopKBuffers,
+    /// `prefillRows`' head output (`matmulPadded(chunk) × vocabulary`),
+    /// created on its first call so no other load pays for it.
+    rows_logits: ?Buffer = null,
 
     /// `chunk` bounds the tokens one `prefill` command buffer processes (and
     /// sizes its activation buffers: about 0.4 MB per token). `kv` is the
@@ -345,6 +348,7 @@ pub const Plan = struct {
         self.x_c = try backend.create(n * hidden * 4);
         self.image_scratch = try backend.create(n * hidden * 4);
         self.image_rows = null;
+        self.rows_logits = null;
         self.normalized_c = try backend.create(n * hidden * 4);
         self.projected_c = try backend.create(n * hidden * 4);
         self.gate_c = try backend.create(n * ffn * 4);
@@ -770,12 +774,42 @@ pub const Plan = struct {
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
         try self.recordChunkLayers(tokens, count, observer, h_rows != null);
-        try self.recordVerifyHead(count, tops);
+        try self.recordHead(count, self.verify_logits, tops);
         try b.commit();
         if (h_rows) |h| self.readCapture(count, h);
         if (rows) |r| @memcpy(r, self.verify_logits.floats()[0 .. count * vocabulary]);
         if (tops) |out| for (out, 0..) |*top, i| try self.readVerifyTopK(i, top);
         try self.state.commitChunk(count);
+    }
+
+    /// Evaluation prefill: consumes `tokens` in chunks, as `prefill` does, and
+    /// runs the output head, scale, and soft-cap over every row, writing each
+    /// row's logits to `rows` (`tokens.len × vocabulary`). Admitted whole
+    /// before the first write.
+    pub fn prefillRows(self: *Plan, tokens: []const u32, rows: []f32, observer: ?Observer) !void {
+        if (tokens.len == 0 or rows.len != tokens.len * vocabulary) return error.InvalidShape;
+        if (observer) |o| if (o.layer != null) return error.InvalidShape;
+        for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
+        if (self.state.status != .ready) return error.SessionNotReady;
+        if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
+        const b = self.backend;
+        const out = self.rows_logits orelse try b.create(metal.Backend.matmulPadded(self.chunk) * vocabulary * 4);
+        self.rows_logits = out;
+        var offset: usize = 0;
+        while (offset < tokens.len) {
+            const count = @min(self.chunk, tokens.len - offset);
+            try self.state.beginChunk(count);
+            errdefer self.state.fail();
+            try b.begin();
+            errdefer if (b.recording) b.commit() catch {};
+            try self.recordChunkLayers(tokens[offset..][0..count], count, observer, false);
+            try self.recordHead(count, out, null);
+            try b.commit();
+            @memcpy(rows[offset * vocabulary ..][0 .. count * vocabulary], out.floats()[0 .. count * vocabulary]);
+            try self.state.commitChunk(count);
+            offset += count;
+            if (observer) |o| if (o.progress) |call| try call(o.context, .{ .phase = .prefill, .position = offset, .target = tokens.len });
+        }
     }
 
     /// `verify`'s greedy sibling: per-row argmax read back (four bytes a
@@ -796,7 +830,7 @@ pub const Plan = struct {
         try b.begin();
         errdefer if (b.recording) b.commit() catch {};
         try self.recordChunkLayers(tokens, count, observer, h_rows != null);
-        try self.recordVerifyHead(count, null);
+        try self.recordHead(count, self.verify_logits, null);
         for (0..count) |i| try b.argmax(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, self.argmax_values, self.argmax_indices, self.verify_argmax.slice(i * 4, 4));
         try b.commit();
         if (h_rows) |h| self.readCapture(count, h);
@@ -809,17 +843,18 @@ pub const Plan = struct {
     }
 
     /// The output head, logit scale, and soft-cap over all `count` rows of
-    /// the last recorded chunk, plus the per-row partial top-k when asked.
-    fn recordVerifyHead(self: *Plan, count: usize, tops: ?[]sampling.TopK) !void {
+    /// the last recorded chunk into `out` (`matmulPadded(count) ×
+    /// vocabulary`), plus the per-row partial top-k when asked.
+    fn recordHead(self: *Plan, count: usize, out: Buffer, tops: ?[]sampling.TopK) !void {
         const b = self.backend;
         try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, normOf(count, model.rms_epsilon));
         const head = try self.weight(self.binding.output);
-        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
+        try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, out, vocabulary, count);
         // The reference folds the scale into the tanh argument; here it is
         // one rounding before it, as in `recordOutputs`.
-        try b.scale(self.verify_logits, count * vocabulary, model.logit_scale);
-        try b.softcap(self.verify_logits, count * vocabulary, model.final_softcap);
-        if (tops) |out| for (out, 0..) |top, i| try b.topk(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, sampling.TopK.capacity, top.temperature, self.topk_rows[i]);
+        try b.scale(out, count * vocabulary, model.logit_scale);
+        try b.softcap(out, count * vocabulary, model.final_softcap);
+        if (tops) |rows| for (rows, 0..) |top, i| try b.topk(out.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, sampling.TopK.capacity, top.temperature, self.topk_rows[i]);
     }
 
     /// One verify row's partial top-k readback from its own scratch set. The

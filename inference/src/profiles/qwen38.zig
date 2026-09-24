@@ -36,6 +36,8 @@ pub const stop_tokens = [_][]const u8{ "<|im_end|>", "<|endoftext|>" };
 
 /// How the model delimits its reasoning: the prompt opens `<think>` and the
 /// model closes it with `</think>`.
+/// The token a raw text starts with; the template opens with none.
+pub const bos_token: ?[]const u8 = null;
 /// The image span placeholder, inside `<|vision_start|>` … `<|vision_end|>`.
 pub const image_placeholder: ?[]const u8 = "<|image_pad|>";
 pub const reasoning: profiles.Reasoning = .{ .open = "<think>", .close = "</think>" };

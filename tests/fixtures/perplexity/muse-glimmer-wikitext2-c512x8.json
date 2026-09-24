@@ -1,0 +1,36 @@
+{
+ "schema_version": 1,
+ "tool": "llama-perplexity",
+ "revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+ "model_file": "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+ "model_bytes": 15878222368,
+ "text_file": "wiki.test.raw",
+ "text_sha256": "173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08",
+ "ctx": 512,
+ "chunks": 8,
+ "flags": [
+  "-c",
+  "512",
+  "--chunks",
+  "8",
+  "-ngl",
+  "99",
+  "-b",
+  "512",
+  "-ub",
+  "1"
+ ],
+ "ppl": 6.6249,
+ "ppl_error": 0.36719,
+ "chunk_ppl": [
+  3.8347,
+  4.8529,
+  4.533,
+  5.2488,
+  5.5364,
+  5.7561,
+  6.0556,
+  6.6249
+ ],
+ "date": "2026-09-24"
+}

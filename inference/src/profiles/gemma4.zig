@@ -40,6 +40,9 @@ pub const stop_tokens = [_][]const u8{ "<turn|>", "<eos>", "<|tool_response>" };
 /// How the model delimits its reasoning in generated text: a thought
 /// channel opened by `<|channel>thought\n` and closed by `<channel|>`. Both
 /// markers are user-defined tokens the decoder always renders as text.
+/// The token a raw text starts with: the template's opening `<bos>`, which
+/// the encoder never adds (the file's own `add_bos_token` may say false).
+pub const bos_token: ?[]const u8 = "<bos>";
 /// The image span placeholder, inside `<|image>` … `<image|>`.
 pub const image_placeholder: ?[]const u8 = "<|image|>";
 pub const reasoning: profiles.Reasoning = .{ .open = "<|channel>thought\n", .close = "<channel|>" };

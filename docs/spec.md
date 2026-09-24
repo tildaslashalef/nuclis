@@ -35,7 +35,7 @@ repository:
 - **an inference library** (`inference/`): loading, validation,
   tokenization, the model schedules, the CPU reference, the Metal backend,
   sampling, and speculative decoding;
-- **an evaluation CLI** (`src/`): `generate`, `bench`, `tokenize`,
+- **an evaluation CLI** (`src/`): `generate`, `bench`, `tokenize`, `eval`,
   `inspect`, `validate`, `config`, and `model`;
 - **an interactive agent** (`nuclis agent`): a terminal surface over the
   same engine with a bounded tool layer for small coding tasks in the
@@ -272,6 +272,7 @@ nuclis agent ls [--json]
 nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--image <path>]... [--image-max-tokens auto|<n>] [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
 nuclis bench --model <m> (--prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32] [--speculative on|off] [--json]
 nuclis tokenize --model <m> --prompt-file <path> [--raw] [--json]
+nuclis eval --model <m> --file <path> [--ctx-size <n>] [--chunks <n>] [--reference <json>] [--kv f16|f32] [--json]
 nuclis inspect --model <m> [--json]
 nuclis validate --model <m> [--json]
 nuclis model pull (<name> | <owner/repo> --file <f>) [--revision <r>] [--role <role>] [--all] [--register] [--force] [--json]
@@ -286,6 +287,7 @@ nuclis --help | <command> --help | --version
 | `generate` | one completion: raw prompt or one rendered turn, streamed, seeded, the profile's per-mode sampling defaults with per-flag overrides, a structured stop reason, timings |
 | `bench` | repeated cold and warm measurements with separate load, prefill, and decode timings; a prompt may be a token array so a reference's exact input is reproduced; the speculative pair measured on one loaded model in one process |
 | `tokenize` | the prompt as `generate` would feed it, its ids and each token's byte offset, from the artifact's header only |
+| `eval` | teacher-forced perplexity of a raw text: windows of `--ctx-size` tokens (default 512), each from an empty session with the model's BOS over its first token, the second half scored against the text's actual next tokens (the reference's `llama-perplexity` method); the running and final perplexity with its standard error; `--reference` compares with a pinned reference run on the same file (its SHA-256 checked) and fails beyond 0.5 % |
 | `inspect` | identity, architecture, dimensions, the encoding histogram, validated ranges |
 | `validate` | whether the file binds to its family's adapter, with the layer composition |
 | `model` | pull with digest verification and sidecars, list the artifacts under the root, judge a file at the four levels of §4 |
@@ -569,7 +571,9 @@ API lookup tool, and a second product surface.
   changed paths: per-layer traces against the reference for every family
   and cache precision, generation checks that chunked prefill agrees with
   the stepped path, that a reset reproduces a fresh session, and that
-  sessions share nothing, and the speculative equivalence checks. Every
+  sessions share nothing, the speculative equivalence checks, and each
+  family's perplexity on a pinned text within 0.5 % of the reference's
+  ([reference/eval.md](reference/eval.md)). Every
   threshold is written down per numerical mode; passes are recorded with
   dates and observed maxima.
 - **Workloads** (`make workload`) are the benchmarks in `workloads.json`;
@@ -595,8 +599,8 @@ bidirectional image spans), and Muse Glimmer's windowed encoder
 Speculation stays off in a conversation once an image is in it.
 PDF attachments are not planned: nothing in the tree extracts their text. Deferred, to be taken through the existing seams as
 concrete requirements arrive: HTTP serving with an OpenAI-compatible protocol,
-persistent prefix caches, concurrent request batching, additional GPU
-backends, and a teacher-forced `eval` command. A local server would wrap
+persistent prefix caches, concurrent request batching, and additional GPU
+backends. A local server would wrap
 the library; tool execution and permissions would stay with the consuming
 agent. A docs or API lookup tool for the agent was assessed and not
 scheduled: read-only docs roots would be the cheapest form, a bounded

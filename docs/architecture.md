@@ -265,7 +265,8 @@ flowchart LR
   a dispatch; nothing runs until `commit()`. The files are deliberately
   parallel so they can be read side by side.
 - `engine.zig` wraps both in a `Model` union with `step`, `prefill`,
-  `verify`, and `reset`, so callers never care which is underneath.
+  `prefillRows` (every row's logits, for `eval`), `verify`, and `reset`,
+  so callers never care which is underneath.
 - The schedule is written twice by decision. Three families showed that
   what varies between them is parameters and instantiations of existing
   kernels, not operation order, so a shared op list was not extracted.
@@ -333,6 +334,10 @@ flowchart LR
   reductions match F64 sums within stated tolerances.
 - **Full-model traces** compare every layer output and the logits on real
   prompts, with a documented tolerance per numerical mode.
+- **Perplexity** is the long-text check the traces cannot be: `nuclis eval`
+  scores 4,096 tokens of a pinned text teacher-forced, and each family's
+  gate holds it within 0.5 % of the reference's per-token run on the same
+  tokens ([reference/eval.md](reference/eval.md)).
 - **Gates and workloads are data.** Every model-specific check is a gate in
   `gates.json`, tiered by cost and selected by changed paths; every
   benchmark is a workload in `workloads.json` with its report saved by
@@ -342,7 +347,8 @@ flowchart LR
 
 **Read:** [development.md § Gates](development.md#gates) and
 [§ The record](development.md#the-record),
-[reference/bench.md](reference/bench.md), `inference/metal-check.zig`.
+[reference/bench.md](reference/bench.md), [reference/eval.md](reference/eval.md),
+`inference/metal-check.zig`.
 
 ## 9. Zig constructs this codebase leans on
 

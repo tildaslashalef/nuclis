@@ -88,14 +88,14 @@ placeholders `{nuclis}`, `{nuclis-cpu}`, `{zig-metal}`, `{zig-cpu}`,
 `{model}`, `{mtp}`, `{trace}`) and a comparator: `exit` (the command's
 status decides: the generation checks, the speculative checks, the Gemma
 and Muse draft checks that compare their own rows, `draft-stats`, the
-vocabulary checks) or `trace` (the `{trace}` directory goes through
+vocabulary checks, the perplexity checks) or `trace` (the `{trace}` directory goes through
 `scripts/compare-generation.py` against the gate's `bounds`). Two things
 make the registry cheaper than the recipes it replaced:
 
 | | tier `verify` | tier `verify-cpu` |
 | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the CPU reference |
-| cost | minutes (29 gates, one `make verify` per unit, about 8.5 min) | hours (14 gates; `qwen38-speculative-cpu` alone is about 20 min) |
+| cost | minutes (34 gates, one `make verify` per unit, about 12 min) | hours (15 gates; `qwen38-speculative-cpu` alone is about 20 min) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | every unit that touched the inference stack | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
@@ -114,9 +114,14 @@ prints the commands), `make gates-list`, and `make gates-validate` (part of
 revision for a log entry. Gate names are `<entry>-<check>-<executor>`:
 `qwen38`, `gemma4`, `gemma4-qat`, `gemma4-26b-a4b`, `muse`, `bonsai`;
 `trace-{cpu,f32,f16}`, `generation-{cpu,metal}`, `speculative-{cpu,metal}`,
-`draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`. A model path is
-overridden per key by `<KEY>_MODEL` (`GEMMA4_QAT_MODEL=…`). Traces are
-written under `.zig-cache/gates/trace/<gate>/`.
+`draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity`. A
+model path is overridden per key by `<KEY>_MODEL` (`GEMMA4_QAT_MODEL=…`).
+Traces are written under `.zig-cache/gates/trace/<gate>/`. The perplexity
+gates read wikitext-2-raw's test text, fetched into `.zig-cache/eval/` and
+checked against its SHA-256 by `make eval-corpus`, which `verify`,
+`verify-changed`, and `gate` run first (a no-op once the file is there);
+their references are pinned under `tests/fixtures/perplexity/`
+([reference/eval.md](reference/eval.md)).
 
 Adding a family adds its gates to the manifest and nothing to the
 Makefile ([new-model-guide.md](reference/new-model-guide.md)). The

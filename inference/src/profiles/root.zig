@@ -221,6 +221,14 @@ pub const Profile = enum {
         };
     }
 
+    /// The token a raw text (no template) starts with, or null: the template's
+    /// opening token, which the encoder never adds.
+    pub fn bosToken(self: Profile) ?[]const u8 {
+        return switch (self) {
+            inline else => |p| p.module().bos_token,
+        };
+    }
+
     /// The reasoning markers of generated text under this template.
     pub fn reasoning(self: Profile) Reasoning {
         return switch (self) {
@@ -427,6 +435,18 @@ test "every profile names at least one stop token and both reasoning markers" {
     try std.testing.expectEqualStrings("<|eom|>", Profile.muse_glimmer.reasoning().close);
     try std.testing.expectEqualStrings("</think>", Profile.qwen38.reasoning().close);
     try std.testing.expectEqualStrings("<channel|>", Profile.gemma4.reasoning().close);
+}
+
+test "a raw text's BOS is the template's opening token" {
+    try std.testing.expect(Profile.qwen38.bosToken() == null);
+    try std.testing.expectEqualStrings("<bos>", Profile.gemma4.bosToken().?);
+    try std.testing.expectEqualStrings("<|begin_of_text|>", Profile.muse_glimmer.bosToken().?);
+    // Each rendering opens with the same token, so text and chat agree.
+    for ([_]Profile{ .gemma4, .muse_glimmer }) |p| {
+        const rendered = try p.render(std.testing.allocator, &.{.{ .role = .user, .content = "hi" }}, &.{}, .off, .{});
+        defer std.testing.allocator.free(rendered);
+        try std.testing.expect(std.mem.startsWith(u8, rendered, p.bosToken().?));
+    }
 }
 
 const user_message: Message = .{ .role = .user, .content = "hi" };

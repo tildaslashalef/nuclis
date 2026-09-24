@@ -1,0 +1,36 @@
+{
+ "schema_version": 1,
+ "tool": "llama-perplexity",
+ "revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+ "model_file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+ "model_bytes": 16464440224,
+ "text_file": "wiki.test.raw",
+ "text_sha256": "173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08",
+ "ctx": 512,
+ "chunks": 8,
+ "flags": [
+  "-c",
+  "512",
+  "--chunks",
+  "8",
+  "-ngl",
+  "99",
+  "-b",
+  "512",
+  "-ub",
+  "1"
+ ],
+ "ppl": 6.6696,
+ "ppl_error": 0.36262,
+ "chunk_ppl": [
+  4.3472,
+  6.1657,
+  5.9379,
+  5.8701,
+  5.8546,
+  6.0758,
+  6.208,
+  6.6696
+ ],
+ "date": "2026-09-24"
+}

@@ -14,7 +14,7 @@ const std = @import("std");
 const style = @import("tui/style.zig");
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, agent, config, model };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -23,6 +23,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .generate => generate(out, sty),
         .bench => bench(out, sty),
         .tokenize => tokenize(out, sty),
+        .eval => eval(out, sty),
         .agent => agent(out, sty),
         .config => config(out, sty),
         .model => model(out, sty),
@@ -117,6 +118,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "generate", "one completion from a prompt");
     try row(out, sty, "bench", "repeated prefill and decode measurements");
     try row(out, sty, "tokenize", "the prompt's token ids and byte offsets, no model run");
+    try row(out, sty, "eval", "perplexity of a text file, teacher-forced");
     try row(out, sty, "inspect", "an artifact's identity, dimensions, tensor encodings");
     try row(out, sty, "validate", "whether a file binds to its architecture's adapter");
     try row(out, sty, "model", "pull, list, and judge Hugging Face Hub artifacts");
@@ -271,6 +273,40 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "ways on one loaded model and the report carries the decode speedup. A");
     try plain(out, "profiled run records one encoder per dispatch; its rates are not");
     try plain(out, "comparable with unprofiled ones.");
+    try out.writeByte('\n');
+}
+
+fn eval(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis eval", "teacher-forced perplexity of a text file");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis eval --file <path> [options]");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "--file <path>", "the text, read raw (no template), up to 16 MiB");
+    try row(out, sty, "--ctx-size <n>", "tokens per window, 2..32768; default 512, or the");
+    try more(out, "reference's");
+    try row(out, sty, "--chunks <n>", "windows from the start of the text; default every");
+    try more(out, "whole window, or the reference's");
+    try row(out, sty, "--reference <json>", "a pinned llama-perplexity run on the same file;");
+    try more(out, "fails beyond 0.5 % of its perplexity, or its bound");
+    try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");
+    try more(out, "engine.model of the config file (qwen3.8-27b)");
+    try row(out, sty, "--backend cpu|metal", "default metal");
+    try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU; default f16");
+    try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, or muse_glimmer (its BOS)");
+    try row(out, sty, "--json", "the report: every window's running perplexity");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis eval --file wiki.test.raw --chunks 8", "the first 4,096 tokens in windows of 512");
+    try example(out, sty, "nuclis eval --file wiki.test.raw --reference ref.json", "the reference's windows, compared with its result");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "Each window starts from an empty cache with the model's BOS over its first");
+    try plain(out, "token, and only the second half is scored, each position against the");
+    try plain(out, "text's actual next token: the llama-perplexity method, so the numbers");
+    try plain(out, "compare with its output. The perplexity is exp of the mean negative");
+    try plain(out, "log-likelihood; its error is the standard error of that mean, scaled.");
+    try plain(out, "A reference names the text's sha256; a different file is refused.");
     try out.writeByte('\n');
 }
 
@@ -492,6 +528,7 @@ test "every flag the parser accepts for a command is on its page" {
         .{ .topic = .bench, .flags = &.{ "--prompt", "--prompt-file", "--prompt-tokens", "--raw", "--repeat", "--warmup", "--profile", "--unfused-norms", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--json", "--temperature" } },
         .{ .topic = .agent, .flags = &.{ "-p", "--prompt", "--print", "--prompt-file", "--json", "--session", "--resume", "--think", "--image-max-tokens", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--temperature" } },
         .{ .topic = .tokenize, .flags = &.{ "--prompt", "--prompt-file", "--raw", "--think", "--prompt-profile", "--model", "--json" } },
+        .{ .topic = .eval, .flags = &.{ "--file", "--ctx-size", "--chunks", "--reference", "--model", "--backend", "--kv", "--prompt-profile", "--json" } },
         .{ .topic = .inspect, .flags = &.{ "--model", "--json" } },
         .{ .topic = .validate, .flags = &.{ "--model", "--json" } },
         .{ .topic = .model, .flags = &.{ "--with", "--all", "--file", "--revision", "--role", "--register", "--profile", "--force", "--json" } },
