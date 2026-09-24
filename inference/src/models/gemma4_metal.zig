@@ -968,6 +968,10 @@ pub const Plan = struct {
         if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
         const head = try self.weight(self.binding.token_embedding);
         try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, self.verify_logits, vocabulary, count);
+        // The rows are the distributions sampled acceptance draws from, so
+        // they carry the soft-cap `step` applies; the greedy sibling's argmax
+        // does not need it (the cap is monotonic).
+        try b.softcap(self.verify_logits, count * vocabulary, model.final_softcap);
         if (tops) |out| {
             for (out, 0..) |top, i| try b.topk(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, sampling.TopK.capacity, top.temperature, self.topk_rows[i]);
         }

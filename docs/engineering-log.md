@@ -128,6 +128,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-23 | Muse Glimmer's windowed vision encoder on both executors; the image token cap for every family | 2026-09-23 (two sessions) |
 | MODL-25 | Bonsai 2's projector through the Qwen3-VL adapter: Q8_0 and F16 weights | 2026-09-23 |
 | REPO-15 | The CPU tier leaves the unit routine: when a unit changes what the CPU reference computes, and before a release | 2026-09-23 |
+| MODL-26 | Gemma 4's Metal `verify` rows carry the final soft-cap | 2026-09-24 |
 
 ## Context
 
@@ -5138,3 +5139,32 @@ line), `TODO.md` (§ Working a unit here).
 **Remaining.** A CPU-reference regression now surfaces at the release run
 rather than at the unit that caused it, unless that unit's author judged
 it CPU-relevant. The tier's cost is unchanged.
+
+## MODL-26 — Gemma 4's Metal `verify` rows carry the final soft-cap (2026-09-24)
+
+**Outcome.** `gemma4_metal.verify` ran the output head over every row but
+not Gemma's final soft-cap `30 · tanh(x / 30)`, which `step`, `prefill`,
+and the CPU `verify` apply. Greedy acceptance was unaffected (the cap is
+monotonic), but the full rows and the per-row device top-k that sampled
+acceptance draws from were the uncapped logits, so a sampled Gemma run with
+`--speculative on` drew its tokens from the wrong distribution. Speculation
+is off by default on both Gemma entries (ENGN-17), and every recorded Gemma
+pair is greedy, so no published number moves. The verify batch now applies
+the cap after the head; `verifyGreedy` does not need it. Found while
+building APPS-14's all-rows path, which shares the head sequence. Facts:
+[speculative-decoding.md § The Gemma 4 assistant heads](reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
+
+**Evidence.** `generation-check`'s Gemma draft trace now compares every
+`verify` row of `<bos>Hello,` against the stepped logits through the
+generic F32 tiles (`compareLogitRows`, bound 5e-3 / 2e-4). Without the fix,
+`make gate NAME=gemma4-qat-draft-trace-metal` fails: row 0 at 27.8 max abs,
+5.95e-2 relative RMS, the same argmax (236770). With it, the gate passes.
+The top-k check (`verifyTopKCheck`) never saw the gap because it compares
+`verify` with itself.
+
+**Files.** `inference/src/models/gemma4_metal.zig`,
+`inference/generation-check.zig`,
+`docs/reference/speculative-decoding.md`, `TODO.md`.
+
+**Remaining.** No sampled Gemma speculative pair has been measured, before
+or after.

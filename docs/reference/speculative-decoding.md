@@ -320,6 +320,21 @@ verify cost says the lever is `max_draft_length` (the 8-row tile bound)
 rather than anything in the drafter, which ENGN-17 may raise if the head is
 ever to pay.
 
+**The rows carry the soft-cap (MODL-26, 2026-09-24).** Until then the Metal
+`verify` ran the head over every row without Gemma's final
+`30 · tanh(x / 30)`, which `step` and the CPU `verify` apply. Greedy
+acceptance was unaffected (the cap is monotonic, so each row's argmax
+held), but the full rows and the per-row top-k that sampled acceptance
+draws from were the uncapped logits: on `<bos>Hello,` row 0 sat 27.8 from
+the stepped logits at max abs. Every Gemma record above and in ENGN-17 is
+greedy, so its numbers stand; a sampled Gemma pair ran on the wrong
+distribution. `gemma4_metal.verify` now applies the cap, and
+`gemma4-qat-draft-trace-metal` compares every `verify` row with the
+stepped logits through the generic F32 tiles (5e-3 / 2e-4). It fails
+without the cap and passes with it. The top-k check never saw this because
+it compares `verify` with itself. Found by `nuclis eval` (APPS-14), whose
+all-rows path shares the head sequence.
+
 ## The Muse Glimmer DFlash drafter (MODL-20)
 
 Facts confirmed on 2026-09-21 from the pinned reference (`7620399f5`): the

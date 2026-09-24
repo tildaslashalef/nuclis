@@ -1465,6 +1465,25 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
             if (metal_greedy != greedy[row]) return error.DraftGreedyMismatch;
         }
     }
+    // `verify`'s rows are the distributions sampled acceptance draws from:
+    // each must be the stepped logits at its position, soft-cap included,
+    // through the generic tiles where only summation order differs.
+    if (gpu) |b| {
+        b.generic_only = true;
+        defer b.generic_only = false;
+        const vocabulary = inference.models.gemma4.vocabulary;
+        const expected = try alloc.alloc(f32, tokens.len * vocabulary);
+        defer alloc.free(expected);
+        const actual = try alloc.alloc(f32, tokens.len * vocabulary);
+        defer alloc.free(actual);
+        var stepped = try Family.Plan.init(alloc, b, mapped.view(), binding, 32, 32, .f32, false, true);
+        defer stepped.deinit();
+        for (tokens, 0..) |t, i| try stepped.step(t, expected[i * vocabulary ..][0..vocabulary], null, null, null, null);
+        var verified = try Family.Plan.init(alloc, b, mapped.view(), binding, 32, 32, .f32, false, true);
+        defer verified.deinit();
+        try verified.verify(&tokens, actual, null, null, null);
+        try compareLogitRows("gemma verify rows (F32 tiles)", vocabulary, expected, actual, 5e-3, 2e-4);
+    }
     // `propose` from the committed prefix equals the pinned draft at row 2:
     // the prompt's hidden rows come from `prefill`, as the loop's prompt
     // commit supplies them.
@@ -1832,6 +1851,26 @@ fn compareChunked(label: []const u8, chunk: usize, expected: []const f32, actual
     const d = Difference.of(expected, actual);
     std.debug.print("Prefill (70 tokens, {s} {d}) vs per-token F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ label, chunk, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
     if (!d.within(max_abs_bound, rel_rms_bound)) return error.ChunkedPrefillMismatch;
+}
+
+/// Every row of a multi-row readback against the stepped logits at the same
+/// position; reports the worst row and fails past the bounds.
+fn compareLogitRows(label: []const u8, vocabulary: usize, expected: []const f32, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
+    const rows = expected.len / vocabulary;
+    var worst: Difference = .{ .max_abs = 0, .rel_rms = 0, .arg_expected = 0, .arg_actual = 0 };
+    var worst_row: usize = 0;
+    for (0..rows) |i| {
+        const d = Difference.of(expected[i * vocabulary ..][0..vocabulary], actual[i * vocabulary ..][0..vocabulary]);
+        if (!d.within(max_abs_bound, rel_rms_bound)) {
+            std.debug.print("{s}: row {d} max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ label, i, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
+            return error.RowsMismatch;
+        }
+        if (d.rel_rms > worst.rel_rms) {
+            worst = d;
+            worst_row = i;
+        }
+    }
+    std.debug.print("{s} vs per-token F32 steps: {d} rows, worst row {d} max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0})\n", .{ label, rows, worst_row, worst.max_abs, worst.rel_rms, max_abs_bound, rel_rms_bound });
 }
 
 /// A recovered verify batch's correction logits against the sequential run's:

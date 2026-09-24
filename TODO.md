@@ -16,6 +16,12 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
+APPS-14 (teacher-forced `eval`) was taken on 2026-09-24, the user's call.
+It surfaced MODL-26, closed the same day: Gemma 4's Metal `verify` rows
+lacked the final soft-cap, so sampled speculative acceptance on Gemma drew
+from uncapped logits (greedy and every record unaffected)
+([log](docs/engineering-log.md#modl-26--gemma-4s-metal-verify-rows-carry-the-final-soft-cap-2026-09-24)).
+
 MODL-23 closed on 2026-09-23 (two sessions): Muse Glimmer reads images on
 both executors and in the chat, so every catalogue family with a working
 projector has vision, and the vision theme is done. The windowed encoder
