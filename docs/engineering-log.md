@@ -5193,6 +5193,31 @@ gates pass, `make check` 554 tests, and `gemma4-perplexity` is unchanged
 `inference/src/tokenizer/bpe.zig`, `src/eval.zig`,
 `docs/reference/tokenizer.md`, `docs/reference/eval.md`.
 
+**Follow-up 2 (2026-09-24): a long-context perplexity tier, partly
+recorded.** At 512-token windows no gate passes a sliding window (Gemma 4's
+1,024, Muse's 2,048) or grows the cache past 512 rows. `scripts/gates.py`
+gained a third tier, `verify-long` (`make verify-long`), which runs when a
+unit changes attention, the KV cache, or a windowed schedule, and before a
+release (AGENTS.md § Validation and § Versioning, development.md § Gates).
+It scores four windows of 4,096 (8,188 tokens at positions 2,048–4,094)
+against the reference's per-token run. Recorded: Gemma 4 12B 752.989
+against 751.820, **+0.155 %**, now the gate `gemma4-perplexity-4k` (149 s of
+evaluation). **Open:** Gemma 4 26B-A4B 992.812 against 1010.894, **−1.789 %**,
+beyond even its 1 % bound, where it read −0.53 % at 512. Four times the
+tokens should have shrunk routing noise, so the gap looks systematic and
+growing with context. The reference reproduces its number exactly, and the
+12B passes on the same plan, so the suspects are what only the 26B has (its
+global layers' two KV heads and geometry, its rotary factors, the expert
+path at depth). The position-binned per-token comparison was stopped before
+it ran, the user's call. The 26B has no 4K gate; its reference is committed
+as evidence. The per-token references for Qwen3.8 and Muse were stopped
+mid-run, so those families have no 4K record. `make gates-validate` passes
+(50 gates); `make verify-long` was not run as a tier (its one gate's result
+is the run above). Files: `scripts/gates.py`, `gates.json`, `Makefile`,
+`AGENTS.md`, `docs/development.md`, `docs/spec.md`,
+`docs/reference/eval.md`, `tests/fixtures/perplexity/*-c4096x4.json`,
+`tests/fixtures/provenance.md`.
+
 ## APPS-14 — Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family (2026-09-24)
 
 **Outcome.** `nuclis eval --file <text> [--ctx-size N] [--chunks N]

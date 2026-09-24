@@ -572,7 +572,9 @@ API lookup tool, and a second product surface.
   and cache precision, generation checks that chunked prefill agrees with
   the stepped path, that a reset reproduces a fresh session, and that
   sessions share nothing, the speculative equivalence checks, and each
-  family's perplexity on a pinned text within 0.5 % of the reference's
+  family's perplexity on a pinned text within 0.5 % of the reference's, at
+  512-token windows per unit and, for Gemma 4 12B so far, at 4,096 (past
+  its sliding windows) in a long-context tier run before a release
   ([reference/eval.md](reference/eval.md)). Every
   threshold is written down per numerical mode; passes are recorded with
   dates and observed maxima.

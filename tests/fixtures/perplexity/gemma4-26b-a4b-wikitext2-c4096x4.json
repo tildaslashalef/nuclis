@@ -1,0 +1,34 @@
+{
+ "schema_version": 1,
+ "tool": "llama-perplexity",
+ "revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+ "model_file": "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+ "model_bytes": 14249047104,
+ "text_file": "wiki.test.raw",
+ "text_sha256": "173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08",
+ "ctx": 4096,
+ "chunks": 4,
+ "flags": [
+  "-c",
+  "4096",
+  "--chunks",
+  "4",
+  "-ngl",
+  "99",
+  "-b",
+  "4096",
+  "-ub",
+  "1"
+ ],
+ "ppl": 1010.8941,
+ "ppl_error": 57.18151,
+ "chunk_ppl": [
+  7018.4956,
+  3207.1836,
+  1342.7331,
+  1010.8941
+ ],
+ "date": "2026-09-24",
+ "tolerance": 0.01,
+ "tolerance_reason": "the reference's batched and per-token runs differ by 0.29 % on this file at 512-token windows and by a median of 0.051 nats per token (routing near-ties swap experts); nuclis's step and prefill paths sit 0.53-0.69 % below with the same per-token spread"
+}

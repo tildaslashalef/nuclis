@@ -199,7 +199,10 @@ For code changes, once build scaffolding exists:
    `*_runtime.zig` forward, or a projector's CPU `Runtime`, or it brings up
    a family or a draft source. Additions nothing calls yet, refactors a
    unit test pins, the check tool, and Metal code do not count. Otherwise
-   the CPU tier runs once before a release.
+   the CPU tier runs once before a release. The long-context tier (`make
+   verify-long`, 4K-token perplexity) runs when a unit changes
+   attention, the KV cache, or a windowed schedule, and once before a
+   release.
 5. A change to the agent's system prompt (`src/agent/system_prompt.zig`),
    a tool description, or the loop's behaviour is measured on the
    playground task list before and after (`make agent-eval VARIANT=…`,
@@ -252,7 +255,8 @@ stale references. Do not claim build/test execution when no code or build exists
   derived from `build.zig.zon`, never passed in), writes the CHANGELOG
   section, commits `chore(release): vX.Y.Z`, tags it (annotated), and bumps
   to the next `X.(Y+1).0-dev` in a follow-up commit. It never pushes.
-  Before it, `make verify-cpu` runs the CPU tier once, since units skip it.
+  Before it, `make verify-cpu` and `make verify-long` run the CPU and
+  long-context tiers once, since most units skip them.
 - Tag only forward, never retroactively. Benchmarks and test records cite the
   git revision, and published numbers cite the release tag once one exists.
 - `CHANGELOG.md` starts at the first tag, assembled from Conventional

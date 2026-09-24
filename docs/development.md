@@ -92,21 +92,22 @@ vocabulary checks, the perplexity checks) or `trace` (the `{trace}` directory go
 `scripts/compare-generation.py` against the gate's `bounds`). Two things
 make the registry cheaper than the recipes it replaced:
 
-| | tier `verify` | tier `verify-cpu` |
-| --- | --- | --- |
-| executor | the Metal plan (and the tokenizer) | the CPU reference |
-| cost | minutes (34 gates, one `make verify` per unit, about 12 min) | hours (15 gates; `qwen38-speculative-cpu` alone is about 20 min) |
-| build | `ReleaseSafe`, `./zig-out/bin/nuclis` | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
-| when | every unit that touched the inference stack | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
+| | tier `verify` | tier `verify-long` | tier `verify-cpu` |
+| --- | --- | --- | --- |
+| executor | the Metal plan (and the tokenizer) | the Metal plan | the CPU reference |
+| cost | minutes (34 gates, one `make verify` per unit, about 12 min) | minutes (1 gate: `gemma4-perplexity-4k`, 149 s of evaluation; the other families wait for their references) | hours (15 gates; `qwen38-speculative-cpu` alone is about 20 min) |
+| build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
+| when | every unit that touched the inference stack | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
 Each gate lists the source globs (`paths`) that make it relevant, so
 `make verify-changed BASE=<rev>` runs the Metal-tier gates whose paths
 match `git diff --name-only <rev>` plus untracked files: a commit under
 `src/tui/` selects nothing, one under `inference/src/models/gemma4*.zig`
-the Gemma gates. The CPU-tier gates that match are listed, not run; `make
-verify-changed BASE=<rev> ARGS='--tier verify-cpu'` runs them when the
-change alters what the CPU reference computes (the table above). The other
-commands: `make verify` / `make verify-cpu` (a tier), `make gate
+the Gemma gates. The long- and CPU-tier gates that match are listed, not
+run; `make verify-changed BASE=<rev> ARGS='--tier verify-long'` (or
+`verify-cpu`) runs them when the change calls for that tier (the table
+above). The other commands: `make verify` / `make verify-long` / `make
+verify-cpu` (a tier), `make gate
 NAME=<name or glob>` (`gemma4-qat-trace-f16`, `'muse-*'`; `ARGS=--dry-run`
 prints the commands), `make gates-list`, and `make gates-validate` (part of
 `make check`: the manifest's schema and the runner's self-test, no model).
@@ -114,7 +115,8 @@ prints the commands), `make gates-list`, and `make gates-validate` (part of
 revision for a log entry. Gate names are `<entry>-<check>-<executor>`:
 `qwen38`, `gemma4`, `gemma4-qat`, `gemma4-26b-a4b`, `muse`, `bonsai`;
 `trace-{cpu,f32,f16}`, `generation-{cpu,metal}`, `speculative-{cpu,metal}`,
-`draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity`. A
+`draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity`,
+`perplexity-4k`. A
 model path is overridden per key by `<KEY>_MODEL` (`GEMMA4_QAT_MODEL=…`).
 Traces are written under `.zig-cache/gates/trace/<gate>/`. The perplexity
 gates read wikitext-2-raw's test text, fetched into `.zig-cache/eval/` and

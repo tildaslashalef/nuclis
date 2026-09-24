@@ -167,6 +167,37 @@ Each family's figure is a gate (`make gate NAME='*-perplexity'`, the
 `verify` tier): `nuclis eval --reference
 tests/fixtures/perplexity/<family>-wikitext2-c512x8.json`.
 
+## The long-context record (2026-09-24)
+
+At 512-token windows no position passes a sliding window (Gemma 4's are
+1,024 tokens, Muse Glimmer's 2,048), and the cache never grows past 512
+rows, so the per-unit gates cannot see an error in the window masks or at
+depth. The long tier (`make verify-long`) scores four windows of 4,096
+(16,384 tokens fed, 8,188 scored at positions 2,048–4,094) against the
+reference's per-token run, as the 512 record does.
+
+| Model | nuclis | reference, per-token | difference | status |
+| --- | ---: | ---: | ---: | --- |
+| Gemma 4 12B | 752.989 ± 46.78 | 751.820 ± 46.67 | +0.155 % | gate `gemma4-perplexity-4k` (149 s) |
+| Gemma 4 26B-A4B | 992.812 ± 56.10 | 1010.894 ± 57.18 | **−1.789 %** | open: no gate |
+| Qwen3.8-27B, Muse Glimmer | — | not recorded | — | reference run stopped |
+
+The Gemma 4 12B passes with every scored position past its 1,024-token
+windows. **The 26B-A4B is open.** Its difference grew from −0.53 % at 512 to
+−1.79 % at 4,096, although four times the scored tokens should shrink
+routing noise, so it looks systematic and growing with context rather than
+noise. The reference reproduces its number exactly, and the 12B passes on
+the same plan code, which points at what only the 26B has: its five global
+layers' two KV heads and geometry, its rotary factors, or the expert path
+at depth. The position-binned per-token comparison against the reference's
+dump was not run. The fixture
+(`tests/fixtures/perplexity/gemma4-26b-a4b-wikitext2-c4096x4.json`, which
+carries the 512 record's 1 % routing bound) is kept as the evidence for that
+unit. The per-token references for Qwen3.8 and Muse (about 25 minutes each)
+were stopped before they finished; `scripts/reference-perplexity.py --ctx
+4096 --chunks 4 --ubatch 1` produces them, and each then gets a
+`*-perplexity-4k` gate in `gates.json`.
+
 ## Gemma 4's verify rows (MODL-26, 2026-09-24)
 
 Building `prefillRows` surfaced a gap in a sibling path: Gemma 4's Metal

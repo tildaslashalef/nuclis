@@ -19,7 +19,7 @@ BIN      := ./zig-out/bin/nuclis
 METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 
 .DEFAULT_GOAL := build
-.PHONY: help build debug build-cpu metal test test-metal check verify verify-cpu verify-changed gate gates-list gates-validate \
+.PHONY: help build debug build-cpu metal test test-metal check verify verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate \
         agent agent-eval model-ls eval-corpus trace clean distclean hf-downloader test-hf changelog release
@@ -62,10 +62,13 @@ BASE ?= HEAD
 verify: eval-corpus ## The Metal tier: every trace, generation, speculative, vocabulary, and perplexity gate (once per unit)
 	python3 scripts/gates.py --tier verify $(ARGS)
 
+verify-long: eval-corpus ## The long-context tier: 4K-token perplexity (Gemma 4 12B so far), when a unit touches attention, the caches, or a windowed schedule, and before a release
+	python3 scripts/gates.py --tier verify-long $(ARGS)
+
 verify-cpu: ## The CPU-reference tier (hours): when a unit changes what the CPU reference computes, and before a release
 	python3 scripts/gates.py --tier verify-cpu $(ARGS)
 
-verify-changed: eval-corpus ## The Metal-tier gates whose paths match `git diff --name-only $(BASE)` plus untracked files (BASE=HEAD); ARGS='--tier verify-cpu' for the CPU tier's
+verify-changed: eval-corpus ## The Metal-tier gates whose paths match `git diff --name-only $(BASE)` plus untracked files (BASE=HEAD); ARGS='--tier verify-long' or '--tier verify-cpu' for those tiers'
 	python3 scripts/gates.py --changed $(BASE) $(ARGS)
 
 gate: eval-corpus ## Gates by name or glob: make gate NAME=gemma4-qat-trace-f16, NAME='muse-*' (ARGS=--dry-run prints the commands)

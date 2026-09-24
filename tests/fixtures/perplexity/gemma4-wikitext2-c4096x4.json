@@ -1,0 +1,32 @@
+{
+ "schema_version": 1,
+ "tool": "llama-perplexity",
+ "revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+ "model_file": "gemma-4-12b-it-UD-Q4_K_XL.gguf",
+ "model_bytes": 7366423360,
+ "text_file": "wiki.test.raw",
+ "text_sha256": "173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08",
+ "ctx": 4096,
+ "chunks": 4,
+ "flags": [
+  "-c",
+  "4096",
+  "--chunks",
+  "4",
+  "-ngl",
+  "99",
+  "-b",
+  "4096",
+  "-ub",
+  "1"
+ ],
+ "ppl": 751.82,
+ "ppl_error": 46.66514,
+ "chunk_ppl": [
+  1086.9564,
+  1312.1277,
+  944.3425,
+  751.82
+ ],
+ "date": "2026-09-24"
+}
