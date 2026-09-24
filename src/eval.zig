@@ -210,12 +210,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, ctx, settings.kv_precision, settings.forced_profile, .none);
     defer eng.deinit();
     interrupt.install();
-    // The reference tokenizes without parsing special markers. Gemma's
-    // splitter makes each line one BPE piece whose merges rescan it (work
-    // quadratic in the line), so the chat prompt's defaults are too small for
-    // a corpus: the bound scales with the text, which is itself bounded.
-    const work = 4096 * @max(text.len, 16 * 1024);
-    const encoded = try eng.encoder.encode(alloc, text, false, .{ .input_bytes = text.len, .output_tokens = text.len + 1, .bpe_work = work, .piece = .{ .piece_bytes = 1024 * 1024, .output_tokens = text.len + 1, .work_bytes = work } });
+    // The reference tokenizes without parsing special markers. The merge
+    // work is linear in the text, so its bound scales with it (the text is
+    // itself bounded).
+    const encoded = try eng.encoder.encode(alloc, text, false, .{ .input_bytes = text.len, .output_tokens = text.len + 1, .bpe_work = @max(64 * 1024 * 1024, 64 * text.len) });
     defer alloc.free(encoded);
     const bos = eng.textBos();
     // The text starts with BOS as a whole, and each window again over its

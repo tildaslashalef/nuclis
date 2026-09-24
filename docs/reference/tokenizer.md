@@ -131,19 +131,34 @@ byte alphabet: visible ranges 33–126, 161–172, and 174–255 keep their code
 other bytes map in order to U+0100 onward. For example, space maps to `Ġ`.
 This is an encoding of bytes, not Unicode normalization.
 
-The reference repeatedly scans adjacent pieces, selects the lowest merge rank,
-and resolves equal ranks at the leftmost occurrence. A linked list represented
-by array indices keeps merged spans contiguous in one encoded buffer. It does
-not use longest-token matching, and it does not shortcut merely because a whole
-piece exists in the vocabulary. Final symbols must resolve to normal tokens;
-missing tokens and unsupported kinds return errors instead of dropping bytes.
+Merges join the adjacent pair with the lowest merge rank and resolve equal
+ranks at the leftmost occurrence. A linked list represented by array indices
+keeps merged spans contiguous in one encoded buffer. It does not use
+longest-token matching, and it does not shortcut merely because a whole piece
+exists in the vocabulary. Final symbols must resolve to normal tokens; missing
+tokens and unsupported kinds return errors instead of dropping bytes.
 
-Defaults bound one piece to 64 KiB, output to 65,536 IDs, and pair scanning to
-64 MiB of examined encoded pair bytes, including separators. The work budget
-bounds repeated scanning even for adversarial input; exceeding it returns
-`WorkLimitExceeded`. This is a simple correctness reference with potentially
-quadratic scanning, not an optimized tokenizer. Scratch storage is proportional
-to input length and released before returning. The caller frees returned IDs.
+A piece of up to 32 symbols (a word) rescans its pairs after every merge,
+which costs fewer lookups than any bookkeeping at that size. A longer piece
+keeps its pairs in a queue ordered by rank then position: each pair is
+looked up once when it forms (at most 3n lookups for n symbols), and a
+queued pair whose symbols have since merged is skipped, so the piece costs
+O(n log n). The two must choose the same pairs in the same order; a
+randomized test holds the queue to the scan over 400 inputs with ties and
+chained merges, and a real corpus proves it at scale: wikitext-2's
+1.29 MB test text encodes to the same ids for all three families
+(2026-09-24). Gemma 4's splitter makes each line one piece, so this is what
+lets a long single-line prompt through: the scan needed ~4.5 s and a
+multi-gigabyte work budget for that corpus, and refused a 40 KB line at the
+chat's defaults; the queue encodes the corpus in 0.26 s and a 200 KB line
+within the defaults. Word-piece families (Qwen3.8, Muse) are 3–4 % slower on
+the corpus (185 against 178 ms), within noise at a chat prompt's size.
+
+Defaults bound one piece to 1 MiB (the encoder's input bound, since a Gemma
+line has no inner splits), output to 1,048,576 IDs, and lookups to 64 MiB of
+encoded pair bytes, including separators; exceeding the budget returns
+`WorkLimitExceeded`. Scratch storage is proportional to the piece and
+released before returning. The caller frees returned IDs.
 **Do not pass an entire prompt as one piece:** doing so permits merges across
 boundaries required by the pre-tokenizer.
 

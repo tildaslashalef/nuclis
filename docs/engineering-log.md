@@ -5170,6 +5170,29 @@ The top-k check (`verifyTopKCheck`) never saw the gap because it compares
 **Remaining.** No sampled Gemma speculative pair has been measured, before
 or after.
 
+**Follow-up 1 (2026-09-24): the tokenizer's merge is linear on long pieces.**
+Gemma 4's splitter makes each line one BPE piece, and the merge rescanned
+every pair after each merge (O(n²) lookups), so a long single-line prompt
+failed at the chat's defaults: `generate` (the agent's `Engine.encode`
+path) and `tokenize` refused a 40 KB line of wikitext with
+`WorkLimitExceeded`. A piece longer than 32 symbols now keeps its pairs in a
+queue ordered by rank then position, each looked up once when it forms,
+stale pairs skipped: O(n log n). Words keep the scan, which is cheaper at
+that size. The per-piece cap rose from 64 KiB to the encoder's 1 MiB input
+bound, since a Gemma line has no inner splits. Evidence: a randomized test
+holds the queue to the scan's exact merges over 400 inputs with ties and
+chained merges; reversing the tie order fails it and an existing tie test.
+The whole 1.29 MB wikitext-2 test text encodes to identical ids before and
+after for Qwen3.8 (297,193), Gemma 4 (295,215), and Muse Glimmer (288,379)
+(Wyhash of the arrays). Gemma's encode went from 4,541 ms to 260 ms;
+Qwen3.8 178 → 185 ms and Muse 194 → 201 ms (three runs each). The 40 KB
+line now tokenizes (9,032 ids, exact round trip) and `generate` prefills its
+9,044 prompt tokens; a 200 KB line gives 46,723 ids. The three vocabulary
+gates pass, `make check` 554 tests, and `gemma4-perplexity` is unchanged
+(588.9540, −0.200 %). `eval` no longer widens the per-piece bounds. Files:
+`inference/src/tokenizer/bpe.zig`, `src/eval.zig`,
+`docs/reference/tokenizer.md`, `docs/reference/eval.md`.
+
 ## APPS-14 — Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family (2026-09-24)
 
 **Outcome.** `nuclis eval --file <text> [--ctx-size N] [--chunks N]

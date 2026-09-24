@@ -3,15 +3,20 @@
 //! whole prompt here can merge across forbidden boundaries and is not correct
 //! text tokenization. No BOS/EOS or other special tokens are inserted.
 //!
-//! A simple repeated scan makes rank ordering explicit. A byte-work budget
-//! bounds its worst-case cost; this is a correctness reference, not a fast path.
+//! Merges join the adjacent pair with the lowest rank, the leftmost on ties:
+//! a short piece rescans its pairs, a long one (a Gemma line) keeps them in a
+//! queue so it costs O(n log n), and a test holds the two to the same order.
+//! A byte-work budget bounds the pair lookups.
 const std = @import("std");
 const Vocabulary = @import("vocabulary.zig").Vocabulary;
 
 pub const Limits = struct {
-    piece_bytes: usize = 64 * 1024,
-    output_tokens: usize = 64 * 1024,
-    /// Sum of encoded pair lengths (including separator) examined by scans.
+    /// One piece may be a whole input (a Gemma line has no inner splits);
+    /// the queued merge keeps its cost linear in the piece, so the bound is
+    /// the encoder's input bound.
+    piece_bytes: usize = 1024 * 1024,
+    output_tokens: usize = 1024 * 1024,
+    /// Sum of encoded pair lengths (including separator) looked up.
     work_bytes: usize = 64 * 1024 * 1024,
 };
 pub const DecodeLimits = struct {
@@ -84,7 +89,7 @@ pub fn encodePieceBudget(alloc: std.mem.Allocator, vocab: *const Vocabulary, byt
         span.* = .{ .start = used, .end = used + len, .next = i + 1 };
         used += len;
     }
-    const count = try mergeSpans(vocab, encoded, spans, pair, &work);
+    const count = try mergeSpans(alloc, vocab, encoded, spans, pair, &work);
     if (count > limits.output_tokens) return error.LimitExceeded;
     const result = try alloc.alloc(u32, count);
     errdefer alloc.free(result);
@@ -98,11 +103,37 @@ pub fn encodePieceBudget(alloc: std.mem.Allocator, vocab: *const Vocabulary, byt
     return result;
 }
 
-/// The rank-ordered merge scan shared by both alphabets: repeatedly joins the
+/// One queued merge: the adjacent pair whose left symbol is `left`, valid
+/// while both symbols still end where they did when it was queued.
+const Candidate = struct { rank: u32, left: usize, right: usize, left_end: usize, right_end: usize };
+
+/// Lowest rank first; among equal ranks the leftmost pair (symbol indices
+/// follow text order, and a merge keeps the left index).
+fn candidateOrder(_: void, a: Candidate, b: Candidate) std.math.Order {
+    if (a.rank != b.rank) return std.math.order(a.rank, b.rank);
+    return std.math.order(a.left, b.left);
+}
+const Queue = std.PriorityQueue(Candidate, void, candidateOrder);
+/// `next` of a symbol merged into its left neighbour.
+const merged = std.math.maxInt(usize);
+
+/// Symbols up to which a piece rescans its pairs: a word's few merges cost
+/// fewer lookups rescanned (n²/2) than queued (3n plus the heap).
+const scan_symbols = 32;
+
+/// The rank-ordered merge shared by both alphabets: repeatedly joins the
 /// adjacent span pair with the lowest merge rank (leftmost on ties) until no
-/// pair is a merge, charging `work` per pair examined. `spans` is the symbol
-/// list (`next` of the last symbol is `spans.len`); returns the symbol count.
-fn mergeSpans(vocab: *const Vocabulary, encoded: []const u8, spans: []Span, pair: []u8, work: *usize) Error!usize {
+/// pair is a merge, charging `work` per pair looked up. `spans` is the
+/// symbol list (`next` of the last symbol is `spans.len`); returns the
+/// symbol count.
+fn mergeSpans(alloc: std.mem.Allocator, vocab: *const Vocabulary, encoded: []const u8, spans: []Span, pair: []u8, work: *usize) Error!usize {
+    if (spans.len <= scan_symbols) return mergeScan(vocab, encoded, spans, pair, work);
+    return mergeQueued(alloc, vocab, encoded, spans, pair, work);
+}
+
+/// The merge order by definition: rescan every adjacent pair and join the
+/// lowest-ranked, the leftmost on ties. O(n²) lookups.
+fn mergeScan(vocab: *const Vocabulary, encoded: []const u8, spans: []Span, pair: []u8, work: *usize) Error!usize {
     var count = spans.len;
     while (count > 1) {
         var best: ?usize = null;
@@ -110,15 +141,7 @@ fn mergeSpans(vocab: *const Vocabulary, encoded: []const u8, spans: []Span, pair
         var left: usize = 0;
         while (spans[left].next < spans.len) {
             const right = spans[left].next;
-            const a = encoded[spans[left].start..spans[left].end];
-            const b = encoded[spans[right].start..spans[right].end];
-            const size = a.len + 1 + b.len;
-            if (size > work.*) return error.WorkLimitExceeded;
-            work.* -= size;
-            @memcpy(pair[0..a.len], a);
-            pair[a.len] = ' ';
-            @memcpy(pair[a.len + 1 ..][0..b.len], b);
-            if (vocab.mergeRank(pair[0..size])) |rank| {
+            if (try lookup(vocab, encoded, spans, pair, work, left)) |rank| {
                 // Strict comparison keeps the leftmost occurrence for ties.
                 if (best == null or rank < best_rank) {
                     best = left;
@@ -134,6 +157,55 @@ fn mergeSpans(vocab: *const Vocabulary, encoded: []const u8, spans: []Span, pair
         count -= 1;
     }
     return count;
+}
+
+/// The same order kept by a queue: each pair is looked up once when it forms
+/// (at most 3n lookups), and a queued pair whose symbols have since merged is
+/// skipped.
+fn mergeQueued(alloc: std.mem.Allocator, vocab: *const Vocabulary, encoded: []const u8, spans: []Span, pair: []u8, work: *usize) Error!usize {
+    if (spans.len < 2) return spans.len;
+    const prev = try alloc.alloc(usize, spans.len);
+    defer alloc.free(prev);
+    for (prev, 0..) |*p, i| p.* = if (i == 0) merged else i - 1;
+    var queue: Queue = .initContext({});
+    defer queue.deinit(alloc);
+    for (0..spans.len - 1) |left| try queuePair(alloc, &queue, vocab, encoded, spans, pair, work, left);
+    var count = spans.len;
+    while (queue.pop()) |c| {
+        if (spans[c.left].next != c.right or spans[c.left].end != c.left_end or spans[c.right].end != c.right_end) continue;
+        const after = spans[c.right].next;
+        spans[c.left].end = spans[c.right].end;
+        spans[c.left].next = after;
+        spans[c.right].next = merged;
+        count -= 1;
+        if (after < spans.len) {
+            prev[after] = c.left;
+            try queuePair(alloc, &queue, vocab, encoded, spans, pair, work, c.left);
+        }
+        if (prev[c.left] != merged) try queuePair(alloc, &queue, vocab, encoded, spans, pair, work, prev[c.left]);
+    }
+    return count;
+}
+
+/// Queues the pair starting at symbol `left` when it is a merge.
+fn queuePair(alloc: std.mem.Allocator, queue: *Queue, vocab: *const Vocabulary, encoded: []const u8, spans: []const Span, pair: []u8, work: *usize, left: usize) Error!void {
+    const rank = try lookup(vocab, encoded, spans, pair, work, left) orelse return;
+    const right = spans[left].next;
+    try queue.push(alloc, .{ .rank = rank, .left = left, .right = right, .left_end = spans[left].end, .right_end = spans[right].end });
+}
+
+/// The merge rank of the pair starting at symbol `left`, charging its bytes.
+fn lookup(vocab: *const Vocabulary, encoded: []const u8, spans: []const Span, pair: []u8, work: *usize, left: usize) Error!?u32 {
+    const right = spans[left].next;
+    const a = encoded[spans[left].start..spans[left].end];
+    const b = encoded[spans[right].start..spans[right].end];
+    const size = a.len + 1 + b.len;
+    if (size > work.*) return error.WorkLimitExceeded;
+    work.* -= size;
+    @memcpy(pair[0..a.len], a);
+    pair[a.len] = ' ';
+    @memcpy(pair[a.len + 1 ..][0..b.len], b);
+    return vocab.mergeRank(pair[0..size]);
 }
 
 /// SPM-style BPE over one piece (Gemma 4; docs/reference/gemma4.md
@@ -162,7 +234,7 @@ pub fn encodeSpmBudget(alloc: std.mem.Allocator, vocab: *const Vocabulary, text:
         offset += len;
     }
     const spans = storage[0..symbols];
-    const count = try mergeSpans(vocab, text, spans, pair, &work);
+    const count = try mergeSpans(alloc, vocab, text, spans, pair, &work);
     var result: std.ArrayList(u32) = .empty;
     errdefer result.deinit(alloc);
     var current: usize = 0;
@@ -345,6 +417,51 @@ fn decodeNormal(text: []const u8, output: ?[]u8) Error!usize {
 
 // Synthetic vocabulary: byte token IDs equal their raw byte values. Additional
 // tokens and ordered merge rules exercise the algorithm without model weights.
+test "the queued merge picks exactly the scan's pairs" {
+    // Merges over a three-letter alphabet with ties, chains, and pairs whose
+    // halves are themselves merges, so orders interact on long runs.
+    var vocab = try fixture(&.{ "a b", "b a", "ab a", "a a", "ab ab", "c a", "b c", "abab c", "aa b", "ca ab", "ba ba", "c c" }, &.{});
+    defer vocab.deinit();
+    var prng: std.Random.DefaultPrng = .init(0x5eed);
+    const random = prng.random();
+    var text: [300]u8 = undefined;
+    var fast: [300]Span = undefined;
+    var slow: [300]Span = undefined;
+    var pair: [601]u8 = undefined;
+    for (0..400) |round| {
+        const len = 1 + random.uintLessThan(usize, text.len);
+        for (text[0..len]) |*c| c.* = "abc"[random.uintLessThan(usize, if (round % 4 == 0) 2 else 3)];
+        for (fast[0..len], slow[0..len], 0..) |*f, *w, i| {
+            f.* = .{ .start = i, .end = i + 1, .next = i + 1 };
+            w.* = f.*;
+        }
+        var work: usize = std.math.maxInt(usize);
+        const got = try mergeQueued(std.testing.allocator, &vocab, text[0..len], fast[0..len], &pair, &work);
+        const want = try mergeScan(&vocab, text[0..len], slow[0..len], &pair, &work);
+        try std.testing.expectEqual(want, got);
+        var f: usize = 0;
+        var w: usize = 0;
+        for (0..want) |_| {
+            try std.testing.expectEqual(slow[w].end, fast[f].end);
+            f = fast[f].next;
+            w = slow[w].next;
+        }
+    }
+}
+
+test "the queued merge's work grows linearly with the piece" {
+    // A 40,000-symbol run the scan would examine ~10^9 pairs for: the queue
+    // looks each pair up once when it forms, within the chat's default budget.
+    var vocab = try fixture(&.{ "a b", "ab ab", "abab abab" }, &.{});
+    defer vocab.deinit();
+    const text = try std.testing.allocator.alloc(u8, 40_000);
+    defer std.testing.allocator.free(text);
+    for (text, 0..) |*c, i| c.* = "ab"[i % 2];
+    const ids = try encodePiece(std.testing.allocator, &vocab, text, .{ .output_tokens = text.len, .work_bytes = 64 * text.len });
+    defer std.testing.allocator.free(ids);
+    try std.testing.expectEqual(@as(usize, 5_000), ids.len);
+}
+
 fn fixture(merges: []const []const u8, extras: []const []const u8) !Vocabulary {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     errdefer arena.deinit();

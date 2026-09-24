@@ -80,13 +80,13 @@ arrays equal the reference's exactly: all 4,096 ids of the first eight
 windows, checked against its `--kl-divergence-base` dump for Qwen3.8 and
 Gemma 4 12B.
 
-Gemma's SPM-style splitter makes each line one BPE piece, and the merge
-loop rescans the piece, so its work grows with the square of the line.
-Wikitext's paragraph lines exceed the chat prompt's work bounds
-(`WorkLimitExceeded`), so `eval` scales both bounds with the text, which is
-itself capped at 16 MiB. The 1.29 MB test text tokenizes in about 3 s on
-Gemma. `nuclis tokenize` keeps the chat bounds and refuses 40 KB of
-wikitext on Gemma.
+Gemma's SPM-style splitter makes each line one BPE piece. The merge used
+to rescan the piece after every merge, so wikitext's paragraph lines
+exceeded the chat's work bounds (`WorkLimitExceeded`) and `eval` scaled them;
+the queued merge ([tokenizer.md § BPE](tokenizer.md#bpe-and-id-to-byte-decoding))
+made the work linear, and `eval` now only widens the input and work bounds
+in proportion to the text (capped at 16 MiB). The 1.29 MB test text encodes
+in about 0.26 s on Gemma.
 
 ## The reference and its two paths
 
