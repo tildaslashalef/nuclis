@@ -1,7 +1,9 @@
 //! Gemma 4's two projectors. The 12B's `gemma4uv` embeds 48-pixel patches
 //! with norms and learned x/y tables and no attention (the language model
-//! does the vision work); the 26B-A4B's `gemma4v` is a 27-block SigLIP
-//! encoder with 2-D NEOX RoPE, a 3×3 average pool, and a standardization.
+//! does the vision work); `gemma4v` is a SigLIP encoder with 2-D NEOX RoPE
+//! and a 3×3 average pool, 27 blocks on the 26B-A4B (with a
+//! standardization) and 16 narrower blocks on the E4B (whose matrices clamp
+//! their inputs and outputs, `Clamp`).
 //! Both place one token per 48×48 pixels, raster order. `bind` validates the
 //! companion file; `Runtime` is the CPU reference (F64 accumulation), and
 //! the host-side tables are shared with the Metal plan
@@ -51,16 +53,34 @@ pub const siglip = struct {
     pub const patch = 16;
     pub const pool = 3;
     pub const values = patch * patch * 3;
-    pub const hidden = 1152;
-    pub const ffn = 4304;
-    pub const heads = 16;
-    pub const head_dim = 72;
-    pub const blocks = 27;
     pub const table = 10240;
     pub const rope_base: f64 = 100;
-    /// Rotation pairs per half head: channels [0, 36) turn with x, [36, 72) with y.
-    pub const rope_pairs = head_dim / 4;
     pub const max_patches = max_tokens * pool * pool;
+    /// The widest encoder of the pinned files; workspaces size by these.
+    pub const max_blocks = 27;
+    pub const max_hidden = 1152;
+
+    /// One pinned encoder's dimensions, selected by `clip.vision.block_count`.
+    pub const Geometry = struct {
+        hidden: usize,
+        ffn: usize,
+        heads: usize,
+        blocks: usize,
+
+        pub fn headDim(self: Geometry) usize {
+            return self.hidden / self.heads;
+        }
+        /// Rotation pairs per half head: the first half of a head turns
+        /// with the patch's x, the second with its y.
+        pub fn ropePairs(self: Geometry) usize {
+            return self.headDim() / 4;
+        }
+    };
+    /// The 26B-A4B's encoder: head 72, 18 pairs per half.
+    pub const large: Geometry = .{ .hidden = 1152, .ffn = 4304, .heads = 16, .blocks = 27 };
+    /// The E4B's encoder: head 64, 16 pairs per half.
+    pub const small: Geometry = .{ .hidden = 768, .ffn = 3072, .heads = 12, .blocks = 16 };
+    pub const geometries = [_]*const Geometry{ &large, &small };
 };
 
 /// The image in tokens (a 48-pixel grid) and, for the SigLIP encoder, in
@@ -112,6 +132,38 @@ pub const UnifiedBinding = struct {
     projection: *const Tensor,
 };
 
+/// The matrices of a block that may clamp (`Clamp`), in `Block.clamps` order.
+pub const Linear = enum { query, key, value, output, gate, up, down };
+
+/// A clipped linear's F32 scalar bounds (`<matrix>.input_min` and so on):
+/// `y = clamp(W · clamp(x, input), output)`; an absent scalar leaves that
+/// side open, as the reference defaults it to ±FLT_MAX.
+pub const Clamp = struct {
+    input_min: ?*const Tensor = null,
+    input_max: ?*const Tensor = null,
+    output_min: ?*const Tensor = null,
+    output_max: ?*const Tensor = null,
+};
+/// A clamp's bounds read from the file.
+pub const Bounds = struct {
+    input: [2]f32,
+    output: [2]f32,
+
+    pub const open: Bounds = .{ .input = .{ -std.math.floatMax(f32), std.math.floatMax(f32) }, .output = .{ -std.math.floatMax(f32), std.math.floatMax(f32) } };
+    pub fn isOpen(self: Bounds) bool {
+        return std.meta.eql(self, open);
+    }
+};
+pub fn clampBounds(view: weights.View, clamp: Clamp) !Bounds {
+    var bounds = Bounds.open;
+    if (clamp.input_min) |t| bounds.input[0] = try view.scalar(t, 0);
+    if (clamp.input_max) |t| bounds.input[1] = try view.scalar(t, 0);
+    if (clamp.output_min) |t| bounds.output[0] = try view.scalar(t, 0);
+    if (clamp.output_max) |t| bounds.output[1] = try view.scalar(t, 0);
+    for ([_][2]f32{ bounds.input, bounds.output }) |pair| if (std.math.isNan(pair[0]) or std.math.isNan(pair[1]) or pair[0] > pair[1]) return error.InvalidShape;
+    return bounds;
+}
+
 pub const Block = struct {
     ln1: *const Tensor,
     query: *const Tensor,
@@ -126,17 +178,37 @@ pub const Block = struct {
     up: *const Tensor,
     down: *const Tensor,
     post_ffn_norm: *const Tensor,
+    clamps: [@typeInfo(Linear).@"enum".fields.len]Clamp,
+
+    pub fn matrix(self: Block, which: Linear) *const Tensor {
+        return switch (which) {
+            .query => self.query,
+            .key => self.key,
+            .value => self.value,
+            .output => self.output,
+            .gate => self.gate,
+            .up => self.up,
+            .down => self.down,
+        };
+    }
 };
 
 pub const SiglipBinding = struct {
+    geometry: *const siglip.Geometry,
     /// F32 `[hidden][3][patch][patch]`: a `[hidden × values]` matrix in the
     /// channel-planar column order `preprocess.patches` writes.
     patch_embedding: *const Tensor,
     position: *const Tensor,
-    layers: [siglip.blocks]Block,
-    std_bias: *const Tensor,
-    std_scale: *const Tensor,
+    /// `geometry.blocks` leading entries are bound; see `active`.
+    layers: [siglip.max_blocks]Block,
+    /// The pooled rows' standardization, absent on the E4B's file.
+    std_bias: ?*const Tensor,
+    std_scale: ?*const Tensor,
     projection: *const Tensor,
+
+    pub fn active(self: *const SiglipBinding) []const Block {
+        return self.layers[0..self.geometry.blocks];
+    }
 };
 
 pub const Binding = struct {
@@ -166,8 +238,25 @@ fn expectUnsigned(doc: *const gguf.Document, key: []const u8, value: u64) Error!
     if (try qwen3vl.unsignedValue(doc, key) != value) return error.UnsupportedConfiguration;
 }
 
+/// Whether a tensor belongs to the audio embedder that shares the file
+/// (the 12B's `mm.a.*` projection, the E4B's whole `a.*` encoder).
+fn isAudio(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "mm.a.") or std.mem.startsWith(u8, name, "a.");
+}
+
+/// A matrix's optional clamp scalars, each an F32 `[1]` if present.
+fn takeClamp(binder: *Binder, block: usize, name: []const u8) Error!Clamp {
+    var result: Clamp = .{};
+    inline for (.{ "input_min", "input_max", "output_min", "output_max" }) |field| {
+        var buffer: [96]u8 = undefined;
+        const key = std.fmt.bufPrint(&buffer, "v.blk.{d}.{s}.{s}", .{ block, name, field }) catch unreachable;
+        if (binder.remaining.contains(key)) @field(result, field) = try binder.take(key, &.{1}, true);
+    }
+    return result;
+}
+
 /// doc must come from successful GGUF parsing; the returned tensor
-/// references borrow it. The 12B file's audio tensors (`mm.a.*`) are left
+/// references borrow it. The audio embedder's tensors (`isAudio`) are left
 /// unbound. Allocations are lookup storage freed before return.
 pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     if (!std.mem.eql(u8, try qwen3vl.stringValue(doc, "general.architecture"), "clip")) return error.UnsupportedArchitecture;
@@ -208,22 +297,27 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
             } };
             // The audio embedder shares the file; its tensors are not ours.
             var it = binder.remaining.keyIterator();
-            while (it.next()) |name| if (!std.mem.startsWith(u8, name.*, "mm.a.")) return error.UnexpectedTensor;
+            while (it.next()) |name| if (!isAudio(name.*)) return error.UnexpectedTensor;
         },
         .siglip => {
-            const h = siglip.hidden;
+            const blocks = try qwen3vl.unsignedValue(doc, "clip.vision.block_count");
+            const geometry = for (siglip.geometries) |g| {
+                if (g.blocks == blocks) break g;
+            } else return error.UnsupportedConfiguration;
+            const h = geometry.hidden;
+            const ffn = geometry.ffn;
             try expectUnsigned(doc, "clip.vision.embedding_length", h);
-            try expectUnsigned(doc, "clip.vision.feed_forward_length", siglip.ffn);
-            try expectUnsigned(doc, "clip.vision.block_count", siglip.blocks);
-            try expectUnsigned(doc, "clip.vision.attention.head_count", siglip.heads);
+            try expectUnsigned(doc, "clip.vision.feed_forward_length", ffn);
+            try expectUnsigned(doc, "clip.vision.attention.head_count", geometry.heads);
             // The FFN gate is the reference's default for a file without
             // `clip.use_gelu`/`use_silu` (gelu_quick); a file naming one is not this graph.
             if (doc.get("clip.use_gelu") != null or doc.get("clip.use_silu") != null) return error.UnsupportedConfiguration;
             var net: SiglipBinding = undefined;
+            net.geometry = geometry;
             net.patch_embedding = try binder.take("v.patch_embd.weight", &.{ siglip.patch, siglip.patch, 3, h }, true);
             net.position = try binder.take("v.position_embd.weight", &.{ h, siglip.table, 2 }, true);
-            const d = siglip.head_dim;
-            for (&net.layers, 0..) |*layer, i| layer.* = .{
+            const d = geometry.headDim();
+            for (net.layers[0..geometry.blocks], 0..) |*layer, i| layer.* = .{
                 .ln1 = try binder.named("v.blk.{d}.ln1.weight", .{i}, &.{h}, true),
                 .query = try binder.named("v.blk.{d}.attn_q.weight", .{i}, &.{ h, h }, false),
                 .key = try binder.named("v.blk.{d}.attn_k.weight", .{i}, &.{ h, h }, false),
@@ -233,15 +327,27 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
                 .key_norm = try binder.named("v.blk.{d}.attn_k_norm.weight", .{i}, &.{d}, true),
                 .post_attention_norm = try binder.named("v.blk.{d}.attn_post_norm.weight", .{i}, &.{h}, true),
                 .ln2 = try binder.named("v.blk.{d}.ln2.weight", .{i}, &.{h}, true),
-                .gate = try binder.named("v.blk.{d}.ffn_gate.weight", .{i}, &.{ h, siglip.ffn }, false),
-                .up = try binder.named("v.blk.{d}.ffn_up.weight", .{i}, &.{ h, siglip.ffn }, false),
-                .down = try binder.named("v.blk.{d}.ffn_down.weight", .{i}, &.{ siglip.ffn, h }, false),
+                .gate = try binder.named("v.blk.{d}.ffn_gate.weight", .{i}, &.{ h, ffn }, false),
+                .up = try binder.named("v.blk.{d}.ffn_up.weight", .{i}, &.{ h, ffn }, false),
+                .down = try binder.named("v.blk.{d}.ffn_down.weight", .{i}, &.{ ffn, h }, false),
                 .post_ffn_norm = try binder.named("v.blk.{d}.ffn_post_norm.weight", .{i}, &.{h}, true),
+                .clamps = .{
+                    try takeClamp(&binder, i, "attn_q"),
+                    try takeClamp(&binder, i, "attn_k"),
+                    try takeClamp(&binder, i, "attn_v"),
+                    try takeClamp(&binder, i, "attn_out"),
+                    try takeClamp(&binder, i, "ffn_gate"),
+                    try takeClamp(&binder, i, "ffn_up"),
+                    try takeClamp(&binder, i, "ffn_down"),
+                },
             };
-            net.std_bias = try binder.take("v.std_bias", &.{h}, true);
-            net.std_scale = try binder.take("v.std_scale", &.{h}, true);
+            // The standardization comes as a pair or not at all.
+            const has_std = binder.remaining.contains("v.std_bias");
+            net.std_bias = if (has_std) try binder.take("v.std_bias", &.{h}, true) else null;
+            net.std_scale = if (has_std) try binder.take("v.std_scale", &.{h}, true) else null;
             net.projection = try binder.take("mm.input_projection.weight", &.{ h, width }, false);
-            if (binder.remaining.count() != 0) return error.UnexpectedTensor;
+            var it = binder.remaining.keyIterator();
+            while (it.next()) |name| if (!isAudio(name.*)) return error.UnexpectedTensor;
             result.net = .{ .siglip = net };
         },
     }
@@ -274,15 +380,14 @@ pub fn positionRows(view: weights.View, tensor: *const Tensor, width: usize, tab
 }
 
 /// The SigLIP 2-D rotary tables for a patch grid, raster order: per patch
-/// `rope_pairs` (cos, sin) pairs of its x (`x_table`) and of its y
-/// (`y_table`) at frequencies `100^(−2j/36)`, F64 angles rounded to F32.
-pub fn ropeTables(x_table: []f32, y_table: []f32, width_patches: usize, count: usize) !void {
-    const pairs = siglip.rope_pairs;
+/// `pairs` (cos, sin) pairs of its x (`x_table`) and of its y (`y_table`) at
+/// frequencies `100^(−2j/(2·pairs))`, F64 angles rounded to F32.
+pub fn ropeTables(x_table: []f32, y_table: []f32, pairs: usize, width_patches: usize, count: usize) !void {
     if (width_patches == 0 or x_table.len < count * pairs * 2 or y_table.len < count * pairs * 2) return error.InvalidShape;
     for (0..count) |i| {
         const positions = [2]f64{ @floatFromInt(i % width_patches), @floatFromInt(i / width_patches) };
         for ([2][]f32{ x_table, y_table }, positions) |table, position| for (0..pairs) |j| {
-            const theta = position * std.math.pow(f64, siglip.rope_base, -2.0 * @as(f64, @floatFromInt(j)) / @as(f64, 2 * pairs));
+            const theta = position * std.math.pow(f64, siglip.rope_base, -2.0 * @as(f64, @floatFromInt(j)) / @as(f64, @floatFromInt(2 * pairs)));
             table[(i * pairs + j) * 2] = @floatCast(@cos(theta));
             table[(i * pairs + j) * 2 + 1] = @floatCast(@sin(theta));
         };
@@ -293,7 +398,7 @@ pub fn ropeTables(x_table: []f32, y_table: []f32, width_patches: usize, count: u
 /// file's bytes (GGUF `[kx, ky, c, o]`, so each output row is already
 /// channel-planar).
 pub fn siglipKernel(view: weights.View, net: *const SiglipBinding) !cpu.Matrix {
-    return .{ .encoding = 0, .rows = siglip.hidden, .columns = siglip.values, .bytes = try view.bytes(net.patch_embedding) };
+    return .{ .encoding = 0, .rows = net.geometry.hidden, .columns = siglip.values, .bytes = try view.bytes(net.patch_embedding) };
 }
 
 /// `rms(input)·weight` (or without a weight), statistics in F64.
@@ -304,9 +409,9 @@ fn rmsNorm(input: []const f32, output: []f32, weight: ?[]const f32) !void {
     };
 }
 
-/// Rotates one 36-wide half head NEOX-style: pairs `(j, j + 18)`.
+/// Rotates one half head NEOX-style: pairs `(j, j + pairs)`.
 fn rotateHalf(half: []f32, table: []const f32) void {
-    const pairs = siglip.rope_pairs;
+    const pairs = half.len / 2;
     for (0..pairs) |j| {
         const c: f64 = table[j * 2];
         const s: f64 = table[j * 2 + 1];
@@ -395,12 +500,28 @@ pub const Runtime = struct {
         }
     }
 
+    /// `output = clamp(W · clamp(input))` (`Clamp`); `input` is left as it was.
+    fn clipped(self: *Runtime, matrix: cpu.Matrix, bounds: Bounds, input: []const f32, output: []f32, scratch: []f32, staged: []f32) !void {
+        _ = self;
+        var source = input;
+        if (!bounds.isOpen()) {
+            for (staged[0..input.len], input) |*s, x| s.* = std.math.clamp(x, bounds.input[0], bounds.input[1]);
+            source = staged[0..input.len];
+        }
+        try cpu.matvec(matrix, source, output, scratch);
+        if (!bounds.isOpen()) for (output) |*y| {
+            y.* = std.math.clamp(y.*, bounds.output[0], bounds.output[1]);
+        };
+    }
+
     fn encodeSiglip(self: *Runtime, net: *const SiglipBinding, patches: preprocess.Patches, grid: Grid, out: []f32) !void {
         const wp: usize = grid.widthPatches();
         const hp: usize = grid.heightPatches();
         const n = wp * hp;
-        const h = siglip.hidden;
-        const d = siglip.head_dim;
+        const g = net.geometry;
+        const h = g.hidden;
+        const d = g.headDim();
+        const pairs = g.ropePairs();
         const width = self.binding.output_width;
         if (patches.row != siglip.values or patches.width_patches != wp or patches.height_patches != hp or patches.count() != n) return error.InvalidShape;
         const a = self.alloc;
@@ -416,21 +537,24 @@ pub const Runtime = struct {
         defer a.free(v);
         const attn = try a.alloc(f32, n * h);
         defer a.free(attn);
-        const gate = try a.alloc(f32, siglip.ffn);
+        const gate = try a.alloc(f32, g.ffn);
         defer a.free(gate);
-        const up = try a.alloc(f32, siglip.ffn);
+        const up = try a.alloc(f32, g.ffn);
         defer a.free(up);
         const row = try a.alloc(f32, h);
         defer a.free(row);
-        const x_table = try a.alloc(f32, n * siglip.rope_pairs * 2);
+        const x_table = try a.alloc(f32, n * pairs * 2);
         defer a.free(x_table);
-        const y_table = try a.alloc(f32, n * siglip.rope_pairs * 2);
+        const y_table = try a.alloc(f32, n * pairs * 2);
         defer a.free(y_table);
-        const scratch = try a.alloc(f32, siglip.ffn + h);
+        const scratch = try a.alloc(f32, g.ffn + h);
         defer a.free(scratch);
+        // A clamped copy of a matrix's input.
+        const staged = try a.alloc(f32, g.ffn + h);
+        defer a.free(staged);
         const scores = try a.alloc(f64, n);
         defer a.free(scores);
-        try ropeTables(x_table, y_table, wp, n);
+        try ropeTables(x_table, y_table, pairs, wp, n);
 
         const kernel = try siglipKernel(self.view, net);
         try positionRows(self.view, net.position, h, siglip.table, wp, n, normed, scratch);
@@ -439,7 +563,9 @@ pub const Runtime = struct {
             try cpu.matvec(kernel, patches.values[t * siglip.values ..][0..siglip.values], xt, scratch);
             for (xt, normed[t * h ..][0..h]) |*o, p| o.* += p;
         }
-        for (net.layers) |layer| {
+        for (net.active()) |layer| {
+            var bounds: [layer.clamps.len]Bounds = undefined;
+            for (&bounds, layer.clamps) |*b, c| b.* = try clampBounds(self.view, c);
             const ln1 = try self.vector(layer.ln1);
             const qn = try self.vector(layer.query_norm);
             const kn = try self.vector(layer.key_norm);
@@ -452,12 +578,12 @@ pub const Runtime = struct {
             for (0..n) |t| {
                 const nt = normed[t * h ..][0..h];
                 try rmsNorm(x[t * h ..][0..h], nt, ln1);
-                try cpu.matvec(wq, nt, q[t * h ..][0..h], scratch);
-                try cpu.matvec(wk, nt, k[t * h ..][0..h], scratch);
-                try cpu.matvec(wv, nt, v[t * h ..][0..h], scratch);
-                const xs = x_table[t * siglip.rope_pairs * 2 ..][0 .. siglip.rope_pairs * 2];
-                const ys = y_table[t * siglip.rope_pairs * 2 ..][0 .. siglip.rope_pairs * 2];
-                for (0..siglip.heads) |head| {
+                try self.clipped(wq, bounds[@intFromEnum(Linear.query)], nt, q[t * h ..][0..h], scratch, staged);
+                try self.clipped(wk, bounds[@intFromEnum(Linear.key)], nt, k[t * h ..][0..h], scratch, staged);
+                try self.clipped(wv, bounds[@intFromEnum(Linear.value)], nt, v[t * h ..][0..h], scratch, staged);
+                const xs = x_table[t * pairs * 2 ..][0 .. pairs * 2];
+                const ys = y_table[t * pairs * 2 ..][0 .. pairs * 2];
+                for (0..g.heads) |head| {
                     const qh = q[t * h + head * d ..][0..d];
                     const kh = k[t * h + head * d ..][0..d];
                     try rmsNorm(qh, qh, qn);
@@ -470,46 +596,45 @@ pub const Runtime = struct {
                     try rmsNorm(vh, vh, null);
                 }
             }
-            attention(q, k, v, attn, n, scores);
+            attention(q, k, v, attn, n, g, scores);
             const wo = try self.view.matrix(layer.output);
             const wg = try self.view.matrix(layer.gate);
             const wu = try self.view.matrix(layer.up);
             const wd = try self.view.matrix(layer.down);
             for (0..n) |t| {
                 const xt = x[t * h ..][0..h];
-                try cpu.matvec(wo, attn[t * h ..][0..h], row, scratch);
+                try self.clipped(wo, bounds[@intFromEnum(Linear.output)], attn[t * h ..][0..h], row, scratch, staged);
                 try rmsNorm(row, row, post_attention);
                 for (xt, row) |*o, r| o.* += r;
                 const nt = normed[t * h ..][0..h];
                 try rmsNorm(xt, nt, ln2);
-                try cpu.matvec(wg, nt, gate, scratch);
-                try cpu.matvec(wu, nt, up, scratch);
-                for (gate, up) |*g, u| g.* = cpu.geluQuick(g.*) * u;
-                try cpu.matvec(wd, gate, row, scratch);
+                try self.clipped(wg, bounds[@intFromEnum(Linear.gate)], nt, gate, scratch, staged);
+                try self.clipped(wu, bounds[@intFromEnum(Linear.up)], nt, up, scratch, staged);
+                for (gate, up) |*gv, u| gv.* = cpu.geluQuick(gv.*) * u;
+                try self.clipped(wd, bounds[@intFromEnum(Linear.down)], gate, row, scratch, staged);
                 try rmsNorm(row, row, post_ffn);
                 for (xt, row) |*o, r| o.* += r;
             }
         }
-        const std_bias = try self.vector(net.std_bias);
-        const std_scale = try self.vector(net.std_scale);
+        const std_bias = if (net.std_bias) |t| try self.vector(t) else null;
+        const std_scale = if (net.std_scale) |t| try self.vector(t) else null;
         const projection = try self.view.matrix(net.projection);
-        try poolRows(x, grid, normed);
+        try poolRows(x, grid, h, normed);
         for (0..grid.tokens()) |t| {
             const pooled = normed[t * h ..][0..h];
-            standardize(pooled, std_bias, std_scale);
+            if (std_bias) |bias| standardize(pooled, bias, std_scale.?);
             try rmsNorm(pooled, row, null);
             try cpu.matvec(projection, row, out[t * width ..][0..width], scratch);
         }
     }
 };
 
-/// The 3×3 average pool of raster patch rows into raster token rows, scaled
-/// by √hidden: `out` gets `grid.tokens() × hidden`.
-pub fn poolRows(x: []const f32, grid: Grid, out: []f32) !void {
-    const h = siglip.hidden;
+/// The 3×3 average pool of raster patch rows of width `h` into raster
+/// token rows, scaled by √h: `out` gets `grid.tokens() × h`.
+pub fn poolRows(x: []const f32, grid: Grid, h: usize, out: []f32) !void {
     const wp: usize = grid.widthPatches();
     if (x.len < wp * grid.heightPatches() * h or out.len < grid.tokens() * h) return error.InvalidShape;
-    const root: f32 = @sqrt(@as(f32, h));
+    const root: f32 = @sqrt(@as(f32, @floatFromInt(h)));
     for (0..grid.height_tokens) |ty| for (0..grid.width_tokens) |tx| {
         const dst = out[(ty * grid.width_tokens + tx) * h ..][0..h];
         for (dst, 0..) |*o, c| {
@@ -529,11 +654,11 @@ pub fn standardize(row: []f32, bias: []const f32, scale: []const f32) void {
     for (row, bias, scale) |*r, b, s| r.* = (r.* - b) * s;
 }
 
-/// Bidirectional attention of `n` rows of 16 heads × 72, scale 1.
-fn attention(q: []const f32, k: []const f32, v: []const f32, out: []f32, n: usize, scores: []f64) void {
-    const h = siglip.hidden;
-    const d = siglip.head_dim;
-    for (0..siglip.heads) |head| for (0..n) |i| {
+/// Bidirectional attention of `n` rows of the geometry's heads, scale 1.
+fn attention(q: []const f32, k: []const f32, v: []const f32, out: []f32, n: usize, g: *const siglip.Geometry, scores: []f64) void {
+    const h = g.hidden;
+    const d = g.headDim();
+    for (0..g.heads) |head| for (0..n) |i| {
         const qi = q[i * h + head * d ..][0..d];
         var max: f64 = -std.math.inf(f64);
         for (0..n) |j| {
@@ -554,6 +679,12 @@ fn attention(q: []const f32, k: []const f32, v: []const f32, out: []f32, n: usiz
             value.* = @floatCast(sum / total);
         }
     };
+}
+
+/// The E4B's projector inventory (`fixtures/gemma4-e4b-mmproj.json`): the
+/// small SigLIP encoder with clamps, and a full audio encoder.
+pub fn inventoryDocumentE4b(gpa: std.mem.Allocator) !gguf.Document {
+    return inventory.document(gpa, @embedFile("fixtures/gemma4-e4b-mmproj.json"));
 }
 
 pub fn inventoryDocument(gpa: std.mem.Allocator, kind: Kind) !gguf.Document {
@@ -579,6 +710,19 @@ test "bind accepts both pinned projector inventories" {
     try std.testing.expectEqual(@as(usize, 2816), b.output_width);
     try std.testing.expectEqual(@as(u32, 356), b.tensors);
     try std.testing.expectEqual([3]f32{ 0, 0, 0 }, b.mean);
+    try std.testing.expect(b.net.siglip.std_bias != null);
+    var e = try inventoryDocumentE4b(alloc);
+    defer e.storage.deinit();
+    const c = try bind(alloc, &e);
+    try std.testing.expectEqual(Kind.siglip, c.kind);
+    try std.testing.expectEqual(@as(usize, 2560), c.output_width);
+    try std.testing.expectEqual(&siglip.small, c.net.siglip.geometry);
+    try std.testing.expect(c.net.siglip.std_bias == null);
+    // 16 blocks of 13 tensors and 28 clamp scalars, the patch kernel, the
+    // position table, and the projection; the 745 audio tensors stay unbound.
+    try std.testing.expectEqual(@as(u32, 16 * (13 + 28) + 3), c.tensors);
+    const q = c.net.siglip.layers[0].clamps[@intFromEnum(Linear.query)];
+    try std.testing.expect(q.input_min != null and q.output_max != null);
 }
 
 test "bind refuses the Qwen projector and a missing tensor" {
@@ -606,28 +750,31 @@ test "the grid follows the reference's bounds on the 48-pixel grid" {
 }
 
 test "the rope tables turn the first half with x and the second with y" {
-    var xt: [6 * siglip.rope_pairs * 2]f32 = undefined;
-    var yt: [6 * siglip.rope_pairs * 2]f32 = undefined;
-    try ropeTables(&xt, &yt, 3, 6);
+    const pairs = siglip.large.ropePairs();
+    var xt: [6 * 18 * 2]f32 = undefined;
+    var yt: [6 * 18 * 2]f32 = undefined;
+    try ropeTables(&xt, &yt, pairs, 3, 6);
     // Patch 4 is (x 1, y 1); patch 2 is (x 2, y 0).
-    try std.testing.expectApproxEqAbs(@as(f32, @cos(1.0)), xt[(4 * siglip.rope_pairs) * 2], 1e-7);
-    try std.testing.expectApproxEqAbs(@as(f32, @cos(2.0)), xt[(2 * siglip.rope_pairs) * 2], 1e-7);
-    try std.testing.expectEqual(@as(f32, 1), yt[(2 * siglip.rope_pairs) * 2]);
+    try std.testing.expectApproxEqAbs(@as(f32, @cos(1.0)), xt[(4 * pairs) * 2], 1e-7);
+    try std.testing.expectApproxEqAbs(@as(f32, @cos(2.0)), xt[(2 * pairs) * 2], 1e-7);
+    try std.testing.expectEqual(@as(f32, 1), yt[(2 * pairs) * 2]);
     // Pair 1's frequency is 100^(−2/36).
     const f = std.math.pow(f64, 100, -2.0 / 36.0);
-    try std.testing.expectApproxEqAbs(@as(f32, @floatCast(@sin(f))), yt[(4 * siglip.rope_pairs + 1) * 2 + 1], 1e-7);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatCast(@sin(f))), yt[(4 * pairs + 1) * 2 + 1], 1e-7);
+    // The E4B's 64-wide heads: pair 1 at 100^(−2/32).
+    try std.testing.expectEqual(@as(usize, 16), siglip.small.ropePairs());
 }
 
 test "the pool averages 3×3 patch blocks in raster order and scales by √hidden" {
     const alloc = std.testing.allocator;
     const grid: Grid = .{ .width_tokens = 2, .height_tokens = 1 };
-    const h = siglip.hidden;
+    const h = siglip.large.hidden;
     const x = try alloc.alloc(f32, 18 * h);
     defer alloc.free(x);
     for (0..18) |p| @memset(x[p * h ..][0..h], @floatFromInt(p % 6));
     const out = try alloc.alloc(f32, 2 * h);
     defer alloc.free(out);
-    try poolRows(x, grid, out);
+    try poolRows(x, grid, h, out);
     // Token 0 covers patch columns 0..2 of rows 0..2: mean 1; token 1 columns 3..5: mean 4.
     try std.testing.expectApproxEqAbs(@as(f32, @sqrt(1152.0)), out[0], 1e-4);
     try std.testing.expectApproxEqAbs(@as(f32, 4 * @sqrt(1152.0)), out[h], 1e-3);

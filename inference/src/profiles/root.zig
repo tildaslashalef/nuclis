@@ -17,6 +17,7 @@ pub const stream = @import("stream.zig");
 
 pub const qwen38 = @import("qwen38.zig");
 pub const gemma4 = @import("gemma4.zig");
+pub const gemma4_e = @import("gemma4_e.zig");
 pub const muse_glimmer = @import("muse_glimmer.zig");
 
 pub const Role = enum { system, developer, user, assistant, tool };
@@ -115,6 +116,7 @@ pub const StreamMarkers = struct {
 pub const Profile = enum {
     qwen38,
     gemma4,
+    gemma4_e,
     muse_glimmer,
 
     /// Resolve control tokens against this artifact once per completion.
@@ -153,6 +155,7 @@ pub const Profile = enum {
         return switch (self) {
             .qwen38 => qwen38,
             .gemma4 => gemma4,
+            .gemma4_e => gemma4_e,
             .muse_glimmer => muse_glimmer,
         };
     }
@@ -404,6 +407,7 @@ fn nextJson(scanner: *std.json.Scanner) Error!?std.json.Token {
 test "profiles are selected by template digest" {
     try std.testing.expectEqual(Profile.qwen38, forTemplate(qwen38.template_sha256).?);
     try std.testing.expectEqual(Profile.gemma4, forTemplate(gemma4.template_sha256).?);
+    try std.testing.expectEqual(Profile.gemma4_e, forTemplate(gemma4_e.template_sha256).?);
     try std.testing.expectEqual(Profile.muse_glimmer, forTemplate(muse_glimmer.template_sha256).?);
     try std.testing.expect(forTemplate("") == null);
     try std.testing.expect(forTemplate("0000000000000000000000000000000000000000000000000000000000000000") == null);
@@ -568,4 +572,5 @@ test {
     _ = qwen38;
     _ = gemma4;
     _ = muse_glimmer;
+    _ = gemma4_e;
 }

@@ -49,14 +49,14 @@ fn expectations(profile: inference.profiles.Profile) Expect {
             .fixture = @embedFile("src/profiles/fixtures/qwen38-text.json"),
             .byte_level = true,
         },
-        .gemma4 => .{
+        .gemma4, .gemma4_e => .{
             .tokens = 262_144,
             .merges = 514_906,
             .bos = 2,
             .eos = &.{ 106, 1 },
             .texts = &.{ "<|turn>", "<turn|>", "<|channel>", "<channel|>", "<|think|>", "<eos>", "user", "model", "system", "thought", "<|tool>", "<tool|>", "<|tool_call>", "<tool_call|>", "<|tool_response>", "<tool_response|>", "<|\"|>" },
             .ids = &.{ 105, 106, 100, 101, 98, 1, 2364, 4368, 9731, 45518, 46, 47, 48, 49, 50, 51, 52 },
-            .fixture = @embedFile("src/profiles/fixtures/gemma4-text.json"),
+            .fixture = if (profile == .gemma4_e) @embedFile("src/profiles/fixtures/gemma4_e-text.json") else @embedFile("src/profiles/fixtures/gemma4-text.json"),
             .byte_level = false,
         },
     };

@@ -88,8 +88,9 @@ fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source; the");
     try more(out, "default is the model entry's verdict, else off");
     try row(out, sty, "--draft-length <n>", "drafts per verify batch, 1..7; default 4");
-    try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, or muse_glimmer on a file");
-    try more(out, "whose chat template is not a pinned one (a finetune)");
+    try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
+    try more(out, "on a file whose chat template is not a pinned one");
+    try more(out, "(a finetune)");
     try row(out, sty, "--seed <n>", "sampler seed; default 0");
 }
 
@@ -295,7 +296,8 @@ fn eval(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "engine.model of the config file (qwen3.8-27b)");
     try row(out, sty, "--backend cpu|metal", "default metal");
     try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU; default f16");
-    try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, or muse_glimmer (its BOS)");
+    try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
+    try more(out, "(its BOS)");
     try row(out, sty, "--json", "the report: every window's running perplexity");
 
     try heading(out, sty, "Examples:");
@@ -323,7 +325,7 @@ fn tokenize(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--prompt-file <path>", "the same, read from a file");
     try row(out, sty, "--raw", "tokenize the text as written, without the template");
     try row(out, sty, "--think <effort>", "render the turn at this effort; default off");
-    try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, or muse_glimmer");
+    try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
     try row(out, sty, "--model <name|path>", "whose vocabulary and template; default engine.model");
     try row(out, sty, "--json", "ids, offsets, and the rendered text as JSON");
 
@@ -408,7 +410,8 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--role <r>", "main, mmproj, mtp, or imatrix; default by content");
     try row(out, sty, "--register <name>", "once verified, write the pull as a registry entry");
     try more(out, "(repo, file, commit); a companion fills the same entry");
-    try row(out, sty, "--profile <p>", "with --register: force qwen38, gemma4, or muse_glimmer");
+    try row(out, sty, "--profile <p>", "with --register: force qwen38, gemma4,");
+    try more(out, "gemma4_e, or muse_glimmer");
     try row(out, sty, "--force", "replace a file whose sidecar records other content");
     try row(out, sty, "--json", "the listing, transfer report, or verdict as JSON");
 

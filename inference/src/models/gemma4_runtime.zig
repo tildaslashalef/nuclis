@@ -1,9 +1,9 @@
-//! CPU execution of the pinned Gemma 4 text schedules (the dense 12B and
-//! the 26B-A4B mixture of experts): the numerical reference
+//! CPU execution of the pinned Gemma 4 text schedules (the dense 12B, the
+//! 26B-A4B mixture of experts, and the E4B): the numerical reference
 //! `gemma4_metal.zig` is compared against, written from the forward pass
 //! recorded in docs/reference/gemma4.md. Immutable weight views and the
 //! binding borrow the loaded model; this runtime owns the session (one
-//! attention cache per layer, F32) and its workspace. A failed step poisons
+//! attention cache per cache-owning layer, F32) and its workspace. A failed step poisons
 //! the session. With a `gemma4-assistant` companion
 //! bound the runtime also runs the draft head (`Head`), which reads the
 //! target's caches and owns no attention state of its own.
@@ -13,21 +13,25 @@
 //! - every layer has four residual-stream norms (pre/post attention,
 //!   pre/post FFN) whose weights are stored raw (`rms(x) * w`);
 //! - queries and keys are RMS-normed per head with a weight, values RMS-normed
-//!   per head *without* one; on global layers the value projection is the
-//!   key projection before its norm;
+//!   per head *without* one; on global layers without their own value
+//!   projection it is the key projection before its norm;
 //! - RoPE is split-half over the whole head, base 1e4 on sliding layers and
 //!   1e6 with the checkpoint's frequency factors on global layers;
 //! - attention scores are unscaled (`scale = 1`), and sliding layers see only
-//!   the last 1024 positions, which the reference reads by slicing the
+//!   the last `window` positions, which the reference reads by slicing the
 //!   cache rows rather than masking;
+//! - on the E4B, layers past `kv_layers` project no keys or values and
+//!   attend over an earlier layer's cache (`Config.kvSource`), and a
+//!   per-layer embedding (`perLayerInputs`) adds a gated term to the
+//!   residual before the output scale (`finishLayer`);
 //! - the FFN gate is tanh-GELU, and each layer's new residual is multiplied
 //!   by its scalar output scale;
 //! - on an expert layer the dense FFN is a shared branch: its output and the
 //!   routed experts' sum each get their own post norm before they are added
 //!   and the ordinary post-FFN norm applies to the sum (`feedForward`);
 //! - logits come from the embedding matrix and are soft-capped at 30;
-//! - the draft head's four blocks read the target's layer-46 (sliding) and
-//!   layer-47 (global) caches, write none, and chain only its `h_next`;
+//! - the draft head's four blocks read the caches of the target's last
+//!   sliding and last global layer, write none, and chain only its `h_next`;
 //!   `commit` is a copy of the last target hidden into `pending_h`.
 const std = @import("std");
 const model = @import("gemma4.zig");
@@ -55,9 +59,11 @@ const LayerConstants = struct {
     ffn_norm: []f32,
     post_ffn_norm: []f32,
     query_norm: []f32,
-    key_norm: []f32,
+    key_norm: ?[]f32,
     output_scale: f32,
     experts: ?ExpertConstants,
+    /// The per-layer embedding block's output norm (E4B).
+    per_layer_norm: ?[]f32,
 };
 
 /// One draft block's decoded constants.
@@ -94,7 +100,7 @@ const Head = struct {
     pending_h: []f32,
 
     fn init(alloc: std.mem.Allocator, binding: assistant.Binding) !Head {
-        const head_width = assistant.embedding;
+        const head_width = binding.config.embedding;
         const out = binding.config.embedding_out;
         var result: Head = undefined;
         result.binding = binding;
@@ -114,7 +120,7 @@ const Head = struct {
         result.row = try alloc.alloc(f32, out);
         inline for (.{ "x", "normalized", "projected" }) |field| @field(result, field) = try alloc.alloc(f32, head_width);
         inline for (.{ "q", "mixed" }) |field| @field(result, field) = try alloc.alloc(f32, assistant.Kind.global.queryWidth());
-        inline for (.{ "gate", "up" }) |field| @field(result, field) = try alloc.alloc(f32, assistant.feed_forward);
+        inline for (.{ "gate", "up" }) |field| @field(result, field) = try alloc.alloc(f32, binding.config.feed_forward);
         result.concat = try alloc.alloc(f32, 2 * out);
         result.logits = try alloc.alloc(f32, assistant.vocabulary);
         result.h_next = try alloc.alloc(f32, out);
@@ -130,7 +136,7 @@ const Head = struct {
         }
         // The head's binding borrows weights; only the decoded constants and
         // the workspace above are this runtime's own.
-        return total + self.constants.len * (@sizeOf(HeadConstants) + 6 * assistant.embedding * @sizeOf(f32));
+        return total + self.constants.len * (@sizeOf(HeadConstants) + 6 * self.binding.config.embedding * @sizeOf(f32));
     }
 };
 
@@ -162,6 +168,12 @@ pub const Runtime = struct {
     expert_out: []f32,
     expert_scratch: []f32,
     accumulator: []f64,
+    // The per-layer embedding workspace (E4B), empty otherwise: the current
+    // row's `[layers][w]` inputs, a second row of that size, the gate.
+    per_layer_inputs: []f32,
+    per_layer_scratch: []f32,
+    per_layer_gate: []f32,
+    per_layer_norm: []f32,
     /// The companion draft head, present only when one was bound and asked for.
     draft: ?Head,
     has_draft: bool,
@@ -169,11 +181,11 @@ pub const Runtime = struct {
     pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
         const config = binding.config;
         var layouts: [model.max_layers]session.Layout = undefined;
-        for (binding.active(), layouts[0..config.layer_count]) |layer, *layout| {
+        for (binding.active()[0..config.kv_layers], layouts[0..config.kv_layers]) |layer, *layout| {
             const width = layer.kvWidth();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width } };
         }
-        var state = try session.Session.init(gpa, layouts[0..config.layer_count], capacity, checkpoint, 0);
+        var state = try session.Session.init(gpa, layouts[0..config.kv_layers], capacity, checkpoint, 0);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -199,6 +211,11 @@ pub const Runtime = struct {
         result.row = try a.alloc(f32, @max(@max(config.feed_forward, config.embedding), model.Kind.global.queryWidth()));
         result.expert_scratch = try a.alloc(f32, 2 * experts.feed_forward + experts.feed_forward + config.embedding + @max(config.embedding, experts.feed_forward));
         result.accumulator = try a.alloc(f64, config.embedding);
+        const w = config.per_layer_input;
+        result.per_layer_inputs = try a.alloc(f32, w * config.layer_count);
+        result.per_layer_scratch = try a.alloc(f32, w * config.layer_count);
+        result.per_layer_gate = try a.alloc(f32, w);
+        result.per_layer_norm = if (binding.per_layer) |p| try view.vector(a, p.projection_norm) else &.{};
         result.output_norm = try view.vector(a, binding.output_norm);
         result.rope_factors = try view.vector(a, binding.rope_factors);
         result.constants = try a.alloc(LayerConstants, config.layer_count);
@@ -209,8 +226,9 @@ pub const Runtime = struct {
                 .ffn_norm = try view.vector(a, layer.ffn_norm),
                 .post_ffn_norm = try view.vector(a, layer.post_ffn_norm),
                 .query_norm = try view.vector(a, layer.query_norm),
-                .key_norm = try view.vector(a, layer.key_norm),
+                .key_norm = if (layer.key_norm) |t| try view.vector(a, t) else null,
                 .output_scale = try view.scalar(layer.output_scale, 0),
+                .per_layer_norm = if (layer.per_layer) |p| try view.vector(a, p.post_norm) else null,
                 .experts = if (layer.experts) |e| .{
                     .router_scale = try view.vector(a, e.router_scale),
                     .down_scale = try view.vector(a, e.down_scale),
@@ -220,13 +238,14 @@ pub const Runtime = struct {
                 } else null,
             };
         }
+        result.has_draft = draft and binding.draft != null;
+        result.draft = if (result.has_draft) try Head.init(a, binding.draft.?) else null;
+        // The arena moves only after its last allocation.
         result.gpa = gpa;
         result.storage = storage;
         result.state = state;
         result.view = view;
         result.binding = binding;
-        result.has_draft = draft and binding.draft != null;
-        result.draft = if (result.has_draft) try Head.init(a, binding.draft.?) else null;
         return result;
     }
 
@@ -262,16 +281,14 @@ pub const Runtime = struct {
         try self.view.row(self.binding.token_embedding, token, self.x);
         const embedding_scale = self.binding.config.embeddingScale();
         for (self.x) |*x| x.* *= embedding_scale;
+        if (self.binding.per_layer != null) try self.perLayerInputs(token, self.x, self.per_layer_inputs);
         for (self.binding.active(), self.constants, 0..) |layer, constants, il| {
             try norm(self.x, self.normalized, constants.attention_norm);
             try self.attention(layer, constants, il);
             try norm(self.projected, self.projected, constants.post_attention_norm);
             for (self.x, self.projected) |*x, contribution| x.* += contribution;
             try self.feedForward(layer, constants);
-            for (self.x, self.projected) |*x, contribution| {
-                x.* = (x.* + contribution) * constants.output_scale;
-                if (!std.math.isFinite(x.*)) return error.NonFiniteResult;
-            }
+            try self.finishLayer(layer, constants, il, self.per_layer_inputs);
             if (observer) |o| {
                 if (o.check) |check| try check(o.context);
                 if (o.layer) |report| try report(o.context, il, self.x);
@@ -289,6 +306,52 @@ pub const Runtime = struct {
             }
         }
         try self.state.commit();
+    }
+
+    /// The per-layer embedding inputs of one row (`out`, `[layers][w]`):
+    /// `(norm_w(P · x0 / √width) + E_pl[token] · √w) / √2`, with `x0` the
+    /// row's scaled embedding (an image row's projector output) and `token`
+    /// the row's id (the padding id 0 for an image row), the reference's
+    /// `project_per_layer_inputs`.
+    fn perLayerInputs(self: *Runtime, token: u32, x0: []const f32, out: []f32) !void {
+        const ple = self.binding.per_layer orelse return error.InvalidShape;
+        const config = self.binding.config;
+        const w = config.per_layer_input;
+        try self.mm(ple.model_projection, x0, out);
+        const inverse_root: f32 = 1.0 / config.embeddingScale();
+        for (out) |*v| v.* *= inverse_root;
+        for (0..config.layer_count) |l| {
+            const slice = out[l * w ..][0..w];
+            try norm(slice, slice, self.per_layer_norm);
+        }
+        try self.view.row(ple.token_embedding, token, self.per_layer_scratch);
+        const selected_scale: f32 = @sqrt(@as(f32, @floatFromInt(w)));
+        const input_scale: f32 = 1.0 / @sqrt(2.0);
+        for (out, self.per_layer_scratch) |*v, e| v.* = (v.* + e * selected_scale) * input_scale;
+    }
+
+    /// Adds the FFN output in `projected` to `x`, then (E4B) the per-layer
+    /// embedding term `norm(proj · (gelu(gate · x) ⊙ inputs[il]))`, then
+    /// applies the layer's output scale. `inputs` is the row's
+    /// `perLayerInputs`.
+    fn finishLayer(self: *Runtime, layer: model.Layer, constants: LayerConstants, il: usize, inputs: []const f32) !void {
+        const block = layer.per_layer orelse {
+            for (self.x, self.projected) |*x, contribution| {
+                x.* = (x.* + contribution) * constants.output_scale;
+                if (!std.math.isFinite(x.*)) return error.NonFiniteResult;
+            }
+            return;
+        };
+        for (self.x, self.projected) |*x, contribution| x.* += contribution;
+        const w = self.binding.config.per_layer_input;
+        try self.mm(block.gate, self.x, self.per_layer_gate);
+        for (self.per_layer_gate, inputs[il * w ..][0..w]) |*g, e| g.* = cpu.gelu(g.*) * e;
+        try self.mm(block.projection, self.per_layer_gate, self.projected);
+        try norm(self.projected, self.projected, constants.per_layer_norm orelse return error.InvalidShape);
+        for (self.x, self.projected) |*x, contribution| {
+            x.* = (x.* + contribution) * constants.output_scale;
+            if (!std.math.isFinite(x.*)) return error.NonFiniteResult;
+        }
     }
 
     /// The feed-forward block over the residual `x` (the attention output
@@ -330,18 +393,12 @@ pub const Runtime = struct {
         const position = self.state.position;
         const q = self.q[0..layer.queryWidth()];
         try self.project(layer, constants, il, self.normalized, position, q);
-        try self.attend(layer, il, q, firstVisible(layer.kind, position), position + 1);
-    }
-
-    /// Sliding layers attend to the last `window` positions including the
-    /// current one; the visible rows are a contiguous suffix of the cache.
-    fn firstVisible(kind: model.Kind, position: usize) usize {
-        return if (kind == .sliding and position + 1 > model.window) position + 1 - model.window else 0;
+        try self.attend(layer, il, q, self.binding.config.firstVisible(layer.kind, position), position + 1);
     }
 
     /// One row's projections at cache row `position`: its query (normed and
-    /// rotated) into `q`, its key and value normed, rotated, and written to
-    /// the layer's cache row.
+    /// rotated) into `q`, and on a cache-owning layer its key and value
+    /// normed, rotated, and written to the layer's cache row.
     fn project(self: *Runtime, layer: model.Layer, constants: LayerConstants, il: usize, input: []const f32, position: usize, q: []f32) !void {
         const kind = layer.kind;
         const hd = layer.headSize();
@@ -355,23 +412,26 @@ pub const Runtime = struct {
             .factors = if (kind == .global) self.rope_factors else null,
         };
         try self.mm(layer.query, input, q);
-        try self.mm(layer.key, input, k);
-        // Global layers have no value projection: V is the raw key projection,
-        // taken before the key norm and RoPE.
-        if (layer.value) |value| try self.mm(value, input, v) else @memcpy(v, k);
-        for (0..model.heads) |h| {
+        for (0..layer.heads) |h| {
             const head = q[h * hd ..][0..hd];
             try norm(head, head, constants.query_norm);
             try cpu.rope.apply(head, head, rope);
         }
+        // A shared layer reads an earlier layer's rows and writes none.
+        const key_tensor = layer.key orelse return;
+        const key_norm = constants.key_norm orelse return error.InvalidShape;
+        try self.mm(key_tensor, input, k);
+        // Without a value projection V is the raw key projection, taken
+        // before the key norm and RoPE.
+        if (layer.value) |value| try self.mm(value, input, v) else @memcpy(v, k);
         for (0..kv_heads) |h| {
             const key = k[h * hd ..][0..hd];
-            try norm(key, key, constants.key_norm);
+            try norm(key, key, key_norm);
             try cpu.rope.apply(key, key, rope);
             const value = v[h * hd ..][0..hd];
             try cpu.rmsNorm(value, value, model.rms_epsilon);
         }
-        const cache = self.state.layers[il].attention;
+        const cache = self.state.layers[self.binding.config.kvSource(il)].attention;
         // The reference cache is F32 by decision: the views assert it.
         @memcpy(cache.keys.floats(position, 1), k);
         @memcpy(cache.values.floats(position, 1), v);
@@ -382,10 +442,10 @@ pub const Runtime = struct {
     fn attend(self: *Runtime, layer: model.Layer, il: usize, q: []const f32, first: usize, last: usize) !void {
         const hd = layer.headSize();
         const visible = last - first;
-        const cache = self.state.layers[il].attention;
+        const cache = self.state.layers[self.binding.config.kvSource(il)].attention;
         const out = self.mixed_out[0..layer.queryWidth()];
         try cpu.attention.apply(.{
-            .query_heads = model.heads,
+            .query_heads = layer.heads,
             .kv_heads = layer.kv_heads,
             .key_width = hd,
             .value_width = hd,
@@ -430,7 +490,8 @@ pub const Runtime = struct {
     /// position, layer by layer: every row projects and writes its cache
     /// row, then each row attends over `[first, span end)` on a sliding
     /// layer (the span is bidirectional there, the reference's
-    /// `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`) and over `[0, row]` on a global one.
+    /// `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`, unless `bidirectional_images` is
+    /// off) and over `[0, row]` on a global one.
     /// Cache row, rotary position, and visible bound are the row's position.
     fn prefillSpan(self: *Runtime, rows: []const f32, logits: ?[]f32, observer: ?Observer) !void {
         const width = self.binding.config.embedding;
@@ -442,6 +503,12 @@ pub const Runtime = struct {
         defer self.gpa.free(xs);
         const qs = try self.gpa.alloc(f32, count * q_stride);
         defer self.gpa.free(qs);
+        // Each row's per-layer inputs, from its unscaled projector row and the
+        // padding token's per-layer embedding (the reference's multimodal path).
+        const pl_width = self.per_layer_inputs.len;
+        const pl_rows = try self.gpa.alloc(f32, count * pl_width);
+        defer self.gpa.free(pl_rows);
+        if (pl_width != 0) for (0..count) |r| try self.perLayerInputs(0, xs[r * width ..][0..width], pl_rows[r * pl_width ..][0..pl_width]);
         try self.state.beginChunk(count);
         errdefer self.state.fail();
         const start = self.state.position;
@@ -453,17 +520,14 @@ pub const Runtime = struct {
             }
             for (0..count) |r| {
                 const position = start + r;
-                const last = if (layer.kind == .sliding) start + count else position + 1;
-                try self.attend(layer, il, qs[r * q_stride ..][0..qw], firstVisible(layer.kind, position), last);
+                const last = if (layer.kind == .sliding and self.binding.config.bidirectional_images) start + count else position + 1;
+                try self.attend(layer, il, qs[r * q_stride ..][0..qw], self.binding.config.firstVisible(layer.kind, position), last);
                 const x = xs[r * width ..][0..width];
                 @memcpy(self.x, x);
                 try norm(self.projected, self.projected, constants.post_attention_norm);
                 for (self.x, self.projected) |*v, contribution| v.* += contribution;
                 try self.feedForward(layer, constants);
-                for (self.x, self.projected) |*v, contribution| {
-                    v.* = (v.* + contribution) * constants.output_scale;
-                    if (!std.math.isFinite(v.*)) return error.NonFiniteResult;
-                }
+                try self.finishLayer(layer, constants, il, pl_rows[r * pl_width ..][0..pl_width]);
                 @memcpy(x, self.x);
             }
             if (observer) |o| if (o.check) |check| try check(o.context);
@@ -495,11 +559,13 @@ pub const Runtime = struct {
 
     // --- the draft head (MODL-19) --------------------------------------
 
-    /// The target cache layer a head block reads: the target's last sliding
-    /// layer for a sliding block, its last (global) layer otherwise.
+    /// The target cache a head block reads: that of the target's last
+    /// sliding layer for a sliding block, its last (global) layer otherwise,
+    /// through the target's own sharing (`kvSource`).
     fn sourceLayer(self: *const Runtime, kind: assistant.Kind) usize {
-        const n = self.binding.config.layer_count;
-        return if (kind == .sliding) n - 2 else n - 1;
+        const config = self.binding.config;
+        const n = config.layer_count;
+        return config.kvSource(if (kind == .sliding) n - 2 else n - 1);
     }
 
     /// One proposed position: pair `token` with `head.pending_h`, project, run
@@ -561,7 +627,7 @@ pub const Runtime = struct {
             .factors = if (kind == .global) head.rope_factors else null,
         };
         try self.headMm(head, layer.query, head.normalized, q);
-        for (0..assistant.heads) |h| {
+        for (0..layer.heads) |h| {
             const channel = q[h * hd ..][0..hd];
             try norm(channel, channel, constants.query_norm);
             try cpu.rope.apply(channel, channel, rope);
@@ -571,12 +637,13 @@ pub const Runtime = struct {
         // `query − key >= window`, and the proposal's own row does not exist);
         // a global block sees every committed row.
         const cache = self.state.layers[self.sourceLayer(kind)].attention;
-        const first = if (kind == .sliding and position >= model.window - 1) position - (model.window - 1) else 0;
+        const window = head.binding.config.window;
+        const first = if (kind == .sliding and position >= window - 1) position - (window - 1) else 0;
         const visible = position - first;
         if (visible == 0) return error.EmptySupport;
         const out = head.mixed[0..layer.queryWidth()];
         try cpu.attention.apply(.{
-            .query_heads = assistant.heads,
+            .query_heads = layer.heads,
             .kv_heads = layer.kv_heads,
             .key_width = hd,
             .value_width = hd,
@@ -716,16 +783,18 @@ fn emptyBinding(config: *const model.Config, tensor: *const Tensor, scalar: *con
     binding.token_embedding = tensor;
     binding.output_norm = tensor;
     binding.rope_factors = tensor;
+    binding.per_layer = null;
     for (binding.layers[0..config.layer_count], 0..) |*layer, i| {
         const kind = model.kindOf(i);
-        layer.* = .{ .kind = kind, .kv_heads = model.kvHeadsOf(config, kind), .attention_norm = tensor, .post_attention_norm = tensor, .ffn_norm = tensor, .post_ffn_norm = tensor, .query = tensor, .key = tensor, .value = if (kind == .sliding) tensor else null, .output = tensor, .query_norm = tensor, .key_norm = tensor, .ffn_gate = tensor, .ffn_up = tensor, .ffn_down = tensor, .output_scale = scalar, .experts = if (config.experts != null) .{ .router = tensor, .router_scale = tensor, .gate_up = tensor, .down = tensor, .down_scale = tensor, .post_ffn_norm_1 = tensor, .pre_ffn_norm_2 = tensor, .post_ffn_norm_2 = tensor } else null };
+        const owns = i < config.kv_layers;
+        layer.* = .{ .kind = kind, .heads = config.heads, .kv_heads = model.kvHeadsOf(config, kind), .attention_norm = tensor, .post_attention_norm = tensor, .ffn_norm = tensor, .post_ffn_norm = tensor, .query = tensor, .key = if (owns) tensor else null, .value = if (owns and kind == .sliding) tensor else null, .output = tensor, .query_norm = tensor, .key_norm = if (owns) tensor else null, .ffn_gate = tensor, .ffn_up = tensor, .ffn_down = tensor, .output_scale = scalar, .experts = if (config.experts != null) .{ .router = tensor, .router_scale = tensor, .gate_up = tensor, .down = tensor, .down_scale = tensor, .post_ffn_norm_1 = tensor, .pre_ffn_norm_2 = tensor, .post_ffn_norm_2 = tensor } else null, .per_layer = null };
     }
     binding.summary = .{ .profile = config.profile, .decoder_layers = @intCast(config.layer_count), .layer_kinds = &.{}, .text_tensors = 0, .auxiliary_tensors = 0, .text_tensor_bytes = 0, .auxiliary_tensor_bytes = 0 };
     return binding;
 }
 
 test "runtime workspace cleanup and invalid steps preserve session admission" {
-    inline for (.{ &model.config_12b, &model.config_26b_a4b }) |config| {
+    inline for (.{ &model.config_12b, &model.config_26b_a4b, &model.config_e4b }) |config| {
         try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
             fn check(alloc: std.mem.Allocator, cfg: *const model.Config) !void {
                 const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
@@ -750,20 +819,22 @@ test "session layouts follow the layer kinds and the configuration's KV heads" {
     // Not runnable without weights; the layout is checked through the
     // session's byte size. 12B: 40 sliding layers of 2 × 2048 F32 rows and
     // 8 global layers of 2 × 512 per position; 26B-A4B: 25 × 2 × 2048 and
-    // 5 global layers of 2 × 1024 (two KV heads of 512).
+    // 5 global layers of 2 × 1024 (two KV heads of 512); E4B: only its 24
+    // cache-owning layers, 20 × 2 × 512 and 4 × 2 × 1024.
     const cases = [_]struct { config: *const model.Config, per_position: usize }{
         .{ .config = &model.config_12b, .per_position = 40 * 2 * 2048 * 4 + 8 * 2 * 512 * 4 },
         .{ .config = &model.config_26b_a4b, .per_position = 25 * 2 * 2048 * 4 + 5 * 2 * 1024 * 4 },
+        .{ .config = &model.config_e4b, .per_position = 20 * 2 * 512 * 4 + 4 * 2 * 1024 * 4 },
     };
     for (cases) |case| {
         var layouts: [model.max_layers]session.Layout = undefined;
-        for (layouts[0..case.config.layer_count], 0..) |*layout, i| {
+        for (layouts[0..case.config.kv_layers], 0..) |*layout, i| {
             const width = model.kvHeadsOf(case.config, model.kindOf(i)) * model.kindOf(i).headSize();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width } };
         }
-        var state = try session.Session.init(std.testing.allocator, layouts[0..case.config.layer_count], 4, false, 0);
+        var state = try session.Session.init(std.testing.allocator, layouts[0..case.config.kv_layers], 4, false, 0);
         defer state.deinit();
         try std.testing.expect(state.bytes() >= case.per_position * 4);
-        try std.testing.expect(state.bytes() < case.per_position * 4 + case.config.layer_count * 2 * 16);
+        try std.testing.expect(state.bytes() < case.per_position * 4 + case.config.kv_layers * 2 * 16);
     }
 }

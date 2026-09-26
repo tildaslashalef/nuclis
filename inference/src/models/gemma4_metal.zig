@@ -1,5 +1,5 @@
 //! GPU-resident execution of the pinned Gemma 4 text schedules, the dense
-//! 12B and the 26B-A4B mixture of experts. One command buffer per token
+//! 12B, the 26B-A4B mixture of experts, and the E4B. One command buffer per token
 //! (`step`) or per prompt chunk (`prefill`): the CPU supplies token ids and
 //! reads back logits, a greedy token, or a partial top-k; every activation,
 //! norm, gate, routing decision, and cache write stays on the GPU. The
@@ -14,9 +14,11 @@
 //! scale as scalar epilogues (`scale`, `addScale`), the final logit soft-cap
 //! (`softcap`), RoPE tables with the checkpoint's frequency factors, the
 //! sliding window (a cache-row slice on decode, a `window` mask on prefill
-//! chunks), the wide attention geometry of the global layers (16 query heads
-//! of 512 channels over one or two KV heads: the decode kernel's wide
-//! instantiation, the chunk kernel's value-column splits), and on the expert
+//! chunks), the wide attention geometry of the global layers (up to 16 query
+//! heads of 512 channels over one or two KV heads: the decode kernel's wide
+//! instantiation, the chunk kernel's value-column splits), on the E4B the
+//! per-layer embedding (existing matvec, norm, and GELU-pair kernels) and
+//! shared layers reading an earlier layer's cache, and on the expert
 //! configuration the gathered kernels (`route`, `matvecExperts`, and for
 //! chunks `expertLists` + `matmulExperts`; docs/reference/metal-backend.md
 //! § Gathered expert kernels). Every expert matrix is wrapped resident; a
@@ -25,10 +27,10 @@
 //! Ownership: the plan borrows the mapped weights and the `Backend`; it owns
 //! the session and the GPU buffers it creates. Session memory is wrapped once
 //! as a shared buffer, so `reset()` is a CPU memset that is only valid after
-//! `commit()` — which the synchronous backend guarantees. Every attention
-//! cache is allocated for the full capacity, sliding layers included (the
-//! reference does the same); a ring layout for the windowed layers is a
-//! session-layout change of its own.
+//! `commit()` — which the synchronous backend guarantees. Every cache-owning
+//! layer's attention cache is allocated for the full capacity, sliding layers
+//! included (the reference does the same); a ring layout for the windowed
+//! layers is a session-layout change of its own.
 const std = @import("std");
 const model = @import("gemma4.zig");
 const assistant = @import("gemma4_assistant.zig");
@@ -43,10 +45,9 @@ const Buffer = metal.Buffer;
 pub const Observer = @import("../runtime/observer.zig").Observer;
 
 pub const vocabulary = model.vocabulary;
-const heads = model.heads;
 /// Rows a verify batch may hold: the adapter's proposal bound plus the seed.
 pub const max_verify_rows = model.max_draft_proposals + 1;
-/// The widest per-layer geometry; sliding layers use a prefix of each buffer.
+/// The widest per-layer geometry; narrower layers use a prefix of each buffer.
 const q_width = model.Kind.global.queryWidth(); // 16 × 512
 const kv_width = model.max_kv_width; // 8 × 256
 const head_max = model.Kind.global.headSize();
@@ -67,10 +68,13 @@ const LayerConstants = struct {
     ffn_norm: Buffer,
     post_ffn_norm: Buffer,
     query_norm: Buffer,
-    key_norm: Buffer,
+    /// Absent on a layer that reads another layer's cache.
+    key_norm: ?Buffer,
     /// The scalar multiplying the layer's whole new residual stream.
     output_scale: f32,
     experts: ?ExpertConstants,
+    /// The per-layer embedding block's output norm (E4B).
+    per_layer_norm: ?Buffer,
 };
 
 /// GPU workspace of the expert block: one token's `k` slots for `step`, and
@@ -107,7 +111,8 @@ const HeadConstants = struct {
 
 /// The companion `gemma4-assistant` head's device workspace. It owns no
 /// attention layout: every block reads the target plan's layer-46 (sliding)
-/// and layer-47 (global) cache slices, and its only state is `pending_h`, the
+/// and layer-47 (global) cache slices (the E4B's shared layers resolve to
+/// layers 22 and 23), and its only state is `pending_h`, the
 /// target hidden of the last committed token. The rope tables are the target
 /// plan's (same bases, widths, and frequency factors; `bindDraft` refuses a
 /// mismatch).
@@ -152,19 +157,20 @@ const Head = struct {
         const b = plan.backend;
         result.output_norm = try Head.constant(plan, binding.view, binding.output_norm);
         result.row = try b.create(out * 4);
-        result.x = try b.create(assistant.embedding * 4);
-        result.normalized = try b.create(assistant.embedding * 4);
+        const width = binding.config.embedding;
+        result.x = try b.create(width * 4);
+        result.normalized = try b.create(width * 4);
         result.concat = try b.create(2 * out * 4);
-        result.projected = try b.create(assistant.embedding * 4);
+        result.projected = try b.create(width * 4);
         result.q = try b.create(assistant.Kind.global.queryWidth() * 4);
         result.mixed = try b.create(assistant.Kind.global.queryWidth() * 4);
-        result.gate = try b.create(assistant.feed_forward * 4);
-        result.up = try b.create(assistant.feed_forward * 4);
+        result.gate = try b.create(binding.config.feed_forward * 4);
+        result.up = try b.create(binding.config.feed_forward * 4);
         result.logits = try b.create(vocabulary * 4);
         result.h_next = try b.create(out * 4);
         result.chain = try b.create(out * 4);
         result.pending_h = try b.create(out * 4);
-        result.partials = try b.create(metal.Backend.attentionDecodePartials(assistant.heads, assistant.Kind.global.headSize()) * 4);
+        result.partials = try b.create(metal.Backend.attentionDecodePartials(assistant.max_heads, assistant.Kind.global.headSize()) * 4);
         result.topk = try b.topkBuffers(1);
         result.argmax_values = try b.create(metal.Backend.argmax_partials * 4);
         result.argmax_indices = try b.create(metal.Backend.argmax_partials * 4);
@@ -272,6 +278,17 @@ pub const Plan = struct {
     /// Half copy of `q_c` for the F16 chunk attention (its operands share one type).
     q_c_h: Buffer, // padded × q_width halves
     mixed_out_c: Buffer, // padded × q_width
+    /// The per-layer embedding workspace (E4B; one float otherwise): each
+    /// row's `[layers][w]` inputs, the selected embedding rows, the gate
+    /// and its GELU product. `pl`, `pl_sel`, `pl_gate` serve `step`.
+    pl: Buffer,
+    pl_sel: Buffer,
+    pl_gate: Buffer,
+    pl_norm: Buffer,
+    pl_c: Buffer,
+    pl_sel_c: Buffer,
+    pl_gate_c: Buffer,
+    pl_mixed_c: Buffer,
     /// Present on the expert configuration only.
     experts: ?ExpertBuffers,
     /// A verify batch's output head over every row: `max_verify_rows`
@@ -312,11 +329,11 @@ pub const Plan = struct {
         const hidden = config.embedding;
         const ffn = config.feed_forward;
         var layouts: [model.max_layers]session.Layout = undefined;
-        for (binding.active(), layouts[0..config.layer_count]) |layer, *layout| {
+        for (binding.active()[0..config.kv_layers], layouts[0..config.kv_layers]) |layer, *layout| {
             const width = layer.kvWidth();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width, .precision = kv } };
         }
-        var state = try session.Session.init(alloc, layouts[0..config.layer_count], capacity, checkpoint, 0);
+        var state = try session.Session.init(alloc, layouts[0..config.kv_layers], capacity, checkpoint, 0);
         errdefer state.deinit();
         const constants = try alloc.alloc(LayerConstants, config.layer_count);
         errdefer alloc.free(constants);
@@ -335,8 +352,9 @@ pub const Plan = struct {
                 .ffn_norm = try self.constant(layer.ffn_norm),
                 .post_ffn_norm = try self.constant(layer.post_ffn_norm),
                 .query_norm = try self.constant(layer.query_norm),
-                .key_norm = try self.constant(layer.key_norm),
+                .key_norm = if (layer.key_norm) |t| try self.constant(t) else null,
                 .output_scale = try view.scalar(layer.output_scale, 0),
+                .per_layer_norm = if (layer.per_layer) |p| try self.constant(p.post_norm) else null,
                 .experts = if (layer.experts) |e| .{
                     .router_scale = try self.constant(e.router_scale),
                     .down_scale = try self.constant(e.down_scale),
@@ -367,7 +385,16 @@ pub const Plan = struct {
         self.k = try backend.create(kv_width * 4);
         self.v = try backend.create(kv_width * 4);
         self.mixed_out = try backend.create(q_width * 4);
-        self.partials = try backend.create(metal.Backend.attentionDecodePartials(heads, head_max) * 4);
+        self.partials = try backend.create(metal.Backend.attentionDecodePartials(model.max_heads, head_max) * 4);
+        const pl_width = config.per_layer_input * config.layer_count;
+        self.pl = try backend.create(@max(pl_width, 1) * 4);
+        self.pl_sel = try backend.create(@max(pl_width, 1) * 4);
+        self.pl_gate = try backend.create(@max(config.per_layer_input, 1) * 4);
+        if (binding.per_layer) |ple| {
+            self.pl_norm = try self.constant(ple.projection_norm);
+        } else {
+            self.pl_norm = try backend.create(4);
+        }
         self.logits = try backend.create(vocabulary * 4);
         self.argmax_values = try backend.create(metal.Backend.argmax_partials * 4);
         self.argmax_indices = try backend.create(metal.Backend.argmax_partials * 4);
@@ -404,8 +431,8 @@ pub const Plan = struct {
     }
     /// The `_c` buffers for chunks of up to `rows` rows (the expert block's
     /// chunk buffers are `expertBuffers`').
-    const ChunkBuffers = struct { padded: usize, x_c: Buffer, normalized_c: Buffer, projected_c: Buffer, gate_c: Buffer, up_c: Buffer, q_c: Buffer, k_c: Buffer, v_c: Buffer, q_c_h: Buffer, mixed_out_c: Buffer };
-    const chunk_fields = .{ "x_c", "normalized_c", "projected_c", "gate_c", "up_c", "q_c", "k_c", "v_c", "q_c_h", "mixed_out_c" };
+    const ChunkBuffers = struct { padded: usize, x_c: Buffer, normalized_c: Buffer, projected_c: Buffer, gate_c: Buffer, up_c: Buffer, q_c: Buffer, k_c: Buffer, v_c: Buffer, q_c_h: Buffer, mixed_out_c: Buffer, pl_c: Buffer, pl_sel_c: Buffer, pl_gate_c: Buffer, pl_mixed_c: Buffer };
+    const chunk_fields = .{ "x_c", "normalized_c", "projected_c", "gate_c", "up_c", "q_c", "k_c", "v_c", "q_c_h", "mixed_out_c", "pl_c", "pl_sel_c", "pl_gate_c", "pl_mixed_c" };
 
     /// Creates a full set, releasing what it made if any creation fails.
     fn createChunkBuffers(self: *Plan, rows: usize) !ChunkBuffers {
@@ -413,7 +440,10 @@ pub const Plan = struct {
         const hidden = self.binding.config.embedding;
         const ffn = self.binding.config.feed_forward;
         const n = metal.Backend.matmulPadded(rows);
-        const sizes = [_]usize{ n * hidden * 4, n * hidden * 4, n * hidden * 4, n * ffn * 4, n * ffn * 4, n * q_width * 4, n * kv_width * 4, n * kv_width * 4, n * q_width * 2, n * q_width * 4 };
+        // The per-layer embedding buffers are one float on configurations without it.
+        const w = self.binding.config.per_layer_input;
+        const pl = @max(n * w * self.binding.config.layer_count, 1);
+        const sizes = [_]usize{ n * hidden * 4, n * hidden * 4, n * hidden * 4, n * ffn * 4, n * ffn * 4, n * q_width * 4, n * kv_width * 4, n * kv_width * 4, n * q_width * 2, n * q_width * 4, pl * 4, pl * 4, @max(n * w, 1) * 4, @max(n * w, 1) * 4 };
         var made: [sizes.len]Buffer = undefined;
         var count: usize = 0;
         errdefer for (made[0..count]) |buffer| b.release(buffer) catch {};
@@ -552,11 +582,9 @@ pub const Plan = struct {
     fn ropeOf(self: *Plan, kind: model.Kind) struct { table: Buffer, dims: usize } {
         return .{ .table = if (kind == .global) self.rope_global else self.rope_sliding, .dims = kind.headSize() };
     }
-    /// First visible cache row for the token at `position`: sliding layers
-    /// see the last `window` positions including their own (the reference
-    /// reads them as a contiguous suffix of the cache rows).
-    fn firstVisible(kind: model.Kind, position: usize) usize {
-        return if (kind == .sliding and position + 1 > model.window) position + 1 - model.window else 0;
+    /// First visible cache row for the token at `position` (`Config.firstVisible`).
+    fn firstVisible(self: *const Plan, kind: model.Kind, position: usize) usize {
+        return self.binding.config.firstVisible(kind, position);
     }
 
     /// Merge only shapes the backend can encode as whole threadgroups. A
@@ -602,13 +630,23 @@ pub const Plan = struct {
         const hidden = self.binding.config.embedding;
         try b.embed(embedding.buffer, embedding.matrix, token, self.x);
         try b.scale(self.x, hidden, self.binding.config.embeddingScale());
+        if (self.binding.per_layer != null) try self.perLayerInputs(&.{token}, self.x, self.pl, self.pl_sel, 1);
         const norm: metal.Backend.Norm = .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden };
         for (self.binding.active(), self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, norm);
             try self.attention(layer, c, il);
             try b.rmsNormAdd(self.x, self.projected, c.post_attention_norm, 1.0, norm);
             try self.feedForward(layer, c);
-            try b.rmsNormAdd(self.x, self.projected, c.post_ffn_norm, c.output_scale, norm);
+            if (layer.per_layer) |block| {
+                const w = self.binding.config.per_layer_input;
+                try b.rmsNormAdd(self.x, self.projected, c.post_ffn_norm, 1.0, norm);
+                try self.mm(block.gate, self.x, self.pl_gate);
+                try b.geluMul(self.pl_gate, self.pl.slice(il * w * 4, w * 4), w);
+                try self.mm(block.projection, self.pl_gate, self.projected);
+                try b.rmsNormAdd(self.x, self.projected, c.per_layer_norm orelse return error.InvalidShape, c.output_scale, norm);
+            } else {
+                try b.rmsNormAdd(self.x, self.projected, c.post_ffn_norm, c.output_scale, norm);
+            }
             if (observer) |o| {
                 if (o.check) |check| try check(o.context);
                 if (o.layer) |report| {
@@ -626,6 +664,27 @@ pub const Plan = struct {
         try b.commit();
         try self.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commit();
+    }
+
+    /// Records the per-layer embedding inputs of `count` rows into `out`
+    /// (`count × [layers][w]`): `(norm_w(P · x0 / √width) + E_pl[id] · √w) / √2`
+    /// with `x0` the rows' scaled embeddings (unscaled projector rows on an
+    /// image span) and `ids` one id per row (the padding id 0 on an image
+    /// span). `selected` is scratch of the same size.
+    fn perLayerInputs(self: *Plan, ids: []const u32, x0: Buffer, out: Buffer, selected: Buffer, count: usize) !void {
+        const ple = self.binding.per_layer orelse return error.InvalidShape;
+        const b = self.backend;
+        const config = self.binding.config;
+        const w = config.per_layer_input;
+        const row = w * config.layer_count;
+        const hidden = config.embedding;
+        if (count == 1) try self.mm(ple.model_projection, x0, out) else try self.mmRows(ple.model_projection, x0, hidden, out, row, count);
+        try b.scale(out, count * row, 1.0 / config.embeddingScale());
+        try b.rmsNorm(out, self.pl_norm, out, .{ .rows = count * config.layer_count, .width = w, .in_stride = w, .out_stride = w });
+        const table = try self.weight(ple.token_embedding);
+        for (0..count) |t| try b.embed(table.buffer, table.matrix, if (ids.len == 1) ids[0] else ids[t], selected.slice(t * row * 4, row * 4));
+        try b.scale(selected, count * row, @sqrt(@as(f32, @floatFromInt(w))));
+        try b.addScale(out, selected, count * row, 1.0 / @sqrt(2.0));
     }
 
     /// Uploads the history words to the device when the set changed since the
@@ -774,33 +833,38 @@ pub const Plan = struct {
         const kv_heads = layer.kv_heads;
         const qw = layer.queryWidth();
         const kvw = layer.kvWidth();
-        const cache = self.state.layers[il].attention;
+        const cache = self.state.layers[self.binding.config.kvSource(il)].attention;
         const position = self.state.position;
         const precision = cache.keys.precision;
-        const k_slot = self.stateSlice(cache.keys.range(position, 1));
-        const v_slot = self.stateSlice(cache.values.range(position, 1));
-        // An F32 cache takes the projections directly; an F16 cache takes them
-        // through F32 scratch rows and one pack dispatch.
-        const k_row = if (precision == .f32) k_slot else self.k.slice(0, kvw * 4);
-        const v_row = if (precision == .f32) v_slot else self.v.slice(0, kvw * 4);
         const q = self.q.slice(0, qw * 4);
-        if (layer.value) |value| {
-            try self.projections(&.{ layer.query, layer.key, value }, &.{ q, k_row, v_row }, .plain);
-        } else {
-            // Global layers have no value projection: V is the raw key
-            // projection, taken before the key norm and RoPE.
-            try self.projections(&.{ layer.query, layer.key }, &.{ q, k_row }, .plain);
-            try b.copy(v_row, k_row, kvw);
-        }
         const rope = self.ropeOf(kind);
-        try b.rmsNormRope(q, c.query_norm, rope.table, q, .{ .rows = heads, .width = hd, .in_stride = hd, .out_stride = hd }, rope.dims, position, .split_half);
-        try b.rmsNormRope(k_row, c.key_norm, rope.table, k_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd }, rope.dims, position, .split_half);
-        try b.rmsNorm(v_row, self.ones, v_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
-        if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = kvw }, .{ .dst = v_slot, .src = v_row, .count = kvw } });
-        const first = firstVisible(kind, position);
+        if (layer.key) |key| {
+            const k_slot = self.stateSlice(cache.keys.range(position, 1));
+            const v_slot = self.stateSlice(cache.values.range(position, 1));
+            // An F32 cache takes the projections directly; an F16 cache takes them
+            // through F32 scratch rows and one pack dispatch.
+            const k_row = if (precision == .f32) k_slot else self.k.slice(0, kvw * 4);
+            const v_row = if (precision == .f32) v_slot else self.v.slice(0, kvw * 4);
+            if (layer.value) |value| {
+                try self.projections(&.{ layer.query, key, value }, &.{ q, k_row, v_row }, .plain);
+            } else {
+                // Without a value projection V is the raw key projection,
+                // taken before the key norm and RoPE.
+                try self.projections(&.{ layer.query, key }, &.{ q, k_row }, .plain);
+                try b.copy(v_row, k_row, kvw);
+            }
+            try b.rmsNormRope(k_row, c.key_norm orelse return error.InvalidShape, rope.table, k_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd }, rope.dims, position, .split_half);
+            try b.rmsNorm(v_row, self.ones, v_row, .{ .rows = kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
+            if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = kvw }, .{ .dst = v_slot, .src = v_row, .count = kvw } });
+        } else {
+            // A shared layer reads the rows its source layer wrote this step.
+            try self.mm(layer.query, self.normalized, q);
+        }
+        try b.rmsNormRope(q, c.query_norm, rope.table, q, .{ .rows = layer.heads, .width = hd, .in_stride = hd, .out_stride = hd }, rope.dims, position, .split_half);
+        const first = self.firstVisible(kind, position);
         const visible = position + 1 - first;
         const out = self.mixed_out.slice(0, qw * 4);
-        try b.attentionDecode(self.stateSlice(cache.keys.range(first, visible)), self.stateSlice(cache.values.range(first, visible)), q, self.partials, out, .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .visible = visible, .scale = 1.0, .precision = precision });
+        try b.attentionDecode(self.stateSlice(cache.keys.range(first, visible)), self.stateSlice(cache.values.range(first, visible)), q, self.partials, out, .{ .query_heads = layer.heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .visible = visible, .scale = 1.0, .precision = precision });
         try self.mm(layer.output, out, self.projected);
     }
 
@@ -928,6 +992,10 @@ pub const Plan = struct {
             for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
             try b.scale(self.x_c, count * hidden, self.binding.config.embeddingScale());
         }
+        const w = self.binding.config.per_layer_input;
+        const pl_row = w * self.binding.config.layer_count;
+        // An image span's rows take the padding token's per-layer embedding.
+        if (self.binding.per_layer != null) try self.perLayerInputs(if (self.image_rows != null) &.{0} else tokens, self.x_c, self.pl_c, self.pl_sel_c, count);
         const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
         for (self.binding.active(), self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x_c, c.attention_norm, self.normalized_c, norm);
@@ -935,6 +1003,13 @@ pub const Plan = struct {
             try b.rmsNorm(self.projected_c, c.post_attention_norm, self.projected_c, norm);
             try b.add(self.x_c, self.projected_c, count * hidden);
             try self.feedForwardChunk(layer, c, count);
+            if (layer.per_layer) |block| {
+                try b.add(self.x_c, self.projected_c, count * hidden);
+                try self.mmRows(block.gate, self.x_c, hidden, self.pl_gate_c, w, count);
+                try b.geluMulRows(self.pl_gate_c, self.pl_c.slice(il * w * 4, self.pl_c.len - il * w * 4), self.pl_mixed_c, w, count, w, pl_row, w);
+                try self.mmRows(block.projection, self.pl_mixed_c, w, self.projected_c, hidden, count);
+                try b.rmsNorm(self.projected_c, c.per_layer_norm orelse return error.InvalidShape, self.projected_c, norm);
+            }
             try b.addScale(self.x_c, self.projected_c, count * hidden, c.output_scale);
             if (observer) |o| if (o.check) |check| try check(o.context);
         }
@@ -1090,53 +1165,61 @@ pub const Plan = struct {
         const qw = layer.queryWidth();
         const kvw = layer.kvWidth();
         const hidden = self.binding.config.embedding;
-        const cache = self.state.layers[il].attention;
+        const cache = self.state.layers[self.binding.config.kvSource(il)].attention;
         const position = self.state.position;
-        try self.mmRows(layer.query, self.normalized_c, hidden, self.q_c, qw, count);
-        try self.mmRows(layer.key, self.normalized_c, hidden, self.k_c, kvw, count);
-        if (layer.value) |value| try self.mmRows(value, self.normalized_c, hidden, self.v_c, kvw, count) else try b.copy(self.v_c, self.k_c, count * kvw);
+        const heads = layer.heads;
         const rope = self.ropeOf(kind);
+        try self.mmRows(layer.query, self.normalized_c, hidden, self.q_c, qw, count);
         try b.rmsNorm(self.q_c, c.query_norm, self.q_c, .{ .rows = count * heads, .width = hd, .in_stride = hd, .out_stride = hd });
         try b.ropeRows(self.q_c, rope.table, heads, hd, rope.dims, position, count, qw, .split_half);
-        try b.rmsNorm(self.k_c, c.key_norm, self.k_c, .{ .rows = count * kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
-        try b.ropeRows(self.k_c, rope.table, kv_heads, hd, rope.dims, position, count, kvw, .split_half);
-        try b.rmsNorm(self.v_c, self.ones, self.v_c, .{ .rows = count * kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
-        // The chunk's keys and values are contiguous in the cache; padding rows never leave the chunk buffers.
         const precision = cache.keys.precision;
-        const k_rows = self.stateSlice(cache.keys.range(position, count));
-        const v_rows = self.stateSlice(cache.values.range(position, count));
+        // A shared layer reads the rows its source layer wrote for this chunk.
+        if (layer.key) |key| {
+            try self.mmRows(key, self.normalized_c, hidden, self.k_c, kvw, count);
+            if (layer.value) |value| try self.mmRows(value, self.normalized_c, hidden, self.v_c, kvw, count) else try b.copy(self.v_c, self.k_c, count * kvw);
+            try b.rmsNorm(self.k_c, c.key_norm orelse return error.InvalidShape, self.k_c, .{ .rows = count * kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
+            try b.ropeRows(self.k_c, rope.table, kv_heads, hd, rope.dims, position, count, kvw, .split_half);
+            try b.rmsNorm(self.v_c, self.ones, self.v_c, .{ .rows = count * kv_heads, .width = hd, .in_stride = hd, .out_stride = hd });
+            // The chunk's keys and values are contiguous in the cache; padding rows never leave the chunk buffers.
+            const k_rows = self.stateSlice(cache.keys.range(position, count));
+            const v_rows = self.stateSlice(cache.values.range(position, count));
+            switch (precision) {
+                .f32 => {
+                    try b.copy(k_rows, self.k_c, count * kvw);
+                    try b.copy(v_rows, self.v_c, count * kvw);
+                },
+                .f16 => try b.packHalf(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * kvw }, .{ .dst = v_rows, .src = self.v_c, .count = count * kvw } }),
+            }
+        }
         var queries = self.q_c;
-        switch (precision) {
-            .f32 => {
-                try b.copy(k_rows, self.k_c, count * kvw);
-                try b.copy(v_rows, self.v_c, count * kvw);
-            },
-            .f16 => {
-                try b.packHalf(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * kvw }, .{ .dst = v_rows, .src = self.v_c, .count = count * kvw } });
-                try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * qw }});
-                queries = self.q_c_h;
-            },
+        if (precision == .f16) {
+            try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * qw }});
+            queries = self.q_c_h;
         }
         // One causal tiled dispatch over the whole chunk. The cache is
         // sliced at the earliest key the chunk's first row can see; the
         // window mask hides the rest per row on sliding layers.
-        const first = firstVisible(kind, position);
+        const first = self.firstVisible(kind, position);
         const total = position + count - first;
         // An image span chunk is bidirectional on sliding layers only (the
-        // reference's `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`); rows, rotary
-        // positions, and cache rows are the same positions either way.
-        const span: metal.Backend.Span = if (self.image_rows != null and kind == .sliding) .{ .begin = 0, .end = count } else .{};
-        try b.attentionChunk(self.stateSlice(cache.keys.range(first, total)), self.stateSlice(cache.values.range(first, total)), queries, self.mixed_out_c, .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = precision, .window = if (kind == .sliding) model.window else 0, .span = span });
+        // reference's `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`), and not at all on a
+        // configuration that keeps images causal; rows, rotary positions,
+        // and cache rows are the same positions either way.
+        const bidirectional = self.image_rows != null and kind == .sliding and self.binding.config.bidirectional_images;
+        const span: metal.Backend.Span = if (bidirectional) .{ .begin = 0, .end = count } else .{};
+        try b.attentionChunk(self.stateSlice(cache.keys.range(first, total)), self.stateSlice(cache.values.range(first, total)), queries, self.mixed_out_c, .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = precision, .window = if (kind == .sliding) self.binding.config.window else 0, .span = span });
         try self.mmRows(layer.output, self.mixed_out_c, qw, self.projected_c, hidden, count);
     }
 
     // --- the draft head (MODL-19) --------------------------------------
 
-    /// The target cache layer a head block reads: the target's last sliding
-    /// layer for a sliding block, its last (global) layer otherwise.
+    /// The target cache a head block reads: that of the target's last
+    /// sliding layer for a sliding block, its last (global) layer otherwise,
+    /// through the target's own sharing (`kvSource`).
     fn sourceLayer(self: *const Plan, kind: assistant.Kind) usize {
-        const n = self.binding.config.layer_count;
-        return if (kind == .sliding) n - 2 else n - 1;
+        const config = self.binding.config;
+        const n = config.layer_count;
+        return config.kvSource(if (kind == .sliding) n - 2 else n - 1);
     }
 
     /// One proposed position in one command buffer: the target's scaled
@@ -1158,7 +1241,8 @@ pub const Plan = struct {
         try b.copy(head.concat.slice(0, out * 4), head.row, out);
         try b.copy(head.concat.slice(out * 4, out * 4), h_prev, out);
         try head.mm(b, head.binding.pre_projection, head.concat, head.x);
-        const single: metal.Backend.Norm = .{ .rows = 1, .width = assistant.embedding, .in_stride = assistant.embedding, .out_stride = assistant.embedding };
+        const width = head.binding.config.embedding;
+        const single: metal.Backend.Norm = .{ .rows = 1, .width = width, .in_stride = width, .out_stride = width };
         for (head.binding.layers, head.constants) |layer, c| {
             try b.rmsNorm(head.x, c.attention_norm, head.normalized, single);
             try self.draftAttention(head, layer, c, position);
@@ -1166,7 +1250,7 @@ pub const Plan = struct {
             try b.rmsNorm(head.x, c.ffn_norm, head.normalized, single);
             try head.mm(b, layer.ffn_gate, head.normalized, head.gate);
             try head.mm(b, layer.ffn_up, head.normalized, head.up);
-            try b.geluMul(head.gate, head.up, assistant.feed_forward);
+            try b.geluMul(head.gate, head.up, head.binding.config.feed_forward);
             try head.mm(b, layer.ffn_down, head.gate, head.projected);
             try b.rmsNormAdd(head.x, head.projected, c.post_ffn_norm, c.output_scale, single);
         }
@@ -1214,16 +1298,17 @@ pub const Plan = struct {
         try head.mm(b, layer.query, head.normalized, q);
         const dims = if (kind == .global) assistant.Kind.global.headSize() else assistant.Kind.sliding.headSize();
         const table = if (kind == .global) self.rope_global else self.rope_sliding;
-        try b.rmsNormRope(q, c.query_norm, table, q, .{ .rows = assistant.heads, .width = hd, .in_stride = hd, .out_stride = hd }, dims, position, .split_half);
+        try b.rmsNormRope(q, c.query_norm, table, q, .{ .rows = layer.heads, .width = hd, .in_stride = hd, .out_stride = hd }, dims, position, .split_half);
         // The target's own rows at the proposal position; the proposal's row
         // does not exist, and the reference's sliding mask is `query − key >=
         // window`.
         const cache = self.state.layers[self.sourceLayer(kind)].attention;
-        const first = if (kind == .sliding and position >= model.window - 1) position - (model.window - 1) else 0;
+        const window = head.binding.config.window;
+        const first = if (kind == .sliding and position >= window - 1) position - (window - 1) else 0;
         const visible = position - first;
         if (visible == 0) return error.EmptySupport;
         const out = head.mixed.slice(0, qw * 4);
-        try b.attentionDecode(self.stateSlice(cache.keys.range(first, visible)), self.stateSlice(cache.values.range(first, visible)), q, head.partials, out, .{ .query_heads = assistant.heads, .kv_heads = layer.kv_heads, .key_width = hd, .value_width = hd, .visible = visible, .scale = 1.0, .precision = cache.keys.precision });
+        try b.attentionDecode(self.stateSlice(cache.keys.range(first, visible)), self.stateSlice(cache.values.range(first, visible)), q, head.partials, out, .{ .query_heads = layer.heads, .kv_heads = layer.kv_heads, .key_width = hd, .value_width = hd, .visible = visible, .scale = 1.0, .precision = cache.keys.precision });
         try head.mm(b, layer.output, out, head.projected);
     }
 
@@ -1300,9 +1385,11 @@ pub const Plan = struct {
 };
 
 test "the visible window of a token is a suffix of the cache rows" {
-    try std.testing.expectEqual(@as(usize, 0), Plan.firstVisible(.sliding, 0));
-    try std.testing.expectEqual(@as(usize, 0), Plan.firstVisible(.sliding, model.window - 1));
-    try std.testing.expectEqual(@as(usize, 1), Plan.firstVisible(.sliding, model.window));
-    try std.testing.expectEqual(@as(usize, 5000 + 1 - model.window), Plan.firstVisible(.sliding, 5000));
-    try std.testing.expectEqual(@as(usize, 0), Plan.firstVisible(.global, 5000));
+    const config = &model.config_12b;
+    try std.testing.expectEqual(@as(usize, 0), config.firstVisible(.sliding, 0));
+    try std.testing.expectEqual(@as(usize, 0), config.firstVisible(.sliding, config.window - 1));
+    try std.testing.expectEqual(@as(usize, 1), config.firstVisible(.sliding, config.window));
+    try std.testing.expectEqual(@as(usize, 5000 + 1 - config.window), config.firstVisible(.sliding, 5000));
+    try std.testing.expectEqual(@as(usize, 0), config.firstVisible(.global, 5000));
+    try std.testing.expectEqual(@as(usize, 5000 + 1 - 512), model.config_e4b.firstVisible(.sliding, 5000));
 }

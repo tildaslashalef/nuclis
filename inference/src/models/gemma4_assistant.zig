@@ -4,8 +4,9 @@
 //! read the target's sliding (layer `n_layer − 2`) and global (layer
 //! `n_layer − 1`) key/value caches and write neither; the facts and their
 //! provenance are in docs/reference/speculative-decoding.md § The Gemma 4
-//! assistant heads. Two pinned widths, the 12B's 3840 and the 26B-A4B's
-//! 2816; everything else is shared. The binder is deliberately narrow: a file
+//! assistant heads. Three pinned heads, keyed by their target's width (the
+//! 12B's 3840, the 26B-A4B's 2816, the E4B's 2560); the E4B's is also
+//! narrower inside (`Config`). The binder is deliberately narrow: a file
 //! whose keys differ from the pinned configuration is rejected with
 //! `UnsupportedConfiguration` rather than run with guessed semantics.
 const std = @import("std");
@@ -16,11 +17,11 @@ const Tensor = gguf.Tensor;
 
 pub const architecture = "gemma4-assistant";
 pub const block_count = 4;
-pub const heads = 16;
-pub const embedding = 1024;
-pub const feed_forward = 8192;
+/// The widest head of any pinned configuration; workspaces size by these.
+pub const max_heads = 16;
+pub const max_embedding = 1024;
+pub const max_feed_forward = 8192;
 pub const vocabulary = 262144;
-pub const window = 1024;
 pub const rms_epsilon: f32 = 1e-6;
 
 /// The per-block geometry of one pinned head width.
@@ -29,13 +30,21 @@ pub const Config = struct {
     profile: []const u8,
     /// The target's hidden width (`embedding_length_out`).
     embedding_out: usize,
-    /// The target's global layers' KV heads, mirrored by the head's global block.
+    /// The head's own residual width and FFN width.
+    embedding: usize = 1024,
+    feed_forward: usize = 8192,
+    heads: usize = 16,
+    /// Positions a sliding block's mask admits (the target's window).
+    window: usize = 1024,
+    /// The target's KV heads per layer kind, mirrored by the head's blocks.
+    sliding_kv_heads: usize = 8,
     global_kv_heads: usize,
     context_length: usize,
 };
 pub const config_12b: Config = .{ .profile = "gemma4_assistant_12b", .embedding_out = 3840, .global_kv_heads = 1, .context_length = 262144 };
 pub const config_26b_a4b: Config = .{ .profile = "gemma4_assistant_26b_a4b", .embedding_out = 2816, .global_kv_heads = 2, .context_length = 131072 };
-pub const configs = [_]*const Config{ &config_12b, &config_26b_a4b };
+pub const config_e4b: Config = .{ .profile = "gemma4_assistant_e4b", .embedding_out = 2560, .embedding = 256, .feed_forward = 2048, .heads = 4, .window = 512, .sliding_kv_heads = 2, .global_kv_heads = 2, .context_length = 131072 };
+pub const configs = [_]*const Config{ &config_12b, &config_26b_a4b, &config_e4b };
 
 /// Layers 0–2 are sliding, layer 3 global, the pattern `[1,1,1,0]`.
 pub const Kind = enum {
@@ -54,8 +63,9 @@ pub const Kind = enum {
             .global => 1_000_000,
         };
     }
+    /// The widest query projection of this kind (`max_heads` heads).
     pub fn queryWidth(self: Kind) usize {
-        return heads * self.headSize();
+        return max_heads * self.headSize();
     }
 };
 pub fn kindOf(index: usize) Kind {
@@ -63,7 +73,7 @@ pub fn kindOf(index: usize) Kind {
 }
 pub fn kvHeadsOf(config: *const Config, kind: Kind) usize {
     return switch (kind) {
-        .sliding => 8,
+        .sliding => config.sliding_kv_heads,
         .global => config.global_kv_heads,
     };
 }
@@ -76,6 +86,7 @@ pub const Summary = models.Summary;
 
 pub const Layer = struct {
     kind: Kind,
+    heads: usize,
     kv_heads: usize,
     attention_norm: *const Tensor,
     post_attention_norm: *const Tensor,
@@ -94,7 +105,7 @@ pub const Layer = struct {
         return self.kind.headSize();
     }
     pub fn queryWidth(self: Layer) usize {
-        return self.kind.queryWidth();
+        return self.heads * self.kind.headSize();
     }
     pub fn kvWidth(self: Layer) usize {
         return self.kv_heads * self.kind.headSize();
@@ -123,10 +134,6 @@ pub const Binding = struct {
 const IntegerSetting = struct { key: []const u8, value: u64 };
 const shared_integer_settings = [_]IntegerSetting{
     .{ .key = "gemma4-assistant.block_count", .value = block_count },
-    .{ .key = "gemma4-assistant.embedding_length", .value = embedding },
-    .{ .key = "gemma4-assistant.feed_forward_length", .value = feed_forward },
-    .{ .key = "gemma4-assistant.attention.head_count", .value = heads },
-    .{ .key = "gemma4-assistant.attention.sliding_window", .value = window },
     .{ .key = "gemma4-assistant.attention.key_length", .value = 512 },
     .{ .key = "gemma4-assistant.attention.value_length", .value = 512 },
     .{ .key = "gemma4-assistant.attention.key_length_swa", .value = 256 },
@@ -144,6 +151,13 @@ const float_settings = [_]FloatSetting{
     .{ .key = "gemma4-assistant.attention.layer_norm_rms_epsilon", .value = @as(f32, 1e-6) },
 };
 const array_settings = [_][]const u8{ "gemma4-assistant.attention.head_count_kv", "gemma4-assistant.attention.sliding_window_pattern" };
+/// Keys whose value is the configuration's.
+const per_config_keys = [_][]const u8{
+    "gemma4-assistant.embedding_length",
+    "gemma4-assistant.feed_forward_length",
+    "gemma4-assistant.attention.head_count",
+    "gemma4-assistant.attention.sliding_window",
+};
 
 /// Integer metadata regardless of the writer's chosen width or signedness.
 fn integer(doc: *const gguf.Document, key: []const u8) Error!u64 {
@@ -181,23 +195,32 @@ fn validateMetadata(doc: *const gguf.Document) Error!*const Config {
     if (!std.mem.eql(u8, arch, architecture)) return error.UnsupportedArchitecture;
     const config = try configFor(doc);
     for (shared_integer_settings) |setting| try expectInteger(doc, setting.key, setting.value);
+    try expectInteger(doc, per_config_keys[0], config.embedding);
+    try expectInteger(doc, per_config_keys[1], config.feed_forward);
+    try expectInteger(doc, per_config_keys[2], config.heads);
+    try expectInteger(doc, per_config_keys[3], config.window);
     for (float_settings) |setting| {
         switch (doc.get(setting.key) orelse return error.MissingMetadata) {
             .float => |value| if (value != setting.value) return error.UnsupportedConfiguration,
             else => return error.InvalidMetadata,
         }
     }
-    // The KV array's global entry is the configuration's, and the sliding
-    // pattern must be the block_count-long `[1,1,1,0]`.
-    const kv = try retained(doc, array_settings[0], block_count);
+    // The KV heads are the configuration's (an array, or one scalar when
+    // every block has the same count), and the sliding pattern must be the
+    // block_count-long `[1,1,1,0]`.
     const swa = try retained(doc, array_settings[1], block_count);
-    for (kv, swa, 0..) |kv_heads, sliding, index| {
+    const kv: ?[]const gguf.Value = switch (doc.get(array_settings[0]) orelse return error.MissingMetadata) {
+        .array => try retained(doc, array_settings[0], block_count),
+        else => null,
+    };
+    const uniform: ?u64 = if (kv == null) try integer(doc, array_settings[0]) else null;
+    for (swa, 0..) |sliding, index| {
         const kind = kindOf(index);
-        const n: u64 = switch (kv_heads) {
+        const n: u64 = if (kv) |values| switch (values[index]) {
             .signed => |v| if (v < 0) return error.InvalidMetadata else @intCast(v),
             .unsigned => |v| v,
             else => return error.InvalidMetadata,
-        };
+        } else uniform.?;
         if (n != kvHeadsOf(config, kind)) return error.UnsupportedConfiguration;
         const is_sliding = switch (sliding) {
             .boolean => |b| b,
@@ -219,6 +242,7 @@ fn validateMetadata(doc: *const gguf.Document) Error!*const Config {
 
 fn knownArchitectureKey(key: []const u8) bool {
     for (shared_integer_settings) |setting| if (std.mem.eql(u8, key, setting.key)) return true;
+    for (per_config_keys) |known| if (std.mem.eql(u8, key, known)) return true;
     for (float_settings) |setting| if (std.mem.eql(u8, key, setting.key)) return true;
     for (array_settings) |known| if (std.mem.eql(u8, key, known)) return true;
     if (std.mem.eql(u8, key, "gemma4-assistant.embedding_length_out")) return true;
@@ -249,9 +273,12 @@ const Binder = struct {
     fn layer(self: *Binder, index: usize) Error!Layer {
         const kind = kindOf(index);
         const hd = kind.headSize();
-        const q = kind.queryWidth();
+        const q = self.config.heads * hd;
+        const embedding = self.config.embedding;
+        const feed_forward = self.config.feed_forward;
         return .{
             .kind = kind,
+            .heads = self.config.heads,
             .kv_heads = kvHeadsOf(self.config, kind),
             .attention_norm = try self.weight(index, "attn_norm.weight", &.{embedding}, .f32),
             .post_attention_norm = try self.weight(index, "post_attention_norm.weight", &.{embedding}, .f32),
@@ -286,10 +313,10 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     }
     var result: Binding = undefined;
     result.config = config;
-    result.classifier = try binder.take("token_embd.weight", &.{ embedding, vocabulary }, .matrix);
-    result.output_norm = try binder.take("output_norm.weight", &.{embedding}, .f32);
-    result.pre_projection = try binder.take("nextn.pre_projection.weight", &.{ 2 * config.embedding_out, embedding }, .matrix);
-    result.post_projection = try binder.take("nextn.post_projection.weight", &.{ embedding, config.embedding_out }, .matrix);
+    result.classifier = try binder.take("token_embd.weight", &.{ config.embedding, vocabulary }, .matrix);
+    result.output_norm = try binder.take("output_norm.weight", &.{config.embedding}, .f32);
+    result.pre_projection = try binder.take("nextn.pre_projection.weight", &.{ 2 * config.embedding_out, config.embedding }, .matrix);
+    result.post_projection = try binder.take("nextn.post_projection.weight", &.{ config.embedding, config.embedding_out }, .matrix);
     result.rope_factors = try binder.take("rope_freqs.weight", &.{256}, .f32);
     for (&result.layers, 0..) |*layer, index| layer.* = try binder.layer(index);
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
@@ -326,6 +353,21 @@ test "the pinned 12B head binds: 49 tensors, three sliding blocks then the globa
     try std.testing.expectEqual(@as(u64, 3840), binding.post_projection.dimensions[1]);
 }
 
+test "the pinned E4B head binds: 256 wide, four query heads, two KV heads on every block" {
+    var doc = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/gemma4-head-e4b.json"));
+    defer doc.deinit();
+    const binding = try bind(std.testing.allocator, &doc);
+    try std.testing.expectEqual(&config_e4b, binding.config);
+    try std.testing.expectEqual(@as(u32, 49), binding.summary.text_tensors);
+    for (&binding.layers, 0..) |layer, i| {
+        try std.testing.expectEqual(kindOf(i), layer.kind);
+        try std.testing.expectEqual(@as(usize, 2), layer.kv_heads);
+    }
+    try std.testing.expectEqual(@as(usize, 1024), binding.layers[0].queryWidth());
+    try std.testing.expectEqual(@as(usize, 2048), binding.layers[3].queryWidth());
+    try std.testing.expectEqualSlices(u64, &.{ 5120, 256 }, binding.pre_projection.dimensions);
+}
+
 test "deviations from the pinned head are typed rejections" {
     const Mutation = union(enum) {
         drop_tensor: []const u8,
@@ -358,7 +400,7 @@ test "deviations from the pinned head are typed rejections" {
                 doc.tensors = try kept.toOwnedSlice(alloc);
             },
             .add_tensor => |name| {
-                const extra: Tensor = .{ .name = name, .dimensions = try alloc.dupe(u64, &.{ embedding, embedding }), .encoding_id = 0, .offset = 0, .elements = embedding * embedding, .bytes = embedding * embedding * 4 };
+                const extra: Tensor = .{ .name = name, .dimensions = try alloc.dupe(u64, &.{ 1024, 1024 }), .encoding_id = 0, .offset = 0, .elements = 1024 * 1024, .bytes = 1024 * 1024 * 4 };
                 const more = try alloc.alloc(Tensor, doc.tensors.len + 1);
                 @memcpy(more[0..doc.tensors.len], doc.tensors);
                 more[doc.tensors.len] = extra;

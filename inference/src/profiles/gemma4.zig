@@ -84,6 +84,19 @@ pub fn prefix(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
 }
 
 pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits) Error![]u8 {
+    return renderWith(alloc, messages, tools, effort, limits, .{});
+}
+
+/// How a template revision's rendering differs from the pinned one's.
+pub const Variant = struct {
+    /// Whether the generation prompt with thinking off opens and closes an
+    /// empty thought channel (the 12B and 26B-A4B template); the E-series
+    /// template (`gemma4_e.zig`) opens none.
+    empty_thought_when_off: bool = true,
+};
+
+/// `render` under a template variant.
+pub fn renderWith(alloc: std.mem.Allocator, messages: []const Message, tools: []const profiles.ToolDefinition, effort: Effort, limits: Limits, variant: Variant) Error![]u8 {
     try profiles.validate(alloc, messages, tools, limits);
     for (messages) |message| switch (message.role) {
         .assistant => for (message.tool_calls) |call| try checkName(call.name),
@@ -171,7 +184,7 @@ pub fn render(alloc: std.mem.Allocator, messages: []const Message, tools: []cons
     }
     if (!open) {
         try builder.add("<|turn>model\n");
-        if (!thinking) {
+        if (!thinking and variant.empty_thought_when_off) {
             try builder.add(reasoning.open);
             try builder.add(reasoning.close);
         }

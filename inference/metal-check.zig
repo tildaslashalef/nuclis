@@ -3223,6 +3223,17 @@ pub fn main(init: std.process.Init) !void {
         try b.commit();
         for (z.floats(), expected) |got, want| try expectClose("softcap", got, want, 2e-6 * @max(1, @abs(want)));
         if (b.softcap(z, width, 0)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+        // The clipped linears' bounds: finite, or infinite on a missing side.
+        for (expected, z.floats()) |*e, zz| e.* = std.math.clamp(zz, -12.5, 7.25);
+        try b.begin();
+        try b.clamp(z, width, -12.5, 7.25);
+        try b.commit();
+        for (z.floats(), expected) |got, want| try expectClose("clamp", got, want, 0);
+        try b.begin();
+        try b.clamp(z, width, -std.math.inf(f32), 3.0);
+        try b.commit();
+        for (z.floats(), expected) |got, want| try expectClose("clamp (open below)", got, @min(want, 3.0), 0);
+        if (b.clamp(z, width, 1, 0)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
         const alpha = try b.create(48 * 4);
         const beta = try b.create(48 * 4);
         const a = try b.create(48 * 4);

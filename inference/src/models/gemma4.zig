@@ -1,23 +1,22 @@
 //! Gemma 4 text adapter: metadata validation and named weight binding for
-//! two pinned checkpoints of one architecture, the dense 12B and the
-//! 26B-A4B mixture of experts. The facts this file encodes were read from
-//! the artifacts and the reference and are recorded, with their
+//! three pinned checkpoints of one architecture, the dense 12B, the 26B-A4B
+//! mixture of experts, and the E4B. The facts this file encodes were read
+//! from the artifacts and the reference and are recorded, with their
 //! provenance, in docs/reference/gemma4.md; nothing here is generic Gemma
 //! knowledge. Like the Qwen adapter it is deliberately narrow: a file whose
 //! `gemma4.*` keys differ from a pinned configuration is rejected with
 //! `UnsupportedConfiguration` rather than run with guessed semantics.
 //!
-//! Shared by both: decoder layers in a period-6 pattern, five sliding-window
-//! layers (window 1024, head size 256, 8 KV heads) then one global layer
-//! (full causal attention, head size 512, no value projection: V is the key
-//! projection), four RMS norms per layer (pre/post attention, pre/post FFN),
+//! Shared by all: decoder layers in a period-6 pattern, five sliding-window
+//! layers (head size 256) then one global layer (full causal attention, head
+//! size 512), four RMS norms per layer (pre/post attention, pre/post FFN),
 //! per-head query and key norms, a tanh-GELU gated FFN, a scalar output
 //! scale per layer, tied embeddings, and final logit soft-capping at 30.
-//! Per `Config`: the layer count, the model width, the FFN width, the
-//! global layers' KV heads (one or two), and on the 26B-A4B the expert
-//! block beside every dense FFN (a router over 128 experts, 8 used, three
-//! more norms). The runtimes (`gemma4_runtime.zig`, `gemma4_metal.zig`)
-//! execute exactly this binding.
+//! Per `Config`: widths, query and KV heads, the window, whether global
+//! layers have their own value projection, the expert block (26B-A4B), and
+//! the E4B's per-layer embeddings and shared KV layers (`kvSource`). The
+//! runtimes (`gemma4_runtime.zig`, `gemma4_metal.zig`) execute exactly this
+//! binding.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
@@ -33,9 +32,9 @@ pub const architecture = "gemma4";
 /// draft length the same way.
 pub const max_draft_proposals = 7;
 
-pub const heads = 16;
+/// The most query heads of any pinned configuration; buffers size by it.
+pub const max_heads = 16;
 pub const vocabulary = 262144;
-pub const window = 1024;
 /// One image span in a prompt (the shared vision contract's `Span`), used by
 /// the CPU runtime and the Metal plan.
 pub const VisionSpan = @import("../vision/root.zig").Span;
@@ -44,8 +43,8 @@ pub const final_softcap: f32 = 30.0;
 /// The largest layer count of any pinned configuration; bindings carry
 /// this many layer slots and `Binding.active` narrows them.
 pub const max_layers = 48;
-/// The widest key/value row of any layer: the sliding geometry (8 heads of
-/// 256); a global layer has one or two heads of 512.
+/// The widest key/value row of any layer: the 12B's sliding geometry (8
+/// heads of 256); a global layer has one or two heads of 512.
 pub const max_kv_width = 8 * 256;
 
 /// The expert block of a configuration whose layers have one.
@@ -65,13 +64,44 @@ pub const Config = struct {
     embedding: usize,
     /// The dense FFN's hidden width (the shared expert on the 26B-A4B).
     feed_forward: usize,
+    /// Query heads of every layer.
+    heads: usize,
+    /// Positions a sliding layer sees, its own included.
+    window: usize,
+    context_length: usize,
+    sliding_kv_heads: usize,
     global_kv_heads: usize,
+    /// Whether global layers have their own value projection; without one,
+    /// V is the key projection taken before the key norm and RoPE.
+    global_value: bool,
     experts: ?Experts,
+    /// Width of each layer's slice of the per-layer embedding; 0 when the
+    /// checkpoint has none.
+    per_layer_input: usize = 0,
+    /// Layers `[0, kv_layers)` own a cache; the rest read one (`kvSource`).
+    kv_layers: usize,
+    /// Whether an image span's rows see each other on sliding layers (the
+    /// reference's non-causal image decode); the E4B's span stays causal.
+    bidirectional_images: bool = true,
     layer_kinds: []const models.LayerKind,
 
     /// The embedding row is multiplied by sqrt(width) after decoding.
     pub fn embeddingScale(self: *const Config) f32 {
         return @sqrt(@as(f32, @floatFromInt(self.embedding)));
+    }
+
+    /// The cache layer `il` attends over: its own, or on a shared layer the
+    /// last cache-owning layer of its kind (the reference's reuse rule:
+    /// `kv_layers − 2` for sliding, `kv_layers − 1` for global).
+    pub fn kvSource(self: *const Config, il: usize) usize {
+        if (il < self.kv_layers) return il;
+        return self.kv_layers - @as(usize, if (kindOf(il) == .sliding) 2 else 1);
+    }
+
+    /// The first cache row visible to the token at `position` on a layer
+    /// of `kind`: sliding layers read a contiguous suffix of the cache.
+    pub fn firstVisible(self: *const Config, kind: Kind, position: usize) usize {
+        return if (kind == .sliding and position + 1 > self.window) position + 1 - self.window else 0;
     }
 };
 
@@ -80,8 +110,14 @@ pub const config_12b: Config = .{
     .layer_count = 48,
     .embedding = 3840,
     .feed_forward = 15360,
+    .heads = 16,
+    .window = 1024,
+    .context_length = 262144,
+    .sliding_kv_heads = 8,
     .global_kv_heads = 1,
+    .global_value = false,
     .experts = null,
+    .kv_layers = 48,
     .layer_kinds = &.{ .{ .kind = "sliding_attention", .count = 40 }, .{ .kind = "global_attention", .count = 8 } },
 };
 pub const config_26b_a4b: Config = .{
@@ -89,12 +125,38 @@ pub const config_26b_a4b: Config = .{
     .layer_count = 30,
     .embedding = 2816,
     .feed_forward = 2112,
+    .heads = 16,
+    .window = 1024,
+    .context_length = 262144,
+    .sliding_kv_heads = 8,
     .global_kv_heads = 2,
+    .global_value = false,
     .experts = .{ .count = 128, .used = 8, .feed_forward = 704 },
+    .kv_layers = 30,
     .layer_kinds = &.{ .{ .kind = "sliding_attention", .count = 25 }, .{ .kind = "global_attention", .count = 5 } },
 };
+/// The on-device E4B: 8 query heads, a 512-position window, a value
+/// projection on global layers, 256-wide per-layer embeddings, and the
+/// last 18 layers reading the caches of layers 22 (sliding) and 23 (global).
+pub const config_e4b: Config = .{
+    .profile = "gemma4_e4b",
+    .layer_count = 42,
+    .embedding = 2560,
+    .feed_forward = 10240,
+    .heads = 8,
+    .window = 512,
+    .context_length = 131072,
+    .sliding_kv_heads = 2,
+    .global_kv_heads = 2,
+    .global_value = true,
+    .experts = null,
+    .per_layer_input = 256,
+    .kv_layers = 24,
+    .bidirectional_images = false,
+    .layer_kinds = &.{ .{ .kind = "sliding_attention", .count = 35 }, .{ .kind = "global_attention", .count = 7 } },
+};
 /// The pinned configurations, selected by `gemma4.block_count`.
-pub const configs = [_]*const Config{ &config_12b, &config_26b_a4b };
+pub const configs = [_]*const Config{ &config_12b, &config_26b_a4b, &config_e4b };
 
 /// The two layer kinds and the attention geometry they share across
 /// configurations; the KV head count is the layer's (`Layer.kv_heads`).
@@ -114,9 +176,10 @@ pub const Kind = enum {
             .global => 1_000_000,
         };
     }
-    /// Query projection width: 16 heads of `headSize`.
+    /// The widest query projection of this kind (`max_heads` heads); a
+    /// layer's own is `Layer.queryWidth`.
     pub fn queryWidth(self: Kind) usize {
-        return heads * self.headSize();
+        return max_heads * self.headSize();
     }
 };
 
@@ -129,7 +192,7 @@ pub fn kindOf(index: usize) Kind {
 /// KV heads of a layer kind under a configuration.
 pub fn kvHeadsOf(config: *const Config, kind: Kind) usize {
     return switch (kind) {
-        .sliding => 8,
+        .sliding => config.sliding_kv_heads,
         .global => config.global_kv_heads,
     };
 }
@@ -164,20 +227,31 @@ pub const ExpertLayer = struct {
     post_ffn_norm_2: *const Tensor,
 };
 
+/// A layer's per-layer-embedding block (E4B): `inp_gate` `[embedding → w]`,
+/// `proj` `[w → embedding]`, and the norm on its output.
+pub const PerLayerBlock = struct {
+    gate: *const Tensor,
+    projection: *const Tensor,
+    post_norm: *const Tensor,
+};
+
 pub const Layer = struct {
     kind: Kind,
+    heads: usize,
     kv_heads: usize,
     attention_norm: *const Tensor,
     post_attention_norm: *const Tensor,
     ffn_norm: *const Tensor,
     post_ffn_norm: *const Tensor,
     query: *const Tensor,
-    key: *const Tensor,
-    /// Absent on global layers, whose values are the key projection.
+    /// Absent on a layer that reads another layer's cache (`Config.kvSource`).
+    key: ?*const Tensor,
+    /// Absent on shared layers and, without `Config.global_value`, on global
+    /// layers, whose values are then the key projection.
     value: ?*const Tensor,
     output: *const Tensor,
     query_norm: *const Tensor,
-    key_norm: *const Tensor,
+    key_norm: ?*const Tensor,
     ffn_gate: *const Tensor,
     ffn_up: *const Tensor,
     ffn_down: *const Tensor,
@@ -185,12 +259,14 @@ pub const Layer = struct {
     output_scale: *const Tensor,
     /// Present on every layer of an expert configuration.
     experts: ?ExpertLayer,
+    /// Present on every layer of a configuration with per-layer embeddings.
+    per_layer: ?PerLayerBlock,
 
     pub fn headSize(self: Layer) usize {
         return self.kind.headSize();
     }
     pub fn queryWidth(self: Layer) usize {
-        return self.kind.queryWidth();
+        return self.heads * self.kind.headSize();
     }
     /// Key (and value) projection width: `kv_heads` of `headSize`.
     pub fn kvWidth(self: Layer) usize {
@@ -209,6 +285,14 @@ pub const Binding = struct {
     output_norm: *const Tensor,
     /// 256 per-pair RoPE frequency factors for the global layers.
     rope_factors: *const Tensor,
+    /// The per-layer embedding inputs (E4B): a `[layers · w]` row per token,
+    /// the projection of the scaled embedding onto it, and the norm of each
+    /// `w`-wide slice of that projection.
+    per_layer: ?struct {
+        token_embedding: *const Tensor,
+        model_projection: *const Tensor,
+        projection_norm: *const Tensor,
+    },
     /// `config.layer_count` leading entries are bound; see `active`.
     layers: [max_layers]Layer,
     summary: Summary,
@@ -250,6 +334,10 @@ pub fn bindDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weig
         else => return err,
     };
     if (head.config.embedding_out != target.config.embedding) return error.DraftSourceMismatch;
+    // The head attends over the target's cache rows with its own KV heads and mask.
+    if (head.config.sliding_kv_heads != target.config.sliding_kv_heads or
+        head.config.global_kv_heads != target.config.global_kv_heads or
+        head.config.window != target.config.window) return error.DraftSourceMismatch;
     const head_factors = view.vector(alloc, head.rope_factors) catch return error.DraftSourceMismatch;
     defer alloc.free(head_factors);
     const target_factors = target_view.vector(alloc, target.rope_factors) catch return error.DraftSourceMismatch;
@@ -262,17 +350,20 @@ pub fn bindDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weig
 const IntegerSetting = struct { key: []const u8, value: u64 };
 /// Keys with one value across the pinned configurations.
 const shared_integer_settings = [_]IntegerSetting{
-    .{ .key = "gemma4.context_length", .value = 262144 },
-    .{ .key = "gemma4.attention.head_count", .value = heads },
-    .{ .key = "gemma4.attention.sliding_window", .value = window },
     .{ .key = "gemma4.attention.key_length", .value = 512 },
     .{ .key = "gemma4.attention.value_length", .value = 512 },
     .{ .key = "gemma4.attention.key_length_swa", .value = 256 },
     .{ .key = "gemma4.attention.value_length_swa", .value = 256 },
     .{ .key = "gemma4.rope.dimension_count", .value = 512 },
     .{ .key = "gemma4.rope.dimension_count_swa", .value = 256 },
-    .{ .key = "gemma4.attention.shared_kv_layers", .value = 0 },
-    .{ .key = "gemma4.embedding_length_per_layer_input", .value = 0 },
+};
+/// Keys whose value is the configuration's (checked in `validateMetadata`).
+const per_config_keys = [_][]const u8{
+    "gemma4.context_length",
+    "gemma4.attention.head_count",
+    "gemma4.attention.sliding_window",
+    "gemma4.attention.shared_kv_layers",
+    "gemma4.embedding_length_per_layer_input",
 };
 const config_integer_keys = [_][]const u8{ "gemma4.block_count", "gemma4.embedding_length", "gemma4.feed_forward_length" };
 const expert_integer_keys = [_][]const u8{ "gemma4.expert_count", "gemma4.expert_used_count", "gemma4.expert_feed_forward_length" };
@@ -309,6 +400,11 @@ fn validateMetadata(doc: *const gguf.Document) Error!*const Config {
     if (!std.mem.eql(u8, arch, architecture)) return error.UnsupportedArchitecture;
     const config = try configFor(doc);
     for (shared_integer_settings) |setting| try expectInteger(doc, setting.key, setting.value);
+    try expectInteger(doc, per_config_keys[0], config.context_length);
+    try expectInteger(doc, per_config_keys[1], config.heads);
+    try expectInteger(doc, per_config_keys[2], config.window);
+    try expectInteger(doc, per_config_keys[3], config.layer_count - config.kv_layers);
+    try expectInteger(doc, per_config_keys[4], config.per_layer_input);
     try expectInteger(doc, config_integer_keys[1], config.embedding);
     try expectInteger(doc, config_integer_keys[2], config.feed_forward);
     if (config.experts) |experts| {
@@ -322,17 +418,22 @@ fn validateMetadata(doc: *const gguf.Document) Error!*const Config {
             else => return error.InvalidMetadata,
         }
     }
-    // The two per-layer arrays must both declare the period-6 pattern
-    // `kindOf` hard-codes, with the configuration's KV heads.
-    const kv = try retained(doc, array_settings[0], config.layer_count);
+    // The per-layer arrays must declare the period-6 pattern `kindOf`
+    // hard-codes, with the configuration's KV heads. A writer may store the
+    // KV heads as one scalar when every layer has the same count.
     const swa = try retained(doc, array_settings[1], config.layer_count);
-    for (kv, swa, 0..) |kv_heads, sliding, index| {
+    const kv: ?[]const gguf.Value = switch (doc.get(array_settings[0]) orelse return error.MissingMetadata) {
+        .array => try retained(doc, array_settings[0], config.layer_count),
+        else => null,
+    };
+    const uniform: ?u64 = if (kv == null) try integer(doc, array_settings[0]) else null;
+    for (swa, 0..) |sliding, index| {
         const kind = kindOf(index);
-        const n: u64 = switch (kv_heads) {
+        const n: u64 = if (kv) |values| switch (values[index]) {
             .signed => |v| if (v < 0) return error.InvalidMetadata else @intCast(v),
             .unsigned => |v| v,
             else => return error.InvalidMetadata,
-        };
+        } else uniform.?;
         if (n != kvHeadsOf(config, kind)) return error.UnsupportedConfiguration;
         const is_sliding = switch (sliding) {
             .boolean => |b| b,
@@ -367,6 +468,7 @@ fn retained(doc: *const gguf.Document, key: []const u8, count: usize) Error![]co
 
 fn knownArchitectureKey(config: *const Config, key: []const u8) bool {
     for (shared_integer_settings) |setting| if (std.mem.eql(u8, key, setting.key)) return true;
+    for (per_config_keys) |known| if (std.mem.eql(u8, key, known)) return true;
     for (config_integer_keys) |known| if (std.mem.eql(u8, key, known)) return true;
     if (config.experts != null) for (expert_integer_keys) |known| if (std.mem.eql(u8, key, known)) return true;
     for (float_settings) |setting| if (std.mem.eql(u8, key, setting.key)) return true;
@@ -415,31 +517,41 @@ const Binder = struct {
         };
     }
     fn layer(self: *Binder, index: usize) Error!Layer {
+        const config = self.config;
         const kind = kindOf(index);
-        const kv_heads = kvHeadsOf(self.config, kind);
+        const kv_heads = kvHeadsOf(config, kind);
         const hd = kind.headSize();
-        const q = kind.queryWidth();
+        const q = config.heads * hd;
         const kv = kv_heads * hd;
-        const d = self.config.embedding;
-        const ff = self.config.feed_forward;
+        const d = config.embedding;
+        const ff = config.feed_forward;
+        const owns_kv = index < config.kv_layers;
+        const has_value = owns_kv and (kind == .sliding or config.global_value);
+        const w = config.per_layer_input;
         return .{
             .kind = kind,
+            .heads = config.heads,
             .kv_heads = kv_heads,
             .attention_norm = try self.weight(index, "attn_norm.weight", &.{d}, .f32),
             .post_attention_norm = try self.weight(index, "post_attention_norm.weight", &.{d}, .f32),
             .ffn_norm = try self.weight(index, "ffn_norm.weight", &.{d}, .f32),
             .post_ffn_norm = try self.weight(index, "post_ffw_norm.weight", &.{d}, .f32),
             .query = try self.weight(index, "attn_q.weight", &.{ d, q }, .matrix),
-            .key = try self.weight(index, "attn_k.weight", &.{ d, kv }, .matrix),
-            .value = if (kind == .sliding) try self.weight(index, "attn_v.weight", &.{ d, kv }, .matrix) else null,
+            .key = if (owns_kv) try self.weight(index, "attn_k.weight", &.{ d, kv }, .matrix) else null,
+            .value = if (has_value) try self.weight(index, "attn_v.weight", &.{ d, kv }, .matrix) else null,
             .output = try self.weight(index, "attn_output.weight", &.{ q, d }, .matrix),
             .query_norm = try self.weight(index, "attn_q_norm.weight", &.{hd}, .f32),
-            .key_norm = try self.weight(index, "attn_k_norm.weight", &.{hd}, .f32),
+            .key_norm = if (owns_kv) try self.weight(index, "attn_k_norm.weight", &.{hd}, .f32) else null,
             .ffn_gate = try self.weight(index, "ffn_gate.weight", &.{ d, ff }, .matrix),
             .ffn_up = try self.weight(index, "ffn_up.weight", &.{ d, ff }, .matrix),
             .ffn_down = try self.weight(index, "ffn_down.weight", &.{ ff, d }, .matrix),
             .output_scale = try self.weight(index, "layer_output_scale.weight", &.{1}, .f32),
-            .experts = if (self.config.experts) |experts| try self.expertLayer(index, experts) else null,
+            .experts = if (config.experts) |experts| try self.expertLayer(index, experts) else null,
+            .per_layer = if (w != 0) .{
+                .gate = try self.weight(index, "inp_gate.weight", &.{ d, w }, .matrix),
+                .projection = try self.weight(index, "proj.weight", &.{ w, d }, .matrix),
+                .post_norm = try self.weight(index, "post_norm.weight", &.{d}, .f32),
+            } else null,
         };
     }
 };
@@ -463,6 +575,12 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     result.token_embedding = try binder.take("token_embd.weight", &.{ config.embedding, vocabulary }, .matrix);
     result.output_norm = try binder.take("output_norm.weight", &.{config.embedding}, .f32);
     result.rope_factors = try binder.take("rope_freqs.weight", &.{256}, .f32);
+    const w = config.per_layer_input;
+    result.per_layer = if (w != 0) .{
+        .token_embedding = try binder.take("per_layer_token_embd.weight", &.{ w * config.layer_count, vocabulary }, .matrix),
+        .model_projection = try binder.take("per_layer_model_proj.weight", &.{ config.embedding, w * config.layer_count }, .matrix),
+        .projection_norm = try binder.take("per_layer_proj_norm.weight", &.{w}, .f32),
+    } else null;
     for (result.layers[0..config.layer_count], 0..) |*layer, index| layer.* = try binder.layer(index);
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
     result.summary = .{
@@ -488,6 +606,10 @@ pub fn inventoryDocument(gpa: std.mem.Allocator) !gguf.Document {
 pub fn inventoryDocument26bA4b(gpa: std.mem.Allocator) !gguf.Document {
     return @import("inventory.zig").document(gpa, @embedFile("fixtures/gemma4-26b-a4b.json"));
 }
+/// The pinned E4B QAT artifact's inventory (`fixtures/gemma4-e4b.json`).
+pub fn inventoryDocumentE4b(gpa: std.mem.Allocator) !gguf.Document {
+    return @import("inventory.zig").document(gpa, @embedFile("fixtures/gemma4-e4b.json"));
+}
 
 test "the pinned 12B inventory binds: 667 tensors, the period-6 pattern, no value on global layers" {
     var doc = try inventoryDocument(std.testing.allocator);
@@ -507,7 +629,7 @@ test "the pinned 12B inventory binds: 667 tensors, the period-6 pattern, no valu
             try std.testing.expect(layer.value == null);
             try std.testing.expectEqual(@as(usize, 1), layer.kv_heads);
             try std.testing.expectEqual(@as(u64, 8192), layer.query.dimensions[1]);
-            try std.testing.expectEqual(@as(u64, 512), layer.key_norm.dimensions[0]);
+            try std.testing.expectEqual(@as(u64, 512), layer.key_norm.?.dimensions[0]);
         } else {
             try std.testing.expect(layer.value != null);
             try std.testing.expectEqual(@as(u64, 2048), layer.value.?.dimensions[1]);
@@ -540,13 +662,54 @@ test "the pinned 26B-A4B inventory binds: 658 tensors, two KV heads on global la
             try std.testing.expect(layer.value == null);
             try std.testing.expectEqual(@as(usize, 2), layer.kv_heads);
             try std.testing.expectEqual(@as(usize, 1024), layer.kvWidth());
-            try std.testing.expectEqual(@as(u64, 1024), layer.key.dimensions[1]);
+            try std.testing.expectEqual(@as(u64, 1024), layer.key.?.dimensions[1]);
         } else {
             try std.testing.expectEqual(@as(usize, 2048), layer.kvWidth());
         }
     }
     try std.testing.expectEqual(@as(usize, 5), globals);
     try std.testing.expectEqual(@as(u64, 262144), binding.token_embedding.dimensions[1]);
+}
+
+test "the pinned E4B inventory binds: 666 tensors, per-layer embeddings, 24 cache-owning layers" {
+    var doc = try inventoryDocumentE4b(std.testing.allocator);
+    defer doc.deinit();
+    const binding = try bind(std.testing.allocator, &doc);
+    try std.testing.expectEqual(&config_e4b, binding.config);
+    try std.testing.expectEqual(@as(u32, 666), binding.summary.text_tensors);
+    try std.testing.expectEqualStrings("gemma4_e4b", binding.summary.profile);
+    const ple = binding.per_layer orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualSlices(u64, &.{ 10752, 262144 }, ple.token_embedding.dimensions);
+    try std.testing.expectEqualSlices(u64, &.{ 2560, 10752 }, ple.model_projection.dimensions);
+    for (binding.active(), 0..) |layer, i| {
+        try std.testing.expectEqual(kindOf(i), layer.kind);
+        try std.testing.expectEqual(@as(usize, 2), layer.kv_heads);
+        try std.testing.expectEqual(layer.kind.headSize() * 8, layer.queryWidth());
+        try std.testing.expect(layer.per_layer != null);
+        const owns = i < 24;
+        try std.testing.expectEqual(owns, layer.key != null);
+        try std.testing.expectEqual(owns, layer.key_norm != null);
+        // Global layers have their own value projection on this checkpoint.
+        try std.testing.expectEqual(owns, layer.value != null);
+    }
+    try std.testing.expectEqual(@as(usize, 22), config_e4b.kvSource(24));
+    try std.testing.expectEqual(@as(usize, 23), config_e4b.kvSource(29));
+    try std.testing.expectEqual(@as(usize, 22), config_e4b.kvSource(40));
+    try std.testing.expectEqual(@as(usize, 23), config_e4b.kvSource(41));
+    try std.testing.expectEqual(@as(usize, 23), config_e4b.kvSource(23));
+    try std.testing.expectEqual(@as(usize, 47), config_12b.kvSource(47));
+    try std.testing.expectEqual(@as(usize, 1), config_e4b.firstVisible(.sliding, 512));
+    try std.testing.expectEqual(@as(usize, 513), config_12b.firstVisible(.sliding, 1536));
+}
+
+test "every configuration's shared layers read a cache-owning layer of their own kind" {
+    for (configs) |config| {
+        for (0..config.layer_count) |il| {
+            const source = config.kvSource(il);
+            try std.testing.expect(source < config.kv_layers);
+            try std.testing.expectEqual(kindOf(il), kindOf(source));
+        }
+    }
 }
 
 const Mutation = union(enum) {
@@ -561,7 +724,7 @@ const Mutation = union(enum) {
 };
 
 fn mutated(base: *const Config, mutation: Mutation) !gguf.Document {
-    var doc = try if (base == &config_12b) inventoryDocument(std.testing.allocator) else inventoryDocument26bA4b(std.testing.allocator);
+    var doc = try if (base == &config_12b) inventoryDocument(std.testing.allocator) else if (base == &config_e4b) inventoryDocumentE4b(std.testing.allocator) else inventoryDocument26bA4b(std.testing.allocator);
     errdefer doc.deinit();
     const alloc = doc.storage.allocator();
     // The Document's slices are const views; mutate owned copies in its arena.
@@ -641,6 +804,14 @@ test "deviations from the pinned configurations are typed rejections" {
         .{ .base = &config_26b_a4b, .mutation = .{ .set_unsigned = .{ .key = "gemma4.expert_used_count", .value = 9 } }, .expected = error.UnsupportedConfiguration },
         .{ .base = &config_26b_a4b, .mutation = .{ .drop_key = "gemma4.expert_feed_forward_length" }, .expected = error.MissingMetadata },
         .{ .base = &config_26b_a4b, .mutation = .{ .flip_pattern = 11 }, .expected = error.UnsupportedConfiguration },
+        .{ .base = &config_e4b, .mutation = .{ .drop_tensor = "blk.23.attn_v.weight" }, .expected = error.MissingTensor },
+        .{ .base = &config_e4b, .mutation = .{ .add_tensor = "blk.24.attn_k_norm.weight" }, .expected = error.UnexpectedTensor },
+        .{ .base = &config_e4b, .mutation = .{ .drop_tensor = "per_layer_proj_norm.weight" }, .expected = error.MissingTensor },
+        .{ .base = &config_e4b, .mutation = .{ .drop_tensor = "blk.41.inp_gate.weight" }, .expected = error.MissingTensor },
+        .{ .base = &config_e4b, .mutation = .{ .set_unsigned = .{ .key = "gemma4.attention.shared_kv_layers", .value = 20 } }, .expected = error.UnsupportedConfiguration },
+        .{ .base = &config_e4b, .mutation = .{ .set_unsigned = .{ .key = "gemma4.embedding_length_per_layer_input", .value = 128 } }, .expected = error.UnsupportedConfiguration },
+        .{ .base = &config_e4b, .mutation = .{ .set_unsigned = .{ .key = "gemma4.attention.head_count_kv", .value = 4 } }, .expected = error.UnsupportedConfiguration },
+        .{ .base = &config_e4b, .mutation = .{ .set_unsigned = .{ .key = "gemma4.attention.sliding_window", .value = 1024 } }, .expected = error.UnsupportedConfiguration },
     };
     for (cases) |case| {
         var doc = try mutated(case.base, case.mutation);
@@ -650,7 +821,7 @@ test "deviations from the pinned configurations are typed rejections" {
 }
 
 test "binding survives allocation failure without leaks" {
-    inline for (.{ inventoryDocument, inventoryDocument26bA4b }) |open| {
+    inline for (.{ inventoryDocument, inventoryDocument26bA4b, inventoryDocumentE4b }) |open| {
         var doc = try open(std.testing.allocator);
         defer doc.deinit();
         try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {

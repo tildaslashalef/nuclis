@@ -1866,6 +1866,11 @@ kernel void nu_scale(device float * x [[buffer(0)]],
                      constant ScaleParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) x[i] *= p.factor;
 }
+struct ClampParams { uint count; float low; float high; };
+kernel void nu_clamp(device float * x [[buffer(0)]],
+                     constant ClampParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+    if (i < p.count) x[i] = min(max(x[i], p.low), p.high);
+}
 kernel void nu_add_scale(device float * x [[buffer(0)]], device const float * y [[buffer(1)]],
                          constant ScaleParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) x[i] = (x[i] + y[i]) * p.factor;

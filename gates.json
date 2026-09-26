@@ -41,6 +41,15 @@
   "bonsai": {
    "path": "~/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
    "entry": "bonsai-2-27b"
+  },
+  "gemma4_e4b": {
+   "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+   "entry": "gemma-4-e4b-qat",
+   "mmproj": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/mmproj-BF16.gguf"
+  },
+  "gemma4_e4b_mtp": {
+   "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/MTP/mtp-gemma-4-E4B-it-Q4_0.gguf",
+   "entry": "gemma-4-e4b-qat (mtp companion)"
   }
  },
  "gates": [
@@ -2062,6 +2071,476 @@
     ".zig-cache/eval/wikitext-2-raw/wiki.test.raw",
     "--reference",
     "tests/fixtures/perplexity/gemma4-wikitext2-c4096x4.json"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/eval.md#the-long-context-record-2026-09-24"
+  },
+  {
+   "name": "gemma4-e4b-trace-cpu",
+   "family": "gemma4",
+   "tier": "verify-cpu",
+   "model": "gemma4_e4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--model",
+    "{model}",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-e4b-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-e4b-hello-comma",
+    "positions": 3,
+    "embedding": 2560,
+    "layers": 42,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-e4b-trace-f32",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f32",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-e4b-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-e4b-hello-comma",
+    "positions": 3,
+    "embedding": 2560,
+    "layers": 42,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-e4b-trace-f16",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f16",
+    "--prompt-tokens",
+    "tests/fixtures/gemma4-e4b-hello-comma/prompt-tokens.json",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--temperature",
+    "0",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/gemma4-e4b-hello-comma",
+    "positions": 3,
+    "embedding": 2560,
+    "layers": 42,
+    "vocab": 262144
+   },
+   "bounds": {
+    "max_absolute": 0.05,
+    "max_relative_rms": 0.002
+   },
+   "evidence": "docs/reference/gemma4.md",
+   "note": "measured 0.013 / 4.3e-4 at bring-up (MODL-27); the 12B's 1.0 / 0.05 is its unscaled keys' rounding"
+  },
+  {
+   "name": "gemma4-e4b-generation-metal",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-e4b-generation-cpu",
+   "family": "gemma4",
+   "tier": "verify-cpu",
+   "model": "gemma4_e4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "about 15 s per token",
+   "evidence": "docs/reference/gemma4.md"
+  },
+  {
+   "name": "gemma4-e4b-vision-metal",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/profiles/gemma4*.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**",
+    "inference/src/vision/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--vision-check",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/vision.md#gemma-4s-projectors-modl-22-2026-09-23"
+  },
+  {
+   "name": "gemma4-e4b-vision-cpu",
+   "family": "gemma4",
+   "tier": "verify-cpu",
+   "model": "gemma4_e4b",
+   "paths": [
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/engine.zig",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/profiles/gemma4*.zig",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/vision/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--vision-check",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "about 12 minutes",
+   "evidence": "docs/reference/vision.md#gemma-4s-projectors-modl-22-2026-09-23"
+  },
+  {
+   "name": "gemma4-e4b-draft-trace-metal",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "mtp": "gemma4_e4b_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the check compares its rows against inference/src/models/fixtures/gemma4-mtp-e4b itself",
+   "evidence": "docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
+  },
+  {
+   "name": "gemma4-e4b-draft-trace-cpu",
+   "family": "gemma4",
+   "tier": "verify-cpu",
+   "model": "gemma4_e4b",
+   "mtp": "gemma4_e4b_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--draft-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
+  },
+  {
+   "name": "gemma4-e4b-vocabulary",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "paths": [
+    "inference/src/profiles/**",
+    "inference/src/tokenizer/**",
+    "inference/vocabulary-check.zig"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-vocabulary",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/prompt-profile.md"
+  },
+  {
+   "name": "gemma4-e4b-perplexity",
+   "family": "gemma4",
+   "tier": "verify",
+   "model": "gemma4_e4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/profiles/**",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**",
+    "inference/src/tokenizer/**",
+    "src/eval.zig",
+    "tests/fixtures/perplexity/gemma4-e4b-wikitext2-c512x8.json"
+   ],
+   "command": [
+    "{nuclis}",
+    "eval",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--file",
+    ".zig-cache/eval/wikitext-2-raw/wiki.test.raw",
+    "--reference",
+    "tests/fixtures/perplexity/gemma4-e4b-wikitext2-c512x8.json"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/eval.md#the-reference-record-apps-14-2026-09-24"
+  },
+  {
+   "name": "gemma4-e4b-perplexity-4k",
+   "family": "gemma4",
+   "tier": "verify-long",
+   "model": "gemma4_e4b",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/gemma4*.zig",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/profiles/**",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**",
+    "inference/src/tokenizer/**",
+    "src/eval.zig",
+    "tests/fixtures/perplexity/gemma4-e4b-wikitext2-c4096x4.json"
+   ],
+   "command": [
+    "{nuclis}",
+    "eval",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--file",
+    ".zig-cache/eval/wikitext-2-raw/wiki.test.raw",
+    "--reference",
+    "tests/fixtures/perplexity/gemma4-e4b-wikitext2-c4096x4.json"
    ],
    "comparator": {
     "kind": "exit"

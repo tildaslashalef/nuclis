@@ -73,7 +73,7 @@ const kernel_names = [_][:0]const u8{
     "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",      "nu_matvec_q4_k_split",
     "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits", "nu_attention_chunk_reuse", "nu_attention_chunk_reuse_h",
     "nu_rmsnorm_add",           "nu_add_rmsnorm",           "nu_rmsnorm_rope",          "nu_layernorm",             "nu_add_bias_rows",         "nu_gelu_inplace",
-    "nu_attention_full",        "nu_gelu_quick_mul",        "nu_gelu_erf_inplace",
+    "nu_attention_full",        "nu_gelu_quick_mul",        "nu_gelu_erf_inplace",      "nu_clamp",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -217,6 +217,7 @@ pub const Kernel = enum(u32) {
     attention_full,
     gelu_quick_mul,
     gelu_erf_inplace,
+    clamp,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -1306,6 +1307,12 @@ pub const Backend = struct {
     pub fn softcap(self: *Backend, x: Buffer, count: usize, cap: f32) !void {
         if (count == 0 or x.len < count * 4 or !std.math.isFinite(cap) or cap <= 0) return error.InvalidShape;
         try self.dispatch(.softcap, &.{x}, ScaleParams{ .count = @intCast(count), .factor = cap }, perElement(count), 256, .{});
+    }
+    pub const ClampParams = extern struct { count: u32, low: f32, high: f32 };
+    /// x[i] = min(max(x[i], low), high); either bound may be infinite.
+    pub fn clamp(self: *Backend, x: Buffer, count: usize, low: f32, high: f32) !void {
+        if (count == 0 or x.len < count * 4 or std.math.isNan(low) or std.math.isNan(high) or low > high) return error.InvalidShape;
+        try self.dispatch(.clamp, &.{x}, ClampParams{ .count = @intCast(count), .low = low, .high = high }, perElement(count), 256, .{});
     }
     pub const DeltaGatesParams = extern struct { count: u32, heads: u32 };
     pub fn deltaGates(self: *Backend, alpha: Buffer, beta: Buffer, a: Buffer, bias: Buffer, heads: usize) !void {

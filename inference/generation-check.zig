@@ -41,9 +41,10 @@ const qwen35_spec: Spec = .{ .Family = inference.models.qwen35.family, .vocabula
 // Gemma's F16 tolerance is the model's own sensitivity to rounding keys
 // (unscaled attention scores; gemma4.md), not the kernels': the same
 // kernels are within 2e-4 of the CPU over the rounded operands (test-metal).
-// The chunk tolerance covers both pinned 12B files' half-operand tile
-// rounding: the K-quant file at 8.6e-2 / 2.5e-3, the QAT file at
-// 4.4e-1 / 1.4e-2. On the 26B-A4B the same rounding moves router logits
+// The chunk tolerance covers the pinned dense files' half-operand tile
+// rounding: the 12B K-quant file at 8.6e-2 / 2.5e-3, the 12B QAT file at
+// 4.4e-1 / 1.4e-2, the E4B at 3.1e-1 / 1.9e-2 (its F32 tiles 2.4e-3 /
+// 1.4e-4). On the 26B-A4B the same rounding moves router logits
 // past near-ties and swaps whole experts for a token, so its chunked
 // logits sit at 1.1e1 / 3.5e-1 (gemma4.md § 26B-A4B). The F32-tile
 // comparison below, at its own unchanged bound, is what proves the schedule.
@@ -1446,7 +1447,19 @@ fn compareDraft(label: []const u8, expected: []const u8, actual: []const f32, ma
 /// token the head runs at that token's proposal position with the previous
 /// position's target hidden (the pinned `hprev` rows). Both the head's
 /// `h_next` and its greedy token must match, and a `propose` seeded from the
-/// committed prefix must return the pinned draft.
+/// committed prefix must return the pinned draft. The pinned rows are the
+/// target's: the 12B QAT file's or the E4B's.
+const GemmaDraftFixture = struct { greedy: [2]u32, hprev: [2][]const u8, h: [2][]const u8 };
+const gemma_draft_12b: GemmaDraftFixture = .{
+    .greedy = .{ 2613, 236764 },
+    .hprev = .{ @embedFile("src/models/fixtures/gemma4-mtp/token-1-mtp-hprev.f32"), @embedFile("src/models/fixtures/gemma4-mtp/token-2-mtp-hprev.f32") },
+    .h = .{ @embedFile("src/models/fixtures/gemma4-mtp/token-1-mtp-h.f32"), @embedFile("src/models/fixtures/gemma4-mtp/token-2-mtp-h.f32") },
+};
+const gemma_draft_e4b: GemmaDraftFixture = .{
+    .greedy = .{ 26352, 236764 },
+    .hprev = .{ @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-1-mtp-hprev.f32"), @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-2-mtp-hprev.f32") },
+    .h = .{ @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-1-mtp-h.f32"), @embedFile("src/models/fixtures/gemma4-mtp-e4b/token-2-mtp-h.f32") },
+};
 fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: []const u8, use_metal: bool) !void {
     const Family = inference.models.gemma4.family;
     var mapped = try inference.weights.Mapped.open(alloc, io, model_path);
@@ -1456,10 +1469,12 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     var binding = try Family.bind(alloc, &mapped.document);
     binding.draft = try Family.bindDraft(alloc, &draft_mapped.document, draft_mapped.view(), mapped.view(), &binding);
     const tokens = [3]u32{ 9259, 236764, 1902 };
-    const greedy = [2]u32{ 2613, 236764 };
-    const hprev_files = [2][]const u8{ @embedFile("src/models/fixtures/gemma4-mtp/token-1-mtp-hprev.f32"), @embedFile("src/models/fixtures/gemma4-mtp/token-2-mtp-hprev.f32") };
-    const h_files = [2][]const u8{ @embedFile("src/models/fixtures/gemma4-mtp/token-1-mtp-h.f32"), @embedFile("src/models/fixtures/gemma4-mtp/token-2-mtp-h.f32") };
-    const hidden = 3840;
+    const fixture = if (binding.config == &inference.models.gemma4.config_e4b) gemma_draft_e4b else gemma_draft_12b;
+    const greedy = fixture.greedy;
+    const hprev_files = fixture.hprev;
+    const h_files = fixture.h;
+    const hidden = binding.config.embedding;
+    if (hprev_files[0].len != hidden * 4) return error.DraftFixtureMismatch;
     const h_prev = try alloc.alloc(f32, hidden);
     defer alloc.free(h_prev);
     const h_out = try alloc.alloc(f32, hidden);
@@ -1971,7 +1986,10 @@ fn visionFixture(projector: *const inference.vision.Projector) VisionFixture {
         // 0.058 / 1.2e-3 (12B) and 0.092 / 1.3e-2 (26B-A4B).
         .gemma4 => |b| switch (b.kind) {
             .unified => .{ .features = @embedFile("src/vision/fixtures/gemma4uv-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4uv-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4uv-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4uv-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.4, .max_abs = 0.1, .rel_rms = 3e-3 },
-            .siglip => .{ .features = @embedFile("src/vision/fixtures/gemma4v-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4v-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4v-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4v-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.1, .max_abs = 0.2, .rel_rms = 2.5e-2 },
+            .siglip => if (b.net.siglip.geometry == &inference.vision.gemma4.siglip.small)
+                .{ .features = @embedFile("src/vision/fixtures/gemma4v-e4b-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4v-e4b-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4v-e4b-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4v-e4b-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.1, .max_abs = 0.2, .rel_rms = 2.5e-2 }
+            else
+                .{ .features = @embedFile("src/vision/fixtures/gemma4v-synthetic/features.f32"), .greedy = @embedFile("src/vision/fixtures/gemma4v-synthetic/greedy.txt"), .prompt_tokens = @embedFile("src/vision/fixtures/gemma4v-synthetic/prompt-tokens.json"), .top_logits = @embedFile("src/vision/fixtures/gemma4v-synthetic/top-logits.txt"), .min_tokens = 4, .logits_max_abs = 0.1, .max_abs = 0.2, .rel_rms = 2.5e-2 },
         },
         // 3×2 tokens at the reference's bounds. Its own CPU and Metal
         // encoders differ by 1.8e-2 relative RMS after block 30 and 0.26 on

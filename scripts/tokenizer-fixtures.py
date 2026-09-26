@@ -69,6 +69,17 @@ PROFILES = {
         "preserve_thinking": False,
         "marker_text": "<|turn>model\n<|channel>thought\n<channel|>Hi<turn|>",
     },
+    "gemma4_e": {
+        "model_sha256": "df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3",
+        "model_size": 4215695776,
+        "template_sha256": "241c50d86bdfe5e43307da87f559cd2416aacd67a8de46c15acc0105ef2200b7",
+        # The E4B's template: Gemma 4's, except that thinking off opens no
+        # empty thought channel.
+        "efforts": ("off", "medium"),
+        "kwargs": lambda effort: {"enable_thinking": effort != "off"},
+        "preserve_thinking": False,
+        "marker_text": "<|turn>model\n<|channel>thought\n<channel|>Hi<turn|>",
+    },
     "muse_glimmer": {
         "model_sha256": "82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38",
         "model_size": 15878222368,

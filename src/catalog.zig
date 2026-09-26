@@ -166,6 +166,30 @@ pub const entries = [_]Entry{
             .{ .role = .mtp, .file = "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", .size = 251_939_328, .sha256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a", .loaded_by = "the MTP unit" },
         },
     },
+    // The on-device E4B, QAT file only: per-layer embeddings and shared
+    // KV layers in the adapter, its own template revision (`gemma4_e`, no
+    // empty thought channel with thinking off), and a causal image span.
+    // Pinned 2026-09-26 by the pull (MODL-27).
+    .{
+        .name = "gemma-4-e4b-qat",
+        .repo = "unsloth/gemma-4-E4B-it-qat-GGUF",
+        .file = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+        .revision = "8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265",
+        .sha256 = "df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3",
+        .size = 4_215_695_776,
+        .quantization = "Q4_0 (QAT)",
+        .architecture = "gemma4",
+        .profile = .gemma4_e,
+        // The E4B head is bound and traced but not measured; off until it is.
+        .speculative = false,
+        .draft_length = 4,
+        .think = .low,
+        .thinking_budget = 1024,
+        .companions = &.{
+            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 991_552_320, .sha256 = "7c9bafa27f82d658eda805c1d82ef62bb0368e1ff75f64f77de58ad318beaaf9", .loaded_by = "the vision unit" },
+            .{ .role = .mtp, .file = "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf", .size = 59_678_016, .sha256 = "423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605", .loaded_by = "the MTP unit" },
+        },
+    },
     // Meta's dense agentic model. Its draft companion is a DFlash drafter,
     // not an MTP head; it takes the `mtp` role because that role means
     // "the draft source the speculative-decoding unit loads", whatever
@@ -310,6 +334,7 @@ test "the table is well formed: unique names, 40-character commits, 64-character
     try std.testing.expectEqual(Profile.gemma4, find("gemma-4-12b").?.profile);
     try std.testing.expectEqualStrings("gemma4", find("gemma-4-12b").?.architecture);
     try std.testing.expectEqual(Profile.gemma4, find("gemma-4-26b-a4b").?.profile);
+    try std.testing.expectEqual(Profile.gemma4_e, find("gemma-4-e4b-qat").?.profile);
     try std.testing.expectEqual(Profile.muse_glimmer, find("muse-glimmer-30b").?.profile);
     try std.testing.expectEqual(Profile.qwen38, find("bonsai-2-27b").?.profile);
     try std.testing.expectEqualStrings("qwen35", find("bonsai-2-27b").?.architecture);
