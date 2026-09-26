@@ -133,6 +133,8 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-16 | `scripts/nuclis_mem_usage.py`: a running process's memory split into GPU and CPU; Qwen3.8-27B measured, exit cleanup checked | 2026-09-26 |
 | AGNT-17 | Blank bash output said; the paged-file rule; Ctrl-O's output view; a reasoning budget at `low` for every family, per model in the catalogue | 2026-09-26 |
 | APPS-17 | The catalogue at five entries; the registry written in name order; `--dry-run` writes nothing | 2026-09-26 |
+| MODL-27 | Gemma 4 E4B QAT: per-layer embeddings, shared KV, a causal image span, the clipped-linear projector, its draft head, the `gemma4_e` profile | 2026-09-27 |
+| REPO-17 | README rewritten: the models grouped, `--discover`, a recorded agent session | 2026-09-27 |
 
 ## Context
 
@@ -5445,3 +5447,93 @@ draft source are loaded; the field predates those units. Discovery names
 come from file names (`ternary-bonsai-2-27b-ptq1_0`); a shorter name needs
 a hand edit. A finetune of the E4B with an unpinned template would take the
 family's `gemma4` profile, not `gemma4_e`.
+
+## MODL-27 — Gemma 4 E4B QAT: per-layer embeddings, shared KV, vision, draft head (2026-09-27)
+
+**Outcome.** `gemma-4-e4b-qat` (`unsloth/gemma-4-E4B-it-qat-GGUF`,
+`8c5a9e4f…`) runs on the CPU reference and on Metal: text, images, and
+speculative decoding with its assistant head. The gemma4 adapter gained a
+third configuration whose query heads, window, KV heads, context, global
+value projection, 256-wide per-layer embeddings, and 18 shared-KV layers
+(`Config.kvSource`) are per-configuration values; both runtimes execute
+them, the session holds only the 24 cache-owning layers, and an image span
+is causal on this checkpoint. The assistant adapter's width, FFN, heads,
+and window moved into its `Config` (`config_e4b`), and `bindDraft`
+refuses a head whose KV geometry differs from its target's. The SigLIP
+projector's geometry is per file (`siglip.large`, `siglip.small`), with
+the E4B's clipped linears (a new `clamp` Metal kernel), optional
+standardization, and the audio encoder skipped. The `gemma4_e` profile
+renders the E4B's template revision. Catalogue entry with speculation off.
+Facts and numbers:
+[gemma4.md § Gemma 4 E4B](reference/gemma4.md#gemma-4-e4b-per-layer-embeddings-and-shared-kv-modl-27-2026-09-26).
+Side fix: the Gemma CPU runtime allocated the draft head from its arena
+after moving the arena into the result, leaking the head (every Gemma
+draft run, the 12B's included).
+
+**Evidence.** Measured at bring-up against the pinned reference: traces
+on `<bos>Hello,` CPU 3.1e-5 / 1.8e-6, Metal F32 6.1e-5 / 2.5e-6, F16
+1.3e-2 / 4.3e-4, top-5 equal; `test-generation --metal` passed; the draft
+head's rows ≤ 6.9e-5 on both executors with the reference's greedy
+drafts; vision on Metal within 3.6e-2 / 7.5e-3 on the rows and 6.1e-3 on
+the logits, 8 greedy tokens equal; the vocabulary check against the
+reference server's capture; perplexity −0.010 % (512×8) and −0.021 %
+(4096×4). `zig build test` (563 then 564 tests) and `zig fmt --check`.
+The fresh binary: a chat answer, `--think low`, the aerial photo described
+correctly, `--speculative on` identical to off at 1.34×. New gates:
+`gemma4-e4b-{trace-cpu,trace-f32,trace-f16,generation-metal,
+generation-cpu,vision-metal,vision-cpu,draft-trace-metal,draft-trace-cpu,
+vocabulary,perplexity,perplexity-4k}`.
+
+**Files.** `inference/src/models/gemma4.zig`, `gemma4_runtime.zig`,
+`gemma4_metal.zig`, `gemma4_assistant.zig`,
+`inference/src/vision/gemma4.zig`, `gemma4_metal.zig`,
+`inference/src/profiles/gemma4.zig`, `gemma4_e.zig`, `root.zig`,
+`inference/src/backends/metal/root.zig` and `kernels.metal` (`clamp`),
+`inference/metal-check.zig`, `inference/generation-check.zig`,
+`inference/vocabulary-check.zig`, `src/catalog.zig`, `src/help.zig`,
+`gates.json`, `scripts/tokenizer-fixtures.py`; fixtures
+`models/fixtures/gemma4-e4b.json`, `gemma4-head-e4b.json`,
+`gemma4-mtp-e4b/`, `vision/fixtures/gemma4-e4b-mmproj.json`,
+`gemma4v-e4b-synthetic/`, `profiles/fixtures/gemma4_e-text.json`,
+`tests/fixtures/gemma4-e4b-hello-comma/`,
+`tests/fixtures/perplexity/gemma4-e4b-*`; `docs/reference/gemma4.md`,
+`artifacts.md`, `tests/fixtures/provenance.md`.
+
+**Remaining.** Closed by the user on 2026-09-27 without the planned gate
+pass: `make verify`, `make verify-long`, and the Gemma CPU-tier gates were
+not run, so the existing Gemma gates are not re-proven after the shared
+adapter and runtime changes, and the E4B's CPU vision and CPU generation
+checks never ran. `make check`'s `metal-check` failed once with
+`ProfileExceedsCommandBuffer` (it passed earlier the same session with the
+new `clamp` fixture); not investigated. No acceptance record (only first
+look rates); speculation stays off until measured. A finetune of the E4B
+with an unpinned template would be forced to `gemma4`, not `gemma4_e`.
+
+## REPO-17 — README rewritten, with a recorded agent session (2026-09-27)
+
+**Outcome.** The README is about half its length: the pitch, a GIF of
+`nuclis agent` with Qwen3.8-27B fixing a failing test, status, a quick
+start ending in `config init --discover`, the five catalogue models
+grouped by family (Gemma 4's three with one line each), a paragraph on
+running anything else (inspect, pull by repository, discover), one
+results table for the four models with acceptance records, and the
+documentation, design rules, contributions, disclosure, name, and licence
+trimmed. `scripts/agent-demo.py` records the GIF: a scratch clone of
+`~/Code/playground` with `rect_perimeter` broken, the agent driven in tmux,
+the pane streamed through `tmux pipe-pane` into an asciicast, and `agg`
+rendering `docs/media/agent.gif` at 2× with pauses shortened (the caption
+says so). vhs was tried first and dropped: its browser terminal stopped
+drawing the TUI after an `Edit`, although the agent finished (print mode
+1 min 43 s; the tmux harness showed the whole turn back at `◆ ready`).
+
+**Evidence.** The recording: 155 s of session (the agent's turn, then
+`git diff` and `make test` passing), a 79 s GIF of 4.4 MB at 1079×739,
+frames checked by extraction (the banner, the side-by-side diff of the
+fix, the clean ending). Every number in the README is carried from
+bench.md or the catalogue.
+
+**Files.** `README.md`, `docs/media/agent.gif`, `scripts/agent-demo.py`.
+
+**Remaining.** The GIF depends on the model's run; a re-record gives a
+different transcript. `agg` and tmux are needed to re-record
+(`brew install agg`).

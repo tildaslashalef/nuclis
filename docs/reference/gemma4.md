@@ -705,3 +705,75 @@ the 12B's 8.5 s for 168 tokens under the same check), `replayed: true`
 as on the 12B. The catalogue entry's verdict is *supported* (`model
 inspect`: the Hub's digest at the pinned commit and the adapter's
 binding).
+
+## Gemma 4 E4B: per-layer embeddings and shared KV (MODL-27, 2026-09-26)
+
+The on-device checkpoint, QAT file only (`unsloth/gemma-4-E4B-it-qat-GGUF`
+at `8c5a9e4f…`, every matrix Q4_0; digests in
+[artifacts.md](artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11)).
+Main file: `gemma4`, 42 blocks, 666 tensors, width 2560, FFN 10240,
+context 131,072, `Config.config_e4b`. Read from the file and the pinned
+reference (`7620399`):
+
+- **Geometry:** 8 query heads; sliding window **512**; two KV heads on
+  every layer (256 wide sliding, 512 global), written as one scalar
+  `head_count_kv`; global layers have their own `attn_v` (the 12B and
+  26B-A4B take V from K). Pattern period 6 (35 sliding, 7 global).
+- **Shared KV:** `shared_kv_layers = 18`: layers 0–23 own a cache; layers
+  24–41 have no `attn_k`, `attn_v`, or `attn_k_norm`, still project and
+  rotate Q, and attend over layer 22's cache if sliding and 23's if global
+  (`llama-model.cpp`, the reuse callback: `kv_layers − 2` / `− 1`).
+  `Config.kvSource`; the session holds 24 caches.
+- **Per-layer embeddings,** 256 wide (`gemma4.cpp`, `build_inp_per_layer`,
+  `project_per_layer_inputs`): per token, with `x0 = embed(t)·√2560`,
+  `ple = (norm_256(P·x0 / √2560) + E_pl[t]·√256) / √2`
+  (`per_layer_token_embd [10752, 262144]`, `per_layer_model_proj`,
+  `per_layer_proj_norm`); per layer, after the FFN residual and before the
+  output scale, `x += norm(proj · (gelu(inp_gate · x) ⊙ ple[il])) ⊙ post_norm`.
+  An image row takes its unscaled projector row as `x0` and token 0's
+  (padding) per-layer row. Metal uses existing kernels only (embed, matmul,
+  per-slice RMS norm, the strided GELU pair).
+- **Images are causal:** the reference's `mtmd_decode_use_non_causal` keeps
+  the E2B/E4B span causal (text widths 1536 and 2560), unlike the 12B and
+  26B-A4B's bidirectional sliding layers; `Config.bidirectional_images`.
+  With the span bidirectional the last-position logits missed the oracle by
+  0.35; causal, 6.1e-3.
+- **Template** `241c50d8…`: the 12B's with one rendered difference — with
+  thinking off, no empty `<|channel>thought\n<channel|>` after the
+  generation prompt (the reference server's capture differs only in the
+  seven `_off` cases). Profile `gemma4_e` (`profiles/gemma4_e.zig`),
+  fixture `profiles/fixtures/gemma4_e-text.json`.
+- **Draft head** (`gemma4-assistant`, 49 tensors): width 256, FFN 2048,
+  4 query heads, two KV heads, window 512, `embedding_length_out` 2560; it
+  reads the target's layers 40/41, which the target's sharing maps to 22/23.
+  `bindDraft` refuses a head whose KV heads or window differ from the
+  target's. Q4_0 `MTP/mtp-gemma-4-E4B-it-Q4_0.gguf` (byte-identical to the
+  root `mtp-gemma-4-E4B-it.gguf`).
+- **Projector** (`clip`, 1,411 tensors, 745 of them the audio encoder, left
+  unbound): `gemma4v`, the 26B-A4B's SigLIP path at 16 blocks, width 768,
+  12 heads of 64, FFN 3072, no standardization, and **clipped linears**:
+  each block's q/k/v/out and gate/up/down carry `input_min/max` and
+  `output_min/max` scalars, `y = clamp(W · clamp(x))` (`gemma4v.cpp`,
+  `build_mm`), a `clamp` kernel on Metal
+  ([vision.md](vision.md#gemma-4s-projectors-modl-22-2026-09-23)).
+
+**Measured at bring-up** (M4 Pro, the pinned reference, Metal, F32 cache):
+
+| Check | Result |
+| --- | --- |
+| traces on `<bos>Hello,`, CPU reference | max abs 3.1e-5, relative RMS 1.8e-6, top-5 equal |
+| traces, Metal F32 cache | 6.1e-5 / 2.5e-6 |
+| traces, Metal F16 cache | 1.3e-2 / 4.3e-4 (gate bound 0.05 / 0.002) |
+| `test-generation --metal` | passed; chunk 64 half tiles 3.1e-1 / 1.86e-2, F32 tiles 2.4e-3 / 1.4e-4 |
+| draft head rows, CPU and Metal | ≤ 6.9e-5; greedy 26352 236764 equal |
+| vision on the synthetic image, Metal | rows 3.6e-2 / 7.5e-3, logits 6.1e-3, 8 greedy tokens equal |
+| vocabulary check | 34 captured sequences encode to the reference's ids |
+| perplexity, wikitext-2 512×8 | 36.0558 vs 36.0595 (−0.010 %) |
+| perplexity, 4096×4 | 23.1732 vs 23.1780 (−0.021 %) |
+
+First look, not an acceptance record: decode 52.4 tok/s on a 28-token code
+prompt (256 greedy tokens, F16 cache); `--speculative on` 69.9 tok/s
+(1.34×, 188 of 230 drafts accepted, output identical), below the 1.5× bar,
+so the entry keeps speculation off. llama.cpp decoded 58.7 tok/s on a
+6-token prompt.
+
