@@ -924,6 +924,28 @@ Default build and test commands must not fetch them.
 Secrets are environment-only and excluded from logs and fixtures. Real session
 data and private source snippets must not become test or benchmark fixtures.
 
+### Memory of a running process
+
+`python3 scripts/nuclis_mem_usage.py` reports where a running `nuclis`
+process's memory is (`--watch 2` samples until Ctrl-C and prints the peaks,
+`--json` for one machine-readable report). Run it outside a sandbox: it reads
+`footprint -j`, `vmmap -w`, and `mincore` over the mapped GGUF. The weights are
+a file mapping the GPU reads through no-copy buffers, so they are clean page
+cache outside the process footprint and RSS (Activity Monitor's *Memory*
+column leaves them out); the script adds them back. The session state (KV
+cache and recurrent state) is the heap shared with the GPU (`SM=SHM`).
+Measured on Qwen3.8-27B-UD-Q4_K_M, context 16384, KV F16, `agent`, M4 Pro
+48 GB, 2026-09-26: 16.11 of 16.46 GB of weights resident, session state
+1.23 GB, Metal buffers 0.14 GB, driver 0.08-0.22 GB, CPU 0.31 GB; footprint
+1.75-1.90 GB (peak 1.95 GB during prefill); total 17.9-18.0 GB, steady from
+ready through a 16-step turn. System wired memory rises by about 17 GB while
+command buffers run (the GPU wires what it reads) and falls back between
+them. On exit (Ctrl-C twice mid-turn, Ctrl-D with a tool's child running,
+Ctrl-C idle) the process is gone in 0.5-0.6 s with status 0, the footprint is
+returned, wired memory falls back to its idle 3 GB, and a tool's child is
+killed; the GGUF stays in the page cache as reclaimable cached files, which
+is what makes the next load 20 s instead of a cold read.
+
 ## Reference implementations and third-party material
 
 llama.cpp and other engines are references: read them to understand a format or

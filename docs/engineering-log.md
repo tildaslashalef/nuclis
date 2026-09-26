@@ -130,6 +130,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-15 | The CPU tier leaves the unit routine: when a unit changes what the CPU reference computes, and before a release | 2026-09-23 |
 | MODL-26 | Gemma 4's Metal `verify` rows carry the final soft-cap | 2026-09-24 |
 | APPS-14 | Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family | 2026-09-24 |
+| REPO-16 | `scripts/nuclis_mem_usage.py`: a running process's memory split into GPU and CPU; Qwen3.8-27B measured, exit cleanup checked | 2026-09-26 |
 
 ## Context
 
@@ -5302,3 +5303,31 @@ long-context and code perplexity are not recorded. The scored rows are
 read back whole (250 MB per 256 rows) and reduced on the host.
 `nuclis tokenize` keeps the chat's work bounds and refuses 40 KB of
 wikitext on Gemma.
+
+## REPO-16 — `scripts/nuclis_mem_usage.py`: a running process's memory split into GPU and CPU (2026-09-26)
+
+**Outcome.** A script reports a running `nuclis` process's memory by who
+reads it: the mapped GGUF's page-cache pages (`mincore`), the session state
+(heap regions shared with the GPU, `SM=SHM` in `vmmap -w`), Metal buffers
+and driver memory (`footprint -j`'s `IOAccelerator` and graphics
+categories), and the CPU rest of the footprint. It exists because the
+process footprint and RSS leave the weights out: Activity Monitor shows
+1.8 GB for a 27B model.
+
+**Evidence.** Qwen3.8-27B-UD-Q4_K_M, `nuclis agent`, context 16384, KV F16,
+M4 Pro 48 GB, ReleaseSafe at e9981d8: weights 16.11 of 16.46 GB resident,
+session state 1.23 GB, Metal buffers 0.14 GB, CPU 0.31 GB, footprint
+1.75-1.90 GB (peak 1.95 GB), total 17.9-18.0 GB, steady through a 16-step
+turn; system wired rises from 3 GB to about 20 GB while command buffers run.
+Exits (tmux, sampled every 2 s): Ctrl-C twice mid-turn 0.62 s, Ctrl-D with a
+`sleep 300` tool child 0.62 s (the child killed), Ctrl-C idle 0.50 s; status
+0, no stderr, 1.81 GB of pages returned, wired back to 3 GB. `--self-test`
+passes.
+
+**Files.** `scripts/nuclis_mem_usage.py`, `docs/development.md` (§ Memory of
+a running process).
+
+**Remaining.** The region sizes behind the session-state row come from
+`vmmap`'s rounded columns (0.1 MB). A first Ctrl-C during prefill takes
+effect at the next 256-token chunk (about 4 s at 60 tok/s on the 27B). The
+zero-leak check of Zig's allocator needs a Debug build and was not run.
