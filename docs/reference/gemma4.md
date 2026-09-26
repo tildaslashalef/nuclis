@@ -243,7 +243,9 @@ even when the configuration guessed another from a bare path.
 and `gemma-4-12b-qat` is the QAT file
 ([§ Q4_0 path](#q4_0-path-and-the-qat-file-modl-08-2026-09-12)). Between MODL-07
 and that day one name pointed at whichever file was newest, which made
-`nuclis model pull gemma-4-12b` mean different bytes in different weeks.
+`nuclis model pull gemma-4-12b` mean different bytes in different weeks. Since 2026-09-26 (APPS-17) only `gemma-4-12b-qat` is in the
+catalogue; the K-quant file runs through `config init --discover`
+([artifacts.md § The catalogue](artifacts.md#the-catalogue)).
 A registry entry of the same name still shadows either.
 
 **Exercised.** `nuclis generate --model gemma-4-12b` in both modes (greedy:

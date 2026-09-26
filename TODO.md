@@ -61,30 +61,11 @@ are skipped), then close (check 8).
 | Unit | Title | Sessions |
 | --- | --- | --- |
 | MODL-27 | Gemma 4 E4B QAT: text, per-layer embeddings, shared KV, vision, draft head, profile, catalogue | several; closes once |
-| APPS-17 | The catalogue at five entries; registry entries ordered by name | one |
 | REPO-17 | README rewritten: grouped models, `--discover`, an agent recording | one |
 
 Decided 2026-09-26 (user): APPS-17 and REPO-17 go ahead while MODL-27's
-checks are pending; the README may list the E4B.
-
-## APPS-17 — the catalogue at five entries; registry ordered by name
-
-- `src/catalog.zig` `entries`: keep `qwen3.8-27b`, `gemma-4-12b-qat`,
-  `gemma-4-26b-a4b`, `gemma-4-e4b-qat`, `muse-glimmer-30b`; drop
-  `gemma-4-12b` (K-quant) and `bonsai-2-27b`. Their files stay runnable:
-  `model pull <owner/repo> --file <f>` then `config init --discover`
-  (Bonsai's template is not pinned, so discovery forces `qwen38`; check its
-  `…-mmproj-Q8_0.gguf` is found as the companion). Fix the catalogue tests
-  and every doc/help example naming a dropped entry
-  (`grep -rn "gemma-4-12b\b\|bonsai-2-27b"`); gates keep their files by
-  path (`gates.json` `models.*.entry` is informational: update the text).
-- Ordering: `config init` (catalogue registration), `config
-  registerDiscovered`, and `model pull --register` write `models` sorted by
-  name, and `--discover`'s report lists candidates by name. Unit tests for
-  both orders.
-- Check: `make check`; `rm` a scratch `NUCLIS_HOME`'s file, run `config
-  init --discover --dry-run` and `config init --discover` on the real models
-  dir, and read the result.
+checks are pending; the README may list the E4B. APPS-17 closed the same
+day ([log](docs/engineering-log.md#apps-17--the-catalogue-at-five-entries-the-registry-in-name-order-2026-09-26)).
 
 ## REPO-17 — README rewritten
 

@@ -13,7 +13,6 @@
   },
   "gemma4": {
    "path": "~/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf",
-   "entry": "gemma-4-12b",
    "mmproj": "~/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/mmproj-BF16.gguf"
   },
   "gemma4_qat": {
@@ -39,8 +38,7 @@
    "entry": "muse-glimmer-30b (mtp companion)"
   },
   "bonsai": {
-   "path": "~/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
-   "entry": "bonsai-2-27b"
+   "path": "~/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf"
   },
   "gemma4_e4b": {
    "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",

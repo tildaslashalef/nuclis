@@ -92,34 +92,11 @@ pub const entries = [_]Entry{
             .{ .role = .mtp, .file = "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .size = 1_369_590_656, .sha256 = "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e", .loaded_by = "the MTP unit" },
         },
     },
-    // Gemma 4 12B in two quantizations, as two entries. The plain name is
-    // the ordinary K-quant release the adapter was brought up on,
-    // and `-qat` is Google's quantization-aware-trained checkpoint,
-    // whose every weight matrix is Q4_0 — the encoding it was *trained* for,
-    // which is why it decodes faster at the same size. Naming them this way
-    // (decided 2026-09-12) keeps the plain name on the plain release and
-    // makes the special one ask for itself; both are pinned, both are
-    // supported, and each has its own reference traces and acceptance record.
-    .{
-        .name = "gemma-4-12b",
-        .repo = "unsloth/gemma-4-12b-it-GGUF",
-        .file = "gemma-4-12b-it-UD-Q4_K_XL.gguf",
-        .revision = "fc034cfff751157913579611efad8462ac1be606",
-        .sha256 = "90fd944d227e9d9b68e7e2c7d5b57b79d4c66ed521b0919fbbd932cf834f6f8e",
-        .size = 7_366_423_360,
-        .quantization = "UD-Q4_K_XL",
-        .architecture = "gemma4",
-        .profile = .gemma4,
-        // The QAT sibling measured the heads: 0.899x at draft 4, 1.017x at 7; off.
-        .speculative = false,
-        .draft_length = 4,
-        .think = .low,
-        .thinking_budget = 1024,
-        .companions = &.{
-            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 175_115_840, .sha256 = "2e269f906eb15169ee9ce880ea649bd6d42d4964c21f8ede10d0d0efc738bcbb", .loaded_by = "the vision unit" },
-            .{ .role = .mtp, .file = "mtp-gemma-4-12b-it.gguf", .size = 465_109_248, .sha256 = "145db9094bc0f85f1701e255a2ed216dcc9800fc8bc8631ad00905b456bd451b", .loaded_by = "the MTP unit" },
-        },
-    },
+    // Gemma 4 12B as Google's quantization-aware-trained checkpoint, whose
+    // every weight matrix is Q4_0 — the encoding it was *trained* for, which
+    // is why it decodes faster than the K-quant release at the same size.
+    // The K-quant file (`unsloth/gemma-4-12b-it-GGUF`, the adapter's bring-up
+    // file) left the catalogue on 2026-09-26 and runs through discovery.
     .{
         .name = "gemma-4-12b-qat",
         .repo = "unsloth/gemma-4-12B-it-qat-GGUF",
@@ -215,35 +192,6 @@ pub const entries = [_]Entry{
             .{ .role = .mtp, .file = "dflash-kquant.gguf", .size = 1_631_205_312, .sha256 = "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc", .loaded_by = "the speculative-decoding unit (a DFlash drafter)" },
         },
     },
-    // Prism ML's ternary re-encoding of Qwen3.8-27B: the same architecture
-    // as `qwen3.8-27b`, its weights ternary at group 128 in a Hadamard-rotated
-    // basis (docs/reference/bonsai.md). The 2-bit-slot PQ2_0 packing was the
-    // bring-up file; the entry moved to the denser PTQ1_0 packing of the same
-    // weights on 2026-09-18 once measured not slower on the whole token
-    // (13.05 against 12.87 tok/s) at 1.26 GB less, matching the same traces
-    // (bench.md § Bonsai 2 27B acceptance record). The profile is the pinned Qwen3.8 one
-    // (decided 2026-09-18): the file's upstream template renders every
-    // conversation it accepts byte-identically, and refuses a second system
-    // message the pinned one merges (docs/reference/bonsai.md).
-    .{
-        .name = "bonsai-2-27b",
-        .repo = "prism-ml/Ternary-Bonsai-2-27B-gguf",
-        .file = "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
-        .revision = "6ed5e12bf84b7a63069882c91dd9e9218647d17b",
-        .sha256 = "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3",
-        .size = 5_946_648_928,
-        .quantization = "PTQ1_0 (ternary g128)",
-        .architecture = "qwen35",
-        .profile = .qwen38,
-        // The file drops the prediction block and the entry pins no companion; off.
-        .speculative = false,
-        .draft_length = 4,
-        .think = .low,
-        .thinking_budget = 1024,
-        .companions = &.{
-            .{ .role = .mmproj, .file = "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf", .size = 629_246_976, .sha256 = "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903", .loaded_by = "the vision unit" },
-        },
-    },
 };
 
 /// The widest entry name, so every listing lines its status column up
@@ -331,14 +279,13 @@ test "the table is well formed: unique names, 40-character commits, 64-character
         for (entries[i + 1 ..]) |other| try std.testing.expect(!std.mem.eql(u8, e.name, other.name));
     }
     try std.testing.expectEqualStrings("unsloth/Qwen3.8-27B-GGUF", find("qwen3.8-27b").?.repo);
-    try std.testing.expectEqual(Profile.gemma4, find("gemma-4-12b").?.profile);
-    try std.testing.expectEqualStrings("gemma4", find("gemma-4-12b").?.architecture);
+    try std.testing.expectEqual(Profile.gemma4, find("gemma-4-12b-qat").?.profile);
+    try std.testing.expectEqualStrings("gemma4", find("gemma-4-12b-qat").?.architecture);
     try std.testing.expectEqual(Profile.gemma4, find("gemma-4-26b-a4b").?.profile);
     try std.testing.expectEqual(Profile.gemma4_e, find("gemma-4-e4b-qat").?.profile);
     try std.testing.expectEqual(Profile.muse_glimmer, find("muse-glimmer-30b").?.profile);
-    try std.testing.expectEqual(Profile.qwen38, find("bonsai-2-27b").?.profile);
-    try std.testing.expectEqualStrings("qwen35", find("bonsai-2-27b").?.architecture);
-    try std.testing.expect(find("bonsai-2-27b").?.companion(.mtp) == null);
+    // Files outside the catalogue run through discovery, not by name.
+    try std.testing.expect(find("gemma-4-12b") == null and find("bonsai-2-27b") == null);
     // The measured speculative verdicts (ENGN-17): only Muse's drafter pays.
     try std.testing.expect(!find("qwen3.8-27b").?.speculative);
     try std.testing.expect(!find("gemma-4-12b-qat").?.speculative);

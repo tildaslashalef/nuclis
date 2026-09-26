@@ -132,6 +132,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-14 | Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family | 2026-09-24 |
 | REPO-16 | `scripts/nuclis_mem_usage.py`: a running process's memory split into GPU and CPU; Qwen3.8-27B measured, exit cleanup checked | 2026-09-26 |
 | AGNT-17 | Blank bash output said; the paged-file rule; Ctrl-O's output view; a reasoning budget at `low` for every family, per model in the catalogue | 2026-09-26 |
+| APPS-17 | The catalogue at five entries; the registry written in name order; `--dry-run` writes nothing | 2026-09-26 |
 
 ## Context
 
@@ -5404,3 +5405,43 @@ no brevity instruction at `low` and may meet the cap more often. A step
 that reopens reasoning after a cut is not capped again. An existing
 `~/.nuclis/nuclis.json` takes the global 1024; per-model values come
 through `config set`.
+
+## APPS-17 — The catalogue at five entries; the registry in name order (2026-09-26)
+
+**Outcome.** The built-in catalogue (`src/catalog.zig`) is `qwen3.8-27b`,
+`gemma-4-12b-qat`, `gemma-4-26b-a4b`, `gemma-4-e4b-qat`, and
+`muse-glimmer-30b`, the user's choice. `gemma-4-12b` (the K-quant release)
+and `bonsai-2-27b` left it: their files are runnable, not supported, and
+reach the registry through `config init --discover` (Bonsai's template is
+not pinned, so discovery forces the family's `qwen38`, as the entry did).
+Their pins stay in [artifacts.md](reference/artifacts.md#the-catalogue) as
+the record their traces and acceptance runs cite; their gates keep the
+files by path. The registry is written in name order: the initial file's
+catalogue entries are sorted at compile time, and every edit
+(`model pull --register`, `config init --discover`, `config set`) sorts
+`models` in `Document.finish`; the discovery report lists candidates by
+name. Side fix: `config init --discover --dry-run` created the base file
+when none existed although its help says it writes nothing; a dry run now
+judges a missing file as the initial document in memory.
+
+**Evidence.** `zig build test` (564 tests; new: the registry order of the
+initial list and of `register` then `registerDiscovered` edits), `zig fmt
+--check`, `make gates-validate workloads-validate`. The fresh binary on the
+user's real home, after they deleted `~/.nuclis/nuclis.json`: `config init
+--discover` registered the four files outside the catalogue
+(`gemma-4-12b-it` with its projector and draft head, profile `gemma4`; the
+HauhauCS finetune, `gemma4` forced; both Bonsai packings, `qwen38` forced,
+the Q8_0 projector as companion) and the file lists its nine entries in
+name order. A scratch `NUCLIS_HOME` dry run left the directory empty.
+
+**Files.** `src/catalog.zig`, `src/config.zig`, `src/discover.zig`,
+`src/cli.zig`, `gates.json` (the two models' informational `entry` names
+removed), `docs/spec.md`, `docs/reference/artifacts.md`,
+`docs/reference/gemma4.md`, `docs/reference/bonsai.md`.
+
+**Remaining.** `model ls` still prints the companions' `loaded_by` text
+("not loaded yet: the vision unit") though every family's projector and
+draft source are loaded; the field predates those units. Discovery names
+come from file names (`ternary-bonsai-2-27b-ptq1_0`); a shorter name needs
+a hand edit. A finetune of the E4B with an unpinned template would take the
+family's `gemma4` profile, not `gemma4_e`.

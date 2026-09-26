@@ -99,10 +99,16 @@ defaults that a measurement set (the speculative switch and draft length).
 | Entry | Family | Artifact | Notes |
 | --- | --- | --- | --- |
 | `qwen3.8-27b` | `qwen35` | `unsloth/Qwen3.8-27B-GGUF` `Qwen3.8-27B-UD-Q4_K_M.gguf` | the first and default model; 64 layers, 16 attention and 48 DeltaNet; an embedded draft block |
-| `gemma-4-12b`, `gemma-4-12b-qat` | `gemma4` | `unsloth/gemma-4-12b-it-GGUF`, `unsloth/gemma-4-12B-it-qat-GGUF` | sliding-window and global attention; the QAT file is Q4_0 throughout |
+| `gemma-4-12b-qat` | `gemma4` | `unsloth/gemma-4-12B-it-qat-GGUF` | sliding-window and global attention; Q4_0 throughout (quantization-aware trained) |
 | `gemma-4-26b-a4b` | `gemma4` | `unsloth/gemma-4-26B-A4B-it-qat-GGUF` | the expert configuration, 8 of 128 experts per token |
+| `gemma-4-e4b-qat` | `gemma4` | `unsloth/gemma-4-E4B-it-qat-GGUF` | per-layer embeddings, 18 shared-KV layers; its own template revision (`gemma4_e`) |
 | `muse-glimmer-30b` | `muse_glimmer` | `unsloth/Muse-Glimmer-30B-GGUF` | dense; windowed and global attention; a DFlash draft companion |
-| `bonsai-2-27b` | `qwen35` | `prism-ml/Ternary-Bonsai-2-27B-gguf` | Qwen3.8 at ternary precision in a rotated basis; renders the Qwen profile by the catalogue's pin |
+
+A file outside the catalogue whose architecture has an adapter is
+*runnable*: `config init --discover` registers it (the profile by template
+digest, the family's forced when none matches). The Gemma 4 12B K-quant
+release and Bonsai 2 27B (Qwen3.8 ternary, which renders the Qwen profile
+by force) left the catalogue on 2026-09-26 (APPS-17) and run this way.
 
 Requirements:
 

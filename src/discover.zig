@@ -142,6 +142,11 @@ pub fn discover(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, 
             .draft_length = family.draft_length,
         });
     }
+    std.mem.sort(Candidate, registered.items, {}, struct {
+        fn lessThan(_: void, a: Candidate, b: Candidate) bool {
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.lessThan);
     return .{ .models_dir = listing.models_dir, .registered = registered.items, .skipped = skipped.items };
 }
 

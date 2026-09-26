@@ -476,7 +476,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         const file = config_path orelse return error.MissingHome;
         switch (options.config_action) {
             .init => {
-                const created = try config.init(io, .cwd(), file);
+                // A dry run writes nothing, the base file included: a missing
+                // file is judged as the initial document in memory.
+                const created: config.InitResult = if (options.dry_run) .exists else try config.init(io, .cwd(), file);
                 if (!options.discover) {
                     switch (created) {
                         .created => {
@@ -493,7 +495,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 const arena = arena_state.allocator();
                 const current = try config.readText(alloc, io, .cwd(), file, diag);
                 defer if (current) |c| alloc.free(c);
-                var loaded = try config.fromText(alloc, current orelse return error.FileNotFound, file, diag);
+                const initial = if (current == null) blk: {
+                    var w: std.Io.Writer.Allocating = .init(arena);
+                    try config.writeInitial(&w.writer);
+                    break :blk w.written();
+                } else null;
+                var loaded = try config.fromText(alloc, current orelse initial.?, file, diag);
                 defer loaded.deinit();
                 var report = try discover.discover(arena, alloc, io, root.?, loaded.config.models);
                 report.config_file = file;

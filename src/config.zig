@@ -750,6 +750,11 @@ pub fn initial() Config {
 const initial_models = blk: {
     var list: [catalog.entries.len]NamedModel = undefined;
     for (&catalog.entries, 0..) |*entry, i| list[i] = .{ .name = entry.name, .entry = registryEntry(entry) };
+    std.mem.sort(NamedModel, &list, {}, struct {
+        fn lessThan(_: void, a: NamedModel, b: NamedModel) bool {
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.lessThan);
     break :blk list;
 };
 
@@ -868,7 +873,17 @@ const Document = struct {
 
     /// Serializes and validates through the same loader every command
     /// runs, so the text returned is one `load` accepts. Owned by `gpa`.
+    /// The registry is written in name order, whichever edit added to it.
     fn finish(self: *Document, gpa: Allocator, path: []const u8, diag: *Diagnostic) ![]u8 {
+        if (self.root.object.getPtr("models")) |models| if (models.* == .object) {
+            const Order = struct {
+                keys: []const []const u8,
+                pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+                    return std.mem.lessThan(u8, ctx.keys[a], ctx.keys[b]);
+                }
+            };
+            models.object.sort(Order{ .keys = models.object.keys() });
+        };
         const text = try std.json.Stringify.valueAlloc(gpa, self.root, .{ .whitespace = .indent_2 });
         errdefer gpa.free(text);
         var loaded = try fromText(gpa, text, path, diag);
@@ -1807,4 +1822,22 @@ test "discovered entries are written under free names with only their stated key
     // The catalogue's names and an existing entry are refused.
     try std.testing.expectError(error.RegistryConflict, registerDiscovered(alloc, text, "/r/nuclis.json", &.{.{ .name = "qwen3.8-27b", .path = "p.gguf" }}, &diag));
     try std.testing.expectError(error.RegistryConflict, registerDiscovered(alloc, text, "/r/nuclis.json", &.{.{ .name = "fine", .path = "p.gguf" }}, &diag));
+}
+
+test "the registry is written in name order: the initial file and every edit" {
+    const alloc = std.testing.allocator;
+    for (initial_models[0 .. initial_models.len - 1], initial_models[1..]) |a, b| try std.testing.expect(std.mem.lessThan(u8, a.name, b.name));
+    var diag: Diagnostic = .{};
+    const text =
+        \\{ "schema_version": 1, "models": { "zeta": { "path": "/z.gguf" }, "beta": { "path": "/b.gguf" } } }
+    ;
+    const registered = try register(alloc, text, "t.json", "alpha", .{ .repo = "a/b", .revision = "0000000000000000000000000000000000000000", .file = "a.gguf" }, &diag);
+    defer alloc.free(registered);
+    const discovered = try registerDiscovered(alloc, registered, "t.json", &.{ .{ .name = "omega", .path = "/o.gguf" }, .{ .name = "gamma", .path = "/g.gguf" } }, &diag);
+    defer alloc.free(discovered);
+    var loaded = try fromText(alloc, discovered, "t.json", &diag);
+    defer loaded.deinit();
+    const want = [_][]const u8{ "alpha", "beta", "gamma", "omega", "zeta" };
+    try std.testing.expectEqual(want.len, loaded.config.models.entries.len);
+    for (want, loaded.config.models.entries) |name, named| try std.testing.expectEqualStrings(name, named.name);
 }

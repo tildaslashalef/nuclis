@@ -60,6 +60,9 @@ values MODL-03's catalogue and the Gemma 4 12B records cite:
 | `unsloth/gemma-4-26B-A4B-it-qat-GGUF` | `7b92b5b28818151e8669af2e45e88d6086f490dd` | `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` | 14,249,047,104 | `a7c5bc715f5ff8e99a3e8901ce7d2b42b402c669bf24f7c5250747633d0f5891` |
 | | | `mmproj-BF16.gguf` | 1,194,828,256 | `7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744` |
 | | | `MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf` | 251,939,328 | `7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a` |
+| `unsloth/gemma-4-E4B-it-qat-GGUF` | `8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265` | `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf` | 4,215,695,776 | `df0fd4ee07072c607c29a0a1cb4f98918426cca12f45a2776bdd6ee6d09a4de3` |
+| | | `mmproj-BF16.gguf` | 991,552,320 | `7c9bafa27f82d658eda805c1d82ef62bb0368e1ff75f64f77de58ad318beaaf9` |
+| | | `MTP/mtp-gemma-4-E4B-it-Q4_0.gguf` | 59,678,016 | `423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605` |
 | `unsloth/Muse-Glimmer-30B-GGUF` | `faa5b025c584459c13febfa5c59883516710ae39` | `Muse-Glimmer-30B-UD-Q4_K_XL.gguf` | 15,878,222,368 | `82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38` |
 | | | `mmproj-kquant.gguf` | 1,400,328,928 | `f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6` |
 | | | `dflash-kquant.gguf` | 1,631,205,312 | `27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc` |
@@ -244,3 +247,12 @@ digest against the catalogue (main file or companion) for its verdict
 the `models` registry in `nuclis.json` names models above the catalogue
 with per-model overrides, pinning no digest
 ([development.md § Configuration file](../development.md#configuration-file)).
+`gemma-4-e4b-qat` joined on 2026-09-26 (MODL-27). The same day
+(APPS-17) the catalogue was trimmed to five entries — `qwen3.8-27b`,
+`gemma-4-12b-qat`, `gemma-4-26b-a4b`, `gemma-4-e4b-qat`,
+`muse-glimmer-30b` — and `gemma-4-12b` (the K-quant release) and
+`bonsai-2-27b` left it. Their pins above stay as the record their traces
+and acceptance runs cite; the files run as any other runnable GGUF:
+`nuclis model pull <owner/repo> --file <f>`, then `nuclis config init
+--discover` registers them (Bonsai's template is not a pinned one, so it
+takes its family's `qwen38` profile by force, as the entry did).

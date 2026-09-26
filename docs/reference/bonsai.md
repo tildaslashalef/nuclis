@@ -26,7 +26,7 @@ fork rather than the file, the sentence says so.
 | File | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | `Ternary-Bonsai-2-27B-PTQ1_0.gguf` |
 | Size | 7,206,168,928 B | 5,946,648,928 B |
 | SHA-256 | `3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1` | `53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3` |
-| Pulled | 2026-09-18 (`nuclis model pull bonsai-2-27b` while it was the entry's file, with the Q8_0 projector) | 2026-09-18 (`model pull prism-ml/Ternary-Bonsai-2-27B-gguf --file … --revision 6ed5e12b…`; `nuclis model pull bonsai-2-27b` since the move) |
+| Pulled | 2026-09-18 (`nuclis model pull bonsai-2-27b` while it was the entry's file, with the Q8_0 projector) | 2026-09-18 (`model pull prism-ml/Ternary-Bonsai-2-27B-gguf --file … --revision 6ed5e12b…`; `nuclis model pull bonsai-2-27b` from the move until the entry left the catalogue on 2026-09-26) |
 | `general.file_type` | 141 | 143 |
 
 Companions: `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` (629,246,976 B, SHA-256
@@ -194,7 +194,9 @@ template accepts, the pinned profile renders the same bytes. **Decided
 at open the way a registry entry's profile is (the catalogue's pin is now
 a forced profile, not only the sampling default, so `--model bonsai-2-27b`
 renders without any registry entry; by path, `--prompt-profile qwen38`
-does the same), with the deviation recorded here: nuclis merges leading
+does the same; since the entry left the catalogue on 2026-09-26,
+`config init --discover` forces the family's `qwen38` on the file), with
+the deviation recorded here: nuclis merges leading
 system messages the file's template would refuse. No `profiles/bonsai.zig`:
 the sampling hints in the header (1.0 / 0.95 / 20) are the pinned
 profile's, and the digest stays unpinned rather than declared an alias
