@@ -265,6 +265,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
                 const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
                 if (n == 0 or n > config.max_draft_length) return error.InvalidNumber;
                 f.draft_length = n;
+            } else if (command == .agent and std.mem.eql(u8, flag, "--thinking-budget")) {
+                if (f.thinking_budget != null) return error.DuplicateOption;
+                const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
+                if (n > config.max_output_tokens) return error.InvalidNumber;
+                f.thinking_budget = n;
             } else if ((command == .generate or command == .agent) and std.mem.eql(u8, flag, "--image-max-tokens")) {
                 if (f.image_max_tokens != null) return error.DuplicateOption;
                 const cap = config.ImageMaxTokens.parse(value) orelse return error.InvalidNumber;
@@ -719,6 +724,8 @@ test "agent parses sampling and effort flags without a prompt" {
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--draft-length", "0" }));
     try std.testing.expectEqual(config.ImageMaxTokens{ .tokens = 512 }, (try parseArgs(&.{ "generate", "--prompt", "a", "--image-max-tokens", "512" })).flags.image_max_tokens.?);
     try std.testing.expectEqual(config.ImageMaxTokens.auto, (try parseArgs(&.{ "agent", "--image-max-tokens", "auto" })).flags.image_max_tokens.?);
+    try std.testing.expectEqual(@as(?usize, 0), (try parseArgs(&.{ "agent", "--thinking-budget", "0" })).flags.thinking_budget);
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "agent", "--thinking-budget", "99999" }));
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--image-max-tokens", "0" }));
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--image-max-tokens", "4097" }));
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "generate", "--prompt", "a", "--image-max-tokens", "most" }));

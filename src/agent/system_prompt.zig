@@ -115,6 +115,7 @@ pub const rules =
     "Never invent a tool result: wait for the output before you continue. " ++
     "Your context is small and a long file arrives in pages: for a question about a whole file " ++
     "prefer one shell command (grep, sort, awk, wc) over reading it page by page, let the shell count (wc -l, grep -c) rather than counting lines yourself, and say when you saw only part of it. " ++
+    "Asked to show a file longer than one page, quote the page you received in your answer (the user does not see tool output unless you quote it), name the lines it covers, and offer the rest; answer any question about the whole file with one command. " ++
     "Quote file contents only from tool output you received in this turn; never reconstruct a file from memory. " ++
     "When a request needs more than the context can hold, say so and offer a summary or a command instead.";
 

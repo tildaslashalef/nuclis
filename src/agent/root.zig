@@ -194,6 +194,16 @@ const Ui = struct {
     image_max_tokens: ?usize = null,
     model_path: []const u8 = "",
 
+    /// The next tool view, named in the bar so the cycle is legible.
+    fn cycleTools(self: *Ui) void {
+        self.tr.tools = self.tr.tools.next();
+        self.status = switch (self.tr.tools) {
+            .summary => "tools: summary",
+            .output => "tools: output",
+            .folded => "tools: folded",
+        };
+    }
+
     fn deinit(self: *Ui) void {
         self.forgetFrame();
         self.last_frame.deinit(self.alloc);
@@ -582,6 +592,8 @@ const Ui = struct {
                     .decode_seconds = step.decode_seconds,
                     .thinking_seconds = step.thinking_seconds,
                     .replayed = step.replayed,
+                    .reasoning_cut = step.reasoning_cut,
+                    .reasoning_tokens = step.reasoning_tokens,
                 },
             } },
             .compaction => |c| .{ .compaction = .{ .first_kept = c.first_kept, .reason = c.reason } },
@@ -698,9 +710,7 @@ const Ui = struct {
                 // written are rewritten when the turn is over.
                 .ignored => switch (key) {
                     .tab => self.tr.expanded = !self.tr.expanded,
-                    .ctrl => |c| if (c == 'o') {
-                        self.tr.tools_folded = !self.tr.tools_folded;
-                    },
+                    .ctrl => |c| if (c == 'o') self.cycleTools(),
                     else => {},
                 },
             }
@@ -745,7 +755,7 @@ const Ui = struct {
                 },
                 'n' => self.newSession(),
                 'o' => {
-                    self.tr.tools_folded = !self.tr.tools_folded;
+                    self.cycleTools();
                     try self.rewriteTurn();
                 },
                 'x' => try self.copyLastAnswer(),
@@ -1636,6 +1646,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .sampler = &sampler,
         .history = &history,
         .buffers = .{ .logits = logits, .candidates = candidates, .generated = generated, .effort = settings.think },
+        .thinking_budget = settings.thinking_budget,
         .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
     };
     defer completer.deinit();

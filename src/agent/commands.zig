@@ -132,7 +132,7 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
         .{ "Shift-Enter", "newline (Ctrl-J too)" },
         .{ "Up / Down", "move in the input; history at the first and last row" },
         .{ "Tab", "complete a /command or an @path, otherwise fold thinking" },
-        .{ "Ctrl-O", "fold and unfold the tool output of the last turn" },
+        .{ "Ctrl-O", "cycle the tool rows of the last turn: summary, output, folded" },
         .{ "Ctrl-E", "expand a paste, file, or image chip into editable text" },
         .{ "Ctrl-G", "edit the input in $VISUAL or $EDITOR" },
         .{ "Ctrl-X", "copy the last answer to the clipboard" },

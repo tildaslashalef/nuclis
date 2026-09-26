@@ -1039,6 +1039,10 @@ pub const Timing = struct {
 pub const Outcome = struct {
     stop: StopReason,
     timing: Timing,
+    /// `complete` closed the reasoning at the budget (`CompletionBuffers.thinking_budget`).
+    reasoning_cut: bool = false,
+    /// Generated tokens `complete` decoded as reasoning.
+    reasoning_tokens: usize = 0,
 };
 
 /// Callbacks observed by the loop. `prefill` runs once with the final prompt
@@ -1054,7 +1058,17 @@ pub const Hooks = struct {
     /// Runs before every model step with the session position the step will
     /// occupy; trace writers name their per-layer files by it.
     before_step: ?*const fn (*anyopaque, usize) anyerror!void = null,
+    /// Asked before each token the loop would sample, and before a
+    /// speculative batch's correction (the one token of a batch not yet in
+    /// the session): a token to emit in its place, or null to keep it.
+    force: ?*const fn (*anyopaque) ?u32 = null,
 };
+
+fn forcedToken(hooks: ?Hooks) ?u32 {
+    const h = hooks orelse return null;
+    const call = h.force orelse return null;
+    return call(h.context);
+}
 
 /// Caller-owned sampling scratch and request mode. The effort must match
 /// the prompt's render: it determines whether the reasoning channel is open.
@@ -1063,6 +1077,10 @@ pub const CompletionBuffers = struct {
     candidates: []inference.sampling.Candidate,
     generated: []u32,
     effort: profiles.Effort,
+    /// The most reasoning tokens the completion may spend before `complete`
+    /// ends the reasoning itself: the bracket grammar's close token, or the
+    /// channel grammar's end of message inside a `to=self` body. Null for no cap.
+    thinking_budget: ?usize = null,
 };
 
 /// Completes a rendered prompt as semantic events. `sink.send(Event)` is a
@@ -1089,18 +1107,36 @@ pub fn complete(
         eng: *Engine,
         decoder: profiles.stream.Decoder,
         sink: @TypeOf(sink),
+        budget: ?usize,
+        reasoning: usize = 0,
+        cut: bool = false,
 
         fn token(context: *anyopaque, id: u32) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             if (self.eng.isStop(id)) return;
+            if (self.decoder.thinking and !self.decoder.in_header) self.reasoning += 1;
             const piece = try inference.bpe.decode(self.eng.alloc, &self.eng.vocab, &.{id}, true, .{});
             defer self.eng.alloc.free(piece);
             try self.decoder.feed(id, piece, self.sink);
         }
+
+        /// Once per completion: the reasoning's own ending when it has
+        /// spent its budget, never inside a call or a header being written.
+        /// A channel message ends with `eom`, which is not a stop token.
+        fn force(context: *anyopaque) ?u32 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const budget = self.budget orelse return null;
+            const d = &self.decoder;
+            if (self.cut or !d.thinking or d.in_tool or d.in_header or self.reasoning < budget) return null;
+            self.cut = true;
+            return if (d.markers.channel) |c| c.eom else d.markers.close;
+        }
     };
-    var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, &eng.vocab, buffers.effort), .sink = sink };
+    var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, &eng.vocab, buffers.effort), .sink = sink, .budget = buffers.thinking_budget };
     defer bridge.decoder.deinit();
-    const outcome = try runLoop(eng, tokens, limit, sampler, history, settings, images, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token });
+    var outcome = try runLoop(eng, tokens, limit, sampler, history, settings, images, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token, .force = Bridge.force });
+    outcome.reasoning_cut = bridge.cut;
+    outcome.reasoning_tokens = bridge.reasoning;
     try bridge.decoder.end(outcome, sink);
     return outcome;
 }
@@ -1269,7 +1305,7 @@ pub fn runLoop(
             token = carried;
             seed = null;
         } else {
-            token = if (gpu_greedy) chosen else if (gpu_topk) (try sampler.selectFrom(&top, candidates)) orelse blk: {
+            token = if (forcedToken(hooks)) |f| f else if (gpu_greedy) chosen else if (gpu_topk) (try sampler.selectFrom(&top, candidates)) orelse blk: {
                 // The readback could not decide exactly (nucleus beyond the
                 // readback, a borderline denominator, or a non-finite logit):
                 // read the full logits and take the reference path. With
@@ -1304,7 +1340,7 @@ pub fn runLoop(
             const room = eng.model.session().capacity - position - 1;
             const k = @min(settings.draft_length, @min(room, limit - count));
             if (hooks) |h| if (h.before_step) |call| try call(h.context, position);
-            const result = speculativeBatch(eng, sampler, history, observer, s, token, k, greedy_verify, vocabulary, drafter.?) catch |err| switch (err) {
+            var result = speculativeBatch(eng, sampler, history, observer, s, token, k, greedy_verify, vocabulary, drafter.?) catch |err| switch (err) {
                 // A cancelled batch poisons the session exactly as a cancelled
                 // step does; the loop resets it and reports cancellation.
                 error.Cancelled => {
@@ -1333,7 +1369,12 @@ pub fn runLoop(
             const extras = s.choices[0 .. result.accepted + 1];
             var kept: usize = extras.len;
             var broke = false;
-            for (extras, 0..) |extra, i| {
+            for (extras, 0..) |*slot, i| {
+                if (i == result.accepted) if (forcedToken(hooks)) |f| {
+                    slot.* = f;
+                    result.correction = f;
+                };
+                const extra = slot.*;
                 generated[count] = extra;
                 count += 1;
                 if (history) |h| try h.observe(extra);

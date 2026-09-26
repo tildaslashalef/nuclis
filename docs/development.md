@@ -346,7 +346,8 @@ and the `models` registry) with a `schema_version`. The sections name a
 *scope*, not a command: `engine` (the artifact and its session) and
 `generation` (how tokens are produced: budget, effort, speculative decoding,
 sampling) are shared by `generate` and `agent`; `agent` holds only the chat
-surface's own settings (`think`, `fold_thinking`, `theme`, `instructions`, and was named
+surface's own settings (`think`, `fold_thinking`, `theme`, `instructions`,
+`thinking_budget`, and was named
 `chat` until 2026-09-11, see
 [spec.md § Configuration](spec.md#58-configuration)); `bench` reads `engine` plus
 its own flags. The section was named `generate` until 2026-09-20, when the
@@ -389,7 +390,8 @@ bring-up file. The example:
                 "image_max_tokens": "auto",
                 "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,
                               "presence_penalty": null, "repetition_penalty": null } },
-  "agent":    { "think": "low", "fold_thinking": true, "theme": "gruvbox-dark", "instructions": "auto" },
+  "agent":    { "think": "low", "fold_thinking": true, "theme": "gruvbox-dark", "instructions": "auto",
+                "thinking_budget": 1024 },
   "models":   { "qwen3.8-27b": { "path": null,
                                  "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
                                  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
@@ -600,9 +602,11 @@ background at sixteen colours, where a dark band cannot be painted, and
 takes its `plain` attributes instead.
 
 Two folds, both applied to whatever is rendered next and replayed over the
-last turn: Tab folds thinking, Ctrl-O folds tool output (`tools_folded`: a
-call keeps its row and loses the detail under it, the result rows, and the
-diff's rows). A `!` line from the editor runs through the `bash` tool and
+last turn: Tab folds thinking, Ctrl-O cycles the tool view
+(`transcript.ToolView`: `summary`, one result row under each call;
+`output`, the result's text under it as the model received it, dim, cut at
+`max_output_rows`; `folded`, a call keeps its row and loses the detail
+under it, the result rows, and the diff's rows). A `!` line from the editor runs through the `bash` tool and
 shows as the same `Bash(cmd)` block followed by the output as an `info`
 block (40 rows, then `… N more lines`); with `!` the output is also the
 next user message, which the surface does not echo (`quiet_user`).

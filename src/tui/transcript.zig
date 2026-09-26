@@ -189,6 +189,28 @@ pub const Live = struct {
     pulse: bool = true,
 };
 
+/// The tool views Ctrl-O cycles through, in order.
+pub const ToolView = enum {
+    /// The call row, its detail, and the result's one summary row.
+    summary,
+    /// The summary and the result's text under it, up to `max_output_rows`.
+    output,
+    /// The call row alone; a diff keeps its header.
+    folded,
+
+    pub fn next(self: ToolView) ToolView {
+        return switch (self) {
+            .summary => .output,
+            .output => .folded,
+            .folded => .summary,
+        };
+    }
+};
+
+/// Above this many display rows a result's text folds under an `… N more
+/// lines` marker; the whole text is in the session file.
+pub const max_output_rows: usize = 40;
+
 pub const Transcript = struct {
     alloc: Allocator,
     /// Tool calls since the last `ops` row, by kind, for the next one.
@@ -202,10 +224,9 @@ pub const Transcript = struct {
     /// is rendered next; blocks already scrolled out of reach keep what they
     /// were printed with, which is the rendering model's rule.
     expanded: bool = false,
-    /// Fold state of tool output, toggled by Ctrl-O: a folded call keeps
-    /// its row and loses the detail under it, the result rows, and the
-    /// diff's rows (the diff keeps its header). The same rule as `expanded`.
-    tools_folded: bool = false,
+    /// How much of each tool call is shown, cycled by Ctrl-O. The same rule
+    /// as `expanded`.
+    tools: ToolView = .summary,
 
     pub fn deinit(self: *Transcript) void {
         self.clear();
@@ -429,7 +450,7 @@ pub const Transcript = struct {
                     // region, until the result settles it into the scrollback.
                     if (call.running) {
                         try produced.append(a, try callRow(a, call, options.th, options.pulse));
-                        if (call.detail) |detail| if (!self.tools_folded) try pushDetail(a, &produced, options.th.glyphs(), detail, options.width, .tool_result);
+                        if (call.detail) |detail| if (self.tools != .folded) try pushDetail(a, &produced, options.th.glyphs(), detail, options.width, .tool_result);
                     } else try self.render(a, &produced, block, shape, .remainder);
                 },
                 else => try self.render(a, &produced, block, shape, .remainder),
@@ -501,13 +522,17 @@ pub const Transcript = struct {
             }, options),
             .tool_call => |call| {
                 try out.append(a, try callRow(a, call, th, true));
-                if (call.detail) |detail| if (!self.tools_folded) try pushDetail(a, out, gl, detail, options.width, .tool_result);
+                if (call.detail) |detail| if (self.tools != .folded) try pushDetail(a, out, gl, detail, options.width, .tool_result);
             },
             .ops => |text| try pushWrapped(a, out, text, options.width, .dim),
             .tool_result => |result| {
                 // The result text is the model's; the reader gets one row
-                // (the tool's summary), or the message when the call failed.
-                if (self.tools_folded) {} else if (result.is_error) {
+                // (the tool's summary), or the message when the call failed,
+                // and the text itself in the output view.
+                if (self.tools == .folded) {} else if (self.tools == .output) {
+                    if (result.summary.len > 0) try pushDetail(a, out, gl, result.summary, options.width, if (result.is_error) .error_text else .tool_result);
+                    try pushOutput(a, out, gl, result.text, options.width);
+                } else if (result.is_error) {
                     var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, result.text, "\n"), '\n');
                     var shown: usize = 0;
                     while (lines.next()) |line| : (shown += 1) {
@@ -556,9 +581,9 @@ pub const Transcript = struct {
             .remove => removed += 1,
             .context => {},
         };
-        const arrow = if (self.tools_folded) gl.fold_closed else gl.fold_open;
+        const arrow = if (self.tools == .folded) gl.fold_closed else gl.fold_open;
         try out.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {s}  {s}{d} {s}{d}", .{ arrow, d.path, gl.diff_add, added, gl.diff_remove, removed }), .style = .diff_header });
-        if (self.tools_folded) return;
+        if (self.tools == .folded) return;
         var produced: std.ArrayList(Row) = .empty;
         if (options.width >= side_by_side_min_width) {
             try renderSideBySide(a, &produced, d.rows, options);
@@ -779,6 +804,15 @@ fn callRow(a: Allocator, call: anytype, th: theme.Theme, pulse: bool) !Row {
 
 fn pushDetail(a: Allocator, out: *std.ArrayList(Row), gl: theme.Glyphs, text: []const u8, width: usize, style: ?theme.Style) !void {
     try pushWrapped(a, out, try std.fmt.allocPrint(a, "{s} {s}", .{ gl.detail, text }), width, style);
+}
+
+/// A result's text, indented and dim, cut at `max_output_rows`.
+fn pushOutput(a: Allocator, out: *std.ArrayList(Row), gl: theme.Glyphs, text: []const u8, width: usize) !void {
+    const body = std.mem.trimEnd(u8, text, "\n");
+    if (body.len == 0) return;
+    const rows = try view.lines(a, body, width -| 2, .word);
+    for (rows[0..@min(rows.len, max_output_rows)]) |line| try out.append(a, .{ .text = try std.fmt.allocPrint(a, "  {s}", .{line}), .style = .dim });
+    if (rows.len > max_output_rows) try out.append(a, .{ .text = try std.fmt.allocPrint(a, "  {s} {d} more lines", .{ gl.ellipsis, rows.len - max_output_rows }), .style = .dim });
 }
 
 fn pushWrapped(a: Allocator, out: *std.ArrayList(Row), text: []const u8, width: usize, style: ?theme.Style) !void {
@@ -1407,7 +1441,7 @@ test "a `!` command is a Bash block with its output under it, never summed up as
     try testing.expect(std.mem.startsWith(u8, failed[0].text, th.paint(.op_error)));
 }
 
-test "Ctrl-O folds tool output: the call row stays, the detail, result, and diff rows go" {
+test "Ctrl-O cycles the tool views: summary, output, folded (the call row stays, the detail, result, and diff rows go)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1431,7 +1465,14 @@ test "Ctrl-O folds tool output: the call row stays, the detail, result, and diff
         open,
     );
     const rows_open = tr.rows;
-    tr.tools_folded = true;
+    tr.tools = tr.tools.next();
+    const output = try texts(a, try tr.replayRows(a, options));
+    try testing.expectEqualStrings(
+        "● Bash(make)\n└ $ make\n└ exit 2 · 1 line\n  boom\n● Edit(a.zig)\n▾ a.zig  +1 −1\n1   − old\n  1 + new\n└ Edited a.zig: +1 −1 lines\n  edited\nRan 1 shell command, wrote 1 file\n\n",
+        output,
+    );
+    tr.tools = tr.tools.next();
+    try testing.expectEqual(ToolView.folded, tr.tools);
     const folded = try texts(a, try tr.replayRows(a, options));
     try testing.expectEqualStrings("● Bash(make)\n● Edit(a.zig)\n▸ a.zig  +1 −1\nRan 1 shell command, wrote 1 file\n\n", folded);
     try testing.expect(tr.rows < rows_open);
@@ -1439,6 +1480,25 @@ test "Ctrl-O folds tool output: the call row stays, the detail, result, and diff
     try tr.apply(.{ .tool_call = .{ .id = 3, .name = "bash", .summary = "Bash(sleep 9)", .detail = "$ sleep 9" } });
     const live = try tr.liveRows(a, .{ .width = 80, .th = options.th, .budget = 10 });
     try testing.expectEqual(@as(usize, 1), live.len);
+}
+
+test "the output view cuts a long result at max_output_rows and dims it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tr = transcript();
+    defer tr.deinit();
+    tr.tools = .output;
+    var long: std.ArrayList(u8) = .empty;
+    for (0..max_output_rows + 5) |i| try long.print(a, "line {d}\n", .{i});
+    try tr.apply(.{ .tool_call = .{ .id = 1, .name = "read_file", .summary = "Read(a.txt)" } });
+    try tr.apply(.{ .tool_result = .{ .id = 1, .text = long.items, .truncated = false, .is_error = false, .summary = "45 lines" } });
+    const rows = try tr.takeClosed(a, .{ .width = 80, .th = .{ .kind = .plain } });
+    // The call, the summary, 40 rows, the marker.
+    try testing.expectEqual(@as(usize, 2 + max_output_rows + 1), rows.len);
+    try testing.expectEqualStrings("  line 0", rows[2].text);
+    try testing.expectEqual(theme.Style.dim, rows[2].style.?);
+    try testing.expectEqualStrings("  … 5 more lines", rows[rows.len - 1].text);
 }
 
 test "an attachment is a dim detail row under its prompt, and a preview reserves its rows" {

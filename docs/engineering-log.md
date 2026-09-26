@@ -131,6 +131,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-26 | Gemma 4's Metal `verify` rows carry the final soft-cap | 2026-09-24 |
 | APPS-14 | Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family | 2026-09-24 |
 | REPO-16 | `scripts/nuclis_mem_usage.py`: a running process's memory split into GPU and CPU; Qwen3.8-27B measured, exit cleanup checked | 2026-09-26 |
+| AGNT-17 | Blank bash output said; the paged-file rule; Ctrl-O's output view; a reasoning budget at `low` for every family, per model in the catalogue | 2026-09-26 |
 
 ## Context
 
@@ -5331,3 +5332,75 @@ a running process).
 `vmmap`'s rounded columns (0.1 MB). A first Ctrl-C during prefill takes
 effect at the next 256-token chunk (about 4 s at 60 tok/s on the 27B). The
 zero-leak check of Zig's allocator needs a Debug build and was not run.
+
+## AGNT-17 — The playground fixes: blank output said, the paged-file rule, tool output in the transcript, a reasoning budget (2026-09-26)
+
+**Outcome.** A manual run in `~/Code/playground` ("Show me all of
+data/measurements.txt and tell me the largest radius in it.", Qwen3.8-27B,
+`low`) took 13 steps and about 8 minutes: an `awk` script that printed only
+blank lines came back as `"\n\n"` with nothing else, and the model spent
+five steps suspecting NUL bytes; then about four minutes of reasoning
+weighed the cost rule against the request, and one step reasoned for 120 s
+although `low` was set. `low` is the template's instruction sentence, not
+a limit (the model card: "lower reasoning effort does not always reduce
+overall task completion time"). Four changes, one unit at the user's
+request:
+
+1. `bash`: a clean run whose output is only whitespace returns
+   `[bash: no output, exit 0]`, summary `no output`.
+2. The system prompt's paged-file rule: quote the page received (the user
+   does not see tool output unless it is quoted), name its lines, offer
+   the rest, answer the whole-file question with one command. Re-pinned.
+3. Ctrl-O cycles three tool views (`transcript.ToolView`): `summary`,
+   `output` (the result's text as the model received it, dim, 40 rows then
+   `… N more lines`), `folded`; the bar names the view.
+4. A per-step reasoning budget at `low`: `Hooks.force` in the engine loop
+   (a token in place of the sampled one; speculating, only the batch's
+   correction, the one token not yet in the session), and `complete`
+   ending the reasoning at `CompletionBuffers.thinking_budget` with the
+   profile's own ending: `</think>` (Qwen3.8, Bonsai 2), `<channel|>`
+   (Gemma 4), `<|eom|>` inside a `to=self` body (Muse Glimmer, not a stop
+   token). `agent.thinking_budget` (1024, 0 = none), per model in
+   `models.<name>.agent.thinking_budget`, `--thinking-budget <n>`; every
+   catalogue entry carries `think = low`, `thinking_budget = 1024`, which
+   `config init` writes (starting values chosen by the user, not measured
+   per family: Qwen's longest ordinary step in the playground sessions is
+   about 450-550 tokens, its runaway about 800-970). A cut is a notice and
+   `reasoning_cut` on the session step; every step records
+   `reasoning_tokens`.
+
+Side fix: `Completer.run` renders and decodes at the current effort. The
+buffers kept the startup effort, so a Ctrl-T switch to `off` pre-closed
+Qwen's think block while the decoder still opened in reasoning and streamed
+the answer as thinking.
+
+**Evidence.** `zig build test` and `zig fmt --check` pass; new tests: the
+blank-output result, the three tool views and the 40-row cut, the cut
+notice and its record through the loop's stub, the budget range and
+`thinkingBudget`, `--thinking-budget`. The user's manual run of the same
+prompt, ReleaseSafe: 4 steps, reasoning 51, 54, 147, and 251 tokens (no
+cut), one `awk | sort -n` over the whole file for 9.832, lines 1-91 quoted
+with "I only saw lines 1-91", and an offer for the rest; an earlier run
+before the rule was tightened answered in 4 steps but said "the first 20
+lines shown above" of a page the user had not seen. The baseline
+`agent-eval` against the frozen `e9981d8` binary ran seed 1 (12 tasks, all
+passing) and part of seed 2 before the user stopped it; its records are
+under `.zig-cache/agent-eval/baseline/`.
+
+**Files.** `src/agent/tools/bash.zig`, `src/agent/system_prompt.zig` and
+`fixtures/system_prompt.txt`, `src/tui/transcript.zig`, `src/agent/root.zig`,
+`src/agent/commands.zig`, `src/agent/loop.zig`, `src/agent/print.zig`,
+`src/agent/session.zig`, `src/config.zig`, `src/catalog.zig`, `src/cli.zig`,
+`src/help.zig`, `inference/src/engine.zig`, `inference/generation-check.zig`
+(a forced-token check: plain and speculative streams identical),
+`docs/spec.md`, `docs/development.md`.
+
+**Remaining.** Not run, at the user's direction: the after-eval against
+the baseline, `generation-check --metal` (the forced-token equivalence is
+written, not yet executed), the Metal tier (`make verify`) for the engine
+loop's new hook, and the screenshot harness (the user's screenshots stand
+in). The 1024 budget is one value for every family; Gemma 4 reasons with
+no brevity instruction at `low` and may meet the cap more often. A step
+that reopens reasoning after a cut is not capped again. An existing
+`~/.nuclis/nuclis.json` takes the global 1024; per-model values come
+through `config set`.

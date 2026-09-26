@@ -180,7 +180,13 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         },
         else => {},
     }
-    if (summary.items.len > 0) try summary.print(alloc, " · {d} line{s}", .{ lines, if (lines == 1) "" else "s" });
+    // Blank output from a clean run reads to a model like a broken tool, not
+    // like its own script matching nothing; say which it was.
+    const clean = outcome == .completed and term == .exited and term.exited == 0;
+    if (clean and std.mem.trim(u8, text.items, " \t\r\n").len == 0) {
+        try text.appendSlice(alloc, "[bash: no output, exit 0]");
+        try summary.appendSlice(alloc, "no output");
+    } else if (summary.items.len > 0) try summary.print(alloc, " · {d} line{s}", .{ lines, if (lines == 1) "" else "s" });
     const owned_summary: ?[]u8 = if (summary.items.len > 0) try summary.toOwnedSlice(alloc) else null;
     errdefer if (owned_summary) |s| alloc.free(s);
     return .{ .text = try text.toOwnedSlice(alloc), .truncated = outcome == .truncated, .is_error = is_error, .summary = owned_summary };
@@ -249,6 +255,23 @@ test "bash reports a non-zero exit as an error result" {
     try testing.expect(result.is_error);
     try testing.expect(std.mem.indexOf(u8, result.text, "exit code 7") != null);
     try testing.expectEqualStrings("exit 7 · 0 lines", result.summary.?);
+}
+
+test "bash says when a clean run printed nothing but blank lines" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"printf '\\\\n\\\\n'\"}");
+    defer result.deinit(alloc);
+    try testing.expectEqualStrings("\n\n[bash: no output, exit 0]", result.text);
+    try testing.expect(!result.is_error);
+    try testing.expectEqualStrings("no output", result.summary.?);
+
+    // A failing command with no output keeps its exit note alone.
+    var failed = try run(fixture.ws, alloc, "{\"command\":\"false\"}");
+    defer failed.deinit(alloc);
+    try testing.expect(std.mem.indexOf(u8, failed.text, "no output") == null);
+    try testing.expectEqualStrings("exit 1 · 0 lines", failed.summary.?);
 }
 
 test "bash runs in the workspace directory" {

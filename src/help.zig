@@ -161,6 +161,8 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--session <path>", "record a printed turn to this session file");
     try row(out, sty, "--resume [<id>]", "replay a saved session first; the latest without <id>");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh; default low");
+    try row(out, sty, "--thinking-budget <n>", "most reasoning tokens per step at low; 0 for no");
+    try more(out, "cap; default the model's entry, else 1024");
     try row(out, sty, "--system-prompt <path>", "the file's text replaces the built prompt");
     try more(out, "sections (for tuning); AGENTS.md still follows");
     try row(out, sty, "--image-max-tokens <n>", "most tokens a dropped image becomes: auto (the");
@@ -526,7 +528,7 @@ test "every flag the parser accepts for a command is on its page" {
     const table = [_]Flags{
         .{ .topic = .generate, .flags = &.{ "--prompt", "--prompt-file", "--prompt-tokens", "--raw", "--image", "--image-max-tokens", "--logits", "--trace-dir", "--think", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--json", "--temperature", "--top-k", "--top-p", "--min-p", "--presence-penalty", "--repetition-penalty" } },
         .{ .topic = .bench, .flags = &.{ "--prompt", "--prompt-file", "--prompt-tokens", "--raw", "--repeat", "--warmup", "--profile", "--unfused-norms", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--json", "--temperature" } },
-        .{ .topic = .agent, .flags = &.{ "-p", "--prompt", "--print", "--prompt-file", "--json", "--session", "--resume", "--think", "--image-max-tokens", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--temperature" } },
+        .{ .topic = .agent, .flags = &.{ "-p", "--prompt", "--print", "--prompt-file", "--json", "--session", "--resume", "--think", "--thinking-budget", "--image-max-tokens", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--temperature" } },
         .{ .topic = .tokenize, .flags = &.{ "--prompt", "--prompt-file", "--raw", "--think", "--prompt-profile", "--model", "--json" } },
         .{ .topic = .eval, .flags = &.{ "--file", "--ctx-size", "--chunks", "--reference", "--model", "--backend", "--kv", "--prompt-profile", "--json" } },
         .{ .topic = .inspect, .flags = &.{ "--model", "--json" } },

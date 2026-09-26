@@ -31,6 +31,7 @@ const tui = @import("../tui/root.zig");
 const tools = @import("tools/root.zig");
 const stream = @import("stream.zig");
 const interrupt = @import("../interrupt.zig");
+const config = @import("../config.zig");
 pub const system_prompt = @import("system_prompt.zig");
 
 const Allocator = std.mem.Allocator;
@@ -118,6 +119,9 @@ pub const Step = struct {
     thinking_seconds: f64 = 0,
     /// The session had to be replayed for this step (compaction or a reset).
     replayed: bool = false,
+    /// The engine closed the reasoning at the budget.
+    reasoning_cut: bool = false,
+    reasoning_tokens: usize = 0,
 };
 
 /// One executed tool call and its typed result.
@@ -449,6 +453,7 @@ pub const Agent = struct {
             // A step that ends in calls, or stops without an answer, closes
             // its reasoning here; a cancelled one keeps the bare label.
             if (!cancelled and self.thinking_open and !self.thinking_ended) try self.endThinking();
+            if (reply.outcome.reasoning_cut) try self.events.send(self.events.context, .{ .notice = "  — reasoning cut at its budget (agent.thinking_budget)" });
             // The assistant turn is the answer content plus the calls the
             // profile decoded; assign their host ids first, so the session
             // records the same correlation ids the history carries.
@@ -468,6 +473,8 @@ pub const Agent = struct {
                 .decode_seconds = seconds(reply.outcome.timing.decode),
                 .thinking_seconds = self.thinking_seconds,
                 .replayed = reply.replayed,
+                .reasoning_cut = reply.outcome.reasoning_cut,
+                .reasoning_tokens = reply.outcome.reasoning_tokens,
             } });
             if (cancelled) return .cancelled;
             try self.appendItem(.assistant, self.answer.written(), self.thinking.written(), calls, null, &.{});
@@ -914,6 +921,8 @@ pub const Completer = struct {
     /// session is.
     history: ?*inference.sampling.History,
     buffers: inference.engine.CompletionBuffers,
+    /// `agent.thinking_budget`: applied per step at the current effort.
+    thinking_budget: usize = 0,
     /// Speculative decoding for this turn, resolved from the configuration
     /// and flags; the engine must have been opened with a matching drafter.
     speculative: inference.engine.Speculative = .{},
@@ -1084,6 +1093,11 @@ pub const Completer = struct {
         var prefill = try self.imagePrefill(tokens, images);
         defer prefill.deinit(self.alloc);
         if (prefill.value != null) self.images_fed = true;
+        // The effort is the one this render used (Ctrl-T changes it between
+        // turns): it decides whether the completion opens in reasoning.
+        var buffers = self.buffers;
+        buffers.effort = self.effort;
+        buffers.thinking_budget = config.thinkingBudget(self.thinking_budget, self.effort);
         const settings: inference.engine.Speculative = if (self.images_fed) .{ .enabled = false, .draft_length = self.speculative.draft_length } else self.speculative;
         const outcome = try inference.engine.complete(
             self.eng,
@@ -1092,7 +1106,7 @@ pub const Completer = struct {
             self.sampler,
             self.history,
             settings,
-            self.buffers,
+            buffers,
             prefill.value,
             self.observer,
             sink,
@@ -1187,6 +1201,8 @@ const Stub = struct {
     honor_interrupt: bool = false,
     /// Presses Ctrl-C on this agent right after the step's reasoning.
     cancel_agent: ?*Agent = null,
+    /// Reports the step at this index as one whose reasoning the engine cut.
+    cut_at: ?usize = null,
 
     fn model(self: *Stub) Model {
         return .{ .context = self, .run = run, .count = count };
@@ -1232,6 +1248,7 @@ const Stub = struct {
         return .{ .outcome = .{
             .stop = if (i < self.stops.len) self.stops[i] else .eos,
             .timing = .{ .prompt_tokens = 1, .generated_tokens = 1 },
+            .reasoning_cut = self.cut_at == i,
         } };
     }
 };
@@ -1243,6 +1260,7 @@ const Capture = struct {
     /// Calls carried by recorded assistant entries: the session must see the
     /// same host ids the history does.
     recorded_calls: usize = 0,
+    recorded_cuts: usize = 0,
     compactions: usize = 0,
     notices: usize = 0,
     thinking_ends: usize = 0,
@@ -1287,6 +1305,7 @@ const Capture = struct {
             .assistant => |step| {
                 self.assistant_records += 1;
                 self.recorded_calls += step.calls.len;
+                if (step.reasoning_cut) self.recorded_cuts += 1;
             },
             .compaction => self.compactions += 1,
             else => {},
@@ -1394,6 +1413,27 @@ test "one call then an answer: the loop executes the call and sends the result b
     try testing.expectEqual(agent.history.items[1].tool_calls[0].id, agent.history.items[2].tool_call_id.?);
     try testing.expect(std.mem.indexOf(u8, agent.history.items[2].content, "hi there") != null);
     try testing.expectEqualStrings("The file says hi there.", agent.history.items[3].content);
+}
+
+test "a step whose reasoning was cut says so once and records it" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "hello.txt", .data = "hi there" });
+    var stub: Stub = .{
+        .answers = &.{ "", "It says hi there." },
+        .calls = &.{&.{read_hello}},
+        .thinking = &.{ "a long deliberation", "short" },
+        .cut_at = 0,
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+    try testing.expectEqual(Stop.done, try agent.turn("what is in hello.txt?", &.{}));
+    try testing.expectEqual(@as(usize, 1), capture.notices);
+    try testing.expectEqual(@as(usize, 1), capture.recorded_cuts);
+    try testing.expectEqual(@as(usize, 2), capture.thinking_ends);
 }
 
 test "a call whose result is empty still reaches the answer" {

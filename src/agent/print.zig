@@ -133,6 +133,7 @@ pub fn run(
         .sampler = &sampler,
         .history = &history,
         .buffers = .{ .logits = logits, .candidates = candidates, .generated = generated, .effort = settings.think },
+        .thinking_budget = settings.thinking_budget,
         .observer = trace.observer(),
     };
     defer completer.deinit();
@@ -236,6 +237,8 @@ const Turn = struct {
                     .decode_seconds = step.decode_seconds,
                     .thinking_seconds = step.thinking_seconds,
                     .replayed = step.replayed,
+                    .reasoning_cut = step.reasoning_cut,
+                    .reasoning_tokens = step.reasoning_tokens,
                 },
             } },
             .compaction => |c| .{ .compaction = .{ .first_kept = c.first_kept, .reason = c.reason } },

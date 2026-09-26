@@ -248,7 +248,7 @@ One file, `~/.nuclis/nuclis.json`, with sections `engine` (model, backend,
 `ctx_size`, `kv_precision`), `generation` (`max_tokens`, `think`,
 `speculative`, `draft_length`, `image_max_tokens`, sampling overrides),
 `agent` (`think`,
-`fold_thinking`, `theme`, `instructions`), and a `models` registry of named entries that
+`fold_thinking`, `theme`, `instructions`, `thinking_budget`), and a `models` registry of named entries that
 locate a file (path, or repository and file with a pinned revision), name
 its companions, force a profile, and override any generation or agent key
 for that model only. Precedence is defaults < profile < file < registry
@@ -372,8 +372,10 @@ one command; the evaluation CLI stays separate.
 - Up/Down move inside a multi-line input and recall history from the
   first and last rows; history persists across sessions (200 entries).
 - Tab completes a `/command` or an `@path`, else folds thinking; Ctrl-O
-  folds the tool output of the last turn (the call rows stay, their detail,
-  result, and diff rows go); Ctrl-T cycles effort; Ctrl-W cycles the
+  cycles the tool rows of the last turn through three views: the summary
+  (each call's row, detail, and one result row), the output (the result's
+  text under it, 40 rows then `… N more lines`), and folded (the call rows
+  stay, their detail, result, and diff rows go); Ctrl-T cycles effort; Ctrl-W cycles the
   context window (2K to 32K, re-opening the engine); Ctrl-N starts a new
   session; Ctrl-C cancels a turn, twice quits, or quits when idle; Ctrl-D
   quits.
@@ -492,6 +494,13 @@ A turn is a loop over steps, at most 16 per turn:
   only then does the turn end with a message naming the tokens needed
   and how to raise the window. A turn that alone cannot fit fails with a
   named reason.
+- Reasoning budget: at `low` effort one step reasons for at most
+  `agent.thinking_budget` tokens (1024 by default and in every catalogue entry `config init` writes, 0 for no cap); past it
+  the engine emits the profile's close marker itself, so the model answers
+  or calls a tool, and the transcript and the session step say the
+  reasoning was cut. Effort is otherwise the template's own instruction,
+  which the model may exceed. A profile without a single close token
+  (Muse Glimmer's channels) is uncapped.
 - Failures are results: an unknown tool, invalid arguments, a timeout, a
   truncated call, an empty result, or an ordinary tool failure returns a
   typed result to the model. Only an inference-transport failure ends the

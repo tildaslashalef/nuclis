@@ -150,8 +150,17 @@ pub const Config = struct {
         /// (AGENTS.md, then CLAUDE.md, whichever the workspace has), `off`,
         /// or a workspace-relative path (`agent/system_prompt.zig`).
         instructions: []const u8 = "auto",
+        /// The most reasoning tokens one agent step spends at `low` effort
+        /// before the engine closes the reasoning itself; 0 for no cap. The
+        /// other efforts are uncapped.
+        thinking_budget: usize = default_thinking_budget,
     };
 };
+
+/// `agent.thinking_budget`'s default: above Qwen3.8's longest ordinary step
+/// at `low` in the playground sessions (about 550 tokens), not yet measured
+/// per family.
+pub const default_thinking_budget: usize = 1024;
 
 /// One registry entry: where a model lives and what it overrides for that
 /// model only. `path` (relative to `<root>/models` unless absolute) or
@@ -186,6 +195,7 @@ pub const ModelEntry = struct {
     pub const Agent = struct {
         think: ?Effort = null,
         fold_thinking: ?bool = null,
+        thinking_budget: ?usize = null,
     };
 };
 
@@ -499,6 +509,14 @@ fn parseValue(comptime T: type, comptime Described: type, value: std.json.Value,
     return error.InvalidConfigValue;
 }
 
+/// A reasoning budget may be 0 (no cap), unlike the other counts.
+fn validateBudget(value: usize, path: []const u8, diag: *Diagnostic) !void {
+    if (value > max_output_tokens) {
+        diag.set("{s} must be 0..{d} (found {d})", .{ path, max_output_tokens, value });
+        return error.InvalidConfigValue;
+    }
+}
+
 fn validateRange(value: usize, path: []const u8, max: usize, diag: *Diagnostic) !void {
     if (value == 0 or value > max) {
         diag.set("{s} must be 1..{d} (found {d})", .{ path, max, value });
@@ -529,6 +547,7 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
     try validateRange(cfg.generation.max_tokens, "generation.max_tokens", max_output_tokens, diag);
     try validateRange(cfg.generation.draft_length, "generation.draft_length", max_draft_length, diag);
     if (cfg.generation.image_max_tokens.count()) |n| try validateRange(n, "generation.image_max_tokens", max_image_tokens, diag);
+    try validateBudget(cfg.agent.thinking_budget, "agent.thinking_budget", diag);
     try validateSampling(cfg.generation.sampling, "generation.sampling", diag);
     for (cfg.models.entries) |named| {
         const e = named.entry;
@@ -560,6 +579,7 @@ fn validate(cfg: *const Config, diag: *Diagnostic) !void {
         if (e.ctx_size) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.ctx_size", .{prefix}) catch unreachable, max_context, diag);
         if (e.generation.max_tokens) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.max_tokens", .{prefix}) catch unreachable, max_output_tokens, diag);
         if (e.generation.draft_length) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.draft_length", .{prefix}) catch unreachable, max_draft_length, diag);
+        if (e.agent.thinking_budget) |n| try validateBudget(n, std.fmt.bufPrint(&key_buffer, "{s}.agent.thinking_budget", .{prefix}) catch unreachable, diag);
         if (e.generation.image_max_tokens) |v| if (v.count()) |n| try validateRange(n, std.fmt.bufPrint(&key_buffer, "{s}.generation.image_max_tokens", .{prefix}) catch unreachable, max_image_tokens, diag);
         try validateSampling(e.generation.sampling, std.fmt.bufPrint(&key_buffer, "{s}.generation.sampling", .{prefix}) catch unreachable, diag);
     }
@@ -577,6 +597,8 @@ pub const Flags = struct {
     speculative: ?bool = null,
     draft_length: ?usize = null,
     image_max_tokens: ?ImageMaxTokens = null,
+    /// `--thinking-budget`, the agent's only.
+    thinking_budget: ?usize = null,
     /// `--prompt-profile`: see `ModelEntry.profile`.
     prompt_profile: ?Profile = null,
     sampling: Overrides = .{},
@@ -617,6 +639,8 @@ pub const Resolved = struct {
     /// `agent.instructions`: the instructions file setting, a workspace
     /// matter with no per-model override.
     instructions: []const u8,
+    /// `agent.thinking_budget`; `thinkingBudget` applies it to an effort.
+    thinking_budget: usize,
     /// The file the values came from; null when only defaults and flags applied.
     config_file: ?[]const u8,
     origin: Origin,
@@ -632,6 +656,12 @@ pub const Resolved = struct {
         return self.profile.samplingDefaults(self.think).override(self.sampling);
     }
 };
+
+/// The reasoning cap one step runs with at `effort`: the budget at `low`,
+/// none otherwise or when the budget is 0.
+pub fn thinkingBudget(budget: usize, effort: Effort) ?usize {
+    return if (effort == .low and budget != 0) budget else null;
+}
 
 /// The sampling profile belongs to the checkpoint. The catalogue records it
 /// per entry so `config show` can name it without opening the file: the
@@ -675,6 +705,7 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
         .fold_thinking = e.agent.fold_thinking orelse cfg.agent.fold_thinking,
         .theme = cfg.agent.theme,
         .instructions = cfg.agent.instructions,
+        .thinking_budget = flags.thinking_budget orelse e.agent.thinking_budget orelse cfg.agent.thinking_budget,
         .config_file = if (loaded.found) loaded.path else null,
         .origin = loaded.origin,
         .command = command,
@@ -691,6 +722,8 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     if (e.agent.think != null) o[comptime leafIndex(Config, "agent.think")] = .model;
     if (flags.think != null) o[if (command == .agent) comptime leafIndex(Config, "agent.think") else comptime leafIndex(Config, "generation.think")] = .flag;
     if (e.agent.fold_thinking != null) o[comptime leafIndex(Config, "agent.fold_thinking")] = .model;
+    const cap = comptime leafIndex(Config, "agent.thinking_budget");
+    if (flags.thinking_budget != null) o[cap] = .flag else if (e.agent.thinking_budget != null) o[cap] = .model;
     if (e.generation.speculative != null) o[comptime leafIndex(Config, "generation.speculative")] = .model;
     if (flags.speculative != null) o[comptime leafIndex(Config, "generation.speculative")] = .flag;
     if (e.generation.draft_length != null) o[comptime leafIndex(Config, "generation.draft_length")] = .model;
@@ -731,6 +764,7 @@ pub fn registryEntry(entry: *const catalog.Entry) ModelEntry {
         .mmproj = if (entry.companion(.mmproj)) |c| c.file else null,
         .mtp = if (entry.companion(.mtp)) |c| c.file else null,
         .generation = .{ .speculative = entry.speculative, .draft_length = entry.draft_length },
+        .agent = .{ .think = entry.think, .thinking_budget = entry.thinking_budget },
     };
 }
 
@@ -1065,7 +1099,7 @@ pub const Effective = struct {
     profile: Profile,
     engine: struct { model: []const u8, backend: Backend, ctx_size: usize, kv_precision: KvPrecision },
     generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, image_max_tokens: ImageMaxTokens, sampling: inference.sampling.Options },
-    agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8 },
+    agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8, thinking_budget: usize },
     origin: Origin,
 
     pub fn from(loaded: *const Loaded) Effective {
@@ -1079,7 +1113,7 @@ pub const Effective = struct {
             .profile = gen.profile,
             .engine = .{ .model = gen.model, .backend = gen.backend, .ctx_size = gen.ctx_size, .kv_precision = gen.kv_precision },
             .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .image_max_tokens = gen.image_max_tokens, .sampling = gen.samplingOptions() },
-            .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions },
+            .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions, .thinking_budget = agent.thinking_budget },
             .origin = origin,
         };
     }
@@ -1320,6 +1354,7 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"top_p\": 0 } } }", .err = error.InvalidConfigValue, .needle = "generation.sampling.top_p is out of range" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"sampling\": { \"temperature\": \"hot\" } } }", .err = error.InvalidConfigValue, .needle = "generation.sampling.temperature must be null or a number" },
         .{ .text = "{ \"schema_version\": 1, \"agent\": { \"fold_thinking\": 1 } }", .err = error.InvalidConfigValue, .needle = "agent.fold_thinking must be true or false" },
+        .{ .text = "{ \"schema_version\": 1, \"agent\": { \"thinking_budget\": 99999 } }", .err = error.InvalidConfigValue, .needle = "agent.thinking_budget must be 0..16384" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": 0 } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be 1..4096 (found 0)" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": \"most\" } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be \"auto\" or a positive integer" },
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": 5000 } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be 1..4096" },
@@ -1365,6 +1400,12 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
     @memset(big, ' ');
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "big.json", .data = big });
     try std.testing.expectError(error.ConfigTooLarge, load(alloc, std.testing.io, tmp.dir, "big.json", &diag));
+}
+
+test "the reasoning budget applies at low only, and 0 turns it off" {
+    try std.testing.expectEqual(@as(?usize, 1024), thinkingBudget(1024, .low));
+    try std.testing.expectEqual(@as(?usize, null), thinkingBudget(0, .low));
+    for ([_]Effort{ .off, .medium, .high, .xhigh }) |effort| try std.testing.expectEqual(@as(?usize, null), thinkingBudget(512, effort));
 }
 
 test "resolve applies defaults < file < flags per command and records the source" {

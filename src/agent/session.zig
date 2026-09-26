@@ -77,6 +77,10 @@ pub const Stats = struct {
     /// The step's reasoning time; 0 in files written before it was kept.
     thinking_seconds: f64 = 0,
     replayed: bool = false,
+    /// The engine closed the step's reasoning at `agent.thinking_budget`.
+    reasoning_cut: bool = false,
+    /// Generated tokens decoded as reasoning; 0 in older files.
+    reasoning_tokens: usize = 0,
 };
 
 /// One line of the file after the header. The tag is the entry's `type`, and
@@ -541,6 +545,8 @@ fn readStats(value: ?std.json.Value) Stats {
         .decode_seconds = number(object.get("decode_seconds")),
         .thinking_seconds = number(object.get("thinking_seconds")),
         .replayed = boolean(object.get("replayed")),
+        .reasoning_cut = boolean(object.get("reasoning_cut")),
+        .reasoning_tokens = @intCast(integer(object.get("reasoning_tokens")) orelse 0),
     };
 }
 

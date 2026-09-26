@@ -969,6 +969,21 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
 
     const spec: engine.Speculative = .{ .enabled = true, .draft_length = 4 };
 
+    // A forced token: speculation may replace only a batch's correction, so
+    // it lands at the first correction from `at` on; the ordinary loop
+    // forced at that same index must then emit the identical stream.
+    var spec_force: Forcer = .{ .at = 3, .token = prompt[0] };
+    resetForRun(&eng);
+    const forced_spec = try engine.runLoop(&eng, prompt, generated, &sampler, null, spec, null, logits, no_candidates, b, null, spec_force.hooks());
+    const where = spec_force.where orelse return error.ForceNeverApplied;
+    if (b[where] != prompt[0]) return error.ForceNotEmitted;
+    var plain_force: Forcer = .{ .at = where, .token = prompt[0] };
+    resetForRun(&eng);
+    const forced_plain = try engine.runLoop(&eng, prompt, generated, &sampler, null, .{}, null, logits, no_candidates, a, null, plain_force.hooks());
+    if (plain_force.where != where) return error.ForcePositionMismatch;
+    if (!std.mem.eql(u32, a[0..forced_plain.timing.generated_tokens], b[0..forced_spec.timing.generated_tokens])) return error.ForcedStreamMismatch;
+    std.debug.print("Forced token passed: token {d} at index {d}, speculative and ordinary streams identical over {d} tokens.\n", .{ prompt[0], where, forced_plain.timing.generated_tokens });
+
     // Budget inside a batch: a limit below what the first batch would emit.
     resetForRun(&eng);
     const short = try engine.runLoop(&eng, prompt, 3, &sampler, null, spec, null, logits, no_candidates, a, null, null);
@@ -1004,6 +1019,28 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     if (full.stop != .context_limit) return error.SpeculativeContextMismatch;
     std.debug.print("Speculative context passed: stopped at the {d}-token context.\n", .{prompt.len + 2});
 }
+
+/// Forces `token` once, at the first chance from `at` emitted tokens on,
+/// and records the index it landed at.
+const Forcer = struct {
+    at: usize,
+    token: u32,
+    emitted: usize = 0,
+    where: ?usize = null,
+    fn hooks(self: *Forcer) inference.engine.Hooks {
+        return .{ .context = self, .token = counted, .force = force };
+    }
+    fn counted(context: *anyopaque, _: u32) !void {
+        const self: *Forcer = @ptrCast(@alignCast(context));
+        self.emitted += 1;
+    }
+    fn force(context: *anyopaque) ?u32 {
+        const self: *Forcer = @ptrCast(@alignCast(context));
+        if (self.where != null or self.emitted < self.at) return null;
+        self.where = self.emitted;
+        return self.token;
+    }
+};
 
 /// Cancels a turn once the session position reaches `at`, which during a
 /// verify batch is the batch's start: the prompt commit stays below it.
