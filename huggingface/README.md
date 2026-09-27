@@ -57,7 +57,7 @@ switch (result.outcome) {
 
 | Operation | Result and ownership |
 | --- | --- |
-| `client.list(request)` | Owned `Catalog`: pinned commit and GGUF filenames, sizes, SHA-256 values. Call `deinit()`. |
+| `client.list(request)` | Owned `Catalog`: pinned commit; weight files (`files`: GGUF, safetensors) and a safetensors set's candidate support files (`support`: `.json`, `.txt`, `.model`, `.jinja`), each with size and SHA-256 (LFS) or git blob id (plain file). Call `deinit()`. |
 | `client.download(request)` | Owned `Result`: downloaded paths or selection choices. Call `deinit()`. |
 | `client.localPath(request, filename)` | Where `download` would put the file; no network or filesystem access. Free with `client.allocator`. |
 | `client.readRange(request, offset, length)` | Allocated bytes (1 byte to 8 MiB); free with `client.allocator`. Requires an exact filename. Does not publish a file. |
@@ -66,14 +66,22 @@ switch (result.outcome) {
 call. The returned 40-character commit pins every subsequent request in that
 operation. Explicit tags, branches (including `/`), and commits are supported.
 
-Omitting `filename` selects the sole GGUF or sole complete split-GGUF set in the
-repository. Multiple choices return `selection_required` **before any model
-bytes or directories are created**. Exact filenames are matched in full, including
-subdirectories; there is no suffix matching or quantization guessing. Selecting
-one standard `-00001-of-00002.gguf` filename downloads its entire ordered shard
-set. Missing shards are errors. The catalog includes auxiliary GGUFs such as
-projectors and importance matrices; choosing an artifact is not proof that the
-inference engine supports it.
+An *artifact* is a GGUF or safetensors file, or a standard split set of
+either (`-00001-of-00002.gguf`, `model-00001-of-00004.safetensors`).
+Omitting `filename` selects the sole artifact in the repository. Multiple
+choices return `selection_required` **before any model bytes or directories
+are created**. Exact filenames are matched in full, including
+subdirectories; there is no suffix matching or quantization guessing.
+Selecting one shard downloads its entire ordered shard set. Missing shards
+are errors. A safetensors selection also downloads its support files: the
+`.json`, `.txt`, `.model`, and `.jinja` files in its directory and below,
+except below a subdirectory holding other safetensors weights and except
+another set's `*.safetensors.index.json`; code, pickles, and images never.
+`request.exact` downloads the one named file (support files included) with
+no expansion; `nuclis model pull` uses it after expanding the selection
+itself. The catalog includes auxiliary GGUFs such as projectors and
+importance matrices; choosing an artifact is not proof that the inference
+engine supports it.
 
 Directory precedence:
 
@@ -210,8 +218,9 @@ with the current span is the next step. Concurrency 12 or 16 did not beat 8.
 - `xorb.zig`: independently written chunk decoder for None, LZ4 frames, and
   ByteGrouping4LZ4, including non-multiple-of-four lengths and LZ4 checksums,
   plus a header-only skip.
-- `root.zig`: the sink that checks the GGUF magic, hashes in file order,
-  appends to an atomic file, and reports progress; publication through
+- `root.zig`: the sink that checks the container's first bytes (GGUF magic;
+  a safetensors header length that fits the file, then `{`), hashes in file
+  order, appends to an atomic file, and reports progress; publication through
   `Io.Dir.createFileAtomic`/`File.Atomic.link`.
 
 Limits are explicit: 4 MiB metadata, 10,000 catalog entries, 512 GiB per artifact,
@@ -228,8 +237,12 @@ Bytes are never delivered twice. There is no persistent chunk cache,
 cross-span prefetch, adaptive concurrency, or persistent interrupted-download
 resume yet.
 
-Full SHA-256 and GGUF magic are checked before publication. Existing paths are
-reused only after size and full SHA-256 verification; conflicts are errors.
+The full digest and the container's first bytes are checked before
+publication: the Hub's SHA-256 for LFS/Xet files, or for a plain git file
+(configs, small tokenizers; the Hub gives no SHA-256) its git blob id,
+`sha1("blob <size>\0" ++ bytes)`. `LocalFile.sha256` is always computed from
+the published bytes. Existing paths are reused only after size and full
+verification the same way; conflicts are errors.
 Publication refuses to overwrite a concurrently created destination. Each shard
 is published independently; the whole shard set is not a filesystem transaction.
 

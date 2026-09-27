@@ -19,80 +19,17 @@ Theme agreed 2026-09-27 (user): safetensors as a second artifact format,
 a new experiment with no reference comparison (the Jev-like decision work
 in [docs/research/typesafe-jev.md](docs/research/typesafe-jev.md) is the
 motivation; Laya, `convaiinnovations/laya` at `55cf4c4e`, is the first
-target artifact). Nothing is implemented yet; start with MODL-28.
+target artifact). MODL-28 closed the same day
+([log](docs/engineering-log.md#modl-28--safetensors-sets-through-the-hub-client-and-model-pull-2026-09-27)):
+Laya's root set (`model.safetensors` + support files) and
+`HuggingFaceTB/SmolLM2-135M` are pulled under `~/.nuclis/models`, ready as
+MODL-29's live inputs. Next: MODL-29.
 
 ## Order
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-28 | Safetensors sets through `huggingface/` and `nuclis model pull`, pinned like GGUF | one |
 | MODL-29 | A generic safetensors loader (`inference/src/formats/safetensors.zig`) and `nuclis inspect` on it | one |
-
-## MODL-28 — Safetensors sets through the Hub client and `model pull`
-
-Facts (checked 2026-09-27 on `convaiinnovations/laya` and
-`HuggingFaceTB/SmolLM2-135M`): `?blobs=true` gives every sibling `size`
-and `blobId`; LFS files add `lfs.sha256`; plain files (config, small
-tokenizers) have only `blobId`, which is the git blob SHA-1
-(`sha1("blob <size>\0" ++ bytes)`, checked with `git hash-object`). A
-plain file's `resolve` answers 307 to `/api/resolve-cache/...`, whose
-range GET is a 206: the existing direct path fetches it.
-
-**Artifact sets.** A GGUF artifact is unchanged (a file, or a
-`-NNNNN-of-MMMMM.gguf` shard set). A safetensors artifact is a single
-`.safetensors` file or a `<prefix>-NNNNN-of-MMMMM.safetensors` shard set,
-plus its *support files*: files with extension `.json`, `.txt`, `.model`,
-`.jinja` in the artifact's directory and its subdirectories, excluding
-subdirectories that hold other `.safetensors` files (Laya's `multilingual/`
-and `typed-decisions/` are separate artifacts) and `*.safetensors.index.json`
-files whose prefix is not the set's. Never `.py`, `.bin`, `.pt`, `.md`,
-images.
-
-`huggingface/src/hub.zig`:
-- `File`: `sha256: ?[32]u8` (LFS) and `git_oid: [20]u8`; a file needs one
-  of the two to be verifiable (`MissingChecksum` otherwise).
-- `Catalog.files` keeps weights only (`.gguf`, `.safetensors`), so choice
-  lists and companion lookups stay weights; new `Catalog.support`.
-- `validate`: a filename ends in `.gguf` or `.safetensors`, unless
-  `Request.exact` (below), which accepts any listed file.
-- `select(a, catalog, filename)`: groups weights into artifacts (shard
-  parsing generalized over the extension); a repo-only request with one
-  artifact selects it, several return null; a safetensors selection
-  returns its shards, then its support files.
-- `Request.exact: bool = false`: download only the named file, no shard or
-  set expansion (`model pull` has already expanded; this also removes the
-  N² re-verification of GGUF shard sets that per-job downloads caused).
-
-`huggingface/src/root.zig`: `FileSink` checks the container by extension
-(GGUF magic; safetensors header length `8 + n <= size` and byte 8 `{`;
-support files unchecked); hashes SHA-256 always and git SHA-1 when the
-catalogue has no SHA-256; `publish`/`verifyExisting` verify whichever
-digest is known. `LocalFile.sha256` stays the computed SHA-256.
-`hf-downloader` text says "model files", not "GGUF files".
-
-`src/model.zig`:
-- `Role.support` (config, tokenizer, index); safetensors weights are
-  `main`. `roleFromHeader` only opens `.gguf`.
-- `Sidecar.git_blob: ?[]const u8 = null` (40 hex) for plain files; the
-  step-2 conflict check compares it when the Hub gives no SHA-256.
-- Raw-repository pulls fetch every selected file with `exact = true`.
-- `--register` on a safetensors artifact is refused (`NotRunnable`: no
-  runtime family reads safetensors yet).
-- `ls` lists `.safetensors` beside `.gguf` (support files have sidecars
-  but are not listed rows).
-- `src/help.zig`, `huggingface/README.md`, `docs/development.md` (models
-  layout) updated.
-
-**Checks.** Unit tests: catalogue parse of a mixed fixture (LFS, plain,
-code, images), artifact grouping (Laya's three sets, a shard set, Mistral's
-`consolidated.safetensors` beside shards → selection required), git-blob
-verification, sidecar round trip with and without `git_blob`. Live, fresh
-binary: `nuclis model pull convaiinnovations/laya --file model.safetensors`
-(root set: weights + `rl_agent_config.json`, `encoder/`, `tokenizer/`,
-`eval/*.json`), a second pull reuses every file, `nuclis model ls` shows
-it; `nuclis model pull HuggingFaceTB/SmolLM2-135M` (sole artifact);
-an existing GGUF pull still reuses its verified files. `make check`. No
-Metal tier (no numerical change).
 
 ## MODL-29 — A generic safetensors loader
 

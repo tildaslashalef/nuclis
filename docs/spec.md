@@ -50,7 +50,7 @@ deferred (§10).
 
 | Term | Meaning |
 | --- | --- |
-| artifact | one GGUF file, identified by its SHA-256 |
+| artifact | one GGUF file, identified by its SHA-256; or a safetensors set (weights and their configuration and tokenizer files), each file identified by its digest |
 | family | an architecture the engine has an adapter for (`qwen35`, `gemma4`, `muse_glimmer`) |
 | adapter | the family's binding, CPU runtime, and Metal plan |
 | profile | the prompt contract of a chat template: rendering, stop set, reasoning markers, tool grammar; selected by the template's digest |

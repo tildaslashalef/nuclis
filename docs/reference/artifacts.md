@@ -197,11 +197,18 @@ Hub collides):
   `--revision` said (`main`, a tag, a commit), which is what makes the
   SHA-256 beside it meaningful; the MODL-03 catalogue and every benchmark record
   cite commits the same way.
-- `role` is `main`, `mmproj`, `mtp`, or `imatrix`: from the header when it
-  says so (`general.type` `imatrix` or `mmproj`, or a `clip` architecture;
-  the main model and the separate MTP head both say `model`), else from
-  `--role` (the MODL-03 catalogue later), else `main`. A flag that contradicts
-  the header is `RoleMismatch`.
+- `role` is `main`, `mmproj`, `mtp`, `imatrix`, or `support`: from the
+  header when it says so (`general.type` `imatrix` or `mmproj`, or a `clip`
+  architecture; the main model and the separate MTP head both say `model`),
+  else from `--role` (the MODL-03 catalogue later), else `main`. A flag that
+  contradicts the header is `RoleMismatch`. Safetensors weights are `main`;
+  the configuration, tokenizer, and index files a safetensors artifact
+  brings are `support` (see *Safetensors artifacts* below).
+- `git_blob` (optional, 40 hex) is the Hub's git blob id of a plain git
+  file (a config or small tokenizer), which has no SHA-256 on the Hub: the
+  pull verified the bytes by it, and `sha256` is the digest computed from
+  those bytes. LFS/Xet files omit it; older sidecars lack it and read the
+  same.
 - Written only after the package's atomic publication, or its full-hash
   verification of a file already in place, succeeded: a sidecar's presence
   means the file beside it was checked against the Hub's catalog. Nothing
@@ -209,6 +216,35 @@ Hub collides):
   it. A sidecar recording other content makes `pull` refuse
   (`ExistingFileMismatch`) unless `--force` replaces file and sidecar.
 - `size` lets `model ls` flag a file that changed underneath its sidecar.
+
+### Safetensors artifacts
+
+A safetensors repository is pulled as a set, since the weights alone do not
+load: `nuclis model pull <owner/repo> [--file <x>.safetensors]` takes the
+file (or its whole `-NNNNN-of-MMMMM.safetensors` shard set) and its
+*support files*: `.json`, `.txt`, `.model`, and `.jinja` files in the
+set's directory and below, except below a subdirectory holding other
+safetensors weights (another artifact) and except an
+`*.safetensors.index.json` of another set. Code, pickles, images, and
+READMEs are never fetched. Each file lands at its Hub path and gets its own
+sidecar, so `convaiinnovations/laya --file model.safetensors` gives:
+
+```text
+~/.nuclis/models/convaiinnovations/laya/
+  model.safetensors                  (+ .nuclis.json, role main)
+  rl_agent_config.json               (+ .nuclis.json, role support)
+  encoder/config.json                (+ .nuclis.json, role support)
+  eval/results.json                  (+ .nuclis.json, role support)
+  tokenizer/tokenizer.json           (+ .nuclis.json, role support)
+  tokenizer/tokenizer_config.json    (+ .nuclis.json, role support)
+```
+
+`multilingual/model.safetensors` and `typed-decisions/model.safetensors`
+are separate choices with their own support files. `model ls` lists the
+weights (not the support files); `--register` refuses a safetensors
+artifact (`NotRunnable`) and `config init --discover` skips one, until a
+family runs safetensors; remote `model inspect` reads GGUF directories
+only.
 
 ### The catalogue
 
@@ -221,8 +257,8 @@ the MTP unit). Entries are named after the model (`qwen3.8-27b`), not the
 quantization. `nuclis model pull <name> [--with mmproj,mtp | --all]`
 fetches through it, `--model` and `engine.model` resolve names through it,
 and `model ls` reports every entry's status from sidecars (`present`,
-`absent`, `mismatch`, `unverified`) with the other GGUF files in the
-layout beneath. The Qwen entry was proven from a clean state on
+`absent`, `mismatch`, `unverified`) with the other model files (GGUF,
+safetensors) in the layout beneath. The Qwen entry was proven from a clean state on
 2026-09-11: the old `models/qwen/` directory was deleted and
 `nuclis model pull qwen3.8-27b --all` rebuilt the model directory (MODL-03).
 Gemma 4 12B entered the catalogue as `gemma-4-12b` with its profile on

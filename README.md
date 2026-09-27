@@ -1,9 +1,9 @@
 # nuclis
 
-A local inference engine for GGUF language models, written in Zig with a
-Metal backend for Apple Silicon, and a small coding agent on top of it.
-Every layer is checked against a pinned llama.cpp build before it is made
-fast.
+A local inference engine for open-weight language models, written in Zig
+with a Metal backend for Apple Silicon, and a small coding agent on top of
+it. Every layer is checked against a pinned llama.cpp build before it is
+made fast.
 
 ![nuclis agent with Qwen3.8-27B finding and fixing a failing test](docs/media/agent.gif)
 

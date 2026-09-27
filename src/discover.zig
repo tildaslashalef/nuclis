@@ -93,6 +93,10 @@ pub fn discover(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, 
             try skipped.append(arena, .{ .path = f.path, .reason = try std.fmt.allocPrint(arena, "already registered as {s}", .{r.name}) });
             continue;
         }
+        if (std.mem.endsWith(u8, f.path, ".safetensors")) {
+            try skipped.append(arena, .{ .path = f.path, .reason = "a safetensors artifact; no model family runs safetensors yet" });
+            continue;
+        }
         if (companionRole(f)) |role| {
             try skipped.append(arena, .{ .path = f.path, .reason = try std.fmt.allocPrint(arena, "a {s} companion; it fills the entry of the main file beside it", .{@tagName(role)}) });
             continue;

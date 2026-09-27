@@ -106,7 +106,7 @@ fn samplingOptions(out: *std.Io.Writer, sty: style.Style) !void {
 // ----- the overview -----
 
 fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
-    try out.print("{s}nuclis{s} {s}{s}{s} — a local inference engine for GGUF models on Apple Silicon\n", .{
+    try out.print("{s}nuclis{s} {s}{s}{s} — a local inference engine for open-weight models on Apple Silicon\n", .{
         sty.on(.header), sty.off(), sty.on(.number), version, sty.off(),
     });
     try heading(out, sty, "Usage:");
@@ -394,10 +394,12 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
 
     try heading(out, sty, "Commands:");
     try row(out, sty, "ls", "the catalogue with each entry's local status, then");
-    try more(out, "every other GGUF file under ~/.nuclis/models");
+    try more(out, "every other GGUF or safetensors file under");
+    try more(out, "~/.nuclis/models");
     try row(out, sty, "pull", "fetch a catalogue entry, a registry entry, or any");
-    try more(out, "file of a repository, verified by SHA-256 and");
-    try more(out, "published atomically");
+    try more(out, "artifact of a repository, verified by digest and");
+    try more(out, "published atomically; a safetensors artifact brings");
+    try more(out, "its config, tokenizer, and index files");
     try row(out, sty, "inspect", "read a remote file's header (at most 64 MiB, no");
     try more(out, "weights) and say whether it would run: supported,");
     try more(out, "runnable, or not");
@@ -419,6 +421,8 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try example(out, sty, "nuclis model pull qwen3.8-27b --all", "the default model with its projector and draft head");
     try code(out, sty, "nuclis model pull unsloth/gemma-4-12b-it-GGUF \\");
     try example(out, sty, "    --file gemma-4-12b-it-UD-Q4_K_XL.gguf --register gemma-fast", "any file of a repository, under a name");
+    try code(out, sty, "nuclis model pull convaiinnovations/laya --file model.safetensors");
+    try more(out, "a safetensors set with its config and tokenizer");
     try example(out, sty, "nuclis model inspect unsloth/Muse-Glimmer-30B-GGUF --file dflash-kquant.gguf", "will it run, before the download");
 
     try heading(out, sty, "Notes:");

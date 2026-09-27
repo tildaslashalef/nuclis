@@ -135,6 +135,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-17 | The catalogue at five entries; the registry written in name order; `--dry-run` writes nothing | 2026-09-26 |
 | MODL-27 | Gemma 4 E4B QAT: per-layer embeddings, shared KV, a causal image span, the clipped-linear projector, its draft head, the `gemma4_e` profile | 2026-09-27 |
 | REPO-17 | README rewritten: the models grouped, `--discover`, a recorded agent session | 2026-09-27 |
+| MODL-28 | Safetensors sets through the Hub client and `model pull`, pinned like GGUF | 2026-09-27 |
 
 ## Context
 
@@ -5537,3 +5538,54 @@ bench.md or the catalogue.
 **Remaining.** The GIF depends on the model's run; a re-record gives a
 different transcript. `agg` and tmux are needed to re-record
 (`brew install agg`).
+
+## MODL-28 — Safetensors sets through the Hub client and `model pull` (2026-09-27)
+
+**Outcome.** `huggingface/` and `nuclis model pull` fetch safetensors as
+well as GGUF, into the same `<models>/<owner>/<repo>/<file>` layout with a
+sidecar per file. An artifact is a GGUF or safetensors file or a standard
+`-NNNNN-of-MMMMM` shard set of either; a safetensors artifact also takes
+its support files (`.json`, `.txt`, `.model`, `.jinja` in its directory
+and below, not below another set's directory, and only its own
+`*.safetensors.index.json`). The catalog keeps weights in `files` (the
+choices) and the candidates in `support`. Plain git files, which have no
+Hub SHA-256, are verified by their git blob id
+(`sha1("blob <size>\0" ++ bytes)`); every file's SHA-256 is computed from
+the published bytes and recorded, with the blob id in a new optional
+sidecar field `git_blob`. A new `support` role; `Request.exact` downloads
+one named file without expansion, which `model pull` now uses for every
+job (it had expanded the selection already; a split GGUF pulled by
+repository id no longer re-verifies the whole set once per shard). The
+sink checks the container by extension (GGUF magic; a safetensors header
+length that fits, then `{`). `--register` refuses a safetensors artifact
+(`NotRunnable`), `config init --discover` skips one with the reason, and
+remote `model inspect` names GGUF-only. The README and `--help` call nuclis
+an engine for open-weight models (the user's wording).
+
+**Evidence.** 567/567 unit tests, including catalogue parsing of a mixed
+listing (LFS, plain, code, images), Laya's three sets and a Mistral-style
+consolidated-beside-shards layout, git-blob verification against a
+`git hash-object` value, the container check, and sidecars with and
+without `git_blob`. Live with the fresh ReleaseSafe binary:
+`model pull convaiinnovations/laya` lists the three sets and fails with
+`SelectionRequired`; `--file model.safetensors` at `55cf4c4e` fetched the
+842,609,210-byte weights (SHA-256 `891102d37268…`, the Hub's) and five
+support files, a second pull verified all six without a download;
+`HuggingFaceTB/SmolLM2-135M` (no `--file`, the sole artifact) fetched the
+weights and seven support files; `--register` on
+`multilingual/model.safetensors` refused; `model pull gemma-4-e4b-qat`
+re-verified its 4.2 GB GGUF in 1.9 s; `model ls` and
+`config init --discover --dry-run` list and skip the two safetensors
+files; `hf-downloader --list` shows Laya's three sets. No Metal tier: no
+numerical change.
+
+**Files.** `huggingface/src/hub.zig`, `huggingface/src/root.zig`,
+`huggingface/src/main.zig`, `huggingface/README.md`, `src/model.zig`,
+`src/discover.zig`, `src/help.zig`, `Makefile`, `README.md`,
+`docs/spec.md`, `docs/development.md`, `docs/reference/artifacts.md`,
+`docs/engineering-log.md`, `TODO.md`.
+
+**Remaining.** Each file of a set is its own package call, so each lists
+the repository again (about 0.7 s per small file). Remote `model inspect`
+does not read safetensors headers. A plain git file's integrity rests on
+SHA-1, the Hub's own identifier for it.

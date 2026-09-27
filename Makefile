@@ -151,7 +151,7 @@ agent-eval: build ## The agent's task list against the playground: make agent-ev
 shot: metal ## Drive `nuclis agent` in tmux and capture its screen: make shot ARGS='until=ready,60 capture=idle --stop' (scripts/tui-shot.py --help)
 	python3 scripts/tui-shot.py --command "$(BIN) agent --backend $(BACKEND) --model $(MODEL)" $(ARGS)
 
-model-ls: build ## List the GGUF files under <root>/models with their provenance sidecars
+model-ls: build ## List the model files (GGUF, safetensors) under <root>/models with their provenance sidecars
 	$(BIN) model ls $(ARGS)
 
 # ---- the perplexity gates' text (docs/reference/eval.md) --------------------

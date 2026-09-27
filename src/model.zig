@@ -38,7 +38,8 @@ pub const version = @import("build_options").version;
 /// What a file is for. The header decides when it says so (`general.type`
 /// `imatrix` or `mmproj`, or a `clip` architecture); otherwise the `--role`
 /// flag (the catalogue resolves it later), and `main` when nothing says.
-pub const Role = enum { main, mmproj, mtp, imatrix };
+/// `support` is a safetensors artifact's configuration, tokenizer, or index.
+pub const Role = enum { main, mmproj, mtp, imatrix, support };
 
 pub const sidecar_suffix = ".nuclis.json";
 /// A sidecar is a few hundred bytes; anything larger is not ours.
@@ -133,6 +134,10 @@ pub const Sidecar = struct {
     role: Role,
     /// RFC 3339 UTC, second resolution.
     downloaded_at: []const u8,
+    /// The Hub's git blob id (40 hex) for a plain git file, which has no
+    /// Hub SHA-256: `sha256` is then computed locally after the blob id
+    /// verified the bytes. Null for LFS files.
+    git_blob: ?[]const u8 = null,
     nuclis_version: []const u8,
 };
 
@@ -243,8 +248,25 @@ const SelectionReport = struct {
 
 /// One file to fetch: its exact Hub name, the role the caller knows (the
 /// catalogue's or `--role`), and the digest it must have (the catalogue's
-/// pinned one, or the Hub's own for a raw repository).
-const Job = struct { name: []const u8, role: ?Role, sha256: []const u8, size: u64 };
+/// pinned one, or the Hub's own for a raw repository): a SHA-256, or for a
+/// plain git file only its blob id.
+const Job = struct { name: []const u8, role: ?Role, sha256: ?[]const u8, git_blob: ?[]const u8 = null, size: u64 };
+
+fn hexOrNull(arena: Allocator, bytes: anytype) !?[]const u8 {
+    const value = bytes orelse return null;
+    return try arena.dupe(u8, &std.fmt.bytesToHex(value, .lower));
+}
+
+fn remoteJob(arena: Allocator, f: hf.RemoteFile, role: ?Role) !Job {
+    const kind = hf.format(f.name);
+    return .{
+        .name = try arena.dupe(u8, f.name),
+        .role = if (kind == null) .support else role,
+        .sha256 = try hexOrNull(arena, f.sha256),
+        .git_blob = try hexOrNull(arena, f.git_oid),
+        .size = f.size,
+    };
+}
 
 /// Resolves the repository (a catalogue name or an `owner/repo` id) and
 /// its revision, prints the pinned commit, downloads or verifies each file,
@@ -294,13 +316,13 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
         var remote = client.list(request) catch |err| return hubFailure(err, options.repo, diag);
         defer remote.deinit();
         pinned = remote.revision;
-        const selected = (hf.select(arena, remote.files, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
+        const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
             try renderSelection(out, .{ .repo = options.repo, .revision = &pinned, .selection_required = try choices(arena, remote.files) }, json, sty);
             try out.flush();
-            diag.set("{s} has {d} GGUF files; pass --file <name>", .{ options.repo, remote.files.len });
+            diag.set("{s} has {d} model files; pass --file <name>", .{ options.repo, remote.files.len });
             return error.SelectionRequired;
         };
-        for (selected) |f| try jobs.append(arena, .{ .name = try arena.dupe(u8, f.name), .role = options.role, .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(f.sha256, .lower)), .size = f.size });
+        for (selected) |f| try jobs.append(arena, try remoteJob(arena, f, options.role));
         // A registry entry's companions, by exact name at the same commit.
         for ([_]struct { name: ?[]const u8, role: Role }{ .{ .name = options.mmproj, .role = .mmproj }, .{ .name = options.mtp, .role = .mtp } }) |companion| {
             const name = companion.name orelse continue;
@@ -310,7 +332,7 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
                 diag.set("{s}: no GGUF named {s} in the repository (the registry entry's {s} companion)", .{ options.repo, name, @tagName(companion.role) });
                 return error.FileNotFound;
             };
-            try jobs.append(arena, .{ .name = try arena.dupe(u8, file.name), .role = companion.role, .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(file.sha256, .lower)), .size = file.size });
+            try jobs.append(arena, try remoteJob(arena, file, companion.role));
         }
     }
     const revision: []const u8 = &pinned;
@@ -320,6 +342,10 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
         const main_file = for (jobs.items) |job| {
             if (job.role == null or job.role == .main) break job.name;
         } else null;
+        if (main_file) |f| if (hf.format(f) == .safetensors) {
+            diag.set("{s} is a safetensors artifact; no model family runs safetensors yet, so it cannot be registered (pull it without --register)", .{f});
+            return error.NotRunnable;
+        };
         try config.registrable(name, request.repo_id, main_file, diag);
     }
     if (!json) try renderHeader(out, sty, if (entry) |e| e.name else options.name, request.repo_id, if (entry != null) null else options.revision orelse "main", revision);
@@ -337,9 +363,13 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
             else => return err,
         };
         if (recorded) |r| {
-            if (std.mem.eql(u8, r.sha256, job.sha256) and r.size == job.size) continue;
+            // A plain git file has only its blob id on the Hub.
+            const same = if (job.sha256) |sha| std.mem.eql(u8, r.sha256, sha) else std.mem.eql(u8, r.git_blob orelse "", job.git_blob.?);
+            if (same and r.size == job.size) continue;
             if (!options.force) {
-                diag.set("{s}: its sidecar records commit {s} (sha256 {s}…), the request resolved to commit {s} (sha256 {s}…); pass --force to replace it", .{ path, r.revision[0..12], r.sha256[0..12], revision[0..12], job.sha256[0..12] });
+                const want, const kind = if (job.sha256) |sha| .{ sha, "sha256" } else .{ job.git_blob.?, "git blob" };
+                const have = if (job.sha256 != null) r.sha256 else r.git_blob orelse "(none recorded)";
+                diag.set("{s}: its sidecar records commit {s} ({s} {s}…), the request resolved to commit {s} ({s} {s}…); pass --force to replace it", .{ path, r.revision[0..12], kind, have[0..@min(12, have.len)], revision[0..12], kind, want[0..12] });
                 return error.ExistingFileMismatch;
             }
             try deleteIfPresent(io, path);
@@ -360,6 +390,9 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     var registration: config.Registration = .{ .repo = request.repo_id, .revision = revision, .file = null, .profile = options.profile };
     var stamp: [20]u8 = undefined;
     const downloaded_at = rfc3339(&stamp, std.Io.Timestamp.now(io, .real).toSeconds());
+    // Every job is one file (shard sets and support files were expanded
+    // above), so each download is exact.
+    request.exact = true;
     for (jobs.items) |job| {
         request.filename = job.name;
         var result = client.download(request) catch |err| switch (err) {
@@ -383,11 +416,11 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
             // The Hub at the pinned commit must agree with the catalogue;
             // otherwise the table is wrong, and the file stays without a
             // sidecar so it is never taken for verified.
-            if (entry != null and !std.mem.eql(u8, digest, job.sha256)) {
-                diag.set("{s}: the Hub's digest at commit {s} is {s}…, the catalogue pins {s}…; the catalogue entry needs updating", .{ file.path, revision[0..12], digest[0..12], job.sha256[0..12] });
+            if (entry != null and !std.mem.eql(u8, digest, job.sha256.?)) {
+                diag.set("{s}: the Hub's digest at commit {s} is {s}…, the catalogue pins {s}…; the catalogue entry needs updating", .{ file.path, revision[0..12], digest[0..12], job.sha256.?[0..12] });
                 return error.CatalogMismatch;
             }
-            const header = try roleFromHeader(gpa, io, file.path);
+            const header = if (hf.format(file.path) == .gguf) try roleFromHeader(gpa, io, file.path) else null;
             const role = resolveRole(header, job.role) catch |err| {
                 diag.set("{s}: the header says its role is {s}; --role {s} contradicts it (no sidecar written)", .{ file.path, @tagName(header.?), @tagName(job.role.?) });
                 return err;
@@ -406,13 +439,14 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
                 .role = role,
                 .downloaded_at = downloaded_at,
                 .nuclis_version = version,
+                .git_blob = try hexOrNull(arena, file.remote.git_oid),
             });
             try report.append(arena, .{ .path = try arena.dupe(u8, file.path), .size = file.size, .sha256 = digest, .transport = @tagName(file.transport), .role = role, .sidecar = sidecar });
             switch (role) {
                 .main => registration.file = job.name,
                 .mmproj => registration.mmproj = job.name,
                 .mtp => registration.mtp = job.name,
-                .imatrix => {},
+                .imatrix, .support => {},
             }
         }
     }
@@ -451,7 +485,7 @@ fn renderSelection(out: *std.Io.Writer, report: SelectionReport, json: bool, sty
         try std.json.Stringify.value(report, .{ .whitespace = .indent_2 }, out);
         return out.writeByte('\n');
     }
-    try out.print("{s}{s}{s} @ commit {s}{s}{s} has {s}{d}{s} GGUF files; choose one with --file <name>:\n", .{ sty.on(.code), report.repo, sty.off(), sty.on(.comment), report.revision, sty.off(), sty.on(.number), report.selection_required.len, sty.off() });
+    try out.print("{s}{s}{s} @ commit {s}{s}{s} has {s}{d}{s} model files; choose one with --file <name>:\n", .{ sty.on(.code), report.repo, sty.off(), sty.on(.comment), report.revision, sty.off(), sty.on(.number), report.selection_required.len, sty.off() });
     for (report.selection_required) |c| try out.print("  {s}{s}{s}\t{s}{d}{s}\n", .{ sty.on(.code), c.name, sty.off(), sty.on(.number), c.size, sty.off() });
 }
 
@@ -501,7 +535,7 @@ fn hubFailure(err: anyerror, repo: []const u8, diag: *config.Diagnostic) anyerro
         error.TokenRejected => diag.set("HF_TOKEN was refused by the Hub: check the token value and that it has not expired or been revoked", .{}),
         error.AccessDenied => diag.set("access to {s} denied: if it is gated, accept its terms on huggingface.co with the account HF_TOKEN belongs to", .{repo}),
         error.NotFound => diag.set("{s}: no such repository, revision, or file on the Hub", .{repo}),
-        error.FileNotFound => diag.set("{s}: no GGUF of that name in the repository (names match in full, subdirectories included)", .{repo}),
+        error.FileNotFound => diag.set("{s}: no model file of that name in the repository (names match in full, subdirectories included)", .{repo}),
         else => {},
     }
     return err;
@@ -563,7 +597,7 @@ const Display = struct {
                 try w.print("{s}: checking for an existing file\n", .{name});
             } else {
                 try d.endLine(w);
-                try w.print("{s}: verifying SHA-256 and publishing\n", .{name});
+                try w.print("{s}: verifying the digest and publishing\n", .{name});
             },
             .downloading => {
                 if (phase_changed or event.file_completed == 0) {
@@ -648,9 +682,9 @@ pub const Listing = struct {
     models_dir: []const u8,
     /// Every catalogue entry with its local status, companions beneath.
     catalog: []const CatalogRow,
-    /// GGUF files in the layout the catalogue does not name.
+    /// Model files (GGUF, safetensors) in the layout the catalogue does not name.
     other: []const Listed,
-    /// GGUF files found above the `<owner>/<repo>/` level; they are not
+    /// Model files found above the `<owner>/<repo>/` level; they are not
     /// listed because nothing can say which repository they came from.
     outside_layout: usize,
     /// Registry entries whose file is absent.
@@ -701,7 +735,7 @@ pub const Listing = struct {
             }
         }
         if (self.other.len > 0) {
-            try out.print("\n{s}other GGUF files in the layout{s} {s}(not in the catalogue; runnable only if their architecture has an adapter){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
+            try out.print("\n{s}other model files in the layout{s} {s}(not in the catalogue; runnable only if their architecture has an adapter){s}\n", .{ sty.on(.header), off, sty.on(.dim), off });
             var width: usize = 0;
             for (self.other) |f| width = @max(width, f.path.len);
             for (self.other) |f| {
@@ -730,7 +764,7 @@ pub const Listing = struct {
                 try out.print("{s}{s}{s}\n", .{ path, m.path, off });
             }
         }
-        if (self.outside_layout > 0) try out.print("\n{s}{d} GGUF file(s) outside the <owner>/<repo>/ layout are not listed{s}\n", .{ sty.on(.warning), self.outside_layout, off });
+        if (self.outside_layout > 0) try out.print("\n{s}{d} model file(s) outside the <owner>/<repo>/ layout are not listed{s}\n", .{ sty.on(.warning), self.outside_layout, off });
     }
 };
 
@@ -843,7 +877,7 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
 fn collect(arena: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []const u8, depth: u8, files: *std.ArrayList(Listed), outside: *usize) !void {
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
-        const is_gguf = std.mem.endsWith(u8, entry.name, ".gguf");
+        const is_model = hf.format(entry.name) != null;
         switch (entry.kind) {
             .directory => {
                 if (depth >= 2 + max_depth_below_repo) continue;
@@ -853,7 +887,7 @@ fn collect(arena: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []const u8, de
                 try collect(arena, io, child, child_prefix, depth + 1, files, outside);
             },
             .file => {
-                if (!is_gguf) continue;
+                if (!is_model) continue;
                 if (depth < 2) {
                     outside.* += 1;
                     continue;
@@ -954,14 +988,18 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
     }
     var remote = client.list(request) catch |err| return hubFailure(err, options.repo, diag);
     defer remote.deinit();
-    const selected = (hf.select(arena, remote.files, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
+    const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
         try renderSelection(out, .{ .repo = options.repo, .revision = &remote.revision, .selection_required = try choices(arena, remote.files) }, json, sty);
         try out.flush();
-        diag.set("{s} has {d} GGUF files; pass --file <name>", .{ options.repo, remote.files.len });
+        diag.set("{s} has {d} model files; pass --file <name>", .{ options.repo, remote.files.len });
         return error.SelectionRequired;
     };
     // A split file's directory is in its first shard.
     const file = selected[0];
+    if (hf.format(file.name) != .gguf) {
+        diag.set("{s}: remote inspection reads GGUF directories; pull the safetensors artifact and inspect it locally", .{file.name});
+        return error.UnsupportedFormat;
+    }
     const revision = try arena.dupe(u8, &remote.revision);
     request.revision = revision;
     request.filename = file.name;
@@ -973,7 +1011,7 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         .requested_revision = options.revision orelse (if (entry) |e| e.revision else "main"),
         .revision = revision,
         .size = file.size,
-        .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(file.sha256, .lower)),
+        .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(file.sha256.?, .lower)),
     }, diag);
     try renderInspect(out, report, json, sty);
 }
@@ -1171,6 +1209,16 @@ test "sidecar round trip, absence, and rejection of what nuclis did not write" {
     try std.testing.expectEqual(written.size, read.size);
     try std.testing.expectEqual(Role.mtp, read.role);
     try std.testing.expectEqualStrings(written.downloaded_at, read.downloaded_at);
+    try std.testing.expect(read.git_blob == null);
+    // A plain git file records its blob id; a sidecar without the field
+    // (every one written before it existed) reads as null.
+    var plain = written;
+    plain.role = .support;
+    plain.git_blob = "ef44a803696cdca06508fe711488cdc982eb64d3";
+    try writeSidecar(arena, io, tmp.dir, "config.json.nuclis.json", plain);
+    const plain_read = (try readSidecar(arena, io, tmp.dir, "config.json.nuclis.json")).?;
+    try std.testing.expectEqualStrings(plain.git_blob.?, plain_read.git_blob.?);
+    try std.testing.expectEqual(Role.support, plain_read.role);
     // Rewriting replaces the record (a second pull records its own commit).
     var again = written;
     again.revision = "89abcdef0123456789abcdef0123456789abcdef";
@@ -1244,6 +1292,9 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     // Files outside the catalogue: one with a sidecar, one without, two above the layout.
     try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/Repo-Q4.gguf", .data = "GGUFxxxx" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/README.md", .data = "not listed" });
+    try tmp.dir.createDirPath(io, "models/convaiinnovations/laya/tokenizer");
+    try tmp.dir.writeFile(io, .{ .sub_path = "models/convaiinnovations/laya/model.safetensors", .data = "\x02\x00\x00\x00\x00\x00\x00\x00{}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "models/convaiinnovations/laya/tokenizer/tokenizer.json", .data = "{}" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/MTP/mtp-Repo.gguf", .data = "GGUF" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/qwen/old-layout.gguf", .data = "GGUF" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/stray.gguf", .data = "GGUF" });
@@ -1270,9 +1321,9 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     const listing = try list(arena, io, root, .{ .entries = &entries });
     try std.testing.expectEqualStrings("big", listing.catalog[0].registered.?.name);
     try std.testing.expect(listing.catalog[0].registered.?.profile == null);
-    try std.testing.expectEqualStrings("local", listing.other[0].registered.?.name);
-    try std.testing.expectEqualStrings("repo", listing.other[1].registered.?.name);
-    try std.testing.expectEqual(.gemma4, listing.other[1].registered.?.profile.?);
+    try std.testing.expectEqualStrings("local", listing.other[1].registered.?.name);
+    try std.testing.expectEqualStrings("repo", listing.other[2].registered.?.name);
+    try std.testing.expectEqual(.gemma4, listing.other[2].registered.?.profile.?);
     try std.testing.expectEqual(@as(usize, 1), listing.missing.len);
     try std.testing.expectEqualStrings("gone", listing.missing[0].name);
     try std.testing.expectEqualStrings("unsloth/Gone-GGUF/gone.gguf", listing.missing[0].path);
@@ -1283,13 +1334,15 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     try std.testing.expectEqual(catalog.Status.absent, row.companions[0].status);
     try std.testing.expectEqual(Role.mtp, row.companions[1].role);
     try std.testing.expectEqual(catalog.Status.mismatch, row.companions[1].status);
-    try std.testing.expectEqual(@as(usize, 2), listing.other.len);
+    // Weights of either format are rows; a safetensors set's support files are not.
+    try std.testing.expectEqual(@as(usize, 3), listing.other.len);
     try std.testing.expectEqual(@as(usize, 2), listing.outside_layout);
-    try std.testing.expectEqualStrings("unsloth/Repo-GGUF/MTP/mtp-Repo.gguf", listing.other[0].path);
-    try std.testing.expect(listing.other[0].sidecar == null);
-    try std.testing.expectEqualStrings("unsloth/Repo-GGUF/Repo-Q4.gguf", listing.other[1].path);
-    try std.testing.expectEqual(@as(u64, 8), listing.other[1].size);
-    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef01234567", listing.other[1].sidecar.?.revision);
+    try std.testing.expectEqualStrings("convaiinnovations/laya/model.safetensors", listing.other[0].path);
+    try std.testing.expectEqualStrings("unsloth/Repo-GGUF/MTP/mtp-Repo.gguf", listing.other[1].path);
+    try std.testing.expect(listing.other[1].sidecar == null);
+    try std.testing.expectEqualStrings("unsloth/Repo-GGUF/Repo-Q4.gguf", listing.other[2].path);
+    try std.testing.expectEqual(@as(u64, 8), listing.other[2].size);
+    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef01234567", listing.other[2].sidecar.?.revision);
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
     try listing.render(&out.writer, false, .none);
@@ -1315,7 +1368,7 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "not loaded yet: the vision unit") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "no sidecar") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "main     0123456789ab  322e194f") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "2 GGUF file(s) outside") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "2 model file(s) outside") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n    registered as repo (profile gemma4 forced)\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "registry entries without a file") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "  gone unsloth/Gone-GGUF/gone.gguf\n") != null);
@@ -1327,11 +1380,11 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     try std.testing.expectEqualStrings("present", rows[0].object.get("status").?.string);
     try std.testing.expectEqualStrings("mismatch", rows[0].object.get("companions").?.array.items[1].object.get("status").?.string);
     const files = parsed.value.object.get("other").?.array.items;
-    try std.testing.expectEqual(@as(usize, 2), files.len);
-    try std.testing.expect(files[0].object.get("sidecar").? == .null);
-    try std.testing.expectEqualStrings("main", files[1].object.get("sidecar").?.object.get("role").?.string);
+    try std.testing.expectEqual(@as(usize, 3), files.len);
+    try std.testing.expect(files[1].object.get("sidecar").? == .null);
+    try std.testing.expectEqualStrings("main", files[2].object.get("sidecar").?.object.get("role").?.string);
     try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("outside_layout").?.integer);
-    try std.testing.expectEqualStrings("repo", files[1].object.get("registered").?.object.get("name").?.string);
+    try std.testing.expectEqualStrings("repo", files[2].object.get("registered").?.object.get("name").?.string);
     try std.testing.expectEqualStrings("gone", parsed.value.object.get("missing").?.array.items[0].object.get("name").?.string);
 }
 

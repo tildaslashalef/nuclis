@@ -20,10 +20,12 @@ pub fn main(init: std.process.Init) void {
 const usage =
     \\hf-downloader REPO [--file EXACT.gguf] [--revision REF] [--local-dir DIR]
     \\  --concurrency N          signed xorb ranges in flight (1..16, default 8)
-    \\  --list                   list GGUF files without downloading
+    \\  --list                   list model files (GGUF, safetensors) without downloading
     \\  --range START COUNT      print SHA-256 of a native download range (max 8 MiB)
     \\  --quiet                  no progress on stderr
-    \\Repo-only downloads select a sole GGUF choice; otherwise list choices.
+    \\Repo-only downloads select a sole artifact (a file or a shard set; a
+    \\safetensors artifact brings its config and tokenizer files); otherwise
+    \\list choices.
     \\Split filenames download the complete shard set. Xet is the default.
     \\Files land in <models dir>/<owner>/<repo>/<file>, where the models
     \\directory is: explicit --local-dir > NUCLIS_HOME/models > HOME/.nuclis/models.
@@ -129,7 +131,7 @@ const Display = struct {
         d.last_phase = event.phase;
         switch (event.phase) {
             .resolving => try w.writeAll("resolving revision and files\n"),
-            .selection_required => try w.writeAll("several GGUF files: choose one with --file\n"),
+            .selection_required => try w.writeAll("several model artifacts: choose one with --file\n"),
             .verifying => if (event.reused) {
                 try d.endLine(w);
                 try w.print("{s}: existing file verified, reused\n", .{name});
@@ -137,7 +139,7 @@ const Display = struct {
                 try w.print("{s}: checking for an existing file\n", .{name});
             } else {
                 try d.endLine(w);
-                try w.print("{s}: verifying SHA-256 and publishing\n", .{name});
+                try w.print("{s}: verifying the digest and publishing\n", .{name});
             },
             .downloading => {
                 if (phase_changed or event.file_completed == 0) {

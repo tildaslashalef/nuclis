@@ -278,10 +278,12 @@ file already in place) and writes the sidecar beside each file; the Hub's
 digest at the pinned commit must equal the catalogue's (`CatalogMismatch`
 otherwise, and no sidecar). `nuclis model pull <owner/repo> [--file <name>]
 [--revision <rev>] [--role main|mmproj|mtp|imatrix]` fetches any other
-GGUF by repository id: the revision (`main` by default; a tag, branch, or
+artifact by repository id (a GGUF, or a safetensors set with its config
+and tokenizer files, [reference/artifacts.md § Safetensors
+artifacts](reference/artifacts.md#safetensors-artifacts)): the revision (`main` by default; a tag, branch, or
 commit) is resolved once, printed as the 40-character commit, and that
 commit pins the transfer and is what the sidecar records; a repository
-with several GGUFs and no `--file` prints the choices with sizes and fails
+with several artifacts and no `--file` prints the choices with sizes and fails
 with `SelectionRequired`; exact names match in full, subdirectories
 included (`--file MTP/mtp-Qwen3.8-27B-Q4_0.gguf` keeps the subdirectory).
 Both forms take `--force` and `--json` and need the root and nothing from
@@ -302,7 +304,7 @@ leave the temporary file). `nuclis model ls [--json]` prints the catalogue
 with each entry's local status from its sidecar alone (`present`,
 `absent`, `mismatch`, `unverified`: the file is there without a sidecar)
 and its companions beneath with a "not loaded yet" note, then the other
-GGUF files in the layout with their sidecar facts (runnable only if their
+model files (GGUF, safetensors weights) in the layout with their sidecar facts (runnable only if their
 architecture has an adapter); files above `<owner>/<repo>/` are counted,
 not listed; every listed file that a registry entry locates (`path`, or
 `repo` and `file`) says `registered as <name>`, with the profile when the
