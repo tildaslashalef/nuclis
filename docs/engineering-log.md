@@ -138,6 +138,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-28 | Safetensors sets through the Hub client and `model pull`, pinned like GGUF | 2026-09-27 |
 | MODL-29 | A generic safetensors loader and `nuclis inspect` on it | 2026-09-27 |
 | REPO-18 | `docs/research/` removed; its conclusion carried into the plan | 2026-09-27 |
+| TERM-13 | Exit keeps the transcript: the margin reset no longer homes the cursor onto the banner | 2026-09-27 |
 
 ## Context
 
@@ -5653,3 +5654,25 @@ keep naming the file, as a record of what those units wrote.
 
 **Files.** `docs/research/typesafe-jev.md` (deleted), `TODO.md`,
 `docs/reference/safetensors.md`, `docs/engineering-log.md`.
+
+## TERM-13 — Exit keeps the transcript (2026-09-27)
+
+**Outcome.** Leaving `nuclis agent` (Ctrl-C, Ctrl-D) left only the banner's
+top border on screen, with the shell prompt drawn over the rest.
+`Screen.finish` erased the live region and then reset the scrolling region
+(`CSI r`); `DECSTBM` homes the cursor, so the lease's trailing CRLF put the
+prompt on row 2. The reset now runs first, inside a cursor save/restore
+(`ESC 7`, `ESC 8`), and the relative walk up over the region and the slack
+follows, so the cursor ends right after the transcript. Reported on
+Ghostty; any VT100 terminal homes on `DECSTBM`.
+
+**Evidence.** `zig build test`; the two `finish` tests pin the new escape
+stream. Through the screenshot harness with the fresh binary (Qwen3.8-27B,
+Metal): `until=ready` then Ctrl-D, the capture `exit-after` shows the whole
+banner and the warm-up notice, then the shell's output on the next line.
+The user confirmed the exit on Ghostty.
+
+**Files.** `src/tui/screen.zig`, `docs/engineering-log.md`.
+
+**Remaining.** The lease still writes a CRLF after `finish`, which leaves
+one blank line before the shell prompt.

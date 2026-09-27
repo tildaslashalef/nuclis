@@ -304,10 +304,13 @@ pub const Screen = struct {
     /// region is erased, the scrolling region reset, the cursor shown.
     pub fn finish(self: *Screen) !void {
         const out = self.out;
+        // `DECSTBM` homes the cursor, so the margins are reset inside a
+        // cursor save/restore, before the relative walk below.
+        try out.writeAll("\x1b7\x1b[r\x1b8");
         // The slack goes with the region: the transcript ends where it ends.
         const up = @min(self.cursor_row + self.slack, self.at -| 1);
         if (up > 0) try out.print("\x1b[{d}A", .{up});
-        try out.writeAll("\r\x1b[0J\x1b[r\x1b[?25h");
+        try out.writeAll("\r\x1b[0J\x1b[?25h");
         self.at -= up;
         self.region_rows = 0;
         self.region_top = 0;
@@ -611,7 +614,7 @@ test "finish and the rewrite fallback walk over the slack as well" {
     try testing.expectEqual(@as(usize, 3), screen.slack);
     buffer.clearRetainingCapacity();
     try screen.finish();
-    try testing.expectEqualStrings("\x1b[3A\r\x1b[0J\x1b[r\x1b[?25h", buffer.written());
+    try testing.expectEqualStrings("\x1b7\x1b[r\x1b8\x1b[3A\r\x1b[0J\x1b[?25h", buffer.written());
     try testing.expectEqual(@as(usize, 7), screen.at);
 }
 
@@ -715,7 +718,7 @@ test "finish erases the region and restores the terminal's scrolling region" {
     try screen.paint(&.{ .{ .text = "editor" }, .{ .text = "bar" } }, .{ .row = 0, .column = 3 });
     buffer.clearRetainingCapacity();
     try screen.finish();
-    try testing.expectEqualStrings("\r\x1b[0J\x1b[r\x1b[?25h", buffer.written());
+    try testing.expectEqualStrings("\x1b7\x1b[r\x1b8\r\x1b[0J\x1b[?25h", buffer.written());
     try testing.expectEqual(@as(usize, 0), screen.region_rows);
 }
 
