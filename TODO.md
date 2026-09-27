@@ -19,10 +19,14 @@ it is empty, ask what to work on and write the agreed plan here.
 Theme agreed 2026-09-27 (user): Laya (`convaiinnovations/laya`, a
 ModernBERT encoder with a typed-decision head, Apache-2.0) end to end in
 nuclis, behind a decision API any client can call: a person writing the
-state and questions by hand, a script, or later an LLM. The reasons and
-the design discussion are in
-[docs/research/typesafe-jev.md](docs/research/typesafe-jev.md) and this
-plan. Already landed: safetensors pull (MODL-28) and the safetensors
+state and questions by hand, a script, or later an LLM. Why it is worth
+having beside an LLM: every question re-reads its state (the encoder is
+bidirectional, so nothing is shared across questions), and an LLM must
+spend decode tokens writing each question, so delegating one decision the
+LLM could make itself saves nothing. It pays as a **filter**: one question
+fanned out over many states the LLM never reads (30 search hits, every
+log section, each diff hunk), where the LLM's prefill is the cost avoided
+(Qwen3.8-27B prefills at about 44 tok/s). Already landed: safetensors pull (MODL-28) and the safetensors
 loader (MODL-29); the root checkpoint is pulled at
 `~/.nuclis/models/convaiinnovations/laya/` (commit `55cf4c4e`). Kept to
 three units on purpose, to iterate fast. Start with MODL-30, session 1.
@@ -189,7 +193,7 @@ reading `tokenizer.json` and NFC.
   safetensors set; the registry's `kind: decision`, `--register`
   accepting safetensors for that kind only.
 - Docs: `docs/reference/laya.md` (the family, the contract, the oracle,
-  numbers), `docs/spec.md` (the decide surface and its requirements),
+  numbers, and the filter argument from *Where we are*), `docs/spec.md` (the decide surface and its requirements),
   `docs/architecture.md` (the decision path beside `Engine`).
 - Checks: `make check`; the six fixture requests through the fresh binary
   (`--json`) equal the oracle's answers within 1e-4; the card's quickstart

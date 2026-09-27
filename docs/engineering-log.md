@@ -137,6 +137,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-17 | README rewritten: the models grouped, `--discover`, a recorded agent session | 2026-09-27 |
 | MODL-28 | Safetensors sets through the Hub client and `model pull`, pinned like GGUF | 2026-09-27 |
 | MODL-29 | A generic safetensors loader and `nuclis inspect` on it | 2026-09-27 |
+| REPO-18 | `docs/research/` removed; its conclusion carried into the plan | 2026-09-27 |
 
 ## Context
 
@@ -5636,3 +5637,19 @@ size, all parse. No Metal tier: nothing in the runtime calls the loader.
 `tokenizer.json` are downloaded but not read. `decode` covers F32, F16,
 and BF16 only. The whole header is held in memory while parsing (bounded
 by the format's 100 MB). Remote `model inspect` still reads GGUF only.
+
+## REPO-18 — `docs/research/` removed (2026-09-27)
+
+**Outcome.** `docs/research/typesafe-jev.md` (written by REPO-06 and its
+predecessor) is deleted at the user's call: its question, whether to
+support a Jev-like decision model, was answered by the Laya plan
+(MODL-30, MODL-31, AGNT-18), which now carries the one conclusion still
+in use (Laya pays as a filter over many states, not as a faster answer to
+one question). The two links to it (`TODO.md`,
+`docs/reference/safetensors.md`) were rewritten; the older log entries
+keep naming the file, as a record of what those units wrote.
+
+**Evidence.** `git grep` finds no link to the file outside this log.
+
+**Files.** `docs/research/typesafe-jev.md` (deleted), `TODO.md`,
+`docs/reference/safetensors.md`, `docs/engineering-log.md`.
