@@ -344,10 +344,13 @@ fn tokenize(out: *std.Io.Writer, sty: style.Style) !void {
 fn inspect(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis inspect", "what an artifact is");
     try heading(out, sty, "Usage:");
-    try code(out, sty, "nuclis inspect [--model <name|path>] [--json]");
+    try code(out, sty, "nuclis inspect [--model <name|path>] [--tensor <name>] [--json]");
 
     try heading(out, sty, "Options:");
-    try row(out, sty, "--model <name|path>", "the file to read; default engine.model");
+    try row(out, sty, "--model <name|path>", "the file to read; default engine.model; a");
+    try more(out, "safetensors file, index, or directory too");
+    try row(out, sty, "--tensor <name>", "safetensors: one tensor's dtype, shape, and");
+    try more(out, "first values");
     try row(out, sty, "--json", "the same facts as JSON");
 
     try heading(out, sty, "Examples:");
@@ -359,6 +362,8 @@ fn inspect(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "tensor encoding histogram, and the memory a context would need. Ranges");
     try plain(out, "and offsets are validated; weight values are not read. Little-endian GGUF");
     try plain(out, "v3 only; an unknown tensor layout is an error rather than a guess.");
+    try plain(out, "A safetensors checkpoint gets its header, shards, and dtype histogram,");
+    try plain(out, "with the byte buffer's tiling checked; no family runs one yet.");
     try out.writeByte('\n');
 }
 

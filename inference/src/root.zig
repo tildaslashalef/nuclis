@@ -1,6 +1,7 @@
 //! Reusable inference modules. Container inspection is the first implemented layer.
 //! No CLI, user-directory policy, or architecture-specific behavior belongs here.
 pub const gguf = @import("formats/gguf.zig");
+pub const safetensors = @import("formats/safetensors.zig");
 pub const encoding = @import("tensor/encoding.zig");
 pub const quant = @import("quant/decode.zig");
 pub const metal = @import("backends/metal/root.zig");
@@ -23,6 +24,7 @@ pub const vision = @import("vision/root.zig");
 
 test {
     _ = gguf;
+    _ = safetensors;
     _ = encoding;
     _ = quant;
     _ = cpu;

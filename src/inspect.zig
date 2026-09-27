@@ -65,6 +65,133 @@ pub const Snapshot = struct {
     }
 };
 
+/// A safetensors checkpoint (one file or an indexed shard set): the header
+/// facts per shard and the dtype histogram over every tensor. Borrows the
+/// checkpoint: render before `deinit`.
+pub const SafetensorsSnapshot = struct {
+    schema_version: u32 = 1,
+    format: []const u8 = "safetensors",
+    model_path: []const u8,
+    /// The file or index the path resolved to.
+    resolved: []const u8,
+    tensor_count: usize,
+    stored_elements: u64,
+    tensor_bytes: u64,
+    shards: []const Shard,
+    dtypes: []const DtypeCount,
+    /// The first shard's `__metadata__` (writers repeat it per shard).
+    metadata: []const inference.safetensors.Metadata,
+
+    pub const Shard = struct { file: []const u8, file_bytes: u64, header_bytes: u64, tensors: usize };
+    pub const DtypeCount = struct { dtype: []const u8, tensors: u64 = 0, elements: u64 = 0, bytes: u64 = 0 };
+
+    pub fn render(self: SafetensorsSnapshot, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+        if (json) {
+            try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
+            return out.writeByte('\n');
+        }
+        const label = sty.on(.label);
+        const number = sty.on(.number);
+        const off = sty.off();
+        try out.print("{s}Checkpoint:{s} {s}", .{ label, off, sty.on(.code) });
+        try std.json.Stringify.value(self.resolved, .{}, out);
+        try out.print("{s}\n{s}Safetensors:{s} {s}{d}{s} shard(s), {s}{d}{s} tensors, {s}{d}{s} metadata keys\n", .{ off, label, off, number, self.shards.len, off, number, self.tensor_count, off, number, self.metadata.len, off });
+        try out.print("{s}Stored tensor elements:{s} {s}{d}{s}; tensor bytes: {s}{d}{s}\n", .{ label, off, number, self.stored_elements, off, number, self.tensor_bytes, off });
+        for (self.metadata) |m| {
+            try out.print("{s}Metadata{s} ", .{ label, off });
+            // Escaped: keys and values come from the file.
+            try std.json.Stringify.value(m.key, .{}, out);
+            try out.writeAll(" = ");
+            try std.json.Stringify.value(m.value, .{}, out);
+            try out.writeByte('\n');
+        }
+        try out.print("\n{s}Shard                                        Header bytes  Tensors          Bytes{s}\n", .{ sty.on(.header), off });
+        for (self.shards) |shard| {
+            try out.print("{s}{s: <44}{s} {s}{d: >12}{s}  {s}{d: >7}{s}  {s}{d: >13}{s}\n", .{ sty.on(.code), shard.file, off, number, shard.header_bytes, off, number, shard.tensors, off, number, shard.file_bytes, off });
+        }
+        try out.print("\n{s}Dtype      Tensors        Elements          Bytes{s}\n", .{ sty.on(.header), off });
+        for (self.dtypes) |d| {
+            try out.print("{s}{s: <8}{s}  {s}{d: >7}{s}  {s}{d: >14}{s}  {s}{d: >13}{s}\n", .{ sty.on(.code), d.dtype, off, number, d.tensors, off, number, d.elements, off, number, d.bytes, off });
+        }
+        try out.print("\n{s}Header and byte buffer validated; no model family runs safetensors yet.{s}\n", .{ sty.on(.dim), off });
+    }
+};
+
+/// One tensor: its descriptor and its first values decoded to f32 (null for
+/// a dtype the loader does not decode).
+pub const TensorPeek = struct {
+    name: []const u8,
+    dtype: []const u8,
+    shape: []const u64,
+    elements: u64,
+    bytes: u64,
+    first: ?[]const f32,
+
+    pub const shown = 8;
+
+    pub fn render(self: TensorPeek, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+        if (json) {
+            try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
+            return out.writeByte('\n');
+        }
+        const label = sty.on(.label);
+        const off = sty.off();
+        try out.print("{s}Tensor:{s} {s}", .{ label, off, sty.on(.code) });
+        try std.json.Stringify.value(self.name, .{}, out);
+        try out.print("{s}\n{s}Dtype:{s} {s}; {s}shape:{s} {any}; {d} elements, {d} bytes\n", .{ off, label, off, self.dtype, label, off, self.shape, self.elements, self.bytes });
+        if (self.first) |values| {
+            try out.print("{s}First {d}:{s}", .{ label, values.len, off });
+            for (values) |v| try out.print(" {d}", .{v});
+            try out.writeByte('\n');
+        } else try out.print("{s}(values not decoded: the loader decodes F32, F16, and BF16){s}\n", .{ sty.on(.dim), off });
+    }
+};
+
+pub fn tensorPeek(arena: std.mem.Allocator, ref: inference.safetensors.Ref) !TensorPeek {
+    const t = ref.tensor;
+    const count: usize = @intCast(@min(t.elements, TensorPeek.shown));
+    const values = try arena.alloc(f32, count);
+    const first: ?[]const f32 = if (ref.decode(0, values)) values else |err| switch (err) {
+        error.UnsupportedDtype => null,
+        else => return err,
+    };
+    return .{ .name = t.name, .dtype = t.dtype.name(), .shape = t.shape, .elements = t.elements, .bytes = t.bytes, .first = first };
+}
+
+/// Allocates the shard and dtype tables in `arena`.
+pub fn safetensorsSnapshot(arena: std.mem.Allocator, checkpoint: *const inference.safetensors.Checkpoint, path: []const u8) !SafetensorsSnapshot {
+    const Dtype = inference.safetensors.Dtype;
+    var counts = [_]SafetensorsSnapshot.DtypeCount{.{ .dtype = "" }} ** std.enums.values(Dtype).len;
+    const shards = try arena.alloc(SafetensorsSnapshot.Shard, checkpoint.shards.len);
+    var elements: u64 = 0;
+    var bytes: u64 = 0;
+    for (checkpoint.shards, shards) |*shard, *summary| {
+        const doc = &shard.document;
+        summary.* = .{ .file = std.fs.path.basename(shard.path), .file_bytes = doc.file_bytes, .header_bytes = doc.header_bytes, .tensors = doc.tensors.len };
+        for (doc.tensors) |t| {
+            elements = try std.math.add(u64, elements, t.elements);
+            bytes = try std.math.add(u64, bytes, t.bytes);
+            const c = &counts[@intFromEnum(t.dtype)];
+            c.dtype = t.dtype.name();
+            c.tensors += 1;
+            c.elements = try std.math.add(u64, c.elements, t.elements);
+            c.bytes = try std.math.add(u64, c.bytes, t.bytes);
+        }
+    }
+    var dtypes: std.ArrayList(SafetensorsSnapshot.DtypeCount) = .empty;
+    for (counts) |c| if (c.tensors > 0) try dtypes.append(arena, c);
+    return .{
+        .model_path = path,
+        .resolved = checkpoint.path,
+        .tensor_count = checkpoint.tensorCount(),
+        .stored_elements = elements,
+        .tensor_bytes = bytes,
+        .shards = shards,
+        .dtypes = dtypes.items,
+        .metadata = if (checkpoint.shards.len > 0) checkpoint.shards[0].document.metadata else &.{},
+    };
+}
+
 /// histogram is caller-provided scratch storage. Every parsed encoding must fit;
 /// Document rejects unknown layouts, so its IDs are bounded by our layout table.
 pub fn snapshot(doc: inference.gguf.Document, path: []const u8, histogram: []EncodingCount) !Snapshot {

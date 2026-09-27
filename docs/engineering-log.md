@@ -136,6 +136,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-27 | Gemma 4 E4B QAT: per-layer embeddings, shared KV, a causal image span, the clipped-linear projector, its draft head, the `gemma4_e` profile | 2026-09-27 |
 | REPO-17 | README rewritten: the models grouped, `--discover`, a recorded agent session | 2026-09-27 |
 | MODL-28 | Safetensors sets through the Hub client and `model pull`, pinned like GGUF | 2026-09-27 |
+| MODL-29 | A generic safetensors loader and `nuclis inspect` on it | 2026-09-27 |
 
 ## Context
 
@@ -5589,3 +5590,49 @@ numerical change.
 the repository again (about 0.7 s per small file). Remote `model inspect`
 does not read safetensors headers. A plain git file's integrity rests on
 SHA-1, the Hub's own identifier for it.
+
+## MODL-29 — A generic safetensors loader and `nuclis inspect` on it (2026-09-27)
+
+**Outcome.** `inference/src/formats/safetensors.zig`, exported as
+`inference.safetensors`: `parse`/`parseDiagnosed`/`open` read the 8-byte
+length and the JSON header (streamed through `std.json.Scanner`, so only
+names, shapes, and metadata are allocated) into an arena-owned `Document`
+with a name index, and check the byte buffer as the format defines it:
+each tensor's size is shape × dtype, and sorted by offset the tensors tile
+the buffer with no hole, overlap, or trailing byte. Sixteen dtypes are
+recognized; `F4`, `F6_*`, and `C64` are `UnsupportedDtype`, named through a
+`Rejection` like GGUF's. `Checkpoint` opens a file, an index, or a
+directory, maps every shard read-only, requires the index and the shards to
+agree exactly, and hands out `Ref`s (descriptor and bytes) whose `decode`
+reads F32, F16, and BF16 with unaligned little-endian loads. `nuclis
+inspect --model` takes a safetensors file, index, or directory (shards,
+dtype histogram, metadata; `--json` from the same snapshot), and the new
+`--tensor <name>` prints one tensor's dtype, shape, and first eight values;
+`validate` on one is `NotRunnable`. No llama.cpp oracle: the format
+specification and independent reads of real files are the checks
+([reference/safetensors.md](reference/safetensors.md)).
+
+**Evidence.** 572/572 unit tests and `make check`. The loader's tests are
+written from the wire format: a padded header with an unaligned F16, a
+scalar, and an empty tensor; each rejection (bad length before allocating,
+bad JSON shape, duplicate, unknown dtype, size mismatch, rank, overflow,
+hole, overlap, out of bounds, trailing bytes); every allocation failure;
+a two-shard index and four disagreeing indexes; directory resolution and
+ambiguity. Live with the fresh binary: Laya's root set is 206 tensors (205
+F16, 1 F32) in a 21,536-byte header, SmolLM2-135M 272 BF16; `--tensor`
+values equal an independent Python `struct` read for all three decoded
+dtypes (Laya `temperature` F32, `type_emb.weight` F16, SmolLM2
+`model.norm.weight` BF16). The real headers of Qwen3-0.6B, Qwen3-0.6B-FP8
+(F8_E4M3), gpt-oss-20b shard 0 (MXFP4 as U8), ModernBERT-large, and a
+Qwen2.5-7B-Instruct shard, each written into a sparse file of the true
+size, all parse. No Metal tier: nothing in the runtime calls the loader.
+
+**Files.** `inference/src/formats/safetensors.zig`,
+`inference/src/root.zig`, `src/cli.zig`, `src/inspect.zig`, `src/help.zig`,
+`docs/reference/safetensors.md`, `docs/architecture.md`,
+`THIRD_PARTY_NOTICES.md`, `docs/engineering-log.md`, `TODO.md`.
+
+**Remaining.** No family binds a safetensors checkpoint; `config.json` and
+`tokenizer.json` are downloaded but not read. `decode` covers F32, F16,
+and BF16 only. The whole header is held in memory while parsing (bounded
+by the format's 100 MB). Remote `model inspect` still reads GGUF only.

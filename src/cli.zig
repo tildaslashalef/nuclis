@@ -54,6 +54,8 @@ pub const Options = struct {
     /// prompt sections (a tuning aid; the instructions file still follows).
     system_prompt_file: ?[]const u8 = null,
     model: ?[]const u8 = null,
+    /// `inspect --tensor <name>`: one tensor of a safetensors checkpoint.
+    tensor: ?[]const u8 = null,
     json: bool = false,
 };
 
@@ -129,6 +131,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
             if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--"))
                 return error.MissingModelPath;
             options.model = args[i];
+        } else if (command == .inspect and std.mem.eql(u8, args[i], "--tensor")) {
+            if (options.tensor != null) return error.DuplicateOption;
+            i += 1;
+            if (i == args.len or args[i].len == 0) return error.MissingOptionValue;
+            options.tensor = args[i];
         } else if (command == .agent and std.mem.eql(u8, args[i], "--print")) {
             if (options.printing) return error.DuplicateOption;
             options.printing = true;
@@ -571,6 +578,40 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         else
             agent.run(alloc, io, environ, path, root, config.resolve(&loaded, options.model, options.flags, .agent), options.generation.seed, options.resume_id, options.system_prompt_file, out),
         .inspect, .validate => blk: {
+            if (try isSafetensors(io, path)) {
+                if (options.command == .validate) {
+                    diag.set("{s}: a safetensors checkpoint; no model family runs safetensors yet (`nuclis inspect --model` reads it)", .{path});
+                    break :blk error.NotRunnable;
+                }
+                var checkpoint = inference.safetensors.Checkpoint.open(alloc, io, path, .{}) catch |err| {
+                    switch (err) {
+                        error.NoCheckpoint => diag.set("{s}: no .safetensors file or index directly in this directory", .{path}),
+                        error.AmbiguousCheckpoint => diag.set("{s}: several .safetensors files and no model.safetensors or index; name the file", .{path}),
+                        error.IndexMismatch => diag.set("{s}: the index and its shards disagree on which tensor lives where", .{path}),
+                        else => {},
+                    }
+                    break :blk err;
+                };
+                defer checkpoint.deinit(io);
+                var arena_state = std.heap.ArenaAllocator.init(alloc);
+                defer arena_state.deinit();
+                if (options.tensor) |name| {
+                    const ref = checkpoint.get(name) orelse {
+                        diag.set("{s}: no tensor named {s} (names match in full, as the header spells them)", .{ path, name });
+                        break :blk error.TensorNotFound;
+                    };
+                    const peek = try inspection.tensorPeek(arena_state.allocator(), ref);
+                    try peek.render(out, options.json, sty);
+                    break :blk {};
+                }
+                const result = try inspection.safetensorsSnapshot(arena_state.allocator(), &checkpoint, path);
+                try result.render(out, options.json, sty);
+                break :blk {};
+            }
+            if (options.tensor != null) {
+                diag.set("{s}: --tensor reads safetensors checkpoints only", .{path});
+                break :blk error.UnsupportedFormat;
+            }
             var document = try inference.gguf.open(alloc, io, path, .{});
             defer document.deinit();
             if (options.command == .validate) {
@@ -602,6 +643,14 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         },
         else => return err,
     };
+}
+
+/// A `.safetensors` file, an index, or a directory (which only a
+/// safetensors checkpoint can be; a GGUF is always one file).
+fn isSafetensors(io: std.Io, path: []const u8) !bool {
+    if (std.mem.endsWith(u8, path, ".safetensors") or std.mem.endsWith(u8, path, ".safetensors.index.json")) return true;
+    const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
+    return stat.kind == .directory;
 }
 
 /// The registry's ids as one comma-separated list, joined at compile time
@@ -655,6 +704,11 @@ test "parse inspection and reject ambiguous or incomplete flags" {
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "inspect", "--json", "--json" }));
     try std.testing.expectError(error.MissingPrompt, parseArgs(&.{"generate"}));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "inspect", "--typo" }));
+    const peek = try parseArgs(&.{ "inspect", "--model", "laya", "--tensor", "temperature" });
+    try std.testing.expectEqualStrings("temperature", peek.tensor.?);
+    try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "inspect", "--tensor" }));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "inspect", "--tensor", "a", "--tensor", "b" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--tensor", "a" }));
 }
 
 test "agent print mode takes a prompt, JSON lines, and a session file" {

@@ -89,6 +89,7 @@ flowchart TB
     end
     subgraph shared [inference/src — model-agnostic]
         gguf[formats/gguf.zig]
+        st[formats/safetensors.zig]
         quant[quant/decode.zig + tensor/encoding.zig]
         tok[tokenizer/*  profiles/*]
         sess[runtime/session.zig  weights.zig  draft.zig]
@@ -103,6 +104,7 @@ flowchart TB
     cli --> model
     model --> hf
     model --> gguf
+    cli --> st
     agent --> engine
     agent --> tui
     engine --> gen
@@ -130,6 +132,7 @@ signals, and the network.
 | Layer | Knows about | Must not know about |
 | --- | --- | --- |
 | `formats/gguf` | bytes, offsets, metadata types | what a tensor name means |
+| `formats/safetensors` | the JSON header, dtypes, the tiled byte buffer, a shard index ([reference](reference/safetensors.md)) | what a tensor name means; no family binds it yet |
 | `quant`, `tensor` | block layouts, decode equations | which tensor is which |
 | `tokenizer`, `profiles` | vocabularies, merges, the chat template, tool grammar | layers, kernels |
 | `runtime/session` | "a layer has KV rows" or "recurrent state" | how big, or why |

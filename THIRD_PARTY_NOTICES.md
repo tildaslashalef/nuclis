@@ -76,6 +76,15 @@ used as the numerical oracle for the committed
 [`ternary.json`](inference/src/quant/fixtures/ternary.json) fixture; no
 table or code from it is present in the tree.
 
+#### Safetensors dtype names — format fact (Apache License 2.0)
+
+`inference/src/formats/safetensors.zig` recognizes the dtype spellings
+(`BF16`, `F8_E4M3`, …) and the header layout defined by the safetensors
+format specification, huggingface/safetensors
+([Apache-2.0](https://github.com/huggingface/safetensors/blob/main/LICENSE)).
+The names are the format's vocabulary; the reader is independently
+written from the specification, with no code from the project.
+
 #### GPT-2 byte-level alphabet — format fact
 
 `inference/src/tokenizer/bpe.zig` maps the 256 byte values onto Unicode
