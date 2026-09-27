@@ -31,14 +31,12 @@ loader (MODL-29); the root checkpoint is pulled at
 `~/.nuclis/models/convaiinnovations/laya/` (commit `55cf4c4e`). Kept to
 three units on purpose, to iterate fast.
 
-Inserted ahead of it (user, 2026-09-27): APPS-18, shell completion and
-`make install`, one session. Then MODL-30, session 1.
+Start with MODL-30, session 1.
 
 ## Order
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| APPS-18 | Shell completion (`nuclis completion <shell>`, answered by the binary) and `make install` | one |
 | MODL-30 | Laya on the CPU: oracle, `tokenizer.json`, ModernBERT, the decision head, `nuclis decide` | three; closes once |
 | MODL-31 | Laya on Metal: bidirectional windowed attention, the encoder plan, measured | one or two |
 | AGNT-18 | The agent's `decide` tool: LLM-written questions over tool-supplied states (the experiment) | one |
@@ -49,65 +47,6 @@ first, then Metal; a new command, `nuclis decide`, with three input tiers,
 fan-out over many states, a styled terminal view, and `--json`; each
 `results[i]` a complete Jev response; LLM-written questions are the last
 unit, an experiment.
-
-## APPS-18 — Shell completion and `make install`
-
-Decisions (user, 2026-09-27): the scripts are thin shims and the binary
-answers every Tab (the "option 3" design): commands, flags, fixed values,
-and the user's own state (registered models, sessions, config keys).
-Installed by the user from `nuclis completion fish|bash|zsh`; `make
-install` copies the binary only.
-
-- **The table.** `src/completion.zig`: `Command { name, summary, actions,
-  flags, positional }`, `Flag { name, short, value: Value, summary }`,
-  `Value = none | text | number | file | dir | choice([]const []const u8)
-  | model | repo | session | config_key | config_value | roles`, one entry
-  per command of `cli.parseArgs` (`agent` with `ls`, `config` with
-  `init|show|set`, `model` with `pull|ls|inspect`, and `completion`).
-  Fixed choices come from the enums (`engine.Backend`,
-  `config.KvPrecision`, `inference.profiles.Profile` and `.Effort`,
-  `model.Role`, `config.Profile`) via `std.meta.fieldNames`, never typed
-  twice.
-- **Drift tests** (the reason for the table): every `"--…"` and `"-p"`
-  literal in `cli.zig` (`@embedFile`) is a flag of some command in the
-  table; every table flag is accepted by `parseArgs` for its command and
-  action (a sample value per `Value` kind, the command's required
-  arguments added); every table flag appears on its command's `--help`
-  page.
-- **`nuclis __complete <words…>`** (hidden: no help row, not completed):
-  the words after `nuclis`, the last one the partial word (may be empty).
-  Prints one candidate per line, `candidate\tdescription`, prefix-filtered,
-  at most 200; or exactly one directive line, `:file` or `:dir`, for the
-  shell's own path completion. Run-time values: `model` = registry names
-  (description: repo/file or path) + catalogue names (architecture ·
-  quantization · status from the sidecar, no hashing), `:file` when the
-  word holds `/`, `~`, or `.`; `repo` = catalogue + registry names;
-  `session` = `resume.list` for the cwd, newest 50 (time · first prompt);
-  `config_key` = the leaves of `config.Config` (a new `config.keyNames`,
-  compile-time); `config_value` = the key's enum or bool values, models for
-  `engine.model`. Every failure prints nothing and exits 0 (a broken
-  `nuclis.json` completes no registry names, never an error on the
-  prompt line). Pure core `complete(arena, words, state) → Result` over a
-  `State` snapshot so the tests need no files; the I/O that fills `State`
-  is lazy (only what the position needs).
-- **`nuclis completion fish|bash|zsh`**: prints the shim, each under 40
-  lines, embedded as text in `completion.zig`; fish uses `commandline
-  -xpc` (fish 4.9 here); bash stays 3.2-compatible (macOS's own bash),
-  `compopt` guarded; zsh `_describe` with `:` escaped, `compdef` at the
-  end so `source <(nuclis completion zsh)` works. Help page
-  `nuclis completion --help` (install lines per shell).
-- **`make install` / `make uninstall`**: `PREFIX ?= $(HOME)/.local`;
-  builds `metal`, `rm -f` then copies (never overwrites a signed binary in
-  place: the kernel's cached signature kills it on Apple Silicon), warns
-  when `$(PREFIX)/bin` is not on `PATH`, prints the completion hint.
-- Docs: `docs/spec.md` §6 (the two commands), `README.md` quick start
-  (`make install`, the fish line), `docs/development.md` (install target).
-- Checks: `make check`; with the fresh binary, `time nuclis __complete
-  agent --model ""` recorded (target under 20 ms); each shell driven in
-  tmux (`tmux -L`) with Tab on `nuclis ag`, `agent --th`, `agent --think `,
-  `agent --model `, `agent --resume `, `config set agent.`, `--prompt-file
-  ` and captured; `make install` into a temporary `PREFIX`. No Metal tier
-  (executable only).
 
 ## MODL-30 — Laya on the CPU, end to end
 

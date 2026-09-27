@@ -811,6 +811,60 @@ fn isKey(comptime T: type, path: []const u8) bool {
     return false;
 }
 
+/// A settable key and the values its type spells out (enum names, `true`
+/// and `false`, `null` for an override); empty for numbers and text.
+pub const KeyInfo = struct { path: []const u8, choices: []const []const u8 };
+
+/// The global keys `config set` accepts, in schema order.
+pub const global_keys = keyInfos(Config, "");
+/// The keys of one registry entry, relative to `models.<name>.`.
+pub const entry_keys = keyInfos(ModelEntry, "");
+
+fn keyInfos(comptime T: type, comptime prefix: []const u8) []const KeyInfo {
+    const list = comptime blk: {
+        @setEvalBranchQuota(20_000);
+        var list: []const KeyInfo = &.{};
+        for (@typeInfo(T).@"struct".fields) |field| {
+            if (field.type == Models or std.mem.eql(u8, field.name, "schema_version")) continue;
+            const path = prefix ++ field.name;
+            list = list ++ if (isSection(field.type)) keyInfos(field.type, path ++ ".") else &[_]KeyInfo{.{ .path = path, .choices = choicesOf(field.type) }};
+        }
+        break :blk list;
+    };
+    return list;
+}
+
+fn choicesOf(comptime T: type) []const []const u8 {
+    const list = comptime switch (@typeInfo(T)) {
+        .@"enum" => |e| blk: {
+            var names: []const []const u8 = &.{};
+            for (e.fields) |f| names = names ++ &[_][]const u8{f.name};
+            break :blk names;
+        },
+        .bool => &[_][]const u8{ "true", "false" },
+        .optional => |o| choicesOf(o.child) ++ &[_][]const u8{"null"},
+        else => if (T == ImageMaxTokens) &[_][]const u8{"auto"} else &[_][]const u8{},
+    };
+    return list;
+}
+
+test "the key listing is the schema's leaves, the file's format and the registry left out" {
+    for (global_keys) |key| try std.testing.expect(isKey(Config, key.path));
+    for (entry_keys) |key| try std.testing.expect(isKey(ModelEntry, key.path));
+    try std.testing.expectEqual(comptime leafCount(Config) - 1, global_keys.len);
+    const find = struct {
+        fn at(keys: []const KeyInfo, path: []const u8) ?KeyInfo {
+            for (keys) |key| if (std.mem.eql(u8, key.path, path)) return key;
+            return null;
+        }
+    }.at;
+    try std.testing.expect(find(global_keys, "schema_version") == null);
+    try std.testing.expectEqualStrings("metal", find(global_keys, "engine.backend").?.choices[1]);
+    try std.testing.expectEqual(@as(usize, 2), find(global_keys, "agent.fold_thinking").?.choices.len);
+    try std.testing.expectEqual(@as(usize, 0), find(global_keys, "engine.ctx_size").?.choices.len);
+    try std.testing.expectEqualStrings("null", find(entry_keys, "profile").?.choices[find(entry_keys, "profile").?.choices.len - 1]);
+}
+
 /// The file's JSON tree, edited in place and written back as it was found
 /// (stated keys only, the file's own order) so an edit changes one thing.
 /// A missing file starts from what `init` writes. Everything lives in the

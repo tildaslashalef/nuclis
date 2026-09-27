@@ -285,6 +285,7 @@ nuclis model pull (<name> | <owner/repo> --file <f>) [--revision <r>] [--role <r
 nuclis model inspect (<name> | <owner/repo> --file <f>) [--revision <r>] [--json]
 nuclis model ls [--json]
 nuclis config init [--discover [--dry-run]] [--json] | show [--json] | set <key> <value>
+nuclis completion fish|bash|zsh
 nuclis --help | <command> --help | --version
 ```
 
@@ -299,6 +300,7 @@ nuclis --help | <command> --help | --version
 | `model` | pull with digest verification and sidecars, list the artifacts under the root, judge a file at the four levels of §4 |
 | `config` | write the file with every catalogue model registered (`--discover` adds runnable files the catalogue does not name), show effective values with their source layer, set one key |
 | `agent` | §7 |
+| `completion` | a thin script per shell: every Tab runs the hidden `nuclis __complete <words…>`, which answers from one command table (held to the parser and the help pages by tests) and the user's state: registered and catalogue models, the workspace's sessions, config keys and their values; paths go back to the shell; a failure completes nothing |
 
 Output rules:
 

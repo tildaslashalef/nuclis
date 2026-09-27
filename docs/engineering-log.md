@@ -139,6 +139,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-29 | A generic safetensors loader and `nuclis inspect` on it | 2026-09-27 |
 | REPO-18 | `docs/research/` removed; its conclusion carried into the plan | 2026-09-27 |
 | TERM-13 | Exit keeps the transcript: the margin reset no longer homes the cursor onto the banner | 2026-09-27 |
+| APPS-18 | Shell completion answered by the binary (`nuclis completion fish\|bash\|zsh`, `__complete`); `make install` | 2026-09-27 |
 
 ## Context
 
@@ -5676,3 +5677,53 @@ The user confirmed the exit on Ghostty.
 
 **Remaining.** The lease still writes a CRLF after `finish`, which leaves
 one blank line before the shell prompt.
+
+## APPS-18 — Shell completion answered by the binary; `make install` (2026-09-27)
+
+**Outcome.** `nuclis completion fish|bash|zsh` prints a shim of under 40
+lines; on every Tab it runs the hidden `nuclis __complete <words…>`, which
+answers from one command table in `src/completion.zig` (commands, actions,
+flags with their value kinds, fixed values taken from the enums) and from
+the user's state, read only when the position needs it: registry and
+catalogue models (catalogue status from the sidecar, no hashing), the
+workspace's saved sessions (newest 50), config keys (`config.global_keys`
+and `entry_keys`, walked from the schema at compile time) and their
+values. Paths are handed back to the shell (`:file`, `:dir`). A failure
+prints nothing and exits 0. The table replaces the help test's hand-kept
+flag list, and three tests hold it: every flag literal in `cli.zig` is in
+the table, every table flag parses for its command and action, every table
+flag is on its help page. `make install` builds the Metal release and
+copies it to `PREFIX/bin` (`~/.local`), removing the old file first (a
+signed binary rewritten in place is killed at launch on Apple Silicon);
+`make uninstall` removes it. The design choice (thin shims, binary answers)
+is the user's, over static generated scripts.
+
+**Evidence.** `make check` (580/580 unit tests, Metal fixtures, the
+manifests). The drift tests bite: dropping `--unfused-norms` from the table
+fails the literal scan; renaming `--repeat` fails the parse test.
+`__complete` takes about 4 ms (ten calls in 0.03–0.04 s for `agent
+--model`, `--resume`, `--th`). Driven in tmux with the fresh binary on
+`PATH`, each shell completed `nuclis ag`, `agent --th`, `agent --think `,
+`agent --model gemma-4-1`, `config set agent.th`, `agent --prompt-file
+src/cl` (the shell's own path completion), and `model pull x --with
+mmproj,`: fish 4.9.3 (with descriptions), bash 5.3 and macOS's bash
+3.2.57, zsh 5.9 sourced and autoloaded from `fpath`. `agent --resume`
+listed the playground's saved session with its first prompt. `make install
+PREFIX=<tmp>` installed, reinstalled over the copy, and uninstalled.
+
+**Findings.** bash 3.2 joins a quoted array slice (`"${a[@]:1:n}"`) into
+one word when `IFS` is not the default, so the bash shim copies the words
+in a loop and sets `IFS` only after the call. tmux runs a pane command
+through the default shell (fish here, where `$PATH` is a list); the test
+driver execs the shell through `/usr/bin/env` instead.
+
+**Files.** `src/completion.zig` (new), `src/cli.zig`, `src/help.zig`,
+`src/config.zig`, `Makefile`, `README.md`, `docs/spec.md`,
+`docs/development.md`, `docs/architecture.md`, `docs/engineering-log.md`,
+`TODO.md`.
+
+**Remaining.** The fish shim's fallback for fish 3 (`commandline -opc`)
+is untested (fish 4.9 only here). Help rows and the table's summaries are
+still two texts (the table only checks that each flag is on its page).
+bash shows no descriptions. `owner/repo` after `model pull` completes only
+names the catalogue and registry know.

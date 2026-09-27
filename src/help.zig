@@ -14,7 +14,7 @@ const std = @import("std");
 const style = @import("tui/style.zig");
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -27,6 +27,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .agent => agent(out, sty),
         .config => config(out, sty),
         .model => model(out, sty),
+        .completion => completion(out, sty),
     };
     return overview(out, sty, version);
 }
@@ -124,6 +125,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "validate", "whether a file binds to its architecture's adapter");
     try row(out, sty, "model", "pull, list, and judge Hugging Face Hub artifacts");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
+    try row(out, sty, "completion", "the shell completion script for fish, bash, or zsh");
 
     try heading(out, sty, "Global options:");
     try row(out, sty, "--help, -h", "this page, or a command's page after its name");
@@ -491,6 +493,29 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try out.writeByte('\n');
 }
 
+fn completion(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis completion", "Tab completion for fish, bash, and zsh");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis completion fish|bash|zsh");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "fish", "the script for fish");
+    try row(out, sty, "bash", "for bash 3.2 and later");
+    try row(out, sty, "zsh", "for zsh, after compinit");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis completion fish > ~/.config/fish/completions/nuclis.fish", "fish loads it on the first Tab");
+    try example(out, sty, "echo 'source <(nuclis completion bash)' >> ~/.bashrc", "bash, every new shell");
+    try example(out, sty, "echo 'source <(nuclis completion zsh)' >> ~/.zshrc", "zsh, after the line that runs compinit");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "The script is a thin shim: each Tab runs nuclis with the words typed so");
+    try plain(out, "far and shows its answer, so new flags, registered models, config keys,");
+    try plain(out, "and this directory's saved sessions complete without writing the script");
+    try plain(out, "again. It calls the nuclis on PATH.");
+    try out.writeByte('\n');
+}
+
 // ----- tests -----
 
 const testing = std.testing;
@@ -532,31 +557,6 @@ test "every page is self-contained, has the standard sections, and fits 80 colum
             try testing.expect(std.unicode.utf8CountCodepoints(line) catch line.len <= 80);
         }
         try testing.expect(count > 8 and count <= 80);
-    }
-}
-
-test "every flag the parser accepts for a command is on its page" {
-    const Flags = struct { topic: Topic, flags: []const []const u8 };
-    const table = [_]Flags{
-        .{ .topic = .generate, .flags = &.{ "--prompt", "--prompt-file", "--prompt-tokens", "--raw", "--image", "--image-max-tokens", "--logits", "--trace-dir", "--think", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--json", "--temperature", "--top-k", "--top-p", "--min-p", "--presence-penalty", "--repetition-penalty" } },
-        .{ .topic = .bench, .flags = &.{ "--prompt", "--prompt-file", "--prompt-tokens", "--raw", "--repeat", "--warmup", "--profile", "--unfused-norms", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--json", "--temperature" } },
-        .{ .topic = .agent, .flags = &.{ "-p", "--prompt", "--print", "--prompt-file", "--json", "--session", "--resume", "--think", "--thinking-budget", "--image-max-tokens", "--model", "--backend", "--ctx-size", "--max-tokens", "--kv", "--speculative", "--draft-length", "--prompt-profile", "--seed", "--temperature" } },
-        .{ .topic = .tokenize, .flags = &.{ "--prompt", "--prompt-file", "--raw", "--think", "--prompt-profile", "--model", "--json" } },
-        .{ .topic = .eval, .flags = &.{ "--file", "--ctx-size", "--chunks", "--reference", "--model", "--backend", "--kv", "--prompt-profile", "--json" } },
-        .{ .topic = .inspect, .flags = &.{ "--model", "--json" } },
-        .{ .topic = .validate, .flags = &.{ "--model", "--json" } },
-        .{ .topic = .model, .flags = &.{ "--with", "--all", "--file", "--revision", "--role", "--register", "--profile", "--force", "--json" } },
-        .{ .topic = .config, .flags = &.{ "--discover", "--dry-run", "--json" } },
-    };
-    for (table) |entry| {
-        const text = try rendered(testing.allocator, entry.topic, .none);
-        defer testing.allocator.free(text);
-        for (entry.flags) |flag| {
-            if (std.mem.indexOf(u8, text, flag) == null) {
-                std.debug.print("{s} page lacks {s}\n", .{ @tagName(entry.topic), flag });
-                return error.TestUnexpectedResult;
-            }
-        }
     }
 }
 

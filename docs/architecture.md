@@ -71,6 +71,7 @@ sequenceDiagram
 flowchart TB
     subgraph exe [src — executable]
         cli[cli.zig parse + dispatch]
+        completion[completion.zig command table + shell completion]
         config[config.zig nuclis.json + models registry]
         tui[tui/ terminal surface — no inference import]
         agent[agent/ loop, tools, session log, print mode]
@@ -102,6 +103,7 @@ flowchart TB
     cli --> engine
     cli --> agent
     cli --> model
+    cli --> completion
     model --> hf
     model --> gguf
     cli --> st

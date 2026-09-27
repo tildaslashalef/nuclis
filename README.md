@@ -33,6 +33,15 @@ make metal                                      # release build, Metal backend
 `nuclis generate`, `bench`, `eval`, and `tokenize` cover the rest;
 `nuclis --help` lists every command and `make help` the development targets.
 
+`make install` puts the binary in `~/.local/bin` (`PREFIX=` elsewhere), and
+`nuclis completion fish|bash|zsh` prints Tab completion for that shell:
+
+```sh
+nuclis completion fish > ~/.config/fish/completions/nuclis.fish
+echo 'source <(nuclis completion zsh)' >> ~/.zshrc     # after compinit
+echo 'source <(nuclis completion bash)' >> ~/.bashrc
+```
+
 ## Models
 
 The catalogue pins each model's repository, commit, and SHA-256, so

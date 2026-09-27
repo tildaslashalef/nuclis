@@ -17,13 +17,19 @@ const model = @import("model.zig");
 const style = @import("tui/style.zig");
 const catalog = @import("catalog.zig");
 const help_text = @import("help.zig");
+const completion = @import("completion.zig");
 
 // Fed from build.zig.zon through the build_options module (see build.zig);
 // never edit a version string here.
 pub const version = @import("build_options").version;
 pub const Diagnostic = config.Diagnostic;
 pub const Options = struct {
-    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model },
+    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, completion, complete },
+    /// `completion <shell>`: which script to print.
+    shell: completion.Shell = .fish,
+    /// `__complete <words…>`: the words after `nuclis`, the last one being
+    /// completed (the shims' hidden call).
+    words: []const []const u8 = &.{},
     /// Which command's page `--help` asked for; null is the overview.
     help_topic: ?help_text.Topic = null,
     config_action: enum { init, show, set } = .show,
@@ -65,6 +71,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
         return .{ .command = .help };
     if (args.len == 1 and std.mem.eql(u8, args[0], "--version"))
         return .{ .command = .version };
+    if (std.mem.eql(u8, args[0], "__complete")) return .{ .command = .complete, .words = args[1..] };
     const command: @FieldType(Options, "command") = if (std.mem.eql(u8, args[0], "inspect"))
         .inspect
     else if (std.mem.eql(u8, args[0], "validate"))
@@ -83,6 +90,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
         .config
     else if (std.mem.eql(u8, args[0], "model"))
         .model
+    else if (std.mem.eql(u8, args[0], "completion"))
+        .completion
     else
         return error.UnknownCommand;
     // `nuclis <command> --help` is that command's page; the bare `--help`
@@ -91,6 +100,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
         return .{ .command = .help, .help_topic = std.meta.stringToEnum(help_text.Topic, args[0]) };
     }
     if (command == .model) return parseModelArgs(args[1..]);
+    if (command == .completion) {
+        if (args.len < 2) return error.MissingShell;
+        if (args.len > 2) return error.UnknownOption;
+        return .{ .command = .completion, .shell = std.meta.stringToEnum(completion.Shell, args[1]) orelse return error.UnknownShell };
+    }
     var options: Options = .{ .command = command };
     var i: usize = 1;
     if (command == .agent and args.len >= 2 and std.mem.eql(u8, args[1], "ls")) {
@@ -420,6 +434,12 @@ fn parseModelArgs(args: []const []const u8) !Options {
 /// unwinds (the key path and the rule it broke); `main` prints it beside
 /// the error name. Nothing here logs, so the function is testable.
 pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, options: Options, out: *std.Io.Writer, diag: *config.Diagnostic) !void {
+    switch (options.command) {
+        // Before anything that probes the terminal: a Tab waits on this.
+        .complete => return completion.run(alloc, io, environ, options.words, out),
+        .completion => return out.writeAll(completion.script(options.shell)),
+        else => {},
+    }
     // Text reports are styled only on a terminal; `--json` never is.
     const sty: style.Style = if (options.json) .none else style.Style.detect(environ, io, std.Io.File.stdout());
     switch (options.command) {
@@ -565,7 +585,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
     (switch (options.command) {
-        .help, .version, .config, .model => unreachable,
+        .help, .version, .config, .model, .completion, .complete => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => blk: {
@@ -694,6 +714,18 @@ fn renderStart(alloc: std.mem.Allocator, io: std.Io, root: []const u8, out: *std
         try out.print("{s}next:{s} {s}nuclis model pull {s}{s} fetches the model ({s}--all{s} adds its companions), then {s}nuclis agent{s}\n", .{ sty.on(.bold), off, sty.on(.code), entry.name, off, sty.on(.code), off, sty.on(.code), off })
     else
         try out.print("{s}next:{s} every catalogue model is present; {s}nuclis agent{s}\n", .{ sty.on(.bold), off, sty.on(.code), off });
+}
+
+test "completion takes one shell; the hidden command takes every word" {
+    try std.testing.expectEqual(completion.Shell.zsh, (try parseArgs(&.{ "completion", "zsh" })).shell);
+    try std.testing.expectError(error.MissingShell, parseArgs(&.{"completion"}));
+    try std.testing.expectError(error.UnknownShell, parseArgs(&.{ "completion", "tcsh" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "completion", "fish", "bash" }));
+    try std.testing.expectEqual(help_text.Topic.completion, (try parseArgs(&.{ "completion", "--help" })).help_topic.?);
+    const words = try parseArgs(&.{ "__complete", "agent", "--model", "" });
+    try std.testing.expect(words.command == .complete);
+    try std.testing.expectEqual(@as(usize, 3), words.words.len);
+    try std.testing.expectEqualStrings("", words.words[2]);
 }
 
 test "parse inspection and reject ambiguous or incomplete flags" {
@@ -1024,6 +1056,7 @@ test {
     _ = discover;
     _ = @import("interrupt.zig");
     _ = style;
+    _ = completion;
 }
 
 test "bench parses shared prompt flags and its own repetition flags" {

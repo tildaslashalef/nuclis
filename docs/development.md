@@ -819,6 +819,17 @@ The root `Makefile` wraps these and the explicit model/GPU targets with the
 local cache flag already applied; `make help` lists every target. Targets that
 run the CLI always use the freshly built `zig-out/bin/nuclis`.
 
+`make install` builds the Metal release and copies the binary to
+`$(PREFIX)/bin/nuclis` (`PREFIX` defaults to `~/.local`); `make uninstall`
+removes it. The binary is self-contained (the Metal shader source is
+embedded and compiled at run time; models live under `~/.nuclis`). The old
+file is removed before the copy, never overwritten in place: on Apple
+Silicon the kernel keeps a replaced file's code signature cached and kills
+the binary rewritten under it at launch. Shell completion is the user's to
+install, from `nuclis completion fish|bash|zsh` (`nuclis completion --help`);
+the scripts are shims that ask the binary on every Tab (`nuclis __complete`,
+`src/completion.zig`), so they never need regenerating after an install.
+
 The root build installs the executable under `zig-out/bin/` and tests the
 executable, the inference module, and the download package. Default tests
 must not initialize a GPU, load full model weights, or reach the network.

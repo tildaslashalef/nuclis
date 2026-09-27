@@ -6,6 +6,7 @@
 #   BACKEND   cpu | metal for run targets (metal)
 #   PROMPT    prompt text for run/bench targets
 #   ARGS      extra arguments appended to run/bench/generate
+#   PREFIX    install root for `make install` ($(HOME)/.local: the binary goes to $(PREFIX)/bin)
 
 ZIG      ?= zig
 CACHE    ?= --global-cache-dir .zig-cache/global
@@ -15,18 +16,19 @@ BACKEND  ?= metal
 VARIANT  ?= baseline
 PROMPT   ?= Write a Zig function that reverses a string.
 ARGS     ?=
+PREFIX   ?= $(HOME)/.local
 BIN      := ./zig-out/bin/nuclis
 METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 
 .DEFAULT_GOAL := build
-.PHONY: help build debug build-cpu metal test test-metal check verify verify-long verify-cpu verify-changed gate gates-list gates-validate \
+.PHONY: help build debug build-cpu metal install uninstall test test-metal check verify verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate \
         agent agent-eval model-ls eval-corpus trace clean distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
-	@echo; echo "Variables: MODEL OPT BACKEND PROMPT ARGS  (see Makefile header)"
+	@echo; echo "Variables: MODEL OPT BACKEND PROMPT ARGS PREFIX  (see Makefile header)"
 
 # ---- build -----------------------------------------------------------------
 
@@ -41,6 +43,20 @@ build-cpu: ## Release build without the Metal backend (-Dmetal=false)
 
 metal: ## Release build with the Metal backend stated explicitly
 	$(ZIG) build $(METAL)
+
+# The old binary is removed before the copy, never overwritten in place: on
+# Apple Silicon the kernel keeps the old file's code signature cached, and a
+# binary rewritten under it is killed at launch.
+install: metal ## Install the Metal build as PREFIX/bin/nuclis (PREFIX=~/.local by default)
+	@mkdir -p "$(PREFIX)/bin"
+	@rm -f "$(PREFIX)/bin/nuclis"
+	@cp $(BIN) "$(PREFIX)/bin/nuclis"
+	@echo "installed $(PREFIX)/bin/nuclis ($$("$(PREFIX)/bin/nuclis" --version))"
+	@case ":$$PATH:" in *":$(PREFIX)/bin:"*) ;; *) echo "note: $(PREFIX)/bin is not on PATH";; esac
+	@echo "shell completion: nuclis completion --help"
+
+uninstall: ## Remove PREFIX/bin/nuclis
+	rm -f "$(PREFIX)/bin/nuclis"
 
 # ---- tests -----------------------------------------------------------------
 
