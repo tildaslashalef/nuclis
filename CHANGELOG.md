@@ -2,6 +2,81 @@
 
 Notable changes, newest first.
 
+## [v0.3.0] - 2026-09-27
+
+### Features
+
+- **nuclis:** the catalogue at five entries, the registry in name order (APPS-17)
+- **inference:** Gemma 4 E4B QAT end to end, checks pending (MODL-27)
+- **agent:** blank bash output said, the paged-file rule, Ctrl-O's output view, a reasoning budget at low (AGNT-17)
+- **eval:** teacher-forced perplexity against the reference, the all-rows prefill, a gate per family (APPS-14)
+- **vision:** Bonsai 2's Q8_0 projector through the Qwen3-VL adapter (MODL-25); TERM-13 dropped
+- **vision:** close MODL-23: Muse Glimmer's vision record, the image token cap, the docs
+- **vision:** Muse Glimmer's windowed projector on both executors and image spans in its language model (MODL-23)
+- **config:** generation.image_max_tokens, auto by default, with a per-model override and --image-max-tokens (MODL-23)
+- **vision:** close MODL-22: the Gemma 4 vision record, the chunk buffers grown all-or-nothing, the docs
+- **vision:** Gemma 4's projectors on both executors and bidirectional image spans in its language model (MODL-22)
+- **agent:** a steer during a reasoning-only step restarts it; close AGNT-16, draft TERM-13
+- **repo:** the screenshot harness runs the agent in a Ghostty window of its own (--direct)
+- **agent:** images and text files in the chat — drop, /image, the chips, the projector turn, the detail row, the preview, sessions (AGNT-15)
+- **vision:** image spans through the Qwen3.8 language model, generate --image, the vision gates (MODL-21)
+- **vision:** session rope triples and the CPU multi-axis RoPE for image spans (MODL-21)
+- **vision:** the Qwen3-VL projector on both executors, the image decoders, exact preprocessing, and the oracle harness (MODL-21, first half)
+- **agent:** the Qwen decoder keeps a value's trailing newline, read_file serves the first MiB, Enter steers a running turn (AGNT-14)
+- **agent:** the system prompt as sections, measured on the playground task list (AGNT-13)
+- **term:** `!` and `!!` run a shell command, Ctrl-O folds tool output, Ctrl-X copies the last answer, Ctrl-G edits the input externally (TERM-10)
+- **term:** markdown hardening: prefix fuzz, pathological goldens, nested quotes, bold italic, soft breaks kept, rows never past the edge (TERM-10)
+- **term:** the diff's gutter, marker cell, and bands; the header counts the change (TERM-10)
+- **term:** operation dots that pulse while running, Name(argument) call rows, write summaries, and the turn's operations row (TERM-10)
+- **term:** frame the input box; its edge carries the effort's colour and the running spinner (TERM-10)
+- **term:** the status bar states its settings at the right edge, the speculative switch among them (TERM-10)
+- **term:** frame the header in a box, and keep it on screen through the first frames (TERM-10)
+- **term:** the warm-up shows its progress in the region and reports when it is done (TERM-10)
+- **term:** repaint at 10 Hz through every GPU wait, and rewrite only the changed rows (TERM-10)
+- **term:** the tmux screenshot harness, and the header keeps its first row (TERM-10)
+- **apps:** raise the output budget default to 4096 and its cap to 16384 (APPS-16)
+
+### Bug Fixes
+
+- **gemma4:** Metal verify rows carry the final soft-cap (MODL-26)
+- **vision:** decode after an image writes and reads the right cache rows; the vision gate compares decode with one prefill; a spinner while images encode (MODL-24, TERM-12)
+- **tui:** re-anchor the live region on a resize from the cursor report; the preview fits above the region and is off under tmux (TERM-11)
+- **agent:** the typed-path scan skips command lines; the harness gains a bracketed paste step and tmux passthrough (AGNT-15)
+- **term:** a fold toggle keeps the editor at the bottom, the input box loses its background, the bar says speculative (TERM-10)
+
+### Performance
+
+- **tokenizer:** queued BPE merge for long pieces; Gemma lines no longer hit the work bound (MODL-26 follow-up)
+- **vision:** Muse's windows on the chunk attention kernel (encode 67 to 47 s at 16,320 patches); generate reports image_milliseconds; the check tool profiles the projector (MODL-23)
+
+### Other
+
+- docs: README rewritten with a recorded agent session; close MODL-27 (REPO-17)
+- chore(scripts): nuclis_mem_usage.py splits a running process's memory into GPU and CPU (REPO-16)
+- test(eval): a long-context perplexity tier; Gemma 4 12B passes at 4K, the 26B-A4B's -1.79 % is open (MODL-26 follow-up)
+- docs(repo): the CPU tier runs only when a unit changes what the CPU reference computes, and before a release (REPO-15)
+- docs(todo): MODL-23 takes generation.image_max_tokens (auto by default, a per-model override and a flag)
+- docs(todo): MODL-23 facts from the reference and the Muse projector file; the pinned synthetic fixture; the oracle takes --n-ctx and --vision-flash
+- docs(todo): MODL-22 facts from the reference and the Gemma 4 projector files; the oracle takes image token bounds
+- docs(repo): the screenshot harness is the validation step for surface changes (REPO-14)
+- docs(plan): close AGNT-15 — images and text files in the chat, the log entry, the spec and reference updates
+- docs(plan): AGNT-15 opened — text-file chips, feature ownership, the speculation rule, the preview's terminal test
+- docs(plan): close MODL-21 — the Qwen3.8 vision projector, verified on both executors
+- docs(plan): AGNT-16 ordered: the Muse value contract measured, steering that interrupts reasoning, the guessed-path guideline
+- docs(plan): AGNT-12 dropped, its steering folded into AGNT-14 with the two measured tool fixes; the images unit renumbered AGNT-15
+- docs(repo): the Metal tier is run for a unit that touched the inference stack, judged by the work
+- docs(term): TERM-10 closed: the repaint tick, the frame, the operation rows, the banded diff, and the editor's shell and keys
+- docs(repo): one specification: spec.md rewritten as a technical spec with the agent spec merged in (REPO-13)
+- docs(repo): the architecture guide as a map: tables, bullets, and pointers, no identifiers in prose (REPO-12)
+- docs(repo): the architecture guide follows the KV cache end to end; the inference guide rewritten as one narrative (REPO-12)
+- docs(term): the transcript's operation rows, the bar's groups, the warm-up, and the session-1 hand-off (TERM-10)
+- docs(plan): order the agent units before the vision units
+- docs(plan): order AGNT-11 ahead of MODL-21
+- docs(plan): draft AGNT-13, the system prompt as sections, after pi's
+- docs(plan): widen TERM-10 to two sessions with the harness, the repaint tick, and pi's ideas
+- docs(repo): point the plan at TERM-10 after the v0.2.0 tag
+- chore: begin 0.3.0-dev
+
 ## [v0.2.0] - 2026-09-21
 
 ### Breaking Changes
