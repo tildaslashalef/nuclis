@@ -21,7 +21,7 @@ BIN      := ./zig-out/bin/nuclis
 METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 
 .DEFAULT_GOAL := build
-.PHONY: help build debug build-cpu metal install uninstall test test-metal check verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
+.PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate \
         agent agent-eval model-ls eval-corpus trace clean distclean hf-downloader test-hf changelog release
@@ -72,10 +72,14 @@ check: fmt-check test test-metal gates-validate workloads-validate ## Format che
 # Every model-specific numerical check is a gate in the manifest: a tier
 # (verify = Metal, minutes; verify-release = whole files, before a release;
 # verify-cpu = the CPU reference, hours) and the
-# source globs that make it relevant. `make verify-changed BASE=<rev>` runs
-# what a change needs.
+# source globs that make it relevant. `make verify-auto` runs what a change
+# needs: the model-free checks and gates its paths select, then names the
+# tiers it requires.
 
 BASE ?= HEAD
+verify-auto: eval-corpus ## What a change needs: the model-free checks and fast-tier gates its paths select (cheapest first, stop at the first failure), then the tiers it requires; BASE= defaults to TODO.md's `Base:` line
+	python3 scripts/gates.py --auto $(if $(filter command line,$(origin BASE)),$(BASE)) $(ARGS)
+
 verify: eval-corpus ## The fast Metal tier: one representative file per family and the paths only a variant has (once per unit)
 	python3 scripts/gates.py --tier verify $(ARGS)
 

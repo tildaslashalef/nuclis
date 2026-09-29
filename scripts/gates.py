@@ -11,7 +11,10 @@ make them relevant, so `--changed REV` selects by `git diff`: the Metal
 tier's matches by default, another tier's with `--tier` (the long tier runs
 when a change touches attention, the caches, or a windowed schedule, the
 CPU tier when a change alters what the CPU reference computes, and all
-three before a release). Bounds live in the manifest and nowhere else.
+three before a release). `--auto` is the one command for a change: the
+model-free checks its paths select (`checks`), its fast-tier gates
+cheapest first until one fails, then the tiers it requires but that did
+not run (`requires`). Bounds live in the manifest and nowhere else.
 See docs/development.md § Gates.
 """
 import argparse
@@ -33,6 +36,10 @@ COMPARATORS = ('exit', 'trace')
 PLACEHOLDERS = ('{nuclis}', '{nuclis-cpu}', '{zig-metal}', '{zig-cpu}', '{model}', '{mtp}', '{mmproj}', '{trace}')
 TRACE_ROOT = '.zig-cache/gates/trace'
 CPU_PREFIX = '.zig-cache/gates/cpu'
+TIMES = ROOT / '.zig-cache/gates/times.json'
+TODO = ROOT / 'TODO.md'
+# A gate never measured sorts after the cheap ones.
+UNKNOWN_SECONDS = 60.0
 
 
 # ---- pure functions (covered by --self-test) --------------------------------
@@ -96,7 +103,25 @@ def validate(doc):
             problems.append(f'{name}: an exit gate carries no bounds')
         if not isinstance(gate.get('evidence'), str):
             problems.append(f'{name}: missing evidence')
+    for i, check in enumerate(doc.get('checks', [])):
+        name = check.get('name', f'check #{i}')
+        command = check.get('command')
+        if not isinstance(command, list) or not command or not all(isinstance(a, str) for a in command):
+            problems.append(f'{name}: command must be a non-empty argv list')
+        if not is_globs(check.get('paths')):
+            problems.append(f'{name}: paths must be a non-empty list of globs')
+    for i, rule in enumerate(doc.get('requires', [])):
+        if rule.get('tier') not in TIERS or rule.get('tier') == 'verify':
+            problems.append(f'requires #{i}: tier must be one of {TIERS[1:]}')
+        if not is_globs(rule.get('paths')):
+            problems.append(f'requires #{i}: paths must be a non-empty list of globs')
+        if not isinstance(rule.get('reason'), str):
+            problems.append(f'requires #{i}: missing reason')
     return problems
+
+
+def is_globs(paths):
+    return isinstance(paths, list) and bool(paths) and all(isinstance(p, str) for p in paths)
 
 
 def glob_to_regex(glob):
@@ -124,8 +149,37 @@ def matches(glob, path):
 
 
 def select(gates, changed):
-    """The gates whose paths match any changed file, in manifest order."""
+    """The gates (or checks) whose paths match any changed file, in manifest order."""
     return [g for g in gates if any(matches(p, f) for p in g['paths'] for f in changed)]
+
+
+def requirements(rules, changed):
+    """(tier, the first file that matched, reason) for each `requires` rule the change matches."""
+    out = []
+    for rule in rules:
+        hit = next((f for f in changed if any(matches(p, f) for p in rule['paths'])), None)
+        if hit is not None:
+            out.append((rule['tier'], hit, rule['reason']))
+    return out
+
+
+def by_cost(gates, times):
+    """Cheapest first by each gate's last measured seconds; ties keep manifest order."""
+    return sorted(gates, key=lambda g: times.get(g['name'], UNKNOWN_SECONDS))
+
+
+def unit_base(todo_text):
+    """The `Base:` revision of the first unit in TODO.md (the one in progress), or None."""
+    m = re.search(r'^Base: `([0-9a-f]{7,40})`', todo_text, re.M)
+    return m.group(1) if m else None
+
+
+def check_argv(check, changed):
+    """A check's argv with `{zig-files}` expanded to the changed Zig sources; None when it has none to read."""
+    zig = [f for f in changed if f.endswith(('.zig', '.zon'))]
+    if '{zig-files}' in check['command'] and not zig:
+        return None
+    return [a for arg in check['command'] for a in (zig if arg == '{zig-files}' else [arg])]
 
 
 def expand(argv, gate, doc, env=None):
@@ -193,6 +247,21 @@ def changed_files(rev):
     diff = subprocess.run(['git', 'diff', '--name-only', rev], cwd=ROOT, capture_output=True, text=True, check=True).stdout
     untracked = subprocess.run(['git', 'ls-files', '--others', '--exclude-standard'], cwd=ROOT, capture_output=True, text=True, check=True).stdout
     return sorted(set(diff.split()) | set(untracked.split()))
+
+
+def load_times():
+    try:
+        return json.loads(TIMES.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_times(results):
+    """Merge each run gate's seconds into the history `--auto` orders by."""
+    times = load_times()
+    times.update({r['name']: round(r['seconds'], 1) for r in results if r.get('passed') is not None})
+    TIMES.parent.mkdir(parents=True, exist_ok=True)
+    TIMES.write_text(json.dumps(times, indent=1, sort_keys=True) + '\n')
 
 
 def build(doc, which, dry_run):
@@ -301,6 +370,9 @@ def main():
     ap.add_argument('--self-test', action='store_true', help='run the unit tests of the pure functions')
     ap.add_argument('--tier', choices=TIERS, help='run every gate of a tier; with --changed, the selected gates of that tier')
     ap.add_argument('--gate', action='append', metavar='NAME', help="run gates by name or glob (repeatable): gemma4-qat-trace-f16, 'muse-*'")
+    ap.add_argument('--auto', nargs='?', const='', metavar='REV',
+                    help="what a change needs: the model-free checks and verify gates its paths select, cheapest first until one fails, then the tiers it requires; REV defaults to TODO.md's `Base:` line")
+    ap.add_argument('--keep-going', action='store_true', help='with --auto, run everything selected after a failure')
     ap.add_argument('--changed', nargs='?', const='HEAD', metavar='REV',
                     help='run the Metal-tier gates whose paths match `git diff --name-only REV` plus untracked files (default HEAD); the other tiers\' matches are listed, and run with --tier verify-long or verify-cpu')
     ap.add_argument('--dry-run', action='store_true', help='print the commands instead of running them')
@@ -321,6 +393,8 @@ def main():
             print(f"{g['name']:<34} {g['tier']:<10} {g['family']:<8} {g['model']:<15} {g['evidence']}")
         return
 
+    if args.auto is not None:
+        sys.exit(auto(doc, args))
     if args.gate:
         selected = []
         for pattern in args.gate:
@@ -354,7 +428,7 @@ def main():
     elif args.tier:
         selected = [g for g in doc['gates'] if g['tier'] == args.tier]
     else:
-        ap.error('one of --list, --validate, --tier, --gate, --changed is required')
+        ap.error('one of --list, --validate, --auto, --tier, --gate, --changed is required')
 
     builds = {}
     if not args.no_build:
@@ -370,6 +444,7 @@ def main():
             print_result(r, gate, args.timeline)
     if args.dry_run:
         return
+    save_times(results)
     if args.json:
         print(json.dumps({'revision': git_rev(), 'builds': builds, 'results': results}, indent=2))
     failed = [r['name'] for r in results if not r['passed']]
@@ -378,6 +453,68 @@ def main():
     print(f"{len(results) - len(failed)}/{len(results)} passed in {total:.0f} s" + (f" after {built:.0f} s of builds" if builds else '')
           + (f"; failed: {', '.join(failed)}" if failed else ''), file=sys.stderr)
     sys.exit(1 if failed else 0)
+
+
+def auto(doc, args):
+    """`--auto`: checks, then gates cheapest first, then the required tiers; returns the exit status."""
+    base = args.auto or unit_base(TODO.read_text() if TODO.exists() else '')
+    if base is None:
+        print('warning: no REV and no `Base:` line in TODO.md; diffing against HEAD (committed work is not seen)', file=sys.stderr)
+        base = 'HEAD'
+    files = changed_files(base)
+    # A deleted file still selects gates; only a file that exists can be formatted.
+    present = [f for f in files if (ROOT / f).exists()]
+    print(f"{len(files)} changed file(s) since {base}", flush=True)
+    failed = []
+
+    def stop():
+        return failed and not args.keep_going
+
+    for check in select(doc.get('checks', []), files):
+        argv = check_argv(check, present)
+        if argv is None:
+            continue
+        print(f"check {check['name']}: {' '.join(argv)}", flush=True)
+        if args.dry_run:
+            continue
+        started = time.monotonic()
+        proc = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+        ok = proc.returncode == 0
+        print(f"{'PASS' if ok else 'FAIL'} check {check['name']:<28} {time.monotonic() - started:7.1f} s", flush=True)
+        if not ok:
+            failed.append(check['name'])
+            for line in (proc.stderr or proc.stdout).strip().splitlines()[-20:]:
+                print('    ' + line)
+            if stop():
+                break
+
+    gates = by_cost([g for g in select(doc['gates'], files) if g['tier'] == 'verify'], load_times())
+    if gates and not stop():
+        print(f"{len(gates)} verify gate(s), cheapest first: " + ', '.join(g['name'] for g in gates), flush=True)
+        if not args.no_build:
+            need = builds_needed(gates)
+            for which in ('metal', 'cpu', 'checks-metal', 'checks-cpu'):
+                if need[which]:
+                    build(doc, which, args.dry_run)
+        results = []
+        for gate in gates:
+            r = run_gate(gate, doc, args.dry_run)
+            if args.dry_run:
+                continue
+            results.append(r)
+            print_result(r, gate, args.timeline)
+            if not r['passed']:
+                failed.append(r['name'])
+                if stop():
+                    break
+        save_times(results)
+
+    required = requirements(doc.get('requires', []), files)
+    for tier, hit, reason in required:
+        print(f"Required, not run: {tier} ({hit}: {reason}); make verify-changed BASE={base} ARGS='--tier {tier}'", flush=True)
+    if not args.dry_run:
+        print(('failed: ' + ', '.join(failed)) if failed else 'all selected checks and gates passed', file=sys.stderr)
+    return 1 if failed else 0
 
 
 def git_rev():
@@ -401,6 +538,13 @@ def sample_doc():
             {'name': 'a-perplexity-4k', 'family': 'a', 'tier': 'verify-long', 'model': 'a', 'paths': ['inference/src/backends/metal/**'],
              'command': ['{nuclis}', 'eval', '--model', '{model}', '--file', 't.raw', '--reference', 'r.json'],
              'comparator': {'kind': 'exit'}, 'evidence': 'docs/a.md'},
+        ],
+        'checks': [
+            {'name': 'fmt', 'command': ['zig', 'fmt', '--check', '{zig-files}'], 'paths': ['**/*.zig']},
+            {'name': 'metal', 'command': ['make', 'test-metal'], 'paths': ['inference/src/backends/**']},
+        ],
+        'requires': [
+            {'tier': 'verify-cpu', 'paths': ['inference/src/backends/cpu/**', 'inference/src/models/*_runtime.zig'], 'reason': 'the CPU reference'},
         ],
     }
 
@@ -450,6 +594,33 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(argv[-3:], [os.path.expanduser('~/m/a.gguf'), '--draft-model', os.path.expanduser('~/m/a-mtp.gguf')])
         argv = expand(doc['gates'][0]['command'], doc['gates'][0], doc, env={'A_MODEL': '/elsewhere/a.gguf'})
         self.assertEqual(argv, ['./zig-out/bin/nuclis', 'generate', '--model', '/elsewhere/a.gguf', '--trace-dir', f'{TRACE_ROOT}/a-trace'])
+
+    def test_checks_and_requirements_follow_paths(self):
+        doc = sample_doc()
+        changed = ['inference/src/backends/cpu/vector.zig', 'docs/x.md']
+        self.assertEqual([c['name'] for c in select(doc['checks'], changed)], ['fmt', 'metal'])
+        self.assertEqual(check_argv(doc['checks'][0], changed), ['zig', 'fmt', '--check', 'inference/src/backends/cpu/vector.zig'])
+        self.assertIsNone(check_argv(doc['checks'][0], ['docs/x.md']))
+        self.assertEqual(requirements(doc['requires'], changed), [('verify-cpu', 'inference/src/backends/cpu/vector.zig', 'the CPU reference')])
+        self.assertEqual(requirements(doc['requires'], ['src/tui/editor.zig']), [])
+
+    def test_by_cost_puts_unmeasured_gates_after_cheap_ones(self):
+        gates = [{'name': n} for n in ('slow', 'new', 'cheap', 'mid')]
+        order = [g['name'] for g in by_cost(gates, {'slow': 120.0, 'cheap': 0.5, 'mid': 10.0})]
+        self.assertEqual(order, ['cheap', 'mid', 'new', 'slow'])
+
+    def test_unit_base_reads_the_first_unit(self):
+        text = '## A\n\nBase: `acce06a` (the commit)\n\n## B\n\nBase: `1234567`\n'
+        self.assertEqual(unit_base(text), 'acce06a')
+        self.assertIsNone(unit_base('no base here, Base: `acce06a` inline'))
+
+    def test_validation_names_bad_checks_and_rules(self):
+        doc = sample_doc()
+        doc['checks'].append({'name': 'bad', 'command': [], 'paths': []})
+        doc['requires'].append({'tier': 'verify', 'paths': ['x'], 'reason': 'r'})
+        problems = validate(doc)
+        for needle in ('bad: command', 'bad: paths', 'requires #1: tier'):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
     def test_builds_needed(self):
         gates = sample_doc()['gates']

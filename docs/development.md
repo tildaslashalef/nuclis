@@ -119,6 +119,23 @@ all eight windows: its running difference swings from −4.1 % after the
 first to −1.2 % after the fourth before settling at −0.53 %, so its 1 %
 bound holds only for the whole run.
 
+**`make verify-auto`** is the one command while working: it diffs from
+the `Base:` line of the unit in progress in `TODO.md` (or `BASE=<rev>`),
+runs the model-free `checks` of `gates.json` the changed paths select
+(`fmt` over the changed Zig files, `unit` = `make test`, `test-metal`,
+`manifests`), then the matched `verify` gates cheapest first (each
+gate's last measured seconds, kept in `.zig-cache/gates/times.json` by
+every run) until one fails (`ARGS=--keep-going` runs the rest), and ends
+by naming the tiers the change requires but that did not run, from the
+manifest's `requires` rules, with the file that matched and the rule's
+reason (`verify-cpu` for the CPU kernels, decoders, `*_runtime.zig`
+forwards, and CPU projectors; `verify-long` for the files that hold
+attention, the KV cache, and the windowed schedules). The rules name
+files, not intent: an addition nothing calls yet or a refactor a unit
+test pins still skips the CPU tier (the table above), and the long rule
+matches files that hold more than attention, so its line asks for a
+judgment of the diff. `ARGS=--dry-run` prints the plan.
+
 Each gate lists the source globs (`paths`) that make it relevant, so
 `make verify-changed BASE=<rev>` runs the Metal-tier gates whose paths
 match `git diff --name-only <rev>` plus untracked files: a commit under

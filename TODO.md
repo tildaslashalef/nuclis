@@ -42,7 +42,8 @@ for `make verify`, hours for `make verify-cpu`) and wants the gates
 re-derived from what they must protect, plus a CPU reference fast enough
 to use while debugging. REPO-20 session 1 is done except the CPU
 tier's baseline. Session 2 applied the approved gate set (`make verify`
-704 s → 246 s); `make verify-auto` remains in it (REPO-20 section), then
+704 s → 246 s) and wrote `make verify-auto`, not yet run: the next
+session starts by running its self-tests (REPO-20 section), then
 session 3, the threaded CPU reference.
 
 ## Order
@@ -128,7 +129,7 @@ unified projector, the 26B-A4B's assistant head, or PQ2_0 beyond
 fixtures; Metal BF16 numerics and `layerNorm`/`addBiasRows` have no
 model-free test; `engine.zig` has no unit tests.
 
-### Session 2 — the approved set applied; `verify-auto` remains
+### Session 2 — the approved set applied; `verify-auto` written, unverified
 
 Delivered (measured 2026-09-29, M4 Pro): `make verify` 32/32 in 246 s
 (`.zig-cache/gates/after/verify2.json`; was 38 gates in 704 s); the
@@ -145,30 +146,27 @@ does not run `verify-release` itself: like the CPU and long tiers it
 runs before it (AGENTS.md § Versioning). The 16:1 attention fixture
 existed already (`checkWindowedAndWideAttention`, geometry `global`).
 
-Remaining (user, 2026-09-29): **`make verify-auto`**, so an agent runs
-what a change needs without judging it from prose. In
-`scripts/gates.py` `--auto [REV]`, with self-tests:
-- The base: `REV`, else the `Base:` line of the unit in progress in
-  `TODO.md`, else `HEAD` with a warning; changed files are `git diff
-  --name-only <base>` plus untracked (`changed_files`).
-- Model-free checks first, selected by paths from a new `checks` list in
-  `gates.json` (`fmt` over the changed Zig files, `unit` = `zig build
-  test`, `test-metal`, `manifests` = the two manifests' self-tests).
-- The matched `verify` gates, cheapest first by each gate's last
-  measured seconds (`.zig-cache/gates/times.json`, written after every
-  run), stopping at the first failure (`--keep-going` to continue).
-- Then the tiers the change requires but that were not run, from a new
-  `requires` list in `gates.json` (`verify-cpu`: the CPU kernels, the
-  decoders, the `*_runtime.zig` forwards, the CPU projectors;
-  `verify-long`: attention, the KV cache, the windowed schedules), each
-  with the matched file and the rule's reason.
-- `make verify-auto` (`BASE=` optional); `AGENTS.md` step 4 (iterate
-  and commit with `verify-auto`, close with `make verify` and what it
-  reports as required; a unit's section records `Base:`);
-  `docs/development.md § Gates`.
-- The user asked for no check runs in this change: its self-tests were
-  written but not run in session 2. Run `make gates-validate` first
-  thing next session, then `make verify-auto` once on a real diff.
+Then (user, 2026-09-29) **`make verify-auto`**, so an agent runs what a
+change needs without judging it from prose, written but **not yet
+run** (the user asked for no check runs in that change):
+`scripts/gates.py --auto [REV]` (base from REV, else the first `Base:`
+line in this file, else `HEAD` with a warning; `checks` selected by
+paths, then the matched `verify` gates by `by_cost` from
+`.zig-cache/gates/times.json`, seeded from the 246 s run and written by
+every run, stopping at the first failure unless `--keep-going`; then
+`requirements` from the manifest's `requires` rules), the `checks` and
+`requires` lists in `gates.json`, `make verify-auto`, `AGENTS.md`
+(step 4 and the `Base:` line), `docs/development.md § Gates`.
+
+**Next session starts here:** `make gates-validate` (the new
+self-tests: `test_checks_and_requirements_follow_paths`,
+`test_by_cost_puts_unmeasured_gates_after_cheap_ones`,
+`test_unit_base_reads_the_first_unit`,
+`test_validation_names_bad_checks_and_rules`), then `make verify-auto
+ARGS=--dry-run` (the diff since `acce06a` should select `fmt`, `unit`,
+`test-metal`, `manifests`, most `verify` gates, and name `verify-cpu`
+and `verify-long`), then one real `make verify-auto`; fix what they
+find, commit, and REPO-20 session 2 is done.
 
 Close REPO-20 after session 3 (below), with the log entry.
 

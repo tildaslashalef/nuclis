@@ -1,5 +1,5 @@
 {
- "$comment": "The gate registry: docs/development.md \u00a7 Gates. Run with scripts/gates.py (make verify, verify-release, verify-cpu, verify-changed, gate).",
+ "$comment": "The gate registry: docs/development.md \u00a7 Gates. Run with scripts/gates.py (make verify-auto, verify, verify-release, verify-cpu, verify-changed, gate).",
  "build": {
   "metal_optimize": "ReleaseSafe",
   "cpu_optimize": "ReleaseFast",
@@ -50,6 +50,88 @@
    "entry": "laya"
   }
  },
+ "checks": [
+  {
+   "name": "fmt",
+   "command": [
+    "zig",
+    "fmt",
+    "--check",
+    "{zig-files}"
+   ],
+   "paths": [
+    "**/*.zig",
+    "**/*.zon"
+   ]
+  },
+  {
+   "name": "unit",
+   "command": [
+    "make",
+    "test"
+   ],
+   "paths": [
+    "**/*.zig",
+    "**/*.zon",
+    "**/fixtures/**"
+   ]
+  },
+  {
+   "name": "test-metal",
+   "command": [
+    "make",
+    "test-metal"
+   ],
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/metal-check.zig",
+    "inference/src/backends/**",
+    "inference/src/quant/**",
+    "inference/src/tensor/**"
+   ]
+  },
+  {
+   "name": "manifests",
+   "command": [
+    "make",
+    "gates-validate",
+    "workloads-validate"
+   ],
+   "paths": [
+    "gates.json",
+    "workloads.json",
+    "scripts/gates.py",
+    "scripts/workloads.py",
+    "scripts/reference-perplexity.py"
+   ]
+  }
+ ],
+ "requires": [
+  {
+   "tier": "verify-cpu",
+   "paths": [
+    "inference/src/backends/cpu/**",
+    "inference/src/quant/**",
+    "inference/src/models/*_runtime.zig",
+    "inference/src/vision/gemma4.zig",
+    "inference/src/vision/muse_glimmer.zig",
+    "inference/src/vision/qwen3vl.zig"
+   ],
+   "reason": "may change what the CPU reference computes; not required for an addition nothing calls yet or a refactor a unit test pins (AGENTS.md, Validation and definition of done)"
+  },
+  {
+   "tier": "verify-long",
+   "paths": [
+    "inference/src/backends/cpu/attention.zig",
+    "inference/src/backends/metal/kernels.metal",
+    "inference/src/backends/metal/root.zig",
+    "inference/src/runtime/session.zig",
+    "inference/src/models/gemma4*.zig"
+   ],
+   "reason": "required when the change touches attention, the KV cache, or a windowed schedule; these files hold them among other things, so judge the diff"
+  }
+ ],
  "gates": [
   {
    "name": "qwen38-trace-f32",

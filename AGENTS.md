@@ -45,6 +45,10 @@ its own: the current unit's section says what the session delivered and
 what remains, *Where we are* says where to pick up. A unit the plan marks
 as several sessions closes once, at its end.
 
+**A unit's section records ``Base: `<rev>` ``** on its own line, the
+commit before its first change, so `make verify-auto` diffs the whole
+unit, committed work included.
+
 **A unit's section is written for whoever implements it next**, which may
 be another model: files, functions, numbers, and gate commands, not
 intent. A unit whose design waits on facts (a file's header, a
@@ -188,11 +192,14 @@ For code changes, once build scaffolding exists:
    keyboard](docs/development.md#looking-at-the-agent-without-a-person-at-the-keyboard)).
 4. Run broader checks when shared code or unresolved risks justify them.
    The model-specific checks are gates in `gates.json`, tiered by cost and
-   selected by changed paths (`make verify-changed` runs the Metal tier's
-   matches), see [docs/development.md § Gates](docs/development.md#gates).
-   `make verify` (the fast Metal tier: one representative file per family
-   and the paths only a variant has) once per unit that touched the
-   inference stack — judge by the work: a unit confined to the executable, the
+   selected by changed paths, see [docs/development.md § Gates](docs/development.md#gates).
+   While iterating and before each commit, `make verify-auto`: the
+   model-free checks and fast-tier gates the diff since the unit's `Base:`
+   selects, cheapest first, then the tiers the change requires; run
+   those it names unless the exemptions below apply. `make verify` (the
+   fast Metal tier: one representative file per family and the paths
+   only a variant has) once per unit that touched the inference
+   stack — judge by the work: a unit confined to the executable, the
    documents, or the scripts changes no numerical behaviour and needs no
    tier. The CPU tier (`make verify-cpu`, hours) is not part of closing a
    unit unless the unit changes what the CPU reference computes: the
