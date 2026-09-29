@@ -24,6 +24,11 @@ pub const muse_glimmer_metal = @import("muse_glimmer_metal.zig");
 /// registry family: the target binds it).
 pub const dflash = @import("dflash.zig");
 pub const inventory = @import("inventory.zig");
+/// Laya, the decision model: a ModernBERT encoder and a typed-decision head
+/// from a safetensors checkpoint. Not a registry family: it decodes nothing.
+pub const modernbert = @import("modernbert.zig");
+pub const modernbert_runtime = @import("modernbert_runtime.zig");
+pub const laya = @import("laya.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
@@ -98,5 +103,8 @@ test {
     _ = muse_glimmer;
     _ = muse_glimmer_runtime;
     _ = muse_glimmer_metal;
+    _ = modernbert;
+    _ = modernbert_runtime;
+    _ = laya;
     _ = dflash;
 }

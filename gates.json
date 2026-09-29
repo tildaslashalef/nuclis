@@ -505,6 +505,32 @@
    "evidence": "docs/reference/tokenizer.md"
   },
   {
+   "name": "laya-cpu",
+   "family": "laya",
+   "tier": "verify",
+   "model": "laya",
+   "paths": [
+    "inference/src/models/modernbert.zig",
+    "inference/src/models/modernbert_runtime.zig",
+    "inference/src/models/laya.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/safetensors.zig",
+    "inference/src/models/fixtures/laya/**",
+    "inference/laya-check.zig"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-laya",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/laya.md"
+  },
+  {
    "name": "gemma4-trace-cpu",
    "family": "gemma4",
    "tier": "verify-cpu",

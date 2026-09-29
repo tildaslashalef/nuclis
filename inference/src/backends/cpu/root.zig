@@ -1,10 +1,12 @@
 //! Pure CPU numerical references, independent of model architecture and I/O.
 //! These favor explicit arithmetic and bounded scratch over throughput. They
 //! establish operation contracts for later kernels, not a CPU inference engine.
+//! The exception is dense.zig: F32 kernels that run an encoder at usable speed.
 const std = @import("std");
 const quant = @import("../../quant/decode.zig");
 const vector = @import("vector.zig");
 pub const rope = @import("rope.zig");
+pub const dense = @import("dense.zig");
 pub const attention = @import("attention.zig");
 pub const recurrent = @import("recurrent.zig");
 pub const experts = @import("experts.zig");
@@ -36,6 +38,7 @@ pub const Error = quant.Error || vector.Error || rope.Error || error{ScratchTooS
 test {
     _ = vector;
     _ = rope;
+    _ = dense;
     _ = attention;
     _ = recurrent;
     _ = experts;

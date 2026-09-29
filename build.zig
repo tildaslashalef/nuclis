@@ -63,6 +63,9 @@ pub fn build(b: *std.Build) void {
     const vocabulary_check = b.addRunArtifact(inference.artifact("vocabulary-check"));
     if (b.args) |args| vocabulary_check.addArgs(args);
     b.step("test-vocabulary", "Check the pinned vocabulary and tokenizer (-- MODEL_PATH)").dependOn(&vocabulary_check.step);
+    const laya_check = b.addRunArtifact(inference.artifact("laya-check"));
+    if (b.args) |args| laya_check.addArgs(args);
+    b.step("test-laya", "Check Laya's CPU forward against the oracle's fixtures (-- LAYA_DIR)").dependOn(&laya_check.step);
     const generation_check = b.addRunArtifact(inference.artifact("generation-check"));
     if (b.args) |args| generation_check.addArgs(args);
     b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&generation_check.step);

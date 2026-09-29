@@ -38,6 +38,19 @@ pub fn build(b: *std.Build) void {
     const run_check = b.addRunArtifact(check);
     if (b.args) |args| run_check.addArgs(args);
     b.step("test-vocabulary", "Check the pinned vocabulary and tokenizer (-- MODEL_PATH)").dependOn(&run_check.step);
+    const laya_check = b.addExecutable(.{
+        .name = "laya-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("laya-check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "inference", .module = mod }},
+        }),
+    });
+    b.installArtifact(laya_check);
+    const run_laya = b.addRunArtifact(laya_check);
+    if (b.args) |args| run_laya.addArgs(args);
+    b.step("test-laya", "Check Laya's CPU forward against the oracle's fixtures (-- LAYA_DIR)").dependOn(&run_laya.step);
     const generation_check = b.addExecutable(.{
         .name = "generation-check",
         .root_module = b.createModule(.{

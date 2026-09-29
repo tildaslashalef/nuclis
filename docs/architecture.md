@@ -96,7 +96,7 @@ flowchart TB
         sess[runtime/session.zig  weights.zig  draft.zig]
         eng[engine.zig  Engine, Model, runLoop]
         samp[sampling/root.zig]
-        cpu[backends/cpu/*  reference math]
+        cpu[backends/cpu/*  reference math; dense.zig for encoders]
         metal[backends/metal/*  bridge + kernels]
     end
     cli --> config
@@ -134,7 +134,7 @@ signals, and the network.
 | Layer | Knows about | Must not know about |
 | --- | --- | --- |
 | `formats/gguf` | bytes, offsets, metadata types | what a tensor name means |
-| `formats/safetensors` | the JSON header, dtypes, the tiled byte buffer, a shard index ([reference](reference/safetensors.md)) | what a tensor name means; no family binds it yet |
+| `formats/safetensors` | the JSON header, dtypes, the tiled byte buffer, a shard index ([reference](reference/safetensors.md)) | what a tensor name means; Laya's loader (`models/laya.zig`) binds it |
 | `quant`, `tensor` | block layouts, decode equations | which tensor is which |
 | `tokenizer`, `profiles` | vocabularies, merges, the chat template, tool grammar | layers, kernels |
 | `runtime/session` | "a layer has KV rows" or "recurrent state" | how big, or why |
@@ -265,7 +265,11 @@ flowchart LR
 
 - `*_runtime.zig` is the **reference**: plain loops, F64 sums, every
   operation a pure function in `backends/cpu/` with its own tests. Slow on
-  purpose; when the two disagree it is presumed right.
+  purpose; when the two disagree it is presumed right. The exception is
+  `modernbert_runtime.zig`, Laya's encoder: its F32 forward is the product
+  path on the CPU (SIMD, split across `Io` tasks, `backends/cpu/dense.zig`),
+  and the oracle's F32 fixtures are its reference
+  ([laya.md](reference/laya.md)).
 - `*_metal.zig` is the **engine**: the same schedule, each line recording
   a dispatch; nothing runs until `commit()`. The files are deliberately
   parallel so they can be read side by side.

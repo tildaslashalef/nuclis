@@ -31,16 +31,18 @@ loader (MODL-29); the root checkpoint is pulled at
 `~/.nuclis/models/convaiinnovations/laya/` (commit `55cf4c4e`). Kept to
 three units on purpose, to iterate fast.
 
-MODL-30 session 1 landed 2026-09-29: the oracle's fixtures, the Hugging
-Face tokenizer (NFC, GPT-2 splitter, two-pass added tokens), and the
-`laya-vocabulary` gate. Start with MODL-30, session 2: the encoder and
-the head on the CPU against `activations.f32`.
+MODL-30 sessions 1 and 2 landed 2026-09-29: the oracle's fixtures, the
+Hugging Face tokenizer (gate `laya-vocabulary`), and the ModernBERT
+encoder and decision head on the CPU matching the oracle at every stored
+stage (gate `laya-cpu`). Start with MODL-30, session 3: the profile (input
+contract and calibration), `Decider`, and `nuclis decide`; the unit closes
+at its end.
 
 ## Order
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-30 | Laya on the CPU: oracle, `tokenizer.json`, ModernBERT, the decision head, `nuclis decide` | three (1 done); closes once |
+| MODL-30 | Laya on the CPU: oracle, `tokenizer.json`, ModernBERT, the decision head, `nuclis decide` | three (2 done); closes once |
 | MODL-31 | Laya on Metal: bidirectional windowed attention, the encoder plan, measured | one or two |
 | AGNT-18 | The agent's `decide` tool: LLM-written questions over tool-supplied states (the experiment) | one |
 
@@ -161,37 +163,28 @@ probabilities {"i": p}, confidence, answer_confidence}`; noul `{type, noul
 tokens, 88 of them new ids (50280–50367), so 50368 ids; `[CLS]` 50281, `[SEP]` 50282, `[PAD]` 50283, `[MASK]`
 50284 (`lstrip`); whitespace runs of 2–24 spaces are added tokens.
 
-### Session 2 — encoder and head on the CPU
+### Session 2 — delivered 2026-09-29 (encoder and head on the CPU)
 
-- `inference/src/models/modernbert.zig`: `Config` from `encoder/config.json`
-  (bounded read; reject `model_type` ≠ `modernbert`, any bias flag true,
-  `hidden_activation` ≠ `gelu`, head dim ≠ 64, layer types other than the
-  two, `rope_parameters` missing a type's `rope_theta`), `bind(checkpoint,
-  config) → Weights` validating every tensor name, shape, and dtype
-  (F16/BF16/F32) and rejecting extras (the `laya.zig` head names are the
-  only others allowed in the file, and `act_head.*` and `temperature`,
-  which are ignored by name).
-- `inference/src/models/modernbert_runtime.zig`: F32 CPU forward for one
-  unpadded sequence (`[len]` ids → `[len][1024]` hidden), reusing
-  `backends/cpu` matmul, norm, and RoPE where their shapes allow (check
-  whether the existing RoPE is rotate-half or interleaved first); weights
-  decoded once at load through `safetensors.Ref.decode` (about 1.7 GB F32
-  for the root set; say so in the module doc). Expose the layer outputs
-  for the check (an optional per-layer callback or an `Observer`).
-- `inference/src/models/laya.zig`: the head: `+ type_emb[qtype]` on every
-  row, the two layers over the whole sequence, the scorer at the marker
-  rows → one logit per option.
-- Check: a new explicit artifact `inference/laya-check.zig` (build step
-  `test-laya -- DIR`) runs every `requests.json` request through the
-  forward and compares against `activations.f32`: each `tensors` entry
-  names `encoder.{0,1,3,27}` (that layer's output, before `final_norm`),
-  `final` (after `final_norm`), `head.{0,1}` (after each head layer, marker
-  rows only), its `rows`, and its F32 `offset` (in floats) into the blob;
-  bounds max abs error ≤ 1e-4 and relative RMS ≤ 1e-5 per tensor, logits
-  within 1e-4 of `logits`. Record the measured maxima per tensor in
-  `docs/reference/laya.md` (created here, finished in session 3). Gate
-  `laya-cpu`: tier verify if the 8 requests run in under a minute, else
-  verify-cpu; paths the three new files and `backends/cpu/**`.
+- `inference/src/models/modernbert.zig` (`parseConfig`, `bind`, `Binder`),
+  `modernbert_runtime.zig` (`Model.load`, `Model.forward`, F32; all but the
+  embedding table decoded at load), `laya.zig` (`Head`, `Laya.open`,
+  `Laya.logits(io, gpa, ids, markers, kind, out, trace)`, `Kind`, `Stage`,
+  `Trace`; unknown, missing, and misshapen tensors rejected), and
+  `inference/src/backends/cpu/dense.zig` (threaded F32 `matmul`,
+  `layerNorm`, windowed `attention` over `Io` tasks). Unit tests: the
+  kernels against F64 and the existing attention reference; a tiny
+  synthetic checkpoint through `Laya.open` (stages, rejections, allocation
+  failures).
+- Check: `zig build test-laya -Doptimize=ReleaseFast -- <dir>`
+  (`inference/laya-check.zig`), gate `laya-cpu` (tier verify, 16 s):
+  passes all 8 requests at every stored stage. Bounds became relative
+  (the plan's absolute 1e-4 fails where the residual reaches 10²–10⁴):
+  worst scaled max 8.3e-6, rel RMS 7.0e-6, scaled logit 9.0e-6; 512 tokens
+  in 2.4 s, open in 0.2 s warm. Same numbers in a Debug build, no leaks.
+  Table in docs/reference/laya.md § On the CPU (created; session 3 adds
+  the contract, calibration, the command, and the filter argument).
+- Docs touched: architecture.md (the safetensors row, `backends/cpu`,
+  the `*_runtime.zig` exception), reference/laya.md (new).
 
 ### Session 3 — profile, `Decider`, `nuclis decide`
 
@@ -203,8 +196,10 @@ tokens, 88 of them new ids (50280–50367), so 50368 ids; `[CLS]` 50281, `[SEP]`
   markers from `question` and `state` (Python `json.dumps` of the object
   states, which `head_text`/`options`/`state_text` spell), and its answer
   from `logits`.
-- `inference/src/decide.zig`, the library API:
-  `Question { kind: choice|score|noul, instructions, options, labels }`,
+- `inference/src/decide.zig`, the library API over `models.laya.Laya`
+  (CPU until MODL-31 adds Metal):
+  `Question { kind: choice|score|noul, instructions, options, labels }`
+  (`kind` is `models.laya.Kind`),
   `Answer { probabilities, logits, confidence, answer_confidence,
   temperature, bucket }`, `StateResult { answers, state_tokens, truncated
   }`, `Decider.open(gpa, io, dir, backend)` (reads `tokenizer.json` through
@@ -236,8 +231,10 @@ tokens, 88 of them new ids (50280–50367), so 50368 ids; `[CLS]` 50281, `[SEP]`
   safetensors set; the registry's `kind: decision`, `--register`
   accepting safetensors for that kind only; then give `gates.json`'s
   `laya` model its `entry`.
-- Docs: `docs/reference/laya.md` (the family, the contract, the oracle,
-  numbers, and the filter argument from *Where we are*), `docs/spec.md`
+- Docs: finish `docs/reference/laya.md` (the input contract, calibration,
+  answers, `nuclis decide`, CPU time per request with tokenizing and
+  calibration included, and the filter argument from *Where we are*; move
+  the *Facts* above into it), `docs/spec.md`
   (the decide surface and its requirements), `docs/architecture.md` (the
   decision path beside `Engine`).
 - Checks: `make check`; the eight fixture requests through the fresh
@@ -245,7 +242,9 @@ tokens, 88 of them new ids (50280–50367), so 50368 ids; `[CLS]` 50281, `[SEP]`
   quickstart (department / urgency / churn) through each input tier gives
   the same JSON; a fan-out over 4 files renders ranked; malformed
   requests fail with the question named. CPU time per request recorded
-  (load separate). No Metal tier (no change to existing numerics).
+  (load separate). `make verify` once at close (the unit added CPU
+  kernels and touched shared modules, though no existing numerics); no CPU
+  tier (no existing CPU kernel or family forward changed).
 
 ## MODL-31 — Laya on Metal
 
