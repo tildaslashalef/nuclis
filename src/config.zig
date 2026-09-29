@@ -109,6 +109,7 @@ pub const Config = struct {
     engine: Engine = .{},
     generation: Generation = .{},
     agent: Agent = .{},
+    decide: Decide = .{},
     models: Models = .{},
 
     pub const Engine = struct {
@@ -155,6 +156,12 @@ pub const Config = struct {
         /// other efforts are uncapped.
         thinking_budget: usize = default_thinking_budget,
     };
+    pub const Decide = struct {
+        /// The decision checkpoint `nuclis decide` opens: a registry entry
+        /// of kind `decision`, a decision catalogue name, or a directory
+        /// (relative to `<root>/models` unless absolute).
+        model: []const u8 = "laya",
+    };
 };
 
 /// `agent.thinking_budget`'s default: above Qwen3.8's longest ordinary step
@@ -170,6 +177,10 @@ pub const default_thinking_budget: usize = 1024;
 /// consumers and for `model pull <name> --with`.
 /// Every other key is `null` by default, meaning "the file's global value".
 pub const ModelEntry = struct {
+    /// Null is `generation`; `decision` entries are Laya checkpoints, which
+    /// only `nuclis decide` opens (their `file` is the weights, their
+    /// directory the checkpoint).
+    kind: ?catalog.ModelKind = null,
     path: ?[]const u8 = null,
     repo: ?[]const u8 = null,
     file: ?[]const u8 = null,
@@ -1021,6 +1032,7 @@ pub const Registration = struct {
     mmproj: ?[]const u8 = null,
     mtp: ?[]const u8 = null,
     profile: ?Profile = null,
+    kind: ?catalog.ModelKind = null,
 };
 
 /// Writes `name` into the registry of the file's current text (`null`: no
@@ -1051,6 +1063,7 @@ pub fn register(gpa: Allocator, current: ?[]const u8, path: []const u8, name: []
     if (reg.mmproj) |file| try entry.put(arena, "mmproj", .{ .string = try arena.dupe(u8, file) });
     if (reg.mtp) |file| try entry.put(arena, "mtp", .{ .string = try arena.dupe(u8, file) });
     if (reg.profile) |profile| try entry.put(arena, "profile", .{ .string = @tagName(profile) });
+    if (reg.kind) |kind| try entry.put(arena, "kind", .{ .string = @tagName(kind) });
     return doc.finish(gpa, path, diag);
 }
 
@@ -1169,6 +1182,7 @@ pub const Effective = struct {
     engine: struct { model: []const u8, backend: Backend, ctx_size: usize, kv_precision: KvPrecision },
     generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, image_max_tokens: ImageMaxTokens, sampling: inference.sampling.Options },
     agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8, thinking_budget: usize },
+    decide: Config.Decide,
     origin: Origin,
 
     pub fn from(loaded: *const Loaded) Effective {
@@ -1183,6 +1197,7 @@ pub const Effective = struct {
             .engine = .{ .model = gen.model, .backend = gen.backend, .ctx_size = gen.ctx_size, .kv_precision = gen.kv_precision },
             .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .image_max_tokens = gen.image_max_tokens, .sampling = gen.samplingOptions() },
             .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions, .thinking_budget = agent.thinking_budget },
+            .decide = loaded.config.decide,
             .origin = origin,
         };
     }
@@ -1226,6 +1241,8 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         try s.write(view.generation);
         try s.objectField("agent");
         try s.write(view.agent);
+        try s.objectField("decide");
+        try s.write(view.decide);
         try s.endObject();
         try s.objectField("sources");
         try s.beginObject();
@@ -1281,6 +1298,7 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
     try walk(@TypeOf(view.engine), view.engine, "engine.", &rows);
     try walk(@TypeOf(view.generation), view.generation, "generation.", &rows);
     try walk(@TypeOf(view.agent), view.agent, "agent.", &rows);
+    try walk(@TypeOf(view.decide), view.decide, "decide.", &rows);
     for (loaded.config.models.entries) |named| {
         var entry_rows: struct {
             out: *std.Io.Writer,

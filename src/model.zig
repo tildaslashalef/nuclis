@@ -82,7 +82,7 @@ pub const PullOptions = struct {
 /// only be a registry entry: the caller then reads `nuclis.json`, which
 /// the other forms never need (a broken file must not block a download).
 pub fn isRegistryName(name: []const u8) bool {
-    return name.len > 0 and catalog.find(name) == null and std.mem.indexOfScalar(u8, name, '/') == null;
+    return name.len > 0 and catalog.find(name) == null and catalog.findDecision(name) == null and std.mem.indexOfScalar(u8, name, '/') == null;
 }
 
 /// `pull <entry>`: the entry's repository, file, and pinned revision as a
@@ -227,15 +227,16 @@ const PulledFile = struct {
 };
 
 const PullReport = struct {
-    schema_version: u32 = 2,
+    schema_version: u32 = 3,
     /// The catalogue or registry name when one was given, else null.
     name: ?[]const u8,
     repo: []const u8,
     requested_revision: []const u8,
     revision: []const u8,
     files: []const PulledFile,
-    /// The registry entry `--register` wrote, and the file it lives in.
-    registered: ?struct { name: []const u8, config: []const u8 } = null,
+    /// The registry entry `--register` wrote, the file it lives in, and the
+    /// key that makes it the default.
+    registered: ?struct { name: []const u8, config: []const u8, key: []const u8 = "engine.model" } = null,
 };
 
 const SelectionReport = struct {
@@ -291,6 +292,7 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     var jobs: std.ArrayList(Job) = .empty;
     var request: hf.Request = .{ .repo_id = options.repo, .revision = options.revision orelse "main", .local_dir = models };
     const entry = catalog.find(options.repo);
+    const decision = catalog.findDecision(options.repo);
     var pinned: [40]u8 = undefined;
     if (entry) |e| {
         if (options.file != null or options.revision != null) {
@@ -308,11 +310,18 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
             return error.NoSuchCompanion;
         };
     } else {
-        if (options.all or options.with.count() != 0) {
+        if (decision) |d| {
+            if (options.all or options.with.count() != 0 or options.file != null or options.revision != null) {
+                diag.set("{s} is a decision checkpoint pinned to {s} at {s}; it has no companions, and pulling by repository id chooses another file or commit", .{ d.name, d.repo, d.revision[0..12] });
+                return error.ConflictingOptions;
+            }
+            request.repo_id = d.repo;
+            request.revision = d.revision;
+        } else if (options.all or options.with.count() != 0) {
             diag.set("--with and --all need a catalogue name; {s} is a repository id (pass --file per companion)", .{options.repo});
             return error.ConflictingOptions;
         }
-        request.filename = options.file;
+        request.filename = if (decision) |d| d.file else options.file;
         var remote = client.list(request) catch |err| return hubFailure(err, options.repo, diag);
         defer remote.deinit();
         pinned = remote.revision;
@@ -323,6 +332,22 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
             return error.SelectionRequired;
         };
         for (selected) |f| try jobs.append(arena, try remoteJob(arena, f, options.role));
+        // A decision checkpoint: the Hub at the pinned commit must hold the
+        // pinned weights and every support file the catalogue names.
+        if (decision) |d| {
+            for (jobs.items) |job| if (std.mem.eql(u8, job.name, d.file) and !std.mem.eql(u8, job.sha256 orelse "", d.sha256)) {
+                diag.set("{s}: the Hub's digest at commit {s} is not the catalogue's {s}…; the catalogue entry needs updating", .{ d.file, d.revision[0..12], d.sha256[0..12] });
+                return error.CatalogMismatch;
+            };
+            for (d.support) |name| {
+                for (jobs.items) |job| {
+                    if (std.mem.eql(u8, job.name, name)) break;
+                } else {
+                    diag.set("{s}: {s} is not beside the weights at commit {s}; the catalogue entry needs updating", .{ d.name, name, d.revision[0..12] });
+                    return error.CatalogMismatch;
+                }
+            }
+        }
         // A registry entry's companions, by exact name at the same commit.
         for ([_]struct { name: ?[]const u8, role: Role }{ .{ .name = options.mmproj, .role = .mmproj }, .{ .name = options.mtp, .role = .mtp } }) |companion| {
             const name = companion.name orelse continue;
@@ -337,18 +362,24 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     }
     const revision: []const u8 = &pinned;
     request.revision = revision;
+    var decision_kind: ?catalog.ModelKind = null;
     if (options.register) |name| {
         if (options.config_path == null) return error.MissingHome;
         const main_file = for (jobs.items) |job| {
             if (job.role == null or job.role == .main) break job.name;
         } else null;
         if (main_file) |f| if (hf.format(f) == .safetensors) {
-            diag.set("{s} is a safetensors artifact; no model family runs safetensors yet, so it cannot be registered (pull it without --register)", .{f});
-            return error.NotRunnable;
+            // The one safetensors checkpoint nuclis runs is Laya's layout.
+            if (!decisionLayout(f, jobs.items)) {
+                diag.set("{s} is a safetensors artifact without rl_agent_config.json beside it; only a Laya decision checkpoint registers (pull it without --register)", .{f});
+                return error.NotRunnable;
+            }
+            decision_kind = .decision;
         };
         try config.registrable(name, request.repo_id, main_file, diag);
     }
-    if (!json) try renderHeader(out, sty, if (entry) |e| e.name else options.name, request.repo_id, if (entry != null) null else options.revision orelse "main", revision);
+    const pinned_name: ?[]const u8 = if (entry) |e| e.name else if (decision) |d| d.name else null;
+    if (!json) try renderHeader(out, sty, pinned_name orelse options.name, request.repo_id, if (pinned_name != null) null else options.revision orelse "main", revision);
     try out.flush();
 
     // 2. Destinations: a sidecar recording other content is a conflict
@@ -387,7 +418,7 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     //    what it finished.
     var report: std.ArrayList(PulledFile) = .empty;
     // What `--register` records: filled per verified file by its role.
-    var registration: config.Registration = .{ .repo = request.repo_id, .revision = revision, .file = null, .profile = options.profile };
+    var registration: config.Registration = .{ .repo = request.repo_id, .revision = revision, .file = null, .profile = options.profile, .kind = decision_kind };
     var stamp: [20]u8 = undefined;
     const downloaded_at = rfc3339(&stamp, std.Io.Timestamp.now(io, .real).toSeconds());
     // Every job is one file (shard sets and support files were expanded
@@ -460,9 +491,20 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
         const text = try config.register(gpa, current, config_path, name, registration, diag);
         defer gpa.free(text);
         try config.write(io, .cwd(), config_path, text);
-        registered = .{ .name = name, .config = config_path };
+        registered = .{ .name = name, .config = config_path, .key = if (decision_kind == .decision) "decide.model" else "engine.model" };
     }
-    try renderPull(out, .{ .name = if (entry) |e| e.name else options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else "main"), .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
+    try renderPull(out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else if (decision) |d| d.revision else "main"), .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
+}
+
+/// Whether safetensors weights come with Laya's `rl_agent_config.json`
+/// beside them among the files pulled.
+fn decisionLayout(weights: []const u8, jobs: []const Job) bool {
+    const dir = std.fs.path.dirnamePosix(weights) orelse "";
+    for (jobs) |job| {
+        const job_dir = std.fs.path.dirnamePosix(job.name) orelse "";
+        if (std.mem.eql(u8, job_dir, dir) and std.mem.eql(u8, std.fs.path.basenamePosix(job.name), "rl_agent_config.json")) return true;
+    }
+    return false;
 }
 
 /// `name = repo @ requested: commit <40 hex>`; the name and the requested
@@ -517,7 +559,7 @@ fn renderPull(out: *std.Io.Writer, report: PullReport, json: bool, sty: style.St
             sty.off(),
         });
     }
-    if (report.registered) |r| try out.print("{s}registered{s} as {s}{s}{s} in {s}{s}{s} {s}(`nuclis config set engine.model {s}` makes it the default){s}\n", .{ sty.on(.success), sty.off(), sty.on(.keyword), r.name, sty.off(), sty.on(.code), r.config, sty.off(), sty.on(.dim), r.name, sty.off() });
+    if (report.registered) |r| try out.print("{s}registered{s} as {s}{s}{s} in {s}{s}{s} {s}(`nuclis config set {s} {s}` makes it the default){s}\n", .{ sty.on(.success), sty.off(), sty.on(.keyword), r.name, sty.off(), sty.on(.code), r.config, sty.off(), sty.on(.dim), r.key, r.name, sty.off() });
 }
 
 fn deleteIfPresent(io: std.Io, path: []const u8) !void {
@@ -664,6 +706,9 @@ pub const CompanionRow = struct {
 
 pub const CatalogRow = struct {
     name: []const u8,
+    /// A `decision` row is a Laya checkpoint (`nuclis decide`); its path is
+    /// the weights, its support files sit beside them.
+    kind: catalog.ModelKind = .generation,
     status: catalog.Status,
     path: []const u8,
     size: u64,
@@ -678,7 +723,7 @@ pub const CatalogRow = struct {
 };
 
 pub const Listing = struct {
-    schema_version: u32 = 3,
+    schema_version: u32 = 4,
     models_dir: []const u8,
     /// Every catalogue entry with its local status, companions beneath.
     catalog: []const CatalogRow,
@@ -720,7 +765,7 @@ pub const Listing = struct {
             try out.writeByte('\n');
             try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
             var size_buffer: [16]u8 = undefined;
-            try out.print("{s}{s:>9}{s}  {s} {s}  commit {s}{s}{s}  sha256 {s}{s}{s}\n", .{ number, humanSize(&size_buffer, row.size), off, row.architecture, row.quantization, hash, row.revision[0..12], off, hash, row.sha256, off });
+            try out.print("{s}{s:>9}{s}  {s} {s}{s}  commit {s}{s}{s}  sha256 {s}{s}{s}\n", .{ number, humanSize(&size_buffer, row.size), off, row.architecture, row.quantization, if (row.kind == .decision) " (nuclis decide)" else "", hash, row.revision[0..12], off, hash, row.sha256, off });
             if (row.registered) |r| {
                 try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
                 try renderRegistered(out, r, sty);
@@ -812,8 +857,12 @@ pub fn statusStyle(status: catalog.Status) style.Kind {
 /// directory lists the catalogue as absent.
 pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models) !Listing {
     const models = try modelsDir(arena, root);
-    const rows = try arena.alloc(CatalogRow, catalog.entries.len);
-    for (&catalog.entries, rows) |*e, *row| {
+    const rows = try arena.alloc(CatalogRow, catalog.entries.len + catalog.decision_entries.len);
+    for (&catalog.decision_entries, rows[catalog.entries.len..]) |*e, *row| {
+        const path = try std.fs.path.join(arena, &.{ models, e.repo, e.file });
+        row.* = .{ .name = e.name, .kind = .decision, .status = try catalog.status(arena, io, path, e.sha256, e.size), .path = path[models.len + 1 ..], .size = e.size, .architecture = e.architecture, .quantization = e.quantization, .revision = e.revision, .sha256 = e.sha256, .companions = &.{} };
+    }
+    for (&catalog.entries, rows[0..catalog.entries.len]) |*e, *row| {
         const path = try catalog.localPath(arena, models, e, e.file);
         const companions = try arena.alloc(CompanionRow, e.companions.len);
         for (e.companions, companions) |c, *cr| {
@@ -1276,7 +1325,7 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     const arena = arena_state.allocator();
     // Absent directory: the catalogue is absent, nothing else, nothing created.
     const empty = try list(arena, io, root, .{});
-    try std.testing.expectEqual(catalog.entries.len, empty.catalog.len);
+    try std.testing.expectEqual(catalog.entries.len + catalog.decision_entries.len, empty.catalog.len);
     try std.testing.expectEqual(catalog.Status.absent, empty.catalog[0].status);
     try std.testing.expectEqual(@as(usize, 0), empty.other.len);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models", .{}));
@@ -1292,9 +1341,9 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     // Files outside the catalogue: one with a sidecar, one without, two above the layout.
     try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/Repo-Q4.gguf", .data = "GGUFxxxx" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/README.md", .data = "not listed" });
-    try tmp.dir.createDirPath(io, "models/convaiinnovations/laya/tokenizer");
-    try tmp.dir.writeFile(io, .{ .sub_path = "models/convaiinnovations/laya/model.safetensors", .data = "\x02\x00\x00\x00\x00\x00\x00\x00{}" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "models/convaiinnovations/laya/tokenizer/tokenizer.json", .data = "{}" });
+    try tmp.dir.createDirPath(io, "models/acme/encoder/tokenizer");
+    try tmp.dir.writeFile(io, .{ .sub_path = "models/acme/encoder/model.safetensors", .data = "\x02\x00\x00\x00\x00\x00\x00\x00{}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "models/acme/encoder/tokenizer/tokenizer.json", .data = "{}" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/unsloth/Repo-GGUF/MTP/mtp-Repo.gguf", .data = "GGUF" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/qwen/old-layout.gguf", .data = "GGUF" });
     try tmp.dir.writeFile(io, .{ .sub_path = "models/stray.gguf", .data = "GGUF" });
@@ -1337,7 +1386,13 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     // Weights of either format are rows; a safetensors set's support files are not.
     try std.testing.expectEqual(@as(usize, 3), listing.other.len);
     try std.testing.expectEqual(@as(usize, 2), listing.outside_layout);
-    try std.testing.expectEqualStrings("convaiinnovations/laya/model.safetensors", listing.other[0].path);
+    try std.testing.expectEqualStrings("acme/encoder/model.safetensors", listing.other[0].path);
+    // The decision catalogue follows the text models, absent here.
+    const laya = listing.catalog[catalog.entries.len];
+    try std.testing.expectEqualStrings("laya", laya.name);
+    try std.testing.expectEqual(catalog.ModelKind.decision, laya.kind);
+    try std.testing.expectEqual(catalog.Status.absent, laya.status);
+    try std.testing.expectEqualStrings("convaiinnovations/laya/model.safetensors", laya.path);
     try std.testing.expectEqualStrings("unsloth/Repo-GGUF/MTP/mtp-Repo.gguf", listing.other[1].path);
     try std.testing.expect(listing.other[1].sidecar == null);
     try std.testing.expectEqualStrings("unsloth/Repo-GGUF/Repo-Q4.gguf", listing.other[2].path);

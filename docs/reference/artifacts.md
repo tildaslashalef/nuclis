@@ -241,10 +241,12 @@ sidecar, so `convaiinnovations/laya --file model.safetensors` gives:
 
 `multilingual/model.safetensors` and `typed-decisions/model.safetensors`
 are separate choices with their own support files. `model ls` lists the
-weights (not the support files); `--register` refuses a safetensors
-artifact (`NotRunnable`) and `config init --discover` skips one, until a
-family runs safetensors; remote `model inspect` reads GGUF directories
-only.
+weights (not the support files). `--register` takes a safetensors artifact
+only when `rl_agent_config.json` sits beside the weights (Laya's layout)
+and writes the entry with `"kind": "decision"`, which `nuclis decide`
+opens and every text command refuses; any other safetensors artifact is
+`NotRunnable`. `config init --discover` skips safetensors; remote `model
+inspect` reads GGUF directories only.
 
 ### The catalogue
 
@@ -292,3 +294,17 @@ and acceptance runs cite; the files run as any other runnable GGUF:
 `nuclis model pull <owner/repo> --file <f>`, then `nuclis config init
 --discover` registers them (Bonsai's template is not a pinned one, so it
 takes its family's `qwen38` profile by force, as the entry did).
+
+A second table, `decision_entries`, pins decision checkpoints, which only
+`nuclis decide` opens (MODL-30): `laya`, `convaiinnovations/laya` at
+commit `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`, weights
+`model.safetensors` (842,609,210 B, SHA-256
+`891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c`, F16)
+and, by name, `encoder/config.json`, `rl_agent_config.json`,
+`tokenizer/tokenizer.json`, and `tokenizer/tokenizer_config.json` (plain
+git files, whose Hub identity is a blob id). `nuclis model pull laya`
+fetches the set at that commit and refuses it if the Hub's weights digest
+or a named support file differs; `model ls` lists it after the text
+models, marked `(nuclis decide)`, and its JSON rows carry `kind`
+(listing schema 4). `decide.model` defaults to `laya`; the name is not a
+text model's, so `generate --model laya` is refused by name.

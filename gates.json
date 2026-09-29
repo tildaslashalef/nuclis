@@ -50,7 +50,8 @@
    "entry": "gemma-4-e4b-qat (mtp companion)"
   },
   "laya": {
-   "path": "~/.nuclis/models/convaiinnovations/laya"
+   "path": "~/.nuclis/models/convaiinnovations/laya",
+   "entry": "laya"
   }
  },
  "gates": [

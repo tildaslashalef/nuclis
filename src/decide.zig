@@ -8,8 +8,7 @@ const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
 const config = @import("config.zig");
-const model = @import("model.zig");
-const paths = @import("paths.zig");
+const catalog = @import("catalog.zig");
 
 const profile = inference.profiles.laya;
 const Decider = inference.decide.Decider;
@@ -283,12 +282,36 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
     return .{ .ids = ids.items, .questions = questions.items, .states = states.items };
 }
 
-/// The checkpoint directory `--model` or `decide.model` names: an absolute
-/// or `./` path as given, else a path under `<root>/models`.
-pub fn resolveDirectory(arena: std.mem.Allocator, root: ?[]const u8, name: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(name) or std.mem.startsWith(u8, name, "./") or std.mem.startsWith(u8, name, "../")) return name;
+/// The checkpoint directory `--model` or `decide.model` names, in order: a
+/// registry entry (which must be of kind `decision`), a decision catalogue
+/// name, else a directory (as given when absolute or `./`, else under
+/// `<root>/models`). A text model's name is refused.
+pub fn resolveModel(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Models, name: []const u8, diag: *config.Diagnostic) ![]const u8 {
+    if (registry.find(name)) |entry| {
+        if (entry.kind != .decision) {
+            diag.set("{s} is a registry entry of a text model; `nuclis decide` opens a decision checkpoint (an entry with \"kind\": \"decision\")", .{name});
+            return error.NotADecisionModel;
+        }
+        const located = if (entry.path) |p| p else if (entry.repo != null and entry.file != null) try std.fs.path.join(arena, &.{ entry.repo.?, entry.file.? }) else {
+            diag.set("models.{s} locates nothing: give it path, or repo and file", .{name});
+            return error.InvalidRegistryEntry;
+        };
+        const full = try models(arena, root, located);
+        // A path to the weights names their directory.
+        return if (std.mem.endsWith(u8, full, ".safetensors")) std.fs.path.dirname(full) orelse full else full;
+    }
+    if (catalog.findDecision(name)) |entry| return catalog.decisionDirectory(arena, try models(arena, root, ""), entry);
+    if (catalog.find(name) != null) {
+        diag.set("{s} is a text model of the catalogue; `nuclis decide` opens a decision checkpoint (laya)", .{name});
+        return error.NotADecisionModel;
+    }
+    return models(arena, root, name);
+}
+
+fn models(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(path) or std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../")) return path;
     const dir = root orelse return error.MissingHome;
-    return std.fs.path.join(arena, &.{ dir, "models", name });
+    return std.fs.path.join(arena, &.{ dir, "models", path });
 }
 
 pub const Identity = struct { name: []const u8, repo: ?[]const u8 = null, revision: ?[]const u8 = null };
@@ -629,4 +652,24 @@ test "inline questions build the package's definitions" {
     try std.testing.expectEqualStrings("true: yes, the statement holds", request.questions[2].texts[1]);
     const twice = [_][]const u8{ "--noul", "a", "--noul", "b", "--state", "s" };
     try std.testing.expectError(error.DuplicateQuestion, buildRequest(arena, std.testing.io, try parseArgs(arena, &twice, &diag), &diag));
+}
+
+test "model names resolve: decision entries, the catalogue, paths; text models refused" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    const registry: config.Models = .{ .entries = &.{
+        .{ .name = "multi", .entry = .{ .kind = .decision, .repo = "convaiinnovations/laya", .file = "multilingual/model.safetensors" } },
+        .{ .name = "local", .entry = .{ .kind = .decision, .path = "/data/laya" } },
+        .{ .name = "qwen", .entry = .{ .repo = "unsloth/Qwen3.8-27B-GGUF", .file = "Qwen3.8-27B-UD-Q4_K_M.gguf" } },
+    } };
+    try std.testing.expectEqualStrings("/r/models/convaiinnovations/laya", try resolveModel(arena, "/r", registry, "laya", &diag));
+    try std.testing.expectEqualStrings("/r/models/convaiinnovations/laya/multilingual", try resolveModel(arena, "/r", registry, "multi", &diag));
+    try std.testing.expectEqualStrings("/data/laya", try resolveModel(arena, "/r", registry, "local", &diag));
+    try std.testing.expectEqualStrings("/r/models/me/finetune", try resolveModel(arena, "/r", registry, "me/finetune", &diag));
+    try std.testing.expectEqualStrings("./here", try resolveModel(arena, null, registry, "./here", &diag));
+    try std.testing.expectError(error.NotADecisionModel, resolveModel(arena, "/r", registry, "qwen", &diag));
+    try std.testing.expectError(error.NotADecisionModel, resolveModel(arena, "/r", registry, "qwen3.8-27b", &diag));
+    try std.testing.expectError(error.MissingHome, resolveModel(arena, null, registry, "laya", &diag));
 }

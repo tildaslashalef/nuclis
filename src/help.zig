@@ -367,8 +367,8 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--id <name>", "names the question before it; default its type");
 
     try heading(out, sty, "Options:");
-    try row(out, sty, "--model <name|path>", "the checkpoint directory; default the pulled");
-    try more(out, "convaiinnovations/laya under ~/.nuclis/models");
+    try row(out, sty, "--model <name|path>", "a decision entry or checkpoint directory;");
+    try more(out, "default decide.model (laya)");
     try row(out, sty, "--truncate head|tail", "the end of a long state that is cut; default tail,");
     try more(out, "head for a JSON list (a conversation)");
     try row(out, sty, "--uncalibrated", "softmax of the raw logits, no temperature");

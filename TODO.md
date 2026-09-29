@@ -197,9 +197,14 @@ rebuilds the 8 oracle sequences exactly and matches their answers (gate
 (`--json`) equal the package's answers exactly after rounding, usage
 included; the quickstart through `--request` (file and stdin),
 `--questions`, and inline gives identical JSON; a fan-out over 4 files
-ranks; malformed requests fail naming the question. Remaining: model
-selection (the default is still the path `convaiinnovations/laya`), docs,
-`make verify`, close.
+ranks; malformed requests fail naming the question. Model selection
+(committed): `catalog.decision_entries` (`laya`), `decide.model`
+(default `laya`), registry `kind: decision` via `model pull --register`
+on a Laya layout, text commands refuse a decision model; checked through
+the fresh binary (`model pull laya` verifies the set, `--register` into a
+scratch `NUCLIS_HOME`, `model ls` rows). A side fix closed as MODL-32
+(the Hub listing lost digests in ReleaseFast). Remaining: docs (laya.md,
+spec.md, architecture.md), `make verify`, close.
 
 - `inference/src/profiles/laya.zig`: the input contract above (render,
   `[MASK]` replacement, budgets, list-state head cut, truncation flag, the

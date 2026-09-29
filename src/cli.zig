@@ -498,7 +498,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             },
         }
     }
-    if (options.command == .decide) return runDecide(alloc, io, root, options.words, out, sty, diag);
+    if (options.command == .decide) return runDecide(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .agent and options.agent_action == .ls) {
         const dir = root orelse return error.MissingHome;
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
@@ -578,6 +578,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     }
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
+    const wanted = options.model orelse loaded.config.engine.model;
+    const decision_entry = if (loaded.config.models.find(wanted)) |e| e.kind == .decision else catalog.findDecision(wanted) != null;
+    if (decision_entry) {
+        diag.set("{s} is a decision model; `nuclis decide --model {s}` runs it", .{ wanted, wanted });
+        return error.DecisionModel;
+    }
     const path = try paths.modelPath(alloc, options.model, loaded.config.engine.model, root, loaded.config.models);
     defer alloc.free(path);
     std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
@@ -683,17 +689,22 @@ fn isSafetensors(io: std.Io, path: []const u8) !bool {
 /// for the diagnostics above.
 /// `decide`: its own flags, a checkpoint directory rather than a GGUF file,
 /// and none of the engine's keys.
-fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
+fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const options = try decide.parseArgs(arena, words, diag);
     const sty: style.Style = if (options.json) .none else sty_detected;
-    const name = options.model orelse "convaiinnovations/laya";
-    const directory = try decide.resolveDirectory(arena, root, name);
+    var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
+    defer loaded.deinit();
+    const name = options.model orelse loaded.config.decide.model;
+    const directory = try decide.resolveModel(arena, root, loaded.config.models, name, diag);
     const weights = try std.fs.path.join(arena, &.{ directory, "model.safetensors" });
     std.Io.Dir.cwd().access(io, weights, .{}) catch {
-        diag.set("{s}: no model.safetensors (a Laya checkpoint directory; `nuclis model pull convaiinnovations/laya` fetches the root set)", .{directory});
+        if (catalog.findDecision(name)) |e|
+            diag.set("{s}: not pulled yet (`nuclis model pull {s}` fetches it, {d} MB)", .{ name, e.name, e.size / 1_000_000 })
+        else
+            diag.set("{s}: no model.safetensors (a Laya checkpoint directory, a decision registry entry, or a decision catalogue name)", .{directory});
         return error.ModelFileNotFound;
     };
     var identity: decide.Identity = .{ .name = name };

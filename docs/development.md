@@ -349,7 +349,7 @@ downloaded; a repository with several GGUFs and no `--file` lists them as
 ### Configuration file
 
 `nuclis.json` is one sectioned document (`engine`, `generation`, `agent`,
-and the `models` registry) with a `schema_version`. The sections name a
+`decide`, and the `models` registry) with a `schema_version`. The sections name a
 *scope*, not a command: `engine` (the artifact and its session) and
 `generation` (how tokens are produced: budget, effort, speculative decoding,
 sampling) are shared by `generate` and `agent`; `agent` holds only the chat
@@ -399,7 +399,8 @@ bring-up file. The example:
                               "presence_penalty": null, "repetition_penalty": null } },
   "agent":    { "think": "low", "fold_thinking": true, "theme": "gruvbox-dark", "instructions": "auto",
                 "thinking_budget": 1024 },
-  "models":   { "qwen3.8-27b": { "path": null,
+  "decide":   { "model": "laya" },
+  "models":   { "qwen3.8-27b": { "kind": null, "path": null,
                                  "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
                                  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
                                  "mmproj": "mmproj-BF16.gguf", "mtp": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
@@ -473,7 +474,15 @@ applies to models with no entry, and `--speculative` overrides either.
   the model, `null` meaning the global value. Entries pin no digest (a
   pull by entry name takes the Hub's). A registry name shadows a catalogue
   name for `--model`/`engine.model`; `model pull` tries the catalogue
-  first, since it needs nothing from the file.
+  first, since it needs nothing from the file. An entry with `"kind":
+  "decision"` (written by `model pull --register` for a Laya layout) is a
+  decision checkpoint: `repo` + `file` or `path` name its weights, whose
+  directory `nuclis decide` opens; text commands refuse it by name.
+- `decide.model` (default `laya`) is the checkpoint `nuclis decide` opens:
+  a registry entry of kind `decision`, a decision catalogue name
+  ([artifacts.md § The catalogue](reference/artifacts.md#the-catalogue)),
+  or a directory (under `<root>/models` unless absolute); `--model` takes
+  the same forms. A text model's name is refused.
 - Sampling entries are overrides: `null` means the official profile of the
   reasoning mode ([generation.md](reference/generation.md#sampling-profiles-and-the-selection-chain-modl-01)),
   so the file never freezes a model's recommended settings. The profile is

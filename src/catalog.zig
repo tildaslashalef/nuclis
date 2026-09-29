@@ -194,12 +194,63 @@ pub const entries = [_]Entry{
     },
 };
 
+/// What runs an artifact: the text engine, or `nuclis decide`.
+pub const ModelKind = enum { generation, decision };
+
+/// A decision checkpoint (Laya): safetensors weights and the support files
+/// beside them, one directory `nuclis decide` opens. Separate from `entries`
+/// so nothing that resolves a text model can pick one.
+pub const DecisionEntry = struct {
+    name: []const u8,
+    repo: []const u8,
+    /// The weights' Hub name; its directory is the checkpoint's.
+    file: []const u8,
+    revision: []const u8,
+    sha256: []const u8,
+    size: u64,
+    architecture: []const u8,
+    quantization: []const u8,
+    /// Hub names the checkpoint needs beside the weights (plain git files:
+    /// the Hub gives their blob ids, not SHA-256).
+    support: []const []const u8,
+};
+
+pub const decision_entries = [_]DecisionEntry{
+    // Laya's English root checkpoint, a ModernBERT-large encoder with a
+    // typed-decision head (MODL-30); pinned 2026-09-27 by the pull.
+    .{
+        .name = "laya",
+        .repo = "convaiinnovations/laya",
+        .file = "model.safetensors",
+        .revision = "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+        .sha256 = "891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c",
+        .size = 842_609_210,
+        .architecture = "modernbert",
+        .quantization = "F16",
+        .support = &.{ "encoder/config.json", "rl_agent_config.json", "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json" },
+    },
+};
+
+pub fn findDecision(name: []const u8) ?*const DecisionEntry {
+    for (&decision_entries) |*e| if (std.mem.eql(u8, e.name, name)) return e;
+    return null;
+}
+
+/// The checkpoint directory of a decision entry: the weights' directory
+/// under `<models>/<repo>/`.
+pub fn decisionDirectory(alloc: Allocator, models_dir: []const u8, entry: *const DecisionEntry) ![]u8 {
+    const weights = try std.fs.path.join(alloc, &.{ models_dir, entry.repo, entry.file });
+    defer alloc.free(weights);
+    return alloc.dupe(u8, std.fs.path.dirname(weights).?);
+}
+
 /// The widest entry name, so every listing lines its status column up
 /// however the catalogue grows. Computed here rather than guessed at each
 /// call site, which is what let `gemma-4-12b-qat` overflow a hardcoded 12.
 pub const name_width = blk: {
     var widest: usize = 0;
     for (&entries) |entry| widest = @max(widest, entry.name.len);
+    for (&decision_entries) |entry| widest = @max(widest, entry.name.len);
     break :blk widest + 1;
 };
 
@@ -265,6 +316,19 @@ pub fn status(alloc: Allocator, io: std.Io, path: []const u8, sha256: []const u8
         else => return err,
     } orelse return .unverified;
     return if (std.mem.eql(u8, sidecar.sha256, sha256) and sidecar.size == size) .present else .mismatch;
+}
+
+test "decision entries are well formed and never text-model names" {
+    for (&decision_entries) |e| {
+        try std.testing.expectEqual(@as(usize, 40), e.revision.len);
+        try std.testing.expectEqual(@as(usize, 64), e.sha256.len);
+        try std.testing.expect(find(e.name) == null);
+        try std.testing.expect(std.mem.endsWith(u8, e.file, ".safetensors"));
+    }
+    const dir = try decisionDirectory(std.testing.allocator, "/m", findDecision("laya").?);
+    defer std.testing.allocator.free(dir);
+    try std.testing.expectEqualStrings("/m/convaiinnovations/laya", dir);
+    try std.testing.expect(findDecision("qwen3.8-27b") == null);
 }
 
 test "the table is well formed: unique names, 40-character commits, 64-character digests" {
