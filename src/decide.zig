@@ -35,6 +35,7 @@ pub const Options = struct {
     explain: bool = false,
     uncalibrated: bool = false,
     truncate: ?profile.Truncate = null,
+    backend: ?inference.decide.Backend = null,
 };
 
 /// Parses the words after `decide`; `arena` owns the lists.
@@ -58,7 +59,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             o.uncalibrated = true;
             continue;
         }
-        const takes_value = for ([_][]const u8{ "--request", "--questions", "--state", "--state-file", "--choice", "--score", "--noul", "--option", "--level", "--id", "--model", "--truncate" }) |known| {
+        const takes_value = for ([_][]const u8{ "--request", "--questions", "--state", "--state-file", "--choice", "--score", "--noul", "--option", "--level", "--id", "--model", "--truncate", "--backend" }) |known| {
             if (std.mem.eql(u8, flag, known)) break true;
         } else false;
         if (!takes_value) {
@@ -88,6 +89,12 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             if (o.truncate != null) return error.DuplicateOption;
             o.truncate = std.meta.stringToEnum(profile.Truncate, value) orelse {
                 diag.set("--truncate takes head or tail (the end of the state that is cut), not {s}", .{value});
+                return error.InvalidOptionValue;
+            };
+        } else if (std.mem.eql(u8, flag, "--backend")) {
+            if (o.backend != null) return error.DuplicateOption;
+            o.backend = std.meta.stringToEnum(inference.decide.Backend, value) orelse {
+                diag.set("--backend takes cpu or metal, not {s}", .{value});
                 return error.InvalidOptionValue;
             };
         } else if (std.mem.eql(u8, flag, "--choice") or std.mem.eql(u8, flag, "--score") or std.mem.eql(u8, flag, "--noul")) {
@@ -332,8 +339,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, identity: 
     };
 
     const started = std.Io.Clock.awake.now(io);
-    var decider = Decider.open(gpa, io, directory, .cpu) catch |err| {
-        diag.set("{s}: not a Laya checkpoint directory nuclis can run ({s})", .{ directory, @errorName(err) });
+    var decider = Decider.open(gpa, io, directory, o.backend orelse inference.decide.default_backend) catch |err| {
+        if (err == error.MetalNotEnabled)
+            diag.set("this build has no Metal backend; run with --backend cpu", .{})
+        else
+            diag.set("{s}: not a Laya checkpoint directory nuclis can run ({s})", .{ directory, @errorName(err) });
         return err;
     };
     defer decider.deinit(io);

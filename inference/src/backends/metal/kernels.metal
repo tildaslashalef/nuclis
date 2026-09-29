@@ -1857,6 +1857,18 @@ kernel void nu_gelu_erf_inplace(device float * x [[buffer(0)]],
                                 constant CountParams & p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
     if (i < p.count) { const float v = x[i]; x[i] = 0.5f * v * (1.0f + nu_erf(v * 0.7071067811865476f)); }
 }
+// The exact-GELU gate over strided rows: out[r][i] = gelu_erf(gate[r][i]) ·
+// up[r][i] (ModernBERT's GeGLU; the halves of one fused row bound at offsets).
+kernel void nu_gelu_erf_mul_rows(device const float * gate [[buffer(0)]],
+                                 device const float * up [[buffer(1)]],
+                                 device float * output [[buffer(2)]],
+                                 constant GeluRowsParams & p [[buffer(7)]],
+                                 uint id [[thread_position_in_grid]]) {
+    if (id >= p.width * p.rows) return;
+    uint row = id / p.width, i = id % p.width;
+    const float v = gate[ulong(row) * p.gate_stride + i];
+    output[ulong(row) * p.out_stride + i] = 0.5f * v * (1.0f + nu_erf(v * 0.7071067811865476f)) * up[ulong(row) * p.up_stride + i];
+}
 // Scalar epilogues (Gemma 4): x *= factor (the embedding scale);
 // x = (x + y) * factor (a residual add followed by a per-layer output
 // scale, one rounding after the add as the CPU reference does it); and
@@ -2946,14 +2958,59 @@ kernel void nu_gelu_inplace(device float * x [[buffer(0)]],
     if (i < p.count) x[i] = nu_gelu(x[i]);
 }
 
+// Bidirectional attention of one (row, head) over the keys [lo, hi), at most
+// NU_FULL_MAX_ROWS of them, by one 256-thread group: the scores land in
+// threadgroup memory, the softmax reduces there, and the value pass splits
+// the keys across the threads that share a dimension.
+#define NU_FULL_MAX_ROWS 4096
+inline void nu_attention_range(device const float * q, device const float * k, device const float * v,
+                               device float * out, uint width, uint kv_stride, float scale, uint lo, uint hi,
+                               threadgroup float * scores, threadgroup float * partial, threadgroup float * acc,
+                               uint tid, uint lane, uint sg) {
+    float local_max = -INFINITY;
+    for (uint j = lo + tid; j < hi; j += 256) {
+        device const float * kj = k + ulong(j) * kv_stride;
+        float dot = 0;
+        for (uint d = 0; d < width; ++d) dot += q[d] * kj[d];
+        dot *= scale;
+        scores[j - lo] = dot;
+        local_max = max(local_max, dot);
+    }
+    local_max = simd_max(local_max);
+    if (lane == 0) partial[sg] = local_max;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float m = partial[0];
+    for (uint i = 1; i < 8; ++i) m = max(m, partial[i]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float local_sum = 0;
+    for (uint j = lo + tid; j < hi; j += 256) { float e = exp(scores[j - lo] - m); scores[j - lo] = e; local_sum += e; }
+    local_sum = simd_sum(local_sum);
+    if (lane == 0) partial[sg] = local_sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float denominator = 0;
+    for (uint i = 0; i < 8; ++i) denominator += partial[i];
+    const float inv = 1.0f / denominator;
+    // Value pass: thread t owns dimension t % width for the keys j ≡ t / width
+    // modulo the number of key groups that fit in 256 threads.
+    const uint key_groups = 256 / width;
+    const uint d = tid % width, kg = tid / width;
+    float sum = 0;
+    if (kg < key_groups) {
+        for (uint j = lo + kg; j < hi; j += key_groups) sum += scores[j - lo] * v[ulong(j) * kv_stride + d];
+    }
+    acc[tid] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < width) {
+        float total = 0;
+        for (uint g = 0; g < key_groups; ++g) total += acc[g * width + d];
+        out[d] = total * inv;
+    }
+}
+
 // Bidirectional attention over `rows` rows (an image's patches): every row
 // attends to every row. Queries, keys, and values are `heads` heads of
 // `width` at `q_stride`/`kv_stride` per row; the output is `heads · width`
-// wide at `out_stride`. One 256-thread group per (row, head): the scores
-// over all keys land in threadgroup memory (at most NU_FULL_MAX_ROWS), the
-// softmax reduces there, and the value pass splits the keys across the
-// threads that share a dimension.
-#define NU_FULL_MAX_ROWS 4096
+// wide at `out_stride`. One 256-thread group per (row, head).
 struct AttentionFullParams { uint heads; uint width; uint rows; uint q_stride; uint kv_stride; uint out_stride; float scale; };
 kernel void nu_attention_full(device const float * queries [[buffer(0)]],
                               device const float * keys [[buffer(1)]],
@@ -2968,45 +3025,39 @@ kernel void nu_attention_full(device const float * queries [[buffer(0)]],
     threadgroup float partial[8];
     threadgroup float acc[256];
     const uint row = group / p.heads, head = group % p.heads;
-    device const float * q = queries + ulong(row) * p.q_stride + ulong(head) * p.width;
-    device const float * k = keys + ulong(head) * p.width;
-    device const float * v = values + ulong(head) * p.width;
-    float local_max = -INFINITY;
-    for (uint j = tid; j < p.rows; j += 256) {
-        device const float * kj = k + ulong(j) * p.kv_stride;
-        float dot = 0;
-        for (uint d = 0; d < p.width; ++d) dot += q[d] * kj[d];
-        dot *= p.scale;
-        scores[j] = dot;
-        local_max = max(local_max, dot);
+    nu_attention_range(queries + ulong(row) * p.q_stride + ulong(head) * p.width, keys + ulong(head) * p.width,
+                       values + ulong(head) * p.width, output + ulong(row) * p.out_stride + ulong(head) * p.width,
+                       p.width, p.kv_stride, p.scale, 0, p.rows, scores, partial, acc, tid, lane, sg);
+}
+
+// Bidirectional attention over packed sequences: row i attends to the keys
+// of its own sequence, `bounds[i]` = [begin, end), within `window` of it
+// (|i − j| ≤ window; ~0u for none). The same layout and grid as
+// nu_attention_full; the bounds are clamped so a bad entry stays in range.
+struct AttentionSegmentsParams { uint heads; uint width; uint rows; uint q_stride; uint kv_stride; uint out_stride; float scale; uint window; };
+kernel void nu_attention_segments(device const float * queries [[buffer(0)]],
+                                  device const float * keys [[buffer(1)]],
+                                  device const float * values [[buffer(2)]],
+                                  device float * output [[buffer(3)]],
+                                  device const uint2 * bounds [[buffer(4)]],
+                                  constant AttentionSegmentsParams & p [[buffer(7)]],
+                                  uint group [[threadgroup_position_in_grid]],
+                                  uint tid [[thread_position_in_threadgroup]],
+                                  uint lane [[thread_index_in_simdgroup]],
+                                  uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float scores[NU_FULL_MAX_ROWS];
+    threadgroup float partial[8];
+    threadgroup float acc[256];
+    const uint row = group / p.heads, head = group % p.heads;
+    const uint2 b = bounds[row];
+    uint lo = min(b.x, row);
+    uint hi = clamp(b.y, row + 1, p.rows);
+    if (p.window != ~0u) {
+        lo = max(lo, row - min(p.window, row));
+        hi = min(hi, row + min(p.window, p.rows) + 1);
     }
-    local_max = simd_max(local_max);
-    if (lane == 0) partial[sg] = local_max;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    float m = partial[0];
-    for (uint i = 1; i < 8; ++i) m = max(m, partial[i]);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    float local_sum = 0;
-    for (uint j = tid; j < p.rows; j += 256) { float e = exp(scores[j] - m); scores[j] = e; local_sum += e; }
-    local_sum = simd_sum(local_sum);
-    if (lane == 0) partial[sg] = local_sum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    float denominator = 0;
-    for (uint i = 0; i < 8; ++i) denominator += partial[i];
-    const float inv = 1.0f / denominator;
-    // Value pass: thread t owns dimension t % width for the keys j ≡ t / width
-    // modulo the number of key groups that fit in 256 threads.
-    const uint key_groups = 256 / p.width;
-    const uint d = tid % p.width, kg = tid / p.width;
-    float sum = 0;
-    if (kg < key_groups) {
-        for (uint j = kg; j < p.rows; j += key_groups) sum += scores[j] * v[ulong(j) * p.kv_stride + d];
-    }
-    acc[tid] = sum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (tid < p.width) {
-        float total = 0;
-        for (uint g = 0; g < key_groups; ++g) total += acc[g * p.width + d];
-        output[ulong(row) * p.out_stride + ulong(head) * p.width + d] = total * inv;
-    }
+    hi = min(hi, lo + NU_FULL_MAX_ROWS);
+    nu_attention_range(queries + ulong(row) * p.q_stride + ulong(head) * p.width, keys + ulong(head) * p.width,
+                       values + ulong(head) * p.width, output + ulong(row) * p.out_stride + ulong(head) * p.width,
+                       p.width, p.kv_stride, p.scale, lo, hi, scores, partial, acc, tid, lane, sg);
 }

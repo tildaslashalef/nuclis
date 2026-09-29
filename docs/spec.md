@@ -306,7 +306,10 @@ the tokenizer's BPE and the safetensors loader.
   `laya-vocabulary` and `laya-cpu`.
 - Host limits, never the caller's: 64 states, 32 questions, 64 options,
   1 MiB per state. A cut state is flagged, never silent.
-- The Metal plan (MODL-31) must meet the same bounds against the CPU.
+- The Metal plan **must** meet the same bounds against the reference, and
+  a packed batch **must** give each sequence exactly its logits alone;
+  gate `laya-metal`. `nuclis decide --backend cpu|metal` chooses, metal
+  by default in a Metal build.
 
 Read: [reference/laya.md](reference/laya.md).
 

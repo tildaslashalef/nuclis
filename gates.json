@@ -626,6 +626,34 @@
    "evidence": "docs/reference/laya.md"
   },
   {
+   "name": "laya-metal",
+   "family": "laya",
+   "tier": "verify",
+   "model": "laya",
+   "paths": [
+    "inference/src/models/modernbert.zig",
+    "inference/src/models/modernbert_runtime.zig",
+    "inference/src/models/laya.zig",
+    "inference/src/models/laya_metal.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/safetensors.zig",
+    "inference/src/models/fixtures/laya/**",
+    "inference/laya-check.zig"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-laya",
+    "--",
+    "{model}",
+    "--backend",
+    "metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/laya.md"
+  },
+  {
    "name": "gemma4-qat-trace-cpu",
    "family": "gemma4",
    "tier": "verify-release",

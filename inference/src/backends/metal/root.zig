@@ -73,7 +73,7 @@ const kernel_names = [_][:0]const u8{
     "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",      "nu_matvec_q4_k_split",
     "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits", "nu_attention_chunk_reuse", "nu_attention_chunk_reuse_h",
     "nu_rmsnorm_add",           "nu_add_rmsnorm",           "nu_rmsnorm_rope",          "nu_layernorm",             "nu_add_bias_rows",         "nu_gelu_inplace",
-    "nu_attention_full",        "nu_gelu_quick_mul",        "nu_gelu_erf_inplace",      "nu_clamp",
+    "nu_attention_full",        "nu_gelu_quick_mul",        "nu_gelu_erf_inplace",      "nu_clamp",                 "nu_attention_segments",    "nu_gelu_erf_mul_rows",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -218,6 +218,8 @@ pub const Kernel = enum(u32) {
     gelu_quick_mul,
     gelu_erf_inplace,
     clamp,
+    attention_segments,
+    gelu_erf_mul_rows,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -1114,6 +1116,35 @@ pub const Backend = struct {
         const p: AttentionFullParams = .{ .heads = @intCast(s.heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale };
         try self.dispatch(.attention_full, &.{ queries, keys, values, output }, p, @intCast(s.rows * s.heads), 256, .{});
     }
+    pub const AttentionSegmentsParams = extern struct { heads: u32, width: u32, rows: u32, q_stride: u32, kv_stride: u32, out_stride: u32, scale: f32, window: u32 };
+    pub const AttentionSegmentsShape = struct {
+        heads: usize,
+        width: usize,
+        rows: usize,
+        q_stride: usize,
+        kv_stride: usize,
+        out_stride: usize,
+        scale: f32,
+        /// Row i sees key j when |i − j| ≤ window; null sees its whole sequence.
+        window: ?usize = null,
+    };
+    /// `attentionFull` over packed sequences: `bounds` holds one `[begin,
+    /// end)` u32 pair per row, the rows of that row's sequence (at most
+    /// `attention_full_max_rows` of them), and each row attends only there.
+    /// The device clamps the pairs; keeping them true is the caller's job.
+    pub fn attentionSegments(self: *Backend, queries: Buffer, keys: Buffer, values: Buffer, output: Buffer, bounds: Buffer, s: AttentionSegmentsShape) !void {
+        if (s.heads == 0 or s.width == 0 or s.width > 256 or s.rows == 0 or s.rows > std.math.maxInt(u32) / s.heads) return error.InvalidShape;
+        const row_floats = s.heads * s.width;
+        if (s.q_stride < row_floats or s.kv_stride < row_floats or s.out_stride < row_floats) return error.InvalidShape;
+        const q_len = ((s.rows - 1) * s.q_stride + row_floats) * 4;
+        const kv_len = ((s.rows - 1) * s.kv_stride + row_floats) * 4;
+        const out_len = ((s.rows - 1) * s.out_stride + row_floats) * 4;
+        if (queries.len < q_len or keys.len < kv_len or values.len < kv_len or output.len < out_len or bounds.len < s.rows * 8 or bounds.offset % 8 != 0) return error.InvalidShape;
+        if (overlaps(output, out_len, queries, q_len) or overlaps(output, out_len, keys, kv_len) or overlaps(output, out_len, values, kv_len) or overlaps(output, out_len, bounds, s.rows * 8)) return error.InvalidShape;
+        const window: u32 = if (s.window) |w| @intCast(@min(w, std.math.maxInt(u32) - 1)) else std.math.maxInt(u32);
+        const p: AttentionSegmentsParams = .{ .heads = @intCast(s.heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = window };
+        try self.dispatch(.attention_segments, &.{ queries, keys, values, output, bounds }, p, @intCast(s.rows * s.heads), 256, .{});
+    }
     pub const NormAddParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32, scale: f32 };
     /// `(destination + norm(input)·w) · factor` over `rows` rows in one
     /// dispatch, where the plans would run `rmsNorm` + `addScale` (`input`
@@ -1290,6 +1321,16 @@ pub const Backend = struct {
     pub fn geluErf(self: *Backend, x: Buffer, count: usize) !void {
         if (count == 0 or x.len < count * 4) return error.InvalidShape;
         try self.dispatch(.gelu_erf_inplace, &.{x}, CountParams{ .count = @intCast(count) }, perElement(count), 256, .{});
+    }
+    /// out[r][i] = gelu_erf(gate[r][i]) · up[r][i] over `rows` strided rows:
+    /// the exact-GELU gate (ModernBERT's GeGLU) where `geluMulRows` is tanh.
+    pub fn geluErfMulRows(self: *Backend, gate: Buffer, up: Buffer, output: Buffer, width: usize, rows: usize, gate_stride: usize, up_stride: usize, out_stride: usize) !void {
+        if (width == 0 or rows == 0 or width * rows > std.math.maxInt(u32) or gate_stride < width or up_stride < width or out_stride < width) return error.InvalidShape;
+        if (gate.len < ((rows - 1) * gate_stride + width) * 4 or up.len < ((rows - 1) * up_stride + width) * 4 or output.len < ((rows - 1) * out_stride + width) * 4) return error.InvalidShape;
+        const out_len = ((rows - 1) * out_stride + width) * 4;
+        if (overlaps(output, out_len, gate, ((rows - 1) * gate_stride + width) * 4) or overlaps(output, out_len, up, ((rows - 1) * up_stride + width) * 4)) return error.InvalidShape;
+        const p: GeluRowsParams = .{ .width = @intCast(width), .rows = @intCast(rows), .gate_stride = @intCast(gate_stride), .up_stride = @intCast(up_stride), .out_stride = @intCast(out_stride) };
+        try self.dispatch(.gelu_erf_mul_rows, &.{ gate, up, output }, p, perElement(width * rows), 256, .{});
     }
     pub const ScaleParams = extern struct { count: u32, factor: f32 };
     /// x[i] *= factor; the factor must be finite.

@@ -166,8 +166,10 @@ between sequences, so there is no session, no sampler, and no KV cache.
 directory: the Hugging Face tokenizer (`tokenizer/hf_json.zig`), the
 profile (`profiles/laya.zig`: question validation, the sequence and its
 budgets, calibration), and the model (`models/laya.zig` over
-`models/modernbert*.zig`, F32 on the CPU through `backends/cpu/dense.zig`).
-Every question about every state is one sequence. It pays as a filter, one
+`models/modernbert*.zig`: F32 on the CPU through `backends/cpu/dense.zig`,
+or `models/laya_metal.zig` on Metal, which packs the sequences of a call
+into batches with per-row bounds instead of padding). Every question about
+every state is one sequence. It pays as a filter, one
 question over many states the language model never has to read
 ([laya.md](reference/laya.md)).
 

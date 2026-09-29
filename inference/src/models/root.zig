@@ -29,6 +29,7 @@ pub const inventory = @import("inventory.zig");
 pub const modernbert = @import("modernbert.zig");
 pub const modernbert_runtime = @import("modernbert_runtime.zig");
 pub const laya = @import("laya.zig");
+pub const laya_metal = @import("laya_metal.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
@@ -106,5 +107,6 @@ test {
     _ = modernbert;
     _ = modernbert_runtime;
     _ = laya;
+    _ = laya_metal;
     _ = dflash;
 }

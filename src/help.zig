@@ -372,6 +372,7 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "default decide.model (laya)");
     try row(out, sty, "--truncate head|tail", "the end of a long state that is cut; default tail,");
     try more(out, "head for a JSON list (a conversation)");
+    try row(out, sty, "--backend cpu|metal", "default metal");
     try row(out, sty, "--uncalibrated", "softmax of the raw logits, no temperature");
     try row(out, sty, "--explain", "each sequence decoded, its budget, the logits");
     try row(out, sty, "--json", "one Jev response per state, with timings");

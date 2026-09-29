@@ -174,12 +174,12 @@ const Scratch = struct {
 
 /// Split-half RoPE tables for positions 0..n: angle `pos · theta^(−2i/d)`
 /// rounded to F32 (the reference's F32 product), then cosine and sine.
-const Rope = struct {
+pub const Rope = struct {
     cos: []const f32,
     sin: []const f32,
     half: usize,
 
-    fn init(cos: []f32, sin: []f32, n: usize, head_dim: usize, theta: f32) Rope {
+    pub fn init(cos: []f32, sin: []f32, n: usize, head_dim: usize, theta: f32) Rope {
         const half = head_dim / 2;
         for (0..half) |i| {
             const exponent = @as(f64, @floatFromInt(2 * i)) / @as(f64, @floatFromInt(head_dim));

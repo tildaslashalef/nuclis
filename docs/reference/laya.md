@@ -5,12 +5,13 @@ ModernBERT-large encoder with a typed-decision head. It answers a typed
 question (`choice`, `score`, or `noul`, a yes/no probability) about a state
 (text, or a JSON document) in one forward pass, with no decoding. nuclis
 runs the root checkpoint (commit `55cf4c4e`, pulled under
-`~/.nuclis/models/convaiinnovations/laya/`) in three parts:
+`~/.nuclis/models/convaiinnovations/laya/`) in these parts:
 
 | Part | Files | Status |
 | --- | --- | --- |
 | Tokenizer | `inference/src/tokenizer/hf_json.zig`, `gpt2.zig`, `nfc.zig` | landed ([tokenizer.md § Hugging Face `tokenizer.json`](tokenizer.md#hugging-face-tokenizerjson)) |
 | Encoder and head, CPU | `inference/src/models/modernbert.zig`, `modernbert_runtime.zig`, `laya.zig`, `inference/src/backends/cpu/dense.zig` | landed (below) |
+| Encoder and head, Metal | `inference/src/models/laya_metal.zig`, `inference/src/backends/metal/` (`attentionSegments`, `geluErfMulRows`) | landed (below) |
 | Input contract, calibration, `Decider` | `inference/src/profiles/laya.zig`, `inference/src/decide.zig` | landed (below) |
 | `nuclis decide`, the `laya` catalogue entry, `decide.model` | `src/decide.zig`, `src/catalog.zig`, `src/config.zig` | landed (below) |
 
@@ -24,8 +25,8 @@ section, each diff hunk), where the language model's prefill is the cost
 avoided: nuclis prefills Qwen3.8-27B at 90.45 tok/s at 512 tokens on
 Metal ([bench.md § Acceptance runs](bench.md#acceptance-runs)), so each
 512-token state it skips saves about 5.7 s of prefill and its context,
-against 2.5 s for Laya to judge it on the CPU (below) while the GPU stays
-free.
+against about 0.2 s for Laya to judge it on Metal, or 2.9 s on the CPU
+while the GPU stays free (below).
 
 ## The encoder
 
@@ -131,6 +132,76 @@ included); opening took 212 ms with the checkpoint in the page cache. A
 512-token sequence is about 2·10¹¹ multiply-adds, so 2.4 s is roughly 170
 GFLOP/s across the cores.
 
+## On Metal
+
+`models/laya_metal.zig` `Plan` runs the CPU forward's schedule on the GPU;
+`Laya.open(gpa, io, dir, .metal)` builds it instead of the CPU runtime.
+It owns its `Backend`, so every device buffer goes with `destroy`.
+
+- **Weights.** Each matrix is the checkpoint mapping's F16 (or F32) bytes
+  wrapped in place and read by the generic F32 `matmul` tile, which
+  converts each weight and keeps F32 operands and sums; BF16 matrices are
+  rejected. Vectors (norms, biases, `type_emb`) are decoded to F32
+  buffers; `scorer.3` stays on the host. Opening decodes no matrix, so it
+  is the shader pipelines and the mapping: 53 ms (ReleaseFast) against
+  the CPU's 212 ms.
+- **Packed batches.** Sequences sit back to back, at most `max_rows`
+  (2048) rows, with no padding: the matmuls, norms, and elementwise
+  kernels run over every row at once; a bounds buffer gives each row its
+  sequence's `[begin, end)`, and a per-row RoPE table its position within
+  the sequence, copied from the CPU forward's own F32-angle tables.
+  Activations take about 56 KB a row (115 MB for 2048 rows).
+  `Laya.logitsBatch` cuts a list of sequences into such batches;
+  `Decider.decide` hands it every question about every state at once.
+- **Kernels.** `attentionSegments` (`nu_attention_segments`) is
+  `attention_full`'s body over a key range: row i sees the keys of its
+  sequence within `|i − j| ≤ 64` on sliding layers, all of them on
+  global layers and in the head; one 256-thread group per (row, head),
+  bounds clamped on the device. `geluErfMulRows` is the GeGLU,
+  `gelu_erf(a)·g` over the two halves of `Wi`'s output rows. The rest
+  existed: `layerNorm` (with a zero bias for the encoder's bias-free
+  norms), `ropeRows` split-half over the q and k thirds of the fused row,
+  `addBiasRows` (every head bias, and `type_emb` per sequence), `clamp(0,
+  ∞)` as ReLU, `geluErf`, `add`.
+- **The scorer** runs its LayerNorm, Linear, and GELU on every row (the
+  marker rows are a few of them; about 0.3 % of the forward) in the same
+  command buffer; after the one commit the host takes each marker row's
+  dot product with `scorer.3` in F64.
+
+### Checked against the oracle and the CPU
+
+```sh
+zig build test-laya -Doptimize=ReleaseSafe -- ~/.nuclis/models/convaiinnovations/laya --backend metal
+```
+
+(gate `laya-metal`, tier verify). The same fixtures and the same bounds
+as the CPU forward; with a trace the plan commits after every stage and
+the host reads the residual rows. Measured 2026-09-29, Apple M4 Pro,
+Zig 0.16.0, ReleaseFast, the MODL-31 commit; worst stage per request, the
+times with a commit per traced stage (31 command buffers; the first
+includes pipeline warm-up):
+
+| Request | Tokens | Options | ms | scaled max \|Δ\| (stage) | rel RMS | scaled logit \|Δ\| |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| `choice_described` | 59 | 3 | 383 | 1.5e-6 (encoder.27) | 1.4e-6 | 1.1e-6 |
+| `choice_labels` | 36 | 3 | 38 | 4.0e-6 (encoder.27) | 1.9e-6 | 8.3e-7 |
+| `score` | 49 | 3 | 25 | 2.9e-6 (final) | 2.5e-6 | 2.5e-6 |
+| `noul` | 56 | 2 | 27 | 2.9e-6 (head.0) | 2.4e-6 | 1.7e-6 |
+| `json_state` | 119 | 2 | 48 | 7.6e-6 (final) | 8.9e-6 | 2.3e-6 |
+| `long_text` | 512 | 3 | 210 | 1.4e-6 (head.0) | 2.1e-6 | 6.5e-6 |
+| `long_list` | 512 | 2 | 209 | 6.0e-7 (final) | 1.1e-6 | 1.2e-6 |
+| `choice_20` | 193 | 20 | 76 | 4.7e-6 (head.0) | 3.7e-6 | 6.5e-6 |
+
+The check then runs all 8 requests as one packed batch (1,536 rows, 538
+ms): each logit equals the request's run alone to the bit, since no
+row's arithmetic depends on what is packed beside it. On the tiny
+synthetic checkpoint it opens, runs, and closes the plan three times, and
+fails every allocation of `open` in turn with no leak. The two kernels
+have their own model-free checks in `make test-metal`: attention over
+packed sequences of 1, 37, and 90 rows, full and within windows 0, 3,
+and 64, with NaN past the batch, against F64 (worst 7.2e-7); the GeGLU
+over strided fused rows against `cpu.geluErf`.
+
 ## The input contract
 
 As the `laya` 0.3.20 package defines it (`laya/common.py`
@@ -198,7 +269,9 @@ default its type). One state renders every answer with its distribution;
 several render ranked by the first question (P(true), the expected score,
 or the first option's probability), a cut state flagged. `--explain`
 shows each sequence decoded, its budget split, bucket, and logits;
-`--truncate head|tail` chooses the end of a long state that is cut.
+`--truncate head|tail` chooses the end of a long state that is cut;
+`--backend cpu|metal` where the model runs (default metal in a Metal
+build).
 
 `--json`: `{schema_version, model, repo, revision, timings_ms {load,
 tokenize, encode}, results: [...]}`, each result a complete Jev response,
@@ -239,9 +312,46 @@ Encoding is the cost; every question is its own sequence, so a call's time
 is about the sum of its sequences' (a short sequence runs at a lower rate:
 the matrices are too narrow to fill the cores).
 
+**Metal against the CPU**, as a filter runs: one noul question over 1,
+10, and 50 synthetic log states of about 60 and about 500 tokens
+(`nuclis decide --backend … --json --request`, `timings_ms`). Apple M4
+Pro, Zig 0.16.0, ReleaseSafe, the MODL-31 commit, best of three, the
+pipelines compiled and the checkpoint in the page cache:
+
+| States × state tokens | Input tokens | Encode, Metal | Encode, CPU | Metal, tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 × 57 | 95 | 39 ms | 519 ms | 2,440 |
+| 10 × 54–60 | 947 | 278 ms | 5,047 ms | 3,410 |
+| 50 × 54–60 | 4,704 | 1,344 ms | 26,485 ms | 3,500 |
+| 1 × 492 | 512 | 207 ms | 2,866 ms | 2,470 |
+| 10 × 487–500 | 5,120 | 1,970 ms | 30,020 ms | 2,600 |
+| 50 × 484–504 | 25,600 | 9,801 ms | — | 2,610 |
+
+Load: 69–75 ms on Metal (the tokenizer, the config, the pipelines, the
+wrapped mapping), 650–690 ms on the CPU. Metal is 13–20× the CPU.
+
+Where the GPU time goes (`laya-check … --backend metal --profile`, each
+dispatch timestamped, ReleaseSafe): for the 512-token `long_text`
+request, 197 ms in kernels, attention 45 % (88 ms), the matmuls 52 %
+(about 3.5 TFLOP/s), everything else 3 %; for all 8 requests packed
+(1,536 rows, 539 ms), attention 39 %. The attention kernel runs one
+threadgroup per (row, head) that reads every visible key itself, so its
+cost grows with the sequence, which is why short states run faster per
+token.
+
 ## Limits and what is not done
 
-- CPU only; the Metal plan is MODL-31.
+- Metal's attention is the scalar per-(row, head) kernel, 45 % of a
+  512-token forward; a kernel that shares each key block across a tile of
+  queries is the first headroom. The matmuls are the generic F32 tile
+  (about 3.5 TFLOP/s); the half-operand tiles would round the
+  activations, whose outliers reach 1.65·10⁴, to F16 and break the
+  bounds. A batch holds at most 2048 rows, which also bounds one
+  sequence on Metal (the contract's is 512). BF16 matrices are refused on
+  Metal (the root set is F16).
+- On Metal Laya shares the GPU with a language model in the same process;
+  the two do not run at once (every `commit` waits), so a decision
+  delays the model's next step by its encode time.
 - The English root checkpoint only; `multilingual/` (mmBERT, 1,024 and up
   to 8,192 tokens) needs its own contract check, though
   `modernbert.parseConfig` reads its config shape.

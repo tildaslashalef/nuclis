@@ -101,7 +101,7 @@ make the registry cheaper than the recipes it replaced:
 | --- | --- | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the Metal plan, and the 12B QAT file's CPU gates | the Metal plan | the CPU reference |
 | covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities (`*-perplexity-full`), the Gemma 12B QAT file, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
-| cost | minutes (32 gates; 246 s measured 2026-09-29, down from 38 gates in 704 s; engineering log, REPO-20) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (1 gate: `gemma4-e4b-perplexity-4k`; the other families wait for their references) | hours (14 gates; `qwen38-speculative-cpu` alone is about 20 min) |
+| cost | minutes (33 gates; 254 s measured 2026-09-29 with `laya-metal`, 246 s for the 32 before it, down from 38 gates in 704 s; engineering log, REPO-20, MODL-31) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (1 gate: `gemma4-e4b-perplexity-4k`; the other families wait for their references) | hours (14 gates; `qwen38-speculative-cpu` alone is about 20 min) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same (CPU gates as `verify-cpu`) | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | every unit that touched the inference stack | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
@@ -196,6 +196,7 @@ What can break independently, and what protects it. *Model-free* means
 | attention: decode, chunk, windowed, F16 cache | fixtures to 16K keys, and Gemma's geometries (16 heads of 512 over one or two KV heads, 16 of 256 over 8) | — |
 | DeltaNet, Hadamard, RoPE, norms, softcap, sampling kernels | fixtures | — |
 | Metal `layerNorm`, `addBiasRows` | strided rows against the CPU (`checkVisionNorms`) | — |
+| Metal attention over packed sequences, the erf GeGLU (Laya) | packed sequences and windows against F64 (`checkSegmentAttention`), fused rows against the CPU (`checkGeluErfRows`) | `laya-metal` (the plan, its batching, and its cleanup) |
 | experts (MoE) | Metal Q4_0 chains; CPU FFN on a 2×2 F32 tensor | `gemma4-26b-a4b-*` |
 | Qwen 3.5 plan (DeltaNet, gated attention, MTP block) | the runtime's admission tests | `qwen38-*` |
 | Qwen 3.5 with Hadamard rotations, PTQ1_0, BF16 | decoders, kernels | `bonsai-*` |

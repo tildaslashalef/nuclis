@@ -1539,6 +1539,108 @@ fn checkWindowAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     }
 }
 
+/// Bidirectional attention over three packed sequences (lengths 1, 37, and
+/// 90) of 64-wide heads in one fused q|k|v row, full and within windows 0,
+/// 3, and 64, against F64 attention over each row's visible keys. Rows past
+/// the batch are NaN (a bounds bug reads them); output rows past it keep
+/// their sentinel.
+fn checkSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
+    const heads: usize = 3;
+    const width: usize = 64;
+    const row_floats = heads * width;
+    const stride = 3 * row_floats;
+    const lengths = [_]usize{ 1, 37, 90 };
+    const rows: usize = 1 + 37 + 90;
+    const total = rows + 5;
+    var prng = std.Random.DefaultPrng.init(0x5e65);
+    const random = prng.random();
+    const host = try alloc.alloc(f32, total * stride);
+    defer alloc.free(host);
+    for (host, 0..) |*x, i| x.* = if (i / stride < rows) random.floatNorm(f32) else std.math.nan(f32);
+    const qkv = try upload(b, host);
+    const out = try b.create(total * row_floats * 4);
+    const bounds = try b.create(rows * 8);
+    const pairs: []u32 = @as([*]u32, @ptrCast(@alignCast(bounds.host)))[0 .. 2 * rows];
+    var begin: usize = 0;
+    for (lengths) |len| {
+        for (begin..begin + len) |r| {
+            pairs[2 * r] = @intCast(begin);
+            pairs[2 * r + 1] = @intCast(begin + len);
+        }
+        begin += len;
+    }
+    const scale: f32 = 0.125;
+    var scores: [rows]f64 = undefined;
+    for ([_]?usize{ null, 0, 3, 64 }) |window| {
+        @memset(out.floats(), -7);
+        try b.begin();
+        try b.attentionSegments(qkv, qkv.slice(row_floats * 4, qkv.len - row_floats * 4), qkv.slice(2 * row_floats * 4, qkv.len - 2 * row_floats * 4), out, bounds, .{ .heads = heads, .width = width, .rows = rows, .q_stride = stride, .kv_stride = stride, .out_stride = row_floats, .scale = scale, .window = window });
+        try b.commit();
+        var worst: f64 = 0;
+        for (0..total) |i| for (0..heads) |h| {
+            const got = out.floats()[i * row_floats + h * width ..][0..width];
+            if (i >= rows) {
+                for (got) |x| if (x != -7) return error.MetalMismatch;
+                continue;
+            }
+            const lo = if (window) |w| @max(pairs[2 * i], i -| w) else pairs[2 * i];
+            const hi = if (window) |w| @min(pairs[2 * i + 1], i + w + 1) else pairs[2 * i + 1];
+            var max: f64 = -std.math.inf(f64);
+            for (lo..hi) |j| {
+                var dot: f64 = 0;
+                for (0..width) |d| dot += @as(f64, host[i * stride + h * width + d]) * host[j * stride + row_floats + h * width + d];
+                scores[j] = dot * scale;
+                max = @max(max, scores[j]);
+            }
+            var sum: f64 = 0;
+            for (scores[lo..hi]) |*x| {
+                x.* = @exp(x.* - max);
+                sum += x.*;
+            }
+            for (got, 0..) |x, d| {
+                var want: f64 = 0;
+                for (lo..hi) |j| want += scores[j] * host[j * stride + 2 * row_floats + h * width + d];
+                worst = @max(worst, @abs(want / sum - x));
+            }
+        };
+        if (!(worst <= 1e-5)) {
+            std.debug.print("segment attention (window {?d}): worst |difference| {e:.3}\n", .{ window, worst });
+            return error.MetalMismatch;
+        }
+        std.debug.print("segment attention over packed sequences of 1/37/90 rows, window {?d}, NaN past the batch, vs F64: worst |difference| {e:.3} (bound 1e-5)\n", .{ window, worst });
+    }
+    if (b.attentionSegments(qkv, qkv, qkv, out, bounds.slice(0, 8), .{ .heads = heads, .width = width, .rows = rows, .q_stride = stride, .kv_stride = stride, .out_stride = row_floats, .scale = scale })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+}
+
+/// The exact-GELU gate over the two halves of strided fused rows against
+/// `cpu.geluErf(a) · g`, tails included.
+fn checkGeluErfRows(alloc: std.mem.Allocator, b: *Backend) !void {
+    const width: usize = 72;
+    const rows: usize = 5;
+    const in_stride = 2 * width + 8;
+    var prng = std.Random.DefaultPrng.init(0x9e1);
+    const random = prng.random();
+    const host = try alloc.alloc(f32, rows * in_stride);
+    defer alloc.free(host);
+    for (host) |*x| x.* = random.floatNorm(f32) * 4;
+    host[0] = 60;
+    host[1] = -60;
+    host[2] = 0;
+    const input = try upload(b, host);
+    const out = try b.create(rows * width * 4);
+    try b.begin();
+    try b.geluErfMulRows(input, input.slice(width * 4, input.len - width * 4), out, width, rows, in_stride, in_stride, width);
+    try b.commit();
+    for (0..rows) |r| for (0..width) |i| {
+        const gelu = inference.cpu.geluErf(host[r * in_stride + i]);
+        const gate = host[r * in_stride + width + i];
+        // gelu_erf's own bound, scaled by the gate it multiplies.
+        try expectClose("gelu_erf_mul_rows", out.floats()[r * width + i], gelu * gate, 1e-6 * @max(1, @abs(gelu)) * @max(1, @abs(gate)));
+    };
+    if (b.geluErfMulRows(input, input, input, width, rows, in_stride, in_stride, in_stride)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
+    std.debug.print("exact-GELU gate over strided fused rows vs the CPU: within gelu_erf's bound times the gate; an aliased output refused\n", .{});
+}
+
 fn checkWindowedAndWideAttention(alloc: std.mem.Allocator, b: *Backend, reuse: bool) !void {
     const saved_max_rows = b.attention_reuse_max_rows;
     defer b.attention_reuse_max_rows = saved_max_rows;
@@ -3015,6 +3117,8 @@ pub fn main(init: std.process.Init) !void {
     try checkWindowedAndWideAttention(alloc, b, true);
     try checkChunkAttentionReuse(alloc, b);
     try checkWindowAttention(alloc, b);
+    try checkSegmentAttention(alloc, b);
+    try checkGeluErfRows(alloc, b);
     try checkFusedNorms(alloc, b);
     try checkDenseEncodings(alloc, b);
     try checkVisionNorms(alloc, b);
@@ -3720,5 +3824,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate and the exact erf GELU among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
 }

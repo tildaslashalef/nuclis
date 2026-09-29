@@ -232,6 +232,7 @@ pub const commands = [_]Command{
         .{ .name = "--id", .value = .text, .repeat = true, .summary = "names the question before it" },
         .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
         .{ .name = "--truncate", .value = .{ .choice = &.{ "head", "tail" } }, .summary = "the end of a long state cut" },
+        backend,
         .{ .name = "--uncalibrated", .summary = "no temperature" },
         .{ .name = "--explain", .summary = "the sequences, budgets, and logits" },
         json,

@@ -144,6 +144,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-30 | Laya on the CPU end to end: the oracle, `tokenizer.json`, ModernBERT and the decision head, `nuclis decide` | 2026-09-29 |
 | REPO-19 | The Gemma 4 12B K-quant file's gates retired with the file | 2026-09-29 |
 | REPO-20 | Fast verification: gates re-derived from code paths (`make verify` 704 s → 246 s), a release tier, `make verify-auto` | 2026-09-29 |
+| MODL-31 | Laya on Metal: packed batches, bidirectional windowed attention over sequence bounds, 13–20× the CPU | 2026-09-29 |
 
 ## Context
 
@@ -5973,3 +5974,66 @@ hold more than attention), so its lines still ask for a judgment of the
 diff. Gaps the matrix found and no gate covers: the 12B QAT's
 `gemma4uv` unified projector, the 26B-A4B's assistant head, PQ2_0 past
 its fixtures; `engine.zig` has no unit tests.
+
+## MODL-31 — Laya on Metal: packed batches, bidirectional windowed attention over sequence bounds (2026-09-29)
+
+**Outcome.** Laya runs on Metal behind `nuclis decide --backend
+cpu|metal`, metal by default in a Metal build
+([reference/laya.md § On Metal](reference/laya.md#on-metal)).
+`models/laya_metal.zig` `Plan` runs the CPU forward's schedule and owns
+its `Backend`: the checkpoint's F16 matrices wrapped in place and read by
+the generic F32 matmul tile, vectors decoded to F32 buffers, no 1.5 GB
+F32 decode at open. Sequences are packed back to back into batches of at
+most 2048 rows with no padding, a bounds buffer giving each row its
+sequence's `[begin, end)` and a per-row RoPE table its position (the plan
+said padding and a key mask; packing wastes no rows on a call's mixed
+lengths). Two kernels: `attentionSegments` (`attention_full`'s body moved
+into one range function both call, `attention_full`'s arithmetic
+unchanged) with a window for the sliding layers, and `geluErfMulRows`,
+the GeGLU. `laya.zig`: `HeadRefs` binds the head once for either
+backend, `Laya.open(…, backend)` builds one forward, `logitsBatch` packs
+on Metal; `Decider.decide` assembles every sequence of a call and hands
+them over at once. The tiny test checkpoint was widened to Metal's matmul
+shapes and exported for the check tool.
+
+**Evidence.** `laya-check --backend metal` (gate `laya-metal`, new, tier
+verify) against the oracle's 8 requests, ReleaseFast: worst largest-
+difference-over-largest-value 7.6e-6 and relative RMS 8.9e-6 (both
+`json_state`, bounds 1e-5), logits 6.5e-6 of max(1, |logit|) (bound
+1e-4), the CPU's own bounds; all 8 as one packed batch (1,536 rows,
+538 ms) give each logit bit-identical to its run alone; on the tiny
+checkpoint three open/forward/close cycles, then every allocation of
+`open` failing in turn, no leak. `test-metal`: attention over packed
+sequences of 1, 37, 90 rows, full and windows 0/3/64, NaN past the
+batch, against F64 (worst 7.2e-7); the GeGLU over strided fused rows
+against `cpu.geluErf`. Through the fresh binary, CPU and Metal give the
+same answers (logits within 2e-5) on inline noul and choice questions.
+Timings (ReleaseSafe, best of three, one noul over synthetic log
+states): 1×57 tokens 39 ms (CPU 519), 10×~57 278 ms (5,047), 50×~57
+1,344 ms (26,485), 1×492 207 ms (2,866), 10×~495 1,970 ms (30,020),
+50×~495 9,801 ms; load 69–75 ms against 650–690; 13–20× the CPU. GPU
+profile (`--profile`) of the 512-token request: attention 45 %, matmuls
+52 % (about 3.5 TFLOP/s). `make verify-auto` from `26eccf1`: `fmt`,
+`unit`, `test-metal`, `manifests`, then 29 verify gates, all passing,
+`laya-cpu` and every vision gate (the `attention_full` refactor) among
+them. It named `verify-cpu` (`modernbert_runtime.zig`: only `Rope` made
+public, nothing it computes changed) and `verify-long` (`kernels.metal`:
+the bidirectional image attention, not the KV cache or a causal window),
+neither run. `make verify`: 33/33 in 254 s
+(the 32 before plus `laya-metal`).
+
+**Files.** `inference/src/models/laya_metal.zig` (new),
+`inference/src/models/{laya,modernbert_runtime,root}.zig`,
+`inference/src/decide.zig`, `inference/src/backends/metal/{root.zig,kernels.metal}`,
+`inference/laya-check.zig`, `inference/metal-check.zig`,
+`src/{decide,help,completion}.zig`, `gates.json`,
+`docs/reference/laya.md`, `docs/architecture.md`, `docs/spec.md`,
+`docs/development.md`, `TODO.md`, `docs/engineering-log.md`.
+
+**Remaining.** Attention is the scalar per-(row, head) kernel, 45 % of a
+512-token forward; a kernel sharing key blocks across a tile of queries
+is the first headroom, then an F32-operand matmul tile (half operands
+would round activations with outliers to 1.65·10⁴). On Metal a sequence
+is bounded by the 2048-row batch and BF16 matrices are refused. Laya and
+a language model in one process share the GPU in turn, never at once.
+

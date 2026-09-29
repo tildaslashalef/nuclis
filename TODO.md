@@ -41,15 +41,18 @@ gates re-derived from what they protect (`make verify` 704 s → 246 s,
 a `verify-release` tier) and `make verify-auto`, which runs the checks
 and gates a diff selects and names the tiers it requires.
 
-Reordered 2026-09-29 (user): Laya end to end first, MODL-31 then AGNT-18;
-KERN-19 (the threaded CPU reference) follows them, its "before" times
-not yet taken. Next is MODL-31, Laya on Metal.
+Reordered 2026-09-29 (user): Laya end to end first, then KERN-19 (the
+threaded CPU reference), its "before" times not yet taken. MODL-31
+closed 2026-09-29 (engineering log): Laya on Metal, `nuclis decide
+--backend cpu|metal` (metal by default), packed batches, 13–20× the CPU
+(a 512-token state in about 0.2 s), gate `laya-metal`. Next is AGNT-18,
+the agent's `decide` tool; `Decider` opens on Metal in the agent's
+process beside the text model, taking the GPU in turn.
 
 ## Order
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-31 | Laya on Metal: bidirectional windowed attention, the encoder plan, measured | one or two |
 | AGNT-18 | The agent's `decide` tool: LLM-written questions over tool-supplied states (the experiment) | one |
 | KERN-19 | A threaded CPU reference, bit-identical: the CPU tier ≤ 30 min | one |
 
@@ -59,67 +62,6 @@ first, then Metal; a new command, `nuclis decide`, with three input tiers,
 fan-out over many states, a styled terminal view, and `--json`; each
 `results[i]` a complete Jev response; LLM-written questions are the last
 unit, an experiment.
-
-## MODL-31 — Laya on Metal
-
-Base: `26eccf1`
-
-Where the CPU path stands (docs/reference/laya.md § On the CPU, § Time
-per call): `models/laya.zig` `Laya.logits(io, gpa, ids, markers, kind,
-out, trace)` over `models/modernbert_runtime.zig` and
-`backends/cpu/dense.zig`; `inference.decide.Backend` is `enum { cpu }`
-and `Decider.open` ignores it. CPU encode times to beat (ReleaseSafe,
-M4 Pro): 56 tokens 269 ms, 164 tokens over three questions 801 ms, 512
-tokens 2,582 ms; load 0.6 s.
-
-Design (read 2026-09-29 from the Metal backend and the vision plans):
-
-- **Packed batches, not padding.** Sequences sit back to back in one
-  batch of at most `max_rows` (2048) rows; every row carries its
-  sequence's `[begin, end)` in a `u32` pair buffer. The matmuls, norms,
-  and elementwise kernels run over all rows at once; attention and RoPE
-  read the per-row bounds and positions.
-- **Kernels, `backends/metal/`:** new `nu_attention_segments`
-  (`Backend.attentionSegments`): `nu_attention_full`'s body moved into
-  one inline function over a key range `[lo, hi)`, called by both
-  (`attention_full`'s arithmetic unchanged); the new kernel takes the
-  bounds buffer and a window (`|i − j| ≤ w`, none for global layers and
-  the head) and clamps the bounds on the device. New
-  `nu_gelu_erf_mul_rows` (`geluErfMulRows`): `gelu_erf(a)·g` over the
-  strided halves of `Wi`'s output. Everything else exists: generic F32
-  `matmul` reads F16 weights (encoding 1) in place, `layerNorm` (a zero
-  bias buffer for ModernBERT's bias-free norms), `ropeRows`
-  (`.split_half`, a per-row host table: position within its sequence),
-  `addBiasRows` (biases, the type embedding per sequence), `clamp(0,
-  +inf)` as ReLU, `geluErf`, `add`.
-- **`models/laya_metal.zig` `Plan`:** owns its `Backend`; wraps each F16
-  or F32 matrix from the checkpoint mapping (BF16 rejected), decodes the
-  vectors (norms, biases, `type_emb`, `scorer.3`) to F32 buffers;
-  activations for `max_rows` rows (x, normed, qkv, attended, wide
-  5248, gated 2624). `run(batch, outs, trace)`: host decodes embedding
-  rows into x and writes bounds and RoPE rows; one command buffer: the
-  28 encoder layers, `final_norm`, per-sequence `type_emb`, two head
-  layers, the scorer's LayerNorm → Linear → GELU on every row; commit;
-  the host dots each marker row with `scorer.3` (F64 sum). With a trace,
-  it commits after each stage and records the host view.
-- **`laya.zig`:** `Head.load` split into `HeadRefs` (bind) and the CPU
-  decode; `Laya.open(gpa, io, dir, backend)` builds the CPU runtime or
-  the Plan, not both (Metal: no 1.5 GB F32 decode); `logitsBatch`
-  (CPU: one sequence at a time; Metal: packed). The tiny test checkpoint
-  widened to Metal's shapes (intermediate 64, head ff 64) and exported
-  for the check tool.
-- **`decide.zig`:** `Backend = enum { cpu, metal }`, `Decider.decide`
-  assembles every sequence, then one `logitsBatch`. `nuclis decide
-  --backend cpu|metal`, default metal when built with it.
-- **Checks:** metal-check `checkSegmentAttention` (packed sequences,
-  windows 0/3/none, NaN outside the bounds, against F64) and the GeGLU
-  rows against `cpu.geluErf`; `laya-check --backend metal`: the 8
-  fixtures with per-stage bounds recorded, all 8 requests as one packed
-  batch equal to one at a time, and open/deinit and allocation-failure
-  sweeps on the tiny checkpoint; new gate `laya-metal` (tier verify).
-  Measured on the M4 Pro: one question over 1, 10, 50 states of 64 and
-  512 tokens, load separate, into `docs/reference/laya.md` with
-  hardware, build, commit. `make verify` once (shared kernels touched).
 
 ## AGNT-18 — The agent's `decide` tool (experiment)
 
