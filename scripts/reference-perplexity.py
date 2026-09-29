@@ -21,7 +21,7 @@ import sys
 
 REVISION = "7620399f58aebfd2196b74021f9581bcf7218cb9"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-CHECKOUT = ROOT / ".zig-cache/reference/llama.cpp"
+CHECKOUT = ROOT / ".reference/llama.cpp"
 BINARY = CHECKOUT / "build/bin/llama-perplexity"
 
 RUNNING = re.compile(r"\[(\d+)\](\d+\.\d+),")

@@ -5,12 +5,12 @@
 
 Never imported by the build. Run it in the reference venv:
 
-    uv venv --python 3.12 .zig-cache/reference/laya-venv
-    VIRTUAL_ENV=.zig-cache/reference/laya-venv uv pip install laya==0.3.20
-    USE_TF=0 .zig-cache/reference/laya-venv/bin/python scripts/laya-reference.py [--subfolder multilingual]
+    uv venv --python 3.12 .reference/laya-venv
+    VIRTUAL_ENV=.reference/laya-venv uv pip install laya==0.3.20
+    USE_TF=0 .reference/laya-venv/bin/python scripts/laya-reference.py [--subfolder multilingual]
 
 It loads the pulled checkpoint (no second download) from a staged copy under
-.zig-cache/reference/laya-model[-<subfolder>], since the package may rewrite
+.reference/laya-model[-<subfolder>], since the package may rewrite
 tokenizer_config.json in place; a staged subfolder loads as the package's
 `Agent(repo, subfolder=...)` would after its download. Writes
 inference/src/models/fixtures/laya[-<subfolder>]/:
@@ -374,7 +374,7 @@ def main() -> None:
     if not args.skip_digest and sha256(model_dir / "model.safetensors") != weights_sha256:
         parser.error("%s/model.safetensors differs from the pinned set (commit %s)" % (model_dir, COMMIT))
 
-    staged = ROOT / (".zig-cache/reference/laya-model" + suffix)
+    staged = ROOT / (".reference/laya-model" + suffix)
     stage(model_dir, staged)
     torch.manual_seed(0)
     agent = laya.Agent(str(staged), device="cpu")

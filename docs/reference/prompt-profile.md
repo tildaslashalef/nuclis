@@ -307,7 +307,7 @@ artifact from the repository root (`--reasoning off` is the Qwen recipe's
 and does not affect `/apply-template`):
 
 ```sh
-.zig-cache/reference/llama.cpp/build/bin/llama-server \
+.reference/llama.cpp/build/bin/llama-server \
   --model "$HOME/.nuclis/models/unsloth/gemma-4-12b-it-GGUF/gemma-4-12b-it-UD-Q4_K_XL.gguf" \
   --ctx-size 2048 --parallel 1 --device MTL0 --n-gpu-layers 99 \
   --host 127.0.0.1 --port 18087 --no-webui

@@ -2,8 +2,8 @@
 """Regenerate small CPU decoder fixtures from a locally built pinned llama.cpp.
 
 Usage: python3 scripts/quant-fixtures.py [reference-checkout] [--prism-checkout DIR]
-Defaults to .zig-cache/reference/llama.cpp under the repository root, and
-.zig-cache/reference/prism-llama.cpp for the PrismML fork that defines the
+Defaults to .reference/llama.cpp under the repository root, and
+.reference/prism-llama.cpp for the PrismML fork that defines the
 ternary encodings (PQ2_0, PTQ1_0; docs/reference/bonsai.md). Each checkout
 must sit at its pinned revision with its Release build; no model or GPU is
 used. Writes fixtures under inference/src/quant/fixtures/ (`ternary.json`
@@ -29,8 +29,8 @@ PRISM_REVISION = "5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6"
 def main():
     root = pathlib.Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("checkout", nargs="?", type=pathlib.Path, default=root / ".zig-cache/reference/llama.cpp")
-    parser.add_argument("--prism-checkout", type=pathlib.Path, default=root / ".zig-cache/reference/prism-llama.cpp")
+    parser.add_argument("checkout", nargs="?", type=pathlib.Path, default=root / ".reference/llama.cpp")
+    parser.add_argument("--prism-checkout", type=pathlib.Path, default=root / ".reference/prism-llama.cpp")
     args = parser.parse_args()
 
     def pinned_library(checkout, expected):

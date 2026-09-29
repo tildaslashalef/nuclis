@@ -210,7 +210,7 @@ fork's server renders it.
 `github.com/PrismML-Eng/llama.cpp` (MIT, tracks mainline), release
 `prism-b10687-5d80cff` = commit `5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6`
 (2026-09-17), pinned by tag since the fork has already retired one format.
-Built as the mainline recipe with `.zig-cache/reference/prism-llama.cpp`
+Built as the mainline recipe with `.reference/prism-llama.cpp`
 in place of the mainline checkout
 ([reference-baseline.md § The second oracle](reference-baseline.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
 Two pins, never one moving one: `scripts/quant-fixtures.py` carries

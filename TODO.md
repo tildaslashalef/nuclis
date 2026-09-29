@@ -60,6 +60,10 @@ generated under `.zig-cache/playground/` by `scripts/playground.py`
 (no more `~/Code/playground`), the Python scripts pass basedpyright
 `standard` and ruff (`make lint-py`, the `python` check).
 
+REPO-22 closed 2026-09-29 (engineering log): durable local state
+(oracles, venvs, pinned downloads) lives in the ignored `.reference/`;
+`.zig-cache` is disposable, `make clean-cache` trims Zig's build cache.
+
 Next (user, 2026-09-29): KERN-19. AGNT-18 is deferred until the user
 picks it up.
 

@@ -147,6 +147,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-31 | Laya on Metal: packed batches, bidirectional windowed attention over sequence bounds, 13–20× the CPU | 2026-09-29 |
 | MODL-33 | Laya multilingual: the Metaspace tokenizer, the checkpoint's own special tokens, checked on both backends | 2026-09-29 |
 | REPO-21 | The agent's playground generated under `.zig-cache`; the Python scripts typed (basedpyright) and formatted (ruff) | 2026-09-29 |
+| REPO-22 | `.reference/` for durable local state (oracles, venvs, pinned downloads); `.zig-cache` disposable, `make clean-cache` | 2026-09-29 |
 
 ## Context
 
@@ -6171,3 +6172,44 @@ fixtures, and instructions line differ. The next unit to measure the
 agent re-measures its baseline on the generated workspace. Only `exit` ran end to end
 here; the other eleven tasks share its path (generation, `make reset`,
 the checks) but have not been run on the new workspace.
+
+## REPO-22 — `.reference/` for durable local state; `.zig-cache` disposable (2026-09-29)
+
+**Outcome.** The state that is slow to set up again moved out of
+`.zig-cache` into `.reference/`, a new ignored directory at the
+repository root: the pinned llama.cpp checkout and its build, the Laya
+venv and staged checkpoints, the pi-mono clone, and the pinned downloads
+(`eval/`, the wikitext-2 corpus; `ucd/`, the Unicode data). `.zig-cache`
+now holds only what rebuilds itself (Zig's build cache, gate traces and
+results, the generated playground), so deleting it loses nothing that
+does not come back. `make clean-cache` drops Zig's build products (`o/`,
+`h/`, `z/`, `tmp/`, `global/`, the part that grows with every build);
+`make distclean` still removes all of `.zig-cache` and never touches
+`.reference/`. Every current path moved with it: the `Makefile`
+(`EVAL_DIR`), the perplexity gates in `gates.json`, the NFC conformance
+test in `nfc.zig`, seven scripts, and the reference documents. Records of
+past runs (this log, `docs/benchmarks/*.json`) keep the paths they ran
+with.
+
+**Evidence.** `git check-ignore` names `.reference/`'s line. The
+llama.cpp build records absolute paths (its binaries' `LC_RPATH` named
+`.zig-cache/reference/…/build/bin`), so it was configured afresh at the new
+place with the pinned recipe and the same seven tools. The rebuilt
+`llama-perplexity` reproduces its recorded Gemma 4 E4B run exactly (8
+windows of 512: every window's perplexity, 36.0595 ± 3.22642, the same
+text digest). The moved Laya venv imports `laya` 0.3.20 and torch
+2.14.0. `make verify-auto` from `b703a67`: `fmt`, `unit`,
+`manifests`, `python`, then the vocabulary and perplexity gates (reading
+the corpus from `.reference/eval`), all passing. Sizes after: 1.5 GB in
+`.reference/`, 4.0 GB in `.zig-cache/`.
+
+**Files.** `.gitignore`, `Makefile`, `gates.json`,
+`inference/src/tokenizer/nfc.zig`, `scripts/{cpu-vector-fixtures,grapheme-table,laya-reference,quant-fixtures,reference-perplexity,tokenizer-nfc,tokenizer-unicode}.py`,
+`scripts/reference-split.cpp`, `docs/development.md`,
+`docs/reference/{reference-baseline,bonsai,eval,generation,new-model-guide,prompt-profile,quantization}.md`,
+`tests/fixtures/provenance.md`, `THIRD_PARTY_NOTICES.md`,
+`docs/engineering-log.md`.
+
+**Remaining.** Another machine sets `.reference/` up once with the
+recipes in `reference-baseline.md` and `development.md`; nothing
+automates it.

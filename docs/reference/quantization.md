@@ -155,7 +155,7 @@ To regenerate on macOS, build the pinned reference following
 python3 scripts/quant-fixtures.py
 ```
 
-The default checkout is `.zig-cache/reference/llama.cpp`, resolved relative to
+The default checkout is `.reference/llama.cpp`, resolved relative to
 the repository rather than the working directory. An optional positional path
 selects another checkout. The generator checks the checkout revision and calls
 the built `libggml-base` CPU functions through Python `ctypes`; it does not load a model or initialize

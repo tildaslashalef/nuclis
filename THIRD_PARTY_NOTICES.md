@@ -142,7 +142,7 @@ code from them is present in nuclis.
 
 - **llama.cpp** `7620399f58aebfd2196b74021f9581bcf7218cb9` (MIT) — GGUF format,
   quantization semantics, tokenizer behavior, Metal reference performance.
-  Built under `.zig-cache/reference/` by [docs/reference/reference-baseline.md](docs/reference/reference-baseline.md);
+  Built under `.reference/` by [docs/reference/reference-baseline.md](docs/reference/reference-baseline.md);
   `scripts/*.py` and `scripts/reference-generation.cpp` call its public API.
   Fixtures under `inference/src/**/fixtures/` and traces are outputs of
   running it, not copies of it.
@@ -153,7 +153,7 @@ code from them is present in nuclis.
   <https://github.com/NandhaKishorM/laya>) with PyTorch 2.14.0, Transformers
   5.17.0, and Tokenizers 0.23.2 — the decision model's input contract,
   forward, calibration, and tokenizer behaviour.
-  `scripts/laya-reference.py` runs it in a venv under `.zig-cache/reference/`;
+  `scripts/laya-reference.py` runs it in a venv under `.reference/`;
   the fixtures under `inference/src/models/fixtures/laya/` and
   `laya-multilingual/` are outputs of running it on the pulled
   checkpoints, not copies of them.

@@ -7,26 +7,28 @@ Use matching token inputs and settings for a later comparison.
 ## Build the reference
 
 The source revision is `7620399f58aebfd2196b74021f9581bcf7218cb9`.
-Keep its checkout and build in the ignored reference cache. Run these commands
+Keep its checkout and build in `.reference/`, the ignored directory for
+state that is slow to rebuild (unlike `.zig-cache`, which may be deleted at
+any time). Run these commands
 from the nuclis repository root:
 
 ```sh
-mkdir -p .zig-cache/reference
-gh repo clone ggml-org/llama.cpp .zig-cache/reference/llama.cpp
-git -C .zig-cache/reference/llama.cpp checkout --detach 7620399f58aebfd2196b74021f9581bcf7218cb9
+mkdir -p .reference
+gh repo clone ggml-org/llama.cpp .reference/llama.cpp
+git -C .reference/llama.cpp checkout --detach 7620399f58aebfd2196b74021f9581bcf7218cb9
 
-cmake -S .zig-cache/reference/llama.cpp -B .zig-cache/reference/llama.cpp/build \
+cmake -S .reference/llama.cpp -B .reference/llama.cpp/build \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF \
   -DLLAMA_USE_PREBUILT_UI=OFF
 
-cmake --build .zig-cache/reference/llama.cpp/build \
+cmake --build .reference/llama.cpp/build \
   --target llama-server llama-bench llama-completion --parallel 8
 ```
 
-The cache survives clearing `/tmp`, but deleting `.zig-cache` removes both the
-checkout and its build. Reconstruct them with the pinned commands above. CMake
+`.reference/` survives clearing `/tmp` and deleting `.zig-cache`; if it is
+lost, reconstruct the checkout and its build with the pinned commands above. CMake
 records absolute paths: after moving a checkout, configure a fresh build
 directory instead of reusing a build generated at the old location.
 
@@ -49,16 +51,16 @@ second constant (`quant-fixtures.py`'s `PRISM_REVISION`). The same recipe,
 in its own checkout:
 
 ```sh
-git clone https://github.com/PrismML-Eng/llama.cpp .zig-cache/reference/prism-llama.cpp
-git -C .zig-cache/reference/prism-llama.cpp checkout --detach 5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6
+git clone https://github.com/PrismML-Eng/llama.cpp .reference/prism-llama.cpp
+git -C .reference/prism-llama.cpp checkout --detach 5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6
 
-cmake -S .zig-cache/reference/prism-llama.cpp -B .zig-cache/reference/prism-llama.cpp/build \
+cmake -S .reference/prism-llama.cpp -B .reference/prism-llama.cpp/build \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF \
   -DLLAMA_USE_PREBUILT_UI=OFF
 
-cmake --build .zig-cache/reference/prism-llama.cpp/build \
+cmake --build .reference/prism-llama.cpp/build \
   --target llama-server llama-bench llama-completion --parallel 8
 ```
 
@@ -84,8 +86,8 @@ and read from there by `nuclis-baseline.py` into the nuclis record
 Start one reference server in a separate terminal:
 
 ```sh
-mkdir -p .zig-cache/reference
-.zig-cache/reference/llama.cpp/build/bin/llama-server \
+mkdir -p .reference
+.reference/llama.cpp/build/bin/llama-server \
   --model "$HOME/.nuclis/models/qwen/Qwen3.8-27B-UD-Q4_K_M.gguf" \
   --ctx-size 32768 --parallel 1 --device MTL0 --n-gpu-layers 99 \
   --flash-attn on --cache-type-k f16 --cache-type-v f16 \
@@ -93,21 +95,21 @@ mkdir -p .zig-cache/reference
   --host 127.0.0.1 --port 18087 --reasoning off --no-context-shift \
   --cache-ram 0 --cache-reuse 0 --load-mode mmap --lazy-mode off --fit off \
   --perf --no-webui --cors-origins localhost --log-verbosity 4 \
-  > .zig-cache/reference/server.log 2>&1
+  > .reference/server.log 2>&1
 ```
 
 Then run the opt-in development harness from this repository:
 
 ```sh
 python3 scripts/reference-baseline.py \
-  --output-dir .zig-cache/reference/warm-new-run
+  --output-dir .reference/warm-new-run
 ```
 
 Run the near-capacity check separately, leaving one token of boundary margin:
 
 ```sh
 python3 scripts/reference-baseline.py \
-  --output-dir .zig-cache/reference/boundary-new-run \
+  --output-dir .reference/boundary-new-run \
   --prompt-lengths 32639 --repetitions 1 --server-pid <pid>
 ```
 
@@ -155,8 +157,8 @@ server's truncation flag; use the margin command for a clean capacity check.
 
 Raw responses, server properties, prompt-construction details, token arrays,
 individual timings, and summaries are written to the selected untracked output
-directory. Using `.zig-cache/reference` keeps them across restarts that clear
-`/tmp`; deleting the Zig cache also deletes these raw artifacts. The runner
+directory. Using `.reference` keeps them across restarts that clear
+`/tmp` and across deleting the Zig cache. The runner
 rejects truncated/reused prompts and completions that miss the output budget.
 Device selection and allocation details must also be checked in the server log;
 the runner's revision check alone does not establish that Metal was used.
@@ -229,7 +231,7 @@ all nine accepted timings, input-file hashes, and the flagged capacity result.
 Saved warm/warmup memory snapshots showed zero swap usage; they are not peak
 memory measurements. The reference process was no longer running when checked
 after completion. Raw local evidence is in
-`tests/fixtures/run-2026-09-06/` (committed fixtures); `.zig-cache/reference/server.log`
+`tests/fixtures/run-2026-09-06/` (committed fixtures); `.reference/server.log`
 is a regenerable cache artifact.
 
 An earlier interrupted attempt experienced growing swap usage and lost its
@@ -239,7 +241,7 @@ from this report. The fresh run records memory conditions alongside every sample
 The raw evidence of the accepted run is committed as fixtures:
 [tests/fixtures/run-2026-09-06/](../../tests/fixtures/run-2026-09-06/) — see
 [tests/fixtures/provenance.md](../../tests/fixtures/provenance.md). The
-working copies under `.zig-cache/reference/` are regenerable caches; the
+working copies under `.reference/` are regenerable caches; the
 fixtures are the retained oracle. The reference process was no longer running
 when checked after completion.
 
@@ -264,12 +266,12 @@ The [compact follow-up record](../benchmarks/reference-boundary-2026-09-06.json)
 retains both timings, explicit acceptance flags/counts, input and response hashes,
 and memory counters. Raw evidence is in
 `tests/fixtures/boundary-2026-09-06/`; device/allocation evidence is in
-`.zig-cache/reference/server-boundary-2026-09-06.log`. The server was stopped
+`.reference/server-boundary-2026-09-06.log`. The server was stopped
 cleanly after completion. This closes the reference boundary check; nuclis's own
 32K execution, numerical correctness, and memory acceptance remain pending.
 
 After measurement, the pinned checkout was moved from temporary storage into
-`.zig-cache/reference/llama.cpp` and its CMake build regenerated there. The
+`.reference/llama.cpp` and its CMake build regenerated there. The
 measurement used the pre-relocation build. `build-before-relocation` preserves
 that old build as local evidence; it contains obsolete absolute paths and must
 not be used for future runs. Use `build/bin/` from the reconstruction commands.

@@ -180,7 +180,7 @@ test "allocation failures leave nothing behind" {
 test "NormalizationTest.txt conformance when cached" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
-    const path = ".zig-cache/ucd/" ++ table.version ++ "/NormalizationTest.txt";
+    const path = ".reference/ucd/" ++ table.version ++ "/NormalizationTest.txt";
     const data = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(8 * 1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,

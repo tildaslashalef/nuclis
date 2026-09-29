@@ -4,7 +4,7 @@
 The table is the terminal's grapheme-breaking and width data: UAX #29 properties
 (Grapheme_Cluster_Break, Indic_Conjunct_Break), UAX #11 East Asian Width, and the
 emoji/legacy properties that decide emoji presentation. It is committed; this
-script only regenerates it. Downloads are cached under .zig-cache/ucd/<version>/
+script only regenerates it. Downloads are cached under .reference/ucd/<version>/
 and checked against pinned digests, so a given source tree always regenerates the
 same bytes.
 
@@ -54,7 +54,7 @@ LINE = re.compile(
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
-    "--ucd-dir", type=Path, default=ROOT / ".zig-cache/ucd" / VERSION, help="where the UCD files are cached/downloaded"
+    "--ucd-dir", type=Path, default=ROOT / ".reference/ucd" / VERSION, help="where the UCD files are cached/downloaded"
 )
 parser.add_argument("--output", type=Path, default=ROOT / "src/tui/graphemes_table.zig")
 parser.add_argument("--offline", action="store_true", help="fail instead of downloading")

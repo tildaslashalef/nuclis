@@ -24,7 +24,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate \
-        agent agent-eval playground model-ls eval-corpus trace clean distclean hf-downloader test-hf changelog release
+        agent agent-eval playground model-ls eval-corpus trace clean clean-cache distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -197,9 +197,9 @@ model-ls: build ## List the model files (GGUF, safetensors) under <root>/models 
 # Fetched, never committed; the pinned references name its SHA-256 and
 # `nuclis eval --reference` refuses any other file.
 
-EVAL_DIR := .zig-cache/eval
+EVAL_DIR := .reference/eval
 EVAL_TEXT := $(EVAL_DIR)/wikitext-2-raw/wiki.test.raw
-eval-corpus: ## Fetch wikitext-2-raw (the perplexity gates' text) into .zig-cache/eval and check its SHA-256
+eval-corpus: ## Fetch wikitext-2-raw (the perplexity gates' text) into .reference/eval and check its SHA-256
 	@mkdir -p $(EVAL_DIR)
 	@test -f $(EVAL_TEXT) || (curl -fsSL -o $(EVAL_DIR)/wikitext-2-raw-v1.zip \
 	  https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip && \
@@ -235,8 +235,11 @@ release: ## Cut a release from the manifest's -dev version: check, changelog, co
 
 # ---- housekeeping ----------------------------------------------------------
 
-clean: ## Remove build outputs (keeps the cache and the reference checkout)
+clean: ## Remove build outputs (keeps the caches and .reference/)
 	rm -rf zig-out
 
-distclean: clean ## Also remove .zig-cache (deletes the llama.cpp reference build and traces)
+clean-cache: ## Remove Zig's build cache, the part of .zig-cache that grows with every build
+	rm -rf .zig-cache/o .zig-cache/h .zig-cache/z .zig-cache/tmp .zig-cache/global
+
+distclean: clean ## Also remove .zig-cache (builds, traces, results; .reference/ is kept)
 	rm -rf .zig-cache

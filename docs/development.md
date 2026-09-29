@@ -50,14 +50,21 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   sit beside it, verified and not executed
   ([reference/artifacts.md](reference/artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11),
   [reference/gguf-inspection.md](reference/gguf-inspection.md#companion-files-in-modelsqwen-2026-09-08)).
+- Two ignored directories hold local state. `.zig-cache/` is disposable:
+  Zig's build cache (`make clean-cache` drops it; it grows with every
+  build), gate traces and results, the generated playground; `make
+  distclean` or `rm -rf` loses nothing that does not come back by itself.
+  `.reference/` is durable: the oracles' checkouts, builds, and venvs, their
+  staged models, and pinned downloads (`eval/`, `ucd/`), all slow to set up
+  again; nothing in the Makefile deletes it.
 - Reference llama.cpp `7620399` builds on demand under
-  `.zig-cache/reference/llama.cpp` (vanishes with `make distclean`); the
+  `.reference/llama.cpp`; the
   PrismML fork `5d80cff` (release `prism-b10687-5d80cff`), the only decoder
   of Bonsai 2 27B's ternary encodings, beside it under
-  `.zig-cache/reference/prism-llama.cpp` with the same recipe
+  `.reference/prism-llama.cpp` with the same recipe
   ([reference-baseline.md § The second oracle](reference/reference-baseline.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
   The decision model's oracle is the `laya` 0.3.20 Python package in a venv
-  at `.zig-cache/reference/laya-venv` (Python 3.12 through `uv`; the recipe
+  at `.reference/laya-venv` (Python 3.12 through `uv`; the recipe
   heads `scripts/laya-reference.py`; `--subfolder multilingual` for the
   multilingual set), run on the CPU in F32 against the pulled checkpoint
   from a staged copy, because the package may rewrite
@@ -167,7 +174,7 @@ seconds are reported apart from the gates'. Gate names are `<entry>-<check>-<exe
 windows), `perplexity-full`, `perplexity-4k`. A
 model path is overridden per key by `<KEY>_MODEL` (`GEMMA4_QAT_MODEL=…`).
 Traces are written under `.zig-cache/gates/trace/<gate>/`. The perplexity
-gates read wikitext-2-raw's test text, fetched into `.zig-cache/eval/` and
+gates read wikitext-2-raw's test text, fetched into `.reference/eval/` and
 checked against its SHA-256 by `make eval-corpus`, which `verify`,
 `verify-changed`, and `gate` run first (a no-op once the file is there);
 their references are pinned under `tests/fixtures/perplexity/`

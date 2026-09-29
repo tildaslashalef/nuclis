@@ -5,7 +5,7 @@ The table is canonical composition data for NFC (UAX #15): nonzero canonical
 combining classes, full canonical decompositions, and primary composites
 (two-character decompositions not in Full_Composition_Exclusion). Hangul is
 algorithmic and not tabled. The table is committed; this script only
-regenerates it. Downloads are cached under .zig-cache/ucd/<version>/ and
+regenerates it. Downloads are cached under .reference/ucd/<version>/ and
 checked against pinned digests; NormalizationTest.txt is fetched too, for the
 conformance test in nfc.zig, which runs whenever that file is cached.
 
@@ -30,7 +30,7 @@ SOURCES = {
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument(
-    "--ucd-dir", type=Path, default=ROOT / ".zig-cache/ucd" / VERSION, help="where the UCD files are cached/downloaded"
+    "--ucd-dir", type=Path, default=ROOT / ".reference/ucd" / VERSION, help="where the UCD files are cached/downloaded"
 )
 parser.add_argument("--output", type=Path, default=ROOT / "inference/src/tokenizer/nfc_table.zig")
 parser.add_argument("--offline", action="store_true", help="fail instead of downloading")

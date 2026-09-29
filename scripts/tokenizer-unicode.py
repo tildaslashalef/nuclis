@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--reference", type=Path, default=ROOT / ".zig-cache/reference/llama.cpp")
+parser.add_argument("--reference", type=Path, default=ROOT / ".reference/llama.cpp")
 args = parser.parse_args()
 source = (args.reference / "src/unicode-data.cpp").read_bytes()
 if hashlib.sha256(source).hexdigest() != "95170cd1c105a5b41a1b2dce73b0fae8ce8011ef7897600828bb2babe8b26e5d":

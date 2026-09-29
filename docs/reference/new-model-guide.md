@@ -199,7 +199,7 @@ the reference's ids.
 - `nuclis --help` names the profiles and their defaults; update it.
 - The acceptance record: the reference harness on the file
   (`scripts/reference-baseline.py --family <family> --output-dir
-  .zig-cache/reference/<family>-<date> --prompt-lengths
+  .reference/<family>-<date> --prompt-lengths
   512,4096,16384,32639` against the server started with the
   [reference recipe](reference-baseline.md#run-the-workload) at 32K),
   its token arrays committed under `tests/fixtures/run-<date>-<family>/`,

@@ -4,10 +4,10 @@
 // stdin; output: pieces separated by U+001F, records by U+001E. Build against
 // the reference checkout (docs/reference/reference-baseline.md):
 //
-//   R=.zig-cache/reference/llama.cpp
+//   R=.reference/llama.cpp
 //   clang++ -std=c++17 -O1 -I $R/src -I $R/include -I $R/ggml/include \
 //     scripts/reference-split.cpp $R/src/unicode.cpp $R/src/unicode-data.cpp \
-//     -o .zig-cache/reference/split
+//     -o .reference/split
 //
 // The default regex is the form the reference runs for the `llama4` label
 // (docs/reference/muse-glimmer.md § Tokenizer); pass another as argv[1].

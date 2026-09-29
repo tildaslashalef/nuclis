@@ -32,7 +32,7 @@ Rules for agents:
 
 - **Never edit or regenerate these files in place.** They are the fixed point
   that proves kernel changes are equivalent. If a trace must be re-produced
-  (e.g. a new reference revision), generate it under `.zig-cache/reference/`
+  (e.g. a new reference revision), generate it under `.reference/`
   first, verify it byte-for-byte against these fixtures, and only then propose
   a fixture update as its own reviewed commit.
 - The acceptance value of `make gate NAME='qwen38-trace-*'` is max abs `0.0001220703125` over

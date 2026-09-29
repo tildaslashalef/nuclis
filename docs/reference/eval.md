@@ -211,9 +211,9 @@ speculative acceptance on Gemma drew from uncapped logits (row 0 of
 
 ```sh
 make eval-corpus
-cmake --build .zig-cache/reference/llama.cpp/build --target llama-perplexity --parallel 8
+cmake --build .reference/llama.cpp/build --target llama-perplexity --parallel 8
 python3 scripts/reference-perplexity.py --model <file.gguf> \
-  --text .zig-cache/eval/wikitext-2-raw/wiki.test.raw --ctx 512 --chunks 8 \
+  --text .reference/eval/wikitext-2-raw/wiki.test.raw --ctx 512 --chunks 8 \
   --ubatch 1 --output tests/fixtures/perplexity/<family>-wikitext2-c512x8.json
 ```
 

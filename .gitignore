@@ -6,3 +6,4 @@ zig-out/
 .env
 .env.*
 !.env.example
+.reference/

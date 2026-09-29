@@ -256,12 +256,12 @@ It refuses to run without a GPU. Build against the relocated checkout:
 ```sh
 mkdir -p .zig-cache/generation
 c++ -std=c++17 \
-  -I.zig-cache/reference/llama.cpp/include \
-  -I.zig-cache/reference/llama.cpp/ggml/include \
-  -I.zig-cache/reference/llama.cpp/src \
+  -I.reference/llama.cpp/include \
+  -I.reference/llama.cpp/ggml/include \
+  -I.reference/llama.cpp/src \
   scripts/reference-generation.cpp \
-  -L.zig-cache/reference/llama.cpp/build/bin -lllama -lggml -lggml-base \
-  -Wl,-rpath,"$PWD/.zig-cache/reference/llama.cpp/build/bin" \
+  -L.reference/llama.cpp/build/bin -lllama -lggml -lggml-base \
+  -Wl,-rpath,"$PWD/.reference/llama.cpp/build/bin" \
   -o .zig-cache/generation/reference-generation
 mkdir -p .zig-cache/generation/native-check .zig-cache/generation/reference-check
 ./zig-out/bin/nuclis generate --raw --prompt 'Hello,' --max-tokens 1 --ctx-size 8 \
@@ -340,7 +340,7 @@ on the QAT file, each against its own traces;
 [gemma4.md](gemma4.md#cpu-reference-against-the-oracle-modl-05-2026-09-11)).
 Top-five IDs and reference greedy margin are reported for diagnosis. The
 harness also builds unchanged against the PrismML fork (the include and
-library paths of `.zig-cache/reference/prism-llama.cpp`, output
+library paths of `.reference/prism-llama.cpp`, output
 `.zig-cache/generation/prism-reference-generation`), which is how the Bonsai
 2 27B traces were captured ([bonsai.md](bonsai.md#oracle-the-prismml-fork)).
 

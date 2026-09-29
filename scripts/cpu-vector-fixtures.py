@@ -10,7 +10,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "7620399f58aebfd2196b74021f9581bcf7218cb9"
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("checkout", nargs="?", type=Path, default=ROOT / ".zig-cache/reference/llama.cpp")
+parser.add_argument("checkout", nargs="?", type=Path, default=ROOT / ".reference/llama.cpp")
 checkout = parser.parse_args().checkout.resolve()
 if subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip() != REVISION:
     parser.error("reference checkout must match the pinned revision")
