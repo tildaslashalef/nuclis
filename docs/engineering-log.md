@@ -140,6 +140,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-18 | `docs/research/` removed; its conclusion carried into the plan | 2026-09-27 |
 | TERM-13 | Exit keeps the transcript: the margin reset no longer homes the cursor onto the banner | 2026-09-27 |
 | APPS-18 | Shell completion answered by the binary (`nuclis completion fish\|bash\|zsh`, `__complete`); `make install` | 2026-09-27 |
+| MODL-32 | The Hub listing keeps its digests in ReleaseFast builds | 2026-09-29 |
 
 ## Context
 
@@ -5727,3 +5728,29 @@ is untested (fish 4.9 only here). Help rows and the table's summaries are
 still two texts (the table only checks that each flag is on its page).
 bash shows no descriptions. `owner/repo` after `model pull` completes only
 names the catalogue and registry know.
+
+## MODL-32 — The Hub listing keeps its digests in ReleaseFast builds (2026-09-29)
+
+**Outcome.** `huggingface/src/hub.zig` decoded each file's LFS SHA-256
+and git blob id by assigning `undefined` to the optional field and then
+writing through `&field.?`. Assigning `undefined` to an optional leaves
+its null flag undefined too; safe builds happened to read it as set,
+ReleaseFast read it as null, so every listed file lost its digest. The
+digests are now decoded into plain arrays and assigned whole. Found while
+MODL-30 added the `laya` decision catalogue entry, whose pull compares the
+Hub's weights digest with the pinned one: a ReleaseFast binary reported
+`CatalogMismatch` for the correct file.
+
+**Evidence.** `nuclis model pull laya` through a ReleaseFast binary:
+before, the weights' listed digest was null (`CatalogMismatch`); after,
+`891102d3…` and every file verified and reused. Debug and ReleaseSafe
+were right before and after. `zig build test` passes. A tree-wide search
+finds no other `= undefined` followed by `&x.?`. Scope of the old bug:
+`make build` defaults to ReleaseSafe, so installed binaries were not
+affected; ReleaseFast builds (the CPU gates' build mode) verified
+repository-id pulls by git blob rather than SHA-256.
+
+**Files.** `huggingface/src/hub.zig`, `docs/engineering-log.md`.
+
+**Remaining.** No unit test catches the pattern: it is undefined
+behaviour the Debug test build does not show.

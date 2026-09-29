@@ -164,16 +164,20 @@ pub fn parseCatalog(gpa: Allocator, repo: []const u8, bytes: []const u8) !Catalo
             if (lfs.sha256.len != 64 or !isHex(lfs.sha256)) return error.InvalidMetadata;
             if (f.size) |n| if (n != lfs.size) return error.InvalidMetadata;
             file.size = lfs.size;
-            file.sha256 = undefined;
-            _ = try std.fmt.hexToBytes(&file.sha256.?, lfs.sha256);
+            // Decode into a plain array: assigning `undefined` to the optional
+            // leaves its null flag undefined too, and ReleaseFast reads it as null.
+            var digest: [32]u8 = undefined;
+            _ = try std.fmt.hexToBytes(&digest, lfs.sha256);
+            file.sha256 = digest;
         } else {
             // A GGUF is always LFS on the Hub; a plain one is not a model.
             if (kind == .gguf) return error.MissingChecksum;
             const oid = f.blobId orelse return error.MissingChecksum;
             if (oid.len != 40 or !isHex(oid)) return error.InvalidMetadata;
             file.size = f.size orelse return error.InvalidMetadata;
-            file.git_oid = undefined;
-            _ = try std.fmt.hexToBytes(&file.git_oid.?, oid);
+            var blob: [20]u8 = undefined;
+            _ = try std.fmt.hexToBytes(&blob, oid);
+            file.git_oid = blob;
         }
         // The smallest valid containers: the GGUF magic, a safetensors
         // length prefix and `{}`.
