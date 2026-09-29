@@ -109,6 +109,17 @@
     "scripts/workloads.py",
     "scripts/reference-perplexity.py"
    ]
+  },
+  {
+   "name": "python",
+   "command": [
+    "make",
+    "lint-py"
+   ],
+   "paths": [
+    "scripts/**/*.py",
+    "pyproject.toml"
+   ]
   }
  ],
  "requires": [

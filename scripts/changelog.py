@@ -11,6 +11,7 @@ not in CI:
 
 Standard library only.
 """
+
 import argparse
 import datetime
 import pathlib
@@ -25,9 +26,7 @@ BREAKING_FOOTER_RE = re.compile(r"^BREAKING CHANGE: (.+)$", re.MULTILINE)
 
 
 def git(*args):
-    return subprocess.run(
-        ["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=True
-    ).stdout
+    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=True).stdout
 
 
 def previous_tag():

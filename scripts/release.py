@@ -15,11 +15,14 @@ a separate action.
 
 Standard library only.
 """
+
 import argparse
+import io
 import pathlib
 import re
 import subprocess
 import sys
+from typing import NoReturn
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / "CHANGELOG.md"
@@ -30,12 +33,10 @@ DEV_RE = re.compile(r"^(?P<x>\d+)\.(?P<y>\d+)\.(?P<z>\d+)-dev$")
 
 
 def git(*args):
-    return subprocess.run(
-        ["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=True
-    ).stdout
+    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=True).stdout
 
 
-def fail(message):
+def fail(message) -> NoReturn:
     print(f"release: {message}", file=sys.stderr)
     sys.exit(1)
 
@@ -69,7 +70,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     args = parser.parse_args()
-    sys.stdout.reconfigure(line_buffering=True)
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(line_buffering=True)
 
     current = manifest_version()
     if not DEV_RE.match(current):
@@ -82,9 +84,7 @@ def main():
         fail("the working tree is dirty; commit or stash first")
     if git("tag", "--list", tag).strip():
         fail(f"tag {tag} already exists; tags never move")
-    if CHANGELOG.exists() and re.search(
-        rf"^## \[{re.escape(tag)}\]", CHANGELOG.read_text(), re.MULTILINE
-    ):
+    if CHANGELOG.exists() and re.search(rf"^## \[{re.escape(tag)}\]", CHANGELOG.read_text(), re.MULTILINE):
         fail(f"CHANGELOG.md already has a {tag} section")
 
     print(f"release {release} ({tag}), then begin {following}")

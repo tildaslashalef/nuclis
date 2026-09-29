@@ -53,17 +53,24 @@ laya-multilingual`, the Metaspace tokenizer and the checkpoint's own
 special tokens, matching the package on both backends (gates
 `laya-multilingual-vocabulary`, `-cpu`, `-metal`); it reads decisions in
 other languages the root set cannot, though language identification
-stays unreliable on both. Next is REPO-21 (added 2026-09-29, user: the
-agent's playground generated in-tree, the Python scripts typed and
-formatted), then AGNT-18.
+stays unreliable on both.
+
+REPO-21 closed 2026-09-29 (engineering log): the agent's playground is
+generated under `.zig-cache/playground/` by `scripts/playground.py`
+(no more `~/Code/playground`), the Python scripts pass basedpyright
+`standard` and ruff (`make lint-py`, the `python` check).
+
+Next (user, 2026-09-29): KERN-19. AGNT-18 is deferred until the user
+picks it up.
 
 ## Order
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| REPO-21 | The agent's playground generated under `.zig-cache`, the Python scripts typed and formatted | one |
-| AGNT-18 | The agent's `decide` tool: LLM-written questions over tool-supplied states (the experiment) | one |
 | KERN-19 | A threaded CPU reference, bit-identical: the CPU tier ≤ 30 min | one |
+
+Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
+agent's `decide` tool (its design stays below).
 
 Decisions (user, 2026-09-27): the oracle is Laya's own Python package;
 the root checkpoint first (multilingual later, same family code); CPU
@@ -72,31 +79,10 @@ fan-out over many states, a styled terminal view, and `--json`; each
 `results[i]` a complete Jev response; LLM-written questions are the last
 unit, an experiment.
 
-## REPO-21 — A generated playground; the Python scripts typed and formatted
+## AGNT-18 — The agent's `decide` tool (experiment) — deferred
 
-Added 2026-09-29 (user), ahead of AGNT-18, whose measurement needs it.
-
-Base: `0942463`
-
-- `scripts/agent-eval.py` and `scripts/agent-demo.py` depend on
-  `~/Code/playground`, a repository only one machine has. A new
-  `scripts/playground.py` generates, on first use, a workspace under
-  `.zig-cache/playground/` holding only what the twelve tasks and the demo
-  touch (`src/shapes/`, `src/cli.py`, `tests/test_shapes.py`,
-  `docs/design.md`, seeded `docs/history.md`, `data/measurements.txt`,
-  `data/big.txt`, `scripts/exit7.sh`, a `Makefile` with `test` and
-  `reset`), commits it with `git init` as the reset baseline, and rebuilds
-  it when its version stamp changes; it never deletes a directory it did
-  not create. Nothing of it is committed to nuclis. `agent-eval` defaults
-  to it (`--workspace` still overrides), `agent-demo` clones it, `make
-  playground` prints its path. Pinned agent-eval tables were measured on
-  `~/Code/playground`; AGNT-18 re-measures its baseline on the new one.
-- Python: a root `pyproject.toml` (basedpyright `standard`, ruff
-  line-length 120), the 35 basedpyright errors and 20 ruff errors of
-  `scripts/` fixed, every script `ruff format`ted, `make lint-py` and a
-  `python` check in `gates.json` selected by `scripts/**`.
-
-## AGNT-18 — The agent's `decide` tool (experiment)
+Deferred 2026-09-29 (user) until picked up. When it is, its baseline is
+re-measured on the generated playground (REPO-21) before the tool lands.
 
 - A tool in `src/agent/tools/` calling the in-process `Decider` (loaded
   on first use, `decide.model`): one question (choice, score, or noul

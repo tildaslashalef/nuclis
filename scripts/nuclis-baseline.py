@@ -32,8 +32,11 @@ MARKER = "NUCLIS_BENCH_CONTENT"
 CLOSING = "\n```\n\nGive your review."
 # The reference harness's template marker per family (scripts/reference-baseline.py):
 # thinking off where the template can switch it, the default strength line for Muse.
-THINKING_OFF = {"qwen38": "<think>\n\n</think>", "gemma4": "<|channel>thought\n<channel|>",
-                "muse-glimmer": "Reasoning strength: high."}
+THINKING_OFF = {
+    "qwen38": "<think>\n\n</think>",
+    "gemma4": "<|channel>thought\n<channel|>",
+    "muse-glimmer": "Reasoning strength: high.",
+}
 
 
 def timestamp():
@@ -60,6 +63,8 @@ def sha256_file(path):
 def reference_corpus():
     """The synthetic Zig corpus, imported from the reference harness so the two never drift."""
     spec = importlib.util.spec_from_file_location("reference_baseline", HERE / "reference-baseline.py")
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot import {spec}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.corpus()
@@ -76,7 +81,10 @@ class Tokenizer:
         path.write_text(text)
         result = subprocess.run(
             [self.nuclis, "tokenize", "--model", self.model, "--raw", "--json", "--prompt-file", str(path)],
-            capture_output=True, text=True, timeout=600)
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
         if result.returncode != 0:
             raise RuntimeError("nuclis tokenize failed: " + result.stderr.strip())
         report = json.loads(result.stdout)
@@ -106,12 +114,17 @@ def build_prompt(size, construction, corpus, corpus_report, reference_ids, token
     prefix_len, suffix_len = len(construction["prefix_tokens"]), len(construction["suffix_tokens"])
     prefix_text, template_suffix = construction["template"].split(MARKER)
     suffix_text = CLOSING + template_suffix
-    if reference_ids[:prefix_len] != construction["prefix_tokens"] or reference_ids[-suffix_len:] != construction["suffix_tokens"]:
+    if (
+        reference_ids[:prefix_len] != construction["prefix_tokens"]
+        or reference_ids[-suffix_len:] != construction["suffix_tokens"]
+    ):
         raise RuntimeError(f"the {size}-token fixture does not start and end with the recorded template tokens")
     body = reference_ids[prefix_len:-suffix_len]
-    if corpus_report["ids"][:len(body)] != body:
-        raise RuntimeError(f"nuclis tokenizes the corpus differently from the reference within the first {len(body)} tokens")
-    text = prefix_text + corpus.encode()[:corpus_report["offsets"][len(body)]].decode() + suffix_text
+    if corpus_report["ids"][: len(body)] != body:
+        raise RuntimeError(
+            f"nuclis tokenizes the corpus differently from the reference within the first {len(body)} tokens"
+        )
+    text = prefix_text + corpus.encode()[: corpus_report["offsets"][len(body)]].decode() + suffix_text
     report = tokenize(text)
     path = prompt_dir / f"prompt-{size}.txt"
     path.write_text(text)
@@ -132,13 +145,33 @@ def memory_snapshot():
 
 def run_bench(args, prompt, repetitions, warmup):
     command = [
-        "/usr/bin/time", "-l", args.nuclis, "bench", "--model", args.model, "--backend", "metal",
-        "--prompt-tokens", str(ROOT / prompt["reference_fixture"]), "--max-tokens", str(args.generate),
-        "--ctx-size", str(args.ctx_size), "--kv", args.kv, "--repeat", str(repetitions),
-        "--warmup", str(warmup), "--json",
+        "/usr/bin/time",
+        "-l",
+        args.nuclis,
+        "bench",
+        "--model",
+        args.model,
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        str(ROOT / prompt["reference_fixture"]),
+        "--max-tokens",
+        str(args.generate),
+        "--ctx-size",
+        str(args.ctx_size),
+        "--kv",
+        args.kv,
+        "--repeat",
+        str(repetitions),
+        "--warmup",
+        str(warmup),
+        "--json",
     ]
-    print(f"Starting {args.label}: prompt={prompt['prompt_tokens']}, output={args.generate}, "
-          f"warmup={warmup}, repetitions={repetitions}", flush=True)
+    print(
+        f"Starting {args.label}: prompt={prompt['prompt_tokens']}, output={args.generate}, "
+        f"warmup={warmup}, repetitions={repetitions}",
+        flush=True,
+    )
     before = memory_snapshot()
     result = subprocess.run(command, capture_output=True, text=True, timeout=4 * 3600)
     after = memory_snapshot()
@@ -150,13 +183,19 @@ def run_bench(args, prompt, repetitions, warmup):
     if report["prompt_source"] != "tokens" or report["kv_precision"] != args.kv or report["context"] != args.ctx_size:
         raise RuntimeError("the report does not describe the requested run")
     for sample in report["samples"]:
-        if (sample["stop_reason"] != "token_budget" or sample["prompt_tokens"] != prompt["prompt_tokens"]
-                or sample["generated_tokens"] != args.generate):
+        if (
+            sample["stop_reason"] != "token_budget"
+            or sample["prompt_tokens"] != prompt["prompt_tokens"]
+            or sample["generated_tokens"] != args.generate
+        ):
             raise RuntimeError(f"a run did not meet the fixed workload: {sample}")
     measured = [s for s in report["samples"] if not s["warmup"]]
     for sample in measured:
-        print(f"  prefill={sample['prefill_tokens_per_second']:.2f} tok/s, decode={sample['decode_tokens_per_second']:.2f} tok/s, "
-              f"first token={sample['first_token_milliseconds'] / 1000:.1f}s", flush=True)
+        print(
+            f"  prefill={sample['prefill_tokens_per_second']:.2f} tok/s, decode={sample['decode_tokens_per_second']:.2f} tok/s, "
+            f"first token={sample['first_token_milliseconds'] / 1000:.1f}s",
+            flush=True,
+        )
     return {
         "prompt_tokens": prompt["prompt_tokens"],
         "command": command[2:],
@@ -173,11 +212,16 @@ def summarize(runs):
     for run in runs:
         measured = [s for s in run["report"]["samples"] if not s["warmup"]]
         row = {"prompt_tokens": run["prompt_tokens"], "samples": len(measured)}
-        for key, metric in (("prefill_tokens_per_second", "prefill_tokens_per_second"),
-                            ("decode_tokens_per_second", "decode_tokens_per_second"),
-                            ("first_token_milliseconds", "first_token_milliseconds")):
+        for key, metric in (
+            ("prefill_tokens_per_second", "prefill_tokens_per_second"),
+            ("decode_tokens_per_second", "decode_tokens_per_second"),
+            ("first_token_milliseconds", "first_token_milliseconds"),
+        ):
             values = [s[metric] for s in measured]
-            row[key] = {"mean": statistics.mean(values), "sample_stdev": statistics.stdev(values) if len(values) > 1 else None}
+            row[key] = {
+                "mean": statistics.mean(values),
+                "sample_stdev": statistics.stdev(values) if len(values) > 1 else None,
+            }
         row["session_bytes"] = run["report"]["session_bytes"]
         row["peak_resident_bytes"] = run["peak_resident_bytes"]
         rows.append(row)
@@ -186,9 +230,15 @@ def summarize(runs):
 
 def reference_revision(benchmarks, names):
     """The one reference revision the committed records were measured at."""
-    revisions = {json.loads((benchmarks / name).read_text())["reference_revision"] for name in names if (benchmarks / name).is_file()}
+    revisions = {
+        json.loads((benchmarks / name).read_text())["reference_revision"]
+        for name in names
+        if (benchmarks / name).is_file()
+    }
     if len(revisions) > 1:
-        raise RuntimeError("the reference records were measured at different revisions: " + ", ".join(sorted(revisions)))
+        raise RuntimeError(
+            "the reference records were measured at different revisions: " + ", ".join(sorted(revisions))
+        )
     return revisions.pop() if revisions else None
 
 
@@ -209,32 +259,77 @@ def reference_rows(benchmarks, names):
             entry = rows.setdefault(sample["prompt_tokens"], {"prefill": [], "decode": [], "source": name})
             entry["prefill"].append(timings["prompt_per_second"])
             entry["decode"].append(timings["predicted_per_second"])
-    return [{"prompt_tokens": size, "samples": len(e["prefill"]), "source": e["source"],
-             "prefill_tokens_per_second": statistics.mean(e["prefill"]),
-             "decode_tokens_per_second": statistics.mean(e["decode"])} for size, e in sorted(rows.items())]
+    return [
+        {
+            "prompt_tokens": size,
+            "samples": len(e["prefill"]),
+            "source": e["source"],
+            "prefill_tokens_per_second": statistics.mean(e["prefill"]),
+            "decode_tokens_per_second": statistics.mean(e["decode"]),
+        }
+        for size, e in sorted(rows.items())
+    ]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--nuclis", default=str(ROOT / "zig-out/bin/nuclis"), help="freshly built binary (default: ./zig-out/bin/nuclis)")
-    parser.add_argument("--model", default=os.path.join(os.environ.get("NUCLIS_HOME", os.path.expanduser("~/.nuclis")), "models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf"))
-    parser.add_argument("--fixtures", default=str(ROOT / "tests/fixtures"), type=pathlib.Path, help="directory holding the reference run fixtures")
+    parser.add_argument(
+        "--nuclis",
+        default=str(ROOT / "zig-out/bin/nuclis"),
+        help="freshly built binary (default: ./zig-out/bin/nuclis)",
+    )
+    parser.add_argument(
+        "--model",
+        default=os.path.join(
+            os.environ.get("NUCLIS_HOME", os.path.expanduser("~/.nuclis")),
+            "models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        ),
+    )
+    parser.add_argument(
+        "--fixtures",
+        default=str(ROOT / "tests/fixtures"),
+        type=pathlib.Path,
+        help="directory holding the reference run fixtures",
+    )
     parser.add_argument("--prompt-dir", default=str(ROOT / ".zig-cache/prompts/reference"), type=pathlib.Path)
-    parser.add_argument("--output", type=pathlib.Path, help="record path (default docs/benchmarks/nuclis-<date>.json); never overwritten")
+    parser.add_argument(
+        "--output",
+        type=pathlib.Path,
+        help="record path (default docs/benchmarks/nuclis-<date>.json); never overwritten",
+    )
     parser.add_argument("--prompt-lengths", default="512,4096,16384,32639")
     parser.add_argument("--generate", type=int, default=128)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--boundary-repetitions", type=int, default=1, help="repetitions for a prompt that fills the context with the output (the reference took one)")
+    parser.add_argument(
+        "--boundary-repetitions",
+        type=int,
+        default=1,
+        help="repetitions for a prompt that fills the context with the output (the reference took one)",
+    )
     parser.add_argument("--ctx-size", type=int, default=32768)
     parser.add_argument("--kv", default="f16", choices=("f16", "f32"))
-    parser.add_argument("--label", default="warm", choices=("warm", "cold"), help="cold: one process after `sudo purge`; pass --purge to run it here")
-    parser.add_argument("--purge", action="store_true", help="run `sudo purge` before the first run (asks for a password)")
+    parser.add_argument(
+        "--label",
+        default="warm",
+        choices=("warm", "cold"),
+        help="cold: one process after `sudo purge`; pass --purge to run it here",
+    )
+    parser.add_argument(
+        "--purge", action="store_true", help="run `sudo purge` before the first run (asks for a password)"
+    )
     parser.add_argument("--model-sha256", help="skip hashing the model (16 GB) when the digest is known")
     parser.add_argument("--prompts-only", action="store_true", help="build and verify the prompts, run nothing")
-    parser.add_argument("--run", default="run-2026-09-06", help="the reference run directory under --fixtures holding prompt-construction.json and the token arrays")
-    parser.add_argument("--reference-records", default="reference-2026-09-06.json,reference-boundary-2026-09-06.json",
-                        help="comma-separated record names under docs/benchmarks whose accepted samples are the reference rows")
+    parser.add_argument(
+        "--run",
+        default="run-2026-09-06",
+        help="the reference run directory under --fixtures holding prompt-construction.json and the token arrays",
+    )
+    parser.add_argument(
+        "--reference-records",
+        default="reference-2026-09-06.json,reference-boundary-2026-09-06.json",
+        help="comma-separated record names under docs/benchmarks whose accepted samples are the reference rows",
+    )
     args = parser.parse_args()
     try:
         lengths = [int(n) for n in args.prompt_lengths.split(",")]
@@ -250,7 +345,12 @@ def main():
         parser.error(f"{args.nuclis} is not a file; build first (make metal)")
     if not pathlib.Path(args.model).is_file():
         parser.error(f"model not found: {args.model}")
-    output = args.output or ROOT / "docs/benchmarks" / f"nuclis-{datetime.date.today().isoformat()}{'-cold' if args.label == 'cold' else ''}.json"
+    output = (
+        args.output
+        or ROOT
+        / "docs/benchmarks"
+        / f"nuclis-{datetime.date.today().isoformat()}{'-cold' if args.label == 'cold' else ''}.json"
+    )
     if output.exists() and not args.prompts_only:
         parser.error(f"{output} exists; choose another --output")
 
@@ -275,9 +375,12 @@ def main():
             prompt["reference_fixture"] = source
             prompt["reference_fixture_sha256"] = sha256_file(ROOT / source)
             prompts.append(prompt)
-            print(f"prompt {size}: run input {source}; corpus tokens match the reference through token {prompt['corpus_tokens']}; "
-                  f"text {prompt['text_file']} ({prompt['text_bytes']} bytes) tokenizes to {prompt['text_tokens']}"
-                  f"{'' if prompt['text_ids_equal_reference'] else ' (IDs differ at the cut)'}", flush=True)
+            print(
+                f"prompt {size}: run input {source}; corpus tokens match the reference through token {prompt['corpus_tokens']}; "
+                f"text {prompt['text_file']} ({prompt['text_bytes']} bytes) tokenizes to {prompt['text_tokens']}"
+                f"{'' if prompt['text_ids_equal_reference'] else ' (IDs differ at the cut)'}",
+                flush=True,
+            )
     if args.prompts_only:
         return
 
@@ -287,7 +390,10 @@ def main():
     version = capture(args.nuclis, "--version")
     runs = []
     for prompt in prompts:
-        boundary = prompt["prompt_tokens"] + args.generate == args.ctx_size - 1 or prompt["prompt_tokens"] + args.generate == args.ctx_size
+        boundary = (
+            prompt["prompt_tokens"] + args.generate == args.ctx_size - 1
+            or prompt["prompt_tokens"] + args.generate == args.ctx_size
+        )
         repetitions = args.boundary_repetitions if boundary else args.repetitions
         runs.append(run_bench(args, prompt, repetitions, args.warmup))
     model_sha256 = args.model_sha256 or sha256_file(args.model)
@@ -299,10 +405,10 @@ def main():
         "started_at": started,
         "finished_at": timestamp(),
         "methodology": "See ../reference/bench.md#acceptance-runs and ../reference/reference-baseline.md. Each run feeds the reference "
-                       "harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a "
-                       "fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident "
-                       "memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident "
-                       "model pages).",
+        "harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a "
+        "fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident "
+        "memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident "
+        "model pages).",
         "nuclis_version": version,
         "git_revision": capture("git", "-C", str(ROOT), "rev-parse", "HEAD"),
         "git_dirty": bool(capture("git", "-C", str(ROOT), "status", "--porcelain")),
@@ -328,16 +434,23 @@ def main():
         "prompts": prompts,
         "summary": summarize(runs),
         "family": family,
-        "reference": {"revision": reference_revision(ROOT / "docs/benchmarks", args.reference_records.split(",")), "run": args.run, "rows": reference_rows(ROOT / "docs/benchmarks", args.reference_records.split(","))},
+        "reference": {
+            "revision": reference_revision(ROOT / "docs/benchmarks", args.reference_records.split(",")),
+            "run": args.run,
+            "rows": reference_rows(ROOT / "docs/benchmarks", args.reference_records.split(",")),
+        },
         "runs": runs,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(record, indent=2) + "\n")
     print("Completed: " + str(output), flush=True)
     for row in record["summary"]:
-        print(f"  {row['prompt_tokens']:>6} tokens: prefill {row['prefill_tokens_per_second']['mean']:.2f} tok/s, "
-              f"decode {row['decode_tokens_per_second']['mean']:.2f} tok/s, session {row['session_bytes'] / 2**20:.0f} MiB, "
-              f"peak RSS {(row['peak_resident_bytes'] or 0) / 2**30:.2f} GiB", flush=True)
+        print(
+            f"  {row['prompt_tokens']:>6} tokens: prefill {row['prefill_tokens_per_second']['mean']:.2f} tok/s, "
+            f"decode {row['decode_tokens_per_second']['mean']:.2f} tok/s, session {row['session_bytes'] / 2**20:.0f} MiB, "
+            f"peak RSS {(row['peak_resident_bytes'] or 0) / 2**30:.2f} GiB",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

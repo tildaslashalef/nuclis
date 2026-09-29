@@ -43,6 +43,7 @@ The session is left running unless `--stop` is given; attach to it with
 `tmux -L nuclis attach -t <session>`. See docs/development.md § The agent's
 transcript.
 """
+
 import argparse
 import fcntl
 import json
@@ -58,12 +59,13 @@ import termios
 import time
 import tty
 import unittest
+from typing import Any
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT_DIR = ROOT / '.zig-cache' / 'tui'
-SOCKET = 'nuclis'
-DEFAULT_COMMAND = './zig-out/bin/nuclis agent'
+OUT_DIR = ROOT / ".zig-cache" / "tui"
+SOCKET = "nuclis"
+DEFAULT_COMMAND = "./zig-out/bin/nuclis agent"
 
 TMUX_CONF = """
 set -g default-terminal "tmux-256color"
@@ -79,24 +81,24 @@ set -g set-clipboard on
 
 # ---- the SGR tagger (pure; covered by --self-test) --------------------------
 
-BASIC = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white']
-SGR = re.compile(r'\x1b\[([0-9;:]*)m')
-OTHER_ESCAPE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])')
+BASIC = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]
+SGR = re.compile(r"\x1b\[([0-9;:]*)m")
+OTHER_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 
 
 def _color(params, i):
     """Parses the colour after a 38/48 at params[i]; returns (name, consumed)."""
-    if i < len(params) and params[i] == '5' and i + 1 < len(params):
-        return 'c%s' % params[i + 1], 2
-    if i < len(params) and params[i] == '2' and i + 3 < len(params):
-        r, g, b = (int(x or 0) for x in params[i + 1:i + 4])
-        return '#%02x%02x%02x' % (r, g, b), 4
+    if i < len(params) and params[i] == "5" and i + 1 < len(params):
+        return "c%s" % params[i + 1], 2
+    if i < len(params) and params[i] == "2" and i + 3 < len(params):
+        r, g, b = (int(x or 0) for x in params[i + 1 : i + 4])
+        return "#%02x%02x%02x" % (r, g, b), 4
     return None, 0
 
 
 def apply_sgr(state, params):
     """Folds one SGR parameter list into `state` (a dict) and returns it."""
-    p = [x for x in params.replace(':', ';').split(';')] if params else ['0']
+    p = [x for x in params.replace(":", ";").split(";")] if params else ["0"]
     i = 0
     while i < len(p):
         n = int(p[i] or 0)
@@ -104,41 +106,41 @@ def apply_sgr(state, params):
         if n == 0:
             state.clear()
         elif n in (1, 2, 3, 4, 7, 9):
-            state[{1: 'bold', 2: 'dim', 3: 'italic', 4: 'underline', 7: 'reverse', 9: 'strike'}[n]] = True
+            state[{1: "bold", 2: "dim", 3: "italic", 4: "underline", 7: "reverse", 9: "strike"}[n]] = True
         elif n == 22:
-            state.pop('bold', None)
-            state.pop('dim', None)
+            state.pop("bold", None)
+            state.pop("dim", None)
         elif n in (23, 24, 27, 29):
-            state.pop({23: 'italic', 24: 'underline', 27: 'reverse', 29: 'strike'}[n], None)
+            state.pop({23: "italic", 24: "underline", 27: "reverse", 29: "strike"}[n], None)
         elif 30 <= n <= 37:
-            state['fg'] = BASIC[n - 30]
+            state["fg"] = BASIC[n - 30]
         elif 90 <= n <= 97:
-            state['fg'] = 'bright-' + BASIC[n - 90]
+            state["fg"] = "bright-" + BASIC[n - 90]
         elif n == 39:
-            state.pop('fg', None)
+            state.pop("fg", None)
         elif 40 <= n <= 47:
-            state['bg'] = BASIC[n - 40]
+            state["bg"] = BASIC[n - 40]
         elif 100 <= n <= 107:
-            state['bg'] = 'bright-' + BASIC[n - 100]
+            state["bg"] = "bright-" + BASIC[n - 100]
         elif n == 49:
-            state.pop('bg', None)
+            state.pop("bg", None)
         elif n in (38, 48):
             name, used = _color(p, i)
             if name:
-                state['fg' if n == 38 else 'bg'] = name
+                state["fg" if n == 38 else "bg"] = name
             i += used
     return state
 
 
 def tag_of(state):
     parts = []
-    for key in ('fg', 'bg'):
+    for key in ("fg", "bg"):
         if key in state:
-            parts.append('%s=%s' % (key, state[key]))
-    for flag in ('bold', 'dim', 'italic', 'underline', 'reverse', 'strike'):
+            parts.append("%s=%s" % (key, state[key]))
+    for flag in ("bold", "dim", "italic", "underline", "reverse", "strike"):
         if state.get(flag):
             parts.append(flag)
-    return '[' + ' '.join(parts) + ']' if parts else ''
+    return "[" + " ".join(parts) + "]" if parts else ""
 
 
 def tagged(ansi):
@@ -147,10 +149,10 @@ def tagged(ansi):
     text, so an unstyled line is unchanged."""
     out = []
     state = {}
-    open_tag = ''
-    pending = ''
+    open_tag = ""
+    pending = ""
     pos = 0
-    for line in ansi.split('\n'):
+    for line in ansi.split("\n"):
         pos = 0
         while pos < len(line):
             m = SGR.match(line, pos)
@@ -165,25 +167,26 @@ def tagged(ansi):
                 continue
             if pending != open_tag:
                 if open_tag:
-                    out.append('[/]')
+                    out.append("[/]")
                 if pending:
                     out.append(pending)
                 open_tag = pending
             out.append(line[pos])
             pos += 1
         if open_tag:
-            out.append('[/]')
-            open_tag = ''
+            out.append("[/]")
+            open_tag = ""
         pending = tag_of(state)
-        out.append('\n')
-    return ''.join(out).rstrip('\n') + '\n'
+        out.append("\n")
+    return "".join(out).rstrip("\n") + "\n"
 
 
 def plain(ansi):
-    return OTHER_ESCAPE.sub('', SGR.sub('', ansi))
+    return OTHER_ESCAPE.sub("", SGR.sub("", ansi))
 
 
 # ---- tmux --------------------------------------------------------------------
+
 
 class Session:
     def __init__(self, name, size, command, cwd, keep_conf=False, env=()):
@@ -192,58 +195,73 @@ class Session:
         self.command = command
         self.cwd = cwd
         self.env = list(env)
-        conf = tempfile.NamedTemporaryFile('w', suffix='.tmux.conf', delete=False)
+        conf = tempfile.NamedTemporaryFile("w", suffix=".tmux.conf", delete=False)
         conf.write(TMUX_CONF)
         conf.close()
         self.conf = conf.name
 
     def tmux(self, *args, check=True, capture=False):
-        cmd = ['tmux', '-L', SOCKET, '-f', self.conf] + list(args)
+        cmd = ["tmux", "-L", SOCKET, "-f", self.conf] + list(args)
         return subprocess.run(cmd, check=check, capture_output=capture, text=True)
 
     def start(self):
-        self.tmux('kill-session', '-t', self.name, check=False, capture=True)
-        env = ['-e', 'COLORTERM=truecolor', '-e', 'NUCLIS_NO_NOTIFY=1']
+        self.tmux("kill-session", "-t", self.name, check=False, capture=True)
+        env = ["-e", "COLORTERM=truecolor", "-e", "NUCLIS_NO_NOTIFY=1"]
         for pair in self.env:
-            env += ['-e', pair]
-        self.tmux('new-session', '-d', '-s', self.name, '-x', str(self.columns), '-y', str(self.rows),
-                  '-c', str(self.cwd), *env, self.command)
+            env += ["-e", pair]
+        self.tmux(
+            "new-session",
+            "-d",
+            "-s",
+            self.name,
+            "-x",
+            str(self.columns),
+            "-y",
+            str(self.rows),
+            "-c",
+            str(self.cwd),
+            *env,
+            self.command,
+        )
         # The pane must be exactly the requested size: the status bar is off
         # and no client is attached, so the window keeps its creation size.
-        info = self.tmux('display-message', '-p', '-t', self.name, '#{pane_width}x#{pane_height}', capture=True).stdout.strip()
-        if info != '%dx%d' % (self.columns, self.rows):
-            print('warning: pane is %s, wanted %dx%d' % (info, self.columns, self.rows), file=sys.stderr)
+        info = self.tmux(
+            "display-message", "-p", "-t", self.name, "#{pane_width}x#{pane_height}", capture=True
+        ).stdout.strip()
+        if info != "%dx%d" % (self.columns, self.rows):
+            print("warning: pane is %s, wanted %dx%d" % (info, self.columns, self.rows), file=sys.stderr)
 
     def send_text(self, text):
-        self.tmux('send-keys', '-t', self.name, '-l', text)
+        self.tmux("send-keys", "-t", self.name, "-l", text)
 
     def send_key(self, key):
-        self.tmux('send-keys', '-t', self.name, key)
+        self.tmux("send-keys", "-t", self.name, key)
 
     def paste(self, text):
         """A bracketed paste, as a drop or Cmd-V arrives: tmux wraps the
         buffer in the paste markers because the agent requested them."""
-        self.tmux('set-buffer', '-b', 'nuclis-paste', text)
-        self.tmux('paste-buffer', '-p', '-b', 'nuclis-paste', '-t', self.name)
+        self.tmux("set-buffer", "-b", "nuclis-paste", text)
+        self.tmux("paste-buffer", "-p", "-b", "nuclis-paste", "-t", self.name)
 
     def screen(self):
-        return self.tmux('capture-pane', '-t', self.name, '-p', '-e', capture=True).stdout
+        return self.tmux("capture-pane", "-t", self.name, "-p", "-e", capture=True).stdout
 
     def buffer(self):
         """tmux's newest paste buffer: with `set-clipboard on`, an OSC 52
         from the pane lands here, so a Ctrl-X can be read back as text."""
-        r = self.tmux('show-buffer', check=False, capture=True)
-        return r.stdout if r.returncode == 0 else ''
+        r = self.tmux("show-buffer", check=False, capture=True)
+        return r.stdout if r.returncode == 0 else ""
 
     def alive(self):
-        return self.tmux('has-session', '-t', self.name, check=False, capture=True).returncode == 0
+        return self.tmux("has-session", "-t", self.name, check=False, capture=True).returncode == 0
 
     def stop(self):
-        self.tmux('kill-session', '-t', self.name, check=False, capture=True)
+        self.tmux("kill-session", "-t", self.name, check=False, capture=True)
         os.unlink(self.conf)
 
 
 # ---- Ghostty ----------------------------------------------------------------
+
 
 class Ghostty:
     """One Ghostty window attached to the session, photographed on capture."""
@@ -253,24 +271,41 @@ class Ghostty:
         self.window_id = None
 
     def open(self):
-        subprocess.run(['open', '-na', 'Ghostty', '--args',
-                        '--window-width=%d' % self.session.columns, '--window-height=%d' % self.session.rows,
-                        '-e', 'tmux', '-L', SOCKET, 'attach', '-t', self.session.name], check=True)
+        subprocess.run(
+            [
+                "open",
+                "-na",
+                "Ghostty",
+                "--args",
+                "--window-width=%d" % self.session.columns,
+                "--window-height=%d" % self.session.rows,
+                "-e",
+                "tmux",
+                "-L",
+                SOCKET,
+                "attach",
+                "-t",
+                self.session.name,
+            ],
+            check=True,
+        )
         deadline = time.time() + 10
         while time.time() < deadline and self.window_id is None:
             time.sleep(0.5)
             self.window_id = self.find_window()
         if self.window_id is None:
-            print('ghostty: window not found; PNG captures skipped', file=sys.stderr)
+            print("ghostty: window not found; PNG captures skipped", file=sys.stderr)
 
     def find_window(self):
-        script = ('ObjC.import("CoreGraphics");'
-                  'const list = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0));'
-                  'const w = list.filter(w => w.kCGWindowOwnerName === "Ghostty" && (w.kCGWindowName || "").includes("%s"));'
-                  'JSON.stringify(w.map(w => w.kCGWindowNumber));' % self.session.name)
-        r = subprocess.run(['osascript', '-l', 'JavaScript', '-e', script], capture_output=True, text=True)
+        script = (
+            'ObjC.import("CoreGraphics");'
+            "const list = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0));"
+            'const w = list.filter(w => w.kCGWindowOwnerName === "Ghostty" && (w.kCGWindowName || "").includes("%s"));'
+            "JSON.stringify(w.map(w => w.kCGWindowNumber));" % self.session.name
+        )
+        r = subprocess.run(["osascript", "-l", "JavaScript", "-e", script], capture_output=True, text=True)
         try:
-            ids = json.loads(r.stdout.strip() or '[]')
+            ids = json.loads(r.stdout.strip() or "[]")
         except json.JSONDecodeError:
             return None
         return ids[0] if ids else None
@@ -278,9 +313,14 @@ class Ghostty:
     def shot(self, path):
         if self.window_id is None:
             return False
-        r = subprocess.run(['screencapture', '-x', '-o', '-l', str(self.window_id), str(path)], capture_output=True, text=True)
+        r = subprocess.run(
+            ["screencapture", "-x", "-o", "-l", str(self.window_id), str(path)], capture_output=True, text=True
+        )
         if r.returncode != 0 or not path.exists():
-            print('ghostty: screencapture failed (%s); grant screen recording to the terminal' % r.stderr.strip(), file=sys.stderr)
+            print(
+                "ghostty: screencapture failed (%s); grant screen recording to the terminal" % r.stderr.strip(),
+                file=sys.stderr,
+            )
             self.window_id = None
             return False
         return True
@@ -290,18 +330,25 @@ class Ghostty:
 
 # tmux key names to the bytes a terminal sends for them.
 KEY_BYTES = {
-    'Enter': b'\r', 'Tab': b'\t', 'Escape': b'\x1b', 'BSpace': b'\x7f', 'Space': b' ',
-    'Up': b'\x1b[A', 'Down': b'\x1b[B', 'Right': b'\x1b[C', 'Left': b'\x1b[D',
-    'M-Enter': b'\x1b\r',
+    "Enter": b"\r",
+    "Tab": b"\t",
+    "Escape": b"\x1b",
+    "BSpace": b"\x7f",
+    "Space": b" ",
+    "Up": b"\x1b[A",
+    "Down": b"\x1b[B",
+    "Right": b"\x1b[C",
+    "Left": b"\x1b[D",
+    "M-Enter": b"\x1b\r",
 }
 
 
 def key_bytes(name):
     if name in KEY_BYTES:
         return KEY_BYTES[name]
-    if len(name) == 3 and name.startswith('C-'):
-        return bytes([ord(name[2].lower()) & 0x1f])
-    raise SystemExit('unknown key for --direct: %s' % name)
+    if len(name) == 3 and name.startswith("C-"):
+        return bytes([ord(name[2].lower()) & 0x1F])
+    raise SystemExit("unknown key for --direct: %s" % name)
 
 
 def relay(fifo, record, argv):
@@ -314,7 +361,7 @@ def relay(fifo, record, argv):
         os.execvp(argv[0], argv)
 
     def winch(*_):
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, fcntl.ioctl(0, termios.TIOCGWINSZ, b'\0' * 8))
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))
 
     signal.signal(signal.SIGWINCH, winch)
     winch()
@@ -323,7 +370,7 @@ def relay(fifo, record, argv):
     # Read-write keeps a writer open, so an idle FIFO blocks rather than
     # reporting end of file on every poll.
     steps = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
-    with open(record, 'ab', buffering=0) as log:
+    with open(record, "ab", buffering=0) as log:
         while True:
             try:
                 ready, _, _ = select.select([0, fd, steps], [], [])
@@ -333,7 +380,7 @@ def relay(fifo, record, argv):
                 try:
                     data = os.read(fd, 65536)
                 except OSError:
-                    data = b''
+                    data = b""
                 if not data:
                     break
                 os.write(1, data)
@@ -358,29 +405,49 @@ class Direct:
         self.command = command
         self.cwd = cwd
         self.env = list(env)
-        self.fifo = Path(tempfile.gettempdir()) / ('nuclis-shot-%s.fifo' % name)
-        self.record = out_dir / (name + '.stream')
-        self.pidfile = Path(tempfile.gettempdir()) / ('nuclis-shot-%s.pid' % name)
+        self.fifo = Path(tempfile.gettempdir()) / ("nuclis-shot-%s.fifo" % name)
+        self.record = out_dir / (name + ".stream")
+        self.pidfile = Path(tempfile.gettempdir()) / ("nuclis-shot-%s.pid" % name)
         self.window = None
 
     def start(self):
         self.stop()
         os.mkfifo(self.fifo)
-        self.record.write_bytes(b'')
-        env = ['COLORTERM=truecolor', 'NUCLIS_NO_NOTIFY=1'] + self.env
-        inner = 'echo $$ > %s; cd %s && exec env %s python3 %s --relay %s %s -- %s' % (
-            self.pidfile, _q(str(self.cwd)), ' '.join(_q(e) for e in env), _q(str(Path(__file__).resolve())),
-            _q(str(self.fifo)), _q(str(self.record)), self.command)
-        subprocess.run(['open', '-na', 'Ghostty', '--args', '--title=%s' % self.name,
-                        '--window-width=%d' % self.columns, '--window-height=%d' % self.rows,
-                        '--confirm-close-surface=false', '-e', '/bin/sh', '-c', inner], check=True)
+        self.record.write_bytes(b"")
+        env = ["COLORTERM=truecolor", "NUCLIS_NO_NOTIFY=1"] + self.env
+        inner = "echo $$ > %s; cd %s && exec env %s python3 %s --relay %s %s -- %s" % (
+            self.pidfile,
+            _q(str(self.cwd)),
+            " ".join(_q(e) for e in env),
+            _q(str(Path(__file__).resolve())),
+            _q(str(self.fifo)),
+            _q(str(self.record)),
+            self.command,
+        )
+        subprocess.run(
+            [
+                "open",
+                "-na",
+                "Ghostty",
+                "--args",
+                "--title=%s" % self.name,
+                "--window-width=%d" % self.columns,
+                "--window-height=%d" % self.rows,
+                "--confirm-close-surface=false",
+                "-e",
+                "/bin/sh",
+                "-c",
+                inner,
+            ],
+            check=True,
+        )
         self.window = Ghostty(self)
         deadline = time.time() + 10
         while time.time() < deadline and self.window.window_id is None:
             time.sleep(0.5)
             self.window.window_id = self.window.find_window()
         if self.window.window_id is None:
-            print('ghostty: window not found; PNG captures skipped', file=sys.stderr)
+            print("ghostty: window not found; PNG captures skipped", file=sys.stderr)
 
     def write(self, data):
         fd = os.open(self.fifo, os.O_WRONLY)
@@ -396,20 +463,21 @@ class Direct:
         self.write(key_bytes(key))
 
     def paste(self, text):
-        self.write(b'\x1b[200~' + text.encode() + b'\x1b[201~')
+        self.write(b"\x1b[200~" + text.encode() + b"\x1b[201~")
 
     def stream(self):
-        return self.record.read_bytes() if self.record.exists() else b''
+        return self.record.read_bytes() if self.record.exists() else b""
 
     def screen(self):
-        return self.stream().decode('utf-8', 'replace')
+        return self.stream().decode("utf-8", "replace")
 
     def buffer(self):
-        return ''
+        return ""
 
     def capture(self, out_dir, name):
-        (out_dir / (name + '.stream')).write_bytes(self.stream())
-        self.window.shot(out_dir / (name + '.png'))
+        (out_dir / (name + ".stream")).write_bytes(self.stream())
+        if self.window is not None:
+            self.window.shot(out_dir / (name + ".png"))
 
     def stop(self):
         if self.pidfile.exists():
@@ -428,10 +496,11 @@ def _q(text):
 
 # ---- the run ----------------------------------------------------------------
 
+
 def write_capture(out_dir, name, ansi):
-    (out_dir / (name + '.ansi')).write_text(ansi)
-    (out_dir / (name + '.txt')).write_text(plain(ansi))
-    (out_dir / (name + '.tagged.txt')).write_text(tagged(ansi))
+    (out_dir / (name + ".ansi")).write_text(ansi)
+    (out_dir / (name + ".txt")).write_text(plain(ansi))
+    (out_dir / (name + ".tagged.txt")).write_text(tagged(ansi))
 
 
 def burst(session, out_dir, name, seconds, hz):
@@ -446,16 +515,23 @@ def burst(session, out_dir, name, seconds, hz):
         frames.append((time.perf_counter() - start, session.screen()))
         next_at += interval
     changed = [i for i in range(1, len(frames)) if frames[i][1] != frames[i - 1][1]]
-    for i in ([0] + changed):
-        write_capture(out_dir, '%s-%02d' % (name, i), frames[i][1])
+    for i in [0] + changed:
+        write_capture(out_dir, "%s-%02d" % (name, i), frames[i][1])
     gaps = [frames[changed[k]][0] - frames[changed[k - 1]][0] for k in range(1, len(changed))]
     mean = sum(gaps) / len(gaps) if gaps else None
-    report = {'name': name, 'frames': len(frames), 'seconds': seconds, 'hz': hz,
-              'changed': [round(frames[i][0], 3) for i in changed],
-              'mean_interval_s': round(mean, 3) if mean is not None else None}
-    (out_dir / (name + '.burst.json')).write_text(json.dumps(report, indent=1) + '\n')
-    print('burst %s: %d frames, %d changed, mean interval %s' % (
-        name, len(frames), len(changed), ('%.3fs' % mean) if mean is not None else 'n/a'))
+    report = {
+        "name": name,
+        "frames": len(frames),
+        "seconds": seconds,
+        "hz": hz,
+        "changed": [round(frames[i][0], 3) for i in changed],
+        "mean_interval_s": round(mean, 3) if mean is not None else None,
+    }
+    (out_dir / (name + ".burst.json")).write_text(json.dumps(report, indent=1) + "\n")
+    print(
+        "burst %s: %d frames, %d changed, mean interval %s"
+        % (name, len(frames), len(changed), ("%.3fs" % mean) if mean is not None else "n/a")
+    )
 
 
 def wait_for(session, text, seconds):
@@ -464,38 +540,38 @@ def wait_for(session, text, seconds):
         if text in plain(session.screen()):
             return True
         time.sleep(0.2)
-    print('until: %r not seen within %ss' % (text, seconds), file=sys.stderr)
+    print("until: %r not seen within %ss" % (text, seconds), file=sys.stderr)
     return False
 
 
-def parse_step(arg):
-    if arg == 'enter':
-        return ('key', 'Enter')
-    if '=' not in arg:
-        raise SystemExit('bad step: %s' % arg)
-    kind, value = arg.split('=', 1)
-    if kind in ('keys', 'key', 'capture', 'buffer', 'paste'):
+def parse_step(arg) -> tuple[str, Any]:
+    if arg == "enter":
+        return ("key", "Enter")
+    if "=" not in arg:
+        raise SystemExit("bad step: %s" % arg)
+    kind, value = arg.split("=", 1)
+    if kind in ("keys", "key", "capture", "buffer", "paste"):
         return (kind, value)
-    if kind == 'wait':
+    if kind == "wait":
         return (kind, float(value))
-    if kind == 'burst':
-        name, seconds, hz = value.split(',')
+    if kind == "burst":
+        name, seconds, hz = value.split(",")
         return (kind, (name, float(seconds), float(hz)))
-    if kind == 'until':
-        text, seconds = value.rsplit(',', 1)
+    if kind == "until":
+        text, seconds = value.rsplit(",", 1)
         return (kind, (text, float(seconds)))
-    raise SystemExit('bad step: %s' % arg)
+    raise SystemExit("bad step: %s" % arg)
 
 
 def run(args):
     out_dir = ROOT / args.out
     out_dir.mkdir(parents=True, exist_ok=True)
-    columns, rows = (int(x) for x in args.size.lower().split('x'))
+    columns, rows = (int(x) for x in args.size.lower().split("x"))
     command = args.command
-    if command.startswith('./'):
+    if command.startswith("./"):
         # A repository-relative binary, whatever --cwd the app runs in.
-        head, _, tail = command.partition(' ')
-        command = str(ROOT / head[2:]) + (' ' + tail if tail else '')
+        head, _, tail = command.partition(" ")
+        command = str(ROOT / head[2:]) + (" " + tail if tail else "")
     if args.direct:
         session = Direct(args.session, (columns, rows), command, ROOT / args.cwd, out_dir, env=args.env)
     else:
@@ -507,91 +583,98 @@ def run(args):
     ok = True
     for step in [parse_step(s) for s in args.steps]:
         kind, value = step
-        if kind == 'keys':
+        if kind == "keys":
             session.send_text(value)
-        elif kind == 'key':
+        elif kind == "key":
             session.send_key(value)
-        elif kind == 'paste':
+        elif kind == "paste":
             session.paste(value)
-        elif kind == 'wait':
+        elif kind == "wait":
             time.sleep(value)
-        elif kind == 'capture' and args.direct:
+        elif kind == "capture" and isinstance(session, Direct):
             session.capture(out_dir, value)
-        elif kind == 'capture':
+        elif kind == "capture":
             write_capture(out_dir, value, session.screen())
             if ghostty:
-                ghostty.shot(out_dir / (value + '.png'))
-            print('capture %s' % value)
-        elif kind == 'burst':
+                ghostty.shot(out_dir / (value + ".png"))
+            print("capture %s" % value)
+        elif kind == "burst":
             burst(session, out_dir, *value)
-        elif kind == 'until':
+        elif kind == "until":
             ok = wait_for(session, *value) and ok
-        elif kind == 'buffer':
-            (out_dir / (value + '.buffer.txt')).write_text(session.buffer())
-            print('buffer %s' % value)
+        elif kind == "buffer":
+            (out_dir / (value + ".buffer.txt")).write_text(session.buffer())
+            print("buffer %s" % value)
     if args.stop:
         session.stop()
     elif args.direct:
-        print('window left open: close it, or rerun with --stop')
+        print("window left open: close it, or rerun with --stop")
     else:
-        print('session left running: tmux -L %s attach -t %s' % (SOCKET, args.session))
+        print("session left running: tmux -L %s attach -t %s" % (SOCKET, args.session))
     return 0 if ok else 1
 
 
 # ---- self-test ----------------------------------------------------------------
 
+
 class TaggerTest(unittest.TestCase):
     def test_truecolor_and_reset(self):
-        self.assertEqual(tagged('a\x1b[38;2;255;0;0mred\x1b[0mb\n'), 'a[fg=#ff0000]red[/]b\n')
+        self.assertEqual(tagged("a\x1b[38;2;255;0;0mred\x1b[0mb\n"), "a[fg=#ff0000]red[/]b\n")
 
     def test_bold_dim_and_background(self):
-        self.assertEqual(tagged('\x1b[1m\x1b[48;5;236mx\x1b[22my\x1b[m\n'), '[bg=c236 bold]x[/][bg=c236]y[/]\n')
+        self.assertEqual(tagged("\x1b[1m\x1b[48;5;236mx\x1b[22my\x1b[m\n"), "[bg=c236 bold]x[/][bg=c236]y[/]\n")
 
     def test_basic_colors_and_other_escapes(self):
-        self.assertEqual(tagged('\x1b[32m\x1b[Kok\x1b[39m done\n'), '[fg=green]ok[/] done\n')
-        self.assertEqual(plain('\x1b[32mok\x1b[0m\x1b]8;;http://x\x1b\\l\x1b]8;;\x1b\\'), 'okl')
+        self.assertEqual(tagged("\x1b[32m\x1b[Kok\x1b[39m done\n"), "[fg=green]ok[/] done\n")
+        self.assertEqual(plain("\x1b[32mok\x1b[0m\x1b]8;;http://x\x1b\\l\x1b]8;;\x1b\\"), "okl")
 
     def test_style_carries_across_lines(self):
-        self.assertEqual(tagged('\x1b[2ma\nb\x1b[0m\n'), '[dim]a[/]\n[dim]b[/]\n')
+        self.assertEqual(tagged("\x1b[2ma\nb\x1b[0m\n"), "[dim]a[/]\n[dim]b[/]\n")
 
     def test_empty_and_unstyled(self):
-        self.assertEqual(tagged('plain\n\nrows\n'), 'plain\n\nrows\n')
+        self.assertEqual(tagged("plain\n\nrows\n"), "plain\n\nrows\n")
 
     def test_steps(self):
-        self.assertEqual(parse_step('enter'), ('key', 'Enter'))
-        self.assertEqual(parse_step('burst=warm,30,10'), ('burst', ('warm', 30.0, 10.0)))
-        self.assertEqual(parse_step('until=ready,40'), ('until', ('ready', 40.0)))
-        self.assertEqual(parse_step('keys=a=b'), ('keys', 'a=b'))
-        self.assertEqual(parse_step('buffer=clip'), ('buffer', 'clip'))
+        self.assertEqual(parse_step("enter"), ("key", "Enter"))
+        self.assertEqual(parse_step("burst=warm,30,10"), ("burst", ("warm", 30.0, 10.0)))
+        self.assertEqual(parse_step("until=ready,40"), ("until", ("ready", 40.0)))
+        self.assertEqual(parse_step("keys=a=b"), ("keys", "a=b"))
+        self.assertEqual(parse_step("buffer=clip"), ("buffer", "clip"))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('steps', nargs='*', help='the steps, in order')
-    ap.add_argument('--size', default='160x45', help='columns x rows (default 160x45)')
-    ap.add_argument('--session', default='shot', help='tmux session name (default shot)')
-    ap.add_argument('--command', default=DEFAULT_COMMAND, help='what to run (default: %s)' % DEFAULT_COMMAND)
-    ap.add_argument('--cwd', default='.', help='working directory of the command, relative to the repository')
-    ap.add_argument('--out', default=str(OUT_DIR.relative_to(ROOT)), help='where captures go')
-    ap.add_argument('--ghostty', action='store_true', help='also attach a Ghostty window and photograph it on capture')
-    ap.add_argument('--direct', action='store_true', help='run in a Ghostty window of its own, no tmux (see above)')
-    ap.add_argument('--relay', nargs=2, metavar=('FIFO', 'RECORD'), help=argparse.SUPPRESS)
-    ap.add_argument('--env', action='append', default=[], metavar='KEY=VALUE', help='an environment variable for the command (repeatable)')
-    ap.add_argument('--stop', action='store_true', help='kill the session at the end')
-    ap.add_argument('--self-test', action='store_true')
-    if '--relay' in sys.argv:
-        at = sys.argv.index('--relay')
-        split = sys.argv.index('--', at)
-        relay(sys.argv[at + 1], sys.argv[at + 2], sys.argv[split + 1:])
+    ap.add_argument("steps", nargs="*", help="the steps, in order")
+    ap.add_argument("--size", default="160x45", help="columns x rows (default 160x45)")
+    ap.add_argument("--session", default="shot", help="tmux session name (default shot)")
+    ap.add_argument("--command", default=DEFAULT_COMMAND, help="what to run (default: %s)" % DEFAULT_COMMAND)
+    ap.add_argument("--cwd", default=".", help="working directory of the command, relative to the repository")
+    ap.add_argument("--out", default=str(OUT_DIR.relative_to(ROOT)), help="where captures go")
+    ap.add_argument("--ghostty", action="store_true", help="also attach a Ghostty window and photograph it on capture")
+    ap.add_argument("--direct", action="store_true", help="run in a Ghostty window of its own, no tmux (see above)")
+    ap.add_argument("--relay", nargs=2, metavar=("FIFO", "RECORD"), help=argparse.SUPPRESS)
+    ap.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="an environment variable for the command (repeatable)",
+    )
+    ap.add_argument("--stop", action="store_true", help="kill the session at the end")
+    ap.add_argument("--self-test", action="store_true")
+    if "--relay" in sys.argv:
+        at = sys.argv.index("--relay")
+        split = sys.argv.index("--", at)
+        relay(sys.argv[at + 1], sys.argv[at + 2], sys.argv[split + 1 :])
         return 0
     args = ap.parse_args()
     if args.self_test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(TaggerTest)
         return 0 if unittest.TextTestRunner(verbosity=0).run(suite).wasSuccessful() else 1
     if not args.steps:
-        ap.error('no steps given')
+        ap.error("no steps given")
     return run(args)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

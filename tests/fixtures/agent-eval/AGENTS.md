@@ -11,4 +11,4 @@ A tiny dependency-free Python geometry package.
   a one-line docstring; files end with a newline.
 - Tests: `make test` (`python3 -m unittest discover -s tests`). There is no
   pytest.
-- Do not edit `data/`; `scripts/gen_fixtures.py` generates it.
+- Do not edit `data/`; it is generated.

@@ -10,41 +10,54 @@ same bytes.
 
     python3 scripts/grapheme-table.py
 """
+
 import argparse
 import hashlib
 import re
 import urllib.request
 from pathlib import Path
 
-VERSION = '17.0.0'
-BASE = f'https://www.unicode.org/Public/{VERSION}/ucd'
+VERSION = "17.0.0"
+BASE = f"https://www.unicode.org/Public/{VERSION}/ucd"
 ROOT = Path(__file__).resolve().parents[1]
 
 # name -> sha256, pinned for the version above.
 SOURCES = {
-    'auxiliary/GraphemeBreakProperty.txt': 'd6b51d1d2ae5c33b451b7ed994b48f1f4dc62b2272a5831e7fd418514a6bae89',
-    'emoji/emoji-data.txt': '2cb2bb9455cda83e8481541ecf5b6dfda66a3bb89efa3fa7c5297eccf607b72b',
-    'EastAsianWidth.txt': 'ea7ce50f3444a050333448dffef1cadd9325af55cbb764b4a2280faf52170a33',
-    'DerivedCoreProperties.txt': '24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08',
+    "auxiliary/GraphemeBreakProperty.txt": "d6b51d1d2ae5c33b451b7ed994b48f1f4dc62b2272a5831e7fd418514a6bae89",
+    "emoji/emoji-data.txt": "2cb2bb9455cda83e8481541ecf5b6dfda66a3bb89efa3fa7c5297eccf607b72b",
+    "EastAsianWidth.txt": "ea7ce50f3444a050333448dffef1cadd9325af55cbb764b4a2280faf52170a33",
+    "DerivedCoreProperties.txt": "24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08",
 }
 
 GCB = {
-    'Other': 'other', 'CR': 'cr', 'LF': 'lf', 'Control': 'control',
-    'Extend': 'extend', 'ZWJ': 'zwj', 'Regional_Indicator': 'ri',
-    'Prepend': 'prepend', 'SpacingMark': 'spacing_mark', 'L': 'l', 'V': 'v',
-    'T': 't', 'LV': 'lv', 'LVT': 'lvt',
+    "Other": "other",
+    "CR": "cr",
+    "LF": "lf",
+    "Control": "control",
+    "Extend": "extend",
+    "ZWJ": "zwj",
+    "Regional_Indicator": "ri",
+    "Prepend": "prepend",
+    "SpacingMark": "spacing_mark",
+    "L": "l",
+    "V": "v",
+    "T": "t",
+    "LV": "lv",
+    "LVT": "lvt",
 }
-INCB = {'Consonant': 'consonant', 'Extend': 'extend', 'Linker': 'linker'}
+INCB = {"Consonant": "consonant", "Extend": "extend", "Linker": "linker"}
 
 LINE = re.compile(
-    r'^\s*([0-9A-Fa-f]+)(?:\.\.([0-9A-Fa-f]+))?\s*;\s*([A-Za-z_]+)'
-    r'(?:\s*;\s*([A-Za-z_]+))?')
+    r"^\s*([0-9A-Fa-f]+)(?:\.\.([0-9A-Fa-f]+))?\s*;\s*([A-Za-z_]+)"
+    r"(?:\s*;\s*([A-Za-z_]+))?"
+)
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--ucd-dir', type=Path, default=ROOT / '.zig-cache/ucd' / VERSION,
-                    help='where the UCD files are cached/downloaded')
-parser.add_argument('--output', type=Path, default=ROOT / 'src/tui/graphemes_table.zig')
-parser.add_argument('--offline', action='store_true', help='fail instead of downloading')
+parser.add_argument(
+    "--ucd-dir", type=Path, default=ROOT / ".zig-cache/ucd" / VERSION, help="where the UCD files are cached/downloaded"
+)
+parser.add_argument("--output", type=Path, default=ROOT / "src/tui/graphemes_table.zig")
+parser.add_argument("--offline", action="store_true", help="fail instead of downloading")
 args = parser.parse_args()
 
 
@@ -52,20 +65,20 @@ def source(relative):
     path = args.ucd_dir / Path(relative).name
     if not path.exists():
         if args.offline:
-            parser.error(f'missing {path}; run without --offline')
+            parser.error(f"missing {path}; run without --offline")
         args.ucd_dir.mkdir(parents=True, exist_ok=True)
-        url = f'{BASE}/{relative}'
-        print('fetch', url)
+        url = f"{BASE}/{relative}"
+        print("fetch", url)
         with urllib.request.urlopen(url, timeout=60) as response:
             path.write_bytes(response.read())
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if digest != SOURCES[relative]:
-        parser.error(f'{relative} sha256 {digest} != pinned {SOURCES[relative]}')
-    return path.read_text(encoding='utf-8')
+        parser.error(f"{relative} sha256 {digest} != pinned {SOURCES[relative]}")
+    return path.read_text(encoding="utf-8")
 
 
 def assign(table, start, end, value):
-    table[start:end + 1] = bytes([value]) * (end - start + 1)
+    table[start : end + 1] = bytes([value]) * (end - start + 1)
 
 
 # Grapheme_Cluster_Break, InCB, East Asian Width, and the emoji properties. A
@@ -75,47 +88,47 @@ incb = bytearray(0x110000)
 flags = bytearray(0x110000)
 WIDE, IGNORABLE, EMOJI_PRESENTATION, EMOJI_MODIFIER, EXTENDED_PICTOGRAPHIC = 1, 2, 4, 8, 16
 
-for line in source('auxiliary/GraphemeBreakProperty.txt').splitlines():
+for line in source("auxiliary/GraphemeBreakProperty.txt").splitlines():
     match = LINE.match(line)
-    if not match or line.lstrip().startswith('#'):
+    if not match or line.lstrip().startswith("#"):
         continue
     start = int(match.group(1), 16)
     end = int(match.group(2), 16) if match.group(2) else start
     assign(gcb, start, end, list(GCB).index(match.group(3)) if match.group(3) in GCB else 0)
 
-for line in source('DerivedCoreProperties.txt').splitlines():
+for line in source("DerivedCoreProperties.txt").splitlines():
     match = LINE.match(line)
-    if not match or line.lstrip().startswith('#'):
+    if not match or line.lstrip().startswith("#"):
         continue
     start = int(match.group(1), 16)
     end = int(match.group(2), 16) if match.group(2) else start
     prop, value = match.group(3), match.group(4)
-    if prop == 'Default_Ignorable_Code_Point':
+    if prop == "Default_Ignorable_Code_Point":
         for cp in range(start, end + 1):
             flags[cp] |= IGNORABLE
-    elif prop == 'InCB' and value in INCB:
+    elif prop == "InCB" and value in INCB:
         assign(incb, start, end, list(INCB).index(value) + 1)
 
-for line in source('EastAsianWidth.txt').splitlines():
+for line in source("EastAsianWidth.txt").splitlines():
     match = LINE.match(line)
-    if not match or line.lstrip().startswith('#'):
+    if not match or line.lstrip().startswith("#"):
         continue
     start = int(match.group(1), 16)
     end = int(match.group(2), 16) if match.group(2) else start
-    if match.group(3) in ('W', 'F'):
+    if match.group(3) in ("W", "F"):
         for cp in range(start, end + 1):
             flags[cp] |= WIDE
 
-for line in source('emoji/emoji-data.txt').splitlines():
+for line in source("emoji/emoji-data.txt").splitlines():
     match = LINE.match(line)
-    if not match or line.lstrip().startswith('#'):
+    if not match or line.lstrip().startswith("#"):
         continue
     start = int(match.group(1), 16)
     end = int(match.group(2), 16) if match.group(2) else start
     bit = {
-        'Emoji_Presentation': EMOJI_PRESENTATION,
-        'Emoji_Modifier': EMOJI_MODIFIER,
-        'Extended_Pictographic': EXTENDED_PICTOGRAPHIC,
+        "Emoji_Presentation": EMOJI_PRESENTATION,
+        "Emoji_Modifier": EMOJI_MODIFIER,
+        "Extended_Pictographic": EXTENDED_PICTOGRAPHIC,
     }.get(match.group(3))
     if bit:
         for cp in range(start, end + 1):
@@ -138,30 +151,36 @@ def emit_props(value):
     g, i, f = value
     fields = []
     if g:
-        fields.append(f'.gcb = .{GCB[list(GCB)[g]]}')
+        fields.append(f".gcb = .{GCB[list(GCB)[g]]}")
     if i:
-        fields.append(f'.incb = .{INCB[list(INCB)[i - 1]]}')
+        fields.append(f".incb = .{INCB[list(INCB)[i - 1]]}")
     if f & WIDE:
-        fields.append('.wide = true')
+        fields.append(".wide = true")
     if f & IGNORABLE:
-        fields.append('.ignorable = true')
+        fields.append(".ignorable = true")
     if f & EMOJI_PRESENTATION:
-        fields.append('.emoji_presentation = true')
+        fields.append(".emoji_presentation = true")
     if f & EMOJI_MODIFIER:
-        fields.append('.emoji_modifier = true')
+        fields.append(".emoji_modifier = true")
     if f & EXTENDED_PICTOGRAPHIC:
-        fields.append('.extended_pictographic = true')
-    return '.{ ' + ', '.join(fields) + ' }' if fields else '.{}'
+        fields.append(".extended_pictographic = true")
+    return ".{ " + ", ".join(fields) + " }" if fields else ".{}"
 
 
 def gcb_enum():
-    return 'pub const Gcb = enum(u4) { ' + ', '.join(
-        f'{name} = {index}' for index, name in enumerate(GCB.values())) + ' };'
+    return (
+        "pub const Gcb = enum(u4) { "
+        + ", ".join(f"{name} = {index}" for index, name in enumerate(GCB.values()))
+        + " };"
+    )
 
 
 def incb_enum():
-    return 'pub const Incb = enum(u2) { none = 0, ' + ', '.join(
-        f'{name} = {index + 1}' for index, name in enumerate(INCB.values())) + ' };'
+    return (
+        "pub const Incb = enum(u2) { none = 0, "
+        + ", ".join(f"{name} = {index + 1}" for index, name in enumerate(INCB.values()))
+        + " };"
+    )
 
 
 header = f'''//! Generated by scripts/grapheme-table.py from the Unicode Character Database
@@ -196,8 +215,8 @@ pub const intervals = [_]Interval{{
 
 lines = [header]
 for start_cp, value in intervals:
-    lines.append(f'    .{{ .start = 0x{start_cp:05X}, .props = {emit_props(value)} }},\n')
-lines.append('};\n')
+    lines.append(f"    .{{ .start = 0x{start_cp:05X}, .props = {emit_props(value)} }},\n")
+lines.append("};\n")
 
-args.output.write_text(''.join(lines), encoding='utf-8')
-print(f'{len(intervals)} intervals -> {args.output.relative_to(ROOT)}')
+args.output.write_text("".join(lines), encoding="utf-8")
+print(f"{len(intervals)} intervals -> {args.output.relative_to(ROOT)}")

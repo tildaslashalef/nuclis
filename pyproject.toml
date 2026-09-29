@@ -1,0 +1,14 @@
+# Tooling for the Python scripts under scripts/ (nuclis itself is Zig): the
+# type checker editors run (basedpyright) and the linter and formatter
+# (ruff). `make lint-py` runs all three checks; `make fmt-py` formats.
+[tool.basedpyright]
+include = ["scripts"]
+exclude = [".zig-cache", "zig-out"]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+extraPaths = ["scripts"]
+
+[tool.ruff]
+include = ["scripts/**/*.py"]
+line-length = 120
+target-version = "py312"

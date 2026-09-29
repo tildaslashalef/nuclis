@@ -181,7 +181,8 @@ The agent in `nuclis chat` is a bounded playground loop, not a platform:
 For code changes, once build scaffolding exists:
 
 1. Build the affected package and run relevant tests, including error paths.
-2. Format/check changed Zig sources and build files.
+2. Format/check changed Zig sources and build files, and changed Python
+   scripts (`make lint-py`).
 3. Exercise the applicable happy path with the freshly built
    `./zig-out/bin/nuclis`, never an installed copy. A change to the chat
    surface (`src/tui/`, `src/agent/root.zig`) is exercised through the

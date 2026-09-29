@@ -778,8 +778,16 @@ at by running `./zig-out/bin/nuclis agent` in Ghostty directly.
 ### The agent's task list
 
 `scripts/agent-eval.py` (`make agent-eval VARIANT=<name> ARGS='…'`) runs
-twelve small tasks against the playground project (`~/Code/playground`, a
-separate repository with `make reset`): whole-file questions (a line count
+twelve small tasks against the playground: a tiny Python geometry package
+that `scripts/playground.py` generates on first use under
+`.zig-cache/playground/` (`make playground` builds it and prints the path)
+and commits with `git init` as the baseline its own `make reset` returns
+to. Nothing of it is committed to nuclis; it holds only what the tasks and
+the README's GIF (`scripts/agent-demo.py`, which clones it) touch, from
+text and fixed seeds, so every machine gets the same baseline commit, and
+a version stamp in its `.git` rebuilds it when the generator changes
+(`--workspace <dir>` runs another project with `make reset` and `make
+test`). The tasks: whole-file questions (a line count
 and a maximum, the release list), edits (a rename, the repeated heading,
 a planted bug, a validation with its test), a new module with tests, a
 flag added to the CLI, a silent `exit 7`, a tree-wide `grep`, a three-bullet
@@ -926,6 +934,13 @@ kernels are the separate `test-metal` step.
 The root `Makefile` wraps these and the explicit model/GPU targets with the
 local cache flag already applied; `make help` lists every target. Targets that
 run the CLI always use the freshly built `zig-out/bin/nuclis`.
+
+The Python scripts under `scripts/` (tooling, never part of the build) follow
+the root `pyproject.toml`: basedpyright in `standard` mode, the type checker
+editors such as Zed run on it, and ruff with lines up to 120 columns. `make
+lint-py` runs `ruff check`, `ruff format --check`, and basedpyright, each
+pinned and fetched by `uvx`; `make fmt-py` formats; the `python` check of
+`gates.json` runs `lint-py` whenever a script or `pyproject.toml` changes.
 
 `make install` builds the Metal release and copies the binary to
 `$(PREFIX)/bin/nuclis` (`PREFIX` defaults to `~/.local`); `make uninstall`

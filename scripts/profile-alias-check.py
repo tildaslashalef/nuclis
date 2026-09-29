@@ -16,6 +16,7 @@ its test checks the two agree.
 The template digest is read from the served file's own GGUF header, so it is
 exactly what `profiles.forDocument` computes at load.
 """
+
 import argparse
 import datetime
 import hashlib
@@ -24,6 +25,7 @@ import json
 import pathlib
 import re
 import struct
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -33,6 +35,8 @@ FIXTURES = ROOT / "inference/src/profiles/fixtures"
 
 def load_sibling(name):
     spec = importlib.util.spec_from_file_location(name.replace("-", "_"), ROOT / "scripts" / f"{name}.py")
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot import {spec}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -46,6 +50,7 @@ def header_strings(path, wanted):
     """The wanted string keys of a GGUF header, read without mapping tensors."""
     out = {}
     with path.open("rb") as f:
+
         def rd(fmt):
             return struct.unpack("<" + fmt, f.read(struct.calcsize(fmt)))
 
@@ -90,23 +95,34 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:18087")
     parser.add_argument("--profile", choices=sorted(TOOLS.PROFILES), required=True)
-    parser.add_argument("--reference-revision", default=TOOLS.REVISION,
-                        help="the served build's llama.cpp commit; the mainline pin by default, "
-                             "a second pinned oracle (the PrismML fork) when it serves the file")
+    parser.add_argument(
+        "--reference-revision",
+        default=TOOLS.REVISION,
+        help="the served build's llama.cpp commit; the mainline pin by default, "
+        "a second pinned oracle (the PrismML fork) when it serves the file",
+    )
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.reference_revision):
         parser.error("--reference-revision must be a full commit hash")
     address = urllib.parse.urlparse(args.url)
-    if (address.scheme != "http" or address.hostname != "127.0.0.1"
-            or address.username or address.password or address.path not in ("", "/")
-            or address.query or address.fragment):
+    if (
+        address.scheme != "http"
+        or address.hostname != "127.0.0.1"
+        or address.username
+        or address.password
+        or address.path not in ("", "/")
+        or address.query
+        or address.fragment
+    ):
         parser.error("--url must be an HTTP endpoint on 127.0.0.1")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def request(endpoint, body=None):
-        req = urllib.request.Request(args.url.rstrip("/") + endpoint,
-                                     data=None if body is None else json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(
+            args.url.rstrip("/") + endpoint,
+            data=None if body is None else json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
         with opener.open(req, timeout=60) as response:
             return json.load(response)
 
@@ -144,14 +160,17 @@ def main():
         raise RuntimeError("fixtures are not the pinned template's")
 
     def tokens(content, special):
-        return request("/tokenize", {"content": content, "add_special": False,
-                                     "parse_special": special})["tokens"]
+        return request("/tokenize", {"content": content, "add_special": False, "parse_special": special})["tokens"]
 
     mismatches = []
     for case in text["prompt_cases"]:
         try:
-            prompt = render({"messages": case["messages"],
-                             "chat_template_kwargs": TEXT.PROFILES[args.profile]["kwargs"](case["effort"])})
+            prompt = render(
+                {
+                    "messages": case["messages"],
+                    "chat_template_kwargs": TEXT.PROFILES[args.profile]["kwargs"](case["effort"]),
+                }
+            )
         except Rendering as refused:
             mismatches.append(("text", case["name"], case["prompt"], str(refused)))
             continue
@@ -160,8 +179,10 @@ def main():
         elif tokens(prompt, True) != case["tokens"]:
             mismatches.append(("tokens", case["name"], case["tokens"], "differs"))
     for case in tools["cases"]:
-        body = {"messages": TOOLS.to_request(case["messages"]),
-                "chat_template_kwargs": TOOLS.PROFILES[args.profile]["kwargs"](case["effort"])}
+        body = {
+            "messages": TOOLS.to_request(case["messages"]),
+            "chat_template_kwargs": TOOLS.PROFILES[args.profile]["kwargs"](case["effort"]),
+        }
         if case.get("tools"):
             body["tools"] = TOOLS.request_tools(case["tools"])
         try:
@@ -187,8 +208,12 @@ def main():
     entry = {
         "template_sha256": digest,
         "template_bytes": len(template),
-        "source": {"name": header.get("general.name", b"").decode(), "file": model.name,
-                   "size": size, "sha256": file_digest.hexdigest()},
+        "source": {
+            "name": header.get("general.name", b"").decode(),
+            "file": model.name,
+            "size": size,
+            "sha256": file_digest.hexdigest(),
+        },
         "reference_revision": args.reference_revision,
         "checked": datetime.date.today().isoformat(),
         "prompt_cases": len(text["prompt_cases"]),
@@ -196,8 +221,11 @@ def main():
         "token_cases": len(text["token_cases"]),
     }
     target = FIXTURES / f"{args.profile}-aliases.json"
-    result = json.loads(target.read_text()) if target.exists() else {
-        "profile": args.profile, "template_sha256": pinned, "aliases": []}
+    result = (
+        json.loads(target.read_text())
+        if target.exists()
+        else {"profile": args.profile, "template_sha256": pinned, "aliases": []}
+    )
     if result["template_sha256"] != pinned:
         raise RuntimeError("the aliases file pins another template; re-check every alias")
     result["aliases"] = [a for a in result["aliases"] if a["template_sha256"] != digest] + [entry]

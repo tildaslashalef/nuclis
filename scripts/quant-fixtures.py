@@ -29,17 +29,13 @@ PRISM_REVISION = "5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6"
 def main():
     root = pathlib.Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("checkout", nargs="?", type=pathlib.Path,
-                        default=root / ".zig-cache/reference/llama.cpp")
-    parser.add_argument("--prism-checkout", type=pathlib.Path,
-                        default=root / ".zig-cache/reference/prism-llama.cpp")
+    parser.add_argument("checkout", nargs="?", type=pathlib.Path, default=root / ".zig-cache/reference/llama.cpp")
+    parser.add_argument("--prism-checkout", type=pathlib.Path, default=root / ".zig-cache/reference/prism-llama.cpp")
     args = parser.parse_args()
 
     def pinned_library(checkout, expected):
         checkout = checkout.resolve()
-        revision = subprocess.check_output(
-            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
-        ).strip()
+        revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
         if revision != expected:
             raise SystemExit(f"{checkout} must sit at the pinned revision {expected}")
         return ctypes.CDLL(str(checkout / "build/bin/libggml-base.dylib"))
@@ -68,19 +64,25 @@ def main():
     prism = pinned_library(args.prism_checkout, PRISM_REVISION)
     scales = [0.5, -2, 0, 1.5, 2**-24, 65504, -0.125, 8]
     fixtures = []
-    blocks = [struct.pack("<e", scale) + bytes((block * 32 + j) * 73 % 256 for j in range(32))
-              for block, scale in enumerate(scales)]
+    blocks = [
+        struct.pack("<e", scale) + bytes((block * 32 + j) * 73 % 256 for j in range(32))
+        for block, scale in enumerate(scales)
+    ]
     blocks.append(struct.pack("<e", 1) + bytes([0b11100100] * 32))  # every 2-bit code, in order
-    blocks.append(struct.pack("<e", 1) + bytes([0xff] * 32))
+    blocks.append(struct.pack("<e", 1) + bytes([0xFF] * 32))
     fixtures.append(reference(142, "pq2_0", blocks, 128, prism))
-    blocks = [bytes((block * 26 + j) * 73 % 256 for j in range(26)) + struct.pack("<e", scale)
-              for block, scale in enumerate(scales)]
+    blocks = [
+        bytes((block * 26 + j) * 73 % 256 for j in range(26)) + struct.pack("<e", scale)
+        for block, scale in enumerate(scales)
+    ]
     blocks.append(bytes([0] * 26) + struct.pack("<e", 1))
-    blocks.append(bytes([0xff] * 26) + struct.pack("<e", 1))
+    blocks.append(bytes([0xFF] * 26) + struct.pack("<e", 1))
+
     # Canonical packings: five trits per byte scaled by 256/243 (rounded up)
     # and the four-trit tail bytes, so the fixture also holds valid codes.
     def pack(trits, scale):
         return (sum(t * 3 ** (4 - i) for i, t in enumerate(trits)) * 256 + 242) // 243
+
     canonical = bytes(pack([(j + k) % 3 for k in range(5)], 5) for j in range(24))
     canonical += bytes((sum(((j + k) % 3) * 3 ** (3 - k) for k in range(4)) * 256 + 242) // 243 for j in range(2))
     blocks.append(canonical + struct.pack("<e", 0.5))
@@ -93,8 +95,7 @@ def main():
         # and large values. Q8 covers all 256 signed byte representations.
         scales = [0.5, -2, 0, 1.5, 2**-24, 65504, -0.125, 8]
         blocks = [
-            struct.pack("<e", scale)
-            + bytes((block * width + j) * 73 % 256 for j in range(width))
+            struct.pack("<e", scale) + bytes((block * width + j) * 73 % 256 for j in range(width))
             for block, scale in enumerate(scales)
         ]
         fixtures.append(reference(encoding, name, blocks, 32))
@@ -103,8 +104,7 @@ def main():
     fixtures = []
     for encoding, name, size in [(12, "q4_K", 144), (13, "q5_K", 176)]:
         blocks = []
-        for index, (d, dmin) in enumerate([(0.5, 0.25), (-0.125, 1.5),
-                                          (2**-24, 0), (0, 65504)]):
+        for index, (d, dmin) in enumerate([(0.5, 0.25), (-0.125, 1.5), (2**-24, 0), (0, 65504)]):
             # Populate the packed coefficient bytes directly, independently of
             # Zig's unpacking equations. Odd stride visits every byte value.
             payload = bytes((j * 73 + index * 41) % 256 for j in range(size - 4))
@@ -150,12 +150,14 @@ def main():
     entries = re.findall(r"0x[0-9a-fA-F]+", body)
     if len(entries) != 512:
         raise RuntimeError("expected the pinned 512-entry IQ3_S grid")
-    lines = ["    " + ", ".join(entries[i:i+8]) + "," for i in range(0, 512, 8)]
-    table = ("//! IQ3_S codebook: a GGML format constant obtained from llama.cpp\n"
-             "//! " + REVISION + " (ggml/src/ggml-common.h); see\n"
-             "//! THIRD_PARTY_NOTICES.md. Regenerate with scripts/quant-fixtures.py. Low byte\n"
-             "//! is component 0. The Metal backend emits this same table into its shader.\n"
-             "pub const values = [512]u32{\n" + "\n".join(lines) + "\n};\n")
+    lines = ["    " + ", ".join(entries[i : i + 8]) + "," for i in range(0, 512, 8)]
+    table = (
+        "//! IQ3_S codebook: a GGML format constant obtained from llama.cpp\n"
+        "//! " + REVISION + " (ggml/src/ggml-common.h); see\n"
+        "//! THIRD_PARTY_NOTICES.md. Regenerate with scripts/quant-fixtures.py. Low byte\n"
+        "//! is component 0. The Metal backend emits this same table into its shader.\n"
+        "pub const values = [512]u32{\n" + "\n".join(lines) + "\n};\n"
+    )
     (root / "inference/src/quant/iq3-grid.zig").write_text(table)
 
 

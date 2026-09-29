@@ -46,9 +46,11 @@ def sha256(path):
 
 
 def self_test():
-    log = ("perplexity: calculating perplexity over 2 chunks, n_ctx=512\n"
-           "[1]4.3434,[2]6.1586,\n"
-           "0.51.372.778 I Final estimate: PPL = 6.1586 +/- 0.36229\n")
+    log = (
+        "perplexity: calculating perplexity over 2 chunks, n_ctx=512\n"
+        "[1]4.3434,[2]6.1586,\n"
+        "0.51.372.778 I Final estimate: PPL = 6.1586 +/- 0.36229\n"
+    )
     running, ppl, error = parse(log)
     assert running == [4.3434, 6.1586] and ppl == 6.1586 and error == 0.36229
     try:
@@ -69,7 +71,11 @@ def main():
     parser.add_argument("--chunks", type=int, default=8)
     parser.add_argument("--ubatch", type=int, help="tokens per decode kernel call (1: the per-token path)")
     parser.add_argument("--output", type=pathlib.Path)
-    parser.add_argument("--tolerance", type=float, help="a bound wider than eval's 0.5 %%, for a model whose reference disagrees with itself")
+    parser.add_argument(
+        "--tolerance",
+        type=float,
+        help="a bound wider than eval's 0.5 %%, for a model whose reference disagrees with itself",
+    )
     parser.add_argument("--tolerance-reason", help="why the bound is wider (required with --tolerance)")
     args = parser.parse_args()
     if args.self_test:
@@ -78,14 +84,18 @@ def main():
         parser.error("--model, --text, and --output are required")
     if args.tolerance is not None and not args.tolerance_reason:
         parser.error("--tolerance needs --tolerance-reason")
-    revision = subprocess.run(["git", "-C", str(CHECKOUT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    revision = subprocess.run(
+        ["git", "-C", str(CHECKOUT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
     if revision != REVISION:
         sys.exit(f"the reference checkout is at {revision}, not the pinned {REVISION}")
     flags = ["-c", str(args.ctx), "--chunks", str(args.chunks), "-ngl", "99"]
     if args.ubatch:
         # The batch must hold one window for the micro-batch to split it.
         flags += ["-b", str(args.ctx), "-ub", str(args.ubatch)]
-    proc = subprocess.run([str(BINARY), "-m", str(args.model), "-f", str(args.text)] + flags, capture_output=True, text=True)
+    proc = subprocess.run(
+        [str(BINARY), "-m", str(args.model), "-f", str(args.text)] + flags, capture_output=True, text=True
+    )
     if proc.returncode != 0:
         sys.exit(proc.stderr[-2000:])
     running, ppl, error = parse(proc.stdout + proc.stderr)

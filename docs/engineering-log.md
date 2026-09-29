@@ -146,6 +146,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-20 | Fast verification: gates re-derived from code paths (`make verify` 704 s → 246 s), a release tier, `make verify-auto` | 2026-09-29 |
 | MODL-31 | Laya on Metal: packed batches, bidirectional windowed attention over sequence bounds, 13–20× the CPU | 2026-09-29 |
 | MODL-33 | Laya multilingual: the Metaspace tokenizer, the checkpoint's own special tokens, checked on both backends | 2026-09-29 |
+| REPO-21 | The agent's playground generated under `.zig-cache`; the Python scripts typed (basedpyright) and formatted (ruff) | 2026-09-29 |
 
 ## Context
 
@@ -6109,3 +6110,64 @@ named. `make verify`: 36/36 in 258 s (the
 the 34 MB `tokenizer.json` every time (about 0.35 s). The package's
 language-specific temperatures are not implemented (this checkpoint's
 are all 1). The fixture set is 1.5 MB, the oracle's cap raised to 2 MiB.
+
+## REPO-21 — A generated playground; the Python scripts typed and formatted (2026-09-29)
+
+**Outcome.** The agent's task list and the README's GIF no longer depend
+on `~/Code/playground`, a repository only one machine had.
+`scripts/playground.py` generates on first use, under
+`.zig-cache/playground/`, a workspace holding only what the twelve tasks
+and the demo touch: the `shapes` package (its polygon area off by a
+factor of two on purpose, `validate`'s scope check), `src/cli.py`,
+`tests/test_shapes.py`, `docs/design.md` with its repeated heading, a
+seeded `docs/history.md`, 400 seeded `data/measurements.txt` lines, the
+1 MiB `data/big.txt`, `scripts/exit7.sh`, a `Makefile` with `test` and
+`reset`. It commits them with `git init`, a fixed identity and date, so
+the baseline commit is the same on every machine (`2b09e6f`). A version
+stamp inside `.git` rebuilds it when the generator changes, and it
+refuses to replace a directory it did not generate. Nothing of it is
+committed to nuclis. `agent-eval.py` defaults to it (`--workspace` still
+overrides), `agent-demo.py` clones it, and `make playground` prints its
+path. The manual playground (`~/Code/playground`, now with `laya/` cases
+for `nuclis decide`) stays the user's own. The Python scripts follow a
+root `pyproject.toml`: basedpyright in `standard` mode (the editors'
+checker) and ruff at 120 columns. `make lint-py` (ruff check, ruff format
+--check, basedpyright, pinned through `uvx`), `make fmt-py`, and a
+`python` check in `gates.json` keep them so.
+
+**Evidence.** Every task-relevant file of the generated workspace is
+byte-identical to `~/Code/playground` at `c2cf963` except
+`measurements.txt`, which is freshly seeded; its task computes the
+expected answer from the file. Two builds give the same commit.
+`make agent-eval VARIANT=repo21-smoke ARGS='--tasks exit --seeds 1'`
+from a deleted workspace generated it and passed (2 steps, 11.0 s). Before: basedpyright's
+default mode reported 123 errors and 3,503 warnings over the 24 scripts,
+`standard` mode 35 errors; ruff 20 lint errors, and 24 files needed
+formatting. After: 0, 0, all formatted. Among the 35 were real faults:
+`agent-eval.py` called `glob.fnmatch` (working only because `glob`
+imports it), `profile-alias-check.py` caught `urllib.error.HTTPError`
+without importing `urllib.error`, and `bench-report.py` divided a mean
+that can be `None`. The rest were narrowed `Optional`s, a key that can be
+a digest dict in `gguf-inventory.py`, and `laya-reference.py`'s
+venv-only imports (allowed at the file's top). The self-tests of
+`gates.py`, `tui-shot.py`, `nuclis_mem_usage.py`, `workloads.py`, and
+`bench-report.py` pass, as do `make gates-validate` and
+`reference-perplexity.py --self-test`; `tokenizer-nfc.py --offline`
+writes the same table before and after. `make verify-auto` from
+`0942463`: `unit`, `manifests`, `python`, all passing.
+
+**Files.** `scripts/playground.py` (new), `pyproject.toml` (new), every
+`scripts/*.py` (formatted; fixes in `agent-eval`, `agent-demo`,
+`bench-report`, `compare-generation`, `gates`, `gguf-inventory`,
+`laya-reference`, `nuclis-baseline`, `nuclis_mem_usage`,
+`profile-alias-check`, `release`, `tokenizer-nfc`, `tui-shot`),
+`Makefile`, `gates.json`, `tests/fixtures/agent-eval/AGENTS.md` (no
+longer names the playground's own generator), `AGENTS.md`,
+`docs/development.md`, `TODO.md`, `docs/engineering-log.md`.
+
+**Remaining.** The pinned agent-eval tables (AGNT-13 onward) were
+measured on `~/Code/playground`, whose `measurements.txt`, extra
+fixtures, and instructions line differ. The next unit to measure the
+agent re-measures its baseline on the generated workspace. Only `exit` ran end to end
+here; the other eleven tasks share its path (generation, `make reset`,
+the checks) but have not been run on the new workspace.

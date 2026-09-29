@@ -33,9 +33,18 @@ REVISION = "7620399f58aebfd2196b74021f9581bcf7218cb9"
 # strength with a wider budget.
 FAMILIES = {
     "qwen38": {"thinking_off": "<think>\n\n</think>", "bos": "", "smoke_tokens": 96, "smoke_kwargs": None},
-    "gemma4": {"thinking_off": "<|channel>thought\n<channel|>", "bos": "<bos>", "smoke_tokens": 96, "smoke_kwargs": None},
-    "muse-glimmer": {"thinking_off": "Reasoning strength: high.", "bos": "<|begin_of_text|>",
-                     "smoke_tokens": 384, "smoke_kwargs": {"reasoning_strength": "low"}},
+    "gemma4": {
+        "thinking_off": "<|channel>thought\n<channel|>",
+        "bos": "<bos>",
+        "smoke_tokens": 96,
+        "smoke_kwargs": None,
+    },
+    "muse-glimmer": {
+        "thinking_off": "Reasoning strength: high.",
+        "bos": "<|begin_of_text|>",
+        "smoke_tokens": 384,
+        "smoke_kwargs": {"reasoning_strength": "low"},
+    },
 }
 
 
@@ -77,17 +86,28 @@ def main():
     parser.add_argument("--generate", type=int, default=128)
     parser.add_argument("--capacity-check", action="store_true")
     parser.add_argument("--server-pid", type=int, help="optionally sample this server's RSS between requests")
-    parser.add_argument("--family", choices=sorted(FAMILIES), default="qwen38", help="the profile family of the loaded artifact")
-    parser.add_argument("--reference-revision", default=REVISION,
-                        help="the full commit the server must be built from (the mainline pin by default; the PrismML fork's for Bonsai)")
+    parser.add_argument(
+        "--family", choices=sorted(FAMILIES), default="qwen38", help="the profile family of the loaded artifact"
+    )
+    parser.add_argument(
+        "--reference-revision",
+        default=REVISION,
+        help="the full commit the server must be built from (the mainline pin by default; the PrismML fork's for Bonsai)",
+    )
     args = parser.parse_args()
     family = FAMILIES[args.family]
     if not re.fullmatch(r"[0-9a-f]{40}", args.reference_revision):
         parser.error("--reference-revision must be a full commit hash")
     address = urllib.parse.urlparse(args.url)
-    if (address.scheme != "http" or address.hostname != "127.0.0.1"
-            or address.username or address.password or address.path not in ("", "/")
-            or address.query or address.fragment):
+    if (
+        address.scheme != "http"
+        or address.hostname != "127.0.0.1"
+        or address.username
+        or address.password
+        or address.path not in ("", "/")
+        or address.query
+        or address.fragment
+    ):
         parser.error("--url must be an HTTP endpoint on 127.0.0.1")
     try:
         lengths = [int(n) for n in args.prompt_lengths.split(",")]
@@ -103,8 +123,9 @@ def main():
 
     def request(endpoint, payload=None):
         data = None if payload is None else json.dumps(payload).encode()
-        req = urllib.request.Request(args.url.rstrip("/") + endpoint, data=data,
-                                     headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(
+            args.url.rstrip("/") + endpoint, data=data, headers={"Content-Type": "application/json"}
+        )
         with opener.open(req, timeout=1800) as response:
             return json.load(response)
 
@@ -127,22 +148,29 @@ def main():
             "timestamp": timestamp(),
             "swap": capture("sysctl", "-n", "vm.swapusage"),
             "vm_stat": capture("vm_stat"),
-            "server_rss_kib": capture("ps", "-p", str(args.server_pid), "-o", "rss=")
-            if args.server_pid else None,
+            "server_rss_kib": capture("ps", "-p", str(args.server_pid), "-o", "rss=") if args.server_pid else None,
         }
 
-    save("run-config.json", {
-        "started_at": timestamp(), "reference_revision": args.reference_revision,
-        "context": context, "prompt_lengths": lengths, "generate": args.generate,
-        "repetitions": args.repetitions, "capacity_check": args.capacity_check,
-        "hardware": capture("sysctl", "-n", "machdep.cpu.brand_string", "hw.memsize", "hw.ncpu"),
-        "os": capture("sw_vers"), "power": capture("pmset", "-g", "batt"),
-        "power_settings": capture("pmset", "-g", "custom"), "memory": memory(),
-    })
+    save(
+        "run-config.json",
+        {
+            "started_at": timestamp(),
+            "reference_revision": args.reference_revision,
+            "context": context,
+            "prompt_lengths": lengths,
+            "generate": args.generate,
+            "repetitions": args.repetitions,
+            "capacity_check": args.capacity_check,
+            "hardware": capture("sysctl", "-n", "machdep.cpu.brand_string", "hw.memsize", "hw.ncpu"),
+            "os": capture("sw_vers"),
+            "power": capture("pmset", "-g", "batt"),
+            "power_settings": capture("pmset", "-g", "custom"),
+            "memory": memory(),
+        },
+    )
 
     def tokenize(text, special=False):
-        return request("/tokenize", {"content": text, "add_special": False,
-                                     "parse_special": special})["tokens"]
+        return request("/tokenize", {"content": text, "add_special": False, "parse_special": special})["tokens"]
 
     save("server-props.json", props)
     marker = "NUCLIS_BENCH_CONTENT"
@@ -154,13 +182,17 @@ def main():
     suffix_tokens = tokenize("\n```\n\nGive your review." + suffix, True)
     source = corpus()
     body_tokens = tokenize(source)
-    save("prompt-construction.json", {
-        "family": args.family,
-        "template": template,
-        "corpus_sha256": hashlib.sha256(source.encode()).hexdigest(),
-        "prefix_tokens": prefix_tokens, "suffix_tokens": suffix_tokens,
-        "method": "prefix + truncated synthetic-code token sequence + suffix",
-    })
+    save(
+        "prompt-construction.json",
+        {
+            "family": args.family,
+            "template": template,
+            "corpus_sha256": hashlib.sha256(source.encode()).hexdigest(),
+            "prefix_tokens": prefix_tokens,
+            "suffix_tokens": suffix_tokens,
+            "method": "prefix + truncated synthetic-code token sequence + suffix",
+        },
+    )
 
     def prompt(size):
         count = size - len(prefix_tokens) - len(suffix_tokens)
@@ -170,18 +202,32 @@ def main():
 
     def complete(tokens, n_predict, ignore_eos):
         start = time.perf_counter()
-        response = request("/completion", {
-            "prompt": tokens, "n_predict": n_predict, "temperature": 0,
-            "samplers": ["temperature"], "seed": 1,
-            "cache_prompt": False, "ignore_eos": ignore_eos,
-            "return_tokens": True, "stream": False, "stop": [],
-        })
+        response = request(
+            "/completion",
+            {
+                "prompt": tokens,
+                "n_predict": n_predict,
+                "temperature": 0,
+                "samplers": ["temperature"],
+                "seed": 1,
+                "cache_prompt": False,
+                "ignore_eos": ignore_eos,
+                "return_tokens": True,
+                "stream": False,
+                "stop": [],
+            },
+        )
         return response, time.perf_counter() - start
 
     # A smoke response checks actual text decoding, but is not a quality score.
-    smoke_request = {"messages": [{
-        "role": "user", "content": "Write a Python function add(a, b) that returns their sum. Return only code.",
-    }]}
+    smoke_request = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "Write a Python function add(a, b) that returns their sum. Return only code.",
+            }
+        ]
+    }
     if family["smoke_kwargs"]:
         smoke_request["chat_template_kwargs"] = family["smoke_kwargs"]
     smoke_prompt = family["bos"] + request("/apply-template", smoke_request)["prompt"]
@@ -211,24 +257,43 @@ def main():
                 raise RuntimeError("prompt truncation or reuse invalidated the measurement")
             if response["tokens_predicted"] != args.generate or response["stop_type"] != "limit":
                 raise RuntimeError("generation did not meet the fixed output budget")
-            row = {"phase": label, "prompt_tokens": size, "repetition": repetition,
-                   "output_tokens": args.generate, "wall_seconds": wall, "timings": timings,
-                   "memory_before": memory_before, "memory_after": memory()}
+            row = {
+                "phase": label,
+                "prompt_tokens": size,
+                "repetition": repetition,
+                "output_tokens": args.generate,
+                "wall_seconds": wall,
+                "timings": timings,
+                "memory_before": memory_before,
+                "memory_after": memory(),
+            }
             results.append(row)
             save("samples.json", results)
-            print(f"  prefill={timings['prompt_per_second']:.2f} tok/s, "
-                  f"decode={timings['predicted_per_second']:.2f} tok/s, wall={wall:.2f}s", flush=True)
+            print(
+                f"  prefill={timings['prompt_per_second']:.2f} tok/s, "
+                f"decode={timings['predicted_per_second']:.2f} tok/s, wall={wall:.2f}s",
+                flush=True,
+            )
     summary = []
     for size, phase in cases:
         rows = [r for r in results if r["prompt_tokens"] == size and r["phase"] == phase]
         item = {"prompt_tokens": size, "phase": phase, "samples": len(rows)}
         for metric in ("prompt_per_second", "predicted_per_second"):
             values = [r["timings"][metric] for r in rows]
-            item[metric] = {"mean": statistics.mean(values),
-                            "sample_stdev": statistics.stdev(values) if len(values) > 1 else None}
+            item[metric] = {
+                "mean": statistics.mean(values),
+                "sample_stdev": statistics.stdev(values) if len(values) > 1 else None,
+            }
         summary.append(item)
-    save("summary.json", {"reference_revision": args.reference_revision, "context": context,
-                          "generate": args.generate, "results": summary})
+    save(
+        "summary.json",
+        {
+            "reference_revision": args.reference_revision,
+            "context": context,
+            "generate": args.generate,
+            "results": summary,
+        },
+    )
     print("Completed: " + str(args.output_dir / "summary.json"), flush=True)
 
 
