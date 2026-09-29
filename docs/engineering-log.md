@@ -145,6 +145,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-19 | The Gemma 4 12B K-quant file's gates retired with the file | 2026-09-29 |
 | REPO-20 | Fast verification: gates re-derived from code paths (`make verify` 704 s → 246 s), a release tier, `make verify-auto` | 2026-09-29 |
 | MODL-31 | Laya on Metal: packed batches, bidirectional windowed attention over sequence bounds, 13–20× the CPU | 2026-09-29 |
+| MODL-33 | Laya multilingual: the Metaspace tokenizer, the checkpoint's own special tokens, checked on both backends | 2026-09-29 |
 
 ## Context
 
@@ -6037,3 +6038,74 @@ would round activations with outliers to 1.65·10⁴). On Metal a sequence
 is bounded by the 2048-row batch and BF16 matrices are refused. Laya and
 a language model in one process share the GPU in turn, never at once.
 
+
+## MODL-33 — Laya multilingual: the Metaspace tokenizer, the checkpoint's own special tokens, checked on both backends (2026-09-29)
+
+**Outcome.** `nuclis decide --model laya-multilingual` runs Laya's
+`multilingual/` checkpoint (an mmBERT-base encoder, the same head) on
+the CPU and on Metal, matching the `laya` 0.3.20 package
+([reference/laya.md § The multilingual checkpoint](reference/laya.md#the-multilingual-checkpoint)).
+The model code is unchanged; the work was around it. `hf_json.zig`
+accepts a second `tokenizer.json` shape, Metaspace (Gemma's vocabulary:
+`Replace " " → "▁"`, `Metaspace` with `prepend_scheme: always` and
+`split`, byte fallback), exactly and by name: added tokens split the raw
+text, each gap gets a `▁` unless it starts with one and is cut before
+each `▁`, pieces merge through `bpe.encodeSpmBudget`. Instead of an
+`<unk>` path, the load proves byte fallback cannot miss (mmBERT lacks
+`<0x09>`, and tab is a token). `bpe.decode` treats the shape as
+SentencePiece, so `--explain` decodes. `profiles/laya.zig` `Specials`
+come from `tokenizer_config.json` (`<bos>`, `<eos>`, `<mask>` here;
+`[CLS]`, `[SEP]`, `[MASK]` when absent) and `Specials.unmask` removes
+the checkpoint's own mask spelling; `Decider.open` reads the file. The
+1,024/256 budget was already read from `rl_agent_config.json`.
+`scripts/laya-reference.py --subfolder multilingual` writes
+`fixtures/laya-multilingual/`; `vocabulary-check` picks the fixture set
+by vocabulary size and `laya-check` by hidden size. Catalogue entry
+`laya-multilingual`, `decide` help, gates `laya-multilingual-vocabulary`,
+`-cpu`, `-metal` (tier verify); `laya-vocabulary` now also selects on
+`profiles/laya.zig`, which its profile check exercises.
+
+**Evidence.** The oracle's 16 requests (the root set's 8 shapes, two of
+them now 1,024 tokens; French, German, Spanish, Arabic, Chinese, and
+Hindi states; a language question; an 889-token French log whose error
+line lies past position 512) and 59 tokenizer texts. `vocabulary-check`:
+all 59 texts and every text of the 16 requests encode exactly as the
+package's `tokenizers` 0.23.2 does, and all 16 sequences rebuild exactly
+with answers equal after rounding. `laya-check`, ReleaseFast: CPU worst
+largest-difference-over-largest-value 7.6e-6, relative RMS 6.5e-6,
+logits 5.0e-5 of max(1, |logit|) (`choice_20`); Metal 1.6e-6, 1.8e-6,
+1.7e-5, the root set's bounds (1e-5, 1e-5, 1e-4); all 16 as one packed
+Metal batch (3,924 rows) bit-identical to one at a time. The root set's
+gates pass unchanged. Unit tests: the Metaspace rules on a generated
+256-byte vocabulary (prepend per gap, a piece per `▁`, `<mask>` lstrip,
+byte fallback, decode) and each rejection (normalizer, prepend scheme,
+decoder, byte fallback off, a normalized added token, an uncovered UTF-8
+byte or ASCII character); `Specials.find` with defaults, an object
+`mask_token`, a missing token, and malformed configs. Time per call (ReleaseSafe, best of three, one
+noul over synthetic logs): Metal 31 ms for 1×88 tokens, 577 ms for
+50×55–88, 108 ms for 1×483, 4,143 ms for 50×448–486, 286 ms for 1×936; the
+CPU 8–18× slower; per token 1.3–2.4× the root set; load about 0.4 s,
+most of it the 34 MB `tokenizer.json`. Through the fresh binary on the
+language requests: a German cancel threat 0.06 → 0.93, a Hindi account
+closure 0.00 → 1.00, the French log's worst level info → error (0.99).
+Language identification stays unreliable on both checkpoints. `make
+verify-auto` from `01b65fe`: `fmt`, `unit`, `manifests`, then 13 verify
+gates (every vocabulary and perplexity gate the tokenizer paths select,
+the three Laya gates, the three new ones), all passing, no further tier
+named. `make verify`: 36/36 in 258 s (the
+33 before plus the three new gates).
+
+**Files.** `inference/src/tokenizer/{hf_json,bpe}.zig`,
+`inference/src/profiles/laya.zig`, `inference/src/decide.zig`,
+`inference/{vocabulary,laya}-check.zig`,
+`inference/src/models/fixtures/laya-multilingual/` (new),
+`scripts/laya-reference.py`, `src/{catalog,help}.zig`, `gates.json`,
+`docs/reference/{laya,tokenizer,artifacts}.md`, `docs/spec.md`,
+`docs/development.md`, `THIRD_PARTY_NOTICES.md`, `TODO.md`,
+`docs/engineering-log.md`.
+
+**Remaining.** No choice of checkpoint by language (the package's
+`Router`): the caller passes `--model laya-multilingual`. Loading parses
+the 34 MB `tokenizer.json` every time (about 0.35 s). The package's
+language-specific temperatures are not implemented (this checkpoint's
+are all 1). The fixture set is 1.5 MB, the oracle's cap raised to 2 MiB.

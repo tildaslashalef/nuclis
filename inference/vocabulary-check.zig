@@ -143,8 +143,36 @@ fn checkFixtures(alloc: std.mem.Allocator, vocab: *const inference.vocabulary.Vo
     std.debug.print("Native encoding matches all {d} standalone and {d} full-prompt token sequences.\n", .{ fixtures.value.token_cases.len, fixtures.value.prompt_cases.len });
 }
 
-const laya_tokens = @embedFile("src/models/fixtures/laya/tokens.json");
-const laya_requests = @embedFile("src/models/fixtures/laya/requests.json");
+/// One Laya checkpoint's oracle fixtures and the tokenizer facts they were
+/// taken with; the vocabulary size picks the set.
+const LayaSet = struct {
+    name: []const u8,
+    tokens: usize,
+    merges: usize,
+    /// `cls`, `sep`, `mask`.
+    specials: [3]u32,
+    tokens_json: []const u8,
+    requests_json: []const u8,
+};
+
+const laya_sets = [_]LayaSet{
+    .{
+        .name = "laya",
+        .tokens = 50_368,
+        .merges = 50_009,
+        .specials = .{ 50281, 50282, 50284 },
+        .tokens_json = @embedFile("src/models/fixtures/laya/tokens.json"),
+        .requests_json = @embedFile("src/models/fixtures/laya/requests.json"),
+    },
+    .{
+        .name = "laya-multilingual",
+        .tokens = 256_000,
+        .merges = 580_604,
+        .specials = .{ 2, 1, 4 },
+        .tokens_json = @embedFile("src/models/fixtures/laya-multilingual/tokens.json"),
+        .requests_json = @embedFile("src/models/fixtures/laya-multilingual/requests.json"),
+    },
+};
 
 /// The oracle's text set, and every text each fixture request tokenized: its
 /// head, options (at most 48 tokens, maybe shrunk), and state (maybe cut at
@@ -157,13 +185,19 @@ fn checkLaya(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
     var tokenizer = try inference.hf_tokenizer.parse(gpa, bytes, .{});
     defer tokenizer.deinit();
     const vocab = &tokenizer.vocab;
-    if (vocab.tokens.len != 50_368 or vocab.merge_ranks.count() != 50_009) return error.ArtifactMismatch;
-    for ([_][]const u8{ "[CLS]", "[SEP]", "[PAD]", "[MASK]" }, [_]u32{ 50281, 50282, 50283, 50284 }) |text, id| {
-        if (vocab.tokenId(text) != id) return error.TokenIdMismatch;
-    }
+    const set = for (&laya_sets) |*set| {
+        if (vocab.tokens.len == set.tokens) break set;
+    } else return error.ArtifactMismatch;
+    if (vocab.merge_ranks.count() != set.merges) return error.ArtifactMismatch;
+    const config_path = try std.fs.path.join(gpa, &.{ dir, "tokenizer", "tokenizer_config.json" });
+    defer gpa.free(config_path);
+    const config = try std.Io.Dir.cwd().readFileAlloc(io, config_path, gpa, .limited(1024 * 1024));
+    defer gpa.free(config);
+    const specials = try inference.profiles.laya.Specials.find(gpa, &tokenizer, config);
+    if (!std.mem.eql(u32, &.{ specials.cls, specials.sep, specials.mask }, &set.specials)) return error.TokenIdMismatch;
 
     const Case = struct { text: []const u8, ids: []const u32 };
-    const cases = try std.json.parseFromSlice(struct { token_cases: []const Case }, gpa, laya_tokens, .{ .ignore_unknown_fields = true });
+    const cases = try std.json.parseFromSlice(struct { token_cases: []const Case }, gpa, set.tokens_json, .{ .ignore_unknown_fields = true });
     defer cases.deinit();
     var decoded_cases: usize = 0;
     for (cases.value.token_cases) |case| {
@@ -173,7 +207,9 @@ fn checkLaya(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
             std.debug.print("Mismatch for {f}: expected {any}, got {any}\n", .{ std.json.fmt(case.text, .{}), case.ids, ids });
             return error.TokenizationMismatch;
         }
-        // Decoding restores text that NFC leaves alone and no marker strips.
+        // Byte-level decoding restores text that NFC leaves alone and no marker
+        // strips; a Metaspace decode keeps the U+2581 prepended to each gap.
+        if (tokenizer.shape != .byte_level) continue;
         const normalized = try inference.hf_tokenizer.nfc.normalize(gpa, case.text);
         defer if (normalized) |n| gpa.free(n);
         if (normalized != null or std.mem.indexOf(u8, case.text, "[MASK]") != null) continue;
@@ -184,9 +220,9 @@ fn checkLaya(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
     }
 
     const Request = struct { name: []const u8, ids: []const u32, markers: []const usize, head_text: []const u8, options: []const []const u8, state_text: []const u8, truncate_left: bool };
-    const requests = try std.json.parseFromSlice(struct { requests: []const Request }, gpa, laya_requests, .{ .ignore_unknown_fields = true });
+    const requests = try std.json.parseFromSlice(struct { requests: []const Request }, gpa, set.requests_json, .{ .ignore_unknown_fields = true });
     defer requests.deinit();
-    const sep = vocab.tokenId("[SEP]").?;
+    const sep = specials.sep;
     for (requests.value.requests) |r| {
         const first = r.markers[0];
         try expectPrefix(gpa, &tokenizer, r.name, r.head_text, r.ids[1 .. first - 1]);
@@ -208,22 +244,21 @@ fn checkLaya(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
             return error.TokenizationMismatch;
         }
     }
-    std.debug.print("Laya tokenizer check passed: {d} tokens, {d} merges; {d} text cases ({d} decoded back), {d} request sequences.\n", .{ vocab.tokens.len, vocab.merge_ranks.count(), cases.value.token_cases.len, decoded_cases, requests.value.requests.len });
-    try checkLayaProfile(gpa, io, dir, &tokenizer);
+    std.debug.print("Laya tokenizer check passed ({s}): {d} tokens, {d} merges; {d} text cases ({d} decoded back), {d} request sequences.\n", .{ set.name, vocab.tokens.len, vocab.merge_ranks.count(), cases.value.token_cases.len, decoded_cases, requests.value.requests.len });
+    try checkLayaProfile(gpa, io, dir, &tokenizer, specials, set.requests_json);
 }
 
 /// The profile end to end on the oracle's requests: each question and state
 /// as given builds exactly the recorded sequence, and the recorded logits
 /// calibrate to the package's answer (rounded to 4 places, as it reports).
-fn checkLayaProfile(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, tokenizer: *const inference.hf_tokenizer.Tokenizer) !void {
+fn checkLayaProfile(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, tokenizer: *const inference.hf_tokenizer.Tokenizer, specials: inference.profiles.laya.Specials, requests_json: []const u8) !void {
     const profile = inference.profiles.laya;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const config_path = try std.fs.path.join(arena, &.{ dir, "rl_agent_config.json" });
     const config = try profile.parseAgentConfig(arena, try std.Io.Dir.cwd().readFileAlloc(io, config_path, arena, .limited(1024 * 1024)));
-    const specials = try profile.Specials.find(tokenizer);
-    const root = try std.json.parseFromSliceLeaky(std.json.Value, arena, laya_requests, .{});
+    const root = try std.json.parseFromSliceLeaky(std.json.Value, arena, requests_json, .{});
     var worst: f64 = 0;
     for (root.object.get("requests").?.array.items) |request| {
         const r = request.object;
@@ -234,7 +269,7 @@ fn checkLayaProfile(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, tokeniz
             return err;
         };
         const state = r.get("state").?;
-        const state_text = try profile.unmask(arena, switch (state) {
+        const state_text = try specials.unmask(arena, switch (state) {
             .string => |t| t,
             else => try profile.pythonJson(arena, state),
         });

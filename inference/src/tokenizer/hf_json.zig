@@ -1,11 +1,16 @@
-//! A Hugging Face `tokenizer.json` with a byte-level BPE model, loaded into
-//! the shared Vocabulary and encoded the way that library encodes without
-//! special-token insertion: added tokens split the text in two passes, each
-//! the leftmost-longest match; first those with `normalized: false` on the
-//! raw text, then, after NFC, those with `normalized: true`; what remains is
-//! split by the GPT-2 pattern (gpt2.zig) and merged by bpe.zig. Other
-//! models, normalizers, pre-tokenizers, decoders, and added-token flags are
-//! rejected by name. The post-processor, truncation, and padding are
+//! A Hugging Face `tokenizer.json` with a BPE model in one of two shapes,
+//! loaded into the shared Vocabulary and encoded the way that library encodes
+//! without special-token insertion. Added tokens split the text in two
+//! passes, each the leftmost-longest match: first those with `normalized:
+//! false` on the raw text, then, after normalization, those with `normalized:
+//! true`. What remains is split and merged by the shape:
+//! - byte-level (ModernBERT): NFC or no normalizer, the GPT-2 pattern
+//!   (gpt2.zig), byte-alphabet merges;
+//! - Metaspace (mmBERT, a Gemma vocabulary): spaces become U+2581, one is
+//!   prepended to each gap, each U+2581 starts a piece, and pieces merge as
+//!   SentencePiece BPE with byte fallback (`bpe.encodeSpmBudget`).
+//! Other models, normalizers, pre-tokenizers, decoders, and added-token flags
+//! are rejected by name. The post-processor, truncation, and padding are
 //! call-time policy and are ignored: encode never adds tokens.
 const std = @import("std");
 const vocabulary = @import("vocabulary.zig");
@@ -42,10 +47,15 @@ pub const Error = std.mem.Allocator.Error || error{
 
 pub const EncodeError = encoder.Error || nfc.Error;
 
+/// The accepted shapes, named by their pre-tokenizer.
+pub const Shape = enum { byte_level, metaspace };
+
 pub const Tokenizer = struct {
-    /// `pre` is "gpt2": normal tokens decode through the byte alphabet, added
-    /// tokens (control or user-defined) are their raw text.
+    /// `pre` is "gpt2" (byte-level: normal tokens decode through the byte
+    /// alphabet) or "metaspace" (`<0xNN>` tokens are `.byte`, U+2581 decodes
+    /// to a space); added tokens (control or user-defined) are their raw text.
     vocab: vocabulary.Vocabulary,
+    shape: Shape,
     /// Added-token ids of each pass, longest text first; arena-owned.
     raw: []const u32,
     normalized: []const u32,
@@ -107,17 +117,56 @@ const Encoding = struct {
                 defer if (normalized) |n| self.alloc.free(n);
                 try self.split(normalized orelse text, self.tokenizer.normalized, .normalized);
             },
-            .normalized => {
-                var it = try gpt2.Iterator.init(text);
-                while (it.next()) |piece| {
-                    var piece_limits = self.limits.piece;
-                    piece_limits.output_tokens = @min(piece_limits.output_tokens, self.limits.output_tokens - self.output.items.len);
-                    const ids = try bpe.encodePieceBudget(self.alloc, &self.tokenizer.vocab, piece, piece_limits, &self.bpe_work);
-                    defer self.alloc.free(ids);
-                    try self.output.appendSlice(self.alloc, ids);
-                }
+            .normalized => switch (self.tokenizer.shape) {
+                .byte_level => {
+                    var it = try gpt2.Iterator.init(text);
+                    while (it.next()) |text_piece| try self.piece(text_piece);
+                },
+                .metaspace => try self.metaspace(text),
             },
         }
+    }
+
+    /// Spaces become U+2581, one is prepended unless the text starts with
+    /// one, and each U+2581 starts a new piece.
+    fn metaspace(self: *Encoding, text: []const u8) EncodeError!void {
+        var spaces: usize = 0;
+        for (text) |byte| spaces += @intFromBool(byte == ' ');
+        const prepend = text[0] != ' ' and !std.mem.startsWith(u8, text, escaped_space);
+        const escaped = try self.alloc.alloc(u8, text.len + spaces * 2 + @as(usize, if (prepend) 3 else 0));
+        defer self.alloc.free(escaped);
+        var n: usize = 0;
+        if (prepend) {
+            @memcpy(escaped[0..3], escaped_space);
+            n = 3;
+        }
+        for (text) |byte| if (byte == ' ') {
+            @memcpy(escaped[n..][0..3], escaped_space);
+            n += 3;
+        } else {
+            escaped[n] = byte;
+            n += 1;
+        };
+        // U+2581's lead byte never occurs inside another character, so a
+        // byte search finds only whole ones.
+        var start: usize = 0;
+        while (start < escaped.len) {
+            const end = std.mem.indexOfPos(u8, escaped, start + 1, escaped_space) orelse escaped.len;
+            try self.piece(escaped[start..end]);
+            start = end;
+        }
+    }
+
+    fn piece(self: *Encoding, text: []const u8) EncodeError!void {
+        var piece_limits = self.limits.piece;
+        piece_limits.output_tokens = @min(piece_limits.output_tokens, self.limits.output_tokens - self.output.items.len);
+        const vocab = &self.tokenizer.vocab;
+        const ids = switch (self.tokenizer.shape) {
+            .byte_level => try bpe.encodePieceBudget(self.alloc, vocab, text, piece_limits, &self.bpe_work),
+            .metaspace => try bpe.encodeSpmBudget(self.alloc, vocab, text, piece_limits, &self.bpe_work),
+        };
+        defer self.alloc.free(ids);
+        try self.output.appendSlice(self.alloc, ids);
     }
 
     fn emit(self: *Encoding, id: u32) EncodeError!void {
@@ -198,17 +247,33 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
         else => error.InvalidTokenizerJson,
     };
     const model = file.model;
-    if (!std.mem.eql(u8, model.type, "BPE") or model.dropout != null or model.unk_token != null or
-        nonEmpty(model.continuing_subword_prefix) or nonEmpty(model.end_of_word_suffix) or
-        model.byte_fallback or model.ignore_merges) return error.UnsupportedModel;
-    const use_nfc = if (file.normalizer) |n| blk: {
-        if (!isType(n, "NFC")) return error.UnsupportedNormalizer;
-        break :blk true;
-    } else false;
     const splitter = file.pre_tokenizer orelse return error.UnsupportedPreTokenizer;
-    if (!isType(splitter, "ByteLevel") or flag(splitter, "add_prefix_space", false) or !flag(splitter, "use_regex", true))
-        return error.UnsupportedPreTokenizer;
-    if (file.decoder) |d| if (!isType(d, "ByteLevel")) return error.UnsupportedDecoder;
+    const shape: Shape = if (isType(splitter, "ByteLevel")) .byte_level else if (isType(splitter, "Metaspace")) .metaspace else return error.UnsupportedPreTokenizer;
+    if (!std.mem.eql(u8, model.type, "BPE") or model.dropout != null or
+        nonEmpty(model.continuing_subword_prefix) or nonEmpty(model.end_of_word_suffix) or model.ignore_merges)
+        return error.UnsupportedModel;
+    var use_nfc = false;
+    switch (shape) {
+        .byte_level => {
+            if (model.unk_token != null or model.byte_fallback) return error.UnsupportedModel;
+            if (file.normalizer) |n| {
+                if (!isType(n, "NFC")) return error.UnsupportedNormalizer;
+                use_nfc = true;
+            }
+            if (flag(splitter, "add_prefix_space", false) or !flag(splitter, "use_regex", true))
+                return error.UnsupportedPreTokenizer;
+            if (file.decoder) |d| if (!isType(d, "ByteLevel")) return error.UnsupportedDecoder;
+        },
+        .metaspace => {
+            // `unk_token` is never produced: the byte tokens cover every input (below).
+            if (!model.byte_fallback) return error.UnsupportedModel;
+            if (!isReplace(file.normalizer orelse return error.UnsupportedNormalizer, " ", escaped_space))
+                return error.UnsupportedNormalizer;
+            if (!isString(splitter, "replacement", escaped_space) or !isString(splitter, "prepend_scheme", "always") or !flag(splitter, "split", false))
+                return error.UnsupportedPreTokenizer;
+            if (file.decoder) |d| if (!isMetaspaceDecoder(d)) return error.UnsupportedDecoder;
+        },
+    }
 
     if (model.vocab.map.count() == 0 or model.merges.len > limits.merges or file.added_tokens.len > limits.added)
         return error.LimitExceeded;
@@ -244,7 +309,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
     var raw: std.ArrayList(u32) = .empty;
     var normalized: std.ArrayList(u32) = .empty;
     for (file.added_tokens) |a| {
-        if (a.single_word or a.rstrip) return error.UnsupportedAddedToken;
+        if (a.single_word or a.rstrip or (a.normalized and shape == .metaspace)) return error.UnsupportedAddedToken;
         if (a.content.len == 0 or a.content.len > limits.added_bytes or !std.unicode.utf8ValidateSlice(a.content))
             return error.InvalidAddedToken;
         const kind: vocabulary.TokenType = if (a.special) .control else .user_defined;
@@ -264,6 +329,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
         try (if (a.normalized) &normalized else &raw).append(alloc, a.id);
     }
     for (filled) |f| if (!f) return error.InvalidToken;
+    if (shape == .metaspace) try markByteTokens(tokens, &ids);
     for ([_]*std.ArrayList(u32){ &raw, &normalized }) |list| std.mem.sort(u32, list.items, tokens, struct {
         fn longer(t: []const vocabulary.Token, a: u32, b: u32) bool {
             return if (t[a].text.len != t[b].text.len) t[a].text.len > t[b].text.len else a < b;
@@ -303,12 +369,52 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
     }
 
     return .{
-        .vocab = .{ .storage = arena, .tokens = tokens, .pre = "gpt2", .bos = null, .eos = null, .padding = null, .token_ids = ids, .merge_ranks = ranks },
+        .vocab = .{ .storage = arena, .tokens = tokens, .pre = if (shape == .metaspace) "metaspace" else "gpt2", .bos = null, .eos = null, .padding = null, .token_ids = ids, .merge_ranks = ranks },
+        .shape = shape,
         .raw = raw.items,
         .normalized = normalized.items,
         .lstrip = lstrip,
         .nfc = use_nfc,
     };
+}
+
+const escaped_space = "\u{2581}";
+
+/// Marks the `<0xNN>` tokens `.byte`. Byte fallback must never miss: a byte
+/// without its token is accepted only when no valid UTF-8 input can reach
+/// it (never a UTF-8 byte, or ASCII spelled by a token of its own).
+fn markByteTokens(tokens: []vocabulary.Token, ids: *const std.StringHashMapUnmanaged(u32)) Error!void {
+    const hex = "0123456789ABCDEF";
+    for (0..256) |b| {
+        const name = [_]u8{ '<', '0', 'x', hex[b >> 4], hex[b & 15], '>' };
+        if (ids.get(&name)) |id| {
+            if (tokens[id].kind != .normal) return error.InvalidToken;
+            tokens[id].kind = .byte;
+        } else if (b >= 0x80) {
+            if (b != 0xC0 and b != 0xC1 and b < 0xF5) return error.UnsupportedModel;
+        } else if (ids.get(&[_]u8{@intCast(b)}) == null) return error.UnsupportedModel;
+    }
+}
+
+/// `{"type":"Replace","pattern":{"String":from},"content":to}`.
+fn isReplace(value: std.json.Value, from: []const u8, to: []const u8) bool {
+    if (!isType(value, "Replace") or !isString(value, "content", to)) return false;
+    const pattern = value.object.get("pattern") orelse return false;
+    return pattern == .object and pattern.object.count() == 1 and isString(pattern, "String", from);
+}
+
+/// U+2581 back to spaces, then byte tokens to bytes, then one string.
+fn isMetaspaceDecoder(value: std.json.Value) bool {
+    if (!isType(value, "Sequence")) return false;
+    const steps = value.object.get("decoders") orelse return false;
+    if (steps != .array or steps.array.items.len != 3) return false;
+    const items = steps.array.items;
+    return isReplace(items[0], escaped_space, " ") and isType(items[1], "ByteFallback") and isType(items[2], "Fuse");
+}
+
+fn isString(value: std.json.Value, name: []const u8, expected: []const u8) bool {
+    const field = value.object.get(name) orelse return false;
+    return field == .string and std.mem.eql(u8, field.string, expected);
 }
 
 fn nonEmpty(text: ?[]const u8) bool {
@@ -424,4 +530,74 @@ test "parse and encode release everything on allocation failure" {
             gpa.free(ids);
         }
     }.run, .{});
+}
+
+/// A Metaspace tokenizer: the 256 byte tokens are ids 0..255, `replace`
+/// edits the JSON, and `drop` renames one byte token (`""` for none).
+fn metaspaceFixture(gpa: std.mem.Allocator, replace: [2][]const u8, drop: []const u8) !Tokenizer {
+    var json: std.Io.Writer.Allocating = .init(gpa);
+    defer json.deinit();
+    const w = &json.writer;
+    try w.writeAll(
+        \\{"added_tokens":[
+        \\  {"id":256,"content":"<unk>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true},
+        \\  {"id":257,"content":"<mask>","single_word":false,"lstrip":true,"rstrip":false,"normalized":false,"special":true},
+        \\  {"id":264,"content":"\n\n","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":false}],
+        \\ "normalizer":{"type":"Replace","pattern":{"String":" "},"content":"▁"},
+        \\ "pre_tokenizer":{"type":"Metaspace","replacement":"▁","prepend_scheme":"always","split":true},
+        \\ "decoder":{"type":"Sequence","decoders":[{"type":"Replace","pattern":{"String":"▁"},"content":" "},{"type":"ByteFallback"},{"type":"Fuse"}]},
+        \\ "model":{"type":"BPE","dropout":null,"unk_token":"<unk>","fuse_unk":true,"byte_fallback":true,"vocab":{
+    );
+    for (0..256) |b| {
+        var name: [6]u8 = undefined;
+        _ = try std.fmt.bufPrint(&name, "<0x{X:0>2}>", .{b});
+        // A dropped byte token keeps its id under another name: ids stay dense.
+        if (std.mem.eql(u8, &name, drop)) try w.print("\"r{d}\":{d},", .{ b, b }) else try w.print("\"{s}\":{d},", .{ name, b });
+    }
+    try w.writeAll(
+        \\"<unk>":256,"<mask>":257,"▁":258,"a":259,"b":260,"▁a":261,"ab":262,"▁ab":263,"\n\n":264},
+        \\ "merges":[["▁","a"],["a","b"],["▁a","b"]]}}
+    );
+    if (replace[0].len == 0) return parse(gpa, json.written(), .{});
+    const bytes = try std.mem.replaceOwned(u8, gpa, json.written(), replace[0], replace[1]);
+    defer gpa.free(bytes);
+    return parse(gpa, bytes, .{});
+}
+
+test "Metaspace: a U+2581 prepended per gap, one piece per U+2581, byte fallback" {
+    const gpa = std.testing.allocator;
+    var t = try metaspaceFixture(gpa, .{ "", "" }, "");
+    defer t.deinit();
+    try std.testing.expectEqual(Shape.metaspace, t.shape);
+    try std.testing.expectEqual(vocabulary.TokenType.byte, t.vocab.tokens[0xA9].kind);
+    try expectIds(&t, "", &.{});
+    try expectIds(&t, "ab", &.{263});
+    try expectIds(&t, " ab", &.{263});
+    try expectIds(&t, "a  b", &.{ 261, 258, 258, 260 });
+    // `<mask>` swallows the spaces before it; the gap after it gets its own U+2581.
+    try expectIds(&t, "a <mask>b", &.{ 261, 257, 258, 260 });
+    // Characters the vocabulary lacks fall back to their bytes, unmerged.
+    try expectIds(&t, "\u{e9}", &.{ 258, 0xC3, 0xA9 });
+    try expectIds(&t, "x\n\nab", &.{ 258, 'x', 264, 263 });
+    const decoded = try bpe.decode(gpa, &t.vocab, &.{ 261, 257, 258, 0xC3, 0xA9, 264 }, true, .{});
+    defer gpa.free(decoded);
+    try std.testing.expectEqualStrings(" a<mask> \u{e9}\n\n", decoded);
+}
+
+test "Metaspace: other normalizers, schemes, and uncovered bytes are rejected" {
+    const gpa = std.testing.allocator;
+    const none: [2][]const u8 = .{ "", "" };
+    try std.testing.expectError(error.UnsupportedNormalizer, metaspaceFixture(gpa, .{ "\"content\":\"▁\"}", "\"content\":\"_\"}" }, ""));
+    try std.testing.expectError(error.UnsupportedPreTokenizer, metaspaceFixture(gpa, .{ "\"always\"", "\"first\"" }, ""));
+    try std.testing.expectError(error.UnsupportedDecoder, metaspaceFixture(gpa, .{ "{\"type\":\"Fuse\"}", "{\"type\":\"Strip\"}" }, ""));
+    try std.testing.expectError(error.UnsupportedModel, metaspaceFixture(gpa, .{ "\"byte_fallback\":true", "\"byte_fallback\":false" }, ""));
+    try std.testing.expectError(error.UnsupportedAddedToken, metaspaceFixture(gpa, .{ "\"normalized\":false,\"special\":false", "\"normalized\":true,\"special\":false" }, ""));
+    // A UTF-8 byte, or ASCII without a token of its own, must have its byte token.
+    try std.testing.expectError(error.UnsupportedModel, metaspaceFixture(gpa, none, "<0x80>"));
+    try std.testing.expectError(error.UnsupportedModel, metaspaceFixture(gpa, none, "<0x78>"));
+    // Neither can reach byte fallback: 0xC0 is never UTF-8, `a` is a token.
+    inline for (.{ "<0xC0>", "<0x61>" }) |drop| {
+        var t = try metaspaceFixture(gpa, none, drop);
+        t.deinit();
+    }
 }

@@ -1,19 +1,23 @@
 //! Explicit full-model check of Laya's forward against the oracle's fixtures
-//! (scripts/laya-reference.py): every request of `requests.json` runs
+//! (scripts/laya-reference.py), the set whose hidden size is the
+//! checkpoint's (root or multilingual): every request of `requests.json` runs
 //! through the encoder and head, and each stage the fixture holds is
 //! compared row by row with `activations.f32`, then the logits. Needs the
 //! pulled checkpoint directory. `--backend metal` checks the Metal plan the
 //! same way, then that one packed batch of every request gives exactly the
 //! logits of one at a time, and the plan's cleanup on the tiny checkpoint;
-//! `--profile` after it prints the GPU time per kernel of the 512-token
-//! request and of all 8 packed.
+//! `--profile` after it prints the GPU time per kernel of the `long_text`
+//! request and of all the requests packed.
 const std = @import("std");
 const inference = @import("inference");
 const laya = inference.models.laya;
 const metal = inference.metal;
 
-const requests_json = @embedFile("src/models/fixtures/laya/requests.json");
-const activations = @embedFile("src/models/fixtures/laya/activations.f32");
+const Fixture = struct { requests_json: []const u8, activations: []const u8 };
+const fixtures = [_]Fixture{
+    .{ .requests_json = @embedFile("src/models/fixtures/laya/requests.json"), .activations = @embedFile("src/models/fixtures/laya/activations.f32") },
+    .{ .requests_json = @embedFile("src/models/fixtures/laya-multilingual/requests.json"), .activations = @embedFile("src/models/fixtures/laya-multilingual/activations.f32") },
+};
 
 /// Bounds relative to magnitude, since F32 summation-order differences scale
 /// with the values summed and the pre-norm residual carries outliers near
@@ -31,6 +35,7 @@ const Stats = struct { max_abs: f64 = 0, max_ref: f64 = 0, diff2: f64 = 0, ref2:
 
 const Compare = struct {
     request: *const Request,
+    activations: []const u8,
     hidden: usize,
     stats: []Stats,
 
@@ -46,7 +51,7 @@ const Compare = struct {
             if (!std.mem.eql(u8, t.name, name)) continue;
             s.seen = true;
             for (t.rows, 0..) |row, r| for (0..self.hidden) |c| {
-                const want: f64 = reference(t.offset + r * self.hidden + c);
+                const want: f64 = reference(self.activations, t.offset + r * self.hidden + c);
                 const d = states[row * self.hidden + c] - want;
                 s.max_abs = @max(s.max_abs, @abs(d));
                 s.max_ref = @max(s.max_ref, @abs(want));
@@ -57,7 +62,7 @@ const Compare = struct {
     }
 };
 
-fn reference(index: usize) f32 {
+fn reference(activations: []const u8, index: usize) f32 {
     return @bitCast(std.mem.readInt(u32, activations[index * 4 ..][0..4], .little));
 }
 
@@ -69,14 +74,17 @@ pub fn main(init: std.process.Init) !void {
     const backend: laya.Backend = if (args.len >= 4) std.meta.stringToEnum(laya.Backend, args[3]) orelse return error.UnknownBackend else .cpu;
     const profile = args.len == 5 and std.mem.eql(u8, args[4], "--profile") and backend == .metal;
     if (args.len == 5 and !profile) return error.UnknownOption;
-    const parsed = try std.json.parseFromSlice(struct { hidden: usize, requests: []const Request }, gpa, requests_json, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
     const load_start = std.Io.Clock.awake.now(io);
     var model = try laya.Laya.open(gpa, io, args[1], backend);
     defer model.deinit(io);
     const load_ms = load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
-    if (model.config.hidden != parsed.value.hidden) return error.ArtifactMismatch;
+    const File = struct { hidden: usize, requests: []const Request };
+    const parsed: std.json.Parsed(File), const fixture = for (fixtures) |f| {
+        const p = try std.json.parseFromSlice(File, gpa, f.requests_json, .{ .ignore_unknown_fields = true });
+        if (p.value.hidden == model.config.hidden) break .{ p, f };
+        p.deinit();
+    } else return error.ArtifactMismatch;
+    defer parsed.deinit();
     std.debug.print("Laya loaded on the {s} in {d} ms: {d} encoder layers, {d} head layers.\n", .{ @tagName(backend), load_ms, model.config.layers, model.head_layers });
 
     var worst_max: f64 = 0;
@@ -87,7 +95,7 @@ pub fn main(init: std.process.Init) !void {
         const stats = try gpa.alloc(Stats, r.tensors.len);
         defer gpa.free(stats);
         @memset(stats, .{});
-        var compare: Compare = .{ .request = r, .hidden = parsed.value.hidden, .stats = stats };
+        var compare: Compare = .{ .request = r, .activations = fixture.activations, .hidden = parsed.value.hidden, .stats = stats };
         const logits = try gpa.alloc(f32, r.markers.len);
         defer gpa.free(logits);
         const start = std.Io.Clock.awake.now(io);
@@ -174,8 +182,8 @@ fn checkLifecycle(gpa: std.mem.Allocator, io: std.Io) !void {
 }
 
 /// GPU time per kernel and shape, each dispatch timestamped (which adds its
-/// own encoder boundaries): the 512-token `long_text` request alone, then
-/// all 8 requests packed, each after a warm-up run.
+/// own encoder boundaries): the `long_text` request alone, then all the
+/// requests packed, each after a warm-up run.
 fn profileKernels(gpa: std.mem.Allocator, io: std.Io, model: *const laya.Laya, requests: []const Request) !void {
     const backend = &model.engine.metal.backend;
     var diagnostic: [256]u8 = undefined;
@@ -191,7 +199,8 @@ fn profileKernels(gpa: std.mem.Allocator, io: std.Io, model: *const laya.Laya, r
         out.* = try a.alloc(f32, r.markers.len);
         if (std.mem.eql(u8, r.name, "long_text")) long = i;
     }
-    for ([_][]const laya.Sequence{ sequences[long..][0..1], sequences }, [_][]const u8{ "long_text alone", "all 8 packed" }) |batch, label| {
+    var all_label: [32]u8 = undefined;
+    for ([_][]const laya.Sequence{ sequences[long..][0..1], sequences }, [_][]const u8{ "long_text alone", try std.fmt.bufPrint(&all_label, "all {d} packed", .{requests.len}) }) |batch, label| {
         try model.logitsBatch(io, a, batch, outs[0..batch.len]);
         backend.profile.?.clear();
         try model.logitsBatch(io, a, batch, outs[0..batch.len]);

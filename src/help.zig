@@ -369,7 +369,8 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
 
     try heading(out, sty, "Options:");
     try row(out, sty, "--model <name|path>", "a decision entry or checkpoint directory;");
-    try more(out, "default decide.model (laya)");
+    try more(out, "default decide.model (laya, English);");
+    try more(out, "laya-multilingual reads other languages");
     try row(out, sty, "--truncate head|tail", "the end of a long state that is cut; default tail,");
     try more(out, "head for a JSON list (a conversation)");
     try row(out, sty, "--backend cpu|metal", "default metal");
@@ -384,9 +385,10 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
 
     try heading(out, sty, "Notes:");
     try plain(out, "Each question is one encoder pass over the question, its options, and the");
-    try plain(out, "state (512 tokens in all; a longer state is cut and flagged). Several");
-    try plain(out, "states rank by the first question: P(true), the expected score, or the");
-    try plain(out, "first option's probability. A request's \"model\" field is ignored.");
+    try plain(out, "state (512 tokens in all, 1,024 for laya-multilingual; a longer state is");
+    try plain(out, "cut and flagged). Several states rank by the first question: P(true),");
+    try plain(out, "the expected score, or the first option's probability. A request's");
+    try plain(out, "\"model\" field is ignored.");
     try out.writeByte('\n');
 }
 

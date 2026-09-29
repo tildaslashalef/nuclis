@@ -115,6 +115,7 @@ repository, revision, the weights' SHA-256, and the support files by name.
 | Entry | Model | Artifact | Notes |
 | --- | --- | --- | --- |
 | `laya` | ModernBERT-large encoder, typed-decision head | `convaiinnovations/laya` `model.safetensors` (F16) and its support files | English; 512 tokens per sequence; the default `decide.model` |
+| `laya-multilingual` | mmBERT-base encoder, the same head | the same repository's `multilingual/model.safetensors` (F16) and its support files | multilingual; 1,024 tokens per sequence; chosen by the caller, never by language detection |
 
 A file outside the catalogue whose architecture has an adapter is
 *runnable*: `config init --discover` registers it (the profile by template
@@ -292,23 +293,28 @@ the tokenizer's BPE and the safetensors loader.
 - The input contract, calibration, and answer fields **must** be the
   reference package's (`laya` 0.3.20): question validation, option
   rendering, structured values rendered as Python's `json.dumps`, the
-  sequence and its budgets (512 tokens; options, then the question text,
+  sequence in the checkpoint's own special tokens and its budgets (the
+  checkpoint's `max_len` and `head_max_len`: 512 and 192 for `laya`,
+  1,024 and 256 for `laya-multilingual`; options, then the question text,
   then the state), a list state cut at its head and any other at its
   tail, temperatures clamped to [0.5, 5.0], answers rounded to 4 places.
   Every question about every state is one sequence.
 - The tokenizer **must** reproduce the reference library's encoding of
-  the checkpoint's `tokenizer.json` (NFC, two added-token passes, the
-  GPT-2 split, byte-level BPE) and reject any other tokenizer shape by
-  name.
+  the checkpoint's `tokenizer.json` in its two shapes (byte-level: NFC,
+  two added-token passes, the GPT-2 split, byte-level BPE; Metaspace:
+  added tokens, `▁` per gap, SentencePiece BPE with byte fallback) and
+  reject any other tokenizer shape by name.
 - The CPU forward **must** match the reference's F32 run within relative
   bounds (largest difference over largest value, and relative RMS, each
   ≤ 1e-5 per stored stage; logits within 1e-4 of max(1, |logit|)); gates
-  `laya-vocabulary` and `laya-cpu`.
+  `laya-vocabulary` and `laya-cpu`, and `laya-multilingual-vocabulary`
+  and `laya-multilingual-cpu`.
 - Host limits, never the caller's: 64 states, 32 questions, 64 options,
   1 MiB per state. A cut state is flagged, never silent.
 - The Metal plan **must** meet the same bounds against the reference, and
   a packed batch **must** give each sequence exactly its logits alone;
-  gate `laya-metal`. `nuclis decide --backend cpu|metal` chooses, metal
+  gates `laya-metal` and `laya-multilingual-metal`. `nuclis decide
+  --backend cpu|metal` chooses, metal
   by default in a Metal build.
 
 Read: [reference/laya.md](reference/laya.md).

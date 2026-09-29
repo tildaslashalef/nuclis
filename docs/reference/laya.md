@@ -4,16 +4,18 @@ Laya (`convaiinnovations/laya`, Apache-2.0) is a decision model: a
 ModernBERT-large encoder with a typed-decision head. It answers a typed
 question (`choice`, `score`, or `noul`, a yes/no probability) about a state
 (text, or a JSON document) in one forward pass, with no decoding. nuclis
-runs the root checkpoint (commit `55cf4c4e`, pulled under
-`~/.nuclis/models/convaiinnovations/laya/`) in these parts:
+runs the English root checkpoint (commit `55cf4c4e`, pulled under
+`~/.nuclis/models/convaiinnovations/laya/`) and, with the same code, the
+multilingual one beside it (an mmBERT-base encoder,
+[below](#the-multilingual-checkpoint)), in these parts:
 
 | Part | Files | Status |
 | --- | --- | --- |
-| Tokenizer | `inference/src/tokenizer/hf_json.zig`, `gpt2.zig`, `nfc.zig` | landed ([tokenizer.md § Hugging Face `tokenizer.json`](tokenizer.md#hugging-face-tokenizerjson)) |
+| Tokenizer | `inference/src/tokenizer/hf_json.zig`, `gpt2.zig`, `nfc.zig`, `bpe.zig` | landed ([tokenizer.md § Hugging Face `tokenizer.json`](tokenizer.md#hugging-face-tokenizerjson)) |
 | Encoder and head, CPU | `inference/src/models/modernbert.zig`, `modernbert_runtime.zig`, `laya.zig`, `inference/src/backends/cpu/dense.zig` | landed (below) |
 | Encoder and head, Metal | `inference/src/models/laya_metal.zig`, `inference/src/backends/metal/` (`attentionSegments`, `geluErfMulRows`) | landed (below) |
 | Input contract, calibration, `Decider` | `inference/src/profiles/laya.zig`, `inference/src/decide.zig` | landed (below) |
-| `nuclis decide`, the `laya` catalogue entry, `decide.model` | `src/decide.zig`, `src/catalog.zig`, `src/config.zig` | landed (below) |
+| `nuclis decide`, the `laya` and `laya-multilingual` catalogue entries, `decide.model` | `src/decide.zig`, `src/catalog.zig`, `src/config.zig` | landed (below) |
 
 **Why it is worth having beside a language model.** Every question
 re-reads its state (the encoder is bidirectional, so nothing is shared
@@ -226,16 +228,23 @@ As the `laya` 0.3.20 package defines it (`laya/common.py`
   (`1.0`, `1e-05`, `1e+16`), keys in their order.
 - **The sequence.** `[CLS] tok("<type> question: <instructions>") [SEP]`,
   then per option `[MASK] tok(" " + text)` (first 48 tokens), `[SEP]`,
-  the state's tokens, `[SEP]`; `[MASK]` spelled in any text becomes a
-  space first. Budgets, in order: if the options leave under 16 of
-  `head_max_len` (192), each is cut to `max(4, (192 − 16) / count)`; the
-  question text keeps `max(8, what remains)`; the state gets the rest of
-  `max_len` (512) less the final `[SEP]`, cut at its tail, or at its head
-  for a list state (a conversation, newest last). Options that still do
-  not fit are `OptionsExceedBudget`.
+  the state's tokens, `[SEP]`; the mask token spelled in any text becomes
+  a space first. The three are the tokens `tokenizer_config.json` names
+  (`cls_token`, `sep_token`, `mask_token`; `[CLS]`, `[SEP]`, `[MASK]`
+  when absent): the multilingual set's are `<bos>`, `<eos>`, `<mask>`, so
+  there `[MASK]` in a text stays text. Budgets, from
+  `rl_agent_config.json` (`max_len` and `head_max_len`, 512 and 192 when
+  absent; the root set's are those, the multilingual set's 1,024 and 256),
+  in order: if the options leave under 16 of `head_max_len`, each is cut
+  to `max(4, (head_max_len − 16) / count)`; the question text keeps
+  `max(8, what remains)`; the state gets the rest of `max_len` less the
+  final `[SEP]`, cut at its tail, or at its head for a list state (a
+  conversation, newest last). Options that still do not fit are
+  `OptionsExceedBudget`.
 
-Checked by the Laya mode of `zig build test-vocabulary` (gate
-`laya-vocabulary`): each of the 8 oracle requests, rebuilt from its raw
+Checked by the Laya mode of `zig build test-vocabulary` (gates
+`laya-vocabulary`, `laya-multilingual-vocabulary`): each oracle request (8
+of the root set, 16 of the multilingual one), rebuilt from its raw
 question and state, gives exactly the package's ids and markers.
 
 ## Calibration and answers
@@ -284,7 +293,7 @@ object: `answer_confidence`, `logits`, `temperature`, `bucket`.
 
 The checkpoint is `--model` or `decide.model` (default `laya`): a registry
 entry of kind `decision` (written by `model pull --register` for a Laya
-layout), the decision catalogue's `laya`
+layout), the decision catalogue's `laya` or `laya-multilingual`
 ([artifacts.md § The catalogue](artifacts.md#the-catalogue)), or a
 directory. Text commands refuse a decision model by name, and `decide`
 refuses a text model.
@@ -339,6 +348,115 @@ threadgroup per (row, head) that reads every visible key itself, so its
 cost grows with the sequence, which is why short states run faster per
 token.
 
+## The multilingual checkpoint
+
+`multilingual/` in the same repository at the same commit (`nuclis model
+pull laya-multilingual`, `nuclis decide --model laya-multilingual`) is
+the same head on an mmBERT-base encoder: 22 layers of hidden 768, 12
+heads of 64, intermediate 1,152, a 256,000-token vocabulary, global
+attention every third layer from 0 and windows of 128 (64 each side)
+between, both RoPE thetas 160,000 (`rope_parameters`, which
+`modernbert.parseConfig` reads); `model.safetensors` is 643,835,514 B, 169
+F16 tensors and the F32 `temperature`, with the root set's tensor names.
+`rl_agent_config.json` gives `max_len` 1,024 and `head_max_len` 256 and
+temperatures of 1 (`max_prefixes` 6 is read by nothing in the package).
+Nothing in the model code changed: the forward, the Metal plan, and the
+2048-row batch already covered the shape. What differs is outside it:
+
+- **Tokenizer.** Gemma's vocabulary as a Metaspace `tokenizer.json`
+  (byte fallback, 580,604 merges, 249 added tokens), the second shape of
+  `hf_json.zig` ([tokenizer.md § Hugging Face `tokenizer.json`](tokenizer.md#hugging-face-tokenizerjson)).
+  Numbers split to single digits, so the same English log line is about
+  40 % more tokens than under the root set.
+- **Special tokens.** `tokenizer_config.json` names `<bos>` (2) as
+  `cls_token`, `<eos>` (1) as `sep_token`, and `<mask>` (4); the
+  package's `build_sequence` uses those, not the encoder config's
+  `cls_token_id` (1). `<mask>` in a text becomes a space, `[MASK]` stays.
+- **Budget.** 1,024 tokens per sequence, 256 for the question and options.
+
+Checked by the same tools on the oracle's 16 requests
+(`scripts/laya-reference.py --subfolder multilingual`,
+`fixtures/laya-multilingual/`): the root set's 8 shapes, where
+`long_text` and `long_list` now fill 1,024 tokens, then states in
+French, German, Spanish, Arabic, Chinese, and Hindi (questions in the
+state's language or in English), a language question, and an 889-token
+French log whose one error line sits past position 512. The tensors kept
+are encoder layers 0, 1, 3, and 21, `final`, and both head layers; the
+bounds are the root set's. Gates `laya-multilingual-vocabulary`,
+`laya-multilingual-cpu`, `laya-multilingual-metal`, tier verify. Measured
+2026-09-29, Apple M4 Pro, Zig 0.16.0, ReleaseFast, the MODL-33 commit;
+worst stage per request, CPU then Metal:
+
+| Request | Tokens | Options | CPU ms | CPU scaled max \|Δ\| (stage) | CPU scaled logit \|Δ\| | Metal ms | Metal scaled max \|Δ\| (stage) | Metal scaled logit \|Δ\| |
+| --- | ---: | ---: | ---: | --- | --- | ---: | --- | --- |
+| `choice_described` | 56 | 3 | 99 | 1.5e-6 (head.0) | 4.7e-6 | 35 | 1.2e-6 (head.0) | 2.3e-6 |
+| `choice_labels` | 36 | 3 | 65 | 1.9e-6 (head.1) | 1.1e-6 | 10 | 1.6e-6 (head.1) | 1.6e-6 |
+| `score` | 52 | 3 | 90 | 1.2e-6 (head.0) | 2.5e-6 | 11 | 2.9e-7 (head.0) | 1.8e-7 |
+| `noul` | 56 | 2 | 97 | 1.0e-6 (head.0) | 7.7e-7 | 11 | 6.8e-7 (final) | 7.7e-7 |
+| `json_state` | 124 | 2 | 212 | 8.9e-7 (head.0) | 1.7e-6 | 21 | 5.0e-7 (final) | 4.3e-7 |
+| `long_text` | 1024 | 3 | 1957 | 2.5e-6 (head.0) | 9.2e-6 | 287 | 8.7e-7 (head.0) | 2.1e-6 |
+| `long_list` | 1024 | 2 | 1947 | 7.6e-6 (head.1) | 9.2e-6 | 285 | 1.2e-6 (head.0) | 1.5e-6 |
+| `choice_20` | 273 | 20 | 473 | 1.4e-6 (head.0) | 5.0e-5 | 47 | 6.4e-7 (encoder.21) | 2.7e-6 |
+| `french_choice` | 77 | 3 | 134 | 1.7e-6 (head.0) | 1.4e-6 | 16 | 5.8e-7 (head.0) | 4.4e-7 |
+| `german_noul` | 66 | 2 | 116 | 1.8e-6 (encoder.21) | 4.1e-6 | 15 | 5.8e-7 (final) | 2.6e-6 |
+| `spanish_score` | 53 | 3 | 92 | 1.5e-6 (head.0) | 4.3e-6 | 11 | 5.2e-7 (head.0) | 2.4e-6 |
+| `arabic_choice` | 44 | 3 | 78 | 2.4e-6 (head.0) | 2.1e-5 | 11 | 1.3e-6 (head.0) | 1.1e-5 |
+| `chinese_choice` | 56 | 3 | 97 | 1.1e-6 (head.0) | 9.9e-7 | 11 | 4.9e-7 (encoder.21) | 3.2e-7 |
+| `hindi_noul` | 58 | 2 | 102 | 8.2e-7 (head.0) | 1.2e-7 | 11 | 4.6e-7 (encoder.21) | 1.2e-7 |
+| `language_id` | 36 | 7 | 65 | 1.4e-6 (head.0) | 5.2e-6 | 10 | 9.7e-7 (head.0) | 1.7e-5 |
+| `long_state` | 889 | 3 | 1686 | 1.4e-6 (head.0) | 6.6e-7 | 234 | 6.0e-7 (head.0) | 1.1e-7 |
+
+Worst relative RMS: 6.5e-6 on the CPU, 1.8e-6 on Metal. All 16 as one
+packed Metal batch (3,924 rows, over two batches, 908 ms) give each
+logit bit-identical to its run alone. Opening the weights alone took 63
+ms on the CPU and 28 ms on Metal.
+
+**Time per call**, measured the way the root set's was (one noul over
+synthetic log states, `nuclis decide --json`, `timings_ms`, ReleaseSafe,
+best of three, the MODL-33 commit, Apple M4 Pro), with states sized to
+this tokenizer. The root set on the same states, Metal, is on the right.
+The CPU skipped the 50-state rows of long states:
+
+| States × state tokens | Input tokens | Encode, Metal | Encode, CPU | Metal, tokens/s | Root set, Metal: input, encode, tokens/s |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 × 88 | 121 | 31 ms | 246 ms | 3,950 | 94, 39 ms, 2,420 |
+| 10 × 55–88 | 1,018 | 124 ms | 2,080 ms | 8,200 | 809, 230 ms, 3,510 |
+| 50 × 55–88 | 4,998 | 577 ms | 10,223 ms | 8,660 | 3,984, 1,084 ms, 3,680 |
+| 1 × 483 | 516 | 108 ms | 1,112 ms | 4,790 | 367, 140 ms, 2,620 |
+| 10 × 450–486 | 4,965 | 858 ms | 10,786 ms | 5,790 | 3,552, 1,213 ms, 2,930 |
+| 50 × 448–486 | 24,722 | 4,143 ms | — | 5,970 | 17,709, 6,037 ms, 2,930 |
+| 1 × 936 | 969 | 286 ms | 2,289 ms | 3,390 | 512 (cut), 201 ms, 2,550 |
+| 10 × 900–939 | 9,481 | 2,547 ms | 22,286 ms | 3,720 | 5,120 (cut), 1,926 ms, 2,660 |
+| 50 × 898–939 | 47,295 | 12,612 ms | — | 3,750 | 25,600 (cut), 9,562 ms, 2,680 |
+
+Metal is 8–18× the CPU. Per token the multilingual set runs 1.3–2.4×
+the root set (its encoder is 22 layers of 768 against 28 of 1,024), less
+for long states, where attention grows with the sequence. Load is 370–425 ms on Metal
+and 570–600 ms on the CPU, against 73–87 ms for the root set: parsing
+the 34 MB `tokenizer.json`.
+
+**What it is for.** The oracle's language requests through both
+checkpoints (`nuclis decide --json`, the answer and its confidence):
+
+| Request | `laya` | `laya-multilingual` |
+| --- | --- | --- |
+| `french_choice` (department) | billing, 0.83 | billing, 1.00 |
+| `german_noul` (threatens to cancel) | 0.06 | 0.93 |
+| `spanish_score` (urgency, 0–2) | 1.56 | 1.54 |
+| `arabic_choice` (sentiment) | neutral, 0.51 | negative, 0.13 |
+| `chinese_choice` (department, question in Chinese) | billing, 0.32 | billing, 1.00 |
+| `hindi_noul` (wants to close the account) | 0.00 | 1.00 |
+| `long_state` (French log, most severe level) | info, 0.04 | error, 0.99 |
+
+It reads the decision in other languages where the root set cannot.
+Language identification is another matter: asked which of English,
+French, German, or Spanish a one-sentence state is written in, the
+multilingual set names French (0.34), German (0.35), and English right
+and calls Spanish English (0.47); the root set names Spanish (0.91) and English
+right and calls French Spanish and German English. The manual test's
+three-option French question gives the multilingual set french 0.42
+(the root set german 0.37).
+
 ## Limits and what is not done
 
 - Metal's attention is the scalar per-(row, head) kernel, 45 % of a
@@ -347,15 +465,20 @@ token.
   (about 3.5 TFLOP/s); the half-operand tiles would round the
   activations, whose outliers reach 1.65·10⁴, to F16 and break the
   bounds. A batch holds at most 2048 rows, which also bounds one
-  sequence on Metal (the contract's is 512). BF16 matrices are refused on
-  Metal (the root set is F16).
+  sequence on Metal (the contracts' are 512 and 1,024). BF16 matrices are
+  refused on Metal (both sets are F16).
 - On Metal Laya shares the GPU with a language model in the same process;
   the two do not run at once (every `commit` waits), so a decision
   delays the model's next step by its encode time.
-- The English root checkpoint only; `multilingual/` (mmBERT, 1,024 and up
-  to 8,192 tokens) needs its own contract check, though
-  `modernbert.parseConfig` reads its config shape.
+- Opening the multilingual set takes about 0.4 s, most of it parsing its
+  34 MB `tokenizer.json` (580,604 merges); the root set opens in about
+  75 ms on Metal. A binary cache of the parsed vocabulary would remove it.
+- Language identification is not what either checkpoint was trained for:
+  asked which language a sentence is in, the multilingual set names
+  French and German right and Spanish wrong, the root set the reverse
+  ([above](#the-multilingual-checkpoint)).
 - The package's `action.act_probability` is not computed (the card says
   it carries no signal); its language-specific temperatures and its
-  `Router` are not implemented.
+  `Router` (automatic choice of checkpoint by language) are not
+  implemented: the caller picks `--model laya-multilingual`.
 - `decide --model` completes directories, not decision entry names.

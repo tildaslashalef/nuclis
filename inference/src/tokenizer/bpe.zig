@@ -293,10 +293,11 @@ fn decodeSpmNormal(text: []const u8, output: ?[]u8) usize {
 /// removal or cleanup heuristics are applied. Other token kinds fail explicitly.
 pub fn decode(alloc: std.mem.Allocator, vocab: *const Vocabulary, ids: []const u32, special: bool, limits: DecodeLimits) Error![]u8 {
     if (ids.len > limits.input_tokens) return error.LimitExceeded;
-    // SPM-style vocabularies (Gemma 4): normal tokens unescape U+2581, byte
-    // tokens are one byte each, and user-defined tokens (the visible chat
-    // markers) are always rendered, as the pinned reference renders them.
-    const spm = std.mem.eql(u8, vocab.pre, "gemma4");
+    // SPM-style vocabularies (Gemma 4, a Metaspace tokenizer.json): normal
+    // tokens unescape U+2581, byte tokens are one byte each, and user-defined
+    // tokens (the visible chat markers) are always rendered, as the pinned
+    // reference renders them.
+    const spm = std.mem.eql(u8, vocab.pre, "gemma4") or std.mem.eql(u8, vocab.pre, "metaspace");
     var size: usize = 0;
     for (ids) |id| {
         if (id >= vocab.tokens.len) return error.InvalidTokenId;

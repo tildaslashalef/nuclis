@@ -5,11 +5,13 @@ Never imported by the build. Run it in the reference venv:
 
     uv venv --python 3.12 .zig-cache/reference/laya-venv
     VIRTUAL_ENV=.zig-cache/reference/laya-venv uv pip install laya==0.3.20
-    USE_TF=0 .zig-cache/reference/laya-venv/bin/python scripts/laya-reference.py
+    USE_TF=0 .zig-cache/reference/laya-venv/bin/python scripts/laya-reference.py [--subfolder multilingual]
 
 It loads the pulled checkpoint (no second download) from a staged copy under
-.zig-cache/reference/laya-model, since the package may rewrite
-tokenizer_config.json in place. Writes inference/src/models/fixtures/laya/:
+.zig-cache/reference/laya-model[-<subfolder>], since the package may rewrite
+tokenizer_config.json in place; a staged subfolder loads as the package's
+`Agent(repo, subfolder=...)` would after its download. Writes
+inference/src/models/fixtures/laya[-<subfolder>]/:
 `requests.json` (versions, per request the sequence, markers, logits, and the
 package's answer; per tensor its rows and offset) with `activations.f32`
 (little-endian F32 rows those offsets index), and `tokens.json` (text → ids
@@ -27,9 +29,13 @@ os.environ.setdefault("USE_TF", "0")
 
 LAYA_VERSION = "0.3.20"
 COMMIT = "55cf4c4e"
-WEIGHTS_SHA256 = "891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c"
+# The weights of each checkpoint in the repository at COMMIT, by subfolder.
+WEIGHTS_SHA256 = {
+    "": "891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c",
+    "multilingual": "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
+}
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-ENCODER_LAYERS = (0, 1, 3, 27)
+MAX_FIXTURE_BYTES = 2 << 20
 
 DEPARTMENT = {"type": "choice", "instructions": "Which department should handle this?",
               "criteria": {"billing": "invoices, payments, refunds",
@@ -101,6 +107,56 @@ TEXTS = [
     json.dumps({"customer": "Zoë Müller", "plan": "pro"}, ensure_ascii=False),
 ]
 
+# The multilingual checkpoint adds states in six languages (questions in the
+# state's language or in English), language identification, and a state past
+# 512 tokens: its budget is 1024, so positions 512..1023 are exercised.
+LANGUAGES = ["english", "french", "german", "spanish", "arabic", "chinese", "hindi"]
+LONG_LOG = "".join(
+    "2026-09-%02d 08:%02d:%02d nœud-%d INFO requête id=%05d chemin=/api/v2/commandes/%d état=200 durée_ms=%d\n"
+    % (1 + i % 28, i % 60, (i * 11) % 60, i % 3, i, i * 17 % 991, 15 + i * 29 % 170) for i in range(14)
+) + "2026-09-29 08:00:00 nœud-1 ERROR connexion à la base de données refusée ; nouvel essai\n"
+
+ML_REQUESTS = [
+    ("french_choice",
+     "Bonjour, nous avons été facturés deux fois pour mars (réf <mask> 4411). Merci de rembourser le "
+     "doublon aujourd'hui, sinon nous résilierons notre abonnement.", DEPARTMENT),
+    ("german_noul",
+     "Ich habe mein Passwort dreimal zurückgesetzt und kann mich immer noch nicht anmelden. "
+     "Das ist inakzeptabel, ich kündige zum Monatsende.",
+     {"type": "noul", "instructions": "Droht der Kunde mit einer Kündigung?"}),
+    ("spanish_score",
+     "El servidor de producción está caído desde hace una hora y ningún cliente puede pagar. [MASK]",
+     {"type": "score", "instructions": "¿Qué tan urgente es esto?",
+      "criteria": ["no urgente", "pronto", "bloqueante"]}),
+    ("arabic_choice", "وصل المنتج مكسوراً وأريد استرداد المبلغ بالكامل. هذه ثالث مرة يحدث هذا!",
+     {"type": "choice", "instructions": "What is the sentiment of this message?",
+      "criteria": ["positive", "negative", "neutral"]}),
+    ("chinese_choice", "我们三月份被重复收费了两次，请今天退还多收的款项。",
+     {"type": "choice", "instructions": "这个问题应该由哪个部门处理？",
+      "criteria": {"billing": "发票、付款、退款", "technical": "错误、故障、系统问题", "other": "其他"}}),
+    ("hindi_noul", "मेरा ऑर्डर तीन हफ्ते से नहीं आया है। कृपया मेरा खाता बंद कर दें।",
+     {"type": "noul", "instructions": "Does the user want to close their account?"}),
+    ("language_id", "Le chat dort sur le canapé.",
+     {"type": "choice", "instructions": "Which language is this text written in?", "criteria": LANGUAGES}),
+    ("long_state", LONG_LOG,
+     {"type": "choice", "instructions": "Quel est le niveau le plus grave dans ce journal ?",
+      "criteria": {"info": "seulement des requêtes de routine", "warning": "dégradé mais fonctionnel",
+                   "error": "une panne"}}),
+]
+
+# Metaspace and byte-fallback edges: scripts, unseen code points, the mask in
+# both spellings, added tokens (newline and tab runs, HTML tags, turn
+# markers), a literal U+2581, and spaces at every position.
+ML_TEXTS = [
+    "Le chat dort sur le canapé.", "Größenwahn auf der Straße", "¿Dónde está la biblioteca? ¡Olé!",
+    "مرحبا بالعالم، هذا اختبار.", "नमस्ते दुनिया, यह एक परीक्षण है।", "Привет, мир!", "สวัสดีครับ",
+    "\U00013000 \U00010000 \u0378 \U000e0001 \x7f\x00", "\U0001f9ff\U0001fae8",
+    "a <mask> b<mask>c  <mask>", "[MASK] <mask>[MASK]", "<bos><eos> <pad> <unk> <2mass> [@BOS@] <unused0>",
+    "<start_of_turn>user\nhi<end_of_turn>\n", "<table><tr><td>x</td></tr></table>",
+    "a\tb", "\t\t\tx", "x\t", "hello ", " ", "  ", "a  b   c", "\n", "x\n\ny", "\r\n",
+    "▁ literal ▁▁ metaspace", "ー—–‐", "\u00a0nbsp\u2009thin\u3000ideographic",
+]
+
 
 def check(agent, name, qtype, logits, answer) -> None:
     """The package batches with padding and rounds to 4 places; its answer
@@ -140,11 +196,17 @@ def sha256(path: pathlib.Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", type=pathlib.Path,
-                        default=pathlib.Path.home() / ".nuclis/models/convaiinnovations/laya")
-    parser.add_argument("--out", type=pathlib.Path, default=ROOT / "inference/src/models/fixtures/laya")
-    parser.add_argument("--skip-digest", action="store_true", help="do not re-hash the 800 MB weights")
+    parser.add_argument("--subfolder", choices=[k for k in WEIGHTS_SHA256 if k], default="",
+                        help="a checkpoint other than the repository's root one")
+    parser.add_argument("--model", type=pathlib.Path, help="the pulled repository (default under ~/.nuclis)")
+    parser.add_argument("--out", type=pathlib.Path, help="default inference/src/models/fixtures/laya[-<subfolder>]")
+    parser.add_argument("--skip-digest", action="store_true", help="do not re-hash the weights")
     args = parser.parse_args()
+    suffix = "-" + args.subfolder if args.subfolder else ""
+    model_dir = (args.model or pathlib.Path.home() / ".nuclis/models/convaiinnovations/laya") / args.subfolder
+    out = args.out or ROOT / ("inference/src/models/fixtures/laya" + suffix)
+    requests_set = REQUESTS + (ML_REQUESTS if args.subfolder else [])
+    texts = TEXTS + (ML_TEXTS if args.subfolder else [])
 
     import laya
     import numpy as np
@@ -156,15 +218,18 @@ def main() -> None:
     from importlib.metadata import version
     if version("laya") != LAYA_VERSION:
         parser.error("laya %s installed, %s pinned" % (version("laya"), LAYA_VERSION))
-    if not args.skip_digest and sha256(args.model / "model.safetensors") != WEIGHTS_SHA256:
-        parser.error("model.safetensors differs from the pinned root set (commit %s)" % COMMIT)
+    weights_sha256 = WEIGHTS_SHA256[args.subfolder]
+    if not args.skip_digest and sha256(model_dir / "model.safetensors") != weights_sha256:
+        parser.error("%s/model.safetensors differs from the pinned set (commit %s)" % (model_dir, COMMIT))
 
-    staged = ROOT / ".zig-cache/reference/laya-model"
-    stage(args.model, staged)
+    staged = ROOT / (".zig-cache/reference/laya-model" + suffix)
+    stage(model_dir, staged)
     torch.manual_seed(0)
     agent = laya.Agent(str(staged), device="cpu")
     assert not agent.amp_enabled and agent.dtype == torch.float32
     model = agent.model.eval()
+    layers = len(model.encoder.layers)
+    encoder_layers = (0, 1, 3, layers - 1)
 
     captured = {}
 
@@ -173,14 +238,14 @@ def main() -> None:
             captured[name] = (output[0] if isinstance(output, tuple) else output).detach()[0].float().clone()
         return hook
 
-    for i in ENCODER_LAYERS:
+    for i in encoder_layers:
         model.encoder.layers[i].register_forward_hook(keep("encoder.%d" % i))
     for i, layer in enumerate(model.head.layers):
         layer.register_forward_hook(keep("head.%d" % i))
 
     blob = bytearray()
     requests = []
-    for name, state, question in REQUESTS:
+    for name, state, question in requests_set:
         agent._check_question(name, question)
         internal = {name: agent._to_internal(question)}
         [item] = agent._encode_state(state, [name], internal)
@@ -202,7 +267,7 @@ def main() -> None:
         kept_markers = sorted(set([markers[0], markers[min(1, len(markers) - 1)], markers[-1]]))
         encoder_rows = sorted(set([0, *kept_markers, n - 1]))
         tensors = []
-        for tname in ["encoder.%d" % i for i in ENCODER_LAYERS] + ["final", "head.0", "head.1"]:
+        for tname in ["encoder.%d" % i for i in encoder_layers] + ["final", "head.0", "head.1"]:
             rows = kept_markers if tname.startswith("head") else encoder_rows
             data = captured[tname][rows].numpy().astype("<f4")
             tensors.append({"name": tname, "rows": rows, "offset": len(blob) // 4})
@@ -231,26 +296,27 @@ def main() -> None:
         print("%-18s %3d tokens %2d options  logits %s" % (name, n, len(markers), np.round(logits, 4)))
 
     tok = agent.tok
-    token_cases = [{"text": t, "ids": tok(t, add_special_tokens=False)["input_ids"]} for t in TEXTS]
+    token_cases = [{"text": t, "ids": tok(t, add_special_tokens=False)["input_ids"]} for t in texts]
 
-    args.out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     versions = {
         "laya": LAYA_VERSION, "torch": torch.__version__, "transformers": transformers.__version__,
         "tokenizers": tokenizers.__version__, "python": sys.version.split()[0],
     }
     meta = {
         "source": "scripts/laya-reference.py", "repo": "convaiinnovations/laya", "commit": COMMIT,
-        "weights_sha256": WEIGHTS_SHA256, "versions": versions, "device": "cpu", "dtype": "float32",
-        "hidden": int(model.encoder.config.hidden_size),
+        "subfolder": args.subfolder, "weights_sha256": weights_sha256, "versions": versions, "device": "cpu", "dtype": "float32",
+        "hidden": int(model.encoder.config.hidden_size), "layers": layers,
+        "max_len": int(agent.cfg.get("max_len", 512)), "head_max_len": int(agent.cfg.get("head_max_len", 192)),
     }
-    (args.out / "requests.json").write_text(json.dumps({**meta, "requests": requests}, ensure_ascii=False, indent=1) + "\n")
-    (args.out / "activations.f32").write_bytes(bytes(blob))
-    (args.out / "tokens.json").write_text(json.dumps({**meta, "token_cases": token_cases}, ensure_ascii=False, indent=1) + "\n")
-    total = sum(p.stat().st_size for p in args.out.iterdir())
+    (out / "requests.json").write_text(json.dumps({**meta, "requests": requests}, ensure_ascii=False, indent=1) + "\n")
+    (out / "activations.f32").write_bytes(bytes(blob))
+    (out / "tokens.json").write_text(json.dumps({**meta, "token_cases": token_cases}, ensure_ascii=False, indent=1) + "\n")
+    total = sum(p.stat().st_size for p in out.iterdir())
     print("versions:", versions)
-    print("wrote %s (%d bytes)" % (args.out, total))
-    if total > 1 << 20:
-        sys.exit("fixtures exceed 1 MiB")
+    print("wrote %s (%d bytes)" % (out, total))
+    if total > MAX_FIXTURE_BYTES:
+        sys.exit("fixtures exceed %d bytes" % MAX_FIXTURE_BYTES)
 
 
 if __name__ == "__main__":

@@ -9,8 +9,8 @@ by `tokenizer.Encoder` with the splitter the vocabulary's `pre` label selects:
 ([gpt4o.zig](../../inference/src/tokenizer/gpt4o.zig), Muse Glimmer), and
 Gemma 4's SPM-style `gemma4` ([gemma4.md § Tokenizer](gemma4.md#tokenizer)).
 The explicit artifact check matches all [prompt/token fixtures](prompt-profile.md).
-A Hugging Face `tokenizer.json` (Laya's ModernBERT tokenizer) loads into the
-same `Vocabulary` through [hf_json.zig](../../inference/src/tokenizer/hf_json.zig)
+A Hugging Face `tokenizer.json` (Laya's ModernBERT and mmBERT tokenizers)
+loads into the same `Vocabulary` through [hf_json.zig](../../inference/src/tokenizer/hf_json.zig)
 and encodes on its own path, [below](#hugging-face-tokenizerjson).
 
 ## Input and ownership
@@ -187,21 +187,34 @@ The scan-based merge core is an independent implementation, checked against the
 
 `hf_tokenizer.parse(allocator, bytes, limits)` reads a whole `tokenizer.json`
 image (the caller reads and bounds the file) into a `Tokenizer`: the shared
-`Vocabulary` with `pre = "gpt2"`, plus the added tokens split by pass. It
-accepts one shape, the one ModernBERT ships, and rejects the rest by name:
-the model must be `BPE` without dropout, `unk_token`, subword affixes,
-`byte_fallback`, or `ignore_merges` (`UnsupportedModel`); the normalizer
-absent or `NFC` (`UnsupportedNormalizer`); the pre-tokenizer `ByteLevel` with
-`use_regex` and without `add_prefix_space` (`UnsupportedPreTokenizer`); the
-decoder absent or `ByteLevel`; no added token may set `single_word` or
-`rstrip` (`UnsupportedAddedToken`). The post-processor, truncation, and
-padding are call-time policy and are ignored: `encode` never inserts tokens.
+`Vocabulary`, plus the added tokens split by pass. It accepts two shapes,
+told apart by the pre-tokenizer, and rejects the rest by name. Both need a
+`BPE` model without dropout, subword affixes, or `ignore_merges`
+(`UnsupportedModel`), and no added token may set `single_word` or `rstrip`
+(`UnsupportedAddedToken`):
+
+| | byte-level (ModernBERT, Laya's root set) | Metaspace (mmBERT, Laya's `multilingual/`) |
+| --- | --- | --- |
+| `Vocabulary.pre` | `"gpt2"` | `"metaspace"` |
+| model | no `unk_token`, no `byte_fallback` | `byte_fallback` (its `unk_token` is never reached, below) |
+| normalizer | absent or `NFC` | `Replace` `" "` → `"▁"` |
+| pre-tokenizer | `ByteLevel`, `use_regex`, no `add_prefix_space` | `Metaspace`, replacement `▁`, `prepend_scheme` `always`, `split` |
+| decoder | absent or `ByteLevel` | absent or `Replace ▁ → " "`, `ByteFallback`, `Fuse` |
+| added tokens | either pass | `normalized: false` only |
+
+The post-processor, truncation, and padding are call-time policy and are
+ignored: `encode` never inserts tokens.
 
 Ids are the model vocabulary's and the added tokens' together, dense from
 zero (an added token may fill a gap, or sit over a vocabulary entry it must
 spell exactly). Added tokens become `control` when `special`, else
 `user_defined`, and keep their raw text, so decoding writes them verbatim.
-Merges may be `"a b"` strings or `["a", "b"]` pairs.
+Merges may be `"a b"` strings or `["a", "b"]` pairs. In the Metaspace shape
+the `<0xNN>` tokens become `byte` tokens, and a byte without one must be
+unreachable: never a UTF-8 byte, or ASCII whose character is a token of its
+own (mmBERT lacks `<0x09>`, and tab is a token). Otherwise the load fails
+with `UnsupportedModel`, so byte fallback can never miss and the reference
+library's `<unk>` path does not exist here.
 
 `Tokenizer.encode` reproduces the reference library's encoding without
 special tokens, checked against it (below):
@@ -220,6 +233,16 @@ special tokens, checked against it (below):
    ([gpt2.zig](../../inference/src/tokenizer/gpt2.zig): case-sensitive
    contractions, unbounded digit runs, marks outside letters, the
    `\s+(?!\S)` lookahead) and merged by `bpe.zig`.
+
+The Metaspace shape runs step 1 as written (every mmBERT added token,
+newline and tab runs and HTML tags among them, matches the raw text, and
+`<mask>` takes the spaces before it). Then each gap has its spaces turned
+into `▁` and gets one `▁` prepended unless it already starts with one, so
+every gap, not just the first, begins a word (`"a <mask>b"` is `▁a`,
+`<mask>`, `▁b`). It is then cut before each `▁` (`"a  b"` is `▁a`, `▁`,
+`▁b`), and each piece merges as SentencePiece BPE over code points
+(`bpe.encodeSpmBudget`, Gemma's), a character the vocabulary lacks falling
+back to its bytes. There is no NFC: decomposed text stays decomposed.
 
 Matching is charged to `limits.special_work`, merges to `limits.bpe_work`.
 The reference library may carry an older Unicode version; text with scalars
@@ -250,14 +273,22 @@ The inference package also exposes `zig build test-vocabulary` independently
 is separate from the shipped nuclis CLI; inspection and structural validation
 do not automatically load the vocabulary.
 
-The Laya checkpoint's directory selects the Hugging Face check instead
-(gate `laya-vocabulary`): all 50,368 ids and 50,009 merges, the four marker
-ids, the 32 texts of `inference/src/models/fixtures/laya/tokens.json`
+The Laya checkpoint's directory selects the Hugging Face check instead,
+with the fixture set its vocabulary size names. For the root set (gate
+`laya-vocabulary`) that is all 50,368 ids and 50,009 merges, the marker
+ids its `tokenizer_config.json` names, the 32 texts of `inference/src/models/fixtures/laya/tokens.json`
 (accents composed and decomposed, Hangul jamo, composition exclusions, CJK,
 emoji, code, whitespace runs, controls, every added-token kind), and every
 text the 8 oracle requests of `requests.json` tokenized, found in their
-recorded sequences. Both fixtures come from `scripts/laya-reference.py`
-(the `laya` 0.3.20 package and its `tokenizers` 0.23.2). The NFC tables
+recorded sequences. For the multilingual set (gate
+`laya-multilingual-vocabulary`) it is 256,000 ids, 580,604 merges, and 59
+texts (those 32, then French, German, Spanish, Arabic, Hindi, Russian, and
+Thai, code points outside the vocabulary for byte fallback, `<mask>` and
+`[MASK]` in text, turn markers, HTML tags, tab and newline runs, a literal
+`▁`, and spaces at every position) plus the 16 requests of
+`fixtures/laya-multilingual/`. The fixtures come from
+`scripts/laya-reference.py [--subfolder multilingual]` (the `laya` 0.3.20
+package and its `tokenizers` 0.23.2). The NFC tables
 pass every NFC column of UCD 17.0.0's `NormalizationTest.txt` whenever
 `scripts/tokenizer-nfc.py` has cached it.
 

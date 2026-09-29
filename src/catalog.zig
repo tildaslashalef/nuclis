@@ -229,6 +229,19 @@ pub const decision_entries = [_]DecisionEntry{
         .quantization = "F16",
         .support = &.{ "encoder/config.json", "rl_agent_config.json", "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json" },
     },
+    // The multilingual checkpoint beside it, an mmBERT-base encoder with the
+    // same head (MODL-33); no routing by language, the caller picks it.
+    .{
+        .name = "laya-multilingual",
+        .repo = "convaiinnovations/laya",
+        .file = "multilingual/model.safetensors",
+        .revision = "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+        .sha256 = "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
+        .size = 643_835_514,
+        .architecture = "modernbert",
+        .quantization = "F16",
+        .support = &.{ "multilingual/encoder/config.json", "multilingual/rl_agent_config.json", "multilingual/tokenizer/tokenizer.json", "multilingual/tokenizer/tokenizer_config.json" },
+    },
 };
 
 pub fn findDecision(name: []const u8) ?*const DecisionEntry {
@@ -324,10 +337,16 @@ test "decision entries are well formed and never text-model names" {
         try std.testing.expectEqual(@as(usize, 64), e.sha256.len);
         try std.testing.expect(find(e.name) == null);
         try std.testing.expect(std.mem.endsWith(u8, e.file, ".safetensors"));
+        // Support files sit in the weights' directory or below it.
+        const prefix = if (std.fs.path.dirname(e.file)) |d| d.len + 1 else 0;
+        for (e.support) |name| try std.testing.expect(prefix == 0 or std.mem.startsWith(u8, name, e.file[0..prefix]));
     }
     const dir = try decisionDirectory(std.testing.allocator, "/m", findDecision("laya").?);
     defer std.testing.allocator.free(dir);
     try std.testing.expectEqualStrings("/m/convaiinnovations/laya", dir);
+    const multilingual = try decisionDirectory(std.testing.allocator, "/m", findDecision("laya-multilingual").?);
+    defer std.testing.allocator.free(multilingual);
+    try std.testing.expectEqualStrings("/m/convaiinnovations/laya/multilingual", multilingual);
     try std.testing.expect(findDecision("qwen3.8-27b") == null);
 }
 

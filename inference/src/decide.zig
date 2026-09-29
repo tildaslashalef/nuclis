@@ -68,7 +68,8 @@ pub const Decider = struct {
     model: laya.Laya,
 
     /// Opens a Laya checkpoint directory (`tokenizer/tokenizer.json`,
-    /// `rl_agent_config.json`, `encoder/config.json`, `model.safetensors`).
+    /// `tokenizer/tokenizer_config.json`, `rl_agent_config.json`,
+    /// `encoder/config.json`, `model.safetensors`).
     pub fn open(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, backend: Backend) !Decider {
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -80,7 +81,9 @@ pub const Decider = struct {
         const config_bytes = try readFile(gpa, io, dir, &.{"rl_agent_config.json"}, max_config_bytes);
         defer gpa.free(config_bytes);
         const config = try profile.parseAgentConfig(arena, config_bytes);
-        const specials = try profile.Specials.find(&tokenizer);
+        const tokenizer_config = try readFile(gpa, io, dir, &.{ "tokenizer", "tokenizer_config.json" }, max_config_bytes);
+        defer gpa.free(tokenizer_config);
+        const specials = try profile.Specials.find(gpa, &tokenizer, tokenizer_config);
         var model = try laya.Laya.open(gpa, io, dir, backend);
         errdefer model.deinit(io);
         return .{ .gpa = gpa, .storage = storage, .tokenizer = tokenizer, .config = config, .specials = specials, .model = model };
@@ -110,7 +113,7 @@ pub const Decider = struct {
         const built = try arena.alloc(profile.Sequence, sequences.len);
         const answers = try arena.alloc(Answer, sequences.len);
         for (results, states, 0..) |*result, state, si| {
-            const state_ids = try self.tokenizer.encode(arena, try profile.unmask(arena, state.text), .{});
+            const state_ids = try self.tokenizer.encode(arena, try self.specials.unmask(arena, state.text), .{});
             result.* = .{ .answers = answers[si * questions.len ..][0..questions.len], .state_tokens = state_ids.len, .truncated = false, .input_tokens = 0 };
             for (questions, prepared, 0..) |q, p, qi| {
                 const k = si * questions.len + qi;

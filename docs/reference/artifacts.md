@@ -302,8 +302,13 @@ commit `55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851`, weights
 `891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c`, F16)
 and, by name, `encoder/config.json`, `rl_agent_config.json`,
 `tokenizer/tokenizer.json`, and `tokenizer/tokenizer_config.json` (plain
-git files, whose Hub identity is a blob id). `nuclis model pull laya`
-fetches the set at that commit and refuses it if the Hub's weights digest
+git files, whose Hub identity is a blob id); and `laya-multilingual`
+(MODL-33), the same commit's `multilingual/model.safetensors`
+(643,835,514 B, SHA-256
+`9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204`, F16)
+with the same four support files under `multilingual/`, which lands in
+`~/.nuclis/models/convaiinnovations/laya/multilingual/`. `nuclis model
+pull laya` (or `laya-multilingual`) fetches the set at that commit and refuses it if the Hub's weights digest
 or a named support file differs; `model ls` lists it after the text
 models, marked `(nuclis decide)`, and its JSON rows carry `kind`
 (listing schema 4). `decide.model` defaults to `laya`; the name is not a

@@ -154,8 +154,9 @@ code from them is present in nuclis.
   5.17.0, and Tokenizers 0.23.2 — the decision model's input contract,
   forward, calibration, and tokenizer behaviour.
   `scripts/laya-reference.py` runs it in a venv under `.zig-cache/reference/`;
-  the fixtures under `inference/src/models/fixtures/laya/` are outputs of
-  running it on the pulled checkpoint, not copies of it.
+  the fixtures under `inference/src/models/fixtures/laya/` and
+  `laya-multilingual/` are outputs of running it on the pulled
+  checkpoints, not copies of them.
 - Model documentation: the Qwen3.8 and Gemma 4 model cards and configuration
   on Hugging Face, and the `convaiinnovations/laya` model card.
 

@@ -1,7 +1,8 @@
 //! Laya's input contract and calibration, as the `laya` 0.3.20 package
 //! defines them: question validation and option rendering, the sequence
 //! `[CLS] <type> question: <instructions> [SEP] ([MASK] option)… [SEP] state
-//! [SEP]` within its budgets, `rl_agent_config.json`, and the calibrated
+//! [SEP]` (spelled in the checkpoint's own special tokens) within its
+//! budgets, `rl_agent_config.json`, and the calibrated
 //! answer. Pure: tokenizing goes through a borrowed Hugging Face tokenizer,
 //! nothing here reads files or runs the model. Structured values are
 //! rendered as Python's `json.dumps(…, ensure_ascii=False)` renders them,
@@ -268,15 +269,6 @@ pub fn writePythonFloat(w: *std.Io.Writer, x: f64) std.Io.Writer.Error!void {
     try w.print("{s}.{s}", .{ digits[0..whole], digits[whole..] });
 }
 
-/// `text` with every `[MASK]` spelled in it replaced by a space, as the
-/// package does before tokenizing instructions, options, and states.
-pub fn unmask(arena: std.mem.Allocator, text: []const u8) ![]const u8 {
-    if (std.mem.indexOf(u8, text, mask_text) == null) return text;
-    return std.mem.replaceOwned(u8, arena, text, mask_text, " ");
-}
-
-const mask_text = "[MASK]";
-
 pub const Budget = struct {
     max_len: usize = 512,
     head_max_len: usize = 192,
@@ -286,31 +278,58 @@ pub const Budget = struct {
 pub const Prepared = struct {
     kind: Kind,
     head: []const u32,
-    /// Each option's `[MASK]` and its first 48 tokens.
+    /// Each option's mask token and its first 48 tokens.
     options: []const []const u32,
 };
 
+/// The tokens a sequence is built from, as the tokenizer names them
+/// (`[CLS]` or `<bos>`); the mask's spelling is removed from every text.
 pub const Specials = struct {
     cls: u32,
     sep: u32,
     mask: u32,
+    /// The mask token's text; borrowed from the tokenizer.
+    mask_text: []const u8,
 
-    pub fn find(tokenizer: *const hf.Tokenizer) error{MissingSpecialToken}!Specials {
-        const v = &tokenizer.vocab;
-        return .{
-            .cls = v.tokenId("[CLS]") orelse return error.MissingSpecialToken,
-            .sep = v.tokenId("[SEP]") orelse return error.MissingSpecialToken,
-            .mask = v.tokenId(mask_text) orelse return error.MissingSpecialToken,
+    pub const Error = std.mem.Allocator.Error || error{ MissingSpecialToken, InvalidTokenizerConfig };
+
+    /// Reads `cls_token`, `sep_token`, and `mask_token` from a
+    /// `tokenizer_config.json` image (each a string or `{"content": ...}`),
+    /// `[CLS]`, `[SEP]`, and `[MASK]` where absent; `gpa` is scratch.
+    pub fn find(gpa: std.mem.Allocator, tokenizer: *const hf.Tokenizer, config: []const u8) Error!Specials {
+        const parsed = std.json.parseFromSlice(std.json.Value, gpa, config, .{}) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.InvalidTokenizerConfig,
         };
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidTokenizerConfig;
+        const v = &tokenizer.vocab;
+        var ids: [3]u32 = undefined;
+        for (&ids, [_][]const u8{ "cls_token", "sep_token", "mask_token" }, [_][]const u8{ "[CLS]", "[SEP]", "[MASK]" }) |*id, key, default| {
+            const text = if (parsed.value.object.get(key)) |value| switch (value) {
+                .string => |t| t,
+                .object => |o| if (o.get("content")) |c| if (c == .string) c.string else return error.InvalidTokenizerConfig else return error.InvalidTokenizerConfig,
+                else => return error.InvalidTokenizerConfig,
+            } else default;
+            id.* = v.tokenId(text) orelse return error.MissingSpecialToken;
+        }
+        return .{ .cls = ids[0], .sep = ids[1], .mask = ids[2], .mask_text = v.tokens[ids[2]].text };
+    }
+
+    /// `text` with every spelling of the mask replaced by a space, as the
+    /// package does before tokenizing instructions, options, and states.
+    pub fn unmask(self: Specials, arena: std.mem.Allocator, text: []const u8) ![]const u8 {
+        if (std.mem.indexOf(u8, text, self.mask_text) == null) return text;
+        return std.mem.replaceOwned(u8, arena, text, self.mask_text, " ");
     }
 };
 
 pub fn prepare(arena: std.mem.Allocator, tokenizer: *const hf.Tokenizer, specials: Specials, question: Question) !Prepared {
-    const head_text = try std.fmt.allocPrint(arena, "{s} question: {s}", .{ question.kind.name(), try unmask(arena, question.instructions) });
+    const head_text = try std.fmt.allocPrint(arena, "{s} question: {s}", .{ question.kind.name(), try specials.unmask(arena, question.instructions) });
     const head = try tokenizer.encode(arena, head_text, .{});
     const options = try arena.alloc([]const u32, question.texts.len);
     for (options, question.texts) |*o, text| {
-        const spaced = try std.fmt.allocPrint(arena, " {s}", .{try unmask(arena, text)});
+        const spaced = try std.fmt.allocPrint(arena, " {s}", .{try specials.unmask(arena, text)});
         const ids = try tokenizer.encode(arena, spaced, .{});
         const kept = ids[0..@min(ids.len, 48)];
         const option = try arena.alloc(u32, 1 + kept.len);
@@ -336,7 +355,7 @@ pub const Sequence = struct {
     truncated: bool,
     /// The question text's tokens kept (the budget may cut them).
     head_kept: usize,
-    /// Tokens each option kept, its `[MASK]` included.
+    /// Tokens each option kept, its mask token included.
     option_kept: []const usize,
 };
 
@@ -622,7 +641,7 @@ test "assembly applies the budgets in the package's order" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const specials: Specials = .{ .cls = 100, .sep = 101, .mask = 102 };
+    const specials: Specials = .{ .cls = 100, .sep = 101, .mask = 102, .mask_text = "[MASK]" };
     const head = [_]u32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
     const option = [_]u32{ 102, 20, 21, 22, 23, 24 };
     const prepared: Prepared = .{ .kind = .choice, .head = &head, .options = &.{ &option, &option } };
@@ -669,4 +688,28 @@ test "agent config clamps temperatures; calibration and rounding" {
     try std.testing.expectApproxEqAbs(@as(f64, 0), score.confidence, 1e-6);
     try std.testing.expectEqual(@as(f64, 0.1235), round4(0.12345678));
     try std.testing.expectEqual(@as(f64, 0.9865), round4(0.98649999));
+}
+
+test "special tokens come from tokenizer_config.json, the bracketed ones by default" {
+    const gpa = std.testing.allocator;
+    var tokenizer = try hf.parse(gpa,
+        \\{"added_tokens":[{"id":0,"content":"[CLS]","normalized":false,"special":true},
+        \\ {"id":1,"content":"[SEP]","normalized":false,"special":true},
+        \\ {"id":2,"content":"[MASK]","normalized":false,"special":true},
+        \\ {"id":3,"content":"<mask>","normalized":false,"special":true}],
+        \\ "pre_tokenizer":{"type":"ByteLevel","add_prefix_space":false,"use_regex":true},
+        \\ "model":{"type":"BPE","vocab":{"a":4},"merges":[]}}
+    , .{});
+    defer tokenizer.deinit();
+    const bracketed = try Specials.find(gpa, &tokenizer, "{}");
+    try std.testing.expectEqual([3]u32{ 0, 1, 2 }, [3]u32{ bracketed.cls, bracketed.sep, bracketed.mask });
+    const own = try Specials.find(gpa, &tokenizer, "{\"mask_token\": {\"content\": \"<mask>\"}}");
+    try std.testing.expectEqual(@as(u32, 3), own.mask);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("a b [MASK]", try own.unmask(arena.allocator(), "a<mask>b [MASK]"));
+    try std.testing.expectError(error.MissingSpecialToken, Specials.find(gpa, &tokenizer, "{\"sep_token\": \"<eos>\"}"));
+    inline for (.{ "{\"cls_token\": 5}", "{\"cls_token\": {\"id\": 0}}", "[]", "not json" }) |config| {
+        try std.testing.expectError(error.InvalidTokenizerConfig, Specials.find(gpa, &tokenizer, config));
+    }
 }

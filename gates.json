@@ -48,6 +48,10 @@
   "laya": {
    "path": "~/.nuclis/models/convaiinnovations/laya",
    "entry": "laya"
+  },
+  "laya_multilingual": {
+   "path": "~/.nuclis/models/convaiinnovations/laya/multilingual",
+   "entry": "laya-multilingual"
   }
  },
  "checks": [
@@ -585,6 +589,7 @@
    "model": "laya",
    "paths": [
     "inference/src/tokenizer/**",
+    "inference/src/profiles/laya.zig",
     "inference/src/models/fixtures/laya/**",
     "inference/vocabulary-check.zig"
    ],
@@ -638,6 +643,82 @@
     "inference/src/backends/metal/**",
     "inference/src/formats/safetensors.zig",
     "inference/src/models/fixtures/laya/**",
+    "inference/laya-check.zig"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-laya",
+    "--",
+    "{model}",
+    "--backend",
+    "metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/laya.md"
+  },
+  {
+   "name": "laya-multilingual-vocabulary",
+   "family": "laya",
+   "tier": "verify",
+   "model": "laya_multilingual",
+   "paths": [
+    "inference/src/tokenizer/**",
+    "inference/src/profiles/laya.zig",
+    "inference/src/models/fixtures/laya-multilingual/**",
+    "inference/vocabulary-check.zig"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-vocabulary",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/tokenizer.md"
+  },
+  {
+   "name": "laya-multilingual-cpu",
+   "family": "laya",
+   "tier": "verify",
+   "model": "laya_multilingual",
+   "paths": [
+    "inference/src/models/modernbert.zig",
+    "inference/src/models/modernbert_runtime.zig",
+    "inference/src/models/laya.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/safetensors.zig",
+    "inference/src/models/fixtures/laya-multilingual/**",
+    "inference/laya-check.zig"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-laya",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/laya.md"
+  },
+  {
+   "name": "laya-multilingual-metal",
+   "family": "laya",
+   "tier": "verify",
+   "model": "laya_multilingual",
+   "paths": [
+    "inference/src/models/modernbert.zig",
+    "inference/src/models/modernbert_runtime.zig",
+    "inference/src/models/laya.zig",
+    "inference/src/models/laya_metal.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/safetensors.zig",
+    "inference/src/models/fixtures/laya-multilingual/**",
     "inference/laya-check.zig"
    ],
    "command": [
