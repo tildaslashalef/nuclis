@@ -143,6 +143,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-32 | The Hub listing keeps its digests in ReleaseFast builds | 2026-09-29 |
 | MODL-30 | Laya on the CPU end to end: the oracle, `tokenizer.json`, ModernBERT and the decision head, `nuclis decide` | 2026-09-29 |
 | REPO-19 | The Gemma 4 12B K-quant file's gates retired with the file | 2026-09-29 |
+| REPO-20 | Fast verification: gates re-derived from code paths (`make verify` 704 s → 246 s), a release tier, `make verify-auto` | 2026-09-29 |
 
 ## Context
 
@@ -5882,3 +5883,93 @@ verify-cpu, 1 verify-long), 10 models, valid.
 **Remaining.** `workloads.json` still defines `gemma4-12b/prose512` and
 `gemma4-12b/acceptance` on the same file; they are records, run only on
 request, and were not asked about.
+
+## REPO-20 — Fast verification: gates re-derived from code paths, a release tier, `make verify-auto` (2026-09-29)
+
+**Outcome.** At the user's call (verification too slow to use freely:
+one full gate set per model file, the Gemma family checked three times),
+the gates were re-derived from what each must protect. A coverage
+matrix (`docs/development.md § What each gate protects`) maps every
+axis that can break independently (kernel × encoding, schedule features,
+session layouts, profiles and tokenizers, projectors, draft sources,
+long context) to the model-free checks and the gates that alone cover
+it. The measured cost sat in four places: the CPU reference running
+inside Metal-tier draft traces (Muse 184 s of its 186 s), the generic
+F32-tile prefill checks, the 8-window perplexities, and a third Gemma
+file adding only its dimensions. With the user's approval:
+
+- `make verify` is the fast tier, one representative file per family and
+  the paths only a variant has: 32 gates. `inference/generation-check.zig`:
+  `--draft-trace --metal` and `checkDraft` under Metal run the plan alone
+  (the CPU halves stay in the `*-draft-trace-cpu` and
+  `*-generation-cpu` gates; the Gemma `propose` check runs on the plan
+  through the F32 tiles); `checkChunkedPrefill` takes its F32-tile and
+  `prefillRows` comparisons over 40 tokens from one stepped run;
+  `--half-tiles-only` for `bonsai-generation-metal` (the schedule checks
+  the Qwen 3.5 plan's `qwen38-generation-metal` covers).
+  `nuclis eval --chunks N` below the reference's count compares against
+  its running value (`chunk_ppl`, `Reference.after`); the Qwen, Muse,
+  and E4B `*-perplexity` gates run two windows. The 26B-A4B keeps all
+  eight: its running difference is −4.1 % after one window and −1.2 %
+  after three and four against a 1 % bound that only the whole run
+  (−0.53 %) meets.
+- `verify-release` (new tier, run before a release with the CPU and
+  long tiers): the `*-perplexity-full` runs, the Gemma 12B QAT file's
+  gates (one global KV head and 48 layers, a shape through the 26B's
+  code), `qwen38-draft-stats` (a report). `gemma4-qat-vocabulary` is
+  removed: the 12B QAT file carries E4B's tokenizer.
+- `test-metal` gains `checkDenseEncodings` (F32/F16/BF16 through matvec
+  and every matmul tile, against the F64 CPU) and `checkVisionNorms`
+  (`layerNorm`, `addBiasRows`), which only the vision and Bonsai gates
+  covered before; the 12B's 16:1 attention geometry was already a
+  fixture.
+- `make verify-auto` (user, the same day): from the diff since the unit's
+  `Base:` line in `TODO.md`, the model-free `checks` the paths select,
+  then the matched `verify` gates cheapest first, one model at a time,
+  by each gate's last measured seconds (`.zig-cache/gates/times.json`)
+  until one fails, then
+  the tiers the manifest's `requires` rules call for, with the file and
+  reason. `AGENTS.md` step 4 now reads: `verify-auto` while iterating
+  and before each commit, `make verify` at a unit's close; a unit
+  records its `Base:`.
+- The runner stamps every output line of a gate with its time since
+  launch (`--timeline`, `timeline` in `--json`) and compiles the check
+  tools first (`zig build check-tools`), so builds are timed apart; the
+  CPU backend's globs are per file (`experts.zig` selects the 26B-A4B,
+  `hadamard.zig` Bonsai, `recurrent.zig` Qwen and Bonsai).
+- Found by `verify-auto`'s first run and fixed: `workloads.json` still
+  named REPO-19's retired `gemma4` model (`gemma4-12b/prose512`,
+  `gemma4-12b/acceptance`), so `make workloads-validate`, and with it
+  `make check`, had failed since REPO-19; the two workloads are removed.
+
+**Evidence** (M4 Pro, 2026-09-29). Before, at `acce06a`: `make verify`
+38/38 in 704 s after 9 s of builds. After, at `0ecbc4f`: `make verify`
+32/32 in 246 s; the release tier's Metal gates 8/8 in 156 s (full
+perplexities within 0.01 % of llama's; the 12B draft trace 1.2 s, was
+47 s; Muse's draft trace 2–4 s, was 186 s). The 2-window perplexities
+differ from the reference's running value by −0.005 % (Qwen), −0.001 %
+(Muse), −0.019 % (E4B). `test-metal`: dense encodings worst 1.9e-7 of
+Σ|w·x|, LayerNorm and bias max abs 9.5e-7. `make verify-auto` from
+`acce06a`: `fmt`, `unit` (37 s), `test-metal` (73 s), `manifests` pass,
+then the 27 gates the diff selects, all passing: 298 s cheapest first
+across models (each switch reloads a model from disk) and 220 s one
+model at a time, the order kept; no `requires` rule matched (the unit changed no CPU
+arithmetic, attention, or cache file). `make gates-validate`: 57 gates
+(verify 32, verify-release 10, verify-long 1, verify-cpu 14), 12
+self-tests.
+
+**Files.** `scripts/gates.py`, `gates.json`, `build.zig` (`check-tools`),
+`inference/generation-check.zig`, `inference/metal-check.zig`,
+`src/eval.zig`, `src/help.zig`, `Makefile`, `workloads.json`,
+`AGENTS.md`, `docs/development.md` (§ Gates, § What each gate protects,
+the workload list), `docs/reference/eval.md`, `TODO.md`,
+`docs/engineering-log.md`.
+
+**Remaining.** The CPU tier was not re-timed: its baseline run was
+stopped when a recompile skewed it, and KERN-19 (the threaded CPU
+reference, split from this unit) takes it first. `verify-auto`'s
+`requires` rules match files, not intent (the long-tier rule's files
+hold more than attention), so its lines still ask for a judgment of the
+diff. Gaps the matrix found and no gate covers: the 12B QAT's
+`gemma4uv` unified projector, the 26B-A4B's assistant head, PQ2_0 past
+its fixtures; `engine.zig` has no unit tests.

@@ -123,9 +123,13 @@ bound holds only for the whole run.
 the `Base:` line of the unit in progress in `TODO.md` (or `BASE=<rev>`),
 runs the model-free `checks` of `gates.json` the changed paths select
 (`fmt` over the changed Zig files, `unit` = `make test`, `test-metal`,
-`manifests`), then the matched `verify` gates cheapest first (each
-gate's last measured seconds, kept in `.zig-cache/gates/times.json` by
-every run) until one fails (`ARGS=--keep-going` runs the rest), and ends
+`manifests`), then the matched `verify` gates cheapest first, one model
+at a time (the pinned files together outgrow the 48 GB, so interleaving
+models reloads each from disk: the same 27 gates took 298 s interleaved,
+220 s grouped; models
+go in the order of their cheapest gate, each gate by its last measured
+seconds, kept in `.zig-cache/gates/times.json` by every run) until one
+fails (`ARGS=--keep-going` runs the rest), and ends
 by naming the tiers the change requires but that did not run, from the
 manifest's `requires` rules, with the file that matched and the rule's
 reason (`verify-cpu` for the CPU kernels, decoders, `*_runtime.zig`
@@ -249,7 +253,7 @@ hardware, the reference rows) and writes the dated record under
 `docs/benchmarks/` as before. The workloads: `qwen38/{prose512,
 prose4096, code}` and their `-draft` pairs, `qwen38/spec/*` (the twelve
 configurations of the speculative record, pair plus baseline each),
-`gemma4-12b/prose512`, `gemma4-qat/prose512{,-draft}`,
+`gemma4-qat/prose512{,-draft}`,
 `gemma4-26b-a4b/prose512`, `muse/prose512{,-draft}`, `bonsai/prose512`,
 and one `<entry>/acceptance` per pinned file.
 

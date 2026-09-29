@@ -267,17 +267,6 @@
       "baseline": true,
       "evidence": "docs/reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
-    "gemma4-12b/prose512": {
-      "kind": "bench",
-      "model": "gemma4",
-      "prompt_tokens": "tests/fixtures/run-2026-09-12-gemma4/prompt-512.json",
-      "max_tokens": 128,
-      "ctx": 32768,
-      "kv": "f16",
-      "warmup": 1,
-      "repeat": 3,
-      "evidence": "docs/reference/bench.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12"
-    },
     "gemma4-qat/prose512": {
       "kind": "bench",
       "model": "gemma4_qat",
@@ -364,15 +353,6 @@
       "record_suffix": "",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/reference/bench.md#acceptance-runs"
-    },
-    "gemma4-12b/acceptance": {
-      "kind": "acceptance",
-      "model": "gemma4",
-      "run": "run-2026-09-12-gemma4",
-      "reference_records": "reference-2026-09-12-gemma4.json",
-      "record_suffix": "gemma4",
-      "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
-      "evidence": "docs/reference/bench.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12"
     },
     "gemma4-qat/acceptance": {
       "kind": "acceptance",

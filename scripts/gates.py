@@ -164,8 +164,15 @@ def requirements(rules, changed):
 
 
 def by_cost(gates, times):
-    """Cheapest first by each gate's last measured seconds; ties keep manifest order."""
-    return sorted(gates, key=lambda g: times.get(g['name'], UNKNOWN_SECONDS))
+    """Cheapest first, one model at a time: the files together outgrow memory,
+    so interleaving models reloads each from disk. Models go in the order of
+    their cheapest gate, a model's gates by their last measured seconds; ties
+    keep manifest order."""
+    cost = lambda g: times.get(g['name'], UNKNOWN_SECONDS)
+    first = {}
+    for g in gates:
+        first[g.get('model')] = min(first.get(g.get('model'), cost(g)), cost(g))
+    return sorted(gates, key=lambda g: (first[g.get('model')], g.get('model') or '', cost(g)))
 
 
 def unit_base(todo_text):
@@ -605,9 +612,15 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(requirements(doc['requires'], ['src/tui/editor.zig']), [])
 
     def test_by_cost_puts_unmeasured_gates_after_cheap_ones(self):
-        gates = [{'name': n} for n in ('slow', 'new', 'cheap', 'mid')]
+        gates = [{'name': n, 'model': 'a'} for n in ('slow', 'new', 'cheap', 'mid')]
         order = [g['name'] for g in by_cost(gates, {'slow': 120.0, 'cheap': 0.5, 'mid': 10.0})]
         self.assertEqual(order, ['cheap', 'mid', 'new', 'slow'])
+
+    def test_by_cost_keeps_a_models_gates_together(self):
+        gates = [{'name': 'a-big', 'model': 'a'}, {'name': 'b-small', 'model': 'b'},
+                 {'name': 'a-small', 'model': 'a'}, {'name': 'b-big', 'model': 'b'}]
+        times = {'a-big': 50.0, 'a-small': 2.0, 'b-small': 0.5, 'b-big': 9.0}
+        self.assertEqual([g['name'] for g in by_cost(gates, times)], ['b-small', 'b-big', 'a-small', 'a-big'])
 
     def test_unit_base_reads_the_first_unit(self):
         text = '## A\n\nBase: `acce06a` (the commit)\n\n## B\n\nBase: `1234567`\n'
