@@ -150,6 +150,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-22 | `.reference/` for durable local state (oracles, venvs, pinned downloads); `.zig-cache` disposable, `make clean-cache` | 2026-09-29 |
 | REPO-23 | The README's Laya section: the experiment and its results | 2026-09-29 |
 | REPO-25 | A gate whose model is absent is skipped, not failed; `--strict` for releases | 2026-09-30 |
+| KERN-19 | A threaded CPU reference, bit-identical: every core through `cpu.matvec`, the CPU tier in 22 min | 2026-09-30 |
 
 ## Context
 
@@ -6254,3 +6255,74 @@ names the skip. The self-test adds `test_missing_models_are_listed`;
 
 **Files.** `scripts/gates.py`, `Makefile`, `docs/development.md`,
 `docs/engineering-log.md`.
+
+## KERN-19 — A threaded CPU reference, bit-identical: the CPU tier in 22 minutes (2026-09-30)
+
+**Outcome.** The CPU reference uses every core without changing a bit of
+what it computes. `cpu.matvec(io, …)` (`backends/cpu/root.zig`) hands
+its rows to one `Io` task per core. Each task takes the next chunk of
+rows from an atomic counter (eight chunks per task, so the performance
+cores take what the efficiency cores have not reached) and decodes into
+its own row of `scratch`; every output row is still one F64 sum in
+column order. A `columns`-wide scratch keeps the serial path, and a
+matrix under 64K weights stays on the calling thread.
+`cpu.matvecScratch(columns)` sizes the scratch for every core. The muse
+vision encoder's `rowsTimes` (a weight row decoded once for every token)
+splits the same way. `io` reaches them through construction: the three
+family runtimes' `Runtime.init` (kept as a field; the DFlash drafter
+carries its own), `cpu.experts.ffn`, the Gemma, Qwen, and muse vision
+`Runtime.init`, `vision.Projector.init`, and `engine.openExecutor`, with
+each runtime's decode scratch widened to one row per core. Attention and
+the DeltaNet recurrence stay serial: in the trace profiles the time was
+the matvec rows' decoding and sums.
+
+**Evidence.** Proof of no change: the seven CPU trace gates' directories
+(598 files, residual streams and logits) are `diff -r`-identical to the
+"before" copies taken at `b5c872c`, both after the first even split and
+after the chunked one, and again after the full tier. The unit test
+"rows split across tasks give the same bits as one thread" compares a
+300 × 512 Q8_0 matvec across 1, 3, and every core. Times, ReleaseFast,
+Apple M4 Pro (8 performance + 4 efficiency cores), nothing else running:
+
+| Gate | Before | After | Speed-up |
+| --- | ---: | ---: | ---: |
+| `qwen38-draft-trace-cpu` | 55.3 s | 6.8 s | 8.1× |
+| `muse-draft-trace-cpu` | 166.9 s | 20.9 s | 8.0× |
+| `gemma4-e4b-draft-trace-cpu` | 14.8 s | 1.9 s | 7.7× |
+| `muse-trace-cpu` | 83.2 s | 16.1 s | 5.2× |
+| `bonsai-trace-cpu` | 50.5 s | 10.5 s | 4.8× |
+| `gemma4-e4b-trace-cpu` | 14.3 s | 3.6 s | 3.9× |
+| `gemma4-26b-a4b-trace-cpu` | 12.4 s | 3.7 s | 3.3× |
+
+The `nuclis generate` traces also pay for loading and for
+`compare-generation.py` reading their files; run alone, the muse
+forward keeps about 8.6 cores busy (9.3 s wall, 80 s CPU). An even split
+first gave 3.2× on Qwen; the process sampler showed 40 % of thread time
+waiting on the slowest (efficiency-core) task, and chunking lifted it to
+8.1×. `make verify-cpu`, the whole tier: 14/14 passed in 1,327 s (22.1
+min, plus 48 s of builds), where the aborted "before" run spent 20 min on
+its first gate (`qwen38-generation-cpu`, now 161 s; the documented
+`qwen38-speculative-cpu` about 20 min, now 308 s). `zig build test`
+passes (the drafter's pinned workspace now adds one 133,120-byte decode
+row per extra core), `zig fmt --check`, and `make lint-py`. `make
+verify-auto` from `5b185ad`: `fmt`, `unit`, `test-metal`, `manifests`,
+`python`, then 27 verify gates, all passing. It named `verify-cpu` (run
+above) and `verify-long` (for `gemma4_runtime.zig`, whose change passes
+`io` and widens a scratch, no attention, cache, or window: not run). One
+earlier `test-metal` run failed after 88 s with its cause not captured;
+three reruns passed with identical numbers. `make verify`: 36/36 in
+266 s.
+
+**Files.** `inference/src/backends/cpu/{root,experts}.zig`,
+`inference/src/models/{qwen35,gemma4,muse_glimmer}_runtime.zig`,
+`inference/src/vision/{gemma4,qwen3vl,muse_glimmer,projector}.zig`,
+`inference/src/engine.zig`, `inference/{generation,metal}-check.zig`,
+`docs/reference/speculative-decoding.md`, `docs/development.md`,
+`AGENTS.md`, `TODO.md`, `docs/engineering-log.md`.
+
+**Remaining.** `muse-vision-cpu` (447 s) and `qwen38-speculative-cpu`
+(308 s) now bound the tier. They were not profiled; the vision
+encoders' serial F64 attention over every patch pair is the first
+suspect if the tier needs to shrink again. The "before" times of the generation, speculative, and
+vision gates were not taken (the full "before" run was aborted); their
+comparison is to the documented hours.

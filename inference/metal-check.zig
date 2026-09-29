@@ -642,7 +642,7 @@ fn attentionBench(alloc: std.mem.Allocator) !void {
 /// prefill lists and gathered tiles over a skewed chunk on both tile
 /// kernels against the reference and the decode path, and the contract
 /// rejections.
-fn checkExperts(alloc: std.mem.Allocator, b: *Backend) !void {
+fn checkExperts(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
     var prng = std.Random.DefaultPrng.init(0xe8e8);
     const random = prng.random();
     // Routing: 128 experts, k 8, six strided rows.
@@ -740,7 +740,7 @@ fn checkExperts(alloc: std.mem.Allocator, b: *Backend) !void {
             for (slots, 0..) |e, s| {
                 const x = input.floats()[s * in_stride ..][0..columns];
                 const matrix = try tensor.expert(e);
-                try inference.cpu.matvec(matrix, x, expected, decoded);
+                try inference.cpu.matvec(io, matrix, x, expected, decoded);
                 const stride = matrix.bytes.len / rows;
                 for (0..rows) |r| {
                     try inference.quant.row(2, matrix.bytes[r * stride ..][0..stride], decoded);
@@ -798,7 +798,7 @@ fn checkExperts(alloc: std.mem.Allocator, b: *Backend) !void {
             try b.commit();
             var f_expected: [8]f32 = undefined;
             for ([_]u32{ 2, 1 }, 0..) |e, s| {
-                try inference.cpu.matvec(try f_tensor.expert(e), input.floats()[s * f_columns ..][0..f_columns], &f_expected, decoded);
+                try inference.cpu.matvec(io, try f_tensor.expert(e), input.floats()[s * f_columns ..][0..f_columns], &f_expected, decoded);
                 for (f_out.floats()[s * f_rows ..][0..f_rows], f_expected) |got, want| try expectClose("gathered dense matvec", got, want, 1e-5);
             }
         }
@@ -860,7 +860,7 @@ fn checkExperts(alloc: std.mem.Allocator, b: *Backend) !void {
             for (0..tokens) |t| {
                 try inference.cpu.experts.route(logits.floats()[t * experts ..][0..experts], &cpu_indices, &cpu_weights);
                 try std.testing.expectEqualSlices(u32, &cpu_indices, @as([*]const u32, @ptrCast(@alignCast(indices.host)))[t * k ..][0..k]);
-                try inference.cpu.experts.ffn(.{ .gate_up = gate_up, .down = down, .down_scale = if (scaled) scales.floats() else null }, x.floats()[t * width ..][0..width], &cpu_indices, &cpu_weights, expected, scratch, acc);
+                try inference.cpu.experts.ffn(io, .{ .gate_up = gate_up, .down = down, .down_scale = if (scaled) scales.floats() else null }, x.floats()[t * width ..][0..width], &cpu_indices, &cpu_weights, expected, scratch, acc);
                 var magnitude: f64 = 0;
                 for (expected) |v| magnitude = @max(magnitude, @abs(v));
                 const tolerance: f64 = 2e-5 * (1 + magnitude);
@@ -941,7 +941,7 @@ fn checkExperts(alloc: std.mem.Allocator, b: *Backend) !void {
             for (0..chunk) |t| {
                 try inference.cpu.experts.route(logits.floats()[t * experts ..][0..experts], &cpu_indices, &cpu_weights);
                 try std.testing.expectEqualSlices(u32, &cpu_indices, idx[t * k ..][0..k]);
-                try inference.cpu.experts.ffn(.{ .gate_up = gate_up, .down = down, .down_scale = scales.floats() }, x.floats()[t * width ..][0..width], &cpu_indices, &cpu_weights, expected[t * width ..][0..width], scratch, acc);
+                try inference.cpu.experts.ffn(io, .{ .gate_up = gate_up, .down = down, .down_scale = scales.floats() }, x.floats()[t * width ..][0..width], &cpu_indices, &cpu_weights, expected[t * width ..][0..width], scratch, acc);
             }
             for (expected) |v| chunk_max = @max(chunk_max, @abs(v));
         }
@@ -2139,7 +2139,7 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
 /// matvec and every matmul tile size, against the F64 CPU matvec per token
 /// row: 40 rows of random weights by 1,280 and 5,120 columns. Bound as the
 /// fixture loops: Σ|w·x|·4e-6 for F32 arithmetic, 2e-4 for half tiles.
-fn checkDenseEncodings(alloc: std.mem.Allocator, b: *Backend) !void {
+fn checkDenseEncodings(alloc: std.mem.Allocator, io: std.Io, b: *Backend) !void {
     var prng = std.Random.DefaultPrng.init(0xbf16);
     const random = prng.random();
     const rows: usize = 40;
@@ -2177,7 +2177,7 @@ fn checkDenseEncodings(alloc: std.mem.Allocator, b: *Backend) !void {
             const half = if (Backend.specializedMatmul(encoding, weights.offset, columns * width, tokens)) |k| Backend.matmulGeometry(k).half else false;
             for (0..tokens) |t| {
                 const x = activations.floats()[t * columns ..][0..columns];
-                try inference.cpu.matvec(matrix, x, expected, decoded);
+                try inference.cpu.matvec(io, matrix, x, expected, decoded);
                 for (0..rows) |r| {
                     try inference.quant.row(encoding, region[r * columns * width ..][0 .. columns * width], decoded);
                     var mass: f64 = 0;
@@ -2249,6 +2249,7 @@ fn checkVisionNorms(alloc: std.mem.Allocator, b: *Backend) !void {
 
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
+    const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-bench")) return matvecBench(alloc, if (args.len > 2) args[2] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-split")) return matvecSplitBench(alloc, if (args.len > 2) args[2] else null);
@@ -2345,7 +2346,7 @@ pub fn main(init: std.process.Init) !void {
                     defer alloc.free(region);
                     const stride = region.len / rows;
                     const matrix: inference.cpu.Matrix = .{ .rows = rows, .columns = columns, .encoding = sample.encoding, .bytes = region };
-                    try inference.cpu.matvec(matrix, input, expected, decoded);
+                    try inference.cpu.matvec(io, matrix, input, expected, decoded);
                     const weights = try uploadBytes(b, region);
                     for ([_]bool{ false, true }) |generic| {
                         b.generic_only = generic;
@@ -2396,7 +2397,7 @@ pub fn main(init: std.process.Init) !void {
                     const weights = try uploadBytes(b, region);
                     const in_buf = try uploadBytes(b, std.mem.sliceAsBytes(input));
                     const out_buf = try b.create(split_rows * 4);
-                    try inference.cpu.matvec(matrix, input, split_expected, split_decoded);
+                    try inference.cpu.matvec(io, matrix, input, split_expected, split_decoded);
                     for ([_]usize{ 2, 4, 8 }) |splits| {
                         try b.begin();
                         try b.matvecSplits(weights, matrix, in_buf, out_buf, splits);
@@ -2440,7 +2441,7 @@ pub fn main(init: std.process.Init) !void {
                         .matrix = .{ .rows = r, .columns = columns, .encoding = 12, .bytes = region[start * stride ..][0 .. r * stride] },
                         .output = out.slice(start * 4, r * 4),
                     };
-                    inference.cpu.matvec(segs[i].matrix, input, merge_expected[start..][0..r], split_decoded) catch return error.InvalidShape;
+                    inference.cpu.matvec(io, segs[i].matrix, input, merge_expected[start..][0..r], split_decoded) catch return error.InvalidShape;
                     start += r;
                 }
                 for ([_]usize{ 2, 4 }) |splits| {
@@ -2514,7 +2515,7 @@ pub fn main(init: std.process.Init) !void {
                             const half = if (specialized_kernel) |k| Backend.matmulGeometry(k).half else false;
                             for (0..mm_tokens) |t| {
                                 const x = activations.floats()[t * columns ..][0..columns];
-                                try inference.cpu.matvec(matrix, x, mm_expected, decoded);
+                                try inference.cpu.matvec(io, matrix, x, mm_expected, decoded);
                                 for (0..mm_rows) |r| {
                                     try inference.quant.row(sample.encoding, region[r * stride ..][0..stride], decoded);
                                     var mass: f64 = 0;
@@ -2620,7 +2621,7 @@ pub fn main(init: std.process.Init) !void {
             for (input) |*x| x.* = random.float(f32) * 2 - 1;
             const decoded = try alloc.alloc(f32, 1280);
             defer alloc.free(decoded);
-            try inference.cpu.matvec(matrix, input, expected, decoded);
+            try inference.cpu.matvec(io, matrix, input, expected, decoded);
             try matvecOnce(b, matrix, shifted.slice(8, region.len), input, actual);
             const stride = region.len / rows;
             for (0..rows) |r| {
@@ -2666,7 +2667,7 @@ pub fn main(init: std.process.Init) !void {
                                 b.generic_only = false;
                                 for (0..row_tokens) |t| {
                                     const x = activations.floats()[t * columns ..][0..columns];
-                                    try inference.cpu.matvec(matrix, x, expected, decoded);
+                                    try inference.cpu.matvec(io, matrix, x, expected, decoded);
                                     for (0..rows) |r| {
                                         try inference.quant.row(sample.encoding, region[r * stride ..][0..stride], decoded);
                                         var mass: f64 = 0;
@@ -2742,7 +2743,7 @@ pub fn main(init: std.process.Init) !void {
         var actual_dense: [3]f32 = undefined;
         var row: [32]f32 = undefined;
         const matrix: inference.cpu.Matrix = .{ .rows = 3, .columns = 32, .encoding = encoding, .bytes = region };
-        try inference.cpu.matvec(matrix, &x, &expected_dense, &row);
+        try inference.cpu.matvec(io, matrix, &x, &expected_dense, &row);
         try matvecOnce(b, matrix, try uploadBytes(b, region), &x, &actual_dense);
         for (expected_dense, actual_dense) |e, a| try expectClose("dense", a, e, 1e-6);
     }
@@ -3120,7 +3121,7 @@ pub fn main(init: std.process.Init) !void {
     try checkSegmentAttention(alloc, b);
     try checkGeluErfRows(alloc, b);
     try checkFusedNorms(alloc, b);
-    try checkDenseEncodings(alloc, b);
+    try checkDenseEncodings(alloc, io, b);
     try checkVisionNorms(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
@@ -3732,7 +3733,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // 9b. Mixture-of-experts kernels against the CPU references.
-    try checkExperts(alloc, b);
+    try checkExperts(alloc, io, b);
 
     // 10. Recording contract: dispatch outside begin/commit is rejected, and a
     // committed empty pass is fine.
@@ -3772,7 +3773,7 @@ pub fn main(init: std.process.Init) !void {
         const sum = try b.create(35 * 4);
         var expected: [35]f32 = undefined;
         var decoded: [1280]f32 = undefined;
-        try inference.cpu.matvec(matrix, input.floats(), &expected, &decoded);
+        try inference.cpu.matvec(io, matrix, input.floats(), &expected, &decoded);
         try b.begin();
         try b.matvec(weights, matrix, input, out);
         try b.matvec(weights, matrix, input, sum);

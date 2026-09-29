@@ -16,72 +16,18 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-Theme agreed 2026-09-27 (user): Laya (`convaiinnovations/laya`, a
-ModernBERT encoder with a typed-decision head, Apache-2.0) end to end in
-nuclis, behind a decision API any client can call: a person writing the
-state and questions by hand, a script, or later an LLM. Why it is worth
-having beside an LLM: every question re-reads its state (the encoder is
-bidirectional, so nothing is shared across questions), and an LLM must
-spend decode tokens writing each question, so delegating one decision the
-LLM could make itself saves nothing. It pays as a **filter**: one question
-fanned out over many states the LLM never reads (30 search hits, every
-log section, each diff hunk), where the LLM's prefill is the cost avoided
-(docs/reference/laya.md gives the measured numbers). Landed before the
-plan: safetensors pull (MODL-28) and the safetensors loader (MODL-29).
-Kept to three units on purpose, to iterate fast.
-
-MODL-30 closed 2026-09-29 (engineering log): `nuclis decide` runs Laya on
-the CPU end to end, matching the `laya` 0.3.20 package exactly on its 8
-oracle requests (gates `laya-vocabulary`, `laya-cpu`); the `laya`
-catalogue entry and `decide.model`.
-
-Added 2026-09-29 (user), ahead of the Laya units: cut debugging and
-verification time. REPO-20 closed 2026-09-29 (engineering log): the
-gates re-derived from what they protect (`make verify` 704 s → 246 s,
-a `verify-release` tier) and `make verify-auto`, which runs the checks
-and gates a diff selects and names the tiers it requires.
-
-Reordered 2026-09-29 (user): Laya end to end first, then KERN-19 (the
-threaded CPU reference), its "before" times not yet taken. MODL-31
-closed 2026-09-29 (engineering log): Laya on Metal, `nuclis decide
---backend cpu|metal` (metal by default), packed batches, 13–20× the CPU
-(a 512-token state in about 0.2 s), gate `laya-metal`.
-
-Added 2026-09-29 (user), ahead of AGNT-18: the multilingual checkpoint.
-MODL-33 closed 2026-09-29 (engineering log): `nuclis decide --model
-laya-multilingual`, the Metaspace tokenizer and the checkpoint's own
-special tokens, matching the package on both backends (gates
-`laya-multilingual-vocabulary`, `-cpu`, `-metal`); it reads decisions in
-other languages the root set cannot, though language identification
-stays unreliable on both.
-
-REPO-21 closed 2026-09-29 (engineering log): the agent's playground is
-generated under `.zig-cache/playground/` by `scripts/playground.py`
-(no more `~/Code/playground`), the Python scripts pass basedpyright
-`standard` and ruff (`make lint-py`, the `python` check).
-
-REPO-22 closed 2026-09-29 (engineering log): durable local state
-(oracles, venvs, pinned downloads) lives in the ignored `.reference/`;
-`.zig-cache` is disposable, `make clean-cache` trims Zig's build cache.
-
-Next (user, 2026-09-29): KERN-19. AGNT-18 is deferred until the user
-picks it up.
-
-## Order
-
-| Unit | Title | Sessions |
-| --- | --- | --- |
-| KERN-19 | A threaded CPU reference, bit-identical: the CPU tier ≤ 30 min | one |
+Nothing is in progress. The Laya theme (agreed 2026-09-27) landed:
+`nuclis decide` on the CPU and on Metal, the English and multilingual
+checkpoints, matching Laya's own package (MODL-30, MODL-31, MODL-33).
+Beside it closed REPO-20 to REPO-23 and REPO-25 (fast gate tiers, a
+generated agent playground, typed Python scripts, `.reference/`, the
+README's Laya section, gates that skip an absent model) and KERN-19 (the
+CPU reference on every core, bit-identical: the CPU tier in 22 minutes).
+All in the engineering log.
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
-agent's `decide` tool (its design stays below).
-
-Decisions (user, 2026-09-27): the oracle is Laya's own Python package;
-the root checkpoint first (multilingual later, same family code); CPU
-first, then Metal; a new command, `nuclis decide`, with three input tiers,
-fan-out over many states, a styled terminal view, and `--json`; each
-`results[i]` a complete Jev response; LLM-written questions are the last
-unit, an experiment.
+agent's `decide` tool, the Laya theme's last unit (its design below).
+A fresh session asks what to work on; it does not start AGNT-18 on its own.
 
 ## AGNT-18 — The agent's `decide` tool (experiment) — deferred
 
@@ -98,62 +44,3 @@ re-measured on the generated playground (REPO-21) before the tool lands.
   task list before and after (`make agent-eval VARIANT=…`), on Qwen3.8-27B
   and Gemma 4 E4B: task success, wall time, and prefill tokens saved.
   Kept only if it helps; the result is logged either way.
-
-## KERN-19 — A threaded CPU reference, bit-identical
-
-Split from REPO-20 at its close (user, 2026-09-29), which delivered the
-fast gate tiers and `make verify-auto` (engineering log). Goal: the CPU
-tier ≤ 30 min (hours today) and one family's CPU trace ≤ 1 min, with
-not one bit of the reference's output changed.
-
-Base: `5b185ad`
-
-- First: `python3 scripts/gates.py --tier verify-cpu --json >
-  .zig-cache/gates/kern19-before.json` in the background, the per-gate
-  "before" times (14 gates, hours; nothing else running meanwhile, since
-  compiles and GPU runs distort it), then copy
-  `.zig-cache/gates/trace/*-trace-cpu/` to `.zig-cache/gates/kern19-before/`
-  for the byte comparison.
-
-- **Before (measured 2026-09-29 at `b5c872c`, ReleaseFast, nothing else
-  running).** The full CPU tier was aborted after 20 min on its first gate
-  (user: too slow to be worth it); the seven trace gates ran instead,
-  since only they write files a byte comparison can use. Times:
-  `muse-draft-trace-cpu` 166.9 s, `muse-trace-cpu` 83.2 s,
-  `qwen38-draft-trace-cpu` 55.3 s, `bonsai-trace-cpu` 50.5 s,
-  `gemma4-e4b-draft-trace-cpu` 14.8 s, `gemma4-e4b-trace-cpu` 14.3 s,
-  `gemma4-26b-a4b-trace-cpu` 12.4 s (about 6.6 min). Their directories
-  are in `.zig-cache/gates/kern19-before/`. The generation, speculative,
-  and vision CPU gates check themselves against fixtures; they only have
-  to pass after.
-- **Design (read 2026-09-29 while the "before" run went).** Every CPU
-  forward reaches the reference `cpu.matvec` (`backends/cpu/root.zig`), a
-  serial loop over rows, each row decoded into `scratch` and summed in F64
-  in column order. Splitting its rows across tasks changes no sum.
-  - `cpu.matvec(io, matrix, input, output, scratch)`: tasks =
-    min(cores, rows, `scratch.len / columns`), each decoding into its own
-    `columns` slice of `scratch`; a `columns`-wide scratch is one task, the
-    serial path; small matrices (under about 64K weights) stay serial,
-    since a task costs more than their work. A task's decode error is kept
-    per task and returned after the group is awaited.
-    `cpu.matvecScratch(columns)` = cores × columns.
-  - The family runtimes (`qwen35_runtime`, `gemma4_runtime` (twice),
-    `muse_glimmer_runtime` (twice)) funnel through one `mm` helper passing
-    `self.row`: `Runtime.init` gains `io` (kept as a field), `self.row`
-    becomes `matvecScratch(max columns)`. Callers of `init`: `engine.zig`,
-    `generation-check.zig` (13), the runtimes' own tests.
-  - `cpu.experts.ffn` gains `io`; each expert's two matvecs split by rows
-    (the slots stay serial, so the F64 sum over slots keeps its order);
-    `gemma4_runtime`'s `expert_scratch` widens its decode tail.
-  - Vision (`vision/gemma4.zig` 5 calls, `vision/qwen3vl.zig` 7): their
-    `Runtime.init` gains `io` (`vision/projector.zig` passes it) and each
-    encode's scratch widens. `vision/muse_glimmer.zig` has no `matvec`;
-    what dominates `muse-vision-cpu` is read from the before times.
-  - Attention (`cpu.attention.apply`) by head only if the before times
-    and a profile show it matters (the trace gates run a few tokens).
-- Proof of no change: every `*-trace-cpu` directory and logits file
-  `cmp`-identical before and after (`cmp -r` against
-  `.zig-cache/gates/kern19-before/`), all `verify-cpu` gates passing;
-  times before and after per gate.
-- `make verify-cpu` once (this changes how the reference runs, not what
-  it computes; the byte comparison is the evidence).
