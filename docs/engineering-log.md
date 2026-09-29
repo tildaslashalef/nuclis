@@ -149,6 +149,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-21 | The agent's playground generated under `.zig-cache`; the Python scripts typed (basedpyright) and formatted (ruff) | 2026-09-29 |
 | REPO-22 | `.reference/` for durable local state (oracles, venvs, pinned downloads); `.zig-cache` disposable, `make clean-cache` | 2026-09-29 |
 | REPO-23 | The README's Laya section: the experiment and its results | 2026-09-29 |
+| REPO-25 | A gate whose model is absent is skipped, not failed; `--strict` for releases | 2026-09-30 |
 
 ## Context
 
@@ -6231,3 +6232,25 @@ correctness and speed, and the manual cases run on both checkpoints on
 2026-09-29 at `0942463` for the answers.
 
 **Files.** `README.md`, `docs/engineering-log.md`.
+
+## REPO-25 — A gate whose model is absent is skipped, not failed (2026-09-30)
+
+**Outcome.** `scripts/gates.py` checks, before running a gate, that the
+model files it reads exist: `model`, `mtp`, and the entry's `mmproj`
+when the command names it (`missing_files`). A gate missing any is
+reported `SKIP <gate> no model: <path>`, runs nothing, and counts neither
+as passed nor as failed. The tier and `--gate` summaries name the
+skipped gates on their own ("0/1 passed …; 1 skipped, their models not on
+this machine: …"), `--auto` lists them before its verdict, and `--json`
+carries `skipped` with the reason. A skip is not a pass: `--strict`
+makes it a failure, and `make verify-release`, the tier every release
+runs, is strict. A clone on a machine with some of the pinned models can
+run the gates it has.
+
+**Evidence.** With `LAYA_MODEL=/nowhere/laya`, `--gate laya-vocabulary`
+prints the skip and exits 0; with `--strict` it exits 1; `--dry-run`
+names the skip. The self-test adds `test_missing_models_are_listed`;
+`make lint-py` is clean.
+
+**Files.** `scripts/gates.py`, `Makefile`, `docs/development.md`,
+`docs/engineering-log.md`.

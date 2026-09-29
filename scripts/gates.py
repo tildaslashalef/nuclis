@@ -240,6 +240,16 @@ def model_path(doc, key, env=None):
     return os.path.expanduser(path)
 
 
+def missing_files(gate, doc, env=None):
+    """The model files a gate reads (`model`, `mtp`, and the entry's `mmproj`
+    when its command names it) that are not on this machine."""
+    paths = [model_path(doc, gate[key], env) for key in ("model", "mtp") if key in gate]
+    entry = doc["models"].get(gate.get("model"), {})
+    if "mmproj" in entry and any("{mmproj}" in arg for arg in gate["command"]):
+        paths.append(os.path.expanduser(entry["mmproj"]))
+    return [path for path in paths if not os.path.exists(path)]
+
+
 def builds_needed(gates):
     """Which binaries the selected gates run: the two nuclis builds, and the check tools behind the zig placeholders (built up front so the build is timed apart from the checks)."""
     joined = [" ".join(g["command"]) for g in gates]
@@ -313,9 +323,17 @@ def build(doc, which, dry_run):
 
 
 def run_gate(gate, doc, dry_run):
+    """Runs one gate; `passed` is None with `skipped` set when a model file it
+    reads is not on this machine (the run neither passes nor fails it)."""
     argv = expand(gate["command"], gate, doc)
     trace = ROOT / TRACE_ROOT / gate["name"]
     result = {"name": gate["name"], "tier": gate["tier"], "command": argv, "passed": None, "seconds": 0.0}
+    missing = missing_files(gate, doc)
+    if missing:
+        result["skipped"] = "no model: " + ", ".join(missing)
+        if dry_run:
+            print(f"{gate['name']}: skipped ({result['skipped']})")
+        return result
     if dry_run:
         print(f"{gate['name']}: {' '.join(argv)}")
         if gate["comparator"]["kind"] == "trace":
@@ -388,6 +406,9 @@ def run_gate(gate, doc, dry_run):
 
 
 def print_result(r, gate, timeline=False):
+    if r.get("skipped"):
+        print(f"SKIP {r['name']:<34} {r['skipped']}", flush=True)
+        return
     status = "PASS" if r["passed"] else "FAIL"
     line = f"{status} {r['name']:<34} {r['seconds']:7.1f} s"
     if "measured" in r:
@@ -435,6 +456,11 @@ def main():
         help="what a change needs: the model-free checks and verify gates its paths select, cheapest first until one fails, then the tiers it requires; REV defaults to TODO.md's `Base:` line",
     )
     ap.add_argument("--keep-going", action="store_true", help="with --auto, run everything selected after a failure")
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help="a gate whose model is not on this machine fails instead of being skipped (before a release)",
+    )
     ap.add_argument(
         "--changed",
         nargs="?",
@@ -528,12 +554,15 @@ def main():
     save_times(results)
     if args.json:
         print(json.dumps({"revision": git_rev(), "builds": builds, "results": results}, indent=2))
-    failed = [r["name"] for r in results if not r["passed"]]
+    skipped = [r["name"] for r in results if r.get("skipped")]
+    failed = [r["name"] for r in results if not r["passed"] and (args.strict or not r.get("skipped"))]
+    passed = len(results) - len(skipped) - len([n for n in failed if n not in skipped])
     total = sum(r["seconds"] for r in results)
     built = sum(builds.values())
     print(
-        f"{len(results) - len(failed)}/{len(results)} passed in {total:.0f} s"
+        f"{passed}/{len(results)} passed in {total:.0f} s"
         + (f" after {built:.0f} s of builds" if builds else "")
+        + (f"; {len(skipped)} skipped, their models not on this machine: {', '.join(skipped)}" if skipped else "")
         + (f"; failed: {', '.join(failed)}" if failed else ""),
         file=sys.stderr,
     )
@@ -554,6 +583,7 @@ def auto(doc, args):
     present = [f for f in files if (ROOT / f).exists()]
     print(f"{len(files)} changed file(s) since {base}", flush=True)
     failed = []
+    skipped = []
 
     def stop():
         return failed and not args.keep_going
@@ -591,6 +621,10 @@ def auto(doc, args):
                 continue
             results.append(r)
             print_result(r, gate, args.timeline)
+            if r.get("skipped"):
+                skipped.append(r["name"])
+                if not args.strict:
+                    continue
             if not r["passed"]:
                 failed.append(r["name"])
                 if stop():
@@ -604,7 +638,15 @@ def auto(doc, args):
             flush=True,
         )
     if not args.dry_run:
-        print(("failed: " + ", ".join(failed)) if failed else "all selected checks and gates passed", file=sys.stderr)
+        if skipped:
+            print("skipped, their models not on this machine: " + ", ".join(skipped), file=sys.stderr)
+        if failed:
+            print("failed: " + ", ".join(failed), file=sys.stderr)
+        else:
+            print(
+                "all selected checks and gates passed" + (f" ({len(skipped)} skipped)" if skipped else ""),
+                file=sys.stderr,
+            )
     return 1 if failed else 0
 
 
@@ -714,6 +756,13 @@ class SelfTest(unittest.TestCase):
             [g["name"] for g in select(gates, ["inference/src/backends/cpu/vector.zig", "inference/src/quant/q4.zig"])],
             ["a-trace", "a-draft-cpu"],
         )
+
+    def test_missing_models_are_listed(self):
+        doc = sample_doc()
+        gate = doc["gates"][1]
+        env = {"A_MODEL": "/nowhere/a.gguf", "A_MTP_MODEL": "/nowhere/mtp.gguf"}
+        self.assertEqual(missing_files(gate, doc, env=env), ["/nowhere/a.gguf", "/nowhere/mtp.gguf"])
+        self.assertEqual(missing_files(gate, doc, env={"A_MODEL": __file__, "A_MTP_MODEL": __file__}), [])
 
     def test_expand_placeholders(self):
         doc = sample_doc()

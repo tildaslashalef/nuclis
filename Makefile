@@ -84,7 +84,7 @@ verify: eval-corpus ## The fast Metal tier: one representative file per family a
 	python3 scripts/gates.py --tier verify $(ARGS)
 
 verify-release: eval-corpus ## Whole-file acceptance before a release: 8-window perplexities, the Gemma 12B QAT file, draft statistics
-	python3 scripts/gates.py --tier verify-release $(ARGS)
+	python3 scripts/gates.py --tier verify-release --strict $(ARGS)
 
 verify-long: eval-corpus ## The long-context tier: 4K-token perplexity (Gemma 4 E4B so far), when a unit touches attention, the caches, or a windowed schedule, and before a release
 	python3 scripts/gates.py --tier verify-long $(ARGS)

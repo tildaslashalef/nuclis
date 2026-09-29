@@ -102,7 +102,12 @@ placeholders `{nuclis}`, `{nuclis-cpu}`, `{zig-metal}`, `{zig-cpu}`,
 status decides: the generation checks, the speculative checks, the Gemma
 and Muse draft checks that compare their own rows, `draft-stats`, the
 vocabulary checks, the perplexity checks) or `trace` (the `{trace}` directory goes through
-`scripts/compare-generation.py` against the gate's `bounds`). Two things
+`scripts/compare-generation.py` against the gate's `bounds`). A gate whose
+model files (`model`, `mtp`, or the `mmproj` its command names) are not on
+this machine is skipped, not failed: `SKIP <gate> no model: <path>`, a
+separate count in the summary, `skipped` in `--json`. A skip is not a
+pass; `--strict` turns it into a failure, and `make verify-release` (so
+every release) runs strict. Two things
 make the registry cheaper than the recipes it replaced:
 
 | | tier `verify` | tier `verify-release` | tier `verify-long` | tier `verify-cpu` |
