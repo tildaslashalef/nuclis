@@ -65,7 +65,7 @@ fast gate tiers and `make verify-auto` (engineering log). Goal: the CPU
 tier ≤ 30 min (hours today) and one family's CPU trace ≤ 1 min, with
 not one bit of the reference's output changed.
 
-Base: written by the commit after REPO-20's close.
+Base: `d46e907`
 
 - First: `python3 scripts/gates.py --tier verify-cpu --json >
   .zig-cache/gates/kern19-before.json` in the background, the per-gate
