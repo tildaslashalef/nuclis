@@ -106,8 +106,7 @@ fast gate tiers and `make verify-auto` (engineering log). Goal: the CPU
 tier ≤ 30 min (hours today) and one family's CPU trace ≤ 1 min, with
 not one bit of the reference's output changed.
 
-Base: to be recorded when it starts (`d46e907` was recorded before the
-reorder; take the commit before its first change).
+Base: `5b185ad`
 
 - First: `python3 scripts/gates.py --tier verify-cpu --json >
   .zig-cache/gates/kern19-before.json` in the background, the per-gate
@@ -116,14 +115,31 @@ reorder; take the commit before its first change).
   `.zig-cache/gates/trace/*-trace-cpu/` to `.zig-cache/gates/kern19-before/`
   for the byte comparison.
 
-- Split independent work across `Io` tasks without changing any sum's
-  order, the pattern of `backends/cpu/dense.zig` (`std.Io.Group`,
-  `taskCount`): `backends/cpu/root.zig` `matvec` by rows (each row still
-  one F64 sum in column order; the decode scratch becomes one `columns`
-  slice per task, so the callers' workspaces grow to `taskCount ×
-  columns`), `attention.apply` by head, `experts.ffn` by expert, and the
-  vision encoders' matvecs. The kernels take `std.Io`; the family
-  runtimes (`*_runtime.zig`, `vision/*.zig` CPU paths) pass theirs.
+- **Design (read 2026-09-29 while the "before" run went).** Every CPU
+  forward reaches the reference `cpu.matvec` (`backends/cpu/root.zig`), a
+  serial loop over rows, each row decoded into `scratch` and summed in F64
+  in column order. Splitting its rows across tasks changes no sum.
+  - `cpu.matvec(io, matrix, input, output, scratch)`: tasks =
+    min(cores, rows, `scratch.len / columns`), each decoding into its own
+    `columns` slice of `scratch`; a `columns`-wide scratch is one task, the
+    serial path; small matrices (under about 64K weights) stay serial,
+    since a task costs more than their work. A task's decode error is kept
+    per task and returned after the group is awaited.
+    `cpu.matvecScratch(columns)` = cores × columns.
+  - The family runtimes (`qwen35_runtime`, `gemma4_runtime` (twice),
+    `muse_glimmer_runtime` (twice)) funnel through one `mm` helper passing
+    `self.row`: `Runtime.init` gains `io` (kept as a field), `self.row`
+    becomes `matvecScratch(max columns)`. Callers of `init`: `engine.zig`,
+    `generation-check.zig` (13), the runtimes' own tests.
+  - `cpu.experts.ffn` gains `io`; each expert's two matvecs split by rows
+    (the slots stay serial, so the F64 sum over slots keeps its order);
+    `gemma4_runtime`'s `expert_scratch` widens its decode tail.
+  - Vision (`vision/gemma4.zig` 5 calls, `vision/qwen3vl.zig` 7): their
+    `Runtime.init` gains `io` (`vision/projector.zig` passes it) and each
+    encode's scratch widens. `vision/muse_glimmer.zig` has no `matvec`;
+    what dominates `muse-vision-cpu` is read from the before times.
+  - Attention (`cpu.attention.apply`) by head only if the before times
+    and a profile show it matters (the trace gates run a few tokens).
 - Proof of no change: every `*-trace-cpu` directory and logits file
   `cmp`-identical before and after (`cmp -r` against
   `.zig-cache/gates/kern19-before/`), all `verify-cpu` gates passing;
