@@ -131,13 +131,11 @@ def select(gates, changed):
 def expand(argv, gate, doc, env=None):
     """Substitute placeholders; the build placeholders expand to several argv items."""
     env = os.environ if env is None else env
-    build = doc['build']
-    zig_common = ['--global-cache-dir', build['cache']]
     table = {
         '{nuclis}': ['./zig-out/bin/nuclis'],
         '{nuclis-cpu}': [f'./{CPU_PREFIX}/bin/nuclis'],
-        '{zig-metal}': ['zig', 'build', '-Dmetal=true', f"-Doptimize={build['metal_optimize']}"] + zig_common,
-        '{zig-cpu}': ['zig', 'build', f"-Doptimize={build['cpu_optimize']}"] + zig_common,
+        '{zig-metal}': ['zig', 'build'] + zig_flags(doc, 'metal'),
+        '{zig-cpu}': ['zig', 'build'] + zig_flags(doc, 'cpu'),
     }
     scalars = {'{trace}': f"{TRACE_ROOT}/{gate['name']}"}
     for key in ('model', 'mtp'):
@@ -157,6 +155,13 @@ def expand(argv, gate, doc, env=None):
     return out
 
 
+def zig_flags(doc, flavour):
+    """The `zig build` options behind `{zig-metal}` / `{zig-cpu}`."""
+    build = doc['build']
+    optimize = ['-Dmetal=true', f"-Doptimize={build['metal_optimize']}"] if flavour == 'metal' else [f"-Doptimize={build['cpu_optimize']}"]
+    return optimize + ['--global-cache-dir', build['cache']]
+
+
 def model_path(doc, key, env=None):
     """The pinned path, or the `<KEY>_MODEL` environment override; `~` expanded."""
     env = os.environ if env is None else env
@@ -166,9 +171,10 @@ def model_path(doc, key, env=None):
 
 
 def builds_needed(gates):
-    """Which binaries the selected gates run directly (the zig placeholders build themselves)."""
+    """Which binaries the selected gates run: the two nuclis builds, and the check tools behind the zig placeholders (built up front so the build is timed apart from the checks)."""
     joined = [' '.join(g['command']) for g in gates]
-    return {'metal': any('{nuclis}' in c for c in joined), 'cpu': any('{nuclis-cpu}' in c for c in joined)}
+    return {'metal': any('{nuclis}' in c for c in joined), 'cpu': any('{nuclis-cpu}' in c for c in joined),
+            'checks-metal': any('{zig-metal}' in c for c in joined), 'checks-cpu': any('{zig-cpu}' in c for c in joined)}
 
 
 # ---- execution ----------------------------------------------------------------
@@ -190,14 +196,22 @@ def changed_files(rev):
 
 
 def build(doc, which, dry_run):
+    """Build one binary (`metal`, `cpu`) or one flavour of the check tools (`checks-metal`, `checks-cpu`); returns seconds."""
     b = doc['build']
+    common = ['--global-cache-dir', b['cache']]
     if which == 'metal':
-        cmd = ['zig', 'build', '-Dmetal=true', f"-Doptimize={b['metal_optimize']}", '--global-cache-dir', b['cache']]
+        cmd = ['zig', 'build', '-Dmetal=true', f"-Doptimize={b['metal_optimize']}"] + common
+    elif which == 'cpu':
+        cmd = ['zig', 'build', '-Dmetal=true', f"-Doptimize={b['cpu_optimize']}"] + common + ['--prefix', CPU_PREFIX]
     else:
-        cmd = ['zig', 'build', '-Dmetal=true', f"-Doptimize={b['cpu_optimize']}", '--global-cache-dir', b['cache'], '--prefix', CPU_PREFIX]
-    print('build:', ' '.join(cmd), flush=True)
-    if not dry_run:
-        subprocess.run(cmd, cwd=ROOT, check=True)
+        # The placeholders' own flags, so the gates' `zig build` finds the compile cached.
+        cmd = ['zig', 'build', 'check-tools'] + zig_flags(doc, which.removeprefix('checks-')) + ['--prefix', f'.zig-cache/gates/{which}']
+    print('build:', ' '.join(cmd), file=sys.stderr, flush=True)
+    if dry_run:
+        return 0.0
+    started = time.monotonic()
+    subprocess.run(cmd, cwd=ROOT, check=True)
+    return time.monotonic() - started
 
 
 def run_gate(gate, doc, dry_run):
@@ -213,10 +227,18 @@ def run_gate(gate, doc, dry_run):
     shutil.rmtree(trace, ignore_errors=True)
     trace.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    proc = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+    # Merged output read line by line, each stamped with its time since
+    # launch: the phases of a check (load, then each protocol) without
+    # instrumenting the tools.
+    proc = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    timeline = []
+    for line in proc.stdout:
+        timeline.append((round(time.monotonic() - started, 2), line.rstrip('\n')))
+    proc.wait()
     result['seconds'] = time.monotonic() - started
     result['exit_status'] = proc.returncode
-    tail = '\n'.join((proc.stderr or proc.stdout).strip().splitlines()[-20:])
+    result['timeline'] = timeline
+    tail = '\n'.join(l for _, l in timeline[-20:]).strip()
     if proc.returncode != 0:
         result['passed'] = False
         result['detail'] = tail
@@ -252,7 +274,7 @@ def run_gate(gate, doc, dry_run):
     return result
 
 
-def print_result(r, gate):
+def print_result(r, gate, timeline=False):
     status = 'PASS' if r['passed'] else 'FAIL'
     line = f"{status} {r['name']:<34} {r['seconds']:7.1f} s"
     if 'measured' in r:
@@ -264,6 +286,9 @@ def print_result(r, gate):
     elif r.get('detail'):
         line += f"  {r['detail'] if r['passed'] else ''}"
     print(line, flush=True)
+    if timeline:
+        for t, l in r.get('timeline', []):
+            print(f'    {t:7.1f} s  {l[:160]}')
     if not r['passed'] and r.get('detail'):
         for l in r['detail'].splitlines():
             print('    ' + l)
@@ -281,6 +306,7 @@ def main():
     ap.add_argument('--dry-run', action='store_true', help='print the commands instead of running them')
     ap.add_argument('--no-build', action='store_true', help='do not rebuild the binaries first')
     ap.add_argument('--json', action='store_true', help='print the results as JSON')
+    ap.add_argument('--timeline', action='store_true', help='print each output line of a gate with its time since launch')
     args = ap.parse_args()
     os.chdir(ROOT)
 
@@ -326,25 +352,27 @@ def main():
     else:
         ap.error('one of --list, --validate, --tier, --gate, --changed is required')
 
+    builds = {}
     if not args.no_build:
         need = builds_needed(selected)
-        if need['metal']:
-            build(doc, 'metal', args.dry_run)
-        if need['cpu']:
-            build(doc, 'cpu', args.dry_run)
+        for which in ('metal', 'cpu', 'checks-metal', 'checks-cpu'):
+            if need[which]:
+                builds[which] = round(build(doc, which, args.dry_run), 1)
     results = []
     for gate in selected:
         r = run_gate(gate, doc, args.dry_run)
         results.append(r)
         if not args.dry_run and not args.json:
-            print_result(r, gate)
+            print_result(r, gate, args.timeline)
     if args.dry_run:
         return
     if args.json:
-        print(json.dumps({'revision': git_rev(), 'results': results}, indent=2))
+        print(json.dumps({'revision': git_rev(), 'builds': builds, 'results': results}, indent=2))
     failed = [r['name'] for r in results if not r['passed']]
     total = sum(r['seconds'] for r in results)
-    print(f"{len(results) - len(failed)}/{len(results)} passed in {total:.0f} s" + (f"; failed: {', '.join(failed)}" if failed else ''), file=sys.stderr)
+    built = sum(builds.values())
+    print(f"{len(results) - len(failed)}/{len(results)} passed in {total:.0f} s" + (f" after {built:.0f} s of builds" if builds else '')
+          + (f"; failed: {', '.join(failed)}" if failed else ''), file=sys.stderr)
     sys.exit(1 if failed else 0)
 
 
@@ -421,8 +449,8 @@ class SelfTest(unittest.TestCase):
 
     def test_builds_needed(self):
         gates = sample_doc()['gates']
-        self.assertEqual(builds_needed(gates), {'metal': True, 'cpu': False})
-        self.assertEqual(builds_needed([gates[1]]), {'metal': False, 'cpu': False})
+        self.assertEqual(builds_needed(gates), {'metal': True, 'cpu': False, 'checks-metal': False, 'checks-cpu': True})
+        self.assertEqual(builds_needed([gates[1]]), {'metal': False, 'cpu': False, 'checks-metal': False, 'checks-cpu': True})
 
 
 def self_test():

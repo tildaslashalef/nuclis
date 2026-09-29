@@ -117,7 +117,10 @@ NAME=<name or glob>` (`gemma4-qat-trace-f16`, `'muse-*'`; `ARGS=--dry-run`
 prints the commands), `make gates-list`, and `make gates-validate` (part of
 `make check`: the manifest's schema and the runner's self-test, no model).
 `python3 scripts/gates.py --json` returns the results with the git
-revision for a log entry. Gate names are `<entry>-<check>-<executor>`:
+revision for a log entry, each with its output lines stamped by time
+since launch (`--timeline` prints them); the check tools behind
+`{zig-*}` are compiled first (`zig build check-tools`), so the builds'
+seconds are reported apart from the gates'. Gate names are `<entry>-<check>-<executor>`:
 `qwen38`, `gemma4`, `gemma4-qat`, `gemma4-26b-a4b`, `muse`, `bonsai`;
 `trace-{cpu,f32,f16}`, `generation-{cpu,metal}`, `speculative-{cpu,metal}`,
 `draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity`,
@@ -129,6 +132,55 @@ checked against its SHA-256 by `make eval-corpus`, which `verify`,
 `verify-changed`, and `gate` run first (a no-op once the file is there);
 their references are pinned under `tests/fixtures/perplexity/`
 ([reference/eval.md](reference/eval.md)).
+
+### What each gate protects
+
+Measured 2026-09-29 at `acce06a` (M4 Pro, `python3 scripts/gates.py
+--tier verify --json`, whose per-gate `timeline` stamps every output
+line): the Metal tier took 704 s after 9 s of builds. Loading is not
+the cost: a model's first gate pays the cold page cache (2–8 s), every
+later one maps it in 0.3–1 s. The cost is in four places:
+
+| Where | Seconds | Why |
+| --- | --- | --- |
+| the CPU reference inside Metal-tier draft traces | 184 (Muse), 46 (Gemma 12B QAT), 15 (E4B), 5 (Qwen's draft block) | `--draft-trace` and `checkDraft` always run the CPU forward, at the Metal build's ReleaseSafe, then the plan; the Metal half compares against the pinned fixtures on its own |
+| `checkChunkedPrefill`'s F32 tiles and `prefillRows`, 70 tokens | 25–31 per 27–30B file | the generic F32 tile kernels, slowest path by design |
+| perplexity, 8 windows of 512 | 56 (Qwen), 53 (Muse), 19 (26B-A4B), 12 (E4B) | the references store the cumulative value per window (`chunk_ppl`), so fewer windows compare against the same file |
+| the Gemma 12B QAT file's five gates | 74 | a third Gemma file, covering only its dimensions (below) |
+
+What can break independently, and what protects it. *Model-free* means
+`make check` (unit tests and `test-metal`, no weights):
+
+| Axis | Model-free | Gates that alone cover it |
+| --- | --- | --- |
+| matvec, matmul tiles, embed gather, per encoding | every quant fixture encoding (Q4_0, Q8_0, IQ4_NL, Q3–Q6_K, IQ3_S, IQ4_XS, PQ2_0, PTQ1_0) against the CPU, and the CPU decoders against llama.cpp's blocks | BF16 on Metal: `bonsai-*` (ssm α/β) and the vision gates; F16/F32 beyond a 3×32 matvec: `gemma4-26b-a4b-*` (F32 router), `laya-cpu` (CPU only) |
+| attention: decode, chunk, windowed, F16 cache | fixtures to 16K keys | head geometry per file: the traces |
+| DeltaNet, Hadamard, RoPE, norms, softcap, sampling kernels | fixtures | — |
+| Metal `layerNorm`, `addBiasRows` | none | `muse-vision-metal`, `gemma4-*-vision-metal` |
+| experts (MoE) | Metal Q4_0 chains; CPU FFN on a 2×2 F32 tensor | `gemma4-26b-a4b-*` |
+| Qwen 3.5 plan (DeltaNet, gated attention, MTP block) | the runtime's admission tests | `qwen38-*` |
+| Qwen 3.5 with Hadamard rotations, PTQ1_0, BF16 | decoders, kernels | `bonsai-*` |
+| Gemma 4: sliding/global, softcap | — | any Gemma file |
+| Gemma 4: shared KV, per-layer embeddings, own V on global layers, window 512 | — | `gemma4-e4b-*` |
+| Gemma 4: K=V global layers, window 1024, the `gemma4` profile | — | `gemma4-26b-a4b-*` (and the 12B QAT) |
+| Gemma 4: one global KV head (16:1), 48 layers | — | the 12B QAT (a shape, through the same code as the 26B's 8:1) |
+| Muse Glimmer plan | — | `muse-*` |
+| session layout: recurrent with row slots (Metal, drafter) | session unit tests | `qwen38-generation-metal` |
+| session layout: recurrent without row slots (rewind, replay) | session unit tests | `bonsai-generation-metal`; every CPU generation gate |
+| session layout: attention only (truncate) | session unit tests | any Gemma or Muse generation gate |
+| engine loop: EOS, budget, context, cancellation, speculative loop, penalties, top-k readback | none (`engine.zig` has no tests) | `qwen38-speculative-metal` |
+| draft sources: Qwen MTP, Gemma assistant, Muse DFlash | — | `qwen38-draft-trace-*`, `gemma4-{e4b,qat}-draft-trace-*` (the same code, two shapes), `muse-draft-trace-*` |
+| tokenizers: Qwen BPE, Muse (GPT-4o splitter), Gemma SPM, Laya | — | one vocabulary gate each; `gemma4-qat-vocabulary` and `gemma4-e4b-vocabulary` read the same tokenizer |
+| vision: Qwen3-VL, SigLIP small with clamps, SigLIP large with standardization, Muse | preprocessing, grids | one vision gate each |
+| batched prefill at 256 rows, F16 cache over 511 keys, real prose | — | the perplexity gates |
+| past 512 tokens and the sliding windows | — | `verify-long` |
+
+Not covered by any gate: the 12B QAT's `gemma4uv` unified projector, the
+26B-A4B's assistant head, and the PQ2_0 encoding (decoder and kernel
+fixtures only). On Metal a speculative greedy divergence is printed, not
+failed (chunk-versus-step rounding may flip a token); the CPU run fails
+on it. `qwen38-draft-stats` reports acceptance rates and fails only on
+an error.
 
 Adding a family adds its gates to the manifest and nothing to the
 Makefile ([new-model-guide.md](reference/new-model-guide.md)). The

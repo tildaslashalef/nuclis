@@ -40,7 +40,9 @@ and verification time. The user is not happy with the gate design (one
 full set per model, so the Gemma family is checked three times; 12 min
 for `make verify`, hours for `make verify-cpu`) and wants the gates
 re-derived from what they must protect, plus a CPU reference fast enough
-to use while debugging. Start with REPO-20, session 1.
+to use while debugging. REPO-20 session 1 is done except the CPU
+tier's baseline times (running); next is the user's decision on the
+proposed gate set in the REPO-20 section, then session 2.
 
 ## Order
 
@@ -60,74 +62,93 @@ unit, an experiment.
 ## REPO-20 — Fast verification
 
 Goal (user, 2026-09-29): debugging and verification runs short enough to
-use freely. Targets, to confirm or revise in session 1: `make verify`
-≤ 4 min (722 s on 2026-09-29), the CPU tier ≤ 30 min (hours today), one
-family's CPU trace ≤ 1 min.
+use freely. Targets: `make verify` ≤ 4 min (704 s measured), the CPU
+tier ≤ 30 min (hours today), one family's CPU trace ≤ 1 min.
 
-Facts (2026-09-29, `make verify` at `792c47f`, 43 gates then, 38 now):
-the Metal tier's time is Muse 303 s (its draft trace alone 181 s), Qwen
-188 s, Gemma QAT 72 s, Bonsai 61 s, E4B 42 s, 26B-A4B 39 s, Laya 16 s.
-By kind, the `*-generation-metal` checks (session isolation, reset,
-snapshot, prefill against per-token steps) cost 10–81 s each and the
-`*-perplexity` checks 11–55 s each; traces are 0.4–10 s. Every gate is
-its own process that loads its model. The CPU reference is single
-threaded and exact by design: Gemma 4 E4B prefills 19 tokens in 67 s and
-decodes at 3–4 s per token (Metal: 0.16 s, 18 ms per token). Its kernels
-are few call sites: `backends/cpu/root.zig` `matvec` (F64 sums per row),
-`attention.apply` per head, `experts.ffn`, `recurrent.delta*`, and the
-vision encoders' matvecs.
+### Session 1 — measured, matrix written; **the proposal awaits the user's approval**
 
-### Session 1 — measure and re-derive the gate set (no gate removed yet)
+Delivered: `scripts/gates.py` stamps every output line of a gate with
+its time since launch (`timeline` in `--json`, `--timeline` to print)
+and compiles the check tools up front (new `zig build check-tools`
+step in `build.zig`) so builds are timed apart; the coverage matrix and
+where the time goes are in `docs/development.md § What each gate
+protects`. Baseline JSON: `.zig-cache/gates/baseline/verify.json`
+(Metal, `acce06a`, 704 s + 9 s builds, 38/38) and `verify-cpu.json`
+(the CPU tier, running at the end of session 1; copy its per-gate times
+into the section above when it lands, and into the log on close).
 
-- Baselines: `make verify-cpu` per-gate times (run it in the background,
-  once) and `make verify` per-gate times split into build, model load,
-  and check (add the split to `scripts/gates.py` output if it is not
-  there).
-- A coverage matrix, written into `docs/development.md § Gates`: for each
-  gate, the code paths only it exercises. The axes are what can break
-  independently: each kernel × weight encoding used by a catalogue file,
-  each schedule feature (DeltaNet, windowed and global attention, shared
-  KV layers, per-layer embeddings, mixture of experts), each session
-  layout (for isolation, reset, snapshot), each prompt profile and
-  tokenizer, each vision projector, each draft source, the long-context
-  paths. Read each gate's command and what its check tool actually
-  compares.
-- From the matrix, the proposed set, on these rules: a gate stays only if
-  it covers a path no cheaper gate covers; a family is checked once on
-  its smallest representative file, and a variant file only for the paths
-  it alone has (for Gemma, the questions are what the 12B QAT file covers
-  that E4B does not, and what 26B-A4B adds beyond its experts);
-  whole-file acceptance of every catalogue entry moves to the release
-  checks; engine-level properties (session isolation, cancellation)
-  are checked once per session layout, not once per model. Also: gates
-  of one model share one process and one model load where the tools
-  allow it; why Muse's draft trace takes 181 s and whether fewer steps
-  prove the same thing; whether `verify-changed`'s path globs select
-  precisely (today `backends/cpu/**` selects every CPU gate).
-- End the session by presenting the proposed set, its projected times,
-  and what each removed gate's coverage moves to; the user approves it
-  before session 3 removes anything. Rewrite sessions 2 and 3 below with
-  the findings.
+Proposed gate set (session 3 applies it once approved):
+
+- **`verify`** (fast, every unit touching the inference stack), 32
+  gates: `qwen38-{trace-f32,trace-f16,generation-metal,
+  speculative-metal,draft-trace-metal,vision-metal,vocabulary,
+  perplexity}`; `bonsai-{trace-f32,trace-f16,generation-metal}`;
+  `muse-{trace-f32,trace-f16,generation-metal,draft-trace-metal,
+  vision-metal,vocabulary,perplexity}`; `gemma4-e4b-{trace-f32,
+  trace-f16,generation-metal,draft-trace-metal,vision-metal,vocabulary,
+  perplexity}`; `gemma4-26b-a4b-{trace-f32,trace-f16,generation-metal,
+  vision-metal,perplexity}`; `laya-{vocabulary,cpu}`. With four tool
+  changes: (1) `--draft-trace --metal` and `checkDraft` under `--metal`
+  run the plan only (the CPU halves stay in the `*-draft-trace-cpu`
+  gates; about −200 s); (2) `checkChunkedPrefill` over 40 tokens instead of
+  70 (chunk 32 still splits; the 64-token tile kernel is pinned by
+  `test-metal`; −30 s); (3) `nuclis eval --chunks 2` against the same
+  reference file's `chunk_ppl[1]` (first two windows measured 0.002 % and
+  0.005 % from llama's on Qwen; −100 s; the 8-window runs move to the
+  release tier); (4) `bonsai-generation-metal` without the F32-tile,
+  `prefillRows`, and F16-KV sub-checks, which test the Qwen 3.5 plan's
+  schedule that `qwen38-generation-metal` covers (a `--session-only`
+  style flag keeping isolation, cancellation, snapshot, recovery, and the
+  half-tile chunks; −30 s). Projected 225–260 s including builds.
+- **`verify-release`** (new; `make release` runs it with `verify-cpu`
+  and `verify-long`): the four 8-window perplexities; the Gemma 12B QAT
+  file's `trace-f32`, `trace-f16`, `generation-metal`,
+  `draft-trace-metal`, and its two CPU gates (it covers one global KV
+  head and 48 layers, a shape through the 26B's code; its tokenizer is
+  E4B's); `qwen38-draft-stats` (a report: it fails only on an error).
+  `gemma4-qat-vocabulary` is removed (the same tokenizer as
+  `gemma4-e4b-vocabulary`).
+- **`verify-cpu`**: unchanged in content minus the 12B QAT gates;
+  session 2 makes it fast.
+- **Globs**: `inference/src/backends/cpu/**` replaced per file:
+  `experts.zig` → the 26B-A4B gates, `hadamard.zig` → Bonsai,
+  `recurrent.zig` → Qwen and Bonsai, `dense.zig` → Laya; the others
+  (`root.zig`, `attention.zig`, `vector.zig`, `rope.zig`) → every CPU
+  gate. The Metal side stays whole-directory (`kernels.metal` is one
+  file every plan uses).
+
+Gaps found, not fixed here: no gate covers the 12B QAT's `gemma4uv`
+unified projector, the 26B-A4B's assistant head, or PQ2_0 beyond
+fixtures; Metal BF16 numerics and `layerNorm`/`addBiasRows` have no
+model-free test; `engine.zig` has no unit tests.
 
 ### Session 2 — a threaded CPU reference, bit-identical
 
-- Split the reference's independent work across `Io` tasks without
-  changing any sum's order: `matvec` rows (each row still one task's F64
-  sum in column order), attention heads, the experts of `experts.ffn`,
-  the vision encoders' matvecs. The kernels take `std.Io` (as
-  `backends/cpu/dense.zig` does); the family runtimes pass theirs.
-- Proof of no change: every CPU trace directory and logits file byte
-  identical before and after (`cmp` over the `*-trace-cpu` outputs), all
-  `verify-cpu` gates passing; times before and after per gate.
+- Split independent work across `Io` tasks without changing any sum's
+  order, the pattern of `backends/cpu/dense.zig` (`std.Io.Group`,
+  `taskCount`): `backends/cpu/root.zig` `matvec` by rows (each row still
+  one F64 sum in column order; the decode scratch becomes one `columns`
+  slice per task, so the callers' workspaces grow to `taskCount ×
+  columns`), `attention.apply` by head, `experts.ffn` by expert, and the
+  vision encoders' matvecs. The kernels take `std.Io`; the family
+  runtimes (`*_runtime.zig`, `vision/*.zig` CPU paths) pass theirs.
+- Proof of no change: every `*-trace-cpu` directory and logits file
+  `cmp`-identical before and after, all `verify-cpu` gates passing; times
+  before (the session 1 baseline) and after per gate.
 - `make verify-cpu` once (this changes how the reference runs, not what
   it computes; the byte comparison is the evidence).
 
-### Session 3 — apply the new gate set
+### Session 3 — apply the approved set
 
-- Remove and merge gates as approved, regroup the tiers (a fast default
-  tier and the release checks), fix the path globs, and update
-  `docs/development.md § Gates`, the tier rules in `AGENTS.md`
-  (§ Validation and definition of done), and the Makefile help.
+- The four tool changes above (`inference/generation-check.zig`
+  `museDraftTrace`, `gemmaDraftTrace`, `checkDraft`,
+  `checkChunkedPrefill`, a Bonsai flag; `src/eval.zig` accepting
+  `--chunks` below the reference's and comparing `chunk_ppl[chunks-1]`,
+  with a unit test), the manifest (`gates.json`: tiers, the new
+  `verify-release` tier in `scripts/gates.py` `TIERS`, the globs), the
+  Makefile (`verify-release`, `release` running it, help), and
+  `docs/development.md § Gates` (tier table, counts, times),
+  `AGENTS.md` § Validation and definition of done (the tier rules).
 - Checks: every remaining gate passes; `make verify` and the CPU tier
   timed against the targets; the log records before and after.
 

@@ -69,6 +69,11 @@ pub fn build(b: *std.Build) void {
     const generation_check = b.addRunArtifact(inference.artifact("generation-check"));
     if (b.args) |args| generation_check.addArgs(args);
     b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&generation_check.step);
+    // Compiles the three check tools without running them, so the gate runner
+    // can time the build apart from the checks.
+    const check_tools = b.step("check-tools", "Install the vocabulary, Laya, and generation check tools");
+    for ([_][]const u8{ "vocabulary-check", "laya-check", "generation-check" }) |name|
+        check_tools.dependOn(&b.addInstallArtifact(inference.artifact(name), .{}).step);
     b.step("test-metal", "Explicit Metal fixture checks (-Dmetal=true)").dependOn(&b.addRunArtifact(inference.artifact("metal-check")).step);
     const matvec_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matvec_bench.addArg("--matvec-bench");
