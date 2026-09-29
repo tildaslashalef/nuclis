@@ -2032,6 +2032,119 @@ fn checkFusedNorms(alloc: std.mem.Allocator, b: *Backend) !void {
     std.debug.print("Fused norms vs the unfused pair and the CPU: max abs fused-vs-unfused {e:.3} (bound 2e-5), vs CPU {e:.3} (bound 2e-4)\n", .{ worst_fused, worst_cpu });
 }
 
+/// The dense encodings the quant fixtures lack (F32, F16, BF16: Bonsai's
+/// recurrent gates, the vision projectors, the 26B-A4B router, Laya) through
+/// matvec and every matmul tile size, against the F64 CPU matvec per token
+/// row: 40 rows of random weights by 1,280 and 5,120 columns. Bound as the
+/// fixture loops: Σ|w·x|·4e-6 for F32 arithmetic, 2e-4 for half tiles.
+fn checkDenseEncodings(alloc: std.mem.Allocator, b: *Backend) !void {
+    var prng = std.Random.DefaultPrng.init(0xbf16);
+    const random = prng.random();
+    const rows: usize = 40;
+    const token_counts = [_]usize{ 37, 20, 9, 1 };
+    const padded = Backend.matmulPadded(37);
+    var worst: f64 = 0;
+    for ([_]u32{ 0, 1, 30 }) |encoding| for ([_]usize{ 1280, 5120 }) |columns| {
+        const width: usize = if (encoding == 0) 4 else 2;
+        const region = try alloc.alloc(u8, rows * columns * width);
+        defer alloc.free(region);
+        for (0..rows * columns) |i| {
+            const v = random.float(f32) * 2 - 1;
+            switch (encoding) {
+                0 => std.mem.writeInt(u32, region[i * 4 ..][0..4], @bitCast(v), .little),
+                1 => std.mem.writeInt(u16, region[i * 2 ..][0..2], @bitCast(@as(f16, @floatCast(v))), .little),
+                else => std.mem.writeInt(u16, region[i * 2 ..][0..2], @truncate(@as(u32, @bitCast(v)) >> 16), .little),
+            }
+        }
+        const matrix: inference.cpu.Matrix = .{ .rows = rows, .columns = columns, .encoding = encoding, .bytes = region };
+        const weights = try uploadBytes(b, region);
+        const activations = try b.create(padded * columns * 4);
+        for (activations.floats()) |*x| x.* = random.float(f32) * 2 - 1;
+        const out = try b.create(padded * rows * 4);
+        const expected = try alloc.alloc(f32, rows);
+        defer alloc.free(expected);
+        const decoded = try alloc.alloc(f32, columns);
+        defer alloc.free(decoded);
+        const masses = try alloc.alloc(f64, rows);
+        defer alloc.free(masses);
+        for (token_counts) |tokens| {
+            for (out.floats()) |*v| v.* = std.math.nan(f32);
+            try b.begin();
+            try b.matmul(weights, matrix, activations, columns, out, rows, tokens);
+            try b.commit();
+            const half = if (Backend.specializedMatmul(encoding, weights.offset, columns * width, tokens)) |k| Backend.matmulGeometry(k).half else false;
+            for (0..tokens) |t| {
+                const x = activations.floats()[t * columns ..][0..columns];
+                try inference.cpu.matvec(matrix, x, expected, decoded);
+                for (0..rows) |r| {
+                    try inference.quant.row(encoding, region[r * columns * width ..][0 .. columns * width], decoded);
+                    var mass: f64 = 0;
+                    for (decoded, x) |w, xv| mass += @abs(@as(f64, w) * xv);
+                    masses[r] = mass;
+                    const got = out.floats()[t * rows + r];
+                    if (mass > 0) worst = @max(worst, @abs(@as(f64, got) - expected[r]) / mass);
+                    expectClose("dense matmul token row", got, expected[r], @floatCast(mass * @as(f64, if (half) 2e-4 else 4e-6) + 1e-6)) catch |err| {
+                        std.debug.print("  encoding {d}, columns {d}, tokens {d}, token {d}, row {d}\n", .{ encoding, columns, tokens, t, r });
+                        return err;
+                    };
+                }
+                if (tokens == 1) {
+                    try matvecOnce(b, matrix, weights, x, decoded[0..rows]);
+                    for (decoded[0..rows], expected, masses) |got, want, mass| {
+                        expectClose("dense matvec", got, want, @floatCast(mass * 4e-6 + 1e-6)) catch |err| {
+                            std.debug.print("  encoding {d}, columns {d}\n", .{ encoding, columns });
+                            return err;
+                        };
+                    }
+                }
+            }
+        }
+    };
+    std.debug.print("Dense F32/F16/BF16 matvec and matmul tiles vs CPU F64: worst |difference| / Σ|w·x| {e:.2}\n", .{worst});
+}
+
+/// The vision towers' LayerNorm (weight and bias, strided rows, in place)
+/// and per-row bias against the CPU: `dense.layerNorm` computes its
+/// statistics in F64, the kernel in F32, so the bound is relative 1e-5.
+fn checkVisionNorms(alloc: std.mem.Allocator, b: *Backend) !void {
+    var prng = std.Random.DefaultPrng.init(0x1a7e);
+    const random = prng.random();
+    const width: usize = 1152;
+    const stride: usize = 1160;
+    const rows: usize = 5;
+    const input = try b.create(rows * stride * 4);
+    const weight = try b.create(width * 4);
+    const bias = try b.create(width * 4);
+    for (input.floats()) |*v| v.* = random.floatNorm(f32) * 4 + 1;
+    for (weight.floats()) |*v| v.* = random.float(f32) + 0.5;
+    for (bias.floats()) |*v| v.* = random.floatNorm(f32);
+    const expected = try alloc.alloc(f32, rows * stride);
+    defer alloc.free(expected);
+    @memcpy(expected, input.floats());
+    for (0..rows) |r| {
+        const row = expected[r * stride ..][0..width];
+        try inference.cpu.dense.layerNorm(row, weight.floats(), bias.floats(), 1e-6, row);
+        for (row, bias.floats()) |*v, add| v.* += add;
+    }
+    try b.begin();
+    try b.layerNorm(input, weight, bias, input, .{ .rows = rows, .width = width, .in_stride = stride, .out_stride = stride, .eps = 1e-6 });
+    try b.addBiasRows(input, bias, width, rows, stride);
+    try b.commit();
+    var worst: f32 = 0;
+    for (0..rows) |r| for (0..stride) |c| {
+        const i = r * stride + c;
+        const got = input.floats()[i];
+        if (c >= width) {
+            // Past the row's width the stride's padding is never written.
+            if (@as(u32, @bitCast(got)) != @as(u32, @bitCast(expected[i]))) return error.MetalMismatch;
+            continue;
+        }
+        worst = @max(worst, @abs(got - expected[i]));
+        try expectClose("layerNorm then addBiasRows", got, expected[i], 1e-5 * @max(1, @abs(expected[i])));
+    };
+    std.debug.print("LayerNorm and per-row bias vs CPU, {d} strided rows of {d}: max abs {e:.3} (bound 1e-5, relative past 1)\n", .{ rows, width, worst });
+}
+
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -2903,6 +3016,8 @@ pub fn main(init: std.process.Init) !void {
     try checkChunkAttentionReuse(alloc, b);
     try checkWindowAttention(alloc, b);
     try checkFusedNorms(alloc, b);
+    try checkDenseEncodings(alloc, b);
+    try checkVisionNorms(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
     // 32, 32, and 6) on the model shape (16 Q/K heads broadcast to 48 value
@@ -3605,5 +3720,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate and the exact erf GELU among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, its per-row state slots against the sequential state, the per-row convolution history gather, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate and the exact erf GELU among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
 }

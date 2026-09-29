@@ -97,22 +97,40 @@ vocabulary checks, the perplexity checks) or `trace` (the `{trace}` directory go
 `scripts/compare-generation.py` against the gate's `bounds`). Two things
 make the registry cheaper than the recipes it replaced:
 
-| | tier `verify` | tier `verify-long` | tier `verify-cpu` |
-| --- | --- | --- | --- |
-| executor | the Metal plan (and the tokenizer) | the Metal plan | the CPU reference |
-| cost | minutes (38 gates, one `make verify` per unit, about 12 min) | minutes (1 gate: `gemma4-e4b-perplexity-4k`; the other families wait for their references) | hours (16 gates; `qwen38-speculative-cpu` alone is about 20 min) |
-| build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
-| when | every unit that touched the inference stack | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
+| | tier `verify` | tier `verify-release` | tier `verify-long` | tier `verify-cpu` |
+| --- | --- | --- | --- | --- |
+| executor | the Metal plan (and the tokenizer) | the Metal plan, and the 12B QAT file's CPU gates | the Metal plan | the CPU reference |
+| covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities (`*-perplexity-full`), the Gemma 12B QAT file, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
+| cost | minutes (32 gates; 246 s measured 2026-09-29, down from 38 gates in 704 s; engineering log, REPO-20) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (1 gate: `gemma4-e4b-perplexity-4k`; the other families wait for their references) | hours (14 gates; `qwen38-speculative-cpu` alone is about 20 min) |
+| build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same (CPU gates as `verify-cpu`) | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
+| when | every unit that touched the inference stack | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
+
+The fast tier trims what its gates repeat, not what they cover: a Metal
+draft trace runs the plan alone (its CPU half is the `*-draft-trace-cpu`
+gate), `checkChunkedPrefill` takes its F32-tile and `prefillRows`
+comparisons over 40 tokens (chunk 32 still splits),
+`bonsai-generation-metal` passes `--half-tiles-only` (the F32-tile and
+F16-cache comparisons check the Qwen 3.5 plan's schedule, which
+`qwen38-generation-metal` covers), and the Qwen, Muse, and E4B
+`*-perplexity` gates run `--chunks 2` against the reference's running
+value after the second window (`chunk_ppl`; −0.005 %, −0.001 %, −0.019 %
+at `f5982c4`), the whole run being `*-perplexity-full`. The 26B-A4B keeps
+all eight windows: its running difference swings from −4.1 % after the
+first to −1.2 % after the fourth before settling at −0.53 %, so its 1 %
+bound holds only for the whole run.
 
 Each gate lists the source globs (`paths`) that make it relevant, so
 `make verify-changed BASE=<rev>` runs the Metal-tier gates whose paths
 match `git diff --name-only <rev>` plus untracked files: a commit under
 `src/tui/` selects nothing, one under `inference/src/models/gemma4*.zig`
-the Gemma gates. The long- and CPU-tier gates that match are listed, not
-run; `make verify-changed BASE=<rev> ARGS='--tier verify-long'` (or
-`verify-cpu`) runs them when the change calls for that tier (the table
-above). The other commands: `make verify` / `make verify-long` / `make
-verify-cpu` (a tier), `make gate
+the Gemma gates; a CPU kernel file selects only the families that call it
+(`backends/cpu/experts.zig` the 26B-A4B, `hadamard.zig` Bonsai,
+`recurrent.zig` Qwen and Bonsai). The other tiers' gates that match are
+listed, not run; `make verify-changed BASE=<rev> ARGS='--tier
+verify-long'` (or `verify-cpu`, `verify-release`) runs them when the
+change calls for that tier (the table above). The other commands: `make
+verify` / `make verify-release` / `make verify-long` / `make verify-cpu`
+(a tier), `make gate
 NAME=<name or glob>` (`gemma4-qat-trace-f16`, `'muse-*'`; `ARGS=--dry-run`
 prints the commands), `make gates-list`, and `make gates-validate` (part of
 `make check`: the manifest's schema and the runner's self-test, no model).
@@ -123,8 +141,8 @@ since launch (`--timeline` prints them); the check tools behind
 seconds are reported apart from the gates'. Gate names are `<entry>-<check>-<executor>`:
 `qwen38`, `gemma4`, `gemma4-qat`, `gemma4-26b-a4b`, `muse`, `bonsai`;
 `trace-{cpu,f32,f16}`, `generation-{cpu,metal}`, `speculative-{cpu,metal}`,
-`draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity`,
-`perplexity-4k`. A
+`draft-trace-{cpu,metal}`, `draft-stats`, `vocabulary`, `perplexity` (two
+windows), `perplexity-full`, `perplexity-4k`. A
 model path is overridden per key by `<KEY>_MODEL` (`GEMMA4_QAT_MODEL=…`).
 Traces are written under `.zig-cache/gates/trace/<gate>/`. The perplexity
 gates read wikitext-2-raw's test text, fetched into `.zig-cache/eval/` and
@@ -135,7 +153,7 @@ their references are pinned under `tests/fixtures/perplexity/`
 
 ### What each gate protects
 
-Measured 2026-09-29 at `acce06a` (M4 Pro, `python3 scripts/gates.py
+Measured 2026-09-29 at `acce06a`, before the fast tier (M4 Pro, `python3 scripts/gates.py
 --tier verify --json`, whose per-gate `timeline` stamps every output
 line): the Metal tier took 704 s after 9 s of builds. Loading is not
 the cost: a model's first gate pays the cold page cache (2–8 s), every
@@ -153,24 +171,24 @@ What can break independently, and what protects it. *Model-free* means
 
 | Axis | Model-free | Gates that alone cover it |
 | --- | --- | --- |
-| matvec, matmul tiles, embed gather, per encoding | every quant fixture encoding (Q4_0, Q8_0, IQ4_NL, Q3–Q6_K, IQ3_S, IQ4_XS, PQ2_0, PTQ1_0) against the CPU, and the CPU decoders against llama.cpp's blocks | BF16 on Metal: `bonsai-*` (ssm α/β) and the vision gates; F16/F32 beyond a 3×32 matvec: `gemma4-26b-a4b-*` (F32 router), `laya-cpu` (CPU only) |
-| attention: decode, chunk, windowed, F16 cache | fixtures to 16K keys | head geometry per file: the traces |
+| matvec, matmul tiles, embed gather, per encoding | every quant fixture encoding (Q4_0, Q8_0, IQ4_NL, Q3–Q6_K, IQ3_S, IQ4_XS, PQ2_0, PTQ1_0) against the CPU, the CPU decoders against llama.cpp's blocks, and F32/F16/BF16 matvec and matmul tiles on random weights (`checkDenseEncodings`) | — |
+| attention: decode, chunk, windowed, F16 cache | fixtures to 16K keys, and Gemma's geometries (16 heads of 512 over one or two KV heads, 16 of 256 over 8) | — |
 | DeltaNet, Hadamard, RoPE, norms, softcap, sampling kernels | fixtures | — |
-| Metal `layerNorm`, `addBiasRows` | none | `muse-vision-metal`, `gemma4-*-vision-metal` |
+| Metal `layerNorm`, `addBiasRows` | strided rows against the CPU (`checkVisionNorms`) | — |
 | experts (MoE) | Metal Q4_0 chains; CPU FFN on a 2×2 F32 tensor | `gemma4-26b-a4b-*` |
 | Qwen 3.5 plan (DeltaNet, gated attention, MTP block) | the runtime's admission tests | `qwen38-*` |
 | Qwen 3.5 with Hadamard rotations, PTQ1_0, BF16 | decoders, kernels | `bonsai-*` |
 | Gemma 4: sliding/global, softcap | — | any Gemma file |
 | Gemma 4: shared KV, per-layer embeddings, own V on global layers, window 512 | — | `gemma4-e4b-*` |
 | Gemma 4: K=V global layers, window 1024, the `gemma4` profile | — | `gemma4-26b-a4b-*` (and the 12B QAT) |
-| Gemma 4: one global KV head (16:1), 48 layers | — | the 12B QAT (a shape, through the same code as the 26B's 8:1) |
+| Gemma 4: one global KV head (16:1), 48 layers | the 16:1 attention geometry | the 12B QAT, release tier (a shape, through the same code as the 26B's 8:1) |
 | Muse Glimmer plan | — | `muse-*` |
 | session layout: recurrent with row slots (Metal, drafter) | session unit tests | `qwen38-generation-metal` |
 | session layout: recurrent without row slots (rewind, replay) | session unit tests | `bonsai-generation-metal`; every CPU generation gate |
 | session layout: attention only (truncate) | session unit tests | any Gemma or Muse generation gate |
 | engine loop: EOS, budget, context, cancellation, speculative loop, penalties, top-k readback | none (`engine.zig` has no tests) | `qwen38-speculative-metal` |
 | draft sources: Qwen MTP, Gemma assistant, Muse DFlash | — | `qwen38-draft-trace-*`, `gemma4-{e4b,qat}-draft-trace-*` (the same code, two shapes), `muse-draft-trace-*` |
-| tokenizers: Qwen BPE, Muse (GPT-4o splitter), Gemma SPM, Laya | — | one vocabulary gate each; `gemma4-qat-vocabulary` and `gemma4-e4b-vocabulary` read the same tokenizer |
+| tokenizers: Qwen BPE, Muse (GPT-4o splitter), Gemma SPM, Laya | — | one vocabulary gate each (the 12B QAT file carries E4B's tokenizer) |
 | vision: Qwen3-VL, SigLIP small with clamps, SigLIP large with standardization, Muse | preprocessing, grids | one vision gate each |
 | batched prefill at 256 rows, F16 cache over 511 keys, real prose | — | the perplexity gates |
 | past 512 tokens and the sliding windows | — | `verify-long` |

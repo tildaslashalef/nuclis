@@ -293,7 +293,8 @@ fn eval(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--ctx-size <n>", "tokens per window, 2..32768; default 512, or the");
     try more(out, "reference's");
     try row(out, sty, "--chunks <n>", "windows from the start of the text; default every");
-    try more(out, "whole window, or the reference's");
+    try more(out, "whole window, or the reference's; fewer than the");
+    try more(out, "reference's compare with its running value");
     try row(out, sty, "--reference <json>", "a pinned llama-perplexity run on the same file;");
     try more(out, "fails beyond 0.5 % of its perplexity, or its bound");
     try row(out, sty, "--model <name|path>", "registry entry, catalogue name, or path; default");

@@ -40,16 +40,30 @@ pub const Reference = struct {
     chunks: usize,
     ppl: f64,
     ppl_error: f64,
+    /// The running perplexity after each window (4 decimals), so a run of
+    /// fewer windows compares against the same file.
+    chunk_ppl: ?[]const f64 = null,
     /// A wider bound for a model whose reference disagrees with itself by
     /// more than the default (the mixture-of-experts file's routing ties).
     tolerance: ?f64 = null,
+
+    /// Its perplexity after the first `chunks` windows: the final value for
+    /// all of them, else the running one, whose error it does not state.
+    pub fn after(self: Reference, chunks: usize) error{ReferenceMismatch}!struct { ppl: f64, ppl_error: ?f64 } {
+        if (chunks == self.chunks) return .{ .ppl = self.ppl, .ppl_error = self.ppl_error };
+        const running = self.chunk_ppl orelse return error.ReferenceMismatch;
+        if (chunks == 0 or chunks > self.chunks or running.len != self.chunks) return error.ReferenceMismatch;
+        return .{ .ppl = running[chunks - 1], .ppl_error = null };
+    }
 };
 
 pub const Comparison = struct {
     tool: []const u8,
     revision: []const u8,
+    /// The windows compared: the reference's, or its first `chunks`.
+    chunks: usize,
     ppl: f64,
-    ppl_error: f64,
+    ppl_error: ?f64,
     /// (ours − reference) / reference.
     relative_difference: f64,
     tolerance: f64,
@@ -92,7 +106,9 @@ pub const Report = struct {
         try out.print("{s}Perplexity:{s} {s}{d:.4}{s} ± {d:.5} (nll {d:.6}), {d} tokens scored in {d:.1} s, {d:.1} tok/s fed\n", .{ label, off, number, self.ppl, off, self.ppl_error, self.nll, self.scored_tokens, self.eval_milliseconds / 1000, self.tokens_per_second });
         if (self.reference) |r| {
             const verdict = if (r.passed) sty.on(.success) else sty.on(.error_text);
-            try out.print("{s}Reference:{s} {s}{d:.4}{s} ± {d:.5} ({s} {s}), difference {d:.3} % (bound {d:.1} %): {s}{s}{s}\n", .{ label, off, number, r.ppl, off, r.ppl_error, r.tool, r.revision[0..@min(r.revision.len, 9)], r.relative_difference * 100, r.tolerance * 100, verdict, if (r.passed) "pass" else "FAIL", off });
+            try out.print("{s}Reference:{s} {s}{d:.4}{s}", .{ label, off, number, r.ppl, off });
+            if (r.ppl_error) |e| try out.print(" ± {d:.5}", .{e}) else try out.print(" after {d} windows", .{r.chunks});
+            try out.print(" ({s} {s}), difference {d:.3} % (bound {d:.1} %): {s}{s}{s}\n", .{ r.tool, r.revision[0..@min(r.revision.len, 9)], r.relative_difference * 100, r.tolerance * 100, verdict, if (r.passed) "pass" else "FAIL", off });
         }
     }
 };
@@ -190,10 +206,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     const reference: ?Reference = if (parsed_reference) |p| p.value else null;
     const ctx = options.ctx orelse if (reference) |r| r.ctx else default_ctx;
     if (ctx < 2 or ctx > config.max_context) return error.InvalidGenerationBudget;
-    if (reference) |r| if (r.ctx != ctx or (options.chunks != null and options.chunks.? != r.chunks)) {
-        diag.set("the reference ran {d} windows of {d} tokens; drop --ctx-size and --chunks to use its", .{ r.chunks, r.ctx });
-        return error.ReferenceMismatch;
-    };
+    if (reference) |r| {
+        errdefer diag.set("the reference ran {d} windows of {d} tokens; drop --ctx-size, and give --chunks at most its count", .{ r.chunks, r.ctx });
+        if (r.ctx != ctx) return error.ReferenceMismatch;
+        _ = try r.after(options.chunks orelse r.chunks);
+    }
     const text = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(max_text_bytes)) catch |err| {
         if (err == error.StreamTooLong) diag.set("{s} is larger than {d} bytes", .{ path, max_text_bytes });
         return err;
@@ -297,9 +314,10 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         .tokens_per_second = @as(f64, @floatFromInt(chunks * ctx)) / seconds,
     };
     if (reference) |r| {
-        const difference = (report.ppl - r.ppl) / r.ppl;
+        const expected = try r.after(chunks);
+        const difference = (report.ppl - expected.ppl) / expected.ppl;
         const bound = r.tolerance orelse tolerance;
-        report.reference = .{ .tool = r.tool, .revision = r.revision, .ppl = r.ppl, .ppl_error = r.ppl_error, .relative_difference = difference, .tolerance = bound, .passed = @abs(difference) <= bound };
+        report.reference = .{ .tool = r.tool, .revision = r.revision, .chunks = chunks, .ppl = expected.ppl, .ppl_error = expected.ppl_error, .relative_difference = difference, .tolerance = bound, .passed = @abs(difference) <= bound };
     }
     try report.render(out, json, sty);
     if (report.reference) |r| if (!r.passed) {
@@ -347,4 +365,22 @@ test "windows cut whole ctx-token spans with BOS over the first token" {
     try std.testing.expectEqualSlices(u32, &.{ 2, 14, 15 }, &out);
     window(&tokens, 0, &out, null);
     try std.testing.expectEqualSlices(u32, &.{ 10, 11, 12 }, &out);
+}
+
+test "a reference compares after all its windows or a prefix of them" {
+    const running = [_]f64{ 4.3472, 6.1657, 5.9379 };
+    const r: Reference = .{ .tool = "t", .revision = "r", .text_sha256 = "s", .ctx = 512, .chunks = 3, .ppl = 5.93791, .ppl_error = 0.4, .chunk_ppl = &running };
+    const all = try r.after(3);
+    try std.testing.expectEqual(@as(f64, 5.93791), all.ppl);
+    try std.testing.expectEqual(@as(?f64, 0.4), all.ppl_error);
+    const two = try r.after(2);
+    try std.testing.expectEqual(@as(f64, 6.1657), two.ppl);
+    try std.testing.expectEqual(@as(?f64, null), two.ppl_error);
+    try std.testing.expectError(error.ReferenceMismatch, r.after(4));
+    try std.testing.expectError(error.ReferenceMismatch, r.after(0));
+    // Without the running values only the whole run compares.
+    var bare = r;
+    bare.chunk_ppl = null;
+    try std.testing.expectError(error.ReferenceMismatch, bare.after(2));
+    _ = try bare.after(3);
 }

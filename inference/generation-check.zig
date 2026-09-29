@@ -93,6 +93,7 @@ pub fn main(init: std.process.Init) !void {
     var use_metal = false;
     var draft_stats = false;
     var speculative_check = false;
+    var half_tiles_only = false;
     var draft_trace: ?[]const u8 = null;
     var draft_model: ?[]const u8 = null;
     var vision_check: ?[]const u8 = null;
@@ -108,6 +109,8 @@ pub fn main(init: std.process.Init) !void {
             draft_stats = true;
         } else if (std.mem.eql(u8, arg, "--speculative-check")) {
             speculative_check = true;
+        } else if (std.mem.eql(u8, arg, "--half-tiles-only")) {
+            half_tiles_only = true;
         } else if (std.mem.eql(u8, arg, "--draft-trace")) {
             i += 1;
             if (i >= args.len) return error.ExpectedTraceDirectory;
@@ -151,7 +154,7 @@ pub fn main(init: std.process.Init) !void {
         else if (speculative_check)
             try speculativeCheck(qwen35_spec, alloc, init.io, &mapped, model_path, use_metal)
         else
-            try run(qwen35_spec, alloc, init.io, &mapped, use_metal),
+            try run(qwen35_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
         .gemma4 => if (vision_check) |projector|
             if (vision_image) |image|
                 try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
@@ -159,7 +162,7 @@ pub fn main(init: std.process.Init) !void {
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (draft_trace != null)
             try gemmaDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal)
-        else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
+        else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
         .@"muse-glimmer" => if (vision_check) |projector|
             if (vision_image) |image|
                 try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
@@ -167,11 +170,11 @@ pub fn main(init: std.process.Init) !void {
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
         else if (draft_trace) |dir|
             try museDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal, dir)
-        else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal),
+        else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
     }
 }
 
-fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool) !void {
+fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, half_tiles_only: bool) !void {
     const Family = spec.Family;
     const Runtime = Family.Runtime;
     const Plan = Family.Plan;
@@ -337,7 +340,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     } else std.debug.print("Draft block checks skipped: the file carries no embedded block.\n", .{});
     try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal);
     if (use_metal) try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 8, true);
-    if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual);
+    if (backend) |*b| try checkChunkedPrefill(spec, alloc, b, mapped.view(), binding, expected, actual, half_tiles_only);
 }
 
 /// Step token 1, snapshot, step token 2 → logits A; restore, step
@@ -475,7 +478,7 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
 }
 
 /// The prediction block against the reference's pinned trace, on the CPU
-/// reference and, when a backend is given, on the Metal plan: at position 0
+/// reference or, when a backend is given, on the Metal plan: at position 0
 /// pair the first token with a zero hidden, at position 1 pair the second with
 /// the first position's target hidden. Both the block's `h_nextn` and its
 /// greedy token must match. The trace was captured from the pinned reference
@@ -496,14 +499,18 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
     defer alloc.free(h_prev);
     for (h_prev, 0..) |*v, i| v.* = std.mem.bytesToValue(f32, p1_hprev[i * 4 ..][0..4]);
 
-    var runtime = try Runtime.init(alloc, view, binding, 4, false, true);
-    defer runtime.deinit();
-    try runtime.draftForward(zeros, draft.tokens[0], 0, logits);
-    try compareDraft("cpu position 0", p0_h, runtime.draft_h, 2e-2, 1e-3);
-    if (argmax(logits) != draft.greedy[0]) return error.DraftGreedyMismatch;
-    try runtime.draftForward(h_prev, draft.tokens[1], 1, logits);
-    try compareDraft("cpu position 1", p1_h, runtime.draft_h, 2e-2, 1e-3);
-    if (argmax(logits) != draft.greedy[1]) return error.DraftGreedyMismatch;
+    // One executor per run: the CPU reference, or the plan alone when a
+    // backend is given (the CPU half is the CPU tier's gate).
+    if (backend == null) {
+        var runtime = try Runtime.init(alloc, view, binding, 4, false, true);
+        defer runtime.deinit();
+        try runtime.draftForward(zeros, draft.tokens[0], 0, logits);
+        try compareDraft("cpu position 0", p0_h, runtime.draft_h, 2e-2, 1e-3);
+        if (argmax(logits) != draft.greedy[0]) return error.DraftGreedyMismatch;
+        try runtime.draftForward(h_prev, draft.tokens[1], 1, logits);
+        try compareDraft("cpu position 1", p1_h, runtime.draft_h, 2e-2, 1e-3);
+        if (argmax(logits) != draft.greedy[1]) return error.DraftGreedyMismatch;
+    }
 
     if (backend) |b| {
         const Plan = spec.Family.Plan;
@@ -549,7 +556,7 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
         std.debug.print("Prefill hidden check passed: {d} rows match verify (max abs {e:.3}).\n", .{ rows, hidden_max_abs });
         if (hidden_max_abs > 1e-3) return error.PrefillHiddenMismatch;
     }
-    std.debug.print("Draft block check passed ({s}): positions 0 and 1 match the pinned trace; greedy tokens {d} and {d}.\n", .{ if (backend != null) "cpu and metal" else "cpu", draft.greedy[0], draft.greedy[1] });
+    std.debug.print("Draft block check passed ({s}): positions 0 and 1 match the pinned trace; greedy tokens {d} and {d}.\n", .{ if (backend != null) "metal" else "cpu", draft.greedy[0], draft.greedy[1] });
 }
 
 /// The block's cache rides the session's recovery: `reset` clears it and a
@@ -1479,8 +1486,10 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     defer alloc.free(h_prev);
     const h_out = try alloc.alloc(f32, hidden);
     defer alloc.free(h_out);
-    var runtime = try Family.Runtime.init(alloc, mapped.view(), binding, 32, false, true);
-    defer runtime.deinit();
+    // One executor per run: the CPU reference, or with `--metal` the plan
+    // alone (the CPU half is the CPU tier's gate).
+    var runtime: ?Family.Runtime = if (use_metal) null else try Family.Runtime.init(alloc, mapped.view(), binding, 32, false, true);
+    defer if (runtime) |*r| r.deinit();
     // The plan must go before the backend it borrows (LIFO defers: register
     // the backend's first).
     var gpu: ?*inference.metal.Backend = null;
@@ -1504,11 +1513,13 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
         // The row's proposal position is `row + 1`, so the target consumes
         // tokens `0 .. row` first: its cache must hold those rows, exactly as
         // it does in the driver when `draft()` runs.
-        try runtime.step(tokens[row], null, null);
-        var token_greedy: u32 = 0;
-        try runtime.draftForwardTrace(h_prev, tokens[row + 1], row + 1, h_out, &token_greedy, null);
-        try compareDraft(if (row == 0) "gemma cpu position 1" else "gemma cpu position 2", h_files[row], h_out, 1e-2, 1e-4);
-        if (token_greedy != greedy[row]) return error.DraftGreedyMismatch;
+        if (runtime) |*r| {
+            try r.step(tokens[row], null, null);
+            var token_greedy: u32 = 0;
+            try r.draftForwardTrace(h_prev, tokens[row + 1], row + 1, h_out, &token_greedy, null);
+            try compareDraft(if (row == 0) "gemma cpu position 1" else "gemma cpu position 2", h_files[row], h_out, 1e-2, 1e-4);
+            if (token_greedy != greedy[row]) return error.DraftGreedyMismatch;
+        }
         if (plan) |*p| {
             try p.step(tokens[row], null, null, null, null, null);
             var metal_greedy: u32 = 0;
@@ -1538,17 +1549,30 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     }
     // `propose` from the committed prefix equals the pinned draft at row 2:
     // the prompt's hidden rows come from `prefill`, as the loop's prompt
-    // commit supplies them.
+    // commit supplies them. The plan prefills through the F32 tiles, so
+    // only summation order separates its rows from the reference's.
     var proposed: [4]u32 = undefined;
     const prompt_hidden = try alloc.alloc(f32, 2 * hidden);
     defer alloc.free(prompt_hidden);
-    var fresh = try Family.Runtime.init(alloc, mapped.view(), binding, 32, false, true);
-    defer fresh.deinit();
-    try fresh.prefill(tokens[0..2], null, prompt_hidden, null);
-    try fresh.commit(tokens[0..2], prompt_hidden);
-    const count = try fresh.propose(tokens[2], &proposed, 0);
+    const count = if (gpu) |b| count: {
+        var fresh = try Family.Plan.init(alloc, b, mapped.view(), binding, 32, 32, .f32, false, true);
+        defer fresh.deinit();
+        {
+            b.generic_only = true;
+            defer b.generic_only = false;
+            try fresh.prefill(tokens[0..2], null, null, null, null, prompt_hidden, null);
+        }
+        try fresh.commit(tokens[0..2], prompt_hidden);
+        break :count try fresh.propose(tokens[2], &proposed, 0);
+    } else count: {
+        var fresh = try Family.Runtime.init(alloc, mapped.view(), binding, 32, false, true);
+        defer fresh.deinit();
+        try fresh.prefill(tokens[0..2], null, prompt_hidden, null);
+        try fresh.commit(tokens[0..2], prompt_hidden);
+        break :count try fresh.propose(tokens[2], &proposed, 0);
+    };
     if (count < 1 or proposed[0] != greedy[1]) return error.DraftGreedyMismatch;
-    std.debug.print("Gemma assistant draft check passed ({s}): both rows match the pinned trace; propose returns {d}.\n", .{ if (use_metal) "cpu and metal" else "cpu", proposed[0] });
+    std.debug.print("Gemma assistant draft check passed ({s}): both rows match the pinned trace; propose returns {d}.\n", .{ if (use_metal) "metal" else "cpu", proposed[0] });
 }
 
 fn argmax(values: []const f32) u32 {
@@ -1580,10 +1604,11 @@ fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, 
     // between the two positions under test, so a capacity past them keeps
     // the same visible set.
     const capacity = 32;
-    var runtime = try Family.Runtime.init(alloc, mapped.view(), binding, capacity, false, true);
-    defer runtime.deinit();
-    // The Metal plan runs the same pinned rows with F32 caches, the
-    // precision the reference trace was captured with.
+    // One executor per run: the CPU reference, or with `--metal` the plan
+    // alone (the CPU half is the CPU tier's gate), each against the pinned
+    // rows. The plan runs F32 caches, the precision of the reference trace.
+    var runtime: ?Family.Runtime = if (use_metal) null else try Family.Runtime.init(alloc, mapped.view(), binding, capacity, false, true);
+    defer if (runtime) |*r| r.deinit();
     var gpu: ?*inference.metal.Backend = null;
     defer if (gpu) |b| {
         b.deinit();
@@ -1652,48 +1677,52 @@ fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, 
 
     // Position 0: the target's residual capture, then the encoder over the
     // same pinned rows (so a capture error is not charged to the encoder).
-    // The CPU reference always runs; `--metal` runs the plan's protocol over
-    // the same pinned rows, and the trace directory receives the plan's rows.
-    try runtime.prefill(tokens[0..1], null, hidden, null);
-    try compareResiduals("cpu residuals position 0", residual_files[0], hidden, residual_max_abs, residual_rel_rms);
+    if (runtime) |*r| {
+        try r.prefill(tokens[0..1], null, hidden, null);
+        try compareResiduals("cpu residuals position 0", residual_files[0], hidden, residual_max_abs, residual_rel_rms);
+    }
     if (plan) |*p| {
         try museStepCapture(p, gpu.?, tokens[0..1], hidden);
         try compareResiduals("metal residuals position 0", residual_files[0], hidden, residual_max_abs, residual_rel_rms);
     }
     try assemblePinned(residual_files[0], pinned_row);
-    try runtime.draftEncodeTrace(pinned_row, encoder);
-    try compareDraft("cpu encoder position 0", encoder_files[0], encoder, 1e-2, encoder_rel_rms);
+    if (runtime) |*r| {
+        try r.draftEncodeTrace(pinned_row, encoder);
+        try compareDraft("cpu encoder position 0", encoder_files[0], encoder, 1e-2, encoder_rel_rms);
+    }
     if (plan) |*p| {
         try p.draftEncodeTrace(pinned_row, encoder);
         try compareDraft("metal encoder position 0", encoder_files[0], encoder, 1e-2, encoder_rel_rms);
     }
     try writeFloats(io, directory, "token-0-encoder.f32", encoder);
-    try runtime.commit(tokens[0..1], hidden);
+    if (runtime) |*r| try r.commit(tokens[0..1], hidden);
     if (plan) |*p| try p.commit(tokens[0..1], hidden);
 
     for (0..2) |row| {
         const label_position = row + 1;
         const block_label: []const u8 = if (row == 0) "block position 1" else "block position 2";
         const greedy_label: []const u8 = if (row == 0) "greedy position 1" else "greedy position 2";
-        try runtime.draftBlockTrace(tokens[label_position], D.block_size, block, &greedy, null);
         // The block's residual stream magnifies the reference backends' own
         // spread (its CPU quantizes activations, its Metal does not; the two
         // differ by 2-5 % per layer here). The native rows sit 4.4e-3 from
         // the pinned Metal ones, inside that spread; the 30 greedy rows pin
         // the block's behaviour exactly.
-        try compareDraft(
-            try std.fmt.bufPrint(&label_buffer, "cpu {s}", .{block_label}),
-            block_files[row],
-            block[0 .. 4 * D.embedding],
-            2e-2,
-            1e-2,
-        );
-        try compareGreedy(
-            try std.fmt.bufPrint(&label_buffer, "cpu {s}", .{greedy_label}),
-            pinned_greedy,
-            row,
-            greedy[1..D.block_size],
-        );
+        if (runtime) |*r| {
+            try r.draftBlockTrace(tokens[label_position], D.block_size, block, &greedy, null);
+            try compareDraft(
+                try std.fmt.bufPrint(&label_buffer, "cpu {s}", .{block_label}),
+                block_files[row],
+                block[0 .. 4 * D.embedding],
+                2e-2,
+                1e-2,
+            );
+            try compareGreedy(
+                try std.fmt.bufPrint(&label_buffer, "cpu {s}", .{greedy_label}),
+                pinned_greedy,
+                row,
+                greedy[1..D.block_size],
+            );
+        }
         if (plan) |*p| {
             try p.draftBlockTrace(tokens[label_position], D.block_size, block, &greedy, null);
             {
@@ -1722,25 +1751,29 @@ fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, 
         if (row == 0) {
             // The next position: capture token 1's residuals and inject them,
             // then the second proposal reads both injected rows.
-            try runtime.prefill(tokens[1..2], null, hidden, null);
-            try compareResiduals("cpu residuals position 1", residual_files[1], hidden, residual_max_abs, residual_rel_rms);
+            if (runtime) |*r| {
+                try r.prefill(tokens[1..2], null, hidden, null);
+                try compareResiduals("cpu residuals position 1", residual_files[1], hidden, residual_max_abs, residual_rel_rms);
+            }
             if (plan) |*p| {
                 try museStepCapture(p, gpu.?, tokens[1..2], hidden);
                 try compareResiduals("metal residuals position 1", residual_files[1], hidden, residual_max_abs, residual_rel_rms);
             }
             try writeFloats(io, directory, "token-1-residuals.f32", hidden);
             try assemblePinned(residual_files[1], pinned_row);
-            try runtime.draftEncodeTrace(pinned_row, encoder);
-            try compareDraft("cpu encoder position 1", encoder_files[1], encoder, 1e-2, encoder_rel_rms);
+            if (runtime) |*r| {
+                try r.draftEncodeTrace(pinned_row, encoder);
+                try compareDraft("cpu encoder position 1", encoder_files[1], encoder, 1e-2, encoder_rel_rms);
+            }
             if (plan) |*p| {
                 try p.draftEncodeTrace(pinned_row, encoder);
                 try compareDraft("metal encoder position 1", encoder_files[1], encoder, 1e-2, encoder_rel_rms);
             }
-            try runtime.commit(tokens[1..2], hidden);
+            if (runtime) |*r| try r.commit(tokens[1..2], hidden);
             if (plan) |*p| try p.commit(tokens[1..2], hidden);
         }
     }
-    std.debug.print("Muse DFlash draft check passed ({s}): residuals, encoder, two blocks, and {d} greedy rows match the pinned trace.\n", .{ if (use_metal) "cpu and metal" else "cpu", 2 * (D.block_size - 1) });
+    std.debug.print("Muse DFlash draft check passed ({s}): residuals, encoder, two blocks, and {d} greedy rows match the pinned trace.\n", .{ if (use_metal) "metal" else "cpu", 2 * (D.block_size - 1) });
 }
 
 /// The pinned residual rows are the reference's per-token target decode; the
@@ -1802,8 +1835,10 @@ fn compareGreedy(label: []const u8, pinned: []const u8, proposal: usize, actual:
 /// half, so bit-identity is not expected; the observed maximum is printed
 /// for the record. Chunks of 48 and 64 repeat the comparison through the
 /// 64×64 tiles (a partial and a full token tile); chunks of at most 32
-/// tokens take the 32×32 tiles.
-fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding, expected: []f32, actual: []f32) !void {
+/// tokens take the 32×32 tiles. `half_tiles_only` stops after those: the
+/// F32-tile and F16-cache comparisons check the family's schedule, which
+/// a file sharing it with another gated file need not repeat.
+fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding, expected: []f32, actual: []f32, half_tiles_only: bool) !void {
     const Plan = spec.Family.Plan;
     var tokens: [70]u32 = undefined;
     var seed: u32 = 12345;
@@ -1819,58 +1854,61 @@ fn checkChunkedPrefill(comptime spec: Spec, alloc: std.mem.Allocator, b: *infere
         var big = try Plan.init(alloc, b, view, binding, 128, chunk, .f32, false, false);
         defer big.deinit();
         try big.prefill(&tokens, actual, null, null, null, null, null);
-        try compareChunked("chunk", chunk, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
+        try compareChunked("chunk", chunk, tokens.len, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
     }
     var chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
     defer chunked.deinit();
     try chunked.prefill(&tokens, actual, null, null, null, null, null);
     if (chunked.state.position != tokens.len or stepped.state.position != tokens.len) return error.PositionMismatch;
-    try compareChunked("chunk", 32, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
-    // The same comparison through the generic F32 tiles and matvecs
-    // (`generic_only`): what remains is summation order alone, so this
-    // separates the half-operand rounding of the specialized tiles (the
-    // family's `chunk_*` tolerance) from any error in the chunk schedule.
-    {
-        const generic_expected = try alloc.alloc(f32, spec.vocabulary);
-        defer alloc.free(generic_expected);
+    try compareChunked("chunk", 32, tokens.len, expected, actual, bounds.chunk_max_abs, bounds.chunk_rel_rms);
+    if (!half_tiles_only) {
+        // The same comparison through the generic F32 tiles and matvecs
+        // (`generic_only`): what remains is summation order alone, so this
+        // separates the half-operand rounding of the specialized tiles (the
+        // family's `chunk_*` tolerance) from any error in the chunk schedule.
+        // 40 tokens still cross a 32-token chunk boundary; the generic tiles
+        // are the slowest path, so the prefix is kept short.
+        const prefix = tokens[0..40];
         b.generic_only = true;
         defer b.generic_only = false;
+        // One stepped run keeps every row: the last is the chunked prefill's
+        // reference, all of them the evaluation path's (`prefillRows`).
+        const every_expected = try alloc.alloc(f32, prefix.len * spec.vocabulary);
+        defer alloc.free(every_expected);
         var generic_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
         defer generic_stepped.deinit();
-        for (tokens, 0..) |t, i| try generic_stepped.step(t, if (i + 1 == tokens.len) generic_expected else null, null, null, null, null);
+        for (prefix, 0..) |t, i| try generic_stepped.step(t, every_expected[i * spec.vocabulary ..][0..spec.vocabulary], null, null, null, null);
+        const generic_expected = every_expected[(prefix.len - 1) * spec.vocabulary ..];
         var generic_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
         defer generic_chunked.deinit();
-        try generic_chunked.prefill(&tokens, actual, null, null, null, null, null);
-        try compareChunked("F32 tiles, chunk", 32, generic_expected, actual, 5e-3, 2e-4);
+        try generic_chunked.prefill(prefix, actual, null, null, null, null, null);
+        try compareChunked("F32 tiles, chunk", 32, prefix.len, generic_expected, actual, 5e-3, 2e-4);
         // The evaluation path keeps every row: each must be the stepped
         // logits at its position, so the head (scale and soft-cap included)
         // runs on every row as `step` runs it on one.
         if (@hasDecl(Plan, "prefillRows")) {
-            const every_expected = try alloc.alloc(f32, tokens.len * spec.vocabulary);
-            defer alloc.free(every_expected);
-            const every_actual = try alloc.alloc(f32, tokens.len * spec.vocabulary);
+            const every_actual = try alloc.alloc(f32, prefix.len * spec.vocabulary);
             defer alloc.free(every_actual);
-            var every_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
-            defer every_stepped.deinit();
-            for (tokens, 0..) |t, i| try every_stepped.step(t, every_expected[i * spec.vocabulary ..][0..spec.vocabulary], null, null, null, null);
             var every_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f32, false, false);
             defer every_chunked.deinit();
-            try every_chunked.prefillRows(&tokens, every_actual, null);
-            if (every_chunked.state.position != tokens.len) return error.PositionMismatch;
-            try compareLogitRows("prefillRows (70 tokens, F32 tiles, chunk 32)", spec.vocabulary, every_expected, every_actual, 5e-3, 2e-4);
+            try every_chunked.prefillRows(prefix, every_actual, null);
+            if (every_chunked.state.position != prefix.len) return error.PositionMismatch;
+            try compareLogitRows("prefillRows (40 tokens, F32 tiles, chunk 32)", spec.vocabulary, every_expected, every_actual, 5e-3, 2e-4);
         }
     }
-    // The same 70 tokens through an F16 cache, stepped and chunked,
-    // against the F32 stepped logits (the session holds half the bytes).
-    var half_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
-    defer half_stepped.deinit();
-    if (half_stepped.state.bytes() >= stepped.state.bytes()) return error.HalfCacheNotSmaller;
-    for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null, null);
-    try compareChunked("F16 KV stepped", 1, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
-    var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
-    defer half_chunked.deinit();
-    try half_chunked.prefill(&tokens, actual, null, null, null, null, null);
-    try compareChunked("F16 KV chunk", 32, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
+    if (!half_tiles_only) {
+        // The same 70 tokens through an F16 cache, stepped and chunked,
+        // against the F32 stepped logits (the session holds half the bytes).
+        var half_stepped = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
+        defer half_stepped.deinit();
+        if (half_stepped.state.bytes() >= stepped.state.bytes()) return error.HalfCacheNotSmaller;
+        for (tokens, 0..) |t, i| try half_stepped.step(t, if (i + 1 == tokens.len) actual else null, null, null, null, null);
+        try compareChunked("F16 KV stepped", 1, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
+        var half_chunked = try Plan.init(alloc, b, view, binding, 128, 32, .f16, false, false);
+        defer half_chunked.deinit();
+        try half_chunked.prefill(&tokens, actual, null, null, null, null, null);
+        try compareChunked("F16 KV chunk", 32, tokens.len, expected, actual, bounds.half_max_abs, bounds.half_rel_rms);
+    }
     // 60 more tokens do not fit the remaining 58 positions: refused before any work.
     if (chunked.prefill(tokens[0..60], null, null, null, null, null, null)) |_| return error.ExpectedContextFull else |err| if (err != error.ContextFull) return err;
     if (chunked.state.position != tokens.len) return error.PositionMismatch;
@@ -1916,9 +1954,9 @@ const Difference = struct {
 
 /// Final logits of a chunked prefill against the stepped ones: max abs,
 /// relative RMS, and the greedy choice, within the family's recorded bound.
-fn compareChunked(label: []const u8, chunk: usize, expected: []const f32, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
+fn compareChunked(label: []const u8, chunk: usize, tokens: usize, expected: []const f32, actual: []const f32, max_abs_bound: f64, rel_rms_bound: f64) !void {
     const d = Difference.of(expected, actual);
-    std.debug.print("Prefill (70 tokens, {s} {d}) vs per-token F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ label, chunk, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
+    std.debug.print("Prefill ({d} tokens, {s} {d}) vs per-token F32 steps: max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ tokens, label, chunk, d.max_abs, d.rel_rms, d.arg_expected, d.arg_actual, max_abs_bound, rel_rms_bound });
     if (!d.within(max_abs_bound, rel_rms_bound)) return error.ChunkedPrefillMismatch;
 }
 

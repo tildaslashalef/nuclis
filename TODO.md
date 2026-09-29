@@ -41,8 +41,9 @@ full set per model, so the Gemma family is checked three times; 12 min
 for `make verify`, hours for `make verify-cpu`) and wants the gates
 re-derived from what they must protect, plus a CPU reference fast enough
 to use while debugging. REPO-20 session 1 is done except the CPU
-tier's baseline times (running); the gate set is approved, and session
-2 applies it (sessions swapped: the threaded reference is session 3).
+tier's baseline. Session 2 applied the approved gate set (`make verify`
+704 s → 246 s); `make verify-auto` remains in it (REPO-20 section), then
+session 3, the threaded CPU reference.
 
 ## Order
 
@@ -65,6 +66,9 @@ Goal (user, 2026-09-29): debugging and verification runs short enough to
 use freely. Targets: `make verify` ≤ 4 min (704 s measured), the CPU
 tier ≤ 30 min (hours today), one family's CPU trace ≤ 1 min.
 
+Base: `acce06a` (the commit before the unit's first change; `make
+verify-auto` diffs from the `Base:` line of the unit in progress).
+
 ### Session 1 — measured, matrix written; the set approved
 
 Delivered: `scripts/gates.py` stamps every output line of a gate with
@@ -73,9 +77,9 @@ and compiles the check tools up front (new `zig build check-tools`
 step in `build.zig`) so builds are timed apart; the coverage matrix and
 where the time goes are in `docs/development.md § What each gate
 protects`. Baseline JSON: `.zig-cache/gates/baseline/verify.json`
-(Metal, `acce06a`, 704 s + 9 s builds, 38/38) and `verify-cpu.json`
-(the CPU tier, running at the end of session 1; copy its per-gate times
-into the section above when it lands, and into the log on close).
+(Metal, `acce06a`, 704 s + 9 s builds, 38/38). The CPU baseline was
+stopped unfinished (a recompile skewed it); session 3 takes it on the
+new manifest.
 
 Gate set approved by the user 2026-09-29, with three additions and the
 sessions swapped (the gate set first: it pays on every unit; the threaded
@@ -124,30 +128,55 @@ unified projector, the 26B-A4B's assistant head, or PQ2_0 beyond
 fixtures; Metal BF16 numerics and `layerNorm`/`addBiasRows` have no
 model-free test; `engine.zig` has no unit tests.
 
-### Session 2 — apply the approved set
+### Session 2 — the approved set applied; `verify-auto` remains
 
-- The four tool changes above (`inference/generation-check.zig`
-  `museDraftTrace`, `gemmaDraftTrace`, `checkDraft`,
-  `checkChunkedPrefill`, a Bonsai flag; `src/eval.zig` accepting
-  `--chunks` below the reference's and comparing `chunk_ppl[chunks-1]`,
-  with a unit test), the manifest (`gates.json`: tiers, the new
-  `verify-release` tier in `scripts/gates.py` `TIERS`, the globs), the
-  Makefile (`verify-release`, `release` running it, help), and
-  `docs/development.md § Gates` (tier table, counts, times),
-  `AGENTS.md` § Validation and definition of done (the tier rules).
-- The additions (model-free, in `inference/metal-check.zig`, so `make
-  check` protects what the moved gates covered by accident): an attention
-  fixture at the 12B QAT's geometry (16 query heads on one global KV head,
-  width 512: four wide-decode head groups per KV head); BF16 matvec and
-  matmul tiles against the CPU; `layerNorm` and `addBiasRows` against the
-  CPU.
-- Checks: every remaining gate passes; `make verify` and the CPU tier
-  timed against the targets; the log records before and after. If
-  `make verify` measures above 4 min, the next cut is the 70-token
-  stepped F32 reference inside `checkChunkedPrefill` (about 8 s per
-  27–30B file).
+Delivered (measured 2026-09-29, M4 Pro): `make verify` 32/32 in 246 s
+(`.zig-cache/gates/after/verify2.json`; was 38 gates in 704 s); the
+release tier's Metal gates 8/8 in 156 s; `zig build test`, `test-metal`
+(the new `checkDenseEncodings`, worst 1.9e-7 of Σ|w·x|, and
+`checkVisionNorms`, 9.5e-7), and `zig fmt --check` pass. The tool
+changes, manifest (57 gates: `verify` 32, `verify-release` 10,
+`verify-long` 1, `verify-cpu` 14), Makefile, `docs/development.md §
+Gates`, `docs/reference/eval.md`, and `AGENTS.md` are in. Deviations
+from the approved text: the 26B-A4B's perplexity keeps all 8 windows in
+the fast tier (its running difference is −1.2 % after windows 3–4
+against a 1 % bound; only the whole run holds), and `make release`
+does not run `verify-release` itself: like the CPU and long tiers it
+runs before it (AGENTS.md § Versioning). The 16:1 attention fixture
+existed already (`checkWindowedAndWideAttention`, geometry `global`).
+
+Remaining (user, 2026-09-29): **`make verify-auto`**, so an agent runs
+what a change needs without judging it from prose. In
+`scripts/gates.py` `--auto [REV]`, with self-tests:
+- The base: `REV`, else the `Base:` line of the unit in progress in
+  `TODO.md`, else `HEAD` with a warning; changed files are `git diff
+  --name-only <base>` plus untracked (`changed_files`).
+- Model-free checks first, selected by paths from a new `checks` list in
+  `gates.json` (`fmt` over the changed Zig files, `unit` = `zig build
+  test`, `test-metal`, `manifests` = the two manifests' self-tests).
+- The matched `verify` gates, cheapest first by each gate's last
+  measured seconds (`.zig-cache/gates/times.json`, written after every
+  run), stopping at the first failure (`--keep-going` to continue).
+- Then the tiers the change requires but that were not run, from a new
+  `requires` list in `gates.json` (`verify-cpu`: the CPU kernels, the
+  decoders, the `*_runtime.zig` forwards, the CPU projectors;
+  `verify-long`: attention, the KV cache, the windowed schedules), each
+  with the matched file and the rule's reason.
+- `make verify-auto` (`BASE=` optional); `AGENTS.md` step 4 (iterate
+  and commit with `verify-auto`, close with `make verify` and what it
+  reports as required; a unit's section records `Base:`);
+  `docs/development.md § Gates`.
+- The user asked for no check runs in this change: its self-tests were
+  written but not run in session 2. Run `make gates-validate` first
+  thing next session, then `make verify-auto` once on a real diff.
+
+Close REPO-20 after session 3 (below), with the log entry.
 
 ### Session 3 — a threaded CPU reference, bit-identical
+
+- First: `make verify-cpu` on the current manifest, in the background,
+  as the per-gate "before" times (14 gates, hours; nothing else running
+  meanwhile, since compiles and GPU runs distort it).
 
 - Split independent work across `Io` tasks without changing any sum's
   order, the pattern of `backends/cpu/dense.zig` (`std.Io.Group`,

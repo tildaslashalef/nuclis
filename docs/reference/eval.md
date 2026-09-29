@@ -37,8 +37,9 @@ compare with that tool's output on the same file:
 
 `--reference <json>` reads a pinned reference run
 (`scripts/reference-perplexity.py`). It takes that run's `ctx` and window
-count unless the flags state them (a conflict is `ReferenceMismatch`),
-refuses a file whose SHA-256 differs from the one the reference ran, and
+count unless the flags state them (another `ctx`, or more windows than
+it ran, is `ReferenceMismatch`; fewer compare against its running value
+after that window, `chunk_ppl`, which the fast gates use), refuses a file whose SHA-256 differs from the one the reference ran, and
 fails beyond **0.5 %** relative difference in perplexity. The report
 (`--json`, schema 1) carries the text's size, digest, and token count,
 the windows, the BOS id, the NLL, the perplexity and its error, the

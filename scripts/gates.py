@@ -4,14 +4,14 @@
 A gate is one command (argv with placeholders) plus a comparator: `exit`
 (the command's status decides) or `trace` (its `{trace}` directory goes
 through compare-generation.py against the gate's bounds). Gates carry a
-tier (`verify`: Metal, minutes; `verify-long`: Metal long-context
-perplexity, tens of minutes; `verify-cpu`: the CPU reference, hours) and the
-source globs that make them relevant, so `--changed REV` selects by
-`git diff`: the Metal tier's matches by default, another tier's with
-`--tier` (the long tier runs when a change touches attention, the caches,
-or a windowed schedule, the CPU tier when a change alters what the CPU
-reference computes, and both before a release). Bounds live in the manifest
-and nowhere else.
+tier (`verify`: Metal, minutes; `verify-release`: whole-file acceptance
+before a release; `verify-long`: Metal long-context perplexity, tens of
+minutes; `verify-cpu`: the CPU reference, hours) and the source globs that
+make them relevant, so `--changed REV` selects by `git diff`: the Metal
+tier's matches by default, another tier's with `--tier` (the long tier runs
+when a change touches attention, the caches, or a windowed schedule, the
+CPU tier when a change alters what the CPU reference computes, and all
+three before a release). Bounds live in the manifest and nowhere else.
 See docs/development.md § Gates.
 """
 import argparse
@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / 'gates.json'
-TIERS = ('verify', 'verify-long', 'verify-cpu')
+TIERS = ('verify', 'verify-release', 'verify-long', 'verify-cpu')
 COMPARATORS = ('exit', 'trace')
 PLACEHOLDERS = ('{nuclis}', '{nuclis-cpu}', '{zig-metal}', '{zig-cpu}', '{model}', '{mtp}', '{mmproj}', '{trace}')
 TRACE_ROOT = '.zig-cache/gates/trace'
@@ -339,12 +339,16 @@ def main():
         if tier == 'verify':
             long = [g['name'] for g in others if g['tier'] == 'verify-long']
             cpu = [g['name'] for g in others if g['tier'] == 'verify-cpu']
+            release = [g['name'] for g in others if g['tier'] == 'verify-release']
             if long:
                 print("Long-tier gates matched, not run (they run when the change touches attention, the caches, "
                       "or a windowed schedule, and before a release; `--tier verify-long` runs them): " + ', '.join(long), flush=True)
             if cpu:
                 print("CPU-tier gates matched, not run (they run when the change alters what the CPU reference "
                       "computes, and before a release; `--tier verify-cpu` runs them): " + ', '.join(cpu), flush=True)
+            if release:
+                print("Release-tier gates matched, not run (before a release; `--tier verify-release` runs them): "
+                      + ', '.join(release), flush=True)
         if not selected:
             return
     elif args.tier:

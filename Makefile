@@ -21,7 +21,7 @@ BIN      := ./zig-out/bin/nuclis
 METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 
 .DEFAULT_GOAL := build
-.PHONY: help build debug build-cpu metal install uninstall test test-metal check verify verify-long verify-cpu verify-changed gate gates-list gates-validate \
+.PHONY: help build debug build-cpu metal install uninstall test test-metal check verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate \
         agent agent-eval model-ls eval-corpus trace clean distclean hf-downloader test-hf changelog release
@@ -70,13 +70,17 @@ check: fmt-check test test-metal gates-validate workloads-validate ## Format che
 
 # ---- gates (gates.json; docs/development.md § Gates) ----------------------
 # Every model-specific numerical check is a gate in the manifest: a tier
-# (verify = Metal, minutes; verify-cpu = the CPU reference, hours) and the
+# (verify = Metal, minutes; verify-release = whole files, before a release;
+# verify-cpu = the CPU reference, hours) and the
 # source globs that make it relevant. `make verify-changed BASE=<rev>` runs
 # what a change needs.
 
 BASE ?= HEAD
-verify: eval-corpus ## The Metal tier: every trace, generation, speculative, vocabulary, and perplexity gate (once per unit)
+verify: eval-corpus ## The fast Metal tier: one representative file per family and the paths only a variant has (once per unit)
 	python3 scripts/gates.py --tier verify $(ARGS)
+
+verify-release: eval-corpus ## Whole-file acceptance before a release: 8-window perplexities, the Gemma 12B QAT file, draft statistics
+	python3 scripts/gates.py --tier verify-release $(ARGS)
 
 verify-long: eval-corpus ## The long-context tier: 4K-token perplexity (Gemma 4 E4B so far), when a unit touches attention, the caches, or a windowed schedule, and before a release
 	python3 scripts/gates.py --tier verify-long $(ARGS)
