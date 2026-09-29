@@ -11,6 +11,7 @@ pub const vocabulary = @import("tokenizer/vocabulary.zig");
 pub const bpe = @import("tokenizer/bpe.zig");
 pub const text_stream = @import("tokenizer/stream.zig");
 pub const tokenizer = @import("tokenizer/encode.zig");
+pub const hf_tokenizer = @import("tokenizer/hf_json.zig");
 pub const models = @import("models/root.zig");
 pub const weights = @import("runtime/weights.zig");
 pub const sampling = @import("sampling/root.zig");
@@ -32,6 +33,7 @@ test {
     _ = vocabulary;
     _ = bpe;
     _ = tokenizer;
+    _ = hf_tokenizer;
     _ = text_stream;
     _ = models;
     _ = weights;

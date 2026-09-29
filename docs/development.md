@@ -56,6 +56,11 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   of Bonsai 2 27B's ternary encodings, beside it under
   `.zig-cache/reference/prism-llama.cpp` with the same recipe
   ([reference-baseline.md § The second oracle](reference/reference-baseline.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
+  The decision model's oracle is the `laya` 0.3.20 Python package in a venv
+  at `.zig-cache/reference/laya-venv` (Python 3.12 through `uv`; the recipe
+  heads `scripts/laya-reference.py`), run on the CPU in F32 against the pulled
+  checkpoint from a staged copy, because the package may rewrite
+  `tokenizer_config.json` in place.
   The reference oracle itself is committed under `tests/fixtures/`
   ([provenance](../tests/fixtures/provenance.md)); `make gate NAME='qwen38-trace-*'` reads
   `tests/fixtures/reference-hello-comma`. Accepted reference warm rates

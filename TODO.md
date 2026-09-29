@@ -31,13 +31,16 @@ loader (MODL-29); the root checkpoint is pulled at
 `~/.nuclis/models/convaiinnovations/laya/` (commit `55cf4c4e`). Kept to
 three units on purpose, to iterate fast.
 
-Start with MODL-30, session 1.
+MODL-30 session 1 landed 2026-09-29: the oracle's fixtures, the Hugging
+Face tokenizer (NFC, GPT-2 splitter, two-pass added tokens), and the
+`laya-vocabulary` gate. Start with MODL-30, session 2: the encoder and
+the head on the CPU against `activations.f32`.
 
 ## Order
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| MODL-30 | Laya on the CPU: oracle, `tokenizer.json`, ModernBERT, the decision head, `nuclis decide` | three; closes once |
+| MODL-30 | Laya on the CPU: oracle, `tokenizer.json`, ModernBERT, the decision head, `nuclis decide` | three (1 done); closes once |
 | MODL-31 | Laya on Metal: bidirectional windowed attention, the encoder plan, measured | one or two |
 | AGNT-18 | The agent's `decide` tool: LLM-written questions over tool-supplied states (the experiment) | one |
 
@@ -50,159 +53,199 @@ unit, an experiment.
 
 ## MODL-30 — Laya on the CPU, end to end
 
-### Facts (read 2026-09-27 at `55cf4c4e`)
+### Session 1 — delivered 2026-09-29 (oracle and tokenizer)
+
+- Oracle: `scripts/laya-reference.py` (venv recipe in its docstring and in
+  docs/development.md § Environment) wrote
+  `inference/src/models/fixtures/laya/` (989 KB): `requests.json` (8
+  requests: `choice_described`, `choice_labels`, `score`, `noul`,
+  `json_state`, `long_text` (512 tokens, tail cut), `long_list` (list
+  state, head cut), `choice_20` (options shrunk to 8 tokens, bucket
+  `choice:11+` clamped); per request the ids, markers, raw logits, the
+  package's answer and usage, the texts it tokenized, and a `tensors`
+  index into `activations.f32`), `tokens.json` (32 texts → ids). The
+  script checks that the package's (padded, batched) answer equals
+  calibration applied to its own batch-1 logits.
+- Tokenizer: `inference/src/tokenizer/hf_json.zig` (`hf_tokenizer.parse`,
+  `Tokenizer.encode`), `gpt2.zig` (splitter), `nfc.zig` + generated
+  `nfc_table.zig` (`scripts/tokenizer-nfc.py`, UCD 17.0.0; passes every
+  NFC column of `NormalizationTest.txt`). Design in
+  docs/reference/tokenizer.md § Hugging Face `tokenizer.json`.
+- Check: `zig build test-vocabulary -- ~/.nuclis/models/convaiinnovations/laya`
+  (a directory selects the Laya mode of `inference/vocabulary-check.zig`),
+  gate `laya-vocabulary` (tier verify, model `laya` in `gates.json`):
+  passes, 32 text cases and every text of the 8 requests.
+- Docs touched: tokenizer.md, development.md, THIRD_PARTY_NOTICES.md.
+
+### Facts (read 2026-09-27 at `55cf4c4e`; corrected 2026-09-29 from the package and the fixtures)
 
 Files under the set: `model.safetensors` (206 tensors, 205 F16 + 1 F32),
 `encoder/config.json`, `rl_agent_config.json`, `tokenizer/tokenizer.json`,
 `tokenizer/tokenizer_config.json`.
 
 **Encoder** (`encoder/config.json`, `model_type` `modernbert`): 28 layers,
-hidden 1024, 16 heads (head dim 64), intermediate 2624, vocabulary 50368
-(padded; the tokenizer has 50285 ids), `norm_eps` 1e-5, no biases
-anywhere (`attention_bias`, `mlp_bias`, `norm_bias` false), layer types
-`full_attention` at `i % 3 == 0`, else `sliding_attention` with
-`local_attention` 128; RoPE theta 160000 (full) and 10000 (sliding);
-`hidden_activation` `gelu`. Tensors (`encoder.` prefix):
-`embeddings.tok_embeddings.weight [50368,1024]`, `embeddings.norm.weight`,
-per layer `attn_norm.weight` (**absent on layer 0**: identity),
-`attn.Wqkv.weight [3072,1024]`, `attn.Wo.weight [1024,1024]`,
-`mlp_norm.weight`, `mlp.Wi.weight [5248,1024]` (input and gate halves of
-2624), `mlp.Wo.weight [1024,2624]`, then `final_norm.weight`. Shapes are
-PyTorch `[out, in]`, row-major.
+hidden 1024, 16 heads (head dim 64), intermediate 2624, vocabulary 50368,
+`norm_eps` 1e-5, no biases anywhere, layer types `full_attention` at
+`i % 3 == 0`, else `sliding_attention` with `local_attention` 128; RoPE
+theta 160000 (full) and 10000 (sliding); `hidden_activation` `gelu`.
+Tensors (`encoder.` prefix): `embeddings.tok_embeddings.weight
+[50368,1024]`, `embeddings.norm.weight`, per layer `attn_norm.weight`
+(**absent on layer 0**: identity), `attn.Wqkv.weight [3072,1024]`,
+`attn.Wo.weight [1024,1024]`, `mlp_norm.weight`, `mlp.Wi.weight
+[5248,1024]`, `mlp.Wo.weight [1024,2624]`, then `final_norm.weight`.
+Shapes are PyTorch `[out, in]`, row-major.
 
-The forward, to confirm against the fixtures in session 2 (the details
-marked † come from the reference implementation's structure, not yet
-from a fixture): `x = LayerNorm(embed[ids])`; per layer
-`x += Wo(attn(attn_norm(x)))`, `x += mlp.Wo(gelu(a) * g)` where
-`a, g = split(Wi(mlp_norm(x)))` (a first †); attention is bidirectional,
-RoPE on q and k (rotate-half, the layer type's theta †), scale 1/8,
-sliding layers see keys with `|i − j| ≤ 64` † (half the window); GELU is
-exact erf †; `final_norm` last. LayerNorm here has weight and no bias.
+The forward, confirmed in Transformers 5.17's `modeling_modernbert.py`
+(the oracle's): `x = LayerNorm(embed[ids])`; per layer `x +=
+Wo(attn(attn_norm(x)))`, `x += mlp.Wo(gelu(a) * g)` where `a, g` are the
+first and second halves of `Wi(mlp_norm(x))`; `Wqkv` output rows are q,
+k, v, each `[16 heads][64]`; RoPE rotate-half (pairs `d` and `d + 32`),
+inverse frequencies `theta^(-2i/64)`, positions 0.., applied in F32 to q
+and k with the layer type's theta; attention bidirectional, scale 1/8;
+sliding layers see keys with `|i − j| ≤ 64` (inclusive); GELU exact erf;
+`final_norm` last. LayerNorm has weight and no bias, eps 1e-5.
 
 **Head** (`model.safetensors`, no prefix): `type_emb.weight [3,1024]`
-added to every position (question type index: choice 0, score 1, noul 2);
-two `head.layers.N` layers, each PyTorch `TransformerEncoderLayer(d=1024,
-nhead=16, ff=4096, norm_first=True)`, activation ReLU (the default †):
-`x += out_proj(mha(norm1(x)))`, `x += linear2(relu(linear1(norm2(x))))`,
-all with biases, LayerNorm with bias, `in_proj_weight [3072,1024]` stacking
-q, k, v; then at each option's `[MASK]` position `scorer`:
-`LayerNorm(scorer.0) → Linear(scorer.1) → GELU → Linear(scorer.3, → 1)`.
-`act_head.*` and the `temperature` buffer (all ones) are not used: the
-card says the act probability carries no signal, and the temperatures come
-from `rl_agent_config.json`.
+added to every position (choice 0, score 1, noul 2); two `head.layers.N`,
+each PyTorch `TransformerEncoderLayer(d=1024, nhead=16, ff=4096,
+norm_first=True)`, ReLU, LayerNorm eps 1e-5 with bias, all linears with
+bias: `x += out_proj(mha(norm1(x)))`, `x += linear2(relu(linear1(norm2(x))))`,
+`in_proj_weight [3072,1024]` stacking q, k, v, scale 1/8; then at each
+option's `[MASK]` position `scorer`: `LayerNorm(scorer.0) →
+Linear(scorer.1) → GELU (erf) → Linear(scorer.3, → 1)`. `act_head.*` and
+the `temperature` buffer are not used (the package still reports
+`action.act_probability`; nuclis omits it: the card says it carries no
+signal).
 
-**Input contract** (`rl_common.py` `build_sequence`, `render_options`):
-`[CLS] tok("<type> question: <instructions>") [SEP]`, then per option
-`[MASK] tok(" " + text)[:48]`, `[SEP]`, the state's tokens, `[SEP]`; no
-special tokens inside `tok`. Option texts: choice `"key: description"` (or
-`"key"`), score `"level i: text"`, noul `"false: <false text or 'no, the
-statement does not hold'>"`, `"true: <… or 'yes, the statement holds'>"`.
-Budgets: `max_len` 512, `head_max_len` 192 (`rl_agent_config.json`); if
-the options leave under 16 tokens, each option is cut to
-`max(4, (head_max_len − 16) / count)` tokens; the question text is cut to
-`max(8, remaining)`; the state gets `max_len − len − 1` tokens, cut at the
-tail (head kept). A state object is serialized as Python
-`json.dumps(state, ensure_ascii=False)` (separators `", "` and `": "`).
-Options that still do not all fit are an error in Laya.
-Calibration: `p = softmax(logits / T)`, `T` from `temperature_by_options`
-by bucket `"<type>:<2|3-5|6-10|11+>"`, else `temperature[type]`;
-confidence `1 − H(p) / ln k` (choice and score); noul is `p[1]`; score is
-`Σ i·p[i]` (zero-based).
+**Input contract** (`laya/common.py` `build_sequence`, `render_options`;
+`laya/agent.py` `_check_question`, `_to_internal`, `_encode_state`):
+`[MASK]` spelled in instructions, options, or state is replaced by a
+space before tokenizing. `[CLS] tok("<type> question: <instructions>")
+[SEP]`, then per option `[MASK] tok(" " + text)[:48]`, `[SEP]`, the
+state's tokens, `[SEP]`; `tok` adds no specials. Non-string instructions
+are `json.dumps(ensure_ascii=False)` (separators `", "`, `": "`). Option
+texts: choice `"key: description"`, or `"key"` when the description is
+null or `""` (criteria as a list are keys without descriptions); score
+`"level i: text"`; noul `"<false label>: <false text or 'no, the
+statement does not hold'>"`, `"<true label>: <… or 'yes, the statement
+holds'>"`, labels default `false`/`true` (optional `labels` object;
+criteria keys lowercased); non-string criterion values are compact JSON
+(separators `", "`, `": "`). Budgets: `max_len` 512, `head_max_len` 192;
+if the options leave under 16 tokens, each option is cut to `max(4,
+(head_max_len − 16) / count)` tokens; the question text is cut to `max(8,
+remaining)`; the state gets `max(0, max_len − len − 1)` tokens, its head
+kept, except a **list** state (a conversation), which keeps its tail.
+Markers past `max_len` are dropped and the question is then an error
+(`options exceed head_max_len`). A state object is Python
+`json.dumps(state, ensure_ascii=False)`.
+Question validation to mirror: type one of choice/score/noul;
+`instructions` present; choice criteria a non-empty dict or list; score a
+non-empty list; noul criteria absent or a dict keyed only true/false;
+`labels` only on noul, two distinct non-empty stripped strings.
 
-**Tokenizer** (`tokenizer/tokenizer.json`): BPE, 50280 vocabulary entries
-+ added tokens, 50009 merges, `byte_fallback` false, normalizer NFC,
-pre-tokenizer ByteLevel (`add_prefix_space` false, `use_regex` true: the
-GPT-2 split), special ids `[CLS]` 50281, `[SEP]` 50282, `[PAD]` 50283,
-`[MASK]` 50284. The same algorithm family as Qwen's byte-level BPE: reuse
-`inference/src/tokenizer/bpe.zig` and `vocabulary.zig`; what is new is
-reading `tokenizer.json` and NFC.
+**Calibration**: `p = softmax(logits / T)`, `T` from
+`temperature_by_options` by bucket `"<type>:<2|3-5|6-10|11+>"` (k = option
+count), else `temperature[type]`, then **clamped to [0.5, 5.0]** (a
+non-number is 1.0): the shipped `choice:11+` is 0.1006 and runs as 0.5.
 
-### Session 1 — oracle and tokenizer
+**Answers** (`agent.py` `_decode_answers`, every number rounded to 4
+places): choice `{type, choice, probabilities {key: p}, confidence,
+answer_confidence}`; score `{type, score = Σ i·p[i], legend {"i": text},
+probabilities {"i": p}, confidence, answer_confidence}`; noul `{type, noul
+= p[1], confidence = max(p1, 1 − p1), answer_confidence}`. `confidence` is
+`1 − H(p) / ln k` clipped to [0, 1] (1 when k < 2) for choice and score;
+`answer_confidence` is max(p) on every type (the calibrated one). Usage
+`{input_tokens: sequence length summed over questions, output_tokens: 0}`.
 
-1. Oracle: `scripts/laya-reference.py` (never imported by the build) run
-   in a venv at `.zig-cache/reference/laya-venv` with `pip install
-   laya==0.3.20` on CPU, `USE_TF=0`; it loads the pulled directory (not a
-   second download), runs `build_sequence` and the model in F32 on CPU,
-   and writes `inference/src/models/fixtures/laya/`: for 6 fixed requests
-   (choice with and without descriptions, score, noul, a JSON-object
-   state, a state long enough to truncate, a 20-option choice that
-   shrinks) the token ids and marker positions, the encoder output at
-   layers 0, 1, 3, and 27 for rows 0, the markers, and the last row, the
-   head output at the markers, the raw logits, and the calibrated answer.
-   Record the oracle's versions (laya, torch, transformers) in the
-   fixture and in `THIRD_PARTY_NOTICES.md` under references consulted.
-   Keep committed fixtures under 1 MB.
-2. `inference/src/tokenizer/hf_json.zig`: `tokenizer.json` (BPE model,
-   ByteLevel pre-tokenizer, NFC normalizer, added tokens) → the existing
-   vocabulary/BPE types; unsupported models, pre-tokenizers, or
-   normalizers are typed errors naming them. NFC: check first whether
-   the Unicode data already in the tree covers composition; if not, add
-   it the way `unicode-ranges.bin` was added (recorded in the notices).
-   Check: the fixture's token ids for every request, plus a text set with
-   accents, CJK, emoji, and code.
-3. End the session by rewriting sessions 2–3 below at this level with
-   anything the fixtures contradicted.
+**Tokenizer** (landed in session 1): 50280 model entries and 116 added
+tokens, 88 of them new ids (50280–50367), so 50368 ids; `[CLS]` 50281, `[SEP]` 50282, `[PAD]` 50283, `[MASK]`
+50284 (`lstrip`); whitespace runs of 2–24 spaces are added tokens.
 
 ### Session 2 — encoder and head on the CPU
 
-- `inference/src/models/modernbert.zig`: `Config` from `config.json`
-  (bounded read; unknown `model_type` or unsupported values rejected),
-  `bind(checkpoint, config) → Weights` validating every tensor name,
-  shape, and dtype (F16/BF16/F32) and rejecting extras.
+- `inference/src/models/modernbert.zig`: `Config` from `encoder/config.json`
+  (bounded read; reject `model_type` ≠ `modernbert`, any bias flag true,
+  `hidden_activation` ≠ `gelu`, head dim ≠ 64, layer types other than the
+  two, `rope_parameters` missing a type's `rope_theta`), `bind(checkpoint,
+  config) → Weights` validating every tensor name, shape, and dtype
+  (F16/BF16/F32) and rejecting extras (the `laya.zig` head names are the
+  only others allowed in the file, and `act_head.*` and `temperature`,
+  which are ignored by name).
 - `inference/src/models/modernbert_runtime.zig`: F32 CPU forward for one
   unpadded sequence (`[len]` ids → `[len][1024]` hidden), reusing
-  `backends/cpu` matmul, norm, and RoPE where their shapes allow; weights
-  decoded from the checkpoint through `safetensors.Ref.decode` once at
-  load (about 1.7 GB of F32 for the root set; state this in the doc).
-- `inference/src/models/laya.zig`: the head: type embedding, the two
-  layers, the scorer at marker rows → one logit per option.
-- Check: every layer the fixtures hold, max abs error ≤ 1e-4 and relative
-  RMS ≤ 1e-5 against the oracle's F32; logits within 1e-4.
+  `backends/cpu` matmul, norm, and RoPE where their shapes allow (check
+  whether the existing RoPE is rotate-half or interleaved first); weights
+  decoded once at load through `safetensors.Ref.decode` (about 1.7 GB F32
+  for the root set; say so in the module doc). Expose the layer outputs
+  for the check (an optional per-layer callback or an `Observer`).
+- `inference/src/models/laya.zig`: the head: `+ type_emb[qtype]` on every
+  row, the two layers over the whole sequence, the scorer at the marker
+  rows → one logit per option.
+- Check: a new explicit artifact `inference/laya-check.zig` (build step
+  `test-laya -- DIR`) runs every `requests.json` request through the
+  forward and compares against `activations.f32`: each `tensors` entry
+  names `encoder.{0,1,3,27}` (that layer's output, before `final_norm`),
+  `final` (after `final_norm`), `head.{0,1}` (after each head layer, marker
+  rows only), its `rows`, and its F32 `offset` (in floats) into the blob;
+  bounds max abs error ≤ 1e-4 and relative RMS ≤ 1e-5 per tensor, logits
+  within 1e-4 of `logits`. Record the measured maxima per tensor in
+  `docs/reference/laya.md` (created here, finished in session 3). Gate
+  `laya-cpu`: tier verify if the 8 requests run in under a minute, else
+  verify-cpu; paths the three new files and `backends/cpu/**`.
 
 ### Session 3 — profile, `Decider`, `nuclis decide`
 
 - `inference/src/profiles/laya.zig`: the input contract above (render,
-  budgets, truncation flag), `rl_agent_config.json` read (temperatures,
-  `max_len`, `head_max_len`), calibration and confidence. Pure; tested on
-  the fixtures' token ids and answers.
+  `[MASK]` replacement, budgets, list-state head cut, truncation flag, the
+  question validation), `rl_agent_config.json` read (temperatures,
+  `max_len`, `head_max_len`), calibration with the clamp, both
+  confidences. Pure; tested on every `requests.json` request: its ids and
+  markers from `question` and `state` (Python `json.dumps` of the object
+  states, which `head_text`/`options`/`state_text` spell), and its answer
+  from `logits`.
 - `inference/src/decide.zig`, the library API:
-  `Question { kind: choice|score|noul, instructions, options }`,
-  `Answer { probabilities, logits, confidence, temperature, bucket }`,
-  `StateResult { answers, state_tokens, truncated }`,
-  `Decider.open(gpa, io, dir, backend)`,
-  `decide(arena, states, questions) → [states][questions] answers`
-  (every pair one sequence), `deinit`. Host limits as constants: 64
-  states, 32 questions, 64 options, 1 MiB per state.
+  `Question { kind: choice|score|noul, instructions, options, labels }`,
+  `Answer { probabilities, logits, confidence, answer_confidence,
+  temperature, bucket }`, `StateResult { answers, state_tokens, truncated
+  }`, `Decider.open(gpa, io, dir, backend)` (reads `tokenizer.json` through
+  `hf_tokenizer.parse`, bounded at 64 MiB), `decide(arena, states,
+  questions) → [states][questions] answers` (every pair one sequence),
+  `deinit`. Host limits as constants: 64 states, 32 questions, 64
+  options, 1 MiB per state.
 - `src/decide.zig` + `src/cli.zig` + `src/help.zig`: `nuclis decide`.
   Input tiers, all building the same request: `--request <file|->` (Jev
   shape, plus `states: [...]` and `{"file": path}` states); `--questions
   <file>` with `--state <text>` / `--state-file <path>` (repeatable);
   inline `--choice <text> --option key[=desc]…`, `--score <text> --level
   <text>…`, `--noul <text>`, `--id <name>`. Output: the styled view (one
-  state: per question the answer, bars, confidence; several states:
-  ranked by the first question, truncation flagged per row) and `--json`
-  (`schema_version`, model, repo, revision, `timings_ms` {load, tokenize,
-  encode}, `results[i]` = a complete Jev response `{answers, usage}` plus
-  `nuclis` {state, state_tokens, truncated}; each answer's extras under
-  `nuclis` {logits, temperature, bucket}). `--explain` (the rendered
-  sequence decoded, budget split, bucket, raw logits), `--uncalibrated`,
-  `--truncate head|tail`. Before closing, check the answer field names
-  against TypeSafe's published API page, not only Laya's server.
+  state: per question the answer, bars, `answer_confidence`; several
+  states: ranked by the first question, truncation flagged per row) and
+  `--json` (`schema_version`, model, repo, revision, `timings_ms` {load,
+  tokenize, encode}, `results[i]` = a complete Jev response `{answers,
+  usage}` with the answer fields above, plus `nuclis` {state,
+  state_tokens, truncated}; each answer's extras under `nuclis` {logits,
+  temperature, bucket}). `--explain` (the rendered sequence decoded with
+  `bpe.decode(…, special=true)`, budget split, bucket, raw logits),
+  `--uncalibrated`, `--truncate head|tail`. Before closing, check the
+  answer field names against TypeSafe's published API page, not only
+  Laya's server.
 - Model selection: `decide.model` config key and `--model`; a catalogue
   entry `laya` pinning the root set (commit `55cf4c4e`, weights SHA-256
   `891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c`,
   support files by name), which needs the catalogue to describe a
   safetensors set; the registry's `kind: decision`, `--register`
-  accepting safetensors for that kind only.
+  accepting safetensors for that kind only; then give `gates.json`'s
+  `laya` model its `entry`.
 - Docs: `docs/reference/laya.md` (the family, the contract, the oracle,
-  numbers, and the filter argument from *Where we are*), `docs/spec.md` (the decide surface and its requirements),
-  `docs/architecture.md` (the decision path beside `Engine`).
-- Checks: `make check`; the six fixture requests through the fresh binary
-  (`--json`) equal the oracle's answers within 1e-4; the card's quickstart
-  (department / urgency / churn) through each input tier gives the same
-  JSON; a fan-out over 4 files renders ranked; malformed requests fail
-  with the question named. CPU time per request recorded (load separate).
-  No Metal tier (no change to existing numerics).
+  numbers, and the filter argument from *Where we are*), `docs/spec.md`
+  (the decide surface and its requirements), `docs/architecture.md` (the
+  decision path beside `Engine`).
+- Checks: `make check`; the eight fixture requests through the fresh
+  binary (`--json`) equal the package's answers within 1e-4; the card's
+  quickstart (department / urgency / churn) through each input tier gives
+  the same JSON; a fan-out over 4 files renders ranked; malformed
+  requests fail with the question named. CPU time per request recorded
+  (load separate). No Metal tier (no change to existing numerics).
 
 ## MODL-31 — Laya on Metal
 

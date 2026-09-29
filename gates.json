@@ -48,6 +48,9 @@
   "gemma4_e4b_mtp": {
    "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/MTP/mtp-gemma-4-E4B-it-Q4_0.gguf",
    "entry": "gemma-4-e4b-qat (mtp companion)"
+  },
+  "laya": {
+   "path": "~/.nuclis/models/convaiinnovations/laya"
   }
  },
  "gates": [
@@ -479,6 +482,27 @@
     "kind": "exit"
    },
    "evidence": "docs/reference/prompt-profile.md"
+  },
+  {
+   "name": "laya-vocabulary",
+   "family": "laya",
+   "tier": "verify",
+   "model": "laya",
+   "paths": [
+    "inference/src/tokenizer/**",
+    "inference/src/models/fixtures/laya/**",
+    "inference/vocabulary-check.zig"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-vocabulary",
+    "--",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/tokenizer.md"
   },
   {
    "name": "gemma4-trace-cpu",

@@ -1,7 +1,8 @@
 //! Explicit full-artifact check of the vocabulary, the tokenizer, and the
 //! profile's captured prompts. No GPU, server, or tensor payload is needed.
-//! The artifact's template digest selects the profile, which selects the
-//! fixture and the expected vocabulary facts.
+//! A GGUF's template digest selects the profile, which selects the fixture
+//! and the expected vocabulary facts; a directory is a Laya checkpoint, whose
+//! `tokenizer/tokenizer.json` is checked against the oracle's fixtures.
 const std = @import("std");
 const inference = @import("inference");
 
@@ -65,6 +66,8 @@ fn expectations(profile: inference.profiles.Profile) Expect {
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 2) return error.ExpectedModelPath;
+    const stat = try std.Io.Dir.cwd().statFile(init.io, args[1], .{});
+    if (stat.kind == .directory) return checkLaya(init.gpa, init.io, args[1]);
     var model = try inference.weights.Mapped.open(init.gpa, init.io, args[1]);
     defer model.deinit(init.io);
     const doc = model.document;
@@ -138,4 +141,82 @@ fn checkFixtures(alloc: std.mem.Allocator, vocab: *const inference.vocabulary.Vo
     }
     std.debug.print("BPE check passed: {d} single-piece cases, {d} distinct normal token pieces; {d} captured token sequences decode exactly.\n", .{ pieces, normal_pieces, fixtures.value.token_cases.len + fixtures.value.prompt_cases.len });
     std.debug.print("Native encoding matches all {d} standalone and {d} full-prompt token sequences.\n", .{ fixtures.value.token_cases.len, fixtures.value.prompt_cases.len });
+}
+
+const laya_tokens = @embedFile("src/models/fixtures/laya/tokens.json");
+const laya_requests = @embedFile("src/models/fixtures/laya/requests.json");
+
+/// The oracle's text set, and every text each fixture request tokenized: its
+/// head, options (at most 48 tokens, maybe shrunk), and state (maybe cut at
+/// the tail, or at the head for list states), found in the recorded sequence.
+fn checkLaya(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
+    const path = try std.fs.path.join(gpa, &.{ dir, "tokenizer", "tokenizer.json" });
+    defer gpa.free(path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 * 1024 * 1024));
+    defer gpa.free(bytes);
+    var tokenizer = try inference.hf_tokenizer.parse(gpa, bytes, .{});
+    defer tokenizer.deinit();
+    const vocab = &tokenizer.vocab;
+    if (vocab.tokens.len != 50_368 or vocab.merge_ranks.count() != 50_009) return error.ArtifactMismatch;
+    for ([_][]const u8{ "[CLS]", "[SEP]", "[PAD]", "[MASK]" }, [_]u32{ 50281, 50282, 50283, 50284 }) |text, id| {
+        if (vocab.tokenId(text) != id) return error.TokenIdMismatch;
+    }
+
+    const Case = struct { text: []const u8, ids: []const u32 };
+    const cases = try std.json.parseFromSlice(struct { token_cases: []const Case }, gpa, laya_tokens, .{ .ignore_unknown_fields = true });
+    defer cases.deinit();
+    var decoded_cases: usize = 0;
+    for (cases.value.token_cases) |case| {
+        const ids = try tokenizer.encode(gpa, case.text, .{});
+        defer gpa.free(ids);
+        if (!std.mem.eql(u32, ids, case.ids)) {
+            std.debug.print("Mismatch for {f}: expected {any}, got {any}\n", .{ std.json.fmt(case.text, .{}), case.ids, ids });
+            return error.TokenizationMismatch;
+        }
+        // Decoding restores text that NFC leaves alone and no marker strips.
+        const normalized = try inference.hf_tokenizer.nfc.normalize(gpa, case.text);
+        defer if (normalized) |n| gpa.free(n);
+        if (normalized != null or std.mem.indexOf(u8, case.text, "[MASK]") != null) continue;
+        const decoded = try inference.bpe.decode(gpa, vocab, ids, true, .{});
+        defer gpa.free(decoded);
+        if (!std.mem.eql(u8, decoded, case.text)) return error.DetokenizationMismatch;
+        decoded_cases += 1;
+    }
+
+    const Request = struct { name: []const u8, ids: []const u32, markers: []const usize, head_text: []const u8, options: []const []const u8, state_text: []const u8, truncate_left: bool };
+    const requests = try std.json.parseFromSlice(struct { requests: []const Request }, gpa, laya_requests, .{ .ignore_unknown_fields = true });
+    defer requests.deinit();
+    const sep = vocab.tokenId("[SEP]").?;
+    for (requests.value.requests) |r| {
+        const first = r.markers[0];
+        try expectPrefix(gpa, &tokenizer, r.name, r.head_text, r.ids[1 .. first - 1]);
+        if (r.ids[first - 1] != sep) return error.SequenceMismatch;
+        const state_start = std.mem.indexOfScalarPos(u32, r.ids, r.markers[r.markers.len - 1], sep).? + 1;
+        for (r.markers, r.options, 0..) |at, option, i| {
+            const end = if (i + 1 < r.markers.len) r.markers[i + 1] else state_start - 1;
+            const text = try std.mem.concat(gpa, u8, &.{ " ", option });
+            defer gpa.free(text);
+            if (end - at - 1 > 48) return error.SequenceMismatch;
+            try expectPrefix(gpa, &tokenizer, r.name, text, r.ids[at + 1 .. end]);
+        }
+        const state = r.ids[state_start .. r.ids.len - 1];
+        const all = try tokenizer.encode(gpa, r.state_text, .{});
+        defer gpa.free(all);
+        const kept = if (r.truncate_left) all[all.len - state.len ..] else all[0..state.len];
+        if (state.len > all.len or !std.mem.eql(u32, kept, state)) {
+            std.debug.print("{s}: state tokens differ\n", .{r.name});
+            return error.TokenizationMismatch;
+        }
+    }
+    std.debug.print("Laya tokenizer check passed: {d} tokens, {d} merges; {d} text cases ({d} decoded back), {d} request sequences.\n", .{ vocab.tokens.len, vocab.merge_ranks.count(), cases.value.token_cases.len, decoded_cases, requests.value.requests.len });
+}
+
+/// `text` must encode to ids that begin with `recorded` (budgets only cut).
+fn expectPrefix(gpa: std.mem.Allocator, tokenizer: *const inference.hf_tokenizer.Tokenizer, name: []const u8, text: []const u8, recorded: []const u32) !void {
+    const ids = try tokenizer.encode(gpa, text, .{});
+    defer gpa.free(ids);
+    if (recorded.len > ids.len or !std.mem.eql(u32, ids[0..recorded.len], recorded)) {
+        std.debug.print("{s}: {f} encodes to {any}, sequence holds {any}\n", .{ name, std.json.fmt(text, .{}), ids, recorded });
+        return error.TokenizationMismatch;
+    }
 }
