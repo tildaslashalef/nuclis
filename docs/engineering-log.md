@@ -6217,15 +6217,13 @@ automates it.
 
 ## REPO-23 — The README's Laya section: the experiment and its results (2026-09-29)
 
-**Outcome.** `README.md` gains *Experiment: decisions with Laya*, after
-*Results*. It says what `nuclis decide` is and how to run it, and states
-the filter idea as the hypothesis under test, with the agent experiment
-(AGNT-18, deferred) still to run. It lists the two pinned checkpoints,
-correctness against the `laya` package, the speed on Metal and the CPU,
-and what 20 hand-written cases showed on both checkpoints: the filter
-rankings, the misses, and the multilingual checkpoint's trade-off (other
-languages and 1,024 tokens against worse English, so `laya` stays the
-default).
+**Outcome.** `README.md` gains a short *Experiment: decisions with Laya*
+after *Results*, leading with how fast Laya reads (2,400–3,500 tokens/s
+for `laya` and 3,400–8,700 for `laya-multilingual` on Metal, against 90
+for Qwen3.8-27B's prefill). It states the filter idea as the hypothesis,
+with the agent experiment (AGNT-18, deferred) still to run. It sums up
+correctness and the hand-run cases in a paragraph and leaves the rest to
+`docs/reference/laya.md`.
 
 **Evidence.** Every number is taken from a measured record:
 [reference/laya.md](reference/laya.md) (MODL-30, MODL-31, MODL-33) for
