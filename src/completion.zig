@@ -219,6 +219,23 @@ pub const commands = [_]Command{
             json,
         } },
     } },
+    .{ .name = "decide", .summary = "typed questions about states, by Laya", .actions = &.{.{ .flags = &.{
+        .{ .name = "--request", .value = .file, .summary = "a Jev request file, - for stdin" },
+        .{ .name = "--questions", .value = .file, .summary = "the questions object alone" },
+        .{ .name = "--state", .value = .text, .repeat = true, .summary = "a state as text" },
+        .{ .name = "--state-file", .value = .file, .repeat = true, .summary = "a state read from a file" },
+        .{ .name = "--choice", .value = .text, .repeat = true, .summary = "an inline choice question" },
+        .{ .name = "--option", .value = .text, .repeat = true, .summary = "a choice option, key[=description]" },
+        .{ .name = "--score", .value = .text, .repeat = true, .summary = "an inline score question" },
+        .{ .name = "--level", .value = .text, .repeat = true, .summary = "a score level, 0 first" },
+        .{ .name = "--noul", .value = .text, .repeat = true, .summary = "an inline yes/no question" },
+        .{ .name = "--id", .value = .text, .repeat = true, .summary = "names the question before it" },
+        .{ .name = "--model", .value = .dir, .summary = "the checkpoint directory" },
+        .{ .name = "--truncate", .value = .{ .choice = &.{ "head", "tail" } }, .summary = "the end of a long state cut" },
+        .{ .name = "--uncalibrated", .summary = "no temperature" },
+        .{ .name = "--explain", .summary = "the sequences, budgets, and logits" },
+        json,
+    } }} },
     .{ .name = "config", .summary = "write, show, or set a key of the config file", .actions = &.{
         .{ .name = "init", .summary = "write the file with the defaults", .flags = &.{
             .{ .name = "--discover", .summary = "also register the files found" },

@@ -14,7 +14,7 @@ const std = @import("std");
 const style = @import("tui/style.zig");
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, completion };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, decide, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -27,6 +27,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .agent => agent(out, sty),
         .config => config(out, sty),
         .model => model(out, sty),
+        .decide => decide(out, sty),
         .completion => completion(out, sty),
     };
     return overview(out, sty, version);
@@ -124,6 +125,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "inspect", "an artifact's identity, dimensions, tensor encodings");
     try row(out, sty, "validate", "whether a file binds to its architecture's adapter");
     try row(out, sty, "model", "pull, list, and judge Hugging Face Hub artifacts");
+    try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
     try row(out, sty, "completion", "the shell completion script for fish, bash, or zsh");
 
@@ -340,6 +342,49 @@ fn tokenize(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "at the given effort) and prints each token's id with its byte offset in");
     try plain(out, "the rendered text. Only the artifact's header is read, so it is fast");
     try plain(out, "enough to use while writing a prompt.");
+    try out.writeByte('\n');
+}
+
+fn decide(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis decide", "typed questions about states, answered by a decision model");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis decide --request <file|-> [options]");
+    try code(out, sty, "nuclis decide --questions <file> <states> [options]");
+    try code(out, sty, "nuclis decide <inline questions> <states> [options]");
+    try code(out, sty, "  <states>: --state <text> and --state-file <path>, repeatable");
+    try code(out, sty, "  <inline questions>: --choice <text> --option <key[=desc]>…,");
+    try code(out, sty, "  --score <text> --level <text>…, --noul <text>; each [--id <name>]");
+
+    try heading(out, sty, "Questions and states:");
+    try row(out, sty, "--request <file|->", "a Jev request: \"questions\" and \"state\" or");
+    try more(out, "\"states\"; a state is text, JSON, or {\"file\": path}");
+    try row(out, sty, "--questions <file>", "the questions object (id -> definition) alone");
+    try row(out, sty, "--state <text>", "a state, repeatable (a question per state each)");
+    try row(out, sty, "--state-file <path>", "a state read from a file, repeatable");
+    try row(out, sty, "--choice <text>", "a choice question; its --option key[=description]s");
+    try row(out, sty, "--score <text>", "a score question; its --level texts, 0 first");
+    try row(out, sty, "--noul <text>", "a yes/no question: the probability it holds");
+    try row(out, sty, "--id <name>", "names the question before it; default its type");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "--model <name|path>", "the checkpoint directory; default the pulled");
+    try more(out, "convaiinnovations/laya under ~/.nuclis/models");
+    try row(out, sty, "--truncate head|tail", "the end of a long state that is cut; default tail,");
+    try more(out, "head for a JSON list (a conversation)");
+    try row(out, sty, "--uncalibrated", "softmax of the raw logits, no temperature");
+    try row(out, sty, "--explain", "each sequence decoded, its budget, the logits");
+    try row(out, sty, "--json", "one Jev response per state, with timings");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis decide --noul \"Will they cancel?\" --state \"Refund me or I go.\"", "one probability");
+    try example(out, sty, "nuclis decide --noul \"A failure?\" --state-file a.log --state-file b.log", "the files ranked by it");
+    try example(out, sty, "nuclis decide --request ticket.json --json", "the Jev response, for a script");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "Each question is one encoder pass over the question, its options, and the");
+    try plain(out, "state (512 tokens in all; a longer state is cut and flagged). Several");
+    try plain(out, "states rank by the first question: P(true), the expected score, or the");
+    try plain(out, "first option's probability. A request's \"model\" field is ignored.");
     try out.writeByte('\n');
 }
 

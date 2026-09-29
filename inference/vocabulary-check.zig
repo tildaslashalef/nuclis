@@ -209,6 +209,86 @@ fn checkLaya(gpa: std.mem.Allocator, io: std.Io, dir: []const u8) !void {
         }
     }
     std.debug.print("Laya tokenizer check passed: {d} tokens, {d} merges; {d} text cases ({d} decoded back), {d} request sequences.\n", .{ vocab.tokens.len, vocab.merge_ranks.count(), cases.value.token_cases.len, decoded_cases, requests.value.requests.len });
+    try checkLayaProfile(gpa, io, dir, &tokenizer);
+}
+
+/// The profile end to end on the oracle's requests: each question and state
+/// as given builds exactly the recorded sequence, and the recorded logits
+/// calibrate to the package's answer (rounded to 4 places, as it reports).
+fn checkLayaProfile(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, tokenizer: *const inference.hf_tokenizer.Tokenizer) !void {
+    const profile = inference.profiles.laya;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const config_path = try std.fs.path.join(arena, &.{ dir, "rl_agent_config.json" });
+    const config = try profile.parseAgentConfig(arena, try std.Io.Dir.cwd().readFileAlloc(io, config_path, arena, .limited(1024 * 1024)));
+    const specials = try profile.Specials.find(tokenizer);
+    const root = try std.json.parseFromSliceLeaky(std.json.Value, arena, laya_requests, .{});
+    var worst: f64 = 0;
+    for (root.object.get("requests").?.array.items) |request| {
+        const r = request.object;
+        const name = r.get("name").?.string;
+        var diag: profile.Diagnostic = .{};
+        const question = profile.parseQuestion(arena, name, r.get("question").?, &diag) catch |err| {
+            std.debug.print("{s}\n", .{diag.message()});
+            return err;
+        };
+        const state = r.get("state").?;
+        const state_text = try profile.unmask(arena, switch (state) {
+            .string => |t| t,
+            else => try profile.pythonJson(arena, state),
+        });
+        const state_ids = try tokenizer.encode(arena, state_text, .{});
+        const prepared = try profile.prepare(arena, tokenizer, specials, question);
+        const sequence = try profile.assemble(arena, specials, prepared, state_ids, if (state == .array) .head else .tail, config.budget);
+        const want_ids = try std.json.parseFromValueLeaky([]const u32, arena, r.get("ids").?, .{});
+        const want_markers = try std.json.parseFromValueLeaky([]const usize, arena, r.get("markers").?, .{});
+        if (!std.mem.eql(u32, sequence.ids, want_ids) or !std.mem.eql(usize, sequence.markers, want_markers)) {
+            std.debug.print("{s}: the profile built {d} ids, markers {any}; the oracle {d}, {any}\n", .{ name, sequence.ids.len, sequence.markers, want_ids.len, want_markers });
+            return error.SequenceMismatch;
+        }
+        const logits = try std.json.parseFromValueLeaky([]const f32, arena, r.get("logits").?, .{});
+        const answer = try profile.calibrate(arena, question.kind, logits, config.temperatureFor(question.kind, logits.len));
+        const want = r.get("answer").?.object;
+        var got: std.ArrayList(f64) = .empty;
+        var expected: std.ArrayList(f64) = .empty;
+        try got.appendSlice(arena, &.{ answer.confidence, answer.answer_confidence });
+        try expected.appendSlice(arena, &.{ jsonNumber(want.get("confidence").?), jsonNumber(want.get("answer_confidence").?) });
+        switch (question.kind) {
+            .noul => {
+                try got.append(arena, answer.value);
+                try expected.append(arena, jsonNumber(want.get("noul").?));
+            },
+            .choice, .score => {
+                if (question.kind == .score) {
+                    try got.append(arena, answer.value);
+                    try expected.append(arena, jsonNumber(want.get("score").?));
+                } else if (!std.mem.eql(u8, question.keys[answer.best], want.get("choice").?.string)) return error.AnswerMismatch;
+                const probabilities = want.get("probabilities").?.object;
+                for (question.keys, answer.probabilities) |key, p| {
+                    try got.append(arena, p);
+                    try expected.append(arena, jsonNumber(probabilities.get(key).?));
+                }
+            },
+        }
+        for (got.items, expected.items) |g, e| {
+            const d = @abs(profile.round4(g) - e);
+            worst = @max(worst, d);
+            if (d > 1.5e-4) {
+                std.debug.print("{s}: answer {d} against the package's {d}\n", .{ name, profile.round4(g), e });
+                return error.AnswerMismatch;
+            }
+        }
+    }
+    std.debug.print("Laya profile check passed: {d} requests rebuilt exactly; answers within {e:.1} of the package's (4-place rounding).\n", .{ root.object.get("requests").?.array.items.len, worst });
+}
+
+fn jsonNumber(value: std.json.Value) f64 {
+    return switch (value) {
+        .float => |f| f,
+        .integer => |i| @floatFromInt(i),
+        else => std.math.nan(f64),
+    };
 }
 
 /// `text` must encode to ids that begin with `recorded` (budgets only cut).

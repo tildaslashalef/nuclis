@@ -19,6 +19,9 @@ pub const qwen38 = @import("qwen38.zig");
 pub const gemma4 = @import("gemma4.zig");
 pub const gemma4_e = @import("gemma4_e.zig");
 pub const muse_glimmer = @import("muse_glimmer.zig");
+/// Laya's input contract and calibration: a decision model, not a chat
+/// template, so not in the registry below.
+pub const laya = @import("laya.zig");
 
 pub const Role = enum { system, developer, user, assistant, tool };
 /// The reasoning control shared by every profile. Named after Qwen3.8's
@@ -573,4 +576,5 @@ test {
     _ = gemma4;
     _ = muse_glimmer;
     _ = gemma4_e;
+    _ = laya;
 }

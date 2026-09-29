@@ -18,7 +18,8 @@ pub const Error = runtime.Error || modernbert.Error || error{ UnexpectedTensor, 
 const head_eps = 1e-5;
 const head_width = 64;
 
-pub const Kind = enum(u2) { choice = 0, score = 1, noul = 2 };
+/// The question type; its value indexes `type_emb`.
+pub const Kind = @import("../profiles/laya.zig").Kind;
 
 /// A stage of the forward, for checks against a reference.
 pub const Stage = union(enum) {

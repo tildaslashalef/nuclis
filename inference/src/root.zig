@@ -21,6 +21,8 @@ pub const draft = @import("runtime/draft.zig");
 pub const observer = @import("runtime/observer.zig");
 pub const events = @import("events.zig");
 pub const engine = @import("engine.zig");
+/// The decision path: a Laya checkpoint answering typed questions.
+pub const decide = @import("decide.zig");
 pub const vision = @import("vision/root.zig");
 
 test {
@@ -41,6 +43,7 @@ test {
     _ = sampling;
     _ = speculative;
     _ = engine;
+    _ = decide;
     _ = events;
     _ = vision;
 }

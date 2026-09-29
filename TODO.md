@@ -188,6 +188,19 @@ tokens, 88 of them new ids (50280–50367), so 50368 ids; `[CLS]` 50281, `[SEP]`
 
 ### Session 3 — profile, `Decider`, `nuclis decide`
 
+Progress 2026-09-29 (committed): `inference/src/profiles/laya.zig` (the
+contract, Python-JSON rendering, `prepare`/`assemble`, `AgentConfig`,
+`calibrate`, `round4`), `inference/src/decide.zig` (`Decider`), `src/decide.zig`
+(`nuclis decide`, help, completion), `vocabulary-check` Laya mode now also
+rebuilds the 8 oracle sequences exactly and matches their answers (gate
+`laya-vocabulary`). Fresh-binary checks passed: the 8 fixture requests
+(`--json`) equal the package's answers exactly after rounding, usage
+included; the quickstart through `--request` (file and stdin),
+`--questions`, and inline gives identical JSON; a fan-out over 4 files
+ranks; malformed requests fail naming the question. Remaining: model
+selection (the default is still the path `convaiinnovations/laya`), docs,
+`make verify`, close.
+
 - `inference/src/profiles/laya.zig`: the input contract above (render,
   `[MASK]` replacement, budgets, list-state head cut, truncation flag, the
   question validation), `rl_agent_config.json` read (temperatures,

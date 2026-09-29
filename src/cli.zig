@@ -18,17 +18,19 @@ const style = @import("tui/style.zig");
 const catalog = @import("catalog.zig");
 const help_text = @import("help.zig");
 const completion = @import("completion.zig");
+const decide = @import("decide.zig");
 
 // Fed from build.zig.zon through the build_options module (see build.zig);
 // never edit a version string here.
 pub const version = @import("build_options").version;
 pub const Diagnostic = config.Diagnostic;
 pub const Options = struct {
-    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, completion, complete },
+    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, decide, completion, complete },
     /// `completion <shell>`: which script to print.
     shell: completion.Shell = .fish,
     /// `__complete <words…>`: the words after `nuclis`, the last one being
-    /// completed (the shims' hidden call).
+    /// completed (the shims' hidden call); `decide`'s own words, which its
+    /// module parses.
     words: []const []const u8 = &.{},
     /// Which command's page `--help` asked for; null is the overview.
     help_topic: ?help_text.Topic = null,
@@ -90,6 +92,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
         .config
     else if (std.mem.eql(u8, args[0], "model"))
         .model
+    else if (std.mem.eql(u8, args[0], "decide"))
+        .decide
     else if (std.mem.eql(u8, args[0], "completion"))
         .completion
     else
@@ -100,6 +104,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
         return .{ .command = .help, .help_topic = std.meta.stringToEnum(help_text.Topic, args[0]) };
     }
     if (command == .model) return parseModelArgs(args[1..]);
+    if (command == .decide) return .{ .command = .decide, .words = args[1..] };
     if (command == .completion) {
         if (args.len < 2) return error.MissingShell;
         if (args.len > 2) return error.UnknownOption;
@@ -493,6 +498,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             },
         }
     }
+    if (options.command == .decide) return runDecide(alloc, io, root, options.words, out, sty, diag);
     if (options.command == .agent and options.agent_action == .ls) {
         const dir = root orelse return error.MissingHome;
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
@@ -585,7 +591,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
     (switch (options.command) {
-        .help, .version, .config, .model, .completion, .complete => unreachable,
+        .help, .version, .config, .model, .decide, .completion, .complete => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => blk: {
@@ -675,6 +681,29 @@ fn isSafetensors(io: std.Io, path: []const u8) !bool {
 
 /// The registry's ids as one comma-separated list, joined at compile time
 /// for the diagnostics above.
+/// `decide`: its own flags, a checkpoint directory rather than a GGUF file,
+/// and none of the engine's keys.
+fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const options = try decide.parseArgs(arena, words, diag);
+    const sty: style.Style = if (options.json) .none else sty_detected;
+    const name = options.model orelse "convaiinnovations/laya";
+    const directory = try decide.resolveDirectory(arena, root, name);
+    const weights = try std.fs.path.join(arena, &.{ directory, "model.safetensors" });
+    std.Io.Dir.cwd().access(io, weights, .{}) catch {
+        diag.set("{s}: no model.safetensors (a Laya checkpoint directory; `nuclis model pull convaiinnovations/laya` fetches the root set)", .{directory});
+        return error.ModelFileNotFound;
+    };
+    var identity: decide.Identity = .{ .name = name };
+    if (model.readSidecar(arena, io, .cwd(), try model.sidecarPath(arena, weights)) catch null) |sidecar| {
+        identity.repo = sidecar.repo;
+        identity.revision = sidecar.revision;
+    }
+    return decide.run(alloc, io, directory, identity, options, out, sty, diag);
+}
+
 const known_architectures = blk: {
     var list: []const u8 = "";
     for (inference.models.known, 0..) |name, i| list = list ++ (if (i > 0) ", " else "") ++ name;
