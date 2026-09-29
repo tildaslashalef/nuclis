@@ -89,6 +89,80 @@ matches the reference's per-layer traces on the CPU and on Metal before
 its rate is recorded. Methodology, variance, and every record:
 [docs/reference/bench.md](docs/reference/bench.md).
 
+## Experiment: decisions with Laya
+
+`nuclis decide` runs [Laya](https://huggingface.co/convaiinnovations/laya),
+a small encoder with a typed-decision head, beside the language models. It
+answers a typed question about a state (text, a JSON document, or a
+conversation) in one forward pass, with no decoding: `noul` (the
+probability that something holds), `choice` (one option), or `score` (a
+level on a scale).
+
+```sh
+nuclis model pull laya
+nuclis decide --noul 'Does this log show a failure that needs a person now?' \
+  --state-file quiet.log --state-file disk.log --state-file payments.log
+```
+
+The idea under test is Laya as a **filter**. A language model that needs
+one fact from 30 search hits or 50 log sections pays to read all of them:
+at 90 tokens/s of prefill, Qwen3.8-27B spends about 5.7 s on each
+512-token state. Laya judges such a state in about 0.2 s on Metal, so one
+question fanned out over the states can hand the model only the few that
+matter. Whether an agent actually gains from that is an experiment still
+to run, not a result.
+
+Two checkpoints are pinned, both run on the CPU and on Metal:
+
+| Name | Encoder | Tokens per sequence | Reads |
+| --- | --- | ---: | --- |
+| `laya` (the default) | ModernBERT-large | 512 | English |
+| `laya-multilingual` | mmBERT-base | 1,024 | other languages too |
+
+**Correctness.** The forward matches Laya's own Python package (`laya`
+0.3.20, F32 on the CPU), the oracle: every token id of every request, the
+residual stream at seven stages within 1e-5 of its largest value, the
+logits within 1e-4, the calibrated answers equal after rounding. That
+holds for 8 reference requests on `laya` and 16 on `laya-multilingual`,
+the multilingual ones including French, German, Spanish, Arabic, Chinese,
+and Hindi states and positions past 512. On Metal, a packed batch gives
+each sequence exactly the logits it gets alone.
+
+**Speed** (M4 Pro, one `noul` question over synthetic logs, encode time):
+
+| States × tokens | `laya`, Metal | `laya`, CPU | `laya-multilingual`, Metal |
+| --- | ---: | ---: | ---: |
+| 1 × ~500 | 0.21 s | 2.9 s | 0.11 s |
+| 50 × ~500 | 9.8 s | — | 4.1 s |
+| 50 × ~60 | 1.3 s | 26.5 s | 0.6 s |
+
+Metal is 8–20× the CPU. The multilingual checkpoint is smaller and faster,
+but it takes 0.4 s to load against 0.1 s.
+
+**What the answers are like**, from 20 hand-written cases run on both
+checkpoints:
+
+- As a filter, `laya` works. Four logs ranked by "needs a person now" come
+  out disk full (0.92), payment errors (0.70), slow queries (0.49), healthy
+  (0.00). Among 50 short entries, the 8 cache misses rank first; among five
+  search hits, the flaky login test and the cookie race rank above the
+  README and the changelog.
+- Plain judgements are mostly right (a cancel threat 0.84, a crash ticket
+  routed to the technical team at 0.95). Some are flat or off: a scam email
+  at 0.48, and 40 minutes of database replication lag judged not urgent.
+  Rewording the question or describing the options changes such answers.
+- `laya-multilingual` reads other languages where `laya` cannot: a German
+  cancellation 0.61 against 0.14, a Hindi request to close an account
+  1.00 against 0.00. It also reads to 1,024 tokens, so it finds an error
+  that `laya` cuts away. On English it is clearly worse: it loses the
+  filter rankings above and is confidently wrong on several plain
+  questions. `laya` stays the default.
+- Neither checkpoint identifies languages; that is not what they were
+  trained for.
+
+A longer state than the budget is cut, and the cut is always flagged.
+Details, measurements, and limits: [docs/reference/laya.md](docs/reference/laya.md).
+
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): how a token flows through

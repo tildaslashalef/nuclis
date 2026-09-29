@@ -148,6 +148,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-33 | Laya multilingual: the Metaspace tokenizer, the checkpoint's own special tokens, checked on both backends | 2026-09-29 |
 | REPO-21 | The agent's playground generated under `.zig-cache`; the Python scripts typed (basedpyright) and formatted (ruff) | 2026-09-29 |
 | REPO-22 | `.reference/` for durable local state (oracles, venvs, pinned downloads); `.zig-cache` disposable, `make clean-cache` | 2026-09-29 |
+| REPO-23 | The README's Laya section: the experiment and its results | 2026-09-29 |
 
 ## Context
 
@@ -6213,3 +6214,22 @@ the corpus from `.reference/eval`), all passing. Sizes after: 1.5 GB in
 **Remaining.** Another machine sets `.reference/` up once with the
 recipes in `reference-baseline.md` and `development.md`; nothing
 automates it.
+
+## REPO-23 — The README's Laya section: the experiment and its results (2026-09-29)
+
+**Outcome.** `README.md` gains *Experiment: decisions with Laya*, after
+*Results*. It says what `nuclis decide` is and how to run it, and states
+the filter idea as the hypothesis under test, with the agent experiment
+(AGNT-18, deferred) still to run. It lists the two pinned checkpoints,
+correctness against the `laya` package, the speed on Metal and the CPU,
+and what 20 hand-written cases showed on both checkpoints: the filter
+rankings, the misses, and the multilingual checkpoint's trade-off (other
+languages and 1,024 tokens against worse English, so `laya` stays the
+default).
+
+**Evidence.** Every number is taken from a measured record:
+[reference/laya.md](reference/laya.md) (MODL-30, MODL-31, MODL-33) for
+correctness and speed, and the manual cases run on both checkpoints on
+2026-09-29 at `0942463` for the answers.
+
+**Files.** `README.md`, `docs/engineering-log.md`.
