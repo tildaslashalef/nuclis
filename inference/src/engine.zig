@@ -639,11 +639,11 @@ fn chunkFor(comptime Family: type, binding: Family.Binding) usize {
 /// Builds one family's executor for the backend. Heap-allocates the Metal
 /// backend so the plan's pointer stays valid when the Engine value is
 /// returned by value; its diagnostic text is logged on failure.
-fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, view: inference.weights.View, binding: Family.Binding, backend: Backend, capacity: usize, kv: KvPrecision, want_draft: bool) !Executor(Family) {
+fn openExecutor(comptime Family: type, alloc: std.mem.Allocator, io: std.Io, view: inference.weights.View, binding: Family.Binding, backend: Backend, capacity: usize, kv: KvPrecision, want_draft: bool) !Executor(Family) {
     // A checkpoint region is sized only when a caller needs to undo a verify
     // batch, which is exactly when a drafter is loaded.
     return switch (backend) {
-        .cpu => .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, want_draft, want_draft) },
+        .cpu => .{ .cpu = try Family.Runtime.init(alloc, io, view, binding, capacity, want_draft, want_draft) },
         .metal => blk: {
             const gpu = try alloc.create(inference.metal.Backend);
             errdefer alloc.destroy(gpu);
@@ -790,7 +790,7 @@ pub const Engine = struct {
                     .file => true,
                     .preferred => if (comptime hasEmbeddedDraft(Family)) true else companion_path != null,
                 };
-                break :blk .{ .exec = @unionInit(Executors, @tagName(a), try openExecutor(Family, alloc, mapped.view(), binding, backend, capacity, kv, want_draft)) };
+                break :blk .{ .exec = @unionInit(Executors, @tagName(a), try openExecutor(Family, alloc, io, mapped.view(), binding, backend, capacity, kv, want_draft)) };
             },
         };
         errdefer model.deinit(alloc);
@@ -874,7 +874,7 @@ pub const Engine = struct {
             .cpu => null,
             .metal => self.model.gpu() orelse return error.MetalNotEnabled,
         };
-        try v.projector.init(self.alloc, &v.mapped.document, v.mapped.view(), gpu);
+        try v.projector.init(self.alloc, self.io, &v.mapped.document, v.mapped.view(), gpu);
         errdefer v.projector.deinit();
         v.projector.limitTokens(max_image_tokens);
         if (v.projector.outputWidth() != try self.embeddingWidth()) return error.VisionSourceMismatch;

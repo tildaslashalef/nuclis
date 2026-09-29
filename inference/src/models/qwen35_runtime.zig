@@ -41,6 +41,8 @@ const Rotation = struct {
 };
 
 pub const Runtime = struct {
+    /// Runs `cpu.matvec`'s row tasks; `row` holds a decode row per task.
+    io: std.Io,
     storage: std.heap.ArenaAllocator,
     state: session.Session,
     view: weights.View,
@@ -87,7 +89,7 @@ pub const Runtime = struct {
     attention_scratch: []f64,
     delta_scratch: []f64,
 
-    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
+    pub fn init(gpa: std.mem.Allocator, io: std.Io, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
         const text = binding.layers.len;
         var layouts: [65]session.Layout = undefined;
         for (binding.layers, layouts[0..text]) |layer, *layout| layout.* = switch (layer.mixer) {
@@ -109,7 +111,8 @@ pub const Runtime = struct {
         // linked-list head can change on each allocation.
         var result: Runtime = undefined;
         inline for (.{ "x", "normalized", "projected", "h" }) |field| @field(result, field) = try a.alloc(f32, 5120);
-        inline for (.{ "gate", "up", "row" }) |field| @field(result, field) = try a.alloc(f32, 17408);
+        inline for (.{ "gate", "up" }) |field| @field(result, field) = try a.alloc(f32, 17408);
+        result.row = try a.alloc(f32, cpu.matvecScratch(17408));
         result.qg = try a.alloc(f32, 12288);
         result.q = try a.alloc(f32, 6144);
         result.k = try a.alloc(f32, 1024);
@@ -169,6 +172,7 @@ pub const Runtime = struct {
         result.storage = storage;
         result.state = state;
         result.view = view;
+        result.io = io;
         result.binding = binding;
         return result;
     }
@@ -183,7 +187,7 @@ pub const Runtime = struct {
     }
 
     fn mm(self: *Runtime, tensor: *const Tensor, input: []const f32, output: []f32) !void {
-        try cpu.matvec(try self.view.matrix(tensor), input, output, self.row);
+        try cpu.matvec(self.io, try self.view.matrix(tensor), input, output, self.row);
     }
     /// The activation a rotated projection reads: on a rotated file, `input`
     /// sign-flipped and transformed into the `rotated` scratch (so callers
@@ -541,7 +545,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
             const attention: model.FullAttention = .{ .query_and_gate = &tensor, .key = &tensor, .value = &tensor, .output = &tensor, .query_norm = &tensor, .key_norm = &tensor };
             const layer: model.Layer = .{ .attention_norm = &tensor, .post_attention_norm = &tensor, .ffn_gate = &tensor, .ffn_up = &tensor, .ffn_down = &tensor, .mixer = .{ .full_attention = attention } };
             const binding: model.Binding = .{ .token_embedding = &tensor, .output_norm = &tensor, .output = &tensor, .layers = @splat(layer), .summary = .{ .profile = "test", .decoder_layers = 64, .layer_kinds = &.{}, .text_tensors = 0, .auxiliary_tensors = 0, .text_tensor_bytes = 0, .auxiliary_tensor_bytes = 0 } };
-            var runtime = try Runtime.init(alloc, .{ .file = &.{}, .data_offset = 0 }, binding, 1, false, false);
+            var runtime = try Runtime.init(alloc, std.testing.io, .{ .file = &.{}, .data_offset = 0 }, binding, 1, false, false);
             defer runtime.deinit();
             try std.testing.expectError(error.InvalidTokenId, runtime.step(248320, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);

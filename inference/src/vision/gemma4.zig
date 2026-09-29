@@ -426,13 +426,15 @@ fn rotateHalf(half: []f32, table: []const f32) void {
 /// `cpu.matvec` (F64 accumulation), norms and attention in F64.
 pub const Runtime = struct {
     alloc: std.mem.Allocator,
+    /// Runs `cpu.matvec`'s row tasks.
+    io: std.Io,
     view: weights.View,
     binding: *const Binding,
     /// The small F32 vectors one `encode` decoded, freed when it returns.
     vectors: std.ArrayList([]f32),
 
-    pub fn init(alloc: std.mem.Allocator, view: weights.View, binding: *const Binding) !Runtime {
-        return .{ .alloc = alloc, .view = view, .binding = binding, .vectors = .empty };
+    pub fn init(alloc: std.mem.Allocator, io: std.Io, view: weights.View, binding: *const Binding) !Runtime {
+        return .{ .alloc = alloc, .io = io, .view = view, .binding = binding, .vectors = .empty };
     }
     pub fn deinit(self: *Runtime) void {
         self.releaseVectors();
@@ -483,32 +485,31 @@ pub const Runtime = struct {
         defer a.free(y);
         const positions = try a.alloc(f32, n * h);
         defer a.free(positions);
-        const scratch = try a.alloc(f32, unified.values + h);
+        const scratch = try a.alloc(f32, cpu.matvecScratch(unified.values + h));
         defer a.free(scratch);
         try positionRows(self.view, net.position, h, unified.table, grid.width_tokens, n, positions, scratch);
         const kernel = try self.view.matrix(net.patch_embedding);
         const projection = try self.view.matrix(net.projection);
         for (0..n) |t| {
             qwen3vl.layerNormEpsilon(patches.values[t * unified.values ..][0..unified.values], normed, n1w, n1b, eps);
-            try cpu.matvec(kernel, normed, x, scratch);
+            try cpu.matvec(self.io, kernel, normed, x, scratch);
             for (x, bias) |*v, b| v.* += b;
             qwen3vl.layerNormEpsilon(x, y, n2w, n2b, eps);
             for (y, positions[t * h ..][0..h]) |*v, p| v.* += p;
             qwen3vl.layerNormEpsilon(y, x, n3w, n3b, eps);
             try rmsNorm(x, y, null);
-            try cpu.matvec(projection, y, out[t * width ..][0..width], scratch);
+            try cpu.matvec(self.io, projection, y, out[t * width ..][0..width], scratch);
         }
     }
 
     /// `output = clamp(W · clamp(input))` (`Clamp`); `input` is left as it was.
     fn clipped(self: *Runtime, matrix: cpu.Matrix, bounds: Bounds, input: []const f32, output: []f32, scratch: []f32, staged: []f32) !void {
-        _ = self;
         var source = input;
         if (!bounds.isOpen()) {
             for (staged[0..input.len], input) |*s, x| s.* = std.math.clamp(x, bounds.input[0], bounds.input[1]);
             source = staged[0..input.len];
         }
-        try cpu.matvec(matrix, source, output, scratch);
+        try cpu.matvec(self.io, matrix, source, output, scratch);
         if (!bounds.isOpen()) for (output) |*y| {
             y.* = std.math.clamp(y.*, bounds.output[0], bounds.output[1]);
         };
@@ -547,7 +548,7 @@ pub const Runtime = struct {
         defer a.free(x_table);
         const y_table = try a.alloc(f32, n * pairs * 2);
         defer a.free(y_table);
-        const scratch = try a.alloc(f32, g.ffn + h);
+        const scratch = try a.alloc(f32, cpu.matvecScratch(g.ffn + h));
         defer a.free(scratch);
         // A clamped copy of a matrix's input.
         const staged = try a.alloc(f32, g.ffn + h);
@@ -560,7 +561,7 @@ pub const Runtime = struct {
         try positionRows(self.view, net.position, h, siglip.table, wp, n, normed, scratch);
         for (0..n) |t| {
             const xt = x[t * h ..][0..h];
-            try cpu.matvec(kernel, patches.values[t * siglip.values ..][0..siglip.values], xt, scratch);
+            try cpu.matvec(self.io, kernel, patches.values[t * siglip.values ..][0..siglip.values], xt, scratch);
             for (xt, normed[t * h ..][0..h]) |*o, p| o.* += p;
         }
         for (net.active()) |layer| {
@@ -624,7 +625,7 @@ pub const Runtime = struct {
             const pooled = normed[t * h ..][0..h];
             if (std_bias) |bias| standardize(pooled, bias, std_scale.?);
             try rmsNorm(pooled, row, null);
-            try cpu.matvec(projection, row, out[t * width ..][0..width], scratch);
+            try cpu.matvec(self.io, projection, row, out[t * width ..][0..width], scratch);
         }
     }
 };

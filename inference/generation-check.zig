@@ -286,9 +286,9 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
     // follow the file, not the family.
     const has_draft = if (comptime spec.draft != null) binding.draft != null else false;
     const first_draft = use_metal and has_draft;
-    var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, first_draft) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, false) };
+    var first: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, first_draft) } else .{ .cpu = try Runtime.init(alloc, io, mapped.view(), binding, 16, true, false) };
     defer first.deinit();
-    var second: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, false) };
+    var second: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, io, mapped.view(), binding, 16, true, false) };
     defer second.deinit();
     const expected = try alloc.alloc(f32, spec.vocabulary);
     defer alloc.free(expected);
@@ -306,7 +306,7 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         var with_draft: Model = if (backend) |*b|
             .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 16, 16, .f32, true, true) }
         else
-            .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 16, true, true) };
+            .{ .cpu = try Runtime.init(alloc, io, mapped.view(), binding, 16, true, true) };
         defer with_draft.deinit();
         try with_draft.sequence(actual);
         if (!std.mem.eql(f32, expected, actual)) return error.DraftLoadedDecodeMismatch;
@@ -330,12 +330,12 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         if (!std.mem.eql(f32, expected, actual)) return error.ResetMismatch;
     }
     std.debug.print("Generation check passed ({s}, {s}): two-token logits identical across independent sessions and reset after partial-step cancellation through both the layer and the check callbacks.\n", .{ Family.architecture, if (use_metal) "metal" else "cpu" });
-    var other: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 8, 4, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, mapped.view(), binding, 8, true, false) };
+    var other: Model = if (backend) |*b| .{ .metal = try Plan.init(alloc, b, mapped.view(), binding, 8, 4, .f32, true, false) } else .{ .cpu = try Runtime.init(alloc, io, mapped.view(), binding, 8, true, false) };
     defer other.deinit();
     try checkSnapshot(spec, Model, alloc, &first, &second, &other, expected, actual);
     if (comptime spec.draft != null) if (has_draft) {
-        try checkDraft(spec, alloc, mapped.view(), binding, spec.draft.?, if (backend) |*b| b else null);
-        try draftRecoveryCheck(spec, alloc, if (backend) |*b| b else null, mapped.view(), binding, spec.draft.?);
+        try checkDraft(spec, alloc, io, mapped.view(), binding, spec.draft.?, if (backend) |*b| b else null);
+        try draftRecoveryCheck(spec, alloc, io, if (backend) |*b| b else null, mapped.view(), binding, spec.draft.?);
         if (backend) |*b| try draftBatchCommitCheck(spec, alloc, b, mapped.view(), binding);
     } else std.debug.print("Draft block checks skipped: the file carries no embedded block.\n", .{});
     try recoveryCheck(spec, Model, alloc, io, &first, &second, &other, 4, use_metal);
@@ -484,7 +484,7 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
 /// greedy token must match. The trace was captured from the pinned reference
 /// with an F32 cache; the tolerances are the bring-up block tolerances
 /// (docs/reference/speculative-decoding.md).
-fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.weights.View, binding: spec.Family.Binding, draft: Draft, backend: ?*inference.metal.Backend) !void {
+fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, view: inference.weights.View, binding: spec.Family.Binding, draft: Draft, backend: ?*inference.metal.Backend) !void {
     const Runtime = spec.Family.Runtime;
     const hidden = 5120;
     const p0_h = @embedFile("src/models/fixtures/qwen35-mtp/p0-h.f32");
@@ -502,7 +502,7 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
     // One executor per run: the CPU reference, or the plan alone when a
     // backend is given (the CPU half is the CPU tier's gate).
     if (backend == null) {
-        var runtime = try Runtime.init(alloc, view, binding, 4, false, true);
+        var runtime = try Runtime.init(alloc, io, view, binding, 4, false, true);
         defer runtime.deinit();
         try runtime.draftForward(zeros, draft.tokens[0], 0, logits);
         try compareDraft("cpu position 0", p0_h, runtime.draft_h, 2e-2, 1e-3);
@@ -564,7 +564,7 @@ fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, view: inference.wei
 /// hidden. `propose` is deterministic across two independently reset runners.
 /// Runs on the CPU reference or the Metal plan (whichever backend is given;
 /// null selects the CPU reference).
-fn draftRecoveryCheck(comptime spec: Spec, alloc: std.mem.Allocator, backend: ?*inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding, draft: Draft) !void {
+fn draftRecoveryCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, backend: ?*inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding, draft: Draft) !void {
     const Family = spec.Family;
     const hidden = 5120;
     const p1_hprev = @embedFile("src/models/fixtures/qwen35-mtp/p1-hprev.f32");
@@ -580,12 +580,12 @@ fn draftRecoveryCheck(comptime spec: Spec, alloc: std.mem.Allocator, backend: ?*
     var first: DraftRunner(spec) = if (backend) |b|
         .{ .metal = try Family.Plan.init(alloc, b, view, binding, 8, 8, .f32, true, true) }
     else
-        .{ .cpu = try Family.Runtime.init(alloc, view, binding, 8, true, true) };
+        .{ .cpu = try Family.Runtime.init(alloc, io, view, binding, 8, true, true) };
     defer first.deinit();
     var second: DraftRunner(spec) = if (backend) |b|
         .{ .metal = try Family.Plan.init(alloc, b, view, binding, 8, 8, .f32, true, true) }
     else
-        .{ .cpu = try Family.Runtime.init(alloc, view, binding, 8, true, true) };
+        .{ .cpu = try Family.Runtime.init(alloc, io, view, binding, 8, true, true) };
     defer second.deinit();
 
     // Reset clears both the block's cache and its pending target hidden.
@@ -696,12 +696,12 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
     var sequential: Runner = if (backend) |*b|
         .{ .metal = try Family.Plan.init(alloc, b, view, binding, capacity, 8, .f32, true, false) }
     else
-        .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, true, false) };
+        .{ .cpu = try Family.Runtime.init(alloc, io, view, binding, capacity, true, false) };
     defer sequential.deinit();
     var speculative: Runner = if (backend) |*b|
         .{ .metal = try Family.Plan.init(alloc, b, view, binding, capacity, 8, .f32, true, true) }
     else
-        .{ .cpu = try Family.Runtime.init(alloc, view, binding, capacity, true, true) };
+        .{ .cpu = try Family.Runtime.init(alloc, io, view, binding, capacity, true, true) };
     defer speculative.deinit();
     const logits = try alloc.alloc(f32, spec.vocabulary);
     defer alloc.free(logits);
@@ -1263,7 +1263,7 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
         var runner: Runner = if (backend) |*b|
             .{ .metal = try Family.Plan.init(alloc, b, mapped.view(), binding, capacity, @min(capacity, 256), .f32, false, true) }
         else
-            .{ .cpu = try Family.Runtime.init(alloc, mapped.view(), binding, capacity, false, true) };
+            .{ .cpu = try Family.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true) };
         defer runner.deinit();
         const logits = try alloc.alloc(f32, spec.vocabulary);
         defer alloc.free(logits);
@@ -1388,7 +1388,7 @@ fn draftTrace(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
     var runner: DraftRunner(spec) = if (backend) |*b|
         .{ .metal = try Family.Plan.init(alloc, b, mapped.view(), binding, capacity, 8, .f32, false, true) }
     else
-        .{ .cpu = try Family.Runtime.init(alloc, mapped.view(), binding, capacity, false, true) };
+        .{ .cpu = try Family.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true) };
     defer runner.deinit();
     const logits = try alloc.alloc(f32, spec.vocabulary);
     defer alloc.free(logits);
@@ -1488,7 +1488,7 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     defer alloc.free(h_out);
     // One executor per run: the CPU reference, or with `--metal` the plan
     // alone (the CPU half is the CPU tier's gate).
-    var runtime: ?Family.Runtime = if (use_metal) null else try Family.Runtime.init(alloc, mapped.view(), binding, 32, false, true);
+    var runtime: ?Family.Runtime = if (use_metal) null else try Family.Runtime.init(alloc, io, mapped.view(), binding, 32, false, true);
     defer if (runtime) |*r| r.deinit();
     // The plan must go before the backend it borrows (LIFO defers: register
     // the backend's first).
@@ -1565,7 +1565,7 @@ fn gemmaDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
         try fresh.commit(tokens[0..2], prompt_hidden);
         break :count try fresh.propose(tokens[2], &proposed, 0);
     } else count: {
-        var fresh = try Family.Runtime.init(alloc, mapped.view(), binding, 32, false, true);
+        var fresh = try Family.Runtime.init(alloc, io, mapped.view(), binding, 32, false, true);
         defer fresh.deinit();
         try fresh.prefill(tokens[0..2], null, prompt_hidden, null);
         try fresh.commit(tokens[0..2], prompt_hidden);
@@ -1607,7 +1607,7 @@ fn museDraftTrace(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, 
     // One executor per run: the CPU reference, or with `--metal` the plan
     // alone (the CPU half is the CPU tier's gate), each against the pinned
     // rows. The plan runs F32 caches, the precision of the reference trace.
-    var runtime: ?Family.Runtime = if (use_metal) null else try Family.Runtime.init(alloc, mapped.view(), binding, capacity, false, true);
+    var runtime: ?Family.Runtime = if (use_metal) null else try Family.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true);
     defer if (runtime) |*r| r.deinit();
     var gpu: ?*inference.metal.Backend = null;
     defer if (gpu) |b| {
@@ -2065,7 +2065,7 @@ const LoadedProjector = struct {
             b.deinit();
             alloc.destroy(b);
         };
-        try self.projector.init(alloc, &self.mapped.document, self.mapped.view(), self.backend);
+        try self.projector.init(alloc, io, &self.mapped.document, self.mapped.view(), self.backend);
     }
     fn close(self: *LoadedProjector, alloc: std.mem.Allocator, io: std.Io) void {
         self.projector.deinit();

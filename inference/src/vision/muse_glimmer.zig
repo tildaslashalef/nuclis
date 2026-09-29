@@ -386,26 +386,66 @@ pub fn shuffle(rows: []const f32, grid: Grid, layout: Layout, out: []f32) !void 
 }
 
 /// `out[t] = W · input[t] (+ bias)` for `n` rows, decoding each weight row
-/// once; F64 accumulation as `cpu.matvec`. `scratch` holds one decoded row.
-fn rowsTimes(matrix: cpu.Matrix, input: []const f32, n: usize, output: []f32, bias: ?[]const f32, scratch: []f32) !void {
+/// once; F64 accumulation as `cpu.matvec`. Weight rows split across `io`
+/// tasks as `cpu.matvec`'s do, in chunks each task takes in turn, decoding
+/// into its own row of `scratch` (one row keeps them on the calling
+/// thread); every sum keeps its order.
+fn rowsTimes(io: std.Io, matrix: cpu.Matrix, input: []const f32, n: usize, output: []f32, bias: ?[]const f32, scratch: []f32) !void {
     const row_bytes = matrix.bytes.len / matrix.rows;
     try quant.validateRow(matrix.encoding, row_bytes, matrix.columns);
-    const decoded = scratch[0..matrix.columns];
-    for (0..matrix.rows) |r| {
-        try quant.row(matrix.encoding, matrix.bytes[r * row_bytes ..][0..row_bytes], decoded);
-        const b: f64 = if (bias) |v| v[r] else 0;
-        for (0..n) |t| {
-            var sum: f64 = 0;
-            for (decoded, input[t * matrix.columns ..][0..matrix.columns]) |w, x| sum += @as(f64, w) * x;
-            output[t * matrix.rows + r] = @floatCast(sum + b);
+    const product: RowsTimes = .{ .matrix = matrix, .row_bytes = row_bytes, .input = input, .n = n, .output = output, .bias = bias };
+    const tasks = @min(max_row_tasks, matrix.rows, scratch.len / matrix.columns);
+    if (tasks <= 1) return product.run(0, matrix.rows, scratch[0..matrix.columns]);
+    var failures = [_]?quant.Error{null} ** max_row_tasks;
+    var next: std.atomic.Value(usize) = .init(0);
+    const chunk = @max(1, matrix.rows / (tasks * 8));
+    var group: std.Io.Group = .init;
+    for (0..tasks) |t| group.async(io, RowsTimes.task, .{ product, &next, chunk, scratch[t * matrix.columns ..][0..matrix.columns], &failures[t] });
+    try group.await(io);
+    for (failures[0..tasks]) |failure| if (failure) |err| return err;
+}
+const max_row_tasks = 64;
+
+const RowsTimes = struct {
+    matrix: cpu.Matrix,
+    row_bytes: usize,
+    input: []const f32,
+    n: usize,
+    output: []f32,
+    bias: ?[]const f32,
+
+    fn run(self: RowsTimes, first: usize, last: usize, decoded: []f32) quant.Error!void {
+        const m = self.matrix;
+        for (first..last) |r| {
+            try quant.row(m.encoding, m.bytes[r * self.row_bytes ..][0..self.row_bytes], decoded);
+            const b: f64 = if (self.bias) |v| v[r] else 0;
+            for (0..self.n) |t| {
+                var sum: f64 = 0;
+                for (decoded, self.input[t * m.columns ..][0..m.columns]) |w, x| sum += @as(f64, w) * x;
+                self.output[t * m.rows + r] = @floatCast(sum + b);
+            }
         }
     }
-}
+
+    /// Takes chunks of rows from `next` until none remain.
+    fn task(self: RowsTimes, next: *std.atomic.Value(usize), chunk: usize, decoded: []f32, failure: *?quant.Error) void {
+        while (true) {
+            const first = next.fetchAdd(chunk, .monotonic);
+            if (first >= self.matrix.rows) return;
+            self.run(first, @min(first + chunk, self.matrix.rows), decoded) catch |err| {
+                failure.* = err;
+                return;
+            };
+        }
+    }
+};
 
 /// The CPU reference: matrix products with F64 accumulation, LayerNorm and
 /// attention in F64, the exact (erf) GELU.
 pub const Runtime = struct {
     alloc: std.mem.Allocator,
+    /// Runs `cpu.matvec`'s row tasks.
+    io: std.Io,
     view: weights.View,
     binding: *const Binding,
     kernel: []f32,
@@ -415,7 +455,7 @@ pub const Runtime = struct {
     const BlockVectors = struct { n1: Pair, qb: []f32, kb: []f32, vb: []f32, ob: []f32, n2: Pair, ub: []f32, db: []f32 };
     const Vectors = struct { pre: Pair, layers: [blocks]BlockVectors, post: Pair };
 
-    pub fn init(alloc: std.mem.Allocator, view: weights.View, binding: *const Binding) !Runtime {
+    pub fn init(alloc: std.mem.Allocator, io: std.Io, view: weights.View, binding: *const Binding) !Runtime {
         var loaded: std.ArrayList([]f32) = .empty;
         defer loaded.deinit(alloc);
         errdefer for (loaded.items) |v| alloc.free(v);
@@ -449,7 +489,7 @@ pub const Runtime = struct {
         vectors.post = try l.pair(binding.post_norm);
         const kernel = try patchKernel(alloc, view, binding, patch_values);
         loaded.clearRetainingCapacity();
-        return .{ .alloc = alloc, .view = view, .binding = binding, .kernel = kernel, .vectors = vectors };
+        return .{ .alloc = alloc, .io = io, .view = view, .binding = binding, .kernel = kernel, .vectors = vectors };
     }
     pub fn deinit(self: *Runtime) void {
         const a = self.alloc;
@@ -496,7 +536,7 @@ pub const Runtime = struct {
         defer a.free(up);
         const rope = try a.alloc(f32, n * rope_pairs * 2);
         defer a.free(rope);
-        const scratch = try a.alloc(f32, @max(ffn, merged_width) + 4 * hidden);
+        const scratch = try a.alloc(f32, cpu.matvecScratch(@max(ffn, merged_width)) + 4 * hidden);
         defer a.free(scratch);
         const scores = try a.alloc(f64, n);
         defer a.free(scores);
@@ -506,7 +546,7 @@ pub const Runtime = struct {
         const gathered = up[0 .. n * patch_values];
         for (0..n) |r| @memcpy(gathered[r * patch_values ..][0..patch_values], patches.values[@as(usize, layout.order[r]) * patch_values ..][0..patch_values]);
         const kernel: cpu.Matrix = .{ .encoding = 0, .rows = hidden, .columns = patch_values, .bytes = std.mem.sliceAsBytes(self.kernel) };
-        try rowsTimes(kernel, gathered, n, x, null, scratch);
+        try rowsTimes(self.io, kernel, gathered, n, x, null, scratch);
         try positionRows(self.view, self.binding.position_embedding, grid, layout, h, scratch);
         for (x, h) |*e, p| e.* += p;
         const vec = self.vectors;
@@ -514,9 +554,9 @@ pub const Runtime = struct {
 
         for (self.binding.layers[0..block_count], vec.layers[0..block_count], 0..) |layer, lv, il| {
             for (0..n) |t| qwen3vl.layerNormEpsilon(x[t * hidden ..][0..hidden], h[t * hidden ..][0..hidden], lv.n1.weight, lv.n1.bias, norm_epsilon);
-            try rowsTimes(try self.view.matrix(layer.query.weight), h, n, q, lv.qb, scratch);
-            try rowsTimes(try self.view.matrix(layer.key.weight), h, n, k, lv.kb, scratch);
-            try rowsTimes(try self.view.matrix(layer.value.weight), h, n, v, lv.vb, scratch);
+            try rowsTimes(self.io, try self.view.matrix(layer.query.weight), h, n, q, lv.qb, scratch);
+            try rowsTimes(self.io, try self.view.matrix(layer.key.weight), h, n, k, lv.kb, scratch);
+            try rowsTimes(self.io, try self.view.matrix(layer.value.weight), h, n, v, lv.vb, scratch);
             for (0..n) |r| {
                 const table = rope[r * rope_pairs * 2 ..][0 .. rope_pairs * 2];
                 for (0..heads) |head| {
@@ -527,13 +567,13 @@ pub const Runtime = struct {
             if (isGlobal(il))
                 attention(q, k, v, attn, .{ .begin = 0, .count = @intCast(n) }, scores)
             else for (layout.windows) |w| attention(q, k, v, attn, w, scores);
-            try rowsTimes(try self.view.matrix(layer.output.weight), attn, n, h, lv.ob, scratch);
+            try rowsTimes(self.io, try self.view.matrix(layer.output.weight), attn, n, h, lv.ob, scratch);
             for (x, h) |*e, r| e.* += r;
             for (0..n) |t| qwen3vl.layerNormEpsilon(x[t * hidden ..][0..hidden], h[t * hidden ..][0..hidden], lv.n2.weight, lv.n2.bias, norm_epsilon);
             const u = up[0 .. n * ffn];
-            try rowsTimes(try self.view.matrix(layer.up.weight), h, n, u, lv.ub, scratch);
+            try rowsTimes(self.io, try self.view.matrix(layer.up.weight), h, n, u, lv.ub, scratch);
             for (u) |*e| e.* = cpu.geluErf(e.*);
-            try rowsTimes(try self.view.matrix(layer.down.weight), u, n, h, lv.db, scratch);
+            try rowsTimes(self.io, try self.view.matrix(layer.down.weight), u, n, h, lv.db, scratch);
             for (x, h) |*e, r| e.* += r;
         }
         const out = switch (result) {
@@ -549,11 +589,11 @@ pub const Runtime = struct {
         try shuffle(h, grid, layout, merged);
         const mid = up[tokens * merged_width ..][0 .. tokens * adapter_width];
         const mid2 = up[tokens * (merged_width + adapter_width) ..][0 .. tokens * adapter_width];
-        try rowsTimes(try self.view.matrix(self.binding.adapter[0]), merged, tokens, mid, null, scratch);
+        try rowsTimes(self.io, try self.view.matrix(self.binding.adapter[0]), merged, tokens, mid, null, scratch);
         for (mid) |*e| e.* = cpu.geluErf(e.*);
-        try rowsTimes(try self.view.matrix(self.binding.adapter[1]), mid, tokens, mid2, null, scratch);
+        try rowsTimes(self.io, try self.view.matrix(self.binding.adapter[1]), mid, tokens, mid2, null, scratch);
         for (mid2) |*e| e.* = cpu.geluErf(e.*);
-        try rowsTimes(try self.view.matrix(self.binding.adapter[2]), mid2, tokens, out[0 .. tokens * output_width], null, scratch);
+        try rowsTimes(self.io, try self.view.matrix(self.binding.adapter[2]), mid2, tokens, out[0 .. tokens * output_width], null, scratch);
     }
 };
 

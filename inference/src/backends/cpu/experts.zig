@@ -101,7 +101,10 @@ pub const Ffn = struct {
 /// (g, u) the halves of gate_up[e_s] · input, summed in F64 over the slots.
 /// `scratch` needs `spec.scratchLen()` floats and `accumulator` one F64
 /// per output; all slices are borrowed and must not overlap the outputs.
-pub fn ffn(spec: Ffn, input: []const f32, indices: []const u32, weights: []const f32, output: []f32, scratch: []f32, accumulator: []f64) Error!void {
+/// Each expert's matvecs split their rows across `io` tasks as far as the
+/// scratch past `scratchLen() - max(columns)` holds decode rows
+/// (`cpu.matvecScratch`); the slots stay in order, so the F64 sum does too.
+pub fn ffn(io: std.Io, spec: Ffn, input: []const f32, indices: []const u32, weights: []const f32, output: []f32, scratch: []f32, accumulator: []f64) Error!void {
     const gu = spec.gate_up;
     const down = spec.down;
     _ = try gu.expertBytes();
@@ -120,9 +123,9 @@ pub fn ffn(spec: Ffn, input: []const f32, indices: []const u32, weights: []const
     const acc = accumulator[0..output.len];
     @memset(acc, 0);
     for (indices, weights) |e, w| {
-        try cpu.matvec(try gu.expert(e), input, gate_up_row, decode);
+        try cpu.matvec(io, try gu.expert(e), input, gate_up_row, decode);
         for (hidden, gate_up_row[0..ff], gate_up_row[ff..]) |*h, g, u| h.* = vector.gelu(g) * u;
-        try cpu.matvec(try down.expert(e), hidden, projected, decode);
+        try cpu.matvec(io, try down.expert(e), hidden, projected, decode);
         const scale: f64 = if (spec.down_scale) |s| s[e] else 1;
         for (acc, projected) |*a, y| a.* += @as(f64, w) * (scale * @as(f64, y));
     }
@@ -170,7 +173,7 @@ test "expert slices index the tensor by expert and reject partial tensors" {
     try std.testing.expectEqual(@as(usize, 32), second.bytes.len);
     var output: [2]f32 = undefined;
     var scratch: [4]f32 = undefined;
-    try cpu.matvec(second, &.{ 1, 0, 0, 0 }, &output, &scratch);
+    try cpu.matvec(std.testing.io, second, &.{ 1, 0, 0, 0 }, &output, &scratch);
     try std.testing.expectEqualSlices(f32, &.{ 8, 12 }, &output);
     try std.testing.expectError(error.InvalidExpert, tensor.expert(3));
     var bad = tensor;
@@ -199,15 +202,15 @@ test "gathered FFN weights, scales, and sums the selected experts" {
     var scratch: [16]f32 = undefined;
     var acc: [2]f64 = undefined;
     // input (2, 3): expert 0 hidden = gelu(2)·3, expert 1 hidden = gelu(3)·2.
-    try ffn(spec, &.{ 2, 3 }, &.{ 0, 1 }, &.{ 0.25, 0.75 }, &output, &scratch, &acc);
+    try ffn(std.testing.io, spec, &.{ 2, 3 }, &.{ 0, 1 }, &.{ 0.25, 0.75 }, &output, &scratch, &acc);
     const h0: f64 = @as(f64, vector.gelu(2)) * 3;
     const h1: f64 = @as(f64, vector.gelu(3)) * 2;
     try std.testing.expectApproxEqRel(@as(f32, @floatCast(0.25 * h0 * 1 + 0.75 * 0.5 * h1 * 3)), output[0], 1e-6);
     try std.testing.expectApproxEqRel(@as(f32, @floatCast(0.25 * h0 * 2 + 0.75 * 0.5 * h1 * 4)), output[1], 1e-6);
-    try std.testing.expectError(error.InvalidExpert, ffn(spec, &.{ 2, 3 }, &.{2}, &.{1}, &output, &scratch, &acc));
-    try std.testing.expectError(error.ScratchTooSmall, ffn(spec, &.{ 2, 3 }, &.{0}, &.{1}, &output, scratch[0..4], &acc));
-    try std.testing.expectError(error.NonFiniteWeight, ffn(spec, &.{ 2, 3 }, &.{0}, &.{std.math.inf(f32)}, &output, &scratch, &acc));
+    try std.testing.expectError(error.InvalidExpert, ffn(std.testing.io, spec, &.{ 2, 3 }, &.{2}, &.{1}, &output, &scratch, &acc));
+    try std.testing.expectError(error.ScratchTooSmall, ffn(std.testing.io, spec, &.{ 2, 3 }, &.{0}, &.{1}, &output, scratch[0..4], &acc));
+    try std.testing.expectError(error.NonFiniteWeight, ffn(std.testing.io, spec, &.{ 2, 3 }, &.{0}, &.{std.math.inf(f32)}, &output, &scratch, &acc));
     var bad = spec;
     bad.down_scale = &.{1};
-    try std.testing.expectError(error.InvalidShape, ffn(bad, &.{ 2, 3 }, &.{0}, &.{1}, &output, &scratch, &acc));
+    try std.testing.expectError(error.InvalidShape, ffn(std.testing.io, bad, &.{ 2, 3 }, &.{0}, &.{1}, &output, &scratch, &acc));
 }

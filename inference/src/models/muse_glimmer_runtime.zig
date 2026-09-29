@@ -80,9 +80,11 @@ const Draft = struct {
     mixed: []f32,
     gate: []f32,
     up: []f32,
-    /// The widest matvec scratch: the encoder's `hidden_width` input.
+    /// The widest matvec scratch, a decode row per task: the encoder's `hidden_width` input.
     row: []f32,
     logits: []f32,
+    /// The runtime's, set with it.
+    io: std.Io,
 };
 
 /// The target layer whose input residual is kept at capture slot `index`,
@@ -93,6 +95,8 @@ fn targetSlot(index: usize) ?usize {
 }
 
 pub const Runtime = struct {
+    /// Runs `cpu.matvec`'s row tasks; `row` holds a decode row per task.
+    io: std.Io,
     storage: std.heap.ArenaAllocator,
     state: session.Session,
     view: weights.View,
@@ -113,7 +117,7 @@ pub const Runtime = struct {
     mixed_out: []f32,
     attention_scratch: []f64,
 
-    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
+    pub fn init(gpa: std.mem.Allocator, io: std.Io, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
         const has_draft = draft and binding.draft != null;
         var layouts: [model.layer_count + dflash.block_count]session.Layout = undefined;
         for (layouts[0..model.layer_count]) |*layout| layout.* = .{ .attention = .{ .key_row = model.kv_width, .value_row = model.kv_width } };
@@ -133,7 +137,7 @@ pub const Runtime = struct {
         inline for (.{ "q", "attention_gate", "mixed_out" }) |field| @field(result, field) = try a.alloc(f32, model.query_width);
         inline for (.{ "k", "v" }) |field| @field(result, field) = try a.alloc(f32, model.kv_width);
         // The matvec decode row holds the widest row any projection decodes.
-        result.row = try a.alloc(f32, @max(model.feed_forward, model.embedding));
+        result.row = try a.alloc(f32, cpu.matvecScratch(@max(model.feed_forward, model.embedding)));
         result.attention_scratch = try a.alloc(f64, capacity);
         result.output_norm = try view.vector(a, binding.output_norm);
         result.constants = try a.alloc(LayerConstants, model.layer_count);
@@ -151,6 +155,8 @@ pub const Runtime = struct {
         result.storage = storage;
         result.state = state;
         result.view = view;
+        result.io = io;
+        if (result.draft) |*d| d.io = io;
         result.binding = binding;
         return result;
     }
@@ -171,7 +177,7 @@ pub const Runtime = struct {
         result.mixed = try a.alloc(f32, dflash.query_width);
         result.gate = try a.alloc(f32, dflash.feed_forward);
         result.up = try a.alloc(f32, dflash.feed_forward);
-        result.row = try a.alloc(f32, dflash.hidden_width);
+        result.row = try a.alloc(f32, cpu.matvecScratch(dflash.hidden_width));
         result.logits = try a.alloc(f32, model.vocabulary);
         result.encoder_norm = try binding.view.vector(a, binding.encoder_norm);
         result.output_norm = try binding.view.vector(a, binding.output_norm);
@@ -197,7 +203,7 @@ pub const Runtime = struct {
     }
 
     fn mm(self: *Runtime, tensor: *const Tensor, input: []const f32, output: []f32) !void {
-        try cpu.matvec(try self.view.matrix(tensor), input, output, self.row);
+        try cpu.matvec(self.io, try self.view.matrix(tensor), input, output, self.row);
     }
 
     /// `rms(input) * weight` at the given epsilon; the weights are stored
@@ -397,7 +403,7 @@ pub const Runtime = struct {
     // --- the DFlash drafter (MODL-20) ----------------------------------
 
     fn draftMm(d: *Draft, tensor: *const Tensor, input: []const f32, output: []f32) !void {
-        try cpu.matvec(try d.binding.view.matrix(tensor), input, output, d.row);
+        try cpu.matvec(d.io, try d.binding.view.matrix(tensor), input, output, d.row);
     }
 
     /// Five target residuals to one feature: `enc.output_norm(fc(row))`.
@@ -635,7 +641,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
         fn check(alloc: std.mem.Allocator) !void {
             const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
             const file = [_]u8{ 0, 0, 0, 0 };
-            var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, emptyBinding(&tensor), 1, false, false);
+            var runtime = try Runtime.init(alloc, std.testing.io, .{ .file = &file, .data_offset = 0 }, emptyBinding(&tensor), 1, false, false);
             defer runtime.deinit();
             try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
             try std.testing.expectEqual(.ready, runtime.state.status);
@@ -672,16 +678,18 @@ test "a bound drafter adds five layouts after the language model's" {
     companion.output_norm = &tensor;
     for (&companion.layers) |*layer| layer.* = .{ .attention_norm = &tensor, .query = &tensor, .query_norm = &tensor, .key = &tensor, .key_norm = &tensor, .value = &tensor, .output = &tensor, .ffn_norm = &tensor, .ffn_gate = &tensor, .ffn_up = &tensor, .ffn_down = &tensor };
     binding.draft = companion;
-    var runtime = try Runtime.init(std.testing.allocator, .{ .file = &file, .data_offset = 0 }, binding, 4, true, true);
+    var runtime = try Runtime.init(std.testing.allocator, std.testing.io, .{ .file = &file, .data_offset = 0 }, binding, 4, true, true);
     defer runtime.deinit();
     try std.testing.expectEqual(model.layer_count + dflash.block_count, runtime.state.layers.len);
     try std.testing.expect(runtime.drafter() != null);
     try std.testing.expectEqual(@as(usize, dflash.hidden_width), runtime.drafter().?.hidden);
-    // The workspace the memory record cites.
-    try std.testing.expectEqual(@as(usize, 2_309_376), runtime.drafter().?.bytes());
+    // The workspace the memory record cites, plus a decode row per core past
+    // the first (`cpu.matvec`'s tasks).
+    const extra_rows = cpu.matvecScratch(dflash.hidden_width) - dflash.hidden_width;
+    try std.testing.expectEqual(@as(usize, 2_309_376) + extra_rows * @sizeOf(f32), runtime.drafter().?.bytes());
     // A drafter request without a bound companion keeps the language model
     // layout and reports no drafter.
-    var plain = try Runtime.init(std.testing.allocator, .{ .file = &file, .data_offset = 0 }, emptyBinding(&tensor), 4, true, true);
+    var plain = try Runtime.init(std.testing.allocator, std.testing.io, .{ .file = &file, .data_offset = 0 }, emptyBinding(&tensor), 4, true, true);
     defer plain.deinit();
     try std.testing.expectEqual(model.layer_count, plain.state.layers.len);
     try std.testing.expect(plain.drafter() == null);

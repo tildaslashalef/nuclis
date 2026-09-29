@@ -47,25 +47,25 @@ pub const Projector = struct {
     /// Binds `doc` and builds the executor in place: `self` must not move
     /// afterwards (the executor borrows the binding). `backend` selects
     /// Metal; the mapped file must outlive the projector.
-    pub fn init(self: *Projector, alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, backend: ?*metal.Backend) !void {
+    pub fn init(self: *Projector, alloc: std.mem.Allocator, io: std.Io, doc: *const gguf.Document, view: weights.View, backend: ?*metal.Backend) !void {
         if (muse.matches(doc)) {
             self.family = .{ .muse = try muse.bind(alloc, doc) };
             self.min_tokens = muse.min_tokens;
             self.max_tokens = muse.max_tokens;
             const binding = &self.family.muse;
-            self.exec = if (backend) |b| .{ .muse_metal = try muse.Plan.init(alloc, b, view, binding) } else .{ .muse_cpu = try muse.Runtime.init(alloc, view, binding) };
+            self.exec = if (backend) |b| .{ .muse_metal = try muse.Plan.init(alloc, b, view, binding) } else .{ .muse_cpu = try muse.Runtime.init(alloc, io, view, binding) };
         } else if (gemma4.kindOf(doc) != null) {
             self.family = .{ .gemma4 = try gemma4.bind(alloc, doc) };
             self.min_tokens = gemma4.min_tokens;
             self.max_tokens = gemma4.max_tokens;
             const binding = &self.family.gemma4;
-            self.exec = if (backend) |b| .{ .gemma4_metal = try gemma4.Plan.init(alloc, b, view, binding) } else .{ .gemma4_cpu = try gemma4.Runtime.init(alloc, view, binding) };
+            self.exec = if (backend) |b| .{ .gemma4_metal = try gemma4.Plan.init(alloc, b, view, binding) } else .{ .gemma4_cpu = try gemma4.Runtime.init(alloc, io, view, binding) };
         } else {
             self.family = .{ .qwen3vl = try qwen3vl.bind(alloc, doc) };
             self.min_tokens = qwen3vl.min_tokens;
             self.max_tokens = qwen3vl.max_tokens;
             const binding = &self.family.qwen3vl;
-            self.exec = if (backend) |b| .{ .qwen3vl_metal = try qwen3vl.Plan.init(alloc, b, view, binding) } else .{ .qwen3vl_cpu = try qwen3vl.Runtime.init(alloc, view, binding) };
+            self.exec = if (backend) |b| .{ .qwen3vl_metal = try qwen3vl.Plan.init(alloc, b, view, binding) } else .{ .qwen3vl_cpu = try qwen3vl.Runtime.init(alloc, io, view, binding) };
         }
     }
     pub fn deinit(self: *Projector) void {

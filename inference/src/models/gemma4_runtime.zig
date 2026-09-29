@@ -143,6 +143,8 @@ const Head = struct {
 pub const Runtime = struct {
     /// For an image span's per-call rows; the workspace lives in `storage`.
     gpa: std.mem.Allocator,
+    /// Runs `cpu.matvec`'s row tasks; `row` holds a decode row per task.
+    io: std.Io,
     storage: std.heap.ArenaAllocator,
     state: session.Session,
     view: weights.View,
@@ -178,7 +180,7 @@ pub const Runtime = struct {
     draft: ?Head,
     has_draft: bool,
 
-    pub fn init(gpa: std.mem.Allocator, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
+    pub fn init(gpa: std.mem.Allocator, io: std.Io, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
         const config = binding.config;
         var layouts: [model.max_layers]session.Layout = undefined;
         for (binding.active()[0..config.kv_layers], layouts[0..config.kv_layers]) |layer, *layout| {
@@ -208,8 +210,8 @@ pub const Runtime = struct {
         // The matvec decode row must hold the widest row any projection
         // decodes: the global attention output's 16 × 512 columns, the FFN
         // down projection's, or the embedding width (the expert router).
-        result.row = try a.alloc(f32, @max(@max(config.feed_forward, config.embedding), model.Kind.global.queryWidth()));
-        result.expert_scratch = try a.alloc(f32, 2 * experts.feed_forward + experts.feed_forward + config.embedding + @max(config.embedding, experts.feed_forward));
+        result.row = try a.alloc(f32, cpu.matvecScratch(@max(@max(config.feed_forward, config.embedding), model.Kind.global.queryWidth())));
+        result.expert_scratch = try a.alloc(f32, 2 * experts.feed_forward + experts.feed_forward + config.embedding + cpu.matvecScratch(@max(config.embedding, experts.feed_forward)));
         result.accumulator = try a.alloc(f64, config.embedding);
         const w = config.per_layer_input;
         result.per_layer_inputs = try a.alloc(f32, w * config.layer_count);
@@ -245,6 +247,7 @@ pub const Runtime = struct {
         result.storage = storage;
         result.state = state;
         result.view = view;
+        result.io = io;
         result.binding = binding;
         return result;
     }
@@ -260,7 +263,7 @@ pub const Runtime = struct {
     }
 
     fn mm(self: *Runtime, tensor: *const Tensor, input: []const f32, output: []f32) !void {
-        try cpu.matvec(try self.view.matrix(tensor), input, output, self.row);
+        try cpu.matvec(self.io, try self.view.matrix(tensor), input, output, self.row);
     }
 
     /// `rms(input) * weight`, the stored-raw weight convention of this checkpoint.
@@ -382,7 +385,7 @@ pub const Runtime = struct {
                 .down = try self.view.expertMatrix(experts.down),
                 .down_scale = ec.down_scale,
             };
-            try cpu.experts.ffn(spec, self.normalized, self.indices, self.route_weights, self.expert_out, self.expert_scratch, self.accumulator);
+            try cpu.experts.ffn(self.io, spec, self.normalized, self.indices, self.route_weights, self.expert_out, self.expert_scratch, self.accumulator);
             try norm(self.expert_out, self.expert_out, ec.post_ffn_norm_2);
             for (self.projected, self.expert_out) |*p, e| p.* += e;
         }
@@ -613,7 +616,7 @@ pub const Runtime = struct {
     /// A head projection: the head's own file is the weight source, unlike
     /// the target's (`self.mm`).
     fn headMm(self: *Runtime, head: *Head, tensor: *const Tensor, input: []const f32, output: []f32) !void {
-        try cpu.matvec(try head.binding.view.matrix(tensor), input, output, self.row);
+        try cpu.matvec(self.io, try head.binding.view.matrix(tensor), input, output, self.row);
     }
 
     fn headAttention(self: *Runtime, head: *Head, layer: assistant.Layer, constants: HeadConstants, position: usize) !void {
@@ -800,7 +803,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
                 const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
                 const scalar: Tensor = .{ .name = "scale", .dimensions = &.{1}, .encoding_id = 0, .offset = 0, .elements = 1, .bytes = 4 };
                 const file = [_]u8{ 0, 0, 0, 0 };
-                var runtime = try Runtime.init(alloc, .{ .file = &file, .data_offset = 0 }, emptyBinding(cfg, &tensor, &scalar), 1, false, false);
+                var runtime = try Runtime.init(alloc, std.testing.io, .{ .file = &file, .data_offset = 0 }, emptyBinding(cfg, &tensor, &scalar), 1, false, false);
                 defer runtime.deinit();
                 try std.testing.expectError(error.InvalidTokenId, runtime.step(model.vocabulary, null, null));
                 try std.testing.expectEqual(.ready, runtime.state.status);

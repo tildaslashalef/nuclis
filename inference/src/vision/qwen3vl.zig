@@ -340,6 +340,8 @@ pub fn scratchFloats(n: usize) usize {
 /// accumulation), LayerNorm and attention in F64, GELU the tanh form.
 pub const Runtime = struct {
     alloc: std.mem.Allocator,
+    /// Runs `cpu.matvec`'s row tasks.
+    io: std.Io,
     view: weights.View,
     binding: *const Binding,
     kernel: []f32,
@@ -348,7 +350,7 @@ pub const Runtime = struct {
     const BlockVectors = struct { n1w: []f32, n1b: []f32, qkvb: []f32, ob: []f32, n2w: []f32, n2b: []f32, ub: []f32, db: []f32 };
     const Vectors = struct { patch_bias: []f32, layers: [blocks]BlockVectors, post_w: []f32, post_b: []f32, m0b: []f32, m2b: []f32 };
 
-    pub fn init(alloc: std.mem.Allocator, view: weights.View, binding: *const Binding) !Runtime {
+    pub fn init(alloc: std.mem.Allocator, io: std.Io, view: weights.View, binding: *const Binding) !Runtime {
         var arena_list: std.ArrayList([]f32) = .empty;
         defer arena_list.deinit(alloc);
         errdefer for (arena_list.items) |v| alloc.free(v);
@@ -379,7 +381,7 @@ pub const Runtime = struct {
         const kernel = try patchKernel(alloc, view, binding);
         errdefer alloc.free(kernel);
         arena_list.clearRetainingCapacity();
-        return .{ .alloc = alloc, .view = view, .binding = binding, .kernel = kernel, .vectors = vectors };
+        return .{ .alloc = alloc, .io = io, .view = view, .binding = binding, .kernel = kernel, .vectors = vectors };
     }
     pub fn deinit(self: *Runtime) void {
         const a = self.alloc;
@@ -409,7 +411,7 @@ pub const Runtime = struct {
         defer a.free(up);
         const rope = try a.alloc(f32, n * rope_pairs * 2);
         defer a.free(rope);
-        const scratch = try a.alloc(f32, @max(merged_width, ffn) + 4 * hidden);
+        const scratch = try a.alloc(f32, cpu.matvecScratch(@max(merged_width, ffn)) + 4 * hidden);
         defer a.free(scratch);
         const scores = try a.alloc(f64, n);
         defer a.free(scores);
@@ -418,7 +420,7 @@ pub const Runtime = struct {
         // Patch embedding, then the interpolated learned positions.
         const kernel_matrix: cpu.Matrix = .{ .encoding = 0, .rows = hidden, .columns = patch_values, .bytes = std.mem.sliceAsBytes(self.kernel) };
         for (0..n) |t| {
-            try cpu.matvec(kernel_matrix, patches.values[t * patch_values ..][0..patch_values], x[t * hidden ..][0..hidden], scratch);
+            try cpu.matvec(self.io, kernel_matrix, patches.values[t * patch_values ..][0..patch_values], x[t * hidden ..][0..hidden], scratch);
             for (x[t * hidden ..][0..hidden], self.vectors.patch_bias) |*v, b| v.* += b;
         }
         try positionRows(self.view, self.binding.position_embedding, grid, h, scratch);
@@ -429,7 +431,7 @@ pub const Runtime = struct {
             const qkv_matrix = try self.view.matrix(layer.qkv.weight);
             for (0..n) |t| {
                 const row = qkv[t * qkv_width ..][0..qkv_width];
-                try cpu.matvec(qkv_matrix, h[t * hidden ..][0..hidden], row, scratch);
+                try cpu.matvec(self.io, qkv_matrix, h[t * hidden ..][0..hidden], row, scratch);
                 for (row, vec.qkvb) |*v, b| v.* += b;
                 const table = rope[t * rope_pairs * 2 ..][0 .. rope_pairs * 2];
                 for (0..heads) |head| {
@@ -441,7 +443,7 @@ pub const Runtime = struct {
             const out_matrix = try self.view.matrix(layer.output.weight);
             for (0..n) |t| {
                 const o = h[t * hidden ..][0..hidden];
-                try cpu.matvec(out_matrix, attn[t * hidden ..][0..hidden], o, scratch);
+                try cpu.matvec(self.io, out_matrix, attn[t * hidden ..][0..hidden], o, scratch);
                 for (x[t * hidden ..][0..hidden], o, vec.ob) |*v, r, b| v.* += r + b;
             }
             const up_matrix = try self.view.matrix(layer.up.weight);
@@ -449,10 +451,10 @@ pub const Runtime = struct {
             for (0..n) |t| {
                 layerNorm(x[t * hidden ..][0..hidden], h[t * hidden ..][0..hidden], vec.n2w, vec.n2b);
                 const u = up[t * ffn ..][0..ffn];
-                try cpu.matvec(up_matrix, h[t * hidden ..][0..hidden], u, scratch);
+                try cpu.matvec(self.io, up_matrix, h[t * hidden ..][0..hidden], u, scratch);
                 for (u, vec.ub) |*v, b| v.* = cpu.gelu(v.* + b);
                 const d = h[t * hidden ..][0..hidden];
-                try cpu.matvec(down_matrix, u, d, scratch);
+                try cpu.matvec(self.io, down_matrix, u, d, scratch);
                 for (x[t * hidden ..][0..hidden], d, vec.db) |*v, r, b| v.* += r + b;
             }
         }
@@ -463,10 +465,10 @@ pub const Runtime = struct {
         const m2 = try self.view.matrix(self.binding.merger_2.weight);
         const mid = up[0..merged_width];
         for (0..grid.tokens()) |g| {
-            try cpu.matvec(m0, h[g * merged_width ..][0..merged_width], mid, scratch);
+            try cpu.matvec(self.io, m0, h[g * merged_width ..][0..merged_width], mid, scratch);
             for (mid, self.vectors.m0b) |*v, b| v.* = cpu.gelu(v.* + b);
             const row = out[g * output_width ..][0..output_width];
-            try cpu.matvec(m2, mid, row, scratch);
+            try cpu.matvec(self.io, m2, mid, row, scratch);
             for (row, self.vectors.m2b) |*v, b| v.* += b;
         }
     }

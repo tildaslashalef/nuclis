@@ -473,7 +473,9 @@ binds the companion (metadata, tensors, the mask token, the target layers);
 it consumes (`prefill`/`verify`/`verifyGreedy` with `hidden`, the DFlash
 form of the row data the drafter's `commit` consumes), opens five draft
 attention layouts when a drafter is bound, and runs the encoder and the
-block on the CPU. The drafter's workspace is 2,309,376 bytes; its cache is
+block on the CPU. The drafter's workspace is 2,309,376 bytes plus one
+133,120-byte decode row per core past the first, which `cpu.matvec`'s row
+tasks use (3,773,696 bytes on the 12-core M4 Pro); its cache is
 part of the session (5 × 2 × 1024 values per position; full capacity, as the
 language model's sliding layers are, so 1.34 GB F32 at 32,768 tokens and
 half that with the F16 cache).

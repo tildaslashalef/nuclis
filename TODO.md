@@ -115,6 +115,17 @@ Base: `5b185ad`
   `.zig-cache/gates/trace/*-trace-cpu/` to `.zig-cache/gates/kern19-before/`
   for the byte comparison.
 
+- **Before (measured 2026-09-29 at `b5c872c`, ReleaseFast, nothing else
+  running).** The full CPU tier was aborted after 20 min on its first gate
+  (user: too slow to be worth it); the seven trace gates ran instead,
+  since only they write files a byte comparison can use. Times:
+  `muse-draft-trace-cpu` 166.9 s, `muse-trace-cpu` 83.2 s,
+  `qwen38-draft-trace-cpu` 55.3 s, `bonsai-trace-cpu` 50.5 s,
+  `gemma4-e4b-draft-trace-cpu` 14.8 s, `gemma4-e4b-trace-cpu` 14.3 s,
+  `gemma4-26b-a4b-trace-cpu` 12.4 s (about 6.6 min). Their directories
+  are in `.zig-cache/gates/kern19-before/`. The generation, speculative,
+  and vision CPU gates check themselves against fixtures; they only have
+  to pass after.
 - **Design (read 2026-09-29 while the "before" run went).** Every CPU
   forward reaches the reference `cpu.matvec` (`backends/cpu/root.zig`), a
   serial loop over rows, each row decoded into `scratch` and summed in F64
