@@ -41,8 +41,8 @@ full set per model, so the Gemma family is checked three times; 12 min
 for `make verify`, hours for `make verify-cpu`) and wants the gates
 re-derived from what they must protect, plus a CPU reference fast enough
 to use while debugging. REPO-20 session 1 is done except the CPU
-tier's baseline times (running); next is the user's decision on the
-proposed gate set in the REPO-20 section, then session 2.
+tier's baseline times (running); the gate set is approved, and session
+2 applies it (sessions swapped: the threaded reference is session 3).
 
 ## Order
 
@@ -65,7 +65,7 @@ Goal (user, 2026-09-29): debugging and verification runs short enough to
 use freely. Targets: `make verify` ≤ 4 min (704 s measured), the CPU
 tier ≤ 30 min (hours today), one family's CPU trace ≤ 1 min.
 
-### Session 1 — measured, matrix written; **the proposal awaits the user's approval**
+### Session 1 — measured, matrix written; the set approved
 
 Delivered: `scripts/gates.py` stamps every output line of a gate with
 its time since launch (`timeline` in `--json`, `--timeline` to print)
@@ -77,7 +77,9 @@ protects`. Baseline JSON: `.zig-cache/gates/baseline/verify.json`
 (the CPU tier, running at the end of session 1; copy its per-gate times
 into the section above when it lands, and into the log on close).
 
-Proposed gate set (session 3 applies it once approved):
+Gate set approved by the user 2026-09-29, with three additions and the
+sessions swapped (the gate set first: it pays on every unit; the threaded
+reference helps only the rarely run CPU tier):
 
 - **`verify`** (fast, every unit touching the inference stack), 32
   gates: `qwen38-{trace-f32,trace-f16,generation-metal,
@@ -122,7 +124,30 @@ unified projector, the 26B-A4B's assistant head, or PQ2_0 beyond
 fixtures; Metal BF16 numerics and `layerNorm`/`addBiasRows` have no
 model-free test; `engine.zig` has no unit tests.
 
-### Session 2 — a threaded CPU reference, bit-identical
+### Session 2 — apply the approved set
+
+- The four tool changes above (`inference/generation-check.zig`
+  `museDraftTrace`, `gemmaDraftTrace`, `checkDraft`,
+  `checkChunkedPrefill`, a Bonsai flag; `src/eval.zig` accepting
+  `--chunks` below the reference's and comparing `chunk_ppl[chunks-1]`,
+  with a unit test), the manifest (`gates.json`: tiers, the new
+  `verify-release` tier in `scripts/gates.py` `TIERS`, the globs), the
+  Makefile (`verify-release`, `release` running it, help), and
+  `docs/development.md § Gates` (tier table, counts, times),
+  `AGENTS.md` § Validation and definition of done (the tier rules).
+- The additions (model-free, in `inference/metal-check.zig`, so `make
+  check` protects what the moved gates covered by accident): an attention
+  fixture at the 12B QAT's geometry (16 query heads on one global KV head,
+  width 512: four wide-decode head groups per KV head); BF16 matvec and
+  matmul tiles against the CPU; `layerNorm` and `addBiasRows` against the
+  CPU.
+- Checks: every remaining gate passes; `make verify` and the CPU tier
+  timed against the targets; the log records before and after. If
+  `make verify` measures above 4 min, the next cut is the 70-token
+  stepped F32 reference inside `checkChunkedPrefill` (about 8 s per
+  27–30B file).
+
+### Session 3 — a threaded CPU reference, bit-identical
 
 - Split independent work across `Io` tasks without changing any sum's
   order, the pattern of `backends/cpu/dense.zig` (`std.Io.Group`,
@@ -137,20 +162,6 @@ model-free test; `engine.zig` has no unit tests.
   before (the session 1 baseline) and after per gate.
 - `make verify-cpu` once (this changes how the reference runs, not what
   it computes; the byte comparison is the evidence).
-
-### Session 3 — apply the approved set
-
-- The four tool changes above (`inference/generation-check.zig`
-  `museDraftTrace`, `gemmaDraftTrace`, `checkDraft`,
-  `checkChunkedPrefill`, a Bonsai flag; `src/eval.zig` accepting
-  `--chunks` below the reference's and comparing `chunk_ppl[chunks-1]`,
-  with a unit test), the manifest (`gates.json`: tiers, the new
-  `verify-release` tier in `scripts/gates.py` `TIERS`, the globs), the
-  Makefile (`verify-release`, `release` running it, help), and
-  `docs/development.md § Gates` (tier table, counts, times),
-  `AGENTS.md` § Validation and definition of done (the tier rules).
-- Checks: every remaining gate passes; `make verify` and the CPU tier
-  timed against the targets; the log records before and after.
 
 ## MODL-31 — Laya on Metal
 
