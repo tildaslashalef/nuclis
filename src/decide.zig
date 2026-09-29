@@ -3,7 +3,8 @@
 //! Jev-shaped request file, a questions file with states from flags, or one
 //! question inline. One state renders per question; several render ranked
 //! by the first question, the filter shape (one question over many states).
-//! `--json` writes one Jev response per state. docs/reference/laya.md.
+//! `--json` writes one Jev response per state: each answer's top level is
+//! exactly Jev's, extras under `nuclis`. docs/reference/laya.md.
 const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
@@ -588,12 +589,16 @@ fn writeAnswer(s: *std.json.Stringify, q: profile.Question, a: inference.decide.
         }
         try s.endObject();
     }
-    try s.objectField("confidence");
-    try s.write(profile.round4(c.confidence));
-    try s.objectField("answer_confidence");
-    try s.write(profile.round4(c.answer_confidence));
+    // Jev's fields at the top (a noul has no confidence there); the
+    // package's `answer_confidence` and the rest under `nuclis`.
+    if (q.kind != .noul) {
+        try s.objectField("confidence");
+        try s.write(profile.round4(c.confidence));
+    }
     try s.objectField("nuclis");
     try s.beginObject();
+    try s.objectField("answer_confidence");
+    try s.write(profile.round4(c.answer_confidence));
     try s.objectField("logits");
     try s.write(a.logits);
     try s.objectField("temperature");

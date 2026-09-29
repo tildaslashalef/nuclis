@@ -36,7 +36,9 @@ repository:
   tokenization, the model schedules, the CPU reference, the Metal backend,
   sampling, and speculative decoding;
 - **an evaluation CLI** (`src/`): `generate`, `bench`, `tokenize`, `eval`,
-  `inspect`, `validate`, `config`, and `model`;
+  `inspect`, `validate`, `config`, `model`, and `decide`, which answers
+  typed questions with a decision model (Laya) rather than a language
+  model (§5.9);
 - **an interactive agent** (`nuclis agent`): a terminal surface over the
   same engine with a bounded tool layer for small coding tasks in the
   working directory.
@@ -62,13 +64,16 @@ deferred (§10).
 | turn | in the agent: one user message and everything the model does until it answers |
 | step | in the agent: one completion request plus the execution of the tool calls it contains |
 | gate | a model-specific check in `gates.json`; workload: a benchmark in `workloads.json` |
+| decision model | an encoder with a typed-decision head (Laya) that scores a question's options about a state in one forward, with no decoding |
+| state, question | what a decision model reads (text, or JSON rendered as text) and what it answers: `choice` (one of named options), `score` (a level of an ordered scale), or `noul` (the probability a statement holds) |
 
 ## 3. Decisions
 
 | Decision | Reason |
 | --- | --- |
 | Zig owns loading, execution planning, tokenization, sampling, the CLI, and the agent; Objective-C exposes a C-compatible Metal interface behind opaque handles; Metal Shading Language implements kernels. | One language for semantics, one thin bridge for the platform, no framework between them. |
-| The Metal backend is the production backend; the CPU path is a reference, slow by design, never optimized. | A fast CPU backend is not a product need; an obviously correct oracle is. |
+| The Metal backend is the production backend; the CPU path is a reference, slow by design, never optimized. The one exception is the decision model's encoder, whose F32 CPU forward is threaded and vectorized (§5.9). | A fast CPU backend is not a product need for text generation; an obviously correct oracle is. A decision model is small enough, and useful enough without a GPU, that its CPU path is a product; its oracle is the reference package's F32 run. |
+| Decision checkpoints have their own catalogue table and registry kind; text commands refuse them by name. | They are directories of safetensors, run by another path; nothing that resolves a text model may pick one. |
 | Weights are memory-mapped, stay quantized, and are never requantized or expanded. | The 27B model fits only at about four bits; the file's arithmetic is what the checkpoint was validated for. |
 | One active session per process; weights are immutable and separate from session state. | Multiple sessions later must not copy weights. |
 | Session state is opaque and never rewound by truncating an attention position alone; rollback is snapshot/restore, and inside a speculative batch checkpoint/rewind. | Recurrent layers keep no history to truncate back to. |
@@ -103,6 +108,13 @@ defaults that a measurement set (the speculative switch and draft length).
 | `gemma-4-26b-a4b` | `gemma4` | `unsloth/gemma-4-26B-A4B-it-qat-GGUF` | the expert configuration, 8 of 128 experts per token |
 | `gemma-4-e4b-qat` | `gemma4` | `unsloth/gemma-4-E4B-it-qat-GGUF` | per-layer embeddings, 18 shared-KV layers; its own template revision (`gemma4_e`) |
 | `muse-glimmer-30b` | `muse_glimmer` | `unsloth/Muse-Glimmer-30B-GGUF` | dense; windowed and global attention; a DFlash draft companion |
+
+Decision checkpoints are pinned in a second table (`decision_entries`):
+repository, revision, the weights' SHA-256, and the support files by name.
+
+| Entry | Model | Artifact | Notes |
+| --- | --- | --- | --- |
+| `laya` | ModernBERT-large encoder, typed-decision head | `convaiinnovations/laya` `model.safetensors` (F16) and its support files | English; 512 tokens per sequence; the default `decide.model` |
 
 A file outside the catalogue whose architecture has an adapter is
 *runnable*: `config init --discover` registers it (the profile by template
@@ -254,10 +266,12 @@ One file, `~/.nuclis/nuclis.json`, with sections `engine` (model, backend,
 `ctx_size`, `kv_precision`), `generation` (`max_tokens`, `think`,
 `speculative`, `draft_length`, `image_max_tokens`, sampling overrides),
 `agent` (`think`,
-`fold_thinking`, `theme`, `instructions`, `thinking_budget`), and a `models` registry of named entries that
+`fold_thinking`, `theme`, `instructions`, `thinking_budget`), `decide`
+(`model`), and a `models` registry of named entries that
 locate a file (path, or repository and file with a pinned revision), name
 its companions, force a profile, and override any generation or agent key
-for that model only. Precedence is defaults < profile < file < registry
+for that model only; an entry of `kind` `decision` is a decision
+checkpoint. Precedence is defaults < profile < file < registry
 entry < flags; `null` in the file means the profile's value. An unknown
 key or an out-of-range value is a typed error naming the key. `bench`
 ignores the file's sampling and budget so a measurement is reproducible
@@ -268,6 +282,33 @@ projector's range, and `--image-max-tokens` on `generate` and `agent`
 overrides both.
 
 Read: [development.md § Configuration file](development.md#configuration-file).
+
+### 5.9 The decision path
+
+`inference.decide.Decider` opens a Laya checkpoint directory and answers
+questions about states, beside `Engine` and sharing nothing with it but
+the tokenizer's BPE and the safetensors loader.
+
+- The input contract, calibration, and answer fields **must** be the
+  reference package's (`laya` 0.3.20): question validation, option
+  rendering, structured values rendered as Python's `json.dumps`, the
+  sequence and its budgets (512 tokens; options, then the question text,
+  then the state), a list state cut at its head and any other at its
+  tail, temperatures clamped to [0.5, 5.0], answers rounded to 4 places.
+  Every question about every state is one sequence.
+- The tokenizer **must** reproduce the reference library's encoding of
+  the checkpoint's `tokenizer.json` (NFC, two added-token passes, the
+  GPT-2 split, byte-level BPE) and reject any other tokenizer shape by
+  name.
+- The CPU forward **must** match the reference's F32 run within relative
+  bounds (largest difference over largest value, and relative RMS, each
+  ≤ 1e-5 per stored stage; logits within 1e-4 of max(1, |logit|)); gates
+  `laya-vocabulary` and `laya-cpu`.
+- Host limits, never the caller's: 64 states, 32 questions, 64 options,
+  1 MiB per state. A cut state is flagged, never silent.
+- The Metal plan (MODL-31) must meet the same bounds against the CPU.
+
+Read: [reference/laya.md](reference/laya.md).
 
 ## 6. Command-line interface
 
@@ -284,6 +325,7 @@ nuclis validate --model <m> [--json]
 nuclis model pull (<name> | <owner/repo> --file <f>) [--revision <r>] [--role <role>] [--all] [--register] [--force] [--json]
 nuclis model inspect (<name> | <owner/repo> --file <f>) [--revision <r>] [--json]
 nuclis model ls [--json]
+nuclis decide (--request <file|-> | --questions <file> <states> | <inline questions> <states>) [--model <m>] [--truncate head|tail] [--uncalibrated] [--explain] [--json]
 nuclis config init [--discover [--dry-run]] [--json] | show [--json] | set <key> <value>
 nuclis completion fish|bash|zsh
 nuclis --help | <command> --help | --version
@@ -298,6 +340,7 @@ nuclis --help | <command> --help | --version
 | `inspect` | identity, architecture, dimensions, the encoding histogram, validated ranges |
 | `validate` | whether the file binds to its family's adapter, with the layer composition |
 | `model` | pull with digest verification and sidecars, list the artifacts under the root, judge a file at the four levels of §4 |
+| `decide` | typed questions about states through a decision checkpoint (`decide.model`, default `laya`): a Jev-shaped request (`questions`, `state` or `states`), a questions file with states from flags, or questions inline; one state renders each answer with its distribution, several render ranked by the first question; `--json` is one Jev response per state (answers with exactly Jev's fields, extras under `nuclis`), with load, tokenize, and encode timings |
 | `config` | write the file with every catalogue model registered (`--discover` adds runnable files the catalogue does not name), show effective values with their source layer, set one key |
 | `agent` | §7 |
 | `completion` | a thin script per shell: every Tab runs the hidden `nuclis __complete <words…>`, which answers from one command table (held to the parser and the help pages by tests) and the user's state: registered and catalogue models, the workspace's sessions, config keys and their values; paths go back to the shell; a failure completes nothing |

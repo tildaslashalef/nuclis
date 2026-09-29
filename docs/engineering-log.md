@@ -141,6 +141,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | TERM-13 | Exit keeps the transcript: the margin reset no longer homes the cursor onto the banner | 2026-09-27 |
 | APPS-18 | Shell completion answered by the binary (`nuclis completion fish\|bash\|zsh`, `__complete`); `make install` | 2026-09-27 |
 | MODL-32 | The Hub listing keeps its digests in ReleaseFast builds | 2026-09-29 |
+| MODL-30 | Laya on the CPU end to end: the oracle, `tokenizer.json`, ModernBERT and the decision head, `nuclis decide` | 2026-09-29 |
 
 ## Context
 
@@ -5754,3 +5755,99 @@ repository-id pulls by git blob rather than SHA-256.
 
 **Remaining.** No unit test catches the pattern: it is undefined
 behaviour the Debug test build does not show.
+
+## MODL-30 — Laya on the CPU end to end: the oracle, `tokenizer.json`, ModernBERT and the decision head, `nuclis decide` (2026-09-29)
+
+**Outcome.** Laya (`convaiinnovations/laya`, the English root checkpoint,
+commit `55cf4c4e`) runs in nuclis on the CPU behind `nuclis decide`, in
+three sessions ([reference/laya.md](reference/laya.md)):
+
+- *The oracle and the tokenizer.* `scripts/laya-reference.py` runs the
+  `laya` 0.3.20 package (PyTorch 2.14.0, Transformers 5.17.0, Tokenizers
+  0.23.2) in F32 on the CPU from a staged copy of the pulled set and writes
+  `inference/src/models/fixtures/laya/` (989 KB): 8 requests with ids,
+  markers, logits, answers, usage, the texts tokenized, and residual rows
+  at seven stages in `activations.f32`, plus 32 tokenizer texts.
+  `inference/src/tokenizer/hf_json.zig` loads a Hugging Face
+  `tokenizer.json` (byte-level BPE; other shapes rejected by name) into the
+  shared `Vocabulary` and encodes it as that library does: two
+  leftmost-longest added-token passes (raw, then after NFC) with `lstrip`,
+  the GPT-2 split (`gpt2.zig`), and `bpe.zig`. NFC is `nfc.zig` over
+  `nfc_table.zig`, generated from UCD 17.0.0 by `scripts/tokenizer-nfc.py`.
+- *The encoder and head.* `models/modernbert.zig` (config, binding),
+  `models/modernbert_runtime.zig` (F32 forward, weights decoded once but the
+  embedding table), `models/laya.zig` (the head, `Laya.open`/`logits`, a
+  stage trace; unknown, missing, or misshapen tensors rejected), over new
+  kernels in `backends/cpu/dense.zig`: a threaded, vectorized F32
+  `X·Wᵀ + b`, LayerNorm, and bidirectional full or windowed attention,
+  split across `Io` tasks. This is the one CPU path built for speed (spec
+  §3 records the exception).
+- *The contract and the command.* `profiles/laya.zig` (question
+  validation and option rendering, Python-`json.dumps` rendering, the
+  sequence and its budgets, `rl_agent_config.json`, calibration with the
+  temperature clamp, 4-place rounding); `inference/src/decide.zig`
+  (`Decider`, host limits 64 states, 32 questions, 64 options, 1 MiB per
+  state); `src/decide.zig` (`nuclis decide`: a Jev request, a questions
+  file, or inline questions; one state per question with bars, several
+  ranked by the first question; `--json` one Jev response per state, each
+  answer's top level exactly TypeSafe's documented fields and extras under
+  `nuclis`; `--explain`, `--uncalibrated`, `--truncate`). Model selection:
+  `catalog.decision_entries` (`laya`, pulled at its pin by `model pull
+  laya`, listed by `model ls`, listing schema 4), `decide.model` (default
+  `laya`), registry `kind: decision` via `model pull --register` on a Laya
+  layout (pull report schema 3); text commands refuse a decision model by
+  name and `decide` refuses a text model.
+
+**Evidence.** `make check` passes (unit tests include the tokenizer,
+NFC, splitter, kernels against F64 and the attention reference, a tiny
+synthetic Laya checkpoint through `open` with rejections and allocation
+failures, the profile, argument parsing, and resolution). NFC passes every
+NFC column of UCD 17.0.0's `NormalizationTest.txt`. Gate `laya-vocabulary`:
+all 32 texts, every text of the 8 requests, and each request rebuilt from
+its raw question and state to exactly the recorded ids and markers, its
+logits calibrating to exactly the package's answers. Gate `laya-cpu`: all
+8 requests at every stored stage, worst largest-difference-over-largest-
+value 8.3e-6, relative RMS 7.0e-6, logits 9.0e-6 of max(1, |logit|); the
+plan's absolute 1e-4 failed where the pre-norm residual reaches 10²–10⁴
+(outliers to 1.65·10⁴), so the bounds are relative; the same numbers in a
+Debug build with no leaks. Through the fresh binary: the 8 requests
+(`--json`) equal the package's answers and usage exactly after rounding;
+the card's quickstart gives identical JSON through `--request` (file and
+standard input), `--questions`, and inline; four log files rank under one
+noul, the long one flagged as cut; malformed requests fail naming the
+question; `model pull laya` verifies the set; `--register` into a scratch
+`NUCLIS_HOME` writes a `decision` entry that `decide` resolves and
+`generate` refuses. Answer fields checked against TypeSafe's documentation
+(docs.typesafe.ai, choice, score, noul pages). Time per call (M4 Pro,
+ReleaseSafe): 56 tokens 269 ms, three questions 801 ms, 512 tokens 2.58 s,
+load 0.6 s. `make verify` (722 s): 38 of 43 gates pass, `laya-vocabulary`
+and `laya-cpu` among them; the five `gemma4-*` gates of the K-quant file
+(`trace-f32`, `trace-f16`, `generation-metal`, `vision-metal`,
+`perplexity`) did not run, `ModelFileNotFound`: that file left the
+catalogue on 2026-09-26 and is no longer under `~/.nuclis/models`. The
+Gemma family is still covered by every `gemma4-qat-*`, `gemma4-e4b-*`, and
+`gemma4-26b-a4b-*` gate, all passing. No CPU tier: no existing CPU kernel
+or family forward changed.
+
+**Files.** `scripts/laya-reference.py`, `scripts/tokenizer-nfc.py`,
+`inference/src/models/fixtures/laya/` (`requests.json`, `activations.f32`,
+`tokens.json`), `inference/src/tokenizer/{hf_json,gpt2,nfc,nfc_table}.zig`,
+`inference/src/backends/cpu/{dense,root}.zig`,
+`inference/src/models/{modernbert,modernbert_runtime,laya,root}.zig`,
+`inference/src/profiles/{laya,root}.zig`, `inference/src/decide.zig`,
+`inference/src/root.zig`, `inference/vocabulary-check.zig`,
+`inference/laya-check.zig`, `inference/build.zig`, `build.zig`,
+`src/{decide,cli,help,completion,catalog,config,model}.zig`, `gates.json`
+(`laya-vocabulary`, `laya-cpu`, model `laya`), `docs/reference/laya.md`
+(new), `docs/reference/tokenizer.md`, `docs/reference/artifacts.md`,
+`docs/spec.md`, `docs/architecture.md`, `docs/development.md`,
+`THIRD_PARTY_NOTICES.md`, `TODO.md`, `docs/engineering-log.md`.
+
+**Remaining.** CPU only (MODL-31 adds Metal). The multilingual and
+typed-decisions checkpoints are not pinned or checked. The package's
+`act_probability`, language temperatures, and `Router` are not
+implemented. Added tokens are matched by a scan per position (fine for
+Laya's 116; a large added vocabulary would want an automaton). `decide
+--model` completes directories, not decision entry names. The Unicode
+version of the reference library's NFC is not known; text with scalars
+assigned after it could normalize differently.

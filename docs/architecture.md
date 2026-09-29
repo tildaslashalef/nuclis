@@ -78,6 +78,7 @@ flowchart TB
         engine[engine.zig re-exports + prompt sources]
         gen[generate.zig / bench.zig]
         model[model.zig pull / ls / inspect + catalog.zig]
+        decidecli[decide.zig nuclis decide: request tiers, ranked view, Jev JSON]
     end
     subgraph hfpkg [huggingface — Hub downloads]
         hf[Client: catalog, Xet transfer, atomic publish]
@@ -95,6 +96,7 @@ flowchart TB
         tok[tokenizer/*  profiles/*]
         sess[runtime/session.zig  weights.zig  draft.zig]
         eng[engine.zig  Engine, Model, runLoop]
+        dec[decide.zig  Decider: Laya over profiles/laya + models/laya]
         samp[sampling/root.zig]
         cpu[backends/cpu/*  reference math; dense.zig for encoders]
         metal[backends/metal/*  bridge + kernels]
@@ -104,6 +106,11 @@ flowchart TB
     cli --> agent
     cli --> model
     cli --> completion
+    cli --> decidecli
+    decidecli --> dec
+    dec --> tok
+    dec --> st
+    dec --> cpu
     model --> hf
     model --> gguf
     cli --> st
@@ -142,11 +149,27 @@ signals, and the network.
 | `backends/cpu`, `backends/metal` | one operation at a time, shapes as parameters | layer order |
 | `models/*` | everything above, composed in one family's order | terminals, files |
 | `engine` | composing adapters, backends, tokenizer, sampler into `open`/`step`/`runLoop` | files, terminals, signals |
+| `decide` | composing Laya's tokenizer, profile (contract and calibration), and model into `open`/`decide` | files beyond its checkpoint directory, terminals, the text engine |
 | `src` | arguments, configuration, stdout, Ctrl-C, presentation, downloads | equations |
 | `huggingface` | the Hub API, Xet reconstruction, digests, atomic publication | what a GGUF means |
 
 **Read:** [spec.md § Extension rules](spec.md#57-extension-rules),
 [development.md](development.md).
+
+### The decision path
+
+`nuclis decide` does not go through `Engine`. A decision model (Laya) is an
+encoder: it reads one whole sequence in both directions and scores the
+options at their `[MASK]` rows; nothing is decoded and nothing is carried
+between sequences, so there is no session, no sampler, and no KV cache.
+`inference.decide.Decider` composes three pieces from one checkpoint
+directory: the Hugging Face tokenizer (`tokenizer/hf_json.zig`), the
+profile (`profiles/laya.zig`: question validation, the sequence and its
+budgets, calibration), and the model (`models/laya.zig` over
+`models/modernbert*.zig`, F32 on the CPU through `backends/cpu/dense.zig`).
+Every question about every state is one sequence. It pays as a filter, one
+question over many states the language model never has to read
+([laya.md](reference/laya.md)).
 
 ## 3. Three kinds of memory
 
