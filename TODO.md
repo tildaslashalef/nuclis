@@ -39,17 +39,19 @@ Added 2026-09-29 (user), ahead of the Laya units: cut debugging and
 verification time. REPO-20 closed 2026-09-29 (engineering log): the
 gates re-derived from what they protect (`make verify` 704 s → 246 s,
 a `verify-release` tier) and `make verify-auto`, which runs the checks
-and gates a diff selects and names the tiers it requires. Next is
-KERN-19, the threaded CPU reference that makes the CPU tier usable
-while debugging; it starts with the CPU tier's "before" times.
+and gates a diff selects and names the tiers it requires.
+
+Reordered 2026-09-29 (user): Laya end to end first, MODL-31 then AGNT-18;
+KERN-19 (the threaded CPU reference) follows them, its "before" times
+not yet taken. Next is MODL-31, Laya on Metal.
 
 ## Order
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
-| KERN-19 | A threaded CPU reference, bit-identical: the CPU tier ≤ 30 min | one |
 | MODL-31 | Laya on Metal: bidirectional windowed attention, the encoder plan, measured | one or two |
 | AGNT-18 | The agent's `decide` tool: LLM-written questions over tool-supplied states (the experiment) | one |
+| KERN-19 | A threaded CPU reference, bit-identical: the CPU tier ≤ 30 min | one |
 
 Decisions (user, 2026-09-27): the oracle is Laya's own Python package;
 the root checkpoint first (multilingual later, same family code); CPU
@@ -58,38 +60,9 @@ fan-out over many states, a styled terminal view, and `--json`; each
 `results[i]` a complete Jev response; LLM-written questions are the last
 unit, an experiment.
 
-## KERN-19 — A threaded CPU reference, bit-identical
-
-Split from REPO-20 at its close (user, 2026-09-29), which delivered the
-fast gate tiers and `make verify-auto` (engineering log). Goal: the CPU
-tier ≤ 30 min (hours today) and one family's CPU trace ≤ 1 min, with
-not one bit of the reference's output changed.
-
-Base: `d46e907`
-
-- First: `python3 scripts/gates.py --tier verify-cpu --json >
-  .zig-cache/gates/kern19-before.json` in the background, the per-gate
-  "before" times (14 gates, hours; nothing else running meanwhile, since
-  compiles and GPU runs distort it), then copy
-  `.zig-cache/gates/trace/*-trace-cpu/` to `.zig-cache/gates/kern19-before/`
-  for the byte comparison.
-
-- Split independent work across `Io` tasks without changing any sum's
-  order, the pattern of `backends/cpu/dense.zig` (`std.Io.Group`,
-  `taskCount`): `backends/cpu/root.zig` `matvec` by rows (each row still
-  one F64 sum in column order; the decode scratch becomes one `columns`
-  slice per task, so the callers' workspaces grow to `taskCount ×
-  columns`), `attention.apply` by head, `experts.ffn` by expert, and the
-  vision encoders' matvecs. The kernels take `std.Io`; the family
-  runtimes (`*_runtime.zig`, `vision/*.zig` CPU paths) pass theirs.
-- Proof of no change: every `*-trace-cpu` directory and logits file
-  `cmp`-identical before and after (`cmp -r` against
-  `.zig-cache/gates/kern19-before/`), all `verify-cpu` gates passing;
-  times before and after per gate.
-- `make verify-cpu` once (this changes how the reference runs, not what
-  it computes; the byte comparison is the evidence).
-
 ## MODL-31 — Laya on Metal
+
+Base: `26eccf1`
 
 Where the CPU path stands (docs/reference/laya.md § On the CPU, § Time
 per call): `models/laya.zig` `Laya.logits(io, gpa, ids, markers, kind,
@@ -128,3 +101,35 @@ forward with the `laya-cpu` bounds (relative 1e-5 per stage; the trace's
   task list before and after (`make agent-eval VARIANT=…`), on Qwen3.8-27B
   and Gemma 4 E4B: task success, wall time, and prefill tokens saved.
   Kept only if it helps; the result is logged either way.
+
+## KERN-19 — A threaded CPU reference, bit-identical
+
+Split from REPO-20 at its close (user, 2026-09-29), which delivered the
+fast gate tiers and `make verify-auto` (engineering log). Goal: the CPU
+tier ≤ 30 min (hours today) and one family's CPU trace ≤ 1 min, with
+not one bit of the reference's output changed.
+
+Base: to be recorded when it starts (`d46e907` was recorded before the
+reorder; take the commit before its first change).
+
+- First: `python3 scripts/gates.py --tier verify-cpu --json >
+  .zig-cache/gates/kern19-before.json` in the background, the per-gate
+  "before" times (14 gates, hours; nothing else running meanwhile, since
+  compiles and GPU runs distort it), then copy
+  `.zig-cache/gates/trace/*-trace-cpu/` to `.zig-cache/gates/kern19-before/`
+  for the byte comparison.
+
+- Split independent work across `Io` tasks without changing any sum's
+  order, the pattern of `backends/cpu/dense.zig` (`std.Io.Group`,
+  `taskCount`): `backends/cpu/root.zig` `matvec` by rows (each row still
+  one F64 sum in column order; the decode scratch becomes one `columns`
+  slice per task, so the callers' workspaces grow to `taskCount ×
+  columns`), `attention.apply` by head, `experts.ffn` by expert, and the
+  vision encoders' matvecs. The kernels take `std.Io`; the family
+  runtimes (`*_runtime.zig`, `vision/*.zig` CPU paths) pass theirs.
+- Proof of no change: every `*-trace-cpu` directory and logits file
+  `cmp`-identical before and after (`cmp -r` against
+  `.zig-cache/gates/kern19-before/`), all `verify-cpu` gates passing;
+  times before and after per gate.
+- `make verify-cpu` once (this changes how the reference runs, not what
+  it computes; the byte comparison is the evidence).
