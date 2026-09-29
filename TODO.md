@@ -45,14 +45,18 @@ Reordered 2026-09-29 (user): Laya end to end first, then KERN-19 (the
 threaded CPU reference), its "before" times not yet taken. MODL-31
 closed 2026-09-29 (engineering log): Laya on Metal, `nuclis decide
 --backend cpu|metal` (metal by default), packed batches, 13–20× the CPU
-(a 512-token state in about 0.2 s), gate `laya-metal`. Next is AGNT-18,
-the agent's `decide` tool; `Decider` opens on Metal in the agent's
-process beside the text model, taking the GPU in turn.
+(a 512-token state in about 0.2 s), gate `laya-metal`.
+
+Added 2026-09-29 (user), ahead of AGNT-18: the multilingual checkpoint.
+Manual tests of the English one showed it cannot read other languages (a
+French sentence scored German 0.37, French 0.30). Next is MODL-33; its
+facts are read (below), so it starts at the oracle.
 
 ## Order
 
 | Unit | Title | Sessions |
 | --- | --- | --- |
+| MODL-33 | Laya multilingual (mmBERT-base): the pull, the Metaspace tokenizer, the contract, checked on both backends | one or two |
 | AGNT-18 | The agent's `decide` tool: LLM-written questions over tool-supplied states (the experiment) | one |
 | KERN-19 | A threaded CPU reference, bit-identical: the CPU tier ≤ 30 min | one |
 
@@ -62,6 +66,76 @@ first, then Metal; a new command, `nuclis decide`, with three input tiers,
 fan-out over many states, a styled terminal view, and `--json`; each
 `results[i]` a complete Jev response; LLM-written questions are the last
 unit, an experiment.
+
+## MODL-33 — Laya multilingual
+
+Base: `01b65fe`
+
+Facts read 2026-09-29 from the Hub (`convaiinnovations/laya` at
+`55cf4c4e`, the same revision as the root set) and the `laya` 0.3.20
+package (`.zig-cache/reference/laya-venv`, which loads it as
+`Agent("convaiinnovations/laya", subfolder="multilingual")`):
+
+- Files under `multilingual/`: `encoder/config.json`, `model.safetensors`
+  (643,835,514 bytes, 169 F16 tensors and `temperature` F32),
+  `rl_agent_config.json`, `tokenizer/tokenizer.json` (34,363,188 bytes),
+  `tokenizer/tokenizer_config.json`.
+- Encoder (mmBERT-base): 22 layers, hidden 768, 12 heads of 64,
+  intermediate 1152, vocabulary 256,000, `layer_types` global every
+  third from 0, `local_attention` 128 (window 64), both RoPE thetas
+  160,000 (`rope_parameters`, which `modernbert.parseConfig` reads;
+  the package's `_apply_rope_config` exists because Transformers 4.x
+  would read 10,000 for the local one). Same tensor names as the root
+  set. Head: 2 layers, `linear1` [3072, 768], 12 heads of 64;
+  `act_head.0.weight` [256, 772]. Every matrix fits the Metal matmul
+  (rows % 8, columns % 64: 768, 1152, 3072).
+- `rl_agent_config.json`: `max_len` 1024, `head_max_len` 256,
+  `temperature` [1, 1, 1], `temperature_by_options` {}, `max_prefixes`
+  6 (check what reads it).
+- Tokenizer: BPE, `byte_fallback` true, `fuse_unk` true, `unk_token`
+  `<unk>`, 580,604 merges; normalizer `Replace " " → "▁"`;
+  pre-tokenizer `Metaspace` (`▁`, `prepend_scheme` always, `split`
+  true); decoder `Replace ▁ → " "`, `ByteFallback`, `Fuse`; 249 added
+  tokens. `tokenizer_config.json`: `cls_token` `<bos>` (2), `sep_token`
+  `<eos>` (1), `mask_token` `<mask>` (4), `pad` 0; the package's
+  `build_sequence` uses `tok.cls_token_id`, `sep_token_id`,
+  `mask_token_id`, and replaces `tok.mask_token` in texts.
+
+Work:
+
+- **Oracle.** `scripts/laya-reference.py --subfolder multilingual` runs
+  the package on the staged `multilingual/` set and writes
+  `inference/src/models/fixtures/laya-multilingual/` (`requests.json`,
+  `activations.f32`, `tokens.json`): the root set's 8 request shapes
+  plus French, German, Spanish, Arabic, Chinese, and Hindi states, a
+  language-identification choice, and a state past 512 tokens (the
+  1024 budget, positions past 512); tokenizer texts across scripts,
+  emoji and unseen bytes (byte fallback), `<mask>` and `[MASK]` in text,
+  whitespace runs, newlines, leading and trailing spaces.
+- **Tokenizer.** `tokenizer/hf_json.zig` accepts this second shape
+  exactly (other shapes still rejected by name) and encodes each
+  Metaspace word through `bpe.encodeSpmBudget` (Gemma's SentencePiece
+  BPE with byte fallback); `tokens.json` pins the semantics (where `▁`
+  is prepended, how `split` cuts, added tokens before normalization).
+- **Profile.** `profiles/laya.zig` `Specials` from
+  `tokenizer_config.json` (`cls_token`, `sep_token`, `mask_token`;
+  `[CLS]`/`[SEP]`/`[MASK]` when absent) and `unmask` with the
+  checkpoint's mask text; the budget and temperatures from
+  `rl_agent_config.json` (1024/256; check `head_max_len` is read).
+- **Model.** Expected unchanged on both backends; the oracle's stages
+  decide.
+- **Catalogue.** A `laya-multilingual` decision entry: the five
+  `multilingual/` files at the pin, into
+  `~/.nuclis/models/convaiinnovations/laya/multilingual/`; `nuclis
+  decide --model laya-multilingual`. No automatic routing by language
+  (the package's `Router`).
+- **Checks.** `vocabulary-check` and `laya-check` pick the fixture set
+  from the checkpoint (or a `--fixtures` flag); gates
+  `laya-multilingual-vocabulary`, `-cpu`, `-metal` (tier verify), a
+  `laya_multilingual` model in `gates.json`; the same relative bounds
+  as the root set. Measured: MODL-31's timing grid on Metal and the CPU;
+  the manual tests' language question in
+  `~/Downloads/laya-manual-tests.md` rerun on it. `make verify` once.
 
 ## AGNT-18 — The agent's `decide` tool (experiment)
 
