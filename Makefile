@@ -78,7 +78,7 @@ BASE ?= HEAD
 verify: eval-corpus ## The Metal tier: every trace, generation, speculative, vocabulary, and perplexity gate (once per unit)
 	python3 scripts/gates.py --tier verify $(ARGS)
 
-verify-long: eval-corpus ## The long-context tier: 4K-token perplexity (Gemma 4 12B so far), when a unit touches attention, the caches, or a windowed schedule, and before a release
+verify-long: eval-corpus ## The long-context tier: 4K-token perplexity (Gemma 4 E4B so far), when a unit touches attention, the caches, or a windowed schedule, and before a release
 	python3 scripts/gates.py --tier verify-long $(ARGS)
 
 verify-cpu: ## The CPU-reference tier (hours): when a unit changes what the CPU reference computes, and before a release

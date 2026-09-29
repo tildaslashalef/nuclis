@@ -100,7 +100,7 @@ make the registry cheaper than the recipes it replaced:
 | | tier `verify` | tier `verify-long` | tier `verify-cpu` |
 | --- | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the Metal plan | the CPU reference |
-| cost | minutes (34 gates, one `make verify` per unit, about 12 min) | minutes (1 gate: `gemma4-perplexity-4k`, 149 s of evaluation; the other families wait for their references) | hours (15 gates; `qwen38-speculative-cpu` alone is about 20 min) |
+| cost | minutes (38 gates, one `make verify` per unit, about 12 min) | minutes (1 gate: `gemma4-e4b-perplexity-4k`; the other families wait for their references) | hours (16 gates; `qwen38-speculative-cpu` alone is about 20 min) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | every unit that touched the inference stack | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 

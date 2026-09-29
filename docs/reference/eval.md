@@ -178,7 +178,7 @@ reference's per-token run, as the 512 record does.
 
 | Model | nuclis | reference, per-token | difference | status |
 | --- | ---: | ---: | ---: | --- |
-| Gemma 4 12B | 752.989 ± 46.78 | 751.820 ± 46.67 | +0.155 % | gate `gemma4-perplexity-4k` (149 s) |
+| Gemma 4 12B | 752.989 ± 46.78 | 751.820 ± 46.67 | +0.155 % | gate `gemma4-perplexity-4k` (149 s; retired 2026-09-29 with the file, REPO-19) |
 | Gemma 4 26B-A4B | 992.812 ± 56.10 | 1010.894 ± 57.18 | **−1.789 %** | open: no gate |
 | Qwen3.8-27B, Muse Glimmer | — | not recorded | — | reference run stopped |
 

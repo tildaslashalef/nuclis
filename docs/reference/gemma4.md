@@ -459,9 +459,10 @@ the reference harness on the QAT file, `<bos>Hello,`, three positions,
 Tighter than the K-quant file on every path (1.8e-4 / 3.4e-4 / 0.73),
 and the F16 cache in particular: the key-rounding sensitivity measured on
 the K-quant file is prompt- and checkpoint-dependent, and the tolerance
-stays the family's recorded one. The K-quant comparisons are unchanged
-and run as `make gate NAME='gemma4-trace-*'` (one make target per entry until
-the gate registry of 2026-09-21).
+stays the family's recorded one. The K-quant comparisons ran as `make
+gate NAME='gemma4-trace-*'` until 2026-09-29, when the K-quant file's
+nine gates were retired with the file (REPO-19); the QAT, E4B, and 26B-A4B
+gates cover the family, and the K-quant results above stay as the record.
 
 **Generation check** (`make gate NAME=gemma4-qat-generation-metal` on the QAT
 file, 2026-09-12): sessions bit-identical, cancellation and reset,

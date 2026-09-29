@@ -142,6 +142,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-18 | Shell completion answered by the binary (`nuclis completion fish\|bash\|zsh`, `__complete`); `make install` | 2026-09-27 |
 | MODL-32 | The Hub listing keeps its digests in ReleaseFast builds | 2026-09-29 |
 | MODL-30 | Laya on the CPU end to end: the oracle, `tokenizer.json`, ModernBERT and the decision head, `nuclis decide` | 2026-09-29 |
+| REPO-19 | The Gemma 4 12B K-quant file's gates retired with the file | 2026-09-29 |
 
 ## Context
 
@@ -5851,3 +5852,33 @@ Laya's 116; a large added vocabulary would want an automaton). `decide
 --model` completes directories, not decision entry names. The Unicode
 version of the reference library's NFC is not known; text with scalars
 assigned after it could normalize differently.
+
+## REPO-19 — The Gemma 4 12B K-quant file's gates retired with the file (2026-09-29)
+
+**Outcome.** At the user's call, the nine gates of `gates.json`'s
+`gemma4` model (`unsloth/gemma-4-12b-it-GGUF`
+`gemma-4-12b-it-UD-Q4_K_XL.gguf`, which left the catalogue on 2026-09-26
+for the QAT file and is no longer under `~/.nuclis/models`) and the model
+entry are removed: `gemma4-trace-{cpu,f32,f16}`,
+`gemma4-generation-{metal,cpu}`, `gemma4-vision-{metal,cpu}`,
+`gemma4-perplexity`, and `gemma4-perplexity-4k`. The family stays covered
+by the `gemma4-qat-*`, `gemma4-e4b-*`, and `gemma4-26b-a4b-*` gates; the
+long-context tier keeps `gemma4-e4b-perplexity-4k`. The file's fixtures
+(`tests/fixtures/gemma4-hello-comma/`, the two
+`tests/fixtures/perplexity/gemma4-wikitext2-*.json`,
+`run-2026-09-12-gemma4/`) stay as the record the log and the reference
+documents cite.
+
+**Evidence.** MODL-30's `make verify` ran 38 of 43 gates; the five
+K-quant Metal gates failed with `ModelFileNotFound`, as the CPU and
+long-tier ones would. `make gates-validate`: 55 gates (38 verify, 16
+verify-cpu, 1 verify-long), 10 models, valid.
+
+**Files.** `gates.json`, `Makefile` (the `verify-long` help),
+`docs/development.md` (the tier table), `docs/reference/gemma4.md`,
+`docs/reference/eval.md`, `tests/fixtures/provenance.md`,
+`docs/engineering-log.md`.
+
+**Remaining.** `workloads.json` still defines `gemma4-12b/prose512` and
+`gemma4-12b/acceptance` on the same file; they are records, run only on
+request, and were not asked about.
