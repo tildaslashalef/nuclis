@@ -22,8 +22,9 @@ toward the 20 tokens/s of [ADR 0001](docs/adr/0001-qwen-decode-verifier.md)
 --verify-rows`, and `make speed` / `make speed-base` exist, and the
 opening baseline is in
 [bench.md § The decode-speed baseline](docs/reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30).
-The base binary for `make speed` is `beccae1`'s tooling; refresh it with
-`make speed-base` before the first experiment. Next: KERN-20's remainder.
+The base binary for `make speed` is saved at `4dc7c70`
+(`.zig-cache/speed/base/`, not committed; `make speed-base` after each
+kept change). Next: KERN-20's remainder.
 The whole-batch verify capture replays only in Xcode's lite mode, so the
 counters come from two kernel captures of its attention and matmul
 (`.zig-cache/trace/`), which wait on the user's Maximum profiles; then
