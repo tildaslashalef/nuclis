@@ -173,6 +173,9 @@ pub const commands = [_]Command{
         .{ .name = "--profile", .summary = "per-kernel GPU time" },
         .{ .name = "--unfused-norms", .summary = "run the norm pairs unfused" },
         .{ .name = "--capture", .value = .file, .summary = "one decode step into a .gputrace" },
+        .{ .name = "--prefix-cache", .value = .dir, .summary = "save and restore the prefilled prompt" },
+        .{ .name = "--verify-rows", .value = .number, .summary = "time verify batches of R rows" },
+        .{ .name = "--accept", .value = .number, .summary = "drafts each verify batch accepts" },
         json,
     } ++ engine_flags) }} },
     .{ .name = "tokenize", .summary = "the prompt's token ids, no model run", .actions = &.{.{ .flags = &.{

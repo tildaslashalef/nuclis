@@ -433,18 +433,26 @@ pub const Model = struct {
             inline else => |*e| e.gpu(),
         };
     }
-    /// A caller-owned checkpoint of the committed state. Valid between
-    /// steps: the synchronous GPU backend has waited for every command
-    /// buffer, so the session memory is quiescent. A step that failed since
-    /// the last reset is refused (`SessionNotReady`).
-    pub fn snapshot(self: *const Model, gpa: std.mem.Allocator) !inference.session.Snapshot {
-        return self.session().snapshot(gpa);
+    /// A caller-owned checkpoint of the committed state, the drafter's
+    /// carried row included. Valid between steps: the synchronous GPU
+    /// backend has waited for every command buffer, so the session memory is
+    /// quiescent. A step that failed since the last reset is refused
+    /// (`SessionNotReady`).
+    pub fn snapshot(self: *Model, gpa: std.mem.Allocator) !inference.session.Snapshot {
+        var snap = try self.session().snapshot(gpa);
+        errdefer snap.deinit();
+        if (self.drafter()) |d| snap.carried = try gpa.dupe(f32, d.carried());
+        return snap;
     }
     /// Returns the model to a snapshot taken from a session of the same
-    /// capacity and layout; the next step continues from its position. A
-    /// mismatch is `SnapshotMismatch` and leaves the session untouched.
+    /// capacity and layout with the same drafter; the next step continues
+    /// from its position. A mismatch is `SnapshotMismatch` and leaves the
+    /// session untouched.
     pub fn restore(self: *Model, snap: *const inference.session.Snapshot) !void {
+        const carried: []f32 = if (self.drafter()) |d| d.carried() else &.{};
+        if (carried.len != snap.carried.len) return error.SnapshotMismatch;
         try self.sessionMut().restore(snap);
+        @memcpy(carried, snap.carried);
     }
     /// Records the committed recurrent state so a verify batch can be undone;
     /// see `recover`. Valid between steps and on both executors, as `snapshot`
@@ -1538,6 +1546,85 @@ fn speculativeBatch(
     try eng.model.commitDraft(batch[0 .. 1 + result.accepted], hidden[0 .. (1 + result.accepted) * drafter.hidden]);
     result.commit = commit_start.durationTo(std.Io.Clock.awake.now(eng.io));
     return result;
+}
+
+/// A `.gputrace` to record one command buffer into, and where the device's
+/// reason for a refusal is written.
+pub const Capture = struct { path: [:0]const u8, diagnostic: []u8 };
+
+/// The timed components of one `forcedBatch`, each wall clock.
+pub const BatchCost = struct {
+    propose: std.Io.Duration = .zero,
+    checkpoint: std.Io.Duration = .zero,
+    verify: std.Io.Duration = .zero,
+    recover: std.Io.Duration = .zero,
+    commit: std.Io.Duration = .zero,
+    /// The whole batch, the components and the bookkeeping between them.
+    total: std.Io.Duration = .zero,
+    /// A seed for the next batch: the target's greedy choice at row
+    /// `accepted`, or the batch's own seed when the rows were sampled.
+    next: u32 = 0,
+};
+
+/// One verify batch with fixed drafts and a forced accepted count: the calls
+/// `speculativeBatch` makes, in its order (propose, checkpoint, verify,
+/// recover to `[seed] ++ drafts[0..accepted]`, commit), without the
+/// acceptance decision, so the batch cost is measured at any depth free of
+/// acceptance noise. The proposal runs over `drafts.len` positions with no
+/// threshold and its output is discarded. `temperature` 0 verifies greedily
+/// (per-row argmax); otherwise rows read back their partial top-k, the
+/// sampled path's route. While a GPU profile is live, only the verify
+/// command buffer is accounted in it; `capture`, when given, records that
+/// command buffer into a new `.gputrace` (Metal only).
+pub fn forcedBatch(eng: *Engine, seed: u32, drafts: []const u32, accepted: usize, temperature: f32, capture: ?Capture) !BatchCost {
+    const drafter = eng.model.drafter() orelse return error.NoDrafter;
+    const s = &(eng.spec orelse return error.NoSpeculativeScratch);
+    const n = drafts.len;
+    if (n > drafter.max_proposals or n > s.drafts.len or accepted > n) return error.InvalidDraftLength;
+    const vocabulary = eng.vocab.tokens.len;
+    const profile: ?*inference.metal.Profile = if (eng.model.gpu()) |b| (if (b.profile) |*p| p else null) else null;
+    if (profile) |p| p.paused = true;
+    defer if (profile) |p| {
+        p.paused = false;
+    };
+    const io = eng.io;
+    var cost: BatchCost = .{ .next = seed };
+    const start = std.Io.Clock.awake.now(io);
+    var mark = start;
+    _ = try eng.model.propose(seed, s.drafts[0..n], 0);
+    cost.propose = lap(io, &mark);
+    try eng.model.checkpoint();
+    cost.checkpoint = lap(io, &mark);
+    s.tokens[0] = seed;
+    @memcpy(s.tokens[1 .. 1 + n], drafts);
+    const batch = s.tokens[0 .. 1 + n];
+    const hidden = s.hidden[0 .. (1 + n) * drafter.hidden];
+    if (profile) |p| p.paused = false;
+    if (capture) |c| try (eng.model.gpu() orelse return error.CaptureRequiresMetal).captureNext(c.path, c.diagnostic);
+    if (temperature == 0) {
+        try eng.model.verifyGreedy(batch, vocabulary, s.choices[0 .. 1 + n], hidden, null);
+        cost.next = s.choices[accepted];
+    } else if (eng.model.supportsVerifyTopK()) {
+        for (s.tops[0 .. 1 + n]) |*top| top.* = .{ .temperature = temperature };
+        try eng.model.verify(batch, vocabulary, .{ .topk = s.tops[0 .. 1 + n] }, hidden, null);
+    } else {
+        try eng.model.verify(batch, vocabulary, .{ .rows = s.rows[0 .. (1 + n) * vocabulary] }, hidden, null);
+    }
+    if (profile) |p| p.paused = true;
+    cost.verify = lap(io, &mark);
+    _ = try eng.model.recover(io, batch[0 .. 1 + accepted]);
+    cost.recover = lap(io, &mark);
+    try eng.model.commitDraft(batch[0 .. 1 + accepted], hidden[0 .. (1 + accepted) * drafter.hidden]);
+    cost.commit = lap(io, &mark);
+    cost.total = start.durationTo(mark);
+    return cost;
+}
+
+/// The time since `mark`, which moves to now.
+fn lap(io: std.Io, mark: *std.Io.Timestamp) std.Io.Duration {
+    const now = std.Io.Clock.awake.now(io);
+    defer mark.* = now;
+    return mark.durationTo(now);
 }
 
 /// Attributes one `recover` call to the run's timing: the aggregate, the

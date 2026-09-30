@@ -264,6 +264,15 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--unfused-norms", "run the norm pairs the fused kernels replace");
     try row(out, sty, "--capture <path>", "after the runs, one more decode step into a");
     try row(out, sty, "", "new .gputrace for Xcode (MTL_CAPTURE_ENABLED=1)");
+    try row(out, sty, "--prefix-cache <dir>", "save the prefilled prompt there and restore it");
+    try more(out, "on later runs with the same model, tokens, and");
+    try more(out, "session layout (prefill rates are then omitted)");
+    try row(out, sty, "--verify-rows <R>", "instead of decoding, time --max-tokens verify");
+    try more(out, "batches of R rows (a seed and R-1 fixed drafts)");
+    try more(out, "from the prompt's depth, split into propose,");
+    try more(out, "checkpoint, verify, recover, and commit; needs");
+    try more(out, "--speculative on");
+    try row(out, sty, "--accept <a>", "drafts each verify batch accepts, 0..R-1 (0)");
     try row(out, sty, "--json", "the report: every sample and the measured means");
     try engineOptions(out, sty);
     try samplingOptions(out, sty);
@@ -272,6 +281,7 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
     try example(out, sty, "nuclis bench --prompt-file prompt.txt --max-tokens 128 --json", "three measured runs after one warmup");
     try example(out, sty, "nuclis bench --prompt-tokens p.json --ctx-size 32768 --repeat 5", "a pinned token array at full context");
     try example(out, sty, "nuclis bench --prompt \"Hi\" --speculative on --draft-length 4", "each run measured with the switch off and on");
+    try example(out, sty, "nuclis bench --prompt-tokens p.json --speculative on --verify-rows 4", "a 4-row verify batch's cost at the prompt's depth");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Greedy with 32 output tokens by default, never the file's sampling and");

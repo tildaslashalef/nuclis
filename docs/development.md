@@ -288,6 +288,56 @@ mean a verdict's condition (`muse/prose512-draft` carries `decode_speedup
 ≥ 1.0`, the reason its entry turns speculation on), not a regression
 threshold: run noise is stated by the record, not enforced by the driver.
 
+## The speed loop
+
+A decode-speed change lands only through an interleaved A/B against a saved
+base binary, at every context it could move. Three tools make that take
+about a minute per context instead of an eleven-minute 32K prefill:
+
+- **Saved prefixes.** `nuclis bench --prefix-cache <dir>` prefills the
+  prompt less its last token once, writes the model's snapshot (the session
+  and the drafter's carried row) to
+  `<dir>/<model>-<tokens>-<layout>.snap`, and every later run with the same
+  model files (size and first MiB of the target and draft source), prefix
+  tokens, and session layout (layouts, KV precision, capacity) restores it
+  and feeds the last token; prefill rates are then omitted. A file that
+  does not match its header, its size, or its content digest is refused
+  and re-prefilled. A file is the session's used extent (150 MB of
+  recurrent state plus 64 KiB of F16 cache per token for Qwen); they live under `.zig-cache/speed/prefix/` and are never
+  committed. A layout change misses by digest; a numerical change to
+  prefill leaves a saved prefix a valid state to time from.
+- **Verify cost at depth.** `bench --speculative on --verify-rows R
+  --accept a` times `--max-tokens` verify batches of R rows per run from
+  the prompt's depth, with fixed drafts (the prompt's first tokens) and `a`
+  accepted: the calls a speculative batch makes, in its order
+  (`inference.engine.forcedBatch`), so the batch cost C(R, depth) is read
+  without acceptance noise. The report splits C into propose, checkpoint,
+  verify, recover, and commit per batch; `--profile` then times only the
+  verify command buffer, and `--capture` records one verify batch's.
+- **The A/B driver.** `make speed-base` builds and saves
+  `./zig-out/bin/nuclis` (kernels embedded) with its revision and a dirty
+  flag under `.zig-cache/speed/base/`. `make speed ARGS='--contexts
+  512,4096,16384,32639 --verify-rows 1,4,8 --model qwen38'`
+  (`scripts/speed.py`) builds the tree and, per context and mode, runs
+  base and candidate `bench` processes in alternating order for
+  `--pairs` (5) pairs of one run each (no warm-up: with the weights in the
+  page cache a first run decodes at its second's rate), on the family's
+  acceptance token arrays (another length slices the 32,639 array),
+  restoring the shared saved prefix. It prints both medians, the change
+  (positive is faster: decode tokens/s up, C down), the range of per-pair
+  changes, and the keep rule's verdict per row and overall; `--json` prints
+  the rows for a ledger. An A/A run (base = candidate) read −0.01 % and
+  +0.07 % with per-pair changes within ±0.23 % at 512 (decode and a 4-row
+  verify, 2026-09-30).
+
+**The keep rule** ([TODO.md](../TODO.md) while the decode-speed theme
+runs): keep a change when its median decode, or for a verify lever the
+batch cost C at the unit's row counts, improves by ≥ 2 % at one context or
+more and no context regresses by more than 1 %, over ≥ 5 interleaved
+pairs; then `make verify-auto` (and `make verify-long` for attention or
+cache changes), commit `perf(inference): …` with the rows in the body, and
+`make speed-base`. Otherwise revert and write the negative result down.
+
 ## Toolchain
 
 The tested compiler is Zig 0.16.0; manifests require at least 0.16.0.

@@ -8,7 +8,8 @@
 //! committed, with the target hidden of each; `propose` chains candidates
 //! from the state after the last committed token. Recovery is the session's
 //! (the drafter's cache is one more layout in it), so the contract has only
-//! `reset` and `bytes` for the load plan.
+//! `reset`, `carried` (what a snapshot must copy besides the session), and
+//! `bytes` for the load plan.
 const std = @import("std");
 
 pub const Drafter = struct {
@@ -34,6 +35,10 @@ pub const Drafter = struct {
     /// `h_rows` (`tokens.len * hidden` values), as committed by `recover`.
     commit_fn: *const fn (host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void,
     reset_fn: *const fn (host: *anyopaque) void,
+    /// The state the drafter carries between calls outside the session (the
+    /// pending target hidden row of an MTP head), empty when none. Mutable:
+    /// a snapshot copies it out and a restore writes it back.
+    carried_fn: *const fn (host: *anyopaque) []f32,
     bytes_fn: *const fn (host: *anyopaque) usize,
 
     pub fn propose(self: Drafter, token: u32, out: []u32, p_min: f32) !usize {
@@ -44,6 +49,9 @@ pub const Drafter = struct {
     }
     pub fn reset(self: Drafter) void {
         self.reset_fn(self.host);
+    }
+    pub fn carried(self: Drafter) []f32 {
+        return self.carried_fn(self.host);
     }
     /// Bytes the drafter adds beyond the session (its workspace), for the
     /// memory record; the session reports its own cache region.

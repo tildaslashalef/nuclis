@@ -8,6 +8,7 @@ const generate = @import("generate.zig");
 const config = @import("config.zig");
 const style = @import("tui/style.zig");
 const interrupt = @import("interrupt.zig");
+const prefix_cache = @import("prefix_cache.zig");
 
 /// What only this command reads from the command line. The model, backend,
 /// and context come resolved from the configuration (`config.Resolved`);
@@ -32,6 +33,16 @@ pub const Options = struct {
     /// A `.gputrace` path: after the runs, one more decode step is recorded
     /// into it for Xcode's Metal debugger. Metal only.
     capture: ?[]const u8 = null,
+    /// A directory of saved prefixes (`prefix_cache.zig`): the prompt less
+    /// its last token is prefilled once, saved, and restored before every
+    /// later run, which then feeds only the last token (prefill rates are
+    /// omitted).
+    prefix_cache: ?[]const u8 = null,
+    /// Instead of decoding, time `--max-tokens` verify batches of this many
+    /// rows per run from the prompt's depth (`inference.engine.forcedBatch`).
+    verify_rows: ?usize = null,
+    /// Drafts each verify batch accepts, below `verify_rows`; default 0.
+    accept: ?usize = null,
 };
 
 /// Dispatches a Qwen token records (~1,240) with margin; the plan is not asked
@@ -42,6 +53,7 @@ const profile_dispatch_capacity = 4096;
 /// steps (command buffers), so the numbers are "per token".
 pub const KernelTime = struct {
     kernel: []const u8,
+    family: Family,
     encoding: ?[]const u8,
     rows: u32,
     columns: u32,
@@ -51,6 +63,37 @@ pub const KernelTime = struct {
     share: f64,
     /// Weight bytes read per second of kernel time; absent for kernels without weight traffic.
     gigabytes_per_second: ?f64,
+};
+
+/// What a kernel's time is spent on, for the per-step split that ranks the
+/// decode-speed levers: weight matrices, the output head (a matrix kernel
+/// over the vocabulary), attention, the DeltaNet recurrence, norms,
+/// token selection, and the rest (residual adds, activations, copies).
+pub const Family = enum {
+    matrix,
+    head,
+    attention,
+    deltanet,
+    norms,
+    selection,
+    other,
+
+    pub fn of(kernel: []const u8, rows: u32, vocabulary: usize) Family {
+        const starts = std.mem.startsWith;
+        const matrix = starts(u8, kernel, "matvec") or starts(u8, kernel, "matmul") or std.mem.endsWith(u8, kernel, "reduce_splits");
+        if (matrix) return if (rows == vocabulary) .head else .matrix;
+        if (starts(u8, kernel, "attention") or starts(u8, kernel, "rope") or std.mem.eql(u8, kernel, "pack_half") or std.mem.eql(u8, kernel, "sigmoid_gate")) return .attention;
+        if (starts(u8, kernel, "delta") or starts(u8, kernel, "convolution") or std.mem.eql(u8, kernel, "l2norm")) return .deltanet;
+        if (std.mem.indexOf(u8, kernel, "norm") != null) return .norms;
+        if (starts(u8, kernel, "argmax") or starts(u8, kernel, "topk") or starts(u8, kernel, "expsum") or std.mem.eql(u8, kernel, "penalize")) return .selection;
+        return .other;
+    }
+};
+
+pub const FamilyTime = struct {
+    family: Family,
+    milliseconds_per_step: f64,
+    share: f64,
 };
 
 pub const ProfileReport = struct {
@@ -63,6 +106,8 @@ pub const ProfileReport = struct {
     gpu_milliseconds_per_step: f64,
     unsampled_dispatches: u64,
     kernels: []const KernelTime,
+    /// The kernels summed by family, slowest first; empty families omitted.
+    families: []const FamilyTime,
 };
 
 /// One accepted prefix length's recovery calls in a sample. `accepted` is the
@@ -116,6 +161,41 @@ pub const Sample = struct {
     commit_milliseconds: ?f64 = null,
 };
 
+/// One run of `--verify-rows`: its batches and the mean milliseconds per
+/// batch of each component `forcedBatch` times. `total` is the batch cost C
+/// (the components plus the host bookkeeping between them).
+pub const VerifySample = struct {
+    warmup: bool,
+    batches: usize,
+    propose: f64,
+    checkpoint: f64,
+    verify: f64,
+    recover: f64,
+    commit: f64,
+    total: f64,
+};
+
+pub const VerifyReport = struct {
+    rows: usize,
+    accepted: usize,
+    /// Session position at the first batch of every run.
+    depth: usize,
+    /// Mean over the measured runs of their per-batch means; null when no
+    /// run was measured.
+    mean: ?VerifySample,
+    samples: []const VerifySample,
+};
+
+/// The saved prefix a run restored or wrote: its file, its length in tokens,
+/// and whether it came from the file (`restored`) or was prefilled now.
+pub const PrefixReport = struct {
+    path: ?[]const u8,
+    tokens: usize,
+    restored: bool,
+    /// Loading the file, or prefilling and saving it.
+    milliseconds: f64,
+};
+
 pub const Report = struct {
     /// Pre-1.0: the shape evolves with the tree, so no bump for the
     /// speculative sample fields and means added alongside the rest.
@@ -151,6 +231,8 @@ pub const Report = struct {
     mean_accepted_per_step: ?f64 = null,
     mean_proposed_per_step: ?f64 = null,
     decode_speedup: ?f64 = null,
+    prefix: ?PrefixReport = null,
+    verify: ?VerifyReport = null,
     profile: ?ProfileReport = null,
 
     pub fn render(self: Report, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
@@ -161,7 +243,14 @@ pub const Report = struct {
         const label = sty.on(.label);
         const off = sty.off();
         try out.print("{s}Backend:{s} {s} ({s})\n{s}Model:{s} {s}{s}{s}\n{s}Config:{s} {s}{s}{s}\n", .{ label, off, self.backend, self.build_mode, label, off, sty.on(.code), self.model_path, off, label, off, sty.on(.code), self.config, off });
-        try out.print("{s}Context:{s} {d} tokens, KV {s} (session {d:.1} MiB), output budget: {d}, {s}, prompt from {s}{s}\n{s}Load:{s} {d:.1} ms\n\n", .{ label, off, self.context, self.kv_precision, @as(f64, @floatFromInt(self.session_bytes)) / (1024 * 1024), self.max_tokens, self.sampling, self.prompt_source, if (self.profile != null) ", profiled (one encoder per dispatch; rates not comparable)" else "", label, off, self.load_milliseconds });
+        try out.print("{s}Context:{s} {d} tokens, KV {s} (session {d:.1} MiB), output budget: {d}, {s}, prompt from {s}{s}\n{s}Load:{s} {d:.1} ms\n", .{ label, off, self.context, self.kv_precision, @as(f64, @floatFromInt(self.session_bytes)) / (1024 * 1024), self.max_tokens, self.sampling, self.prompt_source, if (self.profile != null) ", profiled (one encoder per dispatch; rates not comparable)" else "", label, off, self.load_milliseconds });
+        if (self.prefix) |p| try out.print("{s}Prefix:{s} {d} tokens {s} in {d:.1} ms{s}{s}\n", .{ label, off, p.tokens, if (p.restored) "restored" else "prefilled", p.milliseconds, if (p.path != null) ", " else "", p.path orelse "" });
+        try out.writeByte('\n');
+        if (self.verify) |v| {
+            try renderVerify(v, out, sty);
+            if (self.profile) |p| try renderProfile(p, out, sty);
+            return;
+        }
         try out.print("{s}run    prompt  gen  spec  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms  fallbacks{s}\n", .{ sty.on(.header), off });
         for (self.samples, 0..) |s, i| {
             try out.print("{s}{d: <4} {d: >7} {d: >4}  {s: <4}  {s: <13} {d: >11.1} ", .{ if (s.warmup) "w" else " ", i, s.prompt_tokens, s.generated_tokens, if (s.speculative) "on" else "off", s.stop_reason, s.prefill_milliseconds });
@@ -195,6 +284,14 @@ pub const Report = struct {
     fn rate(out: *std.Io.Writer, value: ?f64) !void {
         if (value) |v| try out.print("{d: >9.2}", .{v}) else try out.writeAll("        —");
     }
+    fn renderVerify(v: VerifyReport, out: *std.Io.Writer, sty: style.Style) !void {
+        try out.print("{s}run  batches  propose  checkpoint   verify  recover   commit   C ms/batch{s}\n", .{ sty.on(.header), sty.off() });
+        for (v.samples, 0..) |s, i| try out.print("{s}{d: <3} {d: >8} {d: >8.2} {d: >11.2} {d: >8.2} {d: >8.2} {d: >8.2} {d: >12.2}\n", .{ if (s.warmup) "w" else " ", i, s.batches, s.propose, s.checkpoint, s.verify, s.recover, s.commit, s.total });
+        try out.print("\n{s}Verify batch, {d} rows, {d} accepted, from depth {d}:{s} ", .{ sty.on(.bold), v.rows, v.accepted, v.depth, sty.off() });
+        if (v.mean) |m| {
+            try out.print("C {s}{d:.2}{s} ms (propose {d:.2}, checkpoint {d:.2}, verify {d:.2}, recover {d:.2}, commit {d:.2})\n", .{ sty.on(.number), m.total, sty.off(), m.propose, m.checkpoint, m.verify, m.recover, m.commit });
+        } else try out.writeAll("no measured run\n");
+    }
     fn renderProfile(p: ProfileReport, out: *std.Io.Writer, sty: style.Style) !void {
         try out.print("\n{s}Per-kernel GPU time over {d} measured steps:{s} {d:.0} dispatches/step, {d:.1} ms/step attributed of {d:.1} ms/step command-buffer time, {d} unsampled dispatches\n", .{ sty.on(.bold), p.steps, sty.off(), p.dispatches_per_step, p.attributed_milliseconds_per_step, p.gpu_milliseconds_per_step, p.unsampled_dispatches });
         try out.print("{s}kernel             encoding    rows    cols   n/step   ms/step  share    GB/s{s}\n", .{ sty.on(.header), sty.off() });
@@ -202,12 +299,15 @@ pub const Report = struct {
             try out.print("{s: <18} {s: <8} {d: >7} {d: >7} {d: >8.1} {d: >9.3} {d: >5.1}%", .{ k.kernel, k.encoding orelse "—", k.rows, k.columns, k.dispatches_per_step, k.milliseconds_per_step, k.share * 100 });
             if (k.gigabytes_per_second) |gbps| try out.print(" {d: >7.1}\n", .{gbps}) else try out.writeAll("       —\n");
         }
+        try out.print("\n{s}family      ms/step  share{s}\n", .{ sty.on(.header), sty.off() });
+        for (p.families) |f| try out.print("{s: <10} {d: >9.3} {d: >5.1}%\n", .{ @tagName(f.family), f.milliseconds_per_step, f.share * 100 });
     }
 };
 
 /// Pure aggregation of a backend profile into per-step rows sorted by time,
-/// so the table is testable without a GPU. Caller frees `kernels`.
-pub fn profileReport(alloc: std.mem.Allocator, profile: *const inference.metal.Profile) !ProfileReport {
+/// so the table is testable without a GPU. `vocabulary` tells the output
+/// head's matrix from the others. Caller frees `kernels` and `families`.
+pub fn profileReport(alloc: std.mem.Allocator, profile: *const inference.metal.Profile, vocabulary: usize) !ProfileReport {
     const kernels = try alloc.alloc(KernelTime, profile.totals.count());
     errdefer alloc.free(kernels);
     const steps = profile.command_buffers;
@@ -226,6 +326,7 @@ pub fn profileReport(alloc: std.mem.Allocator, profile: *const inference.metal.P
         const total = entry.value_ptr.*;
         kernels[i] = .{
             .kernel = @tagName(key.kernel),
+            .family = Family.of(@tagName(key.kernel), key.rows, vocabulary),
             .encoding = if (key.encoding) |id| (if (inference.encoding.layout(id)) |layout| layout.name else "?") else null,
             .rows = key.rows,
             .columns = key.columns,
@@ -240,6 +341,23 @@ pub fn profileReport(alloc: std.mem.Allocator, profile: *const inference.metal.P
             return a.milliseconds_per_step > b.milliseconds_per_step;
         }
     }.slower);
+    var sums: [@typeInfo(Family).@"enum".fields.len]f64 = @splat(0);
+    for (kernels) |k| sums[@intFromEnum(k.family)] += k.milliseconds_per_step;
+    var present: usize = 0;
+    for (sums) |ms| present += @intFromBool(ms > 0);
+    const families = try alloc.alloc(FamilyTime, present);
+    errdefer alloc.free(families);
+    const total_ms = attributed * 1000 * per_step;
+    var f: usize = 0;
+    for (sums, 0..) |ms, tag| if (ms > 0) {
+        families[f] = .{ .family = @enumFromInt(tag), .milliseconds_per_step = ms, .share = if (total_ms > 0) ms / total_ms else 0 };
+        f += 1;
+    };
+    std.mem.sort(FamilyTime, families, {}, struct {
+        fn slower(_: void, a: FamilyTime, b: FamilyTime) bool {
+            return a.milliseconds_per_step > b.milliseconds_per_step;
+        }
+    }.slower);
     return .{
         .steps = steps,
         .dispatches_per_step = @as(f64, @floatFromInt(dispatches)) * per_step,
@@ -247,6 +365,7 @@ pub fn profileReport(alloc: std.mem.Allocator, profile: *const inference.metal.P
         .gpu_milliseconds_per_step = profile.gpu_seconds * 1000 * per_step,
         .unsampled_dispatches = profile.unsampled,
         .kernels = kernels,
+        .families = families,
     };
 }
 
@@ -398,10 +517,87 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     var sampling_label: [192]u8 = undefined;
     const o = sampler.options;
     const sampling: []const u8 = if (o.temperature == 0 and !o.penaltiesActive()) "greedy" else try std.fmt.bufPrint(&sampling_label, "sampled: temperature {d}, top-k {d}, top-p {d}, min-p {d}, presence {d}, repetition {d}, seed {d}", .{ o.temperature, o.top_k, o.top_p, o.min_p, o.presence_penalty, o.repetition_penalty, options.seed orelse 0 });
+    const accept = options.accept orelse 0;
+    if (options.accept != null and options.verify_rows == null) return error.AcceptNeedsVerifyRows;
+    if (options.verify_rows) |rows| {
+        const d = eng.model.drafter() orelse return error.VerifyRowsNeedDrafter;
+        if (rows - 1 > d.max_proposals or accept >= rows) return error.InvalidDraftLength;
+        // Every run's last batch, and the capture's, still needs its rows' room.
+        if (tokens.len - 1 + (limit - 1) * (accept + 1) + rows > capacity) return error.ContextFull;
+    }
+    var trace: generate.Trace = .{ .io = io, .directory = null, .started = std.Io.Clock.awake.now(io) };
+
+    // The saved prefix is the prompt less its last token, so each run still
+    // feeds one prompt token and samples its first token from real logits.
+    // A verify run always starts from one, kept in memory without a directory.
+    const prefix_tokens = tokens[0 .. tokens.len - 1];
+    var prefix: ?inference.session.Snapshot = null;
+    defer if (prefix) |*p| p.deinit();
+    var prefix_report: ?PrefixReport = null;
+    var prefix_path: [4096]u8 = undefined;
+    if (options.prefix_cache != null or options.verify_rows != null) {
+        const started = std.Io.Clock.awake.now(io);
+        const dir: ?std.Io.Dir = if (options.prefix_cache) |path| try std.Io.Dir.cwd().createDirPathOpen(io, path, .{}) else null;
+        defer if (dir) |d| d.close(io);
+        var key: prefix_cache.Key = undefined;
+        var path: ?[]const u8 = null;
+        if (dir) |d| {
+            key = .{ .model = try prefix_cache.modelDigest(io, model_path, if (speculate) draft_path else null), .tokens = prefix_cache.tokenDigest(prefix_tokens), .layout = eng.model.session().layout_digest };
+            var name: [64]u8 = undefined;
+            path = try std.fmt.bufPrint(&prefix_path, "{s}/{s}", .{ options.prefix_cache.?, prefix_cache.fileName(&name, key) });
+            prefix = prefix_cache.load(alloc, io, d, key) catch |err| switch (err) {
+                error.PrefixMismatch, error.PrefixCorrupt => blk: {
+                    std.log.warn("saved prefix {s} refused ({s}); prefilling instead", .{ path.?, @errorName(err) });
+                    break :blk null;
+                },
+                else => return err,
+            };
+        }
+        const restored = prefix != null;
+        if (!restored) {
+            // Committed to the drafter too when one is loaded, as the
+            // speculative loop commits a prompt, so its cache rows exist.
+            eng.model.reset();
+            if (prefix_tokens.len > 0) {
+                if (speculate) {
+                    try inference.engine.commitPrompt(&eng, prefix_tokens, null, trace.observer());
+                } else try eng.model.prefill(prefix_tokens, null, null, null, null, null, trace.observer());
+            }
+            prefix = try eng.model.snapshot(alloc);
+            if (dir) |d| try prefix_cache.save(io, d, key, &prefix.?);
+        }
+        prefix_report = .{ .path = path, .tokens = prefix_tokens.len, .restored = restored, .milliseconds = engine.milliseconds(started.durationTo(std.Io.Clock.awake.now(io))) };
+        if (!json) {
+            try writer.print("prefix: {d} tokens {s}\n", .{ prefix_tokens.len, if (restored) "restored" else "prefilled" });
+            try writer.flush();
+        }
+    }
+
+    if (options.verify_rows) |rows| return runVerify(alloc, &eng, tokens, &prefix.?, rows, accept, limit, warmup, repeat, capture, json, writer, sty, .{
+        .backend = @tagName(settings.backend),
+        .model_path = model_path,
+        .config = settings.config_file orelse "built-in defaults",
+        .prompt_source = if (options.prompt_tokens != null) "tokens" else "text",
+        .context = capacity,
+        .kv_precision = @tagName(eng.kv_precision),
+        .session_bytes = eng.model.session().bytes(),
+        .max_tokens = limit,
+        .sampling = sampling,
+        .sampling_options = sampler.options,
+        .seed = options.seed orelse 0,
+        .warmup_runs = warmup,
+        .measured_runs = 0,
+        .load_milliseconds = engine.milliseconds(eng.load),
+        .samples = &.{},
+        .mean_prefill_tokens_per_second = null,
+        .mean_decode_tokens_per_second = null,
+        .mean_first_token_milliseconds = null,
+        .prefix = prefix_report,
+    });
+
     const per_iteration: usize = if (speculate) 2 else 1;
     const samples = try alloc.alloc(Sample, (warmup + repeat) * per_iteration);
     defer alloc.free(samples);
-    var trace: generate.Trace = .{ .io = io, .directory = null, .started = std.Io.Clock.awake.now(io) };
     var completed: usize = 0;
     var cancelled = false;
     for (0..warmup + repeat) |i| {
@@ -409,26 +605,32 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         if (i == warmup) if (gpu) |backend| if (backend.profile) |*p| p.clear();
         for ([_]bool{ false, true }) |on| {
             if (on and !speculate) continue;
-            // Every run starts from an empty session and an empty token history.
+            // Every run starts from an empty session and an empty token
+            // history, or from the saved prefix and the history it implies.
             eng.model.reset();
             history.reset();
+            if (prefix) |*p| {
+                try eng.model.restore(p);
+                for (prefix_tokens) |token| try history.observe(token);
+            }
+            const fed = if (prefix != null) tokens[prefix_tokens.len..] else tokens;
             const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length } else .{};
             // Decode covers the steps after the first sampled token; the first
             // token's latency (prefill included) is reported separately.
-            const outcome = try generate.runLoop(&eng, tokens, limit, &sampler, &history, spec, null, logits, candidates, generated, &trace, null);
+            const outcome = try generate.runLoop(&eng, fed, limit, &sampler, &history, spec, null, logits, candidates, generated, &trace, null);
             const t = outcome.timing;
             const decode_steps = if (t.generated_tokens > 1) t.generated_tokens - 1 else 0;
             samples[completed] = .{
                 .warmup = i < warmup,
-                .prompt_tokens = t.prompt_tokens,
+                .prompt_tokens = tokens.len,
                 .generated_tokens = t.generated_tokens,
                 .stop_reason = @tagName(outcome.stop),
                 .prefill_milliseconds = engine.milliseconds(t.prefill),
                 .first_token_milliseconds = engine.milliseconds(t.first_token),
                 .decode_milliseconds = engine.milliseconds(t.decode),
-                .prefill_tokens_per_second = perSecond(t.prompt_tokens, t.prefill),
+                .prefill_tokens_per_second = if (prefix != null) null else perSecond(t.prompt_tokens, t.prefill),
                 .decode_tokens_per_second = perSecond(decode_steps, t.decode),
-                .gpu_busy_milliseconds = if (t.gpu_seconds) |s| s * 1000 else null,
+                .gpu_busy_milliseconds = if (t.gpu_seconds) |sec| sec * 1000 else null,
                 .topk_fallbacks = t.topk_fallbacks,
                 .speculative = on,
                 .draft_length = if (on) settings.draft_length else null,
@@ -446,7 +648,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 .commit_milliseconds = if (on) engine.milliseconds(t.commit) else null,
             };
             if (!json) {
-                try writer.print("{s} run {d}{s}: {d} prompt, {d} generated, {s}\n", .{ if (i < warmup) "warmup" else "measured", i, if (on) " (speculative)" else "", t.prompt_tokens, t.generated_tokens, @tagName(outcome.stop) });
+                try writer.print("{s} run {d}{s}: {d} prompt, {d} generated, {s}\n", .{ if (i < warmup) "warmup" else "measured", i, if (on) " (speculative)" else "", tokens.len, t.generated_tokens, @tagName(outcome.stop) });
                 try writer.flush();
             }
             completed += 1;
@@ -463,9 +665,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     const measured_samples = samples[0..completed];
     const stats = summarize(measured_samples);
     var profile: ?ProfileReport = null;
-    defer if (profile) |p| alloc.free(p.kernels);
+    defer if (profile) |p| {
+        alloc.free(p.kernels);
+        alloc.free(p.families);
+    };
     if (gpu) |backend| if (backend.profile) |*p| {
-        profile = try profileReport(alloc, p);
+        profile = try profileReport(alloc, p, eng.vocab.tokens.len);
     };
     if (capture) |path| if (!cancelled) {
         // One decode step after the last run: the loop never feeds its last
@@ -503,8 +708,86 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         .mean_accepted_per_step = stats.accepted_per_step,
         .mean_proposed_per_step = stats.proposed_per_step,
         .decode_speedup = if (stats.decode != null and stats.speculative_decode != null) stats.speculative_decode.? / stats.decode.? else null,
+        .prefix = prefix_report,
         .profile = profile,
     };
+    if (!json) try writer.writeByte('\n');
+    try report.render(writer, json, sty);
+}
+
+/// The `--verify-rows` runs: each restores `prefix` and times `limit`
+/// forced batches of `rows` rows (the prompt's last token as the first seed,
+/// the prompt's first tokens as the fixed drafts), then renders `base` with
+/// the verify report and the profile. A capture records one more batch's
+/// verify command buffer from the prefix.
+fn runVerify(alloc: std.mem.Allocator, eng: *engine.Engine, tokens: []const u32, prefix: *const inference.session.Snapshot, rows: usize, accept: usize, limit: usize, warmup: usize, repeat: usize, capture: ?[:0]const u8, json: bool, writer: *std.Io.Writer, sty: style.Style, base: Report) !void {
+    const samples = try alloc.alloc(VerifySample, warmup + repeat);
+    defer alloc.free(samples);
+    var drafts: [inference.engine.max_draft_length]u32 = undefined;
+    for (drafts[0 .. rows - 1], 0..) |*d, j| d.* = tokens[j % tokens.len];
+    const temperature = base.sampling_options.temperature;
+    const gpu = eng.model.gpu();
+    var completed: usize = 0;
+    var cancelled = false;
+    for (0..warmup + repeat) |i| {
+        if (i == warmup) if (gpu) |backend| if (backend.profile) |*p| p.clear();
+        eng.model.reset();
+        try eng.model.restore(prefix);
+        var seed = tokens[tokens.len - 1];
+        var sums: [6]f64 = @splat(0);
+        var batches: usize = 0;
+        while (batches < limit) : (batches += 1) {
+            interrupt.check() catch {
+                cancelled = true;
+                break;
+            };
+            const cost = try inference.engine.forcedBatch(eng, seed, drafts[0 .. rows - 1], accept, temperature, null);
+            seed = cost.next;
+            for (&sums, [_]std.Io.Duration{ cost.propose, cost.checkpoint, cost.verify, cost.recover, cost.commit, cost.total }) |*sum, d| sum.* += engine.milliseconds(d);
+        }
+        const n: f64 = @floatFromInt(@max(batches, 1));
+        samples[completed] = .{ .warmup = i < warmup, .batches = batches, .propose = sums[0] / n, .checkpoint = sums[1] / n, .verify = sums[2] / n, .recover = sums[3] / n, .commit = sums[4] / n, .total = sums[5] / n };
+        completed += 1;
+        if (!json) {
+            try writer.print("{s} run {d}: {d} batches of {d} rows, {d} accepted, {d:.2} ms each\n", .{ if (i < warmup) "warmup" else "measured", i, batches, rows, accept, sums[5] / n });
+            try writer.flush();
+        }
+        if (cancelled) break;
+    }
+    // A cancelled run is shown but never averaged.
+    var mean: VerifySample = .{ .warmup = false, .batches = 0, .propose = 0, .checkpoint = 0, .verify = 0, .recover = 0, .commit = 0, .total = 0 };
+    var measured: usize = 0;
+    for (samples[0..completed], 0..) |s, i| {
+        if (s.warmup or (cancelled and i + 1 == completed)) continue;
+        measured += 1;
+        mean.batches += s.batches;
+        inline for (.{ "propose", "checkpoint", "verify", "recover", "commit", "total" }) |field| @field(mean, field) += @field(s, field);
+    }
+    if (measured > 0) inline for (.{ "propose", "checkpoint", "verify", "recover", "commit", "total" }) |field| {
+        @field(mean, field) /= @floatFromInt(measured);
+    };
+    var profile: ?ProfileReport = null;
+    defer if (profile) |p| {
+        alloc.free(p.kernels);
+        alloc.free(p.families);
+    };
+    if (gpu) |backend| if (backend.profile) |*p| {
+        profile = try profileReport(alloc, p, eng.vocab.tokens.len);
+    };
+    if (capture) |path| if (!cancelled) {
+        eng.model.reset();
+        try eng.model.restore(prefix);
+        var diagnostic: [1024]u8 = @splat(0);
+        _ = inference.engine.forcedBatch(eng, tokens[tokens.len - 1], drafts[0 .. rows - 1], accept, temperature, .{ .path = path, .diagnostic = &diagnostic }) catch |err| {
+            std.log.err("{s}", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+        if (!json) try writer.print("captured one {d}-row verify batch at position {d}: {s}\n", .{ rows, prefix.position, path });
+    };
+    var report = base;
+    report.measured_runs = measured;
+    report.verify = .{ .rows = rows, .accepted = accept, .depth = prefix.position, .mean = if (measured > 0) mean else null, .samples = samples[0..completed] };
+    report.profile = profile;
     if (!json) try writer.writeByte('\n');
     try report.render(writer, json, sty);
 }
@@ -532,8 +815,9 @@ test "profile report divides totals per step, sorts by time, and omits rates wit
     // 8 dispatches, 0.2 s, 4 GB read: 2/step, 50 ms/step, 20 GB/s.
     try profile.totals.put(alloc, .{ .kernel = .matvec_q4_k, .encoding = 12, .rows = 17408, .columns = 5120 }, .{ .dispatches = 8, .seconds = 0.2, .bytes = 4_000_000_000 });
     try profile.totals.put(alloc, .{ .kernel = .add, .encoding = null, .rows = 0, .columns = 0 }, .{ .dispatches = 40, .seconds = 0.1, .bytes = 0 });
-    const report = try profileReport(alloc, &profile);
+    const report = try profileReport(alloc, &profile, 248320);
     defer alloc.free(report.kernels);
+    defer alloc.free(report.families);
     try std.testing.expectEqual(@as(u64, 4), report.steps);
     try std.testing.expectApproxEqAbs(@as(f64, 12.5), report.dispatches_per_step, 1e-12); // (8 + 40 + 2 unsampled) / 4
     try std.testing.expectApproxEqAbs(@as(f64, 75), report.attributed_milliseconds_per_step, 1e-9);
@@ -550,6 +834,16 @@ test "profile report divides totals per step, sorts by time, and omits rates wit
     try std.testing.expectApproxEqAbs(@as(f64, 20), first.gigabytes_per_second.?, 1e-9);
     try std.testing.expect(report.kernels[1].encoding == null);
     try std.testing.expect(report.kernels[1].gigabytes_per_second == null);
+    // By family: the matrix row then `add` under other, shares of attributed time.
+    try std.testing.expectEqual(@as(usize, 2), report.families.len);
+    try std.testing.expectEqual(Family.matrix, report.families[0].family);
+    try std.testing.expectApproxEqAbs(@as(f64, 50), report.families[0].milliseconds_per_step, 1e-9);
+    try std.testing.expectEqual(Family.other, report.families[1].family);
+    try std.testing.expectEqual(Family.head, Family.of("matvec_q6_k", 248320, 248320));
+    try std.testing.expectEqual(Family.attention, Family.of("attention_decode_wh", 0, 248320));
+    try std.testing.expectEqual(Family.deltanet, Family.of("delta_chunk", 0, 248320));
+    try std.testing.expectEqual(Family.norms, Family.of("add_rmsnorm", 0, 248320));
+    try std.testing.expectEqual(Family.selection, Family.of("argmax_partial", 0, 248320));
     // Rendering both ways includes the table, and an empty profile has no steps.
     const wrapped: Report = .{ .backend = "metal", .model_path = "m.gguf", .context = 64, .max_tokens = 2, .warmup_runs = 0, .measured_runs = 1, .load_milliseconds = 1, .samples = &.{}, .mean_prefill_tokens_per_second = null, .mean_decode_tokens_per_second = null, .mean_first_token_milliseconds = null, .profile = report };
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -560,8 +854,9 @@ test "profile report divides totals per step, sorts by time, and omits rates wit
     try wrapped.render(&out.writer, true, .none);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"gigabytes_per_second\": 20") != null);
     var empty: inference.metal.Profile = .{};
-    const none = try profileReport(alloc, &empty);
+    const none = try profileReport(alloc, &empty, 248320);
     defer alloc.free(none.kernels);
+    defer alloc.free(none.families);
     try std.testing.expectEqual(@as(u64, 0), none.steps);
     try std.testing.expectEqual(@as(f64, 0), none.attributed_milliseconds_per_step);
 }
@@ -582,4 +877,8 @@ test "report renders text and JSON from the same samples" {
     out.clearRetainingCapacity();
     try report.render(&out.writer, false, .none);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "decode         — tok/s") != null);
+}
+
+test {
+    _ = prefix_cache;
 }

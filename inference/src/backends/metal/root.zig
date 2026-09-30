@@ -266,6 +266,9 @@ pub const Profile = struct {
     /// Whole-command-buffer GPU time while profiling. Exceeds the sum of the
     /// totals by the cost of the per-dispatch encoder boundaries.
     gpu_seconds: f64 = 0,
+    /// While set, committed command buffers are timed but not accounted: a
+    /// caller narrows the profile to the work it brackets.
+    paused: bool = false,
 
     pub fn deinit(self: *Profile, alloc: std.mem.Allocator) void {
         self.totals.deinit(alloc);
@@ -371,7 +374,7 @@ pub const Backend = struct {
     fn account(self: *Backend, gpu_before: f64, completed: bool) !void {
         const p = &self.profile.?;
         defer p.pending.clearRetainingCapacity();
-        if (!completed or p.pending.items.len == 0) return;
+        if (!completed or p.paused or p.pending.items.len == 0) return;
         p.command_buffers += 1;
         p.gpu_seconds += nu_metal_gpu_seconds(self.handle) - gpu_before;
         const timed = nu_metal_profile_read(self.handle, p.durations.ptr, @intCast(p.durations.len));

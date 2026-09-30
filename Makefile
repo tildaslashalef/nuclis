@@ -23,7 +23,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
-        workload workloads-list workloads-validate \
+        workload workloads-list workloads-validate speed speed-base \
         agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
@@ -116,9 +116,20 @@ workload: ## Run workloads by name or glob: make workload NAME=gemma4-qat/prose5
 workloads-list: ## Every workload with its model's status, shape, and evidence
 	python3 scripts/workloads.py --list
 
-workloads-validate: ## Validate workloads.json and run the driver's and the report script's self-tests (no model)
+workloads-validate: ## Validate workloads.json and run the driver's, the report script's, and the speed loop's self-tests (no model)
 	python3 scripts/workloads.py --validate
 	python3 scripts/bench-report.py --self-test
+	python3 scripts/speed.py --self-test
+
+# ---- the speed loop (scripts/speed.py; docs/development.md § The speed loop) --
+# A saved base binary against the tree, interleaved on saved prefixes under
+# .zig-cache/speed/; the keep rule decides.
+
+speed-base: metal ## Save the built binary as the speed loop's base (.zig-cache/speed/base, with its revision)
+	python3 scripts/speed.py --save-base
+
+speed: metal ## Interleaved A/B of the tree against the base: make speed ARGS='--contexts 512,4096 --verify-rows 1,4,8 --model qwen38'
+	python3 scripts/speed.py $(ARGS)
 
 # ---- formatting ------------------------------------------------------------
 

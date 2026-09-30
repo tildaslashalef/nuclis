@@ -1363,7 +1363,7 @@ pub const Plan = struct {
     /// The contract value the engine holds, or null when no head is loaded.
     pub fn drafter(self: *Plan) ?@import("../runtime/draft.zig").Drafter {
         if (!self.has_draft) return null;
-        return .{ .host = self, .hidden = self.draft.?.binding.config.embedding_out, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = self.draft.?.binding.config.embedding_out, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
@@ -1376,6 +1376,11 @@ pub const Plan = struct {
     fn resetDraftFn(host: *anyopaque) void {
         const self: *Plan = @ptrCast(@alignCast(host));
         if (self.draft) |*head| @memset(head.pending_h.floats(), 0);
+    }
+    fn carriedDraft(host: *anyopaque) []f32 {
+        const self: *Plan = @ptrCast(@alignCast(host));
+        if (self.draft) |*head| return head.pending_h.floats();
+        return &.{};
     }
     fn draftBytes(host: *anyopaque) usize {
         const self: *Plan = @ptrCast(@alignCast(host));

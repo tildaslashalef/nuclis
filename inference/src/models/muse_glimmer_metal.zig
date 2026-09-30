@@ -1144,7 +1144,7 @@ pub const Plan = struct {
     /// The contract value the engine holds, or null when no companion bound.
     pub fn drafter(self: *Plan) ?Drafter {
         if (!self.has_draft) return null;
-        return .{ .host = self, .hidden = dflash.hidden_width, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = dflash.hidden_width, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
         const self: *Plan = @ptrCast(@alignCast(host));
@@ -1158,6 +1158,10 @@ pub const Plan = struct {
         // The drafter's state is its session cache, which `Session.reset`
         // clears; nothing else is carried between calls.
         _ = host;
+    }
+    fn carriedDraft(host: *anyopaque) []f32 {
+        _ = host;
+        return &.{};
     }
     fn draftBytes(host: *anyopaque) usize {
         const self: *Plan = @ptrCast(@alignCast(host));

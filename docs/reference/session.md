@@ -75,7 +75,13 @@ explicit about its cost.
 `engine.Model.snapshot`/`restore` expose the pair on both executors; the
 chat and the agent loop are the intended callers (turn-boundary
 checkpoints instead of replaying the conversation after a cancel), wired
-in the agent's phase 2.
+in the agent's phase 2. The model's pair also carries what a loaded
+drafter keeps outside the session (`Drafter.carried`: an MTP head's
+pending target hidden row, 20 KB for Qwen), in `Snapshot.carried`, and
+refuses a snapshot whose carried length differs before touching the
+session: without it a restored prefix proposed its first draft from a
+zeroed row. `bench --prefix-cache` writes the model's snapshot to disk
+([development.md § The speed loop](../development.md#the-speed-loop)).
 
 **Evidence** (`make gate NAME=qwen38-generation-cpu` and `make gate NAME=qwen38-generation-metal`,
 2026-09-10): step token 1, snapshot (157,024,256 bytes at position 1),

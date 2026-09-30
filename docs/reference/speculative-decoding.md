@@ -29,13 +29,15 @@ and provenance, and the measurements behind each catalogue verdict.
 ## The draft contract (MODL-18)
 
 `inference/src/runtime/draft.zig` owns the model-independent interface: a
-family exposes a `Drafter` (a host pointer and four function pointers)
+family exposes a `Drafter` (a host pointer and five function pointers)
 whose `propose(token, out)` returns greedy candidates chained from the
 state after the last committed token (no draft distribution: acceptance
 draws from the target alone, below); `commit(tokens, h_rows)`
 advances the drafter over tokens the main model committed using their
-target hidden; `reset()` clears the drafter's state; `bytes()` reports the
-workspace it owns beyond the session's. There is deliberately no
+target hidden; `reset()` clears the drafter's state; `carried()` is the
+state it keeps outside the session (the MTP heads' pending target hidden
+row; empty for DFlash), which `Model.snapshot`/`restore` copy with the
+session; `bytes()` reports the workspace it owns beyond the session's. There is deliberately no
 `rewind`: the drafter's own attention cache is one more layout in the
 *same* `Session`, so ENGN-11's checkpoint/rewind/truncate cover it and the
 generation loop only needs `reset` on a session reset.

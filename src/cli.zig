@@ -262,6 +262,17 @@ pub fn parseArgs(args: []const []const u8) !Options {
             } else if (command == .bench and std.mem.eql(u8, flag, "--capture")) {
                 if (b.capture != null) return error.DuplicateOption;
                 b.capture = value;
+            } else if (command == .bench and std.mem.eql(u8, flag, "--prefix-cache")) {
+                if (b.prefix_cache != null) return error.DuplicateOption;
+                b.prefix_cache = value;
+            } else if (command == .bench and std.mem.eql(u8, flag, "--verify-rows")) {
+                if (b.verify_rows != null) return error.DuplicateOption;
+                const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
+                if (n == 0 or n > config.max_draft_length + 1) return error.InvalidNumber;
+                b.verify_rows = n;
+            } else if (command == .bench and std.mem.eql(u8, flag, "--accept")) {
+                if (b.accept != null) return error.DuplicateOption;
+                b.accept = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
             } else if (command == .generate and std.mem.eql(u8, flag, "--prompt-tokens")) {
                 if (g.prompt_tokens != null) return error.DuplicateOption;
                 g.prompt_tokens = value;
@@ -1127,6 +1138,12 @@ test "bench parses shared prompt flags and its own repetition flags" {
     try std.testing.expectEqualStrings("t.gputrace", (try parseArgs(&.{ "bench", "--prompt", "a", "--capture", "t.gputrace" })).benchmark.capture.?);
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "bench", "--prompt", "a", "--capture", "a", "--capture", "b" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--prompt", "a", "--capture", "t.gputrace" }));
+    const verify = (try parseArgs(&.{ "bench", "--prompt", "a", "--prefix-cache", "d", "--verify-rows", "4", "--accept", "2" })).benchmark;
+    try std.testing.expectEqualStrings("d", verify.prefix_cache.?);
+    try std.testing.expectEqual(@as(usize, 4), verify.verify_rows.?);
+    try std.testing.expectEqual(@as(usize, 2), verify.accept.?);
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "bench", "--prompt", "a", "--verify-rows", "0" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--prompt", "a", "--verify-rows", "2" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--profile", "--prompt", "a" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--prompt", "a", "--repeat", "1" }));
 }

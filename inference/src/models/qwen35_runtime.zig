@@ -515,7 +515,7 @@ pub const Runtime = struct {
     /// The contract value the engine holds, or null when no block is loaded.
     pub fn drafter(self: *Runtime) ?@import("../runtime/draft.zig").Drafter {
         if (!self.has_draft) return null;
-        return .{ .host = self, .hidden = 5120, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = 5120, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));
@@ -528,6 +528,11 @@ pub const Runtime = struct {
     fn resetDraftFn(host: *anyopaque) void {
         const self: *Runtime = @ptrCast(@alignCast(host));
         if (self.has_draft) @memset(self.draft_pending_h, 0);
+    }
+    fn carriedDraft(host: *anyopaque) []f32 {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        if (!self.has_draft) return &.{};
+        return self.draft_pending_h;
     }
     fn draftBytes(host: *anyopaque) usize {
         const self: *Runtime = @ptrCast(@alignCast(host));

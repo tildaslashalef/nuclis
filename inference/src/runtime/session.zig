@@ -77,9 +77,14 @@ pub const Snapshot = struct {
     layout_digest: u64,
     spans: [max_spans]PositionSpan = undefined,
     span_count: usize = 0,
+    /// State kept outside the session that belongs to the same point (a
+    /// drafter's pending hidden row), owned like `memory`; the session
+    /// neither writes nor reads it.
+    carried: []f32 = &.{},
 
     pub fn deinit(self: *Snapshot) void {
         self.gpa.free(self.memory);
+        self.gpa.free(self.carried);
         self.* = undefined;
     }
     /// Bytes the snapshot holds (its used extent, no padding).
