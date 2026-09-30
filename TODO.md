@@ -18,10 +18,17 @@ it is empty, ask what to work on and write the agreed plan here.
 
 Theme agreed 2026-09-30: **decode speed on Metal**, Qwen3.8-27B first,
 toward the 20 tokens/s of [ADR 0001](docs/adr/0001-qwen-decode-verifier.md)
-(proposed). KERN-20's capture tooling landed early (2026-09-30: `bench
---capture`, `make capture`, `CAPTURE=` on the micro-benchmarks; its
-section says what remains). The next unit is ENGN-18, the speed loop;
-every later unit measures through it.
+(proposed). ENGN-18 closed 2026-09-30: saved prefixes, `bench
+--verify-rows`, and `make speed` / `make speed-base` exist, and the
+opening baseline is in
+[bench.md § The decode-speed baseline](docs/reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30).
+The base binary for `make speed` is `beccae1`'s tooling; refresh it with
+`make speed-base` before the first experiment. Next: KERN-20's remainder.
+The whole-batch verify capture replays only in Xcode's lite mode, so the
+counters come from two kernel captures of its attention and matmul
+(`.zig-cache/trace/`), which wait on the user's Maximum profiles; then
+pipeline statistics and the rest of `apple-gpu.md`. Then the levers in the order the cost table set
+(*Order* below).
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
@@ -96,68 +103,28 @@ KERN-20, with the source or the measurement for each fact.
 
 | # | Unit | Sessions | Lands when |
 | --- | --- | ---: | --- |
-| 1 | ENGN-18 — The speed loop: saved prefixes, verify cost at depth, A/B | 1 | the tools work and today's baseline is written |
-| 2 | KERN-20 — Seeing inside the GPU: capture, pipeline statistics, `apple-gpu.md` | 1 | a decode step and a verify batch are read against their limiters |
-| 3 | KERN-21 — Few-query split-KV verify attention | 1–2 | C at 4K drops ≥ 60 ms, or closed negative |
-| 4 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 8.3 tok/s, or closed negative |
-| 5 | KERN-23 — Single-row matvec toward MLX-class bandwidth | 2 | 512 decode ≥ 11.5 tok/s, or closed at its ledger |
-| 6 | KERN-24 — Register-fragment verify matmul | 2 | the 4-row matmul ≤ 1.3 single-row steps, or closed negative |
-| 7 | ENGN-19 — DeltaNet recurrent verify with a replay tape | 1–2 | checkpoint + recover + slot writes ≤ 6 ms per batch |
-| 8 | ENGN-20 — Re-price speculation per family; the defaults | 1 | the verdict table is re-measured and the catalogue follows it |
+| 1 | KERN-20 — Seeing inside the GPU: capture, pipeline statistics, `apple-gpu.md` | 1 | a decode step and a verify batch are read against their limiters |
+| 2 | KERN-21 — Few-query split-KV verify attention | 1–2 | C at 4K drops ≥ 60 ms, or closed negative |
+| 3 | KERN-24 — Register-fragment verify matmul | 2 | the 4-row matmul ≤ 1.3 single-row steps, or closed negative |
+| 4 | ENGN-19 — DeltaNet recurrent verify with a replay tape | 1–2 | checkpoint + recover + slot writes ≤ 6 ms per batch |
+| 5 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
+| 6 | KERN-23 — Single-row matvec toward MLX-class bandwidth | 2 | 512 decode ≥ 11.5 tok/s, or closed at its ledger |
+| 7 | ENGN-20 — Re-price speculation per family; the defaults | 1 | the verdict table is re-measured and the catalogue follows it |
+
+**The order is ENGN-18's cost table** (bench.md § The decode-speed
+baseline, `--profile` of a 4-row verify and a decode step, 2026-09-30).
+A 4-row verify batch at 4K is 399 ms of kernel time: weight matmuls 237
+(2.8 decode steps' worth), verify attention 106, DeltaNet 44; at 32K
+attention is 824 of 1,114. KERN-21 first: the largest term at depth, and
+the drafter's commit (48 ms per batch at 32K) runs the same
+`attentionChunk`. KERN-24 next: the largest term at 512 and 4K. ENGN-19:
+`delta_chunk` 38 ms + recover 14 + checkpoint 3 per batch. Then decode:
+KERN-22 (decode attention 5.2 ms per step at 4K, 27.5 at 32K) and KERN-23
+(weight matvecs 85 ms per step at every depth).
 
 Identifiers are provisional in this order; they are fixed in the order
-the units close. Units 3–7 are independent once 1–2 exist: reorder by the
-cost table ENGN-18 produces, not by this list.
-
-## ENGN-18 — The speed loop: saved prefixes, verify cost at depth, A/B
-
-Base: `d66c371`
-
-A 32K measurement costs 11 minutes of prefill today; this unit makes it
-cost seconds, so every lever is measured at every context.
-
-- **Saved prefixes.** `nuclis bench --prefix-cache <dir>`: after the
-  prompt's prefill, write `Model.snapshot` to
-  `<dir>/<model digest>-<token hash>-<layout digest>.snap`, and on a later
-  run with the same three keys `restore` it instead of prefilling (prefill
-  rates are then omitted, never estimated). The snapshot already carries
-  the draft source's layers. Write to a temporary name and rename; refuse
-  a file whose size or digest does not match (typed error, fall back to
-  prefill). Files live under `.zig-cache/speed/`, never committed. Unit
-  tests: a round trip on a tiny session, a digest mismatch refused.
-  Numerical changes to prefill leave a saved prefix a valid *state* for
-  timing; a layout change invalidates it by digest.
-- **Verify cost at depth.** `nuclis bench --verify-rows R --accept a`
-  (R 1..8, a 0..R-1): after the prefix, run `--max-tokens` verify
-  batches of R rows through `engine.Model` exactly as speculation does
-  (checkpoint, verify, accept `a`, recover), with fixed draft tokens;
-  report mean ms per batch split into verify, recover, checkpoint, commit,
-  and the batch total C. This is C(R, depth) without acceptance noise;
-  E comes from the real speculative runs.
-- **A/B driver.** `scripts/speed.py` (typed, ruff-clean, a self-test
-  like `gates.py`'s) and `make speed` / `make speed-base`. `speed-base`
-  copies the current `./zig-out/bin/nuclis` (kernels are embedded) to
-  `.zig-cache/speed/base/nuclis` with its revision and a dirty flag;
-  `speed` builds the tree, then alternates base and candidate, ≥ 5 pairs,
-  per context in `--contexts` (default the four acceptance lengths from
-  the acceptance token arrays), and optionally `--verify-rows 1,4,8`.
-  Prints per context: base and candidate medians, Δ %, the pairs' spread,
-  and KEEP / NOISE / REGRESS by the loop's rule; `--json` for the ledger.
-  `--model` picks the family (default qwen38), so every unit can check
-  the others.
-- **Baseline.** Run the whole matrix once at the base revision and write
-  it to [docs/reference/bench.md](docs/reference/bench.md) as the theme's
-  opening record: four contexts plain decode, C(R, depth) at R = 1, 2, 3,
-  4, 5, 8 and depths 512 / 4K / 16K / 32K, and real speculative E at 16K
-  and 32K from saved prefixes (`--speculative on`, draft 4, greedy and
-  instruct), the first long-context acceptance numbers we have. Add the
-  row "C ≤ 50E" per context from them to ADR 0001's budget table.
-- Also the `bench --profile` split of one decode step and one 4-row
-  verify at 4K and 32K by kernel family (matvec, attention, DeltaNet,
-  head, norms), which picks the order of units 3–7.
-
-Gates: `make check`, `make lint-py`, `make verify-auto`. Docs:
-`docs/development.md` (the loop, `make speed`), `bench.md`.
+the units close. Units 2–6 are independent of one another: re-rank them
+when a kept change moves the cost table.
 
 ## KERN-20 — Seeing inside the GPU: capture, pipeline statistics, `apple-gpu.md`
 
@@ -182,10 +149,21 @@ capture is a different path.
   and MMU are not limiters; confirmed at performance state Maximum (149
   GB/s in the replay, the benchmark's rate). Xcode confirmed:
   replay, *Profile after replay*, Performance → Counters → export CSV.
-  Remaining: a verify-batch capture once
-  ENGN-18's `--verify-rows` exists; read, per kernel family, ALU (FP32 /
-  FP16 / integer) utilization and limiter, occupancy, L1 and last-level
-  cache, the MMU limiter, and spills, into `apple-gpu.md`.
+  Verify capture taken 2026-09-30 (`bench --speculative on --verify-rows
+  4 --accept 1 --capture`, 4K array, depth 4,095): it replays only in
+  Xcode's lite mode (over the full-profiling run-time limit; 332.08 ms
+  effective GPU time at Maximum, the unprofiled verify's 335 ms), so no
+  counters; delete it once the user has closed it. Counters come from
+  kernel captures instead, handed to the user 2026-09-30:
+  `attention-4096-c8-reuse-f16` (`make bench-attention CAPTURE=…`, the
+  verify's `attention_chunk_reuse_h`) and
+  `rows-IQ4_XS-17408x5120-t4-tile` (`make bench-matvec-rows CAPTURE=…`,
+  its `matmul_iq4_xs_8`, 0.52 ms, 90.5 GB/s; the multi-row path reads
+  103 GB/s at t = 4), both under `.zig-cache/trace/`. Remaining: rename
+  and read their exports (ALU FP32 / FP16 / integer utilization and
+  limiter, occupancy, L1 and last-level cache, the MMU limiter, spills)
+  into `apple-gpu.md`; a `delta_chunk` case in `metal-check` if the
+  DeltaNet verify still matters then.
 - **Pipeline statistics.** At pipeline creation, log per kernel
   `maxTotalThreadsPerThreadgroup` (it drops below 1024 when a kernel's
   registers limit occupancy), `threadExecutionWidth`, and
@@ -232,8 +210,11 @@ sweep).
   K through threadgroup memory versus direct `simdgroup_load`.
 - **Prediction.** 8 rows ≤ 1.5 ms per layer at 4K, ≤ 4 ms at 16K
   (`make bench-attention`, the verify-shaped counts); the 4K verify batch
-  loses ≥ 60 ms in `make speed --verify-rows 4`. Stop below a 3× kernel
-  gain.
+  loses ≥ 60 ms in `make speed ARGS='--verify-rows 4'`. Stop below a 3×
+  kernel gain. Today (`--profile`, 2026-09-30): `attention_chunk_reuse_h`
+  106.0 ms per 4-row batch at 4K, 823.3 ms at 32K. Route the drafter's
+  batched commit (`commitBatch`, 2–4 rows: 29 ms at 16K, 55 ms at 32K)
+  through the same kernel.
 - **Correctness.** A `metal-check` fixture over synthetic F16 operands at
   counts 1–8, visible 512 to 32,767, future rows poisoned (6e4 F16), each
   row against the F64 CPU attention of its own causal prefix, at the
@@ -258,7 +239,10 @@ Single-row decode is 124 ms at 30,650 tokens against 94 ms at 2K
   reduction per block; (c) 128 or 256 splits; (d) KERN-21's kernel at
   T = 1 (6 heads padded to 8 rows), which would unify decode and verify.
 - **Prediction.** The decode attention kernel ≥ 150 GB/s of cache in
-  `bench --profile` at 32K; 32K decode 7.55 → ≥ 8.3 tok/s, 16K ≥ 8.8.
+  `bench --profile` at 32K (`attention_decode_h` 26.8 → ≤ 13 ms per step);
+  32K decode 8.28 → ≥ 9.2 tok/s, 16K 9.25 → ≥ 9.5. (The first target,
+  7.55 → 8.3, was set against the hot-chip acceptance record; the
+  2026-09-30 baseline already reads 8.28.)
 - **Correctness.** The decode attention fixtures in `metal-check`
   (poisoned future rows), the trace gates, `make verify-long`.
 
@@ -330,8 +314,10 @@ copies a slot.
   a frozen state and writing a tape per row (the correction, normalized
   key, and gate the update needs, a few KB per layer); commit replays the
   accepted prefix once and writes the state once. Price it against the
-  current chunk + checkpoints first with `make speed --verify-rows 4
-  --accept 0,1,3` (ENGN-18).
+  current chunk + checkpoints first with `make speed ARGS='--verify-rows
+  4 --accept N'` for N = 0, 1, 3. Today, per 4-row batch at 4K:
+  `delta_chunk` 38.3 ms of kernel time (1.9 ms in a decode step),
+  recover 14.0 ms, checkpoint 2.8 ms.
 - **Prediction.** checkpoint + recover + slot writes ≈ 32 ms → ≤ 6 ms per
   batch; the region for 8 slots 1.25 GB → tens of MB.
 - **Correctness.** Replay against stepped decode, bit-identical on the

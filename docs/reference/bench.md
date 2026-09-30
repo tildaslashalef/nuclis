@@ -1136,7 +1136,13 @@ rather than hidden:
   buffer's start to the microsecond).
 - Up to 4,096 dispatches per command buffer are timed (a Qwen token records
   1,236); the rest are counted as `unsampled` and excluded from the table.
-- Warm-up runs are profiled and discarded; the table covers measured steps only.
+- Warm-up runs are profiled and discarded; the table covers measured decode
+  steps only (since 2026-09-30 a run's prefill is paused out of it; earlier
+  records spread the prompt's command buffers over their steps).
+- `attributed` can exceed the command-buffer time (4K decode 107.5 against
+  105.8 ms; a 4-row verify 399 against 330 ms, 2026-09-30): summed kernel
+  intervals are not wall time when consecutive encoders overlap, so read
+  the table as shares of kernel time.
 - Matrix kernels are keyed by encoding and shape, so one kernel's time splits
   by tensor; `GB/s` is weight bytes over kernel time. Elementwise kernels
   aggregate by name.
@@ -1712,3 +1718,122 @@ the removed launch (~2–4 µs of ~7–10 µs), about 0.4 ms of Gemma's 39 ms
 step. The dispatch reduction is real (10–21 %) and shipped; the speed bars
 are missed and the unit closes below its target. Verdict in
 [metal-backend.md § KERN-18](metal-backend.md#fused-decode-norms-kern-18-2026-09-21-closed-below-its-target).
+
+## The decode-speed baseline (ENGN-18, 2026-09-30)
+
+The opening record of the decode-speed theme
+([ADR 0001](../adr/0001-qwen-decode-verifier.md)), taken with the speed
+loop's tools ([development.md § The speed loop](../development.md#the-speed-loop)):
+every run restores a saved prefix (the acceptance array less its last
+token) and feeds the last token, so no prefill rate is reported. Apple M4
+Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 27.0 (26A428), AC power, Zig
+0.16.0, ReleaseSafe, `nuclis 0.4.0-dev` at `beccae1`, pinned Qwen3.8-27B
+artifact (`322e194f…`), backend metal, `--ctx-size 32768 --kv f16`, no
+warm-up, one process per row, nothing else on the GPU; the reference
+harness's token arrays (512, 4,096, 16,384 from `run-2026-09-06`, 32,639
+from `boundary-2026-09-06`). The saved prefixes are 190 MB, 425 MB,
+1.23 GB, and 2.30 GB without the draft block (192 MB, 442 MB, 1.30 GB
+with it); a restore took 71 / 167 / 481 / 848–969 ms at 512 / 4K / 16K /
+32K, against a 32K prefill of 640 s (666 s with the draft block).
+
+**Plain decode** (`--speculative off`, the drafter not loaded; 128 tokens,
+greedy, three runs, mean ± sample standard deviation; every run stopped on
+`token_budget`):
+
+| Prompt tokens | Decode tok/s | ms/step | 2026-09-10 record |
+| ---: | ---: | ---: | ---: |
+| 512 | 10.56 ± 0.01 | 94.7 | 10.62 |
+| 4,096 | 10.19 ± 0.01 | 98.1 | 10.20 |
+| 16,384 | 9.25 ± 0.00 | 108.1 | 8.27 |
+| 32,639 | 8.28 ± 0.00 | 120.8 | 7.55 (one run) |
+
+512 and 4K match the acceptance record. 16K and 32K read 12 % and 10 %
+higher. The record ran each length straight after its own prefill (4.4
+and 11 minutes of full GPU load), so its decode started on a hot chip.
+These runs restore a prefix and decode at once; the difference is
+consistent with that, though no temperature was recorded to prove it. The
+speed loop compares interleaved processes of equal history, so neither
+condition biases a keep decision; published end-to-end numbers stay the
+acceptance workload's.
+
+**Real speculation at depth** (`--speculative on --draft-length 4`, the
+embedded MTP head, 128 tokens, three off/on pairs on one loaded model;
+greedy, and the instruct profile's sampling `--temperature 0.7 --top-p
+0.8 --top-k 20 --presence-penalty 1.5 --seed 0`). Per-batch components are
+the runs' totals divided by their batches; **E** is emitted tokens per
+batch (generated − 1 over batches), **C** the decode wall time per batch
+(every component and the loop between them), so the rate is E / C and 20
+tok/s needs C ≤ 50E:
+
+| Prompt | sampling | accepted/step | proposed/step | E | propose | checkpoint | verify | recover | commit | C ms | 50E ms | C / 50E | decode off → on tok/s | speedup |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | greedy | 1.49 | 2.27 | 2.49 | 13.9 | 2.9 | 225.6 | 8.8 | 5.3 | 256.5 | 124.5 | 2.06 | 10.50 → 9.71 | 0.92× |
+| 512 | instruct | 1.46 | 2.39 | 2.46 | 14.8 | 2.9 | 228.1 | 8.8 | 5.2 | 259.8 | 122.9 | 2.11 | 10.46 → 9.46 | 0.90× |
+| 4,096 | greedy | 1.51 | 2.06 | 2.49 | 13.0 | 3.0 | 310.5 | 6.4 | 9.4 | 342.4 | 124.5 | 2.75 | 9.98 → 7.27 | 0.73× |
+| 4,096 | instruct | 1.42 | 2.39 | 2.41 | 15.1 | 3.0 | 319.8 | 9.6 | 9.5 | 356.9 | 120.6 | 2.96 | 9.91 → 6.76 | 0.68× |
+| 16,384 | greedy | 1.67 | 2.44 | 2.65 | 16.9 | 3.0 | 629.9 | 8.5 | 25.6 | 683.9 | 132.3 | 5.17 | 9.21 → 3.87 | 0.42× |
+| 16,384 | instruct | 1.42 | 2.41 | 2.40 | 16.8 | 3.0 | 629.6 | 8.4 | 23.4 | 681.1 | 119.8 | 5.68 | 9.19 → 3.52 | 0.38× |
+| 32,639 | greedy | 1.82 | 2.62 | 2.82 | 20.2 | 3.0 | 1040.9 | 8.1 | 48.5 | 1120.7 | 141.1 | 7.94 | 8.31 → 2.52 | 0.30× |
+| 32,639 | instruct | 1.75 | 2.55 | 2.74 | 19.7 | 3.0 | 1043.3 | 8.5 | 45.3 | 1119.9 | 137.1 | 8.17 | 8.29 → 2.45 | 0.30× |
+
+The host acceptance decision is under 0.1 ms in every row. These are the
+first long-context acceptance counts: E holds at 2.4–2.8 from 512 to
+32,639 (it even rises a little with depth, the long prose being
+repetitive), so the budget 50E stays at 120–141 ms at every depth while
+the verify batch grows from 226 ms to 1,041 ms and the drafter's commit
+from 5 ms to 48 ms (its own attention over the whole cache). Acceptance is not what fails at depth;
+the verify cost is.
+
+**The verify batch cost C(R, depth)** (`--speculative on --verify-rows R
+--accept a` with a = ⌊(R − 1)/2⌋, 16 forced batches per run, three runs;
+fixed drafts, so no acceptance noise). ms per batch, the whole batch C
+and, in parentheses, its verify forward; the first run of each cell reads
+1–5 % above the next two, which agree within 0.2 %:
+
+| R (accepted) | 512 | 4,096 | 16,384 | 32,639 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 (0) | 242.8 (233.5) | 334.1 (324.5) | 645.4 (635.3) | 1,056.6 (1,045.4) |
+| 2 (0) | 220.8 (189.9) | 312.0 (280.7) | 622.9 (590.1) | 1,034.3 (999.8) |
+| 3 (1) | 275.6 (241.0) | 372.3 (331.8) | 702.5 (641.3) | 1,140.1 (1,050.9) |
+| 4 (1) | 284.8 (244.4) | 382.3 (335.4) | 712.1 (644.0) | 1,153.0 (1,055.7) |
+| 5 (2) | 301.6 (253.6) | 399.3 (344.9) | 731.1 (654.7) | 1,170.7 (1,064.7) |
+| 8 (3) | 315.7 (249.9) | 414.3 (341.1) | 748.6 (651.3) | 1,190.0 (1,060.8) |
+
+The other components per batch: propose 6.2–7.9 ms per draft (7.3 ms
+for one draft at 512, 9.3 ms at 32K); checkpoint 2.7–3.2 ms; recover
+13.9–14.2 ms whenever a draft is rejected (one row-checkpoint copy) and 0
+at R = 1; commit 4–11 ms at 512 and 4K, 29–31 ms at 16K, 55–57 ms at 32K
+for two to four rows (the MTP block's attention over the whole cache;
+6–8 ms for one row, which takes the single-token path).
+
+**Reading.** The verify forward is flat in R from 3 to 8 rows at every
+depth (241–254 ms at 512, 1,051–1,065 ms at 32K): its cost is fixed per
+batch, not per row. That cost is 2.6× a single-row decode step at 512
+(244 against 95 ms at R = 4) and 8.7× at 32K (1,056 against 121 ms), and a one-row
+verify is no cheaper than a four-row one (the batched path runs even
+there): the verify schedule, not the row count, is what a lever must
+change. R = 2 is the cheapest batch everywhere, its forward 44–46 ms under
+R = 1's: two rows take the multi-row matvec route, which three and more do not.
+
+**Where the time goes** (`--profile`, 31 decode steps or 16 verify
+batches, each profile its own process; profile mode serializes every
+dispatch, so absolute times read high):
+
+| ms per step or batch | decode 4K | decode 32K | 4-row verify 4K | 4-row verify 32K |
+| --- | ---: | ---: | ---: | ---: |
+| matrix (weight matvec / matmul) | 84.8 (86 %) | 84.8 (70 %) | 236.8 (59 %) | 235.6 (21 %) |
+| attention | 5.2 (5 %) | 27.5 (23 %) | 106.3 (27 %) | 823.6 (74 %) |
+| DeltaNet | 1.9 (2 %) | 1.9 (2 %) | 43.5 (11 %) | 42.7 (4 %) |
+| output head | 4.2 (4 %) | 4.1 (3 %) | 8.8 (2 %) | 8.7 (1 %) |
+| norms | 2.3 | 2.3 | 2.3 | 2.5 |
+| attributed / command buffer | 98.9 / 99.0 | 121.1 / 121.2 | 398.8 / 330.0 | 1,114.2 / 1,047.1 |
+
+Largest rows: decode, `matvec_segments` (the fused projections) 36.1 +
+15.5 + 4.3 ms and `attention_decode_h` 5.0 ms at 4K, 26.8 ms at 32K;
+verify, `attention_chunk_reuse_h` 106.0 ms at 4K and 823.3 ms at 32K
+(the KERN-16 sweep's per-layer cost over 16 layers predicted 103 ms at
+4K; it did not reach 32K), the eight-token-wide tiles `matmul_iq4_xs_8` 52.0,
+`matmul_q5_k_8` 25.4, `matmul_q4_k_8` 24.0 ms, `delta_chunk` 38.3 ms, and
+the 48 × 5,120 Q8_0 β/α projections on the generic tile, 15.7 ms. So at 4K
+a 4-row verify's weight work is 2.8× a decode step's and its attention
+20×; at 32K attention alone is 6.8 decode steps.

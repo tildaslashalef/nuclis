@@ -24,8 +24,12 @@ The [acceptance record](../reference/bench.md#acceptance-runs), not a fresh meas
 | 16,384 | 8.27 | 2.42× |
 | 32,639 | 7.55 | 2.65× |
 
-Those 2026-09-10 numbers need re-measuring at the current revision.
-Use the same token arrays, 128 outputs, 32,768 capacity and warmup policy.
+Re-measured on 2026-09-30 at `beccae1` on saved prefixes, same arrays, 128
+outputs, 32,768 capacity: 10.56 / 10.19 / 9.25 / 8.28 tokens/s
+([bench.md § The decode-speed baseline](../reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30);
+16K and 32K read higher than the record, which decoded straight after its
+own long prefill). Use the same token arrays, 128 outputs, 32,768 capacity
+and warmup policy.
 Do not substitute configured capacity for actual visible prompt length.
 
 ### Why ordinary decode alone is an unlikely route
@@ -184,6 +188,22 @@ averages of per-batch rates.
 | Prose 4K, greedy, draft 4 | 2.49 | 124.5 ms |
 | Short code, greedy, draft 7 | 3.53 | 176.5 ms |
 
+Measured at every acceptance length on 2026-09-30 (draft 4, the embedded
+MTP head, greedy / instruct sampling; E and C from real runs on saved
+prefixes, [bench.md § The decode-speed baseline](../reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30)):
+
+| Context | Emitted tokens/batch E | Budget 50E | Measured C | of which verify | C / 50E | Plain decode |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 2.49 / 2.46 | 124.5 / 122.9 ms | 256.5 / 259.8 ms | 225.6 / 228.1 ms | 2.06 / 2.11 | 10.56 tok/s |
+| 4,096 | 2.49 / 2.41 | 124.5 / 120.6 ms | 342.4 / 356.9 ms | 310.5 / 319.8 ms | 2.75 / 2.96 | 10.19 tok/s |
+| 16,384 | 2.65 / 2.40 | 132.3 / 119.8 ms | 683.9 / 681.1 ms | 629.9 / 629.6 ms | 5.17 / 5.68 | 9.25 tok/s |
+| 32,639 | 2.82 / 2.74 | 141.1 / 137.1 ms | 1,120.7 / 1,119.9 ms | 1,040.9 / 1,043.3 ms | 7.94 / 8.17 | 8.28 tok/s |
+
+Acceptance holds at depth (E 2.4–2.8 at every length); the verify
+forward does not (flat in the row count from 3 to 8 rows, 2.6 single-row
+steps at 512 and 8.7 at 32K). Verify attention is 27 % of a 4-row batch's
+kernel time at 4K and 74 % at 32K.
+
 These are calculated budgets using historical emitted counts, not predictions
 of future acceptance. For prose 512 draft 7, non-verifier costs total about
 35.7 ms, leaving approximately **99 ms for verification**, against 227.6 ms
@@ -202,13 +222,28 @@ acceptance record:
 | 16K | 121 ms | ≈93 ms, if E and non-verifier costs held at 4K |
 | 32K | 132 ms | ≈93 ms, same assumption |
 
+Re-measured on 2026-09-30 (draft 4, greedy, the table above): the verify
+budget is 50E less the batch's measured non-verify costs (propose,
+checkpoint, recover, commit, and the loop), against today's single-row step:
+
+| Context | Single-row step | Non-verify costs | Verify budget | Verify measured |
+| --- | ---: | ---: | ---: | ---: |
+| 512 | 94.7 ms | 30.9 ms | 93.6 ms | 225.6 ms |
+| 4K | 98.1 ms | 31.9 ms | 92.6 ms | 310.5 ms |
+| 16K | 108.1 ms | 54.0 ms | 78.3 ms | 629.9 ms |
+| 32K | 120.8 ms | 79.8 ms | 61.3 ms | 1,040.9 ms |
+
+The drafter's commit grows with depth (5 ms at 512, 48 ms at 32K: its own
+attention over the whole cache), so at 32K the verify budget is half a
+single-row step.
+
 At 512 a batch of about 3.7 rows must cost what one row costs today; at 4K
 and beyond it must cost **less than today's single-row step**. The verifier
 streams the same 16.1 GB as that step, so no verifier schedule reaches these
 budgets unless the single-row path's own weight streaming (about 171 GB/s of
 the 273 GB/s peak at 512) and long-context attention improve too. Ordinary
 decode efficiency is therefore on the critical path, not supporting work.
-There are no measured acceptance counts here from which to price 16K/32K.
+The 16K and 32K acceptance counts were first measured on 2026-09-30 (above).
 
 Stop an individual candidate when its predicted saving does not materialize
 in complete batch wall time, when it only moves costs elsewhere without a

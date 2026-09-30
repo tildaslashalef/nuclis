@@ -621,7 +621,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length } else .{};
             // Decode covers the steps after the first sampled token; the first
             // token's latency (prefill included) is reported separately.
-            const outcome = try generate.runLoop(&eng, fed, limit, &sampler, &history, spec, null, logits, candidates, generated, &trace, null);
+            // The profile covers decode steps only: a run's prefill is
+            // paused out of it and the loop's first step hook resumes it.
+            var gate: ProfileGate = .{ .profile = if (gpu) |backend| (if (backend.profile) |*p| p else null) else null };
+            if (gate.profile) |p| p.paused = true;
+            const outcome = try generate.runLoop(&eng, fed, limit, &sampler, &history, spec, null, logits, candidates, generated, &trace, .{ .context = &gate, .step = ProfileGate.step });
+            if (gate.profile) |p| p.paused = false;
             const t = outcome.timing;
             const decode_steps = if (t.generated_tokens > 1) t.generated_tokens - 1 else 0;
             samples[completed] = .{
@@ -718,6 +723,16 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     if (!json) try writer.writeByte('\n');
     try report.render(writer, json, sty);
 }
+
+/// Resumes a paused profile at the first step after a run's prefill; a
+/// `step` hook alone leaves the decode path as it is.
+const ProfileGate = struct {
+    profile: ?*inference.metal.Profile,
+    fn step(context: *anyopaque, _: usize) anyerror!void {
+        const self: *ProfileGate = @ptrCast(@alignCast(context));
+        if (self.profile) |p| p.paused = false;
+    }
+};
 
 /// The `--verify-rows` runs: each restores `prefix` and times `limit`
 /// forced batches of `rows` rows (the prompt's last token as the first seed,

@@ -152,6 +152,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-25 | A gate whose model is absent is skipped, not failed; `--strict` for releases | 2026-09-30 |
 | KERN-19 | A threaded CPU reference, bit-identical: every core through `cpu.matvec`, the CPU tier in 22 min | 2026-09-30 |
 | REPO-24 | Qwen decode at 20 tokens/s: the evidence, the verify budgets, and ADR 0001 (proposed) | 2026-09-30 |
+| ENGN-18 | The speed loop: saved prefixes, verify cost at depth, interleaved A/B, and the decode-speed baseline | 2026-09-30 |
 
 ## Context
 
@@ -6360,3 +6361,77 @@ evidence*, measured and claimed figures marked apart.
 **Limitations.** Every throughput figure in the ADR is a target or a
 calculation; the Qwen correctness gates it names are not implemented, and
 16K/32K acceptance lengths under speculation are unmeasured.
+
+## ENGN-18 — The speed loop: saved prefixes, verify cost at depth, interleaved A/B, and the decode-speed baseline (2026-09-30)
+
+**Outcome.** The decode-speed theme's measurement loop
+([development.md § The speed loop](development.md#the-speed-loop)):
+
+- `bench --prefix-cache <dir>` saves the prefilled prompt less its last
+  token (`src/prefix_cache.zig`: header, session bytes, the drafter's
+  carried row; keyed by the model files' size and first MiB, the prefix
+  tokens, and the session layout digest; written through a temporary file
+  in 1 GiB pieces; a size, header, or content-digest mismatch is refused
+  and re-prefilled) and restores it before every run, which then feeds one
+  token. A 32K prefix restores in 0.85–0.97 s instead of a 640–666 s
+  prefill.
+- `bench --speculative on --verify-rows R --accept a` times forced verify
+  batches from the prompt's depth (`inference.engine.forcedBatch`: the
+  calls a speculative batch makes, in its order, with fixed drafts and a
+  forced accepted count), split into propose, checkpoint, verify,
+  recover, commit, and the batch total C; `--profile` times only the
+  verify command buffers (`Profile.paused`), `--capture` records one.
+  `--profile` now also sums kernels by family (matrix, head, attention,
+  DeltaNet, norms, selection, other) and excludes a run's prefill.
+- `scripts/speed.py` (`make speed`, `make speed-base`, self-test in
+  `make workloads-validate`): a saved base binary against the tree,
+  alternating first mover, per context and row count, with the keep
+  rule's verdict per row and overall.
+- A side fix: `Drafter` gained `carried()` (the MTP heads' pending target
+  hidden row; empty for DFlash), and `Model.snapshot`/`restore` copy it,
+  checked before the session is touched. The agent's restored primed
+  prefix used to propose its first draft from a zeroed row (acceptance
+  only, never output).
+
+**Evidence.** [bench.md § The decode-speed baseline](reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30),
+at `beccae1`, M4 Pro, macOS 27.0, ReleaseSafe, F16 KV, 32,768 context:
+plain decode 10.56 / 10.19 / 9.25 / 8.28 tok/s at 512 / 4K / 16K / 32,639
+(512 and 4K at the 2026-09-10 record; 16K and 32K 10–12 % above it, whose
+runs decoded straight after their long prefills). Real speculation, draft
+4: E 2.4–2.8 emitted tokens per batch at every depth (the first 16K and
+32K acceptance counts), C 257 / 342 / 684 / 1,121 ms greedy, so C / 50E
+= 2.06 / 2.75 / 5.17 / 7.94 and speculation runs 0.92× / 0.73× / 0.42× /
+0.30× of plain decode; rows added to ADR 0001's budget table. C(R, depth)
+for R = 1–5, 8: the verify forward is flat from 3 to 8 rows (241–254 ms at
+512, 1,051–1,065 ms at 32K), 2.6 single-row steps at 512 and 8.7 at 32K;
+R = 2 (the multi-row matvec route) is the cheapest batch. Profiles: a
+4-row verify at 4K is 399 ms of kernel time, 237 weight matmuls, 106
+attention, 44 DeltaNet; at 32K attention is 824 of 1,114. A decode step
+is 86 % weight matvec at 4K; attention grows from 5.2 to 27.5 ms per step
+at 32K. An A/A `make speed` read NOISE, per-pair changes within ±0.23 %.
+`make check`, `make lint-py`, and `make verify-auto` (29 fast-tier gates
+of every family) pass; the CPU and long tiers were not run: no CPU
+forward, attention, or cache arithmetic changed (an accessor, a profiler
+flag, and bench-side code). The 4-row verify capture at 4K replays only
+in Xcode's lite mode (332.08 ms effective GPU time at Maximum, the
+unprofiled verify's 335 ms; no counters), so KERN-20 reads kernel
+captures of its attention and matmul instead.
+
+**Files.** `src/prefix_cache.zig`, `src/bench.zig`, `src/cli.zig`,
+`src/help.zig`, `src/completion.zig`, `inference/src/engine.zig`,
+`inference/src/runtime/draft.zig`, `inference/src/runtime/session.zig`,
+`inference/src/backends/metal/root.zig`, the six family executors'
+drafters (`qwen35_*`, `gemma4_*`, `muse_glimmer_*`), `scripts/speed.py`,
+`Makefile`, `docs/development.md`, `docs/reference/bench.md`,
+`docs/reference/session.md`, `docs/reference/speculative-decoding.md`,
+`docs/adr/0001-qwen-decode-verifier.md`, `TODO.md`.
+
+**Limitations.** A saved prefix is prefilled as one chunked prompt less
+its last token, so its numerics can differ from a whole-prompt prefill at
+chunk boundaries: a valid state to time from, not a trace fixture. The
+model digest reads the files' first MiB, not their weights. The baseline's
+16K/32K plain rates are not comparable with the acceptance record's
+(chip temperature was not recorded). The verify profile's attributed time
+exceeds its command-buffer time (overlapping encoders), so its table is
+read as shares. The prefix files (0.2–2.3 GB each) accumulate under
+`.zig-cache/speed/prefix/` until deleted.

@@ -1144,6 +1144,16 @@ which shader profiling needs), replay,
 and read *Performance* (counters per dispatch, limiters). Never commit a
 capture.
 
+**Counters need a short command buffer.** Xcode 27 profiles a command
+buffer in full only below a GPU run-time limit; above it the profiler runs
+in *lite* mode ("the Metal workload exceeds the maximum size supported for
+full profiling"): the timeline and the effective GPU time, with Shaders,
+Heat Map, Cost Graph, and Counters disabled, and a Counters export of a
+header alone. A 21 ms micro-benchmark buffer profiled in full; a 4-row
+Qwen verify at 4K (332 ms at Maximum, 2026-09-30) did not. A whole-model
+capture therefore confirms GPU time and dispatch order; counters come from
+kernel captures.
+
 For one kernel on one shape, capture a micro-benchmark instead: `make
 bench-kernels ARGS=Q4_K CAPTURE='matvec-Q4_K-5120x17408 (ffn_down)-block'`
 (also `bench-matvec-rows` and `bench-attention`) records the last warm-up
