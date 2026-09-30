@@ -46,7 +46,7 @@ on this shape; the replays took 31.09 ms at Medium (about 103 GB/s) and
 | Kernel Occupancy / Occupancy Manager Target | 23.1 / 47.4 % | 23.5 / 45.2 % |
 | Allocated registers / high register / spilled | 192 / 192 / 16 bytes | same |
 | L1 Cache Limiter / Eviction Rate | 17.4 / 13.7 % | 18.8 / 17.4 % |
-| Last Level Cache Limiter / Miss Rate | 0.2 / 95.8 % | 1.5 % / — |
+| Last Level Cache Limiter / Miss Rate | 0.2 / 95.8 % | 1.5 / 94.4 % |
 | MMU Limiter / TLB Miss Rate | 0.3 / 74.6 % | 2.0 / 34.4 % |
 
 **Reading, confirmed at full clocks.** The kernel is not waiting
@@ -54,7 +54,7 @@ on memory: the last-level cache, the L1, and the MMU are barely limiters,
 and the cache misses are the expected streaming. It is **issue-bound on
 the integer and complex pipe**: half its ALU instructions are integer and
 complex (the Q4_K nibble unpacking, scale extraction, and integer-to-float
-conversions), and that pipe is the limiter 71 % of the time while only 39 %
+conversions), and that pipe is the limiter 69–71 % of the time while only 38–39 %
 utilized. Occupancy is half what the occupancy manager targets, with 192
 registers per thread and a small spill, so fewer SIMD groups are in
 flight to hide load latency. KERN-05 cut instruction count without a gain;
