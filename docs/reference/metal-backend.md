@@ -5,7 +5,9 @@ buffer per token, every activation resident on the GPU, and the CPU supplying a
 token ID and reading back either logits or a greedy token. It is numerically
 validated against the CPU reference and llama.cpp traces. For the surrounding
 stack see [architecture.md](../architecture.md); for the performance plan see
-the 2026-09-07 review.
+the 2026-09-07 review. What the GPU itself is (limits, dynamic caching) and
+what its counters say about our hot kernels is in
+[apple-gpu.md](apple-gpu.md).
 
 ## Build and run
 
@@ -885,6 +887,18 @@ vs H4a). The remaining candidates are load-latency exposure per block and
 the eight-lanes-per-block reduction structure, which only a different
 geometry (e.g. one SIMD group per block with a wider reduction) would test.
 
+**Answered by counters (KERN-20, 2026-09-30).** A Metal capture of the
+Q4_K matvec on the `ffn_down` shape, profiled at full clocks, reads it as
+**issue-bound on the integer and complex pipe** (limiter 69 %, 38 %
+utilized, half the ALU instructions), not latency-bound on memory (cache
+and MMU limiters at most 19 %), with occupancy at half the occupancy
+manager's target (192 registers, a 16-byte spill):
+[apple-gpu.md § `nu_matvec_q4_k`](apple-gpu.md#nu_matvec_q4_k-on-qwens-ffn_down-shape-2026-09-30).
+It reconciles the experiments above: total instruction count was not the
+limit, because the bound is on *which* pipe issues (the nibble unpacking,
+scale extraction, and integer-to-float conversions); and register
+footprint mattered through occupancy.
+
 `make bench` after the session, kernels unchanged: 10.64 tok/s decode
 ([bench.md](bench.md)).
 
@@ -1626,7 +1640,9 @@ prompt, not the acceptance runs (ENGN-07).
 - Profiling times dispatches in separate encoders, which perturbs what it
   measures by ~8 %; there is no per-dispatch sampling on Apple GPUs, and the
   Instruments GPU limiter counters are unavailable on this device from
-  `xctrace` (KERN-05).
+  `xctrace` (KERN-05). Counters come from Metal captures replayed in Xcode,
+  and only for command buffers under its full-profiling limit (kernel
+  captures, not a whole verify): [apple-gpu.md](apple-gpu.md).
 - Prefill is fully batched (ENGN-02–ENGN-04); its ceiling is the matmul tile's
   half operands (ENGN-05), whose rounding shows more on Gemma's larger
   activations (2.5e-3 relative RMS on the chunked logits against 1.1e-4

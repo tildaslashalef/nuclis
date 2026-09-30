@@ -172,6 +172,7 @@ pub const commands = [_]Command{
         .{ .name = "--warmup", .value = .number, .summary = "unmeasured runs first" },
         .{ .name = "--profile", .summary = "per-kernel GPU time" },
         .{ .name = "--unfused-norms", .summary = "run the norm pairs unfused" },
+        .{ .name = "--kernel-stats", .summary = "each Metal pipeline's limits, no model" },
         .{ .name = "--capture", .value = .file, .summary = "one decode step into a .gputrace" },
         .{ .name = "--prefix-cache", .value = .dir, .summary = "save and restore the prefilled prompt" },
         .{ .name = "--verify-rows", .value = .number, .summary = "time verify batches of R rows" },
@@ -734,7 +735,7 @@ test "every flag in the table is one the parser takes for that command" {
         if (f.value != .none) try args.append(a, sample(f.value));
         // What the command needs besides the flag under test.
         const sources = [_][]const u8{ "--prompt", "--prompt-file", "--prompt-tokens" };
-        if (contains(&.{ "generate", "bench", "tokenize" }, command.name) and !contains(&sources, f.name)) try args.appendSlice(a, &.{ "--prompt", "x" });
+        if (contains(&.{ "generate", "bench", "tokenize" }, command.name) and !contains(&sources, f.name) and !std.mem.eql(u8, f.name, "--kernel-stats")) try args.appendSlice(a, &.{ "--prompt", "x" });
         if (std.mem.eql(u8, command.name, "eval") and !std.mem.eql(u8, f.name, "--file")) try args.appendSlice(a, &.{ "--file", "x" });
         if (std.mem.eql(u8, command.name, "agent") and action.name.len == 0 and contains(&.{ "--json", "--session", "--print" }, f.name)) try args.appendSlice(a, &.{ "-p", "x" });
         if (std.mem.eql(u8, action.name, "init") and !std.mem.eql(u8, f.name, "--discover")) try args.append(a, "--discover");

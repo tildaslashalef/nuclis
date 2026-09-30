@@ -197,6 +197,9 @@ pub fn parseArgs(args: []const []const u8) !Options {
         } else if (command == .bench and std.mem.eql(u8, args[i], "--profile")) {
             if (options.benchmark.profile) return error.DuplicateOption;
             options.benchmark.profile = true;
+        } else if (command == .bench and std.mem.eql(u8, args[i], "--kernel-stats")) {
+            if (options.benchmark.kernel_stats) return error.DuplicateOption;
+            options.benchmark.kernel_stats = true;
         } else if (command == .bench and std.mem.eql(u8, args[i], "--unfused-norms")) {
             if (options.benchmark.unfused_norms) return error.DuplicateOption;
             options.benchmark.unfused_norms = true;
@@ -365,6 +368,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
     if (command == .eval and options.evaluation.file == null) return error.MissingTextFile;
     const token_prompt = options.benchmark.prompt_tokens != null or options.generation.prompt_tokens != null;
     const sources = @as(u8, @intFromBool(options.generation.prompt != null)) + @intFromBool(options.generation.prompt_file != null) + @intFromBool(token_prompt);
+    if (options.benchmark.kernel_stats) {
+        // Standalone: it loads no model, so a prompt would be ignored.
+        if (sources > 0) return error.ConflictingOptions;
+        return options;
+    }
     if (prompts and sources == 0) return error.MissingPrompt;
     // Token prompts are fed as given: --raw would suggest a rendering choice that does not exist.
     if (sources > 1 or (token_prompt and (options.benchmark.raw or options.generation.raw))) return error.ConflictingPromptSources;
@@ -464,6 +472,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     switch (options.command) {
         .help => return help_text.write(out, sty, options.help_topic, version),
         .version => return out.writeAll("nuclis " ++ version ++ "\n"),
+        // Compiles the kernels only: no model, root, or configuration.
+        .bench => if (options.benchmark.kernel_stats) return bench.kernelStats(alloc, options.json, out, sty, diag),
         else => {},
     }
     // Every other command starts from the user root and the configuration
@@ -1135,6 +1145,10 @@ test "bench parses shared prompt flags and its own repetition flags" {
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "bench", "--prompt", "a", "--logits", "l.f32" }));
     try std.testing.expect((try parseArgs(&.{ "bench", "--prompt", "a", "--profile" })).benchmark.profile);
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "bench", "--prompt", "a", "--profile", "--profile" }));
+    try std.testing.expect((try parseArgs(&.{ "bench", "--kernel-stats", "--json" })).benchmark.kernel_stats);
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "bench", "--kernel-stats", "--prompt", "a" }));
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "bench", "--kernel-stats", "--kernel-stats" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--kernel-stats", "--prompt", "a" }));
     try std.testing.expectEqualStrings("t.gputrace", (try parseArgs(&.{ "bench", "--prompt", "a", "--capture", "t.gputrace" })).benchmark.capture.?);
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "bench", "--prompt", "a", "--capture", "a", "--capture", "b" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--prompt", "a", "--capture", "t.gputrace" }));

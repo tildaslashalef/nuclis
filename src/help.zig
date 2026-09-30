@@ -262,6 +262,9 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--warmup <n>", "unmeasured runs first, 0..100; default 1");
     try row(out, sty, "--profile", "per-kernel GPU time (Metal); perturbs the rates");
     try row(out, sty, "--unfused-norms", "run the norm pairs the fused kernels replace");
+    try row(out, sty, "--kernel-stats", "instead of benchmarking, print each Metal");
+    try more(out, "pipeline's thread limit, SIMD width, and static");
+    try more(out, "threadgroup memory (no model or prompt)");
     try row(out, sty, "--capture <path>", "after the runs, one more decode step into a");
     try row(out, sty, "", "new .gputrace for Xcode (MTL_CAPTURE_ENABLED=1)");
     try row(out, sty, "--prefix-cache <dir>", "save the prefilled prompt there and restore it");
@@ -282,6 +285,7 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
     try example(out, sty, "nuclis bench --prompt-tokens p.json --ctx-size 32768 --repeat 5", "a pinned token array at full context");
     try example(out, sty, "nuclis bench --prompt \"Hi\" --speculative on --draft-length 4", "each run measured with the switch off and on");
     try example(out, sty, "nuclis bench --prompt-tokens p.json --speculative on --verify-rows 4", "a 4-row verify batch's cost at the prompt's depth");
+    try example(out, sty, "nuclis bench --kernel-stats", "which kernels' registers cap their threadgroups");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Greedy with 32 output tokens by default, never the file's sampling and");

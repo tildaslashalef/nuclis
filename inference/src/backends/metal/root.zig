@@ -23,6 +23,7 @@ const Binding = extern struct { buffer: u32, offset: usize };
 extern fn nu_metal_create([*]const u8, usize, [*]u8, usize) ?*anyopaque;
 extern fn nu_metal_destroy(*anyopaque) void;
 extern fn nu_metal_pipeline(*anyopaque, [*:0]const u8, *u32, [*]u8, usize) c_int;
+extern fn nu_metal_pipeline_stats(*anyopaque, u32, *[3]u32) c_int;
 extern fn nu_metal_max_buffer_length(*anyopaque) usize;
 extern fn nu_metal_buffer_create(*anyopaque, usize, *u32) c_int;
 extern fn nu_metal_buffer_wrap(*anyopaque, [*]const u8, usize, *u32, *usize) c_int;
@@ -300,6 +301,16 @@ pub const Tick = struct {
     call: *const fn (context: *anyopaque) void,
 };
 
+/// A compiled pipeline's limits: `max_threads` per threadgroup drops below
+/// the device's 1024 when the kernel's registers limit occupancy.
+pub const PipelineStats = struct {
+    name: []const u8,
+    max_threads: u32,
+    execution_width: u32,
+    /// Bytes of `threadgroup` arrays the kernel declares statically.
+    threadgroup_memory: u32,
+};
+
 pub const Backend = struct {
     alloc: std.mem.Allocator,
     handle: *anyopaque,
@@ -388,6 +399,15 @@ pub const Backend = struct {
             entry.value_ptr.seconds += p.durations[i];
             entry.value_ptr.bytes += item.bytes;
         }
+    }
+    pub const pipeline_count = kernel_names.len;
+    /// The compiled pipeline `index` (0 ..< `pipeline_count`, the order the
+    /// kernels are compiled in) as the Metal compiler sized it.
+    pub fn pipelineStats(self: *const Backend, index: usize) PipelineStats {
+        if (!enabled) unreachable; // no Backend exists without Metal
+        var out: [3]u32 = undefined;
+        if (nu_metal_pipeline_stats(self.handle, self.pipelines[index], &out) != 0) unreachable;
+        return .{ .name = kernel_names[index], .max_threads = out[0], .execution_width = out[1], .threadgroup_memory = out[2] };
     }
     pub fn maxBufferLength(self: *const Backend) usize {
         if (!enabled) return 0;

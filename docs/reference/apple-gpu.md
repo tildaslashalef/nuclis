@@ -8,6 +8,56 @@ capture](../development.md#gpu-counters-by-capture)); exported counter
 tables stay under `.zig-cache/trace/`, the numbers that matter are copied
 here.
 
+Sources cited by number are Apple's M3-generation tech talks, which
+describe the Apple family 9 shader core the M4 Pro shares: 111373 *Learn
+performance best practices for Metal shaders*, 111374 *Discover new Metal
+profiling tools for M3 and A17 Pro*, 111375 *Explore GPU advancements in
+M3 and A17 Pro* (developer.apple.com/videos/play/tech-talks/<number>).
+
+## The device
+
+Queried from `MTLDevice` and `system_profiler` on 2026-09-30 (macOS 27.0),
+unless a row names a measurement.
+
+| Fact | Value | Source |
+| --- | --- | --- |
+| GPU | Apple M4 Pro, 16 cores, Apple family 9 (not 10), Metal 4 | `supportsFamily`, `system_profiler` |
+| Unified memory | 48 GiB; `recommendedMaxWorkingSetSize` 40.2 GB; `maxBufferLength` 30.2 GB | `MTLDevice` |
+| Memory bandwidth | 273 GB/s published; best kernel alone 248 GB/s (Q6_K matvec), a Qwen decode step about 63 % of peak | Apple; [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec), [bench.md](bench.md#the-decode-speed-baseline-engn-18-2026-09-30) |
+| SIMD width | 32 threads, every pipeline | `threadExecutionWidth` (`nuclis bench --kernel-stats`) |
+| Threads per threadgroup | 1,024; every pipeline keeps the full 1,024 (below) | `maxThreadsPerThreadgroup`, `--kernel-stats` |
+| Threadgroup memory | 32 KiB per threadgroup; occupancy falls off a cliff between 16 and 24 KB per group (the 64 × 64 prefill tile fits only with half operands); our largest static use is `nu_delta_chunk`, 28,160 B | `maxThreadgroupMemoryLength`; measured in [metal-backend.md § Kernels](metal-backend.md#kernels) (ENGN-05); `--kernel-stats` |
+| Matrix unit | `simdgroup_matrix` 8 × 8; operands of one type (no half → float matrix conversion in MSL); half operands with F32 accumulation reach 4.9–5.2 TFLOP/s in 64 × 64 tiles, F32 operands 3.3–3.5; Apple publishes no peak | measured, [metal-backend.md § Kernels](metal-backend.md#kernels) |
+| Per-lane arithmetic | scalar: building a `float4` value by value cost 3–4× one `uchar4 → float4` cast (Q5_K matvec 113 → 210 GB/s) | measured, [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
+| Loads | the specialized matvecs load `uint4` (16-byte-aligned blocks), `uint2`, or `packed_ushort4` by block alignment; no controlled sweep of load width against rate yet | [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
+| half ↔ float | conversions are free; 16-bit types use fewer registers | 111373 (not isolated by a measurement of ours) |
+| Clock | an isolated short dispatch measures the GPU clock's ramp-up, not the kernel: micro-benchmarks run 8 dispatches per command buffer, 64 below 8,192 rows | measured, [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
+
+## Registers and occupancy under dynamic caching
+
+On family 9 GPUs, registers, threadgroup, tile, stack, and buffer data
+share on-chip caches, and "on-chip register memory is now dynamically
+allocated and deallocated over the lifetime of the shader"; the maximum
+register use "no longer dictates how many SIMDgroups can be run" (111375).
+An **occupancy manager** watches each shader and lowers its occupancy when
+its working set would spill past the L1 (111375, 111374). The FP32, FP16,
+and integer pipes issue in parallel "to a greater degree than ever before"
+(111375), which is why a capture reports a limiter per pipe.
+
+**Measured consequence: the compiler reports no register pressure.** All
+144 of our pipelines report `maxTotalThreadsPerThreadgroup` 1,024 and a
+SIMD width of 32 (`nuclis bench --kernel-stats`, 2026-09-30), including
+`nu_matvec_q4_k` at 192 registers with a spill and
+`nu_attention_chunk_reuse_h` with 116 GB/s of stack traffic (below). On
+older Apple GPUs this limit drops when a kernel's registers cap its
+threads; here it never does. Register pressure is read from a capture
+instead: *Allocated registers* and *spilled bytes*, *L1 Register
+Residency*, *Stack L1 Read/Write Bandwidth*, and occupancy against the
+occupancy manager's target. What `--kernel-stats` still shows is static
+threadgroup memory, which does gate occupancy ("shader cores will stall
+launching new threads due to unavailability of thread group memory",
+111374) and has the measured cliff above.
+
 ## Reading a capture
 
 - Xcode's profiler reports per dispatch a **limiter** and a

@@ -1154,6 +1154,15 @@ Qwen verify at 4K (332 ms at Maximum, 2026-09-30) did not. A whole-model
 capture therefore confirms GPU time and dispatch order; counters come from
 kernel captures.
 
+**Pipeline limits without a capture.** `nuclis bench --kernel-stats`
+(no model; `--json` for a machine-readable list) compiles the kernels and
+prints each pipeline's `maxTotalThreadsPerThreadgroup`,
+`threadExecutionWidth`, and static threadgroup memory. On this family 9
+GPU the thread limit stays 1,024 whatever a kernel's registers
+(dynamic caching), so register pressure is read only from a capture;
+the threadgroup-memory column is the cheap check
+([apple-gpu.md § Registers and occupancy](reference/apple-gpu.md#registers-and-occupancy-under-dynamic-caching)).
+
 For one kernel on one shape, capture a micro-benchmark instead: `make
 bench-kernels ARGS=Q4_K CAPTURE='matvec-Q4_K-5120x17408 (ffn_down)-block'`
 (also `bench-matvec-rows` and `bench-attention`) records the last warm-up

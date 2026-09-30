@@ -100,6 +100,19 @@ int nu_metal_pipeline(void * opaque, const char * name, uint32_t * out_id, char 
     }
 }
 
+// What the compiler made of a pipeline: out[0] its thread limit per
+// threadgroup (below the device's 1024 when registers limit occupancy),
+// out[1] its SIMD width, out[2] its static threadgroup memory in bytes.
+int nu_metal_pipeline_stats(void * opaque, uint32_t index, uint32_t * out) {
+    NuMetal * m = opaque;
+    if (index >= m->pipelines.count) return 1;
+    id<MTLComputePipelineState> state = m->pipelines[index];
+    out[0] = (uint32_t)state.maxTotalThreadsPerThreadgroup;
+    out[1] = (uint32_t)state.threadExecutionWidth;
+    out[2] = (uint32_t)state.staticThreadgroupMemoryLength;
+    return 0;
+}
+
 size_t nu_metal_max_buffer_length(void * opaque) { return ((NuMetal *)opaque)->device.maxBufferLength; }
 
 // Zero-filled shared buffer owned by the bridge for the handle's lifetime.

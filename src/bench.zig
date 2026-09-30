@@ -43,7 +43,43 @@ pub const Options = struct {
     verify_rows: ?usize = null,
     /// Drafts each verify batch accepts, below `verify_rows`; default 0.
     accept: ?usize = null,
+    /// Print every Metal pipeline's compiled limits (`kernelStats`) instead
+    /// of benchmarking; no model is loaded.
+    kernel_stats: bool = false,
 };
+
+/// Compiles the Metal kernels and prints each pipeline's limits: a thread
+/// limit under 1024 is the compiler saying the kernel's registers cap its
+/// occupancy, the cheapest register-pressure signal a kernel change has.
+pub fn kernelStats(alloc: std.mem.Allocator, json: bool, writer: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    const Backend = inference.metal.Backend;
+    var diagnostic: [512]u8 = @splat(0);
+    var backend = Backend.init(alloc, &diagnostic) catch |err| {
+        // Widened: a Metal build's `init` cannot return MetalNotEnabled.
+        if (@as(anyerror, err) == error.MetalNotEnabled)
+            diag.set("this binary was built without the Metal backend: rebuild with `zig build -Dmetal=true` (or `make metal`)", .{})
+        else
+            diag.set("{s}", .{std.mem.sliceTo(&diagnostic, 0)});
+        return err;
+    };
+    defer backend.deinit();
+    var stats: [Backend.pipeline_count]inference.metal.PipelineStats = undefined;
+    var limited: usize = 0;
+    for (&stats, 0..) |*s, i| {
+        s.* = backend.pipelineStats(i);
+        limited += @intFromBool(s.max_threads < 1024);
+    }
+    if (json) {
+        try std.json.Stringify.value(.{ .pipelines = &stats }, .{ .whitespace = .indent_2 }, writer);
+        return writer.writeByte('\n');
+    }
+    try writer.print("{s}Metal pipelines:{s} {d}, {d} below 1024 threads per threadgroup\n\n", .{ sty.on(.bold), sty.off(), stats.len, limited });
+    try writer.print("{s}kernel                       max threads  SIMD width  threadgroup bytes{s}\n", .{ sty.on(.header), sty.off() });
+    for (stats) |s| {
+        const flag = if (s.max_threads < 1024) sty.on(.number) else "";
+        try writer.print("{s: <28} {s}{d: >12}{s} {d: >11} {d: >18}\n", .{ s.name, flag, s.max_threads, if (flag.len > 0) sty.off() else "", s.execution_width, s.threadgroup_memory });
+    }
+}
 
 /// Dispatches a Qwen token records (~1,240) with margin; the plan is not asked
 /// because the bench does not know the model, only the backend.
