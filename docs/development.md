@@ -1098,7 +1098,12 @@ For one kernel on one shape, capture a micro-benchmark instead: `make
 bench-kernels ARGS=Q4_K CAPTURE='matvec-Q4_K-5120x17408 (ffn_down)-block'`
 (also `bench-matvec-rows` and `bench-attention`) records the last warm-up
 command buffer of each case whose printed label contains `CAPTURE` into
-`.zig-cache/trace/kernels/`, replacing the previous set. About 1 GB each:
+`.zig-cache/trace/kernels/` (spaces become `-`, parentheses are
+dropped), replacing the previous set. Save Xcode's counter export beside
+it as `<capture name>_<YYYY-MM-DDTHHMM>_<performance state>.csv`, for
+example `matvec-Q4_K-5120x17408-ffn_down-block_2026-09-30T0947_max.csv`;
+[apple-gpu.md](reference/apple-gpu.md) cites the file it copies numbers
+from. About 1 GB each:
 the benchmark's buffers are sized for its largest shape, and the capture
 holds whole buffers.
 

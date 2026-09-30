@@ -31,7 +31,9 @@ here.
 
 `make bench-kernels ARGS=Q4_K CAPTURE='matvec-Q4_K-5120x17408
 (ffn_down)-block'`: 64 dispatches of the 5,120 × 17,408 Q4_K matvec
-(50.1 MB) in one command buffer, profiled in Xcode 27 on macOS 27.0 at
+(50.1 MB) in one command buffer (exports
+`matvec-Q4_K-5120x17408-ffn_down-block_2026-09-30T0941_medium.csv` and
+`…_2026-09-30T0947_max.csv`, not committed), profiled in Xcode 27 on macOS 27.0 at
 performance states Medium and Maximum. The benchmark reads 127–150 GB/s
 on this shape; the replays took 31.09 ms at Medium (about 103 GB/s) and
 21.51 ms at Maximum (**149 GB/s**, the benchmark's best).

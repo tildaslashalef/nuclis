@@ -2274,11 +2274,25 @@ var capture_match: ?[]const u8 = null;
 fn captureCase(b: *Backend, label: []const u8) !void {
     const match = capture_match orelse return;
     if (std.mem.indexOf(u8, label, match) == null) return;
-    var path_buffer: [256]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buffer, ".zig-cache/trace/kernels/{s}.gputrace", .{label});
-    for (path[".zig-cache/trace/kernels/".len..]) |*c| if (c.* == ' ' or c.* == '/') {
-        c.* = '_';
+    // File names without spaces or parentheses: "5120x17408 (ffn_down)"
+    // becomes "5120x17408-ffn_down".
+    var name: [128]u8 = undefined;
+    var n: usize = 0;
+    for (label) |c| switch (c) {
+        '(', ')' => {},
+        ' ', '/' => {
+            if (n == name.len) return error.NoSpaceLeft;
+            name[n] = '-';
+            n += 1;
+        },
+        else => {
+            if (n == name.len) return error.NoSpaceLeft;
+            name[n] = c;
+            n += 1;
+        },
     };
+    var path_buffer: [256]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buffer, ".zig-cache/trace/kernels/{s}.gputrace", .{name[0..n]});
     var diagnostic: [512]u8 = @splat(0);
     b.captureNext(path, &diagnostic) catch |err| {
         std.debug.print("capture {s}: {s}\n", .{ path, std.mem.sliceTo(&diagnostic, 0) });
