@@ -121,59 +121,19 @@ to the 20 tokens/s outcome.
 
 ### Experiment sequence
 
-1. **Establish the current cost and feasibility envelope.** Run
-   `make workload NAME=qwen38/acceptance` for ordinary decode. Run the
-   existing `qwen38/spec/*` workload, then explicitly add the acceptance
-   token arrays at 16K/32K to the experiment; the short code prompt is not
-   evidence for long-context code. Collect plain wall-time reports separately
-   from `bench --profile`. Profile ordinary steps and verifier batches at
-   2, 3, 4, 5 and 8 rows, over short and long visible caches. Attribute matmul,
-   attention, DeltaNet, head, draft, commit and recovery. Track memory and swap,
-   record thermal/power state, and interleave candidate/control runs.
-   Take one `MTLCaptureManager` capture of a decode step and of a verify
-   batch to read the limiters `xctrace` cannot, settling the KERN-05 limiter
-   and KERN-12 register-pressure questions.
-2. **Verify attention first.** A split-KV causal kernel on a (KV head, key
-   split) grid, rows = 6 query heads × T queries, each row limited to its
-   own causal prefix, merged per row; built with block softmax in registers
-   from the start. Compare against `nu_attention_chunk_reuse` in `make
-   bench-attention` at counts 1–8. Prediction: 8 rows at 4K ≤ 1.5 ms per
-   layer (from 6.46), at 16K ≤ 4 ms (from 25.8); the 4K verify loses ≥ 60 ms.
-   Stop below a 3× kernel gain. Preserve the entire visible context; no
-   sliding window. The same kernel at T = 1 is the candidate for ordinary
-   decode attention at 16K/32K, measured separately.
-3. **Then the verify-width matmul.** Work in
-   `inference/src/backends/metal/{kernels.metal,root.zig}`. A register-
-   fragment tile that decodes each weight block once for all rows with no
-   threadgroup staging, against the existing two-row route and the matrix
-   tiles in `make bench-matvec-rows` at 3, 4, 5 and 8 rows, with capture
-   evidence for spills and occupancy. 8×8 fragments compute 8 token columns
-   whatever the real count, so at 8 rows the matrix work alone is about
-   64–92 ms on this GPU (estimate); below about 4 rows a scalar body can stay
-   under the bandwidth floor. Keep drafts at 3–4 unless the measured curve
-   says otherwise. Prediction: ≥ 150 GB/s at t = 4 on Q5_K/Q6_K (95–115
-   today); stop below 120. Select routing per shape and encoding only when an
-   end-to-end batch improves.
-4. **Recurrent verify and single-row efficiency.** Price a per-token
-   recurrent verify for ≤ 8 rows with a replay tape against the chunk form
-   with row checkpoints, both exact to the chunk-versus-step bound. In
-   parallel, the single-row path the budgets also need: contiguous-channel
-   decode attention, the half magic-number weight decode, and Metal-allocated
-   against file-mapped weight buffers, each read against the capture's
-   limiters.
-5. **Improve drafts only after pricing verification.** Measure accepted prefix
-   length and complete batch cost, not acceptance percentage alone. Re-evaluate
-   the existing MTP policy at the new costs, then, as separate adapter
-   experiments: the published DFlash 2 checkpoint for this target (read its
-   architecture before assuming the MODL-20 adapter applies), suffix drafts
-   for agent edit turns (`make agent-eval`), and one root-sibling row.
-6. **Validate and decide per context and workload.** Use `make verify-auto`
-   per change and `make verify` once per inference unit. Attention/cache
-   changes also require `make verify-long`; CPU arithmetic changes require
-   `make verify-cpu`. Keep greedy equivalence, sampled acceptance, partial
-   recovery, cancellation and GPU lifetime checks. Re-run all four plain
-   acceptance lengths and realistic code/prose, greedy and instruct pairs.
-   Enable speculation only where the documented family acceptance rule holds.
+The units, their predictions, and the keep rule (a change lands only with
+a measured decode gain) are the plan in [TODO.md](../../TODO.md) while the
+theme runs, and the engineering log afterwards. In order:
+
+1. A fast measurement loop: saved prefixes, the verify batch cost C at
+   every depth and row count, interleaved A/B against a base binary; the
+   current four-context baseline and the first 16K/32K acceptance counts.
+2. GPU counters from Metal captures, answering the open limiter and
+   register-pressure questions.
+3. Few-query split-KV verify attention; then long-context decode
+   attention, the single-row matvec, the verify-width matmul, and the
+   DeltaNet recurrent verify, ordered by the measured cost table.
+4. Re-price C and E per family and set the speculative defaults.
 
 ### Correctness coverage required before a candidate lands
 
