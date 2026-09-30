@@ -174,7 +174,15 @@ capture is a different path.
   are read in Xcode's GUI. Kernel captures: `make bench-kernels |
   bench-matvec-rows | bench-attention CAPTURE=<label substring>` (about
   1 GB each, `metal-check`'s `NUCLIS_CAPTURE`). Not yet confirmed that
-  Xcode opens and replays either size: the user's first check. Remaining: a verify-batch capture once
+  Xcode opens and replays either size: the user's first check. First
+  reading landed in [docs/reference/apple-gpu.md](docs/reference/apple-gpu.md):
+  `nu_matvec_q4_k` on the `ffn_down` shape is issue-bound on the integer
+  and complex pipe (limiter 71 %, half its instructions), occupancy 23 %
+  against a 47 % target, 192 registers and a 16-byte spill; memory, cache,
+  and MMU are not limiters. Read at performance state Medium on 9 of 16
+  sampled cores: re-profile at Maximum to confirm. Xcode confirmed:
+  replay, *Profile after replay*, Performance → Counters → export CSV.
+  Remaining: a verify-batch capture once
   ENGN-18's `--verify-rows` exists; read, per kernel family, ALU (FP32 /
   FP16 / integer) utilization and limiter, occupancy, L1 and last-level
   cache, the MMU limiter, and spills, into `apple-gpu.md`.
@@ -264,6 +272,11 @@ verify-long`.
 IQ4_XS, so part of the gap is in the model, not the kernel. Read
 KERN-20's capture first; the ideas are ranked by what it says.
 
+- **What the counters say first** (apple-gpu.md, at Medium): the Q4_K
+  matvec is issue-bound on the integer and complex pipe, not on memory, at
+  half its target occupancy with 192 registers. So (b) and fewer live
+  registers come first, (a) only if the in-model capture shows an MMU
+  limiter the micro-bench does not.
 - **Ideas:** (a) weights in Metal-allocated buffers instead of
   `newBufferWithBytesNoCopy` over the file mapping (the in-model rate
   runs about 10 % under the micro-bench; the MMU limiter decides);

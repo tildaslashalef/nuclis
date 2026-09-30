@@ -485,6 +485,7 @@ drafts.
 
 **Read:** [reference/bench.md](reference/bench.md),
 [reference/metal-backend.md](reference/metal-backend.md),
+[reference/apple-gpu.md](reference/apple-gpu.md) (the GPU's counters on our kernels),
 [llm-guide.md § 13](llm-guide.md#13-the-matvec-that-reads-16-gb) and
 [§ 23](llm-guide.md#23-guessing-ahead-and-paying-to-check),
 [../TODO.md](../TODO.md) for what is next.
