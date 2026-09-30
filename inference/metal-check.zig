@@ -190,6 +190,10 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
                     var total: f64 = 0;
                     var samples: [rounds]f64 = undefined;
                     for (0..rounds + 2) |i| {
+                        if (i == 1) {
+                            var label: [96]u8 = undefined;
+                            try captureCase(b, try std.fmt.bufPrint(&label, "matvec-{s}-{s}-{s}", .{ enc.name, shape.name, if (generic) "generic" else "block" }));
+                        }
                         const before = b.gpuSeconds();
                         try b.begin();
                         for (0..repeats) |_| try b.matvec(weights, matrix, input, output);
@@ -506,6 +510,11 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     std.debug.print("The multi-row path reads the weights once for all rows; the tile reads them once per 8-row token tile (one tile here).\n", .{});
 }
 
+fn captureRows(b: *Backend, path: []const u8, encoding: []const u8, shape: []const u8, tokens: usize) !void {
+    var label: [96]u8 = undefined;
+    try captureCase(b, try std.fmt.bufPrint(&label, "rows-{s}-{s}-t{d}-{s}", .{ encoding, shape, tokens, path }));
+}
+
 fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, encoding: u32, bytes: []const u8, shape: anytype, max_rows: usize, rounds: usize, repeats: usize, weights: Buffer, input: Buffer, output: Buffer) !void {
     const region = try tiledMatrix(alloc, bytes, encoding, shape.rows, shape.columns);
     defer alloc.free(region);
@@ -515,6 +524,7 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
     for (1..max_rows + 1) |tokens| {
         var tile_ms: f64 = std.math.inf(f64);
         for (0..rounds + 1) |i| {
+            if (i == 0) try captureRows(b, "tile", name, shape.name, tokens);
             const before = b.gpuSeconds();
             try b.begin();
             for (0..repeats) |_| try b.matmulTile(weights, matrix, input, shape.columns, output, shape.rows, tokens);
@@ -525,6 +535,7 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
         }
         var wide_ms: f64 = std.math.nan(f64);
         if (Backend.specializedMatmulWide(encoding, weights.offset, region.len / shape.rows, tokens) != null) for (0..rounds + 1) |i| {
+            if (i == 0) try captureRows(b, "wide", name, shape.name, tokens);
             const before = b.gpuSeconds();
             try b.begin();
             for (0..repeats) |_| try b.matmulTile32(weights, matrix, input, shape.columns, output, shape.rows, tokens);
@@ -535,6 +546,7 @@ fn matvecRowsShape(alloc: std.mem.Allocator, b: *Backend, name: []const u8, enco
         };
         var rows_ms: f64 = std.math.nan(f64);
         if (tokens >= 2) for (0..rounds + 1) |i| {
+            if (i == 0) try captureRows(b, "rows", name, shape.name, tokens);
             const before = b.gpuSeconds();
             try b.begin();
             for (0..repeats) |_| try b.matvecRows(weights, matrix, input, shape.columns, output, shape.rows, tokens);
@@ -613,6 +625,10 @@ fn attentionBench(alloc: std.mem.Allocator) !void {
                 const query = if (half) query_f16 else query_f32;
                 var best: f64 = std.math.inf(f64);
                 for (0..rounds + 2) |i| {
+                    if (i == 1) {
+                        var label: [96]u8 = undefined;
+                        try captureCase(b, try std.fmt.bufPrint(&label, "attention-{d}-c{d}-{s}-{s}", .{ case.visible, case.count, if (reuse) "reuse" else "split", if (half) "f16" else "f32" }));
+                    }
                     const before = b.gpuSeconds();
                     try b.begin();
                     for (0..repeats) |_| {
@@ -2247,10 +2263,35 @@ fn checkVisionNorms(alloc: std.mem.Allocator, b: *Backend) !void {
     std.debug.print("LayerNorm and per-row bias vs CPU, {d} strided rows of {d}: max abs {e:.3} (bound 1e-5, relative past 1)\n", .{ rows, width, worst });
 }
 
+/// `NUCLIS_CAPTURE=<substring>`: the benchmarks record the last warm-up
+/// command buffer of every case whose label contains it into
+/// `.zig-cache/trace/kernels/<label>.gputrace`, for Xcode's counters. The
+/// directory must exist and the process needs `MTL_CAPTURE_ENABLED=1`;
+/// `make bench-* CAPTURE=…` provides both.
+var capture_match: ?[]const u8 = null;
+
+/// Opens a capture for the next command buffer when `label` matches.
+fn captureCase(b: *Backend, label: []const u8) !void {
+    const match = capture_match orelse return;
+    if (std.mem.indexOf(u8, label, match) == null) return;
+    var path_buffer: [256]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buffer, ".zig-cache/trace/kernels/{s}.gputrace", .{label});
+    for (path[".zig-cache/trace/kernels/".len..]) |*c| if (c.* == ' ' or c.* == '/') {
+        c.* = '_';
+    };
+    var diagnostic: [512]u8 = @splat(0);
+    b.captureNext(path, &diagnostic) catch |err| {
+        std.debug.print("capture {s}: {s}\n", .{ path, std.mem.sliceTo(&diagnostic, 0) });
+        return err;
+    };
+    std.debug.print("capturing {s}\n", .{path});
+}
+
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+    capture_match = init.environ_map.get("NUCLIS_CAPTURE");
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-bench")) return matvecBench(alloc, if (args.len > 2) args[2] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-split")) return matvecSplitBench(alloc, if (args.len > 2) args[2] else null);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matmul-bench")) return matmulBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);

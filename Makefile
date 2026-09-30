@@ -157,8 +157,13 @@ bench: metal ## Repeated prefill/decode measurement (see docs/reference/bench.md
 bench-profile: metal ## Per-kernel GPU time per token from GPU timestamps (diagnostic; see docs/reference/bench.md)
 	$(BIN) bench --backend metal --model "$(MODEL)" --prompt "$(PROMPT)" --max-tokens 64 --ctx-size 2048 --profile $(ARGS)
 
+# CAPTURE=<substring> on bench-kernels, bench-matvec-rows, bench-attention:
+# each matching case's last warm-up command buffer into
+# .zig-cache/trace/kernels/<label>.gputrace (small; open in Xcode for counters).
+CAPTURE_ENV = $(if $(CAPTURE),rm -rf .zig-cache/trace/kernels && mkdir -p .zig-cache/trace/kernels && MTL_CAPTURE_ENABLED=1 NUCLIS_CAPTURE="$(CAPTURE)")
+
 bench-kernels: ## Achieved GB/s of each matvec kernel on model-shaped matrices, or one with ARGS=<ENCODING> (no model)
-	$(ZIG) build bench-kernels $(METAL) $(if $(ARGS),-- $(ARGS))
+	$(CAPTURE_ENV) $(ZIG) build bench-kernels $(METAL) $(if $(ARGS),-- $(ARGS))
 
 bench-matvec-split: ## Split-K matvec GB/s on the row-poor shapes at 1/2/4/8 splits, or ARGS=<ENCODING> (no model)
 	$(ZIG) build bench-matvec-split $(METAL) $(if $(ARGS),-- $(ARGS))
@@ -167,7 +172,7 @@ bench-matmul: ## Throughput of the batched prefill matmul on model shapes, 256 t
 	$(ZIG) build bench-matmul $(METAL) $(if $(ARGS),-- $(ARGS))
 
 bench-matvec-rows: ## Multi-row matvec vs the 16x8 tile at 1-8 rows, or ARGS=<max rows> (no model)
-	$(ZIG) build bench-matvec-rows $(METAL) $(if $(ARGS),-- $(ARGS))
+	$(CAPTURE_ENV) $(ZIG) build bench-matvec-rows $(METAL) $(if $(ARGS),-- $(ARGS))
 
 bench-hadamard: ## GPU time of one token's 258 Hadamard transforms on the Bonsai schedule, and per block (no model; docs/reference/metal-backend.md)
 	$(ZIG) build bench-hadamard $(METAL)
@@ -176,7 +181,7 @@ bench-experts: ## GB/s of the gathered expert kernels on the 26B-A4B shape, 8 of
 	$(ZIG) build bench-experts $(METAL) $(if $(ARGS),-- $(ARGS))
 
 bench-attention: ## Prefill chunk attention, row-split vs register-reuse, 4K-32K visible and the verify-shaped counts (no model)
-	$(ZIG) build bench-attention $(METAL)
+	$(CAPTURE_ENV) $(ZIG) build bench-attention $(METAL)
 
 agent: metal ## Interactive agent surface on the engine (Metal by default; ARGS="--think low")
 	$(BIN) agent --backend $(BACKEND) --model "$(MODEL)" $(ARGS)

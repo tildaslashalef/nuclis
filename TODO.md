@@ -169,7 +169,10 @@ capture is a different path.
   capture`; procedure in `docs/development.md` § GPU counters by capture.
   Verified: a Qwen decode step at 2K context captured (15 GB document,
   weights included). Xcode 27 has no command-line reader, so the counters
-  are read in Xcode's GUI. Remaining: a verify-batch capture once
+  are read in Xcode's GUI. Kernel captures: `make bench-kernels |
+  bench-matvec-rows | bench-attention CAPTURE=<label substring>` (about
+  1 GB each, `metal-check`'s `NUCLIS_CAPTURE`). Not yet confirmed that
+  Xcode opens and replays either size: the user's first check. Remaining: a verify-batch capture once
   ENGN-18's `--verify-rows` exists; read, per kernel family, ALU (FP32 /
   FP16 / integer) utilization and limiter, occupancy, L1 and last-level
   cache, the MMU limiter, and spills, into `apple-gpu.md`.

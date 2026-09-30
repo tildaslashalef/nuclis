@@ -1091,6 +1091,14 @@ Xcode 27 ships no command-line reader for it: open it in Xcode, replay,
 and read *Performance* (counters per dispatch, limiters). Never commit a
 capture.
 
+For one kernel on one shape, capture a micro-benchmark instead: `make
+bench-kernels ARGS=Q4_K CAPTURE='matvec-Q4_K-5120x17408 (ffn_down)-block'`
+(also `bench-matvec-rows` and `bench-attention`) records the last warm-up
+command buffer of each case whose printed label contains `CAPTURE` into
+`.zig-cache/trace/kernels/`, replacing the previous set. About 1 GB each:
+the benchmark's buffers are sized for its largest shape, and the capture
+holds whole buffers.
+
 ### Memory of a running process
 
 `python3 scripts/nuclis_mem_usage.py` reports where a running `nuclis`
