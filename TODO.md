@@ -18,7 +18,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 Theme agreed 2026-09-30: **decode speed on Metal**, Qwen3.8-27B first,
 toward the 20 tokens/s of [ADR 0001](docs/adr/0001-qwen-decode-verifier.md)
-(proposed). Nothing started. The next unit is ENGN-18, the speed loop;
+(proposed). KERN-20's capture tooling landed early (2026-09-30: `bench
+--capture`, `make capture`, `CAPTURE=` on the micro-benchmarks; its
+section says what remains). The next unit is ENGN-18, the speed loop;
 every later unit measures through it.
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
