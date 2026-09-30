@@ -250,7 +250,10 @@ stale references. Do not claim build/test execution when no code or build exists
   timeline (`metal-gpu-intervals`) does record. For counters, `make
   capture` writes a Metal `.gputrace` of one decode step (needs
   `MTL_CAPTURE_ENABLED=1`, which the target sets; about 15 GB with the
-  weights) that only Xcode's GUI replays ([docs/development.md § GPU
+  weights; `CAPTURE=` on the micro-benchmarks makes ~1 GB kernel captures)
+  that only Xcode's GUI replays. Xcode 27's agent tools (`xcrun mcpbridge`,
+  an MCP server; `mcp-server` manages it) cover builds, tests, previews,
+  and devices, not GPU captures ([docs/development.md § GPU
   counters by capture](docs/development.md#gpu-counters-by-capture)). Keep traces under
   `.zig-cache/trace/`; never commit them.
 

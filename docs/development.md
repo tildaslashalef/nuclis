@@ -1087,7 +1087,8 @@ into `.zig-cache/trace/decode.gputrace` (`CAPTURE_OUT=` to move it,
 `MODEL=`, `PROMPT=`, and `ARGS=` as for `bench`; the budget's context sets
 the visible cache). The document holds every buffer the step reads, the
 weights included: about 15 GB for Qwen3.8-27B, so delete it when done.
-Xcode 27 ships no command-line reader for it: open it in Xcode, replay,
+Xcode 27 ships no command-line reader for it, and its MCP tools (`xcrun
+mcpbridge`) include none: open it in Xcode, replay,
 and read *Performance* (counters per dispatch, limiters). Never commit a
 capture.
 
