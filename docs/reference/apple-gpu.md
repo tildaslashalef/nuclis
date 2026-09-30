@@ -173,3 +173,46 @@ ranks KERN-24's ideas: decode straight into register fragments (drop the
 staging instructions), and route small row counts to a body that does not
 compute padded columns: the multi-row matvec already reads 103 GB/s at 4
 tokens on this shape against the tile's 90.5.
+
+## The multi-row matvec at 2 and 8 rows (2026-09-30)
+
+`make bench-matvec-rows CAPTURE='rows-Q4_K-17408x5120-t<n>-rows'`: the
+Q4_K multi-row matvec (`nu_matvec_rows_q4_k_t2` and `_t8`) on the
+17,408 × 5,120 `ffn_gate`/`ffn_up` shape, which reads 141.7 GB/s at 2
+rows (0.35 ms) and 27.8 GB/s at 8 (1.80 ms; the 16 × 8 tile reads 96.5 at
+any count). Profiled at Maximum (exports
+`rows-Q4_K-17408x5120-t2-rows_2026-09-30T1800_max.csv` and
+`…-t8-rows_…`, not committed); the replays' GPU times were not read.
+
+| Counter | 2 rows | 8 rows |
+| --- | ---: | ---: |
+| ALU Utilization | 23.8 % | 12.0 % |
+| Instruction Throughput Limiter / Utilization | 65.2 / 12.6 % | 23.1 / 6.3 % |
+| Integer and Complex Limiter / Utilization | 60.3 / 36.5 % | 9.1 / 7.9 % |
+| F32 Limiter / Utilization | 34.6 / 23.7 % | 22.4 / 18.0 % |
+| ALU instruction mix: float / integer and complex / integer and conditional | 49.7 / 38.4 / 11.9 % | 75.1 / 16.6 / 8.3 % |
+| Kernel ALU instructions (same invocations) | 8.70 × 10⁹ | 22.30 × 10⁹ |
+| Kernel Occupancy / Occupancy Manager Target | 25.2 / 30.8 % | **17.6 / 19.7 %** |
+| L1 Register / Buffer Residency | 51.3 / 26.8 % | **72.4** / 12.6 % |
+| Stack L1 Read / Write Bandwidth | 146.8 / 129.2 | **309.9 / 297.2** |
+| Buffer L1 Read Bandwidth / Miss Rate | 601.9 / 16.8 % | 395.0 / 19.8 % |
+| L1 Cache Limiter / Eviction Rate | 25.4 / 76.3 % | 16.1 / 100 % |
+| Last Level Cache Limiter / MMU Limiter | 4.0 / 1.6 % | 0.2 / 0.1 % |
+| Compute Shader Launch Limiter | 66.3 % | 64.7 % |
+
+(Bandwidths as Xcode exports them, GB/s.)
+
+**Reading: register pressure, confirmed.** At 2 rows the body looks like
+the single-row matvec: issue-bound on the integer and complex pipe (limiter
+60 %), with some spill already (276 GB/s of stack traffic). At 8 rows the
+live accumulators (one per row and token) fill the L1 with registers
+(72 % register residency), the kernel spills 607 GB/s of stack traffic
+against 395 GB/s of buffer reads, the occupancy manager lowers its own
+target to 20 % to keep that working set on chip, and every ALU limiter
+falls: the SIMD groups wait on their own stack, not on the weights or
+the ALUs. The 2.6× instructions for 4× the tokens cost 5× the time. A
+multi-row body that holds more rows than about two needs fewer live
+values per thread (fewer rows per SIMD group, or accumulators in
+threadgroup memory), not fewer instructions. The launch limiter reads
+65 % in both runs; what it measures here is not established.
+

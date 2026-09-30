@@ -153,6 +153,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-19 | A threaded CPU reference, bit-identical: every core through `cpu.matvec`, the CPU tier in 22 min | 2026-09-30 |
 | REPO-24 | Qwen decode at 20 tokens/s: the evidence, the verify budgets, and ADR 0001 (proposed) | 2026-09-30 |
 | ENGN-18 | The speed loop: saved prefixes, verify cost at depth, interleaved A/B, and the decode-speed baseline | 2026-09-30 |
+| KERN-20 | Seeing inside the GPU: Metal captures read in Xcode, `bench --kernel-stats`, `apple-gpu.md`; KERN-05's and KERN-12's questions answered | 2026-09-30 |
 
 ## Context
 
@@ -6435,3 +6436,73 @@ model digest reads the files' first MiB, not their weights. The baseline's
 exceeds its command-buffer time (overlapping encoders), so its table is
 read as shares. The prefix files (0.2–2.3 GB each) accumulate under
 `.zig-cache/speed/prefix/` until deleted.
+
+## KERN-20 — Seeing inside the GPU: Metal captures, pipeline statistics, `apple-gpu.md` (2026-09-30)
+
+**Outcome.** `xctrace`'s counter profile is unsupported on the M4 Pro
+(KERN-05); Metal captures replayed in Xcode are the path to counters
+([development.md § GPU counters by capture](development.md#gpu-counters-by-capture)).
+
+- Capture: `Backend.captureNext` (bridge `nu_metal_capture_next`),
+  `bench --capture <path>`, `make capture` (one decode or verify batch);
+  micro-benchmark captures by label (`make bench-kernels |
+  bench-matvec-rows | bench-attention CAPTURE=<label>`, `metal-check`'s
+  `NUCLIS_CAPTURE`). The agent captures, the user profiles at Maximum and
+  exports Counters as CSV, the agent renames, reads, and deletes the
+  capture.
+- Pipeline statistics: `nuclis bench --kernel-stats` (no model, `--json`;
+  bridge `nu_metal_pipeline_stats`, `Backend.pipelineStats`) prints each
+  pipeline's `maxTotalThreadsPerThreadgroup`, `threadExecutionWidth`, and
+  static threadgroup memory.
+- [apple-gpu.md](reference/apple-gpu.md): the device (queried and
+  measured, Apple's tech talks 111373–111375 cited), registers and
+  occupancy under dynamic caching, how to read a capture, and four kernel
+  readings; linked from architecture.md § 11 and metal-backend.md.
+
+**Evidence.** Four kernel captures profiled at Maximum, each replay at
+its benchmark's rate where read:
+
+- `nu_matvec_q4_k` on `ffn_down` (149 GB/s): issue-bound on the integer
+  and complex pipe (limiter 69 %, 38 % utilized, half the ALU
+  instructions), occupancy 23 % of a 45 % target, 192 registers and a
+  16-byte spill; memory not a limiter. **KERN-05's question**
+  (issue-bound or latency-bound?): issue-bound, on *which* pipe issues,
+  not on instruction count.
+- `nu_attention_chunk_reuse_h`, 8 verify rows at 4K: latency-bound on an
+  empty GPU (occupancy 6 % of 85 %, every limiter ≤ 10 %, 116 GB/s of
+  stack spill); KERN-21's design, whose first idea then cut the 4-row
+  verify batch at 4K by 99 ms.
+- `nu_matmul_iq4_xs_8`, 4 tokens: issue-bound (instruction throughput
+  limiter 91 %, F32 68 %), staging through threadgroup memory, half its
+  columns padding; ranks KERN-24's ideas.
+- `nu_matvec_rows_q4_k` at 2 and 8 rows (141.7 against 27.8 GB/s):
+  **KERN-12's hypothesis confirmed**, register pressure: at 8 rows 607
+  GB/s of stack traffic against 395 of buffer reads, 72 % register
+  residency, the occupancy manager's target down to 20 %, every ALU
+  limiter under 25 %.
+
+Pipeline statistics: all 144 pipelines report 1,024 threads per
+threadgroup and SIMD width 32, the spilling kernels included (dynamic
+caching allocates registers at run time), so the call is no register
+signal on this GPU; static threadgroup memory (largest `nu_delta_chunk`,
+28,160 of 32,768 bytes) is. A whole 4-row verify at 4K replays only in
+Xcode's lite mode (332.08 ms at Maximum, over the full-profiling limit),
+so counters come from kernel captures. `make verify-auto` passed (29
+gates); no numerical path changed.
+
+**Files.** `inference/src/backends/metal/bridge.m`,
+`inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
+`src/bench.zig`, `src/cli.zig`, `src/help.zig`, `src/completion.zig`,
+`Makefile`, `docs/reference/apple-gpu.md`,
+`docs/reference/metal-backend.md`, `docs/reference/bench.md`,
+`docs/development.md`, `docs/architecture.md`, `TODO.md`.
+
+**Limitations.** Xcode 27 has no command-line reader, so every reading
+needs a person at Xcode. Profiles report 3–9 of 16 sampled cores with a
+warning. The multi-row replays' GPU times were not read, so their
+performance state rests on the menu setting. The exported CSVs stay
+under `.zig-cache/trace/`, uncommitted. No `delta_chunk` capture was
+taken; the Compute Shader Launch limiter (65 % in the multi-row runs) is
+unexplained. Allocated register counts come from Xcode's shader view,
+not the CSV, and were read only for the Q4_K matvec.
+

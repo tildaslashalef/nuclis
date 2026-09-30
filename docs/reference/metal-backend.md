@@ -1124,6 +1124,13 @@ justify stopping work on these scalar bodies, not an impossibility claim for
 all scalar register tiles. The unit shipped two-row routing below its original
 acceptance; the matrix tile and eliminating recovery replay are the next levers.
 
+**Answered by counters (KERN-20, 2026-09-30).** A capture of the Q4_K body
+at 2 and 8 rows confirms the register-pressure hypothesis: at 8 rows the
+kernel spills 607 GB/s of stack traffic against 395 GB/s of buffer reads,
+registers hold 72 % of the L1, the occupancy manager lowers its target to
+20 %, and every ALU limiter falls below 25 %
+([apple-gpu.md § The multi-row matvec](apple-gpu.md#the-multi-row-matvec-at-2-and-8-rows-2026-09-30)).
+
 A reference-style `1 row per lane group × NT tokens` body was also measured and
 rejected: it decodes a 256-value block header once per 16-value segment instead
 of once per 32 values, and Q4_K fell to 55 GB/s at 2 rows.

@@ -24,12 +24,10 @@ opening baseline is in
 [bench.md § The decode-speed baseline](docs/reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30).
 The base binary for `make speed` is the KERN-21 kept change
 (`.zig-cache/speed/base/`, not committed; `make speed-base` after each
-kept change). KERN-20: everything landed but KERN-12's answer, which
-waits on the user's profile of two captures taken 2026-09-30
-(`.zig-cache/trace/rows-Q4_K-17408x5120-t{2,8}-rows.gputrace`, the
-multi-row matvec at 2 and 8 rows: 141.7 and 27.8 GB/s); read them into
-apple-gpu.md, answer KERN-12 in metal-backend.md, then close KERN-20.
-KERN-21: its first idea is kept (the 4-row verify batch C at 4K 387 →
+kept change). KERN-20 closed 2026-09-30: captures read in Xcode,
+`bench --kernel-stats`, and
+[apple-gpu.md](docs/reference/apple-gpu.md) with four kernel readings; KERN-05
+and KERN-12 answered. KERN-21: its first idea is kept (the 4-row verify batch C at 4K 387 →
 288 ms, at 32K 1,157 → 376); next are the remaining items in its
 section. Then the levers in the order the cost table set (*Order*
 below), re-ranked: attention is no longer the verify's largest term.
@@ -111,7 +109,6 @@ KERN-20, with the source or the measurement for each fact.
 
 | # | Unit | Sessions | Lands when |
 | --- | --- | ---: | --- |
-| 1 | KERN-20 — Seeing inside the GPU: capture, pipeline statistics, `apple-gpu.md` | 1 | a decode step and a verify batch are read against their limiters |
 | 2 | KERN-21 — Few-query split-KV verify attention | 1–2 | C at 4K drops ≥ 60 ms, or closed negative |
 | 3 | KERN-24 — Register-fragment verify matmul | 2 | the 4-row matmul ≤ 1.3 single-row steps, or closed negative |
 | 4 | ENGN-19 — DeltaNet recurrent verify with a replay tape | 1–2 | checkpoint + recover + slot writes ≤ 6 ms per batch |
@@ -133,77 +130,6 @@ KERN-22 (decode attention 5.2 ms per step at 4K, 27.5 at 32K) and KERN-23
 Identifiers are provisional in this order; they are fixed in the order
 the units close. Units 2–6 are independent of one another: re-rank them
 when a kept change moves the cost table.
-
-## KERN-20 — Seeing inside the GPU: capture, pipeline statistics, `apple-gpu.md`
-
-`xctrace`'s counter profile is unsupported on this M4 Pro (KERN-05), so
-every limiter question so far was answered by guessing. Metal's own
-capture is a different path.
-
-- **Capture — landed 2026-09-30.** `Backend.captureNext` (bridge
-  `nu_metal_capture_next`, the queue captured until the next commit),
-  `bench --capture <path>` (one decode step after the runs), `make
-  capture`; procedure in `docs/development.md` § GPU counters by capture.
-  Verified: a Qwen decode step at 2K context captured (15 GB document,
-  weights included). Xcode 27 has no command-line reader, so the counters
-  are read in Xcode's GUI. Kernel captures: `make bench-kernels |
-  bench-matvec-rows | bench-attention CAPTURE=<label substring>` (about
-  1 GB each, `metal-check`'s `NUCLIS_CAPTURE`). Not yet confirmed that
-  Xcode opens and replays either size: the user's first check. First
-  reading landed in [docs/reference/apple-gpu.md](docs/reference/apple-gpu.md):
-  `nu_matvec_q4_k` on the `ffn_down` shape is issue-bound on the integer
-  and complex pipe (limiter 71 %, half its instructions), occupancy 23 %
-  against a 47 % target, 192 registers and a 16-byte spill; memory, cache,
-  and MMU are not limiters; confirmed at performance state Maximum (149
-  GB/s in the replay, the benchmark's rate). Xcode confirmed:
-  replay, *Profile after replay*, Performance → Counters → export CSV.
-  Verify capture taken 2026-09-30 (`bench --speculative on --verify-rows
-  4 --accept 1 --capture`, 4K array, depth 4,095): it replays only in
-  Xcode's lite mode (over the full-profiling run-time limit; 332.08 ms
-  effective GPU time at Maximum, the unprofiled verify's 335 ms), so no
-  counters; delete it once the user has closed it. Counters come from
-  kernel captures instead, handed to the user 2026-09-30:
-  `attention-4096-c8-reuse-f16` (`make bench-attention CAPTURE=…`, the
-  verify's `attention_chunk_reuse_h`) and
-  `rows-IQ4_XS-17408x5120-t4-tile` (`make bench-matvec-rows CAPTURE=…`,
-  its `matmul_iq4_xs_8`, 0.52 ms, 90.5 GB/s; the multi-row path reads
-  103 GB/s at t = 4). **Read 2026-09-30** into
-  [apple-gpu.md § The verify batch's two largest kernels](docs/reference/apple-gpu.md#the-verify-batchs-two-largest-kernels-2026-09-30):
-  the attention is latency-bound on an empty GPU (occupancy 6 % of an
-  85 % target, every limiter ≤ 10 %, 116 GB/s of stack spill traffic);
-  the matmul tile is issue-bound (instruction throughput limiter 91 %,
-  F32 68 %, occupancy 38 % of 82 %, staging through threadgroup memory,
-  half its columns padding). Remaining: a `delta_chunk` case in
-  `metal-check` if the DeltaNet verify still matters then.
-- **Pipeline statistics — landed 2026-09-30** (`9ecea66`): `nuclis
-  bench --kernel-stats` (no model, `--json`), bridge
-  `nu_metal_pipeline_stats`, `Backend.pipelineStats`. Finding: all 144
-  pipelines keep 1,024 threads and SIMD width 32 whatever their registers
-  (family 9 dynamic caching), so it is no register-pressure signal here;
-  the static threadgroup memory column is (apple-gpu.md § Registers and
-  occupancy).
-- **`docs/reference/apple-gpu.md`.** The M4 Pro GPU as we measure it:
-  cores, SIMD width, register file and dynamic caching, threadgroup
-  memory, load widths that coalesce, `simdgroup_matrix` throughput we
-  reach, half ↔ float conversion costs, the limiters of our hot kernels;
-  each fact with its source (Apple tech talks 111373–111375, the Metal
-  Shading Language specification, the WWDC 2025 Metal 4 sessions) or its
-  measurement. Linked from `docs/architecture.md` § 11 and
-  `metal-backend.md`.
-- **`apple-gpu.md` — landed 2026-09-30** (`9ecea66`): the device table
-  (queried and measured, sources 111373–111375) and registers under
-  dynamic caching; linked from architecture.md § 11 and metal-backend.md.
-- **Answer the two open questions.** KERN-05 answered in
-  metal-backend.md (issue-bound on the integer and complex pipe).
-  KERN-12 (register pressure in the multi-row matvec) waits on the
-  user's profile of `rows-Q4_K-17408x5120-t2-rows` and `-t8-rows`
-  (`.zig-cache/trace/`, Maximum, export Counters CSV): read allocated
-  registers, spills, stack bandwidth, and occupancy at 2 against 8 rows
-  (141.7 against 27.8 GB/s) into apple-gpu.md, answer in metal-backend.md
-  § Multi-row matvec, delete the captures, close KERN-20.
-
-Gates: `make check`, `make verify-auto`; the capture path is off unless
-the variable is set, so no numerical gate moves.
 
 ## KERN-21 — Few-query split-KV verify attention
 
