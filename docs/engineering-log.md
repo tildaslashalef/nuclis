@@ -151,6 +151,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-23 | The README's Laya section: the experiment and its results | 2026-09-29 |
 | REPO-25 | A gate whose model is absent is skipped, not failed; `--strict` for releases | 2026-09-30 |
 | KERN-19 | A threaded CPU reference, bit-identical: every core through `cpu.matvec`, the CPU tier in 22 min | 2026-09-30 |
+| REPO-24 | Qwen decode at 20 tokens/s: the evidence, the verify budgets, and ADR 0001 (proposed) | 2026-09-30 |
 
 ## Context
 
@@ -6326,3 +6327,36 @@ encoders' serial F64 attention over every patch pair is the first
 suspect if the tier needs to shrink again. The "before" times of the generation, speculative, and
 vision gates were not taken (the full "before" run was aborted); their
 comparison is to the documented hours.
+
+## REPO-24 — Qwen decode at 20 tokens/s: evidence and experiment proposal (2026-09-30)
+
+**Outcome.** [ADR 0001](adr/0001-qwen-decode-verifier.md), status
+proposed: amortize Qwen decode through a dedicated small-batch verifier,
+with the correctness gates a candidate must pass and quantitative stop
+rules. Its budget arithmetic (a batch emitting E tokens in C ms reaches
+20 tokens/s only when C ≤ 50E) sets the verify budgets from the
+[speculative verdict record](reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21):
+about 99 ms at prose 512, 93 ms at 4K, and 137 ms on the short code prompt,
+against 227–309 ms measured. From 4K up the budget is below today's
+single-row step (98 ms at 4K, 132 ms at 32K), so the verifier alone cannot
+reach the target: the single-row path's weight streaming (about 171 GB/s
+of 273 GB/s at 512) and long-context attention have to improve with it.
+
+**Evidence.** No new measurement: the ADR prices the acceptance record
+of 2026-09-10 and the ENGN-17 record, and checks its code claims against
+the source (`qwen35_metal.Plan.recordLayers`, `verify`, `verifyGreedy`,
+`Backend.matmulImpl`, `Backend.attentionChunk`, `specializedMatmul`,
+`deltaChunkRows`). The KERN-16 attention sweep prices verify attention at
+about 103 ms per batch at 4K and 413 ms at 16K (16 full-attention layers),
+which accounts for the verify's 512 → 4K growth; the experiment order puts
+that kernel first. A survey of Apple Metal documentation,
+metal-flash-attention, MLX, llama.cpp, and the 2025–2026
+speculative-decoding literature for hybrid models is summarized in the ADR's *External
+evidence*, measured and claimed figures marked apart.
+
+**Files.** `docs/adr/0001-qwen-decode-verifier.md`,
+`docs/engineering-log.md`.
+
+**Limitations.** Every throughput figure in the ADR is a target or a
+calculation; the Qwen correctness gates it names are not implemented, and
+16K/32K acceptance lengths under speculation are unmeasured.
