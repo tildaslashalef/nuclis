@@ -564,7 +564,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 } else try eng.model.prefill(prefix_tokens, null, null, null, null, null, trace.observer());
             }
             prefix = try eng.model.snapshot(alloc);
-            if (dir) |d| try prefix_cache.save(io, d, key, &prefix.?);
+            // Minutes of prefill are not thrown away for a failed save: the
+            // runs go on from the snapshot in memory.
+            if (dir) |d| prefix_cache.save(io, d, key, &prefix.?) catch |err| {
+                std.log.warn("could not save the prefix to {s}: {s}", .{ path.?, @errorName(err) });
+            };
         }
         prefix_report = .{ .path = path, .tokens = prefix_tokens.len, .restored = restored, .milliseconds = engine.milliseconds(started.durationTo(std.Io.Clock.awake.now(io))) };
         if (!json) {

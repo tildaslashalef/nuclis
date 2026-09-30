@@ -112,10 +112,29 @@ pub fn save(io: std.Io, dir: std.Io.Dir, key: Key, snap: *const Snapshot) !void 
     var name: [64]u8 = undefined;
     var atomic = try dir.createFileAtomic(io, fileName(&name, key), .{ .replace = true });
     defer atomic.deinit(io);
-    try atomic.file.writeStreamingAll(io, std.mem.asBytes(&header));
-    try atomic.file.writeStreamingAll(io, snap.memory);
-    try atomic.file.writeStreamingAll(io, std.mem.sliceAsBytes(snap.carried));
+    for ([_][]const u8{ std.mem.asBytes(&header), snap.memory, std.mem.sliceAsBytes(snap.carried) }) |bytes| {
+        var rest = bytes;
+        while (rest.len > 0) : (rest = rest[@min(rest.len, io_chunk)..]) {
+            try atomic.file.writeStreamingAll(io, rest[0..@min(rest.len, io_chunk)]);
+        }
+    }
     try atomic.replace(io);
+}
+
+/// Largest single read or write: Darwin refuses a transfer above `INT_MAX`
+/// bytes, and a 32K Qwen prefix is 2.3 GB.
+const io_chunk = 1 << 30;
+
+/// `readPositionalAll` in `io_chunk` pieces; the bytes read.
+fn readAt(io: std.Io, file: std.Io.File, buffer: []u8, offset: u64) !usize {
+    var done: usize = 0;
+    while (done < buffer.len) {
+        const piece = buffer[done..][0..@min(buffer.len - done, io_chunk)];
+        const got = try file.readPositionalAll(io, piece, offset + done);
+        done += got;
+        if (got < piece.len) break;
+    }
+    return done;
 }
 
 /// The saved prefix for `key`, or null when none exists. A file whose header
@@ -142,8 +161,8 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, key: Key) !?Sna
     errdefer gpa.free(memory);
     const carried = try gpa.alloc(f32, @intCast(header.carried_floats));
     errdefer gpa.free(carried);
-    if (try file.readPositionalAll(io, memory, @sizeOf(Header)) != memory.len) return error.PrefixMismatch;
-    if (try file.readPositionalAll(io, std.mem.sliceAsBytes(carried), @sizeOf(Header) + header.memory_bytes) != carried_bytes) return error.PrefixMismatch;
+    if (try readAt(io, file, memory, @sizeOf(Header)) != memory.len) return error.PrefixMismatch;
+    if (try readAt(io, file, std.mem.sliceAsBytes(carried), @sizeOf(Header) + header.memory_bytes) != carried_bytes) return error.PrefixMismatch;
     const snap: Snapshot = .{
         .gpa = gpa,
         .memory = memory,
