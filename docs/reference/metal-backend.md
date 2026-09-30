@@ -1410,6 +1410,11 @@ product, `simd_sum`, and `exp`, not the bus. End to end (`make speed
 --verify-rows 4`, 5 interleaved pairs against `4dc7c70`), the 4-row
 verify batch C: 289.9 → 274.8 ms at 512, 387.2 → 288.2 at 4K, 717.6 →
 328.7 at 16K, 1,156.6 → 376.5 at 32,639; decode unchanged (+0.2 to +0.5 %).
+Gemma 4 12B QAT: 142.5 → 99.4 / 255.6 → 113.2 / 530.0 → 144.8 / 908.4 →
+199.9 ms at the same four depths; Muse Glimmer 30B: 225.8 → 206.4 / 323.5
+→ 250.6 / 467.8 → 286.9 / 663.9 → 346.4. A 4-row Qwen verify's attention
+(`--profile`) is 14.4 ms per batch at 4K (was 106.3) and 95.8 at 32K (was
+823.6).
 Numerics: 1.8e-7 max abs against the F64 reference (`make test-metal`),
 and the chunked-vs-stepped gates moved closer (Qwen relative RMS 1.33e-4 →
 1.26e-4, Muse 7.6e-4 → 5.9e-4) because a short tail no longer rounds its

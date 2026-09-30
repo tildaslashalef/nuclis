@@ -22,15 +22,16 @@ toward the 20 tokens/s of [ADR 0001](docs/adr/0001-qwen-decode-verifier.md)
 --verify-rows`, and `make speed` / `make speed-base` exist, and the
 opening baseline is in
 [bench.md § The decode-speed baseline](docs/reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30).
-The base binary for `make speed` is the KERN-21 kept change
+The base binary for `make speed` is saved at `d1f0a1b` (KERN-21's code)
 (`.zig-cache/speed/base/`, not committed; `make speed-base` after each
 kept change). KERN-20 closed 2026-09-30: captures read in Xcode,
 `bench --kernel-stats`, and
 [apple-gpu.md](docs/reference/apple-gpu.md) with four kernel readings; KERN-05
-and KERN-12 answered. KERN-21: its first idea is kept (the 4-row verify batch C at 4K 387 →
-288 ms, at 32K 1,157 → 376); next are the remaining items in its
-section. Then the levers in the order the cost table set (*Order*
-below), re-ranked: attention is no longer the verify's largest term.
+and KERN-12 answered. KERN-21 closed 2026-09-30: verify batches run the flash-decoding split
+pass (Qwen's 4-row C 387 → 288 ms at 4K, 1,157 → 376 at 32K; Gemma 12B
+908 → 200 at 32K), checked at depth by `qwen38-verify-depth-*`. Next:
+KERN-24, the verify's weight matmuls, now 236 of 306 ms of kernel time
+at 4K (*Order* below).
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
@@ -109,14 +110,18 @@ KERN-20, with the source or the measurement for each fact.
 
 | # | Unit | Sessions | Lands when |
 | --- | --- | ---: | --- |
-| 2 | KERN-21 — Few-query split-KV verify attention | 1–2 | C at 4K drops ≥ 60 ms, or closed negative |
-| 3 | KERN-24 — Register-fragment verify matmul | 2 | the 4-row matmul ≤ 1.3 single-row steps, or closed negative |
-| 4 | ENGN-19 — DeltaNet recurrent verify with a replay tape | 1–2 | checkpoint + recover + slot writes ≤ 6 ms per batch |
-| 5 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
-| 6 | KERN-23 — Single-row matvec toward MLX-class bandwidth | 2 | 512 decode ≥ 11.5 tok/s, or closed at its ledger |
-| 7 | ENGN-20 — Re-price speculation per family; the defaults | 1 | the verdict table is re-measured and the catalogue follows it |
+| 1 | KERN-24 — Register-fragment verify matmul | 2 | the 4-row matmul ≤ 1.3 single-row steps, or closed negative |
+| 2 | ENGN-19 — DeltaNet recurrent verify with a replay tape | 1–2 | checkpoint + recover + slot writes ≤ 6 ms per batch |
+| 3 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
+| 4 | KERN-23 — Single-row matvec toward MLX-class bandwidth | 2 | 512 decode ≥ 11.5 tok/s, or closed at its ledger |
+| 5 | ENGN-20 — Re-price speculation per family; the defaults | 1 | the verdict table is re-measured and the catalogue follows it |
 
-**The order is ENGN-18's cost table** (bench.md § The decode-speed
+**Re-ranked after KERN-21** (`--profile`, 4-row Qwen verify, warm,
+2026-09-30): at 4K weight matmuls 236.4 ms, DeltaNet 41.7, attention
+14.4 (was 106.3); at 32K matmuls 235.9, attention 95.8 (was 823.6),
+DeltaNet 41.3. The order below stands: KERN-24, ENGN-19, then decode.
+
+**The order was ENGN-18's cost table** (bench.md § The decode-speed
 baseline, `--profile` of a 4-row verify and a decode step, 2026-09-30).
 A 4-row verify batch at 4K is 399 ms of kernel time: weight matmuls 237
 (2.8 decode steps' worth), verify attention 106, DeltaNet 44; at 32K
@@ -131,96 +136,6 @@ Identifiers are provisional in this order; they are fixed in the order
 the units close. Units 2–6 are independent of one another: re-rank them
 when a kept change moves the cost table.
 
-## KERN-21 — Few-query split-KV verify attention
-
-`Backend.attentionChunk` / `attentionChunkReuse` dispatch
-`query_heads × ceil(count/32) × value_splits` threadgroups: 24 for any
-Qwen verify, each walking the whole cache; 8 rows cost 6.46 ms per layer
-at 4K and 25.8 ms at 16K, the same as 1 row (bench.md § Prefill attention
-sweep).
-
-- **Kernel** `nu_attention_verify` (+ `_h` for the F16 cache) in
-  `kernels.metal`, `Backend.attentionVerify` in `root.zig`: grid (KV head,
-  key split); a threadgroup's rows are the GQA group's query heads × T
-  queries (Qwen: 6 × T, so T = 4 fills three 8-row blocks); each row's
-  causal limit is `position + row`, masked only in the splits that reach
-  it; softmax per key block in registers (one max and rescale per block,
-  `exp2` with the scale folded in); partials merged by
-  `nu_attention_merge` extended to T rows. Splits chosen as flash decoding
-  chooses them (KERN-08), then swept.
-- **Routing.** `qwen35_metal`, `gemma4_metal`, `muse_glimmer_metal` send
-  verify batches (count ≤ 8, later ≤ 16) here; prefill chunks keep
-  `attentionChunk`. Gemma's sliding-window layers keep their window.
-- **Ideas to try, cheapest first:** split count sweep (16…256); K/V
-  fragments shared across the 6 heads versus per head; T-major versus
-  head-major row order; F16 score accumulation with F32 max/sum; staging
-  K through threadgroup memory versus direct `simdgroup_load`.
-- **Prediction.** 8 rows ≤ 1.5 ms per layer at 4K, ≤ 4 ms at 16K
-  (`make bench-attention`, the verify-shaped counts); the 4K verify batch
-  loses ≥ 60 ms in `make speed ARGS='--verify-rows 4'`. Stop below a 3×
-  kernel gain. Today (`--profile`, 2026-09-30): `attention_chunk_reuse_h`
-  106.0 ms per 4-row batch at 4K, 823.3 ms at 32K. Route the drafter's
-  batched commit (`commitBatch`, 2–4 rows: 29 ms at 16K, 55 ms at 32K)
-  through the same kernel.
-- **Correctness.** A `metal-check` fixture over synthetic F16 operands at
-  counts 1–8, visible 512 to 32,767, future rows poisoned (6e4 F16), each
-  row against the F64 CPU attention of its own causal prefix, at the
-  existing verify-shaped bounds (1e-3 F16). The ADR's Qwen gates:
-  verify rows against stepped decode from the same state at 512 and 4K in
-  `verify`, at 16K and 32,639 in `verify-long` (saved prefixes from
-  ENGN-18 keep them affordable), in `gates.json` through
-  `inference/generation-check.zig`.
-
-Gates: `make test-metal`, `make verify-auto`, `make verify`, `make
-verify-long`.
-
-Base: `9ecea66`
-
-**Ledger.**
-
-1. *The decode kernel with a row dimension* (`attentionVerify`: the
-   flash-decoding split pass over grid (KV head, split, row), each row's
-   limit `position + row + 1`, F32 queries, `nu_attention_merge` over
-   (row, head); decode is rows = 1). Rows share nothing but the split
-   boundaries: each re-reads its prefix, about 17 MB per row per layer at
-   4K, 0.06 ms at the bus's rate, cheap against an empty GPU. Prediction
-   (`make bench-attention`, F16 cache): 4 rows at 4K ≤ 0.8 ms per layer
-   (today 6.46 for the reuse body), 8 rows at 4K ≤ 1.5 ms, 8 rows at 16K
-   ≤ 4 ms, 4 rows at 32,640 ≤ 4 ms; decode unchanged (rows = 1 computes
-   what it did). **Measured** (2026-09-30, `make bench-attention`, F16,
-   ms per layer, reuse → verify): 4K × 4 rows 6.35 → 0.92 (6.9×), 4K × 8
-   6.35 → 1.67, 16K × 8 25.69 → 6.34, 16K × 1 25.75 → 0.94, 32,640 × 4
-   51.19 → 5.97 (8.6×), 32,640 × 8 51.18 → 11.72; 512 × 8 0.77 → 0.20.
-   Every prediction missed by 10–60 %, none by half; every case ≥ 3.8×.
-   The cost is now linear in rows (≈ 0.23 ms per row per layer at 4K,
-   ≈ 85 GB/s of real cache traffic): the per-(row, head) dot, `simd_sum`,
-   and `exp` work, not the bus. `test-metal`: max abs 1.8e-7 against
-   F64, 1–16 rows to the 32K cache, poisoned. Routed in `qwen35_metal`,
-   `gemma4_metal` (no span), `muse_glimmer_metal` for counts ≤
-   `verify_max_rows` (16; partials sized for 16 rows: Qwen 25 MB, Gemma
-   34 MB). The window bound (`window`, per row) added for the sliding
-   layers. **Kept** (`make speed --verify-rows 4`, 5 pairs against
-   `4dc7c70`, final tree): C 289.9 → 274.8 ms at 512 (+5.2 %), 387.2 →
-   288.2 at 4K (+25.6 %, −99 ms), 717.6 → 328.7 at 16K (+54.2 %),
-   1,156.6 → 376.5 at 32,639 (+67.5 %); decode +0.2 to +0.5 % (noise). A
-   first run read 32K decode −3.18 % with pairs −6.09..+0.40; a 9-pair
-   rerun read +0.48 % (pairs +0.40..+0.56). `verify-auto` (29 gates) and
-   `verify-long` pass.
-
-**Remaining.**
-
-- Idea 2: share K/V across the GQA group's 6 heads × T rows through
-  `simdgroup_matrix` (Q tile 24 × 256 against 8-key blocks), since the
-  cost is now per-(row, head) arithmetic. Micro-bench first against the
-  table above.
-- Split count sweep for the verify pass (it uses decode's: 256 rows per
-  split, at most 64).
-- The ADR's gates: verify rows against stepped decode from the same state
-  at 512 and 4K (`verify`) and at 16K and 32,639 (`verify-long`), through
-  `inference/generation-check.zig` and saved prefixes.
-- `make speed` for Gemma and Muse with speculation on (routed, gated, not
-  yet timed), and `--profile` of a 4-row verify to re-rank the order.
-
 ## KERN-22 — Long-context decode attention
 
 Single-row decode is 124 ms at 30,650 tokens against 94 ms at 2K
@@ -230,8 +145,13 @@ Single-row decode is 124 ms at 30,650 tokens against 94 ms at 2K
 
 - **Ideas, cheapest first:** (a) contiguous `half8` channels per lane (one
   16-byte load); (b) a lane per key inside a 32-key block, one softmax
-  reduction per block; (c) 128 or 256 splits; (d) KERN-21's kernel at
-  T = 1 (6 heads padded to 8 rows), which would unify decode and verify.
+  reduction per block; (c) 128 or 256 splits; (d) the GQA group's 6
+  heads × T rows as one `simdgroup_matrix` Q tile against 8-key blocks.
+  Since KERN-21 the verify batch runs this same kernel with a row
+  dimension (`attentionVerify`), linear in rows at about 0.23 ms per row
+  per layer at 4K and 95.8 ms per 4-row batch at 32K: every idea here is
+  measured on `make bench-attention`'s verify rows too, and (d) is
+  KERN-21's untried idea for them.
 - **Prediction.** The decode attention kernel ≥ 150 GB/s of cache in
   `bench --profile` at 32K (`attention_decode_h` 26.8 → ≤ 13 ms per step);
   32K decode 8.28 → ≥ 9.2 tok/s, 16K 9.25 → ≥ 9.5. (The first target,

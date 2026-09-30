@@ -154,6 +154,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-24 | Qwen decode at 20 tokens/s: the evidence, the verify budgets, and ADR 0001 (proposed) | 2026-09-30 |
 | ENGN-18 | The speed loop: saved prefixes, verify cost at depth, interleaved A/B, and the decode-speed baseline | 2026-09-30 |
 | KERN-20 | Seeing inside the GPU: Metal captures read in Xcode, `bench --kernel-stats`, `apple-gpu.md`; KERN-05's and KERN-12's questions answered | 2026-09-30 |
+| KERN-21 | Few-query verify attention through the flash-decoding split pass: the 4-row verify batch 25–78 % cheaper from 4K up on Qwen, Gemma, and Muse; checked at depth | 2026-09-30 |
 
 ## Context
 
@@ -6505,4 +6506,86 @@ under `.zig-cache/trace/`, uncommitted. No `delta_chunk` capture was
 taken; the Compute Shader Launch limiter (65 % in the multi-row runs) is
 unexplained. Allocated register counts come from Xcode's shader view,
 not the CSV, and were read only for the Q4_K matvec.
+
+## KERN-21 — Few-query verify attention through the split pass (2026-09-30)
+
+**Outcome.** A verify batch (the seed and its drafts) and a drafter's
+batched commit ran the prefill chunk body: 24 threadgroups for any Qwen
+verify, each walking the whole cache, on a GPU 6 % occupied (KERN-20's
+capture). `Backend.attentionVerify` runs chunks of at most
+`verify_max_rows` (16) rows through the flash-decoding split pass with a
+row dimension: `nu_attention_decode_t` over (KV head, head group, split,
+row), row r seeing `visible − (rows − 1 − r)` cache rows (and its last
+`window` on sliding layers), `nu_attention_merge` over (row, head), F32
+queries over either cache precision; decode is rows = 1 and computes
+what it did. Routed in `qwen35_metal` (and so the MTP block's commit),
+`gemma4_metal` (not an image span), and `muse_glimmer_metal`; the partial
+buffers hold 16 rows (Qwen 25 MB, Gemma 34 MB). A prefill's short tail
+takes the same route, with F32 queries instead of half.
+
+- `generation-check --verify-depth <tokens.json> --prefix-cache <dir>`
+  compares a 4-row verify batch with stepped decode from the same restored
+  state; gates `qwen38-verify-depth-{512,4k}` (`verify`) and `-{16k,32k}`
+  (`verify-long`), 3–6 s each from the speed loop's saved prefixes. The
+  saved-prefix module moved from `src/` to `inference.prefix_cache` for it.
+- Side fix: `scripts/speed.py` found a family's token arrays by
+  `<model key>/acceptance`, which missed Gemma (gate keys use underscores,
+  workload names hyphens); it now matches the workload's `model` field.
+- `make bench-attention` gained the verify body and 4-row and 32K cases,
+  and its row-split body no longer routes small counts to the reuse body.
+
+**Evidence.** Micro-bench (F16 cache, Qwen geometry, ms per layer, the
+register-reuse body → the verify body): 512 × 8 0.77 → 0.20, 4K × 4 6.35
+→ 0.92, 4K × 8 6.35 → 1.67, 16K × 8 25.69 → 6.34, 32,640 × 4 51.19 →
+5.97, 32,640 × 8 51.18 → 11.72; the predictions (≤ 0.8 / 1.5 / 4 / 4)
+missed by 10–60 %, every case ≥ 3.8×. `make test-metal`: max abs 1.8e-7
+against F64 at 1–16 rows to the 32K cache with poisoned rows, 3.9e-7 on
+the windowed and 512-wide geometries.
+
+`make speed --verify-rows 4`, 5 interleaved pairs against `4dc7c70`,
+batch cost C in ms (base → KERN-21):
+
+| Context | Qwen3.8-27B | Gemma 4 12B QAT | Muse Glimmer 30B |
+| ---: | ---: | ---: | ---: |
+| 512 | 289.9 → 274.8 (+5.2 %) | 142.5 → 99.4 (+30.3 %) | 225.8 → 206.4 (+8.6 %) |
+| 4,096 | 387.2 → 288.2 (+25.6 %) | 255.6 → 113.2 (+55.7 %) | 323.5 → 250.6 (+22.6 %) |
+| 16,384 | 717.6 → 328.7 (+54.2 %) | 530.0 → 144.8 (+72.7 %) | 467.8 → 286.9 (+38.7 %) |
+| 32,639 | 1,156.6 → 376.5 (+67.5 %) | 908.4 → 199.9 (+78.0 %) | 663.9 → 346.4 (+47.8 %) |
+
+Decode within noise for every family and context. Two rows first read
+REGRESS with wide pair spreads (Qwen 32K −3.18 %, pairs −6.09..+0.40;
+Muse 16K −2.66 %, pairs −11.63..+4.38); 9-pair reruns read +0.48 %
+(+0.40..+0.56) and +0.14 % (+0.04..+0.23). `--profile` of a 4-row Qwen
+verify: attention 106.3 → 14.4 ms per batch at 4K and 823.6 → 95.8 at
+32K; the weight matmuls (236 ms) are now the largest term at every
+depth. At depth, verify rows against stepped decode: relative RMS 9.0e-4
+/ 7.0e-4 / 9.9e-4 / 1.02e-3 and max abs 8.1e-3 / 1.8e-2 / 1.5e-2 / 1.3e-2
+at 511 / 4,095 / 16,383 / 32,638, the same greedy tokens; the old route
+reads the same 1.021e-3 at 32K (the multi-row weight tiles' half
+operands), and a causal limit off by the batch reads 4.7e-2 with the
+greedy token unchanged, hence the bound 4e-2 / 2e-3. The chunked-prefill
+gates moved closer (Qwen 1.33e-4 → 1.26e-4, Muse 7.6e-4 → 5.9e-4
+relative RMS). `make verify-auto` (29, then 35 gates), `make
+verify-long`, `make check`, `make lint-py` pass.
+
+**Files.** `inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`,
+`inference/src/models/qwen35_metal.zig`,
+`inference/src/models/gemma4_metal.zig`,
+`inference/src/models/muse_glimmer_metal.zig`,
+`inference/metal-check.zig`, `inference/generation-check.zig`,
+`inference/src/runtime/prefix_cache.zig` (from `src/`),
+`inference/src/root.zig`, `src/bench.zig`, `scripts/speed.py`,
+`gates.json`, `docs/reference/metal-backend.md`,
+`docs/architecture.md`, `docs/development.md`, `TODO.md`.
+
+**Limitations.** Rows share nothing: the cost is linear in rows (about
+0.23 ms per row per layer at 4K), bound by the per-(row, head) dot,
+`simd_sum`, and `exp`, not the bus (about 85 GB/s of real cache traffic).
+Not tried, carried to KERN-22 (the same kernel): the GQA group's heads ×
+rows as one `simdgroup_matrix` tile, and a split-count sweep (the verify
+uses decode's 256 rows per split, at most 64). The depth gates are Qwen
+only; Gemma's and Muse's routes are checked by the kernel fixtures and
+their 70-token chunk-versus-step gates, not at depth. Gemma was timed on
+the 12B QAT file, not the E4B or 26B-A4B.
 

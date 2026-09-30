@@ -159,12 +159,21 @@ def save_base():
     print(f"base saved: {target} at {info['revision']}{' (dirty tree)' if info['dirty'] else ''}")
 
 
+def acceptance_run(workloads, model_key):
+    """The run directory of the acceptance workload whose model is `model_key`
+    (workload names use hyphens, gate model keys underscores), or None."""
+    for name, entry in workloads.items():
+        if name.endswith("/acceptance") and entry.get("model") == model_key:
+            return entry["run"]
+    return None
+
+
 def family_run(model_key):
     workloads = json.loads((ROOT / "workloads.json").read_text())["workloads"]
-    entry = workloads.get(f"{model_key}/acceptance")
-    if entry is None:
-        sys.exit(f"no {model_key}/acceptance workload names this family's token arrays")
-    return entry["run"]
+    run = acceptance_run(workloads, model_key)
+    if run is None:
+        sys.exit(f"no acceptance workload names {model_key}'s token arrays")
+    return run
 
 
 def prompt_for(run, context):
@@ -309,6 +318,14 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(metric({"mean_decode_tokens_per_second": 10.5}, False), 10.5)
         self.assertEqual(metric({"verify": {"mean": {"total": 280.9}}}, True), 280.9)
         self.assertIsNone(metric({"verify": {"mean": None}}, True))
+
+    def test_acceptance_run_matches_the_model_field(self):
+        workloads = {
+            "gemma4-qat/acceptance": {"run": "r1", "model": "gemma4_qat"},
+            "gemma4-qat/smoke": {"run": "r2", "model": "gemma4_qat"},
+        }
+        self.assertEqual(acceptance_run(workloads, "gemma4_qat"), "r1")
+        self.assertIsNone(acceptance_run(workloads, "muse"))
 
     def test_prompt_candidates(self):
         paths = prompt_candidates("run-2026-09-06", 32639)
