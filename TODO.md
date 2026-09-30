@@ -22,13 +22,17 @@ toward the 20 tokens/s of [ADR 0001](docs/adr/0001-qwen-decode-verifier.md)
 --verify-rows`, and `make speed` / `make speed-base` exist, and the
 opening baseline is in
 [bench.md § The decode-speed baseline](docs/reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30).
-The base binary for `make speed` is saved at `4dc7c70`
+The base binary for `make speed` is the KERN-21 kept change
 (`.zig-cache/speed/base/`, not committed; `make speed-base` after each
-kept change). Next: KERN-20's remainder.
-The verify's attention and matmul are read against their counters
-(apple-gpu.md); what remains is pipeline statistics (`bench
---kernel-stats`) and the rest of `apple-gpu.md`. Then the levers in the order the cost table set
-(*Order* below).
+kept change). KERN-20: everything landed but KERN-12's answer, which
+waits on the user's profile of two captures taken 2026-09-30
+(`.zig-cache/trace/rows-Q4_K-17408x5120-t{2,8}-rows.gputrace`, the
+multi-row matvec at 2 and 8 rows: 141.7 and 27.8 GB/s); read them into
+apple-gpu.md, answer KERN-12 in metal-backend.md, then close KERN-20.
+KERN-21: its first idea is kept (the 4-row verify batch C at 4K 387 →
+288 ms, at 32K 1,157 → 376); next are the remaining items in its
+section. Then the levers in the order the cost table set (*Order*
+below), re-ranked: attention is no longer the verify's largest term.
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
@@ -171,11 +175,13 @@ capture is a different path.
   F32 68 %, occupancy 38 % of 82 %, staging through threadgroup memory,
   half its columns padding). Remaining: a `delta_chunk` case in
   `metal-check` if the DeltaNet verify still matters then.
-- **Pipeline statistics.** At pipeline creation, log per kernel
-  `maxTotalThreadsPerThreadgroup` (it drops below 1024 when a kernel's
-  registers limit occupancy), `threadExecutionWidth`, and
-  `staticThreadgroupMemoryLength`; `nuclis bench --kernel-stats` prints
-  them. A cheap register-pressure signal for every experiment after this.
+- **Pipeline statistics — landed 2026-09-30** (`9ecea66`): `nuclis
+  bench --kernel-stats` (no model, `--json`), bridge
+  `nu_metal_pipeline_stats`, `Backend.pipelineStats`. Finding: all 144
+  pipelines keep 1,024 threads and SIMD width 32 whatever their registers
+  (family 9 dynamic caching), so it is no register-pressure signal here;
+  the static threadgroup memory column is (apple-gpu.md § Registers and
+  occupancy).
 - **`docs/reference/apple-gpu.md`.** The M4 Pro GPU as we measure it:
   cores, SIMD width, register file and dynamic caching, threadgroup
   memory, load widths that coalesce, `simdgroup_matrix` throughput we
@@ -184,9 +190,17 @@ capture is a different path.
   Shading Language specification, the WWDC 2025 Metal 4 sessions) or its
   measurement. Linked from `docs/architecture.md` § 11 and
   `metal-backend.md`.
-- **Answer the two open questions** with the capture: KERN-05's matvec
-  limiter (issue-bound or latency-bound at 171 GB/s?) and KERN-12's
-  register-pressure hypothesis for the multi-row matvec.
+- **`apple-gpu.md` — landed 2026-09-30** (`9ecea66`): the device table
+  (queried and measured, sources 111373–111375) and registers under
+  dynamic caching; linked from architecture.md § 11 and metal-backend.md.
+- **Answer the two open questions.** KERN-05 answered in
+  metal-backend.md (issue-bound on the integer and complex pipe).
+  KERN-12 (register pressure in the multi-row matvec) waits on the
+  user's profile of `rows-Q4_K-17408x5120-t2-rows` and `-t8-rows`
+  (`.zig-cache/trace/`, Maximum, export Counters CSV): read allocated
+  registers, spills, stack bandwidth, and occupancy at 2 against 8 rows
+  (141.7 against 27.8 GB/s) into apple-gpu.md, answer in metal-backend.md
+  § Multi-row matvec, delete the captures, close KERN-20.
 
 Gates: `make check`, `make verify-auto`; the capture path is off unless
 the variable is set, so no numerical gate moves.
@@ -233,6 +247,53 @@ sweep).
 
 Gates: `make test-metal`, `make verify-auto`, `make verify`, `make
 verify-long`.
+
+Base: `9ecea66`
+
+**Ledger.**
+
+1. *The decode kernel with a row dimension* (`attentionVerify`: the
+   flash-decoding split pass over grid (KV head, split, row), each row's
+   limit `position + row + 1`, F32 queries, `nu_attention_merge` over
+   (row, head); decode is rows = 1). Rows share nothing but the split
+   boundaries: each re-reads its prefix, about 17 MB per row per layer at
+   4K, 0.06 ms at the bus's rate, cheap against an empty GPU. Prediction
+   (`make bench-attention`, F16 cache): 4 rows at 4K ≤ 0.8 ms per layer
+   (today 6.46 for the reuse body), 8 rows at 4K ≤ 1.5 ms, 8 rows at 16K
+   ≤ 4 ms, 4 rows at 32,640 ≤ 4 ms; decode unchanged (rows = 1 computes
+   what it did). **Measured** (2026-09-30, `make bench-attention`, F16,
+   ms per layer, reuse → verify): 4K × 4 rows 6.35 → 0.92 (6.9×), 4K × 8
+   6.35 → 1.67, 16K × 8 25.69 → 6.34, 16K × 1 25.75 → 0.94, 32,640 × 4
+   51.19 → 5.97 (8.6×), 32,640 × 8 51.18 → 11.72; 512 × 8 0.77 → 0.20.
+   Every prediction missed by 10–60 %, none by half; every case ≥ 3.8×.
+   The cost is now linear in rows (≈ 0.23 ms per row per layer at 4K,
+   ≈ 85 GB/s of real cache traffic): the per-(row, head) dot, `simd_sum`,
+   and `exp` work, not the bus. `test-metal`: max abs 1.8e-7 against
+   F64, 1–16 rows to the 32K cache, poisoned. Routed in `qwen35_metal`,
+   `gemma4_metal` (no span), `muse_glimmer_metal` for counts ≤
+   `verify_max_rows` (16; partials sized for 16 rows: Qwen 25 MB, Gemma
+   34 MB). The window bound (`window`, per row) added for the sliding
+   layers. **Kept** (`make speed --verify-rows 4`, 5 pairs against
+   `4dc7c70`, final tree): C 289.9 → 274.8 ms at 512 (+5.2 %), 387.2 →
+   288.2 at 4K (+25.6 %, −99 ms), 717.6 → 328.7 at 16K (+54.2 %),
+   1,156.6 → 376.5 at 32,639 (+67.5 %); decode +0.2 to +0.5 % (noise). A
+   first run read 32K decode −3.18 % with pairs −6.09..+0.40; a 9-pair
+   rerun read +0.48 % (pairs +0.40..+0.56). `verify-auto` (29 gates) and
+   `verify-long` pass.
+
+**Remaining.**
+
+- Idea 2: share K/V across the GQA group's 6 heads × T rows through
+  `simdgroup_matrix` (Q tile 24 × 256 against 8-key blocks), since the
+  cost is now per-(row, head) arithmetic. Micro-bench first against the
+  table above.
+- Split count sweep for the verify pass (it uses decode's: 256 rows per
+  split, at most 64).
+- The ADR's gates: verify rows against stepped decode from the same state
+  at 512 and 4K (`verify`) and at 16K and 32,639 (`verify-long`), through
+  `inference/generation-check.zig` and saved prefixes.
+- `make speed` for Gemma and Muse with speculation on (routed, gated, not
+  yet timed), and `--profile` of a 4-row verify to re-rank the order.
 
 ## KERN-22 — Long-context decode attention
 

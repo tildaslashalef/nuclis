@@ -2081,7 +2081,13 @@ kernel void nu_pack_half(device half * dst0 [[buffer(0)]], device const float * 
 // threadgroup writes one partial (m, l, acc[value_width]) per head;
 // `nu_attention_merge` combines the splits per head the same way. An empty
 // slice or SIMD group leaves m = -inf and l = 0, which both merges skip.
-struct AttentionDecodeParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint visible; uint splits; float scale; };
+// `rows` consecutive query positions (a verify batch) add a grid dimension:
+// row r sees the first `visible - (rows - 1 - r)` cache rows, the split
+// boundaries are the last row's, and a split past a row's end stays empty.
+// A nonzero `window` also bounds each row from below (its last `window`
+// rows). Queries and outputs are `[row][q_stride | out_stride]`; decode is
+// rows = 1, window = 0 (its callers slice the window off the cache).
+struct AttentionDecodeParams { uint query_heads; uint kv_heads; uint key_width; uint value_width; uint visible; uint splits; float scale; uint rows; uint q_stride; uint out_stride; uint window; };
 // GROUP query heads per threadgroup and CH channels per lane (widths up to
 // 32 * CH); the register budget is GROUP * CH * 2 floats per lane in both
 // instantiation pairs (8 × 8 for widths up to 256, 4 × 16 up to 512). A KV
@@ -2103,10 +2109,13 @@ kernel void nu_attention_decode_t(device const KV * keys [[buffer(0)]],
     const uint g = p.query_heads / p.kv_heads;
     const uint head_groups = (g + GROUP - 1) / GROUP;
     const uint kv = group % p.kv_heads, rest = group / p.kv_heads;
-    const uint hg = rest % head_groups, split = rest / head_groups;
+    const uint hg = rest % head_groups, split = (rest / head_groups) % p.splits, row = rest / head_groups / p.splits;
     const uint h0 = hg * GROUP, hn = min(GROUP, g - h0); // this threadgroup's query heads: kv * g + h0 .. + hn
     const uint per = (p.visible + p.splits - 1) / p.splits;
-    const uint start = split * per, end = min(p.visible, start + per);
+    const uint seen = p.visible - (p.rows - 1 - row);
+    const uint low = (p.window != 0 && seen > p.window) ? seen - p.window : 0;
+    const uint start = max(split * per, low), end = min(seen, split * per + per);
+    queries += ulong(row) * p.q_stride;
     const uint kch = (p.key_width + 31) / 32, vch = (p.value_width + 31) / 32;
     float q[GROUP][CH];
     for (uint h = 0; h < GROUP; ++h) for (uint i = 0; i < CH; ++i) {
@@ -2165,7 +2174,7 @@ kernel void nu_attention_decode_t(device const KV * keys [[buffer(0)]],
     const uint stride = 2 + p.value_width;
     for (uint h = 0; h < GROUP; ++h) {
         if (h >= hn) break;
-        device float * out = partials + (ulong(kv * g + h0 + h) * p.splits + split) * stride;
+        device float * out = partials + ((ulong(row) * p.query_heads + kv * g + h0 + h) * p.splits + split) * stride;
         if (lane == 0) { out[0] = m[h]; out[1] = l[h]; }
         for (uint i = 0; i < CH; ++i) { const uint c = lane + 32 * i; if (i < vch && c < p.value_width) out[2 + c] = acc[h][i]; }
     }
@@ -2175,8 +2184,9 @@ template [[host_name("nu_attention_decode")]] kernel void nu_attention_decode_t<
 template [[host_name("nu_attention_decode_h")]] kernel void nu_attention_decode_t<half, 8, 8>(device const half *, device const half *, NU_ATTN_DECODE_ARGS);
 template [[host_name("nu_attention_decode_w")]] kernel void nu_attention_decode_t<float, 4, 16>(device const float *, device const float *, NU_ATTN_DECODE_ARGS);
 template [[host_name("nu_attention_decode_wh")]] kernel void nu_attention_decode_t<half, 4, 16>(device const half *, device const half *, NU_ATTN_DECODE_ARGS);
-// One threadgroup per query head, 256 threads striding the value channels:
-// rescale every split's partial to the global max, divide by the merged sum.
+// One threadgroup per (row, query head), 256 threads striding the value
+// channels: rescale every split's partial to the global max, divide by the
+// merged sum.
 kernel void nu_attention_merge(device const float * partials [[buffer(0)]],
                                device float * output [[buffer(1)]],
                                constant AttentionDecodeParams & p [[buffer(7)]],
@@ -2195,7 +2205,7 @@ kernel void nu_attention_merge(device const float * partials [[buffer(0)]],
             total += part[s * stride + 1] * a;
             sum += part[s * stride + 2 + c] * a;
         }
-        output[ulong(head) * p.value_width + c] = sum / total;
+        output[ulong(head / p.query_heads) * p.out_stride + (head % p.query_heads) * p.value_width + c] = sum / total;
     }
 }
 

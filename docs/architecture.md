@@ -478,7 +478,8 @@ flowchart LR
 Levers that were built, measured, and kept out, each with its table in the
 record: a multi-row matvec that wins only at 2 rows, a wider small-batch
 tile, a split-K matvec, register-reuse prefill attention (shipped only for
-the 1–64-row batches speculation verifies), fused decode norms (shipped
+chunks of 17–64 rows; verify batches of up to 16 take the split pass of
+[few-query verify attention](reference/metal-backend.md#few-query-verify-attention-kern-21-2026-09-30)), fused decode norms (shipped
 for the dispatch count, not for speed), and the speculative switch on
 Qwen and Gemma, where the verifier's row-flat cost outweighs the accepted
 drafts.

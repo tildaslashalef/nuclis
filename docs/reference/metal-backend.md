@@ -1363,6 +1363,51 @@ Full model: `make gate NAME=qwen38-trace-f32` 129 files, max abs 6.1e-5 (was 1.2
 (bit-identical sessions, snapshot round trip). Performance:
 [bench.md § Observations](bench.md#observations-so-far) (KERN-08 rows).
 
+## Few-query verify attention (KERN-21, 2026-09-30)
+
+A verify batch (a seed and its drafts, 2–16 rows) and a drafter's batched
+commit ran the prefill chunk body, whose grid is one threadgroup per query
+head per 32-row tile: 24 threadgroups for any Qwen verify, each walking the
+whole cache, on a GPU 6 % occupied
+([apple-gpu.md](apple-gpu.md#the-verify-batchs-two-largest-kernels-2026-09-30)).
+`Backend.attentionVerify` runs them through the flash-decoding split pass
+instead, with a row dimension: `nu_attention_decode_t` over the grid (KV
+head, head group, split, row) and `nu_attention_merge` over (row, head).
+Row r of `rows` sees the first `visible − (rows − 1 − r)` cache rows (and,
+with a window, only its last `window`); the split boundaries are the last
+row's, so a split past a row's end stays empty and the merge skips it.
+Queries are F32 over either cache precision, as in decode; decode itself
+is the rows = 1 case. Rows share nothing but the dispatch: each re-reads
+its prefix, cheap against an idle GPU.
+
+The models route every chunk of at most `verify_max_rows` (16) rows here
+(Gemma only without an image span), which also takes a prefill's short
+tail; the partial buffers are sized for 16 rows (Qwen 25 MB, Gemma 34 MB).
+
+`make bench-attention`, F16 cache, Qwen geometry, ms per layer (the
+register-reuse body → the verify body):
+
+| Visible × rows | reuse | verify | gain |
+| --- | ---: | ---: | ---: |
+| 512 × 8 | 0.77 | 0.20 | 3.8× |
+| 4,096 × 4 | 6.35 | 0.92 | 6.9× |
+| 4,096 × 8 | 6.35 | 1.67 | 3.8× |
+| 16,384 × 1 | 25.75 | 0.94 | 27× |
+| 16,384 × 8 | 25.69 | 6.34 | 4.1× |
+| 32,640 × 4 | 51.19 | 5.97 | 8.6× |
+| 32,640 × 8 | 51.18 | 11.72 | 4.4× |
+
+The cost is linear in rows (about 0.23 ms per row per layer at 4K, 85 GB/s
+of real cache traffic), so what bounds it is the per-(row, head) dot
+product, `simd_sum`, and `exp`, not the bus. End to end (`make speed
+--verify-rows 4`, 5 interleaved pairs against `4dc7c70`), the 4-row
+verify batch C: 289.9 → 274.8 ms at 512, 387.2 → 288.2 at 4K, 717.6 →
+328.7 at 16K, 1,156.6 → 376.5 at 32,639; decode unchanged (+0.2 to +0.5 %).
+Numerics: 1.8e-7 max abs against the F64 reference (`make test-metal`),
+and the chunked-vs-stepped gates moved closer (Qwen relative RMS 1.33e-4 →
+1.26e-4, Muse 7.6e-4 → 5.9e-4) because a short tail no longer rounds its
+queries to half.
+
 ## Long-context prefill attention (ENGN-08, 2026-09-10, closed without a kernel change)
 
 ENGN-07 measured prefill at the reference's rate at 512 tokens and −6 / −15 /

@@ -238,7 +238,7 @@ pub const Plan = struct {
     k: Buffer, // kv_width, a slice of kv
     v: Buffer, // kv_width, a slice of kv
     mixed_out: Buffer, // q_width
-    /// Flash-decoding partials: `[32][splits][2 + 128]`.
+    /// Flash-decoding partials: `[rows][32][splits][2 + 128]` for up to `verify_max_rows` rows.
     partials: Buffer,
     logits: Buffer, // vocabulary
     argmax_values: Buffer,
@@ -334,7 +334,8 @@ pub const Plan = struct {
         self.k = self.kv.slice(0, kv_width * 4);
         self.v = self.kv.slice(kv_width * 4, kv_width * 4);
         self.mixed_out = try backend.create(q_width * 4);
-        self.partials = try backend.create(metal.Backend.attentionDecodePartials(heads, hd) * 4);
+        // Up to `verify_max_rows` rows for a verify batch's split pass.
+        self.partials = try backend.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, heads, hd) * 4);
         self.logits = try backend.create(vocabulary * 4);
         self.argmax_values = try backend.create(metal.Backend.argmax_partials * 4);
         self.argmax_indices = try backend.create(metal.Backend.argmax_partials * 4);
@@ -904,6 +905,9 @@ pub const Plan = struct {
         const precision = cache.keys.precision;
         const k_rows = self.stateSlice(cache.keys.range(position, count));
         const v_rows = self.stateSlice(cache.values.range(position, count));
+        // A verify batch (few rows) takes the split pass with F32 queries;
+        // a prefill chunk the tiled body.
+        const few = count <= metal.Backend.verify_max_rows;
         var queries = self.q_c;
         switch (precision) {
             .f32 => {
@@ -912,16 +916,20 @@ pub const Plan = struct {
             },
             .f16 => {
                 try b.packHalf(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * kv_width }, .{ .dst = v_rows, .src = self.v_c, .count = count * kv_width } });
-                try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * q_width }});
-                queries = self.q_c_h;
+                if (!few) {
+                    try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * q_width }});
+                    queries = self.q_c_h;
+                }
             },
         }
-        // One causal tiled dispatch over the whole chunk. The cache is
-        // sliced at the earliest key the chunk's first row can see; the
-        // window mask hides the rest per row on sliding layers.
+        // The cache is sliced at the earliest key the chunk's first row can
+        // see; the window mask hides the rest per row on sliding layers.
         const first = firstVisible(layer.kind, position);
         const total = position + count - first;
-        try b.attentionChunk(self.stateSlice(cache.keys.range(first, total)), self.stateSlice(cache.values.range(first, total)), queries, self.mixed_out_c, .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = q_width, .out_stride = q_width, .scale = model.attention_scale, .precision = precision, .window = if (layer.kind == .sliding) model.window else 0 });
+        const keys = self.stateSlice(cache.keys.range(first, total));
+        const values = self.stateSlice(cache.values.range(first, total));
+        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = q_width, .out_stride = q_width, .scale = model.attention_scale, .precision = precision, .window = if (layer.kind == .sliding) model.window else 0 };
+        if (few) try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape) else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
         // Rows are contiguous at `q_width`, so the chunk's gates are one
         // long run of heads.
         try b.sigmoidGate(self.mixed_out_c, self.attention_gate_c, count * heads, hd, hd, 0);

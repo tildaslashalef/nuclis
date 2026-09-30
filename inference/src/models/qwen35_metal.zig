@@ -98,7 +98,9 @@ pub const Plan = struct {
     alpha: Buffer, // 48
     beta: Buffer, // 48
     mixed_out: Buffer, // 6144
-    /// Flash-decoding partials: `[24][splits][2 + 256]`, 1.6 MB, independent of the capacity.
+    /// Flash-decoding partials: `[rows][24][splits][2 + 256]` for up to
+    /// `verify_max_rows` rows (a decode step uses the first), 25 MB,
+    /// independent of the capacity.
     partials: Buffer,
     logits: Buffer, // vocabulary
     /// A verify batch's output head over every row: `max_verify_rows`
@@ -241,7 +243,7 @@ pub const Plan = struct {
         self.alpha = delta_projections.slice((10240 + 6144 + 48) * 4, 48 * 4);
         self.beta = delta_projections.slice((10240 + 6144) * 4, 48 * 4);
         self.mixed_out = try backend.create(6144 * 4);
-        self.partials = try backend.create(metal.Backend.attentionDecodePartials(24, 256) * 4);
+        self.partials = try backend.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, 24, 256) * 4);
         self.logits = try backend.create(vocabulary * 4);
         // Verify scratch exists only with a drafter (the loop's only caller).
         // `matmul` writes `matmulPadded(tokens)` output rows regardless of the
@@ -876,6 +878,9 @@ pub const Plan = struct {
         const precision = cache.keys.precision;
         const k_rows = self.stateSlice(cache.keys.range(position, count));
         const v_rows = self.stateSlice(cache.values.range(position, count));
+        // A verify batch or a drafter's commit (few rows) takes the split
+        // pass with F32 queries; a prefill chunk the tiled body.
+        const few = count <= metal.Backend.verify_max_rows;
         var queries = self.q_c;
         switch (precision) {
             .f32 => {
@@ -887,14 +892,19 @@ pub const Plan = struct {
                 // a half copy of the rotated queries (padded rows included, as the
                 // kernel computes on them).
                 try b.packHalf(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * 1024 }, .{ .dst = v_rows, .src = self.v_c, .count = count * 1024 } });
-                try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * 24 * 256 }});
-                queries = self.q_c_h;
+                if (!few) {
+                    try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * 24 * 256 }});
+                    queries = self.q_c_h;
+                }
             },
         }
-        // One causal tiled dispatch over the whole chunk: row t attends to
-        // cache[0 .. position + t]; padded rows of q_c/mixed_out_c absorb the tail.
+        // Row t attends to cache[0 .. position + t]; padded rows of
+        // q_c/mixed_out_c absorb the tiled body's tail.
         const total = position + count;
-        try b.attentionChunk(self.stateSlice(cache.keys.range(0, total)), self.stateSlice(cache.values.range(0, total)), queries, self.mixed_out_c, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = position, .count = count, .q_stride = 24 * 256, .out_stride = 6144, .scale = 1.0 / 16.0, .precision = precision });
+        const keys = self.stateSlice(cache.keys.range(0, total));
+        const values = self.stateSlice(cache.values.range(0, total));
+        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = position, .count = count, .q_stride = 24 * 256, .out_stride = 6144, .scale = 1.0 / 16.0, .precision = precision };
+        if (few) try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape) else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
         try b.sigmoidGate(self.mixed_out_c, self.qg_c, count * 24, 256, 512, 256);
         try self.rotate(self.mixed_out_c, 6144, count);
         try self.mmRows(attn.output, self.mixed_out_c, 6144, self.projected_c, hidden, count);

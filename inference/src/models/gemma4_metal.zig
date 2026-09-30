@@ -244,7 +244,8 @@ pub const Plan = struct {
     k: Buffer, // kv_width
     v: Buffer, // kv_width
     mixed_out: Buffer, // q_width
-    /// Flash-decoding partials for the wide geometry: `[16][splits][2 + 512]`.
+    /// Flash-decoding partials for the wide geometry: `[rows][16][splits][2 + 512]`
+    /// for up to `verify_max_rows` rows.
     partials: Buffer,
     logits: Buffer, // vocabulary
     argmax_values: Buffer,
@@ -385,7 +386,8 @@ pub const Plan = struct {
         self.k = try backend.create(kv_width * 4);
         self.v = try backend.create(kv_width * 4);
         self.mixed_out = try backend.create(q_width * 4);
-        self.partials = try backend.create(metal.Backend.attentionDecodePartials(model.max_heads, head_max) * 4);
+        // Up to `verify_max_rows` rows for a verify batch's split pass.
+        self.partials = try backend.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, model.max_heads, head_max) * 4);
         const pl_width = config.per_layer_input * config.layer_count;
         self.pl = try backend.create(@max(pl_width, 1) * 4);
         self.pl_sel = try backend.create(@max(pl_width, 1) * 4);
@@ -1191,23 +1193,28 @@ pub const Plan = struct {
                 .f16 => try b.packHalf(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * kvw }, .{ .dst = v_rows, .src = self.v_c, .count = count * kvw } }),
             }
         }
-        var queries = self.q_c;
-        if (precision == .f16) {
-            try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * qw }});
-            queries = self.q_c_h;
-        }
-        // One causal tiled dispatch over the whole chunk. The cache is
-        // sliced at the earliest key the chunk's first row can see; the
-        // window mask hides the rest per row on sliding layers.
-        const first = self.firstVisible(kind, position);
-        const total = position + count - first;
         // An image span chunk is bidirectional on sliding layers only (the
         // reference's `LLAMA_NON_CAUSAL_TYPE_SWA_ONLY`), and not at all on a
         // configuration that keeps images causal; rows, rotary positions,
         // and cache rows are the same positions either way.
         const bidirectional = self.image_rows != null and kind == .sliding and self.binding.config.bidirectional_images;
         const span: metal.Backend.Span = if (bidirectional) .{ .begin = 0, .end = count } else .{};
-        try b.attentionChunk(self.stateSlice(cache.keys.range(first, total)), self.stateSlice(cache.values.range(first, total)), queries, self.mixed_out_c, .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = precision, .window = if (kind == .sliding) self.binding.config.window else 0, .span = span });
+        // A verify batch (few causal rows) takes the split pass with F32
+        // queries; a prefill chunk or a span the tiled body.
+        const few = count <= metal.Backend.verify_max_rows and span.end == 0;
+        var queries = self.q_c;
+        if (precision == .f16 and !few) {
+            try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * qw }});
+            queries = self.q_c_h;
+        }
+        // The cache is sliced at the earliest key the chunk's first row can
+        // see; the window mask hides the rest per row on sliding layers.
+        const first = self.firstVisible(kind, position);
+        const total = position + count - first;
+        const keys = self.stateSlice(cache.keys.range(first, total));
+        const values = self.stateSlice(cache.values.range(first, total));
+        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = kv_heads, .key_width = hd, .value_width = hd, .position = position - first, .count = count, .q_stride = qw, .out_stride = qw, .scale = 1.0, .precision = precision, .window = if (kind == .sliding) self.binding.config.window else 0, .span = span };
+        if (few) try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape) else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
         try self.mmRows(layer.output, self.mixed_out_c, qw, self.projected_c, hidden, count);
     }
 
