@@ -366,7 +366,7 @@ re-measured on the generated playground (REPO-21) before the tool lands.
 ## AGNT-19 — Saved prefixes for the agent: the primed prefix and `/resume` across processes (2 sessions) — queued
 
 `nuclis agent` prefills its system block and tool definitions at every
-start (about 11 s for 934 tokens on Qwen, 2026-09-20) and replays a whole
+start (about 11 s for 934 tokens on Qwen, llm-guide.md § 22) and replays a whole
 conversation on `/resume` (minutes at 16K). ENGN-18's `src/prefix_cache.zig`
 already writes and restores a model snapshot keyed by model files, tokens,
 and layout; this unit uses it for real work, where a stale state is a
