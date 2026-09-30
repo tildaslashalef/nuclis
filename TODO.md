@@ -34,6 +34,10 @@ Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
 it on its own.
 
+Queued (user, 2026-09-30), after the decode-speed theme unless the user
+pulls it forward: AGNT-19, saved prefixes for the agent across processes
+(its design after AGNT-18).
+
 ## The theme: decode speed on Metal
 
 **Why this order.** Our own records already say where the verify batch
@@ -358,3 +362,52 @@ re-measured on the generated playground (REPO-21) before the tool lands.
   task list before and after (`make agent-eval VARIANT=…`), on Qwen3.8-27B
   and Gemma 4 E4B: task success, wall time, and prefill tokens saved.
   Kept only if it helps; the result is logged either way.
+
+## AGNT-19 — Saved prefixes for the agent: the primed prefix and `/resume` across processes (2 sessions) — queued
+
+`nuclis agent` prefills its system block and tool definitions at every
+start (about 11 s for 934 tokens on Qwen, 2026-09-20) and replays a whole
+conversation on `/resume` (minutes at 16K). ENGN-18's `src/prefix_cache.zig`
+already writes and restores a model snapshot keyed by model files, tokens,
+and layout; this unit uses it for real work, where a stale state is a
+correctness bug, not a timing one.
+
+- **Key.** `prefix_cache.Key` gains the build: the binary's
+  `nuclis --version` string and the git revision from `build_options`
+  (a dev build's revision plus a dirty flag). A different build is a
+  miss, never a restore: a saved state must equal what this build's
+  prefill would compute. The file header records all four keys.
+- **Session 1: the primed prefix.** `Completer.prime` (`src/agent/loop.zig`)
+  first calls `prefix_cache.load` from `<NUCLIS_HOME>/cache/prefix/`
+  (`src/paths.zig`); on a hit it restores and skips the prefill, on a
+  miss it prefills as today, snapshots (already done), and saves.
+  `restorePrimed` is unchanged. A `/ctx` change re-opens the engine and
+  keys on the new capacity. Speculation on and off are different layouts
+  (the draft block's cache), so each has its own file.
+- **Session 2: `/resume`.** When the agent writes a session file
+  (`src/agent/history.zig` / the save path), it also saves the model
+  snapshot at the end of the last completed turn, keyed by the consumed
+  tokens; `/resume` restores it when the rendered prefix's tokens match
+  and prefills only the remainder, falling back to the replay otherwise.
+- **Bounds.** A per-file bound (the session's used extent: about 150 MB
+  of recurrent state plus 64 KiB per token for Qwen, 2.3 GB at 32K) and a
+  directory budget (`cache.prefix_bytes` in `nuclis.json`, default 8 GB;
+  0 disables), evicted oldest-accessed first after each save. `nuclis
+  cache ls` and `nuclis cache clear` (APPS surface) show and empty it.
+- **Limits, stated in the docs.** Exact token prefixes only (an edited
+  system prompt or tool list misses); bound to capacity, KV precision, and
+  the draft layout; disk cost as above.
+- **Prediction.** The agent's first prompt appears with the primed prefix
+  restored in ≤ 0.5 s instead of ~11 s; `/resume` of a 16K conversation
+  in ≤ 2 s instead of minutes.
+- **Correctness.** Unit tests: a build-key miss, a budget eviction, a
+  corrupt file refused and re-prefilled (the ENGN-18 tests extended). A
+  restored primed prefix gives the same first-turn tokens as a fresh
+  prime (greedy, both backends' generation checks). The agent surface
+  through `make shot` (a cold start, then a warm start showing the
+  restore; a `/resume`), and `make agent-eval` before and after, since
+  the loop's behaviour changes.
+
+Gates: `make check`, `make lint-py`, `make verify-auto`, `make shot`,
+`make agent-eval VARIANT=…`. Docs: `docs/reference/session.md`,
+`docs/development.md` § User directories, the agent's help.
