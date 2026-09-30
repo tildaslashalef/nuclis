@@ -99,6 +99,8 @@ pub fn main(init: std.process.Init) !void {
     var vision_check: ?[]const u8 = null;
     var vision_image: ?[]const u8 = null;
     var vision_oracle: ?[]const u8 = null;
+    var verify_depth: ?[]const u8 = null;
+    var prefix_dir: ?[]const u8 = null;
     var path: ?[]const u8 = null;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -127,6 +129,14 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedImagePath;
             vision_image = args[i];
+        } else if (std.mem.eql(u8, arg, "--verify-depth")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedTokenArray;
+            verify_depth = args[i];
+        } else if (std.mem.eql(u8, arg, "--prefix-cache")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedPrefixDirectory;
+            prefix_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--vision-profile")) {
             vision_profile = true;
         } else if (std.mem.eql(u8, arg, "--vision-oracle")) {
@@ -138,6 +148,10 @@ pub fn main(init: std.process.Init) !void {
         } else return error.UnknownOption;
     }
     const model_path = path orelse return error.ExpectedModelPath;
+    if (verify_depth) |tokens_path| {
+        if (!use_metal) return error.VerifyDepthNeedsMetal;
+        return verifyAtDepth(alloc, init.io, model_path, draft_model, tokens_path, prefix_dir orelse return error.ExpectedPrefixDirectory);
+    }
     var mapped = try inference.weights.Mapped.open(alloc, init.io, model_path);
     defer mapped.deinit(init.io);
     const architecture = mapped.document.string("general.architecture") orelse return error.MissingMetadata;
@@ -798,6 +812,80 @@ fn speculativeCheck(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, m
     if (use_metal) try speculativeLoop(alloc, io, model_path, use_metal);
     if (backend) |*b| try penaltyCheck(spec, alloc, b, view, binding);
     if (backend) |*b| try verifyTopKCheck(spec, alloc, b, view, binding);
+}
+
+/// A 4-row verify batch against stepped decode from the same restored state
+/// at the depth of a token array (its tokens less the last, a saved prefix
+/// under `prefix_dir`, keyed as `bench --speculative on` keys it so the
+/// speed loop's files serve): the seed and three fixed drafts, each row's
+/// logits within the depth bound below and on the same greedy token. Metal,
+/// F16 cache, 32,768 capacity, the drafter loaded (`draft_path` as the
+/// catalogue entry names it; Qwen loads its embedded block). Qwen only: the
+/// other families' errors at depth are unmeasured.
+fn verifyAtDepth(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, draft_path: ?[]const u8, tokens_path: []const u8, prefix_dir: []const u8) !void {
+    const engine = inference.engine;
+    const prefix_cache = inference.prefix_cache;
+    const rows = 4;
+    const capacity = 32768;
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, tokens_path, alloc, .limited(16 << 20));
+    defer alloc.free(bytes);
+    const parsed = try std.json.parseFromSlice([]const u32, alloc, bytes, .{});
+    defer parsed.deinit();
+    const tokens = parsed.value;
+    if (tokens.len < rows or tokens.len + rows > capacity) return error.InvalidTokenArray;
+    var eng = try engine.Engine.open(alloc, io, model_path, .metal, capacity, .f16, null, .{ .preferred = draft_path });
+    defer eng.deinit();
+    if (eng.model.drafter() == null) return error.DraftSourceMissing;
+    if (eng.model.adapter() != .qwen35) return error.VerifyDepthUnsupported;
+    // Twice the worst measured on both attention routes (1.8e-2 max abs at
+    // 4K, 1.02e-3 relative RMS at 32K: the multi-row weight tiles' half
+    // operands, flat with depth); a causal limit off by the batch reads
+    // 4.7e-2 relative RMS with the greedy token unchanged.
+    const max_abs_bound = 4e-2;
+    const rel_rms_bound = 2e-3;
+    const prefix = tokens[0 .. tokens.len - 1];
+    const key: prefix_cache.Key = .{ .model = try prefix_cache.modelDigest(io, model_path, draft_path), .tokens = prefix_cache.tokenDigest(prefix), .layout = eng.model.session().layout_digest };
+    const dir = try std.Io.Dir.cwd().createDirPathOpen(io, prefix_dir, .{});
+    defer dir.close(io);
+    const started = std.Io.Clock.awake.now(io);
+    const saved = prefix_cache.load(alloc, io, dir, key) catch |err| switch (err) {
+        error.PrefixMismatch, error.PrefixCorrupt => null,
+        else => return err,
+    };
+    const restored = saved != null;
+    var snap = saved orelse blk: {
+        eng.model.reset();
+        try engine.commitPrompt(&eng, prefix, null, null);
+        const fresh = try eng.model.snapshot(alloc);
+        prefix_cache.save(io, dir, key, &fresh) catch |err| std.debug.print("could not save the prefix: {s}\n", .{@errorName(err)});
+        break :blk fresh;
+    };
+    defer snap.deinit();
+    const prepared = started.durationTo(std.Io.Clock.awake.now(io));
+    const batch = [rows]u32{ tokens[tokens.len - 1], tokens[0], tokens[1], tokens[2] };
+    const vocabulary = eng.vocab.tokens.len;
+    const verified = try alloc.alloc(f32, rows * vocabulary);
+    defer alloc.free(verified);
+    const stepped = try alloc.alloc(f32, rows * vocabulary);
+    defer alloc.free(stepped);
+    try eng.model.restore(&snap);
+    try eng.model.verify(&batch, vocabulary, .{ .rows = verified }, null, null);
+    try eng.model.restore(&snap);
+    for (batch, 0..) |token, i| try eng.model.step(token, stepped[i * vocabulary ..][0..vocabulary], null, null, null, null);
+    var worst: Difference = .{ .max_abs = 0, .rel_rms = 0, .arg_expected = 0, .arg_actual = 0 };
+    var worst_row: usize = 0;
+    var failed = false;
+    for (0..rows) |i| {
+        const d = Difference.of(stepped[i * vocabulary ..][0..vocabulary], verified[i * vocabulary ..][0..vocabulary]);
+        failed = failed or !d.within(max_abs_bound, rel_rms_bound);
+        if (i == 0 or d.rel_rms > worst.rel_rms or !d.within(max_abs_bound, rel_rms_bound)) {
+            worst = d;
+            worst_row = i;
+        }
+        if (failed) break;
+    }
+    std.debug.print("Verify rows vs stepped decode at depth {d} (F16 cache; prefix {s} in {d:.1} s): {d} rows, {s} row {d} max abs {e:.3}, relative RMS {e:.3}, argmax {d}/{d} (bounds {e:.0} / {e:.0})\n", .{ prefix.len, if (restored) "restored" else "prefilled and saved", @as(f64, @floatFromInt(prepared.nanoseconds)) / 1e9, rows, if (failed) "failing" else "worst", worst_row, worst.max_abs, worst.rel_rms, worst.arg_expected, worst.arg_actual, max_abs_bound, rel_rms_bound });
+    if (failed) return error.VerifyDepthMismatch;
 }
 
 /// The verify batch's per-row top-k readback against the same batch's full

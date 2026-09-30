@@ -11,6 +11,9 @@
    "entry": "qwen3.8-27b",
    "mmproj": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/mmproj-BF16.gguf"
   },
+  "qwen38_mtp": {
+   "path": "~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
+  },
   "gemma4_qat": {
    "path": "~/.nuclis/models/unsloth/gemma-4-12B-it-qat-GGUF/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
    "entry": "gemma-4-12b-qat"
@@ -423,6 +426,88 @@
     "kind": "exit"
    },
    "evidence": "docs/reference/speculative-decoding.md"
+  },
+  {
+   "name": "qwen38-verify-depth-512",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-09-06/prompt-512.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/metal-backend.md"
+  },
+  {
+   "name": "qwen38-verify-depth-4k",
+   "family": "qwen38",
+   "tier": "verify",
+   "model": "qwen38",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-09-06/prompt-4096.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/metal-backend.md"
   },
   {
    "name": "qwen38-speculative-cpu",
@@ -2583,6 +2668,88 @@
     "kind": "exit"
    },
    "evidence": "docs/reference/eval.md#the-long-context-record-2026-09-24"
+  },
+  {
+   "name": "qwen38-verify-depth-16k",
+   "family": "qwen38",
+   "tier": "verify-long",
+   "model": "qwen38",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/run-2026-09-06/prompt-16384.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/metal-backend.md"
+  },
+  {
+   "name": "qwen38-verify-depth-32k",
+   "family": "qwen38",
+   "tier": "verify-long",
+   "model": "qwen38",
+   "mtp": "qwen38_mtp",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/generation-check.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/engine.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/sampling/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--metal",
+    "--draft-model",
+    "{mtp}",
+    "--verify-depth",
+    "tests/fixtures/boundary-2026-09-06/prompt-32639.json",
+    "--prefix-cache",
+    ".zig-cache/speed/prefix"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/metal-backend.md"
   }
  ]
 }

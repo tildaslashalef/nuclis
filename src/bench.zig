@@ -8,7 +8,7 @@ const generate = @import("generate.zig");
 const config = @import("config.zig");
 const style = @import("tui/style.zig");
 const interrupt = @import("interrupt.zig");
-const prefix_cache = @import("prefix_cache.zig");
+const prefix_cache = inference.prefix_cache;
 
 /// What only this command reads from the command line. The model, backend,
 /// and context come resolved from the configuration (`config.Resolved`);
@@ -33,7 +33,7 @@ pub const Options = struct {
     /// A `.gputrace` path: after the runs, one more decode step is recorded
     /// into it for Xcode's Metal debugger. Metal only.
     capture: ?[]const u8 = null,
-    /// A directory of saved prefixes (`prefix_cache.zig`): the prompt less
+    /// A directory of saved prefixes (`inference.prefix_cache`): the prompt less
     /// its last token is prefilled once, saved, and restored before every
     /// later run, which then feeds only the last token (prefill rates are
     /// omitted).

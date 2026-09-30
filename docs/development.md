@@ -114,7 +114,7 @@ make the registry cheaper than the recipes it replaced:
 | --- | --- | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the Metal plan, and the 12B QAT file's CPU gates | the Metal plan | the CPU reference |
 | covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities (`*-perplexity-full`), the Gemma 12B QAT file, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
-| cost | minutes (36 gates; 258 s measured 2026-09-29 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; engineering log, REPO-20, MODL-31, MODL-33) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (1 gate: `gemma4-e4b-perplexity-4k`; the other families wait for their references) | 22 min (14 gates, 1,327 s measured 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, KERN-19) |
+| cost | minutes (38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; engineering log, REPO-20, MODL-31, MODL-33; then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 22 min (14 gates, 1,327 s measured 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, KERN-19) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same (CPU gates as `verify-cpu`) | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | every unit that touched the inference stack | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
@@ -227,6 +227,7 @@ What can break independently, and what protects it. *Model-free* means
 | tokenizers: Qwen BPE, Muse (GPT-4o splitter), Gemma SPM, Laya byte-level and Metaspace | the Metaspace rules and rejections on a synthetic vocabulary | one vocabulary gate each (the 12B QAT file carries E4B's tokenizer) |
 | vision: Qwen3-VL, SigLIP small with clamps, SigLIP large with standardization, Muse | preprocessing, grids | one vision gate each |
 | batched prefill at 256 rows, F16 cache over 511 keys, real prose | — | the perplexity gates |
+| a verify batch at depth (few-query attention, the multi-row weight path) against stepped decode from the same state | `checkAttentionVerify` against F64 to the 32K cache | `qwen38-verify-depth-{512,4k}`; `-16k`, `-32k` in `verify-long` |
 | past 512 tokens and the sliding windows | — | `verify-long` |
 
 Not covered by any gate: the 12B QAT's `gemma4uv` unified projector, the
@@ -304,7 +305,8 @@ about a minute per context instead of an eleven-minute 32K prefill:
   does not match its header, its size, or its content digest is refused
   and re-prefilled. A file is the session's used extent (150 MB of
   recurrent state plus 64 KiB of F16 cache per token for Qwen); they live under `.zig-cache/speed/prefix/` and are never
-  committed. A layout change misses by digest; a numerical change to
+  committed. The `qwen38-verify-depth-*` gates key theirs the same way
+  (`inference.prefix_cache`), so the speed loop's files serve them. A layout change misses by digest; a numerical change to
   prefill leaves a saved prefix a valid state to time from.
 - **Verify cost at depth.** `bench --speculative on --verify-rows R
   --accept a` times `--max-tokens` verify batches of R rows per run from

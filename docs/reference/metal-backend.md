@@ -1415,6 +1415,18 @@ and the chunked-vs-stepped gates moved closer (Qwen relative RMS 1.33e-4 →
 1.26e-4, Muse 7.6e-4 → 5.9e-4) because a short tail no longer rounds its
 queries to half.
 
+At depth, the `qwen38-verify-depth-*` gates (`generation-check
+--verify-depth`) restore a saved prefix of the acceptance arrays and
+compare a 4-row verify batch's logits with stepped decode from the same
+state: worst row relative RMS 9.0e-4 / 7.0e-4 / 9.9e-4 / 1.02e-3 and max
+abs 8.1e-3 / 1.8e-2 / 1.5e-2 / 1.3e-2 at 511 / 4,095 / 16,383 / 32,638,
+the same greedy token on every row. The old chunk route reads the same
+at 32,638 (1.021e-3): the error is the multi-row weight tiles' half
+operands, flat with depth, not the attention. The bound is 4e-2 / 2e-3;
+a causal limit off by the batch reads 4.7e-2 relative RMS with the greedy
+token unchanged, which is why the gate bounds the RMS and not only the
+argmax.
+
 ## Long-context prefill attention (ENGN-08, 2026-09-10, closed without a kernel change)
 
 ENGN-07 measured prefill at the reference's rate at 512 tokens and −6 / −15 /

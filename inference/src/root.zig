@@ -17,6 +17,7 @@ pub const weights = @import("runtime/weights.zig");
 pub const sampling = @import("sampling/root.zig");
 pub const speculative = @import("sampling/speculative.zig");
 pub const session = @import("runtime/session.zig");
+pub const prefix_cache = @import("runtime/prefix_cache.zig");
 pub const draft = @import("runtime/draft.zig");
 pub const observer = @import("runtime/observer.zig");
 pub const events = @import("events.zig");
@@ -40,6 +41,7 @@ test {
     _ = models;
     _ = weights;
     _ = session;
+    _ = prefix_cache;
     _ = sampling;
     _ = speculative;
     _ = engine;

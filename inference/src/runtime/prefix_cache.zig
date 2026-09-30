@@ -1,16 +1,17 @@
-//! Saved prefixes for `bench --prefix-cache`: a prefilled model's snapshot
-//! on disk, keyed by the model files, the prefix tokens, and the session
-//! layout, so a long-context measurement restores its prompt in seconds
-//! instead of prefilling it for minutes. A timing aid only: a numerical
-//! change to prefill leaves a saved prefix a valid state to time from, and a
-//! layout change misses by digest. Files are private and never committed.
+//! Saved prefixes (`bench --prefix-cache`, the long verify gates): a
+//! prefilled model's snapshot on disk, keyed by the model files, the prefix
+//! tokens, and the session layout, so a long-context measurement or check
+//! restores its prompt in seconds instead of prefilling it for minutes. Not
+//! a trace fixture: a numerical change to prefill leaves a saved prefix a
+//! valid state to time or compare from, and a layout change misses by
+//! digest. Files are private and never committed.
 //!
 //! File: one `Header`, the snapshot's session bytes, then its carried floats
 //! (native byte order; the files never leave the machine that wrote them).
 const std = @import("std");
-const inference = @import("inference");
+const session = @import("session.zig");
 
-const Snapshot = inference.session.Snapshot;
+const Snapshot = session.Snapshot;
 
 pub const Key = struct {
     /// `modelDigest` of the target and draft files.
@@ -180,8 +181,8 @@ test "a saved prefix round-trips into a fresh session" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const Session = inference.session.Session;
-    const layouts = [_]inference.session.Layout{ .{ .attention = .{ .key_row = 2, .value_row = 2, .precision = .f16 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } };
+    const Session = session.Session;
+    const layouts = [_]session.Layout{ .{ .attention = .{ .key_row = 2, .value_row = 2, .precision = .f16 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } };
     var s = try Session.init(a, &layouts, 8, false, 0);
     defer s.deinit();
     try s.beginChunk(3);
