@@ -65,3 +65,61 @@ That ranks the single-row matvec's ideas: a decode that produces floats
 without integer-to-float conversions (the half magic-number form), fewer
 unpacking operations per weight, and fewer live registers, each read
 against these counters.
+
+## The verify batch's two largest kernels (2026-09-30)
+
+A whole 4-row Qwen verify at 4K replays only in Xcode's lite mode (over
+the full-profiling run-time limit: 332.08 ms effective GPU time at
+Maximum, the unprofiled verify's 335 ms), so its two largest kernels were
+captured from the micro-benchmarks on the verify's shapes and profiled at
+Maximum (exports `attention-4096-c8-reuse-f16_2026-09-30T1513_max.csv` and
+`rows-IQ4_XS-17408x5120-t4-tile_2026-09-30T1513_max.csv`, not committed).
+Both replays ran at the benchmarks' rates: 16 attention dispatches in
+107.26 ms (6.70 ms each; the sweep reads 6.46–6.56) and 16 matmul
+dispatches in 8.39 ms (0.52 ms each, the benchmark's). Sampled cores 3/16
+and 8/16, with the usual warning.
+
+| Counter | `nu_attention_chunk_reuse_h` (8 rows, 4,096 visible, F16) | `nu_matmul_iq4_xs_8` (17,408 × 5,120, 4 tokens) |
+| --- | ---: | ---: |
+| ALU Utilization | 4.9 % | 47.9 % |
+| Instruction Throughput Limiter / Utilization | 8.6 / 2.9 % | **91.0** / 27.3 % |
+| F32 Limiter / Utilization | 4.9 / 4.8 % | 68.0 / 47.8 % |
+| Integer and Complex Limiter / Utilization | 6.4 / 6.3 % | 56.4 / 43.1 % |
+| Integer and Conditional Limiter | 1.8 % | 35.6 % |
+| ALU instruction mix: float / integer and complex / integer and conditional | 49.9 / 32.2 / 18.0 % | 50.0 / 22.5 / 27.5 % |
+| Kernel Occupancy / Occupancy Manager Target | **6.2 / 85.1 %** | 37.7 / 82.1 % |
+| L1 Register / Threadgroup Residency | 31.4 / 4.8 % | 1.5 / 23.3 % |
+| Stack L1 Read / Write Bandwidth | **116.1 / 116.2** | 0 / 0 |
+| Threadgroup Memory L1 Read Bandwidth | 4.8 | 321.1 |
+| Buffer L1 Read Bandwidth / Miss Rate | 16.3 / 27.9 % | 688.6 / 19.7 % |
+| L1 Cache Limiter / Eviction Rate | 1.6 / 100 % | 22.9 / 0 % |
+| Last Level Cache Limiter / Miss Rate | 10.3 / 47.0 % | 9.1 / 39.2 % |
+| MMU Limiter | 0.1 % | 3.1 % |
+
+(Bandwidths as Xcode exports them, GB/s.)
+
+**The verify attention waits on nothing: the GPU is nearly empty.**
+Every limiter is at or under 10 %, ALU utilization is 5 %, and occupancy is
+6 % against an 85 % target: 109,056 kernel invocations over 16
+dispatches, about 6,800 threads each (the dispatch is 24 threadgroups per
+value split, one per query head: ADR 0001), cannot hide the latency of
+walking 4,096 cached rows. What traffic there is, is mostly the thread's own
+stack: 116 GB/s of spill reads and writes against 16 GB/s of buffer
+reads, with the L1 evicting every line. Both point at the design KERN-21
+proposes: split the keys so hundreds of threadgroups share the walk, and
+keep per-thread state small enough not to spill. It also explains the
+sweep's finding that 1 and 8 rows cost the same: rows are not what the
+kernel is short of; parallel work is.
+
+**The verify matmul is issue-bound, like the matvec, on different
+pipes.** The instruction-throughput limiter is 91 % while the ALUs are
+48 % busy: F32 (68 %) and integer and complex (56 %) both near their
+limits, occupancy at 38 % of an 82 % target, no spills. Memory is not the
+limit (last-level cache 9 %, MMU 3 %). The tile stages every decoded
+weight through threadgroup memory (321 GB/s of threadgroup reads for
+689 GB/s of buffer reads), and its 8-wide fragment computes 8 token
+columns for 4 real ones, so half its float work multiplies padding. That
+ranks KERN-24's ideas: decode straight into register fragments (drop the
+staging instructions), and route small row counts to a body that does not
+compute padded columns: the multi-row matvec already reads 103 GB/s at 4
+tokens on this shape against the tile's 90.5.

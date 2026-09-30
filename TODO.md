@@ -25,10 +25,9 @@ opening baseline is in
 The base binary for `make speed` is saved at `4dc7c70`
 (`.zig-cache/speed/base/`, not committed; `make speed-base` after each
 kept change). Next: KERN-20's remainder.
-The whole-batch verify capture replays only in Xcode's lite mode, so the
-counters come from two kernel captures of its attention and matmul
-(`.zig-cache/trace/`), which wait on the user's Maximum profiles; then
-pipeline statistics and the rest of `apple-gpu.md`. Then the levers in the order the cost table set
+The verify's attention and matmul are read against their counters
+(apple-gpu.md); what remains is pipeline statistics (`bench
+--kernel-stats`) and the rest of `apple-gpu.md`. Then the levers in the order the cost table set
 (*Order* below).
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
@@ -160,11 +159,14 @@ capture is a different path.
   verify's `attention_chunk_reuse_h`) and
   `rows-IQ4_XS-17408x5120-t4-tile` (`make bench-matvec-rows CAPTURE=…`,
   its `matmul_iq4_xs_8`, 0.52 ms, 90.5 GB/s; the multi-row path reads
-  103 GB/s at t = 4), both under `.zig-cache/trace/`. Remaining: rename
-  and read their exports (ALU FP32 / FP16 / integer utilization and
-  limiter, occupancy, L1 and last-level cache, the MMU limiter, spills)
-  into `apple-gpu.md`; a `delta_chunk` case in `metal-check` if the
-  DeltaNet verify still matters then.
+  103 GB/s at t = 4). **Read 2026-09-30** into
+  [apple-gpu.md § The verify batch's two largest kernels](docs/reference/apple-gpu.md#the-verify-batchs-two-largest-kernels-2026-09-30):
+  the attention is latency-bound on an empty GPU (occupancy 6 % of an
+  85 % target, every limiter ≤ 10 %, 116 GB/s of stack spill traffic);
+  the matmul tile is issue-bound (instruction throughput limiter 91 %,
+  F32 68 %, occupancy 38 % of 82 %, staging through threadgroup memory,
+  half its columns padding). Remaining: a `delta_chunk` case in
+  `metal-check` if the DeltaNet verify still matters then.
 - **Pipeline statistics.** At pipeline creation, log per kernel
   `maxTotalThreadsPerThreadgroup` (it drops below 1024 when a kernel's
   registers limit occupancy), `threadExecutionWidth`, and
