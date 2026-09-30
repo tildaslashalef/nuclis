@@ -253,7 +253,9 @@ stale references. Do not claim build/test execution when no code or build exists
   weights; `CAPTURE=` on the micro-benchmarks makes ~1 GB kernel captures)
   that only Xcode's GUI replays. Xcode 27's agent tools (`xcrun mcpbridge`,
   an MCP server; `mcp-server` manages it) cover builds, tests, previews,
-  and devices, not GPU captures ([docs/development.md § GPU
+  and devices, not GPU captures. Profiling a replay needs Xcode's separate
+  Metal Toolchain component (Xcode offers the download on first use); our
+  builds do not, since the kernels compile at run time ([docs/development.md § GPU
   counters by capture](docs/development.md#gpu-counters-by-capture)). Keep traces under
   `.zig-cache/trace/`; never commit them.
 

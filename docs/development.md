@@ -1088,7 +1088,9 @@ into `.zig-cache/trace/decode.gputrace` (`CAPTURE_OUT=` to move it,
 the visible cache). The document holds every buffer the step reads, the
 weights included: about 15 GB for Qwen3.8-27B, so delete it when done.
 Xcode 27 ships no command-line reader for it, and its MCP tools (`xcrun
-mcpbridge`) include none: open it in Xcode, replay,
+mcpbridge`) include none: open it in Xcode, tick *Profile after replay*
+(the first time, Xcode asks to download its Metal Toolchain component,
+which shader profiling needs), replay,
 and read *Performance* (counters per dispatch, limiters). Never commit a
 capture.
 
