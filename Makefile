@@ -24,7 +24,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate \
-        agent agent-eval playground model-ls eval-corpus trace clean clean-cache distclean hf-downloader test-hf changelog release
+        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf changelog release
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -216,6 +216,13 @@ trace: metal ## Metal System Trace of one `bench` run under xctrace (needs Xcode
 	  --output "$(TRACE_OUT)" --no-prompt --launch -- $(BIN) bench --backend metal --model "$(MODEL)" \
 	  --prompt "$(PROMPT)" --max-tokens 64 --ctx-size 2048 --repeat 1 --warmup 1 $(ARGS)
 	DEVELOPER_DIR=$(XCODE_DEV) xcrun xctrace export --input "$(TRACE_OUT)" --toc | grep -o '<table schema="metal-gpu[^"]*"' | sort -u
+
+CAPTURE_OUT ?= .zig-cache/trace/decode.gputrace
+capture: metal ## One decode step captured into a .gputrace for Xcode's Metal debugger (counters, limiters, occupancy; output under .zig-cache/trace)
+	mkdir -p $(dir $(CAPTURE_OUT)) && rm -rf "$(CAPTURE_OUT)"
+	MTL_CAPTURE_ENABLED=1 $(BIN) bench --backend metal --model "$(MODEL)" --prompt "$(PROMPT)" --max-tokens 8 \
+	  --ctx-size 2048 --repeat 1 --warmup 0 --capture "$(CAPTURE_OUT)" $(ARGS)
+	@echo "open $(CAPTURE_OUT)   # Xcode: Metal debugger, Performance / Counters"
 
 # ---- huggingface package (a path dependency of the root build since MODL-02) -----
 

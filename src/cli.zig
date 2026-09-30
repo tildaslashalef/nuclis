@@ -259,6 +259,9 @@ pub fn parseArgs(args: []const []const u8) !Options {
             } else if (command == .bench and std.mem.eql(u8, flag, "--prompt-tokens")) {
                 if (b.prompt_tokens != null) return error.DuplicateOption;
                 b.prompt_tokens = value;
+            } else if (command == .bench and std.mem.eql(u8, flag, "--capture")) {
+                if (b.capture != null) return error.DuplicateOption;
+                b.capture = value;
             } else if (command == .generate and std.mem.eql(u8, flag, "--prompt-tokens")) {
                 if (g.prompt_tokens != null) return error.DuplicateOption;
                 g.prompt_tokens = value;
@@ -1121,6 +1124,9 @@ test "bench parses shared prompt flags and its own repetition flags" {
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "bench", "--prompt", "a", "--logits", "l.f32" }));
     try std.testing.expect((try parseArgs(&.{ "bench", "--prompt", "a", "--profile" })).benchmark.profile);
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "bench", "--prompt", "a", "--profile", "--profile" }));
+    try std.testing.expectEqualStrings("t.gputrace", (try parseArgs(&.{ "bench", "--prompt", "a", "--capture", "t.gputrace" })).benchmark.capture.?);
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "bench", "--prompt", "a", "--capture", "a", "--capture", "b" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--prompt", "a", "--capture", "t.gputrace" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--profile", "--prompt", "a" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--prompt", "a", "--repeat", "1" }));
 }

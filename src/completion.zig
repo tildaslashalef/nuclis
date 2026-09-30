@@ -172,6 +172,7 @@ pub const commands = [_]Command{
         .{ .name = "--warmup", .value = .number, .summary = "unmeasured runs first" },
         .{ .name = "--profile", .summary = "per-kernel GPU time" },
         .{ .name = "--unfused-norms", .summary = "run the norm pairs unfused" },
+        .{ .name = "--capture", .value = .file, .summary = "one decode step into a .gputrace" },
         json,
     } ++ engine_flags) }} },
     .{ .name = "tokenize", .summary = "the prompt's token ids, no model run", .actions = &.{.{ .flags = &.{

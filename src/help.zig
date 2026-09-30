@@ -262,6 +262,8 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--warmup <n>", "unmeasured runs first, 0..100; default 1");
     try row(out, sty, "--profile", "per-kernel GPU time (Metal); perturbs the rates");
     try row(out, sty, "--unfused-norms", "run the norm pairs the fused kernels replace");
+    try row(out, sty, "--capture <path>", "after the runs, one more decode step into a");
+    try row(out, sty, "", "new .gputrace for Xcode (MTL_CAPTURE_ENABLED=1)");
     try row(out, sty, "--json", "the report: every sample and the measured means");
     try engineOptions(out, sty);
     try samplingOptions(out, sty);

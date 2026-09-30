@@ -34,6 +34,7 @@ extern fn nu_metal_commit(*anyopaque, ?*const fn (?*anyopaque) callconv(.c) void
 extern fn nu_metal_gpu_seconds(*anyopaque) f64;
 extern fn nu_metal_profile_enable(*anyopaque, u32, [*]u8, usize) c_int;
 extern fn nu_metal_profile_read(*anyopaque, [*]f64, u32) u32;
+extern fn nu_metal_capture_next(*anyopaque, [*:0]const u8, [*]u8, usize) c_int;
 
 /// The IQ3_S codebook is emitted into the shader source at compile time from
 /// the single Zig definition, so the CPU and GPU decoders share one table.
@@ -354,6 +355,15 @@ pub const Backend = struct {
         errdefer self.alloc.free(durations);
         if (nu_metal_profile_enable(self.handle, max_dispatches, diagnostic.ptr, diagnostic.len) != 0) return error.MetalProfilingUnavailable;
         self.profile = .{ .durations = durations };
+    }
+    /// Records the next submitted command buffer into a new `.gputrace`
+    /// document at `path` for Xcode's Metal debugger (counters, limiters,
+    /// occupancy). Needs `MTL_CAPTURE_ENABLED=1`; the reason for a refusal is
+    /// written to `diagnostic`. Idle only.
+    pub fn captureNext(self: *Backend, path: [:0]const u8, diagnostic: []u8) !void {
+        if (!enabled) return error.MetalNotEnabled;
+        if (self.recording) return error.MetalAlreadyRecording;
+        if (nu_metal_capture_next(self.handle, path.ptr, diagnostic.ptr, diagnostic.len) != 0) return error.MetalCaptureUnavailable;
     }
     /// Pairs the bridge's per-dispatch durations with the recorded kernels.
     /// Runs after every commit while profiling, including failed ones, so the

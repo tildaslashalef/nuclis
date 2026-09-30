@@ -29,6 +29,9 @@ pub const Options = struct {
     /// Run the norm pairs the fused kernels replace instead of the fused
     /// ones: the interleaved control for the KERN-18 acceptance.
     unfused_norms: bool = false,
+    /// A `.gputrace` path: after the runs, one more decode step is recorded
+    /// into it for Xcode's Metal debugger. Metal only.
+    capture: ?[]const u8 = null,
 };
 
 /// Dispatches a Qwen token records (~1,240) with margin; the plan is not asked
@@ -365,6 +368,14 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
             return err;
         };
     }
+    // The capture runs after minutes of measurement, so its refusals are
+    // found before them.
+    const capture: ?[:0]u8 = if (options.capture) |path| blk: {
+        if (gpu == null) return error.CaptureRequiresMetal;
+        if (std.Io.Dir.cwd().access(io, path, .{})) |_| return error.CaptureExists else |_| {}
+        break :blk try alloc.dupeZ(u8, path);
+    } else null;
+    defer if (capture) |path| alloc.free(path);
     interrupt.install();
     const tokens = if (options.prompt_tokens) |path| try engine.readPromptTokens(alloc, io, path, eng.vocab.tokens.len) else blk: {
         const prompt = try eng.prompt(user.?, options.raw, .off);
@@ -455,6 +466,18 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     defer if (profile) |p| alloc.free(p.kernels);
     if (gpu) |backend| if (backend.profile) |*p| {
         profile = try profileReport(alloc, p);
+    };
+    if (capture) |path| if (!cancelled) {
+        // One decode step after the last run: the loop never feeds its last
+        // sampled token, so the budget's room still holds this one.
+        var diagnostic: [1024]u8 = @splat(0);
+        gpu.?.captureNext(path, &diagnostic) catch |err| {
+            std.log.err("{s}", .{std.mem.sliceTo(&diagnostic, 0)});
+            return err;
+        };
+        var next: u32 = 0;
+        try eng.model.step(generated[0], null, &next, null, null, null);
+        if (!json) try writer.print("captured one decode step at position {d}: {s}\n", .{ eng.model.session().position, path });
     };
     const report: Report = .{
         .backend = @tagName(settings.backend),

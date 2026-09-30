@@ -247,7 +247,11 @@ stale references. Do not claim build/test execution when no code or build exists
 
   `make trace` wraps this for `bench`. On the M4 Pro the GPU limiter counter
   profile is reported unsupported and its tables export empty; the GPU
-  timeline (`metal-gpu-intervals`) does record. Keep traces under
+  timeline (`metal-gpu-intervals`) does record. For counters, `make
+  capture` writes a Metal `.gputrace` of one decode step (needs
+  `MTL_CAPTURE_ENABLED=1`, which the target sets; about 15 GB with the
+  weights) that only Xcode's GUI replays ([docs/development.md § GPU
+  counters by capture](docs/development.md#gpu-counters-by-capture)). Keep traces under
   `.zig-cache/trace/`; never commit them.
 
 ## Versioning and releases

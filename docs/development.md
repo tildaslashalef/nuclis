@@ -1076,6 +1076,21 @@ Default build and test commands must not fetch them.
 Secrets are environment-only and excluded from logs and fixtures. Real session
 data and private source snippets must not become test or benchmark fixtures.
 
+### GPU counters by capture
+
+`xctrace`'s GPU counter profile is unsupported on the M4 Pro, but a Metal
+capture replayed in Xcode reports the counters: ALU (FP32, FP16, integer)
+utilization and limiters, occupancy, caches, and the MMU limiter per
+dispatch. `make capture` runs `bench --capture` with
+`MTL_CAPTURE_ENABLED=1`: after the runs, one more decode step is recorded
+into `.zig-cache/trace/decode.gputrace` (`CAPTURE_OUT=` to move it,
+`MODEL=`, `PROMPT=`, and `ARGS=` as for `bench`; the budget's context sets
+the visible cache). The document holds every buffer the step reads, the
+weights included: about 15 GB for Qwen3.8-27B, so delete it when done.
+Xcode 27 ships no command-line reader for it: open it in Xcode, replay,
+and read *Performance* (counters per dispatch, limiters). Never commit a
+capture.
+
 ### Memory of a running process
 
 `python3 scripts/nuclis_mem_usage.py` reports where a running `nuclis`

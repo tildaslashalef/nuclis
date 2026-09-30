@@ -35,6 +35,7 @@ typedef struct {
     uint32_t sampled; // timed dispatches in the current command buffer
     uint32_t resolved; // entries valid in `durations` after the last commit
     double * durations; // seconds per timed dispatch, `sample_capacity` entries
+    int capturing; // a GPU capture is open; the next commit closes it
 } NuMetal;
 
 // Timestamp counters are undocumented in unit; measured on Apple M4 Pro (macOS
@@ -53,6 +54,7 @@ void nu_metal_destroy(void * opaque) {
     NuMetal * m = opaque;
     if (m->encoder) { [m->encoder endEncoding]; [m->encoder release]; }
     if (m->command) { [m->command waitUntilCompleted]; [m->command release]; }
+    if (m->capturing) [[MTLCaptureManager sharedCaptureManager] stopCapture];
     [m->samples release]; free(m->durations);
     [m->buffers release]; [m->pipelines release]; [m->library release];
     [m->queue release]; [m->device release];
@@ -263,6 +265,7 @@ int nu_metal_commit(void * opaque, void (*tick)(void *), void * tick_context) {
                 [command commit];
                 [command waitUntilCompleted];
             }
+            if (m->capturing) { [[MTLCaptureManager sharedCaptureManager] stopCapture]; m->capturing = 0; }
             if (command.status != MTLCommandBufferStatusCompleted) status = 1;
             else {
                 m->gpu_seconds += command.GPUEndTime - command.GPUStartTime;
@@ -326,4 +329,30 @@ uint32_t nu_metal_profile_read(void * opaque, double * out, uint32_t capacity) {
     uint32_t count = MIN(m->resolved, capacity);
     if (count) memcpy(out, m->durations, count * sizeof(double));
     return count;
+}
+
+// Opens a GPU capture of this queue into a `.gputrace` document at `path`
+// (which must not exist); the next commit that submits work closes it, so the
+// document holds exactly that command buffer. The process needs
+// MTL_CAPTURE_ENABLED=1 in its environment. Idle only.
+int nu_metal_capture_next(void * opaque, const char * path, char * error, size_t capacity) {
+    @autoreleasepool {
+        NuMetal * m = opaque;
+        if (m->command || m->capturing) { message(error, capacity, @"a capture opens once, outside a command buffer"); return 1; }
+        MTLCaptureManager * manager = [MTLCaptureManager sharedCaptureManager];
+        if (![manager supportsDestination:MTLCaptureDestinationGPUTraceDocument]) {
+            message(error, capacity, @"GPU trace documents are unavailable: set MTL_CAPTURE_ENABLED=1");
+            return 1;
+        }
+        MTLCaptureDescriptor * descriptor = [MTLCaptureDescriptor new];
+        descriptor.captureObject = m->queue;
+        descriptor.destination = MTLCaptureDestinationGPUTraceDocument;
+        descriptor.outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+        NSError * failure = nil;
+        BOOL started = [manager startCaptureWithDescriptor:descriptor error:&failure];
+        [descriptor release];
+        if (!started) { message(error, capacity, failure.localizedDescription ?: @"capture failed to start"); return 1; }
+        m->capturing = 1;
+        return 0;
+    }
 }

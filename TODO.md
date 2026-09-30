@@ -163,17 +163,16 @@ Gates: `make check`, `make lint-py`, `make verify-auto`. Docs:
 every limiter question so far was answered by guessing. Metal's own
 capture is a different path.
 
-- **Capture.** `NUCLIS_GPU_CAPTURE=<path.gputrace>` makes the bridge
-  (`inference/src/backends/metal/bridge.m`) wrap the next command buffer
-  (one decode step, or one verify batch with `--verify-rows`) in
-  `MTLCaptureManager` to a `.gputrace` document (needs
-  `MTL_CAPTURE_ENABLED=1`; `make capture ARGS=…` sets both, output under
-  `.zig-cache/trace/`). Open in Xcode's Metal debugger; export what can be
-  exported. Read, per kernel family: ALU (FP32 / FP16 / integer)
-  utilization and limiter, occupancy, L1 and last-level cache, the MMU
-  limiter, and spills. If the counters need Xcode's GUI, record the
-  procedure in `docs/development.md` beside the xctrace notes and the
-  numbers in `apple-gpu.md`.
+- **Capture — landed 2026-09-30.** `Backend.captureNext` (bridge
+  `nu_metal_capture_next`, the queue captured until the next commit),
+  `bench --capture <path>` (one decode step after the runs), `make
+  capture`; procedure in `docs/development.md` § GPU counters by capture.
+  Verified: a Qwen decode step at 2K context captured (15 GB document,
+  weights included). Xcode 27 has no command-line reader, so the counters
+  are read in Xcode's GUI. Remaining: a verify-batch capture once
+  ENGN-18's `--verify-rows` exists; read, per kernel family, ALU (FP32 /
+  FP16 / integer) utilization and limiter, occupancy, L1 and last-level
+  cache, the MMU limiter, and spills, into `apple-gpu.md`.
 - **Pipeline statistics.** At pipeline creation, log per kernel
   `maxTotalThreadsPerThreadgroup` (it drops below 1024 when a kernel's
   registers limit occupancy), `threadExecutionWidth`, and
