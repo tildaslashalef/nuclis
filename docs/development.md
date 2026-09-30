@@ -1099,11 +1099,19 @@ bench-kernels ARGS=Q4_K CAPTURE='matvec-Q4_K-5120x17408 (ffn_down)-block'`
 (also `bench-matvec-rows` and `bench-attention`) records the last warm-up
 command buffer of each case whose printed label contains `CAPTURE` into
 `.zig-cache/trace/kernels/` (spaces become `-`, parentheses are
-dropped), replacing the previous set. Save Xcode's counter export beside
-it as `<capture name>_<YYYY-MM-DDTHHMM>_<performance state>.csv`, for
-example `matvec-Q4_K-5120x17408-ffn_down-block_2026-09-30T0947_max.csv`;
-[apple-gpu.md](reference/apple-gpu.md) cites the file it copies numbers
-from. About 1 GB each:
+dropped), replacing the previous set.
+
+**The division of work.** The agent makes the capture and asks the user
+to profile it (gauge menu: Maximum, *Profile*) and export Counters as CSV
+into `.zig-cache/trace/` under any name. When the user says it is done,
+the agent renames the export to `<capture name>_<YYYY-MM-DDTHHMM>_<performance
+state>.csv` (the time is the file's modification time; the state is
+checked against the replay's GPU time, which at Maximum matches the
+benchmark's rate), for example
+`matvec-Q4_K-5120x17408-ffn_down-block_2026-09-30T0947_max.csv`, reads
+it, copies the numbers that matter into
+[apple-gpu.md](reference/apple-gpu.md) citing the file name, and deletes
+the capture (the `.gputrace`), keeping the CSV. About 1 GB each:
 the benchmark's buffers are sized for its largest shape, and the capture
 holds whole buffers.
 
