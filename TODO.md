@@ -179,8 +179,8 @@ capture is a different path.
   `nu_matvec_q4_k` on the `ffn_down` shape is issue-bound on the integer
   and complex pipe (limiter 71 %, half its instructions), occupancy 23 %
   against a 47 % target, 192 registers and a 16-byte spill; memory, cache,
-  and MMU are not limiters. Read at performance state Medium on 9 of 16
-  sampled cores: re-profile at Maximum to confirm. Xcode confirmed:
+  and MMU are not limiters; confirmed at performance state Maximum (149
+  GB/s in the replay, the benchmark's rate). Xcode confirmed:
   replay, *Profile after replay*, Performance → Counters → export CSV.
   Remaining: a verify-batch capture once
   ENGN-18's `--verify-rows` exists; read, per kernel family, ALU (FP32 /
@@ -272,7 +272,7 @@ verify-long`.
 IQ4_XS, so part of the gap is in the model, not the kernel. Read
 KERN-20's capture first; the ideas are ranked by what it says.
 
-- **What the counters say first** (apple-gpu.md, at Medium): the Q4_K
+- **What the counters say first** (apple-gpu.md, at full clocks): the Q4_K
   matvec is issue-bound on the integer and complex pipe, not on memory, at
   half its target occupancy with 192 registers. So (b) and fewer live
   registers come first, (a) only if the in-model capture shows an MMU
