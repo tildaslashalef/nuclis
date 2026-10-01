@@ -125,6 +125,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_route` (KERN-09) | 256 | one row of ≤ 256 router logits | 32 logits; k rounds of "best untaken" | `simd_max`, `simd_sum`, `simd_shuffle_down`, 8-way threadgroup pick | 8 + 8 + 64 entries |
 | `nu_matmul_*` (specialized, ENGN-05) | 128 | 64-row × 64-token output tile (32×32 for chunks of ≤ 32 tokens) | a 32×32 quarter as 4×4 `simdgroup_float8x8` (2×2 in the small tile) | matrix loads and MACs | 8 KB half weight tile + 8 KB half activation tile (small tile: 4 KB, activations from device), `threadgroup_barrier` |
 | `nu_matmul_*_8` (KERN-11) | 128 | 16-row × 8-token output tile (two token tiles for 9..16) | 16 rows × 8 tokens over one K slice: two 8×8 accumulators sharing one B load, four groups split K | matrix loads and MACs | 8 KB half tile (16 rows × 64 k per group), `simdgroup_barrier` only |
+| `nu_matmul_*_f2` (KERN-24) | 128 | 16-row × 8-token output tile (token tiles as `_8`) | 16 rows × 8 tokens over one K slice: each lane decodes one 16-value segment per row straight into its `simdgroup_matrix` elements (K permuted per 64-column step), two float4 activation loads per token | matrix MACs; four K partials summed in a fixed order | 2 KB of K partials, one `threadgroup_barrier` |
 | `nu_matvec_rows_*_t<n>` (KERN-12) | 128 | 16 output rows × up to 8 tokens | 4 rows; 8 lanes per 256-value block; one accumulator per (row, token) | `simd_sum` across 32 lanes per (row, token) | none |
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
@@ -280,9 +281,15 @@ memory, and leave the rest to the grid.
   only loop and serves chunks of at most `small_chunk_tokens` (24) tokens,
   where the 32-row tile's barrier-bound loop streams weight bytes far below
   the matvec floor; see [§ Small-chunk tile](#small-chunk-tile-kern-11-2026-09-19).
-  The generic instantiation
+  Production now takes the register-fragment set (`nu_matmul_*_f2`, the same
+  16×8 geometry without staging, every specialized encoding and IQ4_NL) for
+  those chunks and keeps `_8` as the benchmark control (`matmulTile`); see
+  [§ The register-fragment tile](#the-register-fragment-tile-kern-24-2026-10-01-below-its-target).
+  A 2–8-token batch with no specialized tile and at most
+  `small_matrix_rows` (1,024) rows runs the generic multi-row matvec
+  instead of a tile. The generic instantiation
   (`nu_matmul`) keeps F32 operands in 32×32 tiles for F32, F16, Q8_0,
-  IQ4_NL, and misaligned ranges (exact for dense rows of any magnitude).
+  IQ4_NL past 24 tokens, and misaligned ranges (exact for dense rows of any magnitude).
   `Backend.matmul` selects by encoding, weight alignment (the matvec
   rules), and chunk length (`specializedMatmul`, `matmulGeometry`).
   Contract: rows % 8 == 0, columns % 64 == 0, float4-aligned input (offset
@@ -1233,6 +1240,58 @@ routing is untouched (the two-row matvec routing included). The numbers are
 in [bench.md § Small-batch tile sweep](bench.md#small-batch-tile-sweep-kern-14-2026-09-20);
 the full-model verify latency is unchanged from the ENGN-15 quick pass
 (262–297 ms), since nothing routes to the candidate.
+
+### The register-fragment tile (KERN-24, 2026-10-01; below its target)
+
+The 16×8 tile decodes weights into threadgroup memory and reloads them as
+8×8 fragments; its time per dispatch was flat across encodings
+(0.48–0.66 ms on the FFN shapes whatever the bits per weight), so it was
+bound on per-element work, not bytes. `nu_matmul_frag_body` keeps the
+geometry and the four-way K split but stages nothing: a lane holds
+elements (r, c) and (r, c + 1) of each `simdgroup_matrix`
+(`nu_fragment_row/col`, pinned by `nu_fragment_layout` in `test-metal`),
+and inside a 64-column step column c = 2q + e of fragment j holds step
+column 16q + 8e + j, identically for both operands. The lane then needs
+segment q of its own weight row (the existing `nu_tile_segment` decoders,
+every specialized encoding plus `nu_tile_iq4_nl`) and step columns
+16(r/2) + 8(r%2) + 0..7 of its two token rows: two float4 loads. Each
+activation fragment is built just before its multiply; keeping all eight
+live across the decode ran 2× slower than the tile. Weights are rounded
+to half, activations stay F32 (half × half measured no faster);
+`test-metal` bounds every variant against the generic F32 tile, worst
+2.0e-5 of Σ|w·x| (the half tile 3.0e-5; bound 2e-4).
+
+`make bench-matvec-rows ARGS="4 frag"` (`fragBench`; Apple M4 Pro,
+ReleaseSafe, minimum of three command buffers of 16 dispatches after a
+warm-up), GB/s of weight bytes at 4 rows, 17,408×5,120 / 5,120×17,408,
+16×8 tile → fragment tile:
+
+| Encoding | tile | fragment |
+| --- | --- | --- |
+| Q4_K | 96.6 / 94.5 | 107.4 / 104.4 |
+| Q5_K | 112.1 / 109.0 | 115.3 / 111.7 |
+| Q6_K | 116.0 / 109.9 | 152.6 / 137.5 |
+| IQ4_XS | 90.6 / 88.4 | 122.2 / 115.4 |
+| Q3_K | 64.2 / 60.1 | 89.5 / 86.1 |
+| IQ3_S | 66.7 / 63.4 | 95.1 / 89.3 |
+| Q4_0 | 91.7 / 89.7 | 133.6 / 128.5 |
+| PQ2_0 | 49.1 / 48.0 | 68.9 / 66.0 |
+| PTQ1_0 | 33.8 / 32.3 | 41.5 / 39.1 |
+| IQ4_NL (generic tile) | 29.4 / 27.8 | 130.7 / 123.9 |
+
+The rate is flat from 1 to 8 rows: an 8×8 multiply computes 8 token
+columns whatever the count. A probe with the decode removed ran Q4_K's
+gate shape in 0.234 ms (about 6 TFLOP/s of 8×8 work) against the
+kernel's 0.47, and the capture
+([apple-gpu.md](apple-gpu.md#the-register-fragment-verify-matmul-2026-10-01))
+puts the kernel on the F32 pipe the multiplies occupy, half of them on
+padding columns at 4 rows. F32 weight fragments, block-wise K (shared
+headers), 8 or 32 rows per group, a software-pipelined decode, and a
+scaled variant (the multiplies on the integer codes, the group scale
+applied once) all measured within noise or worse (the log's ledger).
+The unit's 150 GB/s bar is met only by Q6_K's gate shape.
+`matmulKernel` forces any instantiation for measurement; `_f2hh` and
+`_f4` stay as measured variants.
 
 ## Merged projections (KERN-04)
 

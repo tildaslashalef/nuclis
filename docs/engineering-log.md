@@ -155,6 +155,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-18 | The speed loop: saved prefixes, verify cost at depth, interleaved A/B, and the decode-speed baseline | 2026-09-30 |
 | KERN-20 | Seeing inside the GPU: Metal captures read in Xcode, `bench --kernel-stats`, `apple-gpu.md`; KERN-05's and KERN-12's questions answered | 2026-09-30 |
 | KERN-21 | Few-query verify attention through the flash-decoding split pass: the 4-row verify batch 25–78 % cheaper from 4K up on Qwen, Gemma, and Muse; checked at depth | 2026-09-30 |
+| KERN-24 | The register-fragment small-batch tile and two routings: Qwen's 4-row verify C 16 % cheaper, Gemma 12B QAT's 23 %; closed below its target (the padded 8×8 multiplies are the floor) | 2026-10-01 |
 
 ## Context
 
@@ -6589,3 +6590,91 @@ only; Gemma's and Muse's routes are checked by the kernel fixtures and
 their 70-token chunk-versus-step gates, not at depth. Gemma was timed on
 the 12B QAT file, not the E4B or 26B-A4B.
 
+## KERN-24 — The register-fragment verify matmul (2026-10-01, closed below its target)
+
+**Outcome.** Verify batches of 3–24 tokens no longer stage weights in
+threadgroup memory. `nu_matmul_frag_body` (the `_f2` instantiations,
+16 rows × 8 tokens, four SIMD groups splitting K as the 16×8 tile does)
+decodes each lane's 16-value segment with the existing `nu_tile_segment`
+decoders straight into its `simdgroup_matrix` elements; the K order inside
+a 64-column step is permuted identically for both operands so the
+activation fragment is two float4 loads per token. The lane layout is
+pinned by `nu_fragment_layout` / `checkFragmentLayout`. `Backend`:
+`specializedMatmulFrag` (every specialized encoding, and IQ4_NL through a
+new `nu_tile_iq4_nl`), `specializedTile` (what production records),
+`matmulKernel` (a forced kernel, for measurement), and
+`small_matrix_rows` = 1,024: a 2–8-token batch with no specialized tile
+and at most that many rows runs the generic multi-row matvec (Qwen's
+48-row Q8_0 β/α projections ran the generic tile on two threadgroups).
+`make bench-matvec-rows ARGS="<rows> frag"` (`fragBench`, with capture
+labels) compares the tile with every fragment variant. The design and
+rates are in [metal-backend.md § The register-fragment
+tile](reference/metal-backend.md#the-register-fragment-tile-kern-24-2026-10-01-below-its-target),
+the counters in [apple-gpu.md § The register-fragment verify
+matmul](reference/apple-gpu.md#the-register-fragment-verify-matmul-2026-10-01).
+
+**Evidence.** Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe,
+pinned artifacts; `make speed` (5 interleaved pairs, restored prefixes,
+`--verify-rows 4 --accept 1`, batch cost C):
+
+| Commit | Change | C before → after |
+| --- | --- | --- |
+| `e5d0129` | fragment tile, Q4_K/Q5_K/Q6_K/IQ4_XS | Qwen 512 275.24 → 254.15 ms (+7.66 %), 4K 289.30 → 269.71 (+6.77 %) |
+| `2c34960` | few-row generic matrices on the multi-row matvec | Qwen 512 254.43 → 238.58 (+6.23 %), 4K 267.15 → 252.09 (+5.64 %) |
+| `3ee3998` | fragment tile, Q3_K/IQ3_S/Q4_0/PQ2_0/PTQ1_0 | Gemma 4 12B QAT 512 99.42 → 76.55 (+23.01 %); Qwen +0.93 / +0.68 % (noise) |
+| `2a6b1ac` | IQ4_NL on the fragment tile | Qwen 512 239.50 → 230.23 (+3.87 %), 4K 253.10 → 243.84 (+3.66 %) |
+
+Qwen's 4-row verify C: 512 275 → 230 ms, 4K 289 → 244 ms. The verify's
+matrix time (`--profile`, 4K) 236.8 → 195.3 ms, 2.8 → 2.3 decode steps
+(a step's matvecs 84.9 ms); the target was ≤ 1.3. Kernel rates at 4 rows
+(17408×5120 / 5120×17408, tile → fragment): Q4_K 96.6/94.5 →
+107.4/104.4, Q5_K 112.1/109.0 → 115.3/111.7, Q6_K 116.0/109.9 →
+152.6/137.5, IQ4_XS 90.6/88.4 → 122.2/115.4, IQ4_NL (generic tile)
+29.4/27.8 → 130.7/123.9; the ≥ 150 GB/s bar is met by Q6_K's gate shape
+only. `make test-metal`: every fragment variant against the generic F32
+tile at 1/5/8/9/16/20 tokens on 1,280 and 5,120 columns, worst 2.02e-5
+of Σ|w·x| (bound 2e-4; the half tile 2.96e-5), the lane layout as
+assumed. `make verify-auto` passed at each commit; `make verify` at the
+close: 38/38 gates in 277 s.
+
+**Ledger** (`make bench-matvec-rows ARGS="4 frag"`, 4 rows):
+
+1. Eight activation fragments built per step and kept live across the
+   decode: half × F32 40–50 GB/s (2× slower than the tile), half × half
+   83, F32 × F32 46, 32 rows 52. Fixed by building each fragment just
+   before its multiply under `#pragma unroll` (the kept form).
+2. MMA floor probe (no decode, no activation loads): 0.234 ms on Q4_K
+   17408×5120, about 6 TFLOP/s of 8×8 work; with activation loads 0.25.
+3. 32 rows per group (`_f4`): Q4_K 103.6 / 100.0 against 107.1 / 104.2.
+4. F32 weight fragments: 107.9 / 105.3. Noise.
+5. Block-wise K (whole 256-value blocks per SIMD group, shared headers):
+   Q4_K 106.6, Q5_K 114.9, IQ4_XS 121.8. Noise.
+6. 8 rows per group: Q4_K 100.0, IQ4_XS 109.8. Worse.
+7. Software-pipelined decode (the next step's segments as half while
+   this step's multiplies issue): Q4_K 99.5, IQ4_XS 101.7. Worse.
+8. The capture (user-profiled at Maximum): F32 limiter 85 % (the tile's
+   68), integer and complex 34 % (56), 17 % fewer instructions,
+   occupancy target 34 % (82) with registers in the L1, no stack.
+9. Scaled tile on IQ4_XS (multiplies on the codes from a half table, the
+   group scale applied once per group): 123.4 / 110.0 against 122.1 /
+   115.6. Noise: the padded multiplies, not the decode's float work,
+   hold the F32 pipe.
+10. The generic multi-row matvec with four SIMD groups per row (the
+    β/α): Qwen C +0.60 / +0.14 %. Noise, reverted; the β/α's profile
+    cost (5.5 ms) is mostly profile-mode dispatch overhead.
+
+**Files.** `inference/src/backends/metal/kernels.metal`,
+`inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
+`docs/reference/{metal-backend,apple-gpu}.md`, `TODO.md`, and this log.
+
+**Limitations.** The ≤ 1.3-step target is not met; at 3–4 rows half of
+every 8×8 multiply is padding and no `simdgroup_matrix` body can fill it,
+so moving the floor needs a scalar body that shares activations across
+rows without the register wall KERN-12 and KERN-20 measured; none was
+tried. The fragment tile costs the same from 1 to 8 rows, so a 7-draft
+verify pays the same matrices as a 3-draft one (ENGN-20's input).
+Bonsai has no draft block and was not measured; Muse and Gemma's other
+files were covered by the gates, not timed. The profile's rates for the
+17408×5120 shapes read about half the micro-benchmark's (profile mode
+serializes dispatches). `_f2hh` and `_f4` stay instantiated as measured
+variants.

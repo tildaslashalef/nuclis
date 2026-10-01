@@ -22,19 +22,17 @@ toward the 20 tokens/s of [ADR 0001](docs/adr/0001-qwen-decode-verifier.md)
 --verify-rows`, and `make speed` / `make speed-base` exist, and the
 opening baseline is in
 [bench.md § The decode-speed baseline](docs/reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30).
-The base binary for `make speed` is saved at `d1f0a1b` (KERN-21's code)
-(`.zig-cache/speed/base/`, not committed; `make speed-base` after each
-kept change). KERN-20 closed 2026-09-30: captures read in Xcode,
+The base binary for `make speed` lives in `.zig-cache/speed/base/` (not
+committed; `make speed-base` after each kept change). KERN-20 closed 2026-09-30: captures read in Xcode,
 `bench --kernel-stats`, and
 [apple-gpu.md](docs/reference/apple-gpu.md) with four kernel readings; KERN-05
 and KERN-12 answered. KERN-21 closed 2026-09-30: verify batches run the flash-decoding split
 pass (Qwen's 4-row C 387 → 288 ms at 4K, 1,157 → 376 at 32K; Gemma 12B
-908 → 200 at 32K), checked at depth by `qwen38-verify-depth-*`. KERN-24 session 1
-(2026-10-01): the register-fragment tile and two routing changes cut
-Qwen's 4-row verify C at 4K from 289 to 244 ms (base binary at
-`2a6b1ac`); the ≤ 1.3-step target is not met and the counters put the
-floor on the padded 8×8 multiplies. Pick up at KERN-24's *What remains*:
-a second session (a scalar 3–4-row body) or its close, the user's call.
+908 → 200 at 32K), checked at depth by `qwen38-verify-depth-*`. KERN-24 closed 2026-10-01
+below its target: the register-fragment tile and two routings cut Qwen's
+4-row verify C at 4K from 289 to 244 ms (512: 275 → 230) and Gemma 12B
+QAT's by 23 %; the base binary for `make speed` is at `2a6b1ac`. Next:
+ENGN-19, the DeltaNet replay tape (*Order* below).
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
@@ -63,7 +61,6 @@ shared code:
 | Few-query split-KV verify attention | KERN-21 | ✓ | ✓ | ✓ (draft heads) | ✓ (speculation on) |
 | Long-context decode attention | KERN-22 | ✓ | ✓ | ✓ | ✓ |
 | Single-row matvec bandwidth | KERN-23 | ✓ | ✓ | ✓ (their encodings) | ✓ |
-| Register-fragment verify matmul | KERN-24 | ✓ | ✓ | ✓ | ✓ |
 | DeltaNet recurrent verify, replay tape | ENGN-19 | ✓ | ✓ | — | — |
 | Re-price speculation per family | ENGN-20 | ✓ | ✓ | ✓ | ✓ |
 
@@ -113,16 +110,17 @@ KERN-20, with the source or the measurement for each fact.
 
 | # | Unit | Sessions | Lands when |
 | --- | --- | ---: | --- |
-| 1 | KERN-24 — Register-fragment verify matmul | 2 | the 4-row matmul ≤ 1.3 single-row steps, or closed negative |
-| 2 | ENGN-19 — DeltaNet recurrent verify with a replay tape | 1–2 | checkpoint + recover + slot writes ≤ 6 ms per batch |
-| 3 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
-| 4 | KERN-23 — Single-row matvec toward MLX-class bandwidth | 2 | 512 decode ≥ 11.5 tok/s, or closed at its ledger |
-| 5 | ENGN-20 — Re-price speculation per family; the defaults | 1 | the verdict table is re-measured and the catalogue follows it |
+| 1 | ENGN-19 — DeltaNet recurrent verify with a replay tape | 1–2 | checkpoint + recover + slot writes ≤ 6 ms per batch |
+| 2 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
+| 3 | KERN-23 — Single-row matvec toward MLX-class bandwidth | 2 | 512 decode ≥ 11.5 tok/s, or closed at its ledger |
+| 4 | ENGN-20 — Re-price speculation per family; the defaults | 1 | the verdict table is re-measured and the catalogue follows it |
 
-**Re-ranked after KERN-21** (`--profile`, 4-row Qwen verify, warm,
-2026-09-30): at 4K weight matmuls 236.4 ms, DeltaNet 41.7, attention
-14.4 (was 106.3); at 32K matmuls 235.9, attention 95.8 (was 823.6),
-DeltaNet 41.3. The order below stands: KERN-24, ENGN-19, then decode.
+**Re-ranked after KERN-24** (`--profile`, 4-row Qwen verify at 4K,
+2026-10-01): matrices 195.3 ms (was 236.8; 2.3 decode steps), DeltaNet
+41.3, attention 14.5. The matrices stay the largest term but KERN-24
+found their floor (the padded 8×8 multiplies); ENGN-19 is next, then
+decode. ENGN-20 must price the fragment tile's flat cost: a 7-draft
+verify pays the same matrices as a 3-draft one.
 
 **The order was ENGN-18's cost table** (bench.md § The decode-speed
 baseline, `--profile` of a 4-row verify and a decode step, 2026-09-30).
@@ -136,7 +134,7 @@ KERN-22 (decode attention 5.2 ms per step at 4K, 27.5 at 32K) and KERN-23
 (weight matvecs 85 ms per step at every depth).
 
 Identifiers are provisional in this order; they are fixed in the order
-the units close. Units 2–6 are independent of one another: re-rank them
+the units close. The units are independent of one another: re-rank them
 when a kept change moves the cost table.
 
 ## KERN-22 — Long-context decode attention
@@ -194,127 +192,6 @@ KERN-20's capture first; the ideas are ranked by what it says.
   its own.
 - **Correctness.** The per-encoding matvec fixtures, the trace gates of
   every family whose encodings change, `make verify`.
-
-Gates: `make test-metal`, `make verify-auto`, `make verify`.
-
-## KERN-24 — Register-fragment verify matmul (2 sessions)
-
-Base: `d39e3d4`
-
-The verify matmul decodes weights into threadgroup memory
-(`nu_matmul_split_body`) and loads B strided on every k8 step; KERN-12's
-scalar rows and KERN-14's wider tile both closed below target.
-
-- **Kernel.** Each lane decodes its contiguous quantized run straight into
-  its `simdgroup_half8x8` fragment elements (`thread_elements()`; check
-  it is public in our MSL version, fixture-test the lane layout); K
-  permuted per 128-wide tile so the lane's elements are contiguous words,
-  the ≤ 8 activation rows pre-packed once in the same order; no
-  threadgroup memory; one weight pass for all rows.
-- **The floor.** An 8×8 fragment computes 8 token columns whatever the
-  real count: about 64–92 ms of matrix work for an 8-row verify on this GPU
-  (estimate), so the unit also measures a scalar body at T ≤ 4 and routes
-  by measured row count; drafts of 3–4 are the likely operating point.
-- **Prediction.** ≥ 150 GB/s at t = 4 on Q5_K / Q6_K (95–115 today) in
-  `make bench-matvec-rows`; 4-row verify matmul ≤ 1.3 single-row steps.
-  Stop below 120 GB/s.
-- **Correctness.** The matmul fixtures at 1–8 rows per encoding;
-  `qwen38-speculative-metal`, the generation gates.
-
-**Session 1 (2026-10-01), in the tree, uncommitted at this point:**
-`nu_matmul_frag_body<ENC, RB, TA, TB, MODE>` (kernels.metal, after the
-wide tile), `nu_fragment_layout` + `checkFragmentLayout`, the `_f2` /
-`_f2hh` / `_f2ff` / `_f4` / `_p1*` / `_p2*` instantiations,
-`Backend.matmulKernel` (forced kernel), `specializedMatmulFrag` (not yet
-routed), `make bench-matvec-rows ARGS="<rows> frag"` (`fragBench`). The
-fragment tiles pass `make test-metal` against the generic F32 tile, worst
-2.02e-5 of Σ|w·x| (half tile 2.96e-5; bound 2e-4).
-
-Where the 4-row Qwen verify's matrix time goes (`--profile`, 4K,
-`d39e3d4`): `matmul_iq4_xs_8` 84 ms over its shapes, `q4_k_8` 59, `q5_k_8`
-62, `q6_k_8` 16 (the head 8.8), the generic tile 31 (Q8_0 48×5120 β/α
-17.1 ms at 1.5 GB/s: 96 dispatches of 2 threadgroups; IQ4_NL 13 ms at 25
-GB/s), `q3_k_8` / `iq3_s_8` 10.
-
-**Ledger** (`make bench-matvec-rows ARGS="4 frag"`, 4 rows, GB/s of weight
-bytes, 17408×5120 / 5120×17408; tile today: Q4_K 96.6 / 94.5, Q5_K 112.1 /
-109.0, Q6_K 116.0 / 109.9, IQ4_XS 90.6 / 88.4; the tile's ms is flat across
-encodings, 0.52–0.66):
-
-1. Fragment tile, eight activation fragments built per step and kept live
-   across the decode. Predicted ≥ 150 on Q5_K/Q6_K. Measured: half × F32
-   40–50 (2× slower than the tile), half × half 83, F32 × F32 46, 32 rows
-   per group 52. Lost to what the next line fixed (registers or a
-   non-unrolled fragment array).
-2. MMA floor probe (`_p2*`: no decode, no activation loads): 0.234 ms on
-   Q4_K 17408×5120, about 6 TFLOP/s of 8×8 work (173–214 GB/s
-   equivalent); with activation loads (`_p1*`) 0.25 ms. The tile is not
-   near its matrix floor; the decode is the larger half.
-3. **Candidate (kept in the tree):** each activation fragment built just
-   before its multiply, `#pragma unroll` on both loops: Q4_K 107.4 /
-   104.4, Q5_K 115.3 / 111.7, Q6_K 152.6 / 137.5, IQ4_XS 122.2 / 115.4
-   (half × half no faster than half × F32: 105.8 / 103.8 on Q4_K, so the
-   activations stay F32). Routed (`specializedMatmulFrag`), committed
-   `e5d0129`: Qwen 4-row C 512 275.24 → 254.15 ms (+7.66 %), 4K 289.30 →
-   269.71 (+6.77 %). KEEP.
-4. 32 rows per group (`_f4`): Q4_K 103.6 / 100.0, below `_f2`; the
-   activation side is not the cost. Kept as a measured variant.
-5. Few-row generic matrices (≤ `small_matrix_rows` = 1,024, 2–8 tokens,
-   no specialized tile) on the generic multi-row matvec instead of the
-   generic tile (the 48-row Q8_0 β/α: 2 threadgroups). Committed
-   `2c34960`: Qwen C 512 254.43 → 238.58 (+6.23 %), 4K 267.15 → 252.09
-   (+5.64 %). KEEP. In the profile the β/α still cost 5.5 ms per batch
-   (57 µs per dispatch, 48 SIMD groups).
-6. The fragment tile for Q3_K, IQ3_S, Q4_0, PQ2_0, PTQ1_0 (their segment
-   decoders already existed): 64.2 → 89.5, 66.7 → 95.1, 91.7 → 133.6,
-   49.1 → 68.9, 33.8 → 41.5 GB/s (17408×5120). Committed `3ee3998`:
-   Gemma 4 12B QAT C 512 99.42 → 76.55 (+23.01 %), Qwen noise (+0.9 /
-   +0.7 %). Bonsai has no draft block (`NoDraftBlock`), no verify batch.
-
-7. IQ4_NL on the fragment tile (`nu_tile_iq4_nl`, Q4_0's block through
-   the nonlinear table; `specializedTile` now decides the few-row route):
-   29.4 → 130.7 GB/s. Committed `2a6b1ac`: Qwen C 512 239.50 → 230.23
-   (+3.87 %), 4K 253.10 → 243.84 (+3.66 %). KEEP. **Session total for
-   Qwen's 4-row C: 512 275 → 230 ms, 4K 289 → 244 ms.**
-8. F32 weight fragments (no float → half conversion): Q4_K 107.9 / 105.3
-   against 107.0 / 104.4. Noise; dropped.
-9. Blockwise K (each SIMD group walks whole 256-value blocks, 4 steps
-   unrolled, so the header loads are shared): Q4_K 106.6, Q5_K 114.9,
-   IQ4_XS 121.8. Noise; dropped. Header loads are not the cost.
-10. 8 rows per SIMD group (RB = 1, fewer live registers): Q4_K 100.0,
-    IQ4_XS 109.8. Worse; dropped.
-11. Software-pipelined decode (step n + 4's segments decoded as half while
-    step n's MMAs issue): Q4_K 99.5, IQ4_XS 101.7. Worse; dropped.
-
-12. Counters of the IQ4_XS fragment tile (capture profiled by the user,
-    [apple-gpu.md § The register-fragment verify
-    matmul](docs/reference/apple-gpu.md#the-register-fragment-verify-matmul-2026-10-01)):
-    F32 limiter 85 % (was 68), integer and complex 34 % (was 56), 17 %
-    fewer instructions, occupancy target 34 % (registers spill into the
-    L1, no stack). Bound on the F32 pipe the 8×8 multiplies occupy.
-13. Scaled fragment tile on IQ4_XS (MMAs multiply the codes from a half
-    table, the group scale applied once per group to the partial
-    product, no float work in the decode): 123.4 / 110.0 against 122.1 /
-    115.6. Noise; dropped. The padded MMAs are the floor.
-14. The generic multi-row matvec with four SIMD groups per row (the
-    β/α): Qwen C +0.60 / +0.14 %. Noise; reverted. The β/α's profile
-    cost is mostly profile-mode dispatch overhead.
-
-**Session 1 result.** 4-row verify matrix time (`--profile`, 4K):
-236.8 → 195.3 ms, 2.8 → 2.3 decode steps (a step's matvecs 84.9 ms);
-the ≤ 1.3 target is not met. Qwen C 4K 289 → 244 ms, 512 275 → 230;
-Gemma 4 12B QAT C 512 99 → 77. Kernel micro rates at 4 rows: Q6_K
-152.6 / 137.5 (the ≥ 150 target met on one shape), Q5_K 115.3 / 111.7
-(not). The fragment tile's time is flat from 1 to 8 rows (the 8×8
-multiply pads), so a 7-draft verify costs its matrices what a 3-draft
-one does: ENGN-20's input.
-
-**What remains, if a second session runs:** only a body with fewer F32
-operations per weight than the padded MMA can move the floor, which at
-3–4 rows is a scalar body sharing activations across rows without the
-register wall KERN-12 and KERN-20 measured (accumulators or activations
-in threadgroup memory). No cheap falsifying probe of it exists yet. The
-alternative is to close KERN-24 at this result and move to ENGN-19.
 
 Gates: `make test-metal`, `make verify-auto`, `make verify`.
 
