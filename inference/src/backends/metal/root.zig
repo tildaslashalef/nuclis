@@ -648,6 +648,10 @@ pub const Backend = struct {
     /// Chunk length up to which the split-K 16×8 tile serves. Set to the
     /// measured crossover between the small tile and the 32×32 one.
     pub const small_chunk_tokens = 24;
+    /// Rows up to which a 2–8-token batch of an encoding without a
+    /// specialized tile runs the generic multi-row matvec instead of the
+    /// generic tile (Qwen's 48-row β/α and 1,024-row projections).
+    pub const small_matrix_rows = 1024;
     pub fn matmulPadded(tokens: usize) usize {
         return (tokens + matmul_tile - 1) / matmul_tile * matmul_tile;
     }
@@ -714,6 +718,11 @@ pub const Backend = struct {
         // slower there (the sweep measures both).
         if (policy == .auto and usesMatvecRows(tokens) and !self.generic_only and
             specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset) != null)
+            return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
+        // A matrix of few rows on the generic tile leaves the GPU nearly
+        // empty (48 rows: two threadgroups); one SIMD group per row does not.
+        if (policy == .auto and !self.generic_only and tokens >= 2 and tokens <= matvec_rows_max and matrix.rows <= small_matrix_rows and
+            specializedMatmul(matrix.encoding, weights.offset, stride, tokens) == null)
             return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
         const kernel = (if (self.generic_only) null else switch (policy) {
             .auto => specializedMatmulFrag(matrix.encoding, weights.offset, stride, tokens) orelse specializedMatmul(matrix.encoding, weights.offset, stride, tokens),
