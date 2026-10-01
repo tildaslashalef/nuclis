@@ -105,7 +105,7 @@ fn tameScales(region: []u8, encoding: u32) void {
         14 => &.{208},
         11 => &.{108},
         143 => &.{26},
-        2, 21, 23, 142 => &.{0},
+        2, 20, 21, 23, 142 => &.{0},
         else => return,
     };
     var offset: usize = 0;
@@ -559,6 +559,7 @@ fn fragBench(alloc: std.mem.Allocator, max_rows: usize) !void {
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
         .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
+        .{ .id = 20, .fixture = "simple", .name = "IQ4_NL" },
     };
     const weights = try b.create(17408 * 5120);
     const input = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
@@ -2847,7 +2848,7 @@ pub fn main(init: std.process.Init) !void {
                             // compared with the generic F32 tile on the same inputs: its
                             // error against that tile is the half rounding of both
                             // operands alone, bounded relative to Σ|w·x| below.
-                            const specialized_kernel = Backend.specializedMatmul(sample.encoding, weights.offset, stride, mm_tokens);
+                            const specialized_kernel = Backend.specializedTile(sample.encoding, weights.offset, stride, mm_tokens);
                             if (specialized_kernel != null) {
                                 for (generic_out.floats()) |*v| v.* = std.math.nan(f32);
                                 b.generic_only = true;

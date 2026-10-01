@@ -251,9 +251,30 @@ encodings, 0.52–0.66):
    before its multiply, `#pragma unroll` on both loops: Q4_K 107.4 /
    104.4, Q5_K 115.3 / 111.7, Q6_K 152.6 / 137.5, IQ4_XS 122.2 / 115.4
    (half × half no faster than half × F32: 105.8 / 103.8 on Q4_K, so the
-   activations stay F32). Next: a cheaper decode into the fragment
-   (decode costs ~0.22 ms of Q4_K's 0.47), RB = 4, then routing and
-   `make speed`.
+   activations stay F32). Routed (`specializedMatmulFrag`), committed
+   `e5d0129`: Qwen 4-row C 512 275.24 → 254.15 ms (+7.66 %), 4K 289.30 →
+   269.71 (+6.77 %). KEEP.
+4. 32 rows per group (`_f4`): Q4_K 103.6 / 100.0, below `_f2`; the
+   activation side is not the cost. Kept as a measured variant.
+5. Few-row generic matrices (≤ `small_matrix_rows` = 1,024, 2–8 tokens,
+   no specialized tile) on the generic multi-row matvec instead of the
+   generic tile (the 48-row Q8_0 β/α: 2 threadgroups). Committed
+   `2c34960`: Qwen C 512 254.43 → 238.58 (+6.23 %), 4K 267.15 → 252.09
+   (+5.64 %). KEEP. In the profile the β/α still cost 5.5 ms per batch
+   (57 µs per dispatch, 48 SIMD groups).
+6. The fragment tile for Q3_K, IQ3_S, Q4_0, PQ2_0, PTQ1_0 (their segment
+   decoders already existed): 64.2 → 89.5, 66.7 → 95.1, 91.7 → 133.6,
+   49.1 → 68.9, 33.8 → 41.5 GB/s (17408×5120). Committed `3ee3998`:
+   Gemma 4 12B QAT C 512 99.42 → 76.55 (+23.01 %), Qwen noise (+0.9 /
+   +0.7 %). Bonsai has no draft block (`NoDraftBlock`), no verify batch.
+
+Next: IQ4_NL on the fragment tile (needs a segment decoder; 13 ms of
+generic tile per Qwen batch in the profile), then a cheaper decode (the
+header once per block: SIMD groups walking contiguous K ranges instead
+of every fourth step; the half magic-number nibble decode, values in any
+lane-local order since the activation fragment can follow it). The
+profile's 17408×5120 rates read about half the micro-bench's (profile
+mode serializes dispatches); judge by `make speed`.
 
 Gates: `make test-metal`, `make verify-auto`, `make verify`.
 

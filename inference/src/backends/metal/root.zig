@@ -78,6 +78,7 @@ const kernel_names = [_][:0]const u8{
     "nu_attention_full",        "nu_gelu_quick_mul",        "nu_gelu_erf_inplace",      "nu_clamp",                 "nu_attention_segments",    "nu_gelu_erf_mul_rows",
     "nu_fragment_layout",       "nu_matmul_q4_k_f2",        "nu_matmul_q4_k_f2hh",      "nu_matmul_q4_k_f4",        "nu_matmul_q5_k_f2",        "nu_matmul_q6_k_f2",
     "nu_matmul_iq4_xs_f2",      "nu_matmul_q3_k_f2",        "nu_matmul_iq3_s_f2",       "nu_matmul_q4_0_f2",        "nu_matmul_pq2_0_f2",       "nu_matmul_ptq1_0_f2",
+    "nu_matmul_iq4_nl_f2",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -236,6 +237,7 @@ pub const Kernel = enum(u32) {
     matmul_q4_0_f2,
     matmul_pq2_0_f2,
     matmul_ptq1_0_f2,
+    matmul_iq4_nl_f2,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -653,8 +655,8 @@ pub const Backend = struct {
     /// Chunk length up to which the split-K 16×8 tile serves. Set to the
     /// measured crossover between the small tile and the 32×32 one.
     pub const small_chunk_tokens = 24;
-    /// Rows up to which a 2–8-token batch of an encoding without a
-    /// specialized tile runs the generic multi-row matvec instead of the
+    /// Rows up to which a 2–8-token batch with no specialized tile
+    /// (`specializedTile`) runs the generic multi-row matvec instead of the
     /// generic tile (Qwen's 48-row β/α and 1,024-row projections).
     pub const small_matrix_rows = 1024;
     pub fn matmulPadded(tokens: usize) usize {
@@ -673,7 +675,7 @@ pub const Backend = struct {
             .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
             .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q3_k_w8, .matmul_q4_k_w8, .matmul_q5_k_w8, .matmul_q6_k_w8, .matmul_iq3_s_w8, .matmul_iq4_xs_w8, .matmul_q4_0_w8, .matmul_pq2_0_w8, .matmul_ptq1_0_w8 => .{ .rows = 32, .tokens = 8, .half = true },
-            .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2 => .{ .rows = 16, .tokens = 8, .half = true },
+            .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2, .matmul_iq4_nl_f2 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q4_k_f4 => .{ .rows = 32, .tokens = 8, .half = true },
             else => .{ .rows = 32, .tokens = 32, .half = true },
         };
@@ -726,11 +728,11 @@ pub const Backend = struct {
             return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
         // A matrix of few rows on the generic tile leaves the GPU nearly
         // empty (48 rows: two threadgroups); one SIMD group per row does not.
-        if (policy == .auto and !self.generic_only and tokens >= 2 and tokens <= matvec_rows_max and matrix.rows <= small_matrix_rows and
-            specializedMatmul(matrix.encoding, weights.offset, stride, tokens) == null)
+        const specialized = specializedTile(matrix.encoding, weights.offset, stride, tokens);
+        if (policy == .auto and !self.generic_only and tokens >= 2 and tokens <= matvec_rows_max and matrix.rows <= small_matrix_rows and specialized == null)
             return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
         const kernel = (if (self.generic_only) null else switch (policy) {
-            .auto => specializedMatmulFrag(matrix.encoding, weights.offset, stride, tokens) orelse specializedMatmul(matrix.encoding, weights.offset, stride, tokens),
+            .auto => specialized,
             .tile => specializedMatmul(matrix.encoding, weights.offset, stride, tokens),
             .wide => specializedMatmulWide(matrix.encoding, weights.offset, stride, tokens),
             .forced => |k| k,
@@ -800,10 +802,20 @@ pub const Backend = struct {
             else => null,
         };
     }
-    /// Picks the register-fragment 16×8 tile (Q4_K, Q5_K, Q6_K, IQ4_XS) for
-    /// at most `small_chunk_tokens` tokens under the tile's alignment rules.
+    /// The specialized tile production `matmul` records for this shape: the
+    /// fragment tile, else `specializedMatmul`'s; `null` means the generic
+    /// tile or, for few rows, the generic multi-row matvec.
+    pub fn specializedTile(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
+        return specializedMatmulFrag(encoding, weight_offset, stride, tokens) orelse specializedMatmul(encoding, weight_offset, stride, tokens);
+    }
+    /// Picks the register-fragment 16×8 tile for at most `small_chunk_tokens`
+    /// tokens: every encoding with a specialized tile under its alignment
+    /// rules, and IQ4_NL (18-byte blocks, 2-byte aligned), which has no
+    /// other specialized kernel.
     pub fn specializedMatmulFrag(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
-        if (tokens == 0 or tokens > small_chunk_tokens or !blockAligned(encoding, weight_offset, stride)) return null;
+        if (tokens == 0 or tokens > small_chunk_tokens) return null;
+        if (encoding == 20) return if (weight_offset % 2 == 0 and stride % 2 == 0) .matmul_iq4_nl_f2 else null;
+        if (!blockAligned(encoding, weight_offset, stride)) return null;
         return switch (encoding) {
             12 => .matmul_q4_k_f2,
             13 => .matmul_q5_k_f2,
