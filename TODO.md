@@ -157,16 +157,77 @@ when a kept change moves the cost table.
 
 ## ENGN-20 — Re-price speculation per family; the defaults
 
-At the costs after KERN-21, KERN-24, and ENGN-19 (re-run after any later
-kept lever): re-run the ENGN-17 matrix for Qwen, the Gemma and
-Muse draft pairs, at 512 / 4K and, from saved prefixes, 16K / 32K; draft
-lengths 2–7; re-tune `p_min` and the length policy at the new costs.
-Update the catalogue's speculative defaults per family where the family's
-acceptance rule holds, and the ADR's confidence with the measured C and E.
+Base: `fec1ec3`
+
+**What changed since the verdicts.** ENGN-17 (2026-09-21) set Qwen and
+Gemma off, Muse on, each at `draft_length` 4, against a 4-row Qwen C of
+257 ms at 512 and 342 at 4K. Since then C fell to 177 / 191 / 232 / 279 ms
+at 512 / 4K / 16K / 32,639 (KERN-21, KERN-24, ENGN-19; bench.md § The
+DeltaNet replay tape). ENGN-18's E (2.4–2.8 emitted per batch at draft 4,
+every depth) predicts Qwen at 2.5 / 0.19 s ≈ 13 tok/s at 512 against 10.56
+plain (~1.25×), ~1.3× at 4K, ~1.2× at 32K. Gemma's verify fell 23 % (KERN-24);
+Muse's too, through the shared `attentionChunk`/`mmRows` routes.
+
+**Session 1 — tools (code, `make check`):**
+
+- `inference.engine.Speculative` gains `p_min: f32 = draft_p_min`;
+  `speculativeBatch` reads it instead of the constant. `bench` alone gains
+  `--draft-p-min <0..1>` (`src/cli.zig`, `src/help.zig`, completion; a
+  measuring knob like `--verify-rows`, not a user setting: `generate` and
+  `agent` reject it). The report carries `speculative_p_min`.
+- `scripts/spec-matrix.py` (`make spec-matrix ARGS=…`, self-test in
+  `make workloads-validate`): per cell (model, context or `code`, sampling,
+  draft length, p_min) one `nuclis bench --speculative on --draft-length L
+  --repeat 3 --warmup 0 --max-tokens 128 --ctx-size 32768 --kv f16 --json`
+  process, contexts restoring speed.py's saved prefixes
+  (`--prefix-cache .zig-cache/speed/prefix`, the family's acceptance
+  arrays through `speed.prompt_for`), `code` the ENGN-17 prompt (`Write a
+  Zig function that reverses a string.`, `--raw`). A pair names the
+  catalogue entry (`gates.json` `entry`) so the companion resolves. It
+  derives per cell: accepted/proposed per batch, **E** = (generated − 1) /
+  batches, **C** = decode ms / batches with its components, off → on tok/s,
+  speedup as the median of the 3 pair ratios, C / 50E; saves reports under
+  `.zig-cache/spec/<model>/<rev>/`, prints a markdown table, `--json`
+  the rows. Samplings: `greedy`, `instruct` (the profile's think-off
+  options: Qwen 0.7 / 0.8 / 20 / presence 1.5; Gemma and Muse 1.0 / 0.95 /
+  64), `thinking` (Qwen think-on 1.0 / 0.95 / 20, the agent's).
+
+**Session 1 — the matrix (background runs, about 3 hours):**
+
+| Family (key) | Contexts | Samplings | Draft lengths |
+| --- | --- | --- | --- |
+| Qwen (`qwen38`, embedded head) | 512, 4096, 16384, 32639, code | greedy, instruct | 2–7 |
+| Gemma 12B QAT (`gemma4_qat`) | 512, 4096, 16384, 32639 | greedy, instruct | 2–7 |
+| Gemma E4B, 26B-A4B | 512, 4096 | greedy, instruct | 2, 4, 7 (all 2–7 if any ≥ 1.0×) |
+| Muse (`muse`, DFlash) | 512, 4096, 16384, 32639 | greedy, instruct | 2, 4, 6, 8, 11, 15 |
+
+Then, per family at its best length: `p_min` ∈ {0, 0.5, 0.6, 0.7, 0.8} at
+512 instruct, 4K greedy, and code greedy (Qwen), and Qwen's `thinking`
+sampling at 512 and 4K. Write each table into the docs as it lands.
+
+**The verdict rule** (one for every family, replacing ENGN-17's Qwen bar of
+code ≥ 1.5× / prose ≥ 0.9×): an entry turns speculation on at draft length
+L when, at L and the shipped `p_min`, no measured configuration reads below
+0.98× (the drift band) and the geometric mean over the prose contexts and
+samplings is ≥ 1.10×. L is the length with the best geometric mean,
+ties to the shorter. `draft_p_min` changes only if one value beats 0.7 by
+≥ 2 % in the geometric mean with no configuration worse by > 1 %.
+
+**Lands:** `src/catalog.zig` (`speculative`, `draft_length` per entry and the
+test at the end), each entry's verdict comment; `engine.draft_p_min` if it
+moves; bench.md § a new *The re-priced speculative verdicts (ENGN-20)*
+with the tables; speculative-decoding.md's verdict paragraphs per family;
+ADR 0001's budget table and *Confidence* with the measured C and E; the
+report JSONs (the summary rows, not every sample) under
+`docs/benchmarks/speculative-2026-10-01/`. If Qwen turns on: `make
+agent-eval VARIANT=spec-on` against the off run (task success, wall time),
+and `make shot` of a turn showing the bar's `spec N.NN/step`.
+
 Proposed next from the result, not before: the DFlash 2 checkpoint for
 Qwen, suffix drafts for agent edit turns, one root-sibling row.
 
-Gates: `make verify-auto`, `make verify`; `make agent-eval` if a default
+Gates: `make check`, `make lint-py`, `make verify-auto`, `make verify`
+(the engine's speculative path changes); `make agent-eval` if a default
 the agent uses changes.
 
 ## KERN-23 — Single-row matvec toward MLX-class bandwidth (2 sessions)
