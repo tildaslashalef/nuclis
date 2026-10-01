@@ -31,8 +31,11 @@ pass (Qwen's 4-row C 387 → 288 ms at 4K, 1,157 → 376 at 32K; Gemma 12B
 908 → 200 at 32K), checked at depth by `qwen38-verify-depth-*`. KERN-24 closed 2026-10-01
 below its target: the register-fragment tile and two routings cut Qwen's
 4-row verify C at 4K from 289 to 244 ms (512: 275 → 230) and Gemma 12B
-QAT's by 23 %; the base binary for `make speed` is at `2a6b1ac`. Next:
-ENGN-19, the DeltaNet replay tape (*Order* below).
+QAT's by 23 %; the base binary for `make speed` is at `2a6b1ac`.
+ENGN-19, the DeltaNet replay tape, is in progress: implemented and
+passing the unit and kernel fixtures, **uncommitted in the working tree**,
+paused 2026-10-01 at the user's request. Pick up at its *Remaining*
+list (gates first).
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
@@ -197,54 +200,86 @@ Gates: `make test-metal`, `make verify-auto`, `make verify`.
 
 ## ENGN-19 — DeltaNet recurrent verify with a replay tape
 
-Verify runs the 32-token WY chunk for 3–8 rows and writes every row's
-recurrent state inside `deltaChunk` (about 151 MB per row); recovery
-copies a slot.
+Base: `e35381b`
 
-- **Design.** For count ≤ 8, a per-token recurrent verify kernel reading
-  a frozen state and writing a tape per row (the correction, normalized
-  key, and gate the update needs, a few KB per layer); commit replays the
-  accepted prefix once and writes the state once. Price it against the
-  current chunk + checkpoints first with `make speed ARGS='--verify-rows
-  4 --accept N'` for N = 0, 1, 3. Today, per 4-row batch at 4K:
-  `delta_chunk` 38.3 ms of kernel time (1.9 ms in a decode step),
-  recover 14.0 ms, checkpoint 2.8 ms.
-  Re-profiled 2026-10-01 at `2a6b1ac` (4-row verify, 4K, `--profile`):
-  the DeltaNet family 41.3 ms per batch, unchanged by KERN-24.
-- **Where the code is.** Metal kernels (`kernels.metal`): `nu_delta`
-  (the decode step, the per-token form to start from), `nu_delta_chunk`
-  (the WY chunk, which writes the row slots when `row_states > 0`),
-  `nu_convolution_rows` / `nu_convolution_history` (the per-row history).
-  Encoders (`backends/metal/root.zig`): `Backend.delta`, `deltaChunk`,
-  `deltaChunkRows`, `convolutionHistory`. The Qwen plan
-  (`models/qwen35_metal.zig`): `Plan.verify` / `verifyGreedy` (pass
-  `recoveryRows(count)` as `row_states`), `Plan.deltaChunk` (the call
-  with the slot stride), `Plan.commit`. Session state
-  (`runtime/session.zig`): `row_checkpoints`, `checkpoint`, `restoreRow`,
-  `rowSlotLayer`. Recovery (`engine.zig`): `Model.recover` (slot restore
-  when `row_checkpoints > 0`, else the step/prefill replay the CPU takes).
-  CPU runtime: `models/qwen35_runtime.zig` (`verify`, its recovery path).
-  Check: `inference/generation-check.zig` `speculativeCheck`
-  (`--speculative-check`); the depth gates `qwen38-verify-depth-*`.
-- **First session.** Record `Base:` here, then price before writing
-  kernels: `make speed ARGS='--contexts 512,4096 --verify-rows 4 --accept
-  N --no-decode'` for N = 0, 1, 3, reading propose / checkpoint / verify /
-  recover / commit per batch from `bench --speculative on --verify-rows 4
-  --accept N --json` on the saved Qwen prefixes (`.zig-cache/speed/prefix/`,
-  512 / 4K / 16K / 32K with and without the draft block, kept). Read
-  `nu_delta` and `nu_delta_chunk`, decide the tape's contents and layout
-  per layer, and rewrite this section at that level (commit it before any
-  code).
-- **Prediction.** checkpoint + recover + slot writes ≈ 32 ms → ≤ 6 ms per
-  batch; the region for 8 slots 1.25 GB → tens of MB. If it lands, Qwen's
-  4-row C falls by about 45 ms at every depth (estimate: 512 230 → ~185,
-  4K 244 → ~199), speculation about 1.2–1.3× plain decode at 512–4K.
-- **Correctness.** Replay against stepped decode, bit-identical on the
-  CPU, within the chunk-versus-step bound on Metal, for every accepted
-  length (`generation-check --speculative-check`); `make verify-cpu`
-  because the CPU runtime's recovery changes.
+**Session 1 (2026-10-01): implemented, not yet gated or committed.** The
+code is in the working tree (uncommitted); `make metal`, `make test` and
+`make test-metal` pass, `zig fmt --check` is clean.
 
-Gates: `make verify-auto`, `make verify`, `make verify-cpu`.
+- **Priced before code** (`bench --speculative on --verify-rows 4 --accept
+  N`, saved prefixes, warm, per batch in ms; helper
+  `.zig-cache/speed/phase.py <binary> <ctx> <rows> <accept> [batches]`,
+  not committed):
+
+  | ctx | accept | checkpoint | verify | recover | total |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 512 | 0 / 1 / 3 | 3.0 | 192 | 14.7 / 14.2 / 0 | 238 / 234 / 221 |
+  | 4K | 0 / 1 / 3 | 3.0 | 203–210 | 14.4 / 16.2 / 0 | 258 / 253 / 233 |
+
+  `--profile` at 4K, 4 rows: `delta_chunk` 37.9 ms, `convolution_rows`
+  3.0, `convolution_history` 0.45 per batch. `Session.restoreRow` also
+  ran a leftover per-float `isFinite` scan over the 151 MB it copied.
+- **Design as built.**
+  - `nu_delta_rows` (`kernels.metal`, `Backend.deltaRows`): one SIMD group
+    per (value head, value row), the state row in registers, `nu_delta`'s
+    arithmetic per token; reads the state, never writes it. Per row it
+    writes the output and a tape: keys of the 16 Q/K heads + 48 decays
+    (`key_stride` 2,096 floats), then the 6,144 corrections.
+  - `nu_delta_replay` (`Backend.deltaReplay`): the first `kept` tape rows
+    applied to the state in place.
+  - The plan's tape (`qwen35_metal.zig` `Plan.tape`, `tape_shape`,
+    `tapeLayer`): per DeltaNet layer `max_draft_rows` × 10,240 convolution
+    inputs + the delta tape, 28 MB total, only with a drafter. A verify of
+    ≤ 8 rows copies `mixed_c` into it, skips `convolutionHistory`, runs
+    `deltaRows`, and marks `Session.deferRows(count)`.
+  - `Plan.replayRows(kept)`: one command buffer, per layer
+    `convolutionHistory` from the taped inputs and `deltaReplay`, then
+    `Session.settleRows(kept)`. `settle()` (replay all) runs first in
+    `step`, `prefill`, `prefillVision`, `prefillRows`, `verify*`,
+    `propose`, `commit`.
+  - Session (`runtime/session.zig`): the 1.25 GB row region, `restoreRow`,
+    `rowSlotLayer` and `Session.init`'s `row_checkpoints` argument are
+    gone; `pending_rows`, `deferRows`, `settleRows`; `begin*`,
+    `checkpoint`, `snapshot`, `truncate` refuse `ReplayPending`;
+    `rewind`/`reset`/`restore` drop pending rows.
+  - Engine: `Model.recover` replays the accepted prefix when rows are
+    pending (`Executor.replayRows`); `Model.snapshot` / `checkpoint`
+    settle first.
+  - Checks: the `metal-check` fixture shows rows + replay **bit-identical**
+    to 8 stepped GPU `nu_delta` calls (outputs and every prefix state,
+    state untouched). `generation-check`'s recovery check re-runs the
+    batch per accepted length so every length goes through the replay, plus
+    the `ReplayPending` / replay-bound refusals.
+  - The CPU reference is untouched, so the CPU tier is not needed.
+- **First measurement** (single runs, 4K, 4 rows): verify 205 → 167 ms,
+  recover 14.4 → 1.9–2.7 ms, total 253 → 199 ms at accept 1 and
+  233 → 197 at accept 3. Not yet an interleaved `make speed` A/B.
+
+**Remaining, in order:**
+
+1. `make gate NAME=qwen38-speculative-metal` (the recovery check through
+   the tape), then `make gate NAME='qwen38-verify-depth-*'` and
+   `NAME=qwen38-draft-trace-metal`.
+2. Delete the dead row-slot paths: `nu_delta_chunk`'s `row_states`
+   block, `DeltaChunkParams.row_states/row_stride`, `deltaChunk`'s
+   `slots` argument, the `RowSlots` / `row_states` part of
+   `nu_convolution_history` and `convolutionHistory`, and the "Row slots"
+   block of the chunk fixture in `metal-check.zig`. Update
+   `Model.recover`'s doc comment (it still says rewind then forward).
+3. `make speed ARGS='--contexts 512,4096,16384,32639 --verify-rows 4
+   --accept 1'` (and `--accept 0`, `3`) plus a decode row (must not
+   regress), against the base at `2a6b1ac`.
+4. Optional experiments, ledger either way: the deferred checkpoint copy
+   (2.9 ms; the live state is the checkpoint until a non-tape forward),
+   and encoding the replay into the next forward's command buffer
+   instead of its own (saves a submit and wait).
+5. `make verify-auto`, `make verify`; docs that still describe row
+   checkpoints: `docs/reference/session.md`, `docs/reference/bench.md`,
+   `docs/development.md`, ADR 0001's verify cost; then the log entry and
+   the commit `perf(inference): …` with the numbers.
+
+Gates: `make test-metal`, `make verify-auto`, `make verify` (no CPU tier:
+the CPU runtime is unchanged).
 
 ## ENGN-20 — Re-price speculation per family; the defaults
 
