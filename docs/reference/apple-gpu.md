@@ -216,3 +216,52 @@ values per thread (fewer rows per SIMD group, or accumulators in
 threadgroup memory), not fewer instructions. The launch limiter reads
 65 % in both runs; what it measures here is not established.
 
+## The register-fragment verify matmul (2026-10-01)
+
+`make bench-matvec-rows ARGS="4 frag"
+CAPTURE='frag-IQ4_XS-17408x5120-t4-iq4_xs_f2'`: `nu_matmul_iq4_xs_f2`,
+the tile that decodes each lane's weight segment straight into its
+`simdgroup_matrix` elements (no threadgroup staging), on the same case
+as the 16 × 8 tile above (export
+`frag-IQ4_XS-17408x5120-t4-iq4_xs_f2_2026-10-01T0600_max.csv`, not
+committed; profiled at Maximum). The benchmark reads 0.388 ms (122 GB/s)
+against the tile's 0.523 (90.6).
+
+| Counter | 16 × 8 tile | fragment tile |
+| --- | ---: | ---: |
+| ALU Utilization | 47.9 % | 53.1 % |
+| Instruction Throughput Limiter / Utilization | 91.0 / 27.3 % | 86.1 / 29.4 % |
+| F32 Limiter / Utilization | 68.0 / 47.8 % | **84.8 / 64.2 %** |
+| Integer and Complex Limiter / Utilization | 56.4 / 43.1 % | 33.7 / 24.8 % |
+| Integer and Conditional Limiter | 35.6 % | 38.4 % |
+| Kernel ALU instructions (16 dispatches) | 25.9 × 10⁹ | 21.4 × 10⁹ |
+| ALU instruction mix: float / integer and complex / integer and conditional | 50.0 / 22.5 / 27.5 % | 60.4 / 11.7 / 27.9 % |
+| Kernel Occupancy / Occupancy Manager Target | 37.7 / 82.1 % | 26.1 / **33.9 %** |
+| L1 Register / Threadgroup Residency | 1.5 / 23.3 % | 11.0 / 0.2 % |
+| Register L1 Read / Write Bandwidth | 6.5 / 7.3 | 195.8 / 210.7 |
+| Threadgroup Memory L1 Read Bandwidth | 321.1 | 5.3 |
+| Stack L1 Read / Write Bandwidth | 0 / 0 | 0 / 0 |
+| Buffer L1 Read Bandwidth / Miss Rate | 688.6 / 19.7 % | 762.0 / 12.5 % |
+| Last Level Cache Limiter / MMU Limiter | 9.1 / 3.1 % | 5.2 / 3.6 % |
+
+(Bandwidths as Xcode exports them, GB/s.)
+
+**Reading: the F32 pipe, which the 8 × 8 multiplies occupy.** Dropping
+the staging removed 17 % of the instructions and most integer work, and
+the kernel is now bound on the F32 pipe (limiter 85 %). The registers no
+longer fit the core's register file (11 % of the L1 holds registers,
+400 GB/s of register traffic through it, no stack spill), and the
+occupancy manager lowers its target from 82 % to 34 %. A probe with the
+decode removed (`_p2`, only the MMAs and fragment moves) ran the same
+case in 0.234 ms, about 6 TFLOP/s of 8 × 8 work: the multiplies alone are
+60 % of the kernel. Taking the decode's float work out of the F32 pipe
+(the MMAs multiplying the integer codes from a half table, the group
+scale applied once to the partial product) measured no gain, nor did
+F32 weight fragments, shared block headers, fewer rows per SIMD group, or
+a software-pipelined decode (KERN-24's ledger). At 4 tokens half of every
+8 × 8 multiply is padding columns, and nothing can fill them (a column
+shares its A operand, so it cannot carry another K range or row set);
+the padded multiplies set the floor of any `simdgroup_matrix` body at
+small token counts on this GPU, and a body that does fewer F32
+operations per weight is a scalar one, which KERN-12 found register-bound
+past two rows.

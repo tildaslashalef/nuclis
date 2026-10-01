@@ -283,17 +283,35 @@ encodings, 0.52–0.66):
 11. Software-pipelined decode (step n + 4's segments decoded as half while
     step n's MMAs issue): Q4_K 99.5, IQ4_XS 101.7. Worse; dropped.
 
-So the decode's cost (Q4_K 0.47 ms against the 0.234 ms MMA floor) is
-neither conversions, header loads, nor visibly registers. **Next: read
-the counters** of `frag-IQ4_XS-17408x5120-t4-iq4_xs_f2.gputrace`
-(`.zig-cache/trace/kernels/`, taken with `make bench-matvec-rows
-ARGS="4 frag" CAPTURE='frag-IQ4_XS-17408x5120-t4-iq4_xs_f2'`), against
-KERN-20's `rows-IQ4_XS-17408x5120-t4-tile_2026-09-30T1513_max.csv` (the
-old tile on the same case), then rank: the magic-number nibble decode
-(values in any lane-local order; the activation fragment follows), the
-β/α matvec (5.5 ms per batch), the 1,024-row matrices (64 threadgroups).
-The profile's 17408×5120 rates read about half the micro-bench's
-(profile mode serializes dispatches); judge by `make speed`.
+12. Counters of the IQ4_XS fragment tile (capture profiled by the user,
+    [apple-gpu.md § The register-fragment verify
+    matmul](docs/reference/apple-gpu.md#the-register-fragment-verify-matmul-2026-10-01)):
+    F32 limiter 85 % (was 68), integer and complex 34 % (was 56), 17 %
+    fewer instructions, occupancy target 34 % (registers spill into the
+    L1, no stack). Bound on the F32 pipe the 8×8 multiplies occupy.
+13. Scaled fragment tile on IQ4_XS (MMAs multiply the codes from a half
+    table, the group scale applied once per group to the partial
+    product, no float work in the decode): 123.4 / 110.0 against 122.1 /
+    115.6. Noise; dropped. The padded MMAs are the floor.
+14. The generic multi-row matvec with four SIMD groups per row (the
+    β/α): Qwen C +0.60 / +0.14 %. Noise; reverted. The β/α's profile
+    cost is mostly profile-mode dispatch overhead.
+
+**Session 1 result.** 4-row verify matrix time (`--profile`, 4K):
+236.8 → 195.3 ms, 2.8 → 2.3 decode steps (a step's matvecs 84.9 ms);
+the ≤ 1.3 target is not met. Qwen C 4K 289 → 244 ms, 512 275 → 230;
+Gemma 4 12B QAT C 512 99 → 77. Kernel micro rates at 4 rows: Q6_K
+152.6 / 137.5 (the ≥ 150 target met on one shape), Q5_K 115.3 / 111.7
+(not). The fragment tile's time is flat from 1 to 8 rows (the 8×8
+multiply pads), so a 7-draft verify costs its matrices what a 3-draft
+one does: ENGN-20's input.
+
+**What remains, if a second session runs:** only a body with fewer F32
+operations per weight than the padded MMA can move the floor, which at
+3–4 rows is a scalar body sharing activations across rows without the
+register wall KERN-12 and KERN-20 measured (accumulators or activations
+in threadgroup memory). No cheap falsifying probe of it exists yet. The
+alternative is to close KERN-24 at this result and move to ENGN-19.
 
 Gates: `make test-metal`, `make verify-auto`, `make verify`.
 
