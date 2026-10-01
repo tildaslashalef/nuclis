@@ -29,9 +29,12 @@ kept change). KERN-20 closed 2026-09-30: captures read in Xcode,
 [apple-gpu.md](docs/reference/apple-gpu.md) with four kernel readings; KERN-05
 and KERN-12 answered. KERN-21 closed 2026-09-30: verify batches run the flash-decoding split
 pass (Qwen's 4-row C 387 → 288 ms at 4K, 1,157 → 376 at 32K; Gemma 12B
-908 → 200 at 32K), checked at depth by `qwen38-verify-depth-*`. Next:
-KERN-24, the verify's weight matmuls, now 236 of 306 ms of kernel time
-at 4K (*Order* below).
+908 → 200 at 32K), checked at depth by `qwen38-verify-depth-*`. KERN-24 session 1
+(2026-10-01): the register-fragment tile and two routing changes cut
+Qwen's 4-row verify C at 4K from 289 to 244 ms (base binary at
+`2a6b1ac`); the ≤ 1.3-step target is not met and the counters put the
+floor on the padded 8×8 multiplies. Pick up at KERN-24's *What remains*:
+a second session (a scalar 3–4-row body) or its close, the user's call.
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
