@@ -209,8 +209,36 @@ copies a slot.
   4 --accept N'` for N = 0, 1, 3. Today, per 4-row batch at 4K:
   `delta_chunk` 38.3 ms of kernel time (1.9 ms in a decode step),
   recover 14.0 ms, checkpoint 2.8 ms.
+  Re-profiled 2026-10-01 at `2a6b1ac` (4-row verify, 4K, `--profile`):
+  the DeltaNet family 41.3 ms per batch, unchanged by KERN-24.
+- **Where the code is.** Metal kernels (`kernels.metal`): `nu_delta`
+  (the decode step, the per-token form to start from), `nu_delta_chunk`
+  (the WY chunk, which writes the row slots when `row_states > 0`),
+  `nu_convolution_rows` / `nu_convolution_history` (the per-row history).
+  Encoders (`backends/metal/root.zig`): `Backend.delta`, `deltaChunk`,
+  `deltaChunkRows`, `convolutionHistory`. The Qwen plan
+  (`models/qwen35_metal.zig`): `Plan.verify` / `verifyGreedy` (pass
+  `recoveryRows(count)` as `row_states`), `Plan.deltaChunk` (the call
+  with the slot stride), `Plan.commit`. Session state
+  (`runtime/session.zig`): `row_checkpoints`, `checkpoint`, `restoreRow`,
+  `rowSlotLayer`. Recovery (`engine.zig`): `Model.recover` (slot restore
+  when `row_checkpoints > 0`, else the step/prefill replay the CPU takes).
+  CPU runtime: `models/qwen35_runtime.zig` (`verify`, its recovery path).
+  Check: `inference/generation-check.zig` `speculativeCheck`
+  (`--speculative-check`); the depth gates `qwen38-verify-depth-*`.
+- **First session.** Record `Base:` here, then price before writing
+  kernels: `make speed ARGS='--contexts 512,4096 --verify-rows 4 --accept
+  N --no-decode'` for N = 0, 1, 3, reading propose / checkpoint / verify /
+  recover / commit per batch from `bench --speculative on --verify-rows 4
+  --accept N --json` on the saved Qwen prefixes (`.zig-cache/speed/prefix/`,
+  512 / 4K / 16K / 32K with and without the draft block, kept). Read
+  `nu_delta` and `nu_delta_chunk`, decide the tape's contents and layout
+  per layer, and rewrite this section at that level (commit it before any
+  code).
 - **Prediction.** checkpoint + recover + slot writes ≈ 32 ms → ≤ 6 ms per
-  batch; the region for 8 slots 1.25 GB → tens of MB.
+  batch; the region for 8 slots 1.25 GB → tens of MB. If it lands, Qwen's
+  4-row C falls by about 45 ms at every depth (estimate: 512 230 → ~185,
+  4K 244 → ~199), speculation about 1.2–1.3× plain decode at 512–4K.
 - **Correctness.** Replay against stepped decode, bit-identical on the
   CPU, within the chunk-versus-step bound on Metal, for every accepted
   length (`generation-check --speculative-check`); `make verify-cpu`
