@@ -35,8 +35,8 @@ QAT's by 23 %. ENGN-19 closed 2026-10-01: verify batches of up to 8 rows
 step DeltaNet without writing the state and recovery replays a tape, so
 Qwen's 4-row C fell 48–51 ms at every depth (4K 239 → 191 ms, 32K 329 →
 279) and the 1.25 GB row-slot region is gone; the base binary for `make
-speed` is at ENGN-19's commit. Next: KERN-22, long-context decode
-attention (*Order* below).
+speed` is at ENGN-19's commit. Next: ENGN-20, re-pricing speculation
+at the new costs (*Order* below, re-ordered 2026-10-01).
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
@@ -114,9 +114,18 @@ KERN-20, with the source or the measurement for each fact.
 
 | # | Unit | Sessions | Lands when |
 | --- | --- | ---: | --- |
-| 1 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
+| 1 | ENGN-20 — Re-price speculation per family; the defaults | 1 | the verdict table is re-measured and the catalogue follows it |
 | 2 | KERN-23 — Single-row matvec toward MLX-class bandwidth | 2 | 512 decode ≥ 11.5 tok/s, or closed at its ledger |
-| 3 | ENGN-20 — Re-price speculation per family; the defaults | 1 | the verdict table is re-measured and the catalogue follows it |
+| 3 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
+
+**Re-ordered after ENGN-19** (user, 2026-10-01): ENGN-20 first, since
+speculation now pays (an estimated 1.2–1.3× from the ENGN-17 acceptance
+at the new C) and its measured E decides how much each decode lever is
+worth; then KERN-23, the largest per-token lever (matvecs 85 of ~95 ms
+per step) and the groundwork for a multi-row scalar verify body; then
+KERN-22, which pays mainly at depth (about 14 ms per step at 32K, plus
+the verify's attention there). Pull KERN-22 forward if long agent
+sessions become the main use.
 
 **Re-ranked after ENGN-19** (`--profile`, 4-row Qwen verify at 4K,
 2026-10-01): matrices 195 ms, attention 14.5, DeltaNet 6.4 (was 41.3),
@@ -146,32 +155,19 @@ Identifiers are provisional in this order; they are fixed in the order
 the units close. The units are independent of one another: re-rank them
 when a kept change moves the cost table.
 
-## KERN-22 — Long-context decode attention
+## ENGN-20 — Re-price speculation per family; the defaults
 
-Single-row decode is 124 ms at 30,650 tokens against 94 ms at 2K
-(bench.md, flash decoding): about 30 ms for 2 GB of F16 cache, some 67 GB/s.
-`nu_attention_decode` gives a lane channels `l, l+32, …` and does a
-`simd_sum`, two `exp`s and a full rescale per key.
+At the costs after KERN-21, KERN-24, and ENGN-19 (re-run after any later
+kept lever): re-run the ENGN-17 matrix for Qwen, the Gemma and
+Muse draft pairs, at 512 / 4K and, from saved prefixes, 16K / 32K; draft
+lengths 2–7; re-tune `p_min` and the length policy at the new costs.
+Update the catalogue's speculative defaults per family where the family's
+acceptance rule holds, and the ADR's confidence with the measured C and E.
+Proposed next from the result, not before: the DFlash 2 checkpoint for
+Qwen, suffix drafts for agent edit turns, one root-sibling row.
 
-- **Ideas, cheapest first:** (a) contiguous `half8` channels per lane (one
-  16-byte load); (b) a lane per key inside a 32-key block, one softmax
-  reduction per block; (c) 128 or 256 splits; (d) the GQA group's 6
-  heads × T rows as one `simdgroup_matrix` Q tile against 8-key blocks.
-  Since KERN-21 the verify batch runs this same kernel with a row
-  dimension (`attentionVerify`), linear in rows at about 0.23 ms per row
-  per layer at 4K and 95.8 ms per 4-row batch at 32K: every idea here is
-  measured on `make bench-attention`'s verify rows too, and (d) is
-  KERN-21's untried idea for them.
-- **Prediction.** The decode attention kernel ≥ 150 GB/s of cache in
-  `bench --profile` at 32K (`attention_decode_h` 26.8 → ≤ 13 ms per step);
-  32K decode 8.28 → ≥ 9.2 tok/s, 16K 9.25 → ≥ 9.5. (The first target,
-  7.55 → 8.3, was set against the hot-chip acceptance record; the
-  2026-09-30 baseline already reads 8.28.)
-- **Correctness.** The decode attention fixtures in `metal-check`
-  (poisoned future rows), the trace gates, `make verify-long`.
-
-Gates: `make test-metal`, `make verify-auto`, `make verify`, `make
-verify-long`.
+Gates: `make verify-auto`, `make verify`; `make agent-eval` if a default
+the agent uses changes.
 
 ## KERN-23 — Single-row matvec toward MLX-class bandwidth (2 sessions)
 
@@ -204,18 +200,32 @@ KERN-20's capture first; the ideas are ranked by what it says.
 
 Gates: `make test-metal`, `make verify-auto`, `make verify`.
 
-## ENGN-20 — Re-price speculation per family; the defaults
+## KERN-22 — Long-context decode attention
 
-After the kept levers: re-run the ENGN-17 matrix for Qwen, the Gemma and
-Muse draft pairs, at 512 / 4K and, from saved prefixes, 16K / 32K; draft
-lengths 2–7; re-tune `p_min` and the length policy at the new costs.
-Update the catalogue's speculative defaults per family where the family's
-acceptance rule holds, and the ADR's confidence with the measured C and E.
-Proposed next from the result, not before: the DFlash 2 checkpoint for
-Qwen, suffix drafts for agent edit turns, one root-sibling row.
+Single-row decode is 124 ms at 30,650 tokens against 94 ms at 2K
+(bench.md, flash decoding): about 30 ms for 2 GB of F16 cache, some 67 GB/s.
+`nu_attention_decode` gives a lane channels `l, l+32, …` and does a
+`simd_sum`, two `exp`s and a full rescale per key.
 
-Gates: `make verify-auto`, `make verify`; `make agent-eval` if a default
-the agent uses changes.
+- **Ideas, cheapest first:** (a) contiguous `half8` channels per lane (one
+  16-byte load); (b) a lane per key inside a 32-key block, one softmax
+  reduction per block; (c) 128 or 256 splits; (d) the GQA group's 6
+  heads × T rows as one `simdgroup_matrix` Q tile against 8-key blocks.
+  Since KERN-21 the verify batch runs this same kernel with a row
+  dimension (`attentionVerify`), linear in rows at about 0.23 ms per row
+  per layer at 4K and 95.8 ms per 4-row batch at 32K: every idea here is
+  measured on `make bench-attention`'s verify rows too, and (d) is
+  KERN-21's untried idea for them.
+- **Prediction.** The decode attention kernel ≥ 150 GB/s of cache in
+  `bench --profile` at 32K (`attention_decode_h` 26.8 → ≤ 13 ms per step);
+  32K decode 8.28 → ≥ 9.2 tok/s, 16K 9.25 → ≥ 9.5. (The first target,
+  7.55 → 8.3, was set against the hot-chip acceptance record; the
+  2026-09-30 baseline already reads 8.28.)
+- **Correctness.** The decode attention fixtures in `metal-check`
+  (poisoned future rows), the trace gates, `make verify-long`.
+
+Gates: `make test-metal`, `make verify-auto`, `make verify`, `make
+verify-long`.
 
 ## AGNT-18 — The agent's `decide` tool (experiment) — deferred
 
