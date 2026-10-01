@@ -273,6 +273,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
                 const n = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
                 if (n == 0 or n > config.max_draft_length + 1) return error.InvalidNumber;
                 b.verify_rows = n;
+            } else if (command == .bench and std.mem.eql(u8, flag, "--draft-p-min")) {
+                if (b.draft_p_min != null) return error.DuplicateOption;
+                const p = std.fmt.parseFloat(f32, value) catch return error.InvalidNumber;
+                if (!std.math.isFinite(p) or p < 0 or p > 1) return error.InvalidNumber;
+                b.draft_p_min = p;
             } else if (command == .bench and std.mem.eql(u8, flag, "--accept")) {
                 if (b.accept != null) return error.DuplicateOption;
                 b.accept = std.fmt.parseInt(usize, value, 10) catch return error.InvalidNumber;
@@ -1158,6 +1163,10 @@ test "bench parses shared prompt flags and its own repetition flags" {
     try std.testing.expectEqual(@as(usize, 2), verify.accept.?);
     try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "bench", "--prompt", "a", "--verify-rows", "0" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--prompt", "a", "--verify-rows", "2" }));
+    try std.testing.expectEqual(@as(f32, 0.5), (try parseArgs(&.{ "bench", "--prompt", "a", "--draft-p-min", "0.5" })).benchmark.draft_p_min.?);
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "bench", "--prompt", "a", "--draft-p-min", "1.5" }));
+    try std.testing.expectError(error.InvalidNumber, parseArgs(&.{ "bench", "--prompt", "a", "--draft-p-min", "nan" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "agent", "--draft-p-min", "0.5" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--profile", "--prompt", "a" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "generate", "--prompt", "a", "--repeat", "1" }));
 }

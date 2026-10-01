@@ -276,6 +276,8 @@ fn bench(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "checkpoint, verify, recover, and commit; needs");
     try more(out, "--speculative on");
     try row(out, sty, "--accept <a>", "drafts each verify batch accepts, 0..R-1 (0)");
+    try row(out, sty, "--draft-p-min <p>", "the drafter's proposal threshold, 0..1, for the");
+    try more(out, "speculative runs (0.7; 0 proposes every position)");
     try row(out, sty, "--json", "the report: every sample and the measured means");
     try engineOptions(out, sty);
     try samplingOptions(out, sty);

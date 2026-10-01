@@ -610,6 +610,8 @@ pub const draft_p_min: f32 = 0.7;
 pub const Speculative = struct {
     enabled: bool = false,
     draft_length: usize = 0,
+    /// The proposal threshold; only `bench --draft-p-min` departs from the default.
+    p_min: f32 = draft_p_min,
 };
 
 /// Engine-owned scratch for the speculative step, sized once when a drafter is
@@ -1371,7 +1373,7 @@ pub fn runLoop(
             const room = eng.model.session().capacity - position - 1;
             const k = @min(settings.draft_length, @min(room, limit - count));
             if (hooks) |h| if (h.before_step) |call| try call(h.context, position);
-            var result = speculativeBatch(eng, sampler, history, observer, s, token, k, greedy_verify, vocabulary, drafter.?) catch |err| switch (err) {
+            var result = speculativeBatch(eng, sampler, history, observer, s, token, k, settings.p_min, greedy_verify, vocabulary, drafter.?) catch |err| switch (err) {
                 // A cancelled batch poisons the session exactly as a cancelled
                 // step does; the loop resets it and reports cancellation.
                 error.Cancelled => {
@@ -1478,12 +1480,13 @@ fn speculativeBatch(
     s: *SpeculativeScratch,
     seed_token: u32,
     k: usize,
+    p_min: f32,
     greedy: bool,
     vocabulary: usize,
     drafter: inference.draft.Drafter,
 ) !BatchResult {
     const propose_start = std.Io.Clock.awake.now(eng.io);
-    const n = try eng.model.propose(seed_token, s.drafts[0..k], draft_p_min);
+    const n = try eng.model.propose(seed_token, s.drafts[0..k], p_min);
     const propose = propose_start.durationTo(std.Io.Clock.awake.now(eng.io));
     const checkpoint_start = std.Io.Clock.awake.now(eng.io);
     try eng.model.checkpoint();

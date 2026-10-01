@@ -177,6 +177,7 @@ pub const commands = [_]Command{
         .{ .name = "--prefix-cache", .value = .dir, .summary = "save and restore the prefilled prompt" },
         .{ .name = "--verify-rows", .value = .number, .summary = "time verify batches of R rows" },
         .{ .name = "--accept", .value = .number, .summary = "drafts each verify batch accepts" },
+        .{ .name = "--draft-p-min", .value = .number, .summary = "the drafter's proposal threshold" },
         json,
     } ++ engine_flags) }} },
     .{ .name = "tokenize", .summary = "the prompt's token ids, no model run", .actions = &.{.{ .flags = &.{

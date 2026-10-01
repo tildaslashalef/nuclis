@@ -43,6 +43,9 @@ pub const Options = struct {
     verify_rows: ?usize = null,
     /// Drafts each verify batch accepts, below `verify_rows`; default 0.
     accept: ?usize = null,
+    /// The drafter's proposal threshold for the speculative runs, in place of
+    /// `inference.engine.draft_p_min`: a tuning knob, not a user setting.
+    draft_p_min: ?f32 = null,
     /// Print every Metal pipeline's compiled limits (`kernelStats`) instead
     /// of benchmarking; no model is loaded.
     kernel_stats: bool = false,
@@ -263,6 +266,7 @@ pub const Report = struct {
     /// the draft length, the decode rate with the switch on, the accepted
     /// drafts per verify batch, and the decode speedup over the baseline.
     speculative_draft_length: ?usize = null,
+    speculative_p_min: ?f32 = null,
     mean_speculative_decode_tokens_per_second: ?f64 = null,
     mean_accepted_per_step: ?f64 = null,
     mean_proposed_per_step: ?f64 = null,
@@ -513,6 +517,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);
     defer eng.deinit();
     const speculate = eng.model.drafter() != null;
+    const p_min = options.draft_p_min orelse inference.engine.draft_p_min;
     const gpu: ?*inference.metal.Backend = eng.model.gpu();
     if (gpu) |backend| backend.fused_norms = !options.unfused_norms;
     if (options.profile) {
@@ -654,7 +659,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
                 for (prefix_tokens) |token| try history.observe(token);
             }
             const fed = if (prefix != null) tokens[prefix_tokens.len..] else tokens;
-            const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length } else .{};
+            const spec: inference.engine.Speculative = if (on) .{ .enabled = true, .draft_length = settings.draft_length, .p_min = p_min } else .{};
             // Decode covers the steps after the first sampled token; the first
             // token's latency (prefill included) is reported separately.
             // The profile covers decode steps only: a run's prefill is
@@ -749,6 +754,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         .mean_decode_tokens_per_second = stats.decode,
         .mean_first_token_milliseconds = stats.first,
         .speculative_draft_length = if (speculate) settings.draft_length else null,
+        .speculative_p_min = if (speculate) p_min else null,
         .mean_speculative_decode_tokens_per_second = stats.speculative_decode,
         .mean_accepted_per_step = stats.accepted_per_step,
         .mean_proposed_per_step = stats.proposed_per_step,
