@@ -77,7 +77,7 @@ const kernel_names = [_][:0]const u8{
     "nu_rmsnorm_add",           "nu_add_rmsnorm",           "nu_rmsnorm_rope",          "nu_layernorm",             "nu_add_bias_rows",         "nu_gelu_inplace",
     "nu_attention_full",        "nu_gelu_quick_mul",        "nu_gelu_erf_inplace",      "nu_clamp",                 "nu_attention_segments",    "nu_gelu_erf_mul_rows",
     "nu_fragment_layout",       "nu_matmul_q4_k_f2",        "nu_matmul_q4_k_f2hh",      "nu_matmul_q4_k_f4",        "nu_matmul_q5_k_f2",        "nu_matmul_q6_k_f2",
-    "nu_matmul_iq4_xs_f2",
+    "nu_matmul_iq4_xs_f2",      "nu_matmul_q3_k_f2",        "nu_matmul_iq3_s_f2",       "nu_matmul_q4_0_f2",        "nu_matmul_pq2_0_f2",       "nu_matmul_ptq1_0_f2",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -231,6 +231,11 @@ pub const Kernel = enum(u32) {
     matmul_q5_k_f2,
     matmul_q6_k_f2,
     matmul_iq4_xs_f2,
+    matmul_q3_k_f2,
+    matmul_iq3_s_f2,
+    matmul_q4_0_f2,
+    matmul_pq2_0_f2,
+    matmul_ptq1_0_f2,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -668,7 +673,7 @@ pub const Backend = struct {
             .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
             .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q3_k_w8, .matmul_q4_k_w8, .matmul_q5_k_w8, .matmul_q6_k_w8, .matmul_iq3_s_w8, .matmul_iq4_xs_w8, .matmul_q4_0_w8, .matmul_pq2_0_w8, .matmul_ptq1_0_w8 => .{ .rows = 32, .tokens = 8, .half = true },
-            .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2 => .{ .rows = 16, .tokens = 8, .half = true },
+            .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q4_k_f4 => .{ .rows = 32, .tokens = 8, .half = true },
             else => .{ .rows = 32, .tokens = 32, .half = true },
         };
@@ -804,6 +809,11 @@ pub const Backend = struct {
             13 => .matmul_q5_k_f2,
             14 => .matmul_q6_k_f2,
             23 => .matmul_iq4_xs_f2,
+            11 => .matmul_q3_k_f2,
+            21 => .matmul_iq3_s_f2,
+            2 => .matmul_q4_0_f2,
+            142 => .matmul_pq2_0_f2,
+            143 => .matmul_ptq1_0_f2,
             else => null,
         };
     }

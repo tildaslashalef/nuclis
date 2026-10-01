@@ -1641,6 +1641,11 @@ template [[host_name("nu_matmul_q4_k_f4")]] kernel void nu_matmul_frag_t<12, 4, 
 template [[host_name("nu_matmul_q5_k_f2")]] kernel void nu_matmul_frag_t<13, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q6_k_f2")]] kernel void nu_matmul_frag_t<14, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq4_xs_f2")]] kernel void nu_matmul_frag_t<23, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q3_k_f2")]] kernel void nu_matmul_frag_t<11, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq3_s_f2")]] kernel void nu_matmul_frag_t<21, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q4_0_f2")]] kernel void nu_matmul_frag_t<2, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_pq2_0_f2")]] kernel void nu_matmul_frag_t<142, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_ptq1_0_f2")]] kernel void nu_matmul_frag_t<143, 2, half, float>(NU_MATMUL_ARGS);
 // Gathered expert tiles: 64 rows × 32 slot rows with half operands for Q4_0
 // (an expert averages k · chunk / experts slot rows per chunk, 16 on the
 // 26B-A4B at 256 tokens, so one token tile covers most experts), and the

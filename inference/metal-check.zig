@@ -549,22 +549,27 @@ fn fragBench(alloc: std.mem.Allocator, max_rows: usize) !void {
         .{ .rows = 17408, .columns = 5120, .name = "17408x5120" },
         .{ .rows = 5120, .columns = 17408, .name = "5120x17408" },
     };
-    const cases = [_]struct { id: u32, fixture: []const u8, name: []const u8, kernels: []const Kernel }{
-        .{ .id = 12, .fixture = "k-affine", .name = "Q4_K", .kernels = &.{ .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q4_k_f4 } },
-        .{ .id = 13, .fixture = "k-affine", .name = "Q5_K", .kernels = &.{.matmul_q5_k_f2} },
-        .{ .id = 14, .fixture = "k-signed", .name = "Q6_K", .kernels = &.{.matmul_q6_k_f2} },
-        .{ .id = 23, .fixture = "iq", .name = "IQ4_XS", .kernels = &.{.matmul_iq4_xs_f2} },
+    const cases = [_]struct { id: u32, fixture: []const u8, name: []const u8 }{
+        .{ .id = 12, .fixture = "k-affine", .name = "Q4_K" },
+        .{ .id = 13, .fixture = "k-affine", .name = "Q5_K" },
+        .{ .id = 14, .fixture = "k-signed", .name = "Q6_K" },
+        .{ .id = 23, .fixture = "iq", .name = "IQ4_XS" },
+        .{ .id = 11, .fixture = "k-signed", .name = "Q3_K" },
+        .{ .id = 21, .fixture = "iq", .name = "IQ3_S" },
+        .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
+        .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
+        .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
     };
     const weights = try b.create(17408 * 5120);
     const input = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
     for (cases) |case| {
-        const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, switch (case.fixture[0]) {
-            'k' => if (case.fixture[2] == 'a') @embedFile("src/quant/fixtures/k-affine.json") else @embedFile("src/quant/fixtures/k-signed.json"),
-            else => @embedFile("src/quant/fixtures/iq.json"),
-        }, .{ .ignore_unknown_fields = true });
+        const json = if (std.mem.eql(u8, case.fixture, "k-affine")) @embedFile("src/quant/fixtures/k-affine.json") else if (std.mem.eql(u8, case.fixture, "k-signed")) @embedFile("src/quant/fixtures/k-signed.json") else if (std.mem.eql(u8, case.fixture, "iq")) @embedFile("src/quant/fixtures/iq.json") else if (std.mem.eql(u8, case.fixture, "simple")) @embedFile("src/quant/fixtures/simple.json") else @embedFile("src/quant/fixtures/ternary.json");
+        const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, json, .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
+        const frag = Backend.specializedMatmulFrag(case.id, 0, 0, 1) orelse return error.UnknownEncoding;
+        const kernels: []const Kernel = if (case.id == 12) &.{ .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q4_k_f4 } else &.{frag};
         var sample_bytes: ?[]const u8 = null;
         for (fixtures.value.rows) |sample| if (sample.encoding == case.id) {
             sample_bytes = sample.bytes;
@@ -578,7 +583,7 @@ fn fragBench(alloc: std.mem.Allocator, max_rows: usize) !void {
             const mb = @as(f64, @floatFromInt(region.len)) / 1e6;
             for (1..max_rows + 1) |tokens| {
                 std.debug.print("{s:<7} {s:<11} {d:>2}", .{ case.name, shape.name, tokens });
-                for (0..case.kernels.len + 1) |v| {
+                for (0..kernels.len + 1) |v| {
                     var best: f64 = std.math.inf(f64);
                     for (0..4) |round| {
                         const before = b.gpuSeconds();
@@ -586,11 +591,11 @@ fn fragBench(alloc: std.mem.Allocator, max_rows: usize) !void {
                         for (0..16) |_| if (v == 0)
                             try b.matmulTile(weights, matrix, input, shape.columns, output, shape.rows, tokens)
                         else
-                            try b.matmulKernel(case.kernels[v - 1], weights, matrix, input, shape.columns, output, shape.rows, tokens);
+                            try b.matmulKernel(kernels[v - 1], weights, matrix, input, shape.columns, output, shape.rows, tokens);
                         try b.commit();
                         if (round > 0) best = @min(best, (b.gpuSeconds() - before) * 1e3 / 16);
                     }
-                    const label = if (v == 0) "tile" else @tagName(case.kernels[v - 1])["matmul_".len..];
+                    const label = if (v == 0) "tile" else @tagName(kernels[v - 1])["matmul_".len..];
                     std.debug.print("  {s} {d:.3} ms {d:.1}", .{ label, best, mb / best });
                 }
                 std.debug.print("\n", .{});
