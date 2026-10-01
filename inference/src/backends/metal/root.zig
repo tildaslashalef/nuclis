@@ -78,7 +78,7 @@ const kernel_names = [_][:0]const u8{
     "nu_attention_full",        "nu_gelu_quick_mul",        "nu_gelu_erf_inplace",      "nu_clamp",                 "nu_attention_segments",    "nu_gelu_erf_mul_rows",
     "nu_fragment_layout",       "nu_matmul_q4_k_f2",        "nu_matmul_q4_k_f2hh",      "nu_matmul_q4_k_f4",        "nu_matmul_q5_k_f2",        "nu_matmul_q6_k_f2",
     "nu_matmul_iq4_xs_f2",      "nu_matmul_q3_k_f2",        "nu_matmul_iq3_s_f2",       "nu_matmul_q4_0_f2",        "nu_matmul_pq2_0_f2",       "nu_matmul_ptq1_0_f2",
-    "nu_matmul_iq4_nl_f2",
+    "nu_matmul_iq4_nl_f2",      "nu_delta_rows",            "nu_delta_replay",
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -238,6 +238,8 @@ pub const Kernel = enum(u32) {
     matmul_pq2_0_f2,
     matmul_ptq1_0_f2,
     matmul_iq4_nl_f2,
+    delta_rows,
+    delta_replay,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -1485,14 +1487,12 @@ pub const Backend = struct {
         const p: DeltaParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .scale = s.scale };
         try self.dispatch(.delta, &.{ state, qkv, decay_log, beta, output }, p, @intCast(s.vheads * s.values), 32, .{});
     }
-    pub const DeltaChunkParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, in_stride: u32, gate_stride: u32, out_stride: u32, row_states: u32, row_stride: u32, scale: f32 };
+    pub const DeltaChunkParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, in_stride: u32, gate_stride: u32, out_stride: u32, scale: f32 };
     /// `count` tokens of one layer: `qkv` rows `[token][in_stride]` laid out
     /// as `nu_delta`'s input (q, k, then v per head), `decay_log`/`beta` rows
     /// `[token][gate_stride]`, `output` rows `[token][out_stride]` at
-    /// `head * values`. State `[head][value][key]` is updated in place. With
-    /// `row_states > 0` (a verify batch, at most one sub-chunk) each row's
-    /// state is also written to `slots`, `row_stride` floats apart.
-    pub const DeltaChunkShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, count: usize, in_stride: usize, gate_stride: usize, out_stride: usize, row_states: usize = 0, row_stride: usize = 0, scale: f32 };
+    /// `head * values`. State `[head][value][key]` is updated in place.
+    pub const DeltaChunkShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, count: usize, in_stride: usize, gate_stride: usize, out_stride: usize, scale: f32 };
     /// Rows the `qkv` buffer must hold for `count` tokens (the kernel walks
     /// 32-token sub-chunks; rows past `count` are masked, never read).
     pub fn deltaChunkRows(count: usize) usize {
@@ -1502,7 +1502,7 @@ pub const Backend = struct {
     /// threadgroup per (value head, 32 value rows), 32-token sub-chunks.
     /// Nontransactional like `delta`: a failed command buffer leaves partial
     /// state and the session must be reset.
-    pub fn deltaChunk(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer, beta: Buffer, output: Buffer, slots: Buffer, s: DeltaChunkShape) !void {
+    pub fn deltaChunk(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer, beta: Buffer, output: Buffer, s: DeltaChunkShape) !void {
         if (s.qheads == 0 or s.vheads == 0 or s.keys == 0 or s.values == 0 or s.vheads % s.qheads != 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
         if (s.keys % 8 != 0 or s.values % 32 != 0 or s.count == 0 or s.count > 4096) return error.InvalidShape;
         const qkv_row = 2 * s.qheads * s.keys + s.vheads * s.values;
@@ -1510,23 +1510,51 @@ pub const Backend = struct {
         const rows = deltaChunkRows(s.count);
         if (state.len < s.vheads * s.values * s.keys * 4) return error.InvalidShape;
         if (qkv.len < rows * s.in_stride * 4 or decay_log.len < s.count * s.gate_stride * 4 or beta.len < s.count * s.gate_stride * 4 or output.len < s.count * s.out_stride * 4) return error.InvalidShape;
-        // Row slots only for a single sub-chunk and a matrix-sized stride.
-        if (s.row_states > 0) {
-            if (s.row_states > s.count or s.row_states > 8 or s.row_stride < s.vheads * s.values * s.keys) return error.InvalidShape;
-            if (slots.len < ((s.row_states - 1) * s.row_stride + s.vheads * s.values * s.keys) * 4) return error.InvalidShape;
-        }
-        const p: DeltaChunkParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .in_stride = @intCast(s.in_stride), .gate_stride = @intCast(s.gate_stride), .out_stride = @intCast(s.out_stride), .row_states = @intCast(s.row_states), .row_stride = @intCast(s.row_stride), .scale = s.scale };
-        try self.dispatch(.delta_chunk, &.{ state, qkv, decay_log, beta, output, slots }, p, @intCast(s.vheads * (s.values / 32)), 128, .{});
+        const p: DeltaChunkParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .in_stride = @intCast(s.in_stride), .gate_stride = @intCast(s.gate_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale };
+        try self.dispatch(.delta_chunk, &.{ state, qkv, decay_log, beta, output }, p, @intCast(s.vheads * (s.values / 32)), 128, .{});
+    }
+    /// A verify batch's rows for `deltaRows` and the tape `deltaReplay` reads:
+    /// `count` rows written, `capacity` the rows the tape holds. The other
+    /// fields are `deltaChunk`'s.
+    pub const DeltaRowsShape = struct { qheads: usize, vheads: usize, keys: usize, values: usize, count: usize, capacity: usize, in_stride: usize = 0, gate_stride: usize = 0, out_stride: usize = 0, scale: f32 = 1 };
+    pub const DeltaRowsParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, in_stride: u32, gate_stride: u32, out_stride: u32, key_stride: u32, corr_offset: u32, scale: f32 };
+    pub const DeltaReplayParams = extern struct { qheads: u32, vheads: u32, keys: u32, values: u32, count: u32, key_stride: u32, corr_offset: u32 };
+    /// Floats a one-layer tape of `capacity` rows takes: per row the
+    /// normalized keys and the decays, then per row the corrections.
+    pub fn deltaTapeFloats(s: DeltaRowsShape) usize {
+        return s.capacity * (s.qheads * s.keys + s.vheads + s.vheads * s.values);
+    }
+    fn deltaTapeShape(s: DeltaRowsShape, tape: Buffer) !struct { key_stride: u32, corr_offset: u32 } {
+        if (s.qheads == 0 or s.vheads == 0 or s.keys == 0 or s.values == 0 or s.vheads % s.qheads != 0) return error.InvalidShape;
+        if (s.keys % 32 != 0 or s.keys > 128 or s.count > s.capacity or tape.len < deltaTapeFloats(s) * 4) return error.InvalidShape;
+        const key_stride = s.qheads * s.keys + s.vheads;
+        return .{ .key_stride = @intCast(key_stride), .corr_offset = @intCast(s.capacity * key_stride) };
+    }
+    /// Verify rows token by token without writing `state`: `nu_delta`'s
+    /// arithmetic per row, outputs as `deltaChunk` lays them out, and the
+    /// rows' tape for `deltaReplay`. One to `capacity` rows.
+    pub fn deltaRows(self: *Backend, state: Buffer, qkv: Buffer, decay_log: Buffer, beta: Buffer, output: Buffer, tape: Buffer, s: DeltaRowsShape) !void {
+        const t = try deltaTapeShape(s, tape);
+        if (s.count == 0 or !std.math.isFinite(s.scale) or s.scale <= 0) return error.InvalidShape;
+        if (s.in_stride < 2 * s.qheads * s.keys + s.vheads * s.values or s.gate_stride < s.vheads or s.out_stride < s.vheads * s.values) return error.InvalidShape;
+        if (state.len < s.vheads * s.values * s.keys * 4 or qkv.len < s.count * s.in_stride * 4 or decay_log.len < s.count * s.gate_stride * 4 or beta.len < s.count * s.gate_stride * 4 or output.len < s.count * s.out_stride * 4) return error.InvalidShape;
+        const p: DeltaRowsParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .in_stride = @intCast(s.in_stride), .gate_stride = @intCast(s.gate_stride), .out_stride = @intCast(s.out_stride), .key_stride = t.key_stride, .corr_offset = t.corr_offset, .scale = s.scale };
+        try self.dispatch(.delta_rows, &.{ state, qkv, decay_log, beta, output, tape }, p, @intCast(s.vheads * s.values), 32, .{});
+    }
+    /// Applies a `deltaRows` tape's first `count` rows to `state` in place:
+    /// the state after `count` decode steps. Nontransactional like `delta`.
+    pub fn deltaReplay(self: *Backend, state: Buffer, tape: Buffer, s: DeltaRowsShape) !void {
+        const t = try deltaTapeShape(s, tape);
+        if (s.count == 0 or state.len < s.vheads * s.values * s.keys * 4) return error.InvalidShape;
+        const p: DeltaReplayParams = .{ .qheads = @intCast(s.qheads), .vheads = @intCast(s.vheads), .keys = @intCast(s.keys), .values = @intCast(s.values), .count = @intCast(s.count), .key_stride = t.key_stride, .corr_offset = t.corr_offset };
+        try self.dispatch(.delta_replay, &.{ state, tape }, p, @intCast(s.vheads * s.values), 32, .{});
     }
     pub const ConvParams = extern struct { channels: u32, taps: u32 };
     pub fn convolution(self: *Backend, history: Buffer, input: Buffer, weights: Buffer, output: Buffer, channels: usize, taps: usize) !void {
         if (channels == 0 or taps < 2 or taps > 32 or history.len < channels * (taps - 1) * 4 or input.len < channels * 4 or weights.len < channels * taps * 4 or output.len < channels * 4) return error.InvalidShape;
         try self.dispatch(.convolution, &.{ history, input, weights, output }, ConvParams{ .channels = @intCast(channels), .taps = @intCast(taps) }, perElement(channels), 256, .{});
     }
-    pub const ConvRowsParams = extern struct { channels: u32, taps: u32, rows: u32, stride: u32, row_states: u32, row_stride: u32 };
-    /// Per-row history slots: slot `r` (`stride` floats apart from `base`)
-    /// receives the history after the chunk's first `r + 1` rows.
-    pub const RowSlots = struct { base: Buffer, states: usize = 0, stride: usize = 0 };
+    pub const ConvRowsParams = extern struct { channels: u32, taps: u32, rows: u32, stride: u32 };
     /// Causal convolution over `rows` token rows (stride `stride`) reading the
     /// pre-chunk inputs from `history`; bit-identical to `rows` sequential
     /// `convolution` calls. Does not touch `history`: call
@@ -1534,21 +1562,15 @@ pub const Backend = struct {
     pub fn convolutionRows(self: *Backend, history: Buffer, input: Buffer, weights: Buffer, output: Buffer, channels: usize, taps: usize, rows: usize, stride: usize) !void {
         if (channels == 0 or taps < 2 or taps > 32 or rows == 0 or stride < channels) return error.InvalidShape;
         if (history.len < channels * (taps - 1) * 4 or input.len < ((rows - 1) * stride + channels) * 4 or weights.len < channels * taps * 4 or output.len < ((rows - 1) * stride + channels) * 4) return error.InvalidShape;
-        const p: ConvRowsParams = .{ .channels = @intCast(channels), .taps = @intCast(taps), .rows = @intCast(rows), .stride = @intCast(stride), .row_states = 0, .row_stride = 0 };
+        const p: ConvRowsParams = .{ .channels = @intCast(channels), .taps = @intCast(taps), .rows = @intCast(rows), .stride = @intCast(stride) };
         try self.dispatch(.convolution_rows, &.{ history, input, weights, output }, p, perElement(rows * channels), 256, .{});
     }
-    /// Shifts the last `taps - 1` inputs of the chunk into `history`. With
-    /// `slots.states > 0` (a verify batch, at most one sub-chunk) each row's
-    /// history is also written to its slot.
-    pub fn convolutionHistory(self: *Backend, history: Buffer, input: Buffer, slots: RowSlots, channels: usize, taps: usize, rows: usize, stride: usize) !void {
+    /// Shifts the last `taps - 1` inputs of the chunk into `history`.
+    pub fn convolutionHistory(self: *Backend, history: Buffer, input: Buffer, channels: usize, taps: usize, rows: usize, stride: usize) !void {
         if (channels == 0 or taps < 2 or taps > 32 or rows == 0 or stride < channels) return error.InvalidShape;
         if (history.len < channels * (taps - 1) * 4 or input.len < ((rows - 1) * stride + channels) * 4) return error.InvalidShape;
-        if (slots.states > 0) {
-            if (slots.states > rows or slots.states > 8 or slots.stride < channels * (taps - 1)) return error.InvalidShape;
-            if (slots.base.len < ((slots.states - 1) * slots.stride + channels * (taps - 1)) * 4) return error.InvalidShape;
-        }
-        const p: ConvRowsParams = .{ .channels = @intCast(channels), .taps = @intCast(taps), .rows = @intCast(rows), .stride = @intCast(stride), .row_states = @intCast(slots.states), .row_stride = @intCast(slots.stride) };
-        try self.dispatch(.convolution_history, &.{ history, input, slots.base }, p, perElement(channels), 256, .{});
+        const p: ConvRowsParams = .{ .channels = @intCast(channels), .taps = @intCast(taps), .rows = @intCast(rows), .stride = @intCast(stride) };
+        try self.dispatch(.convolution_history, &.{ history, input }, p, perElement(channels), 256, .{});
     }
     pub const AttentionParams = extern struct { query_heads: u32, kv_heads: u32, key_width: u32, value_width: u32, visible: u32, scale: f32 };
     /// `precision` is how `keys`/`values` are stored; queries, scores,

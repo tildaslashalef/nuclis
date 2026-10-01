@@ -2045,6 +2045,77 @@ kernel void nu_delta(device float * state [[buffer(0)]],
     if (lane == 0) output[row] = result;
 }
 
+// A verify batch's DeltaNet rows, token by token: nu_delta's arithmetic with
+// the state row in registers, read once and never written. Each row t also
+// writes a replay tape that nu_delta_replay applies to the accepted prefix:
+// row t's normalized key per Q/K head and decay per value head at
+// tape[t·key_stride], its correction per (value head, value) at
+// tape[corr_offset + t·vheads·values]. keys is a multiple of 32, at most 128.
+struct DeltaRowsParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint in_stride; uint gate_stride; uint out_stride; uint key_stride; uint corr_offset; float scale; };
+#define NU_DELTA_LANE_KEYS 4
+kernel void nu_delta_rows(device const float * state [[buffer(0)]],
+                          device const float * input [[buffer(1)]],
+                          device const float * decay_log [[buffer(2)]],
+                          device const float * beta_gate [[buffer(3)]],
+                          device float * output [[buffer(4)]],
+                          device float * tape [[buffer(5)]],
+                          constant DeltaRowsParams & p [[buffer(7)]],
+                          uint row [[threadgroup_position_in_grid]],
+                          uint lane [[thread_index_in_simdgroup]]) {
+    uint head = row / p.values, value = row % p.values, kh = head % p.qheads;
+    uint qsize = p.qheads * p.keys, n = p.keys / 32;
+    float s[NU_DELTA_LANE_KEYS];
+    for (uint i = 0; i < n; ++i) s[i] = state[row*p.keys + lane + 32*i];
+    for (uint t = 0; t < p.count; ++t) {
+        device const float * in = input + ulong(t) * p.in_stride;
+        device float * keys = tape + ulong(t) * p.key_stride;
+        float decay = exp(decay_log[t*p.gate_stride + head]);
+        float beta = beta_gate[t*p.gate_stride + head];
+        float prediction = 0;
+        for (uint i = 0; i < n; ++i) prediction += (s[i]*decay) * in[qsize + kh*p.keys + lane + 32*i];
+        prediction = simd_sum(prediction);
+        float correction = beta * (in[2*qsize + head*p.values + value] - prediction);
+        float result = 0;
+        for (uint i = 0; i < n; ++i) {
+            float next = s[i]*decay + in[qsize + kh*p.keys + lane + 32*i]*correction;
+            s[i] = next;
+            result += next * in[kh*p.keys + lane + 32*i];
+        }
+        result = simd_sum(result) * p.scale;
+        if (lane == 0) {
+            output[ulong(t)*p.out_stride + row] = result;
+            tape[p.corr_offset + ulong(t)*p.vheads*p.values + row] = correction;
+        }
+        // Value row 0 of the first qheads value heads owns the shared keys.
+        if (value == 0) {
+            if (head < p.qheads) for (uint i = 0; i < n; ++i) keys[head*p.keys + lane + 32*i] = in[qsize + head*p.keys + lane + 32*i];
+            if (lane == 0) keys[qsize + head] = decay;
+        }
+    }
+}
+
+// Applies the first `count` rows of a nu_delta_rows tape to the state:
+// nu_delta's update with the recorded decay, key, and correction, so the
+// state equals `count` decode steps. One SIMD group per (value head, value).
+struct DeltaReplayParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint key_stride; uint corr_offset; };
+kernel void nu_delta_replay(device float * state [[buffer(0)]],
+                            device const float * tape [[buffer(1)]],
+                            constant DeltaReplayParams & p [[buffer(7)]],
+                            uint row [[threadgroup_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]]) {
+    uint head = row / p.values, kh = head % p.qheads;
+    uint qsize = p.qheads * p.keys, n = p.keys / 32;
+    float s[NU_DELTA_LANE_KEYS];
+    for (uint i = 0; i < n; ++i) s[i] = state[row*p.keys + lane + 32*i];
+    for (uint t = 0; t < p.count; ++t) {
+        device const float * keys = tape + ulong(t) * p.key_stride;
+        float decay = keys[qsize + head];
+        float correction = tape[p.corr_offset + ulong(t)*p.vheads*p.values + row];
+        for (uint i = 0; i < n; ++i) s[i] = s[i]*decay + keys[kh*p.keys + lane + 32*i]*correction;
+    }
+    for (uint i = 0; i < n; ++i) state[row*p.keys + lane + 32*i] = s[i];
+}
+
 // Depthwise causal convolution with in-place history shift; one thread per channel.
 struct ConvParams { uint channels; uint taps; };
 kernel void nu_convolution(device float * history [[buffer(0)]],
@@ -2066,12 +2137,9 @@ kernel void nu_convolution(device float * history [[buffer(0)]],
 // out[t][c] = Σ_tap w[c][tap] · in(t − (taps−1) + tap), where inputs before the
 // chunk come from `history` (oldest first). The summation order matches
 // nu_convolution exactly (current input first, then the older taps), so a
-// chunk equals the sequential steps bit for bit. A batch with
-// `row_states > 0` (at most one sub-chunk) also writes the history after each
-// of its first rows into slot `r` at `row_states_base + r · row_stride`.
-// `nu_convolution_history` then shifts the last taps−1 inputs into the
-// history, one thread per channel.
-struct ConvRowsParams { uint channels; uint taps; uint rows; uint stride; uint row_states; uint row_stride; };
+// chunk equals the sequential steps bit for bit. `nu_convolution_history`
+// then shifts the last taps−1 inputs into the history, one thread per channel.
+struct ConvRowsParams { uint channels; uint taps; uint rows; uint stride; };
 inline float nu_conv_input(device const float * history, device const float * input, uint c, int s, uint taps, uint stride) {
     return s < 0 ? history[c * (taps - 1) + uint(int(taps - 1) + s)] : input[ulong(uint(s)) * stride + c];
 }
@@ -2089,19 +2157,12 @@ kernel void nu_convolution_rows(device const float * history [[buffer(0)]],
 }
 kernel void nu_convolution_history(device float * history [[buffer(0)]],
                                    device const float * input [[buffer(1)]],
-                                   device float * row_states_base [[buffer(2)]],
                                    constant ConvRowsParams & p [[buffer(7)]],
                                    uint c [[thread_position_in_grid]]) {
     if (c >= p.channels) return;
     uint n = p.taps - 1;
     float next[31];
     for (uint j = 0; j < n; ++j) next[j] = nu_conv_input(history, input, c, int(p.rows) - int(n) + int(j), p.taps, p.stride);
-    if (p.row_states > 0) {
-        const uint rows = min(p.row_states, p.rows);
-        for (uint r = 0; r < rows; ++r)
-            for (uint j = 0; j < n; ++j)
-                row_states_base[ulong(r) * p.row_stride + c * n + j] = nu_conv_input(history, input, c, int(r) + 1 - int(n) + int(j), p.taps, p.stride);
-    }
     for (uint j = 0; j < n; ++j) history[c * n + j] = next[j];
 }
 
@@ -2658,11 +2719,8 @@ template [[host_name("nu_attention_chunk_reuse_h")]] kernel void nu_attention_ch
 // zero-filling masked loader (never read from the caller's padding) and
 // their U rows are zero, so they cannot reach the outputs or the carry.
 // Mirrors cpu.recurrent.deltaChunk; the Q/K head of value head h is
-// h % qheads, as in nu_delta. A verify batch (row_states > 0, at most one
-// sub-chunk) additionally writes each row's state S_r to slot r: with
-// B_{r} = γ_n S₀ + Σ_{s≤r} r(n−1,s) U[s]ᵀK[s] accumulated as B_{r−1} plus
-// the rank-8 product of w's token block, S_r = exp(cum[r] − cum[n−1])·B_r.
-struct DeltaChunkParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint in_stride; uint gate_stride; uint out_stride; uint row_states; uint row_stride; float scale; };
+// h % qheads, as in nu_delta.
+struct DeltaChunkParams { uint qheads; uint vheads; uint keys; uint values; uint count; uint in_stride; uint gate_stride; uint out_stride; float scale; };
 #define NU_DELTA_SUB 32   // tokens per state carry
 #define NU_DELTA_ROWS 32  // value rows per threadgroup
 kernel void nu_delta_chunk(device float * state [[buffer(0)]],
@@ -2670,7 +2728,6 @@ kernel void nu_delta_chunk(device float * state [[buffer(0)]],
                            device const float * decay_log [[buffer(2)]],
                            device const float * beta_gate [[buffer(3)]],
                            device float * output [[buffer(4)]],
-                           device float * row_states_base [[buffer(5)]],
                            constant DeltaChunkParams & p [[buffer(7)]],
                            uint group [[threadgroup_position_in_grid]],
                            uint tid [[thread_position_in_threadgroup]],
@@ -2683,7 +2740,6 @@ kernel void nu_delta_chunk(device float * state [[buffer(0)]],
     threadgroup float u[NU_DELTA_SUB * NU_DELTA_ROWS];   // [t][j]: B, then U
     threadgroup float w[NU_DELTA_SUB * NU_DELTA_ROWS];   // [s][j]: r(n−1,s) U
     threadgroup float cum[NU_DELTA_SUB], beta[NU_DELTA_SUB], diag[64];
-    threadgroup float rowdiag[8 * 64];
     threadgroup float stage[4][64];
     const uint blocks_per_head = p.values / NU_DELTA_ROWS;
     const uint head = group / blocks_per_head, r0 = (group % blocks_per_head) * NU_DELTA_ROWS;
@@ -2779,50 +2835,6 @@ kernel void nu_delta_chunk(device float * state [[buffer(0)]],
         for (uint i = tid; i < 64; i += 128) diag[i] = ((i >> 3) == (i & 7)) ? exp(cum[n - 1]) : 0.0f;
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // Phase 7: S_new = γ_n S₀ + Wᵀ K over this group's rows; SIMD group sg owns value-row block 8·sg.
-        // Per-row slots (one sub-chunk at most) write S_r = γ_r S₀ + Σ_{s≤r}
-        // r(r,s) U[s]ᵀK[s] directly: the rescaled rows come from `u` with
-        // exponents cum[r]−cum[s] ≤ 0, because rescaling the full-chunk `w`
-        // (base cum[n−1]) by r(r,n−1) overflows when the chunk's total decay
-        // is large. `sk` is free here and holds the rescaled rows.
-        const uint slot_rows = (p.row_states > 0 && t0 == 0) ? min(p.row_states, n) : 0;
-        if (slot_rows > 0) {
-            for (uint i = tid; i < slot_rows * 64; i += 128) {
-                const uint r = i / 64, k = i % 64;
-                rowdiag[i] = ((k >> 3) == (k & 7)) ? exp(cum[r]) : 0.0f;
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (slot_rows > 0) {
-            threadgroup float * wr = sk; // [s][j] rescaled U for the current row
-            device float * slot_base = row_states_base + (ulong(head) * p.values + r0 + 8 * sg) * p.keys;
-            for (uint r = 0; r < slot_rows; ++r) {
-                for (uint i = tid; i < NU_DELTA_SUB * NU_DELTA_ROWS; i += 128) {
-                    const uint s = i / NU_DELTA_ROWS;
-                    wr[i] = (s <= r and s < n) ? exp(cum[r] - cum[s]) * u[i] : 0.0f;
-                }
-                threadgroup_barrier(mem_flags::mem_threadgroup);
-                simdgroup_float8x8 dgr, wtr;
-                simdgroup_load(dgr, rowdiag + r * 64, 8);
-                simdgroup_load(wtr, wr + 8 * sg, NU_DELTA_ROWS, ulong2(0, 0), true);
-                for (uint ib = 0; ib < kblocks; ++ib) {
-                    simdgroup_float8x8 s0, accr;
-                    simdgroup_load(s0, s_base + 8 * sg * p.keys + 8 * ib, p.keys);
-                    simdgroup_multiply(accr, dgr, s0);
-                    for (uint sb = 0; sb < 4; ++sb) {
-                        const uint valid_s = min(8u, n - min(n, 8u * sb));
-                        if (valid_s == 0) break;
-                        simdgroup_float8x8 kb;
-                        if (valid_s == 8) simdgroup_load(kb, k_rows + 8 * sb * p.in_stride + 8 * ib, p.in_stride);
-                        else nu_load_rows_masked(kb, k_rows + 8 * sb * p.in_stride + 8 * ib, p.in_stride, valid_s, stage[sg], lane, false);
-                        simdgroup_float8x8 wb;
-                        simdgroup_load(wb, wr + 8 * sb * NU_DELTA_ROWS + 8 * sg, NU_DELTA_ROWS, ulong2(0, 0), true);
-                        simdgroup_multiply_accumulate(accr, wb, kb, accr);
-                    }
-                    simdgroup_store(accr, slot_base + ulong(r) * p.row_stride + 8 * ib, p.keys);
-                }
-                threadgroup_barrier(mem_flags::mem_threadgroup);
-            }
-        }
         {
             simdgroup_float8x8 dg, wt[4];
             simdgroup_load(dg, diag, 8);

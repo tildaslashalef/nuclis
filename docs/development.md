@@ -219,8 +219,8 @@ What can break independently, and what protects it. *Model-free* means
 | Gemma 4: K=V global layers, window 1024, the `gemma4` profile | — | `gemma4-26b-a4b-*` (and the 12B QAT) |
 | Gemma 4: one global KV head (16:1), 48 layers | the 16:1 attention geometry | the 12B QAT, release tier (a shape, through the same code as the 26B's 8:1) |
 | Muse Glimmer plan | — | `muse-*` |
-| session layout: recurrent with row slots (Metal, drafter) | session unit tests | `qwen38-generation-metal` |
-| session layout: recurrent without row slots (rewind, replay) | session unit tests | `bonsai-generation-metal`; every CPU generation gate |
+| session layout: recurrent with the verify tape (Metal, drafter) | session unit tests | `qwen38-generation-metal` |
+| session layout: recurrent without a tape (rewind, replay) | session unit tests | `bonsai-generation-metal`; every CPU generation gate |
 | session layout: attention only (truncate) | session unit tests | any Gemma or Muse generation gate |
 | engine loop: EOS, budget, context, cancellation, speculative loop, penalties, top-k readback | none (`engine.zig` has no tests) | `qwen38-speculative-metal` |
 | draft sources: Qwen MTP, Gemma assistant, Muse DFlash | — | `qwen38-draft-trace-*`, `gemma4-{e4b,qat}-draft-trace-*` (the same code, two shapes), `muse-draft-trace-*` |

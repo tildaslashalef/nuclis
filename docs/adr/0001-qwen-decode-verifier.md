@@ -292,6 +292,9 @@ These are concrete differences in execution paths, not diagnosed bugs:
   to **verification**, not the separately timed `recover` call. Ablate the
   checkpoint-writing cost with controlled replay recovery and compare a
   tiny-batch recurrent schedule; do not disable recovery in production.
+  Measured since: the per-token verify with a replay tape replaced both
+  (DeltaNet 41 → 6 ms and recover 14 → 2–3 ms per 4-row batch at 4K;
+  [bench.md § The DeltaNet replay tape](../reference/bench.md#the-deltanet-replay-tape-engn-19-2026-10-01)).
 - Chunk attention uses a different schedule from single-row flash decoding:
   24 threadgroups per value split, each walking the whole cache, and a 32-row
   tile at least 75 % padding for a verify. The reuse body's 11–16 % win at

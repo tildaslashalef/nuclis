@@ -334,7 +334,7 @@ pub const Plan = struct {
             const width = layer.kvWidth();
             layout.* = .{ .attention = .{ .key_row = width, .value_row = width, .precision = kv } };
         }
-        var state = try session.Session.init(alloc, layouts[0..config.kv_layers], capacity, checkpoint, 0);
+        var state = try session.Session.init(alloc, layouts[0..config.kv_layers], capacity, checkpoint);
         errdefer state.deinit();
         const constants = try alloc.alloc(LayerConstants, config.layer_count);
         errdefer alloc.free(constants);

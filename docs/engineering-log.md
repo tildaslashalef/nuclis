@@ -156,6 +156,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-20 | Seeing inside the GPU: Metal captures read in Xcode, `bench --kernel-stats`, `apple-gpu.md`; KERN-05's and KERN-12's questions answered | 2026-09-30 |
 | KERN-21 | Few-query verify attention through the flash-decoding split pass: the 4-row verify batch 25–78 % cheaper from 4K up on Qwen, Gemma, and Muse; checked at depth | 2026-09-30 |
 | KERN-24 | The register-fragment small-batch tile and two routings: Qwen's 4-row verify C 16 % cheaper, Gemma 12B QAT's 23 %; closed below its target (the padded 8×8 multiplies are the floor) | 2026-10-01 |
+| ENGN-19 | The DeltaNet replay tape: verify steps the recurrence without writing the state, recovery replays the accepted rows; Qwen's verify C 48–51 ms cheaper at every depth, the 1.25 GB row-slot region gone | 2026-10-01 |
 
 ## Context
 
@@ -6678,3 +6679,74 @@ files were covered by the gates, not timed. The profile's rates for the
 17408×5120 shapes read about half the micro-benchmark's (profile mode
 serializes dispatches). `_f2hh` and `_f4` stay instantiated as measured
 variants.
+
+## ENGN-19 — The DeltaNet replay tape (2026-10-01)
+
+**Outcome.** A Qwen verify batch of up to 8 rows (`max_draft_rows`) no
+longer advances the recurrent layers. Per DeltaNet layer `nu_delta_rows`
+(`Backend.deltaRows`) runs `nu_delta`'s arithmetic token by token with each
+state row in registers, reading the state once and never writing it, and
+writes a tape per row (normalized keys, decays, corrections); the plan
+copies the rows' convolution inputs beside it and skips the history shift.
+`Session.deferRows` marks the batch pending; `Plan.replayRows(kept)`
+(`convolutionHistory` over the taped inputs, `nu_delta_replay`) applies the
+accepted prefix in one command buffer and `Session.settleRows` drops the
+rest. `engine.Model.recover` replays when rows are pending; every other
+plan entry and `Model.snapshot`/`checkpoint` replay all pending rows first,
+and `begin*`, `checkpoint`, `snapshot`, `truncate` refuse `ReplayPending`.
+ENGN-14's row checkpoints are gone: `Session.init`'s `row_checkpoints`, the
+1.25 GB slot region, `restoreRow` (and its leftover per-float `isFinite`
+scan), `rowSlotLayer`, and the slot writes in `nu_delta_chunk` and
+`nu_convolution_history`. The tape is 28,385,280 bytes of plan memory, only
+with a drafter. Design in
+[session.md § Pending rows and the verify tape](reference/session.md#pending-rows-and-the-verify-tape-engn-19).
+
+**Evidence.** Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe,
+Qwen3.8-27B UD-Q4_K_M, F16 KV; priced first at `e35381b` (4K, 4 rows:
+verify 203–210 ms with `delta_chunk` 37.9, recover 14.4–16.2, checkpoint
+2.9–3.2). `make speed` against `2a6b1ac`, 5 interleaved pairs, C in ms:
+
+| Rows (accepted) | 512 | 4,096 | 16,384 | 32,639 |
+| --- | ---: | ---: | ---: | ---: |
+| 4 (1) | 225.86 → 177.44 (+21.4 %) | 239.37 → 190.75 (+20.3 %) | 279.95 → 231.74 (+17.2 %) | 328.80 → 279.11 (+15.1 %) |
+| 4 (0) | 229.19 → 180.41 (+21.3 %) | 243.46 → 195.43 (+19.7 %) | — | — |
+| 4 (3) | 211.96 → 178.68 (+15.7 %) | 226.85 → 192.89 (+15.0 %) | — | — |
+| 8 (3) | 260.65 → 209.87 (+19.5 %) | 286.80 → 235.44 (+17.9 %) | — | — |
+
+Decode unchanged (±0.3 %). `--profile` at 4K: DeltaNet 41.3 → 6.4 ms per
+4-row batch (`delta_rows` 3.4); recover 2.0–2.8 ms. The prediction (≤ 6 ms
+for checkpoint + recover + slot writes, C −45 ms) is met: recover ≈ 2.5,
+checkpoint 3.0 unchanged, C −48 to −51 ms. `make test-metal`: rows and
+replay bit-identical to 8 stepped GPU `nu_delta` calls (outputs and every
+prefix state, state untouched), the convolution history after every prefix
+exact; `make test` (the pending-row state machine). `qwen38-generation-metal`:
+recovery through the tape at every accepted length of a 4- and an 8-row
+batch against sequential steps (worst 3.1e-3 max abs, 1.6e-4 relative RMS,
+argmax equal; the remainder is the batched matmul and attention, DeltaNet
+is exact) and the refusals; `qwen38-speculative-metal` (12 tokens equal to
+greedy), `qwen38-verify-depth-{512,4k,16k,32k}`, `qwen38-draft-trace-metal`,
+`bonsai-generation-metal`. `make
+verify-auto` passed; `make verify` 38/38 gates in 280 s. The CPU tier was
+flagged by path and not run: the CPU files changed only `Session.init`'s
+argument list (no arithmetic); the long-context tier likewise (no attention
+or cache change), and its two Qwen verify-depth gates (16K, 32K) passed.
+
+**Ledger.** Untried, each under the 2 % bar alone at today's C: deferring
+the 3 ms checkpoint copy (the live state is the checkpoint until a
+non-tape forward) and encoding the replay into the next forward's command
+buffer instead of its own (one submit and wait, about 0.5 ms).
+
+**Files.** `inference/src/backends/metal/{kernels.metal,root.zig}`,
+`inference/src/models/qwen35_metal.zig`, `inference/src/runtime/session.zig`,
+`inference/src/engine.zig`, the `Session.init` callers
+(`gemma4_{metal,runtime}.zig`, `muse_glimmer_{metal,runtime}.zig`,
+`qwen35_runtime.zig`, `prefix_cache.zig`), `inference/metal-check.zig`,
+`inference/generation-check.zig`, `docs/reference/{session,bench}.md`,
+`docs/development.md`, ADR 0001, `TODO.md`, and this log.
+
+**Limitations.** Metal and Qwen's adapter only (Bonsai runs it but has no
+draft block); the CPU reference still rewinds and replays, unchanged. A
+batch over 8 rows keeps the chunk path and the rewind. Recovery now costs a
+replay even when every draft is accepted (2.8 ms against 0), still a net
+gain of 33–34 ms per batch there.
+

@@ -121,16 +121,18 @@ past the position are left as they are, exactly as `restore` documents.
 Recurrent state is a function of every token fed, so `rewind` restores the
 copy and the accepted prefix is then **replayed** through `prefill` — the
 batch's rows are rewritten by the same forward, and never by truncating a
-position alone. Per-row checkpoints written by the DeltaNet chunk kernel
-beat that replay and are what Qwen's Metal plan uses
-([§ Row checkpoints](#row-checkpoints-engn-14)).
+position alone. Qwen's Metal plan avoids both the rewind and the forward:
+its verify leaves the recurrent state at the batch's start and keeps a
+tape that replays the accepted rows
+([§ Pending rows and the verify tape](#pending-rows-and-the-verify-tape-engn-19)).
 
 `reset()` and `restore()` clear the recorded position: both rewrite the
 state, so the region's bytes are stale and are only read after a fresh
 `checkpoint()`. `engine.Model.checkpoint/rewind/truncate` forward on both
 executors, and `engine.Model.recover(accepted)` is the accepted-prefix
-operation used by the loop: rewind then `prefill(accepted)` on a recurrent
-model, `truncate(checkpoint + accepted.len)` otherwise.
+operation used by the loop: the tape replay when the batch kept one, else
+rewind then `prefill(accepted)` on a recurrent model, and
+`truncate(checkpoint + accepted.len)` on an attention-only one.
 
 A model with an embedded draft block (Qwen's `blk.64`, MODL-18) adds the
 block's attention cache as **one more layout in the same session** while the
@@ -150,52 +152,39 @@ so the family's chunk-versus-step bound applies (Qwen 27B ≤ 2.9e-3 max abs
 and 1.5e-4 relative RMS over a 4- and an 8-row batch, argmax equal; Bonsai
 ≤ 8.6e-6; Gemma 4 and Muse exactly zero at these small tiles).
 
-## Row checkpoints (ENGN-14)
+## Pending rows and the verify tape (ENGN-19)
 
-A verify batch can leave the state after **every row** behind, so recovery
-copies the accepted row instead of replaying it. `Session.init`'s
-`row_checkpoints` count (0, or the plan's row bound) reserves a second
-page-aligned region after the checkpoint region: that many slots, each the
-same packed recurrent copy as the checkpoint region (`row_slot_bytes`,
-156,893,184 bytes on Qwen), so slot `r` holds the state after the batch's
-first `r + 1` rows. The region is excluded from `layout_digest` and from a
-`Snapshot` like the checkpoint region, counted by `bytes()`, and written by
-the kernels that run the batch, not by a host copy:
+A verify batch of at most `max_draft_rows` (8) on Qwen's Metal plan does
+not advance the recurrent layers. Per DeltaNet layer it copies the rows'
+convolution inputs to the plan's tape, skips the history shift, and runs
+`nu_delta_rows` (`Backend.deltaRows`): `nu_delta`'s per-token arithmetic
+with each state row in registers, reading the state once and never writing
+it. Each row also writes its normalized keys, decays, and corrections to the
+tape. The plan then calls `Session.deferRows(count)`, and
+`Session.pending_rows` says the recurrent layers still hold the state at
+`position - pending_rows`.
 
-- `nu_delta_chunk` writes `S_r` to slot `r` (`Backend.deltaChunk` binds the
-  layer's slot window and passes `row_states`/`row_stride`).
-- `nu_convolution_history` writes each row's convolution history
-  (`Backend.convolutionHistory`'s `RowSlots`).
-- Both are no-ops when `row_states == 0`: ordinary prefill, decode, and the
-  prompt commit pass 0 and behave exactly as before.
+`Plan.replayRows(kept)` applies the kept prefix in one command buffer,
+`nu_convolution_history` over the taped inputs and `nu_delta_replay` per
+layer, and `Session.settleRows(kept)` drops the rest of the batch from the
+position. `engine.Model.recover` calls it when rows are pending; every other
+plan entry (`step`, the prefills, `verify*`, `propose`, `commit`) and
+`Model.snapshot`/`checkpoint` first replay all pending rows, so a caller
+that never recovers still sees the batch applied. While rows are pending,
+`begin`/`beginChunk`, `checkpoint`, `snapshot`, and `truncate` refuse with
+`ReplayPending`; `rewind`, `reset`, and `restore` drop the rows with the
+rest of the state they rewrite.
 
-`Plan.verify`/`verifyGreedy` pass the batch length and set
-`Session.row_checkpoint_rows` to it; `beginChunk`, `checkpoint`, `rewind`,
-`restore`, and `reset` clear it, so only the most recent batch's slots are
-readable. `Session.restoreRow(slot)` copies that slot into the recurrent
-layers and sets `position = checkpoint_position + slot + 1`; attention rows
-past the position are ignored by contract. Refusals: `SessionNotReady`,
-`NoCheckpoint` without a live checkpoint, `NoRowCheckpoints` without a
-region, `RowNotCheckpointed` past the rows the last forward wrote.
-`rowSlotLayer(il)` returns the layer's history and matrix views spanning
-every slot plus the byte stride, which is what the plan binds.
+The tape is plan memory, not session memory: per DeltaNet layer 8 × 10,240
+convolution inputs, 8 × (16 × 128 keys + 48 decays), and 8 × 6,144
+corrections, 591,360 bytes; 28,385,280 bytes for Qwen's 48 layers, only
+with a drafter. A batch past 8 rows updates the state in place
+(`nu_delta_chunk`) and recovery rewinds and replays. The replayed state is
+bit-identical to the same rows stepped through `nu_delta` (`make
+test-metal`); `make gate NAME=qwen38-generation-metal` checks the recovery
+at every accepted length of a 4- and an 8-row batch against sequential
+steps and exercises the refusals.
 
-The kernel computes each row's state directly as
-`S_r = γ_r S₀ + Σ_{s≤r} r(r,s) U[s]ᵀK[s]`, building the rescaled `U` rows
-from the threadgroup's solved `U` (every exponent `cum[r] − cum[s] ≤ 0`).
-The cheaper-looking form that rescales the full-chunk `W` by
-`r(r, n−1)` overflows when a layer's chunk decay is large — measured
-`cum[n−1] = −114` on one Qwen layer, where `exp(97)` is `inf` — and the
-`inf` then poisons the restored state through `0 · inf`. Slot rows live in
-the first 8-token block, so only one block is needed per row.
-
-**Costs** (Qwen 27B, Metal, F16 KV, 32K context, draft 4): eight slots are
-1,255,146,752 bytes, so a speculative session is 3,850,633,216 bytes with
-the 150 MB checkpoint region and the 2.15 GiB attention/recurrent block.
-`restoreRow` copies one 150 MB slot, 13–17 ms per call at every accepted
-length (against 97–220 ms for the step/prefill replay); the slot writes add
-21 ms per verify batch. `make test-metal` checks every slot against the
-CPU's sequential state (7.7e-7 worst) and the per-row history against the
-exact gather; `make gate NAME=qwen38-generation-metal` compares restore-by-slot with
-the CPU's replay through the next step's logits at every accepted length
-(exact) and exercises the refusals.
+This replaced ENGN-14's row checkpoints (a 150 MB recurrent copy per batch
+row, 1.25 GB for eight, written by the chunk kernel and restored by a host
+copy); see the [engineering log](../engineering-log.md) for both.

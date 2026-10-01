@@ -1057,7 +1057,7 @@ each at `draft_length` 4.
 The second speculative-decoding record, taken after the whole-stack replay
 was replaced by per-row recurrent checkpoints
 ([speculative-decoding.md § Recovery by accepted length](speculative-decoding.md#recovery-by-accepted-length-engn-14-2026-09-20),
-[session.md § Row checkpoints](session.md#row-checkpoints-engn-14)). Same
+the engineering log; replaced by the verify tape, [session.md § Pending rows and the verify tape](session.md#pending-rows-and-the-verify-tape-engn-19)). Same
 methodology, corpus, prompts, sampling, draft lengths, context, and
 precision as the ENGN-12 record above; `make workload NAME='qwen38/spec/*'`
 (then `scripts/nuclis-speculative.py`, now the `qwen38/spec/*` workloads; reports under
@@ -1839,3 +1839,27 @@ verify, `attention_chunk_reuse_h` 106.0 ms at 4K and 823.3 ms at 32K
 the 48 × 5,120 Q8_0 β/α projections on the generic tile, 15.7 ms. So at 4K
 a 4-row verify's weight work is 2.8× a decode step's and its attention
 20×; at 32K attention alone is 6.8 decode steps.
+
+## The DeltaNet replay tape (ENGN-19, 2026-10-01)
+
+Verify batches of up to 8 rows on Qwen's Metal plan step the DeltaNet
+recurrence per token without writing the state, and recovery replays the
+accepted rows from a tape
+([session.md § Pending rows and the verify tape](session.md#pending-rows-and-the-verify-tape-engn-19)).
+Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe, Qwen3.8-27B
+UD-Q4_K_M, F16 KV, `--ctx-size 32768`, restored prefixes; `make speed`,
+5 interleaved pairs, base `2a6b1ac` (KERN-24's close), batch cost C in ms:
+
+| Rows (accepted) | 512 | 4,096 | 16,384 | 32,639 |
+| --- | ---: | ---: | ---: | ---: |
+| 4 (1) | 225.86 → 177.44 (+21.4 %) | 239.37 → 190.75 (+20.3 %) | 279.95 → 231.74 (+17.2 %) | 328.80 → 279.11 (+15.1 %) |
+| 4 (0) | 229.19 → 180.41 (+21.3 %) | 243.46 → 195.43 (+19.7 %) | — | — |
+| 4 (3) | 211.96 → 178.68 (+15.7 %) | 226.85 → 192.89 (+15.0 %) | — | — |
+| 8 (3) | 260.65 → 209.87 (+19.5 %) | 286.80 → 235.44 (+17.9 %) | — | — |
+
+Plain decode is unchanged (10.57 / 10.20 / 9.25 / 8.30 tok/s, within
+±0.3 %). Phases at 4K, 4 rows (one process, 32 batches, ms): checkpoint
+2.9–3.2 (unchanged), verify 203–210 → 160–170, recover 14.4–16.2 → 2.0–2.8
+(it now also runs when every draft is accepted, where it cost 0). Under
+`--profile` (4K, 4 rows, accept 1) the DeltaNet family is 6.4 ms per batch
+(was 41.3): `delta_rows` 3.4 ms where `delta_chunk` was 37.9.

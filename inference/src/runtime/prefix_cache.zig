@@ -183,7 +183,7 @@ test "a saved prefix round-trips into a fresh session" {
     defer tmp.cleanup();
     const Session = session.Session;
     const layouts = [_]session.Layout{ .{ .attention = .{ .key_row = 2, .value_row = 2, .precision = .f16 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } };
-    var s = try Session.init(a, &layouts, 8, false, 0);
+    var s = try Session.init(a, &layouts, 8, false);
     defer s.deinit();
     try s.beginChunk(3);
     try s.commitChunk(3);
@@ -199,7 +199,7 @@ test "a saved prefix round-trips into a fresh session" {
     defer back.deinit();
     try std.testing.expectEqualSlices(u8, snap.memory, back.memory);
     try std.testing.expectEqualSlices(f32, snap.carried, back.carried);
-    var fresh = try Session.init(a, &layouts, 8, false, 0);
+    var fresh = try Session.init(a, &layouts, 8, false);
     defer fresh.deinit();
     try fresh.restore(&back);
     try std.testing.expectEqual(@as(usize, 3), fresh.position);

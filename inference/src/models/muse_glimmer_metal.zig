@@ -295,7 +295,7 @@ pub const Plan = struct {
             for (layouts[model.layer_count..]) |*layout| layout.* = .{ .attention = .{ .key_row = dflash.kv_width, .value_row = dflash.kv_width, .precision = kv } };
         }
         const draft_layers: usize = if (has_draft) dflash.block_count else 0;
-        var state = try session.Session.init(alloc, layouts[0 .. model.layer_count + draft_layers], capacity, checkpoint, 0);
+        var state = try session.Session.init(alloc, layouts[0 .. model.layer_count + draft_layers], capacity, checkpoint);
         errdefer state.deinit();
         const constants = try alloc.alloc(LayerConstants, model.layer_count);
         errdefer alloc.free(constants);

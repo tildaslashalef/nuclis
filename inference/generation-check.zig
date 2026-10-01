@@ -214,14 +214,14 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
             }
         }
         /// Consumes one batch. The Metal plan with a drafter runs its greedy
-        /// verify path, which also fills the row checkpoints; everything else
-        /// steps token by token or prefills.
+        /// verify path, which keeps the batch's recurrent update on its tape;
+        /// everything else steps token by token or prefills.
         fn batch(self: *@This(), tokens: []const u32) !void {
             switch (self.*) {
                 .cpu => |*r| for (tokens) |token| try r.step(token, null, null),
                 .metal => |*p| {
                     if (@hasField(@TypeOf(p.*), "has_draft")) {
-                        if (p.has_draft and p.state.row_checkpoints > 0) {
+                        if (p.has_draft) {
                             var choices: [16]u32 = undefined;
                             try p.verifyGreedy(tokens, choices[0..tokens.len], null, null);
                             return;
@@ -252,6 +252,12 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
         fn checkpoint(self: *@This()) !void {
             return self.state().checkpoint();
         }
+        fn replayRows(self: *@This(), kept: usize) !void {
+            switch (self.*) {
+                .cpu => return error.InvalidShape,
+                .metal => |*p| if (comptime @hasDecl(@TypeOf(p.*), "replayRows")) try p.replayRows(kept) else return error.InvalidShape,
+            }
+        }
         fn rewind(self: *@This()) !void {
             return self.state().rewind();
         }
@@ -259,19 +265,17 @@ fn run(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped: *infer
             return self.state().truncate(position);
         }
         /// The accepted-prefix operation, mirroring `engine.Model.recover`:
-        /// a batch that kept row checkpoints restores the accepted row,
-        /// recurrent state without them is replayed, attention alone is
+        /// a batch that kept a tape replays the accepted rows, recurrent
+        /// state without one is rewound and prefilled, attention alone is
         /// truncated.
         fn recover(self: *@This(), accepted: []const u32) !void {
             const at = self.state().checkpoint_position orelse return error.NoCheckpoint;
             if (self.state().hasRecurrent()) {
+                const pending = self.state().pending_rows;
+                if (pending > 0 and accepted.len <= pending and self.state().position - pending == at) return self.replayRows(accepted.len);
                 // The batch already fed the accepted prefix when every draft
                 // was accepted; nothing is rewound or replayed then.
                 if (accepted.len == self.state().position - at) return;
-                if (accepted.len > 0 and self.state().row_checkpoints > 0 and accepted.len <= self.state().row_checkpoint_rows) {
-                    try self.state().restoreRow(accepted.len - 1);
-                    return;
-                }
                 try self.rewind();
                 if (accepted.len > 0) try self.prefill(accepted, null, null);
             } else try self.truncate(at + accepted.len);
@@ -399,8 +403,9 @@ fn checkSnapshot(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
 
 /// The accepted-prefix recovery contract. Step a header token, checkpoint,
 /// then consume a `rows`-token batch. For every accepted length `a` in
-/// `[0, rows]`, undo the batch, replay the accepted prefix, and step the next
-/// token; the logits must match a second executor that consumed the same
+/// `[0, rows]`, rewind, consume the batch again, recover the accepted prefix
+/// (a Metal tape replays it, otherwise the prefix is replayed after a
+/// rewind), and step the next token; the logits must match a second executor that consumed the same
 /// tokens one by one from scratch. Replay is the same sequential arithmetic on
 /// the CPU (bit-identical); on Metal the batch is chunked, so the family's
 /// chunk-versus-step tolerance applies and the difference is printed. Then the
@@ -428,8 +433,9 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
     const checkpoint_start = std.Io.Clock.awake.now(io);
     try first.checkpoint();
     const checkpoint_time = checkpoint_start.durationTo(std.Io.Clock.awake.now(io));
-    try first.batch(tokens[1 .. 1 + rows]);
     for (0..rows + 1) |accepted| {
+        if (accepted > 0) try first.rewind();
+        try first.batch(tokens[1 .. 1 + rows]);
         try first.recover(tokens[1 .. 1 + accepted]);
         try first.step(tokens[1 + accepted], a, null);
         second.reset();
@@ -439,26 +445,26 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
             try compareRecovery(rows, b, a, spec.bounds.chunk_max_abs, spec.bounds.chunk_rel_rms);
         } else if (!std.mem.eql(f32, a, b)) return error.RecoveryMismatch;
     }
-    if (first.state().row_checkpoints > 0) {
-        // Slots cover every accepted prefix, not the post-batch state.
-        if (first.state().restoreRow(rows + 1)) |_| return error.ExpectedRowNotCheckpointed else |err| if (err != error.RowNotCheckpointed) return err;
+    // A taped batch keeps its rows pending: a checkpoint is refused until a
+    // recovery settles them, and a replay past the batch is refused.
+    try first.rewind();
+    try first.batch(tokens[1 .. 1 + rows]);
+    const taped = first.state().pending_rows > 0;
+    if (taped) {
+        if (first.checkpoint()) |_| return error.ExpectedReplayPending else |err| if (err != error.ReplayPending) return err;
+        if (first.replayRows(rows + 1)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
     }
     const rewind_start = std.Io.Clock.awake.now(io);
     try first.rewind();
     const rewind_time = rewind_start.durationTo(std.Io.Clock.awake.now(io));
-    std.debug.print("Recovery check passed ({d} rows{s}): checkpoint {d:.3} ms, rewind {d:.3} ms, region {d} bytes, rows {d}x{d} bytes.\n", .{
-        rows, if (first.state().row_checkpoints > 0) ", row slots" else "", checkpoint_time.toMilliseconds(), rewind_time.toMilliseconds(), first.state().checkpoint_region.len, first.state().row_checkpoints, first.state().row_slot_bytes,
+    std.debug.print("Recovery check passed ({d} rows{s}): checkpoint {d:.3} ms, rewind {d:.3} ms, region {d} bytes.\n", .{
+        rows, if (taped) ", tape replay" else "", checkpoint_time.toMilliseconds(), rewind_time.toMilliseconds(), first.state().checkpoint_region.len,
     });
 
-    // Rewind without a live checkpoint; a row restore without a batch is
-    // refused the same way.
+    // Rewind without a live checkpoint; a replay without a batch is refused.
     first.reset();
     if (first.rewind()) |_| return error.ExpectedNoCheckpoint else |err| if (err != error.NoCheckpoint) return err;
-    if (first.state().row_checkpoints > 0) {
-        try first.step(tokens[0], null, null);
-        try first.checkpoint();
-        if (first.state().restoreRow(0)) |_| return error.ExpectedRowNotCheckpointed else |err| if (err != error.RowNotCheckpointed) return err;
-    }
+    if (taped) if (first.replayRows(0)) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
 
     // Position truncate: a recurrent layout refuses, an attention-only one accepts.
     first.reset();

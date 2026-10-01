@@ -293,6 +293,14 @@ pub fn Executor(comptime Family: type) type {
         pub fn checkpoint(self: *Self) !void {
             return self.sessionMut().checkpoint();
         }
+        /// Applies the first `kept` pending rows of the last verify (see
+        /// `Session.pending_rows`); only a plan that keeps a tape has them.
+        pub fn replayRows(self: *Self, kept: usize) !void {
+            switch (self.*) {
+                .cpu => return error.InvalidShape,
+                .metal => |*m| if (comptime @hasDecl(Family.Plan, "replayRows")) try m.plan.replayRows(kept) else return error.InvalidShape,
+            }
+        }
         pub fn rewind(self: *Self) !void {
             return self.sessionMut().rewind();
         }
@@ -439,6 +447,7 @@ pub const Model = struct {
     /// quiescent. A step that failed since the last reset is refused
     /// (`SessionNotReady`).
     pub fn snapshot(self: *Model, gpa: std.mem.Allocator) !inference.session.Snapshot {
+        try self.settle();
         var snap = try self.session().snapshot(gpa);
         errdefer snap.deinit();
         if (self.drafter()) |d| snap.carried = try gpa.dupe(f32, d.carried());
@@ -458,8 +467,20 @@ pub const Model = struct {
     /// see `recover`. Valid between steps and on both executors, as `snapshot`
     /// is. Nothing reads the region until `rewind`.
     pub fn checkpoint(self: *Model) !void {
+        try self.settle();
         switch (self.exec) {
             inline else => |*e| try e.checkpoint(),
+        }
+    }
+    /// Replays a verify's pending rows in full (a no-op without them), for a
+    /// caller that reads the state without a `recover` first.
+    fn settle(self: *Model) !void {
+        const pending = self.session().pending_rows;
+        if (pending > 0) try self.replayRows(pending);
+    }
+    fn replayRows(self: *Model, kept: usize) !void {
+        switch (self.exec) {
+            inline else => |*e| try e.replayRows(kept),
         }
     }
     pub fn rewind(self: *Model) !void {
@@ -494,7 +515,7 @@ pub const Model = struct {
         try d.commit(tokens, h_rows);
     }
     /// How one `recover` call spent its time: the checkpoint copy and the
-    /// forward over the accepted prefix.
+    /// forward (or tape replay) over the accepted prefix.
     pub const Recovery = struct {
         rewind: std.Io.Duration = .zero,
         replay: std.Io.Duration = .zero,
@@ -502,9 +523,10 @@ pub const Model = struct {
     /// Returns the session to the state after the accepted prefix of a
     /// speculative verify batch. `accepted` is the tokens the main model
     /// committed, starting with the token fed before the batch; the position
-    /// ends at the checkpoint plus `accepted.len`. Recurrent state is replayed
-    /// (rewind then a forward), attention alone is truncated: rows past the
-    /// position are ignored by contract. Returns the copy and replay times.
+    /// ends at the checkpoint plus `accepted.len`. Recurrent state is replayed:
+    /// from the plan's tape when the batch kept one, else a rewind then a
+    /// forward; attention alone is truncated (rows past the position are
+    /// ignored by contract). Returns the copy and replay times.
     /// A missing checkpoint is `NoCheckpoint`; a batch larger than the context
     /// is `ContextFull` for recurrent state (nothing is written past the
     /// capacity).
@@ -516,16 +538,17 @@ pub const Model = struct {
             // draft was accepted (accepted is the whole batch): the recurrent
             // state is already a function of those tokens, so nothing is
             // rewound or replayed.
-            if (accepted.len == self.session().position - at) return stats;
-            // A batch that kept row checkpoints restores the accepted row
-            // directly: one copy, no replay. The CPU reference and a batch
-            // past the region replay below.
-            if (accepted.len > 0 and self.session().row_checkpoints > 0 and accepted.len <= self.session().row_checkpoint_rows) {
-                const restore_start = std.Io.Clock.awake.now(io);
-                try self.sessionMut().restoreRow(accepted.len - 1);
-                stats.rewind = restore_start.durationTo(std.Io.Clock.awake.now(io));
+            // A batch that kept a tape left the recurrent state at its start:
+            // replaying the accepted rows is the whole recovery. The CPU
+            // reference and a batch past the tape rewind and replay below.
+            const pending = self.session().pending_rows;
+            if (pending > 0 and accepted.len <= pending and self.session().position - pending == at) {
+                const replay_start = std.Io.Clock.awake.now(io);
+                try self.replayRows(accepted.len);
+                stats.replay = replay_start.durationTo(std.Io.Clock.awake.now(io));
                 return stats;
             }
+            if (accepted.len == self.session().position - at) return stats;
             const rewind_start = std.Io.Clock.awake.now(io);
             try self.rewind();
             stats.rewind = rewind_start.durationTo(std.Io.Clock.awake.now(io));
