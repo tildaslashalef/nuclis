@@ -268,13 +268,32 @@ encodings, 0.52–0.66):
    Gemma 4 12B QAT C 512 99.42 → 76.55 (+23.01 %), Qwen noise (+0.9 /
    +0.7 %). Bonsai has no draft block (`NoDraftBlock`), no verify batch.
 
-Next: IQ4_NL on the fragment tile (needs a segment decoder; 13 ms of
-generic tile per Qwen batch in the profile), then a cheaper decode (the
-header once per block: SIMD groups walking contiguous K ranges instead
-of every fourth step; the half magic-number nibble decode, values in any
-lane-local order since the activation fragment can follow it). The
-profile's 17408×5120 rates read about half the micro-bench's (profile
-mode serializes dispatches); judge by `make speed`.
+7. IQ4_NL on the fragment tile (`nu_tile_iq4_nl`, Q4_0's block through
+   the nonlinear table; `specializedTile` now decides the few-row route):
+   29.4 → 130.7 GB/s. Committed `2a6b1ac`: Qwen C 512 239.50 → 230.23
+   (+3.87 %), 4K 253.10 → 243.84 (+3.66 %). KEEP. **Session total for
+   Qwen's 4-row C: 512 275 → 230 ms, 4K 289 → 244 ms.**
+8. F32 weight fragments (no float → half conversion): Q4_K 107.9 / 105.3
+   against 107.0 / 104.4. Noise; dropped.
+9. Blockwise K (each SIMD group walks whole 256-value blocks, 4 steps
+   unrolled, so the header loads are shared): Q4_K 106.6, Q5_K 114.9,
+   IQ4_XS 121.8. Noise; dropped. Header loads are not the cost.
+10. 8 rows per SIMD group (RB = 1, fewer live registers): Q4_K 100.0,
+    IQ4_XS 109.8. Worse; dropped.
+11. Software-pipelined decode (step n + 4's segments decoded as half while
+    step n's MMAs issue): Q4_K 99.5, IQ4_XS 101.7. Worse; dropped.
+
+So the decode's cost (Q4_K 0.47 ms against the 0.234 ms MMA floor) is
+neither conversions, header loads, nor visibly registers. **Next: read
+the counters** of `frag-IQ4_XS-17408x5120-t4-iq4_xs_f2.gputrace`
+(`.zig-cache/trace/kernels/`, taken with `make bench-matvec-rows
+ARGS="4 frag" CAPTURE='frag-IQ4_XS-17408x5120-t4-iq4_xs_f2'`), against
+KERN-20's `rows-IQ4_XS-17408x5120-t4-tile_2026-09-30T1513_max.csv` (the
+old tile on the same case), then rank: the magic-number nibble decode
+(values in any lane-local order; the activation fragment follows), the
+β/α matvec (5.5 ms per batch), the 1,024-row matrices (64 threadgroups).
+The profile's 17408×5120 rates read about half the micro-bench's
+(profile mode serializes dispatches); judge by `make speed`.
 
 Gates: `make test-metal`, `make verify-auto`, `make verify`.
 

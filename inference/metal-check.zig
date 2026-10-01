@@ -586,7 +586,12 @@ fn fragBench(alloc: std.mem.Allocator, max_rows: usize) !void {
                 std.debug.print("{s:<7} {s:<11} {d:>2}", .{ case.name, shape.name, tokens });
                 for (0..kernels.len + 1) |v| {
                     var best: f64 = std.math.inf(f64);
+                    const label = if (v == 0) "tile" else @tagName(kernels[v - 1])["matmul_".len..];
                     for (0..4) |round| {
+                        if (round == 0) {
+                            var name: [96]u8 = undefined;
+                            try captureCase(b, try std.fmt.bufPrint(&name, "frag-{s}-{s}-t{d}-{s}", .{ case.name, shape.name, tokens, label }));
+                        }
                         const before = b.gpuSeconds();
                         try b.begin();
                         for (0..16) |_| if (v == 0)
@@ -596,7 +601,6 @@ fn fragBench(alloc: std.mem.Allocator, max_rows: usize) !void {
                         try b.commit();
                         if (round > 0) best = @min(best, (b.gpuSeconds() - before) * 1e3 / 16);
                     }
-                    const label = if (v == 0) "tile" else @tagName(kernels[v - 1])["matmul_".len..];
                     std.debug.print("  {s} {d:.3} ms {d:.1}", .{ label, best, mb / best });
                 }
                 std.debug.print("\n", .{});
