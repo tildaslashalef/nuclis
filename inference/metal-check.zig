@@ -510,6 +510,95 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     std.debug.print("The multi-row path reads the weights once for all rows; the tile reads them once per 8-row token tile (one tile here).\n", .{});
 }
 
+/// The `simdgroup_matrix` lane layout the register-fragment tiles assume:
+/// lane l holds (row, col) and (row, col + 1), row = (l/4 & 4) + (l/2 % 4),
+/// col = 2·((l/4 & 2) + l % 2).
+fn checkFragmentLayout(alloc: std.mem.Allocator) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const out = try b.create(64 * 4);
+    for (out.floats()) |*v| v.* = std.math.nan(f32);
+    try b.begin();
+    try b.fragmentLayout(out);
+    try b.commit();
+    for (0..32) |lane| {
+        const row = ((lane >> 2) & 4) + ((lane >> 1) & 3);
+        const col = (((lane >> 2) & 2) + (lane & 1)) * 2;
+        for (0..2) |i| {
+            const got = out.floats()[8 * row + col + i];
+            if (got != @as(f32, @floatFromInt(2 * lane + i))) {
+                std.debug.print("fragment layout: lane {d} element {d} expected at ({d}, {d}), found {d}\n", .{ lane, i, row, col + i, got });
+                return error.MetalMismatch;
+            }
+        }
+    }
+    std.debug.print("simdgroup_matrix lane layout: as the fragment tiles assume\n", .{});
+}
+
+/// `--matvec-rows-bench <max_rows> frag`: the register-fragment tiles
+/// against the 16×8 tile on the two FFN shapes at 1..`max_rows` token rows,
+/// GPU ms per dispatch and GB/s of weight bytes (minimum of three command
+/// buffers of 16 dispatches after a warm-up). A measurement aid.
+fn fragBench(alloc: std.mem.Allocator, max_rows: usize) !void {
+    var backend = try openBackend(alloc);
+    defer backend.deinit();
+    const b = &backend;
+    const Kernel = inference.metal.Kernel;
+    const shapes = [_]struct { rows: usize, columns: usize, name: []const u8 }{
+        .{ .rows = 17408, .columns = 5120, .name = "17408x5120" },
+        .{ .rows = 5120, .columns = 17408, .name = "5120x17408" },
+    };
+    const cases = [_]struct { id: u32, fixture: []const u8, name: []const u8, kernels: []const Kernel }{
+        .{ .id = 12, .fixture = "k-affine", .name = "Q4_K", .kernels = &.{ .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q4_k_f4 } },
+        .{ .id = 13, .fixture = "k-affine", .name = "Q5_K", .kernels = &.{.matmul_q5_k_f2} },
+        .{ .id = 14, .fixture = "k-signed", .name = "Q6_K", .kernels = &.{.matmul_q6_k_f2} },
+        .{ .id = 23, .fixture = "iq", .name = "IQ4_XS", .kernels = &.{.matmul_iq4_xs_f2} },
+    };
+    const weights = try b.create(17408 * 5120);
+    const input = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
+    for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
+    const output = try b.create(Backend.matmulPadded(max_rows) * 17408 * 4);
+    for (cases) |case| {
+        const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, switch (case.fixture[0]) {
+            'k' => if (case.fixture[2] == 'a') @embedFile("src/quant/fixtures/k-affine.json") else @embedFile("src/quant/fixtures/k-signed.json"),
+            else => @embedFile("src/quant/fixtures/iq.json"),
+        }, .{ .ignore_unknown_fields = true });
+        defer fixtures.deinit();
+        var sample_bytes: ?[]const u8 = null;
+        for (fixtures.value.rows) |sample| if (sample.encoding == case.id) {
+            sample_bytes = sample.bytes;
+            break;
+        };
+        for (shapes) |shape| {
+            const region = try tiledMatrix(alloc, sample_bytes orelse return error.FixtureMissing, case.id, shape.rows, shape.columns);
+            defer alloc.free(region);
+            @memcpy(weights.host[0..region.len], region);
+            const matrix: inference.cpu.Matrix = .{ .rows = shape.rows, .columns = shape.columns, .encoding = case.id, .bytes = region };
+            const mb = @as(f64, @floatFromInt(region.len)) / 1e6;
+            for (1..max_rows + 1) |tokens| {
+                std.debug.print("{s:<7} {s:<11} {d:>2}", .{ case.name, shape.name, tokens });
+                for (0..case.kernels.len + 1) |v| {
+                    var best: f64 = std.math.inf(f64);
+                    for (0..4) |round| {
+                        const before = b.gpuSeconds();
+                        try b.begin();
+                        for (0..16) |_| if (v == 0)
+                            try b.matmulTile(weights, matrix, input, shape.columns, output, shape.rows, tokens)
+                        else
+                            try b.matmulKernel(case.kernels[v - 1], weights, matrix, input, shape.columns, output, shape.rows, tokens);
+                        try b.commit();
+                        if (round > 0) best = @min(best, (b.gpuSeconds() - before) * 1e3 / 16);
+                    }
+                    const label = if (v == 0) "tile" else @tagName(case.kernels[v - 1])["matmul_".len..];
+                    std.debug.print("  {s} {d:.3} ms {d:.1}", .{ label, best, mb / best });
+                }
+                std.debug.print("\n", .{});
+            }
+        }
+    }
+}
+
 fn captureRows(b: *Backend, path: []const u8, encoding: []const u8, shape: []const u8, tokens: usize) !void {
     var label: [96]u8 = undefined;
     try captureCase(b, try std.fmt.bufPrint(&label, "rows-{s}-{s}-t{d}-{s}", .{ encoding, shape, tokens, path }));
@@ -2503,6 +2592,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matmul-bench")) return matmulBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--matvec-rows-bench")) {
         const max_rows = if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 8;
+        if (args.len > 3 and std.mem.eql(u8, args[3], "frag")) return fragBench(alloc, max_rows);
         const with_head = args.len > 3 and std.mem.eql(u8, args[3], "head");
         return matvecRowsBench(alloc, max_rows, with_head);
     }
@@ -2510,6 +2600,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--attention-bench")) return attentionBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len != 1) return error.UnknownOption;
+    try checkFragmentLayout(alloc);
     try checkTick(alloc);
     try checkSegments(alloc);
     try checkHadamard(alloc);
@@ -2721,6 +2812,7 @@ pub fn main(init: std.process.Init) !void {
             const mm_expected = try alloc.alloc(f32, mm_rows);
             defer alloc.free(mm_expected);
             var mm_worst: f64 = 0;
+            var frag_worst: f64 = 0;
             for ([_]usize{ 1280, 5120 }) |columns| {
                 const activations = try b.create(padded * columns * 4);
                 for (activations.floats()) |*x| x.* = random.float(f32) * 2 - 1;
@@ -2786,6 +2878,31 @@ pub fn main(init: std.process.Init) !void {
                                     }
                                 }
                             }
+                            // The register-fragment tiles: the same rows within
+                            // the half-tile bound, every variant of the encoding.
+                            if (Backend.specializedMatmulFrag(sample.encoding, weights.offset, stride, mm_tokens)) |frag| {
+                                const variants: []const inference.metal.Kernel = if (frag == .matmul_q4_k_f2) &.{ .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q4_k_f4 } else &.{frag};
+                                for (variants) |kernel| {
+                                    for (out.floats()) |*v| v.* = std.math.nan(f32);
+                                    try b.begin();
+                                    try b.matmulKernel(kernel, weights, matrix, activations, columns, out, mm_rows, mm_tokens);
+                                    try b.commit();
+                                    for (0..mm_tokens) |t| {
+                                        const x = activations.floats()[t * columns ..][0..columns];
+                                        for (0..mm_rows) |r| {
+                                            try inference.quant.row(sample.encoding, region[r * stride ..][0..stride], decoded);
+                                            var mass: f64 = 0;
+                                            for (decoded, x) |w, xv| mass += @abs(@as(f64, w) * xv);
+                                            const got = out.floats()[t * mm_rows + r];
+                                            if (mass > 0) frag_worst = @max(frag_worst, @abs(@as(f64, got) - generic_out.floats()[t * mm_rows + r]) / mass);
+                                            expectClose("matmul fragment tile vs generic F32 tile", got, generic_out.floats()[t * mm_rows + r], @floatCast(mass * 2e-4 + 1e-6)) catch |err| {
+                                                std.debug.print("  {s}, token {d}/{d}, row {d}, columns {d}\n", .{ @tagName(kernel), t, mm_tokens, r, columns });
+                                                return err;
+                                            };
+                                        }
+                                    }
+                                }
+                            }
                             // The wide 32×8 tile (KERN-14) must land on the
                             // same rows within the half-tile bound; it is an
                             // experiment, so nothing routes to it.
@@ -2809,6 +2926,7 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
             std.debug.print("Matmul half tiles vs the generic F32 tile: worst |difference| / Σ|w·x| {e:.2} (bound 2e-4)\n", .{mm_worst});
+            std.debug.print("Matmul fragment tiles vs the generic F32 tile: worst |difference| / Σ|w·x| {e:.2} (bound 2e-4)\n", .{frag_worst});
             // Shape rules: rows must be a multiple of 8, columns of 64, and the
             // buffers must hold the padded token rows.
             const small = try b.create(32 * 64 * 4);

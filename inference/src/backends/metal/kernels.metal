@@ -1481,6 +1481,83 @@ kernel void nu_matmul_wide_t(device const uchar * weights [[buffer(0)]],
     const uint row0 = (group % p.row_tiles) * 32, token0 = (group / p.row_tiles) * 8;
     nu_matmul_wide_body<ENC, TW>(weights, input, output, p, row0, token0, tile, tid, sg);
 }
+// Lane `lane` holds elements (row, col) and (row, col + 1) of an 8×8
+// `simdgroup_matrix` through `thread_elements()`; `nu_fragment_layout`
+// pins this in metal-check.
+inline uint nu_fragment_row(uint lane) { return ((lane >> 2) & 4) + ((lane >> 1) & 3); }
+inline uint nu_fragment_col(uint lane) { return (((lane >> 2) & 2) + (lane & 1)) * 2; }
+kernel void nu_fragment_layout(device float * out [[buffer(0)]], uint lane [[thread_index_in_simdgroup]]) {
+    simdgroup_float8x8 m;
+    m.thread_elements()[0] = float(2 * lane);
+    m.thread_elements()[1] = float(2 * lane + 1);
+    simdgroup_store(m, out, 8);
+}
+// Register-fragment small-batch tile: 8·RB rows × 8 tokens per 128-thread
+// group, the four SIMD groups splitting the 64-column K steps as the 16×8
+// tile does, with nothing staged in threadgroup memory. The K order inside
+// a step is permuted, identically for both operands so each product is
+// unchanged: fragment j, column c = 2q + e holds step column 16q + 8e + j.
+// A lane (fragment row r, quarter q) then needs segment q of its weight row
+// (values j and 8 + j for fragment j), decoded straight into its elements,
+// and step columns 16(r/2) + 8(r%2) + 0..7 of its two token rows, two
+// float4 loads each. Token rows past `tokens` contribute zeros.
+template <uint ENC, uint RB, typename TA, typename TB>
+inline void nu_matmul_frag_body(device const uchar * weights, device const float * input, device float * output, MatmulParams p,
+                                uint row0, uint token0, threadgroup float * partials, uint tid, uint sg) {
+    const uint lane = tid & 31;
+    const uint fr = nu_fragment_row(lane), fc = nu_fragment_col(lane), quarter = fc / 2;
+    device const uchar * wrow[RB];
+    for (uint i = 0; i < RB; ++i) wrow[i] = weights + ulong(min(row0 + 8 * i + fr, p.rows - 1)) * p.stride;
+    const bool live0 = token0 + fc < p.tokens, live1 = token0 + fc + 1 < p.tokens;
+    const uint x_at = 16 * (fr >> 1) + 8 * (fr & 1);
+    device const float * x0 = input + ulong(token0 + fc) * p.in_stride + x_at;
+    device const float * x1 = x0 + p.in_stride;
+    simdgroup_float8x8 acc[RB];
+    for (uint i = 0; i < RB; ++i) acc[i] = simdgroup_float8x8(0.0f);
+    const uint steps = p.columns / 64;
+    for (uint step = sg; step < steps; step += 4) {
+        const uint k0 = step * 64;
+        float4 u0 = 0.0f, u1 = 0.0f, v0 = 0.0f, v1 = 0.0f;
+        if (live0) { u0 = *(device const float4 *)(x0 + k0); u1 = *(device const float4 *)(x0 + k0 + 4); }
+        if (live1) { v0 = *(device const float4 *)(x1 + k0); v1 = *(device const float4 *)(x1 + k0 + 4); }
+        #pragma unroll
+        for (uint i = 0; i < RB; ++i) {
+            float4 w[4];
+            nu_tile_segment<ENC>(wrow[i], p.encoding, k0 / 16 + quarter, w);
+            #pragma unroll
+            for (uint j = 0; j < 8; ++j) {
+                simdgroup_matrix<TB, 8, 8> b;
+                b.thread_elements()[0] = TB(j < 4 ? u0[j & 3] : u1[j & 3]);
+                b.thread_elements()[1] = TB(j < 4 ? v0[j & 3] : v1[j & 3]);
+                simdgroup_matrix<TA, 8, 8> a;
+                a.thread_elements()[0] = TA(w[j >> 2][j & 3]);
+                a.thread_elements()[1] = TA(w[2 + (j >> 2)][j & 3]);
+                simdgroup_multiply_accumulate(acc[i], a, b, acc[i]);
+            }
+        }
+    }
+    for (uint i = 0; i < RB; ++i) simdgroup_store(acc[i], partials + (sg * RB + i) * 64, 8);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Element (row 8i + r, token t) of SIMD group s's partial sits at
+    // (s·RB + i)·64 + 8r + t; the four partials are summed in a fixed order.
+    for (uint o = tid; o < 64 * RB; o += 128) {
+        const float total = ((partials[o] + partials[64 * RB + o]) + partials[128 * RB + o]) + partials[192 * RB + o];
+        const uint i = o / 64, r = (o / 8) & 7, t = o & 7;
+        if (row0 + 8 * i + r < p.rows) output[ulong(token0 + t) * p.out_stride + row0 + 8 * i + r] = total;
+    }
+}
+template <uint ENC, uint RB, typename TA, typename TB>
+kernel void nu_matmul_frag_t(device const uchar * weights [[buffer(0)]],
+                             device const float * input [[buffer(1)]],
+                             device float * output [[buffer(2)]],
+                             constant MatmulParams & p [[buffer(7)]],
+                             uint group [[threadgroup_position_in_grid]],
+                             uint tid [[thread_position_in_threadgroup]],
+                             uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float partials[4 * RB * 64];
+    const uint row0 = (group % p.row_tiles) * (8 * RB), token0 = (group / p.row_tiles) * 8;
+    nu_matmul_frag_body<ENC, RB, TA, TB>(weights, input, output, p, row0, token0, partials, tid, sg);
+}
 // Gathered expert matmul over the row lists of `nu_expert_lists`: threadgroup
 // `group` serves tile `group / row_tiles` of the list (exiting past the tile
 // count) and row tile `group % row_tiles` of that tile's expert, whose bytes
@@ -1555,6 +1632,15 @@ template [[host_name("nu_matmul_iq4_xs_w8")]] kernel void nu_matmul_wide_t<23, h
 template [[host_name("nu_matmul_q4_0_w8")]] kernel void nu_matmul_wide_t<2, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_pq2_0_w8")]] kernel void nu_matmul_wide_t<142, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0_w8")]] kernel void nu_matmul_wide_t<143, half>(NU_MATMUL_ARGS);
+// Register-fragment tiles (`_f<RB>`: 8·RB rows × 8 tokens; half weights,
+// F32 activations, half both with `hh`). `matmul` routes the `_f2` set
+// (`specializedMatmulFrag`); `_f2hh` and `_f4` are measured variants.
+template [[host_name("nu_matmul_q4_k_f2")]] kernel void nu_matmul_frag_t<12, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q4_k_f2hh")]] kernel void nu_matmul_frag_t<12, 2, half, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q4_k_f4")]] kernel void nu_matmul_frag_t<12, 4, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q5_k_f2")]] kernel void nu_matmul_frag_t<13, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q6_k_f2")]] kernel void nu_matmul_frag_t<14, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq4_xs_f2")]] kernel void nu_matmul_frag_t<23, 2, half, float>(NU_MATMUL_ARGS);
 // Gathered expert tiles: 64 rows × 32 slot rows with half operands for Q4_0
 // (an expert averages k · chunk / experts slot rows per chunk, 16 on the
 // 26B-A4B at 256 tokens, so one token tile covers most experts), and the

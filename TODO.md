@@ -196,6 +196,8 @@ Gates: `make test-metal`, `make verify-auto`, `make verify`.
 
 ## KERN-24 — Register-fragment verify matmul (2 sessions)
 
+Base: `d39e3d4`
+
 The verify matmul decodes weights into threadgroup memory
 (`nu_matmul_split_body`) and loads B strided on every k8 step; KERN-12's
 scalar rows and KERN-14's wider tile both closed below target.
@@ -215,6 +217,43 @@ scalar rows and KERN-14's wider tile both closed below target.
   Stop below 120 GB/s.
 - **Correctness.** The matmul fixtures at 1–8 rows per encoding;
   `qwen38-speculative-metal`, the generation gates.
+
+**Session 1 (2026-10-01), in the tree, uncommitted at this point:**
+`nu_matmul_frag_body<ENC, RB, TA, TB, MODE>` (kernels.metal, after the
+wide tile), `nu_fragment_layout` + `checkFragmentLayout`, the `_f2` /
+`_f2hh` / `_f2ff` / `_f4` / `_p1*` / `_p2*` instantiations,
+`Backend.matmulKernel` (forced kernel), `specializedMatmulFrag` (not yet
+routed), `make bench-matvec-rows ARGS="<rows> frag"` (`fragBench`). The
+fragment tiles pass `make test-metal` against the generic F32 tile, worst
+2.02e-5 of Σ|w·x| (half tile 2.96e-5; bound 2e-4).
+
+Where the 4-row Qwen verify's matrix time goes (`--profile`, 4K,
+`d39e3d4`): `matmul_iq4_xs_8` 84 ms over its shapes, `q4_k_8` 59, `q5_k_8`
+62, `q6_k_8` 16 (the head 8.8), the generic tile 31 (Q8_0 48×5120 β/α
+17.1 ms at 1.5 GB/s: 96 dispatches of 2 threadgroups; IQ4_NL 13 ms at 25
+GB/s), `q3_k_8` / `iq3_s_8` 10.
+
+**Ledger** (`make bench-matvec-rows ARGS="4 frag"`, 4 rows, GB/s of weight
+bytes, 17408×5120 / 5120×17408; tile today: Q4_K 96.6 / 94.5, Q5_K 112.1 /
+109.0, Q6_K 116.0 / 109.9, IQ4_XS 90.6 / 88.4; the tile's ms is flat across
+encodings, 0.52–0.66):
+
+1. Fragment tile, eight activation fragments built per step and kept live
+   across the decode. Predicted ≥ 150 on Q5_K/Q6_K. Measured: half × F32
+   40–50 (2× slower than the tile), half × half 83, F32 × F32 46, 32 rows
+   per group 52. Lost to what the next line fixed (registers or a
+   non-unrolled fragment array).
+2. MMA floor probe (`_p2*`: no decode, no activation loads): 0.234 ms on
+   Q4_K 17408×5120, about 6 TFLOP/s of 8×8 work (173–214 GB/s
+   equivalent); with activation loads (`_p1*`) 0.25 ms. The tile is not
+   near its matrix floor; the decode is the larger half.
+3. **Candidate (kept in the tree):** each activation fragment built just
+   before its multiply, `#pragma unroll` on both loops: Q4_K 107.4 /
+   104.4, Q5_K 115.3 / 111.7, Q6_K 152.6 / 137.5, IQ4_XS 122.2 / 115.4
+   (half × half no faster than half × F32: 105.8 / 103.8 on Q4_K, so the
+   activations stay F32). Next: a cheaper decode into the fragment
+   (decode costs ~0.22 ms of Q4_K's 0.47), RB = 4, then routing and
+   `make speed`.
 
 Gates: `make test-metal`, `make verify-auto`, `make verify`.
 
