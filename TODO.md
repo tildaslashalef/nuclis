@@ -282,15 +282,34 @@ Deferred 2026-09-29 (user) until picked up. When it is, its baseline is
 re-measured on the generated playground (REPO-21) before the tool lands.
 
 - A tool in `src/agent/tools/` calling the in-process `Decider` (loaded
-  on first use, `decide.model`): one question (choice, score, or noul
-  with its options) over up to 64 candidates given as workspace file
-  paths or as the items of the previous tool result; returns the
-  candidates ranked with probabilities, truncation marked; limits are host
-  constants; failures are results.
+  on first use): one question (choice, score, or noul with its options)
+  over up to 64 candidates given as workspace file paths or as the items
+  of the previous tool result; returns the candidates ranked with
+  probabilities, truncation marked; limits are host constants; failures
+  are results.
+- **Checkpoint: `laya-multilingual`**, named by the tool, not taken from
+  `decide.model` (whose default stays `laya`). It reads 1,024 tokens per
+  sequence (256 for the question and options) against the root set's
+  512, and on a check that turns on comparing numbers in a JSON state (a
+  distance against a target) it answered P = 0.99 where `laya` answered
+  at chance (0.51, 0.54 with nothing cut). Every measurement below runs
+  `laya` beside it; the tool switches only if `laya` wins. Opening it
+  costs about 0.4 s (its 34 MB `tokenizer.json`), once per process.
+- **A labeled set, scored per decision.** End-to-end task success alone
+  cannot separate a good filter from a bad one: the agent may finish by
+  reading the files anyway. Before the tool lands, build 30–60 cases from
+  playground sessions (search hits with the relevant ones marked, build
+  and test logs with the failing section marked, diffs with the hunks
+  that matter marked) and score each decision: the right candidate in the
+  top 1 and top 3, and whether the probabilities track correctness.
+- **A cheap baseline on the same set:** keyword overlap between the
+  question and each candidate, and a random order. The tool is worth its
+  GPU time only where Laya beats both.
 - Its description and the system-prompt line measured on the playground
   task list before and after (`make agent-eval VARIANT=…`), on Qwen3.8-27B
   and Gemma 4 E4B: task success, wall time, and prefill tokens saved.
-  Kept only if it helps; the result is logged either way.
+  Kept only if it helps on both the labeled set and the task list; the
+  result is logged either way.
 
 ## AGNT-19 — Saved prefixes for the agent: the primed prefix and `/resume` across processes (2 sessions) — queued
 
