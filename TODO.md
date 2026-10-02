@@ -16,11 +16,16 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: KERN-23 session 1** (its section is below the theme's): record
-its `Base:` at the first change, and run `make speed-base` first:
-MODL-34 made `qwen35_metal.zig` read its shape from the file (Qwen3.8's
-arithmetic unchanged, its gates equal), so the saved base binary
-predates the code the candidate builds. MODL-34 closed 2026-10-02 in one
+**Next: KERN-23 session 1** (its section is below the theme's). Before
+any change: run `make speed-base` on the clean tree at `d5eedb2` (or
+later), then record the unit's `Base:` at the first change. There is no
+base binary now: `.zig-cache/` was cleaned after MODL-34 (2026-10-02),
+and MODL-34 changed `qwen35_metal.zig` anyway (the shape is read from
+the file; Qwen3.8's arithmetic and gates unchanged). The cleanup also
+took the 16K and 32K saved prefixes under `.zig-cache/speed/prefix/`
+(512 and 4K were rebuilt by the gates): the first `make speed` or
+`qwen38-verify-depth-16k`/`-32k` run at those depths prefills them again,
+about 3 and 11 min. MODL-34 closed 2026-10-02 in one
 session: `nuclis decide --model clef-flash` and `nuclis serve` answer
 with Cloudflare's 9B decision model, text and images, every question of
 a state in one pass (2.3 s for a 637-token state on Metal;
@@ -54,15 +59,13 @@ speculation re-priced on every family; the catalogue turns it on for Qwen
 (5), E4B (6), and Muse (6), and off for Gemma 26B-A4B; `make
 spec-matrix` measures it, and `agent --print` now loads the drafter. An
 existing `~/.nuclis/nuclis.json` keeps its entries' old values until the
-user edits them or re-runs `config init`. The base binary for `make
-speed` is at ENGN-19's commit (no engine arithmetic changed since).
+user edits them or re-runs `config init`.
 REPO-27 closed 2026-10-02: an external review's fixes (a failed
 recording is discarded, so metal-check reports instead of hanging; the
 kernel table is derived from `Kernel`; `--file` names a support file's
 weights; parser property tests). Its log entry lists what waits for
 KERN-23: pruning the 56 check-only pipelines (1.70 s of a cold start)
-and the GGUF type-id enum. No engine arithmetic changed, so the `make
-speed` base binary stands.
+and the GGUF type-id enum.
 
 **Re-ordered 2026-10-02 (user).** Decision models move ahead of the last
 speed unit: first APPS-19 (closed), `nuclis serve`, the nuclis API
