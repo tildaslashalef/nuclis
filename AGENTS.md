@@ -202,7 +202,7 @@ For code changes, once build scaffolding exists:
    only a variant has) once per unit that touched the inference
    stack — judge by the work: a unit confined to the executable, the
    documents, or the scripts changes no numerical behaviour and needs no
-   tier. The CPU tier (`make verify-cpu`, about 22 minutes) is not part of closing a
+   tier. The CPU tier (`make verify-cpu`, about 25 minutes) is not part of closing a
    unit unless the unit changes what the CPU reference computes: the
    arithmetic of an existing CPU kernel or quantized decoder, a family's
    `*_runtime.zig` forward, or a projector's CPU `Runtime`, or it brings up

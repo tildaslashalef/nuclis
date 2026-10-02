@@ -98,7 +98,7 @@ flowchart TB
         tok[tokenizer/*  profiles/*]
         sess[runtime/session.zig  weights.zig  draft.zig]
         eng[engine.zig  Engine, Model, runLoop]
-        dec[decide.zig  Decider: Laya over profiles/laya + models/laya]
+        dec[decide.zig  Decider: Laya or clef over profiles/* + models/*]
         samp[sampling/root.zig]
         cpu[backends/cpu/*  reference math; dense.zig for encoders]
         metal[backends/metal/*  bridge + kernels]
@@ -155,7 +155,7 @@ signals, and the network.
 | `backends/cpu`, `backends/metal` | one operation at a time, shapes as parameters | layer order |
 | `models/*` | everything above, composed in one family's order | terminals, files |
 | `engine` | composing adapters, backends, tokenizer, sampler into `open`/`step`/`runLoop` | files, terminals, signals |
-| `decide` | composing Laya's tokenizer, profile (contract and calibration), and model into `open`/`decide` | files beyond its checkpoint directory, terminals, the text engine |
+| `decide` | picking a decision family by the checkpoint's files and composing its tokenizer, profile (contract, calibration), and model into `open`/`parseQuestion`/`decide` | files beyond its location (directory, backbone, projector), terminals, the text engine |
 | `src` | arguments, configuration, stdout, Ctrl-C, presentation, downloads | equations |
 | `src/decision` | the decision request and response JSON, resolving a decision model's name | HTTP, terminals |
 | `src/api` transport and router (`http.zig`, `router.zig`) | connections, HTTP/1.1, routes, the error body | models, `inference` |
@@ -181,6 +181,18 @@ into batches with per-row bounds instead of padding). Every question about
 every state is one sequence. It pays as a filter, one
 question over many states the language model never has to read
 ([laya.md](reference/laya.md)).
+
+The second family, clef-flash, shares the seam and not the shape: a
+Qwen3.5 backbone (the qwen35 adapter at the file's shape, its
+`hiddenRows`/`prefillHidden` giving every row after `output_norm` with no
+output head), images through the Qwen3-VL projector, and a joint schema
+head on the CPU (`models/clef.zig`) that reads one sequence per state
+holding every question (`profiles/clef.zig`). `Decider` is a tagged union
+of the two; the family decides how a question is validated
+(`decide.parseQuestion`), so `src/decision/` parses a request only once
+it knows the model, and a `Question` carries the order the model reads
+its options in beside the order it is answered in
+([clef.md](reference/clef.md)).
 
 ### The API layer
 

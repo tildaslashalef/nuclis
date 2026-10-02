@@ -164,6 +164,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-22 | Long-context decode attention: dropped before it started, a small win at 32K only | 2026-10-02 |
 | APPS-19 | `nuclis serve`, the nuclis API: decisions over HTTP, TypeSafe's Jev call, batched across requests (1.24–1.30×, the model's packing ceiling); closed below its throughput target | 2026-10-02 |
 | APPS-20 | `nuclis serve` configured and logged: the `serve` section (host, port 8000, log), the default model opened at start, a coloured line per request | 2026-10-02 |
+| MODL-34 | clef-flash: Cloudflare's 9B decision model (Qwen3.5 backbone, joint schema head) on both backends, text and images, in `decide` and `serve`; qwen35 reads its shape from the file | 2026-10-02 |
 
 ## Context
 
@@ -7171,3 +7172,110 @@ defaults; `make check` passed (637 tests).
 benchmarks run with `--quiet`, since a line per response is written and
 flushed. The rates in api.md were measured on port 8735 before the log
 existed.
+
+## MODL-34 — clef-flash: Cloudflare's 9B decision model, text and vision, on both backends (2026-10-02, four planned sessions in one)
+
+**Outcome.** `nuclis decide --model clef-flash` and `nuclis serve` answer
+typed questions with Cloudflare's clef-flash: the Qwen3.5-9B backbone as
+bartowski's Q6_K GGUF, Cloudflare's joint schema head, and the Qwen3-VL
+projector for images. Every question about a state is one pass over one
+sequence of up to 16,384 tokens; a 637-token decision takes 2.3 s on
+Metal. Planned as four sessions (pull and sequence; seam and CPU head;
+Metal and catalogue; vision); done in one at the user's request, with a
+forked agent doing the backbone's shape in parallel.
+
+- **The backbone at the file's shape** (`b2bd22a`). `qwen35.Shape`
+  (`hidden`, `ffn`, `heads`, `layers`, `value_heads`) is read from the
+  metadata and checked against the tensors, with the derived widths as
+  methods; `Binding` carries it and `layers()` replaces the field. The CPU
+  runtime and the Metal plan size buffers, loops, tape and partials from
+  it. Both gain the decision head's input, `Runtime.hiddenRows` and
+  `Plan.prefillHidden`: every row after `output_norm`, no output head,
+  image spans as `prefillVision` places them. A Bonsai rotation is
+  accepted only at the 27B shape; clef's file declares
+  `qwen35.attention.recurrent_layers`, accepted when it matches the
+  every-4th schedule. Qwen3.8's numbers are unchanged (trace F32 max abs
+  6.1e-5, F16 2.50e-2, generation 1.29e-4, perplexity −0.005 %).
+- **The input contract** (`profiles/clef.zig`) from
+  `joint_schema_model.py` at `17f0b0ad`: question validation as
+  `systemone` does it, options as sorted compact JSON, one sequence per
+  state with every question, each piece tokenized alone, the spans the
+  head averages, the state's head kept under the budget, images'
+  placeholder tokens. Tokens come from the backbone GGUF's vocabulary:
+  `tokenizer.json`'s `Split` pre-tokenizer is not one `hf_json` reads, and
+  the fixture proves the two equal.
+- **The head** (`models/clef.zig`): `JointSchemaHead` in F32 on the CPU
+  (`cpu.dense`), weights decoded from BF16 at load; lexical vectors are the
+  means of `output.weight` rows decoded from Q6_K. It costs about 4 % of
+  the Metal backbone's time (30–130 ms up to 829 tokens, 450 ms at 3,931),
+  so the planned Metal head was not written.
+- **The seam** (`inference/src/decide.zig`): `Decider` is a tagged union
+  of Laya and clef, picked by the directory's files; `parseQuestion`
+  validates by the family's rules, so `src/decision/` parses a request
+  once the model is known. The shared question shape moved to
+  `profiles/decision.zig` with `id` and `model_order` (the model reads
+  `choice` keys sorted and `noul` true first, answers come back in the
+  request's order), and Python's `json.dumps` gained the compact sorted
+  style. clef answers are uncalibrated, `confidence` the top probability
+  as `systemone` reports it.
+- **Vision.** The Qwen3-VL projector reads `clip.vision.projection_dim`
+  (4,096 or 5,120) on both executors; clef's images are stretched
+  (bicubic) to its processor's grid, at least 65,536 pixels and at most
+  the plan's 1,024 tokens, not letterboxed as the chat path does. A
+  request's `"images"` (data URLs, base64, `{"file": path}` from the CLI)
+  and `decide --image` carry them; Laya, or clef without its projector,
+  refuses them with `images_unsupported`.
+- **The catalogue.** `clef-flash` is a decision entry whose backbone and
+  projector live in another repository: `DecisionEntry.backbone` and
+  `.mmproj`; `nuclis model pull clef-flash [--with mmproj]` pulls the
+  backbone first by repository id at its commit, checks each digest
+  against the catalogue, then the head and its seven support files.
+  `catalog.locate` returns the whole location; the server's pool, batcher,
+  and the CLI open it.
+
+**Evidence.** Apple M4 Pro, 48 GB; the oracle is Cloudflare's own code in
+`.reference/clef-venv` (torch 2.11.0, transformers 5.10.2), never loading
+the backbone:
+
+| Check | Result |
+| --- | --- |
+| The sequence: 10 requests (the card's two examples, Laya's shapes, a 3,931-token log, 6 questions over a conversation, two image requests) | ids and every span equal; image token counts 80 and 64 + 192 equal |
+| The head alone, seeded random inputs | within 1.4e-6 |
+| The head on nuclis's Metal rows (the `head.json` fixture) | within 6e-7 |
+| CPU against Metal | `card_invoice` rows' cosine ≥ 0.999997, RMS ratio 6.2e-4, logits 8.5e-5; `noul_error` 7.5e-5, `noul_criteria` 5.8e-4, `image_red` (CPU projector) 5.8e-5 |
+| The sanity set, 15 text and 2 image questions with obvious answers, the card's examples among them | every one picked on Metal; on the CPU, the three requests run |
+| `nuclis decide` / `nuclis serve` on the card's `systemone` example | technical 0.96, today (1.79 of 2), outage 0.83; the same bytes over `POST /v1/systemone` with `systemone`'s fields; a green circle in a PNG: circle 0.99, green 0.99, by `--image` and by data URL |
+
+For scale, the reference's own deployment runs the head in BF16, which
+moves its logits by 0.007–0.03 from F32 on the same inputs.
+
+Timings (`nuclis decide --json`, ReleaseSafe, Metal, one `noul` question,
+load 0.5 s excluded): 637 tokens 2.37 s per state (2.30 s each over 10,
+2.32 over 50); 2,162 tokens 8.51 s (8.24 each over 10). The backbone's
+prefill runs 260–290 tok/s with a 512-row chunk; the cost is linear in
+states, one sequence at a time. clef.md § Time per decision.
+
+Gates: `clef-sequences` and `clef-metal` (tier `verify`), `clef-cpu`
+(tier `verify-cpu`, the two requests under 160 tokens, 7.75 min). `make
+verify-auto` passed (28 gates, Qwen3.8, Bonsai, Gemma, Laya, and clef),
+`make verify` 40 of 40 in 311 s,
+`make verify-cpu` passed (15 of 15 in 1,523 s, `clef-cpu` 368 s; Qwen3.8's CPU gates unchanged).
+
+Files: `inference/src/models/qwen35.zig`, `qwen35_runtime.zig`,
+`qwen35_metal.zig`, `inference/generation-check.zig` (`--hidden-rows`),
+`inference/src/profiles/clef.zig`, `profiles/decision.zig`,
+`profiles/laya.zig`, `inference/src/models/clef.zig`,
+`inference/src/decide.zig`, `inference/src/vision/qwen3vl.zig`,
+`qwen3vl_metal.zig`, `projector.zig`, `inference/clef-check.zig`,
+`inference/src/models/fixtures/clef/`, `fixtures/clef-flash-q6k.json`,
+`scripts/clef-reference.py`, `src/decision/`, `src/api/decisions/`,
+`src/decide.zig`, `src/catalog.zig`, `src/model.zig`, `src/cli.zig`,
+`src/help.zig`, `gates.json`; docs `reference/clef.md` (new), `spec.md`,
+`architecture.md`, `reference/api.md`, `reference/artifacts.md`,
+`development.md`, `README.md`, `THIRD_PARTY_NOTICES.md`.
+
+**Remaining.** One sequence at a time (no packing across requests); an
+image is at most 1,024 tokens where the reference allows 16,384; videos
+are not read; the CPU backbone runs about a token a second, for checks
+only; no Q8_0 or bf16 backbone was compared. `model ls` lists the entry's
+size as the head's (the backbone has its own row).

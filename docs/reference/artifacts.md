@@ -315,3 +315,23 @@ or a named support file differs; `model ls` lists it after the text
 models, marked `(nuclis decide)`, and its JSON rows carry `kind`
 (listing schema 4). `decide.model` defaults to `laya`; the name is not a
 text model's, so `generate --model laya` is refused by name.
+
+`clef-flash` (MODL-34) spans two repositories: its head
+`joint_head.safetensors` (243,538,016 B, SHA-256
+`19cdcec8c81dc9212be320fff47462ab342fbc1278be4368fb3da71241cf5ba0`, BF16)
+with `config.json`, `joint_head_config.json`, `tokenizer.json`,
+`tokenizer_config.json`, `chat_template.jinja`, `processor_config.json`,
+and `generation_config.json` from `Cloudflare/clef-flash` at
+`17f0b0ad64efb65d273590632833508766b2aae6`, and its backbone
+`Cloudflare_clef-flash-Q6_K.gguf` (7,793,714,496 B, SHA-256
+`b80f7cfb803de25aade15853bab331e9f030a9ee64dee7bc91ed8c2b07312423`) from
+`bartowski/Cloudflare_clef-flash-GGUF` at
+`d7f376ea88c05e7bb1014dd5351a93df9dd8029e`, with the projector
+`mmproj-Cloudflare_clef-flash-bf16.gguf` (921,704,928 B, SHA-256
+`3c45b34aee6f353a0d41d6b96ba712a498a17a82f0a6152bf68a5021f9652c0f`)
+beside it. `nuclis model pull clef-flash` pulls the backbone first, by
+repository id at its commit, then the head and its support files; `--with
+mmproj` adds the projector. Each file lands under its own repository's
+directory, and a backbone or projector whose pulled digest is not the
+catalogue's fails the pull (`CatalogMismatch`). `nuclis decide` finds the
+backbone and, when it is pulled, the projector from the entry.

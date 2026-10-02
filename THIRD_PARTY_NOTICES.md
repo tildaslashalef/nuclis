@@ -49,6 +49,21 @@ size limits, ownership, UTF-8 checks, narrower typed inputs, `<bos>`
 rendered as text; tools, multimodal rendering, and assistant prefill are
 not implemented.
 
+#### clef-flash — Apache License 2.0
+
+`inference/src/profiles/clef.zig` reimplements, in Zig, the record
+encoding of Cloudflare's `joint_schema_model.py` (`encode_record`,
+`question_options`, `render`) and carries its fixed text: the system
+instruction (`SYSTEM_PROMPT`), the frame around the state, and the schema's
+field labels (`SCHEMA FIELDS:`, `FIELD`, `ID:`, `TYPE:`, `INSTRUCTION:`,
+`ALLOWED OPTIONS:`, `OPTION`, `END FIELD`, `JOINT SCHEMA DECISIONS:`);
+`inference/src/models/clef.zig` implements `JointSchemaHead.forward` from
+the same file. Source: <https://huggingface.co/Cloudflare/clef-flash/tree/17f0b0ad64efb65d273590632833508766b2aae6>,
+license <https://huggingface.co/Cloudflare/clef-flash/blob/17f0b0ad64efb65d273590632833508766b2aae6/LICENSE>.
+Modifications: explicit size limits, ownership, typed validation
+failures, the head in F32 rather than the release's BF16, images at most
+1,024 tokens; videos are not implemented.
+
 ### Format-defining data
 
 #### GGML storage-format constants — MIT (ggml authors)
@@ -157,8 +172,15 @@ code from them is present in nuclis.
   the fixtures under `inference/src/models/fixtures/laya/` and
   `laya-multilingual/` are outputs of running it on the pulled
   checkpoints, not copies of them.
+- **clef-flash**'s `joint_schema_model.py` by Cloudflare (Apache-2.0, at
+  commit `17f0b0ad`) with PyTorch 2.11.0 and Transformers 5.10.2 — the
+  oracle for the sequence and the head. `scripts/clef-reference.py` runs
+  it in a venv under `.reference/`; the fixtures under
+  `inference/src/models/fixtures/clef/` are outputs of running it, not
+  copies of it.
 - Model documentation: the Qwen3.8 and Gemma 4 model cards and configuration
-  on Hugging Face, and the `convaiinnovations/laya` model card.
+  on Hugging Face, the `convaiinnovations/laya` model card, and the
+  `Cloudflare/clef-flash` model card.
 
 ## The project's own licence
 

@@ -46,11 +46,22 @@ for a run.
 
 A model is named as `nuclis decide --model` names it: a registry entry of
 kind `decision` in `~/.nuclis/nuclis.json`, a decision catalogue name
-(`laya`, `laya-multilingual`), or a checkpoint directory. A request that
-names none gets the configuration's `decide.model` (default `laya`).
-The server keeps 2 models open and closes the least recently used when a
-third is asked for; opening takes 0.07 s (`laya`) to 0.15 s
-(`laya-multilingual`) on Metal, paid by the request that asks.
+(`laya`, `laya-multilingual`, `clef-flash`), or a checkpoint directory. A
+request that names none gets the configuration's `decide.model` (default
+`laya`). The server keeps 2 models open and closes the least recently used
+when a third is asked for; opening takes 0.07 s (`laya`) to 0.15 s
+(`laya-multilingual`) on Metal, and 0.5 s for `clef-flash`, paid by the
+request that asks. Each model validates questions by its own rules:
+`clef-flash` takes questions without `instructions`, Laya does not.
+
+`clef-flash` also reads images: a request's `"images"` is a list of data
+URLs (`data:image/png;base64,…`) or bare base64, at most 8, each read
+before every state (`422 images_unsupported` from Laya, or from
+`clef-flash` without its projector pulled; `422 invalid_image` for bytes
+that are not an image). The body limit (4 MiB) bounds them. Its answers
+are `systemone`'s own: uncalibrated, `confidence` the top probability. A
+clef decision is a 9B prefill, 2.3 s for a 637-token state
+([clef.md § Time per decision](clef.md#time-per-decision)).
 
 Ctrl-C stops the server. It reads no files on a client's behalf and
 writes nothing but its log: one line per response on stdout, coloured on
@@ -89,7 +100,8 @@ or the error):
 The option limit is the protocol's. A model may hold fewer: Laya fits a
 question's options into its head budget (192 tokens for `laya`, 256 for
 `laya-multilingual`) and refuses a question whose options do not fit with
-`422 options_exceed_budget`.
+`422 options_exceed_budget`; `clef-flash` refuses a request whose
+questions alone overflow its 16,384 tokens the same way.
 
 ## Errors
 

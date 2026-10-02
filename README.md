@@ -134,6 +134,13 @@ scored at 0.48. `laya-multilingual` reads other languages and 1,024 tokens
 but is worse on English, so `laya` is the default. Details, measurements,
 and limits: [docs/reference/laya.md](docs/reference/laya.md).
 
+`clef-flash`, Cloudflare's 9B decision model (a Qwen3.5 backbone with a
+joint schema head), answers every question about a state in one pass, reads
+images, and holds states up to 16,384 tokens, at about 2.3 s for a
+637-token state on Metal; its sequence and head match Cloudflare's own
+code, and every sanity answer is the obvious one. Details:
+[docs/reference/clef.md](docs/reference/clef.md).
+
 `nuclis serve` keeps the models open behind a local HTTP API that speaks
 TypeSafe's Jev protocol, so a Jev client only changes its base URL; a warm
 decision takes 14 ms (`laya-multilingual`) to 34 ms (`laya`), and requests

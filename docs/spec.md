@@ -37,7 +37,7 @@ repository:
   sampling, and speculative decoding;
 - **an evaluation CLI** (`src/`): `generate`, `bench`, `tokenize`, `eval`,
   `inspect`, `validate`, `config`, `model`, and `decide`, which answers
-  typed questions with a decision model (Laya) rather than a language
+  typed questions with a decision model (Laya, clef-flash) rather than a language
   model (§5.9), and `serve`, which keeps decision models open behind an
   HTTP API;
 - **an interactive agent** (`nuclis agent`): a terminal surface over the
@@ -65,7 +65,7 @@ deferred (§10).
 | turn | in the agent: one user message and everything the model does until it answers |
 | step | in the agent: one completion request plus the execution of the tool calls it contains |
 | gate | a model-specific check in `gates.json`; workload: a benchmark in `workloads.json` |
-| decision model | an encoder with a typed-decision head (Laya) that scores a question's options about a state in one forward, with no decoding |
+| decision model | a model with a typed-decision head that scores a question's options about a state in one forward, with no decoding: Laya (an encoder, one pass per question) or clef-flash (a Qwen backbone, every question in one pass) |
 | state, question | what a decision model reads (text, or JSON rendered as text) and what it answers: `choice` (one of named options), `score` (a level of an ordered scale), or `noul` (the probability a statement holds) |
 
 ## 3. Decisions
@@ -117,6 +117,7 @@ repository, revision, the weights' SHA-256, and the support files by name.
 | --- | --- | --- | --- |
 | `laya` | ModernBERT-large encoder, typed-decision head | `convaiinnovations/laya` `model.safetensors` (F16) and its support files | English; 512 tokens per sequence; the default `decide.model` |
 | `laya-multilingual` | mmBERT-base encoder, the same head | the same repository's `multilingual/model.safetensors` (F16) and its support files | multilingual; 1,024 tokens per sequence; chosen by the caller, never by language detection |
+| `clef-flash` | Qwen3.5-9B backbone (qwen35), joint schema head, Qwen3-VL projector | `Cloudflare/clef-flash` `joint_head.safetensors` (BF16) and its support files; the backbone `bartowski/Cloudflare_clef-flash-GGUF` `Cloudflare_clef-flash-Q6_K.gguf`; the projector `mmproj-Cloudflare_clef-flash-bf16.gguf` (`--with mmproj`) | every question of a state in one sequence of up to 16,384 tokens; images; a decision entry may name a backbone and a projector in another repository, each pinned and digest-checked |
 
 A file outside the catalogue whose architecture has an adapter is
 *runnable*: `config init --discover` registers it (the profile by template
@@ -287,9 +288,13 @@ Read: [development.md § Configuration file](development.md#configuration-file).
 
 ### 5.9 The decision path
 
-`inference.decide.Decider` opens a Laya checkpoint directory and answers
-questions about states, beside `Engine` and sharing nothing with it but
-the tokenizer's BPE and the safetensors loader.
+`inference.decide.Decider` opens a decision checkpoint and answers
+questions about states, beside `Engine`. Two families sit behind it,
+picked by the directory's files (clef's `joint_head.safetensors`, else
+Laya); each validates questions by its own rules, so a request is parsed
+for the model it names. Laya shares nothing with `Engine` but the
+tokenizer's BPE and the safetensors loader; clef-flash runs the qwen35
+backbone and the Qwen3-VL projector the text path uses. The Laya rules:
 
 - The input contract, calibration, and answer fields **must** be the
   reference package's (`laya` 0.3.20): question validation, option
@@ -323,7 +328,26 @@ the tokenizer's BPE and the safetensors loader.
   --backend cpu|metal` chooses, metal
   by default in a Metal build.
 
-Read: [reference/laya.md](reference/laya.md).
+clef-flash:
+
+- The input contract and answer fields **must** be Cloudflare's
+  `joint_schema_model.py` at the pinned revision: question validation,
+  options rendered as sorted compact JSON in the model's order (`choice`
+  keys sorted, `noul` `true` first) and answered in the request's, the
+  one sequence per state with every question and its spans, the state cut
+  at its end to the 16,384-token budget, a softmax per question with no
+  calibration, `confidence` the top probability. The sequence **must**
+  equal the reference's ids and spans (gate `clef-sequences`).
+- The head **must** match the reference's F32 head on the same inputs
+  within 1e-4 of max(1, |logit|); the whole model on Metal **must** stay
+  within 1e-3 of the fixture the reference head made from the Metal
+  backbone's rows and pick every sanity answer (`clef-metal`); the CPU
+  reference within 2e-3 (`clef-cpu`).
+- Images (at most 8 per call, 16 MiB each) precede every state, stretched
+  to the processor's grid (at least 65,536 pixels, at most the projector
+  plan's 1,024 tokens); Laya, or clef without its projector, refuses them.
+
+Read: [reference/laya.md](reference/laya.md), [reference/clef.md](reference/clef.md).
 
 ## 6. Command-line interface
 
@@ -356,7 +380,7 @@ nuclis --help | <command> --help | --version
 | `inspect` | identity, architecture, dimensions, the encoding histogram, validated ranges |
 | `validate` | whether the file binds to its family's adapter, with the layer composition |
 | `model` | pull with digest verification and sidecars, list the artifacts under the root, judge a file at the four levels of §4 |
-| `decide` | typed questions about states through a decision checkpoint (`decide.model`, default `laya`): a Jev-shaped request (`questions`, `state` or `states`), a questions file with states from flags, or questions inline; one state renders each answer with its distribution, several render ranked by the first question; `--json` is one Jev response per state (answers with exactly Jev's fields, extras under `nuclis`), with load, tokenize, and encode timings |
+| `decide` | typed questions about states through a decision checkpoint (`decide.model`, default `laya`): a Jev-shaped request (`questions`, `state` or `states`), a questions file with states from flags, or questions inline, and images (`--image`, a request's `images`) for clef-flash; one state renders each answer with its distribution, several render ranked by the first question; `--json` is one Jev response per state (answers with exactly Jev's fields, extras under `nuclis`), with load, tokenize, and encode timings |
 | `serve` | the nuclis API over HTTP/1.1 ([reference/api.md](reference/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `GET /v1/models` lists the decision models in OpenAI's shape, `GET /v1/health` the queue; `serve.host`, `serve.port` (default 8000), and `serve.log` in the file, the flags over them; `decide.model` opened at start unless `--model` names others; a coloured line per response on stdout; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
 | `config` | write the file with every catalogue model registered (`--discover` adds runnable files the catalogue does not name), show effective values with their source layer, set one key |
 | `agent` | §7 |

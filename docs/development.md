@@ -72,6 +72,12 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   multilingual set), run on the CPU in F32 against the pulled checkpoint
   from a staged copy, because the package may rewrite
   `tokenizer_config.json` in place.
+  clef-flash's oracle is Cloudflare's `joint_schema_model.py` at the
+  pinned commit in a venv at `.reference/clef-venv` (torch 2.11.0,
+  transformers 5.10.2; the recipe heads `scripts/clef-reference.py`),
+  which never loads the backbone: `sequence` mode writes the reference's
+  ids and spans, `head` mode runs the head on the rows `clef-check run
+  --dump` writes from nuclis's backbone.
   The reference oracle itself is committed under `tests/fixtures/`
   ([provenance](../tests/fixtures/provenance.md)); `make gate NAME='qwen38-trace-*'` reads
   `tests/fixtures/reference-hello-comma`. Accepted reference warm rates
@@ -117,7 +123,7 @@ make the registry cheaper than the recipes it replaced:
 | --- | --- | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the Metal plan, and the 12B QAT file's CPU gates | the Metal plan | the CPU reference |
 | covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities (`*-perplexity-full`), the Gemma 12B QAT file, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
-| cost | minutes (38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; engineering log, REPO-20, MODL-31, MODL-33; then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 22 min (14 gates, 1,327 s measured 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, KERN-19) |
+| cost | minutes (40 gates in 311 s measured 2026-10-02 with `clef-sequences` and `clef-metal`, MODL-34; 38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; engineering log, REPO-20, MODL-31, MODL-33; then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 25 min (15 gates, 1,523 s measured 2026-10-02 with `clef-cpu`, 368 s; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, KERN-19, MODL-34) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same (CPU gates as `verify-cpu`) | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | every unit that touched the inference stack | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
