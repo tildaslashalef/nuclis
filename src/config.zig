@@ -172,6 +172,9 @@ pub const Config = struct {
         port: u16 = 8000,
         /// A line per request on stdout; `--quiet` turns it off for a run.
         log: bool = true,
+        /// Seconds a decision request may wait for the GPU before `529
+        /// timeout`; a clef-flash request alone can hold it for minutes.
+        timeout: u32 = 300,
     };
 };
 

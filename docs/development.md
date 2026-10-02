@@ -672,6 +672,10 @@ applies to models with no entry, and `--speculative` overrides either.
   `serve.port` (default 8000) are where `nuclis serve` listens; `--host`
   and `--port` override them for a run. `serve.log` (default `true`)
   writes a line per request to stdout; `--quiet` turns it off for a run.
+  `serve.timeout` (default 300 seconds, `--timeout` for a run) is how
+  long a decision request may wait for the GPU before `529 timeout`: a
+  Laya request takes milliseconds, a clef-flash one seconds to minutes,
+  and a request waits for every pass ahead of it.
 - Sampling entries are overrides: `null` means the official profile of the
   reasoning mode ([generation.md](reference/generation.md#sampling-profiles-and-the-selection-chain-modl-01)),
   so the file never freezes a model's recommended settings. The profile is

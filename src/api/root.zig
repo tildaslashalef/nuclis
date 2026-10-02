@@ -32,6 +32,8 @@ pub const Options = struct {
     port: u16,
     /// A line per request on stdout.
     log: bool,
+    /// Seconds a decision request may wait for the GPU, at least 1.
+    timeout: u32,
     /// Opened at start, in order (the default model when none is named);
     /// others open on first use.
     models: std.ArrayList([]const u8) = .empty,
@@ -41,8 +43,8 @@ pub const Options = struct {
 /// Parses the words after `serve` over `serve`'s configured `host` and
 /// `port`; `arena` owns the list.
 pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured: config.Config.Serve, diag: *config.Diagnostic) !Options {
-    var o: Options = .{ .host = configured.host, .port = configured.port, .log = configured.log };
-    var seen: struct { host: bool = false, port: bool = false } = .{};
+    var o: Options = .{ .host = configured.host, .port = configured.port, .log = configured.log, .timeout = configured.timeout };
+    var seen: struct { host: bool = false, port: bool = false, timeout: bool = false } = .{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const flag = args[i];
@@ -50,7 +52,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
             o.log = false;
             continue;
         }
-        const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend" }) |k| {
+        const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend", "--timeout" }) |k| {
             if (std.mem.eql(u8, flag, k)) break true;
         } else false;
         if (!known) {
@@ -74,6 +76,13 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
                 diag.set("--port takes a number from 0 to 65535, not {s}", .{value});
                 return error.InvalidOptionValue;
             };
+        } else if (std.mem.eql(u8, flag, "--timeout")) {
+            if (seen.timeout) return error.DuplicateOption;
+            seen.timeout = true;
+            o.timeout = std.fmt.parseInt(u32, value, 10) catch {
+                diag.set("--timeout takes seconds, a whole number, not {s}", .{value});
+                return error.InvalidOptionValue;
+            };
         } else if (std.mem.eql(u8, flag, "--model")) {
             try o.models.append(arena, value);
         } else {
@@ -83,6 +92,10 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
                 return error.InvalidOptionValue;
             };
         }
+    }
+    if (o.timeout == 0) {
+        diag.set("the wait limit (--timeout or serve.timeout) is at least 1 s", .{});
+        return error.InvalidOptionValue;
     }
     if (o.models.items.len > @import("decisions/pool.zig").capacity) {
         diag.set("at most {d} --model (the server keeps {d} decision models open)", .{ @import("decisions/pool.zig").capacity, @import("decisions/pool.zig").capacity });
@@ -217,6 +230,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         .version = context.version,
     };
     server.decisions.executor = &server.executor;
+    server.decisions.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     server.decisions.bind();
     defer server.deinit();
     try server.register();
@@ -313,6 +327,8 @@ test "serve arguments" {
     try std.testing.expectEqual(@as(u16, 8000), defaults.port);
     try std.testing.expectEqualStrings("127.0.0.1", defaults.host);
     try std.testing.expect(defaults.log);
+    try std.testing.expectEqual(@as(u32, 300), defaults.timeout);
+    try std.testing.expectEqual(@as(u32, 600), (try parseArgs(arena, &.{ "--timeout", "600" }, configured, &diag)).timeout);
     try std.testing.expectEqual(@as(u16, 9001), (try parseArgs(arena, &.{}, .{ .host = "::1", .port = 9001 }, &diag)).port);
     const cases = .{
         .{ &[_][]const u8{ "--port", "70000" }, error.InvalidOptionValue },
@@ -321,6 +337,9 @@ test "serve arguments" {
         .{ &[_][]const u8{ "--port", "1", "--port", "2" }, error.DuplicateOption },
         .{ &[_][]const u8{"--json"}, error.UnknownOption },
         .{ &[_][]const u8{"--host"}, error.MissingOptionValue },
+        .{ &[_][]const u8{ "--timeout", "0" }, error.InvalidOptionValue },
+        .{ &[_][]const u8{ "--timeout", "1.5" }, error.InvalidOptionValue },
+        .{ &[_][]const u8{ "--timeout", "5", "--timeout", "6" }, error.DuplicateOption },
     };
     inline for (cases) |case| try std.testing.expectError(case[1], parseArgs(arena, case[0], configured, &diag));
     try std.testing.expect(isLoopback(try address("localhost", 1, &diag)));

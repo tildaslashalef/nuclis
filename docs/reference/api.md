@@ -33,12 +33,13 @@ nuclis serve                           # http://127.0.0.1:8000/v1, decide.model 
 | `--model <name>` | a decision model opened before the server listens (at most 2); without one, `decide.model` opens; others open on their first request |
 | `--backend cpu\|metal` | where the models run; default `metal` in a Metal build |
 | `--quiet` | no request log (`serve.log: false` does the same) |
+| `--timeout <s>` | how long a request may wait for the GPU before `529 timeout`; default `serve.timeout`, `300` |
 
 The configuration file (`~/.nuclis/nuclis.json`) holds the defaults:
 
 ```json
 "decide": { "model": "laya" },
-"serve":  { "host": "127.0.0.1", "port": 8000, "log": true }
+"serve":  { "host": "127.0.0.1", "port": 8000, "log": true, "timeout": 300 }
 ```
 
 `nuclis config set serve.port 9000` changes one; the flags override them
@@ -91,7 +92,7 @@ or the error):
 | request body | 4 MiB | `413 payload_too_large`, connection closed |
 | open connections | 64 | `529 busy`, connection closed |
 | decision requests waiting for the GPU | 64 | `529 busy` |
-| wait before a request starts on the GPU | 30 s | `529 timeout` (a started pass always finishes) |
+| wait before a request starts on the GPU | 300 s (`serve.timeout`) | `529 timeout` (a started pass always finishes) |
 | states per request | 64 | `422 request_too_large` |
 | questions per request | 32 | `422 request_too_large` |
 | options per question | 255 | `422 request_too_large` |
@@ -136,7 +137,7 @@ by default).
 | 500 | `internal`, `invalid_registry_entry` | a fault on the server's side |
 | 503 | `shutting_down` | the server is stopping |
 | 529 | `busy` | 64 decision requests wait already, or 64 connections are open |
-| 529 | `timeout` | the request waited 30 s without reaching the GPU |
+| 529 | `timeout` | the request waited `serve.timeout` (300 s) without reaching the GPU |
 
 ## Decisions
 

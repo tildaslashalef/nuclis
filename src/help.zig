@@ -423,7 +423,7 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis serve", "the nuclis API: decision models kept open, over HTTP");
     try heading(out, sty, "Usage:");
     try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]…");
-    try code(out, sty, "             [--backend cpu|metal]");
+    try code(out, sty, "             [--backend cpu|metal] [--timeout <s>]");
 
     try heading(out, sty, "Options:");
     try row(out, sty, "--host <ip>", "the address to listen on; default serve.host,");
@@ -435,6 +435,8 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "(2 stay open)");
     try row(out, sty, "--backend cpu|metal", "default metal");
     try row(out, sty, "--quiet", "no line per request (serve.log false does the same)");
+    try row(out, sty, "--timeout <s>", "how long a request may wait for the GPU before");
+    try more(out, "529 timeout; default serve.timeout, 300");
 
     try heading(out, sty, "Routes:");
     try row(out, sty, "POST /v1/decisions", "a `decide --request` body (\"model\" picks the");
@@ -450,7 +452,7 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
 
     try heading(out, sty, "Notes:");
     try plain(out, "Requests run on the GPU one at a time in arrival order; a request waits at");
-    try plain(out, "most 30 s to start (then 529 timeout), at most 64 wait (then 529 busy).");
+    try plain(out, "most 300 s to start (then 529 timeout), at most 64 wait (then 529 busy).");
     try plain(out, "Bodies up to 4 MiB; states are text or JSON, never {\"file\": path}.");
     try plain(out, "Errors are {\"error\": {\"code\", \"message\"}} with a fitting HTTP status.");
 }

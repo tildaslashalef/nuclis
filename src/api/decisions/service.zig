@@ -23,8 +23,8 @@ const batcher_mod = @import("batcher.zig");
 const ApiError = errors.ApiError;
 
 /// A request waits at most this long for the GPU (queue and run together
-/// before it starts; a started pass is never cut).
-pub const default_timeout_ns: u64 = 30 * std.time.ns_per_s;
+/// before it starts; a started pass is never cut). `serve.timeout` sets it.
+pub const default_timeout_ns: u64 = 300 * std.time.ns_per_s;
 
 /// Decision requests waiting for the GPU at once; one more is `busy`.
 pub const max_waiting = 64;
