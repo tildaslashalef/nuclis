@@ -162,6 +162,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-27 | External review fixes: a failed recording is discarded (the destroy-while-recording hang gone), the kernel table derived, `--file` names a support file's weights, other formats' folders skipped, parser property tests | 2026-10-02 |
 | AGNT-18 | The agent's `decide` tool: dropped before it started; decision models are served by `nuclis serve` | 2026-10-02 |
 | KERN-22 | Long-context decode attention: dropped before it started, a small win at 32K only | 2026-10-02 |
+| APPS-19 | `nuclis serve`, the nuclis API: decisions over HTTP, TypeSafe's Jev call, batched across requests (1.24–1.30×, the model's packing ceiling); closed below its throughput target | 2026-10-02 |
 
 ## Context
 
@@ -7013,3 +7014,108 @@ the history of `TODO.md` before this entry's commit.
 **Remaining.** Decode attention at depth stays as measured in
 [bench.md](reference/bench.md) (flash decoding); a later unit can take
 the design from the plan's history if long contexts become the main use.
+
+## APPS-19 — `nuclis serve`, the nuclis API: decisions first, batched across requests (2026-10-02, two sessions in one)
+
+**Outcome.** `nuclis serve` keeps decision models open behind an HTTP/1.1
+server on loopback (port 8735), the nuclis API with decisions as its
+first service. Closed below its batching target: throughput at
+concurrency 16 rose 1.24× (laya) and 1.30× (laya-multilingual) against
+the planned 2×, the ceiling Laya's Metal encode allows (below).
+
+- **The wire format moved** out of `src/decide.zig` into `src/decision/`
+  (`request.zig`, `response.zig`, `catalog.zig`), shared by the CLI and
+  the API, with no behaviour change: `nuclis decide` wrote the same bytes,
+  timings aside, for the 8 root fixture requests (`--json --explain`), a
+  four-state request with a file state, and two text renderings, before
+  and after (11 of 11), and again after the batching refactor.
+- **The layers** (`src/api/`): `http.zig` (one connection over any
+  reader and writer, keep-alive, the request read whole into an arena
+  reset after each response, the reply in one flush, answered in the
+  request's HTTP version), `router.zig`, `errors.zig` (one error body),
+  `models.zig` (OpenAI's list shape with a `nuclis` object), `gpu.zig`
+  (the one executor that owns the GPU: a worker runs items one at a time
+  in arrival order; a waiter that times out unlinks an item that never
+  started), `decisions/pool.zig` (two deciders open, LRU, opened and
+  closed only on the worker), `decisions/batcher.zig`, and
+  `decisions/service.zig`; `root.zig` composes them, caps connections at
+  64, and serves `GET /v1/health`.
+- **Routes.** `POST /v1/decisions` takes the `decide --request` body (file
+  states refused) and returns the `decide --json` bytes; `POST
+  /v1/systemone` is TypeSafe's Jev call; `GET /v1/models`; `GET
+  /v1/health`.
+- **Jev compatibility**, checked against TypeSafe's API reference
+  (`docs.typesafe.ai/api.md`, read 2026-10-02) at the user's request:
+  `422` for a body that fails validation and `529` (Overloaded, which
+  Jev's SDKs retry) for `busy` and `timeout`; a `jev-…` model id is the
+  default decision model unless the registry names one so; `systemone`
+  answers carry exactly Jev's fields; the `authorization` header is
+  accepted and ignored; the choice limit is the protocol's 255 options
+  (`inference.decide.max_options`, 64 before), the model's budget refusing
+  a question whose options do not fit (`options_exceed_budget`), as the
+  user asked: the limit is the API's, not today's model's.
+- **Batching.** `inference.decide` gains `prepare` (one call's sequences
+  in its own arena; a call that cannot be built fails alone) and
+  `decideJobs` (every prepared call in one `logitsBatch`, each calibrated
+  in its own arena); `decide` is the one-call case. The batcher's one
+  executor item takes the oldest waiting request's model and every
+  request waiting for it, in order, while they fit one 2,048-row pass,
+  and requeues itself while requests wait (the executor runs an item
+  again when it asks, or when it is submitted while running).
+
+**Evidence.** Apple M4 Pro, ReleaseFast, Metal, `ab -k` on loopback, the
+full tables in [api.md § Measured rates](reference/api.md#measured-rates):
+
+| Measure | Target | Measured |
+| --- | --- | --- |
+| `GET /v1/health`, concurrency 1 | p50 ≤ 0.2 ms, p99 ≤ 1 ms | p50 0.019 ms, p99 0.082 ms |
+| `GET /v1/health`, concurrency 16 | ≥ 20,000 requests/s | 146,801–166,589 |
+| warm laya-multilingual decision, one state, two questions | within 2 ms of the encode | HTTP p50 13.97 ms, encode median 14.3 ms (laya: 34.05 against 34.5) |
+| the same through the subprocess | (0.75 s in the plan) | 0.20 s (laya 0.09 s) |
+| batching, concurrency 16, 512 requests | ≥ 2× session 1 | 1.24× laya (29.4 → 36.4 req/s), 1.30× laya-multilingual (72.0 → 93.4) |
+| p99 at concurrency 16 | ≤ 2 batches | about 2.05: 444 ms against 2 × 217 (laya), 172 against 2 × 85 |
+| concurrency 1 | within 2 % | +1.4 % laya, +2.9 % laya-multilingual (faster) |
+
+Why the batching target was missed: at concurrency 16 a pass held 7.9
+requests (about 820 rows), but one request already encodes at 3,020
+rows/s (laya) and 7,160 (laya-multilingual), against packed rates near
+3,700 and 8,660 ([laya.md § Time per call](reference/laya.md#time-per-call));
+the plan's own figures (2,440 → 3,500 tokens/s from 1 to 50 states)
+implied the ceiling. More would need a faster Laya encode (its attention
+and F32 matmul tile, laya.md § Limits), not a different server.
+
+Correctness: the 8 root fixture requests and a three-state request
+served over HTTP equal `nuclis decide --json` byte for byte, timings
+aside; 16 concurrent requests with different questions (two states each;
+choice, noul, score) returned the same bytes as each alone on both
+checkpoints on Metal (16 in 3 and in 4 passes); TypeSafe's example request
+sent as a Jev client sends it returns Jev's shape (`frustration` 1.09
+against TypeSafe's published 1.05); a 100-option choice answers, 256 is
+`422`. Unit tests (636, `std.testing.allocator`, no leaks): the transport
+over a socket-like reader (keep-alive, lengths and chunks, HTTP/1.0,
+oversized heads and bodies, malformed requests, `expect`, compression,
+closes mid-head), the router (404, 405, HEAD), the executor (order, busy,
+timeout unlinking, requeue), the pool's eviction, the service on a tiny
+whole checkpoint on the CPU (`src/decision/tiny.zig`: every refusal's
+code and status, busy, timeout, the response equal to `nuclis decide
+--json`, the Jev example, the listing), and 16 concurrent requests held
+behind a gated GPU answered in few passes with each one's bytes alone.
+`make check` and `make verify-auto` (`fmt`, `unit`) passed; no model gate
+covers these paths and no numerical behaviour changed, so no Metal or CPU
+tier.
+
+**Files.** `src/api/{root,http,router,errors,models,gpu}.zig`,
+`src/api/decisions/{service,pool,batcher}.zig`,
+`src/decision/{request,response,catalog,tiny}.zig`, `src/decide.zig`,
+`src/cli.zig`, `src/help.zig`, `src/completion.zig`,
+`inference/src/decide.zig`; `docs/reference/api.md` (new),
+`docs/{architecture,spec,development}.md`, `docs/reference/laya.md`,
+`TODO.md`, and this log.
+
+**Remaining.** The OpenAI-compatible service for the language models
+(`/v1/chat/completions`, streamed: a `http.zig` addition for server-sent
+events, a `src/api/chat/` service on the same executor). A faster Laya
+encode, which is what batching now waits on. Idle keep-alive connections
+hold one of the 64 slots until the client closes (the standard library's
+socket reads have no timeout); a slow client can do the same. No
+authentication: loopback by default, a warning otherwise.

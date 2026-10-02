@@ -16,11 +16,16 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: APPS-19 session 1** (its section follows this one): `nuclis
-serve`, the nuclis API layer in `src/api/`, decisions first. Record its
-`Base:` at the first change. The order of the units that follow is the
-table at the end of this section; the history of the speed theme comes
-first.
+**Next: MODL-34 session 1** (its section follows this one): clef-flash,
+first pulling its files with `nuclis model pull`. Record its `Base:` at
+the first change. APPS-19 closed 2026-10-02: `nuclis serve` keeps
+decision models open behind the nuclis API on 127.0.0.1:8735
+([api.md](docs/reference/api.md)), TypeSafe's Jev call included, and
+batches requests that wait together (1.24–1.30× at concurrency 16, the
+Laya encode's packing ceiling, below the planned 2×); MODL-34's catalogue
+entry is served by it once it lands. The order of the units that follow
+is the table at the end of this section; the history of the speed theme
+comes first.
 
 Theme agreed 2026-09-30: **decode speed on Metal**, Qwen3.8-27B first,
 toward the 20 tokens/s of [ADR 0001](docs/adr/0001-qwen-decode-verifier.md)
@@ -57,9 +62,9 @@ and the GGUF type-id enum. No engine arithmetic changed, so the `make
 speed` base binary stands.
 
 **Re-ordered 2026-10-02 (user).** Decision models move ahead of the last
-speed unit: first APPS-19, `nuclis serve`, the nuclis API (`src/api/`)
-with decisions as its first service, models kept loaded and concurrent
-requests batched, an OpenAI-compatible service expected later; then MODL-34,
+speed unit: first APPS-19 (closed), `nuclis serve`, the nuclis API
+(`src/api/`) with decisions as its first service, an OpenAI-compatible
+service expected later; then MODL-34,
 Cloudflare's clef-flash decision model; then KERN-23, which closes the
 decode-speed theme. Dropped (engineering log): KERN-22, long-context
 decode attention, a small win at 32K only; AGNT-18, the agent's `decide`
@@ -68,192 +73,11 @@ stays a tool for language models.
 
 | # | Unit | Sessions |
 | --- | --- | ---: |
-| 1 | APPS-19 — `nuclis serve`: the nuclis API, decisions first, batched across requests | 2 |
-| 2 | MODL-34 — clef-flash: Cloudflare's 9B decision model, text then vision | 4 |
-| 3 | KERN-23 — Weight streaming for one row and a few (closes the decode-speed theme) | 2 |
+| 1 | MODL-34 — clef-flash: Cloudflare's 9B decision model, text then vision | 4 |
+| 2 | KERN-23 — Weight streaming for one row and a few (closes the decode-speed theme) | 2 |
 | — | AGNT-19 — Saved prefixes for the agent across processes | queued after KERN-23 |
 
-## APPS-19 — `nuclis serve`: the nuclis API, decisions first, batched across requests (2 sessions) — next
-
-Base: `83f8238`
-
-Every `nuclis decide` call starts a process and opens its checkpoint:
-about 75 ms for `laya` and 0.4 s for `laya-multilingual` (parsing its
-34 MB `tokenizer.json`) before a 230–300 ms Metal encode, so a client
-deciding every second spends half its time loading. A long-running
-process that keeps decision models open removes that; batching requests
-that arrive together into one Metal pass raises throughput the way a
-multi-state call already does (one state 2,440 tokens/s, 50 states 3,500,
-[laya.md § Time per call](docs/reference/laya.md#time-per-call)); an
-endpoint listing the models lets clients follow the catalogue.
-
-Where the time goes decides the design: the encode is hundreds of
-milliseconds and HTTP on loopback is tens of microseconds, so the server
-must add nothing measurable around the encode, never leave the GPU idle
-while a request waits, and pack whatever is waiting into the next pass.
-
-### Structure: an API layer, decisions its first service
-
-`nuclis serve` is the nuclis API, not a decision server: decisions are its
-first service, and an OpenAI-compatible service for the language models
-(`/v1/chat/completions`, streamed) is expected later. This unit builds only
-decisions, but the layers below keep that addition to a new service
-directory and one registration line.
-
-```
-src/api/
-  root.zig        serve(gpa, io, options): listener, router, services; the
-                  `nuclis serve` command's entry, called from cli.zig
-  http.zig        transport only: accept loop, connections, keep-alive,
-                  per-connection arena, limits, Request/Response; knows no
-                  route and no model
-  router.zig      method + path → handler; the /v1 prefix; JSON error
-                  bodies; each service registers its routes
-  errors.zig      ApiError (code, HTTP status, message) and its JSON writer,
-                  shared by every service
-  models.zig      GET /v1/models, aggregated from every service's listing,
-                  OpenAI's list shape with a `nuclis` object per entry
-  gpu.zig         the one executor that owns the GPU: services submit work,
-                  it runs one item at a time (two models never run at once,
-                  laya.md § Limits), FIFO across services
-  decisions/
-    service.zig   registers the decision routes; the handlers
-    pool.zig      open Deciders keyed by resolved directory, LRU, at most 2
-    batcher.zig   session 2: merges waiting jobs into one GPU item
-src/decision/     the decision wire format, shared by the CLI and the API
-  request.zig     the Jev-shaped request JSON → Request (from today's
-                  parseJson, stateFromJson, questionsFromJson, buildRequest);
-                  `{"file": path}` states only when the caller allows files
-                  (the CLI does, the API does not)
-  response.zig    Answer/Result → the --json body (from writeAnswer and
-                  run's JSON writer), so CLI and API write the same bytes
-  catalog.zig     resolve and list decision entries with their budgets
-                  (rl_agent_config.json max_len, head_max_len)
-src/decide.zig    the `nuclis decide` command only: flags, terminal view
-```
-
-Rules that keep it decoupled: `http.zig` and `router.zig` import nothing
-from `inference`; a service never touches sockets; `src/decision/` knows
-no HTTP; the GPU is reached only through `gpu.zig`. A later chat service
-adds `src/api/chat/`, registers its routes, contributes generation entries
-to `/v1/models`, and submits its steps to the same executor; streaming
-responses (server-sent events) are a `http.zig` addition then, not now.
-
-### Surface
-
-- **Command.** `nuclis serve` (APPS surface): `--host` (default
-  `127.0.0.1`), `--port` (default 8735), `--model <name|path>`
-  (repeatable, opened at start; otherwise each opens on first use),
-  `--backend cpu|metal`. Binding anywhere but loopback prints a warning;
-  there is no authentication.
-- **Routes** (JSON in and out; errors `{"error": {"code", "message"}}`
-  with the HTTP status that fits):
-  - `POST /v1/decisions`: the body `nuclis decide --request` reads
-    (`questions`, `state` or `states`, an optional `model` naming a
-    decision model, default `decide.model`), `?explain=1` for the explain
-    fields. The response is byte-for-byte what `nuclis decide --json`
-    writes for the same request, timings aside. File states are refused.
-  - `POST /v1/systemone`: Jev's single-state call for clients written
-    against TypeSafe's API: one `state`, the response `{model, answers,
-    usage}`.
-  - `GET /v1/models`: OpenAI's shape, `{"object": "list", "data": [{"id",
-    "object": "model", "owned_by", "nuclis": {"kind": "decision",
-    "present", "loaded", "max_len", "head_max_len", "repo",
-    "revision"}}]}`, so OpenAI clients read the ids and nuclis clients
-    the rest. Decision entries only in this unit.
-  - `GET /v1/health`: version, backend, loaded models, queue depth.
-
-### Session 1: the layers, lean
-
-- **The move first.** `src/decision/` takes the wire format out of
-  `src/decide.zig` with no behaviour change: `nuclis decide --json` gives
-  the same bytes for the 8 root fixture requests before and after, checked
-  by hand and by the existing unit tests.
-- **I/O.** `std.Io` (Zig 0.16) net listener and `std.http.Server`: one
-  accept loop, each connection its own task (`io.async`), HTTP/1.1
-  keep-alive, no pipelining. Each connection owns a fixed read buffer
-  (16 KiB headers) and an arena reset after every response, so a warm
-  connection allocates nothing that outlives a request. Bodies are read
-  into the arena up to the limit, parsed once, rendered once; the
-  response goes out with `Content-Length` in one write.
-- **Pool and executor.** `decisions/pool.zig` opens each model once under
-  a lock however many first requests race; `gpu.zig` runs one job at a
-  time in this session.
-- **Limits.** Host constants: body 4 MiB, headers 16 KiB, 64
-  connections, 64 queued jobs (then 503 `busy`), 30 s per request
-  (`timeout`); `inference.decide`'s request limits (`max_states`,
-  `max_questions`, `max_options`, `max_state_bytes`) apply unchanged.
-- **Targets** (Apple M4 Pro, ReleaseFast, `ab -k`, 1,000 requests):
-  `GET /v1/health` p50 ≤ 0.2 ms and p99 ≤ 1 ms at concurrency 1, ≥
-  20,000 requests/s at concurrency 16; a warm `laya-multilingual`
-  `POST /v1/decisions` (one state, two questions) within 2 ms of the
-  encode `timings_ms` reports, against 0.75 s through the subprocess.
-- **Correctness.** Unit tests per layer: `http.zig` over in-memory
-  streams (keep-alive, oversized headers and bodies, malformed requests)
-  with no route; `router.zig` with stub handlers (404, 405, the error
-  body); the decision service on the tiny synthetic checkpoint on the CPU
-  (every error: malformed JSON, unknown model, a file state, busy,
-  timeout; the pool's eviction; responses equal to what `nuclis decide
-  --json` writes); all under `std.testing.allocator` with no leaks. Once,
-  at close, the fresh binary serves the 8 root Laya fixture requests and
-  the responses are compared with `nuclis decide --json` by hand; the log
-  records it. No gate is added.
-
-### Session 2: batching across requests
-
-- **A jobs call.** `Decider.decide` asks every question of every state, so
-  requests with different questions cannot share one call.
-  `inference/src/decide.zig` gains `decideJobs`: a list of jobs, each its
-  own states and questions, every sequence of every job built and sent to
-  the model in one `Laya.logitsBatch`, each job's results returned apart.
-  `decide` becomes the one-job case of it.
-- **Batcher.** While the executor runs, arriving decision jobs queue per
-  model in `decisions/batcher.zig`. When the GPU frees, the batcher takes
-  every queued job for the oldest job's model whose sequences fit the
-  Metal plan's 2,048 rows (in arrival order, a job never split) and
-  submits them as one executor item. No waiting window: an idle GPU starts
-  the first job at once, so a lone client pays nothing for batching. The
-  CPU backend batches the same way.
-- **Why it is safe.** A packed sequence's logits do not depend on what is
-  packed beside it (bit-identical,
-  [laya.md § On Metal](docs/reference/laya.md#on-metal)), so batching
-  changes timing, never answers. The test asserts it: 16 concurrent
-  requests with different questions return exactly the results each gets
-  alone.
-- **Fairness.** Jobs for another model wait at most one batch: the next
-  batch serves the oldest waiting job's model.
-- **Targets** (same machine, `ab -k -c 16`, a one-state two-question
-  `laya` request, 512 requests): throughput ≥ 2× session 1's at
-  concurrency 16, p99 latency ≤ 2 batches' time; concurrency 1 unchanged
-  within 2 %.
-- **Measured and recorded**: requests/s and p50/p99 at concurrency 1, 4,
-  16 for both checkpoints, before and after batching, in
-  `docs/reference/api.md`.
-
-Docs: **`docs/reference/api.md` (new), the nuclis API reference clients
-build against**: the server and its limits, then one section per service
-(decisions now, chat later): every route with its request and response
-JSON, field by field, the error codes with their HTTP statuses, the
-batching behaviour, an example per route with `curl`, and the measured
-rates. It is written for a client author who has not read the code, and it
-is the document handed to client projects when the unit closes. Also
-`docs/architecture.md` (the API layer and its rules, beside the decision
-path), `docs/spec.md` (the command table), `docs/reference/laya.md` (a
-link from its `nuclis decide` section), `docs/development.md` (the port,
-measuring with `ab`), `src/help.zig`.
-
-**Fast loop, no model gates.** `make verify-auto` selects only `fmt` and
-`unit` for this unit: no gate lists `src/api/**`, `src/decision/**`,
-`src/decide.zig`, `src/cli.zig`, `src/help.zig`, or
-`inference/src/decide.zig`. Keep it so: do not edit the root `build.zig`
-(it selects 51 gates; the new tests run in the existing `make test`), and
-add no gate. If batching must touch `inference/src/models/laya*.zig` or
-`profiles/laya.zig`, the six Laya gates (about 22 s together) run, as
-they should. No numerical behaviour changes, so no Metal or CPU tier.
-
-Gates: `make check`, `make verify-auto`.
-
-## MODL-34 — clef-flash: Cloudflare's 9B decision model, text then vision (4 sessions) — after APPS-19
+## MODL-34 — clef-flash: Cloudflare's 9B decision model, text then vision (4 sessions) — next
 
 Base: recorded when the unit starts.
 
@@ -389,7 +213,9 @@ functions, and numbers.
 A decision-family seam in `inference/src/decide.zig` (today it composes
 Laya only): a family's profile builds sequences and calibrates, its model
 returns per-option logits; Laya moves behind it unchanged (its gates
-pass). `profiles/clef.zig` (the sequence and budgets, equal to the
+pass). The seam keeps `prepare` and `decideJobs`, which `nuclis serve`
+batches through (`src/api/decisions/batcher.zig`; a family's pass limit
+replaces `decide.batch_rows`). `profiles/clef.zig` (the sequence and budgets, equal to the
 sequence fixtures), `models/clef.zig` (the head on
 `backends/cpu/dense.zig`), and the backbone's final hidden states from
 `qwen35_runtime.zig` without the output head. The CPU backbone dumps the

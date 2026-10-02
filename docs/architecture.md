@@ -78,7 +78,9 @@ flowchart TB
         engine[engine.zig re-exports + prompt sources]
         gen[generate.zig / bench.zig]
         model[model.zig pull / ls / inspect + catalog.zig]
-        decidecli[decide.zig nuclis decide: request tiers, ranked view, Jev JSON]
+        decidecli[decide.zig nuclis decide: request tiers, ranked view]
+        wire[decision/ request + response wire format, model names]
+        api[api/ nuclis serve: http, router, GPU executor, services]
     end
     subgraph hfpkg [huggingface — Hub downloads]
         hf[Client: catalog, Xet transfer, atomic publish]
@@ -107,7 +109,11 @@ flowchart TB
     cli --> model
     cli --> completion
     cli --> decidecli
-    decidecli --> dec
+    cli --> api
+    decidecli --> wire
+    api --> wire
+    wire --> dec
+    api --> dec
     dec --> tok
     dec --> st
     dec --> cpu
@@ -151,6 +157,9 @@ signals, and the network.
 | `engine` | composing adapters, backends, tokenizer, sampler into `open`/`step`/`runLoop` | files, terminals, signals |
 | `decide` | composing Laya's tokenizer, profile (contract and calibration), and model into `open`/`decide` | files beyond its checkpoint directory, terminals, the text engine |
 | `src` | arguments, configuration, stdout, Ctrl-C, presentation, downloads | equations |
+| `src/decision` | the decision request and response JSON, resolving a decision model's name | HTTP, terminals |
+| `src/api` transport and router (`http.zig`, `router.zig`) | connections, HTTP/1.1, routes, the error body | models, `inference` |
+| `src/api` services (`decisions/`) | validating a request, waiting for the GPU, rendering the answer | sockets; a model except through the GPU executor |
 | `huggingface` | the Hub API, Xet reconstruction, digests, atomic publication | what a GGUF means |
 
 **Read:** [spec.md § Extension rules](spec.md#57-extension-rules),
@@ -172,6 +181,33 @@ into batches with per-row bounds instead of padding). Every question about
 every state is one sequence. It pays as a filter, one
 question over many states the language model never has to read
 ([laya.md](reference/laya.md)).
+
+### The API layer
+
+`nuclis serve` (`src/api/`) keeps decision models open behind an HTTP/1.1
+server speaking TypeSafe's Jev protocol ([api.md](reference/api.md)). Its
+layers stay apart so a second service (an OpenAI-compatible one for the
+language models) is a new directory and one registration:
+
+- `http.zig` serves one connection over any reader and writer: each
+  request read whole into the connection's arena, handed to a handler,
+  answered with `Content-Length` in one flush; it knows no route.
+  `router.zig` maps method and path to a service's handler; `errors.zig`
+  is the one error body.
+- `gpu.zig` is the one executor that owns the GPU: a single worker runs
+  submitted items one at a time in arrival order, so two models never run
+  at once and only the worker touches a model. An item lives in its
+  submitter's frame; a waiter that times out unlinks an item that never
+  started and otherwise waits for it.
+- `decisions/` validates on the connection's thread, then waits in the
+  batcher: one executor item takes the oldest waiting request's model and
+  every request waiting for it that fits one pass, and answers them with
+  `Decider.decideJobs` (each request prepared in its own arena, one
+  `logitsBatch` for all). `pool.zig` keeps two deciders open, opened and
+  closed only on the worker.
+- `src/decision/` holds the wire format and model names that `nuclis
+  decide` and the service share, so the CLI's `--json` and the API's
+  body are the same bytes.
 
 ## 3. Three kinds of memory
 

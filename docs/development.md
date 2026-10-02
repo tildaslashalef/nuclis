@@ -18,6 +18,9 @@ src/                 executable: CLI, model commands, config
   src/tui/           terminal surface, engine-free: screen, editor, theme,
                      markdown, keys
   src/agent/         agent composition: engine, conversation, sessions, tools
+  src/decision/      the decision request and response JSON, model names
+  src/api/           nuclis serve: HTTP transport, router, GPU executor,
+                     services (decisions/)
 inference/           engine library: runtime, quantization, tokenizer,
                      sampling, backends, profiles
 huggingface/         Hub download library (Xet) and its standalone binary;
@@ -651,7 +654,8 @@ applies to models with no entry, and `--speculative` overrides either.
   "decision"` (written by `model pull --register` for a Laya layout) is a
   decision checkpoint: `repo` + `file` or `path` name its weights, whose
   directory `nuclis decide` opens; text commands refuse it by name.
-- `decide.model` (default `laya`) is the checkpoint `nuclis decide` opens:
+- `decide.model` (default `laya`) is the checkpoint `nuclis decide` opens,
+  and the one `nuclis serve` uses for a request naming no model or a `jev-…` id:
   a registry entry of kind `decision`, a decision catalogue name
   ([artifacts.md § The catalogue](reference/artifacts.md#the-catalogue)),
   or a directory (under `<root>/models` unless absolute); `--model` takes
@@ -1142,6 +1146,30 @@ Default build and test commands must not fetch them.
 
 Secrets are environment-only and excluded from logs and fixtures. Real session
 data and private source snippets must not become test or benchmark fixtures.
+
+### Measuring the API
+
+`nuclis serve` listens on `127.0.0.1:8735` by default (`--port` moves it);
+start it with the models open (`--model laya --model laya-multilingual`)
+so no request pays an open. Rates come from ApacheBench (`/usr/sbin/ab`,
+in macOS) with keep-alive, and percentiles from its CSV, which keeps
+fractions of a millisecond where the summary rounds to whole ones:
+
+```sh
+ab -k -n 512 -c 16 -p request.json -T application/json -e out.csv \
+  http://127.0.0.1:8735/v1/decisions
+```
+
+`ab` speaks HTTP/1.0: with `-k` it keeps a connection only when the reply
+says `connection: keep-alive`, which the server sends to a 1.0 request
+that asked. Its "Failed requests" counts responses whose length differs
+from the first, so `GET /v1/health` (whose counters change length) reports
+nearly all as failed while every one is a 200: read the
+`Length:` breakdown and `Non-2xx responses`. Compare served responses
+with `nuclis decide --json` after masking `timings_ms`, and read the
+batching counters from `GET /v1/health` before and after a run.
+[reference/api.md § Measured rates](reference/api.md#measured-rates)
+holds the record.
 
 ### GPU counters by capture
 

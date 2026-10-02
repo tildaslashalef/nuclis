@@ -298,6 +298,11 @@ layout), the decision catalogue's `laya` or `laya-multilingual`
 directory. Text commands refuse a decision model by name, and `decide`
 refuses a text model.
 
+`nuclis serve` answers the same request over HTTP with the models kept
+open: `POST /v1/decisions` returns these bytes, timings aside, and `POST
+/v1/systemone` is Jev's own call ([api.md](api.md)); a served request's
+`"model"` chooses the checkpoint.
+
 Checked through the fresh binary, 2026-09-29: the 8 fixture requests
 (`--json`) give exactly the package's answers and usage; the card's
 quickstart gives identical JSON through `--request` (file and standard
@@ -472,7 +477,8 @@ three-option French question gives the multilingual set french 0.42
   delays the model's next step by its encode time.
 - Opening the multilingual set takes about 0.4 s, most of it parsing its
   34 MB `tokenizer.json` (580,604 merges); the root set opens in about
-  75 ms on Metal. A binary cache of the parsed vocabulary would remove it.
+  75 ms on Metal. `nuclis serve` pays it once; a binary cache of the
+  parsed vocabulary would remove it for `nuclis decide`.
 - Language identification is not what either checkpoint was trained for:
   asked which language a sentence is in, the multilingual set names
   French and German right and Spanish wrong, the root set the reverse

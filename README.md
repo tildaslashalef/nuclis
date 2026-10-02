@@ -134,6 +134,19 @@ scored at 0.48. `laya-multilingual` reads other languages and 1,024 tokens
 but is worse on English, so `laya` is the default. Details, measurements,
 and limits: [docs/reference/laya.md](docs/reference/laya.md).
 
+`nuclis serve` keeps the models open behind a local HTTP API that speaks
+TypeSafe's Jev protocol, so a Jev client only changes its base URL; a warm
+decision takes 14 ms (`laya-multilingual`) to 34 ms (`laya`), and requests
+that arrive together share a GPU pass. Routes, errors, and rates:
+[docs/reference/api.md](docs/reference/api.md).
+
+```sh
+nuclis serve --model laya
+curl -s localhost:8735/v1/systemone -d '{"model": "jev-latest",
+  "state": "Help! My payouts have been failing for 3 days.",
+  "questions": {"is_urgent": {"type": "noul", "instructions": "Does this convey urgency?"}}}'
+```
+
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): how a token flows through

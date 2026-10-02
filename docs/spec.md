@@ -38,7 +38,8 @@ repository:
 - **an evaluation CLI** (`src/`): `generate`, `bench`, `tokenize`, `eval`,
   `inspect`, `validate`, `config`, `model`, and `decide`, which answers
   typed questions with a decision model (Laya) rather than a language
-  model (§5.9);
+  model (§5.9), and `serve`, which keeps decision models open behind an
+  HTTP API;
 - **an interactive agent** (`nuclis agent`): a terminal surface over the
   same engine with a bounded tool layer for small coding tasks in the
   working directory.
@@ -309,8 +310,13 @@ the tokenizer's BPE and the safetensors loader.
   ≤ 1e-5 per stored stage; logits within 1e-4 of max(1, |logit|)); gates
   `laya-vocabulary` and `laya-cpu`, and `laya-multilingual-vocabulary`
   and `laya-multilingual-cpu`.
-- Host limits, never the caller's: 64 states, 32 questions, 64 options,
-  1 MiB per state. A cut state is flagged, never silent.
+- Host limits, never the caller's: 64 states, 32 questions, 255 options
+  (TypeSafe's limit; a model whose head budget cannot hold a question's
+  options refuses that question), 1 MiB per state. A cut state is
+  flagged, never silent.
+- `prepare` and `decideJobs` answer several calls in one batch, each
+  call's sequences and results in its own arena; a call that cannot be
+  built fails alone, and the answers **must** equal each call's alone.
 - The Metal plan **must** meet the same bounds against the reference, and
   a packed batch **must** give each sequence exactly its logits alone;
   gates `laya-metal` and `laya-multilingual-metal`. `nuclis decide
@@ -335,6 +341,7 @@ nuclis model pull (<name> | <owner/repo> --file <f>) [--revision <r>] [--role <r
 nuclis model inspect (<name> | <owner/repo> --file <f>) [--revision <r>] [--json]
 nuclis model ls [--json]
 nuclis decide (--request <file|-> | --questions <file> <states> | <inline questions> <states>) [--model <m>] [--truncate head|tail] [--uncalibrated] [--explain] [--json]
+nuclis serve [--host <ip>] [--port <n>] [--model <m>]... [--backend cpu|metal]
 nuclis config init [--discover [--dry-run]] [--json] | show [--json] | set <key> <value>
 nuclis completion fish|bash|zsh
 nuclis --help | <command> --help | --version
@@ -350,6 +357,7 @@ nuclis --help | <command> --help | --version
 | `validate` | whether the file binds to its family's adapter, with the layer composition |
 | `model` | pull with digest verification and sidecars, list the artifacts under the root, judge a file at the four levels of §4 |
 | `decide` | typed questions about states through a decision checkpoint (`decide.model`, default `laya`): a Jev-shaped request (`questions`, `state` or `states`), a questions file with states from flags, or questions inline; one state renders each answer with its distribution, several render ranked by the first question; `--json` is one Jev response per state (answers with exactly Jev's fields, extras under `nuclis`), with load, tokenize, and encode timings |
+| `serve` | the nuclis API over HTTP/1.1 ([reference/api.md](reference/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `GET /v1/models` lists the decision models in OpenAI's shape, `GET /v1/health` the queue; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
 | `config` | write the file with every catalogue model registered (`--discover` adds runnable files the catalogue does not name), show effective values with their source layer, set one key |
 | `agent` | §7 |
 | `completion` | a thin script per shell: every Tab runs the hidden `nuclis __complete <words…>`, which answers from one command table (held to the parser and the help pages by tests) and the user's state: registered and catalogue models, the workspace's sessions, config keys and their values; paths go back to the shell; a failure completes nothing |
@@ -669,11 +677,11 @@ bidirectional image spans), and Muse Glimmer's windowed encoder
 `inference/src/vision/` contract, [reference/vision.md](reference/vision.md)).
 Speculation stays off in a conversation once an image is in it.
 PDF attachments are not planned: nothing in the tree extracts their text. Deferred, to be taken through the existing seams as
-concrete requirements arrive: HTTP serving with an OpenAI-compatible protocol,
-persistent prefix caches, concurrent request batching, and additional GPU
-backends. A local server would wrap
-the library; tool execution and permissions would stay with the consuming
-agent. A docs or API lookup tool for the agent was assessed and not
+concrete requirements arrive: an OpenAI-compatible service for the
+language models on `nuclis serve` (decisions are served, batched across
+requests), persistent prefix caches, and additional GPU backends. The
+server wraps the library; tool execution and permissions would stay with
+the consuming agent. A docs or API lookup tool for the agent was assessed and not
 scheduled: read-only docs roots would be the cheapest form, a bounded
 fetch would reopen the no-permission decision, an embedding index is
 ruled out.
