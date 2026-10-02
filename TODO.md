@@ -289,10 +289,11 @@ re-measured on the generated playground (REPO-21) before the tool lands.
   are results.
 - **Checkpoint: measured, not assumed.** The tool opens `decide.model`
   (default `laya`), and every measurement below runs both checkpoints;
-  the default follows the result. The evidence so far points both ways:
-  on English filter tasks (ranking logs by urgency, cache misses among 50
-  entries, relevant search hits) `laya` ranked correctly and
-  `laya-multilingual` lost the rankings (README, 2026-09-29); on a check
+  this unit settles the default (*Settling the default* below). The
+  evidence so far points both ways: on English filter tasks (ranking logs
+  by urgency, cache misses among 50 entries, relevant search hits) `laya`
+  ranked correctly and `laya-multilingual` lost the rankings (README,
+  2026-09-29); on a check
   that turns on comparing numbers in a JSON state (a distance against a
   target) `laya-multilingual` answered P = 0.99 where `laya` answered at
   chance (0.51, 0.54 with nothing cut). `laya-multilingual` reads 1,024
@@ -303,11 +304,27 @@ re-measured on the generated playground (REPO-21) before the tool lands.
   reading the files anyway. Before the tool lands, build 30–60 cases from
   playground sessions (search hits with the relevant ones marked, build
   and test logs with the failing section marked, diffs with the hunks
-  that matter marked) and score each decision: the right candidate in the
-  top 1 and top 3, and whether the probabilities track correctness.
+  that matter marked, and cases that turn on comparing numbers against a
+  threshold: sizes, counts, durations, exit codes) and score each
+  decision: the right candidate in the top 1 and top 3, and whether the
+  probabilities track correctness.
 - **A cheap baseline on the same set:** keyword overlap between the
   question and each candidate, and a random order. The tool is worth its
   GPU time only where Laya beats both.
+- **Settling the default.** Score `laya` and `laya-multilingual` on the
+  labeled set, top 3 over all cases as the measure, reported per category
+  (search hits, logs, diffs, numbers). The higher becomes the default; a
+  margin under 3 cases keeps `laya` (upstream's root checkpoint, 75 ms to
+  open). If `laya-multilingual` wins: set `Config.Decide.model` in
+  `src/config.zig`, the `--model` row of `decide`'s help in
+  `src/help.zig`, the catalogue table and `decide` row in `docs/spec.md`,
+  the config example and `decide.model` line in `docs/development.md`,
+  `docs/reference/laya.md` § `nuclis decide`,
+  `docs/reference/artifacts.md` § The catalogue, and the README's Laya
+  section (whose "worse on English" sentence the scores replace); then
+  measure the agent's first `decide` call, and if the 0.4 s open shows,
+  the parsed-vocabulary cache from `laya.md`'s limits joins the unit.
+  Either way the log entry carries the per-category table.
 - Its description and the system-prompt line measured on the playground
   task list before and after (`make agent-eval VARIANT=…`), on Qwen3.8-27B
   and Gemma 4 E4B: task success, wall time, and prefill tokens saved.
