@@ -287,14 +287,17 @@ re-measured on the generated playground (REPO-21) before the tool lands.
   of the previous tool result; returns the candidates ranked with
   probabilities, truncation marked; limits are host constants; failures
   are results.
-- **Checkpoint: `laya-multilingual`**, named by the tool, not taken from
-  `decide.model` (whose default stays `laya`). It reads 1,024 tokens per
-  sequence (256 for the question and options) against the root set's
-  512, and on a check that turns on comparing numbers in a JSON state (a
-  distance against a target) it answered P = 0.99 where `laya` answered
-  at chance (0.51, 0.54 with nothing cut). Every measurement below runs
-  `laya` beside it; the tool switches only if `laya` wins. Opening it
-  costs about 0.4 s (its 34 MB `tokenizer.json`), once per process.
+- **Checkpoint: measured, not assumed.** The tool opens `decide.model`
+  (default `laya`), and every measurement below runs both checkpoints;
+  the default follows the result. The evidence so far points both ways:
+  on English filter tasks (ranking logs by urgency, cache misses among 50
+  entries, relevant search hits) `laya` ranked correctly and
+  `laya-multilingual` lost the rankings (README, 2026-09-29); on a check
+  that turns on comparing numbers in a JSON state (a distance against a
+  target) `laya-multilingual` answered P = 0.99 where `laya` answered at
+  chance (0.51, 0.54 with nothing cut). `laya-multilingual` reads 1,024
+  tokens per sequence against 512 and costs about 0.4 s to open (its
+  34 MB `tokenizer.json`), once per process.
 - **A labeled set, scored per decision.** End-to-end task success alone
   cannot separate a good filter from a bad one: the agent may finish by
   reading the files anyway. Before the tool lands, build 30–60 cases from
