@@ -144,8 +144,11 @@ while a request waits, and pack whatever is waiting into the next pass.
   oversized headers, busy, timeout), keep-alive across requests, and the
   model table's eviction, on the tiny synthetic checkpoint on the CPU,
   under `std.testing.allocator` with no leaks. A server on an ephemeral
-  port answers the 8 root fixture requests with exactly `nuclis decide
-  --json`'s results (a new fast-tier gate, `decide-serve`).
+  port answers requests with exactly what `nuclis decide --json` writes,
+  as a unit test on the tiny synthetic checkpoint. Once, at close, the
+  fresh binary serves the 8 root Laya fixture requests and the responses
+  are compared with `nuclis decide --json` by hand; the log records it.
+  No gate is added.
 
 ### Session 2: batching across requests
 
@@ -181,8 +184,16 @@ document handed to client projects when the unit closes. Also
 its `nuclis decide` section), `docs/development.md` (the port, measuring
 with `ab`), `src/help.zig`, `docs/architecture.md` (the decision path).
 
-Gates: `make check`, `make verify-auto` (the new `decide-serve` gate). No
-numerical behaviour changes, so no Metal or CPU tier.
+**Fast loop, no model gates.** `make verify-auto` selects only `fmt` and
+`unit` for this unit: no gate lists `src/serve.zig`, `src/decide*.zig`,
+`src/cli.zig`, `src/help.zig`, or `inference/src/decide.zig`. Keep it so:
+do not edit the root `build.zig` (it selects 51 gates; the server's tests
+run in the existing `make test`), and add no gate. If batching must touch
+`inference/src/models/laya*.zig` or `profiles/laya.zig`, the six Laya
+gates (about 22 s together) run, as they should. No numerical behaviour
+changes, so no Metal or CPU tier.
+
+Gates: `make check`, `make verify-auto`.
 
 ## MODL-34 — clef-flash: Cloudflare's 9B decision model, text then vision (4 sessions) — after APPS-19
 
