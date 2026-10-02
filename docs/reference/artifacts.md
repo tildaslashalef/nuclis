@@ -224,9 +224,11 @@ load: `nuclis model pull <owner/repo> [--file <x>.safetensors]` takes the
 file (or its whole `-NNNNN-of-MMMMM.safetensors` shard set) and its
 *support files*: `.json`, `.txt`, `.model`, and `.jinja` files in the
 set's directory and below, except below a subdirectory holding other
-safetensors weights (another artifact) and except an
-`*.safetensors.index.json` of another set. Code, pickles, images, and
-READMEs are never fetched. Each file lands at its Hub path and gets its own
+weights of any format (another artifact: GPT-2's `onnx/` export, by its
+`.onnx` files) and except an `*.safetensors.index.json` of another set.
+Code, pickles, images, and READMEs are never fetched. `--file` names a
+weight file: a support file is refused with `NotAWeightFile`, naming the
+weights it comes with. Each file lands at its Hub path and gets its own
 sidecar, so `convaiinnovations/laya --file model.safetensors` gives:
 
 ```text

@@ -3,8 +3,9 @@
 //!
 //! An artifact is a GGUF file, a safetensors file, or a standard
 //! `-NNNNN-of-MMMMM` shard set of either. A safetensors artifact also takes
-//! its support files (configuration, tokenizer, index) from its directory,
-//! so the set is loadable on its own.
+//! its support files (configuration, tokenizer, index) from its directory and
+//! the subdirectories that hold no other weights, so the set is loadable on
+//! its own.
 const std = @import("std");
 const http = @import("http.zig");
 pub const Allocator = std.mem.Allocator;
@@ -33,6 +34,10 @@ pub fn format(name: []const u8) ?Format {
 /// pickled weights (`.py`, `.bin`, `.pt`) are never selected.
 const support_extensions = [_][]const u8{ ".json", ".txt", ".model", ".jinja" };
 
+/// Weight containers nuclis never downloads. A subdirectory holding one is
+/// another artifact (GPT-2's `onnx/`), so its support files are not ours.
+const foreign_weight_extensions = [_][]const u8{ ".onnx", ".bin", ".pt", ".pth", ".ckpt", ".msgpack", ".h5", ".tflite", ".mlmodel", ".ot" };
+
 pub const File = struct {
     name: []const u8,
     size: u64,
@@ -51,6 +56,9 @@ pub const Catalog = struct {
     files: []const File,
     /// Files a safetensors artifact may carry (see `support_extensions`).
     support: []const File = &.{},
+    /// Names of weights in formats nuclis does not download
+    /// (`foreign_weight_extensions`); they only mark other artifacts' folders.
+    others: []const []const u8 = &.{},
     pub fn deinit(c: *Catalog) void {
         c.arena.deinit();
         c.* = undefined;
@@ -69,7 +77,11 @@ pub fn validate(req: Request) !void {
     if (!validPath(req.repo_id) or std.mem.count(u8, req.repo_id, "/") != 1) return error.InvalidRepository;
     for (req.repo_id) |b| if (!(std.ascii.isAlphanumeric(b) or std.mem.indexOfScalar(u8, "-._/", b) != null)) return error.InvalidRepository;
     if (!validPath(req.revision)) return error.InvalidRevision;
-    if (req.filename) |f| if (!validPath(f) or (!req.exact and format(f) == null)) return error.InvalidFilename;
+    if (req.filename) |f| {
+        if (!validPath(f)) return error.InvalidFilename;
+        // A support file comes with its weights; `owners` names them.
+        if (!req.exact and format(f) == null) return error.NotAWeightFile;
+    }
     if (req.exact and req.filename == null) return error.FilenameRequired;
     if (req.local_dir) |dir| if (dir.len == 0 or std.mem.indexOfScalar(u8, dir, 0) != null) return error.InvalidDirectory;
 }
@@ -155,8 +167,14 @@ pub fn parseCatalog(gpa: Allocator, repo: []const u8, bytes: []const u8) !Catalo
     if (w.siblings.len > 10_000) return error.TooManyFiles;
     var files: std.ArrayList(File) = .empty;
     var support: std.ArrayList(File) = .empty;
+    var others: std.ArrayList([]const u8) = .empty;
     for (w.siblings) |f| {
         const kind = format(f.rfilename);
+        if (kind == null and hasExtension(f.rfilename, &foreign_weight_extensions)) {
+            if (!validPath(f.rfilename)) return error.InvalidMetadata;
+            try others.append(a, f.rfilename);
+            continue;
+        }
         const list = if (kind != null) &files else if (isSupport(f.rfilename)) &support else continue;
         if (!validPath(f.rfilename)) return error.InvalidMetadata;
         var file: File = .{ .name = f.rfilename, .size = undefined };
@@ -189,11 +207,15 @@ pub fn parseCatalog(gpa: Allocator, repo: []const u8, bytes: []const u8) !Catalo
         for (list.items) |old| if (std.mem.eql(u8, old.name, f.rfilename)) return error.InvalidMetadata;
         try list.append(a, file);
     }
-    return .{ .arena = arena, .repo_id = try a.dupe(u8, repo), .revision = w.sha[0..40].*, .files = files.items, .support = support.items };
+    return .{ .arena = arena, .repo_id = try a.dupe(u8, repo), .revision = w.sha[0..40].*, .files = files.items, .support = support.items, .others = others.items };
 }
 
 fn isSupport(name: []const u8) bool {
-    for (support_extensions) |ext| if (std.mem.endsWith(u8, name, ext)) return true;
+    return hasExtension(name, &support_extensions);
+}
+
+fn hasExtension(name: []const u8, extensions: []const []const u8) bool {
+    for (extensions) |ext| if (std.mem.endsWith(u8, name, ext)) return true;
     return false;
 }
 
@@ -261,16 +283,33 @@ pub fn select(a: Allocator, catalog_: *const Catalog, filename: ?[]const u8) !?[
     } else try result.append(a, f);
     if (format(f.name) == .safetensors) {
         const set_stem = if (shard(f.name)) |s| s.prefix else f.name[0 .. f.name.len - ".safetensors".len];
-        for (catalog_.support) |file| if (supports(files, set_stem, file.name)) try result.append(a, file);
+        for (catalog_.support) |file| if (supports(catalog_, set_stem, file.name)) try result.append(a, file);
     }
     return try result.toOwnedSlice(a);
 }
 
+/// The safetensors artifacts that carry support file `name`, each named by
+/// a weight file `select` accepts (a set's first shard): what to pass
+/// instead of the support file. Empty when no artifact carries it.
+pub fn owners(a: Allocator, catalog_: *const Catalog, name: []const u8) ![]const []const u8 {
+    var result: std.ArrayList([]const u8) = .empty;
+    errdefer result.deinit(a);
+    for (catalog_.files) |f| {
+        if (format(f.name) != .safetensors) continue;
+        const set_stem = if (shard(f.name)) |s| blk: {
+            if (s.index != 1) continue;
+            break :blk s.prefix;
+        } else f.name[0 .. f.name.len - ".safetensors".len];
+        if (supports(catalog_, set_stem, name)) try result.append(a, f.name);
+    }
+    return result.toOwnedSlice(a);
+}
+
 /// Whether a support file belongs to the safetensors set whose shards are
 /// `<set_stem>...`: it lies in the set's directory or below, but not below
-/// a subdirectory holding other safetensors weights (another artifact),
+/// a subdirectory holding other weights of any format (another artifact),
 /// and an index file only goes with the set it indexes.
-fn supports(files: []const File, set_stem: []const u8, name: []const u8) bool {
+fn supports(catalog_: *const Catalog, set_stem: []const u8, name: []const u8) bool {
     const set_dir = std.fs.path.dirnamePosix(set_stem) orelse "";
     const below = if (set_dir.len == 0) name else blk: {
         if (!std.mem.startsWith(u8, name, set_dir) or name.len <= set_dir.len or name[set_dir.len] != '/') return false;
@@ -282,11 +321,14 @@ fn supports(files: []const File, set_stem: []const u8, name: []const u8) bool {
     var end = std.mem.indexOfScalar(u8, below, '/');
     while (end) |e| : (end = if (std.mem.indexOfScalarPos(u8, below, e + 1, '/')) |n| n else null) {
         const sub = name[0 .. name.len - below.len + e];
-        for (files) |w| if (format(w.name) == .safetensors) {
-            if (std.mem.eql(u8, std.fs.path.dirnamePosix(w.name) orelse "", sub)) return false;
-        };
+        for (catalog_.files) |w| if (inDirectory(w.name, sub)) return false;
+        for (catalog_.others) |w| if (inDirectory(w, sub)) return false;
     }
     return true;
+}
+
+fn inDirectory(name: []const u8, dir: []const u8) bool {
+    return std.mem.eql(u8, std.fs.path.dirnamePosix(name) orelse "", dir);
 }
 
 test "hub status maps authorization failures by whether a token was sent" {
@@ -304,6 +346,9 @@ test "request and directory validation" {
     try validate(.{ .repo_id = "unsloth/Qwen3.8-27B-GGUF", .revision = "refs/pr/1" });
     try std.testing.expectError(error.InvalidRepository, validate(.{ .repo_id = "../escape" }));
     try std.testing.expectError(error.InvalidFilename, validate(.{ .repo_id = "a/b", .filename = "../bad.gguf" }));
+    try std.testing.expectError(error.InvalidFilename, validate(.{ .repo_id = "a/b", .filename = "../config.json" }));
+    try std.testing.expectError(error.NotAWeightFile, validate(.{ .repo_id = "a/b", .filename = "config.json" }));
+    try validate(.{ .repo_id = "a/b", .filename = "config.json", .exact = true });
     try std.testing.expectError(error.InvalidNuclisHome, directory(a, null, "relative", "/home/me"));
     const p = try directory(a, null, "/data/nuclis", null);
     defer a.free(p);
@@ -401,6 +446,58 @@ test "a safetensors artifact takes its shards and its own support files" {
     defer a.free(gguf);
     try expectNames(&.{"m.gguf"}, gguf);
 }
+
+test "another format's weights mark another artifact's folder (GPT-2's layout)" {
+    const a = std.testing.allocator;
+    var c = try parseCatalog(a, "openai-community/gpt2", gpt2_listing);
+    defer c.deinit();
+    try expectNames(&.{"model.safetensors"}, c.files);
+    try std.testing.expectEqual(@as(usize, 10), c.others.len);
+    try std.testing.expectEqual(@as(usize, 13), c.support.len);
+    const root = (try select(a, &c, null)).?;
+    defer a.free(root);
+    try expectNames(&.{ "model.safetensors", "config.json", "generation_config.json", "merges.txt", "tokenizer.json", "tokenizer_config.json", "vocab.json" }, root);
+    // The diagnostic for `--file config.json` names the weights it comes with;
+    // `onnx/config.json` belongs to no artifact nuclis downloads.
+    const owned = try owners(a, &c, "config.json");
+    defer a.free(owned);
+    try std.testing.expectEqual(@as(usize, 1), owned.len);
+    try std.testing.expectEqualStrings("model.safetensors", owned[0]);
+    const orphan = try owners(a, &c, "onnx/config.json");
+    defer a.free(orphan);
+    try std.testing.expectEqual(@as(usize, 0), orphan.len);
+}
+
+test "a support file's owners are each set that carries it, by its first shard" {
+    const a = std.testing.allocator;
+    const sets = [_]File{
+        .{ .name = "model-00002-of-00002.safetensors", .size = 10 },
+        .{ .name = "model-00001-of-00002.safetensors", .size = 10 },
+        .{ .name = "consolidated.safetensors", .size = 10 },
+        .{ .name = "q.gguf", .size = 4, .sha256 = @splat(0) },
+    };
+    const owned = try owners(a, &fixtureCatalog(&sets, &.{}), "config.json");
+    defer a.free(owned);
+    try std.testing.expectEqual(@as(usize, 2), owned.len);
+    try std.testing.expectEqualStrings("model-00001-of-00002.safetensors", owned[0]);
+    try std.testing.expectEqualStrings("consolidated.safetensors", owned[1]);
+    const indexed = try owners(a, &fixtureCatalog(&sets, &.{}), "model.safetensors.index.json");
+    defer a.free(indexed);
+    try std.testing.expectEqual(@as(usize, 1), indexed.len);
+}
+
+/// openai-community/gpt2's listing, sizes and digests abbreviated: weights in
+/// six formats at the root, an ONNX export with its own support files.
+const gpt2_listing = blk: {
+    const lfs = "\"size\":16,\"lfs\":{\"size\":16,\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}";
+    const plain = "\"size\":10,\"blobId\":\"5881ba831f2db5ce0f606bbaa1f2668e1e6cb706\"";
+    const names_lfs = [_][]const u8{ "64-8bits.tflite", "64-fp16.tflite", "64.tflite", "flax_model.msgpack", "model.safetensors", "onnx/decoder_model.onnx", "onnx/decoder_model_merged.onnx", "onnx/decoder_with_past_model.onnx", "pytorch_model.bin", "rust_model.ot", "tf_model.h5" };
+    const names_plain = [_][]const u8{ ".gitattributes", "README.md", "config.json", "generation_config.json", "merges.txt", "onnx/config.json", "onnx/generation_config.json", "onnx/merges.txt", "onnx/special_tokens_map.json", "onnx/tokenizer.json", "onnx/tokenizer_config.json", "onnx/vocab.json", "tokenizer.json", "tokenizer_config.json", "vocab.json" };
+    var text: []const u8 = "{\"sha\":\"0123456789abcdef0123456789abcdef01234567\",\"siblings\":[";
+    for (names_lfs) |n| text = text ++ "{\"rfilename\":\"" ++ n ++ "\"," ++ lfs ++ "},";
+    for (names_plain, 0..) |n, i| text = text ++ "{\"rfilename\":\"" ++ n ++ "\"," ++ plain ++ "}" ++ (if (i + 1 < names_plain.len) "," else "");
+    break :blk text ++ "]}";
+};
 
 const catalog_fixture =
     \\{"sha":"0123456789abcdef0123456789abcdef01234567","siblings":[{"rfilename":"Q4.gguf","size":8,"lfs":{"size":8,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},{"rfilename":"README.md"},

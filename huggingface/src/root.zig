@@ -30,6 +30,7 @@ pub const max_range_bytes = transfer.window_size;
 /// Which files a request would download from a catalog (null: several
 /// choices), so a host can check destinations before calling `download`.
 pub const select = hub.select;
+pub const owners = hub.owners;
 
 pub const LocalFile = struct {
     path: []const u8,

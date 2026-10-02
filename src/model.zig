@@ -322,7 +322,7 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
             return error.ConflictingOptions;
         }
         request.filename = if (decision) |d| d.file else options.file;
-        var remote = client.list(request) catch |err| return hubFailure(err, options.repo, diag);
+        var remote = client.list(request) catch |err| return listFailure(err, arena, client, request, options.repo, diag);
         defer remote.deinit();
         pinned = remote.revision;
         const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
@@ -537,7 +537,7 @@ fn renderPull(out: *std.Io.Writer, report: PullReport, json: bool, sty: style.St
         return out.writeByte('\n');
     }
     for (report.files) |f| {
-        try out.print("{s}{s}{s} {s}{s}{s}\n  {s}{d}{s} bytes, sha256 {s}{s}{s}, role {s}{s}{s}; provenance in {s}{s}{s}{s}\n", .{
+        try out.print("{s}{s}{s} {s}{s}{s}\n  {s}{d}{s} bytes, sha256 {s}{s}{s}, role {s}{s}{s}; provenance beside it in {s}{s}{s}{s}\n", .{
             sty.on(.success),
             if (std.mem.eql(u8, f.transport, "verified_local")) "verified" else "downloaded",
             sty.off(),
@@ -567,6 +567,32 @@ fn deleteIfPresent(io: std.Io, path: []const u8) !void {
         error.FileNotFound => {},
         else => return err,
     };
+}
+
+/// `hubFailure`, plus the two refusals of `--file` itself, which name the
+/// file: a path outside the repository, and a file that is not a weight,
+/// where the repository is listed to name the weights it comes with.
+fn listFailure(err: anyerror, arena: Allocator, client: hf.Client, request: hf.Request, repo: []const u8, diag: *config.Diagnostic) anyerror {
+    const name = request.filename orelse return hubFailure(err, repo, diag);
+    switch (err) {
+        error.InvalidFilename => diag.set("{s}: --file takes a path inside the repository (no empty, '.' or '..' parts, '\\', ':', or control characters)", .{name}),
+        error.NotAWeightFile => {
+            var listing = request;
+            listing.filename = null;
+            var remote = client.list(listing) catch |list_err| return hubFailure(list_err, repo, diag);
+            defer remote.deinit();
+            for (remote.support) |f| if (std.mem.eql(u8, f.name, name)) {
+                const owned = try hf.owners(arena, &remote, name);
+                if (owned.len == 0) {
+                    diag.set("{s} is not part of any safetensors artifact in {s}; support files come only with their weights", .{ name, repo });
+                } else diag.set("{s} is a support file of {s}: it comes with the weights (pass --file {s})", .{ name, try std.mem.join(arena, ", ", owned), owned[0] });
+                return err;
+            };
+            diag.set("{s}: not a weight file (.gguf, .safetensors) nor a support file nuclis pulls from {s}", .{ name, repo });
+        },
+        else => return hubFailure(err, repo, diag),
+    }
+    return err;
 }
 
 /// Names the fix for the Hub's refusals (the package's typed errors); other
@@ -1035,7 +1061,7 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         }
         request = .{ .repo_id = e.repo, .revision = e.revision, .filename = e.file };
     }
-    var remote = client.list(request) catch |err| return hubFailure(err, options.repo, diag);
+    var remote = client.list(request) catch |err| return listFailure(err, arena, client, request, options.repo, diag);
     defer remote.deinit();
     const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
         try renderSelection(out, .{ .repo = options.repo, .revision = &remote.revision, .selection_required = try choices(arena, remote.files) }, json, sty);
@@ -1299,7 +1325,7 @@ test "selection and pull reports render the same values in both forms" {
     out.clearRetainingCapacity();
     const pulled: PullReport = .{ .name = null, .repo = "a/b", .requested_revision = "main", .revision = selection.revision, .files = &.{.{ .path = "/m/a/b/Q4.gguf", .size = 4, .sha256 = "ab", .transport = "verified_local", .role = .main, .sidecar = "/m/a/b/Q4.gguf.nuclis.json" }} };
     try renderPull(&out.writer, pulled, false, .none);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "verified /m/a/b/Q4.gguf\n  4 bytes, sha256 ab, role main; provenance in Q4.gguf.nuclis.json\n"));
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "verified /m/a/b/Q4.gguf\n  4 bytes, sha256 ab, role main; provenance beside it in Q4.gguf.nuclis.json\n"));
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "registered") == null);
     out.clearRetainingCapacity();
     var named = pulled;

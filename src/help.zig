@@ -482,7 +482,8 @@ fn model(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "Options:");
     try row(out, sty, "--with mmproj,mtp", "also fetch those companions of the entry");
     try row(out, sty, "--all", "every companion the entry names");
-    try row(out, sty, "--file <name>", "which file of the repository (required when several)");
+    try row(out, sty, "--file <name>", "which weight file (.gguf, .safetensors); required");
+    try more(out, "when several; its support files come with it");
     try row(out, sty, "--revision <rev>", "a branch, tag, or commit; default main");
     try row(out, sty, "--role <r>", "main, mmproj, mtp, or imatrix; default by content");
     try row(out, sty, "--register <name>", "once verified, write the pull as a registry entry");
