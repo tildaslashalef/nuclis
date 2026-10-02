@@ -160,6 +160,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-20 | Speculation re-priced per family: Qwen on at draft 7 (short code 20.3–20.9 tok/s), Gemma 12B QAT on at 5, E4B on at 6, Muse at 6, 26B-A4B off; `make spec-matrix`, `bench --draft-p-min`; `agent --print` loads the drafter | 2026-10-02 |
 | REPO-26 | The README states the speculative defaults and their measured rates | 2026-10-02 |
 | REPO-27 | External review fixes: a failed recording is discarded (the destroy-while-recording hang gone), the kernel table derived, `--file` names a support file's weights, other formats' folders skipped, parser property tests | 2026-10-02 |
+| AGNT-18 | The agent's `decide` tool: dropped before it started; decision models are served by `nuclis serve` | 2026-10-02 |
 
 ## Context
 
@@ -6968,3 +6969,26 @@ hard-coded Qwen shapes (validated exactly at load, one supported shape),
 lazy pipelines or a binary archive (warm starts are 26 ms), and
 repository-wide line wrapping (1,079 lines over 160 characters; `zig fmt`
 does not wrap).
+
+## AGNT-18 — The agent's `decide` tool: dropped before it started (2026-10-02)
+
+**Outcome.** Dropped by the user before any work. The unit would have
+given the agent in `nuclis chat` a tool that runs a decision model (Laya)
+over up to 64 candidates (files or the previous tool result's items) so
+the language model reads only the relevant ones. Decision models now go
+behind `nuclis serve` (APPS-19), a local HTTP API any client can call, and
+the agent stays a tool loop for language models. No code, test, or
+document changed beyond the plan.
+
+**Evidence.** None needed: no measurement was taken. The design that was
+deferred on 2026-09-29 is in the history of `TODO.md` (the commits
+`bcef958`, `06a9bf9`, and `7739069` refined it: both Laya checkpoints
+measured on a per-decision labeled set against keyword and random
+baselines, the default `decide.model` settled by a stated rule).
+
+**Files.** `TODO.md`.
+
+**Remaining.** `decide.model`'s default stays `laya`; the labeled-set
+measurement that would have settled it is not scheduled. MODL-34 measures
+clef-flash's quantized backbone against its bf16 reference, not the
+checkpoints against one another.
