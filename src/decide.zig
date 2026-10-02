@@ -35,6 +35,8 @@ pub const Options = struct {
     uncalibrated: bool = false,
     truncate: ?profile.Truncate = null,
     backend: ?inference.decide.Backend = null,
+    /// Image files read before every state (clef-flash).
+    images: std.ArrayList([]const u8) = .empty,
 };
 
 /// Parses the words after `decide`; `arena` owns the lists.
@@ -58,7 +60,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             o.uncalibrated = true;
             continue;
         }
-        const takes_value = for ([_][]const u8{ "--request", "--questions", "--state", "--state-file", "--choice", "--score", "--noul", "--option", "--level", "--id", "--model", "--truncate", "--backend" }) |known| {
+        const takes_value = for ([_][]const u8{ "--request", "--questions", "--state", "--state-file", "--choice", "--score", "--noul", "--option", "--level", "--id", "--model", "--truncate", "--backend", "--image" }) |known| {
             if (std.mem.eql(u8, flag, known)) break true;
         } else false;
         if (!takes_value) {
@@ -81,6 +83,8 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             try o.states.append(arena, .{ .text = value });
         } else if (std.mem.eql(u8, flag, "--state-file")) {
             try o.states.append(arena, .{ .file = value });
+        } else if (std.mem.eql(u8, flag, "--image")) {
+            try o.images.append(arena, value);
         } else if (std.mem.eql(u8, flag, "--model")) {
             if (o.model != null) return error.DuplicateOption;
             o.model = value;
@@ -140,14 +144,14 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
 
 const Request = wire.Request;
 
-fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.Diagnostic) !Request {
+fn buildRequest(arena: std.mem.Allocator, io: std.Io, family: inference.decide.Family, o: Options, diag: *config.Diagnostic) !Request {
     var ids: std.ArrayList([]const u8) = .empty;
     var questions: std.ArrayList(profile.Question) = .empty;
     var states: std.ArrayList(wire.Labeled) = .empty;
     if (o.request) |request_path| {
         const path = if (std.mem.eql(u8, request_path, "-")) "standard input" else request_path;
         const root = try wire.parseJson(arena, try wire.readBounded(arena, io, request_path, 64 * 1024 * 1024, diag), path, diag);
-        const request = try wire.fromJson(arena, io, root, path, .allowed, diag);
+        const request = try wire.fromJson(arena, io, root, path, .allowed, family, diag);
         try ids.appendSlice(arena, request.ids);
         try questions.appendSlice(arena, request.questions);
         try states.appendSlice(arena, request.states);
@@ -156,7 +160,7 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
             const root = try wire.parseJson(arena, try wire.readBounded(arena, io, path, 1024 * 1024, diag), path, diag);
             // A whole request's "questions" field, or the map itself.
             const map = if (root == .object and root.object.get("questions") != null) root.object.get("questions").? else root;
-            try wire.questionsFromJson(arena, map, path, &ids, &questions, diag);
+            try wire.questionsFromJson(arena, family, map, path, &ids, &questions, diag);
         }
         for (o.inline_questions.items) |q| {
             var definition: std.json.ObjectMap = .empty;
@@ -184,7 +188,7 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
                 return error.DuplicateQuestion;
             };
             var why: profile.Diagnostic = .{};
-            const parsed = profile.parseQuestion(arena, id, .{ .object = definition }, &why) catch |err| {
+            const parsed = inference.decide.parseQuestion(family, arena, id, .{ .object = definition }, &why) catch |err| {
                 diag.set("{s}", .{why.message()});
                 return err;
             };
@@ -203,22 +207,32 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
     if (o.truncate) |t| for (states.items) |*s| {
         s.state.truncate = t;
     };
+    if (o.images.items.len > 0) {
+        if (o.images.items.len > inference.decide.max_images) {
+            diag.set("at most {d} images; {d} given", .{ inference.decide.max_images, o.images.items.len });
+            return error.RequestTooLarge;
+        }
+        const images = try arena.alloc([]const u8, o.images.items.len);
+        for (images, o.images.items) |*bytes, path| bytes.* = try wire.readBounded(arena, io, path, inference.decide.max_image_bytes, diag);
+        for (states.items) |*s| s.state.images = images;
+    }
     return .{ .ids = ids.items, .questions = questions.items, .states = states.items };
 }
 
-pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, identity: response.Identity, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, location: inference.decide.Location, identity: response.Identity, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const request = try buildRequest(arena, io, o, diag);
+    const directory = location.directory;
+    const request = try buildRequest(arena, io, inference.decide.Family.of(io, directory), o, diag);
     try wire.checkLimits(request, diag);
 
     const started = std.Io.Clock.awake.now(io);
-    var decider = Decider.open(gpa, io, directory, o.backend orelse inference.decide.default_backend) catch |err| {
+    var decider = Decider.open(gpa, io, location, o.backend orelse inference.decide.default_backend) catch |err| {
         if (err == error.MetalNotEnabled)
             diag.set("this build has no Metal backend; run with --backend cpu", .{})
         else
-            diag.set("{s}: not a Laya checkpoint directory nuclis can run ({s})", .{ directory, @errorName(err) });
+            diag.set("{s}: not a decision checkpoint nuclis can run ({s})", .{ directory, @errorName(err) });
         return err;
     };
     defer decider.deinit(io);
@@ -226,8 +240,20 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, identity: 
     var timings: inference.decide.Timings = .{};
     const states = try wire.decisionStates(arena, request);
     const results = decider.decide(arena, io, states, request.questions, .{ .uncalibrated = o.uncalibrated }, &timings) catch |err| switch (err) {
-        error.OptionsExceedBudget => {
-            diag.set("a question's options do not fit in {d} tokens; shorten them or ask fewer", .{decider.config.budget.max_len});
+        error.OptionsExceedBudget, error.SchemaExceedsBudget => {
+            diag.set("a question's options do not fit in {d} tokens; shorten them or ask fewer", .{decider.sequenceBudget()});
+            return err;
+        },
+        error.ImagesUnsupported => {
+            diag.set("{s} reads no images; clef-flash does", .{identity.name});
+            return err;
+        },
+        error.NoVision => {
+            diag.set("{s} has no projector pulled (`nuclis model pull {s} --with mmproj`)", .{ identity.name, identity.name });
+            return err;
+        },
+        error.UnsupportedImageFormat, error.MalformedImage, error.ImageTooLarge => {
+            diag.set("an image could not be read ({s})", .{@errorName(err)});
             return err;
         },
         else => return err,
@@ -295,11 +321,17 @@ const Report = struct {
 
     fn writeExplain(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, sty: style.Style, q: profile.Question, a: inference.decide.Answer) !void {
         const off = sty.off();
-        const seq = a.sequence;
-        const decoded = try inference.bpe.decode(arena, &self.decider.tokenizer.vocab, seq.ids, true, .{});
+        const seq = a.sequence orelse {
+            // clef: one sequence per state, every question in it.
+            try out.print("   {s}logits{s}", .{ sty.on(.label), off });
+            for (q.keys, a.logits) |key, z| try out.print(" {s}={d:.4}", .{ key, z });
+            return out.writeByte('\n');
+        };
+        const laya = &self.decider.family.laya;
+        const decoded = try inference.bpe.decode(arena, &laya.tokenizer.vocab, seq.ids, true, .{});
         var options_kept: usize = 0;
         for (seq.option_kept) |k| options_kept += k;
-        try out.print("   {s}sequence{s} {d} tokens: question {d}, options {d} ({d} each at most), state {d} of the budget {d}{s}\n", .{ sty.on(.label), off, seq.ids.len, seq.head_kept, options_kept, std.mem.max(usize, seq.option_kept), seq.state_kept, self.decider.config.budget.max_len, if (seq.truncated) ", cut" else "" });
+        try out.print("   {s}sequence{s} {d} tokens: question {d}, options {d} ({d} each at most), state {d} of the budget {d}{s}\n", .{ sty.on(.label), off, seq.ids.len, seq.head_kept, options_kept, std.mem.max(usize, seq.option_kept), seq.state_kept, laya.config.budget.max_len, if (seq.truncated) ", cut" else "" });
         try out.print("   {s}temperature{s} {d:.4} ({s}{s}){s}\n", .{ sty.on(.label), off, a.calibrated.temperature, a.bucket, if (self.options.uncalibrated) ", uncalibrated" else "", "" });
         try out.print("   {s}logits{s}", .{ sty.on(.label), off });
         for (q.keys, a.logits) |key, z| try out.print(" {s}={d:.4}", .{ key, z });
@@ -410,12 +442,12 @@ test "inline questions build the package's definitions" {
     var diag: config.Diagnostic = .{};
     const args = [_][]const u8{ "--choice", "Which?", "--option", "billing=invoices, refunds", "--option", "other", "--score", "How urgent?", "--level", "not urgent", "--level", "blocking", "--noul", "Cancel?", "--state", "hello" };
     const o = try parseArgs(arena, &args, &diag);
-    const request = try buildRequest(arena, std.testing.io, o, &diag);
+    const request = try buildRequest(arena, std.testing.io, .laya, o, &diag);
     try std.testing.expectEqualStrings("choice", request.ids[0]);
     try std.testing.expectEqualStrings("billing: invoices, refunds", request.questions[0].texts[0]);
     try std.testing.expectEqualStrings("other", request.questions[0].texts[1]);
     try std.testing.expectEqualStrings("level 1: blocking", request.questions[1].texts[1]);
     try std.testing.expectEqualStrings("true: yes, the statement holds", request.questions[2].texts[1]);
     const twice = [_][]const u8{ "--noul", "a", "--noul", "b", "--state", "s" };
-    try std.testing.expectError(error.DuplicateQuestion, buildRequest(arena, std.testing.io, try parseArgs(arena, &twice, &diag), &diag));
+    try std.testing.expectError(error.DuplicateQuestion, buildRequest(arena, std.testing.io, .laya, try parseArgs(arena, &twice, &diag), &diag));
 }

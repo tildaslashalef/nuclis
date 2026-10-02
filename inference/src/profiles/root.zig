@@ -22,6 +22,10 @@ pub const muse_glimmer = @import("muse_glimmer.zig");
 /// Laya's input contract and calibration: a decision model, not a chat
 /// template, so not in the registry below.
 pub const laya = @import("laya.zig");
+/// clef-flash's input contract: a decision model beside Laya.
+pub const clef = @import("clef.zig");
+/// The question shape and JSON text every decision model shares.
+pub const decision = @import("decision.zig");
 
 pub const Role = enum { system, developer, user, assistant, tool };
 /// The reasoning control shared by every profile. Named after Qwen3.8's
@@ -577,4 +581,6 @@ test {
     _ = muse_glimmer;
     _ = gemma4_e;
     _ = laya;
+    _ = clef;
+    _ = decision;
 }

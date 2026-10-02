@@ -383,6 +383,8 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--questions <file>", "the questions object (id -> definition) alone");
     try row(out, sty, "--state <text>", "a state, repeatable (a question per state each)");
     try row(out, sty, "--state-file <path>", "a state read from a file, repeatable");
+    try row(out, sty, "--image <path>", "an image read before every state, repeatable");
+    try more(out, "(clef-flash, pulled --with mmproj; at most 8)");
     try row(out, sty, "--choice <text>", "a choice question; its --option key[=description]s");
     try row(out, sty, "--score <text>", "a score question; its --level texts, 0 first");
     try row(out, sty, "--noul <text>", "a yes/no question: the probability it holds");
@@ -391,7 +393,8 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
     try heading(out, sty, "Options:");
     try row(out, sty, "--model <name|path>", "a decision entry or checkpoint directory;");
     try more(out, "default decide.model (laya, English);");
-    try more(out, "laya-multilingual reads other languages");
+    try more(out, "laya-multilingual reads other languages;");
+    try more(out, "clef-flash: a 9B model, every question in one pass");
     try row(out, sty, "--truncate head|tail", "the end of a long state that is cut; default tail,");
     try more(out, "head for a JSON list (a conversation)");
     try row(out, sty, "--backend cpu|metal", "default metal");
@@ -409,7 +412,10 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "state (512 tokens in all, 1,024 for laya-multilingual; a longer state is");
     try plain(out, "cut and flagged). Several states rank by the first question: P(true),");
     try plain(out, "the expected score, or the first option's probability. A request's");
-    try plain(out, "\"model\" field is ignored here; `nuclis serve` reads it.");
+    try plain(out, "\"model\" field is ignored here; `nuclis serve` reads it. clef-flash");
+    try plain(out, "reads a state and every question in one pass of up to 16,384 tokens, its");
+    try plain(out, "answers uncalibrated (a softmax per question), its images from --image or");
+    try plain(out, "a request's \"images\" (data URLs, base64, or {\"file\": path}).");
     try out.writeByte('\n');
 }
 

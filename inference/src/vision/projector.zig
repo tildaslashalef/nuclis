@@ -78,7 +78,7 @@ pub const Projector = struct {
     /// The width of a feature row: the language model's embedding width.
     pub fn outputWidth(self: *const Projector) usize {
         return switch (self.family) {
-            .qwen3vl => qwen3vl.output_width,
+            .qwen3vl => |b| b.output_width,
             .gemma4 => |b| b.output_width,
             .muse => muse.output_width,
         };
@@ -124,6 +124,20 @@ pub const Projector = struct {
                 break :blk .{ .width_tokens = g.widthTokens(), .height_tokens = g.heightTokens() };
             },
         };
+    }
+
+    /// `prepare` without the letterbox: a bicubic stretch to the grid, as
+    /// the Hugging Face Qwen2-VL processor resizes (clef-flash's reference).
+    /// Qwen3-VL only. Caller owns the result.
+    pub fn prepareStretched(self: *const Projector, alloc: std.mem.Allocator, source: image.Rgb8, g: Grid) !preprocess.Patches {
+        const b = switch (self.family) {
+            .qwen3vl => |b| b,
+            else => return error.UnsupportedProjector,
+        };
+        const target: preprocess.Size = .{ .width = g.width_tokens * qwen3vl.patch * qwen3vl.merge, .height = g.height_tokens * qwen3vl.patch * qwen3vl.merge };
+        const resized = try preprocess.resizeBicubic(alloc, source, target);
+        defer alloc.free(resized);
+        return preprocess.patches(alloc, resized, target, .{ .patch = qwen3vl.patch, .merge = qwen3vl.merge, .mean = b.mean, .std = b.std });
     }
 
     /// Resizes `source` to `g` and lays out the projector's patch rows.

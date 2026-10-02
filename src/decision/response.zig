@@ -163,10 +163,12 @@ fn writeAnswer(s: *std.json.Stringify, q: profile.Question, a: decide.Answer, de
     try s.objectField("bucket");
     try s.write(a.bucket);
     if (detail == .explain) {
-        try s.objectField("sequence_tokens");
-        try s.write(a.sequence.ids.len);
-        try s.objectField("state_kept");
-        try s.write(a.sequence.state_kept);
+        if (a.sequence) |sequence| {
+            try s.objectField("sequence_tokens");
+            try s.write(sequence.ids.len);
+            try s.objectField("state_kept");
+            try s.write(sequence.state_kept);
+        }
     }
     try s.endObject();
     try s.endObject();

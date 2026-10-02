@@ -197,8 +197,9 @@ pub const entries = [_]Entry{
 /// What runs an artifact: the text engine, or `nuclis decide`.
 pub const ModelKind = enum { generation, decision };
 
-/// A decision checkpoint (Laya): safetensors weights and the support files
-/// beside them, one directory `nuclis decide` opens. Separate from `entries`
+/// A decision checkpoint (Laya, clef): safetensors weights and the support
+/// files beside them, one directory `nuclis decide` opens, and for clef a
+/// backbone GGUF from another repository. Separate from `entries`
 /// so nothing that resolves a text model can pick one.
 pub const DecisionEntry = struct {
     name: []const u8,
@@ -213,6 +214,24 @@ pub const DecisionEntry = struct {
     /// Hub names the checkpoint needs beside the weights (plain git files:
     /// the Hub gives their blob ids, not SHA-256).
     support: []const []const u8,
+    /// clef's backbone GGUF, in another repository, pulled with the head.
+    backbone: ?Artifact = null,
+    /// The backbone's vision projector (`--with mmproj`).
+    mmproj: ?Artifact = null,
+
+    /// The head (or weights) and the backbone, without the projector.
+    pub fn totalSize(self: *const DecisionEntry) u64 {
+        return self.size + if (self.backbone) |b| b.size else 0;
+    }
+};
+
+/// A pinned file of another repository a decision checkpoint runs with.
+pub const Artifact = struct {
+    repo: []const u8,
+    file: []const u8,
+    revision: []const u8,
+    sha256: []const u8,
+    size: u64,
 };
 
 pub const decision_entries = [_]DecisionEntry{
@@ -241,6 +260,35 @@ pub const decision_entries = [_]DecisionEntry{
         .architecture = "modernbert",
         .quantization = "F16",
         .support = &.{ "multilingual/encoder/config.json", "multilingual/rl_agent_config.json", "multilingual/tokenizer/tokenizer.json", "multilingual/tokenizer/tokenizer_config.json" },
+    },
+    // Cloudflare's clef-flash: the joint schema head and support files from
+    // Cloudflare's repository, the Qwen3.5-9B backbone as bartowski's Q6_K
+    // GGUF (llama.cpp b11279, imatrix) and its BF16 projector; pinned
+    // 2026-10-02 by the pull (MODL-34).
+    .{
+        .name = "clef-flash",
+        .repo = "Cloudflare/clef-flash",
+        .file = "joint_head.safetensors",
+        .revision = "17f0b0ad64efb65d273590632833508766b2aae6",
+        .sha256 = "19cdcec8c81dc9212be320fff47462ab342fbc1278be4368fb3da71241cf5ba0",
+        .size = 243_538_016,
+        .architecture = "qwen35",
+        .quantization = "Q6_K",
+        .support = &.{ "config.json", "joint_head_config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "processor_config.json", "generation_config.json" },
+        .backbone = .{
+            .repo = "bartowski/Cloudflare_clef-flash-GGUF",
+            .file = "Cloudflare_clef-flash-Q6_K.gguf",
+            .revision = "d7f376ea88c05e7bb1014dd5351a93df9dd8029e",
+            .sha256 = "b80f7cfb803de25aade15853bab331e9f030a9ee64dee7bc91ed8c2b07312423",
+            .size = 7_793_714_496,
+        },
+        .mmproj = .{
+            .repo = "bartowski/Cloudflare_clef-flash-GGUF",
+            .file = "mmproj-Cloudflare_clef-flash-bf16.gguf",
+            .revision = "d7f376ea88c05e7bb1014dd5351a93df9dd8029e",
+            .sha256 = "3c45b34aee6f353a0d41d6b96ba712a498a17a82f0a6152bf68a5021f9652c0f",
+            .size = 921_704_928,
+        },
     },
 };
 

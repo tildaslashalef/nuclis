@@ -76,7 +76,7 @@ test "the tiny checkpoint opens and answers any text on the CPU" {
     try write(gpa, io, tmp.dir);
     const path = try tmp.dir.realPathFileAlloc(io, ".", gpa);
     defer gpa.free(path);
-    var decider = try inference.decide.Decider.open(gpa, io, path, .cpu);
+    var decider = try inference.decide.Decider.open(gpa, io, .{ .directory = path }, .cpu);
     defer decider.deinit(io);
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();

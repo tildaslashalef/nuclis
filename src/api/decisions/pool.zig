@@ -48,14 +48,15 @@ pub const Pool = struct {
 
     /// GPU worker only: the decider for `directory`, opened (closing the
     /// least recently used when full) if it is not open.
-    pub fn acquire(self: *Pool, io: std.Io, directory: []const u8, name: []const u8) !Acquired {
+    pub fn acquire(self: *Pool, io: std.Io, location: inference.decide.Location, name: []const u8) !Acquired {
+        const directory = location.directory;
         self.tick += 1;
         for (&self.slots) |*slot| if (slot.*) |*s| if (std.mem.eql(u8, s.directory, directory)) {
             s.used = self.tick;
             return .{ .decider = &s.decider, .load_ns = 0 };
         };
         const started = std.Io.Clock.awake.now(io);
-        var decider = try Decider.open(self.gpa, io, directory, self.backend);
+        var decider = try Decider.open(self.gpa, io, location, self.backend);
         errdefer decider.deinit(io);
         const owned_directory = try self.gpa.dupe(u8, directory);
         errdefer self.gpa.free(owned_directory);
@@ -123,15 +124,15 @@ test "the pool opens once, keeps two, and closes the least recently used" {
 
     var pool: Pool = .init(gpa, .cpu);
     defer pool.deinit(io);
-    try std.testing.expect((try pool.acquire(io, paths[0], "a")).load_ns > 0);
-    try std.testing.expectEqual(@as(u64, 0), (try pool.acquire(io, paths[0], "a")).load_ns);
-    _ = try pool.acquire(io, paths[1], "b");
-    _ = try pool.acquire(io, paths[0], "a");
-    _ = try pool.acquire(io, paths[2], "c");
+    try std.testing.expect((try pool.acquire(io, .{ .directory = paths[0] }, "a")).load_ns > 0);
+    try std.testing.expectEqual(@as(u64, 0), (try pool.acquire(io, .{ .directory = paths[0] }, "a")).load_ns);
+    _ = try pool.acquire(io, .{ .directory = paths[1] }, "b");
+    _ = try pool.acquire(io, .{ .directory = paths[0] }, "a");
+    _ = try pool.acquire(io, .{ .directory = paths[2] }, "c");
     try std.testing.expect(pool.isOpen(io, paths[0]) and !pool.isOpen(io, paths[1]) and pool.isOpen(io, paths[2]));
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     try std.testing.expectEqual(@as(usize, 2), (try pool.openNames(io, arena_state.allocator())).len);
-    try std.testing.expectError(error.FileNotFound, pool.acquire(io, root, "root"));
+    try std.testing.expectError(error.FileNotFound, pool.acquire(io, .{ .directory = root }, "root"));
     try std.testing.expect(pool.isOpen(io, paths[0]) and pool.isOpen(io, paths[2]));
 }

@@ -734,7 +734,7 @@ fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_pat
     defer loaded.deinit();
     const name = options.model orelse loaded.config.decide.model;
     const located = try decision_catalog.locate(arena, io, root, loaded.config.models, name, diag);
-    return decide.run(alloc, io, located.directory, located.identity, options, out, sty, diag);
+    return decide.run(alloc, io, located.location(), located.identity, options, out, sty, diag);
 }
 
 /// `serve`: the API over the decision models the configuration names.

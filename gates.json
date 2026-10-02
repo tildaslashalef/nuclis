@@ -55,6 +55,11 @@
   "laya_multilingual": {
    "path": "~/.nuclis/models/convaiinnovations/laya/multilingual",
    "entry": "laya-multilingual"
+  },
+  "clef": {
+   "path": "~/.nuclis/models/Cloudflare/clef-flash",
+   "entry": "clef-flash",
+   "mmproj": "~/.nuclis/models/bartowski/Cloudflare_clef-flash-GGUF/mmproj-Cloudflare_clef-flash-bf16.gguf"
   }
  },
  "checks": [
@@ -829,6 +834,95 @@
     "kind": "exit"
    },
    "evidence": "docs/reference/laya.md"
+  },
+  {
+   "name": "clef-sequences",
+   "family": "clef",
+   "tier": "verify",
+   "model": "clef",
+   "paths": [
+    "inference/src/profiles/clef.zig",
+    "inference/src/profiles/decision.zig",
+    "inference/src/tokenizer/**",
+    "inference/src/models/fixtures/clef/sequences.json",
+    "inference/clef-check.zig"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-clef",
+    "--",
+    "sequences",
+    "{model}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/clef.md"
+  },
+  {
+   "name": "clef-metal",
+   "family": "clef",
+   "tier": "verify",
+   "model": "clef",
+   "paths": [
+    "inference/src/profiles/clef.zig",
+    "inference/src/profiles/decision.zig",
+    "inference/src/models/clef.zig",
+    "inference/src/models/fixtures/clef/**",
+    "inference/clef-check.zig",
+    "inference/src/models/qwen35.zig",
+    "inference/src/tokenizer/**",
+    "inference/src/models/qwen35_metal.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/backends/cpu/dense.zig"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-clef",
+    "--",
+    "run",
+    "{model}",
+    "--backend",
+    "metal",
+    "--mmproj",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/clef.md"
+  },
+  {
+   "name": "clef-cpu",
+   "family": "clef",
+   "tier": "verify-cpu",
+   "model": "clef",
+   "paths": [
+    "inference/src/profiles/clef.zig",
+    "inference/src/profiles/decision.zig",
+    "inference/src/models/clef.zig",
+    "inference/src/models/fixtures/clef/**",
+    "inference/clef-check.zig",
+    "inference/src/models/qwen35.zig",
+    "inference/src/tokenizer/**",
+    "inference/src/models/qwen35_runtime.zig",
+    "inference/src/backends/cpu/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-clef",
+    "--",
+    "run",
+    "{model}",
+    "--backend",
+    "cpu",
+    "--max-tokens",
+    "160"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/reference/clef.md"
   },
   {
    "name": "gemma4-qat-trace-cpu",

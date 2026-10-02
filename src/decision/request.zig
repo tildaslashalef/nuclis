@@ -19,6 +19,71 @@ pub const Request = struct {
     states: []const Labeled,
 };
 
+/// The request's `images`, as encoded bytes: each a data URL
+/// (`data:image/png;base64,…`), bare base64, or `{"file": path}` when
+/// `files` allows. clef-flash reads them before every state.
+pub fn imagesFromJson(arena: std.mem.Allocator, io: std.Io, value: std.json.Value, files: Files, diag: *config.Diagnostic) ![]const []const u8 {
+    const list = switch (value) {
+        .array => |a| a.items,
+        else => {
+            diag.set("\"images\" must be a list of data URLs or base64 strings", .{});
+            return error.InvalidRequest;
+        },
+    };
+    if (list.len > decide.max_images) {
+        diag.set("at most {d} images per request; this one has {d}", .{ decide.max_images, list.len });
+        return error.RequestTooLarge;
+    }
+    const out = try arena.alloc([]const u8, list.len);
+    for (list, out, 0..) |item, *bytes, i| {
+        switch (item) {
+            .string => |s| {
+                const data = if (std.mem.startsWith(u8, s, "data:")) blk: {
+                    const comma = std.mem.indexOfScalar(u8, s, ',') orelse break :blk null;
+                    if (!std.mem.endsWith(u8, s[0..comma], ";base64")) break :blk null;
+                    break :blk s[comma + 1 ..];
+                } else s;
+                const encoded = data orelse {
+                    diag.set("images[{d}]: a data URL must be base64 (data:<type>;base64,…)", .{i});
+                    return error.InvalidRequest;
+                };
+                const decoder = std.base64.standard.Decoder;
+                const size = decoder.calcSizeForSlice(encoded) catch {
+                    diag.set("images[{d}]: not base64", .{i});
+                    return error.InvalidRequest;
+                };
+                if (size > decide.max_image_bytes) {
+                    diag.set("images[{d}]: {d} bytes, at most {d}", .{ i, size, decide.max_image_bytes });
+                    return error.RequestTooLarge;
+                }
+                const decoded = try arena.alloc(u8, size);
+                decoder.decode(decoded, encoded) catch {
+                    diag.set("images[{d}]: not base64", .{i});
+                    return error.InvalidRequest;
+                };
+                bytes.* = decoded;
+            },
+            .object => |o| {
+                const path = if (o.count() == 1) if (o.get("file")) |f| if (f == .string) f.string else null else null else null;
+                const p = path orelse {
+                    diag.set("images[{d}]: an image is a data URL, base64, or {{\"file\": path}}", .{i});
+                    return error.InvalidRequest;
+                };
+                if (files == .refused) {
+                    diag.set("images[{d}] names a file; this server reads no files, send the image as a data URL", .{i});
+                    return error.FileStateRefused;
+                }
+                bytes.* = try readBounded(arena, io, p, decide.max_image_bytes, diag);
+            },
+            else => {
+                diag.set("images[{d}]: an image is a data URL, base64, or {{\"file\": path}}", .{i});
+                return error.InvalidRequest;
+            },
+        }
+    }
+    return out;
+}
+
 /// Whether a `{"file": path}` state may be read: the CLI's caller owns the
 /// files, a network client does not.
 pub const Files = enum { allowed, refused };
@@ -65,12 +130,13 @@ pub fn stateFromJson(arena: std.mem.Allocator, io: std.Io, value: std.json.Value
     }
     return .{
         .label = try std.fmt.allocPrint(arena, "state[{d}]", .{index}),
-        .state = .{ .text = try profile.pythonJson(arena, value), .truncate = if (value == .array) .head else .tail },
+        .state = .{ .text = try profile.pythonJson(arena, value), .truncate = if (value == .array) .head else .tail, .json = value },
     };
 }
 
-/// Appends the questions of a `"questions"` object (id → definition).
-pub fn questionsFromJson(arena: std.mem.Allocator, value: std.json.Value, what: []const u8, ids: *std.ArrayList([]const u8), questions: *std.ArrayList(profile.Question), diag: *config.Diagnostic) !void {
+/// Appends the questions of a `"questions"` object (id → definition),
+/// validated by `family`'s rules.
+pub fn questionsFromJson(arena: std.mem.Allocator, family: decide.Family, value: std.json.Value, what: []const u8, ids: *std.ArrayList([]const u8), questions: *std.ArrayList(profile.Question), diag: *config.Diagnostic) !void {
     const map = switch (value) {
         .object => |o| o,
         else => {
@@ -81,7 +147,7 @@ pub fn questionsFromJson(arena: std.mem.Allocator, value: std.json.Value, what: 
     var it = map.iterator();
     while (it.next()) |entry| {
         var why: profile.Diagnostic = .{};
-        const q = profile.parseQuestion(arena, entry.key_ptr.*, entry.value_ptr.*, &why) catch |err| {
+        const q = decide.parseQuestion(family, arena, entry.key_ptr.*, entry.value_ptr.*, &why) catch |err| {
             diag.set("{s}", .{why.message()});
             return err;
         };
@@ -92,8 +158,8 @@ pub fn questionsFromJson(arena: std.mem.Allocator, value: std.json.Value, what: 
 
 /// A whole request object: `questions` and one of `state` or `states`.
 /// Other fields (`model`) are the caller's to read; `what` names the source
-/// in diagnostics.
-pub fn fromJson(arena: std.mem.Allocator, io: std.Io, root: std.json.Value, what: []const u8, files: Files, diag: *config.Diagnostic) !Request {
+/// in diagnostics, `family` the model's question rules.
+pub fn fromJson(arena: std.mem.Allocator, io: std.Io, root: std.json.Value, what: []const u8, files: Files, family: decide.Family, diag: *config.Diagnostic) !Request {
     const body = switch (root) {
         .object => |b| b,
         else => {
@@ -104,7 +170,7 @@ pub fn fromJson(arena: std.mem.Allocator, io: std.Io, root: std.json.Value, what
     var ids: std.ArrayList([]const u8) = .empty;
     var questions: std.ArrayList(profile.Question) = .empty;
     var states: std.ArrayList(Labeled) = .empty;
-    try questionsFromJson(arena, body.get("questions") orelse .null, what, &ids, &questions, diag);
+    try questionsFromJson(arena, family, body.get("questions") orelse .null, what, &ids, &questions, diag);
     const one = body.get("state");
     const many = body.get("states");
     if ((one == null) == (many == null)) {
@@ -123,6 +189,10 @@ pub fn fromJson(arena: std.mem.Allocator, io: std.Io, root: std.json.Value, what
             return error.RequestTooLarge;
         }
         for (m.array.items, 0..) |s, i| try states.append(arena, try stateFromJson(arena, io, s, i, files, diag));
+    }
+    if (body.get("images")) |value| {
+        const images = try imagesFromJson(arena, io, value, files, diag);
+        for (states.items) |*s| s.state.images = images;
     }
     return .{ .ids = ids.items, .questions = questions.items, .states = states.items };
 }
@@ -164,7 +234,7 @@ test "a request object: one state or many, files only when allowed" {
         \\{"model":"laya","questions":{"angry":{"type":"noul","instructions":"Angry?"}},
         \\ "states":["text",{"a":1},[{"role":"user","content":"hi"}]]}
     ;
-    const request = try fromJson(arena, io, try parseJson(arena, body, "body", &diag), "body", .refused, &diag);
+    const request = try fromJson(arena, io, try parseJson(arena, body, "body", &diag), "body", .refused, .laya, &diag);
     try std.testing.expectEqual(@as(usize, 3), request.states.len);
     try std.testing.expectEqualStrings("angry", request.ids[0]);
     try std.testing.expectEqualStrings("state[1]", request.states[1].label);
@@ -172,7 +242,7 @@ test "a request object: one state or many, files only when allowed" {
     try checkLimits(request, &diag);
 
     const file = "{\"questions\":{\"a\":{\"type\":\"noul\",\"instructions\":\"x\"}},\"state\":{\"file\":\"/etc/hosts\"}}";
-    try std.testing.expectError(error.FileStateRefused, fromJson(arena, io, try parseJson(arena, file, "body", &diag), "body", .refused, &diag));
+    try std.testing.expectError(error.FileStateRefused, fromJson(arena, io, try parseJson(arena, file, "body", &diag), "body", .refused, .laya, &diag));
     const cases = [_][]const u8{
         "[]",
         "{\"questions\":{\"a\":{\"type\":\"noul\",\"instructions\":\"x\"}}}",
@@ -180,8 +250,37 @@ test "a request object: one state or many, files only when allowed" {
         "{\"questions\":{\"a\":{\"type\":\"noul\",\"instructions\":\"x\"}},\"states\":[]}",
         "{\"questions\":[],\"state\":\"s\"}",
     };
-    for (cases) |case| try std.testing.expectError(error.InvalidRequest, fromJson(arena, io, try parseJson(arena, case, "body", &diag), "body", .refused, &diag));
+    for (cases) |case| try std.testing.expectError(error.InvalidRequest, fromJson(arena, io, try parseJson(arena, case, "body", &diag), "body", .refused, .laya, &diag));
     try std.testing.expectError(error.InvalidRequest, parseJson(arena, "{", "body", &diag));
-    const empty = try fromJson(arena, io, try parseJson(arena, "{\"questions\":{},\"state\":\"s\"}", "body", &diag), "body", .refused, &diag);
+    const empty = try fromJson(arena, io, try parseJson(arena, "{\"questions\":{},\"state\":\"s\"}", "body", &diag), "body", .refused, .laya, &diag);
     try std.testing.expectError(error.MissingQuestions, checkLimits(empty, &diag));
+}
+
+test "a request's images: data URLs and base64 decoded, files only when allowed" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var diag: config.Diagnostic = .{};
+    const body =
+        \\{"questions":{"a":{"type":"noul"}},"states":["one","two"],
+        \\ "images":["data:image/png;base64,UDYK","UDYK"]}
+    ;
+    const request = try fromJson(arena, io, try parseJson(arena, body, "body", &diag), "body", .refused, .clef, &diag);
+    try std.testing.expectEqual(@as(usize, 2), request.states[1].state.images.len);
+    try std.testing.expectEqualStrings("P6\n", request.states[0].state.images[0]);
+    try std.testing.expectEqualStrings("P6\n", request.states[0].state.images[1]);
+    try std.testing.expectEqualStrings("a", request.questions[0].instructions);
+    for ([_][]const u8{
+        "{\"questions\":{\"a\":{\"type\":\"noul\"}},\"state\":\"s\",\"images\":\"UDYK\"}",
+        "{\"questions\":{\"a\":{\"type\":\"noul\"}},\"state\":\"s\",\"images\":[\"data:image/png,raw\"]}",
+        "{\"questions\":{\"a\":{\"type\":\"noul\"}},\"state\":\"s\",\"images\":[\"!!\"]}",
+        "{\"questions\":{\"a\":{\"type\":\"noul\"}},\"state\":\"s\",\"images\":[3]}",
+    }) |case| try std.testing.expectError(error.InvalidRequest, fromJson(arena, io, try parseJson(arena, case, "body", &diag), "body", .refused, .clef, &diag));
+    const file = "{\"questions\":{\"a\":{\"type\":\"noul\"}},\"state\":\"s\",\"images\":[{\"file\":\"/etc/hosts\"}]}";
+    try std.testing.expectError(error.FileStateRefused, fromJson(arena, io, try parseJson(arena, file, "body", &diag), "body", .refused, .clef, &diag));
+    const many = "{\"questions\":{\"a\":{\"type\":\"noul\"}},\"state\":\"s\",\"images\":[\"UDYK\",\"UDYK\",\"UDYK\",\"UDYK\",\"UDYK\",\"UDYK\",\"UDYK\",\"UDYK\",\"UDYK\"]}";
+    try std.testing.expectError(error.RequestTooLarge, fromJson(arena, io, try parseJson(arena, many, "body", &diag), "body", .refused, .clef, &diag));
+    // Laya's rules still ask for instructions.
+    try std.testing.expectError(error.InvalidQuestion, fromJson(arena, io, try parseJson(arena, "{\"questions\":{\"a\":{\"type\":\"noul\"}},\"state\":\"s\"}", "body", &diag), "body", .refused, .laya, &diag));
 }

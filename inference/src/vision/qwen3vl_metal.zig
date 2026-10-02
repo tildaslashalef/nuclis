@@ -21,7 +21,6 @@ const ffn = model.ffn;
 pub const ffn_padded = (ffn + 63) / 64 * 64;
 const qkv_width = model.qkv_width;
 const merged = model.merged_width;
-const out_width = model.output_width;
 const max_patches = model.max_patches;
 const max_tokens = model.max_tokens;
 
@@ -131,7 +130,7 @@ pub const Plan = struct {
         self.pos = try self.created(max_patches * hidden * 4);
         self.rope = try self.created(max_patches * model.rope_pairs * 8);
         self.mid = try self.created(max_tokens * merged * 4);
-        self.out = try self.created(max_tokens * out_width * 4);
+        self.out = try self.created(max_tokens * binding.output_width * 4);
         self.scratch = try alloc.alloc(f32, 4 * hidden);
         return self;
     }
@@ -149,12 +148,13 @@ pub const Plan = struct {
         self.* = undefined;
     }
 
-    /// Encodes `patches` into `out` (`grid.tokens() × output_width` rows);
+    /// Encodes `patches` into `out` (`grid.tokens() × binding.output_width` rows);
     /// one command buffer, committed and waited for before the copy out.
     pub fn encode(self: *Plan, patches: preprocess.Patches, out: []f32) !void {
         const grid: model.Grid = .{ .width_patches = patches.width_patches, .height_patches = patches.height_patches };
         const n = grid.patches();
         const tokens = grid.tokens();
+        const out_width = self.binding.output_width;
         if (n == 0 or n > max_patches or patches.row != model.patch_values or out.len < tokens * out_width) return error.InvalidShape;
         const b = self.backend;
         @memcpy(self.input.floats()[0 .. n * model.patch_values], patches.values);

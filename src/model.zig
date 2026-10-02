@@ -274,6 +274,42 @@ fn remoteJob(arena: Allocator, f: hf.RemoteFile, role: ?Role) !Job {
 /// and writes the sidecars. `diag` carries the reason of every typed
 /// failure.
 pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    const decision = catalog.findDecision(options.repo) orelse return pullOne(gpa, io, environ, root, options, json, out, sty, diag);
+    const backbone = decision.backbone orelse return pullOne(gpa, io, environ, root, options, json, out, sty, diag);
+    // clef: the backbone (and, asked for, its projector) from their own
+    // repository at the pinned commit, each checked against the catalogue's
+    // digest, then the head and its support files.
+    if (options.file != null or options.revision != null or options.register != null) {
+        diag.set("{s} is a decision checkpoint pinned to {s} at {s}; pulling by repository id chooses another file or commit", .{ decision.name, decision.repo, decision.revision[0..12] });
+        return error.ConflictingOptions;
+    }
+    var wanted = options.with.iterator();
+    while (wanted.next()) |role| if (role != .mmproj or decision.mmproj == null) {
+        diag.set("{s} has no {s} companion in the catalogue", .{ decision.name, @tagName(role) });
+        return error.NoSuchCompanion;
+    };
+    const with_mmproj = options.all or options.with.contains(.mmproj);
+    for ([_]?catalog.Artifact{ backbone, if (with_mmproj) decision.mmproj else null }, [_]Role{ .main, .mmproj }) |artifact, role| {
+        const a = artifact orelse continue;
+        var part: PullOptions = .{ .repo = a.repo, .revision = a.revision, .file = a.file, .role = role, .force = options.force };
+        part.config_path = options.config_path;
+        try pullOne(gpa, io, environ, root, part, json, out, sty, diag);
+        var arena_state = std.heap.ArenaAllocator.init(gpa);
+        defer arena_state.deinit();
+        const path = try std.fs.path.join(arena_state.allocator(), &.{ try modelsDir(arena_state.allocator(), root), a.repo, a.file });
+        const recorded = (try readSidecar(arena_state.allocator(), io, .cwd(), try sidecarPath(arena_state.allocator(), path))) orelse return error.InvalidSidecar;
+        if (!std.mem.eql(u8, recorded.sha256, a.sha256)) {
+            diag.set("{s}: the Hub's digest at commit {s} is not the catalogue's {s}…; the catalogue entry needs updating", .{ a.file, a.revision[0..12], a.sha256[0..12] });
+            return error.CatalogMismatch;
+        }
+    }
+    var head = options;
+    head.with = .initEmpty();
+    head.all = false;
+    return pullOne(gpa, io, environ, root, head, json, out, sty, diag);
+}
+
+fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, options: PullOptions, json: bool, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

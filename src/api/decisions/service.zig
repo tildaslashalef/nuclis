@@ -97,13 +97,15 @@ pub const Service = struct {
             return fail(arena, .unprocessable_entity, "invalid_request", "systemone takes one \"state\"; POST /v1/decisions takes \"states\"");
         const located = catalog.locate(arena, io, self.root, self.registry, name, &diag) catch |err|
             return locateFailure(arena, err, diag.message());
-        const decision = wire.fromJson(arena, io, root, "the request body", .refused, &diag) catch |err|
+        const decision = wire.fromJson(arena, io, root, "the request body", .refused, inference.decide.Family.of(io, located.directory), &diag) catch |err|
             return requestFailure(arena, err, diag.message());
         wire.checkLimits(decision, &diag) catch |err| return requestFailure(arena, err, diag.message());
 
         var job: batcher_mod.Job = .{
             .arena = arena,
             .directory = located.directory,
+            .backbone = located.backbone,
+            .mmproj = located.mmproj,
             .name = name,
             .states = wire.decisionStates(arena, decision) catch return fail(arena, .internal_server_error, "internal", "out of memory"),
             .questions = decision.questions,
@@ -147,7 +149,7 @@ pub const Service = struct {
     /// Opens `name` now (the `--model` of `nuclis serve`), through the GPU.
     pub fn preload(self: *Service, arena: std.mem.Allocator, io: std.Io, name: []const u8, diag: *config.Diagnostic) !void {
         const located = try catalog.locate(arena, io, self.root, self.registry, name, diag);
-        var opening: Opening = .{ .pool = &self.pool, .arena = arena, .directory = located.directory, .name = name };
+        var opening: Opening = .{ .pool = &self.pool, .arena = arena, .location = located.location(), .name = name };
         try self.executor.submit(io, &opening.item);
         opening.item.done.waitUncancelable(io);
         if (opening.failed) |e| {
@@ -164,7 +166,8 @@ pub const Service = struct {
             try details.put(arena, "present", .{ .bool = l.present });
             try details.put(arena, "loaded", .{ .bool = if (l.directory) |d| self.pool.isOpen(io, d) else false });
             try details.put(arena, "default", .{ .bool = std.mem.eql(u8, l.name, self.default_model) });
-            try details.put(arena, "max_len", if (l.budget) |b| .{ .integer = @intCast(b.max_len) } else .null);
+            const clef_budget: ?std.json.Value = if (l.family == .clef) .{ .integer = inference.profiles.clef.max_length } else null;
+            try details.put(arena, "max_len", clef_budget orelse if (l.budget) |b| .{ .integer = @intCast(b.max_len) } else .null);
             try details.put(arena, "head_max_len", if (l.budget) |b| .{ .integer = @intCast(b.head_max_len) } else .null);
             try details.put(arena, "repo", if (l.repo) |r| .{ .string = r } else .null);
             try details.put(arena, "revision", if (l.revision) |r| .{ .string = r } else .null);
@@ -179,13 +182,13 @@ const Opening = struct {
     item: gpu.Item = .{ .run = run },
     pool: *pool_mod.Pool,
     arena: std.mem.Allocator,
-    directory: []const u8,
+    location: inference.decide.Location,
     name: []const u8,
     failed: ?ApiError = null,
 
     fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
         const self: *Opening = @fieldParentPtr("item", item);
-        _ = self.pool.acquire(io, self.directory, self.name) catch |err| {
+        _ = self.pool.acquire(io, self.location, self.name) catch |err| {
             self.failed = batcher_mod.openFailure(self.arena, self.name, err);
         };
         return .done;
@@ -322,7 +325,7 @@ test "decisions: the response is what `nuclis decide --json` writes" {
         var diag: config.Diagnostic = .{};
         const args: []const []const u8 = if (explain) &.{ "--request", path, "--json", "--backend", "cpu", "--explain" } else &.{ "--request", path, "--json", "--backend", "cpu" };
         var cli: std.Io.Writer.Allocating = .init(arena);
-        try decide.run(std.testing.allocator, io, f.directory, .{ .name = "tiny" }, try decide.parseArgs(arena, args, &diag), &cli.writer, .none, &diag);
+        try decide.run(std.testing.allocator, io, .{ .directory = f.directory }, .{ .name = "tiny" }, try decide.parseArgs(arena, args, &diag), &cli.writer, .none, &diag);
         try std.testing.expectEqualStrings(try withoutTimings(arena, cli.written()), try withoutTimings(arena, served.body));
     }
 

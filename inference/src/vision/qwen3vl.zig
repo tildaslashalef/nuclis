@@ -25,7 +25,10 @@ pub const head_dim = 72;
 pub const blocks = 27;
 pub const patch = 16;
 pub const merge = 2;
-pub const output_width = 5120;
+/// The feature widths accepted: the embedding widths of the backbones this
+/// projector feeds (Qwen3.8-27B 5,120, clef-flash's Qwen3.5-9B 4,096), read
+/// from `clip.vision.projection_dim`.
+pub const output_widths = [_]usize{ 5120, 4096 };
 /// The learned position table is a `position_side²` grid, bilinearly
 /// resized (corners aligned) to the image's patch grid.
 pub const position_side = 48;
@@ -62,6 +65,8 @@ pub const Linear = struct { weight: *const Tensor, bias: *const Tensor };
 pub const Block = struct { norm1: Norm, qkv: Linear, output: Linear, norm2: Norm, up: Linear, down: Linear };
 
 pub const Binding = struct {
+    /// `clip.vision.projection_dim`, one of `output_widths`.
+    output_width: usize,
     /// The two temporal slices of the 3-D patch convolution; a still image is
     /// both frames, so the slices are summed at load.
     patch_embedding: [2]*const Tensor,
@@ -110,7 +115,6 @@ fn validateMetadata(doc: *const gguf.Document) Error!void {
     if (!std.mem.eql(u8, try stringValue(doc, "general.architecture"), architecture)) return error.UnsupportedArchitecture;
     if (!std.mem.eql(u8, try stringValue(doc, "clip.projector_type"), projector_type)) return error.UnsupportedProjector;
     const settings = [_]struct { key: []const u8, value: u64 }{
-        .{ .key = "clip.vision.projection_dim", .value = output_width },
         .{ .key = "clip.vision.image_size", .value = 768 },
         .{ .key = "clip.vision.patch_size", .value = patch },
         .{ .key = "clip.vision.embedding_length", .value = hidden },
@@ -208,7 +212,9 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     for (result.layers) |layer| if (std.mem.indexOfScalar(u32, &element_encodings, layer.down.weight.encoding_id) == null) return error.UnsupportedTensorEncoding;
     result.post_norm = try binder.norm("v.post_ln", .{}, hidden);
     result.merger_0 = try binder.linear("mm.0", .{}, merged_width, merged_width);
-    result.merger_2 = try binder.linear("mm.2", .{}, merged_width, output_width);
+    result.output_width = std.math.cast(usize, try unsignedValue(doc, "clip.vision.projection_dim")) orelse return error.UnsupportedConfiguration;
+    if (std.mem.indexOfScalar(usize, &output_widths, result.output_width) == null) return error.UnsupportedConfiguration;
+    result.merger_2 = try binder.linear("mm.2", .{}, merged_width, result.output_width);
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
     result.tensors = binder.tensors;
     result.bytes = binder.bytes;
@@ -393,10 +399,11 @@ pub const Runtime = struct {
     }
 
     /// Encodes `patches` (a grid's rows from `preprocess.patches`) into
-    /// `out`: `grid.tokens() × output_width` feature rows.
+    /// `out`: `grid.tokens() × binding.output_width` feature rows.
     pub fn encode(self: *Runtime, patches: preprocess.Patches, out: []f32) !void {
         const grid: Grid = .{ .width_patches = patches.width_patches, .height_patches = patches.height_patches };
         const n = grid.patches();
+        const output_width = self.binding.output_width;
         if (n == 0 or n > max_patches or patches.row != patch_values or out.len < grid.tokens() * output_width) return error.InvalidShape;
         const a = self.alloc;
         const x = try a.alloc(f32, n * hidden);

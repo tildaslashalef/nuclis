@@ -9,45 +9,15 @@
 //! since the model read that text in training. Contract: docs/reference/laya.md.
 const std = @import("std");
 const hf = @import("../tokenizer/hf_json.zig");
+const decision = @import("decision.zig");
 
-pub const Kind = enum(u2) {
-    choice = 0,
-    score = 1,
-    noul = 2,
-
-    pub fn name(self: Kind) []const u8 {
-        return @tagName(self);
-    }
-};
-
-/// A validation failure's reason, naming the question.
-pub const Diagnostic = struct {
-    buffer: [512]u8 = undefined,
-    len: usize = 0,
-
-    pub fn message(self: *const Diagnostic) []const u8 {
-        return self.buffer[0..self.len];
-    }
-
-    pub fn set(self: *Diagnostic, comptime fmt: []const u8, args: anytype) void {
-        self.len = if (std.fmt.bufPrint(&self.buffer, fmt, args)) |text| text.len else |_| self.buffer.len;
-    }
-};
-
-pub const QuestionError = std.mem.Allocator.Error || error{InvalidQuestion};
-
-/// One question, validated and rendered.
-pub const Question = struct {
-    kind: Kind,
-    /// As the model reads it: non-string instructions are JSON.
-    instructions: []const u8,
-    /// Answer keys in option order: choice keys, score `"0"`…, noul `"false"`, `"true"`.
-    keys: []const []const u8,
-    /// Option texts in the same order (`"key: description"`, `"level i: …"`, `"false: …"`).
-    texts: []const []const u8,
-    /// A score question's criteria as given (the answer's `legend`); empty otherwise.
-    legend: []const std.json.Value = &.{},
-};
+pub const Kind = decision.Kind;
+pub const Diagnostic = decision.Diagnostic;
+pub const QuestionError = decision.QuestionError;
+pub const Question = decision.Question;
+pub const pythonJson = decision.pythonJson;
+pub const writePythonJson = decision.writePythonJson;
+pub const writePythonFloat = decision.writePythonFloat;
 
 /// Validates a question definition (`{"type", "instructions", "criteria",
 /// "labels"}`) as the package does and renders its options; `arena` owns
@@ -136,7 +106,7 @@ pub fn parseQuestion(arena: std.mem.Allocator, id: []const u8, value: std.json.V
             }
         },
     }
-    return .{ .kind = kind, .instructions = instructions, .keys = keys.items, .texts = texts.items, .legend = legend };
+    return .{ .id = id, .kind = kind, .instructions = instructions, .keys = keys.items, .texts = texts.items, .legend = legend };
 }
 
 fn fail(diag: *Diagnostic, comptime fmt: []const u8, args: anytype) error{InvalidQuestion} {
@@ -176,97 +146,6 @@ fn criterion(arena: std.mem.Allocator, value: std.json.Value) ![]const u8 {
         .string => |s| s,
         else => pythonJson(arena, value),
     };
-}
-
-/// `json.dumps(value, ensure_ascii=False)`: separators `", "` and `": "`,
-/// non-ASCII kept, floats in Python's `repr` form, keys in their order.
-pub fn pythonJson(arena: std.mem.Allocator, value: std.json.Value) ![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(arena);
-    writePythonJson(&out.writer, value) catch return error.OutOfMemory;
-    return out.written();
-}
-
-pub fn writePythonJson(w: *std.Io.Writer, value: std.json.Value) std.Io.Writer.Error!void {
-    switch (value) {
-        .null => try w.writeAll("null"),
-        .bool => |b| try w.writeAll(if (b) "true" else "false"),
-        .integer => |i| try w.print("{d}", .{i}),
-        .float => |f| try writePythonFloat(w, f),
-        .number_string => |s| try w.writeAll(s),
-        .string => |s| try writePythonString(w, s),
-        .array => |a| {
-            try w.writeByte('[');
-            for (a.items, 0..) |item, i| {
-                if (i > 0) try w.writeAll(", ");
-                try writePythonJson(w, item);
-            }
-            try w.writeByte(']');
-        },
-        .object => |o| {
-            try w.writeByte('{');
-            var it = o.iterator();
-            var first = true;
-            while (it.next()) |entry| {
-                if (!first) try w.writeAll(", ");
-                first = false;
-                try writePythonString(w, entry.key_ptr.*);
-                try w.writeAll(": ");
-                try writePythonJson(w, entry.value_ptr.*);
-            }
-            try w.writeByte('}');
-        },
-    }
-}
-
-fn writePythonString(w: *std.Io.Writer, s: []const u8) std.Io.Writer.Error!void {
-    try w.writeByte('"');
-    for (s) |c| switch (c) {
-        '"' => try w.writeAll("\\\""),
-        '\\' => try w.writeAll("\\\\"),
-        '\n' => try w.writeAll("\\n"),
-        '\r' => try w.writeAll("\\r"),
-        '\t' => try w.writeAll("\\t"),
-        0x08 => try w.writeAll("\\b"),
-        0x0c => try w.writeAll("\\f"),
-        0...0x07, 0x0b, 0x0e...0x1f => try w.print("\\u{x:0>4}", .{c}),
-        else => try w.writeByte(c),
-    };
-    try w.writeByte('"');
-}
-
-/// Python's `repr(float)`: the shortest round-trip digits, positional for
-/// decimal exponents −4…15 (always with a fraction), else `d.ddde±XX`.
-pub fn writePythonFloat(w: *std.Io.Writer, x: f64) std.Io.Writer.Error!void {
-    if (!std.math.isFinite(x)) return w.writeAll(if (std.math.isNan(x)) "NaN" else if (x > 0) "Infinity" else "-Infinity");
-    var buffer: [64]u8 = undefined;
-    const scientific = std.fmt.bufPrint(&buffer, "{e}", .{@abs(x)}) catch unreachable;
-    const e_at = std.mem.indexOfScalar(u8, scientific, 'e').?;
-    const exponent = std.fmt.parseInt(i32, scientific[e_at + 1 ..], 10) catch unreachable;
-    var digits_buffer: [32]u8 = undefined;
-    var n: usize = 0;
-    for (scientific[0..e_at]) |c| if (c != '.') {
-        digits_buffer[n] = c;
-        n += 1;
-    };
-    const digits = digits_buffer[0..n];
-    if (std.math.signbit(x)) try w.writeByte('-');
-    if (exponent < -4 or exponent >= 16) {
-        try w.writeByte(digits[0]);
-        if (digits.len > 1) try w.print(".{s}", .{digits[1..]});
-        return w.print("e{c}{d:0>2}", .{ @as(u8, if (exponent < 0) '-' else '+'), @abs(exponent) });
-    }
-    if (exponent < 0) {
-        try w.writeAll("0.");
-        for (0..@intCast(-exponent - 1)) |_| try w.writeByte('0');
-        return w.writeAll(digits);
-    }
-    const whole: usize = @intCast(exponent + 1);
-    if (whole >= digits.len) {
-        try w.writeAll(digits);
-        for (0..whole - digits.len) |_| try w.writeByte('0');
-        return w.writeAll(".0");
-    }
-    try w.print("{s}.{s}", .{ digits[0..whole], digits[whole..] });
 }
 
 pub const Budget = struct {
