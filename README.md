@@ -57,6 +57,10 @@ decoding, switched on where it measured faster.
 | | `gemma-4-e4b-qat` | on-device size: per-layer embeddings, shared KV layers | 4.2 GB |
 | Muse Glimmer | `muse-glimmer-30b` | dense 30B with a DFlash block drafter | 15.9 GB |
 
+Decision models, which answer typed questions instead of writing text,
+have their own entries: `laya`, `laya-multilingual`, and `clef-flash`
+([below](#decision-models-laya-and-clef-flash)).
+
 **Anything else** runs when its architecture has an adapter (Qwen3.8,
 Gemma 4, Muse Glimmer): finetunes, other quantizations, Gemma 4's K-quant
 release, Prism ML's ternary Bonsai 2. Judge a file before downloading it,
@@ -107,7 +111,7 @@ spends 38 % less model time. Gemma 4 26B-A4B stays off: on that mixture
 of experts the batch grows dearer with every drafted token than it saves. Methodology, variance, and every
 record: [docs/reference/bench.md](docs/reference/bench.md).
 
-## Experiment: decisions with Laya
+## Decision models: Laya and clef-flash
 
 `nuclis decide` runs [Laya](https://huggingface.co/convaiinnovations/laya),
 a small encoder that answers a typed question about a text in one pass,
@@ -134,24 +138,55 @@ scored at 0.48. `laya-multilingual` reads other languages and 1,024 tokens
 but is worse on English, so `laya` is the default. Details, measurements,
 and limits: [docs/reference/laya.md](docs/reference/laya.md).
 
-`clef-flash`, Cloudflare's 9B decision model (a Qwen3.5 backbone with a
-joint schema head), answers every question about a state in one pass, reads
-images, and holds states up to 16,384 tokens, at about 2.3 s for a
-637-token state on Metal; its sequence and head match Cloudflare's own
-code, and every sanity answer is the obvious one. Details:
-[docs/reference/clef.md](docs/reference/clef.md).
+[clef-flash](https://huggingface.co/Cloudflare/clef-flash), Cloudflare's
+9B decision model, is the other end of the trade: a Qwen3.5 backbone (the
+same hybrid DeltaNet family as Qwen3.8, at a smaller shape) with a joint
+schema head that answers every question about a state in one pass. It
+reads images and states up to 16,384 tokens.
+
+```sh
+nuclis model pull clef-flash --with mmproj      # backbone, head, and projector: 9 GB
+nuclis decide --model clef-flash --image receipt.png --state 'Review the receipt.' \
+  --noul 'Is the total legible?' --choice 'Which currency?' --option USD --option EUR
+```
+
+| | `laya` | `clef-flash` |
+| --- | --- | --- |
+| Model | 0.4B encoder, one pass per question | 9B Qwen3.5 backbone, every question in one pass |
+| State | 512 tokens | 16,384 tokens, and images |
+| One decision on Metal | 0.1–0.2 s (500 tokens) | 2.3 s (637 tokens) |
+| Weights | 0.8 GB | 9 GB |
+| CPU | usable | checks only (about 1 token/s) |
+| Decision Index 0.2.1 (Cloudflare's card) | MMLU 30.7, BANKING77 14.3 | MMLU 91.8, BANKING77 90.9 |
+
+So Laya is the filter over many states, and clef-flash the judge of a few
+hard ones. Its sequence and head match Cloudflare's own code (the token
+ids exactly, the head within 1.4e-6), CPU and Metal agree within 6e-4,
+and every obvious-answer check picks the obvious option, on text and on
+images. The benchmark scores are Cloudflare's, not re-measured here.
+Details: [docs/reference/clef.md](docs/reference/clef.md).
 
 `nuclis serve` keeps the models open behind a local HTTP API that speaks
 TypeSafe's Jev protocol, so a Jev client only changes its base URL; a warm
 decision takes 14 ms (`laya-multilingual`) to 34 ms (`laya`), and requests
-that arrive together share a GPU pass. Routes, errors, and rates:
-[docs/reference/api.md](docs/reference/api.md).
+that arrive together share a GPU pass. A request picks its model by name,
+so one server answers with Laya and clef-flash side by side. Routes,
+errors, and rates: [docs/reference/api.md](docs/reference/api.md).
 
 ```sh
 nuclis serve
 curl -s localhost:8000/v1/systemone -d '{"model": "jev-latest",
   "state": "Help! My payouts have been failing for 3 days.",
   "questions": {"is_urgent": {"type": "noul", "instructions": "Does this convey urgency?"}}}'
+```
+
+`nuclis serve --model clef-flash` opens clef-flash at start; a request
+still names it, since the default model stays `decide.model`:
+
+```sh
+curl -s localhost:8000/v1/systemone -d '{"model": "clef-flash",
+  "state": "Our checkout returns errors and orders are blocked.",
+  "questions": {"team": {"type": "choice", "criteria": {"billing": "Payments", "technical": "Outages"}}}}'
 ```
 
 ## Documentation

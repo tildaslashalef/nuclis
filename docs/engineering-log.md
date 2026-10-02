@@ -165,6 +165,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-19 | `nuclis serve`, the nuclis API: decisions over HTTP, TypeSafe's Jev call, batched across requests (1.24–1.30×, the model's packing ceiling); closed below its throughput target | 2026-10-02 |
 | APPS-20 | `nuclis serve` configured and logged: the `serve` section (host, port 8000, log), the default model opened at start, a coloured line per request | 2026-10-02 |
 | MODL-34 | clef-flash: Cloudflare's 9B decision model (Qwen3.5 backbone, joint schema head) on both backends, text and images, in `decide` and `serve`; qwen35 reads its shape from the file | 2026-10-02 |
+| REPO-28 | The README presents clef-flash beside Laya: the decision section renamed, a pull and image example, the trade-off table, a clef request to `serve` | 2026-10-03 |
 
 ## Context
 
@@ -7279,3 +7280,20 @@ image is at most 1,024 tokens where the reference allows 16,384; videos
 are not read; the CPU backbone runs about a token a second, for checks
 only; no Q8_0 or bf16 backbone was compared. `model ls` lists the entry's
 size as the head's (the backbone has its own row).
+
+## REPO-28 — The README presents clef-flash beside Laya (2026-10-03)
+
+**Outcome.** The README's *Experiment: decisions with Laya* becomes
+*Decision models: Laya and clef-flash*: the Models section points to the
+decision entries, clef-flash gets its pull (`--with mmproj`) and an
+image example of `nuclis decide`, a table of the trade (model, state
+length, time per decision, weights, CPU use, and Cloudflare's Decision
+Index scores, marked as theirs), and `nuclis serve` gains a request
+naming `clef-flash`, with the note that `--model` opens a model without
+making it the default.
+
+**Evidence.** The example command ran as written on the fresh build
+(`--image` with a test PNG: both questions answered, 4.4 s). The figures
+are MODL-34's and laya.md's.
+
+**Files.** `README.md`.
