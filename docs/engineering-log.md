@@ -161,6 +161,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-26 | The README states the speculative defaults and their measured rates | 2026-10-02 |
 | REPO-27 | External review fixes: a failed recording is discarded (the destroy-while-recording hang gone), the kernel table derived, `--file` names a support file's weights, other formats' folders skipped, parser property tests | 2026-10-02 |
 | AGNT-18 | The agent's `decide` tool: dropped before it started; decision models are served by `nuclis serve` | 2026-10-02 |
+| KERN-22 | Long-context decode attention: dropped before it started, a small win at 32K only | 2026-10-02 |
 
 ## Context
 
@@ -6992,3 +6993,23 @@ baselines, the default `decide.model` settled by a stated rule).
 measurement that would have settled it is not scheduled. MODL-34 measures
 clef-flash's quantized backbone against its bf16 reference, not the
 checkpoints against one another.
+
+## KERN-22 — Long-context decode attention: dropped before it started (2026-10-02)
+
+**Outcome.** Dropped by the user before any work: KERN-23 closes the
+decode-speed theme. The unit would have reworked `nu_attention_decode`
+(each lane's strided channels, a `simd_sum`, two `exp`s and a full rescale
+per key) for long caches, where single-row decode is 124 ms at 30,650
+tokens against 94 ms at 2K, about 30 ms for 2 GB of F16 cache (some 67
+GB/s). Its target was 32K decode ≥ 9.2 tok/s; the win is confined to deep
+contexts, and the plan's own note was to pull it forward only if long
+agent sessions became the main use.
+
+**Evidence.** None needed: no measurement was taken. The design is in
+the history of `TODO.md` before this entry's commit.
+
+**Files.** `TODO.md`.
+
+**Remaining.** Decode attention at depth stays as measured in
+[bench.md](reference/bench.md) (flash decoding); a later unit can take
+the design from the plan's history if long contexts become the main use.

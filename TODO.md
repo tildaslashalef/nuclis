@@ -54,17 +54,16 @@ speed` base binary stands.
 speed unit: first APPS-19, `nuclis serve`, a local decision API that keeps
 decision models loaded and batches concurrent requests; then MODL-34,
 Cloudflare's clef-flash decision model; then KERN-23, which closes the
-decode-speed theme. KERN-22 is deferred (its design kept below; pull it
-forward if long agent sessions become the main use). AGNT-18, the agent's
-`decide` tool, is dropped (engineering log): decision models are served
-by `nuclis serve`, and the agent stays a tool for language models.
+decode-speed theme. Dropped (engineering log): KERN-22, long-context
+decode attention, a small win at 32K only; AGNT-18, the agent's `decide`
+tool, since decision models are served by `nuclis serve` and the agent
+stays a tool for language models.
 
 | # | Unit | Sessions |
 | --- | --- | ---: |
 | 1 | APPS-19 — `nuclis serve`: a local decision API that batches across requests | 2 |
 | 2 | MODL-34 — clef-flash: Cloudflare's 9B decision model, text then vision | 4 |
 | 3 | KERN-23 — Weight streaming for one row and a few (closes the decode-speed theme) | 2 |
-| — | KERN-22 — Long-context decode attention | deferred |
 | — | AGNT-19 — Saved prefixes for the agent across processes | queued after KERN-23 |
 
 ## APPS-19 — `nuclis serve`: a local decision API that batches across requests (2 sessions) — next
@@ -294,7 +293,6 @@ shared code:
 | Lever | Unit | Qwen 27B | Bonsai 27B | Gemma 4 (E4B, 12B, 26B-A4B) | Muse 30B |
 | --- | --- | :---: | :---: | :---: | :---: |
 | Few-query split-KV verify attention | KERN-21 | ✓ | ✓ | ✓ (draft heads) | ✓ (speculation on) |
-| Long-context decode attention | KERN-22 | ✓ | ✓ | ✓ | ✓ |
 | Single-row and few-row matvec bandwidth | KERN-23 | ✓ | ✓ | ✓ (their encodings) | ✓ |
 | DeltaNet recurrent verify, replay tape | ENGN-19 | ✓ | ✓ | — | — |
 
@@ -345,7 +343,6 @@ KERN-20, with the source or the measurement for each fact.
 | # | Unit | Sessions | Lands when |
 | --- | --- | ---: | --- |
 | 1 | KERN-23 — Weight streaming for one row and a few: decode and the verify body | 2 | 512 decode ≥ 11.5 tok/s, a 4-row verify C ≤ 150 ms at 512, or Qwen speculative prose 512 ≥ 18 tok/s; or closed at its ledger |
-| — | KERN-22 — Long-context decode attention (deferred 2026-10-02, user) | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
 
 **Re-ranked after ENGN-20** (2026-10-02): speculation is on for Qwen
 (draft 7), Gemma 12B QAT (5), E4B (6), and Muse (6), so a verify lever now
@@ -465,36 +462,6 @@ verify`.
 
 Gates: `make test-metal`, `make verify-auto`, `make verify`; the
 speculative record above for the third prediction.
-
-## KERN-22 — Long-context decode attention — deferred
-
-Deferred 2026-10-02 (user): KERN-23 closes the decode-speed theme. The
-design below stands for when long agent sessions make 32K decode matter.
-
-Single-row decode is 124 ms at 30,650 tokens against 94 ms at 2K
-(bench.md, flash decoding): about 30 ms for 2 GB of F16 cache, some 67 GB/s.
-`nu_attention_decode` gives a lane channels `l, l+32, …` and does a
-`simd_sum`, two `exp`s and a full rescale per key.
-
-- **Ideas, cheapest first:** (a) contiguous `half8` channels per lane (one
-  16-byte load); (b) a lane per key inside a 32-key block, one softmax
-  reduction per block; (c) 128 or 256 splits; (d) the GQA group's 6
-  heads × T rows as one `simdgroup_matrix` Q tile against 8-key blocks.
-  Since KERN-21 the verify batch runs this same kernel with a row
-  dimension (`attentionVerify`), linear in rows at about 0.23 ms per row
-  per layer at 4K and 95.8 ms per 4-row batch at 32K: every idea here is
-  measured on `make bench-attention`'s verify rows too, and (d) is
-  KERN-21's untried idea for them.
-- **Prediction.** The decode attention kernel ≥ 150 GB/s of cache in
-  `bench --profile` at 32K (`attention_decode_h` 26.8 → ≤ 13 ms per step);
-  32K decode 8.28 → ≥ 9.2 tok/s, 16K 9.25 → ≥ 9.5. (The first target,
-  7.55 → 8.3, was set against the hot-chip acceptance record; the
-  2026-09-30 baseline already reads 8.28.)
-- **Correctness.** The decode attention fixtures in `metal-check`
-  (poisoned future rows), the trace gates, `make verify-long`.
-
-Gates: `make test-metal`, `make verify-auto`, `make verify`, `make
-verify-long`.
 
 ## AGNT-19 — Saved prefixes for the agent: the primed prefix and `/resume` across processes (2 sessions) — queued
 
