@@ -158,6 +158,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-24 | The register-fragment small-batch tile and two routings: Qwen's 4-row verify C 16 % cheaper, Gemma 12B QAT's 23 %; closed below its target (the padded 8×8 multiplies are the floor) | 2026-10-01 |
 | ENGN-19 | The DeltaNet replay tape: verify steps the recurrence without writing the state, recovery replays the accepted rows; Qwen's verify C 48–51 ms cheaper at every depth, the 1.25 GB row-slot region gone | 2026-10-01 |
 | ENGN-20 | Speculation re-priced per family: Qwen on at draft 7 (short code 20.3–20.9 tok/s), Gemma 12B QAT on at 5, E4B on at 6, Muse at 6, 26B-A4B off; `make spec-matrix`, `bench --draft-p-min`; `agent --print` loads the drafter | 2026-10-02 |
+| REPO-26 | The README states the speculative defaults and their measured rates | 2026-10-02 |
 
 ## Context
 
@@ -6834,3 +6835,24 @@ The `code` workload is untemplated, so it counts for Qwen alone. The
 proposals the unit named as next (the DFlash 2 checkpoint for Qwen,
 suffix drafts for agent edit turns, one root-sibling row) were not
 started.
+
+## REPO-26 — The README's speculative decoding results (2026-10-02)
+
+**Outcome.** The README's *Models* section says each entry's draft source
+is switched on where it measured faster (Muse's row no longer singles it
+out), and *Results* gains a short table of decode off → on at 512 and
+32,639 tokens for the four entries ENGN-20 turned on, with Qwen's short
+code at 20 tokens/s, the agent task list's 38 % less model time, and
+why Gemma 4 26B-A4B stays off.
+
+**Evidence.** Every number is a row of
+[bench.md § The re-priced speculative verdicts](reference/bench.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)
+or of ENGN-20's log entry (Qwen's from the cold pass at draft 7; the
+others from the hot matrix at their default length, greedy), and the
+README says which. Documentation only: no build or test was run.
+
+**Files.** `README.md`, this log.
+
+**Remaining.** The README's first results table is still the 2026-09-10
+acceptance record (macOS 26.6.2); it is refreshed with the next release's
+acceptance run.

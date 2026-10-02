@@ -46,7 +46,8 @@ echo 'source <(nuclis completion bash)' >> ~/.bashrc
 
 The catalogue pins each model's repository, commit, and SHA-256, so
 `nuclis model pull <name>` fetches exactly the bytes that were measured.
-Every entry reads images and carries a draft head for speculative decoding.
+Every entry reads images and carries a draft source for speculative
+decoding, switched on where it measured faster.
 
 | Family | Name | What is distinctive | Size |
 | --- | --- | --- | ---: |
@@ -54,7 +55,7 @@ Every entry reads images and carries a draft head for speculative decoding.
 | Gemma 4 | `gemma-4-12b-qat` | dense, quantization-aware trained: every matrix Q4_0 | 6.7 GB |
 | | `gemma-4-26b-a4b` | mixture of experts, 8 of 128 per token | 14.2 GB |
 | | `gemma-4-e4b-qat` | on-device size: per-layer embeddings, shared KV layers | 4.2 GB |
-| Muse Glimmer | `muse-glimmer-30b` | dense 30B with a DFlash drafter, on by default | 15.9 GB |
+| Muse Glimmer | `muse-glimmer-30b` | dense 30B with a DFlash block drafter | 15.9 GB |
 
 **Anything else** runs when its architecture has an adapter (Qwen3.8,
 Gemma 4, Muse Glimmer): finetunes, other quantizations, Gemma 4's K-quant
@@ -86,8 +87,25 @@ Qwen3.8, the first target, decodes faster than the reference at every
 length. The other families run on kernels written for Qwen and have not
 been tuned yet; the per-kernel profiles say where the gap is. Every file
 matches the reference's per-layer traces on the CPU and on Metal before
-its rate is recorded. Methodology, variance, and every record:
-[docs/reference/bench.md](docs/reference/bench.md).
+its rate is recorded.
+
+**Speculative decoding** is on by default: a small drafter proposes a
+few tokens and the model checks them in one batch, keeping what it would
+have produced itself. Decode with the switch off → on, greedy, at the
+entry's draft length (same M4 Pro, macOS 27.0, 2026-10-01; Qwen from a
+cooled chip, the others from one long, warm run):
+
+| Model | Draft | 512 | 32,639 |
+| --- | ---: | ---: | ---: |
+| Qwen3.8-27B | 7 | 10.5 → 16.5 (1.57×) | 8.3 → 10.9 (1.32×) |
+| Gemma 4 12B QAT | 5 | 24.7 → 44.8 (1.83×) | 16.5 → 16.2 (0.98×) |
+| Gemma 4 E4B QAT | 6 | 46.9 → 98.6 (2.10×) | 33.0 → 38.7 (1.16×) |
+| Muse Glimmer 30B | 6 | 8.5 → 12.6 (1.50×) | 6.9 → 7.6 (1.12×) |
+
+Short code on Qwen3.8 reaches 20 tokens/s, and the agent's task list
+spends 38 % less model time. Gemma 4 26B-A4B stays off: on that mixture
+of experts the batch grows dearer with every drafted token than it saves. Methodology, variance, and every
+record: [docs/reference/bench.md](docs/reference/bench.md).
 
 ## Experiment: decisions with Laya
 
