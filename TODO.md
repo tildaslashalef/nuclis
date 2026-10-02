@@ -61,8 +61,9 @@ pulls it forward: AGNT-19, saved prefixes for the agent across processes
 (its design after AGNT-18).
 
 Queued (user, 2026-10-02), after the decode-speed theme unless the user
-pulls it forward: APPS-19, `nuclis serve`, a local decision API that keeps
-decision models loaded (its design at the end).
+pulls it forward: APPS-19 (2 sessions), `nuclis serve`, a local decision
+API that keeps decision models loaded and batches concurrent requests into
+one Metal pass (its design at the end).
 
 ## The theme: decode speed on Metal
 
@@ -384,7 +385,7 @@ Gates: `make check`, `make lint-py`, `make verify-auto`, `make shot`,
 `make agent-eval VARIANT=…`. Docs: `docs/reference/session.md`,
 `docs/development.md` § User directories, the agent's help.
 
-## APPS-19 — `nuclis serve`: a local decision API (1 session) — queued
+## APPS-19 — `nuclis serve`: a local decision API that batches across requests (2 sessions) — queued
 
 Base: recorded when the unit starts.
 
@@ -392,58 +393,107 @@ Every `nuclis decide` call starts a process and opens its checkpoint:
 about 75 ms for `laya` and 0.4 s for `laya-multilingual` (parsing its
 34 MB `tokenizer.json`) before a 230–300 ms Metal encode, so a client
 deciding every second spends half its time loading. A long-running
-process that keeps decision models open removes that, and an endpoint
-listing them lets clients follow the catalogue instead of hard-coding
-names.
+process that keeps decision models open removes that; batching requests
+that arrive together into one Metal pass raises throughput the way a
+multi-state call already does (one state 2,440 tokens/s, 50 states 3,500,
+[laya.md § Time per call](docs/reference/laya.md#time-per-call)); an
+endpoint listing the models lets clients follow the catalogue.
+
+Where the time goes decides the design: the encode is hundreds of
+milliseconds and HTTP on loopback is tens of microseconds, so the server
+must add nothing measurable around the encode, never leave the GPU idle
+while a request waits, and pack whatever is waiting into the next pass.
+
+### Surface
 
 - **Command.** `nuclis serve` (APPS surface, `src/serve.zig`, dispatched
   from `src/cli.zig` like `decide`): `--host` (default `127.0.0.1`),
   `--port` (default 8735), `--model <name|path>` (repeatable, opened at
-  start; otherwise each model opens on first use), `--backend cpu|metal`.
+  start; otherwise each opens on first use), `--backend cpu|metal`.
   Binding anywhere but loopback prints a warning; there is no
   authentication.
 - **Routes.** JSON in and out, typed errors as
-  `{"error": {"code", "message"}}`:
+  `{"error": {"code", "message"}}` with the HTTP status that fits:
   - `POST /v1/decide`: the body `nuclis decide --request` reads
     (`questions`, `state` or `states`, an optional `model` naming a
     decision model, default `decide.model`), `?explain=1` for the explain
     fields. The response is byte-for-byte what `nuclis decide --json`
     writes for the same request, timings aside. `{"file": path}` states
-    are refused: the server reads no files a request names.
+    are refused: the server reads no file a request names.
   - `POST /v1/systemone`: Jev's single-state call for clients written
-    against TypeSafe's API: the request as above with one `state`, the
-    response `{model, answers, usage}` (one result's fields).
+    against TypeSafe's API: one `state`, the response `{model, answers,
+    usage}`.
   - `GET /v1/models`: every decision entry (catalogue and registry, `kind:
     "decision"`): name, repo, revision, present, loaded, and the budgets
     from its `rl_agent_config.json` (`max_len`, `head_max_len`).
-  - `GET /v1/health`: version, backend, loaded models.
+  - `GET /v1/health`: version, backend, loaded models, queue depth.
 - **Shared code.** The JSON request parsing (`parseJson`,
   `stateFromJson`, `questionsFromJson`, the request part of
   `buildRequest`) and the JSON writer (`writeAnswer` and the `--json`
   body of `run`) move from `src/decide.zig` to `src/decide_json.zig`, so
   the CLI and the server cannot drift.
+
+### Session 1: the server, lean
+
+- **I/O.** `std.Io` (Zig 0.16) net listener and `std.http.Server`: one
+  accept loop, each connection its own task (`io.async`), HTTP/1.1
+  keep-alive, no pipelining. Each connection owns a fixed read buffer
+  (16 KiB headers) and an arena reset after every response, so a warm
+  connection allocates nothing that outlives a request. Bodies are read
+  into the arena up to the limit, parsed once, rendered once; the
+  response goes out with `Content-Length` in one write.
 - **Models.** A table of open `inference.decide.Decider`s keyed by the
-  resolved directory, at most 2 open (evict the least recently used),
-  each opened under a lock so two first requests open it once.
-- **Limits.** Host constants: request body 4 MiB, headers 16 KiB, 8
-  connections, one decision at a time on the GPU (the others wait, at
-  most 8, then 503 `busy`), 30 s per request; the request limits of
-  `inference.decide` (`max_states`, `max_questions`, `max_options`,
-  `max_state_bytes`) apply unchanged.
-- **Prediction.** A warm `laya-multilingual` decision of one state and
-  two questions, measured with `curl` from the same machine: within 20 ms
-  of the encode time `timings_ms` reports, against 0.75 s through the
-  subprocess.
-- **Correctness.** Unit tests over in-memory requests: routing, each
+  resolved directory, at most 2 open (least recently used evicted when no
+  batch holds it), each opened once under a lock however many first
+  requests race.
+- **The GPU.** One worker task owns decisions; connections hand it a
+  job and wait on its completion. In this session it runs jobs one at a
+  time.
+- **Limits.** Host constants: body 4 MiB, headers 16 KiB, 64
+  connections, 64 queued jobs (then 503 `busy`), 30 s per request
+  (`timeout`); `inference.decide`'s request limits (`max_states`,
+  `max_questions`, `max_options`, `max_state_bytes`) apply unchanged.
+- **Targets** (Apple M4 Pro, ReleaseFast, `ab -k`, 1,000 requests):
+  `GET /v1/health` p50 ≤ 0.2 ms and p99 ≤ 1 ms at concurrency 1, ≥
+  20,000 requests/s at concurrency 16; a warm `laya-multilingual`
+  `POST /v1/decide` (one state, two questions) within 2 ms of the encode
+  `timings_ms` reports, against 0.75 s through the subprocess.
+- **Correctness.** Unit tests over in-memory connections: routing, each
   error (malformed JSON, unknown model, a file state, an oversized body,
-  busy), and the model table's eviction, on the tiny synthetic checkpoint
-  on the CPU. A server started on an ephemeral port answers the 8 root
-  fixture requests with exactly `nuclis decide --json`'s results (a new
-  fast-tier gate, `decide-serve`). The fresh binary exercised with `curl`
-  for every route.
-- **Docs.** `docs/spec.md` (the command table), a `nuclis serve` section
-  in `docs/reference/laya.md`, `docs/development.md` (the port and the
-  limits), `src/help.zig`, `docs/architecture.md` (the decision path).
+  oversized headers, busy, timeout), keep-alive across requests, and the
+  model table's eviction, on the tiny synthetic checkpoint on the CPU,
+  under `std.testing.allocator` with no leaks. A server on an ephemeral
+  port answers the 8 root fixture requests with exactly `nuclis decide
+  --json`'s results (a new fast-tier gate, `decide-serve`).
+
+### Session 2: batching across requests
+
+- **Scheduler.** While a batch runs, arriving jobs queue per model. When
+  the GPU frees, the worker takes every queued job for the oldest job's
+  model whose sequences fit the Metal plan's 2,048 rows (in arrival
+  order, a job never split), runs them as one `Decider.decide` call, and
+  hands each job its own results. No waiting window: an idle GPU starts
+  the first job at once, so a lone client pays nothing for batching. The
+  CPU backend batches the same way.
+- **Why it is safe.** A packed sequence's logits do not depend on what is
+  packed beside it (bit-identical,
+  [laya.md § On Metal](docs/reference/laya.md#on-metal)), so batching
+  changes timing, never answers. The test asserts it: 16 concurrent
+  requests return exactly the results each gets alone.
+- **Fairness.** Jobs for another model wait at most one batch: the next
+  batch serves the oldest waiting job's model.
+- **Targets** (same machine, `ab -k -c 16`, a one-state two-question
+  `laya` request, 512 requests): throughput ≥ 2× session 1's at
+  concurrency 16, p99 latency ≤ 2 batches' time; concurrency 1 unchanged
+  within 2 %.
+- **Measured and recorded**: requests/s and p50/p99 at concurrency 1, 4,
+  16 for both checkpoints, before and after batching, in the `nuclis
+  serve` section of `laya.md`.
+
+Docs: `docs/spec.md` (the command table), a `nuclis serve` section in
+`docs/reference/laya.md`, `docs/development.md` (the port, the limits,
+measuring with `ab`), `src/help.zig`, `docs/architecture.md` (the
+decision path).
 
 Gates: `make check`, `make verify-auto` (the new `decide-serve` gate). No
 numerical behaviour changes, so no Metal or CPU tier.
