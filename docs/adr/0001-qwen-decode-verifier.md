@@ -237,6 +237,24 @@ The drafter's commit grows with depth (5 ms at 512, 48 ms at 32K: its own
 attention over the whole cache), so at 32K the verify budget is half a
 single-row step.
 
+Re-measured on 2026-10-01 after KERN-21, KERN-24, and ENGN-19 (draft 7,
+cold chip, greedy / instruct; E and C from real runs,
+[bench.md § The re-priced speculative verdicts](../reference/bench.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)):
+
+| Context | E | Budget 50E | Measured C | of which verify | C / 50E | tok/s, plain → speculative |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| short code | 3.53 / 3.81 | 176.5 / 190.5 ms | 174.1 / 182.3 ms | 142.2 / 144.6 ms | **0.99 / 0.96** | 10.55 → 20.26 / 10.51 → 20.93 |
+| 512 | 2.70 / 2.63 | 135.0 / 131.5 ms | 164.1 / 166.5 ms | 138.2 / 138.9 ms | 1.21 / 1.27 | 10.47 → 16.47 / 10.42 → 15.86 |
+| 4,096 | 2.82 / 2.56 | 141.0 / 128.0 ms | 178.5 / 181.6 ms | 148.3 / 151.6 ms | 1.26 / 1.42 | 10.12 → 15.81 / 10.08 → 14.26 |
+| 16,384 | 2.70 / 2.49 | 135.0 / 124.5 ms | 217.7 / 222.3 ms | 184.8 / 187.2 ms | 1.61 / 1.79 | 9.20 → 12.41 / 9.16 → 11.26 |
+| 32,639 | 2.95 / 2.84 | 147.5 / 142.0 ms | 270.8 / 269.2 ms | 234.0 / 231.6 ms | 1.83 / 1.89 | 8.26 → 10.91 / 8.24 → 10.60 |
+
+The verify forward is now 1.46× a single-row step at 512 and 1.9× at
+32,639 (it was 2.4× and 8.6×), the drafter's commit 4–8 ms at every
+depth, and short code meets the budget. The 512 and 4K gaps are 29–54 ms
+per batch, a third to a half of a single-row step; from 16K the verify
+attention is the gap again.
+
 At 512 a batch of about 3.7 rows must cost what one row costs today; at 4K
 and beyond it must cost **less than today's single-row step**. The verifier
 streams the same 16.1 GB as that step, so no verifier schedule reaches these
@@ -308,17 +326,17 @@ These are concrete differences in execution paths, not diagnosed bugs:
 
 ### Confidence
 
-Subjective engineering estimate, not a statistical probability: approximately
-**15% confidence** in 20 tokens/s at all four contexts with the unchanged
-artifact and current draft source, before new measurements: from 4K up, the
-verifier must beat today's single-row step. Approximately **50% confidence**
-for short coding workloads, where the historical best is already 13.4
-tokens/s and the verify budget needs a 40 % cut. The survey supports the
-shape of this: an M4 Pro running MLX at about 78 % of peak bandwidth would
-take a single-row step to about 13 tokens/s, and its 3-row forward costs
-1.38× a step; reaching 20 at 512 needs both that efficiency and a verify
-near that ratio. There is stronger evidence for some improvement than
-for a uniform doubling. Refresh these estimates after the first cost table.
+Subjective engineering estimate, not a statistical probability. Refreshed
+2026-10-01 from the table above: short code is **measured** at 20.3–20.9
+tokens/s (draft 7, cold chip; it falls with the chip's heat, 18.3 in a
+long hot sequence). Approximately **25% confidence** in 20 tokens/s on
+prose at 512 and 4K with the unchanged artifact and draft source: C must
+fall a further 18–30 % (29–54 ms) while the verify's matrices sit at
+KERN-24's floor; what is left is the proposal (16–18 ms per batch at
+draft 7, its head a 1 GB Q6_K matvec per position) and a multi-row scalar
+verify body built on the single-row matvec work (KERN-23). Approximately
+**10%** at 16K and beyond, where the verify attention must roughly halve
+on top of that. Refresh after KERN-23 and KERN-22.
 
 The benefit is weight reuse across accepted tokens. The cost is a separate
 execution schedule, more numerical validation, and workload-dependent draft

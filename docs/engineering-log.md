@@ -157,6 +157,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-21 | Few-query verify attention through the flash-decoding split pass: the 4-row verify batch 25–78 % cheaper from 4K up on Qwen, Gemma, and Muse; checked at depth | 2026-09-30 |
 | KERN-24 | The register-fragment small-batch tile and two routings: Qwen's 4-row verify C 16 % cheaper, Gemma 12B QAT's 23 %; closed below its target (the padded 8×8 multiplies are the floor) | 2026-10-01 |
 | ENGN-19 | The DeltaNet replay tape: verify steps the recurrence without writing the state, recovery replays the accepted rows; Qwen's verify C 48–51 ms cheaper at every depth, the 1.25 GB row-slot region gone | 2026-10-01 |
+| ENGN-20 | Speculation re-priced per family: Qwen on at draft 7 (short code 20.3–20.9 tok/s), Gemma 12B QAT on at 5, E4B on at 6, Muse at 6, 26B-A4B off; `make spec-matrix`, `bench --draft-p-min`; `agent --print` loads the drafter | 2026-10-02 |
 
 ## Context
 
@@ -6750,3 +6751,86 @@ batch over 8 rows keeps the chunk path and the rewind. Recovery now costs a
 replay even when every draft is accepted (2.8 ms against 0), still a net
 gain of 33–34 ms per batch there.
 
+## ENGN-20 — Speculation re-priced per family; the catalogue's defaults (2026-10-02)
+
+**Outcome.** At the verify costs after KERN-21, KERN-24, and ENGN-19,
+speculation pays for every family but the mixture-of-experts Gemma, and
+the catalogue follows the record: `qwen3.8-27b` on at draft 7 (was off,
+4), `gemma-4-12b-qat` on at 5 (off, 4), `gemma-4-e4b-qat` on at 6
+(unmeasured, off), `muse-glimmer-30b` on at 6 (on, 4), `gemma-4-26b-a4b`
+off (unmeasured, now measured negative). One verdict rule replaces
+ENGN-17's Qwen bar: on at draft length L when no prose cell (512, 4K,
+16K, 32,639; greedy and the profile's sampling) reads below 0.98× and the
+cells' geometric mean is ≥ 1.10×, L the qualifying length with the best
+mean. `engine.draft_p_min` stays 0.7.
+
+- `inference.engine.Speculative.p_min` (default `draft_p_min`) and
+  `bench --draft-p-min <0..1>`, a bench-only knob (`speculative_p_min`
+  in the report).
+- `scripts/spec-matrix.py` (`make spec-matrix`, self-test in `make
+  workloads-validate`): real speculation per cell on the speed loop's
+  saved prefixes, E, C and its parts, C / 50E, the median pair speedup;
+  resumable (`.zig-cache/spec/<model>/<rev>/`), `--report`, `--cooldown`,
+  `--run` (another fixture run's token arrays).
+- A side fix: `nuclis agent --print` opened the engine with no drafter,
+  so `--speculative on` and an entry's verdict were ignored in print mode
+  (the terminal agent loaded it). `src/agent/print.zig` now resolves the
+  draft source and passes the speculative settings to the completer, as
+  `src/agent/root.zig` does. Found when the agent task list's "on" run
+  reproduced the "off" run's tokens.
+
+**Evidence.** [bench.md § The re-priced speculative verdicts](reference/bench.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01),
+the derived rows under `docs/benchmarks/speculative-2026-10-01/`. Apple M4
+Pro MacBook Pro (Mac16,8), 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe,
+`c7b6d2b`, F16 KV, context 32,768, 128 output tokens, three off/on pairs
+per cell; 302 cells over about 6½ hours.
+
+- Qwen, cold (`--cooldown 90`), draft 7: prose 1.25–1.57× (512 16.5 / 15.9
+  tok/s greedy / instruct, 4K 15.8 / 14.3, 16K 12.4 / 11.3, 32,639 10.9 /
+  10.6), the think-on sampling 1.44–1.53×, short code 1.92 / 1.95×: **20.26
+  and 20.93 tok/s, C / 50E 0.99 and 0.96**, ADR 0001's target for short
+  code. C at draft 7 is 164–271 ms from 512 to 32,639 (verify 138–234;
+  the drafter's commit 4–8 ms, was 48 at 32K). Hot matrix, drafts 2–7:
+  prose geometric mean 1.301 / 1.338 / 1.366 / 1.392 / 1.392 / 1.392;
+  cold drafts 5 / 7 tie on prose (1.386 / 1.387), 7 wins code (1.94 /
+  1.88).
+- `p_min` at Qwen draft 7 (code, 512, 4K; both samplings): 0 → 1.489, 0.5
+  → 1.576, 0.6 → 1.613, 0.7 → 1.649, 0.8 → 1.631.
+- Gemma 12B QAT, drafts 2–7: geometric mean 1.209–1.336, best at 5; worst
+  cells at 32K (0.92–1.03×), where the verify grows with its rows (122 →
+  171 ms). E4B: 1.297–1.473, draft 7 fails the rule (0.979× at 32K
+  instruct), 6 kept (1.468, worst 0.990). Muse, drafts 2–15: best at 6
+  (1.270, worst 1.096); the block costs 25–30 ms up to 6 drafts and 47–60
+  ms from 8. 26B-A4B: 0.63–0.76× on prose at 512 and 4K, its verify
+  growing from 60 to 98 ms with the rows.
+- The chip heats: plain decode at 512 settles at 9.07 tok/s within 15
+  minutes of a sequence (10.5 cold) and the verify slows with it; the cold
+  pass read the same speedups within the pairs' spread.
+- The agent task list (`make agent-eval`, Qwen, seeds 1 and 2, `--speculative
+  off` against `on --draft-length 7`): 24/24 against 23/24 passed, model
+  seconds per task mean 83.3 → 52.0 and median 38.8 → 29.5, the totals
+  1,999 → 1,249 s, while generating 666 → 780 tokens per task. The one
+  failure, `history` seed 2, answered from a bounded `read_file` result;
+  on seeds 3–5 the task fails 2 of 3 with speculation off and 1 of 3 on.
+  `make shot` of a terminal turn (`.zig-cache/tui/engn20-turn.txt`): the
+  bar reads `speculative on 7 · 2.14/step`.
+- `make check` (the cli tests of `--draft-p-min`, the catalogue's and the
+  configuration's verdict tests), `make lint-py`, `make verify-auto`
+  (12 gates) and `make verify` (38/38 in 293 s) pass. The CPU and long
+  tiers were not run: no CPU arithmetic, attention, or cache change.
+
+**Files.** `inference/src/engine.zig`, `src/{bench,cli,completion,help,catalog,config}.zig`,
+`src/agent/print.zig`, `scripts/spec-matrix.py` (new), `Makefile`,
+`docs/reference/{bench,speculative-decoding}.md`, `docs/development.md`
+(§ The speed loop), ADR 0001 (the re-measured budget table and its
+confidence), `docs/benchmarks/speculative-2026-10-01/` (new), `TODO.md`,
+and this log.
+
+**Remaining.** A configuration file written before this unit keeps its
+entries' `speculative` and `draft_length` (the file is the user's; a fresh
+`config init` writes the new values). Both Gemma entries only break even
+at 32K, so the decode-attention lever (KERN-22) decides their long end.
+The `code` workload is untemplated, so it counts for Qwen alone. The
+proposals the unit named as next (the DFlash 2 checkpoint for Qwen,
+suffix drafts for agent edit turns, one root-sibling row) were not
+started.

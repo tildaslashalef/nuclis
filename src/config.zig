@@ -1862,14 +1862,16 @@ test "the written initial file parses back exactly and shows the entry shape" {
     try std.testing.expect(gen.entry != null);
     try std.testing.expectEqual(.qwen38, gen.profile);
     try std.testing.expectEqual(@as(usize, 16384), gen.ctx_size);
-    // The entry carries the measured speculative verdict (ENGN-17): Qwen's
-    // record does not pay for verification, Muse's does.
-    try std.testing.expectEqual(false, gen.entry.?.generation.speculative.?);
-    try std.testing.expectEqual(@as(usize, 4), gen.entry.?.generation.draft_length.?);
-    const muse = resolve(&loaded, "muse-glimmer-30b", .{}, .generate);
-    try std.testing.expectEqual(true, muse.entry.?.generation.speculative.?);
-    try std.testing.expect(muse.speculative);
-    try std.testing.expect(!gen.speculative);
+    // The entry carries the measured speculative verdict (ENGN-20): Qwen's
+    // embedded head pays at draft 7, the mixture-of-experts Gemma's does not.
+    try std.testing.expectEqual(true, gen.entry.?.generation.speculative.?);
+    try std.testing.expectEqual(@as(usize, 7), gen.entry.?.generation.draft_length.?);
+    try std.testing.expect(gen.speculative);
+    const moe = resolve(&loaded, "gemma-4-26b-a4b", .{}, .generate);
+    try std.testing.expectEqual(false, moe.entry.?.generation.speculative.?);
+    try std.testing.expect(!moe.speculative);
+    // A flag still wins over the entry's verdict.
+    try std.testing.expect(!resolve(&loaded, null, .{ .speculative = false }, .generate).speculative);
 }
 
 test "discovered entries are written under free names with only their stated keys" {

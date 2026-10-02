@@ -11,8 +11,10 @@ is the fixed short prompt of the ENGN-17 record. Reports are saved under
 so an interrupted matrix resumes. The table gives, per cell, accepted and
 proposed drafts per batch, E (emitted tokens per batch), the per-batch costs
 and their sum C, C / 50E (20 tok/s needs <= 1), the off and on rates, and the
-speedup: the median of the pairs' on/off ratios.
-See TODO.md (ENGN-20) and docs/development.md § The speed loop.
+speedup: the median of the pairs' on/off ratios. The chip heats over a long
+matrix, slowing both sides of a pair; `--cooldown` idles before each cell
+for cold-chip rates.
+See docs/development.md § The speed loop.
 """
 
 import argparse
@@ -20,6 +22,7 @@ import json
 import statistics
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -154,7 +157,11 @@ def main():
     ap.add_argument("--p-min", help="proposal thresholds, e.g. 0,0.5,0.7 (default: the engine's)")
     ap.add_argument("--repeat", type=int, default=3, help="off/on pairs per cell (default: %(default)s)")
     ap.add_argument("--tokens", type=int, default=128, help="output tokens per run (default: %(default)s)")
+    ap.add_argument("--run", help="the fixture run whose token arrays to use (default: the family's acceptance run)")
     ap.add_argument("--rev", help="read or write the reports of this revision (default: HEAD, +dirty)")
+    ap.add_argument(
+        "--cooldown", type=float, default=0, help="seconds idle before each run, for a cool chip (default: 0)"
+    )
     ap.add_argument("--fresh", action="store_true", help="re-run cells already saved")
     ap.add_argument("--report", action="store_true", help="only print the saved cells, run nothing")
     ap.add_argument("--json", action="store_true", help="print the rows as JSON")
@@ -173,7 +180,7 @@ def main():
     )
     out_dir = OUT / args.model / rev
     out_dir.mkdir(parents=True, exist_ok=True)
-    run = speed.family_run(args.model)
+    run = args.run or speed.family_run(args.model)
     p_mins = [None] if args.p_min is None else [float(p) for p in args.p_min.split(",")]
     rows = []
     print(HEADER)
@@ -189,6 +196,7 @@ def main():
                         argv = bench_argv(
                             speed.CANDIDATE, model, args.model, prompt, sampling, draft, p_min, args.repeat, args.tokens
                         )
+                        time.sleep(args.cooldown)
                         result = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
                         if result.returncode != 0:
                             sys.exit(f"{' '.join(argv)} failed:\n{result.stderr.strip()[-2000:]}")

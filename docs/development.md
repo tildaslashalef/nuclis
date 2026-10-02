@@ -332,6 +332,21 @@ about a minute per context instead of an eleven-minute 32K prefill:
   +0.07 % with per-pair changes within ±0.23 % at 512 (decode and a 4-row
   verify, 2026-09-30).
 
+- **The speculative matrix.** `make spec-matrix ARGS='--model qwen38
+  --contexts code,512,4096,16384,32639 --sampling greedy,instruct --drafts
+  2-7'` (`scripts/spec-matrix.py`) runs real speculation per cell (context,
+  sampling, draft length, and `--p-min` through `bench --draft-p-min`): one
+  `bench --speculative on` process of three off/on pairs, on the same saved
+  prefixes. It prints E, C and its parts, C / 50E, and the median pair
+  speedup; reports land in `.zig-cache/spec/<model>/<rev>/` and a saved
+  cell is not re-run, so a stopped matrix resumes (`--report` only reads
+  them). The chip heats over a long sequence: plain decode at 512 drifts
+  from 10.5 to 9.1 tok/s within 15 minutes, and the verify with it, so the
+  paired ratio holds while the absolute rates do not; `--cooldown 90`
+  (seconds idle before each cell) gives cold-chip rates. This is how a
+  catalogue verdict is set
+  ([bench.md § The re-priced speculative verdicts](reference/bench.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)).
+
 **The keep rule** ([TODO.md](../TODO.md) while the decode-speed theme
 runs): keep a change when its median decode, or for a verify lever the
 batch cost C at the unit's row counts, improves by ≥ 2 % at one context or

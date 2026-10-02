@@ -51,7 +51,7 @@ pub const Entry = struct {
     /// pin a protocol onto a file whose own template digest is not).
     profile: Profile,
     companions: []const Companion,
-    /// The measured speculative verdict (ENGN-17): whether the switch is on
+    /// The measured speculative verdict (ENGN-20): whether the switch is on
     /// by default for this entry and the draft length the record chose. The
     /// entry's value wins over the global default (a user's `--speculative`
     /// still overrides it), because the verdict is a property of the family's
@@ -82,9 +82,9 @@ pub const entries = [_]Entry{
         .quantization = "UD-Q4_K_M",
         .architecture = "qwen35",
         .profile = .qwen38,
-        // The embedded block's best is code 1.30x at draft 7 (1.28x instruct at 4), below the 1.5x bar; off.
-        .speculative = false,
-        .draft_length = 4,
+        // The embedded block re-measured at draft 7: prose 1.25-1.57x from 512 to 32K, code 1.92-1.95x; on.
+        .speculative = true,
+        .draft_length = 7,
         .think = .low,
         .thinking_budget = 1024,
         .companions = &.{
@@ -109,9 +109,9 @@ pub const entries = [_]Entry{
         .quantization = "Q4_0 (QAT)",
         .architecture = "gemma4",
         .profile = .gemma4,
-        // The assistant heads measured 0.899x at draft 4 and 1.017x at 7; off.
-        .speculative = false,
-        .draft_length = 4,
+        // The assistant heads at draft 5: prose 1.34x geometric mean, 0.98x at 32K; on.
+        .speculative = true,
+        .draft_length = 5,
         .think = .low,
         .thinking_budget = 1024,
         .companions = &.{
@@ -133,7 +133,7 @@ pub const entries = [_]Entry{
         .quantization = "Q4_0 (QAT)",
         .architecture = "gemma4",
         .profile = .gemma4,
-        // The 26B-A4B head is bound but not measured; off until it is.
+        // The 26B-A4B head loses 0.63-0.76x on prose at drafts 2-7 (rows route to their own experts); off.
         .speculative = false,
         .draft_length = 4,
         .think = .low,
@@ -157,9 +157,9 @@ pub const entries = [_]Entry{
         .quantization = "Q4_0 (QAT)",
         .architecture = "gemma4",
         .profile = .gemma4_e,
-        // The E4B head is bound and traced but not measured; off until it is.
-        .speculative = false,
-        .draft_length = 4,
+        // The E4B head at draft 6: prose 1.47x geometric mean, 0.99x at 32K; on.
+        .speculative = true,
+        .draft_length = 6,
         .think = .low,
         .thinking_budget = 1024,
         .companions = &.{
@@ -182,9 +182,9 @@ pub const entries = [_]Entry{
         .quantization = "UD-Q4_K_XL",
         .architecture = "muse-glimmer",
         .profile = .muse_glimmer,
-        // The DFlash drafter measured 1.234x at draft 4 (1.163x at 8, 1.222x at 15); on.
+        // The DFlash drafter at draft 6: prose 1.27x geometric mean, 1.10x at 32K; past 6 the block costs double; on.
         .speculative = true,
-        .draft_length = 4,
+        .draft_length = 6,
         .think = .low,
         .thinking_budget = 1024,
         .companions = &.{
@@ -369,11 +369,14 @@ test "the table is well formed: unique names, 40-character commits, 64-character
     try std.testing.expectEqual(Profile.muse_glimmer, find("muse-glimmer-30b").?.profile);
     // Files outside the catalogue run through discovery, not by name.
     try std.testing.expect(find("gemma-4-12b") == null and find("bonsai-2-27b") == null);
-    // The measured speculative verdicts (ENGN-17): only Muse's drafter pays.
-    try std.testing.expect(!find("qwen3.8-27b").?.speculative);
-    try std.testing.expect(!find("gemma-4-12b-qat").?.speculative);
-    try std.testing.expect(find("muse-glimmer-30b").?.speculative);
-    for (&entries) |e| try std.testing.expectEqual(@as(usize, 4), e.draft_length);
+    // The measured speculative verdicts (ENGN-20): every drafter pays but the mixture-of-experts head.
+    try std.testing.expect(find("qwen3.8-27b").?.speculative);
+    try std.testing.expectEqual(@as(usize, 7), find("qwen3.8-27b").?.draft_length);
+    try std.testing.expectEqual(@as(usize, 5), find("gemma-4-12b-qat").?.draft_length);
+    try std.testing.expectEqual(@as(usize, 6), find("gemma-4-e4b-qat").?.draft_length);
+    try std.testing.expectEqual(@as(usize, 6), find("muse-glimmer-30b").?.draft_length);
+    try std.testing.expect(!find("gemma-4-26b-a4b").?.speculative);
+    for (&entries) |e| if (e.speculative) try std.testing.expect(e.draft_length >= 1 and e.draft_length <= inference.engine.max_draft_length);
     try std.testing.expectEqualStrings("muse-glimmer", find("muse-glimmer-30b").?.architecture);
     try std.testing.expectEqual(Role.mtp, findFile("unsloth/Muse-Glimmer-30B-GGUF", "dflash-kquant.gguf").?.role);
     try std.testing.expectEqual(Role.mtp, findFile("unsloth/gemma-4-12B-it-qat-GGUF", "mtp-gemma-4-12B-it.gguf").?.role);

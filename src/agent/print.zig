@@ -83,7 +83,12 @@ pub fn run(
     const limit = settings.max_tokens;
     if (capacity == 0 or capacity > config.max_context or limit == 0 or limit > config.max_output_tokens) return error.InvalidGenerationBudget;
     var sampler = try inference.sampling.Sampler.init(options.seed orelse 0, settings.samplingOptions());
-    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, .none);
+    // The drafter as the terminal agent loads it, so a scripted turn decodes
+    // at the configured speculative setting.
+    const draft_path = try engine.draftPath(alloc, model_path, if (settings.entry) |entry| entry.mtp else null);
+    defer if (draft_path) |path| alloc.free(path);
+    const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
+    var eng = try engine.Engine.open(alloc, io, model_path, settings.backend, capacity, settings.kv_precision, settings.forced_profile, draft);
     defer eng.deinit();
     const profile = eng.profile orelse return error.UnsupportedPromptTemplate;
     try sampler.setOptions(profile.samplingOptions(settings.think, settings.sampling));
@@ -135,6 +140,7 @@ pub fn run(
         .buffers = .{ .logits = logits, .candidates = candidates, .generated = generated, .effort = settings.think },
         .thinking_budget = settings.thinking_budget,
         .observer = trace.observer(),
+        .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
     };
     defer completer.deinit();
     const workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };

@@ -5,26 +5,23 @@ are in the [spec](../spec.md#56-speculative-decoding); the units that fill it
 in are planned in [TODO.md](../../TODO.md); closed outcomes are cited from
 the [engineering log](../engineering-log.md).
 
-As of 2026-09-20 the recovery contract (ENGN-11), the Qwen3.8 embedded
-prediction block (MODL-18), and speculative generation with its switch,
-draft length, and benchmark record (ENGN-12) are implemented and measured.
-What exists: the draft contract in `runtime/draft.zig`; the Qwen adapter
-binds the 15 embedded `nextn` tensors and both executors run the block
-([qwen-validation.md](qwen-validation.md)); the session has a host-side
-snapshot and restore and an in-block checkpoint ([session.md](session.md));
-every family's draft companion is pinned and pulled
-([artifacts.md](artifacts.md)); the verify batch, the sampled acceptance
-module, and the `runLoop` speculative step are in place, checked for greedy
-equivalence on both executors, and switched by `generation.speculative` /
-`--speculative on|off` with `generation.draft_length` / `--draft-length`;
-`bench` measures the off/on pair on one loaded model. The record
-([bench.md](bench.md#speculative-decoding-record-engn-12-2026-09-20)) keeps
-the switch off by default: the per-batch costs the plan's performance units
-attack are tabulated in `TODO.md`. Gemma 4's and Muse Glimmer's own draft
-sources are still to come (MODL-19, MODL-20).
+As of 2026-10-01 every catalogue family with a draft source is measured
+and the defaults follow the record
+([§ The re-priced verdicts](#the-re-priced-verdicts-engn-20-2026-10-01)):
+Qwen3.8-27B on at draft 7, Gemma 4 12B QAT on at 5, Gemma 4 E4B on at 6,
+Muse Glimmer on at 6, Gemma 4 26B-A4B off. What exists: the draft
+contract in `runtime/draft.zig`; three draft sources (Qwen's embedded
+`nextn` block, Gemma's assistant heads, Muse's DFlash drafter); the
+session's checkpoint, recovery by accepted length, and Qwen's DeltaNet
+replay tape ([session.md](session.md)); the verify batch, the sampled
+acceptance on the device readback, and the `runLoop` speculative step,
+checked for greedy equivalence on both executors and switched by
+`generation.speculative` / `--speculative on|off` with
+`generation.draft_length` / `--draft-length`. `bench` measures the
+off/on pair on one loaded model, and `make spec-matrix` runs the record.
 
-Sections to come, one per unit: each family's draft source with its facts
-and provenance, and the measurements behind each catalogue verdict.
+The sections below follow the units in order, so the early ones carry
+the costs and verdicts of their day; the last section holds today's.
 
 ## The draft contract (MODL-18)
 
@@ -958,3 +955,37 @@ the measured control (27 %); the bar's purpose — the decode rate not
 lower — is met with an 8–10 % gain, and every other criterion passes.
 `bench.Sample` gained `proposed_per_step`, so the record's tables print
 proposed, accepted, and drafts per accepted token.
+
+## The re-priced verdicts (ENGN-20, 2026-10-01)
+
+KERN-21 (the split verify attention), KERN-24 (the register-fragment
+verify matmul), and ENGN-19 (the DeltaNet replay tape) cut Qwen's 4-row
+verify batch from 257 to 177 ms at 512 and from 1,121 to 279 ms at
+32,639, and Gemma's by about half. `make spec-matrix` re-measured every
+family's real speculation at 512, 4K, 16K, and 32,639 tokens on saved
+prefixes, greedy and with the profile's sampling, at every draft length.
+The tables and the rule are in
+[bench.md § The re-priced speculative verdicts](bench.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01).
+
+- **Qwen3.8-27B, on at draft 7.** Cold, prose runs 1.25–1.57× (15.9–16.5
+  tok/s at 512, 10.6–10.9 at 32,639) and the short code prompt 1.92–1.95×,
+  20.3 and 20.9 tok/s: the 20 tok/s of
+  [ADR 0001](../adr/0001-qwen-decode-verifier.md) for short code. The
+  think-on sampling the agent uses reads 1.44–1.53×. Drafts 5–7 tie on
+  prose; 7 wins on code.
+- **Gemma 4 12B QAT, on at draft 5; E4B, on at draft 6.** 1.19–2.10× up
+  to 16K; at 32K both break even (0.98–1.16×), because the few-query
+  verify attention is linear in the batch's rows and longer drafts carry
+  more of them.
+- **Muse Glimmer, on at draft 6** (was 4). The DFlash block's forward
+  costs 25–30 ms up to 6 drafts and 47–60 ms from 8, so 6 is the knee.
+- **Gemma 4 26B-A4B, off.** 0.63–0.76× on prose: the verify grows with
+  the rows (60 → 98 ms), which a mixture of experts explains (each row
+  routes to its own experts).
+- **`draft_p_min` stays 0.7.** Swept at Qwen draft 7 over code, 512, and
+  4K: 0 → 1.489, 0.5 → 1.576, 0.6 → 1.613, 0.7 → 1.649, 0.8 → 1.631
+  (geometric mean speedup).
+
+A configuration file written before this record keeps its entries'
+`generation.speculative` and `generation.draft_length` (by design: the
+file is the user's); a fresh `nuclis config init` writes the new values.

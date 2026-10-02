@@ -89,7 +89,8 @@ fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 4096 (bench: 32)");
     try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source; the");
     try more(out, "default is the model entry's verdict, else off");
-    try row(out, sty, "--draft-length <n>", "drafts per verify batch, 1..7; default 4");
+    try row(out, sty, "--draft-length <n>", "drafts per verify batch, 1..15, capped by the");
+    try more(out, "draft source; default the model entry's, else 4");
     try row(out, sty, "--prompt-profile <p>", "force qwen38, gemma4, gemma4_e, or muse_glimmer");
     try more(out, "on a file whose chat template is not a pinned one");
     try more(out, "(a finetune)");
