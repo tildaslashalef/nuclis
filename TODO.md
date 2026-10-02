@@ -42,13 +42,15 @@ spec-matrix` measures it, and `agent --print` now loads the drafter. An
 existing `~/.nuclis/nuclis.json` keeps its entries' old values until the
 user edits them or re-runs `config init`. The base binary for `make
 speed` is at ENGN-19's commit (no engine arithmetic changed since).
-Next: REPO-27 (user, 2026-10-02), the verified fixes from an external
-review, pulled ahead of KERN-23: the Metal discard path fixes a hang
-KERN-23's check loop would hit, and the kernel table replaces the enum
-arithmetic KERN-23's multi-row routing extends. Then KERN-23, re-scoped
-2026-10-02 (user) to the single-row matvec and a multi-row verify body,
-since speculation is now the default path (*Order* below); its `Base:`
-moves to REPO-27's closing commit, since it has no code yet.
+REPO-27 closed 2026-10-02: an external review's fixes (a failed
+recording is discarded, so metal-check reports instead of hanging; the
+kernel table is derived from `Kernel`; `--file` names a support file's
+weights; parser property tests). Its log entry lists what waits for
+KERN-23: pruning the 56 check-only pipelines (1.70 s of a cold start)
+and the GGUF type-id enum. No engine arithmetic changed, so the `make
+speed` base binary stands. Next: KERN-23, re-scoped 2026-10-02 (user) to
+the single-row matvec and a multi-row verify body, since speculation is
+now the default path (*Order* below).
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
@@ -125,9 +127,8 @@ KERN-20, with the source or the measurement for each fact.
 
 | # | Unit | Sessions | Lands when |
 | --- | --- | ---: | --- |
-| 1 | REPO-27 — External review fixes: Metal discard, kernel table, downloader, parser tests | 1 | every bullet's test passes |
-| 2 | KERN-23 — Weight streaming for one row and a few: decode and the verify body | 2 | 512 decode ≥ 11.5 tok/s, a 4-row verify C ≤ 150 ms at 512, or Qwen speculative prose 512 ≥ 18 tok/s; or closed at its ledger |
-| 3 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
+| 1 | KERN-23 — Weight streaming for one row and a few: decode and the verify body | 2 | 512 decode ≥ 11.5 tok/s, a 4-row verify C ≤ 150 ms at 512, or Qwen speculative prose 512 ≥ 18 tok/s; or closed at its ledger |
+| 2 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
 
 **Re-ranked after ENGN-20** (2026-10-02): speculation is on for Qwen
 (draft 7), Gemma 12B QAT (5), E4B (6), and Muse (6), so a verify lever now
@@ -176,75 +177,9 @@ Identifiers are provisional in this order; they are fixed in the order
 the units close. The units are independent of one another: re-rank them
 when a kept change moves the cost table.
 
-## REPO-27 — External review fixes: Metal error path, kernel table, downloader, parser tests (1 session)
-
-Base: `7120a5a`
-
-**Why.** An external review (2026-10-02), verified at `7120a5a`. Measured:
-`nu_metal_destroy` hangs on a backend that is still recording
-(`waitUntilCompleted` on an uncommitted buffer; the validation layer
-asserts instead), so a metal-check failure mid-recording hangs rather than
-reports; `--file config.json` fails with a bare `InvalidFilename`; GPT-2's
-`onnx/` support files are pulled with the root `model.safetensors`.
-Dropping an uncommitted, ended command buffer is clean under
-`MTL_DEBUG_LAYER=1` (1,000 discards, none of their work ran).
-
-- **Metal discard.** `bridge.m`: `nu_metal_discard` (endEncoding, release
-  encoder and command buffer, reset dispatches/sampled, stop capture);
-  `nu_metal_destroy` discards instead of waiting. `root.zig`:
-  `Backend.discard()` (no-op when idle; clears `profile.pending`). Replace
-  the 29 `errdefer if (b.recording) b.commit() catch {};` in
-  `models/{qwen35,gemma4,muse_glimmer,laya}_metal.zig` and
-  `vision/{qwen3vl,gemma4,muse_glimmer}_metal.zig` with
-  `errdefer b.discard();`. metal-check case: record, discard, buffer
-  untouched, begin/commit still works, deinit while recording returns.
-- **Kernel table.** `kernel_names` built at comptime as `"nu_" ++` each
-  `Kernel` field name; `specializedMatvecRows` reads a comptime table built
-  with `@field(Kernel, ...)` instead of `@enumFromInt(base + tokens - 2)`;
-  a unit test pins every encoding × tokens 2..8 against the old mapping.
-- **Downloader.** `hub.validate`: `!validPath` → `InvalidFilename`,
-  non-weight name → new `NotAWeightFile`. `model.pull`/`inspect`: on
-  `NotAWeightFile`, list the repository and name the owning weight
-  (`hub.owners`, reusing `supports()`); `hubFailure` messages name the file.
-  `parseCatalog` keeps foreign weights (`.onnx .bin .pt .pth .msgpack .h5
-  .tflite .mlmodel .ot .ckpt`) in `Catalog.others`; `supports()` excludes a
-  subfolder holding any weight. First: confirm Laya's raw Hub listing
-  (`convaiinnovations/laya` @ `55cf4c4e`) has no foreign weight under
-  `encoder/` or `tokenizer/`; if it does, stop and re-plan this bullet.
-  GPT-2-shaped fixture test beside the Laya test (root + 6 support files;
-  Laya's assertions unchanged). `renderPull` prints the relative path.
-- **Parser property tests.** `formats/gguf.zig` and
-  `formats/safetensors.zig`: a seeded test over `fixture()`: truncation at
-  every offset (honest and lying `file_bytes`), bytes {0,1,0x7f,0x80,0xff}
-  and u64 extremes at every offset, 1,000 PRNG multi-byte mutations
-  (fixed seed); asserts return-without-panic, `testing.allocator` leak
-  check; < 1 s under `zig build test`.
-- **Small fixes.** `c: anytype` in `qwen35_metal.zig` (4 functions) becomes
-  named `AttentionConstants` / `DeltaConstants`. Stale paths: `ci.yml:11`,
-  `tensor/encoding.zig:3`, `models/qwen35.zig:5`. Reword the 12 comments
-  whose sentence leans on a unit identifier (Makefile:247,
-  generation-check:904, metal-check:217, kernels.metal:43, root.zig:704,
-  790, 916, bench.zig:31, catalog.zig:174, config.zig:51, 774,
-  spec-matrix.py:9). `metal-backend.md:46`: replace "about one second"
-  with the measured 26 ms warm, ~0.6 s after a shader edit, 4.8 s fully
-  cold.
-
-**Not in this unit** (after KERN-23): pruning the 56 production-unreachable
-pipelines (1.70 s of the 3.94 s cold pipeline compile: the `_t3..t8`
-bodies, the `_8` and `_w8` tiles, split-K, `f2hh`/`f4`, the three-pass
-attention, `rope`, `fragment_layout`); the GGUF type-id `Encoding` enum.
-
-**Lands when** every bullet's test passes; no dispatch changes on the
-success path, so no `make speed`.
-
-Gates: `zig build test`, `make test-metal`, `make lint-py`, `make
-verify-auto`, `make verify`; one live `./zig-out/bin/nuclis model pull
-openai-community/gpt2 --file config.json` (diagnostic) and `--file
-model.safetensors` into a scratch `NUCLIS_HOME` (no `onnx/` files).
-
 ## KERN-23 — Weight streaming for one row and a few: decode and the verify body (2 sessions)
 
-Base: `2479d62`
+Base: `c2c03a4`
 
 **Why, since ENGN-20.** Speculation is on for Qwen at draft 7, so a
 default turn spends its time in verify batches: at 512, C 164 ms = propose

@@ -159,6 +159,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | ENGN-19 | The DeltaNet replay tape: verify steps the recurrence without writing the state, recovery replays the accepted rows; Qwen's verify C 48–51 ms cheaper at every depth, the 1.25 GB row-slot region gone | 2026-10-01 |
 | ENGN-20 | Speculation re-priced per family: Qwen on at draft 7 (short code 20.3–20.9 tok/s), Gemma 12B QAT on at 5, E4B on at 6, Muse at 6, 26B-A4B off; `make spec-matrix`, `bench --draft-p-min`; `agent --print` loads the drafter | 2026-10-02 |
 | REPO-26 | The README states the speculative defaults and their measured rates | 2026-10-02 |
+| REPO-27 | External review fixes: a failed recording is discarded (the destroy-while-recording hang gone), the kernel table derived, `--file` names a support file's weights, other formats' folders skipped, parser property tests | 2026-10-02 |
 
 ## Context
 
@@ -6856,3 +6857,114 @@ README says which. Documentation only: no build or test was run.
 **Remaining.** The README's first results table is still the 2026-09-10
 acceptance record (macOS 26.6.2); it is refreshed with the next release's
 acceptance run.
+
+## REPO-27 — External review fixes: the Metal discard path, the kernel table, the downloader, parser property tests (2026-10-02)
+
+**Outcome.** An external review's claims were verified at `7120a5a`
+before any change (the plan in `TODO.md`, commit `6099030`), and the ones
+worth fixing now landed:
+
+- **Discard instead of commit on error.** `Backend.discard()` and the
+  bridge's `nu_metal_discard` drop an open command buffer unsubmitted; the
+  29 `errdefer if (b.recording) b.commit() catch {};` in the model and
+  vision plans are `errdefer b.discard();`, so a rejected shape or a
+  cancelling observer `check` no longer runs the layers already recorded.
+  `nu_metal_destroy` discards too: it used to call `waitUntilCompleted` on
+  the open buffer, which is never committed, and that call never returns
+  (the validation layer asserts instead), so a metal-check failure
+  mid-recording hung rather than reported.
+- **The kernel table.** `kernel_names` is built at compile time as `nu_`
+  plus each `Kernel` tag (the hand-kept list of 159 names is gone), and
+  `specializedMatvecRows` looks its `_t2.._t8` bodies up by name instead of
+  `@enumFromInt(base + tokens - 2)`.
+- **The downloader.** A non-weight `--file` is `NotAWeightFile`, no longer
+  the `InvalidFilename` of a malformed path, and the diagnostic names the
+  weights it comes with (`hub.owners`): `config.json is a support file of
+  model.safetensors: it comes with the weights (pass --file
+  model.safetensors)`. Weights in formats nuclis never downloads (`.onnx`,
+  `.bin`, `.pt`, `.pth`, `.ckpt`, `.msgpack`, `.h5`, `.tflite`, `.mlmodel`,
+  `.ot`) are listed in `Catalog.others` and, like a GGUF, mark another
+  artifact's folder: GPT-2's `onnx/` support files no longer come with its
+  root `model.safetensors`. The pull summary reads "provenance beside it
+  in …". Option (a) of the review, support files only from the weight's
+  own folder, was rejected: Laya's pinned artifact needs
+  `encoder/config.json` and `tokenizer/*`.
+- **Parser property tests.** `gguf.zig` and `safetensors.zig` parse every
+  truncation of their fixture (honest and lying lengths), small and
+  extreme values at every offset, and seeded random multi-byte mutations;
+  each case must return an error or a document, under the leak-checking
+  allocator. No panic site was found by them or by the review's 28,803 +
+  7,063 mutations. `zig build test --fuzz` does not compile on Zig 0.16.0
+  (`test_runner.zig:566`), so these are seeded tests under plain `zig
+  build test`.
+- **Small fixes.** `qwen35_metal.zig` names its mixer constants
+  (`AttentionConstants`, `DeltaConstants`) where four functions took
+  `c: anytype`; three stale document paths (`ci.yml`, `encoding.zig`,
+  `qwen35.zig`); twelve comments whose sentence leaned on a unit
+  identifier now stand alone; `metal-backend.md` gives the measured
+  shader compile costs in place of "about one second".
+
+**Evidence.**
+
+- Shader compile (M4 Pro, Darwin 27, 2026-10-02): a warm `nuclis bench
+  --kernel-stats` is 26 ms for the whole process. A standalone harness
+  compiling the same source: a changed source recompiles the library in
+  about 610 ms while the pipeline cache, keyed per function, still hits
+  (4 ms); fully cold (forced by a new Metal language version) the library
+  is 820 ms and the 159 pipelines 3,940 ms, three runs each. 56 pipelines
+  have no production route (proven by call site: the 24 `_t3..t8` bodies,
+  9 `_8` tiles shadowed by the fragment tile, 9 `_w8`, 5 split-K, the 5
+  three-pass attention kernels, `f2hh`/`f4`, `rope`, `fragment_layout`):
+  1,698 ms of the cold 3,936 ms; dropping their 46 template instances
+  cuts the library compile 615 → 445 ms.
+- Discard: 1,000 ended, uncommitted command buffers released under
+  `MTL_DEBUG_LAYER=1` without a complaint and none of their work ran;
+  `waitUntilCompleted` on one hung (killed after 4 s) and asserted under
+  the validation layer. metal-check's new `checkDiscard` (recorded work
+  dropped, plain and profiled; deinit while recording returns) passes,
+  also under the validation layer, and with the old destroy restored the
+  run hung at that check until killed at 100 s.
+- Kernel table: `bench --kernel-stats` lists the same 159 names in the
+  same order before and after; metal-check pins every multi-row encoding
+  × 2..8 tokens to the body of that name.
+- Downloader: hub tests for the GPT-2 listing (root plus its 6 support
+  files, the 7 `onnx/` files excluded; Laya's assertions unchanged),
+  `owners` (shard sets by their first shard, an index file only with its
+  set), and `validate`'s two errors. Laya's live listing at `55cf4c4e`
+  holds no foreign weight. With the fresh binary in a scratch
+  `NUCLIS_HOME`: `--file config.json`, `onnx/config.json`, `README.md`,
+  and `../x.json` each fail with a message naming the file; `--file
+  model.safetensors` downloaded exactly 7 files, none under `onnx/`.
+- Property tests: 0.9 s (GGUF) and 1.1 s (safetensors) in Debug; replacing
+  the GGUF shape product's `std.math.mul` with `*` makes the GGUF test
+  panic (`integer overflow`, `gguf.zig:350`).
+- `zig build test` (615/615), `make test-metal`, `make fmt-check`, `make
+  lint-py`, `make verify-auto` (37/37) and `make verify` (38/38 in 277 s)
+  pass. `make verify-long` was named for `kernels.metal`, whose change is
+  a comment only; the CPU tier was not run (no CPU arithmetic changed).
+  No `make speed`: no dispatch on the success path changed.
+
+**Files.** `inference/src/backends/metal/{bridge.m,root.zig,kernels.metal}`,
+`inference/src/models/{qwen35,gemma4,muse_glimmer,laya}_metal.zig`,
+`inference/src/vision/{qwen3vl,gemma4,muse_glimmer}_metal.zig`,
+`inference/src/models/qwen35.zig`, `inference/src/tensor/encoding.zig`,
+`inference/src/formats/{gguf,safetensors}.zig`,
+`inference/{metal,generation}-check.zig`, `huggingface/src/{hub,root}.zig`,
+`src/{model,help,bench,catalog,config}.zig`, `scripts/spec-matrix.py`,
+`Makefile`, `.github/workflows/ci.yml`,
+`docs/reference/{metal-backend,artifacts}.md`, `TODO.md`, and this log.
+
+**Remaining.** After KERN-23 decides which multi-row bodies and tiles it
+keeps: pruning the 56 check-only pipelines (1.70 s of a cold start), and
+a GGUF type-id `Encoding` enum in place of the raw `u32` ids (21 switches,
+about 45 comparisons, a `0x80000000` generic flag ORed into the id). Not
+started: a shared readback module for the eight copies of the top-k
+readback in the model plans, an options struct for `step`/`prefill`
+(54 callers, 206 of 346 arguments `null`), exporting Qwen's shape
+constants from `qwen35.zig`, capping GGUF counts by the bytes remaining
+(a 24-byte file can make the parser allocate about 6.4 MB), and a hash
+set for safetensors' O(n²) duplicate-metadata check. Kept as is: the
+hard-coded Qwen shapes (validated exactly at load, one supported shape),
+lazy pipelines or a binary archive (warm starts are 26 ms), and
+repository-wide line wrapping (1,079 lines over 160 characters; `zig fmt`
+does not wrap).
