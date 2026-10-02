@@ -2,8 +2,9 @@
 //! --request` reads, answered with what `nuclis decide --json` writes),
 //! `POST /v1/systemone` (Jev's single-state call), and the decision models
 //! for `GET /v1/models`. A handler parses and validates on its connection's
-//! thread, then waits for one GPU item that opens the model if needed and
-//! answers; it never touches a socket or a model directly.
+//! thread, then waits in the batcher, whose GPU item opens the model if
+//! needed and answers every waiting request for it in one pass; a handler
+//! never touches a socket or a model directly.
 //! docs/reference/api.md § Decisions.
 const std = @import("std");
 const inference = @import("inference");
@@ -17,6 +18,7 @@ const gpu = @import("../gpu.zig");
 const models = @import("../models.zig");
 const router_mod = @import("../router.zig");
 const pool_mod = @import("pool.zig");
+const batcher_mod = @import("batcher.zig");
 
 const ApiError = errors.ApiError;
 
@@ -24,9 +26,13 @@ const ApiError = errors.ApiError;
 /// before it starts; a started pass is never cut).
 pub const default_timeout_ns: u64 = 30 * std.time.ns_per_s;
 
+/// Decision requests waiting for the GPU at once; one more is `busy`.
+pub const max_waiting = 64;
+
 pub const Service = struct {
     executor: *gpu.Executor,
     pool: pool_mod.Pool,
+    batcher: batcher_mod.Batcher,
     /// The user root, for model names under `<root>/models`.
     root: ?[]const u8,
     registry: config.Models,
@@ -36,13 +42,28 @@ pub const Service = struct {
 
     pub const Shape = enum { decisions, systemone };
 
-    /// `registry` and `root` are borrowed for the service's lifetime.
+    /// `registry` and `root` are borrowed for the service's lifetime. The
+    /// batcher points into the service: call `bind` once it sits at its
+    /// final address.
     pub fn init(gpa: std.mem.Allocator, executor: *gpu.Executor, backend: inference.decide.Backend, root: ?[]const u8, registry: config.Models, default_model: []const u8) Service {
-        return .{ .executor = executor, .pool = .init(gpa, backend), .root = root, .registry = registry, .default_model = default_model };
+        return .{
+            .executor = executor,
+            .pool = .init(gpa, backend),
+            .batcher = .init(gpa, executor, undefined, max_waiting),
+            .root = root,
+            .registry = registry,
+            .default_model = default_model,
+        };
+    }
+
+    pub fn bind(self: *Service) void {
+        self.batcher.executor = self.executor;
+        self.batcher.pool = &self.pool;
     }
 
     /// After the executor's worker stopped.
     pub fn deinit(self: *Service, io: std.Io) void {
+        self.batcher.deinit();
         self.pool.deinit(io);
     }
 
@@ -80,18 +101,18 @@ pub const Service = struct {
             return requestFailure(arena, err, diag.message());
         wire.checkLimits(decision, &diag) catch |err| return requestFailure(arena, err, diag.message());
 
-        var job: Job = .{
-            .pool = &self.pool,
+        var job: batcher_mod.Job = .{
             .arena = arena,
             .directory = located.directory,
             .name = name,
-            .request = decision,
+            .states = wire.decisionStates(arena, decision) catch return fail(arena, .internal_server_error, "internal", "out of memory"),
+            .questions = decision.questions,
         };
-        self.executor.submit(io, &job.item) catch |err| return switch (err) {
-            error.Busy => fail(arena, http.overloaded, "busy", "the GPU queue is full; retry shortly"),
+        self.batcher.submit(io, &job) catch |err| return switch (err) {
+            error.Busy => fail(arena, http.overloaded, "busy", "too many decision requests wait for the GPU; retry shortly"),
             error.Stopped => fail(arena, .service_unavailable, "shutting_down", "the server is stopping"),
         };
-        self.executor.wait(io, &job.item, deadline) catch
+        self.batcher.wait(io, &job, deadline) catch
             return fail(arena, http.overloaded, "timeout", std.fmt.allocPrint(arena, "waited {d} s for the GPU without starting", .{self.timeout_ns / std.time.ns_per_s}) catch "timeout");
         const done = switch (job.outcome) {
             .pending => unreachable,
@@ -126,11 +147,11 @@ pub const Service = struct {
     /// Opens `name` now (the `--model` of `nuclis serve`), through the GPU.
     pub fn preload(self: *Service, arena: std.mem.Allocator, io: std.Io, name: []const u8, diag: *config.Diagnostic) !void {
         const located = try catalog.locate(arena, io, self.root, self.registry, name, diag);
-        var job: Job = .{ .pool = &self.pool, .arena = arena, .directory = located.directory, .name = name, .request = null };
-        try self.executor.submit(io, &job.item);
-        job.item.done.waitUncancelable(io);
-        if (job.outcome == .failed) {
-            diag.set("{s}", .{job.outcome.failed.message});
+        var opening: Opening = .{ .pool = &self.pool, .arena = arena, .directory = located.directory, .name = name };
+        try self.executor.submit(io, &opening.item);
+        opening.item.done.waitUncancelable(io);
+        if (opening.failed) |e| {
+            diag.set("{s}", .{e.message});
             return error.ModelOpenFailed;
         }
     }
@@ -153,48 +174,23 @@ pub const Service = struct {
     }
 };
 
-/// One request's GPU work: open the model if needed, then answer (nothing
-/// to answer when preloading). Runs on the worker; `arena` is the request's,
-/// untouched by its connection until `wait` returns.
-const Job = struct {
+/// Opening a model on the worker, outside any request.
+const Opening = struct {
     item: gpu.Item = .{ .run = run },
     pool: *pool_mod.Pool,
     arena: std.mem.Allocator,
     directory: []const u8,
     name: []const u8,
-    request: ?wire.Request,
-    outcome: union(enum) { pending, done: Done, failed: ApiError } = .pending,
+    failed: ?ApiError = null,
 
-    const Done = struct { results: []const inference.decide.StateResult, load_ns: u64, timings: inference.decide.Timings };
-
-    fn run(item: *gpu.Item, io: std.Io) void {
-        const job: *Job = @fieldParentPtr("item", item);
-        job.outcome = job.execute(io) catch |err| .{ .failed = job.failure(err) };
-    }
-
-    fn execute(job: *Job, io: std.Io) !@FieldType(Job, "outcome") {
-        const acquired = job.pool.acquire(io, job.directory, job.name) catch |err| return .{ .failed = openFailure(job.arena, job.name, err) };
-        const request = job.request orelse return .{ .done = .{ .results = &.{}, .load_ns = acquired.load_ns, .timings = .{} } };
-        var timings: inference.decide.Timings = .{};
-        const states = try wire.decisionStates(job.arena, request);
-        const results = try acquired.decider.decide(job.arena, io, states, request.questions, .{}, &timings);
-        return .{ .done = .{ .results = results, .load_ns = acquired.load_ns, .timings = timings } };
-    }
-
-    fn failure(job: *Job, err: anyerror) ApiError {
-        return switch (err) {
-            error.OptionsExceedBudget => .init(.unprocessable_entity, "options_exceed_budget", "a question's options do not fit in the model's budget; shorten them or ask fewer"),
-            error.OutOfMemory => .init(.internal_server_error, "internal", "out of memory"),
-            error.InvalidUtf8, error.LimitExceeded, error.WorkLimitExceeded => .init(.unprocessable_entity, "invalid_request", std.fmt.allocPrint(job.arena, "a text could not be tokenized ({s})", .{@errorName(err)}) catch "a text could not be tokenized"),
-            else => .init(.internal_server_error, "internal", std.fmt.allocPrint(job.arena, "{s}: {s}", .{ job.name, @errorName(err) }) catch @errorName(err)),
+    fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
+        const self: *Opening = @fieldParentPtr("item", item);
+        _ = self.pool.acquire(io, self.directory, self.name) catch |err| {
+            self.failed = batcher_mod.openFailure(self.arena, self.name, err);
         };
+        return .done;
     }
 };
-
-fn openFailure(arena: std.mem.Allocator, name: []const u8, err: anyerror) ApiError {
-    if (err == error.MetalNotEnabled) return .init(.internal_server_error, "model_failed", "this build has no Metal backend; serve with --backend cpu");
-    return .init(.internal_server_error, "model_failed", std.fmt.allocPrint(arena, "{s}: not a Laya checkpoint directory nuclis can run ({s})", .{ name, @errorName(err) }) catch "the model failed to open");
-}
 
 fn locateFailure(arena: std.mem.Allocator, err: anyerror, message: []const u8) http.Response {
     return switch (err) {
@@ -250,6 +246,7 @@ const Fixture = struct {
         self.entries = .{.{ .name = "tiny", .entry = .{ .kind = .decision, .path = self.directory } }};
         self.executor = .init(max_queued);
         self.service = .init(gpa, &self.executor, .cpu, self.directory, .{ .entries = &self.entries }, "tiny");
+        self.service.bind();
     }
 
     fn deinit(self: *Fixture) void {
@@ -403,6 +400,72 @@ test "decisions: a full queue is busy; a request that never starts times out" {
         const r = f.post(arena, .decisions, "", body);
         try std.testing.expectEqual(http.overloaded, r.status);
         try std.testing.expect(std.mem.indexOf(u8, r.body, "\"timeout\"") != null);
-        try std.testing.expectEqual(@as(usize, 0), f.executor.stats(io).queued);
+        try std.testing.expectEqual(@as(usize, 0), f.service.batcher.stats(io).waiting);
+    }
+}
+
+const Gate = struct {
+    item: gpu.Item = .{ .run = run },
+    open: std.Io.Event = .unset,
+    fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
+        const self: *Gate = @fieldParentPtr("item", item);
+        self.open.waitUncancelable(io);
+        return .done;
+    }
+};
+
+const Concurrent = struct {
+    fn post(f: *Fixture, arena: std.mem.Allocator, body: []const u8, out: *http.Response) void {
+        out.* = f.post(arena, .decisions, "", body);
+    }
+};
+
+test "decisions: requests waiting together share one pass and get what each gets alone" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var f: Fixture = undefined;
+    try f.init(4);
+    defer f.deinit();
+    var worker = try io.concurrent(gpu.Executor.run, .{ &f.executor, io });
+    defer {
+        f.executor.stop(io);
+        worker.await(io);
+    }
+    const count = 16;
+    var arenas: [count]std.heap.ArenaAllocator = undefined;
+    for (&arenas) |*a| a.* = .init(gpa);
+    defer for (&arenas) |*a| a.deinit();
+    var bodies: [count][]const u8 = undefined;
+    for (&bodies, 0..) |*b, i| b.* = try std.fmt.allocPrint(arenas[i].allocator(),
+        \\{{"questions":{{"q{d}":{{"type":"choice","instructions":"Which of {d}?","criteria":{{"a":"first {d}","b":null,"c":"{s}"}}}},
+        \\ "n":{{"type":"noul","instructions":"Is {d} odd?"}}}},"states":["state {d}",{{"n":{d}}}]}}
+    , .{ i, i, i, "x" ** 3, i, i, i });
+
+    // Alone: each request is its own pass.
+    var alone: [count][]const u8 = undefined;
+    for (&alone, bodies, 0..) |*a, body, i| {
+        const r = f.post(arenas[i].allocator(), .decisions, "", body);
+        try std.testing.expectEqual(std.http.Status.ok, r.status);
+        a.* = try withoutTimings(arenas[i].allocator(), r.body);
+    }
+    try std.testing.expectEqual(@as(u64, count), f.service.batcher.stats(io).batches);
+
+    // Together: the GPU is held while all sixteen arrive, then freed.
+    var gate: Gate = .{};
+    try f.executor.submit(io, &gate.item);
+    var together: [count]http.Response = undefined;
+    var group: std.Io.Group = .init;
+    for (0..count) |i| try group.concurrent(io, Concurrent.post, .{ &f, arenas[i].allocator(), bodies[i], &together[i] });
+    while (f.service.batcher.stats(io).waiting < count) try io.sleep(.fromMilliseconds(1), .awake);
+    gate.open.set(io);
+    try group.await(io);
+    // Each tiny job is about 300 rows (a byte per token), so the sixteen
+    // fill a few passes of `decide.batch_rows`, never sixteen.
+    const stats = f.service.batcher.stats(io);
+    try std.testing.expect(stats.batches - count <= 4);
+    try std.testing.expectEqual(@as(u64, 2 * count), stats.jobs);
+    for (together, alone, 0..) |r, a, i| {
+        try std.testing.expectEqual(std.http.Status.ok, r.status);
+        try std.testing.expectEqualStrings(a, try withoutTimings(arenas[i].allocator(), r.body));
     }
 }

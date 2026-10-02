@@ -14,6 +14,7 @@ const gpu = @import("gpu.zig");
 const models = @import("models.zig");
 const router_mod = @import("router.zig");
 const decisions = @import("decisions/service.zig");
+const batcher = @import("decisions/batcher.zig");
 
 pub const default_port: u16 = 8735;
 
@@ -123,9 +124,10 @@ const Server = struct {
         _ = request;
         const self: *Server = @ptrCast(@alignCast(context));
         const stats = self.executor.stats(io);
+        const batching = self.decisions.batcher.stats(io);
         const open = self.decisions.pool.openNames(io, arena) catch &.{};
         var out: std.Io.Writer.Allocating = .init(arena);
-        writeHealth(&out.writer, self.version, self.backend, open, stats, self.active.load(.monotonic)) catch
+        writeHealth(&out.writer, self.version, self.backend, open, stats, batching, self.active.load(.monotonic)) catch
             return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         return .{ .body = out.written() };
     }
@@ -145,7 +147,7 @@ const Server = struct {
     }
 };
 
-fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, stats: gpu.Stats, connections: u32) !void {
+fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, stats: gpu.Stats, batching: batcher.Stats, connections: u32) !void {
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("status");
@@ -164,6 +166,15 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.write(stats.running);
     try s.objectField("completed");
     try s.write(stats.completed);
+    try s.endObject();
+    try s.objectField("decisions");
+    try s.beginObject();
+    try s.objectField("waiting");
+    try s.write(batching.waiting);
+    try s.objectField("batches");
+    try s.write(batching.batches);
+    try s.objectField("requests");
+    try s.write(batching.jobs);
     try s.endObject();
     try s.objectField("connections");
     try s.write(connections);
@@ -196,6 +207,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         .version = context.version,
     };
     server.decisions.executor = &server.executor;
+    server.decisions.bind();
     defer server.deinit();
     try server.register();
 
@@ -291,10 +303,11 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .queued = 2, .running = true, .completed = 7 }, 3);
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, 3);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);
     try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("queue").?.object.get("queued").?.integer);
     try std.testing.expectEqualStrings("laya", parsed.value.object.get("loaded").?.array.items[0].string);
+    try std.testing.expectEqual(@as(i64, 5), parsed.value.object.get("decisions").?.object.get("waiting").?.integer);
 }

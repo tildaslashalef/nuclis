@@ -9,12 +9,16 @@ const std = @import("std");
 
 pub const Item = struct {
     /// Runs on the worker; the item's owner reads the outcome after `wait`.
-    run: *const fn (item: *Item, io: std.Io) void,
+    /// `.again` queues it once more at the tail instead of finishing it.
+    run: *const fn (item: *Item, io: std.Io) After,
     next: ?*Item = null,
     state: State = .idle,
     done: std.Io.Event = .unset,
+    /// Submitted again while it ran: it runs once more.
+    rerun: bool = false,
 
     pub const State = enum { idle, queued, running, finished, abandoned };
+    pub const After = enum { done, again };
 };
 
 pub const Stats = struct { queued: usize, running: bool, completed: u64 };
@@ -36,11 +40,17 @@ pub const Executor = struct {
 
     /// Queues `item` behind everything waiting. `Busy` when the queue is
     /// full, `Stopped` once `stop` was called.
+    /// An item submitted while it runs is not linked twice: it runs once
+    /// more when it finishes (a drain that found nothing, racing a new job).
     pub fn submit(self: *Executor, io: std.Io, item: *Item) error{ Busy, Stopped }!void {
-        std.debug.assert(item.state == .idle);
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
+        std.debug.assert(item.state != .queued);
         if (self.stopping) return error.Stopped;
+        if (item.state == .running) {
+            item.rerun = true;
+            return;
+        }
         if (self.queued >= self.max_queued) return error.Busy;
         item.next = null;
         item.state = .queued;
@@ -107,12 +117,23 @@ pub const Executor = struct {
             self.running = true;
             self.mutex.unlock(io);
 
-            item.run(item, io);
+            const after = item.run(item, io);
 
             self.mutex.lockUncancelable(io);
-            item.state = .finished;
             self.running = false;
             self.completed += 1;
+            if (after == .again or item.rerun) {
+                // Requeued even when full or stopping: it was admitted once.
+                item.rerun = false;
+                item.next = null;
+                item.state = .queued;
+                if (self.tail) |t| t.next = item else self.head = item;
+                self.tail = item;
+                self.queued += 1;
+                self.mutex.unlock(io);
+                continue;
+            }
+            item.state = .finished;
             self.mutex.unlock(io);
             item.done.set(io);
         }
@@ -137,11 +158,17 @@ const Counting = struct {
     order: *std.ArrayList(u32),
     id: u32,
     gate: ?*std.Io.Event = null,
+    repeats: u32 = 0,
 
-    fn runOne(item: *Item, io: std.Io) void {
+    fn runOne(item: *Item, io: std.Io) Item.After {
         const self: *Counting = @fieldParentPtr("item", item);
         if (self.gate) |g| g.waitUncancelable(io);
         self.order.appendAssumeCapacity(self.id);
+        if (self.repeats > 0) {
+            self.repeats -= 1;
+            return .again;
+        }
+        return .done;
     }
 };
 
@@ -198,4 +225,21 @@ test "a waiter that times out unlinks its queued item; a running one is waited f
     executor.stop(io);
     worker.await(io);
     try std.testing.expectEqualSlices(u32, &.{ 1, 3 }, order.items);
+}
+
+test "an item that runs again goes behind what queued meanwhile" {
+    const io = std.testing.io;
+    var executor: Executor = .init(4);
+    var order: std.ArrayList(u32) = try .initCapacity(std.testing.allocator, 8);
+    defer order.deinit(std.testing.allocator);
+    var twice: Counting = .{ .order = &order, .id = 1, .repeats = 1 };
+    var other: Counting = .{ .order = &order, .id = 2 };
+    try executor.submit(io, &twice.item);
+    try executor.submit(io, &other.item);
+    var worker = try io.concurrent(Executor.run, .{ &executor, io });
+    try executor.wait(io, &twice.item, deadlineIn(io, 5_000));
+    try executor.wait(io, &other.item, deadlineIn(io, 5_000));
+    executor.stop(io);
+    worker.await(io);
+    try std.testing.expectEqualSlices(u32, &.{ 1, 2, 1 }, order.items);
 }
