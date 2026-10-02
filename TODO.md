@@ -42,7 +42,9 @@ spec-matrix` measures it, and `agent --print` now loads the drafter. An
 existing `~/.nuclis/nuclis.json` keeps its entries' old values until the
 user edits them or re-runs `config init`. The base binary for `make
 speed` is at ENGN-19's commit (no engine arithmetic changed since).
-Next: KERN-23, the single-row matvec (*Order* below).
+Next: KERN-23, re-scoped 2026-10-02 (user) to the single-row matvec
+and a multi-row verify body, since speculation is now the default path
+(*Order* below).
 
 Deferred (user, 2026-09-29), until the user picks it up: AGNT-18, the
 agent's `decide` tool (its design at the end). A session does not start
@@ -70,7 +72,7 @@ shared code:
 | --- | --- | :---: | :---: | :---: | :---: |
 | Few-query split-KV verify attention | KERN-21 | ✓ | ✓ | ✓ (draft heads) | ✓ (speculation on) |
 | Long-context decode attention | KERN-22 | ✓ | ✓ | ✓ | ✓ |
-| Single-row matvec bandwidth | KERN-23 | ✓ | ✓ | ✓ (their encodings) | ✓ |
+| Single-row and few-row matvec bandwidth | KERN-23 | ✓ | ✓ | ✓ (their encodings) | ✓ |
 | DeltaNet recurrent verify, replay tape | ENGN-19 | ✓ | ✓ | — | — |
 
 Bonsai runs on the Qwen adapter (`qwen35_metal.zig` with its Hadamard
@@ -119,7 +121,7 @@ KERN-20, with the source or the measurement for each fact.
 
 | # | Unit | Sessions | Lands when |
 | --- | --- | ---: | --- |
-| 1 | KERN-23 — Single-row matvec toward MLX-class bandwidth | 2 | 512 decode ≥ 11.5 tok/s, or closed at its ledger |
+| 1 | KERN-23 — Weight streaming for one row and a few: decode and the verify body | 2 | 512 decode ≥ 11.5 tok/s, a 4-row verify C ≤ 150 ms at 512, or Qwen speculative prose 512 ≥ 18 tok/s; or closed at its ledger |
 | 2 | KERN-22 — Long-context decode attention | 1 | 32K decode ≥ 9.2 tok/s, or closed negative |
 
 **Re-ranked after ENGN-20** (2026-10-02): speculation is on for Qwen
@@ -169,36 +171,77 @@ Identifiers are provisional in this order; they are fixed in the order
 the units close. The units are independent of one another: re-rank them
 when a kept change moves the cost table.
 
-## KERN-23 — Single-row matvec toward MLX-class bandwidth (2 sessions)
+## KERN-23 — Weight streaming for one row and a few: decode and the verify body (2 sessions)
 
-171 GB/s in the model at 512 (63 %); MLX reaches about 78 % on a 4-bit
-27B on this chip. The micro-benchmarks already read 192–212 GB/s for
-IQ4_XS, so part of the gap is in the model, not the kernel. Read
-KERN-20's capture first; the ideas are ranked by what it says.
+Base: `2479d62`
 
-- **What the counters say first** (apple-gpu.md, at full clocks): the Q4_K
-  matvec is issue-bound on the integer and complex pipe, not on memory, at
-  half its target occupancy with 192 registers. So (b) and fewer live
-  registers come first, (a) only if the in-model capture shows an MMU
-  limiter the micro-bench does not.
-- **Ideas:** (a) weights in Metal-allocated buffers instead of
-  `newBufferWithBytesNoCopy` over the file mapping (the in-model rate
-  runs about 10 % under the micro-bench; the MMU limiter decides);
-  (b) the half magic-number decode (a nibble OR'd into a half of exponent
-  1024, minus 1024) with float accumulation, per encoding; (c) scale and
-  bias once per group, `s·Σqx + b·Σx`; (d) wider loads per lane, 16 bytes
-  aligned; (e) the command buffer split in 2–4 so the GPU starts while
-  the CPU encodes, and `MTLDispatchTypeConcurrent` with explicit barriers
-  (bounded by the ~2 ms wall-versus-GPU gap); (f) the output head (Q6_K,
-  about 1 GB) as its own tuned kernel, since the drafter pays it per
-  proposal too.
-- **Prediction.** Q4_K 179 → ≥ 200 GB/s in `make bench-kernels`; 512
-  decode 10.62 → ≥ 11.5 tok/s. Each idea is judged by `make speed` on
-  its own.
-- **Correctness.** The per-encoding matvec fixtures, the trace gates of
-  every family whose encodings change, `make verify`.
+**Why, since ENGN-20.** Speculation is on for Qwen at draft 7, so a
+default turn spends its time in verify batches: at 512, C 164 ms = propose
+16.5 + checkpoint 3 + verify 138 + recover 2.5 + commit 4 (cold, greedy;
+bench.md § The re-priced speculative verdicts). The verify's matrices sit
+at KERN-24's floor: the fragment tile pads every 8×8 multiply and costs the
+same from 1 to 8 rows, its rates at 4 rows 107 GB/s (Q4_K) to 152 (Q6_K),
+against 179–212 GB/s for the single-row matvec in `make bench-kernels`.
+Plain decode still runs wherever speculation is off (Gemma 26B-A4B, Bonsai,
+files outside the catalogue, a turn after an image) and is 85 ms of
+matvecs in a 95 ms step at 512.
 
-Gates: `make test-metal`, `make verify-auto`, `make verify`.
+**What the counters say** (apple-gpu.md, at full clocks): the Q4_K matvec
+is issue-bound on the integer and complex pipe, not on memory, at half its
+target occupancy with 192 registers. The multi-row matvec kernels for 2–8
+tokens already exist (`nu_matvec_rows_{q4_k,q5_k,q6_k,iq4_xs}_t2..t8`,
+`nu_matvec_rows_k_body` and siblings in `kernels.metal`), but only 2 rows
+route to them (KERN-12): beyond that each token's accumulators push the
+registers and the body loses to the tile. KERN-24's close names the gap:
+a scalar body that shares activations across rows without that register
+wall; none was tried. Cheaper decode arithmetic and fewer live registers
+serve both halves of this unit.
+
+**Session 1 — the single-row matvec.** Ideas in this order, each judged
+first on `make bench-kernels` (Q4_K, Q5_K, Q6_K, IQ4_XS, IQ4_NL, Q8_0 at
+Qwen's shapes), then by `make speed` decode at 512 and 4K: (b) the half
+magic-number decode (a nibble OR'd into a half of exponent 1024, minus
+1024) with float accumulation, per encoding; (c) scale and bias once per
+group, `s·Σqx + b·Σx`; (d) 16-byte aligned loads per lane; then (a)
+weights in Metal-allocated buffers instead of `newBufferWithBytesNoCopy`,
+only if a capture shows an MMU limiter; (e) the command buffer split so
+the GPU starts while the CPU encodes; (f) the Q6_K output head (about 1
+GB) as its own kernel, which the drafter pays per proposed position too.
+`--kernel-stats` reads each candidate's thread limit before it is timed.
+
+**Session 2 — the multi-row body.** Carry session 1's decode into the
+`_t3..t8` bodies with the accumulators bounded (rows × tokens per
+SIMD group chosen so the thread limit stays at 1,024 in
+`--kernel-stats`), and measure every encoding at 3–8 tokens against the
+fragment tile with `make bench-matvec-rows ARGS="8 frag"`. Where the body
+beats the tile at a token count, route verify batches of that count to it
+(the routing that sends 2 tokens to `matvec_rows` today, in
+`inference/src/backends/metal/root.zig`), per encoding. Kept only through
+`make speed --verify-rows 4,8` and the speculative record below; Gemma's
+Q4_0 verify gets the same body if Q4_0 joins.
+
+**Predictions** (written before code; each idea's own goes into the
+ledger):
+
+- Q4_K single-row matvec 179 → ≥ 200 GB/s in `make bench-kernels`; 512
+  plain decode 10.56 → ≥ 11.5 tok/s.
+- A 4-token multi-row body ≥ 150 GB/s on Qwen's Q4_K and IQ4_XS shapes
+  (the tile reads 107 and 122); Qwen's 4-row verify C at 512 177 → ≤ 150
+  ms in `make speed`.
+- Qwen prose 512 with speculation (`make spec-matrix ARGS='--model qwen38
+  --contexts 512 --drafts 7 --cooldown 90 --rev <rev>'`, greedy and
+  instruct): 16.5 / 15.9 → ≥ 18 tok/s.
+
+**Lands when** any prediction is met with no context regressing, or the
+unit closes at its ledger. **Correctness:** the per-encoding matvec and
+multi-row fixtures in `metal-check` against the F64 CPU references
+(poisoned rows past the visible ones), the trace gates of every family
+whose encodings change, `qwen38-verify-depth-*` and
+`qwen38-generation-metal` (verify rows against stepped decode), `make
+verify`.
+
+Gates: `make test-metal`, `make verify-auto`, `make verify`; the
+speculative record above for the third prediction.
 
 ## KERN-22 — Long-context decode attention
 
