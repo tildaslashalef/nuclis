@@ -16,6 +16,12 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
+**Next: APPS-19 session 1** (its section follows this one): `nuclis
+serve`, the nuclis API layer in `src/api/`, decisions first. Record its
+`Base:` at the first change. The order of the units that follow is the
+table at the end of this section; the history of the speed theme comes
+first.
+
 Theme agreed 2026-09-30: **decode speed on Metal**, Qwen3.8-27B first,
 toward the 20 tokens/s of [ADR 0001](docs/adr/0001-qwen-decode-verifier.md)
 (proposed). ENGN-18 closed 2026-09-30: saved prefixes, `bench
