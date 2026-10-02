@@ -32,7 +32,7 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([generation.md](generat
 
 | File | Owns |
 | --- | --- |
-| `backends/metal/bridge.m` | Device, queue, shader library, pipelines, buffers, one open command buffer. A generic recording API: `begin`, `dispatch(pipeline, bindings, constants, grid)`, `commit`. Opt-in profiling: timestamp counter sample buffers and one encoder per dispatch, resolved to seconds per dispatch at commit. Knows nothing about models, shapes, or encodings. |
+| `backends/metal/bridge.m` | Device, queue, shader library, pipelines, buffers, one open command buffer. A generic recording API: `begin`, `dispatch(pipeline, bindings, constants, grid)`, `commit`, and `discard` (an error path drops the open command buffer unsubmitted). Opt-in profiling: timestamp counter sample buffers and one encoder per dispatch, resolved to seconds per dispatch at commit. Knows nothing about models, shapes, or encodings. |
 | `backends/metal/root.zig` | `Backend`: compiles the kernel set, hands out `Buffer` handles (`create`/`wrap`/`slice`), and exposes one typed encoder per kernel that validates shapes before recording. `Profile` accumulates timed dispatches by kernel, encoding, and shape. Knows kernel contracts, not layer schedules. |
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
 | `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
@@ -87,7 +87,12 @@ synchronous contract is what makes the following simple:
 - **Failure**: a failed command buffer or a rejected dispatch returns an error;
   `errdefer` marks the session failed and it stays poisoned until `reset()`.
   The DeltaNet update is in place, so a partially executed token is not
-  transactional — matching the CPU contract's outcome.
+  transactional — matching the CPU contract's outcome. An error while
+  recording (a rejected shape, an observer's `check` cancelling) discards
+  the open command buffer (`Backend.discard`, `errdefer` after `begin`):
+  the recorded layers never run, and the backend can `begin` again.
+  Destroying a backend mid-recording discards too; waiting on a buffer
+  that was never committed would never return.
 - **Observer.** `check` runs between recorded layers with no synchronization
   (Ctrl-C, time limit). `layer` needs the activations, so it forces a `commit`
   after every layer: traces only. Until 2026-09-07 the CLI installed a single

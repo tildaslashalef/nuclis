@@ -243,7 +243,7 @@ pub const Plan = struct {
         const b = self.backend;
         const eps = unified.layer_norm_epsilon;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try b.layerNorm(u.input, u.n1w, u.n1b, u.normed, .{ .rows = n, .width = unified.values, .in_stride = unified.values, .out_stride = unified.values, .eps = eps });
         try b.matmul(u.kernel.buffer, u.kernel.matrix, u.normed, unified.values, u.x, h, n);
         try b.addBiasRows(u.x, u.bias, h, n, h);
@@ -313,7 +313,7 @@ pub const Plan = struct {
         try model.ropeTables(s.rope_x.floats(), s.rope_y.floats(), g.ropePairs(), wp, n);
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try b.matmul(s.kernel.buffer, s.kernel.matrix, s.input, siglip.values, s.x, h, n);
         try b.add(s.x, s.h, n * h);
         const rows: Backend.Norm = .{ .rows = n, .width = h, .in_stride = h, .out_stride = h };

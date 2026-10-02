@@ -6,7 +6,8 @@
 //!
 //! Ownership: created buffers live until `deinit`. Wrapped buffers borrow the
 //! caller's page-backed memory, which must outlive the backend. `commit()`
-//! waits for completion, so CPU access to any buffer after it is race-free.
+//! waits for completion, so CPU access to any buffer after it is race-free;
+//! `discard()` drops a recording on an error path without running it.
 //!
 //! Profiling (`enableProfiling`) times every dispatch with GPU timestamps and
 //! accumulates them per kernel and shape in `Profile`. It is a diagnostic
@@ -32,6 +33,7 @@ extern fn nu_metal_buffer_release(*anyopaque, u32) c_int;
 extern fn nu_metal_begin(*anyopaque) c_int;
 extern fn nu_metal_dispatch(*anyopaque, u32, [*]const Binding, u32, ?*const anyopaque, usize, u32, u32, u32, u32) c_int;
 extern fn nu_metal_commit(*anyopaque, ?*const fn (?*anyopaque) callconv(.c) void, ?*anyopaque) c_int;
+extern fn nu_metal_discard(*anyopaque) c_int;
 extern fn nu_metal_gpu_seconds(*anyopaque) f64;
 extern fn nu_metal_profile_enable(*anyopaque, u32, [*]u8, usize) c_int;
 extern fn nu_metal_profile_read(*anyopaque, [*]f64, u32) u32;
@@ -51,34 +53,16 @@ const iq3_grid_source = blk: {
 };
 const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ iq3_grid_source ++ @embedFile("dequant.metal") ++ "\n" ++ @embedFile("kernels.metal");
 
-const kernel_names = [_][:0]const u8{
-    "nu_matvec",                "nu_matvec_q4_k",           "nu_matvec_q5_k",           "nu_matvec_q6_k",           "nu_matvec_iq4_xs",         "nu_embed",
-    "nu_rmsnorm",               "nu_l2norm",                "nu_rope",                  "nu_add",                   "nu_silu_mul",              "nu_silu_inplace",
-    "nu_delta_gates",           "nu_sigmoid_gate",          "nu_delta",                 "nu_convolution",           "nu_attention_scores",      "nu_attention_softmax",
-    "nu_attention_values",      "nu_penalize",              "nu_argmax_partial",        "nu_argmax_final",          "nu_matvec_q3_k",           "nu_matvec_iq3_s",
-    "nu_matvec_segments",       "nu_topk_partial",          "nu_topk_final",            "nu_expsum_partial",        "nu_matmul",                "nu_rope_rows",
-    "nu_copy",                  "nu_convolution_rows",      "nu_convolution_history",   "nu_attention_chunk",       "nu_delta_chunk",           "nu_matmul_q3_k",
-    "nu_matmul_q4_k",           "nu_matmul_q5_k",           "nu_matmul_q6_k",           "nu_matmul_iq3_s",          "nu_matmul_iq4_xs",         "nu_matmul_q3_k_32",
-    "nu_matmul_q4_k_32",        "nu_matmul_q5_k_32",        "nu_matmul_q6_k_32",        "nu_matmul_iq3_s_32",       "nu_matmul_iq4_xs_32",      "nu_attention_scores_h",
-    "nu_attention_values_h",    "nu_attention_chunk_h",     "nu_pack_half",             "nu_attention_decode",      "nu_attention_decode_h",    "nu_attention_merge",
-    "nu_gelu_mul",              "nu_scale",                 "nu_add_scale",             "nu_softcap",               "nu_attention_decode_w",    "nu_attention_decode_wh",
-    "nu_matvec_q4_0",           "nu_matmul_q4_0",           "nu_matmul_q4_0_32",        "nu_matvec_experts",        "nu_route",                 "nu_combine_experts",
-    "nu_gelu_mul_rows",         "nu_expert_lists",          "nu_matmul_experts",        "nu_matmul_experts_q4_0",   "nu_matvec_pq2_0",          "nu_matvec_ptq1_0",
-    "nu_matmul_pq2_0",          "nu_matmul_ptq1_0",         "nu_matmul_pq2_0_32",       "nu_matmul_ptq1_0_32",      "nu_hadamard",              "nu_gather_rows",
-    "nu_matmul_q3_k_8",         "nu_matmul_q4_k_8",         "nu_matmul_q5_k_8",         "nu_matmul_q6_k_8",         "nu_matmul_iq3_s_8",        "nu_matmul_iq4_xs_8",
-    "nu_matmul_q4_0_8",         "nu_matmul_pq2_0_8",        "nu_matmul_ptq1_0_8",       "nu_matvec_rows",           "nu_matvec_rows_q4_k_t2",   "nu_matvec_rows_q4_k_t3",
-    "nu_matvec_rows_q4_k_t4",   "nu_matvec_rows_q4_k_t5",   "nu_matvec_rows_q4_k_t6",   "nu_matvec_rows_q4_k_t7",   "nu_matvec_rows_q4_k_t8",   "nu_matvec_rows_q5_k_t2",
-    "nu_matvec_rows_q5_k_t3",   "nu_matvec_rows_q5_k_t4",   "nu_matvec_rows_q5_k_t5",   "nu_matvec_rows_q5_k_t6",   "nu_matvec_rows_q5_k_t7",   "nu_matvec_rows_q5_k_t8",
-    "nu_matvec_rows_q6_k_t2",   "nu_matvec_rows_q6_k_t3",   "nu_matvec_rows_q6_k_t4",   "nu_matvec_rows_q6_k_t5",   "nu_matvec_rows_q6_k_t6",   "nu_matvec_rows_q6_k_t7",
-    "nu_matvec_rows_q6_k_t8",   "nu_matvec_rows_iq4_xs_t2", "nu_matvec_rows_iq4_xs_t3", "nu_matvec_rows_iq4_xs_t4", "nu_matvec_rows_iq4_xs_t5", "nu_matvec_rows_iq4_xs_t6",
-    "nu_matvec_rows_iq4_xs_t7", "nu_matvec_rows_iq4_xs_t8", "nu_matmul_q3_k_w8",        "nu_matmul_q4_k_w8",        "nu_matmul_q5_k_w8",        "nu_matmul_q6_k_w8",
-    "nu_matmul_iq3_s_w8",       "nu_matmul_iq4_xs_w8",      "nu_matmul_q4_0_w8",        "nu_matmul_pq2_0_w8",       "nu_matmul_ptq1_0_w8",      "nu_matvec_q4_k_split",
-    "nu_matvec_q5_k_split",     "nu_reduce_splits",         "nu_matvec_segments_split", "nu_segment_reduce_splits", "nu_attention_chunk_reuse", "nu_attention_chunk_reuse_h",
-    "nu_rmsnorm_add",           "nu_add_rmsnorm",           "nu_rmsnorm_rope",          "nu_layernorm",             "nu_add_bias_rows",         "nu_gelu_inplace",
-    "nu_attention_full",        "nu_gelu_quick_mul",        "nu_gelu_erf_inplace",      "nu_clamp",                 "nu_attention_segments",    "nu_gelu_erf_mul_rows",
-    "nu_fragment_layout",       "nu_matmul_q4_k_f2",        "nu_matmul_q4_k_f2hh",      "nu_matmul_q4_k_f4",        "nu_matmul_q5_k_f2",        "nu_matmul_q6_k_f2",
-    "nu_matmul_iq4_xs_f2",      "nu_matmul_q3_k_f2",        "nu_matmul_iq3_s_f2",       "nu_matmul_q4_0_f2",        "nu_matmul_pq2_0_f2",       "nu_matmul_ptq1_0_f2",
-    "nu_matmul_iq4_nl_f2",      "nu_delta_rows",            "nu_delta_replay",
+/// Each `Kernel` names its MSL entry point as `nu_` plus the tag; pipelines
+/// are indexed by the tag's value, so the two cannot drift apart.
+const kernel_names = blk: {
+    const fields = @typeInfo(Kernel).@"enum".fields;
+    var names: [fields.len][:0]const u8 = undefined;
+    for (fields, &names, 0..) |field, *name, i| {
+        if (field.value != i) @compileError("Kernel values must be 0..n-1 in declaration order");
+        name.* = "nu_" ++ field.name;
+    }
+    break :blk names;
 };
 pub const Kernel = enum(u32) {
     matvec,
@@ -491,6 +475,16 @@ pub const Backend = struct {
         if (!completed) return error.MetalExecutionFailed;
     }
 
+    /// Drops the open command buffer unsubmitted, so none of its dispatches
+    /// run; a no-op when idle. The error-path counterpart of `commit`: model
+    /// plans `errdefer` it after `begin`, and the backend can `begin` again.
+    pub fn discard(self: *Backend) void {
+        if (!enabled or !self.recording) return;
+        self.recording = false;
+        _ = nu_metal_discard(self.handle);
+        if (self.profile) |*p| p.pending.clearRetainingCapacity();
+    }
+
     fn tickTrampoline(context: ?*anyopaque) callconv(.c) void {
         const self: *Backend = @ptrCast(@alignCast(context.?));
         if (self.tick) |t| t.call(t.context);
@@ -637,18 +631,23 @@ pub const Backend = struct {
     /// The multi-row bodies that exist (Q4_K, Q5_K, Q6_K, IQ4_XS), one per token
     /// count 2..8; every other encoding takes the generic `nu_matvec_rows` above.
     /// The token count is a template parameter so the body's accumulator loops
-    /// are compile-time bound (see kernels.metal); the per-encoding kernels are
-    /// contiguous in `Kernel` at `t2`.
+    /// are compile-time bound (see kernels.metal).
     pub fn specializedMatvecRows(encoding: u32, tokens: usize, weight_offset: usize, stride: usize, input_offset: usize) ?Kernel {
         if (input_offset % 16 != 0 or tokens < 2 or tokens > matvec_rows_max or !blockAligned(encoding, weight_offset, stride)) return null;
-        const base: u32 = switch (encoding) {
-            12 => @intFromEnum(Kernel.matvec_rows_q4_k_t2),
-            13 => @intFromEnum(Kernel.matvec_rows_q5_k_t2),
-            14 => @intFromEnum(Kernel.matvec_rows_q6_k_t2),
-            23 => @intFromEnum(Kernel.matvec_rows_iq4_xs_t2),
+        const bodies = switch (encoding) {
+            12 => comptime matvecRowsBodies("q4_k"),
+            13 => comptime matvecRowsBodies("q5_k"),
+            14 => comptime matvecRowsBodies("q6_k"),
+            23 => comptime matvecRowsBodies("iq4_xs"),
             else => return null,
         };
-        return @enumFromInt(base + tokens - 2);
+        return bodies[tokens - 2];
+    }
+    /// `matvec_rows_<name>_t2` .. `_t<matvec_rows_max>`, looked up by name.
+    fn matvecRowsBodies(comptime name: []const u8) [matvec_rows_max - 1]Kernel {
+        var bodies: [matvec_rows_max - 1]Kernel = undefined;
+        for (&bodies, 2..) |*body, tokens| body.* = @field(Kernel, std.fmt.comptimePrint("matvec_rows_{s}_t{d}", .{ name, tokens }));
+        return bodies;
     }
     pub const MatmulParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32, tokens: u32, in_stride: u32, out_stride: u32, row_tiles: u32 };
     /// Token padding of `matmul`: activation buffers hold a multiple of this

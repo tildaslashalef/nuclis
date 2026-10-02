@@ -444,7 +444,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         const embedding = try self.weight(self.binding.token_embedding);
         try b.embed(embedding.buffer, embedding.matrix, token, self.x);
         if (self.rotation) |rotation| try b.hadamard(self.x, try rotation.signsFor(hidden), hidden, 1, hidden, true);
@@ -628,7 +628,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try self.recordLayers(tokens, count, observer, false);
         if (hidden_rows != null) {
             // Normalize every row, as `verify` does; the last row also serves
@@ -671,7 +671,7 @@ pub const Plan = struct {
             try self.state.beginChunk(count);
             errdefer self.state.fail();
             try b.begin();
-            errdefer if (b.recording) b.commit() catch {};
+            errdefer b.discard();
             try self.recordLayers(tokens[offset..][0..count], count, observer, false);
             try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
             try self.rotate(self.normalized_c, hidden, count);
@@ -752,7 +752,7 @@ pub const Plan = struct {
         const b = self.backend;
         const taped = count <= max_draft_rows;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try self.recordLayers(tokens, count, observer, taped);
         try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
         if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
@@ -819,7 +819,7 @@ pub const Plan = struct {
         const b = self.backend;
         const taped = count <= max_draft_rows;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try self.recordLayers(tokens, count, observer, taped);
         try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
         if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
@@ -855,7 +855,7 @@ pub const Plan = struct {
             errdefer self.state.fail();
             const b = self.backend;
             try b.begin();
-            errdefer if (b.recording) b.commit() catch {};
+            errdefer b.discard();
             var shape = tape_shape;
             shape.count = kept;
             for (self.binding.layers, 0..) |layer, il| if (layer.mixer == .delta_net) {
@@ -1024,7 +1024,7 @@ pub const Plan = struct {
         const b = self.backend;
         const single: metal.Backend.Norm = .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden };
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         const embedding = try self.weight(self.binding.token_embedding);
         try b.embed(embedding.buffer, embedding.matrix, token, self.x);
         // [enorm(embed(x_p)); hnorm(h_{p-1})], projected by eh_proj.
@@ -1153,7 +1153,7 @@ pub const Plan = struct {
         @memcpy(hp[0..hidden], h_prev);
         if (count > 1) @memcpy(hp[hidden .. count * hidden], h_next_rows);
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         const embedding = try self.weight(self.binding.token_embedding);
         for (tokens, 0..) |token, t| try b.embed(embedding.buffer, embedding.matrix, token, self.x_c.slice(t * hidden * 4, hidden * 4));
         // enorm fills column 0 of the pair, hnorm column `hidden`; the 10240

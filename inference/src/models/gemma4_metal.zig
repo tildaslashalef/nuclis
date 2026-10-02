@@ -627,7 +627,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         const embedding = try self.weight(self.binding.token_embedding);
         const hidden = self.binding.config.embedding;
         try b.embed(embedding.buffer, embedding.matrix, token, self.x);
@@ -955,7 +955,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try self.recordLayers(tokens, count, observer);
         const hidden = self.binding.config.embedding;
         if (hidden_rows != null) {
@@ -1038,7 +1038,7 @@ pub const Plan = struct {
             try self.state.beginChunk(count);
             errdefer self.state.fail();
             try b.begin();
-            errdefer if (b.recording) b.commit() catch {};
+            errdefer b.discard();
             try self.recordLayers(tokens[offset..][0..count], count, observer);
             try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
             try b.matmul(head.buffer, head.matrix, self.normalized_c, hidden, out, vocabulary, count);
@@ -1077,7 +1077,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try self.recordLayers(tokens, count, observer);
         try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
         if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
@@ -1115,7 +1115,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try self.recordLayers(tokens, count, observer);
         try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
         if (h_rows != null) try b.copy(self.verify_hidden, self.normalized_c, count * hidden);
@@ -1241,7 +1241,7 @@ pub const Plan = struct {
         if (logits) |values| if (values.len != vocabulary) return error.InvalidShape;
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         const embedding = try self.weight(self.binding.token_embedding);
         try b.embed(embedding.buffer, embedding.matrix, token, head.row);
         try b.scale(head.row, out, @sqrt(@as(f32, @floatFromInt(out))));

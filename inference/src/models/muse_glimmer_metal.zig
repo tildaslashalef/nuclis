@@ -464,7 +464,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         const embedding = try self.weight(self.binding.token_embedding);
         try b.embed(embedding.buffer, embedding.matrix, token, self.x);
         try b.rmsNorm(self.x, self.ones, self.x, normOf(1, model.rms_epsilon));
@@ -688,7 +688,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try self.recordChunkLayers(tokens, count, observer, hidden_rows != null);
         if (logits != null or greedy != null or topk != null) {
             const last_row = self.x_c.slice((count - 1) * hidden * 4, hidden * 4);
@@ -773,7 +773,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try self.recordChunkLayers(tokens, count, observer, h_rows != null);
         try self.recordHead(count, self.verify_logits, tops);
         try b.commit();
@@ -802,7 +802,7 @@ pub const Plan = struct {
             try self.state.beginChunk(count);
             errdefer self.state.fail();
             try b.begin();
-            errdefer if (b.recording) b.commit() catch {};
+            errdefer b.discard();
             try self.recordChunkLayers(tokens[offset..][0..count], count, observer, false);
             try self.recordHead(count, out, null);
             try b.commit();
@@ -829,7 +829,7 @@ pub const Plan = struct {
         errdefer self.state.fail();
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try self.recordChunkLayers(tokens, count, observer, h_rows != null);
         try self.recordHead(count, self.verify_logits, null);
         for (0..count) |i| try b.argmax(self.verify_logits.slice(i * vocabulary * 4, vocabulary * 4), vocabulary, self.argmax_values, self.argmax_indices, self.verify_argmax.slice(i * 4, 4));
@@ -968,7 +968,7 @@ pub const Plan = struct {
         // are the contract's input, and `stage` is padded to the tile.
         @memcpy(d.stage.floats()[0 .. count * dflash.hidden_width], h_rows);
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try d.mmRows(b, d.binding.fc, d.stage, dflash.hidden_width, d.encoded, dflash.embedding, count);
         try b.rmsNorm(d.encoded, d.encoder_norm, d.encoded, normOf(count, dflash.rms_epsilon));
         for (d.binding.layers, d.constants, 0..) |layer, c, il| {
@@ -1010,7 +1010,7 @@ pub const Plan = struct {
         try self.draftBlock(token, rows);
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         // The target's head over every block row (the anchor's row included,
         // as the reference decodes the whole block); the drafts are rows 1...
         const head = try self.weight(self.binding.output);
@@ -1054,7 +1054,7 @@ pub const Plan = struct {
         const last = base + rows - 1;
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         const embedding = try self.weight(self.binding.token_embedding);
         for (0..rows) |r| {
             const input = if (r == 0) token else dflash.mask_token;
@@ -1118,7 +1118,7 @@ pub const Plan = struct {
         @memcpy(d.stage.floats()[0..dflash.hidden_width], inp);
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try d.mmRows(b, d.binding.fc, d.stage, dflash.hidden_width, d.encoded, dflash.embedding, 1);
         try b.rmsNorm(d.encoded, d.encoder_norm, d.encoded, normOf(1, dflash.rms_epsilon));
         try b.commit();
@@ -1136,7 +1136,7 @@ pub const Plan = struct {
         try self.draftBlock(token, rows);
         const b = self.backend;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         const head = try self.weight(self.binding.output);
         try b.matmul(head.buffer, head.matrix, d.hidden, dflash.embedding, d.logits, vocabulary, rows);
         for (0..rows) |r| try b.topk(d.logits.slice(r * vocabulary * 4, vocabulary * 4), vocabulary, 1, 1.0, d.topk[r]);

@@ -165,7 +165,7 @@ pub const Plan = struct {
         @memset(self.h.floats(), 0);
 
         try b.begin();
-        errdefer b.commit() catch {};
+        errdefer b.discard();
         try b.matmul(self.kernel, self.kernel_m, self.input, model.patch_values, self.x, hidden, n);
         try b.addBiasRows(self.x, self.patch_bias, hidden, n, hidden);
         try b.add(self.x, self.pos, n * hidden);

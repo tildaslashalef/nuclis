@@ -1300,6 +1300,48 @@ fn expertsBench(alloc: std.mem.Allocator, chunk: usize) !void {
 /// The tick fires while a long command buffer runs and stays silent for a
 /// short one: 600 back-to-back matvecs over a 200 MB Q4_0 matrix hold the GPU
 /// about 600 ms, past several intervals; a single one completes before the first.
+/// A discarded recording runs none of its dispatches, leaves the backend
+/// able to record again, and drops its profile entries; a backend destroyed
+/// mid-recording returns instead of waiting on a buffer never committed.
+fn checkDiscard(alloc: std.mem.Allocator) !void {
+    const count = 1024;
+    for ([_]bool{ false, true }) |profiled| {
+        var backend = try openBackend(alloc);
+        defer backend.deinit();
+        const b = &backend;
+        if (profiled) {
+            var diagnostic: [512]u8 = @splat(0);
+            try b.enableProfiling(64, &diagnostic);
+        }
+        const x = try b.create(count * 4);
+        const y = try b.create(count * 4);
+        @memset(x.floats(), 1);
+        @memset(y.floats(), 1);
+        b.discard(); // idle: a no-op
+        try b.begin();
+        for (0..8) |_| try b.add(x, y, count);
+        b.discard();
+        if (b.recording) return error.DiscardStillRecording;
+        for (x.floats()) |v| if (v != 1) return error.DiscardedWorkRan;
+        try b.begin();
+        try b.add(x, y, count);
+        try b.commit();
+        for (x.floats()) |v| if (v != 2) return error.MetalMismatch;
+        if (b.profile) |p| {
+            var dispatches: u64 = 0;
+            var totals = p.totals.valueIterator();
+            while (totals.next()) |t| dispatches += t.dispatches;
+            if (dispatches + p.unsampled != 1 or p.command_buffers != 1) return error.DiscardLeakedProfile;
+        }
+    }
+    var backend = try openBackend(alloc);
+    const x = try backend.create(count * 4);
+    try backend.begin();
+    try backend.add(x, x, count);
+    backend.deinit();
+    std.debug.print("discard: recorded work dropped, plain and profiled; deinit while recording returns\n", .{});
+}
+
 fn checkTick(alloc: std.mem.Allocator) !void {
     var backend = try openBackend(alloc);
     defer backend.deinit();
@@ -2611,6 +2653,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
     if (args.len != 1) return error.UnknownOption;
     try checkFragmentLayout(alloc);
+    try checkDiscard(alloc);
     try checkTick(alloc);
     try checkSegments(alloc);
     try checkHadamard(alloc);
@@ -3070,6 +3113,16 @@ pub fn main(init: std.process.Init) !void {
             if (Backend.usesMatvecRows(1) or !Backend.usesMatvecRows(2) or Backend.usesMatvecRows(3) or
                 Backend.usesMatvecRows(Backend.matvec_rows_max)) return error.MatvecRowsSelection;
             if (Backend.small_batch_rows != 2 or Backend.matvec_rows_max != 8) return error.MatvecRowsSelection;
+            // Each encoding with a multi-row body selects the instantiation
+            // of exactly its token count.
+            for ([_]struct { u32, []const u8 }{ .{ 12, "q4_k" }, .{ 13, "q5_k" }, .{ 14, "q6_k" }, .{ 23, "iq4_xs" } }) |body| {
+                for (2..Backend.matvec_rows_max + 1) |tokens| {
+                    var want: [32]u8 = undefined;
+                    const name = try std.fmt.bufPrint(&want, "matvec_rows_{s}_t{d}", .{ body[1], tokens });
+                    const kernel = Backend.specializedMatvecRows(body[0], tokens, 0, 4096, 0) orelse return error.MatvecRowsSelection;
+                    if (!std.mem.eql(u8, @tagName(kernel), name)) return error.MatvecRowsSelection;
+                }
+            }
             // One row is refused by the kernel itself, never silently served.
             const one_fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/k-affine.json"), .{ .ignore_unknown_fields = true });
             defer one_fixtures.deinit();

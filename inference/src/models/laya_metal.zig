@@ -250,7 +250,7 @@ pub const Plan = struct {
         const head_norm: Backend.Norm = .{ .rows = n, .width = d, .in_stride = d, .out_stride = d, .eps = head_eps };
         const inter = c.intermediate;
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try b.layerNorm(self.x, self.embed_norm, self.zeros, self.x, norm);
         for (self.layers, 0..) |l, i| {
             const global = c.global.isSet(i);

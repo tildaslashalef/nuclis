@@ -2,7 +2,8 @@
 // pipelines, and buffers; it knows nothing about layers, encodings, or shapes.
 // Zig records dispatches between nu_metal_begin and nu_metal_commit; commit
 // waits for completion, so CPU access to shared memory after it is race-free
-// and destruction cannot overlap submitted work.
+// and destruction cannot overlap submitted work. nu_metal_discard drops an
+// open command buffer unsubmitted: none of its dispatches run.
 //
 // Profiling (opt-in, nu_metal_profile_enable): Apple GPUs sample timestamps only
 // at encoder stage boundaries, never per dispatch, so in profile mode every
@@ -49,11 +50,20 @@ static void message(char * error, size_t capacity, NSString * text) {
     if (capacity) snprintf(error, capacity, "%s", text.UTF8String ?: "Metal failure");
 }
 
+// Ends and releases an open command buffer without committing it. An open
+// buffer is never committed (commit clears `command` first), and waiting on
+// an uncommitted buffer never returns, so dropping it is the only release.
+static void discardCommand(NuMetal * m) {
+    if (m->encoder) { [m->encoder endEncoding]; [m->encoder release]; m->encoder = nil; }
+    if (m->command) { [m->command release]; m->command = nil; }
+    m->dispatches = 0;
+    m->sampled = 0;
+}
+
 void nu_metal_destroy(void * opaque) {
     if (!opaque) return;
     NuMetal * m = opaque;
-    if (m->encoder) { [m->encoder endEncoding]; [m->encoder release]; }
-    if (m->command) { [m->command waitUntilCompleted]; [m->command release]; }
+    discardCommand(m);
     if (m->capturing) [[MTLCaptureManager sharedCaptureManager] stopCapture];
     [m->samples release]; free(m->durations);
     [m->buffers release]; [m->pipelines release]; [m->library release];
@@ -185,6 +195,15 @@ int nu_metal_begin(void * opaque) {
         m->sampled = 0;
         return 0;
     }
+}
+
+// Drops the open command buffer unsubmitted (an error path); a pending
+// capture stays armed for the next commit. Returns 1 when none is open.
+int nu_metal_discard(void * opaque) {
+    NuMetal * m = opaque;
+    if (!m->command) return 1;
+    discardCommand(m);
+    return 0;
 }
 
 // Profile mode: an encoder for exactly one dispatch, timestamped at its start

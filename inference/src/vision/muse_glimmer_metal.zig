@@ -178,7 +178,7 @@ pub const Plan = struct {
         const norm: Backend.Norm = .{ .rows = n, .width = hidden, .in_stride = hidden, .out_stride = hidden, .eps = model.norm_epsilon };
         const scale: f32 = @floatCast(1.0 / @sqrt(@as(f64, model.head_dim)));
         try b.begin();
-        errdefer if (b.recording) b.commit() catch {};
+        errdefer b.discard();
         try b.matmul(self.kernel.buffer, self.kernel.matrix, self.input, patch_columns, self.h, hidden, n);
         try b.add(self.h, self.attn, n * hidden);
         try b.layerNorm(self.h, self.pre_w, self.pre_b, self.x, norm);
