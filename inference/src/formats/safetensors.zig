@@ -643,6 +643,44 @@ test "every rejection is typed, and hostile lengths fail before allocating" {
     try std.testing.expectEqualStrings("weird", rejection.tensor().?);
 }
 
+/// Parses `bytes` as a file of `file_bytes`: a typed error or a document,
+/// which is released. A panic, an overflow, or a leak fails the caller.
+fn parseAny(bytes: []const u8, file_bytes: u64) void {
+    var reader: std.Io.Reader = .fixed(bytes);
+    var doc = parse(std.testing.allocator, &reader, file_bytes, .{}) catch return;
+    doc.deinit();
+}
+
+test "corrupted files return an error or a document, never a panic or a leak" {
+    const gpa = std.testing.allocator;
+    const buffer = validBuffer();
+    const good = try fixture(gpa, valid_header, &buffer);
+    defer gpa.free(good);
+    const bytes = try gpa.dupe(u8, good);
+    defer gpa.free(bytes);
+    for (0..good.len) |n| for ([_]u64{ n, std.math.maxInt(u64) }) |claimed| parseAny(good[0..n], claimed);
+    // JSON structure and a byte no JSON allows, at every offset; the random
+    // pass below covers digits and names.
+    for (0..good.len) |at| for ("{}[]\":\xff") |v| {
+        @memcpy(bytes, good);
+        bytes[at] = v;
+        parseAny(bytes, bytes.len);
+    };
+    for ([_]u64{ 0, 1, 7, valid_header.len - 1, valid_header.len + 1, good.len, std.math.maxInt(u64), 1 << 63 }) |v| {
+        @memcpy(bytes, good);
+        std.mem.writeInt(u64, bytes[0..8], v, .little);
+        parseAny(bytes, bytes.len);
+    }
+    var prng: std.Random.DefaultPrng = .init(0x7361_6665);
+    const random = prng.random();
+    const alphabet = "{}[]\":,-.0123456789eE \"abcdtypeshapeF32U8";
+    for (0..500) |_| {
+        @memcpy(bytes, good);
+        for (0..random.intRangeAtMost(usize, 1, 4)) |_| bytes[random.uintLessThan(usize, bytes.len)] = alphabet[random.uintLessThan(usize, alphabet.len)];
+        parseAny(bytes, bytes.len);
+    }
+}
+
 fn parseValid(gpa: Allocator) !void {
     const buffer = validBuffer();
     const bytes = try fixture(gpa, valid_header, &buffer);

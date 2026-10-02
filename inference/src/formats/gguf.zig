@@ -588,6 +588,49 @@ test "hostile lengths and counts are rejected before allocating" {
     try std.testing.expectError(error.LimitExceeded, parse(std.testing.allocator, &reader, bytes.written().len, .{}));
 }
 
+/// Parses `bytes` as a file of `file_bytes`: a typed error or a document,
+/// which is released. A panic, an overflow, or a leak fails the caller.
+fn parseAny(bytes: []const u8, file_bytes: u64) void {
+    var reader: std.Io.Reader = .fixed(bytes);
+    var doc = parse(std.testing.allocator, &reader, file_bytes, .{}) catch return;
+    doc.deinit();
+}
+
+test "corrupted files return an error or a document, never a panic or a leak" {
+    var original = try fixture(.{});
+    defer original.deinit();
+    const good = original.written();
+    const bytes = try std.testing.allocator.dupe(u8, good);
+    defer std.testing.allocator.free(bytes);
+    // Every truncation, honest about its length or claiming more.
+    for (0..good.len) |n| for ([_]u64{ n, good.len, std.math.maxInt(u64) }) |claimed| parseAny(good[0..n], claimed);
+    // Small and extreme values at every offset: tags, lengths, counts, offsets.
+    for (0..good.len) |at| {
+        for ([_]u8{ 0, 1, 0x7f, 0x80, 0xff }) |v| {
+            @memcpy(bytes, good);
+            bytes[at] = v;
+            parseAny(bytes, bytes.len);
+        }
+        if (at + 4 <= good.len) for ([_]u32{ std.math.maxInt(u32), 1 << 31, 13 }) |v| {
+            @memcpy(bytes, good);
+            std.mem.writeInt(u32, bytes[at..][0..4], v, .little);
+            parseAny(bytes, bytes.len);
+        };
+        if (at + 8 <= good.len) for ([_]u64{ std.math.maxInt(u64), 1 << 63, 1 << 32, 100_000, 100_001 }) |v| {
+            @memcpy(bytes, good);
+            std.mem.writeInt(u64, bytes[at..][0..8], v, .little);
+            parseAny(bytes, bytes.len);
+        };
+    }
+    var prng: std.Random.DefaultPrng = .init(0x6767_7566);
+    const random = prng.random();
+    for (0..1000) |_| {
+        @memcpy(bytes, good);
+        for (0..random.intRangeAtMost(usize, 1, 4)) |_| bytes[random.uintLessThan(usize, bytes.len)] = random.int(u8);
+        parseAny(bytes, bytes.len);
+    }
+}
+
 test "arena cleanup survives every allocation failure" {
     var bytes = try fixture(.{});
     defer bytes.deinit();
