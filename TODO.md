@@ -168,13 +168,18 @@ while a request waits, and pack whatever is waiting into the next pass.
   concurrency 16, p99 latency ≤ 2 batches' time; concurrency 1 unchanged
   within 2 %.
 - **Measured and recorded**: requests/s and p50/p99 at concurrency 1, 4,
-  16 for both checkpoints, before and after batching, in the `nuclis
-  serve` section of `laya.md`.
+  16 for both checkpoints, before and after batching, in
+  `docs/reference/serve.md`.
 
-Docs: `docs/spec.md` (the command table), a `nuclis serve` section in
-`docs/reference/laya.md`, `docs/development.md` (the port, the limits,
-measuring with `ab`), `src/help.zig`, `docs/architecture.md` (the
-decision path).
+Docs: **`docs/reference/serve.md` (new), the API reference clients build
+against**: every route with its request and response JSON, field by field,
+the error codes with their HTTP statuses, the limits, the batching
+behaviour, an example per route with `curl`, and the measured rates. It is
+written for a client author who has not read the code, and it is the
+document handed to client projects when the unit closes. Also
+`docs/spec.md` (the command table), `docs/reference/laya.md` (a link from
+its `nuclis decide` section), `docs/development.md` (the port, measuring
+with `ab`), `src/help.zig`, `docs/architecture.md` (the decision path).
 
 Gates: `make check`, `make verify-auto` (the new `decide-serve` gate). No
 numerical behaviour changes, so no Metal or CPU tier.
