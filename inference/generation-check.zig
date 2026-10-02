@@ -101,6 +101,7 @@ pub fn main(init: std.process.Init) !void {
     var vision_oracle: ?[]const u8 = null;
     var verify_depth: ?[]const u8 = null;
     var prefix_dir: ?[]const u8 = null;
+    var hidden_rows = false;
     var path: ?[]const u8 = null;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -137,6 +138,8 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedPrefixDirectory;
             prefix_dir = args[i];
+        } else if (std.mem.eql(u8, arg, "--hidden-rows")) {
+            hidden_rows = true;
         } else if (std.mem.eql(u8, arg, "--vision-profile")) {
             vision_profile = true;
         } else if (std.mem.eql(u8, arg, "--vision-oracle")) {
@@ -156,7 +159,9 @@ pub fn main(init: std.process.Init) !void {
     defer mapped.deinit(init.io);
     const architecture = mapped.document.string("general.architecture") orelse return error.MissingMetadata;
     switch (try inference.models.select(architecture)) {
-        .qwen35 => if (vision_check) |projector|
+        .qwen35 => if (hidden_rows)
+            try hiddenRowsCheck(alloc, init.io, &mapped)
+        else if (vision_check) |projector|
             if (vision_image) |image|
                 try visionCompare(alloc, init.io, projector, image, vision_oracle orelse return error.ExpectedOracleDirectory, use_metal, model_path)
             else
@@ -185,6 +190,60 @@ pub fn main(init: std.process.Init) !void {
         else if (draft_trace) |dir|
             try museDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal, dir)
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
+    }
+}
+
+/// A decision head's input on both backends: every row's post-`output_norm`
+/// hidden from the CPU reference (`Runtime.hiddenRows`) against the Metal
+/// chunked prefill (`Plan.prefillHidden`) over 40 tokens, one chunk boundary
+/// inside, then the Metal path timed at 512 and 2,000 tokens. Any qwen35
+/// shape; no draft block needed.
+fn hiddenRowsCheck(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped) !void {
+    const qwen35 = inference.models.qwen35;
+    const binding = try qwen35.bind(alloc, &mapped.document);
+    const hidden = binding.shape.hidden;
+    var diagnostic: [8192]u8 = @splat(0);
+    var backend = inference.metal.Backend.init(alloc, &diagnostic) catch |err| {
+        std.debug.print("{s}\n", .{std.mem.sliceTo(&diagnostic, 0)});
+        return err;
+    };
+    defer backend.deinit();
+    var tokens: [2000]u32 = undefined;
+    // Deterministic ids spread over the ordinary vocabulary.
+    for (&tokens, 0..) |*t, i| t.* = @intCast(1000 + (i * 7919) % 150_000);
+    const count = 40;
+    const cpu_rows = try alloc.alloc(f32, count * hidden);
+    defer alloc.free(cpu_rows);
+    const gpu_rows = try alloc.alloc(f32, tokens.len * hidden);
+    defer alloc.free(gpu_rows);
+    {
+        var runtime = try qwen35.family.Runtime.init(alloc, io, mapped.view(), binding, count, false, false);
+        defer runtime.deinit();
+        try runtime.hiddenRows(tokens[0..count], &.{}, &.{}, cpu_rows);
+    }
+    var plan = try qwen35.family.Plan.init(alloc, &backend, mapped.view(), binding, tokens.len, 32, .f32, false, false);
+    defer plan.deinit();
+    try plan.prefillHidden(tokens[0..count], &.{}, &.{}, gpu_rows[0 .. count * hidden]);
+    var max_abs: f64 = 0;
+    var diff_sq: f64 = 0;
+    var ref_sq: f64 = 0;
+    for (cpu_rows, gpu_rows[0 .. count * hidden]) |e, a| {
+        const d = @abs(@as(f64, e) - a);
+        max_abs = @max(max_abs, d);
+        diff_sq += d * d;
+        ref_sq += @as(f64, e) * e;
+    }
+    const rel_rms = @sqrt(diff_sq / ref_sq);
+    std.debug.print("Hidden rows, CPU vs Metal ({d} rows of {d}): max abs {e:.3}, relative RMS {e:.3} (bounds 5e-2 / 2e-3)\n", .{ count, hidden, max_abs, rel_rms });
+    if (!(max_abs <= 5e-2) or !(rel_rms <= 2e-3)) return error.HiddenRowsMismatch;
+    var timed = try qwen35.family.Plan.init(alloc, &backend, mapped.view(), binding, tokens.len, 512, .f16, false, false);
+    defer timed.deinit();
+    for ([_]usize{ 512, 2000 }) |n| {
+        try timed.prefillHidden(tokens[0..n], &.{}, &.{}, gpu_rows[0 .. n * hidden]); // warm
+        const start = std.Io.Clock.awake.now(io);
+        try timed.prefillHidden(tokens[0..n], &.{}, &.{}, gpu_rows[0 .. n * hidden]);
+        const ns: f64 = @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds());
+        std.debug.print("Metal prefillHidden: {d} tokens in {d:.1} ms ({d:.0} tokens/s, chunk 512, f16 cache)\n", .{ n, ns / 1e6, @as(f64, @floatFromInt(n)) / (ns / 1e9) });
     }
 }
 

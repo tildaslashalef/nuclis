@@ -1,4 +1,4 @@
-//! GPU-resident execution of the pinned text-only Qwen schedule. One command
+//! GPU-resident execution of the qwen35 schedule at the binding's shape. One command
 //! buffer per token: the CPU supplies a token ID and reads back logits (or a
 //! greedy token); every activation, norm, gate, cache write, and recurrent
 //! update stays on the GPU. The schedule is the same as `qwen35_runtime.zig`,
@@ -23,8 +23,6 @@ const Buffer = metal.Buffer;
 const Drafter = @import("../runtime/draft.zig").Drafter;
 
 pub const vocabulary = 248320;
-const hidden = 5120;
-const ffn = 17408;
 /// Rows a single verify batch may hold: the largest draft block plus its
 /// seed token and bonus. Sizes the device buffers the output head reads back
 /// (about 16 MB of logits), not the layer activations, which are chunk-sized.
@@ -35,9 +33,15 @@ pub const max_verify_rows = 16;
 pub const max_draft_rows = model.max_draft_proposals + 1;
 /// One DeltaNet layer's verify tape: the batch rows' convolution inputs, then
 /// the `deltaRows` tape.
-const tape_shape: metal.Backend.DeltaRowsShape = .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = 0, .capacity = max_draft_rows, .in_stride = 10240, .gate_stride = 48, .out_stride = 6144, .scale = 1.0 / @sqrt(@as(f32, 128)) };
-const tape_mixed_floats = max_draft_rows * 10240;
-const tape_layer_floats = tape_mixed_floats + metal.Backend.deltaTapeFloats(tape_shape);
+fn tapeShape(shape: model.Shape) metal.Backend.DeltaRowsShape {
+    return .{ .qheads = 16, .vheads = shape.value_heads, .keys = 128, .values = 128, .count = 0, .capacity = max_draft_rows, .in_stride = shape.qkvWidth(), .gate_stride = shape.value_heads, .out_stride = shape.innerWidth(), .scale = 1.0 / @sqrt(@as(f32, 128)) };
+}
+fn tapeMixedFloats(shape: model.Shape) usize {
+    return max_draft_rows * shape.qkvWidth();
+}
+fn tapeLayerFloats(shape: model.Shape) usize {
+    return tapeMixedFloats(shape) + metal.Backend.deltaTapeFloats(tapeShape(shape));
+}
 
 const LayerConstants = struct {
     attention_norm: Buffer,
@@ -92,20 +96,20 @@ pub const Plan = struct {
     projected: Buffer, // hidden
     gate: Buffer, // ffn
     up: Buffer, // ffn
-    qg: Buffer, // 24 * 512
-    q: Buffer, // 24 * 256
+    qg: Buffer, // heads * 512
+    q: Buffer, // heads * 256
     /// F32 key/value rows of the current token when the cache is F16:
     /// projected, normalized, and rotated here, then packed into the slot.
     /// With an F32 cache the projections write the slot directly.
     k: Buffer, // 1024
     v: Buffer, // 1024
-    mixed: Buffer, // 10240
-    convolved: Buffer, // 10240
-    z: Buffer, // 6144
-    alpha: Buffer, // 48
-    beta: Buffer, // 48
-    mixed_out: Buffer, // 6144
-    /// Flash-decoding partials: `[rows][24][splits][2 + 256]` for up to
+    mixed: Buffer, // qkv
+    convolved: Buffer, // qkv
+    z: Buffer, // inner
+    alpha: Buffer, // value heads
+    beta: Buffer, // value heads
+    mixed_out: Buffer, // max(heads * 256, inner)
+    /// Flash-decoding partials: `[rows][heads][splits][2 + 256]` for up to
     /// `verify_max_rows` rows (a decode step uses the first), 25 MB,
     /// independent of the capacity.
     partials: Buffer,
@@ -143,22 +147,23 @@ pub const Plan = struct {
     projected_c: Buffer,
     gate_c: Buffer, // padded × ffn
     up_c: Buffer,
-    qg_c: Buffer, // padded × 24 × 512
-    q_c: Buffer, // padded × 24 × 256
+    qg_c: Buffer, // padded × heads × 512
+    q_c: Buffer, // padded × heads × 256
     k_c: Buffer, // padded × 1024
     v_c: Buffer,
     /// Half copy of `q_c` for the F16 chunk attention (its operands share one type).
-    q_c_h: Buffer, // padded × 24 × 256 halves
-    mixed_c: Buffer, // padded × 10240
+    q_c_h: Buffer, // padded × heads × 256 halves
+    mixed_c: Buffer, // padded × qkv
     convolved_c: Buffer,
-    z_c: Buffer, // padded × 6144
-    alpha_c: Buffer, // padded × 48
+    z_c: Buffer, // padded × inner
+    alpha_c: Buffer, // padded × value heads
     beta_c: Buffer,
-    mixed_out_c: Buffer, // padded × 6144
+    mixed_out_c: Buffer, // padded × max(heads * 256, inner)
     /// Post-`output_norm` rows of a prefill chunk when `prefill` is asked for
     /// them; a drafter's `commit` consumes the same rows, so it exists only
     /// with the draft.
-    prefill_hidden: Buffer, // chunk × hidden
+    /// Created on first use unless a drafter loads it at init.
+    prefill_hidden: ?Buffer, // chunk × hidden
 
     /// The embedded prediction head's workspace, allocated only when a
     /// drafter was requested. `draft_h` is the block's `h_nextn` (after
@@ -197,16 +202,24 @@ pub const Plan = struct {
     pub fn init(alloc: std.mem.Allocator, backend: *metal.Backend, view: weights.View, binding: model.Binding, capacity: usize, chunk: usize, kv: session.Precision, checkpoint: bool, draft: bool) !Plan {
         if (chunk == 0 or chunk > 4096) return error.InvalidShape;
         if (draft and binding.draft == null) return error.NoDraftBlock;
-        const text = binding.layers.len;
-        var layouts: [text + 1]session.Layout = undefined;
-        for (binding.layers, layouts[0..text]) |layer, *layout| layout.* = switch (layer.mixer) {
+        const shape = binding.shape;
+        const hidden = shape.hidden;
+        const ffn = shape.ffn;
+        const heads = shape.heads;
+        const value_heads = shape.value_heads;
+        const qkv = shape.qkvWidth();
+        const inner = shape.innerWidth();
+        const mixed_out_width = @max(shape.queryWidth(), inner);
+        const text = shape.layers;
+        var layouts: [model.Shape.max_layers + 1]session.Layout = undefined;
+        for (binding.layers(), layouts[0..text]) |layer, *layout| layout.* = switch (layer.mixer) {
             .full_attention => .{ .attention = .{ .key_row = 1024, .value_row = 1024, .precision = kv } },
-            .delta_net => .{ .recurrent = .{ .history = 10240 * 3, .matrix = 48 * 128 * 128 } },
+            .delta_net => .{ .recurrent = .{ .history = shape.deltaHistory(), .matrix = shape.deltaMatrix() } },
         };
         if (draft) layouts[text] = .{ .attention = .{ .key_row = 1024, .value_row = 1024, .precision = kv } };
         var state = try session.Session.init(alloc, layouts[0 .. text + @intFromBool(draft)], capacity, checkpoint);
         errdefer state.deinit();
-        const constants = try alloc.alloc(LayerConstants, binding.layers.len);
+        const constants = try alloc.alloc(LayerConstants, text);
         errdefer alloc.free(constants);
         var self: Plan = undefined;
         self.alloc = alloc;
@@ -216,7 +229,7 @@ pub const Plan = struct {
         self.state = state;
         self.constants = constants;
         self.state_buffer = try backend.wrap(state.memory);
-        for (binding.layers, constants) |layer, *c| {
+        for (binding.layers(), constants) |layer, *c| {
             c.* = .{
                 .attention_norm = try self.constant(layer.attention_norm),
                 .post_attention_norm = try self.constant(layer.post_attention_norm),
@@ -241,21 +254,21 @@ pub const Plan = struct {
         self.projected = try backend.create(hidden * 4);
         self.gate = try backend.create(ffn * 4);
         self.up = try backend.create(ffn * 4);
-        self.qg = try backend.create(24 * 512 * 4);
-        self.q = try backend.create(24 * 256 * 4);
+        self.qg = try backend.create(heads * 512 * 4);
+        self.q = try backend.create(heads * 256 * 4);
         self.k = try backend.create(1024 * 4);
         self.v = try backend.create(1024 * 4);
         // One shared projection allocation lets four weights and all DeltaNet
         // outputs fit the merged kernel's seven data bindings. The named slices
         // preserve the downstream operation interfaces and borrowed lifetimes.
-        const delta_projections = try backend.create((10240 + 6144 + 48 + 48) * 4);
-        self.mixed = delta_projections.slice(0, 10240 * 4);
-        self.convolved = try backend.create(10240 * 4);
-        self.z = delta_projections.slice(10240 * 4, 6144 * 4);
-        self.alpha = delta_projections.slice((10240 + 6144 + 48) * 4, 48 * 4);
-        self.beta = delta_projections.slice((10240 + 6144) * 4, 48 * 4);
-        self.mixed_out = try backend.create(6144 * 4);
-        self.partials = try backend.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, 24, 256) * 4);
+        const delta_projections = try backend.create((qkv + inner + 2 * value_heads) * 4);
+        self.mixed = delta_projections.slice(0, qkv * 4);
+        self.convolved = try backend.create(qkv * 4);
+        self.z = delta_projections.slice(qkv * 4, inner * 4);
+        self.alpha = delta_projections.slice((qkv + inner + value_heads) * 4, value_heads * 4);
+        self.beta = delta_projections.slice((qkv + inner) * 4, value_heads * 4);
+        self.mixed_out = try backend.create(mixed_out_width * 4);
+        self.partials = try backend.create(metal.Backend.attentionVerifyPartials(metal.Backend.verify_max_rows, heads, 256) * 4);
         self.logits = try backend.create(vocabulary * 4);
         // Verify scratch exists only with a drafter (the loop's only caller).
         // `matmul` writes `matmulPadded(tokens)` output rows regardless of the
@@ -285,18 +298,18 @@ pub const Plan = struct {
         self.projected_c = try backend.create(n * hidden * 4);
         self.gate_c = try backend.create(n * ffn * 4);
         self.up_c = try backend.create(n * ffn * 4);
-        self.qg_c = try backend.create(n * 24 * 512 * 4);
-        self.q_c = try backend.create(n * 24 * 256 * 4);
+        self.qg_c = try backend.create(n * heads * 512 * 4);
+        self.q_c = try backend.create(n * heads * 256 * 4);
         self.k_c = try backend.create(n * 1024 * 4);
         self.v_c = try backend.create(n * 1024 * 4);
-        self.q_c_h = try backend.create(n * 24 * 256 * 2);
-        self.mixed_c = try backend.create(n * 10240 * 4);
-        self.convolved_c = try backend.create(n * 10240 * 4);
-        self.z_c = try backend.create(n * 6144 * 4);
-        self.alpha_c = try backend.create(n * 48 * 4);
-        self.beta_c = try backend.create(n * 48 * 4);
-        self.mixed_out_c = try backend.create(n * 6144 * 4);
-        self.prefill_hidden = try backend.create(if (draft) chunk * hidden * 4 else 4);
+        self.q_c_h = try backend.create(n * heads * 256 * 2);
+        self.mixed_c = try backend.create(n * qkv * 4);
+        self.convolved_c = try backend.create(n * qkv * 4);
+        self.z_c = try backend.create(n * inner * 4);
+        self.alpha_c = try backend.create(n * value_heads * 4);
+        self.beta_c = try backend.create(n * value_heads * 4);
+        self.mixed_out_c = try backend.create(n * mixed_out_width * 4);
+        self.prefill_hidden = if (draft) try backend.create(chunk * hidden * 4) else null;
         self.rotation = null;
         if (binding.rotation) |rotation| {
             var signs: [3]Buffer = undefined;
@@ -340,8 +353,8 @@ pub const Plan = struct {
             self.draft_hprev_c = try backend.create(n * hidden * 4);
             self.draft_concat_c = try backend.create(n * 2 * hidden * 4);
             var delta_layers: usize = 0;
-            for (binding.layers) |layer| delta_layers += @intFromBool(layer.mixer == .delta_net);
-            self.tape = try backend.create(delta_layers * tape_layer_floats * 4);
+            for (binding.layers()) |layer| delta_layers += @intFromBool(layer.mixer == .delta_net);
+            self.tape = try backend.create(delta_layers * tapeLayerFloats(shape) * 4);
             @memset(self.draft_pending_h.floats(), 0);
         }
         return self;
@@ -398,6 +411,7 @@ pub const Plan = struct {
     /// on a rotated one, transformed in place, or first regathered into the
     /// scratch of its path (`chunk`: the prefill rows) from the tiled to the
     /// grouped head order when the fold used it (`qwen35_runtime.rotateGrouped`).
+    /// A rotation exists only at the 27B shape, hence its literal widths.
     fn rotateGrouped(self: *Plan, input: Buffer, rows: usize, chunk: bool) !Buffer {
         const rotation = self.rotation orelse return input;
         const map = rotation.value_map orelse {
@@ -437,6 +451,8 @@ pub const Plan = struct {
     /// layers at no GPU cost; its `layer` callback forces a commit after every
     /// layer (64 command buffers per token) and is for numerical traces only.
     pub fn step(self: *Plan, token: u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
+        const ffn = self.binding.shape.ffn;
         if (token >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
@@ -450,7 +466,7 @@ pub const Plan = struct {
         const embedding = try self.weight(self.binding.token_embedding);
         try b.embed(embedding.buffer, embedding.matrix, token, self.x);
         if (self.rotation) |rotation| try b.hadamard(self.x, try rotation.signsFor(hidden), hidden, 1, hidden, true);
-        for (self.binding.layers, self.constants, 0..) |layer, c, il| {
+        for (self.binding.layers(), self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x, c.attention_norm, self.normalized, .{ .rows = 1, .width = hidden, .in_stride = hidden, .out_stride = hidden });
             switch (layer.mixer) {
                 .full_attention => |attn| try self.fullAttention(attn, c.mixer.full_attention, il, self.state.position, self.state.ropePosition(self.state.position)),
@@ -497,6 +513,7 @@ pub const Plan = struct {
     /// applies `nu_penalize` to the logits in place before the argmax/top-k,
     /// so both see the vector the CPU sampler would sort.
     fn recordOutputs(self: *Plan, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties) !void {
+        const hidden = self.binding.shape.hidden;
         const b = self.backend;
         try self.rotate(self.normalized, hidden, 1);
         try self.mm(self.binding.output, self.normalized, self.logits);
@@ -547,8 +564,8 @@ pub const Plan = struct {
     /// tolerance, not bit for bit; `generation-check --metal` measures it.
     ///
     /// `hidden_rows`, when given (`tokens.len × hidden`), receives every
-    /// row's post-`output_norm` hidden — the rows the drafter's `commit`
-    /// consumes — and requires the block.
+    /// row's post-`output_norm` hidden: the rows the drafter's `commit`
+    /// consumes, or a decision head's input.
     /// Prefills a prompt with image spans: text runs and image spans are
     /// chunked separately (a span never straddles a chunk), each span
     /// registered in the session so its rows carry M-RoPE positions, and the
@@ -556,7 +573,24 @@ pub const Plan = struct {
     /// `Σ span.count × hidden`) instead of token embeddings. `logits`, when
     /// given, receives the last row's. Speculation is off on this path.
     pub fn prefillVision(self: *Plan, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, observer: ?Observer) !void {
+        return self.prefillSpans(tokens, spans, features, logits, greedy, topk, penalties, null, observer);
+    }
+
+    /// Runs `tokens` from position 0 of a fresh session and writes every
+    /// row's post-`output_norm` hidden into `out` (`tokens.len × hidden`),
+    /// never computing the output head: a decision head's input. `spans`
+    /// and `features` place image rows as `prefillVision` does.
+    pub fn prefillHidden(self: *Plan, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, out: []f32) !void {
+        self.reset();
+        try self.prefillSpans(tokens, spans, features, null, null, null, null, out, null);
+    }
+
+    /// `prefillVision` that also writes every row's post-`output_norm`
+    /// hidden into `hidden_rows` (`tokens.len × hidden`) when given.
+    fn prefillSpans(self: *Plan, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
         if (tokens.len == 0) return error.InvalidShape;
+        if (hidden_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         try self.settle();
@@ -577,7 +611,7 @@ pub const Plan = struct {
                     @memcpy(self.image_scratch.floats()[0 .. c * hidden], features[(frow + done) * hidden ..][0 .. c * hidden]);
                     self.image_rows = self.image_scratch;
                     defer self.image_rows = null;
-                    try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, null, observer);
+                    try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, rowsOf(hidden_rows, i, c, hidden), observer);
                     done += c;
                     i += c;
                 }
@@ -588,7 +622,7 @@ pub const Plan = struct {
                 while (i < run_end) {
                     const c = @min(self.chunk, run_end - i);
                     const last = i + c == tokens.len;
-                    try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, null, observer);
+                    try self.prefillChunk(tokens[i..][0..c], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, rowsOf(hidden_rows, i, c, hidden), observer);
                     i += c;
                 }
             }
@@ -596,15 +630,13 @@ pub const Plan = struct {
     }
 
     pub fn prefill(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
         if (tokens.len == 0) return error.InvalidShape;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
         if (logits) |out| if (out.len != vocabulary) return error.InvalidShape;
         if (topk) |top| if (!std.math.isFinite(top.temperature) or top.temperature <= 0) return error.InvalidShape;
-        if (hidden_rows) |h| {
-            if (!self.has_draft) return error.HiddenUnsupported;
-            if (h.len != tokens.len * hidden) return error.InvalidShape;
-        }
+        if (hidden_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         // The whole prompt must fit: a prompt is never half-consumed.
         try self.settle();
         if (self.state.status != .ready) return error.SessionNotReady;
@@ -613,7 +645,7 @@ pub const Plan = struct {
         while (offset < tokens.len) {
             const count = @min(self.chunk, tokens.len - offset);
             const last = offset + count == tokens.len;
-            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, if (hidden_rows) |h| h[offset * hidden ..][0 .. count * hidden] else null, observer);
+            try self.prefillChunk(tokens[offset..][0..count], if (last) logits else null, if (last) greedy else null, if (last) topk else null, if (last) penalties else null, rowsOf(hidden_rows, offset, count, hidden), observer);
             offset += count;
             // The whole prompt is one `step` for the loop's hooks, so this is
             // the only place a caller can learn how far a long prefill has got.
@@ -621,10 +653,22 @@ pub const Plan = struct {
         }
     }
 
+    /// Rows `[start, start + count)` of an optional `[rows][width]` buffer.
+    fn rowsOf(rows: ?[]f32, start: usize, count: usize, width: usize) ?[]f32 {
+        const all = rows orelse return null;
+        return all[start * width ..][0 .. count * width];
+    }
+
     fn prefillChunk(self: *Plan, tokens: []const u32, logits: ?[]f32, greedy: ?*u32, topk: ?*sampling.TopK, penalties: ?sampling.Penalties, hidden_rows: ?[]f32, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
         const count = tokens.len;
         std.debug.assert(count >= 1 and count <= self.chunk);
         const want_outputs = logits != null or greedy != null or topk != null;
+        const staging: ?Buffer = if (hidden_rows == null) null else self.prefill_hidden orelse blk: {
+            const created = try self.backend.create(self.chunk * hidden * 4);
+            self.prefill_hidden = created;
+            break :blk created;
+        };
         if (penalties) |p| try self.syncPenalties(p);
         try self.state.beginChunk(count);
         errdefer self.state.fail();
@@ -636,7 +680,7 @@ pub const Plan = struct {
             // Normalize every row, as `verify` does; the last row also serves
             // the output head when a readback was asked for.
             try b.rmsNorm(self.x_c, self.output_norm, self.normalized_c, .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden });
-            try b.copy(self.prefill_hidden, self.normalized_c, count * hidden);
+            try b.copy(staging.?, self.normalized_c, count * hidden);
             if (want_outputs) {
                 try b.copy(self.normalized, self.normalized_c.slice((count - 1) * hidden * 4, hidden * 4), hidden);
                 try self.recordOutputs(greedy, topk, penalties);
@@ -649,7 +693,7 @@ pub const Plan = struct {
         try b.commit();
         try self.readOutputs(logits, greedy, topk, penalties != null);
         try self.state.commitChunk(count);
-        if (hidden_rows) |dest| @memcpy(dest, self.prefill_hidden.floats()[0 .. count * hidden]);
+        if (hidden_rows) |dest| @memcpy(dest, staging.?.floats()[0 .. count * hidden]);
     }
 
     /// Evaluation prefill: consumes `tokens` in chunks, as `prefill` does, and
@@ -657,6 +701,7 @@ pub const Plan = struct {
     /// `rows` (`tokens.len × vocabulary`). Admitted whole before the first
     /// write.
     pub fn prefillRows(self: *Plan, tokens: []const u32, rows: []f32, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
         if (tokens.len == 0 or rows.len != tokens.len * vocabulary) return error.InvalidShape;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         for (tokens) |t| if (t >= vocabulary) return error.InvalidTokenId;
@@ -692,6 +737,8 @@ pub const Plan = struct {
     /// admission (`beginChunk`/`commitChunk`); `prefillChunk` and `verify`
     /// share it so the schedule is written once.
     fn recordLayers(self: *Plan, tokens: []const u32, count: usize, observer: ?Observer, taped: bool) !void {
+        const hidden = self.binding.shape.hidden;
+        const ffn = self.binding.shape.ffn;
         const b = self.backend;
         if (self.image_rows) |features| {
             // A chunk of image span rows: the projector's feature rows are
@@ -704,7 +751,7 @@ pub const Plan = struct {
             if (self.rotation) |rotation| try b.hadamard(self.x_c, try rotation.signsFor(hidden), hidden, count, hidden, true);
         }
         const norm: metal.Backend.Norm = .{ .rows = count, .width = hidden, .in_stride = hidden, .out_stride = hidden };
-        for (self.binding.layers, self.constants, 0..) |layer, c, il| {
+        for (self.binding.layers(), self.constants, 0..) |layer, c, il| {
             try b.rmsNorm(self.x_c, c.attention_norm, self.normalized_c, norm);
             switch (layer.mixer) {
                 .full_attention => |attn| try self.attentionChunk(attn, c.mixer.full_attention, il, count, self.state.position),
@@ -733,6 +780,7 @@ pub const Plan = struct {
     /// post-`output_norm` hidden. The whole batch is admitted before the
     /// first write, as `prefill` is.
     pub fn verify(self: *Plan, tokens: []const u32, rows: ?[]f32, tops: ?[]sampling.TopK, h_rows: ?[]f32, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
         if (!self.has_draft) return error.NoDraftBlock;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         if (tokens.len == 0 or tokens.len > self.chunk or tokens.len > max_verify_rows) return error.InvalidShape;
@@ -806,6 +854,7 @@ pub const Plan = struct {
     /// `verify`'s greedy sibling: per-row argmax read back (four bytes a row),
     /// no logit readback. `out` holds `tokens.len` token ids.
     pub fn verifyGreedy(self: *Plan, tokens: []const u32, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
         if (!self.has_draft) return error.NoDraftBlock;
         if (observer) |o| if (o.layer != null) return error.InvalidShape;
         if (tokens.len == 0 or tokens.len > self.chunk or tokens.len > max_verify_rows) return error.InvalidShape;
@@ -858,13 +907,14 @@ pub const Plan = struct {
             const b = self.backend;
             try b.begin();
             errdefer b.discard();
-            var shape = tape_shape;
+            var shape = tapeShape(self.binding.shape);
             shape.count = kept;
-            for (self.binding.layers, 0..) |layer, il| if (layer.mixer == .delta_net) {
+            const qkv = self.binding.shape.qkvWidth();
+            for (self.binding.layers(), 0..) |layer, il| if (layer.mixer == .delta_net) {
                 const state = self.state.layers[il].recurrent;
                 const tape = self.tapeLayer(il);
                 const history = self.stateFloats(state.history);
-                try b.convolutionHistory(history, tape.mixed, 10240, 4, kept, 10240);
+                try b.convolutionHistory(history, tape.mixed, qkv, 4, kept, qkv);
                 try b.deltaReplay(self.stateFloats(state.matrix), tape.delta, shape);
             };
             try b.commit();
@@ -879,11 +929,13 @@ pub const Plan = struct {
     /// DeltaNet layer `il`'s slices of `tape`.
     fn tapeLayer(self: *Plan, il: usize) struct { mixed: Buffer, delta: Buffer } {
         var index: usize = 0;
-        for (self.binding.layers[0..il]) |layer| index += @intFromBool(layer.mixer == .delta_net);
-        const base = index * tape_layer_floats * 4;
+        for (self.binding.layers()[0..il]) |layer| index += @intFromBool(layer.mixer == .delta_net);
+        const layer_floats = tapeLayerFloats(self.binding.shape);
+        const mixed_floats = tapeMixedFloats(self.binding.shape);
+        const base = index * layer_floats * 4;
         return .{
-            .mixed = self.tape.slice(base, tape_mixed_floats * 4),
-            .delta = self.tape.slice(base + tape_mixed_floats * 4, (tape_layer_floats - tape_mixed_floats) * 4),
+            .mixed = self.tape.slice(base, mixed_floats * 4),
+            .delta = self.tape.slice(base + mixed_floats * 4, (layer_floats - mixed_floats) * 4),
         };
     }
 
@@ -911,22 +963,24 @@ pub const Plan = struct {
     fn attentionChunk(self: *Plan, attn: model.FullAttention, c: AttentionConstants, il: usize, count: usize, position: usize) !void {
         const b = self.backend;
         const cache = self.state.layers[il].attention;
+        const hidden = self.binding.shape.hidden;
+        const heads = self.binding.shape.heads;
         try self.rotate(self.normalized_c, hidden, count);
-        try self.mmRows(attn.query_and_gate, self.normalized_c, hidden, self.qg_c, 24 * 512, count);
+        try self.mmRows(attn.query_and_gate, self.normalized_c, hidden, self.qg_c, heads * 512, count);
         try self.mmRows(attn.key, self.normalized_c, hidden, self.k_c, 1024, count);
         try self.mmRows(attn.value, self.normalized_c, hidden, self.v_c, 1024, count);
-        try b.rmsNorm(self.qg_c, c.query_norm, self.q_c, .{ .rows = count * 24, .width = 256, .in_stride = 512, .out_stride = 256 });
+        try b.rmsNorm(self.qg_c, c.query_norm, self.q_c, .{ .rows = count * heads, .width = 256, .in_stride = 512, .out_stride = 256 });
         try b.rmsNorm(self.k_c, c.key_norm, self.k_c, .{ .rows = count * 4, .width = 256, .in_stride = 256, .out_stride = 256 });
         if (self.state.span_count == 0) {
             // The text fast path: consecutive positions from one shared table,
             // bit-identical to the pre-vision schedule (the trace gates).
-            try b.ropeRows(self.q_c, self.rope_table, 24, 256, 64, position, count, 24 * 256, .split_half);
+            try b.ropeRows(self.q_c, self.rope_table, heads, 256, 64, position, count, heads * 256, .split_half);
             try b.ropeRows(self.k_c, self.rope_table, 4, 256, 64, position, count, 1024, .split_half);
         } else {
             // A chunk that overlaps an image span: each row's M-RoPE triple
             // (`Session.ropeTriple`) into the per-row table, rotated at 0.
             try self.fillChunkRope(position, count);
-            try b.ropeRows(self.q_c, self.chunk_rope, 24, 256, 64, 0, count, 24 * 256, .split_half);
+            try b.ropeRows(self.q_c, self.chunk_rope, heads, 256, 64, 0, count, heads * 256, .split_half);
             try b.ropeRows(self.k_c, self.chunk_rope, 4, 256, 64, 0, count, 1024, .split_half);
         }
         // The chunk's keys and values are contiguous in the cache; padding rows never leave the chunk buffers.
@@ -948,7 +1002,7 @@ pub const Plan = struct {
                 // kernel computes on them).
                 try b.packHalf(&.{ .{ .dst = k_rows, .src = self.k_c, .count = count * 1024 }, .{ .dst = v_rows, .src = self.v_c, .count = count * 1024 } });
                 if (!few) {
-                    try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * 24 * 256 }});
+                    try b.packHalf(&.{.{ .dst = self.q_c_h, .src = self.q_c, .count = metal.Backend.attentionChunkRows(count) * heads * 256 }});
                     queries = self.q_c_h;
                 }
             },
@@ -958,43 +1012,49 @@ pub const Plan = struct {
         const total = position + count;
         const keys = self.stateSlice(cache.keys.range(0, total));
         const values = self.stateSlice(cache.values.range(0, total));
-        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = position, .count = count, .q_stride = 24 * 256, .out_stride = 6144, .scale = 1.0 / 16.0, .precision = precision };
+        const width = heads * 256;
+        const shape: metal.Backend.AttentionChunkShape = .{ .query_heads = heads, .kv_heads = 4, .key_width = 256, .value_width = 256, .position = position, .count = count, .q_stride = width, .out_stride = width, .scale = 1.0 / 16.0, .precision = precision };
         if (few) try b.attentionVerify(keys, values, queries, self.partials, self.mixed_out_c, shape) else try b.attentionChunk(keys, values, queries, self.mixed_out_c, shape);
-        try b.sigmoidGate(self.mixed_out_c, self.qg_c, count * 24, 256, 512, 256);
-        try self.rotate(self.mixed_out_c, 6144, count);
-        try self.mmRows(attn.output, self.mixed_out_c, 6144, self.projected_c, hidden, count);
+        try b.sigmoidGate(self.mixed_out_c, self.qg_c, count * heads, 256, 512, 256);
+        try self.rotate(self.mixed_out_c, width, count);
+        try self.mmRows(attn.output, self.mixed_out_c, width, self.projected_c, hidden, count);
     }
 
     fn deltaChunk(self: *Plan, linear: model.DeltaNet, c: DeltaConstants, il: usize, count: usize, taped: bool) !void {
         const b = self.backend;
         const state = self.state.layers[il].recurrent;
+        const s = self.binding.shape;
+        const hidden = s.hidden;
+        const vh = s.value_heads;
+        const qkv = s.qkvWidth();
+        const inner = s.innerWidth();
         // The gating projections read the residual before its transform.
-        try self.mmRows(linear.beta, self.normalized_c, hidden, self.beta_c, 48, count);
-        try self.mmRows(linear.alpha, self.normalized_c, hidden, self.alpha_c, 48, count);
+        try self.mmRows(linear.beta, self.normalized_c, hidden, self.beta_c, vh, count);
+        try self.mmRows(linear.alpha, self.normalized_c, hidden, self.alpha_c, vh, count);
         try self.rotate(self.normalized_c, hidden, count);
-        try self.mmRows(linear.qkv, self.normalized_c, hidden, self.mixed_c, 10240, count);
-        try self.mmRows(linear.gate, self.normalized_c, hidden, self.z_c, 6144, count);
+        try self.mmRows(linear.qkv, self.normalized_c, hidden, self.mixed_c, qkv, count);
+        try self.mmRows(linear.gate, self.normalized_c, hidden, self.z_c, inner, count);
         const history = self.stateFloats(state.history);
-        try b.convolutionRows(history, self.mixed_c, c.convolution, self.convolved_c, 10240, 4, count, 10240);
+        try b.convolutionRows(history, self.mixed_c, c.convolution, self.convolved_c, qkv, 4, count, qkv);
         // A taped verify leaves the history and the matrix at the batch's
         // start; `replayRows` advances both over the kept rows.
         const tape = if (taped) self.tapeLayer(il) else null;
-        if (tape) |t| try b.copy(t.mixed, self.mixed_c, count * 10240) else try b.convolutionHistory(history, self.mixed_c, 10240, 4, count, 10240);
-        try b.silu(self.convolved_c, count * 10240);
-        try b.l2NormRows(self.convolved_c, count, 32, 128, 128, 10240, 1e-6);
-        try b.deltaGatesRows(self.alpha_c, self.beta_c, c.a, c.time_bias, 48, count);
+        if (tape) |t| try b.copy(t.mixed, self.mixed_c, count * qkv) else try b.convolutionHistory(history, self.mixed_c, qkv, 4, count, qkv);
+        try b.silu(self.convolved_c, count * qkv);
+        try b.l2NormRows(self.convolved_c, count, 32, 128, 128, qkv, 1e-6);
+        try b.deltaGatesRows(self.alpha_c, self.beta_c, c.a, c.time_bias, vh, count);
         if (tape) |t| {
-            var shape = tape_shape;
+            var shape = tapeShape(s);
             shape.count = count;
             try b.deltaRows(self.stateFloats(state.matrix), self.convolved_c, self.alpha_c, self.beta_c, self.mixed_out_c, t.delta, shape);
         } else {
             // One chunkwise dispatch for the whole chunk: the WY form over
             // 32-token sub-chunks with the state carried in place.
-            try b.deltaChunk(self.stateFloats(state.matrix), self.convolved_c, self.alpha_c, self.beta_c, self.mixed_out_c, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .count = count, .in_stride = 10240, .gate_stride = 48, .out_stride = 6144, .scale = 1.0 / @sqrt(@as(f32, 128)) });
+            try b.deltaChunk(self.stateFloats(state.matrix), self.convolved_c, self.alpha_c, self.beta_c, self.mixed_out_c, .{ .qheads = 16, .vheads = vh, .keys = 128, .values = 128, .count = count, .in_stride = qkv, .gate_stride = vh, .out_stride = inner, .scale = 1.0 / @sqrt(@as(f32, 128)) });
         }
-        try b.rmsNorm(self.mixed_out_c, c.norm, self.mixed_out_c, .{ .rows = count * 48, .width = 128, .in_stride = 128, .out_stride = 128, .silu_multiplier = .{ .buffer = self.z_c, .stride = 128 } });
+        try b.rmsNorm(self.mixed_out_c, c.norm, self.mixed_out_c, .{ .rows = count * vh, .width = 128, .in_stride = 128, .out_stride = 128, .silu_multiplier = .{ .buffer = self.z_c, .stride = 128 } });
         const out_input = try self.rotateGrouped(self.mixed_out_c, count, true);
-        try self.mmRows(linear.output, out_input, 6144, self.projected_c, hidden, count);
+        try self.mmRows(linear.output, out_input, inner, self.projected_c, hidden, count);
     }
 
     /// Copies the last step's logits out of the shared buffer. Valid after a
@@ -1019,6 +1079,8 @@ pub const Plan = struct {
     /// and `logits` are read only when given, and `pmax` (the top candidate's
     /// softmax probability, `1 / Σ exp(l − max)` at temperature 1) with them.
     pub fn draftForward(self: *Plan, h_prev: Buffer, token: u32, position: usize, greedy: ?*u32, pmax: ?*f32, logits: ?[]f32) !void {
+        const hidden = self.binding.shape.hidden;
+        const ffn = self.binding.shape.ffn;
         const block = self.binding.draft orelse return error.NoDraftBlock;
         const constants = self.draft_constants orelse return error.NoDraftBlock;
         if (token >= vocabulary or position >= self.state.capacity or h_prev.len < hidden * 4) return error.InvalidShape;
@@ -1076,6 +1138,7 @@ pub const Plan = struct {
 
     /// `draftForward` with a host `h_prev`, staged through `draft_chain`.
     pub fn draftForwardHost(self: *Plan, h_prev: []const f32, token: u32, position: usize, greedy: ?*u32, pmax: ?*f32, logits: ?[]f32) !void {
+        const hidden = self.binding.shape.hidden;
         if (h_prev.len != hidden) return error.InvalidShape;
         @memcpy(self.draft_chain.floats()[0..hidden], h_prev);
         try self.draftForward(self.draft_chain, token, position, greedy, pmax, logits);
@@ -1117,6 +1180,7 @@ pub const Plan = struct {
     /// one batched forward per `chunk` rows (the cache is filled from the
     /// target hidden, never the block's own).
     pub fn commit(self: *Plan, tokens: []const u32, h_rows: []const f32) !void {
+        const hidden = self.binding.shape.hidden;
         if (!self.has_draft) return error.NoDraftBlock;
         if (h_rows.len != tokens.len * hidden) return error.InvalidShape;
         if (tokens.len == 0) return;
@@ -1145,6 +1209,8 @@ pub const Plan = struct {
     /// The head norm is skipped: a commit only fills the cache rows, and the
     /// caller sets `draft_pending_h` from the last target hidden.
     fn commitBatch(self: *Plan, tokens: []const u32, h_prev: []const f32, h_next_rows: []const f32, start: usize) !void {
+        const hidden = self.binding.shape.hidden;
+        const ffn = self.binding.shape.ffn;
         const count = tokens.len;
         std.debug.assert(count >= 1 and count <= self.chunk);
         std.debug.assert(h_prev.len == hidden and h_next_rows.len == (count - 1) * hidden);
@@ -1177,6 +1243,7 @@ pub const Plan = struct {
 
     /// The contract value the engine holds, or null when no block is loaded.
     pub fn drafter(self: *Plan) ?Drafter {
+        const hidden = self.binding.shape.hidden;
         if (!self.has_draft) return null;
         return .{ .host = self, .hidden = hidden, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
@@ -1217,38 +1284,43 @@ pub const Plan = struct {
         // through F32 scratch rows and one pack dispatch.
         const k_row = if (precision == .f32) k_slot else self.k;
         const v_row = if (precision == .f32) v_slot else self.v;
+        const hidden = self.binding.shape.hidden;
+        const heads = self.binding.shape.heads;
         try self.rotate(self.normalized, hidden, 1);
         try self.projections(&.{ attn.query_and_gate, attn.key, attn.value }, &.{ self.qg, k_row, v_row }, .plain);
         // Each projected head stores query then gate; the gate is applied after attention.
-        try b.rmsNormRope(self.qg, c.query_norm, self.rope_table, self.q, .{ .rows = 24, .width = 256, .in_stride = 512, .out_stride = 256 }, 64, rope_position, .split_half);
+        try b.rmsNormRope(self.qg, c.query_norm, self.rope_table, self.q, .{ .rows = heads, .width = 256, .in_stride = 512, .out_stride = 256 }, 64, rope_position, .split_half);
         try b.rmsNormRope(k_row, c.key_norm, self.rope_table, k_row, .{ .rows = 4, .width = 256, .in_stride = 256, .out_stride = 256 }, 64, rope_position, .split_half);
         if (precision == .f16) try b.packHalf(&.{ .{ .dst = k_slot, .src = k_row, .count = 1024 }, .{ .dst = v_slot, .src = v_row, .count = 1024 } });
         const visible = row + 1;
-        try b.attentionDecode(self.stateSlice(cache.keys.range(0, visible)), self.stateSlice(cache.values.range(0, visible)), self.q, self.partials, self.mixed_out, .{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = visible, .scale = 1.0 / 16.0, .precision = precision });
-        try b.sigmoidGate(self.mixed_out, self.qg, 24, 256, 512, 256);
-        try self.rotate(self.mixed_out, 6144, 1);
+        try b.attentionDecode(self.stateSlice(cache.keys.range(0, visible)), self.stateSlice(cache.values.range(0, visible)), self.q, self.partials, self.mixed_out, .{ .query_heads = heads, .kv_heads = 4, .key_width = 256, .value_width = 256, .visible = visible, .scale = 1.0 / 16.0, .precision = precision });
+        try b.sigmoidGate(self.mixed_out, self.qg, heads, 256, 512, 256);
+        try self.rotate(self.mixed_out, heads * 256, 1);
         try self.mm(attn.output, self.mixed_out, self.projected);
     }
 
     fn linearAttention(self: *Plan, linear: model.DeltaNet, c: DeltaConstants, il: usize) !void {
         const b = self.backend;
         const state = self.state.layers[il].recurrent;
+        const s = self.binding.shape;
+        const vh = s.value_heads;
+        const qkv = s.qkvWidth();
         if (self.rotation == null) {
             try self.projections(&.{ linear.qkv, linear.gate, linear.beta, linear.alpha }, &.{ self.mixed, self.z, self.beta, self.alpha }, .plain);
         } else {
             // The gating projections read the residual before its transform,
             // so the merge splits in two around it.
             try self.projections(&.{ linear.beta, linear.alpha }, &.{ self.beta, self.alpha }, .plain);
-            try self.rotate(self.normalized, hidden, 1);
+            try self.rotate(self.normalized, s.hidden, 1);
             try self.projections(&.{ linear.qkv, linear.gate }, &.{ self.mixed, self.z }, .plain);
         }
-        try b.convolution(self.stateFloats(state.history), self.mixed, c.convolution, self.convolved, 10240, 4);
-        try b.silu(self.convolved, 10240);
-        // Convolution output is [Q:16x128 | K:16x128 | V:48x128]; Q and K are L2-normalized.
+        try b.convolution(self.stateFloats(state.history), self.mixed, c.convolution, self.convolved, qkv, 4);
+        try b.silu(self.convolved, qkv);
+        // Convolution output is [Q:16x128 | K:16x128 | V:value heads x 128]; Q and K are L2-normalized.
         try b.l2Norm(self.convolved, 32, 128, 128, 1e-6);
-        try b.deltaGates(self.alpha, self.beta, c.a, c.time_bias, 48);
-        try b.delta(self.stateFloats(state.matrix), self.convolved, self.alpha, self.beta, self.mixed_out, .{ .qheads = 16, .vheads = 48, .keys = 128, .values = 128, .scale = 1.0 / @sqrt(@as(f32, 128)) });
-        try b.rmsNorm(self.mixed_out, c.norm, self.mixed_out, .{ .rows = 48, .width = 128, .in_stride = 128, .out_stride = 128, .silu_multiplier = .{ .buffer = self.z, .stride = 128 } });
+        try b.deltaGates(self.alpha, self.beta, c.a, c.time_bias, vh);
+        try b.delta(self.stateFloats(state.matrix), self.convolved, self.alpha, self.beta, self.mixed_out, .{ .qheads = 16, .vheads = vh, .keys = 128, .values = 128, .scale = 1.0 / @sqrt(@as(f32, 128)) });
+        try b.rmsNorm(self.mixed_out, c.norm, self.mixed_out, .{ .rows = vh, .width = 128, .in_stride = 128, .out_stride = 128, .silu_multiplier = .{ .buffer = self.z, .stride = 128 } });
         const out_input = try self.rotateGrouped(self.mixed_out, 1, false);
         try self.mm(linear.output, out_input, self.projected);
     }

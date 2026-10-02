@@ -1,4 +1,4 @@
-//! CPU execution of the pinned text-only Qwen schedule. Immutable weight views
+//! CPU execution of the qwen35 schedule at the binding's shape. Immutable weight views
 //! and bindings borrow the loaded model; this runtime owns session and workspace.
 //! A failed step poisons the session. No MTP, multimodal positions, or rewinding.
 //! This is the numerical reference; `qwen35_metal.zig` runs the same schedule
@@ -90,17 +90,18 @@ pub const Runtime = struct {
     delta_scratch: []f64,
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
-        const text = binding.layers.len;
-        var layouts: [65]session.Layout = undefined;
-        for (binding.layers, layouts[0..text]) |layer, *layout| layout.* = switch (layer.mixer) {
-            .full_attention => .{ .attention = .{ .key_row = 1024, .value_row = 1024 } },
-            .delta_net => .{ .recurrent = .{ .history = 10240 * 3, .matrix = 48 * 128 * 128 } },
+        const shape = binding.shape;
+        const text = shape.layers;
+        var layouts: [model.Shape.max_layers + 1]session.Layout = undefined;
+        for (binding.layers(), layouts[0..text]) |layer, *layout| layout.* = switch (layer.mixer) {
+            .full_attention => .{ .attention = .{ .key_row = model.Shape.kv_width, .value_row = model.Shape.kv_width } },
+            .delta_net => .{ .recurrent = .{ .history = shape.deltaHistory(), .matrix = shape.deltaMatrix() } },
         };
         if (draft) {
             if (binding.draft == null) return error.NoDraftBlock;
             // The block is a full-attention layer of the main shape; its cache
             // is one more layout in the same session, so recovery rewinds it.
-            layouts[text] = .{ .attention = .{ .key_row = 1024, .value_row = 1024 } };
+            layouts[text] = .{ .attention = .{ .key_row = model.Shape.kv_width, .value_row = model.Shape.kv_width } };
         }
         var state = try session.Session.init(gpa, layouts[0 .. text + @intFromBool(draft)], capacity, checkpoint);
         errdefer state.deinit();
@@ -110,20 +111,21 @@ pub const Runtime = struct {
         // Finish allocations before transferring the arena, whose internal
         // linked-list head can change on each allocation.
         var result: Runtime = undefined;
-        inline for (.{ "x", "normalized", "projected", "h" }) |field| @field(result, field) = try a.alloc(f32, 5120);
-        inline for (.{ "gate", "up" }) |field| @field(result, field) = try a.alloc(f32, 17408);
-        result.row = try a.alloc(f32, cpu.matvecScratch(17408));
-        result.qg = try a.alloc(f32, 12288);
-        result.q = try a.alloc(f32, 6144);
-        result.k = try a.alloc(f32, 1024);
-        result.v = try a.alloc(f32, 1024);
-        result.mixed = try a.alloc(f32, 10240);
-        result.convolved = try a.alloc(f32, 10240);
-        result.z = try a.alloc(f32, 6144);
-        result.mixed_out = try a.alloc(f32, 6144);
-        result.alpha = try a.alloc(f32, 48);
-        result.beta = try a.alloc(f32, 48);
-        result.rotated = try a.alloc(f32, 17408);
+        inline for (.{ "x", "normalized", "projected", "h" }) |field| @field(result, field) = try a.alloc(f32, shape.hidden);
+        inline for (.{ "gate", "up" }) |field| @field(result, field) = try a.alloc(f32, shape.ffn);
+        result.row = try a.alloc(f32, cpu.matvecScratch(@max(shape.ffn, 2 * shape.hidden, shape.queryWidth(), shape.innerWidth())));
+        result.qg = try a.alloc(f32, shape.queryGateWidth());
+        result.q = try a.alloc(f32, shape.queryWidth());
+        result.k = try a.alloc(f32, model.Shape.kv_width);
+        result.v = try a.alloc(f32, model.Shape.kv_width);
+        result.mixed = try a.alloc(f32, shape.qkvWidth());
+        result.convolved = try a.alloc(f32, shape.qkvWidth());
+        result.z = try a.alloc(f32, shape.innerWidth());
+        // Attention writes one row per query head here, DeltaNet one per value head.
+        result.mixed_out = try a.alloc(f32, @max(shape.queryWidth(), shape.innerWidth()));
+        result.alpha = try a.alloc(f32, shape.value_heads);
+        result.beta = try a.alloc(f32, shape.value_heads);
+        result.rotated = try a.alloc(f32, @max(shape.ffn, shape.hidden, shape.queryWidth(), shape.innerWidth()));
         result.rotation = null;
         if (binding.rotation) |rotation| {
             var signs: [3][]f32 = undefined;
@@ -136,8 +138,8 @@ pub const Runtime = struct {
         result.attention_scratch = try a.alloc(f64, capacity);
         result.delta_scratch = try a.alloc(f64, 128 * 129);
         result.output_norm = try view.vector(a, binding.output_norm);
-        result.constants = try a.alloc(LayerConstants, binding.layers.len);
-        for (binding.layers, result.constants) |layer, *constants| {
+        result.constants = try a.alloc(LayerConstants, text);
+        for (binding.layers(), result.constants) |layer, *constants| {
             constants.* = .{
                 .attention_norm = try view.vector(a, layer.attention_norm),
                 .post_attention_norm = try view.vector(a, layer.post_attention_norm),
@@ -149,9 +151,9 @@ pub const Runtime = struct {
         }
         result.has_draft = draft;
         result.draft_layer = text;
-        inline for (.{ "draft_h", "draft_hnorm", "draft_chain", "draft_pending_h" }) |field| @field(result, field) = try a.alloc(f32, if (draft) 5120 else 0);
-        inline for (.{ "draft_enorm", "draft_hnorm_w", "draft_head_norm" }) |field| @field(result, field) = try a.alloc(f32, if (draft) 5120 else 0);
-        result.draft_concat = try a.alloc(f32, if (draft) 10240 else 0);
+        inline for (.{ "draft_h", "draft_hnorm", "draft_chain", "draft_pending_h" }) |field| @field(result, field) = try a.alloc(f32, if (draft) shape.hidden else 0);
+        inline for (.{ "draft_enorm", "draft_hnorm_w", "draft_head_norm" }) |field| @field(result, field) = try a.alloc(f32, if (draft) shape.hidden else 0);
+        result.draft_concat = try a.alloc(f32, if (draft) 2 * shape.hidden else 0);
         result.draft_logits = try a.alloc(f32, if (draft) 248320 else 0);
         result.draft_constants = null;
         if (draft) {
@@ -202,6 +204,7 @@ pub const Runtime = struct {
     /// `ssm_out`'s input: the fold was computed with the 48 value heads in
     /// group order (`nk * 3 + rep`) while the mixer emits them tiled
     /// (`rep * 16 + nk`), so the heads are regathered before the transform.
+    /// A rotation exists only at the 27B shape (the adapter refuses others).
     fn rotateGrouped(self: *Runtime, input: []const f32) ![]const f32 {
         const rotation = self.rotation orelse return input;
         if (!rotation.value_grouped) return self.rotate(input);
@@ -227,10 +230,18 @@ pub const Runtime = struct {
     }
     /// Prefills a prompt with image spans, token by token: a span's rows are
     /// registered so they carry M-RoPE positions, then fed the projector's
-    /// feature rows (`features`, `Σ span.count × 5120`) in place of token
+    /// feature rows (`features`, `Σ span.count × hidden`) in place of token
     /// embeddings. `logits`, when given, receives the last row's.
     pub fn prefillVision(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, observer: ?Observer) !void {
+        return self.prefillSpans(tokens, spans, features, logits, null, observer);
+    }
+
+    /// `prefillVision` that also writes every row's post-`output_norm` hidden
+    /// into `hidden_rows` (`tokens.len × hidden`) when given.
+    fn prefillSpans(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, logits: ?[]f32, hidden_rows: ?[]f32, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
         if (tokens.len == 0) return error.InvalidShape;
+        if (hidden_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         if (tokens.len > self.state.capacity - self.state.position) return error.ContextFull;
         var i: usize = 0;
         var si: usize = 0;
@@ -239,27 +250,38 @@ pub const Runtime = struct {
             const last = i + 1 == tokens.len;
             if (si < spans.len and spans[si].start == i) {
                 const sp = spans[si];
-                if (frow + sp.count > features.len / 5120) return error.InvalidShape;
+                if (frow + sp.count > features.len / hidden) return error.InvalidShape;
                 try self.state.addSpan(.{ .row = self.state.position, .count = sp.count, .advance = @max(sp.width_tokens, sp.height_tokens), .columns = sp.width_tokens });
                 for (0..sp.count) |r| {
                     const row_last = i + 1 == tokens.len;
-                    try self.stepImage(features[(frow + r) * 5120 ..][0..5120], if (row_last) logits else null, observer);
+                    try self.stepImage(features[(frow + r) * hidden ..][0..hidden], if (row_last) logits else null, observer);
+                    if (hidden_rows) |h| @memcpy(h[i * hidden ..][0..hidden], self.h);
                     i += 1;
                 }
                 frow += sp.count;
                 si += 1;
             } else {
                 try self.step(tokens[i], if (last) logits else null, observer);
+                if (hidden_rows) |h| @memcpy(h[i * hidden ..][0..hidden], self.h);
                 i += 1;
             }
         }
     }
 
+    /// Runs `tokens` from position 0 of a fresh session and writes every
+    /// row's post-`output_norm` hidden into `out` (`tokens.len × hidden`),
+    /// never computing the output head: a decision head's input. `spans`
+    /// and `features` place image rows as `prefillVision` does.
+    pub fn hiddenRows(self: *Runtime, tokens: []const u32, spans: []const model.VisionSpan, features: []const f32, out: []f32) !void {
+        self.reset();
+        try self.prefillSpans(tokens, spans, features, null, out, null);
+    }
+
     /// `step` for an image row: the row's embedding is a projector feature
-    /// row (`5120` values) instead of a token's, and its rotary triple comes
+    /// row (`hidden` values) instead of a token's, and its rotary triple comes
     /// from the session's span (`Session.ropeTriple`).
     pub fn stepImage(self: *Runtime, features: []const f32, logits: ?[]f32, observer: ?Observer) !void {
-        if (features.len != 5120) return error.InvalidShape;
+        if (features.len != self.binding.shape.hidden) return error.InvalidShape;
         return self.stepRow(.{ .features = features }, logits, observer);
     }
     const RowSource = union(enum) { token: u32, features: []const f32 };
@@ -270,13 +292,13 @@ pub const Runtime = struct {
         switch (source) {
             .token => |token| {
                 try self.view.row(self.binding.token_embedding, token, self.x);
-                if (self.rotation) |rotation| try cpu.hadamard.inverse(self.x, try rotation.signsFor(5120), rotation.block);
+                if (self.rotation) |rotation| try cpu.hadamard.inverse(self.x, try rotation.signsFor(self.x.len), rotation.block);
             },
             // A feature row is already in the model's width and basis: the
             // reference feeds it as an embedding, unrotated.
             .features => |row| @memcpy(self.x, row),
         }
-        for (self.binding.layers, self.constants, 0..) |layer, constants, il| {
+        for (self.binding.layers(), self.constants, 0..) |layer, constants, il| {
             try norm(self.x, self.normalized, constants.attention_norm);
             switch (layer.mixer) {
                 .full_attention => |attn| {
@@ -330,10 +352,11 @@ pub const Runtime = struct {
     /// not.
     fn fullAttention(self: *Runtime, attn: model.FullAttention, query_norm: []const f32, key_norm: []const f32, keys: session.Rows, values: session.Rows, position: usize, rotated: bool) !void {
         const input = if (rotated) try self.rotate(self.normalized) else self.normalized;
+        const heads = self.binding.shape.heads;
         try self.mm(attn.query_and_gate, input, self.qg);
         try self.mm(attn.key, input, self.k);
         try self.mm(attn.value, input, self.v);
-        for (0..24) |h| {
+        for (0..heads) |h| {
             const q = self.q[h * 256 ..][0..256];
             // Each projected head stores query then gate, not all queries then
             // all gates. The gate remains untouched until after attention.
@@ -348,15 +371,18 @@ pub const Runtime = struct {
         // The reference cache is F32 by decision: the views assert it.
         @memcpy(keys.floats(position, 1), self.k);
         @memcpy(values.floats(position, 1), self.v);
-        try cpu.attention.apply(.{ .query_heads = 24, .kv_heads = 4, .key_width = 256, .value_width = 256, .tokens = position + 1, .visible_tokens = position + 1, .scale = 1.0 / 16.0, .queries = self.q, .keys = keys.floats(0, position + 1), .values = values.floats(0, position + 1) }, self.mixed_out, self.attention_scratch);
-        for (0..24) |h| for (0..256) |i| {
-            self.mixed_out[h * 256 + i] *= cpu.sigmoid(self.qg[h * 512 + 256 + i]);
+        const attended = self.mixed_out[0 .. heads * 256];
+        try cpu.attention.apply(.{ .query_heads = heads, .kv_heads = 4, .key_width = 256, .value_width = 256, .tokens = position + 1, .visible_tokens = position + 1, .scale = 1.0 / 16.0, .queries = self.q, .keys = keys.floats(0, position + 1), .values = values.floats(0, position + 1) }, attended, self.attention_scratch);
+        for (0..heads) |h| for (0..256) |i| {
+            attended[h * 256 + i] *= cpu.sigmoid(self.qg[h * 512 + 256 + i]);
         };
-        const mixed = if (rotated) try self.rotate(self.mixed_out) else self.mixed_out;
+        const mixed = if (rotated) try self.rotate(attended) else attended;
         try self.mm(attn.output, mixed, self.projected);
     }
 
     fn linearAttention(self: *Runtime, linear: model.DeltaNet, constants: anytype, il: usize) !void {
+        const value_heads = self.binding.shape.value_heads;
+        const mixed_out = self.mixed_out[0 .. value_heads * 128];
         const input = try self.rotate(self.normalized);
         try self.mm(linear.qkv, input, self.mixed);
         try self.mm(linear.gate, input, self.z);
@@ -366,28 +392,28 @@ pub const Runtime = struct {
         const state = self.state.layers[il].recurrent;
         try cpu.recurrent.convolution(self.mixed, constants.convolution, state.history, self.convolved, 4);
         for (self.convolved) |*x| x.* = cpu.silu(x.*);
-        // Convolution output is [Q:16x128 | K:16x128 | V:48x128].
+        // Convolution output is [Q:16x128 | K:16x128 | V:value_heads x 128].
         for (0..32) |h| {
             const row = self.convolved[h * 128 ..][0..128];
             try cpu.l2Norm(row, row, 1e-6);
         }
-        if (constants.a.len != 48 or constants.time_bias.len != 48) return error.InvalidShape;
-        for (0..48) |h| {
+        if (constants.a.len != value_heads or constants.time_bias.len != value_heads) return error.InvalidShape;
+        for (0..value_heads) |h| {
             self.alpha[h] = constants.a[h] * cpu.softplus(self.alpha[h] + constants.time_bias[h]);
             self.beta[h] = cpu.sigmoid(self.beta[h]);
         }
-        for (0..48) |h| {
+        for (0..value_heads) |h| {
             const kh = h % 16; // tiled Q/K broadcast, unlike attention's GQA
             const matrix = state.matrix[h * 128 * 128 ..][0 .. 128 * 128];
-            const out = self.mixed_out[h * 128 ..][0..128];
+            const out = mixed_out[h * 128 ..][0..128];
             try cpu.recurrent.delta(.{ .query = self.convolved[kh * 128 ..][0..128], .key = self.convolved[2048 + kh * 128 ..][0..128], .value = self.convolved[4096 + h * 128 ..][0..128], .log_decay = self.alpha[h], .beta = self.beta[h], .scale = 1.0 / @sqrt(@as(f32, 128)) }, matrix, matrix, out, self.delta_scratch);
         }
-        for (0..48) |h| {
-            const out = self.mixed_out[h * 128 ..][0..128];
+        for (0..value_heads) |h| {
+            const out = mixed_out[h * 128 ..][0..128];
             try norm(out, out, constants.norm);
             for (out, self.z[h * 128 ..][0..128]) |*x, z| x.* *= cpu.silu(z);
         }
-        try self.mm(linear.output, try self.rotateGrouped(self.mixed_out), self.projected);
+        try self.mm(linear.output, try self.rotateGrouped(mixed_out), self.projected);
     }
 
     // --- the prediction block (MODL-18) --------------------------------
@@ -399,14 +425,15 @@ pub const Runtime = struct {
     pub fn draftForward(self: *Runtime, h_prev: []const f32, token: u32, position: usize, logits: ?[]f32) !void {
         const block = self.binding.draft orelse return error.NoDraftBlock;
         const constants = self.draft_constants orelse return error.NoDraftBlock;
-        if (token >= 248320 or h_prev.len != 5120 or position >= self.state.capacity) return error.InvalidShape;
+        const hidden = self.binding.shape.hidden;
+        if (token >= 248320 or h_prev.len != hidden or position >= self.state.capacity) return error.InvalidShape;
         if (logits) |out| if (out.len != 248320) return error.InvalidShape;
         // [enorm(embed(x_p)); hnorm(h_{p-1})], projected by eh_proj.
         try self.view.row(self.binding.token_embedding, token, self.x);
         try norm(self.x, self.normalized, self.draft_enorm);
         try norm(h_prev, self.draft_hnorm, self.draft_hnorm_w);
-        @memcpy(self.draft_concat[0..5120], self.normalized);
-        @memcpy(self.draft_concat[5120..10240], self.draft_hnorm);
+        @memcpy(self.draft_concat[0..hidden], self.normalized);
+        @memcpy(self.draft_concat[hidden..], self.draft_hnorm);
         try self.mm(block.eh_proj, self.draft_concat, self.x);
         // The block's own full-attention cache, in the same session block.
         try norm(self.x, self.normalized, constants.attention_norm);
@@ -430,22 +457,23 @@ pub const Runtime = struct {
     }
 
     /// Advances the block over tokens the main model committed, whose target
-    /// hidden rows are `h_rows` (`tokens.len * 5120`). The block's cache row
+    /// hidden rows are `h_rows` (`tokens.len * hidden`). The block's cache row
     /// index is the main token position, so the accepted prefix ends at
     /// `state.position`; the caller has already `recover`ed the session.
     pub fn commit(self: *Runtime, tokens: []const u32, h_rows: []const f32) !void {
         if (!self.has_draft) return error.NoDraftBlock;
-        if (h_rows.len != tokens.len * 5120) return error.InvalidShape;
+        const hidden = self.binding.shape.hidden;
+        if (h_rows.len != tokens.len * hidden) return error.InvalidShape;
         if (tokens.len == 0) return;
         if (self.state.position < tokens.len) return error.InvalidShape;
         const start = self.state.position - tokens.len;
         for (tokens, 0..) |token, i| {
             // Row 0 pairs with the previous committed token's hidden; the
             // rest with the hidden of the row before them.
-            const h_prev = if (i == 0) self.draft_pending_h else h_rows[(i - 1) * 5120 ..][0..5120];
+            const h_prev = if (i == 0) self.draft_pending_h else h_rows[(i - 1) * hidden ..][0..hidden];
             try self.draftForward(h_prev, token, start + i, null);
         }
-        @memcpy(self.draft_pending_h, h_rows[h_rows.len - 5120 ..][0..5120]);
+        @memcpy(self.draft_pending_h, h_rows[h_rows.len - hidden ..][0..hidden]);
     }
 
     /// Greedy candidates from the state after the last committed token;
@@ -483,11 +511,12 @@ pub const Runtime = struct {
     /// Reference verify: one step per token, keeping every row's logits and,
     /// when asked, the post-`output_norm` hidden the drafter's `commit` reads.
     pub fn verify(self: *Runtime, tokens: []const u32, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
         if (rows.len != tokens.len * 248320) return error.InvalidShape;
-        if (h_rows) |h| if (h.len != tokens.len * 5120) return error.InvalidShape;
+        if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         for (tokens, 0..) |token, i| {
             try self.step(token, rows[i * 248320 ..][0..248320], observer);
-            if (h_rows) |h| @memcpy(h[i * 5120 ..][0..5120], self.h);
+            if (h_rows) |h| @memcpy(h[i * hidden ..][0..hidden], self.h);
         }
     }
 
@@ -495,12 +524,13 @@ pub const Runtime = struct {
     /// of full logits. Reuses the block's logits scratch, which exists exactly
     /// when a drafter does.
     pub fn verifyGreedy(self: *Runtime, tokens: []const u32, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
+        const hidden = self.binding.shape.hidden;
         if (out.len != tokens.len) return error.InvalidShape;
-        if (h_rows) |h| if (h.len != tokens.len * 5120) return error.InvalidShape;
+        if (h_rows) |h| if (h.len != tokens.len * hidden) return error.InvalidShape;
         for (tokens, 0..) |token, i| {
             try self.step(token, self.draft_logits, observer);
             out[i] = argmax(self.draft_logits);
-            if (h_rows) |h| @memcpy(h[i * 5120 ..][0..5120], self.h);
+            if (h_rows) |h| @memcpy(h[i * hidden ..][0..hidden], self.h);
         }
     }
 
@@ -515,7 +545,7 @@ pub const Runtime = struct {
     /// The contract value the engine holds, or null when no block is loaded.
     pub fn drafter(self: *Runtime) ?@import("../runtime/draft.zig").Drafter {
         if (!self.has_draft) return null;
-        return .{ .host = self, .hidden = 5120, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
+        return .{ .host = self, .hidden = self.binding.shape.hidden, .max_proposals = model.max_draft_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetDraftFn, .carried_fn = carriedDraft, .bytes_fn = draftBytes };
     }
     fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
         const self: *Runtime = @ptrCast(@alignCast(host));
@@ -549,7 +579,7 @@ test "runtime workspace cleanup and invalid steps preserve session admission" {
             const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
             const attention: model.FullAttention = .{ .query_and_gate = &tensor, .key = &tensor, .value = &tensor, .output = &tensor, .query_norm = &tensor, .key_norm = &tensor };
             const layer: model.Layer = .{ .attention_norm = &tensor, .post_attention_norm = &tensor, .ffn_gate = &tensor, .ffn_up = &tensor, .ffn_down = &tensor, .mixer = .{ .full_attention = attention } };
-            const binding: model.Binding = .{ .token_embedding = &tensor, .output_norm = &tensor, .output = &tensor, .layers = @splat(layer), .summary = .{ .profile = "test", .decoder_layers = 64, .layer_kinds = &.{}, .text_tensors = 0, .auxiliary_tensors = 0, .text_tensor_bytes = 0, .auxiliary_tensor_bytes = 0 } };
+            const binding: model.Binding = .{ .token_embedding = &tensor, .output_norm = &tensor, .output = &tensor, .layer_slots = @splat(layer), .shape = model.qwen38_shape, .summary = .{ .profile = "test", .decoder_layers = 64, .layer_kinds = &.{}, .text_tensors = 0, .auxiliary_tensors = 0, .text_tensor_bytes = 0, .auxiliary_tensor_bytes = 0 } };
             var runtime = try Runtime.init(alloc, std.testing.io, .{ .file = &.{}, .data_offset = 0 }, binding, 1, false, false);
             defer runtime.deinit();
             try std.testing.expectError(error.InvalidTokenId, runtime.step(248320, null, null));

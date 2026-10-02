@@ -1,4 +1,6 @@
-//! Structural adapter for the initial Qwen3.8-27B GGUF profile (`qwen35`).
+//! Structural adapter for the hybrid DeltaNet GGUF family (`qwen35`):
+//! Qwen3.8-27B and the Qwen3.5-9B shape (clef-flash's backbone), whose
+//! dimensions the file declares (`Shape`); everything else is pinned.
 //! Bind once at model load: later numerical code uses named tensor references,
 //! never repeated GGUF string lookups. Bindings borrow the Document's storage.
 //! Validation checks the declared profile and storage, not tensor values or
@@ -104,14 +106,73 @@ pub const Rotation = struct {
     }
 };
 
-/// What a binding reports (`models.Summary`): the pinned configuration's
-/// composition, 16 full-attention and 48 DeltaNet layers plus, when the
-/// file carries it, one auxiliary prediction layer excluded from the text
-/// schedule.
+/// The dimensions a file declares: the six keys the 27B and 9B releases
+/// differ in. The head widths, the 4 KV heads, the 16 DeltaNet key heads,
+/// and the every-4th full-attention schedule stay pinned.
+pub const Shape = struct {
+    hidden: usize,
+    ffn: usize,
+    /// Full-attention query heads.
+    heads: usize,
+    /// Text layers, without the auxiliary prediction block.
+    layers: usize,
+    /// DeltaNet value heads (`ssm.time_step_rank`).
+    value_heads: usize,
+
+    pub const max_layers = 64;
+    pub const kv_heads = 4;
+    pub const head_width = 256;
+    pub const kv_width = kv_heads * head_width;
+    pub const key_heads = 16;
+    pub const state_width = 128;
+    pub const conv_kernel = 4;
+
+    pub fn queryWidth(s: Shape) usize {
+        return s.heads * head_width;
+    }
+    /// `attn_q` emits each head's query then its output gate.
+    pub fn queryGateWidth(s: Shape) usize {
+        return 2 * s.queryWidth();
+    }
+    /// The DeltaNet value width (`ssm.inner_size`).
+    pub fn innerWidth(s: Shape) usize {
+        return s.value_heads * state_width;
+    }
+    /// `attn_qkv`'s output: [Q | K: 16 key heads each | V: value heads].
+    pub fn qkvWidth(s: Shape) usize {
+        return 2 * key_heads * state_width + s.innerWidth();
+    }
+    /// One DeltaNet layer's recurrent state: the convolution history and the
+    /// per-value-head matrices.
+    pub fn deltaHistory(s: Shape) usize {
+        return s.qkvWidth() * (conv_kernel - 1);
+    }
+    pub fn deltaMatrix(s: Shape) usize {
+        return s.value_heads * state_width * state_width;
+    }
+    pub fn eql(a: Shape, b: Shape) bool {
+        return std.meta.eql(a, b);
+    }
+};
+
+/// Qwen3.8-27B (and Bonsai 2 27B): the shape the rotation contract is pinned to.
+pub const qwen38_shape: Shape = .{ .hidden = 5120, .ffn = 17408, .heads = 24, .layers = 64, .value_heads = 48 };
+/// Qwen3.5-9B, clef-flash's backbone.
+pub const qwen35_9b_shape: Shape = .{ .hidden = 4096, .ffn = 12288, .heads = 16, .layers = 32, .value_heads = 32 };
+
+/// What a binding reports (`models.Summary`): the layer composition (a
+/// quarter full attention, the rest DeltaNet) plus, when the file carries
+/// it, one auxiliary prediction layer excluded from the text schedule.
 pub const Summary = models.Summary;
-const layer_kinds = [_]models.LayerKind{
-    .{ .kind = "full_attention", .count = 16 },
-    .{ .kind = "delta_net", .count = 48 },
+/// Layer kinds per accepted layer count (4 to 64 in steps of 4), so a summary
+/// borrows static storage.
+const layer_kind_table = blk: {
+    var table: [Shape.max_layers / 4][2]models.LayerKind = undefined;
+    for (&table, 1..) |*kinds, n| kinds.* = .{
+        .{ .kind = "full_attention", .count = n },
+        .{ .kind = "delta_net", .count = 3 * n },
+    };
+    break :blk table;
 };
 
 /// All tensor pointers borrow doc.tensors. No weights are read or allocated;
@@ -120,13 +181,20 @@ pub const Binding = struct {
     token_embedding: *const Tensor,
     output_norm: *const Tensor,
     output: *const Tensor,
-    layers: [64]Layer,
+    /// The first `shape.layers` entries are bound; read them through `layers()`.
+    layer_slots: [Shape.max_layers]Layer,
+    shape: Shape,
     summary: Summary,
     /// Present on a rotated (Bonsai) file; the runtimes must apply it.
     rotation: ?Rotation = null,
     /// The embedded prediction head, present on the Qwen3.8 release (65
     /// blocks) and absent from the Bonsai re-encoding.
     draft: ?DraftBlock = null,
+
+    /// The text layers, in schedule order.
+    pub fn layers(self: *const Binding) []const Layer {
+        return self.layer_slots[0..self.shape.layers];
+    }
 };
 
 /// The registry's shared binding error set; this adapter returns all of it.
@@ -147,31 +215,34 @@ pub const family = struct {
     pub const embedded_draft = true;
 };
 
-// This first profile is deliberately narrow. Reject unimplemented variants
+// The profile is deliberately narrow. Reject unimplemented variants
 // instead of accepting a familiar architecture name with different semantics.
 const IntegerSetting = struct { key: []const u8, value: u64 };
 const integer_settings = [_]IntegerSetting{
     .{ .key = "qwen35.context_length", .value = 262144 },
-    .{ .key = "qwen35.embedding_length", .value = 5120 },
-    .{ .key = "qwen35.feed_forward_length", .value = 17408 },
-    .{ .key = "qwen35.attention.head_count", .value = 24 },
     .{ .key = "qwen35.attention.head_count_kv", .value = 4 },
     .{ .key = "qwen35.attention.key_length", .value = 256 },
     .{ .key = "qwen35.attention.value_length", .value = 256 },
     .{ .key = "qwen35.ssm.conv_kernel", .value = 4 },
     .{ .key = "qwen35.ssm.state_size", .value = 128 },
     .{ .key = "qwen35.ssm.group_count", .value = 16 },
-    .{ .key = "qwen35.ssm.time_step_rank", .value = 48 },
-    .{ .key = "qwen35.ssm.inner_size", .value = 6144 },
     .{ .key = "qwen35.full_attention_interval", .value = 4 },
     .{ .key = "qwen35.rope.dimension_count", .value = 64 },
     .{ .key = "general.quantization_version", .value = 2 },
 };
 
-/// The 64 text layers, plus the auxiliary prediction block when the file
-/// declares it: the Qwen3.8 release counts it as a 65th block with one
-/// `nextn` layer, the Bonsai re-encoding drops it (64 blocks, no key).
-fn validateMetadata(doc: *const gguf.Document) Error!bool {
+/// The shape the file declares, bounded to what the runtimes size and the
+/// kernels tile.
+const shape_keys = [_][]const u8{
+    "qwen35.embedding_length",     "qwen35.feed_forward_length",        "qwen35.attention.head_count",
+    "qwen35.ssm.time_step_rank",   "qwen35.ssm.inner_size",             "qwen35.block_count",
+    "qwen35.nextn_predict_layers", "qwen35.attention.recurrent_layers",
+};
+
+/// The text layers, plus the auxiliary prediction block when the file
+/// declares it: the Qwen3.8 release counts it as one more block with one
+/// `nextn` layer, the Bonsai re-encoding and the 9B drop it (no key).
+fn validateMetadata(doc: *const gguf.Document) Error!struct { shape: Shape, auxiliary: bool } {
     const arch = switch (doc.get("general.architecture") orelse return error.MissingMetadata) {
         .string => |value| value,
         else => return error.InvalidMetadata,
@@ -185,13 +256,17 @@ fn validateMetadata(doc: *const gguf.Document) Error!bool {
         }
     }
     const blocks = try unsignedValue(doc, "qwen35.block_count");
-    const auxiliary = switch (blocks) {
-        64 => false,
-        65 => true,
-        else => return error.UnsupportedConfiguration,
-    };
     const nextn = if (doc.get("qwen35.nextn_predict_layers")) |_| try unsignedValue(doc, "qwen35.nextn_predict_layers") else 0;
-    if (nextn != @as(u64, if (auxiliary) 1 else 0)) return error.UnsupportedConfiguration;
+    if (nextn > 1 or blocks <= nextn) return error.UnsupportedConfiguration;
+    const shape = try readShape(doc, blocks - nextn);
+    // Newer converters spell the schedule out; it must be the pinned one.
+    if (doc.get("qwen35.attention.recurrent_layers") != null) {
+        const flags = try arrayValues(doc, "qwen35.attention.recurrent_layers", .boolean, shape.layers);
+        for (flags, 0..) |flag, i| switch (flag) {
+            .boolean => |recurrent| if (recurrent != ((i + 1) % 4 != 0)) return error.UnsupportedConfiguration,
+            else => return error.InvalidMetadata,
+        };
+    }
     try expectFloat(doc, "qwen35.rope.freq_base", 10_000_000);
     try expectFloat(doc, "qwen35.attention.layer_norm_rms_epsilon", @as(f32, 1e-6));
     const sections = switch (doc.get("qwen35.rope.dimension_sections") orelse return error.MissingMetadata) {
@@ -219,14 +294,32 @@ fn validateMetadata(doc: *const gguf.Document) Error!bool {
         if (std.mem.startsWith(u8, entry.key, "qwen35.") and !knownArchitectureKey(entry.key))
             return error.UnsupportedConfiguration;
     }
-    return auxiliary;
+    return .{ .shape = shape, .auxiliary = nextn == 1 };
+}
+
+/// Each dimension a multiple of the 256-element quantization block, the
+/// heads whole groups of the pinned KV and key heads, the layers whole
+/// periods of the every-4th schedule.
+fn readShape(doc: *const gguf.Document, layers: u64) Error!Shape {
+    const hidden = try unsignedValue(doc, "qwen35.embedding_length");
+    const ffn = try unsignedValue(doc, "qwen35.feed_forward_length");
+    const heads = try unsignedValue(doc, "qwen35.attention.head_count");
+    const value_heads = try unsignedValue(doc, "qwen35.ssm.time_step_rank");
+    const inner = try unsignedValue(doc, "qwen35.ssm.inner_size");
+    if (hidden == 0 or hidden > 16384 or hidden % 256 != 0) return error.UnsupportedConfiguration;
+    if (ffn == 0 or ffn > 65536 or ffn % 256 != 0) return error.UnsupportedConfiguration;
+    if (heads == 0 or heads > 64 or heads % Shape.kv_heads != 0) return error.UnsupportedConfiguration;
+    if (value_heads == 0 or value_heads > 64 or value_heads % Shape.key_heads != 0) return error.UnsupportedConfiguration;
+    if (inner != value_heads * Shape.state_width) return error.UnsupportedConfiguration;
+    if (layers == 0 or layers > Shape.max_layers or layers % 4 != 0) return error.UnsupportedConfiguration;
+    return .{ .hidden = @intCast(hidden), .ffn = @intCast(ffn), .heads = @intCast(heads), .layers = @intCast(layers), .value_heads = @intCast(value_heads) };
 }
 
 fn knownArchitectureKey(key: []const u8) bool {
     for (integer_settings) |setting| if (std.mem.eql(u8, key, setting.key)) return true;
+    for (shape_keys) |known| if (std.mem.eql(u8, key, known)) return true;
     for ([_][]const u8{
-        "qwen35.block_count",                      "qwen35.nextn_predict_layers",    "qwen35.rope.freq_base",
-        "qwen35.attention.layer_norm_rms_epsilon", "qwen35.rope.dimension_sections",
+        "qwen35.rope.freq_base", "qwen35.attention.layer_norm_rms_epsilon", "qwen35.rope.dimension_sections",
     }) |known| if (std.mem.eql(u8, key, known)) return true;
     return false;
 }
@@ -373,6 +466,7 @@ const Storage = enum { f32, matrix };
 
 const Binder = struct {
     remaining: std.StringHashMap(*const Tensor),
+    shape: Shape,
     tensors: u32 = 0,
     bytes: u64 = 0,
 
@@ -397,34 +491,34 @@ const Binder = struct {
     }
 
     fn layer(self: *Binder, index: usize, full_attention: bool) Error!Layer {
+        const s = self.shape;
         return .{
-            .attention_norm = try self.weight(index, "attn_norm.weight", &.{5120}, .f32),
-            .post_attention_norm = try self.weight(index, "post_attention_norm.weight", &.{5120}, .f32),
-            .ffn_gate = try self.weight(index, "ffn_gate.weight", &.{ 5120, 17408 }, .matrix),
-            .ffn_up = try self.weight(index, "ffn_up.weight", &.{ 5120, 17408 }, .matrix),
-            .ffn_down = try self.weight(index, "ffn_down.weight", &.{ 17408, 5120 }, .matrix),
+            .attention_norm = try self.weight(index, "attn_norm.weight", &.{s.hidden}, .f32),
+            .post_attention_norm = try self.weight(index, "post_attention_norm.weight", &.{s.hidden}, .f32),
+            .ffn_gate = try self.weight(index, "ffn_gate.weight", &.{ s.hidden, s.ffn }, .matrix),
+            .ffn_up = try self.weight(index, "ffn_up.weight", &.{ s.hidden, s.ffn }, .matrix),
+            .ffn_down = try self.weight(index, "ffn_down.weight", &.{ s.ffn, s.hidden }, .matrix),
             .mixer = if (full_attention) .{
                 .full_attention = .{
                     // Q contains both the query and the elementwise output gate.
-                    .query_and_gate = try self.weight(index, "attn_q.weight", &.{ 5120, 12288 }, .matrix),
-                    .key = try self.weight(index, "attn_k.weight", &.{ 5120, 1024 }, .matrix),
-                    .value = try self.weight(index, "attn_v.weight", &.{ 5120, 1024 }, .matrix),
-                    .output = try self.weight(index, "attn_output.weight", &.{ 6144, 5120 }, .matrix),
-                    .query_norm = try self.weight(index, "attn_q_norm.weight", &.{256}, .f32),
-                    .key_norm = try self.weight(index, "attn_k_norm.weight", &.{256}, .f32),
+                    .query_and_gate = try self.weight(index, "attn_q.weight", &.{ s.hidden, s.queryGateWidth() }, .matrix),
+                    .key = try self.weight(index, "attn_k.weight", &.{ s.hidden, Shape.kv_width }, .matrix),
+                    .value = try self.weight(index, "attn_v.weight", &.{ s.hidden, Shape.kv_width }, .matrix),
+                    .output = try self.weight(index, "attn_output.weight", &.{ s.queryWidth(), s.hidden }, .matrix),
+                    .query_norm = try self.weight(index, "attn_q_norm.weight", &.{Shape.head_width}, .f32),
+                    .key_norm = try self.weight(index, "attn_k_norm.weight", &.{Shape.head_width}, .f32),
                 },
             } else .{
                 .delta_net = .{
-                    // 2 * (16 key heads * 128) + (48 value heads * 128).
-                    .qkv = try self.weight(index, "attn_qkv.weight", &.{ 5120, 10240 }, .matrix),
-                    .gate = try self.weight(index, "attn_gate.weight", &.{ 5120, 6144 }, .matrix),
-                    .convolution = try self.weight(index, "ssm_conv1d.weight", &.{ 4, 10240 }, .f32),
-                    .time_bias = try self.weight(index, "ssm_dt.bias", &.{48}, .f32),
-                    .a = try self.weight(index, "ssm_a", &.{48}, .f32),
-                    .beta = try self.weight(index, "ssm_beta.weight", &.{ 5120, 48 }, .matrix),
-                    .alpha = try self.weight(index, "ssm_alpha.weight", &.{ 5120, 48 }, .matrix),
-                    .norm = try self.weight(index, "ssm_norm.weight", &.{128}, .f32),
-                    .output = try self.weight(index, "ssm_out.weight", &.{ 6144, 5120 }, .matrix),
+                    .qkv = try self.weight(index, "attn_qkv.weight", &.{ s.hidden, s.qkvWidth() }, .matrix),
+                    .gate = try self.weight(index, "attn_gate.weight", &.{ s.hidden, s.innerWidth() }, .matrix),
+                    .convolution = try self.weight(index, "ssm_conv1d.weight", &.{ Shape.conv_kernel, s.qkvWidth() }, .f32),
+                    .time_bias = try self.weight(index, "ssm_dt.bias", &.{s.value_heads}, .f32),
+                    .a = try self.weight(index, "ssm_a", &.{s.value_heads}, .f32),
+                    .beta = try self.weight(index, "ssm_beta.weight", &.{ s.hidden, s.value_heads }, .matrix),
+                    .alpha = try self.weight(index, "ssm_alpha.weight", &.{ s.hidden, s.value_heads }, .matrix),
+                    .norm = try self.weight(index, "ssm_norm.weight", &.{Shape.state_width}, .f32),
+                    .output = try self.weight(index, "ssm_out.weight", &.{ s.innerWidth(), s.hidden }, .matrix),
                 },
             },
         };
@@ -434,9 +528,13 @@ const Binder = struct {
 /// doc must come from successful GGUF parsing. Allocations are temporary lookup
 /// storage, freed before return; only the returned tensor references borrow doc.
 pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
-    const auxiliary = try validateMetadata(doc);
+    const declared = try validateMetadata(doc);
+    const shape = declared.shape;
+    const auxiliary = declared.auxiliary;
     const rotation = try validateRotation(doc);
-    var binder: Binder = .{ .remaining = .init(alloc) };
+    // The rotation contract (sign widths, the rotated names) is pinned to the 27B.
+    if (rotation != null and !shape.eql(qwen38_shape)) return error.UnsupportedConfiguration;
+    var binder: Binder = .{ .remaining = .init(alloc), .shape = shape };
     defer binder.remaining.deinit();
     for (doc.tensors) |*tensor| {
         const slot = try binder.remaining.getOrPut(tensor.name);
@@ -444,31 +542,35 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
         slot.value_ptr.* = tensor;
     }
     var result: Binding = undefined;
-    result.token_embedding = try binder.take("token_embd.weight", &.{ 5120, 248320 }, .matrix);
-    result.output_norm = try binder.take("output_norm.weight", &.{5120}, .f32);
-    result.output = try binder.take("output.weight", &.{ 5120, 248320 }, .matrix);
-    for (&result.layers, 0..) |*layer, i| layer.* = try binder.layer(i, (i + 1) % 4 == 0);
+    result.shape = shape;
+    result.token_embedding = try binder.take("token_embd.weight", &.{ shape.hidden, 248320 }, .matrix);
+    result.output_norm = try binder.take("output_norm.weight", &.{shape.hidden}, .f32);
+    result.output = try binder.take("output.weight", &.{ shape.hidden, 248320 }, .matrix);
+    for (result.layer_slots[0..shape.layers], 0..) |*layer, i| layer.* = try binder.layer(i, (i + 1) % 4 == 0);
+    // Unbound slots are never read (`layers()` stops at the shape's count).
+    for (result.layer_slots[shape.layers..]) |*layer| layer.* = undefined;
     const text_tensors = binder.tensors;
     const text_bytes = binder.bytes;
 
     // The auxiliary block is bound separately, never in `layers`, so the text
-    // schedule stays 64 layers. It always uses full attention, regardless of
+    // schedule keeps its length. It always uses full attention, regardless of
     // the main schedule's modulo.
     result.draft = null;
     if (auxiliary) {
+        const at = shape.layers;
         result.draft = .{
-            .eh_proj = try binder.weight(64, "nextn.eh_proj.weight", &.{ 10240, 5120 }, .matrix),
-            .enorm = try binder.weight(64, "nextn.enorm.weight", &.{5120}, .f32),
-            .hnorm = try binder.weight(64, "nextn.hnorm.weight", &.{5120}, .f32),
-            .shared_head_norm = try binder.weight(64, "nextn.shared_head_norm.weight", &.{5120}, .f32),
-            .layer = try binder.layer(64, true),
+            .eh_proj = try binder.weight(at, "nextn.eh_proj.weight", &.{ 2 * shape.hidden, shape.hidden }, .matrix),
+            .enorm = try binder.weight(at, "nextn.enorm.weight", &.{shape.hidden}, .f32),
+            .hnorm = try binder.weight(at, "nextn.hnorm.weight", &.{shape.hidden}, .f32),
+            .shared_head_norm = try binder.weight(at, "nextn.shared_head_norm.weight", &.{shape.hidden}, .f32),
+            .layer = try binder.layer(at, true),
         };
     }
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
     result.summary = .{
-        .profile = "qwen35_27b",
-        .decoder_layers = 64,
-        .layer_kinds = &layer_kinds,
+        .profile = if (shape.eql(qwen38_shape)) "qwen35_27b" else if (shape.eql(qwen35_9b_shape)) "qwen35_9b" else "qwen35",
+        .decoder_layers = @intCast(shape.layers),
+        .layer_kinds = &layer_kind_table[shape.layers / 4 - 1],
         .auxiliary_prediction_layers = if (auxiliary) 1 else 0,
         .rotated_basis = if (rotation != null) "normalized-sylvester-walsh-hadamard, block 1024, explicit signs" else null,
         .text_tensors = text_tensors,
@@ -525,7 +627,7 @@ test "bind real descriptor inventory with auxiliary weights outside the text lay
     try std.testing.expect(model.token_embedding == tensorEntry(&doc, "token_embd.weight"));
     var full: u32 = 0;
     var recurrent: u32 = 0;
-    for (model.layers, 0..) |layer, i| {
+    for (model.layers(), 0..) |layer, i| {
         switch (layer.mixer) {
             .full_attention => |attention| {
                 full += 1;
@@ -661,7 +763,7 @@ test "bind the Bonsai inventory: 64 blocks, ternary and BF16 matrices, the pinne
     try std.testing.expectEqual(@as(u64, 7_195_047_936), model.summary.text_tensor_bytes);
     try std.testing.expect(model.draft == null);
     try std.testing.expectEqual(@as(u32, 142), model.output.encoding_id);
-    try std.testing.expectEqual(@as(u32, 30), model.layers[0].mixer.delta_net.alpha.encoding_id);
+    try std.testing.expectEqual(@as(u32, 30), model.layers()[0].mixer.delta_net.alpha.encoding_id);
     try std.testing.expect(model.summary.rotated_basis != null);
     const rotation = model.rotation.?;
     try std.testing.expectEqual(@as(u32, 1024), rotation.block);
@@ -708,6 +810,46 @@ test "reject rotations outside the pinned contract" {
     // The block count and the auxiliary declaration must agree.
     metadataEntry(&doc, "qwen35.block_count").value = .{ .unsigned = 65 };
     try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+}
+
+test "bind clef-flash's 9B inventory: the shape from the file, no prediction block" {
+    var doc = try @import("inventory.zig").document(std.testing.allocator, @embedFile("fixtures/clef-flash-q6k.json"));
+    defer doc.deinit();
+    const model = try bind(std.testing.allocator, &doc);
+    try std.testing.expect(model.shape.eql(qwen35_9b_shape));
+    try std.testing.expectEqualStrings("qwen35_9b", model.summary.profile);
+    try std.testing.expectEqual(@as(u32, 32), model.summary.decoder_layers);
+    try std.testing.expectEqual(@as(u32, 8), model.summary.layer_kinds[0].count);
+    try std.testing.expectEqual(@as(u32, 24), model.summary.layer_kinds[1].count);
+    try std.testing.expect(model.draft == null and model.rotation == null);
+    try std.testing.expectEqual(@as(usize, 32), model.layers().len);
+    try std.testing.expectEqualSlices(u64, &.{ 4096, 8192 }, model.layers()[0].mixer.delta_net.qkv.dimensions);
+    try std.testing.expectEqualSlices(u64, &.{ 4096, 8192 }, model.layers()[3].mixer.full_attention.query_and_gate.dimensions);
+    try std.testing.expectEqual(@as(usize, 8192 * 3), model.shape.deltaHistory());
+    // The spelled-out schedule must be the every-4th one.
+    const flags = @constCast(metadataEntry(&doc, "qwen35.attention.recurrent_layers").value.array.values.?);
+    flags[3] = .{ .boolean = true };
+    try std.testing.expectError(error.UnsupportedConfiguration, bind(std.testing.allocator, &doc));
+}
+
+test "reject shapes outside the accepted bounds" {
+    var doc = try fixture();
+    defer doc.deinit();
+    for ([_]struct { key: []const u8, value: u64, err: anyerror }{
+        .{ .key = "qwen35.attention.head_count", .value = 22, .err = error.UnsupportedConfiguration },
+        .{ .key = "qwen35.ssm.time_step_rank", .value = 40, .err = error.UnsupportedConfiguration },
+        .{ .key = "qwen35.ssm.inner_size", .value = 4096, .err = error.UnsupportedConfiguration },
+        .{ .key = "qwen35.embedding_length", .value = 5000, .err = error.UnsupportedConfiguration },
+        .{ .key = "qwen35.block_count", .value = 66, .err = error.UnsupportedConfiguration },
+        // A valid shape the tensors do not have.
+        .{ .key = "qwen35.embedding_length", .value = 4096, .err = error.InvalidTensorShape },
+    }) |case| {
+        const entry = metadataEntry(&doc, case.key);
+        const saved = entry.value;
+        entry.value = .{ .unsigned = case.value };
+        try std.testing.expectError(case.err, bind(std.testing.allocator, &doc));
+        entry.value = saved;
+    }
 }
 
 fn bindWithAllocator(alloc: std.mem.Allocator, doc: *const gguf.Document) !void {
