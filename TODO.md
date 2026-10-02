@@ -60,6 +60,10 @@ Queued (user, 2026-09-30), after the decode-speed theme unless the user
 pulls it forward: AGNT-19, saved prefixes for the agent across processes
 (its design after AGNT-18).
 
+Queued (user, 2026-10-02), after the decode-speed theme unless the user
+pulls it forward: APPS-19, `nuclis serve`, a local decision API that keeps
+decision models loaded (its design at the end).
+
 ## The theme: decode speed on Metal
 
 **Why this order.** Our own records already say where the verify batch
@@ -379,3 +383,67 @@ correctness bug, not a timing one.
 Gates: `make check`, `make lint-py`, `make verify-auto`, `make shot`,
 `make agent-eval VARIANT=…`. Docs: `docs/reference/session.md`,
 `docs/development.md` § User directories, the agent's help.
+
+## APPS-19 — `nuclis serve`: a local decision API (1 session) — queued
+
+Base: recorded when the unit starts.
+
+Every `nuclis decide` call starts a process and opens its checkpoint:
+about 75 ms for `laya` and 0.4 s for `laya-multilingual` (parsing its
+34 MB `tokenizer.json`) before a 230–300 ms Metal encode, so a client
+deciding every second spends half its time loading. A long-running
+process that keeps decision models open removes that, and an endpoint
+listing them lets clients follow the catalogue instead of hard-coding
+names.
+
+- **Command.** `nuclis serve` (APPS surface, `src/serve.zig`, dispatched
+  from `src/cli.zig` like `decide`): `--host` (default `127.0.0.1`),
+  `--port` (default 8735), `--model <name|path>` (repeatable, opened at
+  start; otherwise each model opens on first use), `--backend cpu|metal`.
+  Binding anywhere but loopback prints a warning; there is no
+  authentication.
+- **Routes.** JSON in and out, typed errors as
+  `{"error": {"code", "message"}}`:
+  - `POST /v1/decide`: the body `nuclis decide --request` reads
+    (`questions`, `state` or `states`, an optional `model` naming a
+    decision model, default `decide.model`), `?explain=1` for the explain
+    fields. The response is byte-for-byte what `nuclis decide --json`
+    writes for the same request, timings aside. `{"file": path}` states
+    are refused: the server reads no files a request names.
+  - `POST /v1/systemone`: Jev's single-state call for clients written
+    against TypeSafe's API: the request as above with one `state`, the
+    response `{model, answers, usage}` (one result's fields).
+  - `GET /v1/models`: every decision entry (catalogue and registry, `kind:
+    "decision"`): name, repo, revision, present, loaded, and the budgets
+    from its `rl_agent_config.json` (`max_len`, `head_max_len`).
+  - `GET /v1/health`: version, backend, loaded models.
+- **Shared code.** The JSON request parsing (`parseJson`,
+  `stateFromJson`, `questionsFromJson`, the request part of
+  `buildRequest`) and the JSON writer (`writeAnswer` and the `--json`
+  body of `run`) move from `src/decide.zig` to `src/decide_json.zig`, so
+  the CLI and the server cannot drift.
+- **Models.** A table of open `inference.decide.Decider`s keyed by the
+  resolved directory, at most 2 open (evict the least recently used),
+  each opened under a lock so two first requests open it once.
+- **Limits.** Host constants: request body 4 MiB, headers 16 KiB, 8
+  connections, one decision at a time on the GPU (the others wait, at
+  most 8, then 503 `busy`), 30 s per request; the request limits of
+  `inference.decide` (`max_states`, `max_questions`, `max_options`,
+  `max_state_bytes`) apply unchanged.
+- **Prediction.** A warm `laya-multilingual` decision of one state and
+  two questions, measured with `curl` from the same machine: within 20 ms
+  of the encode time `timings_ms` reports, against 0.75 s through the
+  subprocess.
+- **Correctness.** Unit tests over in-memory requests: routing, each
+  error (malformed JSON, unknown model, a file state, an oversized body,
+  busy), and the model table's eviction, on the tiny synthetic checkpoint
+  on the CPU. A server started on an ephemeral port answers the 8 root
+  fixture requests with exactly `nuclis decide --json`'s results (a new
+  fast-tier gate, `decide-serve`). The fresh binary exercised with `curl`
+  for every route.
+- **Docs.** `docs/spec.md` (the command table), a `nuclis serve` section
+  in `docs/reference/laya.md`, `docs/development.md` (the port and the
+  limits), `src/help.zig`, `docs/architecture.md` (the decision path).
+
+Gates: `make check`, `make verify-auto` (the new `decide-serve` gate). No
+numerical behaviour changes, so no Metal or CPU tier.
