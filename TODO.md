@@ -75,7 +75,7 @@ stays a tool for language models.
 
 ## APPS-19 — `nuclis serve`: the nuclis API, decisions first, batched across requests (2 sessions) — next
 
-Base: recorded when the unit starts.
+Base: `83f8238`
 
 Every `nuclis decide` call starts a process and opens its checkpoint:
 about 75 ms for `laya` and 0.4 s for `laya-multilingual` (parsing its

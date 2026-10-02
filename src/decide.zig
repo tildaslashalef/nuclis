@@ -3,18 +3,17 @@
 //! Jev-shaped request file, a questions file with states from flags, or one
 //! question inline. One state renders per question; several render ranked
 //! by the first question, the filter shape (one question over many states).
-//! `--json` writes one Jev response per state: each answer's top level is
-//! exactly Jev's, extras under `nuclis`. docs/reference/laya.md.
+//! `--json` writes the shared wire format (`decision/response.zig`).
+//! docs/reference/laya.md.
 const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");
 const config = @import("config.zig");
-const catalog = @import("catalog.zig");
+const wire = @import("decision/request.zig");
+const response = @import("decision/response.zig");
 
 const profile = inference.profiles.laya;
 const Decider = inference.decide.Decider;
-
-pub const schema_version = 1;
 
 const StateSource = union(enum) { text: []const u8, file: []const u8 };
 
@@ -139,108 +138,25 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
     return o;
 }
 
-/// One state as the request named it, ready for the decider.
-const Labeled = struct { label: []const u8, state: inference.decide.State };
-
-const Request = struct {
-    ids: []const []const u8,
-    questions: []const profile.Question,
-    states: []const Labeled,
-};
-
-fn readBounded(arena: std.mem.Allocator, io: std.Io, path: []const u8, limit: usize, diag: *config.Diagnostic) ![]u8 {
-    if (std.mem.eql(u8, path, "-")) {
-        var buffer: [4096]u8 = undefined;
-        var reader = std.Io.File.stdin().readerStreaming(io, &buffer);
-        return reader.interface.allocRemaining(arena, .limited(limit)) catch |err| {
-            diag.set("standard input: {s} (at most {d} bytes)", .{ @errorName(err), limit });
-            return err;
-        };
-    }
-    return std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(limit)) catch |err| {
-        diag.set("{s}: {s}", .{ path, @errorName(err) });
-        return err;
-    };
-}
-
-fn parseJson(arena: std.mem.Allocator, bytes: []const u8, what: []const u8, diag: *config.Diagnostic) !std.json.Value {
-    return std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{}) catch |err| {
-        diag.set("{s} is not valid JSON ({s})", .{ what, @errorName(err) });
-        return error.InvalidRequest;
-    };
-}
-
-/// A state value of a request: text, `{"file": path}` (read, as text), or
-/// any other JSON, rendered as the package renders it (a list keeps its tail).
-fn stateFromJson(arena: std.mem.Allocator, io: std.Io, value: std.json.Value, index: usize, diag: *config.Diagnostic) !Labeled {
-    switch (value) {
-        .string => |s| return .{ .label = try std.fmt.allocPrint(arena, "state[{d}]", .{index}), .state = .{ .text = s } },
-        .object => |o| if (o.count() == 1) if (o.get("file")) |f| if (f == .string) {
-            return .{ .label = f.string, .state = .{ .text = try readBounded(arena, io, f.string, inference.decide.max_state_bytes, diag) } };
-        },
-        else => {},
-    }
-    return .{
-        .label = try std.fmt.allocPrint(arena, "state[{d}]", .{index}),
-        .state = .{ .text = try profile.pythonJson(arena, value), .truncate = if (value == .array) .head else .tail },
-    };
-}
-
-fn questionsFromJson(arena: std.mem.Allocator, value: std.json.Value, what: []const u8, ids: *std.ArrayList([]const u8), questions: *std.ArrayList(profile.Question), diag: *config.Diagnostic) !void {
-    const map = switch (value) {
-        .object => |o| o,
-        else => {
-            diag.set("{s}: \"questions\" must be an object of id -> definition", .{what});
-            return error.InvalidRequest;
-        },
-    };
-    var it = map.iterator();
-    while (it.next()) |entry| {
-        var why: profile.Diagnostic = .{};
-        const q = profile.parseQuestion(arena, entry.key_ptr.*, entry.value_ptr.*, &why) catch |err| {
-            diag.set("{s}", .{why.message()});
-            return err;
-        };
-        try ids.append(arena, entry.key_ptr.*);
-        try questions.append(arena, q);
-    }
-}
+const Request = wire.Request;
 
 fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.Diagnostic) !Request {
     var ids: std.ArrayList([]const u8) = .empty;
     var questions: std.ArrayList(profile.Question) = .empty;
-    var states: std.ArrayList(Labeled) = .empty;
+    var states: std.ArrayList(wire.Labeled) = .empty;
     if (o.request) |request_path| {
         const path = if (std.mem.eql(u8, request_path, "-")) "standard input" else request_path;
-        const root = try parseJson(arena, try readBounded(arena, io, request_path, 64 * 1024 * 1024, diag), path, diag);
-        const body = switch (root) {
-            .object => |b| b,
-            else => {
-                diag.set("{s}: a request is an object with \"questions\" and \"state\" or \"states\"", .{path});
-                return error.InvalidRequest;
-            },
-        };
-        try questionsFromJson(arena, body.get("questions") orelse .null, path, &ids, &questions, diag);
-        const one = body.get("state");
-        const many = body.get("states");
-        if ((one == null) == (many == null)) {
-            diag.set("{s}: give \"state\" or \"states\", one of them", .{path});
-            return error.InvalidRequest;
-        }
-        if (one) |s| try states.append(arena, try stateFromJson(arena, io, s, 0, diag));
-        if (many) |m| {
-            if (m != .array or m.array.items.len == 0) {
-                diag.set("{s}: \"states\" must be a non-empty list", .{path});
-                return error.InvalidRequest;
-            }
-            for (m.array.items, 0..) |s, i| try states.append(arena, try stateFromJson(arena, io, s, i, diag));
-        }
+        const root = try wire.parseJson(arena, try wire.readBounded(arena, io, request_path, 64 * 1024 * 1024, diag), path, diag);
+        const request = try wire.fromJson(arena, io, root, path, .allowed, diag);
+        try ids.appendSlice(arena, request.ids);
+        try questions.appendSlice(arena, request.questions);
+        try states.appendSlice(arena, request.states);
     } else {
         if (o.questions) |path| {
-            const root = try parseJson(arena, try readBounded(arena, io, path, 1024 * 1024, diag), path, diag);
+            const root = try wire.parseJson(arena, try wire.readBounded(arena, io, path, 1024 * 1024, diag), path, diag);
             // A whole request's "questions" field, or the map itself.
             const map = if (root == .object and root.object.get("questions") != null) root.object.get("questions").? else root;
-            try questionsFromJson(arena, map, path, &ids, &questions, diag);
+            try wire.questionsFromJson(arena, map, path, &ids, &questions, diag);
         }
         for (o.inline_questions.items) |q| {
             var definition: std.json.ObjectMap = .empty;
@@ -277,7 +193,7 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
         }
         for (o.states.items, 0..) |source, i| try states.append(arena, switch (source) {
             .text => |t| .{ .label = try std.fmt.allocPrint(arena, "state[{d}]", .{i}), .state = .{ .text = t } },
-            .file => |f| .{ .label = f, .state = .{ .text = try readBounded(arena, io, f, inference.decide.max_state_bytes, diag) } },
+            .file => |f| .{ .label = f, .state = .{ .text = try wire.readBounded(arena, io, f, inference.decide.max_state_bytes, diag) } },
         });
     }
     if (questions.items.len == 0) {
@@ -290,53 +206,12 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
     return .{ .ids = ids.items, .questions = questions.items, .states = states.items };
 }
 
-/// The checkpoint directory `--model` or `decide.model` names, in order: a
-/// registry entry (which must be of kind `decision`), a decision catalogue
-/// name, else a directory (as given when absolute or `./`, else under
-/// `<root>/models`). A text model's name is refused.
-pub fn resolveModel(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Models, name: []const u8, diag: *config.Diagnostic) ![]const u8 {
-    if (registry.find(name)) |entry| {
-        if (entry.kind != .decision) {
-            diag.set("{s} is a registry entry of a text model; `nuclis decide` opens a decision checkpoint (an entry with \"kind\": \"decision\")", .{name});
-            return error.NotADecisionModel;
-        }
-        const located = if (entry.path) |p| p else if (entry.repo != null and entry.file != null) try std.fs.path.join(arena, &.{ entry.repo.?, entry.file.? }) else {
-            diag.set("models.{s} locates nothing: give it path, or repo and file", .{name});
-            return error.InvalidRegistryEntry;
-        };
-        const full = try models(arena, root, located);
-        // A path to the weights names their directory.
-        return if (std.mem.endsWith(u8, full, ".safetensors")) std.fs.path.dirname(full) orelse full else full;
-    }
-    if (catalog.findDecision(name)) |entry| return catalog.decisionDirectory(arena, try models(arena, root, ""), entry);
-    if (catalog.find(name) != null) {
-        diag.set("{s} is a text model of the catalogue; `nuclis decide` opens a decision checkpoint (laya)", .{name});
-        return error.NotADecisionModel;
-    }
-    return models(arena, root, name);
-}
-
-fn models(arena: std.mem.Allocator, root: ?[]const u8, path: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(path) or std.mem.startsWith(u8, path, "./") or std.mem.startsWith(u8, path, "../")) return path;
-    const dir = root orelse return error.MissingHome;
-    return std.fs.path.join(arena, &.{ dir, "models", path });
-}
-
-pub const Identity = struct { name: []const u8, repo: ?[]const u8 = null, revision: ?[]const u8 = null };
-
-pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, identity: Identity, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, identity: response.Identity, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const request = try buildRequest(arena, io, o, diag);
-    if (request.states.len > inference.decide.max_states or request.questions.len > inference.decide.max_questions) {
-        diag.set("at most {d} states and {d} questions per call; this request has {d} and {d}", .{ inference.decide.max_states, inference.decide.max_questions, request.states.len, request.questions.len });
-        return error.RequestTooLarge;
-    }
-    for (request.ids, request.questions) |id, q| if (q.texts.len > inference.decide.max_options) {
-        diag.set("question {s}: {d} options, at most {d}", .{ id, q.texts.len, inference.decide.max_options });
-        return error.TooManyOptions;
-    };
+    try wire.checkLimits(request, diag);
 
     const started = std.Io.Clock.awake.now(io);
     var decider = Decider.open(gpa, io, directory, o.backend orelse inference.decide.default_backend) catch |err| {
@@ -349,8 +224,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, identity: 
     defer decider.deinit(io);
     const load_ns: u64 = @intCast(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds());
     var timings: inference.decide.Timings = .{};
-    const states = try arena.alloc(inference.decide.State, request.states.len);
-    for (states, request.states) |*s, l| s.* = l.state;
+    const states = try wire.decisionStates(arena, request);
     const results = decider.decide(arena, io, states, request.questions, .{ .uncalibrated = o.uncalibrated }, &timings) catch |err| switch (err) {
         error.OptionsExceedBudget => {
             diag.set("a question's options do not fit in {d} tokens; shorten them or ask fewer", .{decider.config.budget.max_len});
@@ -359,83 +233,25 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, identity: 
         else => return err,
     };
     const report: Report = .{ .request = request, .results = results, .identity = identity, .decider = &decider, .load_ns = load_ns, .timings = timings, .options = o };
-    if (o.json) return report.writeJson(out);
+    if (o.json) return response.write(out, .{ .request = request, .results = results, .identity = identity, .load_ns = load_ns, .timings = timings, .explain = o.explain });
     try report.writeText(arena, out, sty);
 }
 
 const Report = struct {
     request: Request,
     results: []const inference.decide.StateResult,
-    identity: Identity,
+    identity: response.Identity,
     decider: *const Decider,
     load_ns: u64,
     timings: inference.decide.Timings,
     options: Options,
 
-    fn ms(ns: u64) f64 {
-        return @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
-    }
-
-    fn writeJson(self: Report, out: *std.Io.Writer) !void {
-        var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
-        try s.beginObject();
-        try s.objectField("schema_version");
-        try s.write(schema_version);
-        try s.objectField("model");
-        try s.write(self.identity.name);
-        try s.objectField("repo");
-        try s.write(self.identity.repo);
-        try s.objectField("revision");
-        try s.write(self.identity.revision);
-        try s.objectField("timings_ms");
-        try s.beginObject();
-        try s.objectField("load");
-        try s.write(round1(ms(self.load_ns)));
-        try s.objectField("tokenize");
-        try s.write(round1(ms(self.timings.tokenize_ns)));
-        try s.objectField("encode");
-        try s.write(round1(ms(self.timings.encode_ns)));
-        try s.endObject();
-        try s.objectField("results");
-        try s.beginArray();
-        for (self.results, self.request.states) |result, labeled| {
-            try s.beginObject();
-            try s.objectField("answers");
-            try s.beginObject();
-            for (self.request.ids, self.request.questions, result.answers) |id, q, a| {
-                try s.objectField(id);
-                try writeAnswer(&s, q, a, self.options.explain);
-            }
-            try s.endObject();
-            try s.objectField("usage");
-            try s.beginObject();
-            try s.objectField("input_tokens");
-            try s.write(result.input_tokens);
-            try s.objectField("output_tokens");
-            try s.write(0);
-            try s.endObject();
-            try s.objectField("nuclis");
-            try s.beginObject();
-            try s.objectField("state");
-            try s.write(labeled.label);
-            try s.objectField("state_tokens");
-            try s.write(result.state_tokens);
-            try s.objectField("truncated");
-            try s.write(result.truncated);
-            try s.endObject();
-            try s.endObject();
-        }
-        try s.endArray();
-        try s.endObject();
-        try out.writeByte('\n');
-    }
-
     fn writeText(self: Report, arena: std.mem.Allocator, out: *std.Io.Writer, sty: style.Style) !void {
         const off = sty.off();
         try out.print("{s}{s}{s} {s}· {d} state{s} · {d} question{s} · load {d:.1} s · tokenize {d:.0} ms · encode {d:.0} ms{s}\n", .{
-            sty.on(.header),         self.identity.name,                     off,                        sty.on(.dim),
-            self.results.len,        if (self.results.len == 1) "" else "s", self.request.ids.len,       if (self.request.ids.len == 1) "" else "s",
-            ms(self.load_ns) / 1000, ms(self.timings.tokenize_ns),           ms(self.timings.encode_ns), off,
+            sty.on(.header),                  self.identity.name,                     off,                                 sty.on(.dim),
+            self.results.len,                 if (self.results.len == 1) "" else "s", self.request.ids.len,                if (self.request.ids.len == 1) "" else "s",
+            response.ms(self.load_ns) / 1000, response.ms(self.timings.tokenize_ns),  response.ms(self.timings.encode_ns), off,
         });
         if (self.results.len == 1) {
             const result = self.results[0];
@@ -490,10 +306,6 @@ const Report = struct {
         try out.print("\n   {s}decoded{s} {s}{s}{s}\n", .{ sty.on(.label), off, sty.on(.dim), decoded, off });
     }
 };
-
-fn round1(x: f64) f64 {
-    return @round(x * 10) / 10;
-}
 
 /// What ranks states: P(true), the expected score, or the first option's probability.
 fn rankKey(kind: profile.Kind, a: inference.decide.Answer) f64 {
@@ -564,67 +376,6 @@ fn optionLabel(q: profile.Question, key: []const u8, i: usize) []const u8 {
     return key;
 }
 
-fn writeAnswer(s: *std.json.Stringify, q: profile.Question, a: inference.decide.Answer, explain: bool) !void {
-    const c = a.calibrated;
-    try s.beginObject();
-    try s.objectField("type");
-    try s.write(@tagName(q.kind));
-    switch (q.kind) {
-        .choice => {
-            try s.objectField("choice");
-            try s.write(q.keys[c.best]);
-        },
-        .score => {
-            try s.objectField("score");
-            try s.write(profile.round4(c.value));
-            try s.objectField("legend");
-            try s.beginObject();
-            for (q.keys, q.legend) |key, value| {
-                try s.objectField(key);
-                try s.write(value);
-            }
-            try s.endObject();
-        },
-        .noul => {
-            try s.objectField("noul");
-            try s.write(profile.round4(c.value));
-        },
-    }
-    if (q.kind != .noul) {
-        try s.objectField("probabilities");
-        try s.beginObject();
-        for (q.keys, c.probabilities) |key, p| {
-            try s.objectField(key);
-            try s.write(profile.round4(p));
-        }
-        try s.endObject();
-    }
-    // Jev's fields at the top (a noul has no confidence there); the
-    // package's `answer_confidence` and the rest under `nuclis`.
-    if (q.kind != .noul) {
-        try s.objectField("confidence");
-        try s.write(profile.round4(c.confidence));
-    }
-    try s.objectField("nuclis");
-    try s.beginObject();
-    try s.objectField("answer_confidence");
-    try s.write(profile.round4(c.answer_confidence));
-    try s.objectField("logits");
-    try s.write(a.logits);
-    try s.objectField("temperature");
-    try s.write(c.temperature);
-    try s.objectField("bucket");
-    try s.write(a.bucket);
-    if (explain) {
-        try s.objectField("sequence_tokens");
-        try s.write(a.sequence.ids.len);
-        try s.objectField("state_kept");
-        try s.write(a.sequence.state_kept);
-    }
-    try s.endObject();
-    try s.endObject();
-}
-
 test "arguments: tiers, attachment, and conflicts" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -667,24 +418,4 @@ test "inline questions build the package's definitions" {
     try std.testing.expectEqualStrings("true: yes, the statement holds", request.questions[2].texts[1]);
     const twice = [_][]const u8{ "--noul", "a", "--noul", "b", "--state", "s" };
     try std.testing.expectError(error.DuplicateQuestion, buildRequest(arena, std.testing.io, try parseArgs(arena, &twice, &diag), &diag));
-}
-
-test "model names resolve: decision entries, the catalogue, paths; text models refused" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var diag: config.Diagnostic = .{};
-    const registry: config.Models = .{ .entries = &.{
-        .{ .name = "multi", .entry = .{ .kind = .decision, .repo = "convaiinnovations/laya", .file = "multilingual/model.safetensors" } },
-        .{ .name = "local", .entry = .{ .kind = .decision, .path = "/data/laya" } },
-        .{ .name = "qwen", .entry = .{ .repo = "unsloth/Qwen3.8-27B-GGUF", .file = "Qwen3.8-27B-UD-Q4_K_M.gguf" } },
-    } };
-    try std.testing.expectEqualStrings("/r/models/convaiinnovations/laya", try resolveModel(arena, "/r", registry, "laya", &diag));
-    try std.testing.expectEqualStrings("/r/models/convaiinnovations/laya/multilingual", try resolveModel(arena, "/r", registry, "multi", &diag));
-    try std.testing.expectEqualStrings("/data/laya", try resolveModel(arena, "/r", registry, "local", &diag));
-    try std.testing.expectEqualStrings("/r/models/me/finetune", try resolveModel(arena, "/r", registry, "me/finetune", &diag));
-    try std.testing.expectEqualStrings("./here", try resolveModel(arena, null, registry, "./here", &diag));
-    try std.testing.expectError(error.NotADecisionModel, resolveModel(arena, "/r", registry, "qwen", &diag));
-    try std.testing.expectError(error.NotADecisionModel, resolveModel(arena, "/r", registry, "qwen3.8-27b", &diag));
-    try std.testing.expectError(error.MissingHome, resolveModel(arena, null, registry, "laya", &diag));
 }

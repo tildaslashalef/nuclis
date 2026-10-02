@@ -19,6 +19,7 @@ const catalog = @import("catalog.zig");
 const help_text = @import("help.zig");
 const completion = @import("completion.zig");
 const decide = @import("decide.zig");
+const decision_catalog = @import("decision/catalog.zig");
 
 // Fed from build.zig.zon through the build_options module (see build.zig);
 // never edit a version string here.
@@ -727,21 +728,8 @@ fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_pat
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const name = options.model orelse loaded.config.decide.model;
-    const directory = try decide.resolveModel(arena, root, loaded.config.models, name, diag);
-    const weights = try std.fs.path.join(arena, &.{ directory, "model.safetensors" });
-    std.Io.Dir.cwd().access(io, weights, .{}) catch {
-        if (catalog.findDecision(name)) |e|
-            diag.set("{s}: not pulled yet (`nuclis model pull {s}` fetches it, {d} MB)", .{ name, e.name, e.size / 1_000_000 })
-        else
-            diag.set("{s}: no model.safetensors (a Laya checkpoint directory, a decision registry entry, or a decision catalogue name)", .{directory});
-        return error.ModelFileNotFound;
-    };
-    var identity: decide.Identity = .{ .name = name };
-    if (model.readSidecar(arena, io, .cwd(), try model.sidecarPath(arena, weights)) catch null) |sidecar| {
-        identity.repo = sidecar.repo;
-        identity.revision = sidecar.revision;
-    }
-    return decide.run(alloc, io, directory, identity, options, out, sty, diag);
+    const located = try decision_catalog.locate(arena, io, root, loaded.config.models, name, diag);
+    return decide.run(alloc, io, located.directory, located.identity, options, out, sty, diag);
 }
 
 const known_architectures = blk: {
@@ -1126,6 +1114,9 @@ test {
     _ = @import("interrupt.zig");
     _ = style;
     _ = completion;
+    _ = decide;
+    _ = decision_catalog;
+    _ = @import("decision/request.zig");
 }
 
 test "bench parses shared prompt flags and its own repetition flags" {
