@@ -243,6 +243,12 @@ pub const commands = [_]Command{
         .{ .name = "--explain", .summary = "the sequences, budgets, and logits" },
         json,
     } }} },
+    .{ .name = "serve", .summary = "the nuclis API over HTTP", .actions = &.{.{ .flags = &.{
+        .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
+        .{ .name = "--port", .value = .number, .summary = "default 8735" },
+        .{ .name = "--model", .value = .dir, .repeat = true, .summary = "a decision model opened at start" },
+        backend,
+    } }} },
     .{ .name = "config", .summary = "write, show, or set a key of the config file", .actions = &.{
         .{ .name = "init", .summary = "write the file with the defaults", .flags = &.{
             .{ .name = "--discover", .summary = "also register the files found" },

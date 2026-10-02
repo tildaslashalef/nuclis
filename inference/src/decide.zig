@@ -13,7 +13,9 @@ const laya = @import("models/laya.zig");
 
 pub const max_states = 64;
 pub const max_questions = 32;
-pub const max_options = 64;
+/// TypeSafe's limit for a choice; a model whose budget cannot hold that
+/// many refuses the question itself (`OptionsExceedBudget`).
+pub const max_options = 255;
 pub const max_state_bytes = 1024 * 1024;
 const max_tokenizer_bytes = 64 * 1024 * 1024;
 const max_config_bytes = 1024 * 1024;

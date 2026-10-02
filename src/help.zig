@@ -14,7 +14,7 @@ const std = @import("std");
 const style = @import("tui/style.zig");
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, decide, completion };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, decide, serve, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -28,6 +28,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .config => config(out, sty),
         .model => model(out, sty),
         .decide => decide(out, sty),
+        .serve => serve(out, sty),
         .completion => completion(out, sty),
     };
     return overview(out, sty, version);
@@ -127,6 +128,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "validate", "whether a file binds to its architecture's adapter");
     try row(out, sty, "model", "pull, list, and judge Hugging Face Hub artifacts");
     try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
+    try row(out, sty, "serve", "the nuclis API over HTTP: decisions, models kept open");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
     try row(out, sty, "completion", "the shell completion script for fish, bash, or zsh");
 
@@ -407,10 +409,42 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "state (512 tokens in all, 1,024 for laya-multilingual; a longer state is");
     try plain(out, "cut and flagged). Several states rank by the first question: P(true),");
     try plain(out, "the expected score, or the first option's probability. A request's");
-    try plain(out, "\"model\" field is ignored.");
+    try plain(out, "\"model\" field is ignored here; `nuclis serve` reads it.");
     try out.writeByte('\n');
 }
 
+fn serve(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis serve", "the nuclis API: decision models kept open, over HTTP");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]…");
+    try code(out, sty, "             [--backend cpu|metal]");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "--host <ip>", "the address to listen on; default 127.0.0.1 (any");
+    try more(out, "other prints a warning: there is no authentication)");
+    try row(out, sty, "--port <n>", "default 8735");
+    try row(out, sty, "--model <name|path>", "open a decision model at start, at most 2;");
+    try more(out, "others open on first use (2 stay open)");
+    try row(out, sty, "--backend cpu|metal", "default metal");
+
+    try heading(out, sty, "Routes:");
+    try row(out, sty, "POST /v1/decisions", "a `decide --request` body (\"model\" picks the");
+    try more(out, "model); the `decide --json` response; ?explain=1");
+    try row(out, sty, "POST /v1/systemone", "TypeSafe's Jev call: one state, Jev's answers;");
+    try more(out, "\"jev-latest\" (any jev- id) is decide.model");
+    try row(out, sty, "GET /v1/models", "the decision models, OpenAI's list shape");
+    try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis serve --model laya", "listen on 127.0.0.1:8735, laya open");
+    try example(out, sty, "curl -s localhost:8735/v1/decisions -d @ticket.json", "one decision request");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "Requests run on the GPU one at a time in arrival order; a request waits at");
+    try plain(out, "most 30 s to start (then 529 timeout), at most 64 wait (then 529 busy).");
+    try plain(out, "Bodies up to 4 MiB; states are text or JSON, never {\"file\": path}.");
+    try plain(out, "Errors are {\"error\": {\"code\", \"message\"}} with a fitting HTTP status.");
+}
 fn inspect(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis inspect", "what an artifact is");
     try heading(out, sty, "Usage:");

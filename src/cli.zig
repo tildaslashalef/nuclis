@@ -20,13 +20,14 @@ const help_text = @import("help.zig");
 const completion = @import("completion.zig");
 const decide = @import("decide.zig");
 const decision_catalog = @import("decision/catalog.zig");
+const api = @import("api/root.zig");
 
 // Fed from build.zig.zon through the build_options module (see build.zig);
 // never edit a version string here.
 pub const version = @import("build_options").version;
 pub const Diagnostic = config.Diagnostic;
 pub const Options = struct {
-    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, decide, completion, complete },
+    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, decide, serve, completion, complete },
     /// `completion <shell>`: which script to print.
     shell: completion.Shell = .fish,
     /// `__complete <words…>`: the words after `nuclis`, the last one being
@@ -95,6 +96,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
         .model
     else if (std.mem.eql(u8, args[0], "decide"))
         .decide
+    else if (std.mem.eql(u8, args[0], "serve"))
+        .serve
     else if (std.mem.eql(u8, args[0], "completion"))
         .completion
     else
@@ -106,6 +109,7 @@ pub fn parseArgs(args: []const []const u8) !Options {
     }
     if (command == .model) return parseModelArgs(args[1..]);
     if (command == .decide) return .{ .command = .decide, .words = args[1..] };
+    if (command == .serve) return .{ .command = .serve, .words = args[1..] };
     if (command == .completion) {
         if (args.len < 2) return error.MissingShell;
         if (args.len > 2) return error.UnknownOption;
@@ -529,6 +533,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         }
     }
     if (options.command == .decide) return runDecide(alloc, io, root, config_path, options.words, out, sty, diag);
+    if (options.command == .serve) return runServe(alloc, io, root, config_path, options.words, out, sty, diag);
     if (options.command == .agent and options.agent_action == .ls) {
         const dir = root orelse return error.MissingHome;
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
@@ -627,7 +632,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
     (switch (options.command) {
-        .help, .version, .config, .model, .decide, .completion, .complete => unreachable,
+        .help, .version, .config, .model, .decide, .serve, .completion, .complete => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => blk: {
@@ -730,6 +735,16 @@ fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_pat
     const name = options.model orelse loaded.config.decide.model;
     const located = try decision_catalog.locate(arena, io, root, loaded.config.models, name, diag);
     return decide.run(alloc, io, located.directory, located.identity, options, out, sty, diag);
+}
+
+/// `serve`: the API over the decision models the configuration names.
+fn runServe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const options = try api.parseArgs(arena_state.allocator(), words, diag);
+    var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
+    defer loaded.deinit();
+    return api.serve(alloc, io, .{ .root = root, .registry = loaded.config.models, .default_model = loaded.config.decide.model, .version = version }, options, out, sty, diag);
 }
 
 const known_architectures = blk: {
@@ -1117,6 +1132,15 @@ test {
     _ = decide;
     _ = decision_catalog;
     _ = @import("decision/request.zig");
+    _ = @import("decision/tiny.zig");
+    _ = @import("api/http.zig");
+    _ = @import("api/router.zig");
+    _ = @import("api/errors.zig");
+    _ = @import("api/gpu.zig");
+    _ = @import("api/models.zig");
+    _ = @import("api/decisions/pool.zig");
+    _ = @import("api/decisions/service.zig");
+    _ = api;
 }
 
 test "bench parses shared prompt flags and its own repetition flags" {

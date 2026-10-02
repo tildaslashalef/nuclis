@@ -44,7 +44,7 @@ pub fn write(out: *std.Io.Writer, body: Body) std.Io.Writer.Error!void {
     try s.beginArray();
     for (body.results, body.request.states) |result, labeled| {
         try s.beginObject();
-        try writeAnswers(&s, body.request, result, body.explain);
+        try writeAnswers(&s, body.request, result, if (body.explain) .explain else .nuclis);
         try writeUsage(&s, result);
         try s.objectField("nuclis");
         try s.beginObject();
@@ -62,15 +62,16 @@ pub fn write(out: *std.Io.Writer, body: Body) std.Io.Writer.Error!void {
     try out.writeByte('\n');
 }
 
-/// Jev's single-state response, `{model, answers, usage}`: the body of a
-/// client written against TypeSafe's `systemone` call. Asserts one state.
+/// Jev's single-state response, `{model, answers, usage}`, each answer with
+/// Jev's fields only: the body of a client written against TypeSafe's
+/// `systemone` call. Asserts one state.
 pub fn writeSystemOne(out: *std.Io.Writer, body: Body) std.Io.Writer.Error!void {
     std.debug.assert(body.results.len == 1);
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("model");
     try s.write(body.identity.name);
-    try writeAnswers(&s, body.request, body.results[0], body.explain);
+    try writeAnswers(&s, body.request, body.results[0], .jev);
     try writeUsage(&s, body.results[0]);
     try s.endObject();
     try out.writeByte('\n');
@@ -85,12 +86,16 @@ fn writeIdentity(s: *std.json.Stringify, identity: Identity) !void {
     try s.write(identity.revision);
 }
 
-fn writeAnswers(s: *std.json.Stringify, request: request_mod.Request, result: decide.StateResult, explain: bool) !void {
+/// What an answer carries beyond Jev's fields: nothing, the `nuclis`
+/// object, or that object with the sequence's sizes.
+const Detail = enum { jev, nuclis, explain };
+
+fn writeAnswers(s: *std.json.Stringify, request: request_mod.Request, result: decide.StateResult, detail: Detail) !void {
     try s.objectField("answers");
     try s.beginObject();
     for (request.ids, request.questions, result.answers) |id, q, a| {
         try s.objectField(id);
-        try writeAnswer(s, q, a, explain);
+        try writeAnswer(s, q, a, detail);
     }
     try s.endObject();
 }
@@ -105,7 +110,7 @@ fn writeUsage(s: *std.json.Stringify, result: decide.StateResult) !void {
     try s.endObject();
 }
 
-fn writeAnswer(s: *std.json.Stringify, q: profile.Question, a: decide.Answer, explain: bool) !void {
+fn writeAnswer(s: *std.json.Stringify, q: profile.Question, a: decide.Answer, detail: Detail) !void {
     const c = a.calibrated;
     try s.beginObject();
     try s.objectField("type");
@@ -146,6 +151,7 @@ fn writeAnswer(s: *std.json.Stringify, q: profile.Question, a: decide.Answer, ex
         try s.objectField("confidence");
         try s.write(profile.round4(c.confidence));
     }
+    if (detail == .jev) return s.endObject();
     try s.objectField("nuclis");
     try s.beginObject();
     try s.objectField("answer_confidence");
@@ -156,7 +162,7 @@ fn writeAnswer(s: *std.json.Stringify, q: profile.Question, a: decide.Answer, ex
     try s.write(c.temperature);
     try s.objectField("bucket");
     try s.write(a.bucket);
-    if (explain) {
+    if (detail == .explain) {
         try s.objectField("sequence_tokens");
         try s.write(a.sequence.ids.len);
         try s.objectField("state_kept");
