@@ -420,12 +420,15 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try code(out, sty, "             [--backend cpu|metal]");
 
     try heading(out, sty, "Options:");
-    try row(out, sty, "--host <ip>", "the address to listen on; default 127.0.0.1 (any");
-    try more(out, "other prints a warning: there is no authentication)");
-    try row(out, sty, "--port <n>", "default 8735");
+    try row(out, sty, "--host <ip>", "the address to listen on; default serve.host,");
+    try more(out, "127.0.0.1 (any other prints a warning: there is no");
+    try more(out, "authentication)");
+    try row(out, sty, "--port <n>", "default serve.port, 8000");
     try row(out, sty, "--model <name|path>", "open a decision model at start, at most 2;");
-    try more(out, "others open on first use (2 stay open)");
+    try more(out, "default decide.model; others open on first use");
+    try more(out, "(2 stay open)");
     try row(out, sty, "--backend cpu|metal", "default metal");
+    try row(out, sty, "--quiet", "no line per request (serve.log false does the same)");
 
     try heading(out, sty, "Routes:");
     try row(out, sty, "POST /v1/decisions", "a `decide --request` body (\"model\" picks the");
@@ -436,8 +439,8 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis serve --model laya", "listen on 127.0.0.1:8735, laya open");
-    try example(out, sty, "curl -s localhost:8735/v1/decisions -d @ticket.json", "one decision request");
+    try example(out, sty, "nuclis serve", "listen on 127.0.0.1:8000, decide.model open");
+    try example(out, sty, "curl -s localhost:8000/v1/decisions -d @ticket.json", "one decision request");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Requests run on the GPU one at a time in arrival order; a request waits at");

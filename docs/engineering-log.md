@@ -163,6 +163,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-18 | The agent's `decide` tool: dropped before it started; decision models are served by `nuclis serve` | 2026-10-02 |
 | KERN-22 | Long-context decode attention: dropped before it started, a small win at 32K only | 2026-10-02 |
 | APPS-19 | `nuclis serve`, the nuclis API: decisions over HTTP, TypeSafe's Jev call, batched across requests (1.24–1.30×, the model's packing ceiling); closed below its throughput target | 2026-10-02 |
+| APPS-20 | `nuclis serve` configured and logged: the `serve` section (host, port 8000, log), the default model opened at start, a coloured line per request | 2026-10-02 |
 
 ## Context
 
@@ -7119,3 +7120,54 @@ encode, which is what batching now waits on. Idle keep-alive connections
 hold one of the 64 slots until the client closes (the standard library's
 socket reads have no timeout); a slow client can do the same. No
 authentication: loopback by default, a warning otherwise.
+
+## APPS-20 — `nuclis serve` configured and logged: the `serve` section, port 8000, the default model at start, a line per request (2026-10-02)
+
+**Outcome.** Asked by the user after APPS-19 closed.
+
+- **Configuration.** `nuclis.json` gains a `serve` section: `host`
+  (default `127.0.0.1`), `port` (default 8000, was the hard-coded 8735),
+  `log` (default `true`); `--host`, `--port`, and the new `--quiet`
+  override them for a run. A narrow integer key's error names its range
+  (`serve.port must be an integer 0..65535`). `config show` lists the
+  keys with their source; completion offers them.
+- **The default model opens at start.** Without `--model`, `nuclis serve`
+  opens `decide.model`, so the first request pays nothing; a default that
+  is not pulled is a warning and the server still serves.
+- **The request log** (`src/api/log.zig`): the transport writes one line
+  per response, the transport's own refusals and the connection limit's
+  `busy` included: local time, method, path, status (green below 300,
+  orange below 500, red above), latency, size, and a note: the decision
+  service's model, states × questions, tokens, the pass it shared, and
+  the open it paid for; an error's code and message. Lines are formatted
+  on the caller's stack and written whole under one lock. Local time is
+  libc's offset, read once at start (Darwin always links libSystem; UTC
+  elsewhere).
+- **The user's machine.** `make install` put the new binary at
+  `~/.local/bin/nuclis` (completion is answered by the binary, so it is
+  current); the user's `~/.nuclis/nuclis.json` was given the `serve`
+  section and `decide.model: laya-multilingual` with `config set`, at the
+  user's request. The project's default stays `laya`.
+
+**Evidence.** The fresh binary in tmux (`scripts/tui-shot.py`,
+`.zig-cache/tui/serve-log.{txt,tagged.txt}`): health, models, systemone,
+decisions, a model opened on first use (`opened in 144 ms`), 422, 404,
+405, 413, and eight concurrent requests (six in one pass, `pass of 6`),
+each line coloured as above. Under a scratch `NUCLIS_HOME`: `config set
+serve.port 70000` refused with the range, `9100` listened on, `--port
+9200` over it, `serve.host example.com` refused naming both sources, an
+unpulled default warned and served. With the user's configuration, `nuclis
+serve` opened laya-multilingual (377 ms, ReleaseSafe) and answered a
+`jev-latest` request with it. Unit tests: the log line's format, the
+`serve` keys from a file and their errors, `--quiet` and the configured
+defaults; `make check` passed (637 tests).
+
+**Files.** `src/api/{log,http,root}.zig`, `src/api/decisions/service.zig`,
+`src/config.zig`, `src/cli.zig`, `src/help.zig`, `src/completion.zig`;
+`docs/reference/api.md`, `docs/{architecture,spec,development}.md`,
+`README.md`, `TODO.md`, and this log.
+
+**Remaining.** The log has no file sink or rotation (redirect stdout);
+benchmarks run with `--quiet`, since a line per response is written and
+flushed. The rates in api.md were measured on port 8735 before the log
+existed.

@@ -141,8 +141,8 @@ that arrive together share a GPU pass. Routes, errors, and rates:
 [docs/reference/api.md](docs/reference/api.md).
 
 ```sh
-nuclis serve --model laya
-curl -s localhost:8735/v1/systemone -d '{"model": "jev-latest",
+nuclis serve
+curl -s localhost:8000/v1/systemone -d '{"model": "jev-latest",
   "state": "Help! My payouts have been failing for 3 days.",
   "questions": {"is_urgent": {"type": "noul", "instructions": "Does this convey urgency?"}}}'
 ```

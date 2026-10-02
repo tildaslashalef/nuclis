@@ -14,9 +14,8 @@ const gpu = @import("gpu.zig");
 const models = @import("models.zig");
 const router_mod = @import("router.zig");
 const decisions = @import("decisions/service.zig");
+const log_mod = @import("log.zig");
 const batcher = @import("decisions/batcher.zig");
-
-pub const default_port: u16 = 8735;
 
 /// Host constants; a client never chooses them.
 pub const limits = struct {
@@ -26,21 +25,31 @@ pub const limits = struct {
     pub const write_buffer = 16 * 1024;
 };
 
+/// Defaults come from the configuration's `serve` section; the flags
+/// override them.
 pub const Options = struct {
-    host: []const u8 = "127.0.0.1",
-    port: u16 = default_port,
-    /// Opened at start, in order; others open on first use.
+    host: []const u8,
+    port: u16,
+    /// A line per request on stdout.
+    log: bool,
+    /// Opened at start, in order (the default model when none is named);
+    /// others open on first use.
     models: std.ArrayList([]const u8) = .empty,
     backend: ?inference.decide.Backend = null,
 };
 
-/// Parses the words after `serve`; `arena` owns the list.
-pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *config.Diagnostic) !Options {
-    var o: Options = .{};
+/// Parses the words after `serve` over `serve`'s configured `host` and
+/// `port`; `arena` owns the list.
+pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured: config.Config.Serve, diag: *config.Diagnostic) !Options {
+    var o: Options = .{ .host = configured.host, .port = configured.port, .log = configured.log };
     var seen: struct { host: bool = false, port: bool = false } = .{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const flag = args[i];
+        if (std.mem.eql(u8, flag, "--quiet")) {
+            o.log = false;
+            continue;
+        }
         const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend" }) |k| {
             if (std.mem.eql(u8, flag, k)) break true;
         } else false;
@@ -86,7 +95,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
 fn address(host: []const u8, port: u16, diag: *config.Diagnostic) !std.Io.net.IpAddress {
     if (std.mem.eql(u8, host, "localhost")) return .{ .ip4 = .loopback(port) };
     return std.Io.net.IpAddress.parse(host, port) catch {
-        diag.set("--host takes an IP address (127.0.0.1, ::1, 0.0.0.0) or localhost, not {s}", .{host});
+        diag.set("the host (--host or serve.host) is an IP address (127.0.0.1, ::1, 0.0.0.0) or localhost, not {s}", .{host});
         return error.InvalidOptionValue;
     };
 }
@@ -108,6 +117,7 @@ const Server = struct {
     backend: inference.decide.Backend,
     version: []const u8,
     active: std.atomic.Value(u32) = .init(0),
+    log: ?*log_mod.Log = null,
 
     fn register(self: *Server) !void {
         try self.decisions.register(self.gpa, &self.router, &self.listing);
@@ -143,7 +153,7 @@ const Server = struct {
         var write_buffer: [limits.write_buffer]u8 = undefined;
         var reader = stream.reader(io, &read_buffer);
         var writer = stream.writer(io, &write_buffer);
-        http.serve(self.gpa, io, &reader.interface, &writer.interface, self.router.handler(), limits.transport);
+        http.serve(self.gpa, io, &reader.interface, &writer.interface, self.router.handler(), limits.transport, self.log);
     }
 };
 
@@ -220,12 +230,23 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
 
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    for (options.models.items) |name| {
+    // Without --model the default opens, so the first request pays nothing;
+    // a default that is not pulled is reported, and the server still runs.
+    const named = options.models.items.len > 0;
+    const opening: []const []const u8 = if (named) options.models.items else &.{context.default_model};
+    for (opening) |name| {
         const started = std.Io.Clock.awake.now(io);
-        try server.decisions.preload(arena_state.allocator(), io, name, diag);
+        server.decisions.preload(arena_state.allocator(), io, name, diag) catch |err| {
+            if (named) return err;
+            try out.print("{s}warning:{s} the default model {s} did not open ({s}); requests for it will say why\n", .{ sty.on(.warning), sty.off(), name, diag.message() });
+            continue;
+        };
         const ms = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_ms;
         try out.print("{s}opened{s} {s} {s}({d:.0} ms){s}\n", .{ sty.on(.success), sty.off(), name, sty.on(.dim), ms, sty.off() });
     }
+
+    var log: log_mod.Log = .init(out, sty, io);
+    if (options.log) server.log = &log;
 
     var listener = listen_address.listen(io, .{ .reuse_address = true, .kernel_backlog = 128 }) catch |err| {
         diag.set("cannot listen on {f}: {s}", .{ listen_address, @errorName(err) });
@@ -234,7 +255,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     defer listener.deinit(io);
     if (!isLoopback(listen_address))
         try out.print("{s}warning:{s} listening beyond this machine ({s}); the API has no authentication\n", .{ sty.on(.warning), sty.off(), options.host });
-    try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default model {s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, sty.off() });
+    try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default model {s}{s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, if (options.log) "" else ", quiet", sty.off() });
     try out.flush();
 
     var group: std.Io.Group = .init;
@@ -253,15 +274,15 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
             },
         };
         if (server.active.fetchAdd(1, .monotonic) >= limits.connections) {
-            refuse(io, stream, &server.active);
+            refuse(io, stream, &server.active, server.log);
             continue;
         }
-        group.concurrent(io, Server.connection, .{ &server, io, stream }) catch refuse(io, stream, &server.active);
+        group.concurrent(io, Server.connection, .{ &server, io, stream }) catch refuse(io, stream, &server.active, server.log);
     }
 }
 
 /// Answers `busy` and closes: over the connection limit, or no task to run it.
-fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32)) void {
+fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32), log: ?*log_mod.Log) void {
     defer {
         stream.close(io);
         _ = active.fetchSub(1, .monotonic);
@@ -270,8 +291,10 @@ fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32))
     var writer = stream.writer(io, &buffer);
     var body_buffer: [256]u8 = undefined;
     var body: std.Io.Writer = .fixed(&body_buffer);
-    errors.write(&body, .init(http.overloaded, "busy", "too many connections; retry shortly")) catch return;
+    const refusal: errors.ApiError = .init(http.overloaded, "busy", "too many connections; retry shortly");
+    errors.write(&body, refusal) catch return;
     http.writeClosing(&writer.interface, http.overloaded, body.buffered()) catch {};
+    if (log) |l| l.request(io, .{ .method = null, .path = "-", .status = http.overloaded, .duration_ns = 0, .bytes_out = body.buffered().len, .note = "busy: too many connections" });
 }
 
 test "serve arguments" {
@@ -279,12 +302,18 @@ test "serve arguments" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var diag: config.Diagnostic = .{};
-    const o = try parseArgs(arena, &.{ "--port", "9000", "--model", "laya", "--model", "laya-multilingual", "--backend", "cpu", "--host", "0.0.0.0" }, &diag);
+    const configured: config.Config.Serve = .{};
+    const o = try parseArgs(arena, &.{ "--port", "9000", "--model", "laya", "--model", "laya-multilingual", "--backend", "cpu", "--host", "0.0.0.0", "--quiet" }, configured, &diag);
+    try std.testing.expect(!o.log);
     try std.testing.expectEqual(@as(u16, 9000), o.port);
     try std.testing.expectEqual(@as(usize, 2), o.models.items.len);
     try std.testing.expectEqual(inference.decide.Backend.cpu, o.backend.?);
     try std.testing.expectEqualStrings("0.0.0.0", o.host);
-    try std.testing.expectEqual(default_port, (try parseArgs(arena, &.{}, &diag)).port);
+    const defaults = try parseArgs(arena, &.{}, configured, &diag);
+    try std.testing.expectEqual(@as(u16, 8000), defaults.port);
+    try std.testing.expectEqualStrings("127.0.0.1", defaults.host);
+    try std.testing.expect(defaults.log);
+    try std.testing.expectEqual(@as(u16, 9001), (try parseArgs(arena, &.{}, .{ .host = "::1", .port = 9001 }, &diag)).port);
     const cases = .{
         .{ &[_][]const u8{ "--port", "70000" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--backend", "tpu" }, error.InvalidOptionValue },
@@ -293,7 +322,7 @@ test "serve arguments" {
         .{ &[_][]const u8{"--json"}, error.UnknownOption },
         .{ &[_][]const u8{"--host"}, error.MissingOptionValue },
     };
-    inline for (cases) |case| try std.testing.expectError(case[1], parseArgs(arena, case[0], &diag));
+    inline for (cases) |case| try std.testing.expectError(case[1], parseArgs(arena, case[0], configured, &diag));
     try std.testing.expect(isLoopback(try address("localhost", 1, &diag)));
     try std.testing.expect(isLoopback(try address("::1", 1, &diag)));
     try std.testing.expect(!isLoopback(try address("0.0.0.0", 1, &diag)));

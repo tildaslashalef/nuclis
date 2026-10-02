@@ -3,9 +3,11 @@
 //! connection's arena, handed to a `Handler`, and answered with
 //! `Content-Length` in one flush. Knows no route and no model; transport
 //! failures answer with the shared error body and close. The arena is reset
-//! after every response, so nothing of a request outlives it.
+//! after every response, so nothing of a request outlives it. Every
+//! response is logged when a log is given.
 const std = @import("std");
 const errors = @import("errors.zig");
+const log_mod = @import("log.zig");
 
 /// TypeSafe's "overloaded", which Jev clients retry with backoff; no
 /// standard code says "the queue is full, come back" as plainly.
@@ -47,9 +49,11 @@ pub const Response = struct {
     content_type: []const u8 = "application/json",
     /// Ask the transport to close the connection after this response.
     close: bool = false,
+    /// One line for the log: what was done, or the error.
+    note: []const u8 = "",
 
     pub fn fromError(arena: std.mem.Allocator, err: errors.ApiError) Response {
-        return .{ .status = err.status, .body = errors.body(arena, err) };
+        return .{ .status = err.status, .body = errors.body(arena, err), .note = noteOf(arena, err) };
     }
 };
 
@@ -60,10 +64,14 @@ pub const Handler = struct {
     handle: *const fn (context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: Request) Response,
 };
 
+pub fn noteOf(arena: std.mem.Allocator, err: errors.ApiError) []const u8 {
+    return std.fmt.allocPrint(arena, "{s}: {s}", .{ err.code, err.message }) catch err.code;
+}
+
 /// Serves requests from `in` until the client closes, asks to close, or a
 /// transport failure ends the connection. `in`'s buffer holds the head, so
 /// the head limit is the smaller of `limits.max_head` and that buffer.
-pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.Io.Writer, handler: Handler, limits: Limits) void {
+pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.Io.Writer, handler: Handler, limits: Limits, log: ?*log_mod.Log) void {
     var server = std.http.Server.init(in, out);
     server.reader.max_head_len = @min(limits.max_head, in.buffer.len);
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -73,22 +81,28 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.I
         // what the previous one allocated.
         _ = arena_state.reset(.{ .retain_with_limit = 256 * 1024 });
         const arena = arena_state.allocator();
-        if (!serveOne(arena, io, &server, handler, limits)) return;
+        if (!serveOne(arena, io, &server, handler, limits, log)) return;
     }
 }
 
 /// One request and its response; false when the connection is done.
-fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, handler: Handler, limits: Limits) bool {
+fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, handler: Handler, limits: Limits, log: ?*log_mod.Log) bool {
     var request = server.receiveHead() catch |err| {
-        switch (err) {
-            error.HttpConnectionClosing, error.HttpRequestTruncated, error.ReadFailed => {},
-            error.HttpHeadersOversize => writeRaw(server.out, arena, .init(.request_header_fields_too_large, "headers_too_large", "the request line and headers exceed the limit")),
-            error.HttpHeadersInvalid => writeRaw(server.out, arena, .init(.bad_request, "bad_request", "malformed HTTP request")),
+        const refusal: ?errors.ApiError = switch (err) {
+            error.HttpConnectionClosing, error.HttpRequestTruncated, error.ReadFailed => null,
+            error.HttpHeadersOversize => .init(.request_header_fields_too_large, "headers_too_large", "the request line and headers exceed the limit"),
+            error.HttpHeadersInvalid => .init(.bad_request, "bad_request", "malformed HTTP request"),
+        };
+        if (refusal) |r| {
+            const body = errors.body(arena, r);
+            writeClosing(server.out, r.status, body) catch {};
+            if (log) |l| l.request(io, .{ .method = null, .path = "-", .status = r.status, .duration_ns = 0, .bytes_out = body.len, .note = noteOf(arena, r) });
         }
         return false;
     };
+    var exchange: Exchange = .{ .request = &request, .arena = arena, .io = io, .log = log, .started = std.Io.Clock.awake.now(io), .method = request.head.method };
     // The head's strings die when the body is read: copy what is kept.
-    const target = arena.dupe(u8, request.head.target) catch return fail(&request, arena, .init(.internal_server_error, "internal", "out of memory"));
+    const target = arena.dupe(u8, request.head.target) catch return exchange.fail(.init(.internal_server_error, "internal", "out of memory"));
     const question = std.mem.indexOfScalar(u8, target, '?');
     var parsed: Request = .{
         .method = request.head.method,
@@ -96,57 +110,73 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         .query = if (question) |q| target[q + 1 ..] else "",
         .body = "",
     };
+    exchange.path = parsed.path;
     if (request.head.transfer_compression != .identity)
-        return fail(&request, arena, .init(.unsupported_media_type, "unsupported_encoding", "compressed request bodies are not accepted"));
+        return exchange.fail(.init(.unsupported_media_type, "unsupported_encoding", "compressed request bodies are not accepted"));
     if (request.head.method.requestHasBody()) {
         if (request.head.content_length) |length| if (length > limits.max_body)
-            return fail(&request, arena, .init(.payload_too_large, "payload_too_large", "the request body exceeds the limit"));
+            return exchange.fail(.init(.payload_too_large, "payload_too_large", "the request body exceeds the limit"));
         // HTTP/1.1: a request with neither length nor chunking has no body.
         if (request.head.transfer_encoding == .none and request.head.content_length == null) request.head.content_length = 0;
         const body_reader = request.readerExpectContinue(&.{}) catch |err| return switch (err) {
             error.HttpExpectationFailed => blk: {
                 // `respond` would refuse the expectation again.
                 request.head.expect = null;
-                break :blk fail(&request, arena, .init(.expectation_failed, "bad_request", "unsupported Expect header"));
+                break :blk exchange.fail(.init(.expectation_failed, "bad_request", "unsupported Expect header"));
             },
             error.WriteFailed => false,
         };
         parsed.body = body_reader.allocRemaining(arena, .limited(limits.max_body)) catch |err| return switch (err) {
-            error.StreamTooLong => fail(&request, arena, .init(.payload_too_large, "payload_too_large", "the request body exceeds the limit")),
-            error.OutOfMemory => fail(&request, arena, .init(.internal_server_error, "internal", "out of memory")),
+            error.StreamTooLong => exchange.fail(.init(.payload_too_large, "payload_too_large", "the request body exceeds the limit")),
+            error.OutOfMemory => exchange.fail(.init(.internal_server_error, "internal", "out of memory")),
             error.ReadFailed => false,
         };
     }
     const response = handler.handle(handler.context, arena, io, parsed);
-    return respond(&request, response) and !response.close;
+    return exchange.respond(response) and !response.close;
 }
 
-/// An error response that ends the connection: the request may not have
-/// been read whole.
-fn fail(request: *std.http.Server.Request, arena: std.mem.Allocator, err: errors.ApiError) bool {
-    var response: Response = .fromError(arena, err);
-    response.close = true;
-    _ = respond(request, response);
-    return false;
-}
+/// One request's response, written and logged.
+const Exchange = struct {
+    request: *std.http.Server.Request,
+    arena: std.mem.Allocator,
+    io: std.Io,
+    log: ?*log_mod.Log,
+    started: std.Io.Timestamp,
+    method: std.http.Method,
+    path: []const u8 = "?",
 
-fn respond(request: *std.http.Server.Request, response: Response) bool {
-    request.respond(response.body, .{
-        // An HTTP/1.0 client keeps the connection only when told so.
-        .version = request.head.version,
-        .status = response.status,
-        .reason = reason(response.status),
-        .keep_alive = !response.close,
-        .extra_headers = &.{.{ .name = "content-type", .value = response.content_type }},
-    }) catch return false;
-    return request.head.keep_alive and !response.close;
-}
+    /// An error response that ends the connection: the request may not
+    /// have been read whole.
+    fn fail(self: *Exchange, err: errors.ApiError) bool {
+        var response: Response = .fromError(self.arena, err);
+        response.close = true;
+        _ = self.respond(response);
+        return false;
+    }
 
-/// A response before any request exists (the head failed to parse); the
-/// connection closes after it.
-fn writeRaw(out: *std.Io.Writer, arena: std.mem.Allocator, err: errors.ApiError) void {
-    writeClosing(out, err.status, errors.body(arena, err)) catch {};
-}
+    /// Whether the connection stays open.
+    fn respond(self: *Exchange, response: Response) bool {
+        const request = self.request;
+        const sent = if (request.respond(response.body, .{
+            // An HTTP/1.0 client keeps the connection only when told so.
+            .version = request.head.version,
+            .status = response.status,
+            .reason = reason(response.status),
+            .keep_alive = !response.close,
+            .extra_headers = &.{.{ .name = "content-type", .value = response.content_type }},
+        })) |_| true else |_| false;
+        if (self.log) |l| l.request(self.io, .{
+            .method = self.method,
+            .path = self.path,
+            .status = response.status,
+            .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())),
+            .bytes_out = response.body.len,
+            .note = response.note,
+        });
+        return sent and request.head.keep_alive and !response.close;
+    }
+};
 
 /// A whole response with `connection: close`, outside any request: the
 /// transport's refusals and the accept loop's `busy`.
@@ -170,14 +200,14 @@ const Echo = struct {
 
 /// Serves `input` as a socket would deliver it: through a read buffer of
 /// `limits.max_head` bytes, in pieces of at most 7.
-fn exchange(input: []const u8, limits: Limits, echo: *Echo) ![]u8 {
+fn roundTrip(input: []const u8, limits: Limits, echo: *Echo) ![]u8 {
     const read_buffer = try std.testing.allocator.alloc(u8, limits.max_head);
     defer std.testing.allocator.free(read_buffer);
     var in: std.testing.Reader = .init(read_buffer, &.{.{ .buffer = input }});
     in.artificial_limit = .limited(7);
     var buffer: [64 * 1024]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buffer);
-    serve(std.testing.allocator, std.testing.io, &in.interface, &out, .{ .context = echo, .handle = Echo.handle }, limits);
+    serve(std.testing.allocator, std.testing.io, &in.interface, &out, .{ .context = echo, .handle = Echo.handle }, limits, null);
     return std.testing.allocator.dupe(u8, out.buffered());
 }
 
@@ -194,7 +224,7 @@ test "keep-alive serves every request on the connection, bodies by length and by
         "POST /v1/decisions HTTP/1.1\r\ncontent-length: 5\r\n\r\nhello" ++
         "POST /a HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n" ++
         "POST /empty HTTP/1.1\r\nconnection: close\r\n\r\n";
-    const output = try exchange(input, .{ .max_head = 1024 }, &echo);
+    const output = try roundTrip(input, .{ .max_head = 1024 }, &echo);
     defer std.testing.allocator.free(output);
     try std.testing.expectEqual(@as(usize, 4), echo.calls);
     try expectContains(output, &.{ "GET /v1/health q=explain=1 explain=1 body=", "POST /v1/decisions q= explain=- body=hello", "POST /a q= explain=- body=abcde", "POST /empty q= explain=- body=", "content-type: text/plain", "connection: close" });
@@ -214,7 +244,7 @@ test "oversized heads and bodies, malformed requests: an error body, then close"
     for (cases) |case| {
         errdefer std.debug.print("case: {s}\n", .{case.input[0..@min(case.input.len, 60)]});
         var echo: Echo = .{};
-        const output = try exchange(case.input, .{ .max_head = 256, .max_body = 100 }, &echo);
+        const output = try roundTrip(case.input, .{ .max_head = 256, .max_body = 100 }, &echo);
         defer std.testing.allocator.free(output);
         try std.testing.expectEqual(@as(usize, 0), echo.calls);
         try std.testing.expect(std.mem.startsWith(u8, output, "HTTP/1.1 "));
@@ -225,7 +255,7 @@ test "oversized heads and bodies, malformed requests: an error body, then close"
 
 test "an HTTP/1.0 client is answered in 1.0, kept alive only when it asks" {
     var echo: Echo = .{};
-    const output = try exchange("GET /a HTTP/1.0\r\nconnection: keep-alive\r\n\r\nGET /b HTTP/1.0\r\n\r\nGET /c HTTP/1.0\r\n\r\n", .{ .max_head = 1024 }, &echo);
+    const output = try roundTrip("GET /a HTTP/1.0\r\nconnection: keep-alive\r\n\r\nGET /b HTTP/1.0\r\n\r\nGET /c HTTP/1.0\r\n\r\n", .{ .max_head = 1024 }, &echo);
     defer std.testing.allocator.free(output);
     try std.testing.expectEqual(@as(usize, 2), echo.calls);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, output, "HTTP/1.0 200 OK"));
@@ -234,10 +264,10 @@ test "an HTTP/1.0 client is answered in 1.0, kept alive only when it asks" {
 
 test "a client that closes mid-head or between requests gets nothing more" {
     var echo: Echo = .{};
-    const empty = try exchange("", .{ .max_head = 256 }, &echo);
+    const empty = try roundTrip("", .{ .max_head = 256 }, &echo);
     defer std.testing.allocator.free(empty);
     try std.testing.expectEqualStrings("", empty);
-    const truncated = try exchange("GET / HTTP/1.1\r\nhost:", .{ .max_head = 256 }, &echo);
+    const truncated = try roundTrip("GET / HTTP/1.1\r\nhost:", .{ .max_head = 256 }, &echo);
     defer std.testing.allocator.free(truncated);
     try std.testing.expectEqualStrings("", truncated);
     try std.testing.expectEqual(@as(usize, 0), echo.calls);

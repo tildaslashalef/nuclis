@@ -19,7 +19,7 @@ it is empty, ask what to work on and write the agreed plan here.
 **Next: MODL-34 session 1** (its section follows this one): clef-flash,
 first pulling its files with `nuclis model pull`. Record its `Base:` at
 the first change. APPS-19 closed 2026-10-02: `nuclis serve` keeps
-decision models open behind the nuclis API on 127.0.0.1:8735
+decision models open behind the nuclis API on 127.0.0.1:8000
 ([api.md](docs/reference/api.md)), TypeSafe's Jev call included, and
 batches requests that wait together (1.24–1.30× at concurrency 16, the
 Laya encode's packing ceiling, below the planned 2×); MODL-34's catalogue

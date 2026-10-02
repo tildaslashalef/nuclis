@@ -23,15 +23,26 @@ same server and is not served yet.
 
 ```sh
 nuclis model pull laya                 # once: the default decision model
-nuclis serve --model laya              # http://127.0.0.1:8735/v1
+nuclis serve                           # http://127.0.0.1:8000/v1, decide.model open
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication. |
-| `--port <n>` | default `8735` |
-| `--model <name>` | a decision model opened before the server listens (at most 2); others open on their first request |
+| `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `serve.host`, `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication. |
+| `--port <n>` | default `serve.port`, `8000` |
+| `--model <name>` | a decision model opened before the server listens (at most 2); without one, `decide.model` opens; others open on their first request |
 | `--backend cpu\|metal` | where the models run; default `metal` in a Metal build |
+| `--quiet` | no request log (`serve.log: false` does the same) |
+
+The configuration file (`~/.nuclis/nuclis.json`) holds the defaults:
+
+```json
+"decide": { "model": "laya" },
+"serve":  { "host": "127.0.0.1", "port": 8000, "log": true }
+```
+
+`nuclis config set serve.port 9000` changes one; the flags override them
+for a run.
 
 A model is named as `nuclis decide --model` names it: a registry entry of
 kind `decision` in `~/.nuclis/nuclis.json`, a decision catalogue name
@@ -42,7 +53,15 @@ third is asked for; opening takes 0.07 s (`laya`) to 0.15 s
 (`laya-multilingual`) on Metal, paid by the request that asks.
 
 Ctrl-C stops the server. It reads no files on a client's behalf and
-writes nothing.
+writes nothing but its log: one line per response on stdout, coloured on
+a terminal (time, method, path, status, latency, size, and what was done
+or the error):
+
+```text
+17:34:35.751 POST   /v1/systemone    200   51.6 ms    175 B  laya · 1 state × 1 question · 43 tokens
+17:34:36.278 POST   /v1/decisions    200  201.8 ms   1.3 KB  laya · 1 state × 2 questions · 104 tokens · pass of 6
+17:34:36.008 POST   /v1/decisions    422  0.062 ms    116 B  invalid_request: question a: unknown type "maybe"; use one of choice, noul, score
+```
 
 ## Conventions
 
@@ -121,7 +140,7 @@ TypeSafe's Jev call: one state, Jev's answers. A Jev client needs no
 change beyond the base URL.
 
 ```sh
-curl -s localhost:8735/v1/systemone -d '{
+curl -s localhost:8000/v1/systemone -d '{
   "model": "jev-latest",
   "state": "Help! My payouts have been failing for 3 days.",
   "questions": {
@@ -173,7 +192,7 @@ The body is what `nuclis decide --request` reads; the response is
 byte for byte what `nuclis decide --json` writes for it, timings aside.
 
 ```sh
-curl -s 'localhost:8735/v1/decisions?explain=1' -d '{
+curl -s 'localhost:8000/v1/decisions?explain=1' -d '{
   "model": "laya-multilingual",
   "questions": {
     "team": {"type": "choice", "instructions": "Which team should handle this?",
@@ -323,7 +342,8 @@ since the start.
 ## Measured rates
 
 Apple M4 Pro (48 GB), ReleaseFast, Zig 0.16.0, macOS 27.0; `nuclis serve
---model laya --model laya-multilingual` on Metal; ApacheBench 2.3 with
+--model laya --model laya-multilingual` on Metal, on the port of the
+time (8735) and before the request log existed; ApacheBench 2.3 with
 keep-alive (`ab -k`) on loopback; checkpoints `convaiinnovations/laya` at
 `55cf4c4e`. The decision request is one state (93 characters, a billing
 complaint) and two questions (a two-option choice and a noul);

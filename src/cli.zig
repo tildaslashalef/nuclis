@@ -741,9 +741,9 @@ fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_pat
 fn runServe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
-    const options = try api.parseArgs(arena_state.allocator(), words, diag);
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
+    const options = try api.parseArgs(arena_state.allocator(), words, loaded.config.serve, diag);
     return api.serve(alloc, io, .{ .root = root, .registry = loaded.config.models, .default_model = loaded.config.decide.model, .version = version }, options, out, sty, diag);
 }
 
@@ -1141,6 +1141,7 @@ test {
     _ = @import("api/decisions/pool.zig");
     _ = @import("api/decisions/service.zig");
     _ = api;
+    _ = @import("api/log.zig");
 }
 
 test "bench parses shared prompt flags and its own repetition flags" {

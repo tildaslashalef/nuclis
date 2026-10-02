@@ -576,6 +576,7 @@ bring-up file. The example:
   "agent":    { "think": "low", "fold_thinking": true, "theme": "gruvbox-dark", "instructions": "auto",
                 "thinking_budget": 1024 },
   "decide":   { "model": "laya" },
+  "serve":    { "host": "127.0.0.1", "port": 8000, "log": true },
   "models":   { "qwen3.8-27b": { "kind": null, "path": null,
                                  "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
                                  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
@@ -655,11 +656,16 @@ applies to models with no entry, and `--speculative` overrides either.
   decision checkpoint: `repo` + `file` or `path` name its weights, whose
   directory `nuclis decide` opens; text commands refuse it by name.
 - `decide.model` (default `laya`) is the checkpoint `nuclis decide` opens,
-  and the one `nuclis serve` uses for a request naming no model or a `jev-…` id:
+  and the one `nuclis serve` opens at start and uses for a request naming
+  no model or a `jev-…` id:
   a registry entry of kind `decision`, a decision catalogue name
   ([artifacts.md § The catalogue](reference/artifacts.md#the-catalogue)),
   or a directory (under `<root>/models` unless absolute); `--model` takes
   the same forms. A text model's name is refused.
+- `serve.host` (default `127.0.0.1`, an IP literal or `localhost`) and
+  `serve.port` (default 8000) are where `nuclis serve` listens; `--host`
+  and `--port` override them for a run. `serve.log` (default `true`)
+  writes a line per request to stdout; `--quiet` turns it off for a run.
 - Sampling entries are overrides: `null` means the official profile of the
   reasoning mode ([generation.md](reference/generation.md#sampling-profiles-and-the-selection-chain-modl-01)),
   so the file never freezes a model's recommended settings. The profile is
@@ -1149,15 +1155,16 @@ data and private source snippets must not become test or benchmark fixtures.
 
 ### Measuring the API
 
-`nuclis serve` listens on `127.0.0.1:8735` by default (`--port` moves it);
-start it with the models open (`--model laya --model laya-multilingual`)
-so no request pays an open. Rates come from ApacheBench (`/usr/sbin/ab`,
+`nuclis serve` listens on `127.0.0.1:8000` by default (`serve.port`,
+`--port`); start it with the models measured open (`--model laya --model
+laya-multilingual`) so no request pays an open, and with `--quiet`: the
+request log writes and flushes a line per response. Rates come from ApacheBench (`/usr/sbin/ab`,
 in macOS) with keep-alive, and percentiles from its CSV, which keeps
 fractions of a millisecond where the summary rounds to whole ones:
 
 ```sh
 ab -k -n 512 -c 16 -p request.json -T application/json -e out.csv \
-  http://127.0.0.1:8735/v1/decisions
+  http://127.0.0.1:8000/v1/decisions
 ```
 
 `ab` speaks HTTP/1.0: with `-k` it keeps a connection only when the reply

@@ -193,7 +193,8 @@ language models) is a new directory and one registration:
   request read whole into the connection's arena, handed to a handler,
   answered with `Content-Length` in one flush; it knows no route.
   `router.zig` maps method and path to a service's handler; `errors.zig`
-  is the one error body.
+  is the one error body; `log.zig` writes the transport's line per
+  response (the handler adds a note) under one lock.
 - `gpu.zig` is the one executor that owns the GPU: a single worker runs
   submitted items one at a time in arrival order, so two models never run
   at once and only the worker touches a model. An item lives in its

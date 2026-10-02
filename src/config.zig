@@ -111,6 +111,7 @@ pub const Config = struct {
     generation: Generation = .{},
     agent: Agent = .{},
     decide: Decide = .{},
+    serve: Serve = .{},
     models: Models = .{},
 
     pub const Engine = struct {
@@ -162,6 +163,15 @@ pub const Config = struct {
         /// of kind `decision`, a decision catalogue name, or a directory
         /// (relative to `<root>/models` unless absolute).
         model: []const u8 = "laya",
+    };
+    pub const Serve = struct {
+        /// The address `nuclis serve` listens on: an IP literal or
+        /// `localhost`. Beyond loopback the API is reachable from the
+        /// network, with no authentication.
+        host: []const u8 = "127.0.0.1",
+        port: u16 = 8000,
+        /// A line per request on stdout; `--quiet` turns it off for a run.
+        log: bool = true,
     };
 };
 
@@ -474,7 +484,8 @@ fn parseModels(map: std.json.ObjectMap, arena: Allocator, diag: *Diagnostic) !Mo
 fn describe(comptime T: type) []const u8 {
     return switch (@typeInfo(T)) {
         .bool => "true or false",
-        .int => "a non-negative integer",
+        // A narrow key (a port) names its range; a count is just non-negative.
+        .int => |i| if (i.bits < 32) std.fmt.comptimePrint("an integer 0..{d}", .{std.math.maxInt(T)}) else "a non-negative integer",
         .float => "a number",
         .pointer => "a string",
         .optional => |o| "null or " ++ describe(o.child),
@@ -1184,6 +1195,7 @@ pub const Effective = struct {
     generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, image_max_tokens: ImageMaxTokens, sampling: inference.sampling.Options },
     agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8, thinking_budget: usize },
     decide: Config.Decide,
+    serve: Config.Serve,
     origin: Origin,
 
     pub fn from(loaded: *const Loaded) Effective {
@@ -1199,6 +1211,7 @@ pub const Effective = struct {
             .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .image_max_tokens = gen.image_max_tokens, .sampling = gen.samplingOptions() },
             .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions, .thinking_budget = agent.thinking_budget },
             .decide = loaded.config.decide,
+            .serve = loaded.config.serve,
             .origin = origin,
         };
     }
@@ -1244,6 +1257,8 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         try s.write(view.agent);
         try s.objectField("decide");
         try s.write(view.decide);
+        try s.objectField("serve");
+        try s.write(view.serve);
         try s.endObject();
         try s.objectField("sources");
         try s.beginObject();
@@ -1300,6 +1315,7 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
     try walk(@TypeOf(view.generation), view.generation, "generation.", &rows);
     try walk(@TypeOf(view.agent), view.agent, "agent.", &rows);
     try walk(@TypeOf(view.decide), view.decide, "decide.", &rows);
+    try walk(@TypeOf(view.serve), view.serve, "serve.", &rows);
     for (loaded.config.models.entries) |named| {
         var entry_rows: struct {
             out: *std.Io.Writer,
@@ -1379,6 +1395,16 @@ test "file values override defaults per key and the source is recorded" {
     try std.testing.expectEqual(ThemeName.@"gruvbox-dark", loaded.config.agent.theme);
     try std.testing.expectEqual(.file, loaded.source("agent.theme"));
     try std.testing.expect(!@hasField(ModelEntry.Agent, "theme"));
+    try std.testing.expectEqualStrings("127.0.0.1", loaded.config.serve.host);
+    try std.testing.expectEqual(@as(u16, 8000), loaded.config.serve.port);
+
+    var served = try fromText(alloc,
+        \\{ "schema_version": 1, "serve": { "host": "0.0.0.0", "port": 9000 } }
+    , "t.json", &diag);
+    defer served.deinit();
+    try std.testing.expectEqualStrings("0.0.0.0", served.config.serve.host);
+    try std.testing.expectEqual(@as(u16, 9000), served.config.serve.port);
+    try std.testing.expectEqual(.file, served.source("serve.port"));
 }
 
 test "registry entries parse by name with their overrides and companions" {
@@ -1448,6 +1474,8 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
         .{ .text = "{ \"schema_version\": 1, \"generation\": { \"image_max_tokens\": 5000 } }", .err = error.InvalidConfigValue, .needle = "generation.image_max_tokens must be 1..4096" },
         .{ .text = "{ \"schema_version\": 1, \"chat\": { \"think\": \"low\" } }", .err = error.UnknownConfigKey, .needle = "unknown key chat: the section is now agent" },
         .{ .text = "{ \"schema_version\": 1, \"agent\": { \"theme\": \"solarized\" } }", .err = error.InvalidConfigValue, .needle = "agent.theme must be one of gruvbox-dark" },
+        .{ .text = "{ \"schema_version\": 1, \"serve\": { \"port\": 70000 } }", .err = error.InvalidConfigValue, .needle = "serve.port must be an integer 0..65535" },
+        .{ .text = "{ \"schema_version\": 1, \"serve\": { \"host\": \"\" } }", .err = error.InvalidConfigValue, .needle = "serve.host must not be empty" },
         // The registry: names, shape, unknown companion keys, ranges.
         .{ .text = "{ \"schema_version\": 1, \"models\": [] }", .err = error.InvalidConfigValue, .needle = "models must be an object" },
         .{ .text = "{ \"schema_version\": 1, \"models\": { \"g\": \"x.gguf\" } }", .err = error.InvalidConfigValue, .needle = "models.g must be an object" },

@@ -132,7 +132,7 @@ pub const Service = struct {
             .decisions => response.write(&out.writer, body),
             .systemone => response.writeSystemOne(&out.writer, body),
         }) catch return fail(arena, .internal_server_error, "internal", "out of memory");
-        return .{ .body = out.written() };
+        return .{ .body = out.written(), .note = note(arena, located.identity.name, decision, done) };
     }
 
     /// The nuclis model a request's `"model"` names. A TypeSafe id
@@ -215,6 +215,18 @@ fn requestFailure(arena: std.mem.Allocator, err: anyerror, message: []const u8) 
 /// `message` may live in a caller's diagnostic buffer: copied into `arena`.
 fn fail(arena: std.mem.Allocator, status: std.http.Status, code: []const u8, message: []const u8) http.Response {
     return .fromError(arena, .init(status, code, arena.dupe(u8, message) catch "out of memory"));
+}
+
+/// The log's line for an answered request: the model, the request's size,
+/// the pass it shared, and the open it paid for, if any.
+fn note(arena: std.mem.Allocator, model: []const u8, request: wire.Request, done: batcher_mod.Job.Done) []const u8 {
+    var tokens: usize = 0;
+    for (done.results) |r| tokens += r.input_tokens;
+    const states = request.states.len;
+    const questions = request.questions.len;
+    const opened = if (done.load_ns > 0) std.fmt.allocPrint(arena, " · opened in {d:.0} ms", .{@as(f64, @floatFromInt(done.load_ns)) / std.time.ns_per_ms}) catch "" else "";
+    const pass = if (done.batch_jobs > 1) std.fmt.allocPrint(arena, " · pass of {d}", .{done.batch_jobs}) catch "" else "";
+    return std.fmt.allocPrint(arena, "{s} · {d} state{s} × {d} question{s} · {d} tokens{s}{s}", .{ model, states, if (states == 1) "" else "s", questions, if (questions == 1) "" else "s", tokens, pass, opened }) catch model;
 }
 
 /// `?explain` or `?explain=1`; `0` and `false` turn it off.
