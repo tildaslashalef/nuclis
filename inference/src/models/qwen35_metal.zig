@@ -43,10 +43,12 @@ const LayerConstants = struct {
     attention_norm: Buffer,
     post_attention_norm: Buffer,
     mixer: union(enum) {
-        full_attention: struct { query_norm: Buffer, key_norm: Buffer },
-        delta_net: struct { convolution: Buffer, a: Buffer, time_bias: Buffer, norm: Buffer },
+        full_attention: AttentionConstants,
+        delta_net: DeltaConstants,
     },
 };
+const AttentionConstants = struct { query_norm: Buffer, key_norm: Buffer };
+const DeltaConstants = struct { convolution: Buffer, a: Buffer, time_bias: Buffer, norm: Buffer };
 
 /// A weight matrix ready for dispatch: its GPU range and CPU-side descriptor.
 const Weight = struct { buffer: Buffer, matrix: @import("../backends/cpu/root.zig").Matrix };
@@ -906,7 +908,7 @@ pub const Plan = struct {
         }
     }
 
-    fn attentionChunk(self: *Plan, attn: model.FullAttention, c: anytype, il: usize, count: usize, position: usize) !void {
+    fn attentionChunk(self: *Plan, attn: model.FullAttention, c: AttentionConstants, il: usize, count: usize, position: usize) !void {
         const b = self.backend;
         const cache = self.state.layers[il].attention;
         try self.rotate(self.normalized_c, hidden, count);
@@ -963,7 +965,7 @@ pub const Plan = struct {
         try self.mmRows(attn.output, self.mixed_out_c, 6144, self.projected_c, hidden, count);
     }
 
-    fn deltaChunk(self: *Plan, linear: model.DeltaNet, c: anytype, il: usize, count: usize, taped: bool) !void {
+    fn deltaChunk(self: *Plan, linear: model.DeltaNet, c: DeltaConstants, il: usize, count: usize, taped: bool) !void {
         const b = self.backend;
         const state = self.state.layers[il].recurrent;
         // The gating projections read the residual before its transform.
@@ -1205,7 +1207,7 @@ pub const Plan = struct {
     /// cache row `row` and attends to rows `[0, row]`, rotated at
     /// `rope_position`. The two differ after an image span, whose rows
     /// advance the rotary position by less than their count.
-    fn fullAttention(self: *Plan, attn: model.FullAttention, c: anytype, il: usize, row: usize, rope_position: usize) !void {
+    fn fullAttention(self: *Plan, attn: model.FullAttention, c: AttentionConstants, il: usize, row: usize, rope_position: usize) !void {
         const b = self.backend;
         const cache = self.state.layers[il].attention;
         const k_slot = self.stateSlice(cache.keys.range(row, 1));
@@ -1228,7 +1230,7 @@ pub const Plan = struct {
         try self.mm(attn.output, self.mixed_out, self.projected);
     }
 
-    fn linearAttention(self: *Plan, linear: model.DeltaNet, c: anytype, il: usize) !void {
+    fn linearAttention(self: *Plan, linear: model.DeltaNet, c: DeltaConstants, il: usize) !void {
         const b = self.backend;
         const state = self.state.layers[il].recurrent;
         if (self.rotation == null) {

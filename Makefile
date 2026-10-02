@@ -244,7 +244,7 @@ capture: metal ## One decode step captured into a .gputrace for Xcode's Metal de
 	  --ctx-size 2048 --repeat 1 --warmup 0 --capture "$(CAPTURE_OUT)" $(ARGS)
 	@echo "open $(CAPTURE_OUT)   # Xcode: Metal debugger, Performance / Counters"
 
-# ---- huggingface package (a path dependency of the root build since MODL-02) -----
+# ---- huggingface package (a path dependency of the root build) -----------------
 
 hf-downloader: ## Build the package's standalone downloader (zig-out/bin/hf-downloader)
 	$(ZIG) build hf-downloader -Doptimize=$(OPT) $(CACHE)

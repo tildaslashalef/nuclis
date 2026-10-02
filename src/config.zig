@@ -48,7 +48,8 @@ pub const max_context = 32768;
 /// reasoning modes think for thousands of tokens before answering, so the
 /// cap is the context's half and the default one completion's worth.
 pub const max_output_tokens = 16384;
-/// The largest draft block: KERN-11's 8-row token tile less the seed row.
+/// The largest draft block: the verify matmul's 8-row token tile less the
+/// seed row.
 /// One host constant, the engine's.
 pub const max_draft_length = inference.engine.max_draft_length;
 /// The largest image token cap a setting may name.
@@ -770,8 +771,8 @@ const initial_models = blk: {
 };
 
 /// A catalogue entry as a registry entry: repository, file, pinned commit,
-/// companion file names, and the entry's speculative verdict (the measured
-/// default of ENGN-17); every other override left to the global sections.
+/// companion file names, and the entry's speculative verdict (its measured
+/// default); every other override left to the global sections.
 pub fn registryEntry(entry: *const catalog.Entry) ModelEntry {
     return .{
         .repo = entry.repo,

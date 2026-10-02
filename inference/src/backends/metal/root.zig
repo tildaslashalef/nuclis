@@ -700,8 +700,8 @@ pub const Backend = struct {
     pub fn matmulTile(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
         return self.matmulImpl(weights, matrix, input, in_stride, output, out_stride, tokens, .tile);
     }
-    /// Same contract, forcing the wide 32×8 split-K tile (KERN-14's
-    /// candidate, measured against `matmulTile`'s 16×8 control). Rejected
+    /// Same contract, forcing the wide 32×8 split-K tile (a measured
+    /// candidate, against `matmulTile`'s 16×8 control). Rejected
     /// when the encoding or alignment has no wide body, or past its 8-token
     /// tile.
     pub fn matmulTile32(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, in_stride: usize, output: Buffer, out_stride: usize, tokens: usize) !void {
@@ -786,8 +786,8 @@ pub const Backend = struct {
         };
     }
     /// Picks the wide 32×8 split-K tile for the specialized encodings, up to
-    /// its 8-token tile. The KERN-14 experiment's candidate; nothing routes
-    /// to it in production.
+    /// its 8-token tile. A measured candidate that lost to the 16×8 tile;
+    /// nothing routes to it in production.
     pub fn specializedMatmulWide(encoding: u32, weight_offset: usize, stride: usize, tokens: usize) ?Kernel {
         if (tokens == 0 or tokens > 8 or !blockAligned(encoding, weight_offset, stride)) return null;
         return switch (encoding) {
@@ -912,8 +912,8 @@ pub const Backend = struct {
     /// `matvecSegments` forcing the split count (the split sweep's knob; 1 is
     /// the single-pass kernel). Only plain-mode merges whose every segment has
     /// a specialized split body (Q4_K/Q5_K) are served. As with
-    /// `matvecSplits`, no production merge routes here (KERN-15 measured the
-    /// split behind); the segment split kernels stay as the measured fixture.
+    /// `matvecSplits`, no production merge routes here (the split measured
+    /// behind the single pass); the segment split kernels stay as the measured fixture.
     pub fn matvecSegmentsSplits(self: *Backend, segments: []const Segment, input: Buffer, mode: SegmentMode, splits: usize) !void {
         if (splits == 0 or splits > split_k_max) return error.InvalidShape;
         return self.matvecSegmentsImpl(segments, input, mode, splits);

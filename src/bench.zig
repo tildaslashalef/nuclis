@@ -28,7 +28,7 @@ pub const Options = struct {
     /// the whole-run rates of a profiled run are not comparable with unprofiled ones.
     profile: bool = false,
     /// Run the norm pairs the fused kernels replace instead of the fused
-    /// ones: the interleaved control for the KERN-18 acceptance.
+    /// ones: the interleaved control that measures the fusions.
     unfused_norms: bool = false,
     /// A `.gputrace` path: after the runs, one more decode step is recorded
     /// into it for Xcode's Metal debugger. Metal only.

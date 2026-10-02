@@ -214,8 +214,8 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
     b.generic_only = false;
 }
 
-/// `--matvec-split [ENCODING]`: the bounded split-K sweep behind KERN-15's
-/// verdict — the two row-poor Muse shapes, the Qwen down-projection geometry,
+/// `--matvec-split [ENCODING]`: the bounded split-K sweep that measured the
+/// split path behind the single pass — the two row-poor Muse shapes, the Qwen down-projection geometry,
 /// and the four-segment merged projection — at 1 (the single-pass control),
 /// 2, 4, and 8 splits, for Q4_K and Q5_K, the encodings with a split body.
 /// `--matvec-bench` measures the same kernels whole; this one stays on the

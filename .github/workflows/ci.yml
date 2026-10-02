@@ -8,7 +8,7 @@
 # `bench`, and anything that pulls a model. Those need the pinned 16.5 GB
 # artifact and the real M4 Pro; a number measured on a virtualised GPU would
 # be a number nobody should trust, and their evidence belongs in
-# docs/reference/engineering-log.md.
+# docs/engineering-log.md.
 #
 # The compiler is installed by `.github/install-zig.sh`: the version comes from
 # `minimum_zig_version` in build.zig.zon and the SHA-256 from

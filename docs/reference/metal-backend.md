@@ -43,8 +43,17 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([generation.md](generat
 
 The MSL source is assembled at compile time: the IQ3_S codebook is emitted from
 the single Zig definition, then `dequant.metal` and `kernels.metal` are embedded.
-The shader compiles at backend creation (about one second) with
-`MTLMathModeSafe`, so no reassociation or contraction is applied.
+The shader compiles at backend creation with `MTLMathModeSafe`, so no
+reassociation or contraction is applied. Metal's per-user shader cache
+keeps that cheap: measured on the M4 Pro (2026-10-02, 159 pipelines,
+`nuclis bench --kernel-stats` and a standalone harness), a warm start costs
+26 ms for the whole process; after a shader edit the library recompiles
+(about 0.6 s) while unchanged functions keep their cached pipelines; fully
+cold (a new OS or driver, a purged cache) it is 0.82 s of library and
+3.94 s of pipelines. 56 of the pipelines (the `_t3..t8` multi-row bodies,
+the `_8` and `_w8` tiles, split-K, `f2hh`/`f4`, the three-pass attention,
+single-row `rope`, `fragment_layout`) serve only checks and benchmarks;
+they are 1.70 s of the cold 3.94 s.
 
 ## Execution model
 

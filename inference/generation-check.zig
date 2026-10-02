@@ -901,7 +901,8 @@ fn verifyAtDepth(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, d
 /// readback path must select the token the rows path's `select` selects; a
 /// row the readback cannot decide must fall back to the resident logits,
 /// which must be bit-identical to the rows plan's, and `select` on those must
-/// agree. Exercises the whole ENGN-15 seam on real logits.
+/// agree. Exercises the whole readback-or-resident-logits seam on real
+/// logits.
 fn verifyTopKCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.metal.Backend, view: inference.weights.View, binding: spec.Family.Binding) !void {
     const Plan = spec.Family.Plan;
     const draft = spec.draft.?;

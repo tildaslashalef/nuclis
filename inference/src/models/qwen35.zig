@@ -2,7 +2,7 @@
 //! Bind once at model load: later numerical code uses named tensor references,
 //! never repeated GGUF string lookups. Bindings borrow the Document's storage.
 //! Validation checks the declared profile and storage, not tensor values or
-//! numerical execution. See docs/qwen-validation.md for the pinned references.
+//! numerical execution. See docs/reference/qwen-validation.md for the pinned references.
 //! The same adapter binds Bonsai 2 27B, the ternary re-encoding whose weights
 //! sit in a Hadamard-rotated basis (`Rotation`, docs/reference/bonsai.md),
 //! with or without the auxiliary prediction block.

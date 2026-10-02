@@ -6,7 +6,7 @@ bench --speculative on` process: `--repeat` off/on pairs on one loaded
 model, 128 output tokens, F16 KV, context 32,768. A numeric context restores
 the speed loop's saved prefix of the family's acceptance array
 (.zig-cache/speed/prefix, prefilled by the first run that needs it); `code`
-is the fixed short prompt of the ENGN-17 record. Reports are saved under
+is the fixed short prompt of the speculative-decoding record. Reports are saved under
 .zig-cache/spec/<model>/<rev>/ and a cell already saved there is not re-run,
 so an interrupted matrix resumes. The table gives, per cell, accepted and
 proposed drafts per batch, E (emitted tokens per batch), the per-batch costs

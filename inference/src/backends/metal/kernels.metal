@@ -39,9 +39,8 @@ kernel void nu_matvec(device const uchar * weights [[buffer(0)]],
 
 // ---------------------------------------------------------------------------
 // Specialized matrix-vector kernels for Q4_K, Q5_K, Q6_K, and IQ4_XS: the four
-// encodings holding 96 % of the model's bytes, so these decide decode speed.
-// KERN-03 added Q3_K and IQ3_S, MODL-08 Q4_0 (the QAT Gemma checkpoint's only
-// weight encoding).
+// encodings holding 96 % of Qwen's bytes, so these decide decode speed; then
+// Q3_K, IQ3_S, and Q4_0 (the QAT Gemma checkpoint's only weight encoding).
 //
 // Geometry: 128-thread groups of four SIMD groups. Each SIMD group owns ROWS
 // consecutive output rows and walks their 256-value blocks four at a time,

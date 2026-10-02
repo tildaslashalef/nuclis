@@ -1,6 +1,6 @@
 //! GGML storage layouts, independent of any model architecture.
 //! These describe on-disk block sizes, not available numerical kernels.
-//! Source: ggml-org/llama.cpp, ggml/src/ggml-common.h (see docs/gguf-inspection.md);
+//! Source: ggml-org/llama.cpp, ggml/src/ggml-common.h (see docs/reference/gguf-inspection.md);
 //! ids 142 and 143 are the PrismML fork's group-128 ternary blocks
 //! (docs/reference/bonsai.md).
 const std = @import("std");
