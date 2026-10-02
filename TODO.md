@@ -273,8 +273,31 @@ Known facts (2026-10-02):
 - **Backbone** (`config.json`): `Qwen3_5ForConditionalGeneration`, text
   `qwen3_5_text`, 32 layers, hidden 4,096, `linear_attention` layers with
   `full_attention` every 4th, 16 heads, 4 KV heads, vocabulary 248,320:
-  the hybrid DeltaNet family `models/qwen35.zig` already runs for
-  Qwen3.8. BF16 in four shards (4.94 + 4.99 + 4.96 + 3.93 GB).
+  the hybrid DeltaNet family `models/qwen35.zig` runs for Qwen3.8. BF16
+  in four shards (4.94 + 4.99 + 4.96 + 3.93 GB).
+- **The qwen35 adapter rejects it today** (`nuclis model inspect
+  bartowski/Cloudflare_clef-flash-GGUF --file Cloudflare_clef-flash-Q6_K.gguf`:
+  `UnsupportedConfiguration`): `integer_settings` in `models/qwen35.zig`
+  pins Qwen3.8-27B's shape. The Q6_K header (read 2026-10-02) differs in
+  six values: `embedding_length` 4,096 (pinned 5,120),
+  `feed_forward_length` 12,288 (17,408), `attention.head_count` 16 (24),
+  `block_count` 32 with no `nextn_predict_layers` (64 or 65),
+  `ssm.time_step_rank` 32 (48), `ssm.inner_size` 4,096 (6,144). Every
+  other pinned value matches: context 262,144, KV heads 4, key/value
+  length 256, conv kernel 4, state size 128, group count 16, full
+  attention every 4, rope 64 with sections [11, 11, 10, 0], base 1e7,
+  epsilon 1e-6. So the adapter, its CPU runtime, and its Metal plan read
+  a shape from the file instead of constants (session 2 on the CPU,
+  session 3 on Metal), and every Qwen3.8 gate passes unchanged. The Q6_K
+  file is 125 Q6_K tensors, 77 Q8_0, 225 F32.
+- **The projector is Qwen3.8's, one width apart.**
+  `mmproj-Cloudflare_clef-flash-bf16.gguf` (0.92 GB, 334 tensors, BF16 +
+  F32) is `clip.projector_type = qwen3vl_merger`, image size 768, patch
+  16, hidden 1,152, feed-forward 4,304, 27 blocks, 16 heads, merge 2,
+  GELU, epsilon 1e-6, no deepstack layers: exactly what
+  `vision/qwen3vl.zig` pins, except `clip.vision.projection_dim` 4,096
+  against its `output_width = 5120`. Supporting it is reading the width
+  from the file, not a new projector.
 - **Head**: `joint_head.safetensors` (0.244 GB, BF16),
   `joint_head_config.json` `{hidden_size 4096, width 1024, routing_layers
   2, layers 4, heads 16, feedforward 4096}`; its forward and the input
@@ -297,12 +320,43 @@ Known facts (2026-10-02):
 
 ### Session 1: facts and the oracle
 
-Read `joint_schema_model.py`, `chat_template.jinja`,
+**First, before reading or writing anything, pull the files** with the
+fresh `./zig-out/bin/nuclis model pull`, pinned by commit (bartowski
+`d7f376ea88c05e7bb1014dd5351a93df9dd8029e`, Cloudflare
+`17f0b0ad64efb65d273590632833508766b2aae6`, both read 2026-10-02):
+
+```sh
+R1=d7f376ea88c05e7bb1014dd5351a93df9dd8029e
+R2=17f0b0ad64efb65d273590632833508766b2aae6
+./zig-out/bin/nuclis model pull bartowski/Cloudflare_clef-flash-GGUF --revision $R1 \
+  --file Cloudflare_clef-flash-Q6_K.gguf                       # 7.79 GB, the backbone
+./zig-out/bin/nuclis model pull bartowski/Cloudflare_clef-flash-GGUF --revision $R1 \
+  --file mmproj-Cloudflare_clef-flash-bf16.gguf --role mmproj  # 0.92 GB, the projector
+./zig-out/bin/nuclis model pull Cloudflare/clef-flash --revision $R2 \
+  --file joint_head.safetensors                                # 0.24 GB, the head
+./zig-out/bin/nuclis model pull Cloudflare/clef-flash --revision $R2 \
+  --file model-00001-of-00004.safetensors                      # 17.9 GB, bf16 set for the oracle
+```
+
+About 27 GB under `~/.nuclis/models/`. A safetensors pull brings the
+`.json`/`.jinja` files beside it (`config.json`, `joint_head_config.json`,
+`tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja`,
+`processor_config.json`, `generation_config.json`) and a shard expands to
+its set and index. `joint_schema_model.py` is not a support file nuclis
+pulls (`.py`); the oracle script fetches it with `hf_hub_download` at
+`R2`. Q8_0 (9.55 GB) is pulled only if session 3's agreement asks for
+it; the bf16 GGUF (17.92 GB) is not pulled, `nuclis model inspect` reads
+its header remotely. If a pull fails, that is a bug in `nuclis model
+pull` to fix first (an APPS side unit), not a reason to download by hand.
+
+Then read `joint_schema_model.py`, `chat_template.jinja`,
 `processor_config.json`, and `tokenizer_config.json`: how a request
 becomes a sequence (the template, where questions, options, and the state
 sit, which positions the head reads), the head's forward exactly, the
 calibration, the budgets (`max_state_tokens`), and how images enter.
-Check that `nuclis inspect` reads the Q6_K and bf16 GGUFs as `qwen35`.
+Run `nuclis inspect` on the pulled Q6_K and mmproj: until sessions 2 and
+4 land, the backbone is rejected for its shape and the projector for its
+width, as recorded above; note any other refusal.
 Write `scripts/clef-reference.py` (a venv beside `.reference/laya-venv`,
 the package pinned) emitting fixtures under
 `inference/src/models/fixtures/clef/`: for 8 requests (the Laya shapes
@@ -316,7 +370,12 @@ rewriting this section at the level of files, functions, and numbers.
 A decision-family seam in `inference/src/decide.zig` (today it composes
 Laya only): a family's profile builds sequences and calibrates, its model
 returns per-option logits; Laya moves behind it unchanged (its gates
-pass). `profiles/clef.zig` (the sequence and budgets), `models/clef.zig`
+pass). **The qwen35 shape from the file**: `models/qwen35.zig` replaces
+the six pinned values above with a shape read and validated from the
+metadata (each value checked against the tensor dimensions; the
+unchanged constants stay pinned), and `qwen35_runtime.zig` sizes its
+buffers and loops from it; Qwen3.8's gates pass unchanged.
+`profiles/clef.zig` (the sequence and budgets), `models/clef.zig`
 (the head on `backends/cpu/dense.zig`), and the backbone's final hidden
 states from `qwen35_runtime.zig` without the output head. Checked
 against the oracle with Laya's relative bounds (`zig build test-clef`,
@@ -324,10 +383,14 @@ gate `clef-cpu`).
 
 ### Session 3: Metal, the agreement, the catalogue
 
-The backbone through `qwen35_metal.zig`'s prefill, the head as a Metal
-plan beside Laya's. The catalogue entry `clef-flash` (kind `decision`;
-the GGUF backbone, the head and support files from Cloudflare's repo,
-pinned by revision); `nuclis decide --model clef-flash`; `nuclis serve`
+The backbone through `qwen35_metal.zig`'s prefill with the shape from
+the file (any kernel or plan constant tied to 5,120 / 17,408 / 24 heads
+/ 48 value heads found and parameterized; Qwen3.8's Metal gates and
+`make speed` unchanged), the head as a Metal plan beside Laya's. The
+catalogue entry `clef-flash` (kind `decision`; the GGUF backbone, the
+mmproj as its `mmproj` companion so `nuclis model pull clef-flash --with
+mmproj` fetches it, the head and support files from Cloudflare's repo,
+all pinned by the revisions above); `nuclis decide --model clef-flash`; `nuclis serve`
 lists and serves it. **Agreement**: Q6_K against the bf16 reference on
 the fixtures plus 200 seeded requests: decision agreement and mean
 |Δp|; Q6_K stays if agreement ≥ 99.5 %, else Q8_0. Timings for 1, 10,
@@ -336,9 +399,13 @@ and 50 states at 500 and 2,000 tokens, recorded in a new
 
 ### Session 4: vision
 
-The projector through `inference/src/vision/` (the Qwen3-VL adapter;
-check `clip.projector_type` and the projection width, 4,096 here against
-Qwen3.8's 5,120), images in the decision request (the field the reference
+**mmproj support is part of the unit; it does not close text-only.**
+The pulled `mmproj-Cloudflare_clef-flash-bf16.gguf` through
+`inference/src/vision/qwen3vl.zig`: `output_width` becomes the file's
+`clip.vision.projection_dim`, accepted when it equals the backbone's
+embedding length (4,096 here, 5,120 for Qwen3.8), on the CPU projector
+and the Metal plan (`qwen3vl_metal.zig`); Qwen3.8's vision gates pass
+unchanged. Images in the decision request (the field the reference
 defines, mirrored in `nuclis decide --request` and `nuclis serve`),
 checked against the oracle on image fixtures; tokens and time per image
 recorded.
