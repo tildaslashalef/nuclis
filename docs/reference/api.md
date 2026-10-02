@@ -316,6 +316,9 @@ object is for nuclis clients.
         "present": true,
         "loaded": true,
         "default": true,
+        "family": "laya",
+        "packs": true,
+        "images": false,
         "max_len": 512,
         "head_max_len": 192,
         "repo": "convaiinnovations/laya",
@@ -328,10 +331,18 @@ object is for nuclis clients.
 
 Every decision model of the catalogue and the registry is listed, pulled
 or not. `present`: its weights are on disk; `loaded`: it is open now;
-`default`: a request without `model` gets it; `max_len` and
-`head_max_len`: its sequence and question budgets in tokens (null when
-not pulled); `owned_by`: the repository's owner, `local` for a directory;
-`created` is always 0.
+`default`: a request without `model` gets it; `family`: `laya` or `clef`,
+known before the model is pulled; `packs`: whether the states of a
+request and the requests waiting together share one GPU pass (Laya),
+or each state is one pass after the other, its cost linear in tokens
+(clef-flash: send one state per request, every question in it, one or two
+requests in flight; [clef.md § Time per decision](clef.md#time-per-decision));
+`images`: it reads a request's `images` (clef-flash with its projector
+pulled); `max_len` and `head_max_len`: its sequence and question budgets
+in tokens (`head_max_len` is null for clef-flash, which has no
+per-question budget, and both are null for a Laya model not pulled);
+`owned_by`: the repository's owner, `local` for a directory; `created` is
+always 0.
 
 ## `GET /v1/health`
 

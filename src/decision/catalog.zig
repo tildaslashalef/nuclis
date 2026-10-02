@@ -93,7 +93,10 @@ pub const Listed = struct {
     present: bool,
     /// From `rl_agent_config.json` when it is present and valid.
     budget: ?profile.Budget,
+    /// From the catalogue entry (a backbone means clef), else the files.
     family: inference.decide.Family = .laya,
+    /// clef with its projector pulled.
+    images: bool = false,
 };
 
 /// Every decision model: the catalogue's, then the registry's decision
@@ -114,6 +117,10 @@ pub fn list(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: c
 
 fn describe(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: config.Models, name: []const u8, repo: ?[]const u8, revision: ?[]const u8) !Listed {
     var listed: Listed = .{ .name = name, .repo = repo, .revision = revision, .directory = null, .present = false, .budget = null };
+    // Known before anything is pulled, so a client plans for it either way.
+    if (registry.find(name) == null) if (catalog.findDecision(name)) |e| if (e.backbone != null) {
+        listed.family = .clef;
+    };
     var diag: config.Diagnostic = .{};
     const located = locate(arena, io, root, registry, name, &diag) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -125,7 +132,8 @@ fn describe(arena: std.mem.Allocator, io: std.Io, root: ?[]const u8, registry: c
     };
     listed.directory = located.directory;
     listed.present = true;
-    listed.family = inference.decide.Family.of(io, located.directory);
+    if (listed.family == .laya) listed.family = inference.decide.Family.of(io, located.directory);
+    listed.images = listed.family == .clef and located.mmproj != null;
     if (located.identity.repo) |r| listed.repo = r;
     if (located.identity.revision) |r| listed.revision = r;
     const agent_path = try std.fs.path.join(arena, &.{ located.directory, "rl_agent_config.json" });
@@ -171,5 +179,6 @@ test "the listing: catalogue then registry, nothing pulled under an empty root" 
     try std.testing.expectEqualStrings("laya-multilingual", listed[0].name);
     try std.testing.expectEqualStrings("laya", listed[listed.len - 1].name);
     try std.testing.expectEqualStrings("/nowhere/laya", listed[listed.len - 1].directory.?);
-    for (listed) |l| try std.testing.expect(!l.present and l.budget == null);
+    for (listed) |l| try std.testing.expect(!l.present and l.budget == null and !l.images);
+    for (listed) |l| try std.testing.expectEqual(std.mem.eql(u8, l.name, "clef-flash"), l.family == .clef);
 }

@@ -36,6 +36,13 @@ pub const Family = enum {
     laya,
     clef,
 
+    /// Whether the sequences of several states and requests share one pass
+    /// (Laya's packed batches); clef runs one sequence at a time, its cost
+    /// linear in tokens.
+    pub fn packs(self: Family) bool {
+        return self == .laya;
+    }
+
     /// The family a checkpoint directory holds: clef's head file, else Laya.
     pub fn of(io: std.Io, directory: []const u8) Family {
         var buffer: [std.fs.max_path_bytes]u8 = undefined;

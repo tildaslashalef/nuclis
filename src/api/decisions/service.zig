@@ -166,6 +166,9 @@ pub const Service = struct {
             try details.put(arena, "present", .{ .bool = l.present });
             try details.put(arena, "loaded", .{ .bool = if (l.directory) |d| self.pool.isOpen(io, d) else false });
             try details.put(arena, "default", .{ .bool = std.mem.eql(u8, l.name, self.default_model) });
+            try details.put(arena, "family", .{ .string = @tagName(l.family) });
+            try details.put(arena, "packs", .{ .bool = l.family.packs() });
+            try details.put(arena, "images", .{ .bool = l.images });
             const clef_budget: ?std.json.Value = if (l.family == .clef) .{ .integer = inference.profiles.clef.max_length } else null;
             try details.put(arena, "max_len", clef_budget orelse if (l.budget) |b| .{ .integer = @intCast(b.max_len) } else .null);
             try details.put(arena, "head_max_len", if (l.budget) |b| .{ .integer = @intCast(b.head_max_len) } else .null);
@@ -354,6 +357,15 @@ test "decisions: the response is what `nuclis decide --json` writes" {
     } else return error.TestExpectedTiny;
     try std.testing.expect(tiny.details.object.get("present").?.bool and tiny.details.object.get("loaded").?.bool and tiny.details.object.get("default").?.bool);
     try std.testing.expectEqual(@as(i64, 256), tiny.details.object.get("max_len").?.integer);
+    try std.testing.expectEqualStrings("laya", tiny.details.object.get("family").?.string);
+    try std.testing.expect(tiny.details.object.get("packs").?.bool and !tiny.details.object.get("images").?.bool);
+    // clef-flash is not pulled here, and still reports how it runs.
+    const clef = for (listing.items) |e| {
+        if (std.mem.eql(u8, e.id, "clef-flash")) break e;
+    } else return error.TestExpectedClef;
+    try std.testing.expectEqualStrings("clef", clef.details.object.get("family").?.string);
+    try std.testing.expect(!clef.details.object.get("packs").?.bool);
+    try std.testing.expectEqual(@as(i64, 16384), clef.details.object.get("max_len").?.integer);
     try std.testing.expectEqualStrings("local", tiny.owned_by);
 }
 
