@@ -88,6 +88,19 @@ inline float4 nu_iq4_high(uint w) { uchar4 n = as_type<uchar4>((w >> 4) & 0x0f0f
 // own, and explicit fma halves the instruction count of a dot product.
 inline float nu_dot(float4 a, float4 b, float acc) { return fma(a.w, b.w, fma(a.z, b.z, fma(a.y, b.y, fma(a.x, b.x, acc)))); }
 inline float nu_sum4(float4 v) { return (v.x + v.y) + (v.z + v.w); }
+// Two codes of at most ten bits OR'd into the mantissas of halves whose
+// exponent is 1024's, then 1024 subtracted: exact, and on the FP16 pipe
+// instead of an integer-to-float conversion per value.
+inline float2 nu_magic(uint bits) { return float2(as_type<half2>(bits | 0x64006400u) - half2(1024.0h)); }
+// The eight nibbles of `w` dotted into two sums: low nibbles with `xa`, high
+// nibbles with `xb` scaled by 16 (they stay at bits 4-7; the caller divides).
+inline void nu_magic_nibbles(uint w, float4 xa, float4 xb, thread float & sa, thread float & sb) {
+    uint w8 = w >> 8;
+    float2 lo02 = nu_magic(w & 0x000f000fu), lo13 = nu_magic(w8 & 0x000f000fu);
+    float2 hi02 = nu_magic(w & 0x00f000f0u), hi13 = nu_magic(w8 & 0x00f000f0u);
+    sa = fma(lo13.y, xa.w, fma(lo02.y, xa.z, fma(lo13.x, xa.y, fma(lo02.x, xa.x, sa))));
+    sb = fma(hi13.y, xb.w, fma(hi02.y, xb.z, fma(hi13.x, xb.y, fma(hi02.x, xb.x, sb))));
+}
 inline uint nu_word(packed_ushort4 v, uint index) { return index == 0 ? (uint(v.x) | (uint(v.y) << 16)) : (uint(v.z) | (uint(v.w) << 16)); }
 // Sixteen consecutive inputs as four float4 plus their sum (16-byte aligned).
 struct NuInputs16 { float4 v[4]; float sum; };
@@ -148,18 +161,19 @@ inline void nu_matvec_k_body(device const uchar * weights, device const float * 
             uint dd = *(device const uint *)(row + kb * block_bytes);
             packed_uint3 s = *(device const packed_uint3 *)(row + kb * block_bytes + 4);
             uint4 v = *(device const uint4 *)(row + slice);
-            float4 qa0, qa1, qa2, qa3, qb0, qb1, qb2, qb3;
+            float sqa = 0.0f, sqb = 0.0f;
             if (FIFTH_BIT) {
                 uint4 h = *(device const uint4 *)(row + plane);
                 uint bit_a = 2 * pair, bit_b = bit_a + 1;
-                qa0 = nu_low_fives(v.x, h.x, bit_a); qa1 = nu_low_fives(v.y, h.y, bit_a); qa2 = nu_low_fives(v.z, h.z, bit_a); qa3 = nu_low_fives(v.w, h.w, bit_a);
-                qb0 = nu_high_fives(v.x, h.x, bit_b); qb1 = nu_high_fives(v.y, h.y, bit_b); qb2 = nu_high_fives(v.z, h.z, bit_b); qb3 = nu_high_fives(v.w, h.w, bit_b);
+                sqa = nu_dot(nu_low_fives(v.w, h.w, bit_a), xa.v[3], nu_dot(nu_low_fives(v.z, h.z, bit_a), xa.v[2], nu_dot(nu_low_fives(v.y, h.y, bit_a), xa.v[1], nu_dot(nu_low_fives(v.x, h.x, bit_a), xa.v[0], 0.0f))));
+                sqb = nu_dot(nu_high_fives(v.w, h.w, bit_b), xb.v[3], nu_dot(nu_high_fives(v.z, h.z, bit_b), xb.v[2], nu_dot(nu_high_fives(v.y, h.y, bit_b), xb.v[1], nu_dot(nu_high_fives(v.x, h.x, bit_b), xb.v[0], 0.0f))));
             } else {
-                qa0 = nu_low_nibbles(v.x); qa1 = nu_low_nibbles(v.y); qa2 = nu_low_nibbles(v.z); qa3 = nu_low_nibbles(v.w);
-                qb0 = nu_high_nibbles(v.x); qb1 = nu_high_nibbles(v.y); qb2 = nu_high_nibbles(v.z); qb3 = nu_high_nibbles(v.w);
+                nu_magic_nibbles(v.x, xa.v[0], xb.v[0], sqa, sqb);
+                nu_magic_nibbles(v.y, xa.v[1], xb.v[1], sqa, sqb);
+                nu_magic_nibbles(v.z, xa.v[2], xb.v[2], sqa, sqb);
+                nu_magic_nibbles(v.w, xa.v[3], xb.v[3], sqa, sqb);
+                sqb *= 0.0625f;
             }
-            float sqa = nu_dot(qa3, xa.v[3], nu_dot(qa2, xa.v[2], nu_dot(qa1, xa.v[1], nu_dot(qa0, xa.v[0], 0.0f))));
-            float sqb = nu_dot(qb3, xb.v[3], nu_dot(qb2, xb.v[2], nu_dot(qb1, xb.v[1], nu_dot(qb0, xb.v[0], 0.0f))));
             float d = nu_half_low(dd), dmin = nu_half_high(dd);
             float sa, ma, sb, mb;
             nu_k_scales_pair(s, pair, sa, ma, sb, mb);

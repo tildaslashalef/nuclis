@@ -198,7 +198,19 @@ when a kept change moves the cost table.
 
 ## KERN-23 — Weight streaming for one row and a few: decode and the verify body (2 sessions)
 
-Base: recorded when the unit starts.
+Base: `8c47b56`
+
+**Ledger** (session 1; `make bench-kernels` best GB/s at base, Qwen
+shapes 4×ffn_gate / 4×ffn_down / output / ffn_down: Q4_K 178.6 / 157.5 /
+179.5 / 150.3, Q5_K 211.5 / 205.4 / 209.7 / 190.6, Q6_K 251.1 / 246.2 /
+251.9 / 238.5, IQ4_XS 212.2 / 188.8 / 217.2 / 180.7; idea (c) is already
+the K-quant body's form, `d·sa·Σqx − dmin·ma·Σx`):
+
+- (b) Q4_K half magic-number decode, high nibbles kept at ×16 with the
+  1/16 folded into the group scale. Prediction: Q4_K ≥ 195 / 175 / 195 /
+  170 GB/s. Measured 199.9 / 178.5 / 199.8 / 177.4 (+11–18 %); `make
+  speed` decode 512 10.37 → 10.79 tok/s (+4.0 %), 4K 10.24 → 10.65
+  (+4.0 %), 5 pairs each within +3.8..+4.6 %. **Kept.**
 
 **Why, since ENGN-20.** Speculation is on for Qwen at draft 7, so a
 default turn spends its time in verify batches: at 512, C 164 ms = propose
