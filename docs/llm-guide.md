@@ -894,12 +894,26 @@ positions and the pair runs 1.16 to 1.23×; on. Each catalogue entry carries
 its own verdict and `bench` opens with no drafter at all when the switch is
 off, so the baseline is true.
 
-Every kernel lever the plan ordered for the verify closed at or below its
-target with its numbers on record: a multi-row matvec that wins only at 2
-rows, a wider small-batch tile, split-K, register-reuse attention, fused
-norms. The honest summary is that speculation is exact on all three
-families, a speedup on one, and the remaining cost is a small-batch matrix
-product this GPU does not do well at 3 to 8 rows.
+Every kernel lever the plan then ordered for the verify closed at or below
+its target with its numbers on record: a multi-row matvec that then won
+only at 2 rows, a wider small-batch tile, split-K, register-reuse
+attention, fused norms. At that point speculation was exact on all three
+families and a speedup on one.
+
+**What changed the verdict.** The decode-speed work that followed attacked
+the verify batch term by term: verify attention split across the visible
+rows like flash decoding, a matrix tile that decodes weights straight into
+its `simdgroup_matrix` registers, and a DeltaNet verify that steps without
+writing its state and, on rejection, replays a small tape instead of
+restoring a checkpoint. Qwen's 4-row verify batch at 4K fell from about
+400 ms to about 190, and the switch is now on for Qwen at draft 7:
+prose at 512 runs 11.5 → 17.4 tok/s (1.51×), short code about 20. A
+rewritten multi-row matvec, which loads each input once for eight rows and
+dequantizes each weight once for every token, now wins at 2 rows for every
+specialized encoding and at 3 for the K-quants. What remains is the
+small-batch matrix product at 4 to 8 rows, which this GPU still does
+poorly: the tile pads every 8×8 multiply, and a scalar body pays about
+0.15 ms per extra token at a quarter of the GPU's occupancy.
 
 Read: `inference/src/runtime/draft.zig`, `speculativeBatch` in `engine.zig`,
 `models/dflash.zig`, `models/gemma4_assistant.zig`,

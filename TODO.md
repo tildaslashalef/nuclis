@@ -76,6 +76,10 @@ correctness bug, not a timing one.
   restore; a `/resume`), and `make agent-eval` before and after, since
   the loop's behaviour changes.
 
-Gates: `make check`, `make lint-py`, `make verify-auto`, `make shot`,
-`make agent-eval VARIANT=…`. Docs: `docs/reference/session.md`,
+Gates: `make check`, `make lint-py`, `make shot`, `make agent-eval
+VARIANT=…`. No inference gate tiers (user, 2026-10-03): this is agent
+work, so `make verify-auto`'s Metal gates, `make verify`, and the CPU,
+long, and release tiers do not run for it; the unit uses only engine
+APIs those tiers already cover (snapshot, restore, `prefix_cache`), and
+an engine change it turns out to need becomes its own ENGN unit. Docs: `docs/reference/session.md`,
 `docs/development.md` § User directories, the agent's help.
