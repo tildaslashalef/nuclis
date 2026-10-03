@@ -455,6 +455,8 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "most 300 s to start (then 529 timeout), at most 64 wait (then 529 busy).");
     try plain(out, "Bodies up to 4 MiB; states are text or JSON, never {\"file\": path}.");
     try plain(out, "Errors are {\"error\": {\"code\", \"message\"}} with a fitting HTTP status.");
+    try plain(out, "Ctrl-C stops accepting, finishes queued decisions (up to 10 s), and exits;");
+    try plain(out, "a second Ctrl-C ends the process at once.");
 }
 fn inspect(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis inspect", "what an artifact is");

@@ -64,7 +64,11 @@ are `systemone`'s own: uncalibrated, `confidence` the top probability. A
 clef decision is a 9B prefill, 2.3 s for a 637-token state
 ([clef.md § Time per decision](clef.md#time-per-decision)).
 
-Ctrl-C stops the server. It reads no files on a client's behalf and
+Ctrl-C stops the server gracefully: it accepts no new connections,
+waits up to 10 s for decisions already queued or running, closes the
+connections (idle keep-alive ones included), and exits 0, so a Debug
+build ends with the allocator's leak check. A second Ctrl-C ends the
+process at once. The server reads no files on a client's behalf and
 writes nothing but its log: one line per response on stdout, coloured on
 a terminal (time, method, path, status, latency, size, and what was done
 or the error):

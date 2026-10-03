@@ -1,6 +1,7 @@
 //! `nuclis serve`: the nuclis API. Composes the transport (`http.zig`), the
 //! router, the GPU executor, and the services (decisions now), then accepts
-//! connections until the process ends, each connection its own task. The
+//! connections, each its own task, until Ctrl-C or a failed accept; Ctrl-C
+//! drains the queued decisions before the connections close. The
 //! layers stay apart: the transport and the router know no model, a service
 //! never touches a socket, and only the executor's worker runs a model.
 //! docs/reference/api.md.
@@ -16,6 +17,7 @@ const router_mod = @import("router.zig");
 const decisions = @import("decisions/service.zig");
 const log_mod = @import("log.zig");
 const batcher = @import("decisions/batcher.zig");
+const interrupt = @import("../interrupt.zig");
 
 /// Host constants; a client never chooses them.
 pub const limits = struct {
@@ -23,6 +25,8 @@ pub const limits = struct {
     pub const connections = 64;
     pub const queued_jobs = 64;
     pub const write_buffer = 16 * 1024;
+    /// How long Ctrl-C waits for queued decisions before closing connections.
+    pub const drain_seconds = 10;
 };
 
 /// Defaults come from the configuration's `serve` section; the flags
@@ -131,6 +135,8 @@ const Server = struct {
     version: []const u8,
     active: std.atomic.Value(u32) = .init(0),
     log: ?*log_mod.Log = null,
+    /// Set when the accept task returns, so the main task stops waiting.
+    accept_ended: std.atomic.Value(bool) = .init(false),
 
     fn register(self: *Server) !void {
         try self.decisions.register(self.gpa, &self.router, &self.listing);
@@ -153,6 +159,38 @@ const Server = struct {
         writeHealth(&out.writer, self.version, self.backend, open, stats, batching, self.active.load(.monotonic)) catch
             return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         return .{ .body = out.written() };
+    }
+
+    /// Decision work queued or running on the GPU.
+    fn busy(self: *Server, io: std.Io) bool {
+        const queue = self.executor.stats(io);
+        return queue.queued > 0 or queue.running or self.decisions.batcher.stats(io).waiting > 0;
+    }
+
+    /// The accept task: one connection task per accepted stream until the
+    /// task is canceled (Ctrl-C) or accepting fails.
+    fn accept(self: *Server, io: std.Io, listener: *std.Io.net.Server, group: *std.Io.Group, diag: *config.Diagnostic) !void {
+        defer self.accept_ended.store(true, .release);
+        while (true) {
+            const stream = listener.accept(io) catch |err| switch (err) {
+                error.Canceled => return err,
+                error.ConnectionAborted, error.ProtocolFailure, error.BlockedByFirewall => continue,
+                // Out of descriptors or memory: refuse this one, keep serving.
+                error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded, error.SystemResources => {
+                    try io.sleep(.fromMilliseconds(10), .awake);
+                    continue;
+                },
+                else => {
+                    diag.set("accepting connections failed: {s}", .{@errorName(err)});
+                    return err;
+                },
+            };
+            if (self.active.fetchAdd(1, .monotonic) >= limits.connections) {
+                refuse(io, stream, &self.active, self.log);
+                continue;
+            }
+            group.concurrent(io, connection, .{ self, io, stream }) catch refuse(io, stream, &self.active, self.log);
+        }
     }
 
     /// One connection's task: serve it, then close it and free its slot.
@@ -218,8 +256,10 @@ pub const Context = struct {
     version: []const u8,
 };
 
-/// Serves until the process ends or accepting fails. Prints where it
-/// listens and what it opened to `out`.
+/// Serves until Ctrl-C or a failed accept. Prints where it listens, what it
+/// opened, and the shutdown to `out`. After Ctrl-C it accepts nothing new,
+/// waits up to `limits.drain_seconds` for queued decisions, closes the
+/// connections, and returns; a second Ctrl-C ends the process at once.
 pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     const backend = options.backend orelse inference.decide.default_backend;
     const listen_address = try address(options.host, options.port, diag);
@@ -274,25 +314,29 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
 
     var group: std.Io.Group = .init;
     defer group.cancel(io);
-    while (true) {
-        const stream = listener.accept(io) catch |err| switch (err) {
-            error.ConnectionAborted, error.ProtocolFailure, error.BlockedByFirewall => continue,
-            // Out of descriptors or memory: refuse this one, keep serving.
-            error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded, error.SystemResources => {
-                try io.sleep(.fromMilliseconds(10), .awake);
-                continue;
-            },
-            else => {
-                diag.set("accepting connections failed: {s}", .{@errorName(err)});
-                return err;
-            },
-        };
-        if (server.active.fetchAdd(1, .monotonic) >= limits.connections) {
-            refuse(io, stream, &server.active, server.log);
-            continue;
-        }
-        group.concurrent(io, Server.connection, .{ &server, io, stream }) catch refuse(io, stream, &server.active, server.log);
+    interrupt.install();
+    var accepting = try io.concurrent(Server.accept, .{ &server, io, &listener, &group, diag });
+    // The signal handler can only set a flag, so the main task polls it.
+    while (!interrupt.requested() and !server.accept_ended.load(.acquire)) {
+        io.sleep(.fromMilliseconds(100), .awake) catch break;
     }
+    accepting.cancel(io) catch |err| switch (err) {
+        error.Canceled => {},
+        else => return err,
+    };
+
+    try out.print("{s}stopping:{s} no new connections; finishing queued decisions {s}(up to {d} s; Ctrl-C again ends now){s}\n", .{ sty.on(.warning), sty.off(), sty.on(.dim), limits.drain_seconds, sty.off() });
+    try out.flush();
+    const drain_until = std.Io.Clock.awake.now(io).addDuration(.fromSeconds(limits.drain_seconds));
+    while (server.busy(io) and std.Io.Clock.awake.now(io).compare(.lt, drain_until)) {
+        io.sleep(.fromMilliseconds(50), .awake) catch break;
+    }
+    const abandoned = server.busy(io);
+    // Wakes idle keep-alive connections; a request already taken by a batch
+    // finishes first (the batcher waits through one cancelation).
+    group.cancel(io);
+    try out.print("{s}stopped{s}{s}\n", .{ sty.on(.success), sty.off(), if (abandoned) " (queued decisions abandoned after the drain limit)" else "" });
+    try out.flush();
 }
 
 /// Answers `busy` and closes: over the connection limit, or no task to run it.
