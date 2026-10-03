@@ -169,7 +169,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-29 | Zig 0.17.0: eight breakage classes migrated, deprecations cleared, `@divCeil` adopted, the version read from the build root; Qwen 4K decode 10 % below the 0.16 records, cause open | 2026-10-03 |
 | REPO-30 | Zig 0.17 holds Qwen's 4K speed: `fd09aa4` under 0.16 and the tree under 0.17 measure the same (10.0 tok/s, C 194 ms); REPO-29's 4K loss was not the compiler or the code | 2026-10-03 |
 | KERN-23 | Weight streaming for one row and a few: the half magic-number decode (Q4_K, Q5_K), IQ4_XS's table in threadgroup memory, word-outer multi-row bodies routed at 2–3 rows; Qwen decode 512 10.37 → 11.78 tok/s, 2–3-row verify C 6–12 % cheaper; closed below its verify and speculation targets | 2026-10-03 |
-| REPO-31 | CI installs Zig 0.17.0: `.github/zig-toolchain` pins the four 0.17.0 tarball digests in place of 0.16.0's | 2026-10-03 |
+| REPO-31 | CI installs Zig 0.17.0: `.github/zig-toolchain` pins the four 0.17.0 tarball digests in place of 0.16.0's; `release` also reads digests from its own revision, so v0.4.0 publishes by dispatch | 2026-10-03 |
 
 ## Context
 
@@ -7612,13 +7612,19 @@ it lists, digests from https://ziglang.org/download/index.json; the
 0.16.0 lines are gone, since the script installs only the manifest's
 version.
 
+The v0.4.0 tag predates the fix, and tags only move forward, so
+`release.yml` now appends the workflow revision's `zig-toolchain` to the
+tag's before installing: the tag's manifest still picks the version, the
+source archive is still `git archive` of the tag. v0.4.0 is published by
+dispatching `release` from `main` with `tag: v0.4.0`.
+
 **Evidence.** `./.github/install-zig.sh <tmp>` on the M4 Pro downloaded
 `zig-aarch64-macos-0.17.0.tar.xz`, matched its digest, and printed
-`0.17.0`. The other three digests are taken from the index unverified by
+`0.17.0`; the same in a worktree of `v0.4.0` with `900e5ea`'s file
+appended. The other three digests are taken from the index unverified by
 download.
 
-**Files.** `.github/zig-toolchain`, this log.
+**Files.** `.github/zig-toolchain`, `.github/workflows/release.yml`,
+`docs/development.md` (§ Continuous integration and releases), this log.
 
-**Remaining.** A Zig upgrade's checklist should name this file; the
-comment at its head already says the three must move together.
-
+**Remaining.** Nothing.

@@ -1034,6 +1034,11 @@ unless:
 3. the installed `zig version` equals `minimum_zig_version`;
 4. `CHANGELOG.md` has a section for the tag.
 
+The Zig version is the tag's, but the digests are the tag's
+`.github/zig-toolchain` plus the workflow revision's, so a tag cut before
+its compiler was pinned is published by dispatching `release` from `main`
+with the tag as input, never by moving the tag.
+
 It then runs the same gate, builds `-Dmetal=true -Doptimize=ReleaseSafe`,
 asserts the binary reports the tag's version, and publishes three assets: the
 binary tarball (`nuclis-vX.Y.Z-aarch64-macos.tar.gz`), a source tarball
