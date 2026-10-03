@@ -242,8 +242,14 @@ the K-quant body's form, `d·sa·Σqx − dmin·ma·Σx`):
   before measuring. Q4_K 250.6 / 237.8 / 252.2 / 230.0 GB/s (+25–34 %),
   Q5_K +0.2–0.7 %. `make speed` 512 11.78 → 11.98 (+1.72 %, pairs
   +1.61..+1.73), 4K 11.34 → 11.52 (+1.62 %, +1.55..+1.68): below the
-  2 % rule, reverted, patch at `.zig-cache/k23/kscales.patch`; kept
-  under the amended rule (below). Profile:
+  2 % rule, reverted, patch at `.zig-cache/k23/kscales.patch`. Under the
+  amended rule (below) it was measured again: 512 +0.94 % (pairs
+  −0.39..+1.73), 4K +1.75 % (+1.55..+2.32), NOISE; then one deciding
+  10-pair run, fixed in advance: 512 +1.58 % (−1.01..+5.65), 4K +1.55 %
+  (+1.22..+2.09), NOISE. **Reverted.** Every median reads +0.9..+1.8 %,
+  and the base binary itself read 11.60–11.78 tok/s across the runs, so
+  the machine was noisier late in the session; retry only on a cool
+  machine or stacked under a larger change to the same body. Profile:
   the standalone Q4_K ffn_down 3.03 → 2.28 ms, the gate+up segment
   kernel only 33.4 → 32.5 ms, since its tensors are mostly IQ4_XS (61 of
   128 gate/up; Q4_K 28, Q5_K 28, Q3_K 6, IQ4_NL 3 on the generic branch).
