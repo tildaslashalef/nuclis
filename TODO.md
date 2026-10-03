@@ -211,6 +211,10 @@ the K-quant body's form, `d·sa·Σqx − dmin·ma·Σx`):
   170 GB/s. Measured 199.9 / 178.5 / 199.8 / 177.4 (+11–18 %); `make
   speed` decode 512 10.37 → 10.79 tok/s (+4.0 %), 4K 10.24 → 10.65
   (+4.0 %), 5 pairs each within +3.8..+4.6 %. **Kept.**
+- (b) Q5_K, the same decode with the fifth bit OR'd in at bit 4 (low)
+  and bit 8 (high, ×16). Prediction: Q5_K ≥ 225 / 220 / 225 / 205 GB/s.
+  Measured 255.9 / 250.9 / 257.6 (+21–23 %); `make speed` decode 512
+  11.04 → 11.35 tok/s (+2.8 %), 4K 10.64 → 10.93 (+2.7 %). **Kept.**
 
 **Why, since ENGN-20.** Speculation is on for Qwen at draft 7, so a
 default turn spends its time in verify batches: at 512, C 164 ms = propose

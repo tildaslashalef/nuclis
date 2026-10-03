@@ -101,6 +101,15 @@ inline void nu_magic_nibbles(uint w, float4 xa, float4 xb, thread float & sa, th
     sa = fma(lo13.y, xa.w, fma(lo02.y, xa.z, fma(lo13.x, xa.y, fma(lo02.x, xa.x, sa))));
     sb = fma(hi13.y, xb.w, fma(hi02.y, xb.z, fma(hi13.x, xb.y, fma(hi02.x, xb.x, sb))));
 }
+// Q5_K's form of the above: bit `bit_a` (low) or `bit_b` (high) of each byte
+// of the plane word `h` completes each code at bit 4 (low) or bit 8 (high, ×16).
+inline void nu_magic_fives(uint v, uint h, uint bit_a, uint bit_b, float4 xa, float4 xb, thread float & sa, thread float & sb) {
+    uint v8 = v >> 8, ha = h >> bit_a, hb = h >> bit_b;
+    float2 lo02 = nu_magic((v & 0x000f000fu) | ((ha & 0x00010001u) << 4)), lo13 = nu_magic((v8 & 0x000f000fu) | ((ha >> 4) & 0x00100010u));
+    float2 hi02 = nu_magic((v & 0x00f000f0u) | ((hb & 0x00010001u) << 8)), hi13 = nu_magic((v8 & 0x00f000f0u) | (hb & 0x01000100u));
+    sa = fma(lo13.y, xa.w, fma(lo02.y, xa.z, fma(lo13.x, xa.y, fma(lo02.x, xa.x, sa))));
+    sb = fma(hi13.y, xb.w, fma(hi02.y, xb.z, fma(hi13.x, xb.y, fma(hi02.x, xb.x, sb))));
+}
 inline uint nu_word(packed_ushort4 v, uint index) { return index == 0 ? (uint(v.x) | (uint(v.y) << 16)) : (uint(v.z) | (uint(v.w) << 16)); }
 // Sixteen consecutive inputs as four float4 plus their sum (16-byte aligned).
 struct NuInputs16 { float4 v[4]; float sum; };
@@ -165,15 +174,17 @@ inline void nu_matvec_k_body(device const uchar * weights, device const float * 
             if (FIFTH_BIT) {
                 uint4 h = *(device const uint4 *)(row + plane);
                 uint bit_a = 2 * pair, bit_b = bit_a + 1;
-                sqa = nu_dot(nu_low_fives(v.w, h.w, bit_a), xa.v[3], nu_dot(nu_low_fives(v.z, h.z, bit_a), xa.v[2], nu_dot(nu_low_fives(v.y, h.y, bit_a), xa.v[1], nu_dot(nu_low_fives(v.x, h.x, bit_a), xa.v[0], 0.0f))));
-                sqb = nu_dot(nu_high_fives(v.w, h.w, bit_b), xb.v[3], nu_dot(nu_high_fives(v.z, h.z, bit_b), xb.v[2], nu_dot(nu_high_fives(v.y, h.y, bit_b), xb.v[1], nu_dot(nu_high_fives(v.x, h.x, bit_b), xb.v[0], 0.0f))));
+                nu_magic_fives(v.x, h.x, bit_a, bit_b, xa.v[0], xb.v[0], sqa, sqb);
+                nu_magic_fives(v.y, h.y, bit_a, bit_b, xa.v[1], xb.v[1], sqa, sqb);
+                nu_magic_fives(v.z, h.z, bit_a, bit_b, xa.v[2], xb.v[2], sqa, sqb);
+                nu_magic_fives(v.w, h.w, bit_a, bit_b, xa.v[3], xb.v[3], sqa, sqb);
             } else {
                 nu_magic_nibbles(v.x, xa.v[0], xb.v[0], sqa, sqb);
                 nu_magic_nibbles(v.y, xa.v[1], xb.v[1], sqa, sqb);
                 nu_magic_nibbles(v.z, xa.v[2], xb.v[2], sqa, sqb);
                 nu_magic_nibbles(v.w, xa.v[3], xb.v[3], sqa, sqb);
-                sqb *= 0.0625f;
             }
+            sqb *= 0.0625f;
             float d = nu_half_low(dd), dmin = nu_half_high(dd);
             float sa, ma, sb, mb;
             nu_k_scales_pair(s, pair, sa, ma, sb, mb);
