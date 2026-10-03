@@ -19,14 +19,10 @@ it is empty, ask what to work on and write the agreed plan here.
 **Next: KERN-23 session 1.** REPO-29 closed 2026-10-03: the tree is on
 Zig 0.17.0 (engineering log). Its base binary is taken: `make speed-base`
 at `2ace031` (`.zig-cache/speed/base/`); record the unit's `Base:` at the
-first change. **Open, deferred by the user:** Qwen's 4K decode reads
-9.18 tok/s and the 4-row verify C 207 ms, against 10.20 and 191 in the
-0.16 records (512 is within 0.6 %); the kernels under `--profile` do not
-hold it, and MODL-34's `qwen35_metal.zig` change is suspected. The check:
-`make speed` with `.zig-cache/speed/base/` replaced by `fd09aa4` built
-with `~/.local/opt/zig/zig-aarch64-macos-0.16.0/zig` (installed, not
-linked), `--contexts 4096`. KERN-23's predictions at 512 are unaffected;
-its 4K rows compare against its own base. The 16K and 32K saved
+first change. REPO-30 closed 2026-10-03: REPO-29's 4K loss is not
+one; `fd09aa4` under Zig 0.16 and the tree under 0.17 both read 10.0
+tok/s decode and a 4-row C of 194 ms at 4K, so KERN-23's 4K
+starting point is about 10.0 / 194, not REPO-29's 9.18 / 207. The 16K and 32K saved
 prefixes under `.zig-cache/speed/prefix/` are gone (512 and 4K exist):
 the first run at those depths prefills them again, about 3 and 11 min. MODL-34 closed 2026-10-02 in one
 session: `nuclis decide --model clef-flash` and `nuclis serve` answer

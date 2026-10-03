@@ -167,6 +167,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | MODL-34 | clef-flash: Cloudflare's 9B decision model (Qwen3.5 backbone, joint schema head) on both backends, text and images, in `decide` and `serve`; qwen35 reads its shape from the file | 2026-10-02 |
 | REPO-28 | The README presents clef-flash beside Laya: the decision section renamed, a pull and image example, the trade-off table, a clef request to `serve` | 2026-10-03 |
 | REPO-29 | Zig 0.17.0: eight breakage classes migrated, deprecations cleared, `@divCeil` adopted, the version read from the build root; Qwen 4K decode 10 % below the 0.16 records, cause open | 2026-10-03 |
+| REPO-30 | Zig 0.17 holds Qwen's 4K speed: `fd09aa4` under 0.16 and the tree under 0.17 measure the same (10.0 tok/s, C 194 ms); REPO-29's 4K loss was not the compiler or the code | 2026-10-03 |
 
 ## Context
 
@@ -7386,3 +7387,33 @@ documents' build commands (`--global-cache-dir` dropped).
 inference). ZLS does not work with 0.17 yet. The `std.fs.path` and
 `std.posix` terminal and signal calls stay deferred (development.md's
 table). Benchmark records keep the compiler they ran with.
+
+## REPO-30 — Zig 0.17 holds Qwen's 4K speed: the regression REPO-29 left open is not one (2026-10-03)
+
+**Outcome.** The 4K loss REPO-29 recorded (decode 9.18 against 10.20
+tok/s, a 4-row verify C 207 against 191 ms) belongs to neither the
+compiler nor the code since the records. `fd09aa4` (the last 0.16
+revision, MODL-34's `qwen35_metal.zig` included) built with Zig 0.16.0
+and the tree at `43c4840` built with 0.17.0 measure the same, both near
+the records. REPO-29's reading was taken after `make verify-cpu`; which
+condition of that run cost 10 % at 4K only is not established.
+
+**Evidence.** `make speed ARGS='--contexts 4096 --verify-rows 4'`, base
+`fd09aa4` built in a temporary worktree with a copy of Zig 0.16.0 under
+`.zig-cache` (both removed afterwards), candidate `43c4840` under 0.17.0,
+ReleaseSafe, 5 interleaved pairs, Qwen3.8-27B UD-Q4_K_M, F16 KV,
+restored 4K prefix, Apple M4 Pro 48 GiB:
+
+| Row | `fd09aa4`, Zig 0.16.0 | `43c4840`, Zig 0.17.0 | Change |
+| --- | ---: | ---: | ---: |
+| 4,096 decode | 10.02 tok/s | 10.01 | −0.16 % (pairs −0.26..−0.05) |
+| 4,096 verify, 4 rows (accept 1) | 194.19 ms | 194.54 | −0.18 % (pairs −0.32..0.00) |
+
+Against the ENGN-19 records (10.20 tok/s, 190.75 ms) both binaries read
+about 2 % slower, at the edge of the record's 1.5 % run-to-run spread;
+since the two agree, that gap predates the compiler change.
+
+**Files.** This log only, and `TODO.md`.
+
+**Remaining.** Nothing for the compiler. KERN-23 keeps `2ace031` as its
+base; its 4K rows compare against that base, not the records.
