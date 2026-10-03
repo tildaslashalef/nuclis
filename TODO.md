@@ -209,8 +209,8 @@ silent changes, deprecations), `make check` and `make verify-auto` pass,
 committed. 2: the 0.17 features below, the speed A/B, `make verify`,
 `make verify-cpu`, docs, close.
 
-**Why first.** The installed compiler is 0.17.0 (`~/.local/opt/zig/stable`,
-0.16.0 removed), and the tree does not configure under it, so no gate, no
+**Why first.** The installed compiler is 0.17.0 (`~/.local/opt/zig/current`,
+managed by `zigup`; 0.16.0 removed), and the tree does not configure under it, so no gate, no
 `make speed-base`, and no KERN-23 experiment can run until this lands. A
 compiler upgrade is its own unit (AGENTS.md § Versioning).
 [Release notes](https://ziglang.org/download/0.17.0/release-notes.html).
@@ -353,9 +353,9 @@ recompiles every CPU reference kernel; ~25 min). Happy path:
 shot`, and `nuclis serve` + one `/v1/models` request.
 
 **Speed A/B against 0.16 (required, agreed 2026-10-03).** No 0.16 binary
-is left, so: download `zig-aarch64-macos-0.16.0` from ziglang.org into
-`.zig-cache/zig016/` (verify the tarball's minisign/shasum against the
-download page); check out `fd09aa4` into a scratch worktree, build it with
+is left, so: `zigup install 0.16.0` (sha256 verified, does not switch
+`current`; the compiler is `~/.local/opt/zig/zig-aarch64-macos-0.16.0/zig`);
+check out `fd09aa4` into a scratch worktree, build it with
 that compiler exactly as `make speed-base` builds (`-Dmetal=true`, the
 same optimize mode), and place the binary and its revision where
 `make speed` reads its base (`.zig-cache/speed/base/`). Then `make speed
@@ -366,7 +366,11 @@ hardware, both compiler versions, revisions, and method. A regression
 beyond 1 % at either context is investigated (`--profile` to tell host
 time from GPU time) before the unit closes, not charged to KERN-23.
 Afterwards `make speed-base` with the 0.17 binary becomes KERN-23's base;
-remove the scratch worktree.
+remove the scratch worktree and `zigup gc` the 0.16 install.
+
+**Landed early (2026-10-03, before session 1):** AGENTS.md § Local
+toolchain notes records the `zigup` layout and the local std/langref;
+development.md's paths point at `current`. The log entry includes it.
 
 **Lands when** the tree builds and every gate above passes under 0.17.0,
 no deprecation from the list is left, the features above are adopted or

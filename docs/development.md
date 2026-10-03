@@ -38,8 +38,8 @@ the root build. Keep kernels with the inference library that owns them.
 
 Facts every unit depends on; keep them here, not in `TODO.md`.
 
-- Zig 0.16.0 (on the author's machine under `~/.local/opt/zig/stable`; any
-  install of that version works); consult its installed std source for API
+- Zig 0.16.0 (on the author's machine under `~/.local/opt/zig/current`, managed
+  by `zigup`; any install of that version works); consult its installed std source for API
   details. Apple M4 Pro, 48 GiB, macOS 26. Metal compiles
   shaders at runtime from the Command Line Tools; Xcode-only tools are reached
   per process (see [../AGENTS.md § Local toolchain notes](../AGENTS.md#local-toolchain-notes)).
@@ -371,7 +371,7 @@ Verify standard-library calls against that toolchain's installed source and
 language reference rather than assuming older Zig examples still apply.
 
 Local language reference: `doc/langref.html` inside the Zig install
-(`~/.local/opt/zig/stable/doc/langref.html` on the author's machine).
+(`~/.local/opt/zig/current/doc/langref.html` on the author's machine).
 
 The Metal backend additionally needs Apple's SDK/frameworks and the
 Objective-C compiler. The [reference baseline](reference/reference-baseline.md)
