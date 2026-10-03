@@ -209,7 +209,7 @@ silent changes, deprecations), `make check` and `make verify-auto` pass,
 committed. 2: the 0.17 features below, the speed A/B, `make verify`,
 `make verify-cpu`, docs, close.
 
-**Why first.** The installed compiler is 0.17.0 (`~/.local/opt/zig/current`,
+**Why first.** The installed compiler is 0.17.0 (`~/.local/opt/zig/stable`,
 managed by `zigup`; 0.16.0 removed), and the tree does not configure under it, so no gate, no
 `make speed-base`, and no KERN-23 experiment can run until this lands. A
 compiler upgrade is its own unit (AGENTS.md § Versioning).
@@ -370,7 +370,7 @@ remove the scratch worktree and `zigup gc` the 0.16 install.
 
 **Landed early (2026-10-03, before session 1):** AGENTS.md § Local
 toolchain notes records the `zigup` layout and the local std/langref;
-development.md's paths point at `current`. The log entry includes it.
+development.md's paths point at `stable`. The log entry includes it.
 
 **Lands when** the tree builds and every gate above passes under 0.17.0,
 no deprecation from the list is left, the features above are adopted or

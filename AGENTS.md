@@ -232,17 +232,17 @@ stale references. Do not claim build/test execution when no code or build exists
 
 ## Local toolchain notes
 
-- Zig lives under `~/.local/opt/zig/current` (`~/.local/bin/zig` links to
-  `current/zig`), managed by the user's fish function `zigup`: `current`
-  points at a channel (`stable`, `nightly`) or a pinned `x.y.z`, each a
-  symlink to `zig-aarch64-macos-<version>/`. Read the standard library at
-  `current/lib/std/` and the language reference at
-  `current/doc/langref.html`, never from the web; only the release notes
-  are online. `zigup install x.y.z` fetches another version (sha256
-  verified) without switching, at
-  `~/.local/opt/zig/zig-aarch64-macos-x.y.z/zig`, for A/B builds; `zigup
-  gc` deletes versions no link references. Switching `current` is the
-  user's call.
+- The project's Zig is `~/.local/opt/zig/stable` (a symlink to
+  `zig-aarch64-macos-<version>/`), managed by the user's fish function
+  `zigup`. Read the standard library at `stable/lib/std/` and the language
+  reference at `stable/doc/langref.html`, never from the web; only the
+  release notes are online. Do not rely on `current`: `~/.local/bin/zig`
+  links to `current/zig`, which the user may point at `nightly` for a
+  while, so check `zig version` against `stable/zig version` before
+  building and say so if they differ. `zigup install x.y.z` fetches another
+  version (sha256 verified) without switching, at
+  `~/.local/opt/zig/zig-aarch64-macos-x.y.z/zig`, for A/B builds; `zigup gc`
+  deletes versions no link references. Switching links is the user's call.
 - The active developer directory is the Command Line Tools
   (`xcode-select -p`), which is what `zig build` uses for the Objective-C
   bridge. Do not switch it globally. Tools that only ship with Xcode
