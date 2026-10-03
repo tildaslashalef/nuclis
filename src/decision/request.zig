@@ -118,7 +118,7 @@ pub fn parseJson(arena: std.mem.Allocator, bytes: []const u8, what: []const u8, 
 /// (a list keeps its tail).
 pub fn stateFromJson(arena: std.mem.Allocator, io: std.Io, value: std.json.Value, index: usize, files: Files, diag: *config.Diagnostic) !Labeled {
     switch (value) {
-        .string => |s| return .{ .label = try std.fmt.allocPrint(arena, "state[{d}]", .{index}), .state = .{ .text = s } },
+        .string => |s| return .{ .label = try arena.print("state[{d}]", .{index}), .state = .{ .text = s } },
         .object => |o| if (o.count() == 1) if (o.get("file")) |f| if (f == .string) {
             if (files == .refused) {
                 diag.set("state[{d}] names a file; this server reads no files, send the text", .{index});
@@ -129,7 +129,7 @@ pub fn stateFromJson(arena: std.mem.Allocator, io: std.Io, value: std.json.Value
         else => {},
     }
     return .{
-        .label = try std.fmt.allocPrint(arena, "state[{d}]", .{index}),
+        .label = try arena.print("state[{d}]", .{index}),
         .state = .{ .text = try profile.pythonJson(arena, value), .truncate = if (value == .array) .head else .tail, .json = value },
     };
 }

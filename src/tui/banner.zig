@@ -5,6 +5,7 @@
 //! from then on. The caller inserts the rows above the live region and owns
 //! the arena they are built in.
 const std = @import("std");
+const repeat = @import("../text.zig").repeat;
 const screen = @import("screen.zig");
 const theme = @import("theme.zig");
 const view = @import("view.zig");
@@ -54,12 +55,12 @@ pub const Info = struct {
 pub fn rows(a: std.mem.Allocator, info: Info, width: usize, th: theme.Theme) ![]const Row {
     var out: std.ArrayList(Row) = .empty;
     const model_line = try modelLine(a, info);
-    const settings_line = try std.fmt.allocPrint(a, "ctx {d} · think {s} · {s}", .{ info.ctx_size, info.effort, info.workspace });
-    const version_line = try std.fmt.allocPrint(a, "nuclis agent {s}", .{info.version});
+    const settings_line = try a.print("ctx {d} · think {s} · {s}", .{ info.ctx_size, info.effort, info.workspace });
+    const version_line = try a.print("nuclis agent {s}", .{info.version});
     if (width < wordmark_width + frame_cells + margin) {
-        try out.append(a, .{ .text = try std.fmt.allocPrint(a, " nuclis agent {s}", .{info.version}), .style = .header });
-        try out.append(a, .{ .text = try std.fmt.allocPrint(a, " {s}", .{model_line}), .style = .dim });
-        try out.append(a, .{ .text = try std.fmt.allocPrint(a, " {s}", .{settings_line}), .style = .dim });
+        try out.append(a, .{ .text = try a.print(" nuclis agent {s}", .{info.version}), .style = .header });
+        try out.append(a, .{ .text = try a.print(" {s}", .{model_line}), .style = .dim });
+        try out.append(a, .{ .text = try a.print(" {s}", .{settings_line}), .style = .dim });
         try out.append(a, .{ .text = "" });
         return out.items;
     }
@@ -159,13 +160,13 @@ test "a wide terminal gets the boxed mark and the description; a narrow one the 
         try testing.expect(row.raw);
         try testing.expectEqual(inner + frame_cells + 2, view.styledWidth(row.text));
     }
-    try testing.expectEqualStrings("  ╭" ++ ("─" ** 59) ++ "╮", try stripped(a, wide[0].text));
+    try testing.expectEqualStrings("  ╭" ++ repeat("─", 59) ++ "╮", try stripped(a, wide[0].text));
     try testing.expectEqualStrings("  │ " ++ wordmark[0] ++ " │", try stripped(a, wide[1].text));
-    try testing.expectEqualStrings("  │ " ++ (" " ** 57) ++ " │", try stripped(a, wide[7].text));
-    try testing.expectEqualStrings("  │ nuclis agent 0.2.0-dev" ++ (" " ** 35) ++ " │", try stripped(a, wide[8].text));
-    try testing.expectEqualStrings("  │ hauhau · Gemma4-12B · metal · gemma4 profile (forced)" ++ (" " ** 4) ++ " │", try stripped(a, wide[9].text));
-    try testing.expectEqualStrings("  │ ctx 8192 · think low · ~/Code/nuclis" ++ (" " ** 21) ++ " │", try stripped(a, wide[10].text));
-    try testing.expectEqualStrings("  ╰" ++ ("─" ** 59) ++ "╯", try stripped(a, wide[11].text));
+    try testing.expectEqualStrings("  │ " ++ repeat(" ", 57) ++ " │", try stripped(a, wide[7].text));
+    try testing.expectEqualStrings("  │ nuclis agent 0.2.0-dev" ++ repeat(" ", 35) ++ " │", try stripped(a, wide[8].text));
+    try testing.expectEqualStrings("  │ hauhau · Gemma4-12B · metal · gemma4 profile (forced)" ++ repeat(" ", 4) ++ " │", try stripped(a, wide[9].text));
+    try testing.expectEqualStrings("  │ ctx 8192 · think low · ~/Code/nuclis" ++ repeat(" ", 21) ++ " │", try stripped(a, wide[10].text));
+    try testing.expectEqualStrings("  ╰" ++ repeat("─", 59) ++ "╯", try stripped(a, wide[11].text));
     try testing.expectEqualStrings("", wide[12].text);
 
     // 80 columns still fits the 61-cell box; 60 does not.
@@ -190,7 +191,7 @@ test "a description wider than the mark widens the box, up to the terminal" {
     try testing.expectEqualStrings("  │ " ++ settings ++ " │", try stripped(a, wide[10].text));
     // Cut at the terminal's width minus the margin: every row still ends
     // with the edge and control bytes never reach the row.
-    long.workspace = "~/\x1b[2J" ++ ("x" ** 200);
+    long.workspace = "~/\x1b[2J" ++ repeat("x", 200);
     const cut = try rows(a, long, 100, .{ .kind = .plain });
     try testing.expectEqual(100 - margin + 2, view.styledWidth(cut[10].text));
     try testing.expect(std.mem.indexOf(u8, cut[10].text, "\x1b[2J") == null);
@@ -202,7 +203,7 @@ test "the ascii set frames with plus and pipe, and a styled theme colours the fr
     defer arena.deinit();
     const a = arena.allocator();
     const ascii = try rows(a, sample, 120, .{ .kind = .plain, .glyph_set = .ascii });
-    try testing.expectEqualStrings("  +" ++ ("-" ** 59) ++ "+", try stripped(a, ascii[0].text));
+    try testing.expectEqualStrings("  +" ++ repeat("-", 59) ++ "+", try stripped(a, ascii[0].text));
     try testing.expect(std.mem.startsWith(u8, try stripped(a, ascii[1].text), "  | "));
     const styled = try rows(a, sample, 120, .{ .kind = .truecolor });
     try testing.expect(std.mem.indexOf(u8, styled[1].text, "\x1b[") != null);

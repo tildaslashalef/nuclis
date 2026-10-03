@@ -170,7 +170,7 @@ test "RoPE identity preserves bits and rotation preserves pair norm" {
 }
 
 test "RoPE rejects invalid shape, base, and nonfinite tail before writes" {
-    var output = [_]f32{123} ** 4;
+    var output: [4]f32 = @splat(123);
     try std.testing.expectError(error.InvalidShape, apply(&.{}, output[0..0], .{ .dimensions = 2, .base = 100, .position = 1 }));
     for ([_]usize{ 0, 1, 3, 6 }) |width|
         try std.testing.expectError(error.InvalidShape, apply(&.{ 1, 2, 3, 4 }, &output, .{ .dimensions = width, .base = 100, .position = 1 }));

@@ -88,11 +88,11 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     workspace.replaceFile(alloc, target.abs, updated.items) catch |err|
         return root.fail(alloc, "edit_file: {s}: {s}", .{ path, @errorName(err) });
 
-    const text = try std.fmt.allocPrint(alloc, "edited {s}: 1 replacement", .{path});
+    const text = try alloc.print("edited {s}: 1 replacement", .{path});
     errdefer alloc.free(text);
     const counts = try root.changeSummary(alloc, change.diff.rows);
     defer alloc.free(counts);
-    const summary = try std.fmt.allocPrint(alloc, "Edited {s}: {s} lines", .{ path, counts });
+    const summary = try alloc.print("Edited {s}: {s} lines", .{ path, counts });
     keep = true;
     return .{ .text = text, .change = change, .summary = summary };
 }

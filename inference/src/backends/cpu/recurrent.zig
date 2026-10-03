@@ -271,7 +271,7 @@ test "causal convolution history order, independent channels, and kernel one" {
 test "DeltaNet corrects decayed prediction and reads updated state" {
     var state = [_]f32{ 1, 2, 3, 4 };
     var out: [2]f32 = undefined;
-    var scratch = [_]f64{999} ** 7;
+    var scratch: [7]f64 = @splat(999);
     const x: Delta = .{ .query = &.{ 0, 1 }, .key = &.{ 1, 0 }, .value = &.{ 5, 7 }, .log_decay = 0, .beta = 0.5, .scale = 2 };
     try delta(x, &state, &state, &out, &scratch);
     try std.testing.expectEqualSlices(f32, &.{ 3, 2, 5, 4 }, &state);
@@ -285,7 +285,7 @@ test "DeltaNet corrects decayed prediction and reads updated state" {
 }
 
 test "restoring a recurrent checkpoint reproduces continuation" {
-    var state = [_]f32{0} ** 4;
+    var state: [4]f32 = @splat(0);
     var out: [2]f32 = undefined;
     var scratch: [6]f64 = undefined;
     const x: Delta = .{ .query = &.{ 0.5, -0.5 }, .key = &.{ 0.6, 0.8 }, .value = &.{ 2, -1 }, .log_decay = -0.2, .beta = 0.7, .scale = 1 };

@@ -106,7 +106,7 @@ fn run(http: *std.http.Client, options: Options, result: *?Response) !void {
     var count: usize = 0;
     if (options.token) |token| {
         if (token.len == 0 or token.len > 64_000 or std.mem.indexOfAny(u8, token, "\r\n\x00") != null) return error.InvalidToken;
-        extra[count] = .{ .name = "Authorization", .value = try std.fmt.allocPrint(a, "Bearer {s}", .{token}) };
+        extra[count] = .{ .name = "Authorization", .value = try a.print("Bearer {s}", .{token}) };
         count += 1;
     }
     if (options.range) |range| {
@@ -125,7 +125,7 @@ fn run(http: *std.http.Client, options: Options, result: *?Response) !void {
     var headers: std.ArrayList(std.http.Header) = .empty;
     var iter = res.head.iterateHeaders();
     while (iter.next()) |h| try headers.append(a, .{ .name = try a.dupe(u8, h.name), .value = try a.dupe(u8, h.value) });
-    const status: u16 = @intFromEnum(res.head.status);
+    const status: u16 = @backingInt(res.head.status);
     // Redirect bodies and error bodies are neither artifacts nor useful diagnostics.
     var body: []const u8 = &.{};
     if (!options.head and (status == 200 or status == 206)) {

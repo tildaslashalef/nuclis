@@ -109,7 +109,7 @@ pub fn run(
     var stamp: [20]u8 = undefined;
     const now = model.rfc3339(&stamp, std.Io.Timestamp.now(io, .real).toSeconds());
     var id: [32]u8 = undefined;
-    const cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc) catch try alloc.dupeZ(u8, ".");
+    const cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc) catch try alloc.dupeSentinel(u8, ".", 0);
     defer alloc.free(cwd);
     var log = try session_log.create(alloc, io, .cwd(), .{
         .root_dir = null,

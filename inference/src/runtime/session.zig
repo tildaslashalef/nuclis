@@ -11,6 +11,7 @@
 //! this memory. The synchronous backend guarantees that by waiting on every
 //! command buffer; an asynchronous backend must fence before these.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 
 /// Storage precision of an attention layer's cache rows. The CPU reference
 /// runtime always uses `f32`; `f16` is a GPU option that
@@ -263,12 +264,12 @@ pub const Session = struct {
         var hasher = std.hash.Wyhash.init(0xd16);
         hasher.update(std.mem.asBytes(&capacity));
         for (layouts) |layout| {
-            hasher.update(std.mem.asBytes(&@intFromEnum(layout)));
+            hasher.update(std.mem.asBytes(&@backingInt(layout)));
             switch (layout) {
                 .attention => |x| {
                     hasher.update(std.mem.asBytes(&x.key_row));
                     hasher.update(std.mem.asBytes(&x.value_row));
-                    hasher.update(std.mem.asBytes(&@intFromEnum(x.precision)));
+                    hasher.update(std.mem.asBytes(&@backingInt(x.precision)));
                 },
                 .recurrent => |x| {
                     hasher.update(std.mem.asBytes(&x.history));
@@ -591,7 +592,7 @@ fn snapshotRoundTrip(a: std.mem.Allocator) !void {
 }
 test "snapshot copies the used extent and restore brings it back" {
     try snapshotRoundTrip(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, snapshotRoundTrip, .{});
+    try alloc_check.checkAll(std.testing.allocator, snapshotRoundTrip, .{});
 }
 
 test "restore refuses other capacities, other layouts, and unready sessions" {
@@ -647,7 +648,7 @@ fn exercise(a: std.mem.Allocator) !void {
 }
 test "session failures require reset and allocation failures release all layers" {
     try exercise(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, exercise, .{});
+    try alloc_check.checkAll(std.testing.allocator, exercise, .{});
 }
 
 test "attention views carve rows at the layout's precision" {
@@ -726,7 +727,7 @@ fn checkpointRoundTrip(a: std.mem.Allocator) !void {
 }
 test "checkpoint copies recurrent state and rewind brings it back" {
     try checkpointRoundTrip(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkpointRoundTrip, .{});
+    try alloc_check.checkAll(std.testing.allocator, checkpointRoundTrip, .{});
 }
 
 test "pending rows refuse until settled or rewound" {

@@ -145,7 +145,7 @@ signed zero, infinity, and NaN.
 Default tests consume only the committed fixtures and need no external checkout or model:
 
 ```sh
-zig build test --global-cache-dir .zig-cache/global
+zig build test
 ```
 
 To regenerate on macOS, build the pinned reference following

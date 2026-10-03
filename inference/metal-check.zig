@@ -2625,7 +2625,7 @@ fn captureCase(b: *Backend, label: []const u8) !void {
         },
     };
     var path_buffer: [256]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buffer, ".zig-cache/trace/kernels/{s}.gputrace", .{name[0..n]});
+    const path = try std.fmt.bufPrintSentinel(&path_buffer, ".zig-cache/trace/kernels/{s}.gputrace", .{name[0..n]}, 0);
     var diagnostic: [512]u8 = @splat(0);
     b.captureNext(path, &diagnostic) catch |err| {
         std.debug.print("capture {s}: {s}\n", .{ path, std.mem.sliceTo(&diagnostic, 0) });

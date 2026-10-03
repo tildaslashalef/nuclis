@@ -54,7 +54,7 @@ pub fn format(w: *std.Io.Writer, sty: style.Style, e: Entry, local_ms: u64) std.
     try w.print("{s}{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}{s} ", .{ sty.on(.dim), day_ms / std.time.ms_per_hour, day_ms / std.time.ms_per_min % 60, day_ms / std.time.ms_per_s % 60, day_ms % 1000, off });
     const method = if (e.method) |m| @tagName(m) else "-";
     try w.print("{s}{s: <6}{s} {s}{s: <16}{s} ", .{ sty.on(.bold), method, off, sty.on(.code), e.path, off });
-    const code = @intFromEnum(e.status);
+    const code = @backingInt(e.status);
     const status_kind: style.Kind = if (code < 300) .success else if (code < 500) .warning else .error_text;
     try w.print("{s}{d}{s} ", .{ sty.on(status_kind), code, off });
     var latency: [16]u8 = undefined;
@@ -102,7 +102,7 @@ extern "c" fn localtime_r(time: *const c_long, result: *Tm) ?*Tm;
 /// The local zone's offset at `now` (seconds since the epoch); UTC where
 /// libc's zone database is not linked.
 fn utcOffset(now: i64) i64 {
-    if (!builtin.os.tag.isDarwin()) return 0;
+    if (!builtin.target.os.tag.isDarwin()) return 0;
     var tm: Tm = undefined;
     const t: c_long = @intCast(now);
     return if (localtime_r(&t, &tm) != null) tm.gmtoff else 0;
@@ -116,6 +116,6 @@ test "a line: time, method, path, status, latency, size, note" {
     try format(&w, .none, .{ .method = .POST, .path = "/v1/decisions", .status = .ok, .duration_ns = 14_210_000, .bytes_out = 612, .note = "laya · 1 state × 2 questions" }, ms);
     try std.testing.expectEqualStrings("13:04:05.678 POST   /v1/decisions    200   14.2 ms    612 B  laya · 1 state × 2 questions\n", w.buffered());
     w = .fixed(&buffer);
-    try format(&w, .none, .{ .method = null, .path = "-", .status = @enumFromInt(529), .duration_ns = 42_000, .bytes_out = 3 * 1024 * 1024 }, 0);
+    try format(&w, .none, .{ .method = null, .path = "-", .status = @fromBackingInt(529), .duration_ns = 42_000, .bytes_out = 3 * 1024 * 1024 }, 0);
     try std.testing.expectEqualStrings("00:00:00.000 -      -                529  0.042 ms   3.0 MB\n", w.buffered());
 }

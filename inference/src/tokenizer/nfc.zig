@@ -3,6 +3,7 @@
 //! generated nfc_table.zig (scripts/tokenizer-nfc.py); Hangul is algorithmic.
 //! Text with no scalar at or above U+0300 is already NFC and is not copied.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const table = @import("nfc_table.zig");
 
 pub const Error = std.mem.Allocator.Error || error{InvalidUtf8};
@@ -167,7 +168,7 @@ test "composition, reordering, blocking, exclusions, and Hangul" {
 }
 
 test "allocation failures leave nothing behind" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try alloc_check.checkAll(std.testing.allocator, struct {
         fn run(gpa: std.mem.Allocator) !void {
             const out = (try normalize(gpa, "d\u{307}\u{323} \u{ac00}\u{11a8}")).?;
             gpa.free(out);

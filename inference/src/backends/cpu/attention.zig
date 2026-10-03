@@ -84,7 +84,7 @@ fn simple() Input {
 test "attention scaled probabilities and causal prefix" {
     var x = simple();
     var output: [1]f32 = undefined;
-    var scratch = [_]f64{123} ** 3;
+    var scratch: [3]f64 = @splat(123);
     try apply(x, &output, &scratch);
     try std.testing.expectApproxEqAbs(@as(f32, 2.5378828427399902), output[0], 3e-7);
     x.scale = 2;
@@ -147,7 +147,7 @@ test "attention matches pinned CPU matrix-softmax-matrix graphs" {
 
 test "attention rejects malformed inputs before touching output or scratch" {
     var output = [_]f32{123};
-    var scratch = [_]f64{456} ** 2;
+    var scratch: [2]f64 = @splat(456);
     const Case = struct { input: Input, err: Error };
     var cases: std.ArrayList(Case) = .empty;
     defer cases.deinit(std.testing.allocator);

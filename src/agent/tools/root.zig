@@ -84,7 +84,7 @@ pub const Workspace = struct {
     pub fn replaceFile(self: Workspace, alloc: Allocator, target: []const u8, content: []const u8) !void {
         var random: [8]u8 = undefined;
         self.io.randomSecure(&random) catch self.io.random(&random);
-        const temp = try std.fmt.allocPrintSentinel(alloc, "{s}.nuclis-{x}.tmp", .{ target, &random }, 0);
+        const temp = try alloc.printSentinel("{s}.nuclis-{x}.tmp", .{ target, &random }, 0);
         defer alloc.free(temp);
         {
             const file = try std.Io.Dir.createFileAbsolute(self.io, temp, .{});
@@ -131,7 +131,7 @@ pub fn changeSummary(alloc: Allocator, rows: []const tui.diff.Row) ![]u8 {
         .remove => removed += 1,
         .context => {},
     };
-    return std.fmt.allocPrint(alloc, "+{d} −{d}", .{ added, removed });
+    return alloc.print("+{d} −{d}", .{ added, removed });
 }
 
 pub const Result = struct {
@@ -187,7 +187,7 @@ pub fn find(name: []const u8) ?Tool {
 
 /// An expected failure, as a result the model reads.
 pub fn fail(alloc: Allocator, comptime format: []const u8, args: anytype) Allocator.Error!Result {
-    return .{ .text = try std.fmt.allocPrint(alloc, format, args), .is_error = true };
+    return .{ .text = try alloc.print(format, args), .is_error = true };
 }
 
 /// A tool call as the transcript shows it: the call row (`Reading TODO.md`)
@@ -213,12 +213,12 @@ pub const max_argument_cells: usize = 72;
 /// model-facing name and raw JSON are untouched. Anything unparseable falls
 /// back to `Name(<raw arguments>)`.
 pub fn describe(alloc: Allocator, name: []const u8, arguments: []const u8) !Described {
-    const tool = find(name) orelse return .{ .summary = try std.fmt.allocPrint(alloc, "{s}({s})", .{ name, arguments }) };
+    const tool = find(name) orelse return .{ .summary = try alloc.print("{s}({s})", .{ name, arguments }) };
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, arguments, .{}) catch
-        return .{ .summary = try std.fmt.allocPrint(alloc, "{s}({s})", .{ tool.display, arguments }) };
+        return .{ .summary = try alloc.print("{s}({s})", .{ tool.display, arguments }) };
     defer parsed.deinit();
-    if (parsed.value != .object) return .{ .summary = try std.fmt.allocPrint(alloc, "{s}({s})", .{ tool.display, arguments }) };
-    const subject = parsed.value.object.get(tool.subject) orelse return .{ .summary = try std.fmt.allocPrint(alloc, "{s}()", .{tool.display}) };
+    if (parsed.value != .object) return .{ .summary = try alloc.print("{s}({s})", .{ tool.display, arguments }) };
+    const subject = parsed.value.object.get(tool.subject) orelse return .{ .summary = try alloc.print("{s}()", .{tool.display}) };
 
     var full: std.Io.Writer.Allocating = .init(alloc);
     defer full.deinit();
@@ -226,10 +226,10 @@ pub fn describe(alloc: Allocator, name: []const u8, arguments: []const u8) !Desc
     // `fit` borrows: the cut is a prefix of the full text.
     const shown = try tui.view.fit(alloc, full.written(), max_argument_cells);
     const cut = shown.len < full.written().len;
-    const summary = try std.fmt.allocPrint(alloc, "{s}({s}{s})", .{ tool.display, shown, if (cut) "…" else "" });
+    const summary = try alloc.print("{s}({s}{s})", .{ tool.display, shown, if (cut) "…" else "" });
     errdefer alloc.free(summary);
     if (!cut) return .{ .summary = summary };
-    const detail = try std.fmt.allocPrint(alloc, "{s}{s}", .{ tool.detail_prefix orelse "", full.written() });
+    const detail = try alloc.print("{s}{s}", .{ tool.detail_prefix orelse "", full.written() });
     return .{ .summary = summary, .detail = detail };
 }
 

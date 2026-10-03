@@ -6,6 +6,7 @@
 //! reuse. Large metadata arrays retain descriptors, not millions of allocations.
 //! No tensor weights are read. Their complete byte ranges are validated instead.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const encoding = @import("../tensor/encoding.zig");
 const Allocator = std.mem.Allocator;
 
@@ -634,7 +635,7 @@ test "corrupted files return an error or a document, never a panic or a leak" {
 test "arena cleanup survives every allocation failure" {
     var bytes = try fixture(.{});
     defer bytes.deinit();
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseFixture, .{bytes.written()});
+    try alloc_check.checkAll(std.testing.allocator, parseFixture, .{bytes.written()});
 }
 
 test "reject bad magic and unknown metadata tags before interpreting values" {

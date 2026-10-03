@@ -34,7 +34,7 @@ pub fn document(gpa: std.mem.Allocator, json_text: []const u8) !gguf.Document {
             .string => |s| .{ .kind = .string, .value = .{ .string = s } },
             .object => |object| blk: {
                 if (object.get("sha256") != null) continue;
-                const element_type: gguf.Type = @enumFromInt(object.get("type").?.integer);
+                const element_type: gguf.Type = @fromBackingInt(@intCast(object.get("type").?.integer));
                 var array: gguf.Array = .{
                     .element_type = element_type,
                     .count = @intCast(object.get("count").?.integer),

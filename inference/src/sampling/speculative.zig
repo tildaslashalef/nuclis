@@ -49,7 +49,7 @@ test "the emitted token is a target draw whatever the draft" {
     // A draft the target never proposes (id 3) is never accepted and the
     // emitted counts are still p; a likely draft (id 0) is accepted at p(0).
     for ([_]u32{ 3, 0 }) |draft| {
-        var seen = [_]usize{0} ** 4;
+        var seen: [4]usize = @splat(0);
         var accepted: usize = 0;
         for (0..trials) |_| {
             if (decide(&sampler, &p, draft) == .accepted) accepted += 1;

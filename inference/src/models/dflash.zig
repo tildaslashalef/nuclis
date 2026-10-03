@@ -10,6 +10,7 @@
 //! configuration, so a file that changes them is refused rather than run.
 //! The binder is deliberately narrow like the other companions.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
 const weights = @import("../runtime/weights.zig");
@@ -358,7 +359,7 @@ test "deviations from the pinned drafter are typed rejections" {
 test "binding survives allocation failure without leaks" {
     var doc = try inventoryDocument(std.testing.allocator);
     defer doc.deinit();
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try alloc_check.checkAll(std.testing.allocator, struct {
         fn check(alloc: std.mem.Allocator, d: *const gguf.Document) !void {
             _ = try bind(alloc, d);
         }

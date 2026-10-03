@@ -27,6 +27,7 @@
 //! the block background, and the language is a caption row above them, so
 //! selecting a block in the terminal copies the code and nothing else.
 const std = @import("std");
+const repeat = @import("../text.zig").repeat;
 const builtin = @import("builtin");
 const theme_mod = @import("theme.zig");
 const view = @import("view.zig");
@@ -921,9 +922,10 @@ test "inline code in headings and items, bold italic, nested quotes, numbered st
 /// The documents every pathological golden and the prefix fuzz are run on.
 const pathological = struct {
     const nested_lists = blk: {
+        @setEvalBranchQuota(10_000); // one branch per repeated space
         var text: []const u8 = "";
         for (0..64) |level| {
-            text = text ++ " " ** (2 * level) ++ "- x\n";
+            text = text ++ repeat(" ", 2 * level) ++ "- x\n";
         }
         break :blk text;
     };

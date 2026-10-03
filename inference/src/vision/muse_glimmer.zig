@@ -396,7 +396,7 @@ fn rowsTimes(io: std.Io, matrix: cpu.Matrix, input: []const f32, n: usize, outpu
     const product: RowsTimes = .{ .matrix = matrix, .row_bytes = row_bytes, .input = input, .n = n, .output = output, .bias = bias };
     const tasks = @min(max_row_tasks, matrix.rows, scratch.len / matrix.columns);
     if (tasks <= 1) return product.run(0, matrix.rows, scratch[0..matrix.columns]);
-    var failures = [_]?quant.Error{null} ** max_row_tasks;
+    var failures: [max_row_tasks]?quant.Error = @splat(null);
     var next: std.atomic.Value(usize) = .init(0);
     const chunk = @max(1, matrix.rows / (tasks * 8));
     var group: std.Io.Group = .init;

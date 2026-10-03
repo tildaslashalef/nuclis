@@ -125,7 +125,7 @@ pub fn parseQuestion(arena: std.mem.Allocator, id: []const u8, value: std.json.V
             .array => |a| {
                 if (a.items.len == 0) return fail(diag, "{s}: criteria must not be empty", .{id});
                 for (a.items, 0..) |level, i| {
-                    try keys.append(arena, try std.fmt.allocPrint(arena, "{d}", .{i}));
+                    try keys.append(arena, try arena.print("{d}", .{i}));
                     try descriptions.append(arena, level);
                 }
                 legend = a.items;
@@ -183,7 +183,7 @@ pub fn schema(arena: std.mem.Allocator, tokenizer: *const Encoder, ids: []const 
     const fields = try arena.alloc(Field, questions.len);
     try append(arena, tokenizer, &out, "\n\nSCHEMA FIELDS:\n");
     for (questions, ids, fields, 0..) |q, id, *field, qi| {
-        try append(arena, tokenizer, &out, try std.fmt.allocPrint(arena, "\nFIELD {d}\nID: {s}\nTYPE: {s}\nINSTRUCTION: ", .{ qi + 1, id, q.kind.name() }));
+        try append(arena, tokenizer, &out, try arena.print("\nFIELD {d}\nID: {s}\nTYPE: {s}\nINSTRUCTION: ", .{ qi + 1, id, q.kind.name() }));
         const start = out.items.len;
         try append(arena, tokenizer, &out, q.instructions);
         field.span = .{ .start = @intCast(start), .end = @intCast(out.items.len) };
@@ -192,7 +192,7 @@ pub fn schema(arena: std.mem.Allocator, tokenizer: *const Encoder, ids: []const 
         const options = try arena.alloc(Span, q.texts.len);
         for (options, 0..) |*span, oi| {
             const text = q.texts[if (q.model_order.len > 0) q.model_order[oi] else oi];
-            try append(arena, tokenizer, &out, try std.fmt.allocPrint(arena, "OPTION {d}: ", .{oi + 1}));
+            try append(arena, tokenizer, &out, try arena.print("OPTION {d}: ", .{oi + 1}));
             const option_start = out.items.len;
             try append(arena, tokenizer, &out, text);
             span.* = .{ .start = @intCast(option_start), .end = @intCast(out.items.len) };

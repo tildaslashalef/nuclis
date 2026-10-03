@@ -99,7 +99,7 @@ pub fn main(init: std.process.Init) !void {
         const logits = try gpa.alloc(f32, r.markers.len);
         defer gpa.free(logits);
         const start = std.Io.Clock.awake.now(io);
-        try model.logits(io, gpa, r.ids, r.markers, @enumFromInt(r.qtype), logits, .{ .context = &compare, .record = Compare.record });
+        try model.logits(io, gpa, r.ids, r.markers, @fromBackingInt(@intCast(r.qtype)), logits, .{ .context = &compare, .record = Compare.record });
         const ms = start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
         var logit_error: f64 = 0;
         for (logits, r.logits) |got, want| logit_error = @max(logit_error, @abs(@as(f64, got) - want) / @max(1, @abs(want)));
@@ -138,7 +138,7 @@ fn checkBatch(gpa: std.mem.Allocator, io: std.Io, model: *const laya.Laya, reque
     const batched = try a.alloc([]f32, requests.len);
     var rows: usize = 0;
     for (requests, sequences, batched) |r, *s, *out| {
-        s.* = .{ .ids = r.ids, .markers = r.markers, .kind = @enumFromInt(r.qtype) };
+        s.* = .{ .ids = r.ids, .markers = r.markers, .kind = @fromBackingInt(@intCast(r.qtype)) };
         out.* = try a.alloc(f32, r.markers.len);
         rows += r.ids.len;
     }
@@ -177,7 +177,7 @@ fn checkLifecycle(gpa: std.mem.Allocator, io: std.Io) !void {
             model.deinit(io_);
         }
     };
-    try std.testing.checkAllAllocationFailures(gpa, Open.run, .{ io, tmp });
+    try inference.alloc_check.checkAll(gpa, Open.run, .{ io, tmp });
     std.debug.print("Tiny checkpoint on Metal: three open/forward/close cycles; every allocation of open failing in turn, no leak.\n", .{});
 }
 
@@ -195,7 +195,7 @@ fn profileKernels(gpa: std.mem.Allocator, io: std.Io, model: *const laya.Laya, r
     const outs = try a.alloc([]f32, requests.len);
     var long: usize = 0;
     for (requests, sequences, outs, 0..) |r, *s, *out, i| {
-        s.* = .{ .ids = r.ids, .markers = r.markers, .kind = @enumFromInt(r.qtype) };
+        s.* = .{ .ids = r.ids, .markers = r.markers, .kind = @fromBackingInt(@intCast(r.qtype)) };
         out.* = try a.alloc(f32, r.markers.len);
         if (std.mem.eql(u8, r.name, "long_text")) long = i;
     }

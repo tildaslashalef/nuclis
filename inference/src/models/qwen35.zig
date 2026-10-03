@@ -9,6 +9,7 @@
 //! sit in a Hadamard-rotated basis (`Rotation`, docs/reference/bonsai.md),
 //! with or without the auxiliary prediction block.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
 const Tensor = gguf.Tensor;
@@ -422,7 +423,7 @@ fn validateRotation(doc: *const gguf.Document) Error!?Rotation {
     // Each listed name claims one slot of the pinned set; a name outside the
     // set or claimed twice is refused, so a full slot table means equality.
     const names = try arrayValues(doc, "prism.hadamard.weight_names", .string, rotated_names);
-    var slots = [_][attention_rotated.len]bool{[_]bool{false} ** attention_rotated.len} ** 64;
+    var slots: [64][attention_rotated.len]bool = @splat(@splat(false));
     var head = false;
     for (names) |value| {
         const name = switch (value) {
@@ -859,5 +860,5 @@ fn bindWithAllocator(alloc: std.mem.Allocator, doc: *const gguf.Document) !void 
 test "binding lookup allocations are freed on every allocation failure" {
     var doc = try fixture();
     defer doc.deinit();
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, bindWithAllocator, .{&doc});
+    try alloc_check.checkAll(std.testing.allocator, bindWithAllocator, .{&doc});
 }

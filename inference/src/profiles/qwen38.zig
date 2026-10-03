@@ -11,6 +11,7 @@
 //! not to the shared sampler, which stays a policy engine with neutral
 //! defaults.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const sampling = @import("../sampling/root.zig");
 
 /// Exact GGUF template this profile implements; future loading must check it
@@ -603,7 +604,7 @@ fn allocationCase(alloc: std.mem.Allocator) !void {
 }
 
 test "prompt rendering cleans up every allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{});
+    try alloc_check.checkAll(std.testing.allocator, allocationCase, .{});
 }
 
 test "a user image renders the vision markers before the text" {

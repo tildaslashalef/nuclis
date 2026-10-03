@@ -6,12 +6,13 @@
 //! after every response, so nothing of a request outlives it. Every
 //! response is logged when a log is given.
 const std = @import("std");
+const repeat = @import("../text.zig").repeat;
 const errors = @import("errors.zig");
 const log_mod = @import("log.zig");
 
 /// TypeSafe's "overloaded", which Jev clients retry with backoff; no
 /// standard code says "the queue is full, come back" as plainly.
-pub const overloaded: std.http.Status = @enumFromInt(529);
+pub const overloaded: std.http.Status = @fromBackingInt(529);
 
 fn reason(status: std.http.Status) []const u8 {
     return if (status == overloaded) "Overloaded" else status.phrase() orelse "";
@@ -65,7 +66,7 @@ pub const Handler = struct {
 };
 
 pub fn noteOf(arena: std.mem.Allocator, err: errors.ApiError) []const u8 {
-    return std.fmt.allocPrint(arena, "{s}: {s}", .{ err.code, err.message }) catch err.code;
+    return arena.print("{s}: {s}", .{ err.code, err.message }) catch err.code;
 }
 
 /// Serves requests from `in` until the client closes, asks to close, or a
@@ -181,7 +182,7 @@ const Exchange = struct {
 /// A whole response with `connection: close`, outside any request: the
 /// transport's refusals and the accept loop's `busy`.
 pub fn writeClosing(out: *std.Io.Writer, status: std.http.Status, body: []const u8) std.Io.Writer.Error!void {
-    try out.print("HTTP/1.1 {d} {s}\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {d}\r\n\r\n{s}", .{ @intFromEnum(status), reason(status), body.len, body });
+    try out.print("HTTP/1.1 {d} {s}\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {d}\r\n\r\n{s}", .{ @backingInt(status), reason(status), body.len, body });
     try out.flush();
 }
 
@@ -193,7 +194,7 @@ const Echo = struct {
         _ = io;
         const self: *Echo = @ptrCast(@alignCast(context));
         self.calls += 1;
-        const text = std.fmt.allocPrint(arena, "{s} {s} q={s} explain={s} body={s}", .{ @tagName(request.method), request.path, request.query, request.param("explain") orelse "-", request.body }) catch unreachable;
+        const text = arena.print("{s} {s} q={s} explain={s} body={s}", .{ @tagName(request.method), request.path, request.query, request.param("explain") orelse "-", request.body }) catch unreachable;
         return .{ .body = text, .content_type = "text/plain" };
     }
 };
@@ -233,9 +234,9 @@ test "keep-alive serves every request on the connection, bodies by length and by
 
 test "oversized heads and bodies, malformed requests: an error body, then close" {
     const cases = [_]struct { input: []const u8, status: []const u8, code: []const u8 }{
-        .{ .input = "GET /" ++ "a" ** 300 ++ " HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\n\r\n", .status = "431", .code = "headers_too_large" },
-        .{ .input = "POST / HTTP/1.1\r\ncontent-length: 101\r\n\r\n" ++ "x" ** 101 ++ "GET / HTTP/1.1\r\n\r\n", .status = "413", .code = "payload_too_large" },
-        .{ .input = "POST / HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n80\r\n" ++ "x" ** 128 ++ "\r\n0\r\n\r\n", .status = "413", .code = "payload_too_large" },
+        .{ .input = "GET /" ++ repeat("a", 300) ++ " HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\n\r\n", .status = "431", .code = "headers_too_large" },
+        .{ .input = "POST / HTTP/1.1\r\ncontent-length: 101\r\n\r\n" ++ repeat("x", 101) ++ "GET / HTTP/1.1\r\n\r\n", .status = "413", .code = "payload_too_large" },
+        .{ .input = "POST / HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n80\r\n" ++ repeat("x", 128) ++ "\r\n0\r\n\r\n", .status = "413", .code = "payload_too_large" },
         .{ .input = "BREW / HTTP/1.1\r\n\r\n", .status = "400", .code = "bad_request" },
         .{ .input = "GET / HTTP/1.1\r\n broken\r\n\r\n", .status = "400", .code = "bad_request" },
         .{ .input = "POST / HTTP/1.1\r\ncontent-encoding: gzip\r\ncontent-length: 1\r\n\r\nx", .status = "415", .code = "unsupported_encoding" },

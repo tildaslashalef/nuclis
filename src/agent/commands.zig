@@ -140,17 +140,17 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
         .{ "Ctrl-N", "new session" },
         .{ "Ctrl-C / Ctrl-D", "cancel a turn, or quit" },
     };
-    for (keys) |pair| try rows.append(alloc, try std.fmt.allocPrint(alloc, "    {s: <17}  {s}", .{ pair[0], pair[1] }));
+    for (keys) |pair| try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ pair[0], pair[1] }));
     try rows.append(alloc, "");
     try rows.append(alloc, "  commands");
     for (table) |spec| {
         const name = if (spec.argument.len > 0)
-            try std.fmt.allocPrint(alloc, "/{s} {s}", .{ spec.name, spec.argument })
+            try alloc.print("/{s} {s}", .{ spec.name, spec.argument })
         else
-            try std.fmt.allocPrint(alloc, "/{s}", .{spec.name});
-        try rows.append(alloc, try std.fmt.allocPrint(alloc, "    {s: <17}  {s}", .{ name, spec.summary }));
+            try alloc.print("/{s}", .{spec.name});
+        try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ name, spec.summary }));
     }
-    try rows.append(alloc, try std.fmt.allocPrint(alloc, "    {s: <17}  {s}", .{ "!<command>", shell_spec.summary }));
+    try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ "!<command>", shell_spec.summary }));
     return rows.toOwnedSlice(alloc);
 }
 
@@ -176,7 +176,7 @@ pub fn workspacePaths(alloc: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []c
         if (entry.name[0] == '.' and !(base.len > 0 and base[0] == '.')) continue;
         if (!std.mem.startsWith(u8, entry.name, base)) continue;
         const suffix: []const u8 = if (entry.kind == .directory) "/" else "";
-        try names.append(alloc, try std.fmt.allocPrint(alloc, "{s}{s}{s}", .{ prefix[0..cut], entry.name, suffix }));
+        try names.append(alloc, try alloc.print("{s}{s}{s}", .{ prefix[0..cut], entry.name, suffix }));
         if (names.items.len >= max_paths) break;
     }
     std.mem.sort([]const u8, names.items, {}, lessThan);

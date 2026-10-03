@@ -53,7 +53,7 @@ pub const PullOptions = struct {
     repo: []const u8 = "",
     /// Companions to add to a catalogue pull, by role; `all` takes every
     /// companion the entry lists. Meaningless with a repository id.
-    with: std.EnumSet(Role) = .initEmpty(),
+    with: std.EnumSet(Role) = .empty,
     all: bool = false,
     file: ?[]const u8 = null,
     /// `main`, a tag, a branch, or a commit; the sidecar always records the
@@ -114,7 +114,7 @@ pub fn fromRegistry(options: PullOptions, entry: *const config.ModelEntry, diag:
     translated.repo = entry.repo.?;
     translated.file = entry.file.?;
     translated.revision = entry.revision;
-    translated.with = .initEmpty();
+    translated.with = .empty;
     translated.all = false;
     if (options.all or options.with.contains(.mmproj)) translated.mmproj = entry.mmproj;
     if (options.all or options.with.contains(.mtp)) translated.mtp = entry.mtp;
@@ -304,7 +304,7 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
         }
     }
     var head = options;
-    head.with = .initEmpty();
+    head.with = .empty;
     head.all = false;
     return pullOne(gpa, io, environ, root, head, json, out, sty, diag);
 }
@@ -1171,9 +1171,9 @@ fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Ident
                 };
                 const encoding = try encodingLabel(arena, rejection.encoding_id.?);
                 const reason = if (err == error.UnsupportedTensorType)
-                    try std.fmt.allocPrint(arena, "tensor {s} uses encoding {s}, which nuclis does not store", .{ tensor, encoding })
+                    try arena.print("tensor {s} uses encoding {s}, which nuclis does not store", .{ tensor, encoding })
                 else
-                    try std.fmt.allocPrint(arena, "tensor {s} has a shape encoding {s} cannot store", .{ tensor, encoding });
+                    try arena.print("tensor {s} has a shape encoding {s} cannot store", .{ tensor, encoding });
                 return finish(id, head.items.len, requests, null, .{ .status = .not_runnable, .reason = reason, .tensor = try arena.dupe(u8, tensor), .encoding = encoding });
             },
             else => {
@@ -1184,7 +1184,7 @@ fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Ident
     };
     defer doc.deinit();
     // The snapshot borrows the document's strings; the report outlives it.
-    var snapshot = try inspection.snapshot(doc, try std.fmt.allocPrint(arena, "{s}/{s}", .{ id.repo, id.file }), try arena.alloc(inspection.EncodingCount, 32));
+    var snapshot = try inspection.snapshot(doc, try arena.print("{s}/{s}", .{ id.repo, id.file }), try arena.alloc(inspection.EncodingCount, 32));
     if (snapshot.architecture) |a| snapshot.architecture = try arena.dupe(u8, a);
     if (snapshot.name) |n| snapshot.name = try arena.dupe(u8, n);
     return finish(id, head.items.len, requests, snapshot, try judge(arena, gpa, &doc, id));
@@ -1196,8 +1196,8 @@ fn finish(id: Identity, bytes_read: u64, requests: usize, directory: ?inspection
 
 /// "Q4_K (id 12)", or "id 999" for a layout nuclis does not know.
 fn encodingLabel(arena: Allocator, encoding_id: u32) ![]const u8 {
-    if (inference.encoding.layout(encoding_id)) |layout| return std.fmt.allocPrint(arena, "{s} (id {d})", .{ layout.name, encoding_id });
-    return std.fmt.allocPrint(arena, "id {d}", .{encoding_id});
+    if (inference.encoding.layout(encoding_id)) |layout| return arena.print("{s} (id {d})", .{ layout.name, encoding_id });
+    return arena.print("id {d}", .{encoding_id});
 }
 
 /// The verdict on a parsed directory. Runnable needs an adapter for the
@@ -1212,38 +1212,38 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
             .status = .not_runnable,
             .catalog = pinned.?.entry.name,
             .role = pinned.?.role,
-            .reason = try std.fmt.allocPrint(arena, "the {s} companion of catalogue entry {s} (loaded by {s}, not by the text engine); architecture \"{s}\" has no adapter", .{ @tagName(pinned.?.role), pinned.?.entry.name, pinned.?.loaded_by.?, architecture }),
+            .reason = try arena.print("the {s} companion of catalogue entry {s} (loaded by {s}, not by the text engine); architecture \"{s}\" has no adapter", .{ @tagName(pinned.?.role), pinned.?.entry.name, pinned.?.loaded_by.?, architecture }),
         };
         return .{
             .status = .not_runnable,
-            .reason = if (architecture.len == 0) "the file declares no general.architecture" else try std.fmt.allocPrint(arena, "no adapter for architecture \"{s}\"", .{architecture}),
+            .reason = if (architecture.len == 0) "the file declares no general.architecture" else try arena.print("no adapter for architecture \"{s}\"", .{architecture}),
         };
     };
     for (doc.tensors) |tensor| if (!inference.models.registry.executableEncoding(adapter, tensor.encoding_id)) {
         const encoding = try encodingLabel(arena, tensor.encoding_id);
         return .{
             .status = .not_runnable,
-            .reason = try std.fmt.allocPrint(arena, "tensor {s} uses encoding {s}, outside the {s} adapter's executable set", .{ tensor.name, encoding, @tagName(adapter) }),
+            .reason = try arena.print("tensor {s} uses encoding {s}, outside the {s} adapter's executable set", .{ tensor.name, encoding, @tagName(adapter) }),
             .tensor = try arena.dupe(u8, tensor.name),
             .encoding = encoding,
         };
     };
     _ = inference.models.registry.validate(adapter, gpa, doc) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        else => return .{ .status = .not_runnable, .reason = try std.fmt.allocPrint(arena, "the {s} adapter rejects the file: {s}", .{ @tagName(adapter), @errorName(err) }) },
+        else => return .{ .status = .not_runnable, .reason = try arena.print("the {s} adapter rejects the file: {s}", .{ @tagName(adapter), @errorName(err) }) },
     };
     if (in_catalog and pinned.?.role == .main) return .{
         .status = .supported,
         .catalog = pinned.?.entry.name,
         .role = .main,
-        .reason = try std.fmt.allocPrint(arena, "catalogue entry {s}: the Hub's digest at this commit equals the pinned one, and the {s} adapter binds it", .{ pinned.?.entry.name, @tagName(adapter) }),
+        .reason = try arena.print("catalogue entry {s}: the Hub's digest at this commit equals the pinned one, and the {s} adapter binds it", .{ pinned.?.entry.name, @tagName(adapter) }),
     };
     return .{
         .status = .runnable,
         .reason = if (pinned != null)
-            try std.fmt.allocPrint(arena, "the {s} adapter binds it; the catalogue pins another digest for this file (entry {s})", .{ @tagName(adapter), pinned.?.entry.name })
+            try arena.print("the {s} adapter binds it; the catalogue pins another digest for this file (entry {s})", .{ @tagName(adapter), pinned.?.entry.name })
         else
-            try std.fmt.allocPrint(arena, "the {s} adapter binds it; not in the catalogue", .{@tagName(adapter)}),
+            try arena.print("the {s} adapter binds it; not in the catalogue", .{@tagName(adapter)}),
     };
 }
 
@@ -1473,13 +1473,13 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     const indent = try alloc.alloc(u8, 2 + catalog.name_width + 1 + 10 + 1);
     defer alloc.free(indent);
     @memset(indent, ' ');
-    const role_row = try std.fmt.allocPrint(alloc, "    mtp{s}mismatch   unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .{indent[0 .. catalog.name_width - 2 - 3 + 1]});
+    const role_row = try alloc.print("    mtp{s}mismatch   unsloth/Qwen3.8-27B-GGUF/MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .{indent[0 .. catalog.name_width - 2 - 3 + 1]});
     defer alloc.free(role_row);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), role_row) != null);
-    const detail = try std.fmt.allocPrint(alloc, "\n{s} 16.46 GB  qwen35 UD-Q4_K_M  commit 4ca720788d1e", .{indent});
+    const detail = try alloc.print("\n{s} 16.46 GB  qwen35 UD-Q4_K_M  commit 4ca720788d1e", .{indent});
     defer alloc.free(detail);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), detail) != null);
-    const big = try std.fmt.allocPrint(alloc, "\n{s}registered as big\n", .{indent});
+    const big = try alloc.print("\n{s}registered as big\n", .{indent});
     defer alloc.free(big);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), big) != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "not loaded yet: the vision unit") != null);
@@ -1546,7 +1546,7 @@ fn serializeDirectory(alloc: Allocator, doc: inference.gguf.Document, mutation: 
     try w.writeInt(u64, doc.metadata.len, .little);
     for (doc.metadata) |m| {
         try writeGgufString(w, m.key);
-        try w.writeInt(u32, @intFromEnum(m.kind), .little);
+        try w.writeInt(u32, @backingInt(m.kind), .little);
         switch (m.value) {
             .unsigned => |n| try w.writeInt(u32, @intCast(n), .little),
             .signed => |n| try w.writeInt(i32, @intCast(n), .little),
@@ -1554,7 +1554,7 @@ fn serializeDirectory(alloc: Allocator, doc: inference.gguf.Document, mutation: 
             .boolean => |b| try w.writeInt(u8, @intFromBool(b), .little),
             .string => |text| try writeGgufString(w, if (mutation.architecture != null and std.mem.eql(u8, m.key, "general.architecture")) mutation.architecture.? else text),
             .array => |array| {
-                try w.writeInt(u32, @intFromEnum(array.element_type), .little);
+                try w.writeInt(u32, @backingInt(array.element_type), .little);
                 try w.writeInt(u64, array.count, .little);
                 if (array.values) |values| {
                     for (values) |value| switch (array.element_type) {
@@ -1693,7 +1693,7 @@ test "inspect judges the pinned directory supported, runnable, or not, from the 
 test "registry entries translate into repository pulls with their companions" {
     var diag: config.Diagnostic = .{};
     const gemma: config.ModelEntry = .{ .repo = "unsloth/gemma-4-12b-it-GGUF", .file = "g.gguf", .revision = "fc034cfff751157913579611efad8462ac1be606", .mmproj = "mmproj-F16.gguf" };
-    var with: std.EnumSet(Role) = .initEmpty();
+    var with: std.EnumSet(Role) = .empty;
     with.insert(.mmproj);
     const pull_options = try fromRegistry(.{ .repo = "gemma", .with = with, .force = true }, &gemma, &diag);
     try std.testing.expectEqualStrings("gemma", pull_options.name.?);
@@ -1706,7 +1706,7 @@ test "registry entries translate into repository pulls with their companions" {
     try std.testing.expect(all.mmproj != null and all.mtp == null and all.revision != null);
     const plain = try fromRegistry(.{ .repo = "gemma" }, &.{ .repo = "a/b", .file = "f.gguf" }, &diag);
     try std.testing.expect(plain.mmproj == null and plain.revision == null);
-    with = .initEmpty();
+    with = .empty;
     with.insert(.mtp);
     try std.testing.expectError(error.NoSuchCompanion, fromRegistry(.{ .repo = "gemma", .with = with }, &gemma, &diag));
     try std.testing.expect(std.mem.indexOf(u8, diag.message(), "no mtp companion") != null);

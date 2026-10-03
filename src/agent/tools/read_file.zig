@@ -181,7 +181,7 @@ test "a file over the byte bound serves its first MiB with the size in the summa
     try testing.expect(!result.is_error);
     try testing.expect(result.truncated);
     try testing.expect(std.mem.startsWith(u8, result.text, line[0 .. line.len - 1]));
-    const expected = try std.fmt.allocPrint(alloc, "first {d} of {d} bytes only", .{ max_bytes, data.items.len });
+    const expected = try alloc.print("first {d} of {d} bytes only", .{ max_bytes, data.items.len });
     defer alloc.free(expected);
     try testing.expect(std.mem.indexOf(u8, result.summary.?, expected) != null);
     try testing.expect(std.mem.indexOf(u8, result.summary.?, "use bash") != null);

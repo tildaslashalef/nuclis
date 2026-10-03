@@ -85,7 +85,7 @@ pub fn parseConfig(gpa: std.mem.Allocator, bytes: []const u8) Error!Config {
         .window = j.local_attention / 2,
         .global_theta = undefined,
         .local_theta = undefined,
-        .global = .initEmpty(),
+        .global = .empty,
     };
     if (j.layer_types) |types| {
         if (types.len != config.layers) return error.InvalidConfig;

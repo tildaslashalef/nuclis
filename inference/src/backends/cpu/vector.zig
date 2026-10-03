@@ -37,7 +37,7 @@ test "L2 normalization clamps the norm and preserves finite extremes" {
 }
 
 test "L2 errors leave output unchanged" {
-    var output = [_]f32{123} ** 2;
+    var output: [2]f32 = @splat(123);
     try std.testing.expectError(error.InvalidShape, l2Norm(&.{}, output[0..0], 1));
     try std.testing.expectError(error.InvalidShape, l2Norm(&.{1}, &output, 1));
     for ([_]f32{ 0, -1, std.math.nan(f32), std.math.inf(f32) }) |epsilon|
@@ -236,7 +236,7 @@ test "softmax masks and full F32 dynamic range" {
 }
 
 test "vector errors do not partially write results" {
-    var output = [_]f32{123} ** 2;
+    var output: [2]f32 = @splat(123);
     try std.testing.expectError(error.InvalidShape, rmsNorm(&.{}, output[0..0], 1));
     try std.testing.expectError(error.InvalidShape, rmsNorm(&.{1}, &output, 1));
     try std.testing.expectError(error.InvalidShape, softmax(&.{}, output[0..0]));

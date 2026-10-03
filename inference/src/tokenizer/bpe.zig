@@ -8,6 +8,7 @@
 //! queue so it costs O(n log n), and a test holds the two to the same order.
 //! A byte-work budget bounds the pair lookups.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const Vocabulary = @import("vocabulary.zig").Vocabulary;
 
 pub const Limits = struct {
@@ -52,7 +53,7 @@ const alphabet: [256]u21 = blk: {
     break :blk result;
 };
 const inverse: [324]?u8 = blk: {
-    var result = [_]?u8{null} ** 324;
+    var result: [324]?u8 = @splat(null);
     for (alphabet, 0..) |cp, byte| result[cp] = @intCast(byte);
     break :blk result;
 };
@@ -585,5 +586,5 @@ fn allocationCheck(alloc: std.mem.Allocator, vocab: *const Vocabulary) !void {
 test "BPE and decoding release partial allocations" {
     var vocab = try fixture(&.{"a b"}, &.{});
     defer vocab.deinit();
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCheck, .{&vocab});
+    try alloc_check.checkAll(std.testing.allocator, allocationCheck, .{&vocab});
 }

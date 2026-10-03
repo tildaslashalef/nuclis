@@ -26,7 +26,7 @@ const event_mod = @import("event.zig");
 const Event = event_mod.Event;
 
 /// Padding for the bar's background; terminals clamp width to 400.
-const spaces = " " ** 512;
+const spaces: [512]u8 = @splat(' ');
 
 pub const Paint = struct {
     width: usize,
@@ -141,14 +141,14 @@ pub const Status = struct {
         // The settings, each cell its own string so the narrow bar can drop
         // them one at a time from the right.
         var cells: std.ArrayList([]const u8) = .empty;
-        try cells.append(a, try std.fmt.allocPrint(a, "{s} think {s}{s}{s}", .{ gl.effort, th.paint(.accent), self.effort, theme.fg_default }));
+        try cells.append(a, try a.print("{s} think {s}{s}{s}", .{ gl.effort, th.paint(.accent), self.effort, theme.fg_default }));
         if (self.speculative) {
             if (self.accepted_per_step) |accepted|
-                try cells.append(a, try std.fmt.allocPrint(a, "speculative {s}on{s} {d} · {d:.2}/step", .{ th.paint(.accent), theme.fg_default, self.draft_length, accepted }))
+                try cells.append(a, try a.print("speculative {s}on{s} {d} · {d:.2}/step", .{ th.paint(.accent), theme.fg_default, self.draft_length, accepted }))
             else
-                try cells.append(a, try std.fmt.allocPrint(a, "speculative {s}on{s} {d}", .{ th.paint(.accent), theme.fg_default, self.draft_length }));
+                try cells.append(a, try a.print("speculative {s}on{s} {d}", .{ th.paint(.accent), theme.fg_default, self.draft_length }));
         } else try cells.append(a, "speculative off");
-        if (self.kv.len != 0) try cells.append(a, try std.fmt.allocPrint(a, "kv {s}", .{self.kv}));
+        if (self.kv.len != 0) try cells.append(a, try a.print("kv {s}", .{self.kv}));
         if (self.backend.len != 0) try cells.append(a, self.backend);
         if (self.model.len != 0) try cells.append(a, self.model);
 

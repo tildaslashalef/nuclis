@@ -90,7 +90,7 @@ pub fn discover(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, 
     for (&catalog.entries) |*e| try taken.append(arena, e.name);
     for (listing.other) |f| {
         if (f.registered) |r| {
-            try skipped.append(arena, .{ .path = f.path, .reason = try std.fmt.allocPrint(arena, "already registered as {s}", .{r.name}) });
+            try skipped.append(arena, .{ .path = f.path, .reason = try arena.print("already registered as {s}", .{r.name}) });
             continue;
         }
         if (std.mem.endsWith(u8, f.path, ".safetensors")) {
@@ -98,12 +98,12 @@ pub fn discover(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, 
             continue;
         }
         if (companionRole(f)) |role| {
-            try skipped.append(arena, .{ .path = f.path, .reason = try std.fmt.allocPrint(arena, "a {s} companion; it fills the entry of the main file beside it", .{@tagName(role)}) });
+            try skipped.append(arena, .{ .path = f.path, .reason = try arena.print("a {s} companion; it fills the entry of the main file beside it", .{@tagName(role)}) });
             continue;
         }
         const absolute = try std.fs.path.join(arena, &.{ listing.models_dir, f.path });
         var doc = inference.gguf.open(gpa, io, absolute, .{}) catch |err| {
-            try skipped.append(arena, .{ .path = f.path, .reason = try std.fmt.allocPrint(arena, "the GGUF directory does not parse: {s}", .{@errorName(err)}) });
+            try skipped.append(arena, .{ .path = f.path, .reason = try arena.print("the GGUF directory does not parse: {s}", .{@errorName(err)}) });
             continue;
         };
         defer doc.deinit();
@@ -116,7 +116,7 @@ pub fn discover(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, 
             },
         };
         const family = familyOf(architecture) orelse {
-            try skipped.append(arena, .{ .path = f.path, .reason = try std.fmt.allocPrint(arena, "no catalogue family for architecture \"{s}\"", .{architecture}) });
+            try skipped.append(arena, .{ .path = f.path, .reason = try arena.print("no catalogue family for architecture \"{s}\"", .{architecture}) });
             continue;
         };
         const pinned = inference.profiles.forDocument(doc);
@@ -162,14 +162,14 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
     const adapter = inference.models.adapterFor(architecture) orelse return .{ .rejected = if (architecture.len == 0)
         "the file declares no general.architecture"
     else
-        try std.fmt.allocPrint(arena, "no adapter for architecture \"{s}\"", .{architecture}) };
+        try arena.print("no adapter for architecture \"{s}\"", .{architecture}) };
     for (doc.tensors) |tensor| if (!inference.models.registry.executableEncoding(adapter, tensor.encoding_id)) {
         const layout = inference.encoding.layout(tensor.encoding_id);
-        return .{ .rejected = try std.fmt.allocPrint(arena, "tensor {s} uses encoding {s} (id {d}), outside the {s} adapter's executable set", .{ tensor.name, if (layout) |l| l.name else "?", tensor.encoding_id, @tagName(adapter) }) };
+        return .{ .rejected = try arena.print("tensor {s} uses encoding {s} (id {d}), outside the {s} adapter's executable set", .{ tensor.name, if (layout) |l| l.name else "?", tensor.encoding_id, @tagName(adapter) }) };
     };
     _ = inference.models.registry.validate(adapter, gpa, doc) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        else => return .{ .rejected = try std.fmt.allocPrint(arena, "the {s} adapter rejects the file: {s}", .{ @tagName(adapter), @errorName(err) }) },
+        else => return .{ .rejected = try arena.print("the {s} adapter rejects the file: {s}", .{ @tagName(adapter), @errorName(err) }) },
     };
     return .{ .adapter = adapter };
 }
@@ -234,11 +234,11 @@ pub fn uniqueName(arena: Allocator, path: []const u8, taken: []const []const u8)
     if (!isTaken(base, taken)) return base;
     const stem = std.fs.path.stem(std.fs.path.basename(path));
     const quant = if (std.mem.lastIndexOfScalar(u8, stem, '-')) |i| stem[i + 1 ..] else stem;
-    const with_quant = try std.fmt.allocPrint(arena, "{s}-{s}", .{ base, try sanitize(arena, quant) });
+    const with_quant = try arena.print("{s}-{s}", .{ base, try sanitize(arena, quant) });
     if (!isTaken(with_quant, taken)) return with_quant;
     var n: usize = 2;
     while (n < 100) : (n += 1) {
-        const numbered = try std.fmt.allocPrint(arena, "{s}-{d}", .{ with_quant, n });
+        const numbered = try arena.print("{s}-{d}", .{ with_quant, n });
         if (!isTaken(numbered, taken)) return numbered;
     }
     return error.NoFreeName;

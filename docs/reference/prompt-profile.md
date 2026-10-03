@@ -318,7 +318,7 @@ In another terminal:
 ```sh
 python3 scripts/tokenizer-fixtures.py --profile gemma4   # or --profile qwen38, --profile muse_glimmer
 python3 scripts/profile-tools-fixtures.py --profile gemma4   # or --profile qwen38 (default)
-zig build test --global-cache-dir .zig-cache/global
+zig build test
 ```
 
 The script accepts loopback only, ignores proxy configuration, verifies

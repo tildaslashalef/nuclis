@@ -196,7 +196,7 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, family: inference.decide.F
             try questions.append(arena, parsed);
         }
         for (o.states.items, 0..) |source, i| try states.append(arena, switch (source) {
-            .text => |t| .{ .label = try std.fmt.allocPrint(arena, "state[{d}]", .{i}), .state = .{ .text = t } },
+            .text => |t| .{ .label = try arena.print("state[{d}]", .{i}), .state = .{ .text = t } },
             .file => |f| .{ .label = f, .state = .{ .text = try wire.readBounded(arena, io, f, inference.decide.max_state_bytes, diag) } },
         });
     }
@@ -362,9 +362,9 @@ fn rankScale(q: profile.Question) f64 {
 fn summary(arena: std.mem.Allocator, q: profile.Question, a: inference.decide.Answer) ![]const u8 {
     const c = a.calibrated;
     return switch (q.kind) {
-        .choice => std.fmt.allocPrint(arena, "{s} {d:.2}", .{ q.keys[c.best], c.probabilities[c.best] }),
-        .score => std.fmt.allocPrint(arena, "{d:.2}/{d}", .{ c.value, q.keys.len - 1 }),
-        .noul => std.fmt.allocPrint(arena, "{d:.2}", .{c.value}),
+        .choice => arena.print("{s} {d:.2}", .{ q.keys[c.best], c.probabilities[c.best] }),
+        .score => arena.print("{d:.2}/{d}", .{ c.value, q.keys.len - 1 }),
+        .noul => arena.print("{d:.2}", .{c.value}),
     };
 }
 

@@ -144,7 +144,7 @@ fn firstPrompt(alloc: Allocator, bytes: []const u8) ![]u8 {
     if (line.len > prompt_preview) {
         var cut = prompt_preview;
         while (cut > 0 and (line[cut] & 0xC0) == 0x80) cut -= 1;
-        return std.fmt.allocPrint(alloc, "{s}…", .{line[0..cut]});
+        return alloc.print("{s}…", .{line[0..cut]});
     }
     return alloc.dupe(u8, line);
 }
@@ -233,7 +233,7 @@ pub fn replay(alloc: Allocator, tr: *transcript.Transcript, loaded: session.Load
                 if (open_turn) try tr.apply(.{ .turn_end = .{ .stop = .eos } });
                 try tr.apply(.{ .user = u.text });
                 for (u.images, 1..) |image, n| {
-                    const label = try std.fmt.allocPrint(alloc, "image #{d}: {s} ({d}×{d} → {d}×{d} tokens)", .{ n, image.path, image.width, image.height, image.width_tokens, image.height_tokens });
+                    const label = try alloc.print("image #{d}: {s} ({d}×{d} → {d}×{d} tokens)", .{ n, image.path, image.width, image.height, image.width_tokens, image.height_tokens });
                     defer alloc.free(label);
                     try tr.apply(.{ .attachment = .{ .label = label } });
                 }

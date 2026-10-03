@@ -21,6 +21,7 @@ pub const prefix_cache = @import("runtime/prefix_cache.zig");
 pub const draft = @import("runtime/draft.zig");
 pub const observer = @import("runtime/observer.zig");
 pub const events = @import("events.zig");
+pub const alloc_check = @import("alloc_check.zig");
 pub const engine = @import("engine.zig");
 /// The decision path: a Laya checkpoint answering typed questions.
 pub const decide = @import("decide.zig");
@@ -47,5 +48,6 @@ test {
     _ = engine;
     _ = decide;
     _ = events;
+    _ = alloc_check;
     _ = vision;
 }

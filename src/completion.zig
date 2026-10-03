@@ -97,7 +97,7 @@ pub const max_sessions = 50;
 fn names(comptime E: type) []const []const u8 {
     const list = comptime blk: {
         var list: []const []const u8 = &.{};
-        for (@typeInfo(E).@"enum".fields) |f| list = list ++ &[_][]const u8{f.name};
+        for (@typeInfo(E).@"enum".field_names) |name| list = list ++ &[_][]const u8{name};
         break :blk list;
     };
     return list;
@@ -383,7 +383,7 @@ pub fn candidates(arena: Allocator, target: Target, current: []const u8, state: 
                 for (config.global_keys) |k| try list.append(arena, .{ .text = k.path });
                 if (std.mem.startsWith(u8, current, "models.")) {
                     for (state.registry) |name| for (config.entry_keys) |k| {
-                        try list.append(arena, .{ .text = try std.fmt.allocPrint(arena, "models.{s}.{s}", .{ name, k.path }) });
+                        try list.append(arena, .{ .text = try arena.print("models.{s}.{s}", .{ name, k.path }) });
                     };
                 } else if (state.registry.len > 0) try list.append(arena, .{ .text = "models.", .description = "a registry entry's key" });
             },
@@ -522,7 +522,7 @@ fn models(arena: Allocator, io: std.Io, root: []const u8, registry: config.Model
     var list: std.ArrayList(Candidate) = .empty;
     for (registry.entries) |named| {
         const e = named.entry;
-        const where = if (e.path) |p| p else if (e.repo) |r| try std.fmt.allocPrint(arena, "{s}/{s}", .{ r, e.file orelse "" }) else "";
+        const where = if (e.path) |p| p else if (e.repo) |r| try arena.print("{s}/{s}", .{ r, e.file orelse "" }) else "";
         try list.append(arena, .{ .text = named.name, .description = where });
     }
     const dir = try model.modelsDir(arena, root);
@@ -530,7 +530,7 @@ fn models(arena: Allocator, io: std.Io, root: []const u8, registry: config.Model
         if (registry.find(e.name) != null) continue;
         const path = try catalog.localPath(arena, dir, e, e.file);
         const status = catalog.status(arena, io, path, e.sha256, e.size) catch .absent;
-        try list.append(arena, .{ .text = e.name, .description = try std.fmt.allocPrint(arena, "{s} · {s} · {s}", .{ e.architecture, e.quantization, @tagName(status) }) });
+        try list.append(arena, .{ .text = e.name, .description = try arena.print("{s} · {s} · {s}", .{ e.architecture, e.quantization, @tagName(status) }) });
     }
     return list.items;
 }
@@ -541,7 +541,7 @@ fn sessions(arena: Allocator, io: std.Io, root: []const u8) ![]const Candidate {
     const list = try arena.alloc(Candidate, @min(summaries.len, max_sessions));
     for (list, summaries[0..list.len]) |*c, s| c.* = .{
         .text = s.id,
-        .description = try std.fmt.allocPrint(arena, "{s} · {s}", .{ s.time, s.first_prompt }),
+        .description = try arena.print("{s} · {s}", .{ s.time, s.first_prompt }),
     };
     return list;
 }
@@ -803,8 +803,8 @@ test "every flag in the table is on its command's help page" {
 }
 
 test "the scripts call the hidden command and handle both directives" {
-    inline for (@typeInfo(Shell).@"enum".fields) |field| {
-        const text = script(@enumFromInt(field.value));
+    inline for (comptime std.enums.values(Shell)) |shell| {
+        const text = script(shell);
         try testing.expect(std.mem.indexOf(u8, text, "nuclis __complete") != null);
         try testing.expect(std.mem.indexOf(u8, text, ":file") != null and std.mem.indexOf(u8, text, ":dir") != null);
         try testing.expect(std.mem.count(u8, text, "\n") <= 40);

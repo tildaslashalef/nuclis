@@ -16,9 +16,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: REPO-29, the Zig 0.17.0 upgrade** (added 2026-10-03; its
-section is before KERN-23's). The installed compiler is 0.17.0 and the
-tree does not configure under it, so it goes first. **Then KERN-23
+**Next: REPO-29 session 2** (the Zig 0.17.0 upgrade; its section is
+before KERN-23's). Session 1 (2026-10-03) landed the migration: the tree
+builds, `make check` and `make verify-auto` pass under 0.17. Session 2:
+the 0.17 features, the speed sanity check, `make verify`, `make
+verify-cpu`, docs, close. **Then KERN-23
 session 1.** Before any KERN-23 change: run `make speed-base` on the
 clean tree after REPO-29 (built with Zig 0.17), then record the unit's `Base:` at the first change. There is no
 base binary now: `.zig-cache/` was cleaned after MODL-34 (2026-10-02),
@@ -202,7 +204,7 @@ when a kept change moves the cost table.
 
 ## REPO-29 — Upgrade to Zig 0.17.0 (2 sessions)
 
-Base: recorded when the unit starts.
+Base: `8f3e6ed`
 
 **Sessions.** 1: the tree builds and tests clean under 0.17 (removals,
 silent changes, deprecations), `make check` and `make verify-auto` pass,
@@ -215,77 +217,59 @@ managed by `zigup`; 0.16.0 removed), and the tree does not configure under it, s
 compiler upgrade is its own unit (AGENTS.md § Versioning).
 [Release notes](https://ziglang.org/download/0.17.0/release-notes.html).
 
-**Probe (2026-10-03, scratch worktree at `fd09aa4`, discarded).** Errors
-surface one class at a time; fixing each exposed the next. Not yet seen:
-anything past `@typeInfo` (the build stopped there). The probe's throwaway
-diff is in `.zig-cache/zig017/probe.patch` (not committed; its string
-helper `__rep` is a hack, do not apply it as is).
+**Session 1 (2026-10-03): the tree builds and tests clean under 0.17.**
+Classes met, in the order they surfaced (each fix exposed the next):
 
-1. **`b.args` removed** (configure). 15 sites in `build.zig`,
-   `inference/build.zig`, `huggingface/build.zig`:
-   `if (b.args) |args| run.addArgs(args);` → `run.addPassthruArgs();`.
-   `zig build <step> -- ARGS` and the Makefile/`gates.json` callers keep
-   working unchanged; check one (`make shot` or `zig build test-vocabulary --
-   …`) passes its arguments.
-2. **Array multiplication `**` removed** (parse). 77 sites, 18+ files.
-   - `[_]T{v} ** n` (array fill, ~40, mostly tests in `inference/src/quant/decode.zig`,
-     `backends/cpu/*.zig`, `generation-check.zig`, the two `failures` arrays in
-     `backends/cpu/root.zig:125` and `vision/muse_glimmer.zig:399`, `bpe.zig:55`,
-     `inspect.zig:164`) → `var x: [n]T = @splat(v);` (or `@as([n]T, @splat(v))`
-     in expressions); `qwen35.zig:425` nested → `[64][N]bool = @splat(@splat(false))`.
-   - `"s" ** n` (string repetition, ~35: `src/tui/{banner,editor,markdown,status}.zig`,
-     `src/help.zig:42`, `src/api/http.zig:236-238`, `src/api/decisions/service.zig:395,469`,
-     `inference/src/profiles/muse_glimmer.zig:531,938`). Single-byte ones become
-     `@as([n]u8, @splat(' '))` (`&` where a slice is needed); multi-byte
-     (`"─"`, `"line\n"`, `"<|patch|>"`, `"\"s\","`) need one comptime
-     `repeat(comptime s, comptime n) *const [s.len * n]u8` helper. Put it in
-     one place each package can reach (`inference/src/` text utilities and a
-     `src/` test helper, or `src/` only if inference's two sites take `@splat`/
-     a literal); no per-file copies. `src/tui/markdown.zig:926` repeats in a
-     comptime loop.
-   - Markdown test strings containing `**` inside literals are not operators;
-     leave them.
-3. **Removed std names** (sema): `EnumSet.initEmpty()` → `.empty`
-   (`src/model.zig` ×5, `inference/src/models/modernbert.zig:88`);
-   `std.ascii.indexOfIgnoreCase` → `findIgnoreCase` (`src/tui/theme.zig:474,487`).
-4. **`@typeInfo` is struct-of-arrays** (sema). 33 sites. `.fields` is gone:
-   enums have `field_names`/`field_values`, structs and unions
-   `field_names`/`field_types`/`field_attrs` (defaults via
-   `field_attrs[i].defaultValue(T)`). `inline for (info.field_names,
-   info.field_types) |name, T|` replaces `|field| field.name / field.type`;
-   `.fields.len` → `.field_names.len`. Heaviest file: `src/config.zig`
-   (12 sites, including default values); then `src/tui/{theme,event}.zig`,
-   `src/help.zig`, `src/completion.zig`, `inference/src/sampling/root.zig`,
-   `inference/src/backends/metal/root.zig:59` (the kernel table),
-   `gemma4_runtime.zig:134`, `vision/gemma4.zig:181`, `registry.zig:173`,
-   `src/agent/session.zig:331`, `src/bench.zig:384`.
-5. **Then** keep building (`zig build`, `zig build -Dmetal=true`, `zig build
-   test`, the check tools) until clean; record each new class here.
+1. **`b.args` removed:** 15 sites → `run.addPassthruArgs()`.
+2. **Array `**` removed:** fills → `var x: [n]T = @splat(v)` (38 by regex,
+   3 by hand: the nested `qwen35.zig` slot table, a `&@as([8]u8, …)`
+   argument, `inspect.zig`'s struct fill); single-byte strings in
+   `help.zig`/`status.zig` → `@splat(' ')`; multi-byte and test strings →
+   `repeat(s, n)` from the new `src/text.zig` (an `inline fn`, so `++`
+   sees a comptime operand); inference's two sites became a literal and an
+   `@splat` array. `markdown.zig`'s 64-level comptime loop raises its
+   branch quota.
+3. **Removed std names:** `EnumSet.initEmpty()` → `.empty`,
+   `indexOfIgnoreCase` → `findIgnoreCase`.
+4. **`@typeInfo` struct-of-arrays:** `.fields` → `field_names` /
+   `field_types` / `field_values`; no site read default values.
+   `std.meta.fieldNames/fieldTypes` are deprecated, and a non-inline call is
+   not comptime-known as an `inline for` operand in a runtime function, so
+   `config.zig` uses `@typeInfo(T).@"struct".field_names` directly.
+5. **`Allocator.dupeZ` removed** → `dupeSentinel(u8, s, 0)` (3 sites).
+6. **`zig build --global-cache-dir` removed** → `ZIG_GLOBAL_CACHE_DIR`:
+   the Makefile exports it (`$(CURDIR)/.zig-cache/global`), `gates.py`
+   sets it from `gates.json`'s `build.cache` in `load()`; the reference
+   docs' commands dropped the flag; development.md says so.
+7. **`std.fmt.bufPrintZ` removed** → `bufPrintSentinel(…, 0)`
+   (`metal-check.zig`).
+8. **`std.testing.allocator` is a `SafeAllocator`**, which grows a block in
+   place only while it ends its bucket, so `checkAllAllocationFailures`
+   saw different allocation counts per run (`NondeterministicMemoryUsage`
+   in Laya's open and Muse's prompt rendering). New
+   `inference/src/alloc_check.zig` (`checkAll`, `noGrowth`: resize/remap
+   refused) backs all 22 inference callers and `laya-check.zig`.
+   Huggingface's two callers pass and stay on std (the package cannot
+   import inference); if one turns nondeterministic, give it the same
+   wrapper.
 
-**Silent changes to audit** (no compile error):
-- `@bitCast` on arrays/vectors changed meaning: grep found only scalar
-  casts (52 sites, `f32/f16 ↔ u32/u16`, `i8 ↔ u8`), unaffected. Re-grep after
-  the fixes for any `@Vector`/array operand.
-- `@hasDecl` is now true only for `pub` declarations, also in the same file.
-  19 sites, all capability probes in `inference/src/engine.zig`,
-  `registry.zig:67`, `generation-check.zig:317,2043` (`prefillRows`,
-  `verify`, `replayRows`, `drafter`, `bindDraft`, `embedded_draft`,
-  `preferredChunk`, …). A private decl now silently drops a path (e.g. a
-  family losing speculation). Check each probed name is `pub` on every
-  family's `Runtime`/`Plan`; the fast tier's speculative and vision gates
-  confirm.
-- `mem.eql` on float slices no longer short-circuits on identical pointers
-  (no float `mem.eql` found).
+Deprecations migrated: `allocPrint`/`allocPrintSentinel` → `a.print` /
+`a.printSentinel` (157); `@intFromEnum`/`@enumFromInt` → `@backingInt` /
+`@fromBackingInt` (`zig fmt` rewrote them, adding `@intCast` where the
+backing type must match; literal ones simplified); `DynamicBitSetUnmanaged`
+→ `bit_set.Dynamic`; `builtin.os` → `builtin.target.os` (2). No other name
+from the release notes' deprecation list is used (deprecations are doc
+comments only; the compiler does not warn).
 
-**Deprecations, migrate in this unit** (removed in 0.18; cheap now):
-`std.fmt.allocPrint(a, …)` → `a.print(…)` (157 sites, mechanical);
-`@intFromEnum`/`@enumFromInt` → `@backingInt`/`@fromBackingInt` (47 sites;
-`zig fmt` rewrites them, check the diff); `std.DynamicBitSetUnmanaged` →
-`std.bit_set.Dynamic` (`sampling/root.zig:107`, `tokenizer/hf_json.zig:308`);
-any `std.builtin` / `@import("builtin").os|cpu` (none found). Run `zig build`
-with no deprecation warnings left. `std.posix` terminal/signal calls and
-`std.fs.path` still exist in 0.17; development.md's earlier migration list
-stays deferred.
+Silent changes audited: `@hasDecl` probes (19) all name `pub` declarations
+on every family (the non-`pub` `replayRows`/`prefill`/`verify` in
+`generation-check.zig` and `engine.zig` are wrappers, not probe targets);
+the 52 `@bitCast`s are scalar; float `mem.eql` has 18 sites (the probe
+missed them), all comparing distinct buffers, so unaffected.
+
+Gates: `make check` passes (645/645 unit tests, `test-metal`, the
+manifests); `make verify-auto` passes (diff since `8f3e6ed`): every check and the 40 fast-tier gates it selected (all families' traces, generation, vision, speculative, draft, verify-depth 512/4K, perplexity; so the `@hasDecl` paths and `addPassthruArgs` are exercised). It flags `verify-cpu` and `verify-long` for `cpu/attention.zig`, whose change is test-array syntax only; `verify-cpu` runs in session 2 anyway (LLVM 22). `zig build -Dmetal=false` and
+`hf-downloader` build.
 
 **Use what 0.17 adds** (not only what it removes). Each item names its
 sites; adopt it where it reads better, and record in the development.md

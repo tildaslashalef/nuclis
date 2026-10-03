@@ -161,7 +161,7 @@ pub fn tensorPeek(arena: std.mem.Allocator, ref: inference.safetensors.Ref) !Ten
 /// Allocates the shard and dtype tables in `arena`.
 pub fn safetensorsSnapshot(arena: std.mem.Allocator, checkpoint: *const inference.safetensors.Checkpoint, path: []const u8) !SafetensorsSnapshot {
     const Dtype = inference.safetensors.Dtype;
-    var counts = [_]SafetensorsSnapshot.DtypeCount{.{ .dtype = "" }} ** std.enums.values(Dtype).len;
+    var counts: [std.enums.values(Dtype).len]SafetensorsSnapshot.DtypeCount = @splat(.{ .dtype = "" });
     const shards = try arena.alloc(SafetensorsSnapshot.Shard, checkpoint.shards.len);
     var elements: u64 = 0;
     var bytes: u64 = 0;
@@ -171,7 +171,7 @@ pub fn safetensorsSnapshot(arena: std.mem.Allocator, checkpoint: *const inferenc
         for (doc.tensors) |t| {
             elements = try std.math.add(u64, elements, t.elements);
             bytes = try std.math.add(u64, bytes, t.bytes);
-            const c = &counts[@intFromEnum(t.dtype)];
+            const c = &counts[@backingInt(t.dtype)];
             c.dtype = t.dtype.name();
             c.tensors += 1;
             c.elements = try std.math.add(u64, c.elements, t.elements);

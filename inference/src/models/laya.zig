@@ -6,6 +6,7 @@
 //! profile's (profiles/laya.zig). F32 on the CPU; the head's weights are
 //! decoded at open like the encoder's. Contract: docs/reference/laya.md.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const safetensors = @import("../formats/safetensors.zig");
 const dense = @import("../backends/cpu/dense.zig");
 const vector = @import("../backends/cpu/vector.zig");
@@ -191,7 +192,7 @@ pub const Head = struct {
         const wide = block[6 * n * d ..][0 .. n * self.ff];
         const scores = block[6 * n * d + n * self.ff ..][0 .. heads * n];
 
-        const type_row = self.type_emb[@intFromEnum(kind) * d ..][0..d];
+        const type_row = self.type_emb[@backingInt(kind) * d ..][0..d];
         for (0..n) |t| for (hidden[t * d ..][0..d], type_row) |*x, e| {
             x.* += e;
         };
@@ -483,7 +484,7 @@ test "unknown, missing, and misshapen tensors are rejected" {
 }
 
 test "open releases everything on allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try alloc_check.checkAll(std.testing.allocator, struct {
         fn run(gpa: std.mem.Allocator) !void {
             var model = try openTiny(gpa, std.testing.io, null, null);
             model.deinit(std.testing.io);

@@ -50,8 +50,8 @@ pub const Options = struct {
     /// field, no runtime reflection.
     pub fn override(self: Options, overrides: Overrides) Options {
         var result = self;
-        inline for (@typeInfo(Overrides).@"struct".fields) |field| {
-            if (@field(overrides, field.name)) |value| @field(result, field.name) = value;
+        inline for (@typeInfo(Overrides).@"struct".field_names) |name| {
+            if (@field(overrides, name)) |value| @field(result, name) = value;
         }
         return result;
     }
@@ -70,8 +70,8 @@ pub const Overrides = struct {
     /// they are applied to a profile.
     pub fn merge(self: Overrides, top: Overrides) Overrides {
         var result = self;
-        inline for (@typeInfo(Overrides).@"struct".fields) |field| {
-            if (@field(top, field.name)) |value| @field(result, field.name) = value;
+        inline for (@typeInfo(Overrides).@"struct".field_names) |name| {
+            if (@field(top, name)) |value| @field(result, name) = value;
         }
         return result;
     }
@@ -95,7 +95,7 @@ pub const Candidate = struct { id: u32, weight: f64 };
 /// kept because the penalties are defined on presence only.
 pub const History = struct {
     alloc: std.mem.Allocator,
-    seen: std.DynamicBitSetUnmanaged,
+    seen: std.bit_set.Dynamic,
     /// Bumped whenever the set changes (an `observe` of an unset id, a
     /// non-empty `reset`). A GPU executor uploads the bits when its
     /// last-uploaded revision differs: one 31 KB copy per change, not per
@@ -104,7 +104,7 @@ pub const History = struct {
 
     pub fn init(alloc: std.mem.Allocator, vocabulary: usize) !History {
         if (vocabulary == 0 or vocabulary > std.math.maxInt(u32)) return error.InvalidLogits;
-        return .{ .alloc = alloc, .seen = try std.DynamicBitSetUnmanaged.initEmpty(alloc, vocabulary) };
+        return .{ .alloc = alloc, .seen = try std.bit_set.Dynamic.initEmpty(alloc, vocabulary) };
     }
     pub fn deinit(self: *History) void {
         self.seen.deinit(self.alloc);

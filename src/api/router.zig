@@ -42,8 +42,8 @@ pub const Router = struct {
                 return r.handler.handle(r.handler.context, arena, io, request);
             path_known = true;
         }
-        if (path_known) return .fromError(arena, .init(.method_not_allowed, "method_not_allowed", std.fmt.allocPrint(arena, "{s} does not take {s}", .{ request.path, @tagName(request.method) }) catch "method not allowed"));
-        return .fromError(arena, .init(.not_found, "not_found", std.fmt.allocPrint(arena, "no route {s} (the routes are under {s}, see GET {s}/models)", .{ request.path, prefix, prefix }) catch "not found"));
+        if (path_known) return .fromError(arena, .init(.method_not_allowed, "method_not_allowed", arena.print("{s} does not take {s}", .{ request.path, @tagName(request.method) }) catch "method not allowed"));
+        return .fromError(arena, .init(.not_found, "not_found", arena.print("no route {s} (the routes are under {s}, see GET {s}/models)", .{ request.path, prefix, prefix }) catch "not found"));
     }
 };
 
@@ -51,7 +51,7 @@ const Stub = struct {
     fn ok(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: http.Request) http.Response {
         _ = context;
         _ = io;
-        return .{ .body = std.fmt.allocPrint(arena, "{s}", .{request.path}) catch unreachable };
+        return .{ .body = arena.print("{s}", .{request.path}) catch unreachable };
     }
 };
 

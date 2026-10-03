@@ -7,6 +7,7 @@
 //! never touches a socket or a model directly.
 //! docs/reference/api.md § Decisions.
 const std = @import("std");
+const repeat = @import("../../text.zig").repeat;
 const inference = @import("inference");
 const config = @import("../../config.zig");
 const wire = @import("../../decision/request.zig");
@@ -115,7 +116,7 @@ pub const Service = struct {
             error.Stopped => fail(arena, .service_unavailable, "shutting_down", "the server is stopping"),
         };
         self.batcher.wait(io, &job, deadline) catch
-            return fail(arena, http.overloaded, "timeout", std.fmt.allocPrint(arena, "waited {d} s for the GPU without starting", .{self.timeout_ns / std.time.ns_per_s}) catch "timeout");
+            return fail(arena, http.overloaded, "timeout", arena.print("waited {d} s for the GPU without starting", .{self.timeout_ns / std.time.ns_per_s}) catch "timeout");
         const done = switch (job.outcome) {
             .pending => unreachable,
             .failed => |e| return .fromError(arena, e),
@@ -230,9 +231,9 @@ fn note(arena: std.mem.Allocator, model: []const u8, request: wire.Request, done
     for (done.results) |r| tokens += r.input_tokens;
     const states = request.states.len;
     const questions = request.questions.len;
-    const opened = if (done.load_ns > 0) std.fmt.allocPrint(arena, " · opened in {d:.0} ms", .{@as(f64, @floatFromInt(done.load_ns)) / std.time.ns_per_ms}) catch "" else "";
-    const pass = if (done.batch_jobs > 1) std.fmt.allocPrint(arena, " · pass of {d}", .{done.batch_jobs}) catch "" else "";
-    return std.fmt.allocPrint(arena, "{s} · {d} state{s} × {d} question{s} · {d} tokens{s}{s}", .{ model, states, if (states == 1) "" else "s", questions, if (questions == 1) "" else "s", tokens, pass, opened }) catch model;
+    const opened = if (done.load_ns > 0) arena.print(" · opened in {d:.0} ms", .{@as(f64, @floatFromInt(done.load_ns)) / std.time.ns_per_ms}) catch "" else "";
+    const pass = if (done.batch_jobs > 1) arena.print(" · pass of {d}", .{done.batch_jobs}) catch "" else "";
+    return arena.print("{s} · {d} state{s} × {d} question{s} · {d} tokens{s}{s}", .{ model, states, if (states == 1) "" else "s", questions, if (questions == 1) "" else "s", tokens, pass, opened }) catch model;
 }
 
 /// `?explain` or `?explain=1`; `0` and `false` turn it off.
@@ -392,7 +393,7 @@ test "decisions: every refusal is a typed error body" {
         .{ .body = "{" ++ q ++ "}", .status = .unprocessable_entity, .code = "invalid_request" },
         .{ .body = "{\"questions\":{\"a\":{\"type\":\"maybe\",\"instructions\":\"x\"}},\"state\":\"s\"}", .status = .unprocessable_entity, .code = "invalid_request" },
         .{ .body = "{\"questions\":{},\"state\":\"s\"}", .status = .unprocessable_entity, .code = "invalid_request" },
-        .{ .body = "{" ++ q ++ ",\"states\":[" ++ "\"s\"," ** 64 ++ "\"s\"]}", .status = .unprocessable_entity, .code = "request_too_large" },
+        .{ .body = "{" ++ q ++ ",\"states\":[" ++ repeat("\"s\",", 64) ++ "\"s\"]}", .status = .unprocessable_entity, .code = "request_too_large" },
         .{ .shape = .systemone, .body = "{" ++ q ++ ",\"states\":[\"s\"]}", .status = .unprocessable_entity, .code = "invalid_request" },
     };
     for (cases) |case| {
@@ -463,10 +464,10 @@ test "decisions: requests waiting together share one pass and get what each gets
     for (&arenas) |*a| a.* = .init(gpa);
     defer for (&arenas) |*a| a.deinit();
     var bodies: [count][]const u8 = undefined;
-    for (&bodies, 0..) |*b, i| b.* = try std.fmt.allocPrint(arenas[i].allocator(),
+    for (&bodies, 0..) |*b, i| b.* = try arenas[i].allocator().print(
         \\{{"questions":{{"q{d}":{{"type":"choice","instructions":"Which of {d}?","criteria":{{"a":"first {d}","b":null,"c":"{s}"}}}},
         \\ "n":{{"type":"noul","instructions":"Is {d} odd?"}}}},"states":["state {d}",{{"n":{d}}}]}}
-    , .{ i, i, i, "x" ** 3, i, i, i });
+    , .{ i, i, i, repeat("x", 3), i, i, i });
 
     // Alone: each request is its own pass.
     var alone: [count][]const u8 = undefined;

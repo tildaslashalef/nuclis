@@ -39,7 +39,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
 /// The name column of a `row`: two spaces of margin, the name padded to this
 /// width, two spaces, then the description; one text column per page.
 const name_column = 22;
-const continuation = " " ** (2 + name_column + 2);
+const continuation: [2 + name_column + 2]u8 = @splat(' ');
 
 /// The page's title line: the command in the header colour, a dash, what it is.
 fn title(out: *std.Io.Writer, sty: style.Style, command: []const u8, text: []const u8) !void {
@@ -644,8 +644,8 @@ fn rendered(alloc: std.mem.Allocator, topic: ?Topic, sty: style.Style) ![]u8 {
 test "the overview names every command and stays one screen" {
     const text = try rendered(testing.allocator, null, .none);
     defer testing.allocator.free(text);
-    inline for (@typeInfo(Topic).@"enum".fields) |field| {
-        try testing.expect(std.mem.indexOf(u8, text, field.name) != null);
+    inline for (@typeInfo(Topic).@"enum".field_names) |name| {
+        try testing.expect(std.mem.indexOf(u8, text, name) != null);
     }
     try testing.expect(std.mem.indexOf(u8, text, "0.0.0-test") != null);
     try testing.expect(std.mem.indexOf(u8, text, "nuclis <command> --help") != null);
@@ -654,11 +654,11 @@ test "the overview names every command and stays one screen" {
 }
 
 test "every page is self-contained, has the standard sections, and fits 80 columns" {
-    inline for (@typeInfo(Topic).@"enum".fields) |field| {
-        const topic: Topic = @enumFromInt(field.value);
+    inline for (@typeInfo(Topic).@"enum".field_names) |name| {
+        const topic = @field(Topic, name);
         const text = try rendered(testing.allocator, topic, .none);
         defer testing.allocator.free(text);
-        try testing.expect(std.mem.indexOf(u8, text, "nuclis " ++ field.name) != null);
+        try testing.expect(std.mem.indexOf(u8, text, "nuclis " ++ name) != null);
         for ([_][]const u8{ "Usage:", "Options:", "Examples:", "Notes:" }) |section| {
             try testing.expect(std.mem.indexOf(u8, text, section) != null);
         }

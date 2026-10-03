@@ -178,7 +178,7 @@ pub const Block = struct {
     up: *const Tensor,
     down: *const Tensor,
     post_ffn_norm: *const Tensor,
-    clamps: [@typeInfo(Linear).@"enum".fields.len]Clamp,
+    clamps: [@typeInfo(Linear).@"enum".field_names.len]Clamp,
 
     pub fn matrix(self: Block, which: Linear) *const Tensor {
         return switch (which) {
@@ -579,9 +579,9 @@ pub const Runtime = struct {
             for (0..n) |t| {
                 const nt = normed[t * h ..][0..h];
                 try rmsNorm(x[t * h ..][0..h], nt, ln1);
-                try self.clipped(wq, bounds[@intFromEnum(Linear.query)], nt, q[t * h ..][0..h], scratch, staged);
-                try self.clipped(wk, bounds[@intFromEnum(Linear.key)], nt, k[t * h ..][0..h], scratch, staged);
-                try self.clipped(wv, bounds[@intFromEnum(Linear.value)], nt, v[t * h ..][0..h], scratch, staged);
+                try self.clipped(wq, bounds[@backingInt(Linear.query)], nt, q[t * h ..][0..h], scratch, staged);
+                try self.clipped(wk, bounds[@backingInt(Linear.key)], nt, k[t * h ..][0..h], scratch, staged);
+                try self.clipped(wv, bounds[@backingInt(Linear.value)], nt, v[t * h ..][0..h], scratch, staged);
                 const xs = x_table[t * pairs * 2 ..][0 .. pairs * 2];
                 const ys = y_table[t * pairs * 2 ..][0 .. pairs * 2];
                 for (0..g.heads) |head| {
@@ -604,15 +604,15 @@ pub const Runtime = struct {
             const wd = try self.view.matrix(layer.down);
             for (0..n) |t| {
                 const xt = x[t * h ..][0..h];
-                try self.clipped(wo, bounds[@intFromEnum(Linear.output)], attn[t * h ..][0..h], row, scratch, staged);
+                try self.clipped(wo, bounds[@backingInt(Linear.output)], attn[t * h ..][0..h], row, scratch, staged);
                 try rmsNorm(row, row, post_attention);
                 for (xt, row) |*o, r| o.* += r;
                 const nt = normed[t * h ..][0..h];
                 try rmsNorm(xt, nt, ln2);
-                try self.clipped(wg, bounds[@intFromEnum(Linear.gate)], nt, gate, scratch, staged);
-                try self.clipped(wu, bounds[@intFromEnum(Linear.up)], nt, up, scratch, staged);
+                try self.clipped(wg, bounds[@backingInt(Linear.gate)], nt, gate, scratch, staged);
+                try self.clipped(wu, bounds[@backingInt(Linear.up)], nt, up, scratch, staged);
                 for (gate, up) |*gv, u| gv.* = cpu.geluQuick(gv.*) * u;
-                try self.clipped(wd, bounds[@intFromEnum(Linear.down)], gate, row, scratch, staged);
+                try self.clipped(wd, bounds[@backingInt(Linear.down)], gate, row, scratch, staged);
                 try rmsNorm(row, row, post_ffn);
                 for (xt, row) |*o, r| o.* += r;
             }
@@ -722,7 +722,7 @@ test "bind accepts both pinned projector inventories" {
     // 16 blocks of 13 tensors and 28 clamp scalars, the patch kernel, the
     // position table, and the projection; the 745 audio tensors stay unbound.
     try std.testing.expectEqual(@as(u32, 16 * (13 + 28) + 3), c.tensors);
-    const q = c.net.siglip.layers[0].clamps[@intFromEnum(Linear.query)];
+    const q = c.net.siglip.layers[0].clamps[@backingInt(Linear.query)];
     try std.testing.expect(q.input_min != null and q.output_max != null);
 }
 

@@ -155,9 +155,9 @@ pub const Event = union(enum) {
                 try s.endArray();
             },
             inline .tool_call, .tool_result, .status, .turn_end => |payload| {
-                inline for (@typeInfo(@TypeOf(payload)).@"struct".fields) |field| {
-                    try s.objectField(field.name);
-                    const value = @field(payload, field.name);
+                inline for (@typeInfo(@TypeOf(payload)).@"struct".field_names) |name| {
+                    try s.objectField(name);
+                    const value = @field(payload, name);
                     if (@typeInfo(@TypeOf(value)) == .@"enum") try s.write(@tagName(value)) else try s.write(value);
                 }
             },
@@ -235,7 +235,7 @@ test "an event is a value: no allocation, and the payloads the turn needs" {
         .{ .info = "keys and commands" },
         .{ .attachment = .{ .label = "image #1: shot.png" } },
     };
-    try std.testing.expectEqual(@typeInfo(Event).@"union".fields.len, events.len);
+    try std.testing.expectEqual(@typeInfo(Event).@"union".field_names.len, events.len);
     try std.testing.expectEqualStrings("hello", events[0].user);
     try std.testing.expectEqual(@as(f64, 3.4), events[2].thinking_end);
     try std.testing.expect(events[5].tool_result.truncated);

@@ -382,7 +382,7 @@ kernels. The independent hand-calculated dot products test summation and signed
 contributions. Default tests require no reference checkout, model, or GPU:
 
 ```sh
-zig build test --global-cache-dir .zig-cache/global
+zig build test
 ```
 
 The freshly built `nuclis validate --json` reports `validation: structure_only`

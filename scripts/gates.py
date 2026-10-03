@@ -229,7 +229,7 @@ def zig_flags(doc, flavour):
         if flavour == "metal"
         else [f"-Doptimize={build['cpu_optimize']}"]
     )
-    return optimize + ["--global-cache-dir", build["cache"]]
+    return optimize
 
 
 def model_path(doc, key, env=None):
@@ -271,6 +271,9 @@ def load():
         for p in problems:
             print(f"gates.json: {p}", file=sys.stderr)
         sys.exit(2)
+    # `zig build` takes the global cache from the environment only; every
+    # build and gate below inherits it.
+    os.environ.setdefault("ZIG_GLOBAL_CACHE_DIR", str(ROOT / doc["build"]["cache"]))
     return doc
 
 
@@ -302,11 +305,10 @@ def save_times(results):
 def build(doc, which, dry_run):
     """Build one binary (`metal`, `cpu`) or one flavour of the check tools (`checks-metal`, `checks-cpu`); returns seconds."""
     b = doc["build"]
-    common = ["--global-cache-dir", b["cache"]]
     if which == "metal":
-        cmd = ["zig", "build", "-Dmetal=true", f"-Doptimize={b['metal_optimize']}"] + common
+        cmd = ["zig", "build", "-Dmetal=true", f"-Doptimize={b['metal_optimize']}"]
     elif which == "cpu":
-        cmd = ["zig", "build", "-Dmetal=true", f"-Doptimize={b['cpu_optimize']}"] + common + ["--prefix", CPU_PREFIX]
+        cmd = ["zig", "build", "-Dmetal=true", f"-Doptimize={b['cpu_optimize']}", "--prefix", CPU_PREFIX]
     else:
         # The placeholders' own flags, so the gates' `zig build` finds the compile cached.
         cmd = (
@@ -767,7 +769,7 @@ class SelfTest(unittest.TestCase):
     def test_expand_placeholders(self):
         doc = sample_doc()
         argv = expand(doc["gates"][1]["command"], doc["gates"][1], doc, env={"HOME": "/h"})
-        self.assertEqual(argv[:4], ["zig", "build", "-Doptimize=ReleaseFast", "--global-cache-dir"])
+        self.assertEqual(argv[:3], ["zig", "build", "-Doptimize=ReleaseFast"])
         self.assertEqual(
             argv[-3:], [os.path.expanduser("~/m/a.gguf"), "--draft-model", os.path.expanduser("~/m/a-mtp.gguf")]
         )

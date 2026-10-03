@@ -150,7 +150,7 @@ pub fn fixtureSequence(arena: std.mem.Allocator, entry: Entry) !clef.Sequence {
 }
 
 fn readF32(arena: std.mem.Allocator, io: std.Io, dir: []const u8, name: []const u8, kind: []const u8) ![]f32 {
-    const path = try std.fmt.allocPrint(arena, "{s}/{s}.{s}.f32", .{ dir, name, kind });
+    const path = try arena.print("{s}/{s}.{s}.f32", .{ dir, name, kind });
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 30));
     const out = try arena.alloc(f32, bytes.len / 4);
     for (out, 0..) |*x, i| x.* = @bitCast(std.mem.readInt(u32, bytes[i * 4 ..][0..4], .little));
@@ -298,6 +298,6 @@ fn backboneBeside(arena: std.mem.Allocator, clef_dir: []const u8) ![]const u8 {
 }
 
 fn writeF32(io: std.Io, arena: std.mem.Allocator, dir: []const u8, name: []const u8, kind: []const u8, values: []const f32) !void {
-    const path = try std.fmt.allocPrint(arena, "{s}/{s}.{s}.f32", .{ dir, name, kind });
+    const path = try arena.print("{s}/{s}.{s}.f32", .{ dir, name, kind });
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = std.mem.sliceAsBytes(values) });
 }

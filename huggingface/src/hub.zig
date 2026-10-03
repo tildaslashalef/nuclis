@@ -137,7 +137,7 @@ pub fn catalog(gpa: Allocator, io: std.Io, token: ?[]const u8, req: Request) !Ca
     var temp = std.heap.ArenaAllocator.init(gpa);
     defer temp.deinit();
     const a = temp.allocator();
-    const url = try std.fmt.allocPrint(a, "https://huggingface.co/api/models/{s}/revision/{s}?blobs=true", .{
+    const url = try a.print("https://huggingface.co/api/models/{s}/revision/{s}?blobs=true", .{
         req.repo_id, try encode(a, req.revision, false),
     });
     var client = http.client(gpa, io);

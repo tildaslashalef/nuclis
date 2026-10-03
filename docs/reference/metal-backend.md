@@ -14,11 +14,11 @@ what its counters say about our hot kernels is in
 Metal is opt-in at build time so default builds and tests never touch the GPU:
 
 ```sh
-zig build -Dmetal=true -Doptimize=ReleaseSafe --global-cache-dir .zig-cache/global
+zig build -Dmetal=true -Doptimize=ReleaseSafe
 ./zig-out/bin/nuclis generate --backend metal --prompt 'Hi' --max-tokens 8 --ctx-size 64
 ./zig-out/bin/nuclis bench --backend metal --prompt-file prompt.txt --max-tokens 64
-zig build test-metal -Dmetal=true -Doptimize=ReleaseSafe --global-cache-dir .zig-cache/global
-zig build test-generation -Dmetal=true -Doptimize=ReleaseSafe --global-cache-dir .zig-cache/global -- MODEL --metal
+zig build test-metal -Dmetal=true -Doptimize=ReleaseSafe
+zig build test-generation -Dmetal=true -Doptimize=ReleaseSafe -- MODEL --metal
 ```
 
 Without `-Dmetal=true`, `inference.metal.Backend.init` returns

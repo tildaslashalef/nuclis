@@ -35,8 +35,8 @@ pub const Terminal = struct {
         raw.lflag.IEXTEN = false;
         raw.iflag.IXON = false;
         raw.iflag.ICRNL = false;
-        raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-        raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+        raw.cc[@backingInt(std.posix.V.MIN)] = 1;
+        raw.cc[@backingInt(std.posix.V.TIME)] = 0;
         var term: Terminal = .{ .io = io, .saved = saved, .raw = raw, .out = out };
         try term.acquire();
         return term;
@@ -77,7 +77,7 @@ pub const Terminal = struct {
     pub fn size(_: Terminal) Size {
         var value: std.posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
         // TIOCGWINSZ from the platform terminal ABI; no model/backend dependency.
-        const request: c_ulong = switch (builtin.os.tag) {
+        const request: c_ulong = switch (builtin.target.os.tag) {
             .macos => 0x40087468,
             .linux => 0x5413,
             else => return .{},
@@ -194,7 +194,7 @@ pub fn editExternally(alloc: std.mem.Allocator, io: std.Io, environ: *const std.
     var random: [8]u8 = undefined;
     io.randomSecure(&random) catch io.random(&random);
     const tmp = environ.get("TMPDIR") orelse "/tmp";
-    const path = try std.fmt.allocPrintSentinel(alloc, "{s}/nuclis-edit-{x}.md", .{ std.mem.trimEnd(u8, tmp, "/"), &random }, 0);
+    const path = try alloc.printSentinel("{s}/nuclis-edit-{x}.md", .{ std.mem.trimEnd(u8, tmp, "/"), &random }, 0);
     defer alloc.free(path);
     {
         const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
@@ -203,7 +203,7 @@ pub fn editExternally(alloc: std.mem.Allocator, io: std.Io, environ: *const std.
     }
     defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
     // `$0` is the file: the value may carry its own arguments (`code -w`).
-    const script = try std.fmt.allocPrint(alloc, "{s} \"$0\"", .{command});
+    const script = try alloc.print("{s} \"$0\"", .{command});
     defer alloc.free(script);
     const argv = [_][]const u8{ "/bin/sh", "-c", script, path };
     var child = try std.process.spawn(io, .{

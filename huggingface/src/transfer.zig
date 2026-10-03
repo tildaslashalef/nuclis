@@ -72,7 +72,7 @@ pub const Session = struct {
         if (s.cached) |c| if (now >= 0 and c.expires > @as(u64, @intCast(now)) + 60) return c;
         var temp = std.heap.ArenaAllocator.init(s.client.allocator);
         defer temp.deinit();
-        const url = try std.fmt.allocPrint(temp.allocator(), "https://huggingface.co/api/models/{s}/xet-read-token/{s}", .{ s.catalog.repo_id, s.catalog.revision });
+        const url = try temp.allocator().print("https://huggingface.co/api/models/{s}/xet-read-token/{s}", .{ s.catalog.repo_id, s.catalog.revision });
         var auth = try http.get(&s.client, .{ .url = url, .token = s.hub_token, .max_bytes = 256 * 1024 });
         defer auth.deinit();
         try hub.hubStatus(auth.status, s.hub_token);
@@ -108,7 +108,7 @@ pub fn resolve(s: *Session, file: hub.File) !Remote {
     const a = s.client.allocator;
     const encoded = try hub.encode(a, file.name, true);
     defer a.free(encoded);
-    const url = try std.fmt.allocPrint(a, "https://huggingface.co/{s}/resolve/{s}/{s}", .{ s.catalog.repo_id, s.catalog.revision, encoded });
+    const url = try a.print("https://huggingface.co/{s}/resolve/{s}/{s}", .{ s.catalog.repo_id, s.catalog.revision, encoded });
     errdefer a.free(url);
     var response = try http.get(&s.client, .{ .url = url, .token = s.hub_token, .head = true });
     defer response.deinit();
@@ -161,10 +161,10 @@ fn xetSpan(s: *Session, hash: *const [64]u8, start: u64, count: u64, concurrency
     const credential = try s.credential();
     var temp = std.heap.ArenaAllocator.init(s.client.allocator);
     defer temp.deinit();
-    const range = try std.fmt.allocPrint(temp.allocator(), "bytes={d}-{d}", .{ start, start + count - 1 });
+    const range = try temp.allocator().print("bytes={d}-{d}", .{ start, start + count - 1 });
     var version: u8 = 2;
     var reconstruction: http.Response = while (true) {
-        const url = try std.fmt.allocPrint(temp.allocator(), "{s}/v{d}/reconstructions/{s}", .{ credential.cas_url, version, hash });
+        const url = try temp.allocator().print("{s}/v{d}/reconstructions/{s}", .{ credential.cas_url, version, hash });
         var r = try http.get(&s.client, .{ .url = url, .token = credential.access_token, .range = range });
         if (version == 2 and (r.status == 404 or r.status == 501)) {
             r.deinit();
@@ -449,7 +449,7 @@ pub fn directRange(s: *Session, initial_url: []const u8, start: u64, count: usiz
     const temp = arena.allocator();
     var url = initial_url;
     var credential = s.hub_token;
-    const range = try std.fmt.allocPrint(temp, "bytes={d}-{d}", .{ start, start + count - 1 });
+    const range = try temp.print("bytes={d}-{d}", .{ start, start + count - 1 });
     for (0..6) |_| {
         var r = try http.get(&s.client, .{ .url = url, .token = credential, .range = range, .max_bytes = count });
         defer r.deinit();
@@ -457,7 +457,7 @@ pub fn directRange(s: *Session, initial_url: []const u8, start: u64, count: usiz
             const location = r.header("location") orelse return error.InvalidRedirect;
             const old = try http.validateUrl(url);
             const next_url = if (std.mem.startsWith(u8, location, "/") and !std.mem.startsWith(u8, location, "//"))
-                try std.fmt.allocPrint(temp, "https://{s}{s}", .{ old.host.?.percent_encoded, location })
+                try temp.print("https://{s}{s}", .{ old.host.?.percent_encoded, location })
             else
                 try temp.dupe(u8, location);
             const next = try http.validateUrl(next_url);

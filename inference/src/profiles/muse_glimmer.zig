@@ -19,6 +19,7 @@
 //! The stream decoder's channel grammar hands a `to=NAME` body to `parseTool`.
 //! It owns no tokenizer or model equations.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const sampling = @import("../sampling/root.zig");
 
 /// Exact GGUF template this profile implements (`tokenizer.chat_template`,
@@ -528,7 +529,7 @@ test "a user image renders the image markers before the text" {
     const refs = [_]profiles.ImageRef{.{ .width_tokens = 3, .height_tokens = 2 }};
     const prompt = try render(alloc, &.{.{ .role = .user, .content = "describe this image", .images = &refs }}, &.{}, .off, .{});
     defer alloc.free(prompt);
-    const expected = "<|start|>user<|message|><|image_start|>" ++ "<|patch|>" ** 6 ++ "<|image_end|>describe this image<|eot|><|start|>assistant";
+    const expected = "<|start|>user<|message|><|image_start|>" ++ "<|patch|><|patch|><|patch|><|patch|><|patch|><|patch|>" ++ "<|image_end|>describe this image<|eot|><|start|>assistant";
     try std.testing.expect(std.mem.endsWith(u8, prompt, expected));
     // A user cannot type the markers.
     try std.testing.expectError(error.UnsupportedContent, render(alloc, &.{.{ .role = .user, .content = "a <|patch|> b" }}, &.{}, .off, .{}));
@@ -633,7 +634,7 @@ const read_tool: profiles.ToolDefinition = .{
 };
 
 test "prompt rendering cleans up every allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{});
+    try alloc_check.checkAll(std.testing.allocator, allocationCase, .{});
 }
 
 test "the prefix is a byte prefix of every rendering that starts with its system messages" {
@@ -935,8 +936,8 @@ test "a bare header, a truncated header, and an overlong header hide nothing" {
     defer long.deinit();
     var f = profiles.stream.Decoder.init(alloc, test_channel, true);
     defer f.deinit();
-    const prose = "x" ** (profiles.stream.header_limit + 5);
-    try f.feed(7, prose, &long);
+    const prose: [profiles.stream.header_limit + 5]u8 = @splat('x');
+    try f.feed(7, &prose, &long);
     try f.feed(7, "more", &long);
     try f.finish(&long);
     try std.testing.expectEqualStrings(prose ++ "more", long.answer.written());

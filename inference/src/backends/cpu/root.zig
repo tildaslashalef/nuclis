@@ -122,7 +122,7 @@ pub fn matvec(io: std.Io, matrix: Matrix, input: []const f32, output: []f32, scr
     const tasks = if (weights < matvec_parallel_weights) 1 else @min(matvecTasks(), matrix.rows, scratch.len / matrix.columns);
     const rows: Rows = .{ .matrix = matrix, .row_bytes = row_bytes, .input = input, .output = output };
     if (tasks <= 1) return rows.run(0, matrix.rows, scratch[0..matrix.columns]);
-    var failures = [_]?quant.Error{null} ** max_matvec_tasks;
+    var failures: [max_matvec_tasks]?quant.Error = @splat(null);
     var next: std.atomic.Value(usize) = .init(0);
     const chunk = @max(1, matrix.rows / (tasks * chunks_per_task));
     var group: std.Io.Group = .init;
@@ -169,7 +169,7 @@ test "rectangular F32 matrix uses contiguous rows and preserves extra scratch" {
     var bytes: [24]u8 = undefined;
     for (values, 0..) |value, i| std.mem.writeInt(u32, bytes[i * 4 ..][0..4], @bitCast(value), .little);
     var output: [2]f32 = undefined;
-    var scratch = [_]f32{99} ** 5;
+    var scratch: [5]f32 = @splat(99);
     try matvec(std.testing.io, .{ .encoding = 0, .rows = 2, .columns = 3, .bytes = &bytes }, &.{ 2, -1, 0.5 }, &output, &scratch);
     try std.testing.expectEqualSlices(f32, &.{ 1.5, -16 }, &output);
     try std.testing.expectEqualSlices(f32, &.{ 99, 99 }, scratch[3..]);
@@ -189,10 +189,10 @@ test "F64 accumulation retains small terms between cancelling F32 products" {
 }
 
 test "Q8 matrix spans multiple independently scaled blocks per row" {
-    var bytes = [_]u8{1} ** 136; // two rows, two blocks per row, code +1
+    var bytes: [136]u8 = @splat(1); // two rows, two blocks per row, code +1
     for ([_]u16{ 0x3800, 0x4000, 0xbc00, 0x3400 }, 0..) |scale, i|
         std.mem.writeInt(u16, bytes[i * 34 ..][0..2], scale, .little);
-    var input = [_]f32{1} ** 64;
+    var input: [64]f32 = @splat(1);
     @memset(input[32..], -2);
     var output: [2]f32 = undefined;
     var scratch: [64]f32 = undefined;
@@ -201,10 +201,10 @@ test "Q8 matrix spans multiple independently scaled blocks per row" {
 }
 
 test "invalid matrix descriptors and buffers leave writable slices untouched" {
-    var output = [_]f32{123} ** 2;
-    var scratch = [_]f32{456} ** 256;
-    const bytes = [_]u8{0} ** 68;
-    const input = [_]f32{0} ** 256;
+    var output: [2]f32 = @splat(123);
+    var scratch: [256]f32 = @splat(456);
+    const bytes: [68]u8 = @splat(0);
+    const input: [256]f32 = @splat(0);
     const valid: Matrix = .{ .encoding = 8, .rows = 2, .columns = 32, .bytes = &bytes };
     var bad = valid;
     bad.rows = 0;

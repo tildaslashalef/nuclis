@@ -60,7 +60,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     if (env.get("PATH") == null) env.put("PATH", fallback_path) catch return error.OutOfMemory;
     if (env.get("LANG") == null) env.put("LANG", "C") catch return error.OutOfMemory;
 
-    const script = try std.fmt.allocPrint(alloc, "exec 2>&1\n{s}", .{command});
+    const script = try alloc.print("exec 2>&1\n{s}", .{command});
     defer alloc.free(script);
     const argv = [_][]const u8{ "/bin/sh", "-c", script };
 

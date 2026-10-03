@@ -7,6 +7,7 @@
 //! An arena owns strings, entries, and lookup tables, so the input Document and
 //! directory image can be released as soon as load returns.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
 
 pub const TokenType = enum(i32) { normal = 1, unknown = 2, control = 3, user_defined = 4, unused = 5, byte = 6 };
@@ -292,5 +293,5 @@ fn allocationCheck(alloc: std.mem.Allocator, bytes: []const u8) !void {
 test "vocabulary releases every partially initialized allocation" {
     var bytes = try fixture(.{});
     defer bytes.deinit();
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCheck, .{bytes.written()});
+    try alloc_check.checkAll(std.testing.allocator, allocationCheck, .{bytes.written()});
 }

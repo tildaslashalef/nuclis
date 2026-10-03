@@ -6,6 +6,7 @@
 //! projection except `ssm_alpha` / `ssm_beta` reads its input through the
 //! Hadamard transform and the embedding row is un-rotated after lookup.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const model = @import("qwen35.zig");
 const weights = @import("../runtime/weights.zig");
 const session = @import("../runtime/session.zig");
@@ -572,7 +573,7 @@ pub const Runtime = struct {
 };
 
 test "runtime workspace cleanup and invalid steps preserve session admission" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try alloc_check.checkAll(std.testing.allocator, struct {
         fn check(alloc: std.mem.Allocator) !void {
             // The binding only supplies layer kinds during preparation. A tiny
             // empty tensor deliberately fails embedding access after admission.

@@ -272,7 +272,7 @@ test "F32 and F16 decode unaligned little-endian storage and IEEE edge values" {
 }
 
 test "Q8_0 signed extremes and independent block scales" {
-    var bytes = [_]u8{0} ** 68;
+    var bytes: [68]u8 = @splat(0);
     bytes[1] = 0x38; // f16 0.5
     bytes[2] = 0x80;
     bytes[3] = 0xff;
@@ -282,7 +282,7 @@ test "Q8_0 signed extremes and independent block scales" {
     bytes[67] = 0xfe;
     var output: [64]f32 = undefined;
     try row(8, &bytes, &output);
-    var expected = [_]f32{0} ** 64;
+    var expected: [64]f32 = @splat(0);
     expected[0] = -64;
     expected[1] = -0.5;
     expected[2] = 63.5;
@@ -325,8 +325,8 @@ test "Q4_0 all codes, half-row ordering, and successive scales" {
 }
 
 test "invalid encodings and row sizes leave caller output untouched" {
-    var output = [_]f32{123} ** 512;
-    const bytes = [_]u8{0} ** 420;
+    var output: [512]f32 = @splat(123);
+    const bytes: [420]u8 = @splat(0);
     for ([_]u32{ 0, 1, 2, 8, 11, 12, 13, 14, 20, 21, 23, 30, 142, 143 }) |id| {
         const layout = encoding.layout(id).?;
         const n = layout.elements_per_block;
@@ -369,7 +369,7 @@ test "BF16 widens the high half of a single without rounding" {
 }
 
 test "PQ2_0 code order within bytes, the +2 code, and successive scales" {
-    var bytes = [_]u8{0} ** 68;
+    var bytes: [68]u8 = @splat(0);
     @memcpy(bytes[0..2], &[_]u8{ 0, 0x38 }); // d=0.5
     @memset(bytes[2..34], 0b11_10_01_00); // codes 0,1,2,3 low bits first
     @memcpy(bytes[34..36], &[_]u8{ 0, 0xc0 }); // d=-2
@@ -418,7 +418,7 @@ const mainline_revision = "7620399f58aebfd2196b74021f9581bcf7218cb9";
 const prism_revision = "5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6";
 
 test "Q3_K biased scales retain all packed bits" {
-    var bytes = [_]u8{0xff} ** 110;
+    var bytes: [110]u8 = @splat(0xff);
     @memset(bytes[32..96], 0x55); // code +1 everywhere
     @memcpy(bytes[96..108], &[_]u8{ 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0, 0x55, 0xaa, 0xff });
     @memcpy(bytes[108..110], &[_]u8{ 0, 0x3c }); // d=1
@@ -429,7 +429,7 @@ test "Q3_K biased scales retain all packed bits" {
 }
 
 test "Q3_K inverted sign mask and two-bit planes span both halves" {
-    var bytes = [_]u8{0} ** 110;
+    var bytes: [110]u8 = @splat(0);
     for (bytes[0..32], 0..) |*byte, i| byte.* = if (i % 2 == 0) 0x55 else 0xaa;
     @memset(bytes[32..96], 0xe4); // successive planes encode 0,1,2,3
     bytes[109] = 0x38; // d=0.5; zero packed scales decode as -32
@@ -443,7 +443,7 @@ test "Q3_K inverted sign mask and two-bit planes span both halves" {
 }
 
 test "Q6_K signed scale extremes and low/high quarter order" {
-    var bytes = [_]u8{0xf0} ** 210;
+    var bytes: [210]u8 = @splat(0xf0);
     @memset(bytes[128..192], 0xe4);
     const scales = [_]i8{ -128, 127, -1, 0, 1, 2, -3, 4, 5, -6, 7, -8, 9, -10, 11, -12 };
     for (scales, 0..) |scale, i| bytes[192 + i] = @bitCast(scale);
@@ -477,7 +477,7 @@ fn checkFixture(json: []const u8, revision: []const u8) !void {
 }
 
 test "IQ4_XS six-bit signed scales and nonlinear half-row order" {
-    var bytes = [_]u8{0xf0} ** 136;
+    var bytes: [136]u8 = @splat(0xf0);
     @memcpy(bytes[0..8], &[_]u8{ 0, 0x38, 0xe4, 0xe4, 0x10, 0x32, 0x54, 0xfe });
     const scales = [_]f32{ -32, -15, 2, 19, -28, -11, 14, 31 };
     var output: [256]f32 = undefined;
@@ -489,7 +489,7 @@ test "IQ4_XS six-bit signed scales and nonlinear half-row order" {
 }
 
 test "IQ3_S grid component order, individual signs, and odd group scales" {
-    var bytes = [_]u8{0} ** 110;
+    var bytes: [110]u8 = @splat(0);
     bytes[1] = 0x38; // d=0.5
     @memset(bytes[2..66], 1); // grid entry 1 is {3,1,1,1}
     for (bytes[74..106], 0..) |*byte, i| byte.* = @as(u8, 1) << @as(u3, @intCast(i % 8));
@@ -505,7 +505,7 @@ test "IQ3_S grid component order, individual signs, and odd group scales" {
 }
 
 test "Q4_K six-bit coefficients and affine offsets for every group" {
-    var bytes = [_]u8{0xa3} ** 144;
+    var bytes: [144]u8 = @splat(0xa3);
     @memcpy(bytes[0..4], &[_]u8{ 0, 0x38, 0, 0x34 }); // d=0.5, dmin=0.25
     @memcpy(bytes[4..16], &[_]u8{ 0xc1, 0x82, 0x43, 4, 0x45, 0x86, 0xc7, 8, 0x91, 0xa2, 0xb3, 0xc4 });
     // Independently unpacked coefficients: scales 1,2,3,4,49,34,19,4;
@@ -517,7 +517,7 @@ test "Q4_K six-bit coefficients and affine offsets for every group" {
 }
 
 test "Q5_K high-bit plane selects the correct group and column" {
-    var bytes = [_]u8{0} ** 176;
+    var bytes: [176]u8 = @splat(0);
     bytes[1] = 0x3c; // d=1; all eight group scales=1, minima=0
     @memcpy(bytes[4..16], &[_]u8{ 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1 });
     @memset(bytes[48..], 0xa3);

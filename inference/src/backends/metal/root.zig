@@ -56,11 +56,11 @@ const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ iq3_grid_s
 /// Each `Kernel` names its MSL entry point as `nu_` plus the tag; pipelines
 /// are indexed by the tag's value, so the two cannot drift apart.
 const kernel_names = blk: {
-    const fields = @typeInfo(Kernel).@"enum".fields;
-    var names: [fields.len][:0]const u8 = undefined;
-    for (fields, &names, 0..) |field, *name, i| {
-        if (field.value != i) @compileError("Kernel values must be 0..n-1 in declaration order");
-        name.* = "nu_" ++ field.name;
+    const info = @typeInfo(Kernel).@"enum";
+    var names: [info.field_names.len][:0]const u8 = undefined;
+    for (info.field_names, info.field_values, &names, 0..) |tag, value, *name, i| {
+        if (value != i) @compileError("Kernel values must be 0..n-1 in declaration order");
+        name.* = "nu_" ++ tag;
     }
     break :blk names;
 };
@@ -496,7 +496,7 @@ pub const Backend = struct {
         var bindings: [7]Binding = undefined;
         if (buffers.len > bindings.len) return error.InvalidShape;
         for (buffers, bindings[0..buffers.len]) |b, *out| out.* = b.binding();
-        if (nu_metal_dispatch(self.handle, self.pipelines[@intFromEnum(kernel)], &bindings, @intCast(buffers.len), @ptrCast(&params), @sizeOf(@TypeOf(params)), groups, 1, threads, 1) != 0) return error.MetalExecutionFailed;
+        if (nu_metal_dispatch(self.handle, self.pipelines[@backingInt(kernel)], &bindings, @intCast(buffers.len), @ptrCast(&params), @sizeOf(@TypeOf(params)), groups, 1, threads, 1) != 0) return error.MetalExecutionFailed;
         // Recorded only after the bridge accepted the dispatch, so pending[i]
         // is the i-th dispatch the GPU will time.
         if (self.profile) |*p| try p.pending.append(self.alloc, .{ .key = .{ .kernel = kernel, .encoding = shape.encoding, .rows = shape.rows, .columns = shape.columns }, .bytes = shape.bytes });
@@ -934,7 +934,7 @@ pub const Backend = struct {
         p.columns = @intCast(columns);
         p.blocks = @intCast(columns / 256);
         p.count = @intCast(segments.len);
-        p.mode = @intFromEnum(mode);
+        p.mode = @backingInt(mode);
         var total_rows: u32 = 0;
         var bytes: u64 = 0;
         // The forced split path needs every segment specialized *with a split
@@ -1305,7 +1305,7 @@ pub const Backend = struct {
             try self.rmsNorm(input, weight, output, spec);
             return self.rope(output, table, spec.rows, spec.out_stride, dims, position, pairing);
         }
-        const p: NormRopeParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .dims = @intCast(dims), .position = @intCast(position), .pairing = @intFromEnum(pairing), .eps = spec.eps };
+        const p: NormRopeParams = .{ .width = @intCast(spec.width), .in_stride = @intCast(spec.in_stride), .out_stride = @intCast(spec.out_stride), .dims = @intCast(dims), .position = @intCast(position), .pairing = @backingInt(pairing), .eps = spec.eps };
         try self.dispatch(.rmsnorm_rope, &.{ input, weight, table, output }, p, @intCast(spec.rows), 256, .{});
     }
     pub const HadamardParams = extern struct { width: u32, stride: u32, rows: u32, blocks: u32, inverse: u32 };
@@ -1361,7 +1361,7 @@ pub const Backend = struct {
     pub fn rope(self: *Backend, data: Buffer, table: Buffer, heads: usize, head_stride: usize, dims: usize, position: usize, pairing: Pairing) !void {
         if (heads == 0 or dims == 0 or dims % 2 != 0 or head_stride < dims or data.len < ((heads - 1) * head_stride + dims) * 4) return error.InvalidShape;
         if (table.len < (position + 1) * (dims / 2) * 8) return error.InvalidShape;
-        const p: RopeParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position), .pairing = @intFromEnum(pairing) };
+        const p: RopeParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position), .pairing = @backingInt(pairing) };
         try self.dispatch(.rope, &.{ data, table }, p, perElement(heads * dims / 2), 256, .{});
     }
     pub const RopeRowsParams = extern struct { heads: u32, head_stride: u32, dims: u32, position: u32, rows: u32, row_stride: u32, pairing: u32 };
@@ -1370,7 +1370,7 @@ pub const Backend = struct {
     pub fn ropeRows(self: *Backend, data: Buffer, table: Buffer, heads: usize, head_stride: usize, dims: usize, position: usize, rows: usize, row_stride: usize, pairing: Pairing) !void {
         if (rows == 0 or heads == 0 or dims == 0 or dims % 2 != 0 or head_stride < dims or row_stride < (heads - 1) * head_stride + dims) return error.InvalidShape;
         if (data.len < ((rows - 1) * row_stride + (heads - 1) * head_stride + dims) * 4 or table.len < (position + rows) * (dims / 2) * 8) return error.InvalidShape;
-        const p: RopeRowsParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position), .rows = @intCast(rows), .row_stride = @intCast(row_stride), .pairing = @intFromEnum(pairing) };
+        const p: RopeRowsParams = .{ .heads = @intCast(heads), .head_stride = @intCast(head_stride), .dims = @intCast(dims), .position = @intCast(position), .rows = @intCast(rows), .row_stride = @intCast(row_stride), .pairing = @backingInt(pairing) };
         try self.dispatch(.rope_rows, &.{ data, table }, p, perElement(rows * heads * dims / 2), 256, .{});
     }
     /// Fills `table` with F64-computed (cos, sin) pairs for `positions` positions

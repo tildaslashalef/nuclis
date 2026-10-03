@@ -18,6 +18,7 @@
 //! runtimes (`gemma4_runtime.zig`, `gemma4_metal.zig`) execute exactly this
 //! binding.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
 const weights = @import("../runtime/weights.zig");
@@ -824,7 +825,7 @@ test "binding survives allocation failure without leaks" {
     inline for (.{ inventoryDocument, inventoryDocument26bA4b, inventoryDocumentE4b }) |open| {
         var doc = try open(std.testing.allocator);
         defer doc.deinit();
-        try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        try alloc_check.checkAll(std.testing.allocator, struct {
             fn check(alloc: std.mem.Allocator, d: *const gguf.Document) !void {
                 _ = try bind(alloc, d);
             }

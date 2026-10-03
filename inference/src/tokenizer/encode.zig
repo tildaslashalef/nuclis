@@ -3,6 +3,7 @@
 //! must outlive Encoder. No model-layer schedule, conversation format, or
 //! implicit BOS/EOS policy.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const vocabulary = @import("vocabulary.zig");
 const bpe = @import("bpe.zig");
 pub const pre = @import("pre.zig");
@@ -274,7 +275,7 @@ test "a marker starting inside an earlier placement is skipped, and thousands of
     const a = arena.allocator();
     var tokens: std.ArrayList(vocabulary.Token) = .empty;
     try tokens.appendSlice(a, &.{ .{ .text = "a", .kind = .normal }, .{ .text = "<", .kind = .normal }, .{ .text = "|", .kind = .normal }, .{ .text = ">", .kind = .normal }, .{ .text = "r", .kind = .normal } });
-    for (0..2048) |i| try tokens.append(a, .{ .text = try std.fmt.allocPrint(a, "<|reserved_special_token_{d}|>", .{i}), .kind = .control });
+    for (0..2048) |i| try tokens.append(a, .{ .text = try a.print("<|reserved_special_token_{d}|>", .{i}), .kind = .control });
     var token_ids: std.StringHashMapUnmanaged(u32) = .empty;
     for (tokens.items, 0..) |token, id| try token_ids.put(a, token.text, @intCast(id));
     var many: vocabulary.Vocabulary = .{ .storage = arena, .tokens = tokens.items, .pre = "llama4", .bos = null, .eos = null, .padding = null, .token_ids = token_ids, .merge_ranks = .empty };
@@ -312,5 +313,5 @@ fn allocationCheck(alloc: std.mem.Allocator, vocab: *const vocabulary.Vocabulary
 test "encoder initialization and encoding clean up all allocation failures" {
     var vocab = try fixture();
     defer vocab.deinit();
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCheck, .{&vocab});
+    try alloc_check.checkAll(std.testing.allocator, allocationCheck, .{&vocab});
 }

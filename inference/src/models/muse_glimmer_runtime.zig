@@ -29,6 +29,7 @@
 //! - the FFN gate is SiLU, there is no per-layer output scale, and logits
 //!   come from the untied head, scaled by `logit_scale`, soft-capped at 20.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const model = @import("muse_glimmer.zig");
 const dflash = @import("dflash.zig");
 const weights = @import("../runtime/weights.zig");
@@ -641,7 +642,7 @@ fn emptyBinding(tensor: *const Tensor) model.Binding {
 }
 
 test "runtime workspace cleanup and invalid steps preserve session admission" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try alloc_check.checkAll(std.testing.allocator, struct {
         fn check(alloc: std.mem.Allocator) !void {
             const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
             const file = [_]u8{ 0, 0, 0, 0 };

@@ -376,7 +376,7 @@ const Ui = struct {
 
     /// One comparable key per row: every field the screen paints from.
     fn rowKey(a: std.mem.Allocator, row: Row) ![]u8 {
-        const style: u8 = if (row.style) |s| @intFromEnum(s) + 1 else 0;
+        const style: u8 = if (row.style) |s| @backingInt(s) + 1 else 0;
         const flags: u8 = (@as(u8, @intFromBool(row.raw)) << 0) | (@as(u8, @intFromBool(row.bar)) << 1) | (@as(u8, @intFromBool(row.editor)) << 2);
         return std.mem.concat(a, u8, &.{ &.{ style, flags }, row.prefix, "\x00", row.text });
     }
@@ -495,7 +495,7 @@ const Ui = struct {
         defer arena.deinit();
         const a = arena.allocator();
         for (images, 1..) |image, n| {
-            const label = try std.fmt.allocPrint(a, "image #{d}: {s} ({d}×{d} → {d}×{d} tokens)", .{ n, image.path, image.prepared.width, image.prepared.height, image.prepared.width_tokens, image.prepared.height_tokens });
+            const label = try a.print("image #{d}: {s} ({d}×{d} → {d}×{d} tokens)", .{ n, image.path, image.prepared.width, image.prepared.height, image.prepared.width_tokens, image.prepared.height_tokens });
             const preview: ?tui.event.Preview = if (self.preview) self.buildPreview(a, image.path) catch null else null;
             try self.tr.apply(.{ .attachment = .{ .label = label, .preview = preview } });
         }
@@ -885,11 +885,11 @@ const Ui = struct {
             try self.resume_paths.append(self.alloc, try self.alloc.dupe(u8, summary.path));
             const short = if (summary.id.len > 8) summary.id[0..8] else summary.id;
             try items.append(a, .{
-                .label = try std.fmt.allocPrint(a, "{s}  {s}", .{ short, summary.time }),
+                .label = try a.print("{s}  {s}", .{ short, summary.time }),
                 .detail = if (summary.first_prompt.len > 0)
-                    try std.fmt.allocPrint(a, "{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, summary.first_prompt })
+                    try a.print("{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, summary.first_prompt })
                 else
-                    try std.fmt.allocPrint(a, "{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, std.fs.path.basename(summary.cwd) }),
+                    try a.print("{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, std.fs.path.basename(summary.cwd) }),
             });
         }
         try self.comp.set(items.items);
@@ -929,16 +929,16 @@ const Ui = struct {
             var buffer: [commands.table.len]commands.Spec = undefined;
             for (commands.matching(word[1..], &buffer)) |spec| {
                 const label = if (spec.argument.len > 0)
-                    try std.fmt.allocPrint(a, "/{s} {s}", .{ spec.name, spec.argument })
+                    try a.print("/{s} {s}", .{ spec.name, spec.argument })
                 else
-                    try std.fmt.allocPrint(a, "/{s}", .{spec.name});
+                    try a.print("/{s}", .{spec.name});
                 try items.append(a, .{ .label = label, .detail = spec.summary });
             }
         } else if (word.len >= 1 and word[0] == '@') {
             self.comp_kind = .path;
             // The workspace is the process's working directory, always.
             for (try commands.workspacePaths(a, self.io, .cwd(), word[1..])) |path| {
-                try items.append(a, .{ .label = try std.fmt.allocPrint(a, "@{s}", .{path}) });
+                try items.append(a, .{ .label = try a.print("@{s}", .{path}) });
             }
         } else if (std.ascii.startsWithIgnoreCase(self.ed.text(), "/image ") and !self.ed.atFirstWord()) {
             // The command's argument completes like an `@path`, bare.
@@ -988,7 +988,7 @@ const Ui = struct {
         const gl = self.th.glyphs();
         const spin = gl.spinner[self.frame % gl.spinner.len];
         const elapsed = seconds(self.turn_started, std.Io.Clock.awake.now(self.io));
-        return std.fmt.allocPrint(a, "{s} {s}{s} {d:.1}s", .{ spin, self.preparing.?, gl.ellipsis, elapsed });
+        return a.print("{s} {s}{s} {d:.1}s", .{ spin, self.preparing.?, gl.ellipsis, elapsed });
     }
 
     /// Enters the busy "preparing" state for work that happens before a
@@ -1242,7 +1242,7 @@ fn imageEntries(buffer: *[editor.max_images]session_log.ImageEntry, images: []co
 /// A leading `~` as the home directory; anything else copied as is.
 fn expandHome(alloc: std.mem.Allocator, environ: *const std.process.Environ.Map, path: []const u8) ![]u8 {
     if (path.len > 0 and path[0] == '~' and (path.len == 1 or path[1] == '/')) {
-        if (environ.get("HOME")) |home| return std.fmt.allocPrint(alloc, "{s}{s}", .{ home, path[1..] });
+        if (environ.get("HOME")) |home| return alloc.print("{s}{s}", .{ home, path[1..] });
     }
     return alloc.dupe(u8, path);
 }
@@ -1279,9 +1279,9 @@ fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Re
                 try names.append(a, '/');
                 try names.appendSlice(a, spec.name);
             }
-            try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — /{s} is not a command; known: {s}", .{ word, names.items }) });
+            try ui.emit(.{ .notice = try a.print("  — /{s} is not a command; known: {s}", .{ word, names.items }) });
         },
-        .usage => |spec| try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — usage: {s}{s} {s} — {s}", .{ if (spec.kind == .shell) "" else "/", spec.name, spec.argument, spec.summary }) }),
+        .usage => |spec| try ui.emit(.{ .notice = try a.print("  — usage: {s}{s} {s} — {s}", .{ if (spec.kind == .shell) "" else "/", spec.name, spec.argument, spec.summary }) }),
         .command => |command| switch (command) {
             .help => {
                 const rows = try commands.help(a, ui.th.glyph_set == .ascii);
@@ -1296,16 +1296,16 @@ fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Re
                 if (std.meta.stringToEnum(Profile.Effort, name)) |effort| {
                     ui.effort = effort;
                     ui.record(.{ .effort = .{ .effort = @tagName(effort) } });
-                    try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — think {s}", .{@tagName(effort)}) });
+                    try ui.emit(.{ .notice = try a.print("  — think {s}", .{@tagName(effort)}) });
                     // The effort is part of the system block: prime it again.
                     primeSession(ui);
                 } else {
-                    try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s} is not an effort; known: off, low, medium, high, xhigh", .{name}) });
+                    try ui.emit(.{ .notice = try a.print("  — {s} is not an effort; known: off, low, medium, high, xhigh", .{name}) });
                 }
             },
             .ctx => |size| {
                 if (size == 0 or size > config.max_context) {
-                    try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — context must be between 1 and {d}", .{config.max_context}) });
+                    try ui.emit(.{ .notice = try a.print("  — context must be between 1 and {d}", .{config.max_context}) });
                 } else {
                     // The main loop re-opens the engine: KV capacity is
                     // allocated at open time, so this cannot be done here.
@@ -1317,14 +1317,14 @@ fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Re
                 // The same probe a drop goes through; the chip lands in the
                 // emptied editor so the question can be typed after it.
                 const dropped = (ui.probe(a, path) catch null) orelse {
-                    if (ui.eng.vision != null or ui.mmproj != null and editor.looksLikeImage(path)) try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s}: not an image file I can read", .{path}) });
+                    if (ui.eng.vision != null or ui.mmproj != null and editor.looksLikeImage(path)) try ui.emit(.{ .notice = try a.print("  — {s}: not an image file I can read", .{path}) });
                     return;
                 };
                 switch (dropped) {
-                    .image => ui.ed.attachImage(path) catch |err| try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s} attaching {s}", .{ @errorName(err), path }) }),
+                    .image => ui.ed.attachImage(path) catch |err| try ui.emit(.{ .notice = try a.print("  — {s} attaching {s}", .{ @errorName(err), path }) }),
                     .text => |content| {
                         a.free(content);
-                        try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s} is not an image; drop it to attach it as text", .{path}) });
+                        try ui.emit(.{ .notice = try a.print("  — {s} is not an image; drop it to attach it as text", .{path}) });
                     },
                 }
             },
@@ -1398,7 +1398,7 @@ fn runShell(ui: *Ui, sampler: *inference.sampling.Sampler, shell: commands.Shell
     } else try ui.emit(.{ .turn_end = .{ .stop = .eos } });
     if (!shell.send) return;
 
-    const message = try std.fmt.allocPrint(ui.alloc, "$ {s}\n{s}", .{ shell.command, result.text });
+    const message = try ui.alloc.print("$ {s}\n{s}", .{ shell.command, result.text });
     defer ui.alloc.free(message);
     ui.quiet_user = true;
     defer ui.quiet_user = false;
@@ -1417,11 +1417,11 @@ fn saveSession(ui: *Ui, a: std.mem.Allocator, root_dir: ?[]const u8, where: ?[]c
     var diagnostic: session_log.Diagnostic = .{};
     const loaded = session_log.load(a, ui.io, .cwd(), source, &diagnostic) catch |err| {
         const reason = if (diagnostic.line > 0)
-            try std.fmt.allocPrint(a, "  — {s} (line {d}) reading {s}", .{ @errorName(err), diagnostic.line, source })
+            try a.print("  — {s} (line {d}) reading {s}", .{ @errorName(err), diagnostic.line, source })
         else if (err == error.FileNotFound)
             "  — nothing recorded in this session yet"
         else
-            try std.fmt.allocPrint(a, "  — {s} reading {s}", .{ @errorName(err), source });
+            try a.print("  — {s} reading {s}", .{ @errorName(err), source });
         try ui.emit(.{ .notice = reason });
         return;
     };
@@ -1438,10 +1438,10 @@ fn saveSession(ui: *Ui, a: std.mem.Allocator, root_dir: ?[]const u8, where: ?[]c
     try session_log.exportMarkdown(loaded, &document.writer);
     if (std.fs.path.dirname(target)) |parent| try std.Io.Dir.cwd().createDirPath(ui.io, parent);
     std.Io.Dir.cwd().writeFile(ui.io, .{ .sub_path = target, .data = document.written() }) catch |err| {
-        try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — {s} writing {s}", .{ @errorName(err), target }) });
+        try ui.emit(.{ .notice = try a.print("  — {s} writing {s}", .{ @errorName(err), target }) });
         return;
     };
-    try ui.emit(.{ .notice = try std.fmt.allocPrint(a, "  — saved {s}", .{target}) });
+    try ui.emit(.{ .notice = try a.print("  — saved {s}", .{target}) });
 }
 
 /// `/resume` and `--resume`: replay a saved conversation into a fresh session
@@ -1456,9 +1456,9 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     var diagnostic: session_log.Diagnostic = .{};
     const loaded = session_log.load(a, io, .cwd(), path, &diagnostic) catch |err| {
         const reason = if (diagnostic.line > 0)
-            try std.fmt.allocPrint(a, "  — {s} (line {d}) loading {s}", .{ @errorName(err), diagnostic.line, path })
+            try a.print("  — {s} (line {d}) loading {s}", .{ @errorName(err), diagnostic.line, path })
         else
-            try std.fmt.allocPrint(a, "  — {s} loading {s}", .{ @errorName(err), path });
+            try a.print("  — {s} loading {s}", .{ @errorName(err), path });
         try ui.emit(.{ .notice = reason });
         return;
     };
@@ -1612,7 +1612,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // effort — so a file read a year later says what produced it.
     // `realPathFileAlloc` returns a sentinel-terminated slice; the fallback
     // must too, or the coerced `[]u8` frees one byte short of the allocation.
-    const cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc) catch try alloc.dupeZ(u8, ".");
+    const cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc) catch try alloc.dupeSentinel(u8, ".", 0);
     defer alloc.free(cwd);
     const digest: ?[]const u8 = blk: {
         // The sidecar's strings live in the allocator it is read with; only

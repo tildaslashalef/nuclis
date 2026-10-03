@@ -13,6 +13,7 @@
 //! are rejected by name. The post-processor, truncation, and padding are
 //! call-time policy and are ignored: encode never adds tokens.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const vocabulary = @import("vocabulary.zig");
 const bpe = @import("bpe.zig");
 const encoder = @import("encode.zig");
@@ -59,7 +60,7 @@ pub const Tokenizer = struct {
     /// Added-token ids of each pass, longest text first; arena-owned.
     raw: []const u32,
     normalized: []const u32,
-    lstrip: std.DynamicBitSetUnmanaged,
+    lstrip: std.bit_set.Dynamic,
     nfc: bool,
 
     pub fn deinit(self: *Tokenizer) void {
@@ -305,7 +306,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!To
         filled[id] = true;
     }
 
-    var lstrip = try std.DynamicBitSetUnmanaged.initEmpty(alloc, count);
+    var lstrip = try std.bit_set.Dynamic.initEmpty(alloc, count);
     var raw: std.ArrayList(u32) = .empty;
     var normalized: std.ArrayList(u32) = .empty;
     for (file.added_tokens) |a| {
@@ -522,7 +523,7 @@ test "unsupported components and inconsistent tables are rejected by name" {
 }
 
 test "parse and encode release everything on allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try alloc_check.checkAll(std.testing.allocator, struct {
         fn run(gpa: std.mem.Allocator) !void {
             var t = try parse(gpa, fixture, .{});
             defer t.deinit();

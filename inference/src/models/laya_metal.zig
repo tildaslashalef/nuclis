@@ -277,7 +277,7 @@ pub const Plan = struct {
         begin = 0;
         for (sequences) |s| {
             const rows = s.ids.len;
-            try b.addBiasRows(self.x.slice(begin * d * 4, rows * d * 4), self.type_emb.slice(@as(usize, @intFromEnum(s.kind)) * d * 4, d * 4), d, rows, d);
+            try b.addBiasRows(self.x.slice(begin * d * 4, rows * d * 4), self.type_emb.slice(@as(usize, @backingInt(s.kind)) * d * 4, d * 4), d, rows, d);
             begin += rows;
         }
         for (self.head, 0..) |l, i| {

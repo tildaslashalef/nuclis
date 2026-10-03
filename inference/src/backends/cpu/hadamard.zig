@@ -94,8 +94,8 @@ test "the butterflies equal the parity-defined matrix and undo themselves" {
 }
 
 test "a constant block and a delta block have known transforms" {
-    var x = [_]f32{1} ** 8;
-    const ones = [_]f32{1} ** 8;
+    var x: [8]f32 = @splat(1);
+    const ones: [8]f32 = @splat(1);
     try forward(&x, &ones, 8);
     // The constant vector is H's first column: all energy in element 0.
     try std.testing.expectApproxEqAbs(@as(f32, @sqrt(8.0)), x[0], 1e-6);
@@ -108,7 +108,7 @@ test "a constant block and a delta block have known transforms" {
 
 test "shape and block validation leaves the input untouched" {
     var x = [_]f32{ 1, 2, 3, 4, 5, 6 };
-    const signs = [_]f32{1} ** 6;
+    const signs: [6]f32 = @splat(1);
     try std.testing.expectError(error.InvalidShape, forward(&x, &signs, 4));
     try std.testing.expectError(error.InvalidShape, forward(x[0..4], &signs, 4));
     try std.testing.expectError(error.InvalidBlock, forward(&x, &signs, 3));

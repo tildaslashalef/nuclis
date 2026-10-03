@@ -1057,8 +1057,9 @@ executable, the inference module, and the download package. Default tests
 must not initialize a GPU, load full model weights, or reach the network.
 
 `zig build run -- inspect --json` runs nuclis directly.
-In a sandbox that cannot write Zig's default global cache, append
-`--global-cache-dir /absolute/writable/cache`; local verification uses the root
+In a sandbox that cannot write Zig's default global cache, set
+`ZIG_GLOBAL_CACHE_DIR=/absolute/writable/cache` (Zig 0.17's `zig build` has no
+`--global-cache-dir`); the Makefile and `scripts/gates.py` point it at the root
 `.zig-cache/global` directory.
 
 Format changed Zig source and build files with `zig fmt`. The repository check is:

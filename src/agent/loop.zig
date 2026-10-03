@@ -532,7 +532,7 @@ pub const Agent = struct {
                 break;
             }
             const name = self.callName(item.tool_call_id) orelse "tool";
-            const stub = try std.fmt.allocPrint(self.alloc, "{s}{s}, {d} lines]", .{ elided_prefix, name, countLines(item.content) });
+            const stub = try self.alloc.print("{s}{s}, {d} lines]", .{ elided_prefix, name, countLines(item.content) });
             self.alloc.free(item.content);
             item.content = stub;
             to_elide -= 1;
@@ -608,7 +608,7 @@ pub const Agent = struct {
             defer if (joined) |bytes| self.alloc.free(bytes);
             if (result.change) |*change| {
                 try self.events.send(self.events.context, .{ .diff = .{ .path = change.path, .rows = change.diff.rows } });
-                joined = try std.fmt.allocPrint(self.alloc, "{s}\n{s}", .{ result.text, change.diff.unified });
+                joined = try self.alloc.print("{s}\n{s}", .{ result.text, change.diff.unified });
                 model_text = joined.?;
             }
 
@@ -626,11 +626,11 @@ pub const Agent = struct {
                 // The row states what the model actually saw, and the same
                 // continuation the note inside the text gives it.
                 cut_summary = if (result.lines) |range|
-                    try std.fmt.allocPrint(self.alloc, "lines {d} to {d} of {d} · cut to fit the context, continue with offset={d}", .{ range.first, range.first + f.kept_lines - 1, range.total, range.first + f.kept_lines })
+                    try self.alloc.print("lines {d} to {d} of {d} · cut to fit the context, continue with offset={d}", .{ range.first, range.first + f.kept_lines - 1, range.total, range.first + f.kept_lines })
                 else if (summary.len > 0)
-                    try std.fmt.allocPrint(self.alloc, "{s} · cut to {d} lines for the context", .{ summary, f.kept_lines })
+                    try self.alloc.print("{s} · cut to {d} lines for the context", .{ summary, f.kept_lines })
                 else
-                    try std.fmt.allocPrint(self.alloc, "cut to {d} of {d} lines for the context", .{ f.kept_lines, f.total_lines });
+                    try self.alloc.print("cut to {d} of {d} lines for the context", .{ f.kept_lines, f.total_lines });
                 summary = cut_summary.?;
             }
 

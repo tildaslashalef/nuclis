@@ -85,14 +85,14 @@ fn commit(workspace: root.Workspace, alloc: std.mem.Allocator, display: []const 
         return root.fail(alloc, "write_file: {s}: {s}", .{ display, @errorName(err) });
     };
 
-    const text = try std.fmt.allocPrint(alloc, "{s} {s} ({d} bytes)", .{ if (existed) "replaced" else "created", display, content.len });
+    const text = try alloc.print("{s} {s} ({d} bytes)", .{ if (existed) "replaced" else "created", display, content.len });
     errdefer alloc.free(text);
     const lines = std.mem.count(u8, content, "\n") + @intFromBool(content.len > 0 and content[content.len - 1] != '\n');
     const summary = if (existed) blk: {
         const counts = try root.changeSummary(alloc, change.diff.rows);
         defer alloc.free(counts);
-        break :blk try std.fmt.allocPrint(alloc, "Replaced {s}: {s} lines", .{ display, counts });
-    } else try std.fmt.allocPrint(alloc, "Wrote {d} line{s} to {s}", .{ lines, if (lines == 1) "" else "s", display });
+        break :blk try alloc.print("Replaced {s}: {s} lines", .{ display, counts });
+    } else try alloc.print("Wrote {d} line{s} to {s}", .{ lines, if (lines == 1) "" else "s", display });
     keep = true;
     return .{ .text = text, .change = change, .summary = summary };
 }

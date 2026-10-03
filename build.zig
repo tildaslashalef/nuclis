@@ -57,20 +57,20 @@ pub fn build(b: *std.Build) void {
     b.step("hf-downloader", "Install the standalone Hugging Face downloader (zig-out/bin/hf-downloader)").dependOn(&b.addInstallArtifact(huggingface.artifact("hf-downloader"), .{}).step);
 
     const run = b.addRunArtifact(exe);
-    if (b.args) |args| run.addArgs(args);
+    run.addPassthruArgs();
     b.step("run", "Run nuclis").dependOn(&run.step);
 
     const vocabulary_check = b.addRunArtifact(inference.artifact("vocabulary-check"));
-    if (b.args) |args| vocabulary_check.addArgs(args);
+    vocabulary_check.addPassthruArgs();
     b.step("test-vocabulary", "Check the pinned vocabulary and tokenizer (-- MODEL_PATH)").dependOn(&vocabulary_check.step);
     const laya_check = b.addRunArtifact(inference.artifact("laya-check"));
-    if (b.args) |args| laya_check.addArgs(args);
+    laya_check.addPassthruArgs();
     b.step("test-laya", "Check Laya's CPU forward against the oracle's fixtures (-- LAYA_DIR)").dependOn(&laya_check.step);
     const clef_check = b.addRunArtifact(inference.artifact("clef-check"));
-    if (b.args) |args| clef_check.addArgs(args);
+    clef_check.addPassthruArgs();
     b.step("test-clef", "Check clef-flash against the oracle's fixtures (-- sequences|head CLEF_DIR ...)").dependOn(&clef_check.step);
     const generation_check = b.addRunArtifact(inference.artifact("generation-check"));
-    if (b.args) |args| generation_check.addArgs(args);
+    generation_check.addPassthruArgs();
     b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&generation_check.step);
     // Compiles the three check tools without running them, so the gate runner
     // can time the build apart from the checks.
@@ -80,26 +80,26 @@ pub fn build(b: *std.Build) void {
     b.step("test-metal", "Explicit Metal fixture checks (-Dmetal=true)").dependOn(&b.addRunArtifact(inference.artifact("metal-check")).step);
     const matvec_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matvec_bench.addArg("--matvec-bench");
-    if (b.args) |args| matvec_bench.addArgs(args);
+    matvec_bench.addPassthruArgs();
     b.step("bench-kernels", "Achieved weight bandwidth of the matvec kernels (-Dmetal=true)").dependOn(&matvec_bench.step);
     const matvec_split_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matvec_split_bench.addArg("--matvec-split");
-    if (b.args) |args| matvec_split_bench.addArgs(args);
+    matvec_split_bench.addPassthruArgs();
     b.step("bench-matvec-split", "Split-K matvec bandwidth on the row-poor shapes at 1/2/4/8 splits (-Dmetal=true)").dependOn(&matvec_split_bench.step);
     const matmul_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matmul_bench.addArg("--matmul-bench");
-    if (b.args) |args| matmul_bench.addArgs(args);
+    matmul_bench.addPassthruArgs();
     b.step("bench-matmul", "Throughput of the batched prefill matmul on model shapes (-Dmetal=true)").dependOn(&matmul_bench.step);
     const matvec_rows_bench = b.addRunArtifact(inference.artifact("metal-check"));
     matvec_rows_bench.addArg("--matvec-rows-bench");
-    if (b.args) |args| matvec_rows_bench.addArgs(args);
+    matvec_rows_bench.addPassthruArgs();
     b.step("bench-matvec-rows", "Multi-row matvec vs the 16x8 tile at 1-8 rows (-Dmetal=true)").dependOn(&matvec_rows_bench.step);
     const hadamard_bench = b.addRunArtifact(inference.artifact("metal-check"));
     hadamard_bench.addArg("--hadamard-bench");
     b.step("bench-hadamard", "GPU time of one token's Hadamard transforms on the Bonsai schedule (-Dmetal=true)").dependOn(&hadamard_bench.step);
     const experts_bench = b.addRunArtifact(inference.artifact("metal-check"));
     experts_bench.addArg("--experts-bench");
-    if (b.args) |args| experts_bench.addArgs(args);
+    experts_bench.addPassthruArgs();
     b.step("bench-experts", "Bandwidth of the gathered expert kernels on the 26B-A4B shape (-Dmetal=true)").dependOn(&experts_bench.step);
     const attention_bench = b.addRunArtifact(inference.artifact("metal-check"));
     attention_bench.addArg("--attention-bench");

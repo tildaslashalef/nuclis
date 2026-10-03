@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(check);
     const run_check = b.addRunArtifact(check);
-    if (b.args) |args| run_check.addArgs(args);
+    run_check.addPassthruArgs();
     b.step("test-vocabulary", "Check the pinned vocabulary and tokenizer (-- MODEL_PATH)").dependOn(&run_check.step);
     const laya_check = b.addExecutable(.{
         .name = "laya-check",
@@ -49,7 +49,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(laya_check);
     const run_laya = b.addRunArtifact(laya_check);
-    if (b.args) |args| run_laya.addArgs(args);
+    run_laya.addPassthruArgs();
     b.step("test-laya", "Check Laya's CPU forward against the oracle's fixtures (-- LAYA_DIR)").dependOn(&run_laya.step);
     const clef_check = b.addExecutable(.{
         .name = "clef-check",
@@ -62,7 +62,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(clef_check);
     const run_clef = b.addRunArtifact(clef_check);
-    if (b.args) |args| run_clef.addArgs(args);
+    run_clef.addPassthruArgs();
     b.step("test-clef", "Check clef-flash against the oracle's fixtures (-- sequences|head CLEF_DIR ...)").dependOn(&run_clef.step);
     const generation_check = b.addExecutable(.{
         .name = "generation-check",
@@ -75,7 +75,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(generation_check);
     const run_generation = b.addRunArtifact(generation_check);
-    if (b.args) |args| run_generation.addArgs(args);
+    run_generation.addPassthruArgs();
     b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&run_generation.step);
     const metal_check = b.addExecutable(.{
         .name = "metal-check",

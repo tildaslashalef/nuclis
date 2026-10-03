@@ -271,16 +271,16 @@ pub fn failure(arena: std.mem.Allocator, name: []const u8, err: anyerror) ApiErr
     return switch (err) {
         error.OptionsExceedBudget => .init(.unprocessable_entity, "options_exceed_budget", "a question's options do not fit in the model's budget; shorten them or ask fewer"),
         error.SchemaExceedsBudget => .init(.unprocessable_entity, "options_exceed_budget", "the questions and their options do not fit in the model's 16,384 tokens; ask fewer"),
-        error.ImagesUnsupported => .init(.unprocessable_entity, "images_unsupported", std.fmt.allocPrint(arena, "{s} reads no images; clef-flash does", .{name}) catch "this model reads no images"),
-        error.NoVision => .init(.unprocessable_entity, "images_unsupported", std.fmt.allocPrint(arena, "{s} has no projector pulled (`nuclis model pull {s} --with mmproj`)", .{ name, name }) catch "no projector pulled"),
-        error.UnsupportedImageFormat, error.MalformedImage, error.ImageTooLarge, error.TooManyImages => .init(.unprocessable_entity, "invalid_image", std.fmt.allocPrint(arena, "an image could not be read ({s})", .{@errorName(err)}) catch "an image could not be read"),
+        error.ImagesUnsupported => .init(.unprocessable_entity, "images_unsupported", arena.print("{s} reads no images; clef-flash does", .{name}) catch "this model reads no images"),
+        error.NoVision => .init(.unprocessable_entity, "images_unsupported", arena.print("{s} has no projector pulled (`nuclis model pull {s} --with mmproj`)", .{ name, name }) catch "no projector pulled"),
+        error.UnsupportedImageFormat, error.MalformedImage, error.ImageTooLarge, error.TooManyImages => .init(.unprocessable_entity, "invalid_image", arena.print("an image could not be read ({s})", .{@errorName(err)}) catch "an image could not be read"),
         error.OutOfMemory => .init(.internal_server_error, "internal", "out of memory"),
-        error.InvalidUtf8, error.LimitExceeded, error.WorkLimitExceeded => .init(.unprocessable_entity, "invalid_request", std.fmt.allocPrint(arena, "a text could not be tokenized ({s})", .{@errorName(err)}) catch "a text could not be tokenized"),
-        else => .init(.internal_server_error, "internal", std.fmt.allocPrint(arena, "{s}: {s}", .{ name, @errorName(err) }) catch @errorName(err)),
+        error.InvalidUtf8, error.LimitExceeded, error.WorkLimitExceeded => .init(.unprocessable_entity, "invalid_request", arena.print("a text could not be tokenized ({s})", .{@errorName(err)}) catch "a text could not be tokenized"),
+        else => .init(.internal_server_error, "internal", arena.print("{s}: {s}", .{ name, @errorName(err) }) catch @errorName(err)),
     };
 }
 
 pub fn openFailure(arena: std.mem.Allocator, name: []const u8, err: anyerror) ApiError {
     if (err == error.MetalNotEnabled) return .init(.internal_server_error, "model_failed", "this build has no Metal backend; serve with --backend cpu");
-    return .init(.internal_server_error, "model_failed", std.fmt.allocPrint(arena, "{s}: not a decision checkpoint nuclis can run ({s})", .{ name, @errorName(err) }) catch "the model failed to open");
+    return .init(.internal_server_error, "model_failed", arena.print("{s}: not a decision checkpoint nuclis can run ({s})", .{ name, @errorName(err) }) catch "the model failed to open");
 }

@@ -54,7 +54,7 @@ pub fn parseQuestion(arena: std.mem.Allocator, id: []const u8, value: std.json.V
                     try keys.append(arena, entry.key_ptr.*);
                     const v = entry.value_ptr.*;
                     const bare = v == .null or (v == .string and v.string.len == 0);
-                    try texts.append(arena, if (bare) entry.key_ptr.* else try std.fmt.allocPrint(arena, "{s}: {s}", .{ entry.key_ptr.*, try criterion(arena, v) }));
+                    try texts.append(arena, if (bare) entry.key_ptr.* else try arena.print("{s}: {s}", .{ entry.key_ptr.*, try criterion(arena, v) }));
                 }
             },
             .array => |a| {
@@ -74,8 +74,8 @@ pub fn parseQuestion(arena: std.mem.Allocator, id: []const u8, value: std.json.V
             .array => |a| {
                 if (a.items.len == 0) return fail(diag, "question {s}: a score question needs at least one level", .{id});
                 for (a.items, 0..) |level, i| {
-                    try keys.append(arena, try std.fmt.allocPrint(arena, "{d}", .{i}));
-                    try texts.append(arena, try std.fmt.allocPrint(arena, "level {d}: {s}", .{ i, try criterion(arena, level) }));
+                    try keys.append(arena, try arena.print("{d}", .{i}));
+                    try texts.append(arena, try arena.print("level {d}: {s}", .{ i, try criterion(arena, level) }));
                 }
                 legend = a.items;
             },
@@ -102,7 +102,7 @@ pub fn parseQuestion(arena: std.mem.Allocator, id: []const u8, value: std.json.V
                 const d = descriptions[slot];
                 const bare = d == .null or (d == .string and d.string.len == 0);
                 try keys.append(arena, if (slot == 0) "false" else "true");
-                try texts.append(arena, try std.fmt.allocPrint(arena, "{s}: {s}", .{ labels[slot], if (bare) defaults[slot] else try criterion(arena, d) }));
+                try texts.append(arena, try arena.print("{s}: {s}", .{ labels[slot], if (bare) defaults[slot] else try criterion(arena, d) }));
             }
         },
     }
@@ -204,11 +204,11 @@ pub const Specials = struct {
 };
 
 pub fn prepare(arena: std.mem.Allocator, tokenizer: *const hf.Tokenizer, specials: Specials, question: Question) !Prepared {
-    const head_text = try std.fmt.allocPrint(arena, "{s} question: {s}", .{ question.kind.name(), try specials.unmask(arena, question.instructions) });
+    const head_text = try arena.print("{s} question: {s}", .{ question.kind.name(), try specials.unmask(arena, question.instructions) });
     const head = try tokenizer.encode(arena, head_text, .{});
     const options = try arena.alloc([]const u32, question.texts.len);
     for (options, question.texts) |*o, text| {
-        const spaced = try std.fmt.allocPrint(arena, " {s}", .{try specials.unmask(arena, text)});
+        const spaced = try arena.print(" {s}", .{try specials.unmask(arena, text)});
         const ids = try tokenizer.encode(arena, spaced, .{});
         const kept = ids[0..@min(ids.len, 48)];
         const option = try arena.alloc(u32, 1 + kept.len);
@@ -304,7 +304,7 @@ pub const AgentConfig = struct {
         var buffer: [16]u8 = undefined;
         const b = bucket(&buffer, kind, k);
         for (self.by_options) |entry| if (std.mem.eql(u8, entry.bucket, b)) return entry.temperature;
-        return self.temperature[@intFromEnum(kind)];
+        return self.temperature[@backingInt(kind)];
     }
 };
 

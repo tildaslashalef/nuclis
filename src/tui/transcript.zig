@@ -280,7 +280,7 @@ pub const Transcript = struct {
                     errdefer if (preview) |p| self.alloc.free(p);
                     try user.details.append(self.alloc, .{ .label = label, .preview = preview, .rows = if (a.preview) |p| p.rows else 0 });
                 } else {
-                    try self.blocks.append(self.alloc, .{ .notice = try std.fmt.allocPrint(self.alloc, "  {s}", .{a.label}) });
+                    try self.blocks.append(self.alloc, .{ .notice = try self.alloc.print("  {s}", .{a.label}) });
                 }
             },
             .notice => |text| try self.blocks.append(self.alloc, .{ .notice = try self.alloc.dupe(u8, text) }),
@@ -503,7 +503,7 @@ pub const Transcript = struct {
                         // picture sits above the cursor and below the label.
                         var n: usize = 0;
                         while (n < d.rows) : (n += 1) try out.append(a, .{ .text = "" });
-                        try out.append(a, .{ .text = try std.fmt.allocPrint(a, "\x1b[{d}A{s}\x1b[{d}B", .{ d.rows, p, d.rows }), .raw = true });
+                        try out.append(a, .{ .text = try a.print("\x1b[{d}A{s}\x1b[{d}B", .{ d.rows, p, d.rows }), .raw = true });
                         continue;
                     }
                 }
@@ -537,10 +537,10 @@ pub const Transcript = struct {
                     var shown: usize = 0;
                     while (lines.next()) |line| : (shown += 1) {
                         if (shown == max_error_rows) {
-                            try out.append(a, .{ .text = try std.fmt.allocPrint(a, "  {s}", .{gl.ellipsis}), .style = .dim });
+                            try out.append(a, .{ .text = try a.print("  {s}", .{gl.ellipsis}), .style = .dim });
                             break;
                         }
-                        if (shown == 0) try pushDetail(a, out, gl, line, options.width, .error_text) else try pushWrapped(a, out, try std.fmt.allocPrint(a, "  {s}", .{line}), options.width, .error_text);
+                        if (shown == 0) try pushDetail(a, out, gl, line, options.width, .error_text) else try pushWrapped(a, out, try a.print("  {s}", .{line}), options.width, .error_text);
                     }
                 } else if (result.summary.len > 0) {
                     try pushDetail(a, out, gl, result.summary, options.width, .tool_result);
@@ -582,7 +582,7 @@ pub const Transcript = struct {
             .context => {},
         };
         const arrow = if (self.tools == .folded) gl.fold_closed else gl.fold_open;
-        try out.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {s}  {s}{d} {s}{d}", .{ arrow, d.path, gl.diff_add, added, gl.diff_remove, removed }), .style = .diff_header });
+        try out.append(a, .{ .text = try a.print("{s} {s}  {s}{d} {s}{d}", .{ arrow, d.path, gl.diff_add, added, gl.diff_remove, removed }), .style = .diff_header });
         if (self.tools == .folded) return;
         var produced: std.ArrayList(Row) = .empty;
         if (options.width >= side_by_side_min_width) {
@@ -593,7 +593,7 @@ pub const Transcript = struct {
         if (produced.items.len > max_diff_rows and max_diff_rows > 1) {
             const hidden = produced.items.len - (max_diff_rows - 1);
             try out.appendSlice(a, produced.items[0 .. max_diff_rows - 1]);
-            try out.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {d} lines", .{ gl.ellipsis, hidden }), .style = .dim });
+            try out.append(a, .{ .text = try a.print("{s} {d} lines", .{ gl.ellipsis, hidden }), .style = .dim });
         } else try out.appendSlice(a, produced.items);
     }
 
@@ -772,10 +772,10 @@ fn foldLabel(a: Allocator, t: Block.Thinking, expanded: bool, th: theme.Theme) !
     const arrow = if (expanded) gl.fold_open else gl.fold_closed;
     const hint = if (expanded) "Tab to fold" else "Tab to unfold";
     if (t.seconds) |seconds| {
-        if (seconds > 0) return std.fmt.allocPrint(a, "{s} Thought for {d:.1}s ({s})", .{ arrow, seconds, hint });
-        return std.fmt.allocPrint(a, "{s} Thought ({s})", .{ arrow, hint });
+        if (seconds > 0) return a.print("{s} Thought for {d:.1}s ({s})", .{ arrow, seconds, hint });
+        return a.print("{s} Thought ({s})", .{ arrow, hint });
     }
-    return std.fmt.allocPrint(a, "{s} thinking ({s})", .{ arrow, hint });
+    return a.print("{s} thinking ({s})", .{ arrow, hint });
 }
 
 /// The rows of an error result are bounded; the message's head is what the
@@ -803,7 +803,7 @@ fn callRow(a: Allocator, call: anytype, th: theme.Theme, pulse: bool) !Row {
 }
 
 fn pushDetail(a: Allocator, out: *std.ArrayList(Row), gl: theme.Glyphs, text: []const u8, width: usize, style: ?theme.Style) !void {
-    try pushWrapped(a, out, try std.fmt.allocPrint(a, "{s} {s}", .{ gl.detail, text }), width, style);
+    try pushWrapped(a, out, try a.print("{s} {s}", .{ gl.detail, text }), width, style);
 }
 
 /// A result's text, indented and dim, cut at `max_output_rows`.
@@ -811,8 +811,8 @@ fn pushOutput(a: Allocator, out: *std.ArrayList(Row), gl: theme.Glyphs, text: []
     const body = std.mem.trimEnd(u8, text, "\n");
     if (body.len == 0) return;
     const rows = try view.lines(a, body, width -| 2, .word);
-    for (rows[0..@min(rows.len, max_output_rows)]) |line| try out.append(a, .{ .text = try std.fmt.allocPrint(a, "  {s}", .{line}), .style = .dim });
-    if (rows.len > max_output_rows) try out.append(a, .{ .text = try std.fmt.allocPrint(a, "  {s} {d} more lines", .{ gl.ellipsis, rows.len - max_output_rows }), .style = .dim });
+    for (rows[0..@min(rows.len, max_output_rows)]) |line| try out.append(a, .{ .text = try a.print("  {s}", .{line}), .style = .dim });
+    if (rows.len > max_output_rows) try out.append(a, .{ .text = try a.print("  {s} {d} more lines", .{ gl.ellipsis, rows.len - max_output_rows }), .style = .dim });
 }
 
 fn pushWrapped(a: Allocator, out: *std.ArrayList(Row), text: []const u8, width: usize, style: ?theme.Style) !void {
@@ -835,7 +835,7 @@ fn wrapped(a: Allocator, text: []const u8, width: usize, style: ?theme.Style) ![
 fn appendTail(a: Allocator, out: *std.ArrayList(Row), produced: []const Row, max: usize, th: theme.Theme) !void {
     if (produced.len > max and max > 1) {
         const hidden = produced.len - (max - 1);
-        try out.append(a, .{ .text = try std.fmt.allocPrint(a, "{s} {d} lines above", .{ th.glyphs().ellipsis, hidden }), .style = .dim });
+        try out.append(a, .{ .text = try a.print("{s} {d} lines above", .{ th.glyphs().ellipsis, hidden }), .style = .dim });
         try out.appendSlice(a, produced[hidden..]);
         return;
     }
@@ -1277,7 +1277,7 @@ test "a diff taller than the budget folds under a marker" {
     defer tr.deinit();
     var rows: std.ArrayList(diff.Row) = .empty;
     for (0..100) |i| {
-        try rows.append(a, .{ .old_line = i + 1, .new_line = i + 1, .kind = .add, .text = try std.fmt.allocPrint(a, "added line {d}", .{i}) });
+        try rows.append(a, .{ .old_line = i + 1, .new_line = i + 1, .kind = .add, .text = try a.print("added line {d}", .{i}) });
     }
     try tr.apply(.{ .diff = .{ .path = "big.zig", .rows = rows.items } });
     const s = try texts(a, try tr.takeClosed(a, .{ .width = 60, .th = .{ .kind = .plain } }));

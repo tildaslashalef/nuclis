@@ -264,7 +264,7 @@ pub fn filePath(alloc: Allocator, root_dir: []const u8, cwd: []const u8, time: [
     const slug = try cwdSlug(alloc, cwd);
     defer alloc.free(slug);
     var stamp: [17]u8 = undefined;
-    const name = try std.fmt.allocPrint(alloc, "{s}/{s}/{s}_{s}.jsonl", .{ paths.sessions_dir, slug, compactTime(&stamp, time), id });
+    const name = try alloc.print("{s}/{s}/{s}_{s}.jsonl", .{ paths.sessions_dir, slug, compactTime(&stamp, time), id });
     defer alloc.free(name);
     return paths.agentPath(alloc, root_dir, name);
 }
@@ -280,7 +280,7 @@ pub fn cwdSlug(alloc: Allocator, cwd: []const u8) ![]u8 {
     }
     if (flat.len <= max_slug_bytes) return flat;
     defer alloc.free(flat);
-    return std.fmt.allocPrint(alloc, "{s}-{x}", .{ flat[0 .. max_slug_bytes - 17], std.hash.Wyhash.hash(0, cwd) });
+    return alloc.print("{s}-{x}", .{ flat[0 .. max_slug_bytes - 17], std.hash.Wyhash.hash(0, cwd) });
 }
 
 /// `2026-09-12T10:00:00Z` as `20260912T100000Z`: the same instant, in a name
@@ -299,7 +299,7 @@ pub fn compactTime(buffer: *[17]u8, time: []const u8) []const u8 {
 /// `<root>/agent/exports/<name>`: where `/save` writes without a path.
 pub fn exportPath(alloc: Allocator, root_dir: []const u8, id: []const u8, time: []const u8) ![]u8 {
     var stamp: [17]u8 = undefined;
-    const name = try std.fmt.allocPrint(alloc, "{s}/{s}_{s}.md", .{ paths.exports_dir, compactTime(&stamp, time), id });
+    const name = try alloc.print("{s}/{s}_{s}.md", .{ paths.exports_dir, compactTime(&stamp, time), id });
     defer alloc.free(name);
     return paths.agentPath(alloc, root_dir, name);
 }
@@ -328,12 +328,12 @@ pub fn writeEntry(out: *std.Io.Writer, entry: Entry, id: u32, parent: ?u32, time
     try s.write(time);
     switch (entry) {
         inline else => |payload| {
-            inline for (@typeInfo(@TypeOf(payload)).@"struct".fields) |field| {
-                const value = @field(payload, field.name);
+            inline for (@typeInfo(@TypeOf(payload)).@"struct".field_names) |name| {
+                const value = @field(payload, name);
                 // A turn without images writes the line older readers know.
-                const skip = comptime std.mem.eql(u8, field.name, "images");
+                const skip = comptime std.mem.eql(u8, name, "images");
                 if (!skip or value.len != 0) {
-                    try s.objectField(field.name);
+                    try s.objectField(name);
                     try s.write(value);
                 }
             }

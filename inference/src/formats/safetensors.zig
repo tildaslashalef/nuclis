@@ -8,6 +8,7 @@
 //! Offsets need not be aligned, so values are read as unaligned little
 //! endian. Format summary: docs/reference/safetensors.md.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Limits = struct {
@@ -635,7 +636,7 @@ test "every rejection is typed, and hostile lengths fail before allocating" {
     try std.testing.expectError(error.EndOfStream, parseBytes(gpa, huge[0..4]));
 
     // The rejected tensor is named for a caller that asks.
-    const bytes = try fixture(gpa, "{\"weird\":{\"dtype\":\"C64\",\"shape\":[1],\"data_offsets\":[0,8]}}", &[_]u8{0} ** 8);
+    const bytes = try fixture(gpa, "{\"weird\":{\"dtype\":\"C64\",\"shape\":[1],\"data_offsets\":[0,8]}}", &@as([8]u8, @splat(0)));
     defer gpa.free(bytes);
     var rejection: Rejection = .{};
     var reader: std.Io.Reader = .fixed(bytes);
@@ -690,7 +691,7 @@ fn parseValid(gpa: Allocator) !void {
 }
 
 test "cleanup survives every allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseValid, .{});
+    try alloc_check.checkAll(std.testing.allocator, parseValid, .{});
 }
 
 test "a checkpoint maps a file and decodes unaligned F32, F16, and BF16" {
@@ -728,7 +729,7 @@ test "an index maps its shards and must agree with them exactly" {
     var one: [4]u8 = undefined;
     std.mem.writeInt(u32, &one, @bitCast(@as(f32, 7)), .little);
     for ([_][]const u8{ "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors" }, [_][]const u8{ "x", "y" }) |file, name| {
-        const header = try std.fmt.allocPrint(gpa, "{{\"{s}\":{{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]}}}}", .{name});
+        const header = try gpa.print("{{\"{s}\":{{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]}}}}", .{name});
         defer gpa.free(header);
         const bytes = try fixture(gpa, header, &one);
         defer gpa.free(bytes);

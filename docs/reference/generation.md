@@ -14,7 +14,7 @@ need neither weights nor GPU access.
 ## Run
 
 ```sh
-zig build -Doptimize=ReleaseSafe --global-cache-dir .zig-cache/global
+zig build -Doptimize=ReleaseSafe
 ./zig-out/bin/nuclis generate --prompt 'Hi' --max-tokens 3 --ctx-size 64
 ./zig-out/bin/nuclis generate --raw --prompt 'Hello,' --max-tokens 2 --ctx-size 8 --json
 ```
@@ -349,7 +349,7 @@ sessions and after reset following injected cancellation in layer 3. Logits must
 be bit-identical within the same CPU backend:
 
 ```sh
-zig build test-generation -Doptimize=ReleaseSafe --global-cache-dir .zig-cache/global -- \
+zig build test-generation -Doptimize=ReleaseSafe -- \
   "$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf"
 ```
 

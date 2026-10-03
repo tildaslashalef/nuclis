@@ -11,6 +11,7 @@
 //! hands off by emitting `<|tool_response>`, which is therefore a stop token.
 //! It owns no tokenizer or model equations.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const sampling = @import("../sampling/root.zig");
 
 /// Exact GGUF template this profile implements (`tokenizer.chat_template`,
@@ -867,7 +868,7 @@ fn allocationCase(alloc: std.mem.Allocator) !void {
 }
 
 test "prompt rendering cleans up every allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{});
+    try alloc_check.checkAll(std.testing.allocator, allocationCase, .{});
 }
 
 test "the prefix is a byte prefix of every rendering that starts with its system message and tools" {

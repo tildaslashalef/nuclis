@@ -34,6 +34,7 @@
 //!   sliding and last global layer, write none, and chain only its `h_next`;
 //!   `commit` is a copy of the last target hidden into `pending_h`.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const model = @import("gemma4.zig");
 const assistant = @import("gemma4_assistant.zig");
 const weights = @import("../runtime/weights.zig");
@@ -131,8 +132,9 @@ const Head = struct {
     }
     fn bytes(self: *const Head) usize {
         var total: usize = 0;
-        inline for (@typeInfo(Head).@"struct".fields) |field| {
-            if (field.type == []f32) total += @field(self, field.name).len * @sizeOf(f32);
+        const info = @typeInfo(Head).@"struct";
+        inline for (info.field_names, info.field_types) |name, T| {
+            if (T == []f32) total += @field(self, name).len * @sizeOf(f32);
         }
         // The head's binding borrows weights; only the decoded constants and
         // the workspace above are this runtime's own.
@@ -803,7 +805,7 @@ fn emptyBinding(config: *const model.Config, tensor: *const Tensor, scalar: *con
 
 test "runtime workspace cleanup and invalid steps preserve session admission" {
     inline for (.{ &model.config_12b, &model.config_26b_a4b, &model.config_e4b }) |config| {
-        try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        try alloc_check.checkAll(std.testing.allocator, struct {
             fn check(alloc: std.mem.Allocator, cfg: *const model.Config) !void {
                 const tensor: Tensor = .{ .name = "empty", .dimensions = &.{0}, .encoding_id = 0, .offset = 0, .elements = 0, .bytes = 0 };
                 const scalar: Tensor = .{ .name = "scale", .dimensions = &.{1}, .encoding_id = 0, .offset = 0, .elements = 1, .bytes = 4 };

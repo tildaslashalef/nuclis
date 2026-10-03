@@ -268,7 +268,7 @@ pub const Plan = struct {
             .{ .w = l.value, .which = .value, .out = s.v },
         };
         for (targets) |t| {
-            const bounds = l.bounds[@intFromEnum(t.which)];
+            const bounds = l.bounds[@backingInt(t.which)];
             var input = s.h;
             if (!bounds.isOpen()) {
                 try b.copy(s.attn, s.h, n * h);
@@ -286,7 +286,7 @@ pub const Plan = struct {
             .{ .w = l.gate, .which = .gate, .out = s.gate },
             .{ .w = l.up, .which = .up, .out = s.up },
         }) |t| {
-            const bounds = l.bounds[@intFromEnum(t.which)];
+            const bounds = l.bounds[@backingInt(t.which)];
             var input = s.h;
             if (!bounds.isOpen()) {
                 try b.copy(s.attn, s.h, n * h);
@@ -333,14 +333,14 @@ pub const Plan = struct {
             }
             try b.rmsNorm(s.v, self.ones, s.v, per_head);
             try b.attentionChunk(s.k, s.v, s.q, s.attn, .{ .query_heads = heads, .kv_heads = heads, .key_width = d, .value_width = d, .position = 0, .count = n, .q_stride = h, .out_stride = h, .scale = 1.0, .span = .{ .begin = 0, .end = n } });
-            try self.clipped(l.output, l.bounds[@intFromEnum(model.Linear.output)], s.attn, h, s.h, h, n);
+            try self.clipped(l.output, l.bounds[@backingInt(model.Linear.output)], s.attn, h, s.h, h, n);
             try b.rmsNorm(s.h, l.post_attention_norm, s.h, rows);
             try b.add(s.x, s.h, n * h);
             try b.rmsNorm(s.x, l.ln2, s.h, rows);
             try self.clippedPair(l, s, n, ffn_padded);
             // The padding columns were never written: gelu_quick(0)·0 keeps them zero.
             try b.geluQuickMul(s.gate, s.up, n * ffn_padded);
-            try self.clipped(l.down, l.bounds[@intFromEnum(model.Linear.down)], s.gate, ffn_padded, s.h, h, n);
+            try self.clipped(l.down, l.bounds[@backingInt(model.Linear.down)], s.gate, ffn_padded, s.h, h, n);
             try b.rmsNorm(s.h, l.post_ffn_norm, s.h, rows);
             try b.add(s.x, s.h, n * h);
         }

@@ -262,7 +262,7 @@ fn leafCount(comptime T: type) usize {
     if (T == Models) return 0;
     if (!isSection(T)) return 1;
     var n: usize = 0;
-    for (@typeInfo(T).@"struct".fields) |f| n += leafCount(f.type);
+    for (@typeInfo(T).@"struct".field_types) |Field| n += leafCount(Field);
     return n;
 }
 
@@ -276,14 +276,14 @@ fn leafIndex(comptime T: type, comptime path: []const u8) usize {
     const dot = std.mem.indexOfScalar(u8, path, '.');
     const head = if (dot) |d| path[0..d] else path;
     var offset: usize = 0;
-    inline for (@typeInfo(T).@"struct".fields) |f| {
-        if (comptime std.mem.eql(u8, f.name, head)) {
-            if (f.type == Models) @compileError("the registry has no key slots: " ++ path);
-            if (dot) |d| return offset + leafIndex(f.type, path[d + 1 ..]);
-            if (isSection(f.type)) @compileError("config path names a section, not a key: " ++ path);
+    inline for (@typeInfo(T).@"struct".field_names, @typeInfo(T).@"struct".field_types) |field_name, Field| {
+        if (comptime std.mem.eql(u8, field_name, head)) {
+            if (Field == Models) @compileError("the registry has no key slots: " ++ path);
+            if (dot) |d| return offset + leafIndex(Field, path[d + 1 ..]);
+            if (isSection(Field)) @compileError("config path names a section, not a key: " ++ path);
             return offset;
         }
-        offset += comptime leafCount(f.type);
+        offset += comptime leafCount(Field);
     }
     @compileError("no such config key: " ++ path);
 }
@@ -390,7 +390,7 @@ pub fn fromText(alloc: Allocator, text: []const u8, path: []const u8, diag: *Dia
 }
 
 fn hasField(comptime T: type, name: []const u8) bool {
-    inline for (@typeInfo(T).@"struct".fields) |f| if (std.mem.eql(u8, f.name, name)) return true;
+    inline for (@typeInfo(T).@"struct".field_names) |field_name| if (std.mem.eql(u8, field_name, name)) return true;
     return false;
 }
 
@@ -419,22 +419,22 @@ fn applySection(comptime T: type, target: *T, object: std.json.ObjectMap, prefix
     var path_buffer: [max_path_bytes]u8 = undefined;
     var prefix_buffer: [max_path_bytes]u8 = undefined;
     comptime var offset: usize = 0;
-    inline for (@typeInfo(T).@"struct".fields) |field| {
-        if (object.get(field.name)) |value| {
-            const path = std.fmt.bufPrint(&path_buffer, "{s}{s}", .{ prefix, field.name }) catch unreachable;
-            if (field.type == Models) {
-                @field(target, field.name) = switch (value) {
+    inline for (@typeInfo(T).@"struct".field_names, @typeInfo(T).@"struct".field_types) |field_name, Field| {
+        if (object.get(field_name)) |value| {
+            const path = std.fmt.bufPrint(&path_buffer, "{s}{s}", .{ prefix, field_name }) catch unreachable;
+            if (Field == Models) {
+                @field(target, field_name) = switch (value) {
                     .object => |map| try parseModels(map, arena, diag),
                     else => {
                         diag.set("{s} must be an object", .{path});
                         return error.InvalidConfigValue;
                     },
                 };
-            } else if (comptime isSection(field.type)) {
+            } else if (comptime isSection(Field)) {
                 switch (value) {
                     .object => |section| {
                         const section_prefix = std.fmt.bufPrint(&prefix_buffer, "{s}.", .{path}) catch unreachable;
-                        try applySection(field.type, &@field(target, field.name), section, section_prefix, origin, if (base) |b| b + offset else null, arena, diag);
+                        try applySection(Field, &@field(target, field_name), section, section_prefix, origin, if (base) |b| b + offset else null, arena, diag);
                     },
                     else => {
                         diag.set("{s} must be an object", .{path});
@@ -442,11 +442,11 @@ fn applySection(comptime T: type, target: *T, object: std.json.ObjectMap, prefix
                     },
                 }
             } else {
-                @field(target, field.name) = try parseLeaf(field.type, value, path, arena, diag);
+                @field(target, field_name) = try parseLeaf(Field, value, path, arena, diag);
                 if (base) |b| origin.?[b + offset] = .file;
             }
         }
-        offset += comptime leafCount(field.type);
+        offset += comptime leafCount(Field);
     }
 }
 
@@ -495,7 +495,7 @@ fn describe(comptime T: type) []const u8 {
         .@"union" => T.description,
         .@"enum" => |e| blk: {
             comptime var names: []const u8 = "one of ";
-            inline for (e.fields, 0..) |f, i| names = names ++ (if (i > 0) "|" else "") ++ f.name;
+            inline for (e.field_names, 0..) |field_name, i| names = names ++ (if (i > 0) "|" else "") ++ field_name;
             break :blk names;
         },
         else => @compileError("unsupported config key type " ++ @typeName(T)),
@@ -553,12 +553,12 @@ fn validateRange(value: usize, path: []const u8, max: usize, diag: *Diagnostic) 
 /// Each sampling option is checked alone through `Sampler.init` so the
 /// message names the key and the rule stays in the sampler.
 fn validateSampling(overrides: Overrides, path: []const u8, diag: *Diagnostic) !void {
-    inline for (@typeInfo(Overrides).@"struct".fields) |field| {
-        if (@field(overrides, field.name)) |value| {
+    inline for (@typeInfo(Overrides).@"struct".field_names) |field_name| {
+        if (@field(overrides, field_name)) |value| {
             var one: Overrides = .{};
-            @field(one, field.name) = value;
+            @field(one, field_name) = value;
             _ = inference.sampling.Sampler.init(0, (inference.sampling.Options{}).override(one)) catch {
-                diag.set("{s}.{s} is out of range (found {d})", .{ path, field.name, value });
+                diag.set("{s}.{s} is out of range (found {d})", .{ path, field_name, value });
                 return error.InvalidConfigValue;
             };
         }
@@ -756,9 +756,9 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
     if (flags.draft_length != null) o[comptime leafIndex(Config, "generation.draft_length")] = .flag;
     if (e.generation.image_max_tokens != null) o[comptime leafIndex(Config, "generation.image_max_tokens")] = .model;
     if (flags.image_max_tokens != null) o[comptime leafIndex(Config, "generation.image_max_tokens")] = .flag;
-    inline for (@typeInfo(Overrides).@"struct".fields) |field| {
-        const index = comptime leafIndex(Config, "generation.sampling." ++ field.name);
-        if (@field(flags.sampling, field.name) != null) o[index] = .flag else if (bench) o[index] = .default else if (@field(e.generation.sampling, field.name) != null) o[index] = .model else if (@field(cfg.generation.sampling, field.name) == null) o[index] = .profile;
+    inline for (@typeInfo(Overrides).@"struct".field_names) |field_name| {
+        const index = comptime leafIndex(Config, "generation.sampling." ++ field_name);
+        if (@field(flags.sampling, field_name) != null) o[index] = .flag else if (bench) o[index] = .default else if (@field(e.generation.sampling, field_name) != null) o[index] = .model else if (@field(cfg.generation.sampling, field_name) == null) o[index] = .profile;
     }
     return r;
 }
@@ -827,10 +827,10 @@ pub fn writeInitial(out: *std.Io.Writer) !void {
 fn isKey(comptime T: type, path: []const u8) bool {
     const dot = std.mem.indexOfScalar(u8, path, '.');
     const head = if (dot) |d| path[0..d] else path;
-    inline for (@typeInfo(T).@"struct".fields) |field| {
-        if (std.mem.eql(u8, field.name, head)) {
-            if (field.type == Models) return false;
-            if (comptime isSection(field.type)) return if (dot) |d| isKey(field.type, path[d + 1 ..]) else false;
+    inline for (@typeInfo(T).@"struct".field_names, @typeInfo(T).@"struct".field_types) |field_name, Field| {
+        if (std.mem.eql(u8, field_name, head)) {
+            if (Field == Models) return false;
+            if (comptime isSection(Field)) return if (dot) |d| isKey(Field, path[d + 1 ..]) else false;
             return dot == null;
         }
     }
@@ -850,10 +850,10 @@ fn keyInfos(comptime T: type, comptime prefix: []const u8) []const KeyInfo {
     const list = comptime blk: {
         @setEvalBranchQuota(20_000);
         var list: []const KeyInfo = &.{};
-        for (@typeInfo(T).@"struct".fields) |field| {
-            if (field.type == Models or std.mem.eql(u8, field.name, "schema_version")) continue;
-            const path = prefix ++ field.name;
-            list = list ++ if (isSection(field.type)) keyInfos(field.type, path ++ ".") else &[_]KeyInfo{.{ .path = path, .choices = choicesOf(field.type) }};
+        for (@typeInfo(T).@"struct".field_names, @typeInfo(T).@"struct".field_types) |field_name, Field| {
+            if (Field == Models or std.mem.eql(u8, field_name, "schema_version")) continue;
+            const path = prefix ++ field_name;
+            list = list ++ if (isSection(Field)) keyInfos(Field, path ++ ".") else &[_]KeyInfo{.{ .path = path, .choices = choicesOf(Field) }};
         }
         break :blk list;
     };
@@ -864,7 +864,7 @@ fn choicesOf(comptime T: type) []const []const u8 {
     const list = comptime switch (@typeInfo(T)) {
         .@"enum" => |e| blk: {
             var names: []const []const u8 = &.{};
-            for (e.fields) |f| names = names ++ &[_][]const u8{f.name};
+            for (e.field_names) |field_name| names = names ++ &[_][]const u8{field_name};
             break :blk names;
         },
         .bool => &[_][]const u8{ "true", "false" },
@@ -1161,14 +1161,14 @@ pub fn readText(gpa: Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8, d
 /// `fn leaf(self, comptime path, value) !void`; the path is comptime so a
 /// visitor can index `Origin` through `leafIndex`.
 fn walk(comptime T: type, value: T, comptime prefix: []const u8, visitor: anytype) !void {
-    inline for (@typeInfo(T).@"struct".fields) |field| {
-        const path = prefix ++ field.name;
-        if (field.type == Models) {
+    inline for (@typeInfo(T).@"struct".field_names, @typeInfo(T).@"struct".field_types) |field_name, Field| {
+        const path = prefix ++ field_name;
+        if (Field == Models) {
             // No key slots; printed separately by name.
-        } else if (comptime isSection(field.type)) {
-            try walk(field.type, @field(value, field.name), path ++ ".", visitor);
+        } else if (comptime isSection(Field)) {
+            try walk(Field, @field(value, field_name), path ++ ".", visitor);
         } else {
-            try visitor.leaf(path, @field(value, field.name));
+            try visitor.leaf(path, @field(value, field_name));
         }
     }
 }

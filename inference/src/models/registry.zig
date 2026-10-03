@@ -99,12 +99,12 @@ pub fn Registry(comptime families: []const type) type {
 
         /// The family behind a tag, for `inline` dispatch.
         pub fn family(comptime adapter: Adapter) type {
-            return families[@intFromEnum(adapter)];
+            return families[@backingInt(adapter)];
         }
 
         pub fn adapterFor(architecture: []const u8) ?Adapter {
             inline for (families, 0..) |Family, i| {
-                if (std.mem.eql(u8, architecture, Family.architecture)) return @enumFromInt(i);
+                if (std.mem.eql(u8, architecture, Family.architecture)) return @fromBackingInt(@intCast(i));
             }
             return null;
         }
@@ -170,7 +170,7 @@ const StubBeta = struct {
 
 test "a registry over stub families derives its tags and dispatch from the table" {
     const Stub = Registry(&.{ StubAlpha, StubBeta });
-    try std.testing.expectEqual(2, @typeInfo(Stub.Adapter).@"enum".fields.len);
+    try std.testing.expectEqual(2, @typeInfo(Stub.Adapter).@"enum".field_names.len);
     try std.testing.expectEqualStrings("alpha", @tagName(Stub.adapterFor("alpha").?));
     try std.testing.expectEqualStrings("beta", @tagName(Stub.adapterFor("beta").?));
     try std.testing.expect(Stub.adapterFor("qwen35") == null);

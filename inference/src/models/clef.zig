@@ -117,7 +117,7 @@ pub const Head = struct {
         head.type_embedding = try loader.tensor("type_embedding.weight", &.{ 3, w });
         head.routing = try arena.alloc(Routing, config.routing_layers);
         for (head.routing, 0..) |*r, i| {
-            const p = try std.fmt.allocPrint(arena, "evidence_layers.{d}.", .{i});
+            const p = try arena.print("evidence_layers.{d}.", .{i});
             r.* = .{
                 .query_norm = try loader.norm(try cat(arena, p, "query_norm"), w),
                 .memory_norm = try loader.norm(try cat(arena, p, "memory_norm"), w),
@@ -130,7 +130,7 @@ pub const Head = struct {
         head.option_summary_norm = try loader.norm("option_summary_norm", w);
         head.decoders = try arena.alloc(Decoder, config.layers);
         for (head.decoders, 0..) |*d, i| {
-            const p = try std.fmt.allocPrint(arena, "layers.{d}.", .{i});
+            const p = try arena.print("layers.{d}.", .{i});
             d.* = .{
                 .norm1 = try loader.norm(try cat(arena, p, "norm1"), w),
                 .norm2 = try loader.norm(try cat(arena, p, "norm2"), w),

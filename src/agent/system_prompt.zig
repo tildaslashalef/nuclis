@@ -89,7 +89,7 @@ pub fn clip(alloc: Allocator, text: []const u8) ![]u8 {
     if (text.len <= max_instructions_bytes) return alloc.dupe(u8, trimmed);
     const kept_end = std.mem.lastIndexOfScalar(u8, text[0..max_instructions_bytes], '\n') orelse max_instructions_bytes;
     const kept = std.mem.trimEnd(u8, text[0..kept_end], " \t\r\n");
-    return std.fmt.allocPrint(alloc, "{s}\n[cut here: only the first {d} bytes of the file are shown]", .{ kept, kept.len });
+    return alloc.print("{s}\n[cut here: only the first {d} bytes of the file are shown]", .{ kept, kept.len });
 }
 
 /// The one guideline rendered under a tool's name, keyed by the registry

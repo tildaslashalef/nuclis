@@ -6,7 +6,7 @@ every performance claim about nuclis comes from the same command, with the
 same definitions, and can be reproduced.
 
 ```sh
-zig build -Dmetal=true -Doptimize=ReleaseSafe --global-cache-dir .zig-cache/global
+zig build -Dmetal=true -Doptimize=ReleaseSafe
 ./zig-out/bin/nuclis bench --backend metal --prompt-file prompt.txt \
   --max-tokens 128 --ctx-size 4096 --repeat 3 --warmup 1 --json
 ```

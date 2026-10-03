@@ -9,7 +9,8 @@
 #   PREFIX    install root for `make install` ($(HOME)/.local: the binary goes to $(PREFIX)/bin)
 
 ZIG      ?= zig
-CACHE    ?= --global-cache-dir .zig-cache/global
+# `zig build` reads the global cache location from the environment only.
+export ZIG_GLOBAL_CACHE_DIR ?= $(CURDIR)/.zig-cache/global
 OPT      ?= ReleaseSafe
 MODEL    ?= $(HOME)/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf
 BACKEND  ?= metal
@@ -18,7 +19,7 @@ PROMPT   ?= Write a Zig function that reverses a string.
 ARGS     ?=
 PREFIX   ?= $(HOME)/.local
 BIN      := ./zig-out/bin/nuclis
-METAL    := -Dmetal=true -Doptimize=$(OPT) $(CACHE)
+METAL    := -Dmetal=true -Doptimize=$(OPT)
 
 .DEFAULT_GOAL := build
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
@@ -33,13 +34,13 @@ help: ## Show this help
 # ---- build -----------------------------------------------------------------
 
 build: ## Release build (Metal is on by default on Apple Silicon)
-	$(ZIG) build -Doptimize=$(OPT) $(CACHE)
+	$(ZIG) build -Doptimize=$(OPT)
 
 debug: ## Debug build
-	$(ZIG) build $(CACHE)
+	$(ZIG) build
 
 build-cpu: ## Release build without the Metal backend (-Dmetal=false)
-	$(ZIG) build -Doptimize=$(OPT) -Dmetal=false $(CACHE)
+	$(ZIG) build -Doptimize=$(OPT) -Dmetal=false
 
 metal: ## Release build with the Metal backend stated explicitly
 	$(ZIG) build $(METAL)
@@ -61,7 +62,7 @@ uninstall: ## Remove PREFIX/bin/nuclis
 # ---- tests -----------------------------------------------------------------
 
 test: ## Default unit tests (no model, no GPU)
-	$(ZIG) build test $(CACHE) --summary all
+	$(ZIG) build test --summary all
 
 test-metal: ## GPU kernel fixture/lifecycle checks (needs a Metal device, no model)
 	$(ZIG) build test-metal $(METAL)
@@ -247,10 +248,10 @@ capture: metal ## One decode step captured into a .gputrace for Xcode's Metal de
 # ---- huggingface package (a path dependency of the root build) -----------------
 
 hf-downloader: ## Build the package's standalone downloader (zig-out/bin/hf-downloader)
-	$(ZIG) build hf-downloader -Doptimize=$(OPT) $(CACHE)
+	$(ZIG) build hf-downloader -Doptimize=$(OPT)
 
 test-hf: ## Offline tests of the huggingface package only (`make test` includes them)
-	$(ZIG) build test-hf $(CACHE)
+	$(ZIG) build test-hf
 
 # ---- releases --------------------------------------------------------------
 

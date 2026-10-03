@@ -23,6 +23,7 @@
 //! than mutating shared UI state, so a test drives it with keys and asserts
 //! on `layout`. See docs/spec.md § Editor for the contract.
 const std = @import("std");
+const repeat = @import("../text.zig").repeat;
 const theme = @import("theme.zig");
 const screen = @import("screen.zig");
 const keys = @import("keys.zig");
@@ -282,7 +283,7 @@ pub const Editor = struct {
     pub fn attachFile(self: *Editor, path: []const u8, content: []u8) !void {
         defer self.alloc.free(content);
         const body = std.mem.trimEnd(u8, content, "\n");
-        const bytes = try std.fmt.allocPrint(self.alloc, "```{s}\n{s}\n```", .{ path, body });
+        const bytes = try self.alloc.print("```{s}\n{s}\n```", .{ path, body });
         defer self.alloc.free(bytes);
         if (self.buffer.items.len + bytes.len > max_input) return error.LimitExceeded;
         const owned = try self.alloc.dupe(u8, path);
@@ -899,7 +900,7 @@ pub const Editor = struct {
 
         var rows: std.ArrayList(screen.Row) = .empty;
         if (hidden > 0) {
-            const label = try std.fmt.allocPrint(a, "{s} {d} lines above", .{ options.theme.glyphs().ellipsis, hidden });
+            const label = try a.print("{s} {d} lines above", .{ options.theme.glyphs().ellipsis, hidden });
             try rows.append(a, try self.styledRow(a, label, options, .dim, "  "));
         }
         var i: usize = 0;
@@ -1025,7 +1026,7 @@ test "a long paste becomes one chip over the buffer, and the buffer is the text"
     defer arena.deinit();
     const a = arena.allocator();
     try typeText(&e, "look: ");
-    const pasted = "line\n" ** 96;
+    const pasted = repeat("line\n", 96);
     try paste(&e, pasted);
     try testing.expectEqual(@as(usize, 1), e.chips.items.len);
     // The text sent is the paste itself, chip or no chip.
@@ -1050,7 +1051,7 @@ test "a short paste is ordinary text" {
 test "the cursor steps over a chip, and Backspace at its edge deletes it whole" {
     var e = editor();
     defer e.deinit();
-    try paste(&e, "x\n" ** 8);
+    try paste(&e, repeat("x\n", 8));
     try typeText(&e, "!");
     const end = e.cursor;
     // Left from after the "!" lands after the chip, then before it.
@@ -1105,7 +1106,7 @@ test "Ctrl-E expands a chip so the text can be edited in place" {
     defer e.deinit();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    try paste(&e, "keep\n" ** 5);
+    try paste(&e, repeat("keep\n", 5));
     e.cursor = 0;
     _ = try e.handleKey(.{ .ctrl = 'e' });
     try testing.expectEqual(@as(usize, 0), e.chips.items.len);
@@ -1116,7 +1117,7 @@ test "Ctrl-E expands a chip so the text can be edited in place" {
 test "an edit inside a chip expands it rather than corrupting the range" {
     var e = editor();
     defer e.deinit();
-    try paste(&e, "a\n" ** 8);
+    try paste(&e, repeat("a\n", 8));
     e.cursor = 5; // strictly inside
     try typeText(&e, "Z");
     try testing.expectEqual(@as(usize, 0), e.chips.items.len);
@@ -1126,7 +1127,7 @@ test "an edit inside a chip expands it rather than corrupting the range" {
 test "chips move with edits before them" {
     var e = editor();
     defer e.deinit();
-    try paste(&e, "p\n" ** 6);
+    try paste(&e, repeat("p\n", 6));
     const before = e.chips.items[0];
     e.cursor = 0;
     try typeText(&e, "hi ");
@@ -1247,7 +1248,7 @@ test "the word before the cursor is what a completion replaces" {
     // Inside or at the end of a paste chip there is nothing to complete.
     var pasted = editor();
     defer pasted.deinit();
-    try paste(&pasted, "x\n" ** 8);
+    try paste(&pasted, repeat("x\n", 8));
     try testing.expectEqualStrings("", pasted.wordBefore());
 }
 
@@ -1356,22 +1357,22 @@ test "the frame wraps the box: edges around every row, the spinner in the top ed
         try testing.expect(row.raw);
         try testing.expectEqual(@as(usize, 30), view.styledWidth(row.text));
     }
-    try testing.expectEqualStrings("╭" ++ ("─" ** 28) ++ "╮", try stripped(a, idle[0].text));
-    try testing.expectEqualStrings("│ > hello" ++ (" " ** 19) ++ " │", try stripped(a, idle[1].text));
-    try testing.expectEqualStrings("│   world" ++ (" " ** 19) ++ " │", try stripped(a, idle[2].text));
-    try testing.expectEqualStrings("│  " ++ (" " ** 25) ++ " │", try stripped(a, idle[3].text));
-    try testing.expectEqualStrings("╰" ++ ("─" ** 28) ++ "╯", try stripped(a, idle[4].text));
+    try testing.expectEqualStrings("╭" ++ repeat("─", 28) ++ "╮", try stripped(a, idle[0].text));
+    try testing.expectEqualStrings("│ > hello" ++ repeat(" ", 19) ++ " │", try stripped(a, idle[1].text));
+    try testing.expectEqualStrings("│   world" ++ repeat(" ", 19) ++ " │", try stripped(a, idle[2].text));
+    try testing.expectEqualStrings("│  " ++ repeat(" ", 25) ++ " │", try stripped(a, idle[3].text));
+    try testing.expectEqualStrings("╰" ++ repeat("─", 28) ++ "╯", try stripped(a, idle[4].text));
     // The cursor sits after "world": row 1 of the layout, column 5.
     try testing.expectEqual(@as(usize, 1), l.cursor_row);
     try testing.expectEqual(@as(usize, 5), l.cursor_col);
 
     const busy = try frame(a, l, .{ .width = 30, .theme = plain, .spinner = "⠋", .style = .frame_high });
-    try testing.expectEqualStrings("╭─⠋" ++ ("─" ** 26) ++ "╮", try stripped(a, busy[0].text));
+    try testing.expectEqualStrings("╭─⠋" ++ repeat("─", 26) ++ "╮", try stripped(a, busy[0].text));
     try testing.expectEqual(@as(usize, 30), view.styledWidth(busy[0].text));
 
     const ascii = try frame(a, l, .{ .width = 30, .theme = .{ .kind = .plain, .glyph_set = .ascii }, .spinner = "|" });
-    try testing.expectEqualStrings("+-|" ++ ("-" ** 26) ++ "+", try stripped(a, ascii[0].text));
-    try testing.expectEqualStrings("| > hello" ++ (" " ** 19) ++ " |", try stripped(a, ascii[1].text));
+    try testing.expectEqualStrings("+-|" ++ repeat("-", 26) ++ "+", try stripped(a, ascii[0].text));
+    try testing.expectEqualStrings("| > hello" ++ repeat(" ", 19) ++ " |", try stripped(a, ascii[1].text));
 
     // A coloured theme paints the frame; the width holds.
     const styled = try frame(a, l, .{ .width = 30, .theme = .{ .kind = .truecolor }, .style = .frame_low });
@@ -1391,7 +1392,7 @@ test "a scrolled box keeps its indicator row inside the frame" {
     const boxed = try frame(a, l, .{ .width = 30, .theme = plain });
     try testing.expectEqual(@as(usize, 5), boxed.len);
     try testing.expect(std.mem.startsWith(u8, try stripped(a, boxed[1].text), "│   … 4 lines above"));
-    try testing.expectEqualStrings("│   6" ++ (" " ** 23) ++ " │", try stripped(a, boxed[3].text));
+    try testing.expectEqualStrings("│   6" ++ repeat(" ", 23) ++ " │", try stripped(a, boxed[3].text));
 }
 
 // ----- attachments -----

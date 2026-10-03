@@ -381,8 +381,8 @@ pub fn profileReport(alloc: std.mem.Allocator, profile: *const inference.metal.P
             return a.milliseconds_per_step > b.milliseconds_per_step;
         }
     }.slower);
-    var sums: [@typeInfo(Family).@"enum".fields.len]f64 = @splat(0);
-    for (kernels) |k| sums[@intFromEnum(k.family)] += k.milliseconds_per_step;
+    var sums: [@typeInfo(Family).@"enum".field_names.len]f64 = @splat(0);
+    for (kernels) |k| sums[@backingInt(k.family)] += k.milliseconds_per_step;
     var present: usize = 0;
     for (sums) |ms| present += @intFromBool(ms > 0);
     const families = try alloc.alloc(FamilyTime, present);
@@ -390,7 +390,7 @@ pub fn profileReport(alloc: std.mem.Allocator, profile: *const inference.metal.P
     const total_ms = attributed * 1000 * per_step;
     var f: usize = 0;
     for (sums, 0..) |ms, tag| if (ms > 0) {
-        families[f] = .{ .family = @enumFromInt(tag), .milliseconds_per_step = ms, .share = if (total_ms > 0) ms / total_ms else 0 };
+        families[f] = .{ .family = @fromBackingInt(@intCast(tag)), .milliseconds_per_step = ms, .share = if (total_ms > 0) ms / total_ms else 0 };
         f += 1;
     };
     std.mem.sort(FamilyTime, families, {}, struct {
@@ -533,7 +533,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     const capture: ?[:0]u8 = if (options.capture) |path| blk: {
         if (gpu == null) return error.CaptureRequiresMetal;
         if (std.Io.Dir.cwd().access(io, path, .{})) |_| return error.CaptureExists else |_| {}
-        break :blk try alloc.dupeZ(u8, path);
+        break :blk try alloc.dupeSentinel(u8, path, 0);
     } else null;
     defer if (capture) |path| alloc.free(path);
     interrupt.install();

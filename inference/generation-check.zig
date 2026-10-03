@@ -1435,8 +1435,8 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
         // The proposal policy's bins: each proposed position's probability
         // bin, kept per draft so the acceptance loop can count both.
         const bins = 4;
-        var bin_total = [_]usize{0} ** bins;
-        var bin_accepted = [_]usize{0} ** bins;
+        var bin_total: [bins]usize = @splat(0);
+        var bin_accepted: [bins]usize = @splat(0);
         const bin_of_draft = try alloc.alloc(u8, draft_generated * max_drafts);
         defer alloc.free(bin_of_draft);
         @memset(bin_of_draft, 0);
@@ -1488,8 +1488,8 @@ fn draftStats(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, mapped:
             try runner.commit(sequence[len - 1 .. len], hidden_rows[(len - 1) * hidden ..][0..hidden]);
         }
 
-        var accepted = [_]usize{0} ** max_drafts;
-        var total = [_]usize{0} ** max_drafts;
+        var accepted: [max_drafts]usize = @splat(0);
+        var total: [max_drafts]usize = @splat(0);
         for (0..draft_generated) |step| {
             for (0..counts[step]) |i| {
                 const at = seeds[step] + 1 + i;

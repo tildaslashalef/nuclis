@@ -264,7 +264,7 @@ profile when one exists; Muse Glimmer's digest is matched directly until
 its profile lands):
 
 ```sh
-zig build test-vocabulary --global-cache-dir .zig-cache/global -- \
+zig build test-vocabulary -- \
   "$HOME/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf"
 ```
 

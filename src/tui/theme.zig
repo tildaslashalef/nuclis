@@ -450,7 +450,7 @@ pub const Theme = struct {
     }
 
     pub fn paint(self: Theme, style: Style) []const u8 {
-        return tables[@intFromEnum(self.name)][@intFromEnum(self.kind)][@intFromEnum(style)];
+        return tables[@backingInt(self.name)][@backingInt(self.kind)][@backingInt(style)];
     }
 
     /// The glyph table to draw with. A value, not a pointer: `Glyphs` is a
@@ -471,7 +471,7 @@ fn detectKind(environ: *const std.process.Environ.Map) Kind {
     if (term.len == 0 or std.mem.eql(u8, term, "dumb")) return .plain;
     // "…-256color" and the direct-colour entries advertise the wide palette;
     // everything else that is a terminal at all has the sixteen ANSI slots.
-    if (std.ascii.indexOfIgnoreCase(term, "256color") != null or std.ascii.indexOfIgnoreCase(term, "direct") != null) return .c256;
+    if (std.ascii.findIgnoreCase(term, "256color") != null or std.ascii.findIgnoreCase(term, "direct") != null) return .c256;
     return .c16;
 }
 
@@ -484,27 +484,27 @@ fn detectGlyphs(environ: *const std.process.Environ.Map) GlyphSet {
         if (!std.mem.eql(u8, value, "0")) return .ascii;
     }
     const locale = environ.get("LC_ALL") orelse environ.get("LC_CTYPE") orelse environ.get("LANG") orelse "";
-    if (std.ascii.indexOfIgnoreCase(locale, "utf-8") != null or std.ascii.indexOfIgnoreCase(locale, "utf8") != null) return .unicode;
+    if (std.ascii.findIgnoreCase(locale, "utf-8") != null or std.ascii.findIgnoreCase(locale, "utf8") != null) return .unicode;
     return .ascii;
 }
 
 // ----- compile-time table construction -----
 
-const style_count = @typeInfo(Style).@"enum".fields.len;
+const style_count = @typeInfo(Style).@"enum".field_names.len;
 const Table = [style_count][]const u8;
 
 /// Every (palette, level) pair resolved once at compile time. Indexed by
-/// `@intFromEnum` in `paint`, which is why `Name` and `Kind` are dense enums.
+/// `@backingInt` in `paint`, which is why `Name` and `Kind` are dense enums.
 const tables = blk: {
     // One `comptimePrint` per colour channel per style per level: the
     // default 1,000 branches is spent long before the first table is done.
     @setEvalBranchQuota(200_000);
-    var all: [@typeInfo(Name).@"enum".fields.len][@typeInfo(Kind).@"enum".fields.len]Table = undefined;
+    var all: [@typeInfo(Name).@"enum".field_names.len][@typeInfo(Kind).@"enum".field_names.len]Table = undefined;
     for (std.enums.values(Name)) |name| {
         for (std.enums.values(Kind)) |kind| {
             var table: Table = undefined;
-            for (std.enums.values(Style)) |style| table[@intFromEnum(style)] = sgr(name.palette(), kind, role(style));
-            all[@intFromEnum(name)][@intFromEnum(kind)] = table;
+            for (std.enums.values(Style)) |style| table[@backingInt(style)] = sgr(name.palette(), kind, role(style));
+            all[@backingInt(name)][@backingInt(kind)] = table;
         }
     }
     break :blk all;
@@ -680,10 +680,11 @@ test "the glyph set follows the locale, and NUCLIS_ASCII forces it" {
 test "every glyph has an ASCII counterpart and none of them is empty" {
     // A missing fallback would print nothing where the Unicode table draws a
     // bullet, so the tables are checked field by field rather than by eye.
-    inline for (@typeInfo(Glyphs).@"struct".fields) |field| {
-        const uni = @field(unicode_glyphs, field.name);
-        const ascii = @field(ascii_glyphs, field.name);
-        if (field.type == []const []const u8) {
+    const info = @typeInfo(Glyphs).@"struct";
+    inline for (info.field_names, info.field_types) |name, T| {
+        const uni = @field(unicode_glyphs, name);
+        const ascii = @field(ascii_glyphs, name);
+        if (T == []const []const u8) {
             try std.testing.expect(uni.len > 0 and ascii.len > 0);
             for (ascii) |frame| try std.testing.expect(frame.len > 0 and frame.len < 3);
         } else {

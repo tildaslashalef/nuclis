@@ -23,6 +23,7 @@
 //! at a closing bracket, so `end` completes it on EOS and releases it as
 //! text on any other stop.
 const std = @import("std");
+const alloc_check = @import("../alloc_check.zig");
 const Utf8 = @import("../tokenizer/stream.zig").Stream;
 const ToolCall = @import("../events.zig").ToolCall;
 
@@ -634,7 +635,7 @@ fn allocationCase(alloc: std.mem.Allocator) !void {
 }
 
 test "decoder and retaining sink clean up every allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationPaths, .{});
+    try alloc_check.checkAll(std.testing.allocator, allocationPaths, .{});
 }
 
 test "sink failure propagates without further events" {
