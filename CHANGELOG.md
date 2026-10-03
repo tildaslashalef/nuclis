@@ -2,6 +2,151 @@
 
 Notable changes, newest first.
 
+## [v0.4.0] - 2026-10-03
+
+### Features
+
+- **nuclis:** serve drains queued decisions on Ctrl-C and exits cleanly
+- **nuclis:** /v1/models reports each decision model's family, whether it packs, and whether it reads images
+- **nuclis:** serve.timeout and --timeout: a request waits up to 300 s for the GPU (clef-flash holds it for seconds)
+- **inference:** clef-flash, a second decision family: the joint schema head, images, decide and serve
+- **inference:** qwen35 reads its shape from the file; hidden rows for decision heads
+- **nuclis:** nuclis serve reads a serve section (port 8000), opens decide.model at start, logs a coloured line per request
+- **nuclis:** nuclis serve batches decision requests that wait together into one pass
+- **nuclis:** nuclis serve, the nuclis API: decisions over HTTP, TypeSafe's systemone call
+- **nuclis:** speculation on by default where it pays; close ENGN-20
+- **nuclis:** bench --draft-p-min and the speculative matrix driver
+- **bench:** --kernel-stats prints each Metal pipeline's limits
+- **bench:** saved prefixes, verify cost at depth, and the speed loop's A/B driver
+- **metal-check:** capture names without spaces; the counter export's naming
+- **metal-check:** CAPTURE= records a micro-benchmark case into a .gputrace
+- **bench:** --capture records one decode step into a Metal .gputrace; make capture
+- **inference:** Laya multilingual, the Metaspace tokenizer; close MODL-33
+- **inference:** Laya on Metal, packed batches over sequence bounds; close MODL-31
+- **gates:** make verify-auto picks the checks and gates a change needs (REPO-20 session 2, part)
+- **gates:** a fast tier from code paths and a release tier (REPO-20 session 2, part)
+- **nuclis:** Jev's answer fields, the decision path documented; close MODL-30
+- **nuclis:** the laya decision catalogue entry, decide.model, registry kind decision (MODL-30 session 3, part)
+- **nuclis:** nuclis decide over Laya's profile and the Decider (MODL-30 session 3, part)
+- **inference:** Laya's encoder and decision head on the CPU (MODL-30 session 2)
+- **inference:** Hugging Face tokenizer.json with NFC, and the Laya oracle (MODL-30 session 1)
+- **nuclis:** shell completion answered by the binary; make install (APPS-18)
+- **inference:** a generic safetensors loader, inspect on it (MODL-29)
+- **nuclis:** pull safetensors sets with their support files, pinned like GGUF (MODL-28)
+
+### Bug Fixes
+
+- **nuclis:** name a support file passed to --file; skip other formats' folders
+- **inference:** discard a failed recording; derive the kernel table
+- **bench:** saved-prefix I/O in 1 GiB pieces; a failed save keeps the run
+- **huggingface:** keep the Hub listing's digests in ReleaseFast builds (MODL-32)
+- **tui:** exit keeps the transcript; reset margins without homing the cursor (TERM-13)
+
+### Performance
+
+- **inference:** word-outer multi-row matvec for 2-3 row batches
+- **inference:** IQ4_XS matvec reads its code table from threadgroup memory
+- **inference:** Q5_K matvec takes the half magic-number decode
+- **inference:** Q4_K matvec decodes nibbles through half magic numbers
+- **inference:** DeltaNet verify by replay tape; close ENGN-19
+- **inference:** IQ4_NL small batches on the fragment tile
+- **inference:** the fragment tile for Q3_K, IQ3_S, Q4_0, PQ2_0, PTQ1_0
+- **inference:** few-row generic matrices of a small batch on the multi-row matvec
+- **inference:** register-fragment small-batch matmul tile
+- **inference:** few-query verify attention through the split pass
+- **inference:** close KERN-19, the CPU tier in 22 minutes, bit-identical
+- **inference:** the CPU reference's matvec across every core, bit-identical
+
+### Other
+
+- docs: AGNT-19 widened to token caching, turn-boundary snapshots in memory and on disk
+- docs: the llm guide's speculation verdict after the decode-speed theme; AGNT-19 runs no inference gate tiers
+- docs: close KERN-23, weight streaming for one row and a few
+- docs: KERN-23, the IQ4_XS matvec's counters, make verify on session 1's kernels
+- docs: KERN-23 session 1 hand-off
+- docs: KERN-23 ledger, the K-scale conversion fails the amended keep rule
+- chore(speed): the keep rule takes a 1-2 % gain whose pairs agree
+- docs: KERN-23 ledger, the encode gap, K-scales below the keep rule, the step's profile
+- docs: close REPO-30, Zig 0.17 holds Qwen's 4K speed
+- docs: close REPO-29, the Zig 0.17.0 upgrade
+- refactor: adopt Zig 0.17's @divCeil and ArrayList.lastPtr; require 0.17 (REPO-29)
+- build: migrate the tree to Zig 0.17.0 (REPO-29 session 1)
+- docs: REPO-29 checks 0.17 speed against the records instead of a 0.16 A/B
+- docs: the project's Zig is the stable link, not current
+- docs: record the zigup-managed Zig install and its local std and langref
+- docs: REPO-29 adopts Zig 0.17's features and measures 0.16 → 0.17 speed
+- docs: plan REPO-29, the Zig 0.17.0 upgrade, ahead of KERN-23
+- docs: the README presents clef-flash beside Laya
+- docs: TODO hand-off for KERN-23 after the cache cleanup: make speed-base first
+- docs: close MODL-34, clef-flash on both backends with images, in decide and serve
+- docs: close APPS-19, the nuclis API reference for clients
+- refactor(nuclis): the decision wire format moves to src/decision/, shared by decide and the API
+- docs(todo): MODL-34 checks only the new parts: no bf16 backbone, a head-only reference, a sanity set
+- docs(todo): MODL-34 pulls its files first, reads the qwen35 shape from the file, keeps the mmproj in scope
+- docs(todo): name the next step first
+- docs(todo): APPS-19 builds the nuclis API layer, decisions its first service
+- docs(todo): APPS-19 runs without model gates
+- docs(todo): APPS-19 writes a client-facing API reference, docs/reference/serve.md
+- docs(todo): drop KERN-22
+- docs(todo): serve and clef-flash before KERN-23; KERN-22 deferred, AGNT-18 dropped
+- docs(todo): APPS-19 serves lean and batches across requests
+- docs(todo): queue APPS-19, nuclis serve, a local decision API
+- docs(todo): the decide tool settles the default Laya checkpoint by a stated rule
+- docs(todo): the decide tool measures both Laya checkpoints; the default stays laya
+- docs(todo): base the decide tool's design on laya-multilingual and a labeled set
+- docs: close REPO-27, the external review fixes
+- refactor: name Qwen's mixer constants; comments stand without unit ids
+- test(inference): corrupted GGUF and safetensors files never panic or leak
+- docs(todo): REPO-27, the verified review fixes, ahead of KERN-23
+- docs(todo): KERN-23 re-scoped to the verify's multi-row body
+- docs(readme): the speculative defaults and their rates; REPO-26
+- docs(todo): ENGN-20's code map, matrix, and verdict rule
+- docs(todo): re-order the decode-speed units: ENGN-20, KERN-23, KERN-22
+- docs(todo): ENGN-19 session 1 hand-off, tape implemented, gates pending
+- docs(todo): ENGN-19's code map and first session
+- docs(log): the register-fragment verify matmul; close KERN-24
+- docs(todo): where KERN-24 stands
+- docs(reference): the fragment tile's counters; KERN-24 session 1 hand-off
+- test(metal-check): capture labels on the fragment-tile sweep; KERN-24 ledger
+- docs(log): Gemma and Muse verify costs at depth; close KERN-21
+- test(generation): verify rows against stepped decode at depth
+- docs(reference): the multi-row matvec spills at 8 rows; close KERN-20
+- docs(todo): cite the primed-prefix cost
+- docs(todo): queue AGNT-19, saved prefixes for the agent across processes
+- docs(reference): the verify's attention latency-bound on an empty GPU, its matmul tile issue-bound
+- docs(todo): the speed loop's base is 4dc7c70
+- docs(bench): the decode-speed baseline; close ENGN-18
+- docs(development): who captures, exports, renames, and reads
+- docs(reference): the last-level miss rate at full clocks
+- docs(reference): the Q4_K matvec's integer-pipe limit confirmed at full clocks
+- docs(reference): apple-gpu.md, the Q4_K matvec issue-bound on the integer pipe
+- docs(development): capture profiling needs Xcode's Metal Toolchain
+- docs(todo): where we are after the capture tooling
+- docs(development): Xcode 27's MCP tools read no GPU capture
+- docs(todo): the decode-speed theme, eight units behind a measured keep rule
+- docs(adr): propose the Qwen small-batch verifier; close REPO-24
+- build(gates): skip a gate whose model is absent, strict for releases; close REPO-25
+- docs(readme): a shorter Laya section led by its read speed
+- docs(todo): KERN-19 base and design from the CPU backend's call paths
+- docs(readme): the Laya experiment and its results; close REPO-23
+- build: durable reference state in .reference/, a disposable .zig-cache; close REPO-22
+- refactor(scripts): a generated agent playground, typed and formatted Python; close REPO-21
+- docs(todo): REPO-21, a generated playground and typed scripts, ahead of AGNT-18
+- docs(todo): MODL-33, Laya multilingual, ahead of AGNT-18
+- docs(todo): MODL-31 design from the Metal backend's facts
+- docs(todo): Laya first (MODL-31, AGNT-18), then KERN-19; MODL-31 base
+- docs(todo): KERN-19 base
+- chore(gates): verify-auto runs one model at a time; close REPO-20
+- docs(todo): REPO-20 gate set approved, sessions swapped
+- chore(gates): time each gate's phases, the coverage matrix (REPO-20 session 1, part)
+- docs: plan fast verification: gates from code paths, a threaded reference (REPO-20)
+- chore(gates): retire the Gemma 4 12B K-quant file's gates (REPO-19)
+- docs: plan shell completion and make install (APPS-18)
+- docs: remove docs/research, carry its conclusion into the plan (REPO-18)
+- docs: plan Laya end to end: CPU, Metal, the agent tool (MODL-30, MODL-31, AGNT-18)
+- docs: plan safetensors acquisition and loader (MODL-28, MODL-29)
+- chore: begin 0.4.0-dev
+
 ## [v0.3.0] - 2026-09-27
 
 ### Features
