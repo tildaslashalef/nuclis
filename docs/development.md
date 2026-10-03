@@ -38,7 +38,7 @@ the root build. Keep kernels with the inference library that owns them.
 
 Facts every unit depends on; keep them here, not in `TODO.md`.
 
-- Zig 0.16.0 (on the author's machine under `~/.local/opt/zig/stable`, managed
+- Zig 0.17.0 (on the author's machine under `~/.local/opt/zig/stable`, managed
   by `zigup`; any install of that version works); consult its installed std source for API
   details. Apple M4 Pro, 48 GiB, macOS 26. Metal compiles
   shaders at runtime from the Command Line Tools; Xcode-only tools are reached
@@ -366,9 +366,14 @@ cache changes), commit `perf(inference): …` with the rows in the body, and
 
 ## Toolchain
 
-The tested compiler is Zig 0.16.0; manifests require at least 0.16.0.
+The tested compiler is Zig 0.17.0; the three manifests require at least
+0.17.0 ([release notes](https://ziglang.org/download/0.17.0/release-notes.html)).
 Verify standard-library calls against that toolchain's installed source and
 language reference rather than assuming older Zig examples still apply.
+ZLS does not work with 0.17 yet: the release split `zig build` into a
+configurer and a maker process, and ZLS waits on the new Build Server
+Protocol. `zig build --print-configuration` prints the configured build
+graph as ZON, the quickest way to see which steps and options exist.
 
 Local language reference: `doc/langref.html` inside the Zig install
 (`~/.local/opt/zig/stable/doc/langref.html` on the author's machine).
@@ -390,11 +395,11 @@ and Io implementation. Pass `init.io` through file operations; keep decisions
 and in-memory parsing independent of OS access. Use `std.Io.Reader`/`Writer`
 and `std.Io.Dir`/`File`, checking APIs against the installed standard library.
 
-Zig 0.16's startup supplies `Io.Threaded`. The experimental `Io.Evented` backend
+Zig's startup supplies `Io.Threaded`. The experimental `Io.Evented` backend
 selects io_uring on Linux and Dispatch on macOS; io_uring does not run on the
 target Mac. Keep the injected default until measurements justify changing it.
-See the [0.16 release notes](https://ziglang.org/download/0.16.0/release-notes.html)
-and installed `lib/std/start.zig` and `lib/std/Io/Evented.zig`.
+See the installed `lib/std/start.zig`, `lib/std/Io.zig` (`Evented`), and
+`lib/std/Io/Dispatch.zig`.
 GPU scheduling will be a separate Metal backend responsibility.
 
 ReleaseSafe is the initial release configuration; ordinary `zig build` uses
@@ -402,26 +407,56 @@ Zig's Debug default. A faster optimization mode is justified only by numerical
 validation and measured improvements; benchmark results must name the actual
 mode used.
 
-### Zig 0.16 usage audit
+### Zig 0.17 usage audit
 
-Audited 2026-09-09 against the
-[0.16.0 release notes](https://ziglang.org/download/0.16.0/release-notes.html);
-"uses"/"does not use" are grep results over `src/` and `inference/`. The tree
-adopted the `Io` interface end to end (`std.process.Init` with `io`,
-`std.Io.Dir`/`File`, `std.Io.Reader`/`Writer`, `File.createMemoryMap`,
-`std.Io.Clock`) and deliberately skips the concurrency layer (`io.async`,
-`Io.Mutex`, `Io.Evented`): the engine is one sequential GPU pipeline,
-cancellation is a flag read between layers in `src/interrupt.zig`, and the chat
-polls with `std.posix.poll` because `Io.Evented` is experimental. It is clean
-on the other 0.16 removals (`@cImport`, `@Type`, `@Vector` indexing,
-`Thread.Pool`, `SegmentedList`, `ArenaAllocator` locking).
+Audited 2026-10-03 against the
+[0.17.0 release notes](https://ziglang.org/download/0.17.0/release-notes.html)
+([REPO-29](engineering-log.md#repo-29--zig-0170-the-tree-migrated-and-its-features-adopted-2026-10-03-two-sessions)); counts are grep results over the
+tree. 0.16's adoption of the `Io` interface stands, as does the decision to
+skip its concurrency layer.
 
-Two spots to migrate at the next compiler upgrade, both isolated from engine
-code:
+- **Removed, migrated:** `b.args` (→ `addPassthruArgs`), array `**`
+  (→ `@splat`, or `repeat` in `src/text.zig` for multi-byte strings),
+  `@typeInfo(...).fields` (→ `field_names`/`field_types`/`field_values`),
+  `Allocator.dupeZ` and `fmt.bufPrintZ` (→ the `Sentinel` variants),
+  `EnumSet.initEmpty`, `ascii.indexOfIgnoreCase`, and `zig build
+  --global-cache-dir` (→ `ZIG_GLOBAL_CACHE_DIR`, set by the Makefile and
+  `scripts/gates.py`).
+- **Deprecated in 0.17, migrated:** `fmt.allocPrint` (→ `Allocator.print`,
+  157 sites), `@intFromEnum`/`@enumFromInt` (→ `@backingInt` /
+  `@fromBackingInt`, rewritten by `zig fmt`), `DynamicBitSetUnmanaged`
+  (→ `bit_set.Dynamic`), `builtin.os` (→ `builtin.target.os`). The tree
+  uses no other deprecated name. Deprecations are doc comments only; the
+  compiler does not warn.
+- **Silent semantic changes, checked:** every `@hasDecl` probe names a
+  `pub` declaration on each family; every `@bitCast` is scalar; the float
+  `mem.eql` calls compare distinct buffers.
+- **Adopted:** `@divCeil` (40 ceiling divisions), `ArrayList.lastPtr` and
+  `addOne` where they remove an index (4 sites; the rest read as well with
+  `len > 0`), `--cache-poison=disallowed` passes for the default, Metal
+  release, test, and check-tool graphs (no `build.zig` reads the working
+  directory or calls `findProgram`; the root build reads `build.zig.zon`
+  from the build root, which 0.17's configure cache tracks by itself).
+- **`std.heap.SafeAllocator`:** `std.testing.allocator` and, in Debug,
+  `std.process.Init.gpa`. It is thread-safe, never reuses memory, and panics
+  on double frees and frees from another instance; leak reports come from
+  it. It grows a block in place only while the block ends its bucket, so
+  `std.testing.checkAllAllocationFailures` over it sees run-dependent
+  allocation counts; the inference package checks through
+  `inference.alloc_check`, which refuses in-place growth.
+- **Not applicable:** incremental compilation and the self-hosted aarch64
+  backend (Mach-O is not ready), `std.zon.parse` (the version line is the
+  only ZON the build reads), `@SpirvType`, translate-c (no `@cImport`; the
+  bridge is Objective-C through `addCSourceFile`), the Build Server
+  Protocol (no tool here consumes it), `Io.Semaphore.waitTimeout` (the
+  batcher's one-shot completion is an `Io.Event` with `waitTimeout`
+  already), and comptime-length slice coercion (no site needs it).
+
+Still deferred (0.17 keeps these calls; none sits in a numerical path):
 
 | Use | Count | File | Migration |
 | --- | ---: | --- | --- |
-| `std.fs.path.join` / `isAbsolute` / `dirname` | 7 | `src/paths.zig`, `src/config.zig` | `std.Io.Dir.path` equivalents |
+| `std.fs.path.join` / `isAbsolute` / `dirname` | 93 | 28 files across `src/`, `inference/`, `huggingface/` (most in `src/paths.zig`, `src/model.zig`, `src/decision/catalog.zig`) | `std.Io.Dir.path` equivalents |
 | `std.posix.sigaction`, `Sigaction`, `SIG`, `SA.RESETHAND`, `sigemptyset` | 5 | `src/interrupt.zig` | `std.posix.system` calls, or an `Io`-level signal facility if a later release adds one |
 | `std.posix.tcgetattr` / `tcsetattr` / `termios` / `poll` / `pollfd` / `winsize` / `system.ioctl` | 11 | `src/tui/terminal.zig` | `std.posix.system` for raw mode and size; `Io` polling once `Io.Evented` is usable |
 
@@ -1130,6 +1165,8 @@ walkthroughs as modules become stable, grounded in the working code.
 
 - Colocate Zig unit tests with the source they exercise.
 - Use `std.testing.allocator` to catch leaks, including error-path leaks.
+  Exhaustive allocation-failure checks in `inference/` go through
+  `alloc_check.checkAll` (see the 0.17 audit above).
 - Test through module interfaces. Use small CPU reference operations to verify
   GPU numerical work; do not require full-model runs for each source edit.
 - Keep parsing, agent state, and memory-planning decisions deterministic and

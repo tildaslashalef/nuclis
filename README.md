@@ -21,7 +21,7 @@ intended. Read it as a worked notebook with a working engine inside.
 
 ## Quick start
 
-Requires macOS on Apple Silicon, Zig 0.16.0, and the Command Line Tools.
+Requires macOS on Apple Silicon, Zig 0.17.0, and the Command Line Tools.
 
 ```sh
 make metal                                      # release build, Metal backend

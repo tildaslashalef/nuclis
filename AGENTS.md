@@ -5,7 +5,7 @@ Instructions for coding agents working in this repository.
 ## Project and sources of truth
 
 nuclis is a modular local inference engine and evaluation CLI built with
-Zig 0.16, initially targeting Qwen3.8-27B on an Apple M4 Pro with 48 GB
+Zig 0.17, initially targeting Qwen3.8-27B on an Apple M4 Pro with 48 GB
 unified memory. A lean agent loop embedded in `nuclis chat` (see the agent
 section of [docs/spec.md](docs/spec.md)) gives the playground small coding
 task abilities; it is not a second product.

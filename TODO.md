@@ -16,20 +16,19 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: REPO-29 session 2** (the Zig 0.17.0 upgrade; its section is
-before KERN-23's). Session 1 (2026-10-03) landed the migration: the tree
-builds, `make check` and `make verify-auto` pass under 0.17. Session 2:
-the 0.17 features, the speed sanity check, `make verify`, `make
-verify-cpu`, docs, close. **Then KERN-23
-session 1.** Before any KERN-23 change: run `make speed-base` on the
-clean tree after REPO-29 (built with Zig 0.17), then record the unit's `Base:` at the first change. There is no
-base binary now: `.zig-cache/` was cleaned after MODL-34 (2026-10-02),
-and MODL-34 changed `qwen35_metal.zig` anyway (the shape is read from
-the file; Qwen3.8's arithmetic and gates unchanged). The cleanup also
-took the 16K and 32K saved prefixes under `.zig-cache/speed/prefix/`
-(512 and 4K were rebuilt by the gates): the first `make speed` or
-`qwen38-verify-depth-16k`/`-32k` run at those depths prefills them again,
-about 3 and 11 min. MODL-34 closed 2026-10-02 in one
+**Next: KERN-23 session 1.** REPO-29 closed 2026-10-03: the tree is on
+Zig 0.17.0 (engineering log). Its base binary is taken: `make speed-base`
+at `2ace031` (`.zig-cache/speed/base/`); record the unit's `Base:` at the
+first change. **Open, deferred by the user:** Qwen's 4K decode reads
+9.18 tok/s and the 4-row verify C 207 ms, against 10.20 and 191 in the
+0.16 records (512 is within 0.6 %); the kernels under `--profile` do not
+hold it, and MODL-34's `qwen35_metal.zig` change is suspected. The check:
+`make speed` with `.zig-cache/speed/base/` replaced by `fd09aa4` built
+with `~/.local/opt/zig/zig-aarch64-macos-0.16.0/zig` (installed, not
+linked), `--contexts 4096`. KERN-23's predictions at 512 are unaffected;
+its 4K rows compare against its own base. The 16K and 32K saved
+prefixes under `.zig-cache/speed/prefix/` are gone (512 and 4K exist):
+the first run at those depths prefills them again, about 3 and 11 min. MODL-34 closed 2026-10-02 in one
 session: `nuclis decide --model clef-flash` and `nuclis serve` answer
 with Cloudflare's 9B decision model, text and images, every question of
 a state in one pass (2.3 s for a 637-token state on Metal;
@@ -83,8 +82,7 @@ stays a tool for language models.
 
 | # | Unit | Sessions |
 | --- | --- | ---: |
-| 1 | REPO-29 — Upgrade to Zig 0.17.0, adopting its features, with a speed sanity check against the 0.16 records (blocks everything: the tree does not build) | 2 |
-| 2 | KERN-23 — Weight streaming for one row and a few (closes the decode-speed theme) | 2 |
+| 1 | KERN-23 — Weight streaming for one row and a few (closes the decode-speed theme) | 2 |
 | — | AGNT-19 — Saved prefixes for the agent across processes | queued after KERN-23 |
 
 ## The theme: decode speed on Metal
@@ -201,166 +199,6 @@ KERN-22 (decode attention 5.2 ms per step at 4K, 27.5 at 32K) and KERN-23
 Identifiers are provisional in this order; they are fixed in the order
 the units close. The units are independent of one another: re-rank them
 when a kept change moves the cost table.
-
-## REPO-29 — Upgrade to Zig 0.17.0 (2 sessions)
-
-Base: `8f3e6ed`
-
-**Sessions.** 1: the tree builds and tests clean under 0.17 (removals,
-silent changes, deprecations), `make check` and `make verify-auto` pass,
-committed. 2: the 0.17 features below, the speed sanity check, `make verify`,
-`make verify-cpu`, docs, close.
-
-**Why first.** The installed compiler is 0.17.0 (`~/.local/opt/zig/stable`,
-managed by `zigup`; 0.16.0 removed), and the tree does not configure under it, so no gate, no
-`make speed-base`, and no KERN-23 experiment can run until this lands. A
-compiler upgrade is its own unit (AGENTS.md § Versioning).
-[Release notes](https://ziglang.org/download/0.17.0/release-notes.html).
-
-**Session 1 (2026-10-03): the tree builds and tests clean under 0.17.**
-Classes met, in the order they surfaced (each fix exposed the next):
-
-1. **`b.args` removed:** 15 sites → `run.addPassthruArgs()`.
-2. **Array `**` removed:** fills → `var x: [n]T = @splat(v)` (38 by regex,
-   3 by hand: the nested `qwen35.zig` slot table, a `&@as([8]u8, …)`
-   argument, `inspect.zig`'s struct fill); single-byte strings in
-   `help.zig`/`status.zig` → `@splat(' ')`; multi-byte and test strings →
-   `repeat(s, n)` from the new `src/text.zig` (an `inline fn`, so `++`
-   sees a comptime operand); inference's two sites became a literal and an
-   `@splat` array. `markdown.zig`'s 64-level comptime loop raises its
-   branch quota.
-3. **Removed std names:** `EnumSet.initEmpty()` → `.empty`,
-   `indexOfIgnoreCase` → `findIgnoreCase`.
-4. **`@typeInfo` struct-of-arrays:** `.fields` → `field_names` /
-   `field_types` / `field_values`; no site read default values.
-   `std.meta.fieldNames/fieldTypes` are deprecated, and a non-inline call is
-   not comptime-known as an `inline for` operand in a runtime function, so
-   `config.zig` uses `@typeInfo(T).@"struct".field_names` directly.
-5. **`Allocator.dupeZ` removed** → `dupeSentinel(u8, s, 0)` (3 sites).
-6. **`zig build --global-cache-dir` removed** → `ZIG_GLOBAL_CACHE_DIR`:
-   the Makefile exports it (`$(CURDIR)/.zig-cache/global`), `gates.py`
-   sets it from `gates.json`'s `build.cache` in `load()`; the reference
-   docs' commands dropped the flag; development.md says so.
-7. **`std.fmt.bufPrintZ` removed** → `bufPrintSentinel(…, 0)`
-   (`metal-check.zig`).
-8. **`std.testing.allocator` is a `SafeAllocator`**, which grows a block in
-   place only while it ends its bucket, so `checkAllAllocationFailures`
-   saw different allocation counts per run (`NondeterministicMemoryUsage`
-   in Laya's open and Muse's prompt rendering). New
-   `inference/src/alloc_check.zig` (`checkAll`, `noGrowth`: resize/remap
-   refused) backs all 22 inference callers and `laya-check.zig`.
-   Huggingface's two callers pass and stay on std (the package cannot
-   import inference); if one turns nondeterministic, give it the same
-   wrapper.
-
-Deprecations migrated: `allocPrint`/`allocPrintSentinel` → `a.print` /
-`a.printSentinel` (157); `@intFromEnum`/`@enumFromInt` → `@backingInt` /
-`@fromBackingInt` (`zig fmt` rewrote them, adding `@intCast` where the
-backing type must match; literal ones simplified); `DynamicBitSetUnmanaged`
-→ `bit_set.Dynamic`; `builtin.os` → `builtin.target.os` (2). No other name
-from the release notes' deprecation list is used (deprecations are doc
-comments only; the compiler does not warn).
-
-Silent changes audited: `@hasDecl` probes (19) all name `pub` declarations
-on every family (the non-`pub` `replayRows`/`prefill`/`verify` in
-`generation-check.zig` and `engine.zig` are wrappers, not probe targets);
-the 52 `@bitCast`s are scalar; float `mem.eql` has 18 sites (the probe
-missed them), all comparing distinct buffers, so unaffected.
-
-Gates: `make check` passes (645/645 unit tests, `test-metal`, the
-manifests); `make verify-auto` passes (diff since `8f3e6ed`): every check and the 40 fast-tier gates it selected (all families' traces, generation, vision, speculative, draft, verify-depth 512/4K, perplexity; so the `@hasDecl` paths and `addPassthruArgs` are exercised). It flags `verify-cpu` and `verify-long` for `cpu/attention.zig`, whose change is test-array syntax only; `verify-cpu` runs in session 2 anyway (LLVM 22). `zig build -Dmetal=false` and
-`hf-downloader` build.
-
-**Use what 0.17 adds** (not only what it removes). Each item names its
-sites; adopt it where it reads better, and record in the development.md
-audit what was adopted, what was judged not to apply, and why.
-- **Configure cache (build system).** `build.zig:19` reads
-  `build.zig.zon` at configure time through `std.Io.Dir.cwd()`, a
-  dependency 0.17's configure cache cannot see: after `make release` bumps
-  the version, `--version` could report the old one from a cached
-  configuration. Read it through `b.path("build.zig.zon")` and declare
-  `b.dependOnFileContents(b.path("build.zig.zon"))`; prove it by bumping
-  the version in a scratch edit and checking `./zig-out/bin/nuclis
-  --version` changes without `rm -rf .zig-cache`. Then run `zig build
-  --cache-poison=disallowed` (and with `-Dmetal=true`) to show no other
-  step poisons the cache; fix any that does (`findProgramLazy` instead of
-  `findProgram`, `dependOn*` for files read while configuring).
-- **Build API.** `addPassthruArgs` (above); `b.pathList` if a `Fmt` step
-  is added; `--print-configuration` worth a line in development.md for
-  inspecting the graph.
-- **`@divCeil`.** The `(a + b - 1) / b` idiom, 26 sites:
-  `inference/src/backends/metal/root.zig` (13, grid sizes),
-  `src/tui/transcript.zig` (6), `vision/muse_glimmer.zig` (2),
-  `metal-check.zig`, `src/{decide,discover}.zig`, `src/tui/{diff,editor}.zig`
-  (1 each). Find them with `git grep -nE '\+ [a-z_.0-9()]+ - 1\) / '`;
-  convert only true ceiling divisions of non-negative integers.
-- **`Allocator.print`, `@backingInt`/`@fromBackingInt`, `@splat`** (the
-  migrations above are the adoption).
-- **`ArrayList.last()` / `lastPtr()`.** `items[list.items.len - 1]`, 10
-  sites (`git grep -nE 'items\[[a-z_.]*items\.len - 1\]'`).
-- **`std.bit_set.Dynamic`, `std.bit_set.Integer/Array/Static`** names, and
-  `.empty`/`.full` decls instead of `init*` functions.
-- **`std.heap.SafeAllocator`.** `std.process.Init.gpa` in Debug builds is
-  now a `SafeAllocator` (thread-safe, never reuses memory, catches
-  double-frees and cross-instance frees) without code changes. Run the
-  `serve` happy path (the batcher and pool threads) and `make check` in
-  Debug to exercise it, and note in development.md that leak and misuse
-  reports come from it.
-- **Comptime-length slices coerce to array pointers.** Simplifies the
-  `[i * 4 ..][0..4]` readers only where the length is comptime; check, do
-  not force.
-- **`std.Io.Semaphore.waitTimeout`.** Evaluate for
-  `src/api/decisions/batcher.zig:107` (`wait` with a deadline); adopt only if
-  it removes code.
-- **`zig fmt --complexity`.** Report the token/node change for the touched
-  files in the log entry (before/after), as the release notes suggest.
-- **Not applicable, say so in the audit:** incremental compilation
-  (`-fincremental --watch` targets x86_64-linux; the Mach-O linker and
-  aarch64 backend are not ready), `std.zon.parse` (no ZON parsing beyond the
-  version line), `@SpirvType`, translate-c (no `@cImport`; the Metal bridge is
-  Objective-C compiled by `addCSourceFile`), Build Server Protocol (no
-  tooling consumes it yet; ZLS does not work with 0.17).
-
-**Docs.** `build.zig.zon` ×3 `minimum_zig_version = "0.17.0"`;
-`docs/development.md § Toolchain` (tested compiler, release-notes link) and
-replace *Zig 0.16 usage audit* with a 0.17 one (what was migrated, what is
-deferred); `AGENTS.md:8` and `README.md:24` (0.17). Leave benchmark records
-and README:78's measured line as they are: they name the compiler they ran
-with. ZLS does not work with 0.17 yet (release notes, Build Server
-Protocol); note it in development.md.
-
-**Gates.** `make check`; `make lint-py` only if scripts change; `make
-verify-auto`; `make verify` (fast Metal tier: the compiler, LLVM 22, and the
-Objective-C bridge's clang all changed); `make verify-cpu` once (LLVM 22
-recompiles every CPU reference kernel; ~25 min). Happy path:
-`./zig-out/bin/nuclis --version`, a `nuclis chat` screenshot through `make
-shot`, and `nuclis serve` + one `/v1/models` request.
-
-**Speed sanity check against the records (re-decided 2026-10-03, user).**
-No interleaved 0.16 → 0.17 A/B: the Metal kernels are compiled at run time
-by Apple's compiler, so Zig/LLVM only reach host time (encoding, the
-Objective-C bridge, sampling), a thin slice of a ~95 ms step. Instead:
-`make speed-base` with the 0.17 binary (KERN-23's base), then `make speed
-ARGS='--contexts 512,4096 --verify-rows 1,4 --model qwen38'` (base and
-tree are the same build, so both sides are 0.17 readings, ≥ 5 pairs).
-Compare against the latest 0.16 records in
-[bench.md](docs/reference/bench.md) § The DeltaNet replay tape (ENGN-19):
-plain decode 10.57 / 10.20 tok/s at 512 / 4K, 4-row (accept 1) C
-177.44 / 190.75 ms. Within 3 % (run-to-run spread ~1.5 %, plus not
-interleaved): record the readings and compiler in the log entry, done.
-Beyond 3 %: `--profile` to tell host time from GPU time, and only then
-`zigup install 0.16.0` and a real interleaved A/B on a scratch worktree at
-`fd09aa4`, before the unit closes, not charged to KERN-23.
-
-**Landed early (2026-10-03, before session 1):** AGENTS.md § Local
-toolchain notes records the `zigup` layout and the local std/langref;
-development.md's paths point at `stable`. The log entry includes it.
-
-**Lands when** the tree builds and every gate above passes under 0.17.0,
-no deprecation from the list is left, the features above are adopted or
-recorded as not applicable, the speed sanity check is within 3 % of the
-records (or a gap is explained), and `make speed-base` has been taken
-with the 0.17 binary for KERN-23.
 
 ## KERN-23 — Weight streaming for one row and a few: decode and the verify body (2 sessions)
 

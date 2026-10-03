@@ -6,7 +6,7 @@ validate Qwen equations, decode quantized values, tokenize, or generate text.
 
 ## Run it
 
-Use Zig 0.16.0 from the repository root:
+Use Zig 0.17.0 from the repository root:
 
 ```sh
 zig build -Doptimize=ReleaseSafe

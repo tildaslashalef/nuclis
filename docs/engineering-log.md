@@ -166,6 +166,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | APPS-20 | `nuclis serve` configured and logged: the `serve` section (host, port 8000, log), the default model opened at start, a coloured line per request | 2026-10-02 |
 | MODL-34 | clef-flash: Cloudflare's 9B decision model (Qwen3.5 backbone, joint schema head) on both backends, text and images, in `decide` and `serve`; qwen35 reads its shape from the file | 2026-10-02 |
 | REPO-28 | The README presents clef-flash beside Laya: the decision section renamed, a pull and image example, the trade-off table, a clef request to `serve` | 2026-10-03 |
+| REPO-29 | Zig 0.17.0: eight breakage classes migrated, deprecations cleared, `@divCeil` adopted, the version read from the build root; Qwen 4K decode 10 % below the 0.16 records, cause open | 2026-10-03 |
 
 ## Context
 
@@ -7297,3 +7298,91 @@ making it the default.
 are MODL-34's and laya.md's.
 
 **Files.** `README.md`.
+
+## REPO-29 — Zig 0.17.0: the tree migrated and its features adopted (2026-10-03, two sessions)
+
+**Outcome.** The tree builds, tests, and passes its gates under Zig
+0.17.0, and the three manifests require it. Eight classes of breakage
+surfaced one after another: `b.args` (→ `addPassthruArgs`), array `**`
+(→ `@splat`; multi-byte strings through a comptime `repeat` in the new
+`src/text.zig`), `@typeInfo`'s `.fields` (→ `field_names` /
+`field_types` / `field_values`), `Allocator.dupeZ`, `fmt.bufPrintZ`, two
+renamed std names, `zig build --global-cache-dir` (the Makefile exports
+`ZIG_GLOBAL_CACHE_DIR`; `gates.py` sets it from `gates.json`), and
+`std.testing.allocator` becoming a `SafeAllocator`. That allocator grows a
+block in place only while the block ends its bucket, so
+`checkAllAllocationFailures` saw allocation counts that changed from run
+to run (Laya's open, Muse's prompt rendering);
+`inference/src/alloc_check.zig` refuses in-place growth for all 22
+inference callers and `laya-check`. Deprecations migrated: 157
+`allocPrint` → `Allocator.print`, the enum builtins → `@backingInt` /
+`@fromBackingInt` (by `zig fmt`), `DynamicBitSetUnmanaged`, `builtin.os`.
+Adopted: `@divCeil` (40 ceiling divisions), `ArrayList.lastPtr` / `addOne`
+(4 sites). The root build reads `build.zig.zon` from the build root: a
+`zig build` run in `src/` installed a binary reporting `nuclis unknown`
+(the configure cache itself tracks the manifest, so the planned
+`dependOnFileContents` was unnecessary). The plan's 0.16 → 0.17 A/B was
+replaced (user, 2026-10-03) by a check against the 0.16 records, since
+the GPU kernels do not pass through Zig. The audit, what does not apply,
+and what stays deferred are in
+[development.md § Zig 0.17 usage audit](development.md#zig-017-usage-audit).
+
+**Evidence.** Silent changes checked by grep: the 19 `@hasDecl` probes
+name `pub` declarations on every family, the 52 `@bitCast`s are scalar,
+the 18 float `mem.eql`s compare distinct buffers. `zig build
+--cache-poison=disallowed` passes for the default, Metal release, test,
+and check-tool graphs. `zig fmt --complexity` over the 70 changed files
+0.17 parses at both revisions: tokens 479,380 → 478,626 (−0.16 %), nodes
+234,420 → 233,912 (−0.22 %). `make check` (645/645 unit tests,
+`test-metal`); `make verify-auto` after session 1 (40 fast-tier gates,
+every family, including the speculative, draft, and vision paths the
+`@hasDecl` probes select); `make verify` at `2ace031` (40 of 40 in 297 s) and `make verify-cpu` (15 of 15 in 1,533 s: LLVM 22 rebuilt every CPU reference kernel, and every family's CPU trace, generation, vision, speculative, and draft gate still matches); `verify-long` not run (the attention change is `@divCeil` in the split count, equal integers, and the 512/4K verify-depth gates cover that path). Happy paths on the fresh
+build: `--version` from the root and from `src/`; `nuclis serve` in
+Debug (`SafeAllocator`) with `/v1/health`, `/v1/models`, and seven
+decision requests, two passes batched (`pass of 2`, `pass of 3`), no
+allocator panic; the agent through `make shot`
+(`.zig-cache/tui/zig017-idle.txt`, `zig017-answer.txt`: banner, one turn
+answered, 10.17 tok/s in the status bar).
+
+**Speed against the 0.16 records.** `make speed-base`, then `make speed
+ARGS='--contexts 512,4096 --verify-rows 1,4 --model qwen38'`: base and
+tree both `2ace031` under Zig 0.17.0, ReleaseSafe, 5 interleaved pairs,
+Qwen3.8-27B UD-Q4_K_M, F16 KV, restored prefixes, Apple M4 Pro 48 GiB.
+The 0.16 column is ENGN-19's record from the same harness:
+
+| Row | Zig 0.16 (ENGN-19) | Zig 0.17 (`2ace031`) | Change |
+| --- | ---: | ---: | ---: |
+| 512 decode | 10.57 tok/s | 10.51 | −0.6 % |
+| 512 verify, 4 rows (accept 1) | 177.44 ms | 177.99 | +0.3 % |
+| 512 verify, 1 row | — | 171.71 | |
+| 4,096 decode | 10.20 tok/s | 9.18 | −10.0 % |
+| 4,096 verify, 4 rows (accept 1) | 190.75 ms | 207.46 | +8.8 % |
+| 4,096 verify, 1 row | — | 185.72 | |
+
+512 is within the record's spread; 4K is not. Under `--profile` (32
+steps, plain decode) the kernels take 98.9 ms per step at 512 and 101.1
+ms at 4K: matrices 86.4 ms at both, attention 1.96 → 5.38 ms (ENGN-18
+read 5.2 ms at 4K), so the kernels do not hold the 4K loss; unprofiled,
+the steps differ by 13.8 ms (95.1 against 108.9 ms), and the profiler's
+per-dispatch encoders change the overlap it would show. A loss that
+appears only with depth points away from host code the compiler builds
+and toward a change since the records (MODL-34 rewrote
+`qwen35_metal.zig`'s shape handling). Not resolved in this unit (user,
+2026-10-03): the deciding check is an interleaved A/B of `fd09aa4` built
+with Zig 0.16.0 (installed beside 0.17 by `zigup`) against this tree.
+The base for KERN-23 is `2ace031`, so its A/Bs compare like with like.
+
+**Files.** `build.zig`, `inference/build.zig`, `huggingface/build.zig`,
+the three `build.zig.zon`, `Makefile`, `scripts/gates.py`,
+`src/text.zig` (new), `inference/src/alloc_check.zig` (new),
+`inference/src/root.zig`, and the migrated sources across `src/`,
+`inference/`, and `huggingface/` (98 files in session 1, 21 in session
+2); docs `development.md`, `AGENTS.md`, `README.md`, and the reference
+documents' build commands (`--global-cache-dir` dropped).
+
+**Remaining.** Qwen's 4K decode and verify are 9–10 % slower than the
+0.16 records, cause not yet found (above). Huggingface's two allocation-failure checks stay on
+`std.testing.allocator` (they pass; the package cannot import
+inference). ZLS does not work with 0.17 yet. The `std.fs.path` and
+`std.posix` terminal and signal calls stay deferred (development.md's
+table). Benchmark records keep the compiler they ran with.
