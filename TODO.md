@@ -215,6 +215,22 @@ the K-quant body's form, `d·sa·Σqx − dmin·ma·Σx`):
   and bit 8 (high, ×16). Prediction: Q5_K ≥ 225 / 220 / 225 / 205 GB/s.
   Measured 255.9 / 250.9 / 257.6 (+21–23 %); `make speed` decode 512
   11.04 → 11.35 tok/s (+2.8 %), 4K 10.64 → 10.93 (+2.7 %). **Kept.**
+- IQ4_XS byte-pair table: a `constant half2[256]` indexed by a whole byte
+  gives its low and high nibble's values in one lookup (half the
+  lookups). Prediction: IQ4_XS ≥ 235 / 210 / 235 / 200 GB/s. Measured
+  157.8 / 155.9 / 159.7 / 153.9 (−26 %): a 1 KB constant table read at
+  divergent indices costs more than the halved count saves. Reverted;
+  the lookups' addressing, not their number, is the cost.
+- IQ4_XS table by `simd_shuffle` (one table entry per lane): 93.4 /
+  92.1 / 94.0 / 86.4 GB/s, a shuffle per code costs far more. Reverted.
+- IQ4_XS table in threadgroup memory (16 floats, filled behind one
+  barrier; the segment and gathered kernels fill it too). Prediction
+  ≥ 220 / 200 / 220 / 195 GB/s. Measured 219.6 / 209.8 / 220.7 / 199.9
+  (+2–11 %); the 256-entry `half2` pair table in threadgroup memory read
+  205.8 / 193.6 / 206.9 / 186.2 (bank conflicts, not kept). `make speed`
+  decode 512 11.35 → 11.78 tok/s (+3.8 %), 4K 10.93 → 11.34 (+3.7 %);
+  Gemma 26B-A4B 512 +0.19 %, Muse 512 −0.24 % (noise). **Kept; the
+  512 decode prediction (≥ 11.5) is met.**
 
 **Why, since ENGN-20.** Speculation is on for Qwen at draft 7, so a
 default turn spends its time in verify batches: at 512, C 164 ms = propose

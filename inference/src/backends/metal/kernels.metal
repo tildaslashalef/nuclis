@@ -86,6 +86,14 @@ inline float4 nu_iq4_low(uint w) { uchar4 n = as_type<uchar4>(w & 0x0f0f0f0fu); 
 inline float4 nu_iq4_high(uint w) { uchar4 n = as_type<uchar4>((w >> 4) & 0x0f0f0f0fu); return float4(nu_iq4_values_f[n.x], nu_iq4_values_f[n.y], nu_iq4_values_f[n.z], nu_iq4_values_f[n.w]); }
 // acc + a·b as four fused multiply-adds: MTLMathModeSafe never contracts on its
 // own, and explicit fma halves the instruction count of a dot product.
+// IQ4 codes are looked up in a threadgroup copy of the table: divergent reads
+// of the `constant` table cost the IQ4_XS matvec 3-11 % of its rate.
+inline float4 nu_iq4_tg(threadgroup const float * tv, uint w) { uchar4 n = as_type<uchar4>(w & 0x0f0f0f0fu); return float4(tv[n.x], tv[n.y], tv[n.z], tv[n.w]); }
+// Fills that copy; every thread of the group must reach it (it holds a barrier).
+inline void nu_iq4_table(threadgroup float * tv, uint sg, uint lane) {
+    if (sg == 0 && lane < 16) tv[lane] = nu_iq4_values_f[lane];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+}
 inline float nu_dot(float4 a, float4 b, float acc) { return fma(a.w, b.w, fma(a.z, b.z, fma(a.y, b.y, fma(a.x, b.x, acc)))); }
 inline float nu_sum4(float4 v) { return (v.x + v.y) + (v.z + v.w); }
 // Two codes of at most ten bits OR'd into the mantissas of halves whose
@@ -263,7 +271,7 @@ kernel void nu_matvec_q6_k(device const uchar * weights [[buffer(0)]], device co
 // nonlinear table. The six-bit group scale is split between four low-nibble
 // bytes and a 16-bit word of high pairs; blocks are 8-byte aligned.
 template <uint ROWS>
-inline void nu_matvec_iq4_xs_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+inline void nu_matvec_iq4_xs_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc, threadgroup const float * tv) {
     uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
     if (row0 >= p.rows) return;
     uint g = lane & 7;
@@ -280,8 +288,8 @@ inline void nu_matvec_iq4_xs_body(device const uchar * weights, device const flo
             float d = nu_half_low(header.x);
             uint low = (header.y >> (4 * g)) & 15u, high = (header.x >> (16 + 2 * g)) & 3u;
             float scale = float(int(low | (high << 4)) - 32);
-            float sum = nu_dot(nu_iq4_low(qa.x), x0, nu_dot(nu_iq4_low(qa.y), x1, nu_dot(nu_iq4_low(qb.x), x2, nu_dot(nu_iq4_low(qb.y), x3, 0.0f))));
-            sum = nu_dot(nu_iq4_high(qa.x), x4, nu_dot(nu_iq4_high(qa.y), x5, nu_dot(nu_iq4_high(qb.x), x6, nu_dot(nu_iq4_high(qb.y), x7, sum))));
+            float sum = nu_dot(nu_iq4_tg(tv, qa.x), x0, nu_dot(nu_iq4_tg(tv, qa.y), x1, nu_dot(nu_iq4_tg(tv, qb.x), x2, nu_dot(nu_iq4_tg(tv, qb.y), x3, 0.0f))));
+            sum = nu_dot(nu_iq4_tg(tv, qa.x >> 4), x4, nu_dot(nu_iq4_tg(tv, qa.y >> 4), x5, nu_dot(nu_iq4_tg(tv, qb.x >> 4), x6, nu_dot(nu_iq4_tg(tv, qb.y >> 4), x7, sum))));
             acc[r] += (d * scale) * sum;
         }
     }
@@ -290,8 +298,10 @@ template <uint ROWS>
 kernel void nu_matvec_iq4_xs(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
                             constant MatvecBlockParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
                             uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float tv[16];
+    nu_iq4_table(tv, sg, lane);
     float acc[ROWS];
-    nu_matvec_iq4_xs_body<ROWS>(weights, input, p, group_index, sg, lane, acc);
+    nu_matvec_iq4_xs_body<ROWS>(weights, input, p, group_index, sg, lane, acc, tv);
     if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
         nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
 }
@@ -554,7 +564,7 @@ struct MatvecSegments { uint columns, blocks, count, mode, splits, split_blocks,
 inline device uchar * nu_segment_buffer(uint slot, device uchar * b1, device uchar * b2, device uchar * b3, device uchar * b4, device uchar * b5, device uchar * b6) {
     switch (slot) { case 1: return b1; case 2: return b2; case 3: return b3; case 4: return b4; case 5: return b5; default: return b6; }
 }
-inline void nu_segment_sums(device const uchar * w, device const float * x, MatvecBlockParams p, uint encoding, uint group, uint sg, uint lane, thread float * acc, uint first, uint last) {
+inline void nu_segment_sums(device const uchar * w, device const float * x, MatvecBlockParams p, uint encoding, uint group, uint sg, uint lane, thread float * acc, uint first, uint last, threadgroup const float * iq4) {
     // Bodies produce the same lane partials as their standalone kernels.
     // The generic branch retains one lane's original 16-value segment order.
     // `first`/`last` carry the split's K-range bounds into the two encodings
@@ -567,7 +577,7 @@ inline void nu_segment_sums(device const uchar * w, device const float * x, Matv
         case 13: nu_matvec_k_body<4, true>(w, x, p, group, sg, lane, acc, first, last); return;
         case 14: nu_matvec_q6_k_body<4>(w, x, p, group, sg, lane, acc); return;
         case 21: nu_matvec_three_body<4, true>(w, x, p, group, sg, lane, acc); return;
-        case 23: nu_matvec_iq4_xs_body<4>(w, x, p, group, sg, lane, acc); return;
+        case 23: nu_matvec_iq4_xs_body<4>(w, x, p, group, sg, lane, acc, iq4); return;
         case 142: nu_matvec_pq2_0_body<4>(w, x, p, group, sg, lane, acc); return;
         case 143: nu_matvec_ptq1_0_body<4>(w, x, p, group, sg, lane, acc); return;
         default:
@@ -606,8 +616,10 @@ kernel void nu_matvec_segments(device const float * input [[buffer(0)]],
     MatvecBlockParams shape = { p.columns, s.stride, s.rows, p.blocks };
     device const uchar * w = nu_segment_buffer(s.weight_slot, b1,b2,b3,b4,b5,b6) + s.weight_offset;
     device float * out = (device float *)(nu_segment_buffer(s.output_slot, b1,b2,b3,b4,b5,b6) + s.output_offset);
+    threadgroup float iq4[16];
+    nu_iq4_table(iq4, sg, lane);
     float a[4];
-    nu_segment_sums(w, input, shape, s.encoding, local, body_sg, lane, a, 0u, p.blocks);
+    nu_segment_sums(w, input, shape, s.encoding, local, body_sg, lane, a, 0u, p.blocks, iq4);
     uint row0 = (local * NU_MATVEC_SIMDGROUPS + sg) * 4;
     if (pair) {
         for (uint r = 0; r < 4; ++r) {
@@ -644,8 +656,10 @@ kernel void nu_matvec_segments_split(device const float * input [[buffer(0)]],
     MatvecBlockParams shape = { p.columns, s.stride, s.rows, p.blocks };
     device const uchar * w = nu_segment_buffer(s.weight_slot, b1,b2,b3,b4,b5,b6) + s.weight_offset;
     device float * partials = (device float *)nu_segment_buffer(p.partials_slot, b1,b2,b3,b4,b5,b6);
+    threadgroup float iq4[16];
+    nu_iq4_table(iq4, sg, lane);
     float a[4];
-    nu_segment_sums(w, input, shape, s.encoding, local, sg, lane, a, first, min(first + p.split_blocks, p.blocks));
+    nu_segment_sums(w, input, shape, s.encoding, local, sg, lane, a, first, min(first + p.split_blocks, p.blocks), iq4);
     uint base = 0;
     for (uint i = 0; i < index; ++i) base += p.segments[i].rows;
     const uint row0 = (local * NU_MATVEC_SIMDGROUPS + sg) * 4;
@@ -932,8 +946,10 @@ kernel void nu_matvec_experts(device const uchar * weights [[buffer(0)]],
     device const float * x = input + ulong(slot) * p.in_stride;
     device float * out = output + ulong(slot) * p.out_stride;
     MatvecBlockParams shape = { p.columns, p.stride, p.rows, p.blocks };
+    threadgroup float iq4[16];
+    nu_iq4_table(iq4, sg, lane);
     float a[4];
-    nu_segment_sums(w, x, shape, p.encoding, local, sg, lane, a, 0u, p.blocks);
+    nu_segment_sums(w, x, shape, p.encoding, local, sg, lane, a, 0u, p.blocks, iq4);
     uint row0 = (local * NU_MATVEC_SIMDGROUPS + sg) * 4;
     if (row0 < p.rows) nu_store_rows<4>(a, out, row0, p.rows, lane);
 }
