@@ -16,7 +16,7 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: AGNT-19** (below), not started; it needs a ``Base: `<rev>` ``
+**Next: AGNT-19** (below), not started, its design agreed 2026-10-03; it needs a ``Base: `<rev>` ``
 line when its first session begins. The decode-speed theme (agreed
 2026-09-30, toward ADR 0001's 20 tokens/s) closed with KERN-23 on
 2026-10-03: Qwen's plain decode at 512 10.37 → 11.78 tok/s, 2–3-row
@@ -29,57 +29,100 @@ exist under `.zig-cache/speed/prefix/`, 16K does not.
 
 | # | Unit | Sessions |
 | --- | --- | ---: |
-| 1 | AGNT-19 — Saved prefixes for the agent across processes | 2 |
+| 1 | AGNT-19 — Token caching for the agent: turn-boundary snapshots in memory and on disk | 2 |
 
-## AGNT-19 — Saved prefixes for the agent: the primed prefix and `/resume` across processes (2 sessions)
+## AGNT-19 — Token caching for the agent: snapshots at turn boundaries, in memory and on disk (2 sessions)
 
-`nuclis agent` prefills its system block and tool definitions at every
-start (about 11 s for 934 tokens on Qwen, llm-guide.md § 22) and replays a whole
-conversation on `/resume` (minutes at 16K). ENGN-18's `src/prefix_cache.zig`
-already writes and restores a model snapshot keyed by model files, tokens,
-and layout; this unit uses it for real work, where a stale state is a
-correctness bug, not a timing one.
+**Why.** Prefill runs at about 90 tok/s on Qwen, and the agent re-prefills
+tokens it has already computed in five places: every start (the system
+block and tools, about 934 tokens, about 11 s; llm-guide.md § 22), every
+`agent --print` task of `make agent-eval`, `/resume` (the whole
+conversation, minutes at 16K), a cancelled step (`Completer.run` clears
+`seen`, so the next step replays the conversation from the primed
+prefix), and an effort change (`low` / `xhigh` rewrite the system block,
+so even the primed prefix misses). Compaction and elision rewrite an
+early message, so a cache saves only up to the first changed token there.
+New tokens (tool results, the user's message) are not cacheable: this
+unit removes re-prefill, not prefill.
 
-- **Key.** `prefix_cache.Key` gains the build: the binary's
-  `nuclis --version` string and the git revision from `build_options`
-  (a dev build's revision plus a dirty flag). A different build is a
-  miss, never a restore: a saved state must equal what this build's
-  prefill would compute. The file header records all four keys.
-- **Session 1: the primed prefix.** `Completer.prime` (`src/agent/loop.zig`)
-  first calls `prefix_cache.load` from `<NUCLIS_HOME>/cache/prefix/`
-  (`src/paths.zig`); on a hit it restores and skips the prefill, on a
-  miss it prefills as today, snapshots (already done), and saves.
-  `restorePrimed` is unchanged. A `/ctx` change re-opens the engine and
-  keys on the new capacity. Speculation on and off are different layouts
-  (the draft block's cache), so each has its own file.
-- **Session 2: `/resume`.** When the agent writes a session file
-  (`src/agent/history.zig` / the save path), it also saves the model
-  snapshot at the end of the last completed turn, keyed by the consumed
-  tokens; `/resume` restores it when the rendered prefix's tokens match
-  and prefills only the remainder, falling back to the replay otherwise.
-- **Bounds.** A per-file bound (the session's used extent: about 150 MB
-  of recurrent state plus 64 KiB per token for Qwen, 2.3 GB at 32K) and a
-  directory budget (`cache.prefix_bytes` in `nuclis.json`, default 8 GB;
-  0 disables), evicted oldest-accessed first after each save. `nuclis
-  cache ls` and `nuclis cache clear` (APPS surface) show and empty it.
-- **Limits, stated in the docs.** Exact token prefixes only (an edited
-  system prompt or tool list misses); bound to capacity, KV precision, and
-  the draft layout; disk cost as above.
-- **Prediction.** The agent's first prompt appears with the primed prefix
-  restored in ≤ 0.5 s instead of ~11 s; `/resume` of a 16K conversation
-  in ≤ 2 s instead of minutes.
-- **Correctness.** Unit tests: a build-key miss, a budget eviction, a
-  corrupt file refused and re-prefilled (the ENGN-18 tests extended). A
-  restored primed prefix gives the same first-turn tokens as a fresh
-  prime (greedy, both backends' generation checks). The agent surface
-  through `make shot` (a cold start, then a warm start showing the
-  restore; a `/resume`), and `make agent-eval` before and after, since
-  the loop's behaviour changes.
+**The constraint.** 48 of Qwen's 64 layers are recurrent, so a state
+cannot be resumed at an arbitrary token by truncating the KV cache
+(session.md § Snapshot and restore): reuse exists only where a snapshot
+was taken. The cache is therefore a set of snapshots at chosen
+boundaries with a longest-prefix lookup, not per-token prefix caching.
+
+**Design.**
+
+- **Entry.** A `Snapshot` (`inference.engine.Model.snapshot`, the drafter's
+  carried row included) plus its token prefix. Key: `prefix_cache.Key`
+  (model files, layout digest, token digest) extended with the **build**:
+  the version and a git revision with a dirty flag, a new
+  `build_options` field in `build.zig` (only `version` exists). A
+  different build is a miss, never a restore: a restored state must equal
+  what this build's prefill computes.
+- **Boundaries.** The primed prefix, one entry per effort level, and the
+  end of every completed turn (the model's final answer, before the next
+  user message). Both sit at the template's control tokens, which BPE
+  never merges across, so a boundary's tokens are the same whatever is
+  rendered after it.
+- **Lookup.** `Completer.run`'s fallback (today `restorePrimed`, else a
+  reset and a full render) becomes: encode the full render, find the
+  longest entry whose tokens prefix it, `restore`, and prefill the rest.
+  The incremental path (`increment(seen, full)`) is unchanged; matching on
+  divergence moves from text to tokens.
+- **Memory tier** (in-process): cancel, compaction, effort switches, `/new`
+  in the same process. Bounded by `cache.memory_bytes` (default 4 GB):
+  a snapshot is 150 MB plus 64 KiB per token on Qwen (about 1.2 GB at
+  16K), so it holds the last few turns, oldest evicted first.
+- **Disk tier** (`<NUCLIS_HOME>/cache/prefix/`, `src/paths.zig`): start,
+  `agent --print`, `/resume`. Writes through `prefix_cache.save` / `load`
+  (header with all keys, content hash; a corrupt file is refused and
+  deleted). Bounded per file (the used extent) and by `cache.disk_bytes`
+  in `nuclis.json` (default 8 GB; 0 disables), evicted oldest-accessed
+  first after each save.
+- **Engine.** Only `snapshot`, `restore`, and `prefix_cache`, which the
+  existing gates already cover. A cheaper turn checkpoint (copy only the
+  150 MB recurrent state and rewind attention by position) is a new engine
+  API: its own ENGN unit, only if the memory tier's copies measure too
+  slow.
+- **Out of scope.** Arbitrary-position reuse, sharing across models or
+  capacities (a `/ctx` change misses), and making compaction itself
+  cache-friendly (a loop behaviour change; a later AGNT unit if the replay
+  counts below show it matters).
+
+**Session 1: the cache and the memory tier.** A new `src/agent/cache.zig`
+(pure logic: entries, longest-prefix lookup by tokens, budget and
+eviction; an injected store so tests need no model), wired into
+`Completer` (`src/agent/loop.zig`) in place of `primed`. The status
+line's `replayed` gains the cause and the tokens re-prefilled (start,
+resume, cancel, compaction, effort), so the gains are counted, not
+estimated. The disk tier for the primed prefix lands here too (start and
+`agent --print`); the build revision in `build.zig`.
+
+**Session 2: `/resume` and the surface.** The session writer
+(`src/agent/session.zig`) saves the last completed turn's snapshot to the
+disk tier keyed by its tokens; `/resume` and `agent --resume` look it up
+and prefill only the remainder, falling back to the replay on a miss.
+`nuclis cache ls` / `nuclis cache clear` (APPS surface, help and
+completion). Docs: `docs/reference/session.md` (the cache), 
+`docs/development.md` § User directories, the agent's help.
+
+**Predictions.** First prompt after start ≤ 0.5 s instead of about 11 s
+(warm disk entry); a cancel at 16K resumes the next step in ≤ 2 s
+instead of a full replay; `/resume` of a 16K conversation ≤ 2 s instead
+of minutes; `make agent-eval` model time per task down by about the
+primed prefill (about 11 s).
+
+**Correctness.** Unit tests in `cache.zig`: longest-prefix choice, a
+build-key miss, budget eviction in both tiers, a corrupt file refused.
+One hand-run end-to-end check on Qwen (not a gate): a fresh and a
+restored session give the same greedy tokens for one prompt, with and
+without the drafter. `make shot`: a cold start, a warm start showing the
+restore, a cancel then a prompt, a `/resume`.
 
 Gates: `make check`, `make lint-py`, `make shot`, `make agent-eval
-VARIANT=…`. No inference gate tiers (user, 2026-10-03): this is agent
-work, so `make verify-auto`'s Metal gates, `make verify`, and the CPU,
-long, and release tiers do not run for it; the unit uses only engine
-APIs those tiers already cover (snapshot, restore, `prefix_cache`), and
-an engine change it turns out to need becomes its own ENGN unit. Docs: `docs/reference/session.md`,
-`docs/development.md` § User directories, the agent's help.
+VARIANT=…` (once before and once after, session 2). No inference gate
+tiers (user, 2026-10-03): this is agent work, so `make verify-auto`'s
+Metal gates, `make verify`, and the CPU, long, and release tiers do not
+run for it; the unit uses only engine APIs those tiers already cover, and
+an engine change it turns out to need becomes its own ENGN unit.
