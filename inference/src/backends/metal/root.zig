@@ -583,24 +583,29 @@ pub const Backend = struct {
     pub const MatvecSplitParams = extern struct { columns: u32, stride: u32, rows: u32, blocks: u32, splits: u32, split_blocks: u32 };
     pub const ReduceSplitsParams = extern struct { rows: u32, splits: u32 };
     pub const MatvecRowsParams = extern struct { columns: u32, encoding: u32, stride: u32, rows: u32, tokens: u32, in_stride: u32, out_stride: u32 };
-    /// Largest batch `matmul` routes to the multi-row matvec. The 2026-09-20
-    /// sweep (metal-check `--matvec-rows-bench`) measured the scalar body at
-    /// 143–182 GB/s (weight bytes) at 2 rows against the 16×8 tile's 88–116,
-    /// but at 3 rows only Q6_K and IQ4_XS still win and at 5–8 the per-token
-    /// input loads and scalar FMA cap it at 49–67. The single safe threshold
-    /// is 2; the tile serves 3–24.
-    pub const small_batch_rows = 2;
-    /// Whether `matmul` routes a `tokens`-row batch to the multi-row matvec.
-    /// On for 2-row batches: the replay of a short accepted prefix and the
-    /// 2-token commit are the batches that win, and routing only the
-    /// specialized encodings keeps the tile under the rest.
+    /// Largest batch `matmul` routes to the multi-row matvec: 2 rows for every
+    /// encoding with a body, 3 for the K-quants. The word-outer bodies read
+    /// 150–214 GB/s (weight bytes) at 2 rows and Q4_K/Q5_K/Q6_K 121–158 at
+    /// 3, against the fragment tile's 104–151; IQ4_XS at 3 and every
+    /// encoding from 4 lose to the tile (`--matvec-rows-bench`, 2026-10-03).
+    pub const small_batch_rows = 3;
+    /// Whether `matmul` routes the multi-row matvec at all. Verify batches
+    /// of 2 and 3 rows are common: the drafter stops its chain at a
+    /// low-probability proposal.
     pub const route_small_batch = true;
     /// Largest token count the multi-row kernels are instantiated for; the
     /// sweep measures every count to `matvec_rows_max` even though `matmul`
     /// routes only to `small_batch_rows`.
     pub const matvec_rows_max = 8;
-    pub fn usesMatvecRows(tokens: usize) bool {
-        return route_small_batch and tokens >= 2 and tokens <= small_batch_rows;
+    /// Rows each SIMD group of a multi-row body accumulates: four 8-lane
+    /// groups of `NU_ROWS_PER_SIMDGROUP` (kernels.metal) rows each.
+    pub const matvec_rows_per_simdgroup = 8;
+    pub fn usesMatvecRows(encoding: u32, tokens: usize) bool {
+        const limit: usize = switch (encoding) {
+            12, 13, 14 => small_batch_rows,
+            else => 2,
+        };
+        return route_small_batch and tokens >= 2 and tokens <= limit;
     }
     /// output[t][r] = Σ_c weights[r,c] · input[t,c] for `1 < tokens ≤
     /// matvec_rows_max` activation rows. Each weight block is decoded once
@@ -622,7 +627,7 @@ pub const Backend = struct {
         const shape: Shape = .{ .encoding = matrix.encoding, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = matrix.bytes.len };
         const p: MatvecRowsParams = .{ .columns = @intCast(matrix.columns), .encoding = matrix.encoding, .stride = @intCast(stride), .rows = @intCast(matrix.rows), .tokens = @intCast(tokens), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride) };
         if (!self.generic_only) if (specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset)) |kernel| {
-            const rows_per_group = rows_per_simdgroup * simdgroups_per_matvec_group;
+            const rows_per_group = matvec_rows_per_simdgroup * simdgroups_per_matvec_group;
             try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(@divCeil(matrix.rows, rows_per_group)), 32 * simdgroups_per_matvec_group, shape);
             return;
         };
@@ -724,7 +729,7 @@ pub const Backend = struct {
         // A 2-row batch is a matvec problem, not a tile one, and only the
         // specialized bodies beat the tile: the generic `nu_matvec_rows` is
         // slower there (the sweep measures both).
-        if (policy == .auto and usesMatvecRows(tokens) and !self.generic_only and
+        if (policy == .auto and usesMatvecRows(matrix.encoding, tokens) and !self.generic_only and
             specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset) != null)
             return self.matvecRows(weights, matrix, input, in_stride, output, out_stride, tokens);
         // A matrix of few rows on the generic tile leaves the GPU nearly

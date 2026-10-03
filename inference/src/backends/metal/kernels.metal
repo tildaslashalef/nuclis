@@ -118,6 +118,16 @@ inline void nu_magic_fives(uint v, uint h, uint bit_a, uint bit_b, float4 xa, fl
     sa = fma(lo13.y, xa.w, fma(lo02.y, xa.z, fma(lo13.x, xa.y, fma(lo02.x, xa.x, sa))));
     sb = fma(hi13.y, xb.w, fma(hi02.y, xb.z, fma(hi13.x, xb.y, fma(hi02.x, xb.x, sb))));
 }
+// The same two decodes returning the codes in byte order: `lo` the low
+// nibbles, `hi` the high ones at ×16 (Q5_K's fifth bit included when FIFTH).
+template <bool FIFTH>
+inline void nu_magic_word(uint v, uint h, uint bit_a, uint bit_b, thread float4 & lo, thread float4 & hi) {
+    uint v8 = v >> 8, ha = h >> bit_a, hb = h >> bit_b;
+    float2 lo02 = nu_magic((v & 0x000f000fu) | (FIFTH ? (ha & 0x00010001u) << 4 : 0u)), lo13 = nu_magic((v8 & 0x000f000fu) | (FIFTH ? (ha >> 4) & 0x00100010u : 0u));
+    float2 hi02 = nu_magic((v & 0x00f000f0u) | (FIFTH ? (hb & 0x00010001u) << 8 : 0u)), hi13 = nu_magic((v8 & 0x00f000f0u) | (FIFTH ? hb & 0x01000100u : 0u));
+    lo = float4(lo02.x, lo13.x, lo02.y, lo13.y);
+    hi = float4(hi02.x, hi13.x, hi02.y, hi13.y);
+}
 inline uint nu_word(packed_ushort4 v, uint index) { return index == 0 ? (uint(v.x) | (uint(v.y) << 16)) : (uint(v.z) | (uint(v.w) << 16)); }
 // Sixteen consecutive inputs as four float4 plus their sum (16-byte aligned).
 struct NuInputs16 { float4 v[4]; float sum; };
@@ -703,10 +713,10 @@ template [[host_name("nu_matvec_ptq1_0")]] kernel void nu_matvec_ptq1_0<4>(NU_MA
 // weight block is decoded once and multiplied against `tokens ≤ NU_ROWS_MAX`
 // activation rows, so the weight bytes are read once per batch instead of once
 // per token. That is the floor for a small batch (2–8 rows): one weight pass,
-// where the 16×8 split-K tile reads them once per token tile. Thread mapping
-// is the matvec's (one SIMD group per ROWS-row block); the accumulator is
-// `acc[row][token]`. Q4_0 and the ternary encodings keep the generic path,
-// which the sweep in metal-check measures.
+// where the 16×8 split-K tile reads them once per token tile. Each 8-lane
+// group owns ROWS rows (below); the accumulator is `acc[row][token]`. Q4_0
+// and the ternary encodings keep the generic path, which the sweep in
+// metal-check measures.
 struct MatvecRowsParams { uint columns; uint encoding; uint stride; uint rows; uint tokens; uint in_stride; uint out_stride; };
 #define NU_MATVEC_ROWS_MAX 8
 
@@ -716,125 +726,168 @@ struct MatvecRowsParams { uint columns; uint encoding; uint stride; uint rows; u
 // thread-local memory, which is what made the first body fall to 4 GB/s at 8
 // rows.
 //
-// The inner shape is forced by register pressure. Holding all decoded rows
-// (float4 qa[ROWS][4]) or parking a four-token input group across the row loop
-// (`NuInputs16 xa[4]`) both spill and measure slower than this form, which
-// decodes one row at a time and reloads each token's input per row. The
-// per-row scale products are hoisted out of the token loop; pragma unroll keeps
-// every `acc` index constant so the accumulators stay in registers.
+// Each 8-lane group of a SIMD group owns ROWS rows and the four groups walk
+// the same column block together, so one input load serves 4·ROWS rows.
+// Rows past the matrix are read clamped and never stored.
+template <uint ROWS>
+inline uint nu_rows_lane_row0(uint group_index, uint sg, uint lane) { return ((group_index * NU_MATVEC_SIMDGROUPS + sg) * 4 + (lane >> 3)) * ROWS; }
+
+// The loop runs word-outer: for each 4-byte word of a lane's slice, every
+// row's eight codes are dequantized once (scale and bias folded in), then each
+// token's eight inputs are loaded once and dotted into every row. Decode is
+// shared by the tokens and input loads by the rows; the live set is the
+// accumulators plus 8·ROWS decoded values. The word loop stays rolled and
+// reads its word from memory: unrolled, the nest grows past what the compiler
+// unrolls, and a run-time index into `acc` compiles to select chains.
 //
-// Q4_K / Q5_K.
+// Q4_K / Q5_K: the high nibbles come out at ×16, so their scale carries 1/16.
 template <uint ROWS, uint TOKENS, bool FIFTH_BIT>
 inline void nu_matvec_rows_k_body(device const uchar * weights, device const float * input, MatvecRowsParams p, uint group_index, uint sg, uint lane, thread float * acc) {
     const uint block_bytes = FIFTH_BIT ? 176 : 144;
     const uint nibble_offset = FIFTH_BIT ? 48 : 16;
-    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
-    if (row0 >= p.rows) return;
+    uint row0 = nu_rows_lane_row0<ROWS>(group_index, sg, lane);
     uint pair = (lane & 7) >> 1, half_index = lane & 1;
+    uint bit_a = 2 * pair, bit_b = bit_a + 1;
     for (uint i = 0; i < ROWS * TOKENS; ++i) acc[i] = 0;
     const uint blocks = p.columns / 256;
-    for (uint kb = lane >> 3; kb < blocks; kb += 4) {
+    for (uint kb = 0; kb < blocks; ++kb) {
         uint slice = kb * block_bytes + nibble_offset + pair * 32 + half_index * 16;
         uint plane = kb * block_bytes + 16 + half_index * 16;
+        device const uchar * rows[ROWS];
+        float da[ROWS], ma[ROWS], db[ROWS], mb[ROWS];
 #pragma unroll
         for (uint r = 0; r < ROWS; ++r) {
             device const uchar * row = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride;
+            rows[r] = row;
             uint dd = *(device const uint *)(row + kb * block_bytes);
             packed_uint3 s = *(device const packed_uint3 *)(row + kb * block_bytes + 4);
-            uint4 v = *(device const uint4 *)(row + slice);
-            float4 qa0, qa1, qa2, qa3, qb0, qb1, qb2, qb3;
-            if (FIFTH_BIT) {
-                uint4 h = *(device const uint4 *)(row + plane);
-                uint bit_a = 2 * pair, bit_b = bit_a + 1;
-                qa0 = nu_low_fives(v.x, h.x, bit_a); qa1 = nu_low_fives(v.y, h.y, bit_a); qa2 = nu_low_fives(v.z, h.z, bit_a); qa3 = nu_low_fives(v.w, h.w, bit_a);
-                qb0 = nu_high_fives(v.x, h.x, bit_b); qb1 = nu_high_fives(v.y, h.y, bit_b); qb2 = nu_high_fives(v.z, h.z, bit_b); qb3 = nu_high_fives(v.w, h.w, bit_b);
-            } else {
-                qa0 = nu_low_nibbles(v.x); qa1 = nu_low_nibbles(v.y); qa2 = nu_low_nibbles(v.z); qa3 = nu_low_nibbles(v.w);
-                qb0 = nu_high_nibbles(v.x); qb1 = nu_high_nibbles(v.y); qb2 = nu_high_nibbles(v.z); qb3 = nu_high_nibbles(v.w);
-            }
             float d = nu_half_low(dd), dmin = nu_half_high(dd);
-            float sa, ma, sb, mb;
-            nu_k_scales_pair(s, pair, sa, ma, sb, mb);
-            float da = d * sa, ma2 = dmin * ma, db = d * sb, mb2 = dmin * mb;
+            float sa, sm, sb, smb;
+            nu_k_scales_pair(s, pair, sa, sm, sb, smb);
+            da[r] = d * sa; ma[r] = -dmin * sm; db[r] = d * sb * (1.0f / 16.0f); mb[r] = -dmin * smb;
+        }
+        device const float * x = input + kb * 256 + pair * 64 + half_index * 16;
+#pragma clang loop unroll(disable)
+        for (uint i = 0; i < 4; ++i) {
+            float4 wa[ROWS], wb[ROWS];
+#pragma unroll
+            for (uint r = 0; r < ROWS; ++r) {
+                uint v = *(device const uint *)(rows[r] + slice + 4 * i);
+                uint h = FIFTH_BIT ? *(device const uint *)(rows[r] + plane + 4 * i) : 0u;
+                float4 lo, hi;
+                nu_magic_word<FIFTH_BIT>(v, h, bit_a, bit_b, lo, hi);
+                wa[r] = fma(lo, float4(da[r]), float4(ma[r]));
+                wb[r] = fma(hi, float4(db[r]), float4(mb[r]));
+            }
 #pragma unroll
             for (uint t = 0; t < TOKENS; ++t) {
-                device const float * x = input + ulong(t) * p.in_stride + kb * 256 + pair * 64 + half_index * 16;
-                NuInputs16 xa = nu_inputs16(x), xb = nu_inputs16(x + 32);
-                float sqa = nu_dot(qa3, xa.v[3], nu_dot(qa2, xa.v[2], nu_dot(qa1, xa.v[1], nu_dot(qa0, xa.v[0], 0.0f))));
-                float sqb = nu_dot(qb3, xb.v[3], nu_dot(qb2, xb.v[2], nu_dot(qb1, xb.v[1], nu_dot(qb0, xb.v[0], 0.0f))));
-                acc[r * TOKENS + t] += (da * sqa - ma2 * xa.sum) + (db * sqb - mb2 * xb.sum);
+                device const float * xt = x + ulong(t) * p.in_stride + 4 * i;
+                float4 xa = *(device const float4 *)xt, xb = *(device const float4 *)(xt + 32);
+#pragma unroll
+                for (uint r = 0; r < ROWS; ++r) acc[r * TOKENS + t] = nu_dot(wb[r], xb, nu_dot(wa[r], xa, acc[r * TOKENS + t]));
             }
         }
     }
 }
 
+// Q6_K: four groups of eight codes per lane, each with its own signed scale;
+// the bias of 32 folds into the dequantized value.
 template <uint ROWS, uint TOKENS>
 inline void nu_matvec_rows_q6_k_body(device const uchar * weights, device const float * input, MatvecRowsParams p, uint group_index, uint sg, uint lane, thread float * acc) {
-    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
-    if (row0 >= p.rows) return;
+    uint row0 = nu_rows_lane_row0<ROWS>(group_index, sg, lane);
     uint h = (lane & 7) >> 2, c8 = lane & 3, scale_byte = c8 >> 1;
     for (uint i = 0; i < ROWS * TOKENS; ++i) acc[i] = 0;
     const uint blocks = p.columns / 256;
-    for (uint kb = lane >> 3; kb < blocks; kb += 4) {
+    for (uint kb = 0; kb < blocks; ++kb) {
         uint base = kb * 210;
+        device const uchar * blocks_at[ROWS];
+        uint hba[ROWS], hbb[ROWS];
+        float d[ROWS];
+#pragma unroll
         for (uint r = 0; r < ROWS; ++r) {
             device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + base;
-            packed_ushort4 l0 = *(device const packed_ushort4 *)(b + h * 64 + c8 * 8);
-            packed_ushort4 l1 = *(device const packed_ushort4 *)(b + h * 64 + 32 + c8 * 8);
+            blocks_at[r] = b;
             packed_ushort4 hb = *(device const packed_ushort4 *)(b + 128 + h * 32 + c8 * 8);
-            packed_ushort4 sc = *(device const packed_ushort4 *)(b + 192 + h * 8);
-            float d = float(as_type<half>(*(device const ushort *)(b + 208)));
-            uint l0a = nu_word(l0, 0), l0b = nu_word(l0, 1), l1a = nu_word(l1, 0), l1b = nu_word(l1, 1), hba = nu_word(hb, 0), hbb = nu_word(hb, 1);
-            float c0 = nu_signed_byte(uint(sc.x), scale_byte), c1 = nu_signed_byte(uint(sc.y), scale_byte);
-            float c2 = nu_signed_byte(uint(sc.z), scale_byte), c3 = nu_signed_byte(uint(sc.w), scale_byte);
+            hba[r] = nu_word(hb, 0); hbb[r] = nu_word(hb, 1);
+            d[r] = float(as_type<half>(*(device const ushort *)(b + 208)));
+        }
+        device const float * x = input + kb * 256 + h * 128 + c8 * 8;
+#pragma clang loop unroll(disable)
+        for (uint k = 0; k < 4; ++k) {
+            float4 wa[ROWS], wb[ROWS];
+#pragma unroll
+            for (uint r = 0; r < ROWS; ++r) {
+                device const uchar * b = blocks_at[r];
+                packed_ushort4 lw = *(device const packed_ushort4 *)(b + h * 64 + (k & 1) * 32 + c8 * 8);
+                uint2 l = uint2(nu_word(lw, 0), nu_word(lw, 1));
+                float dc = d[r] * nu_signed_byte(uint(*(device const ushort *)(b + 192 + h * 8 + 2 * k)), scale_byte);
+                float4 qa = k < 2 ? nu_low_sixes(l.x, hba[r], 2 * k) : nu_high_sixes(l.x, hba[r], 2 * k);
+                float4 qb = k < 2 ? nu_low_sixes(l.y, hbb[r], 2 * k) : nu_high_sixes(l.y, hbb[r], 2 * k);
+                wa[r] = fma(qa, float4(dc), float4(-32.0f * dc));
+                wb[r] = fma(qb, float4(dc), float4(-32.0f * dc));
+            }
+#pragma unroll
             for (uint t = 0; t < TOKENS; ++t) {
-                device const float4 * x = (device const float4 *)(input + ulong(t) * p.in_stride + kb * 256 + h * 128 + c8 * 8);
-                float4 x0a = x[0], x0b = x[1], x1a = x[8], x1b = x[9], x2a = x[16], x2b = x[17], x3a = x[24], x3b = x[25];
-                float sx0 = nu_sum4(x0a + x0b), sx1 = nu_sum4(x1a + x1b), sx2 = nu_sum4(x2a + x2b), sx3 = nu_sum4(x3a + x3b);
-                float s0 = nu_dot(nu_low_sixes(l0b, hbb, 0), x0b, nu_dot(nu_low_sixes(l0a, hba, 0), x0a, 0.0f));
-                float s1 = nu_dot(nu_low_sixes(l1b, hbb, 2), x1b, nu_dot(nu_low_sixes(l1a, hba, 2), x1a, 0.0f));
-                float s2 = nu_dot(nu_high_sixes(l0b, hbb, 4), x2b, nu_dot(nu_high_sixes(l0a, hba, 4), x2a, 0.0f));
-                float s3 = nu_dot(nu_high_sixes(l1b, hbb, 6), x3b, nu_dot(nu_high_sixes(l1a, hba, 6), x3a, 0.0f));
-                acc[r * TOKENS + t] += (d * c0) * fma(-32.0f, sx0, s0) + (d * c1) * fma(-32.0f, sx1, s1) + (d * c2) * fma(-32.0f, sx2, s2) + (d * c3) * fma(-32.0f, sx3, s3);
+                device const float4 * xt = (device const float4 *)(x + ulong(t) * p.in_stride) + 8 * k;
+                float4 xa = xt[0], xb = xt[1];
+#pragma unroll
+                for (uint r = 0; r < ROWS; ++r) acc[r * TOKENS + t] = nu_dot(wb[r], xb, nu_dot(wa[r], xa, acc[r * TOKENS + t]));
             }
         }
     }
 }
 
+// IQ4_XS: word j of the lane's 16 code bytes pairs with inputs j (low
+// nibbles) and j + 4 (high), through the threadgroup copy of the table.
 template <uint ROWS, uint TOKENS>
-inline void nu_matvec_rows_iq4_xs_body(device const uchar * weights, device const float * input, MatvecRowsParams p, uint group_index, uint sg, uint lane, thread float * acc) {
-    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
-    if (row0 >= p.rows) return;
+inline void nu_matvec_rows_iq4_xs_body(device const uchar * weights, device const float * input, MatvecRowsParams p, uint group_index, uint sg, uint lane, thread float * acc, threadgroup const float * tv) {
+    uint row0 = nu_rows_lane_row0<ROWS>(group_index, sg, lane);
     uint g = lane & 7;
     for (uint i = 0; i < ROWS * TOKENS; ++i) acc[i] = 0;
     const uint blocks = p.columns / 256;
-    for (uint kb = lane >> 3; kb < blocks; kb += 4) {
+    for (uint kb = 0; kb < blocks; ++kb) {
         uint base = kb * 136;
+        device const uchar * codes[ROWS];
+        float ds[ROWS];
+#pragma unroll
         for (uint r = 0; r < ROWS; ++r) {
             device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + base;
             uint2 header = *(device const uint2 *)b;
-            uint2 qa = *(device const uint2 *)(b + 8 + g * 16);
-            uint2 qb = *(device const uint2 *)(b + 16 + g * 16);
-            float d = nu_half_low(header.x);
+            codes[r] = b + 8 + g * 16;
             uint low = (header.y >> (4 * g)) & 15u, high = (header.x >> (16 + 2 * g)) & 3u;
-            float scale = float(int(low | (high << 4)) - 32);
+            ds[r] = nu_half_low(header.x) * float(int(low | (high << 4)) - 32);
+        }
+        device const float * x = input + kb * 256 + g * 32;
+#pragma clang loop unroll(disable)
+        for (uint j = 0; j < 4; ++j) {
+            float4 wa[ROWS], wb[ROWS];
+#pragma unroll
+            for (uint r = 0; r < ROWS; ++r) {
+                uint q = *(device const uint *)(codes[r] + 4 * j);
+                wa[r] = nu_iq4_tg(tv, q) * ds[r];
+                wb[r] = nu_iq4_tg(tv, q >> 4) * ds[r];
+            }
+#pragma unroll
             for (uint t = 0; t < TOKENS; ++t) {
-                device const float4 * x = (device const float4 *)(input + ulong(t) * p.in_stride + kb * 256 + g * 32);
-                float4 x0 = x[0], x1 = x[1], x2 = x[2], x3 = x[3], x4 = x[4], x5 = x[5], x6 = x[6], x7 = x[7];
-                float sum = nu_dot(nu_iq4_low(qa.x), x0, nu_dot(nu_iq4_low(qa.y), x1, nu_dot(nu_iq4_low(qb.x), x2, nu_dot(nu_iq4_low(qb.y), x3, 0.0f))));
-                sum = nu_dot(nu_iq4_high(qa.x), x4, nu_dot(nu_iq4_high(qa.y), x5, nu_dot(nu_iq4_high(qb.x), x6, nu_dot(nu_iq4_high(qb.y), x7, sum))));
-                acc[r * TOKENS + t] += (d * scale) * sum;
+                device const float4 * xt = (device const float4 *)(x + ulong(t) * p.in_stride);
+                float4 xa = xt[j], xb = xt[j + 4];
+#pragma unroll
+                for (uint r = 0; r < ROWS; ++r) acc[r * TOKENS + t] = nu_dot(wb[r], xb, nu_dot(wa[r], xa, acc[r * TOKENS + t]));
             }
         }
     }
 }
 
+// Sums each accumulator over its 8-lane group; the group's first lane stores.
 template <uint ROWS, uint TOKENS>
 inline void nu_store_rows_multi(thread float * acc, device float * output, uint row0, uint rows, uint out_stride, uint lane) {
     for (uint t = 0; t < TOKENS; ++t)
         for (uint r = 0; r < ROWS; ++r) {
-            float total = simd_sum(acc[r * TOKENS + t]);
-            if (lane == 0 && row0 + r < rows) output[ulong(t) * out_stride + row0 + r] = total;
+            float total = acc[r * TOKENS + t];
+            total += simd_shuffle_xor(total, 1);
+            total += simd_shuffle_xor(total, 2);
+            total += simd_shuffle_xor(total, 4);
+            if ((lane & 7) == 0 && row0 + r < rows) output[ulong(t) * out_stride + row0 + r] = total;
         }
 }
 
@@ -844,8 +897,7 @@ kernel void nu_matvec_rows_q4_k(device const uchar * weights [[buffer(0)]], devi
                                 uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     float acc[ROWS * TOKENS];
     nu_matvec_rows_k_body<ROWS, TOKENS, false>(weights, input, p, group_index, sg, lane, acc);
-    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
-        nu_store_rows_multi<ROWS, TOKENS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, p.out_stride, lane);
+    nu_store_rows_multi<ROWS, TOKENS>(acc, output, nu_rows_lane_row0<ROWS>(group_index, sg, lane), p.rows, p.out_stride, lane);
 }
 template <uint ROWS, uint TOKENS>
 kernel void nu_matvec_rows_q5_k(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
@@ -853,8 +905,7 @@ kernel void nu_matvec_rows_q5_k(device const uchar * weights [[buffer(0)]], devi
                                 uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     float acc[ROWS * TOKENS];
     nu_matvec_rows_k_body<ROWS, TOKENS, true>(weights, input, p, group_index, sg, lane, acc);
-    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
-        nu_store_rows_multi<ROWS, TOKENS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, p.out_stride, lane);
+    nu_store_rows_multi<ROWS, TOKENS>(acc, output, nu_rows_lane_row0<ROWS>(group_index, sg, lane), p.rows, p.out_stride, lane);
 }
 template <uint ROWS, uint TOKENS>
 kernel void nu_matvec_rows_q6_k(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
@@ -862,17 +913,17 @@ kernel void nu_matvec_rows_q6_k(device const uchar * weights [[buffer(0)]], devi
                                 uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     float acc[ROWS * TOKENS];
     nu_matvec_rows_q6_k_body<ROWS, TOKENS>(weights, input, p, group_index, sg, lane, acc);
-    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
-        nu_store_rows_multi<ROWS, TOKENS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, p.out_stride, lane);
+    nu_store_rows_multi<ROWS, TOKENS>(acc, output, nu_rows_lane_row0<ROWS>(group_index, sg, lane), p.rows, p.out_stride, lane);
 }
 template <uint ROWS, uint TOKENS>
 kernel void nu_matvec_rows_iq4_xs(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
                                   constant MatvecRowsParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
                                   uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float tv[16];
+    nu_iq4_table(tv, sg, lane);
     float acc[ROWS * TOKENS];
-    nu_matvec_rows_iq4_xs_body<ROWS, TOKENS>(weights, input, p, group_index, sg, lane, acc);
-    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
-        nu_store_rows_multi<ROWS, TOKENS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, p.out_stride, lane);
+    nu_matvec_rows_iq4_xs_body<ROWS, TOKENS>(weights, input, p, group_index, sg, lane, acc, tv);
+    nu_store_rows_multi<ROWS, TOKENS>(acc, output, nu_rows_lane_row0<ROWS>(group_index, sg, lane), p.rows, p.out_stride, lane);
 }
 
 // Generic fallback for encodings without a specialized multi-row body
@@ -907,7 +958,7 @@ kernel void nu_matvec_rows(device const uchar * weights [[buffer(0)]],
 // One instantiation per token count so the accumulator loops are compile-time
 // bound; `matvec_rows_max` in root.zig is the largest count. ROWS must match
 // `rows_per_simdgroup` there.
-#define NU_ROWS_PER_SIMDGROUP 4 // must match rows_per_simdgroup in root.zig
+#define NU_ROWS_PER_SIMDGROUP 2 // rows per 8-lane group; four groups give matvec_rows_per_simdgroup in root.zig
 #define NU_MATVEC_ROWS_INSTANCE(NAME, TOK) \
     template [[host_name("nu_matvec_rows_" #NAME "_t" #TOK)]] kernel void nu_matvec_rows_##NAME<NU_ROWS_PER_SIMDGROUP, TOK>(device const uchar *, device const float *, device float *, constant MatvecRowsParams &, uint, uint, uint);
 #define NU_MATVEC_ROWS_ALL(NAME) \

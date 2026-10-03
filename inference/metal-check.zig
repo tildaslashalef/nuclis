@@ -443,7 +443,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
 
 /// `--matvec-rows-bench [max_rows] [head]`: the multi-row matvec against the
 /// 16×8 tile on the two FFN shapes at 1..`max_rows` token rows (default 8),
-/// the sweep that settles `small_batch_rows`. The 248,320-row head shape is
+/// the sweep that settles `small_batch_rows` and `usesMatvecRows`. The 248,320-row head shape is
 /// added only when a second argument is given, and only for the encodings with
 /// a specialized multi-row body. Each path runs in one command buffer of
 /// `repeats` dispatches; reports GPU ms per dispatch and GB/s of weight bytes
@@ -3105,14 +3105,16 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
             std.debug.print("Multi-row matvec vs CPU (2/5/8 rows): worst |difference| / Σ|w·x| {e:.2} (bound 4e-6)\n", .{rows_worst});
-            // Selection: `matmul` routes 2-row batches to the multi-row matvec
-            // and one row, three or more, or the end of the instantiated range
-            // stay on the tile. The sweep put the crossover at 2 for the single
-            // safe threshold across encodings (`matvec_rows_max` is the kernel
-            // range, not the routing one).
-            if (Backend.usesMatvecRows(1) or !Backend.usesMatvecRows(2) or Backend.usesMatvecRows(3) or
-                Backend.usesMatvecRows(Backend.matvec_rows_max)) return error.MatvecRowsSelection;
-            if (Backend.small_batch_rows != 2 or Backend.matvec_rows_max != 8) return error.MatvecRowsSelection;
+            // Selection: `matmul` routes 2-row batches to the multi-row matvec,
+            // 3-row ones for the K-quants only; one row, more rows, or the
+            // end of the instantiated range stay on the tile
+            // (`matvec_rows_max` is the kernel range, not the routing one).
+            for ([_]u32{ 12, 13, 14, 23 }) |encoding| {
+                const three = encoding != 23;
+                if (Backend.usesMatvecRows(encoding, 1) or !Backend.usesMatvecRows(encoding, 2) or Backend.usesMatvecRows(encoding, 3) != three or
+                    Backend.usesMatvecRows(encoding, 4) or Backend.usesMatvecRows(encoding, Backend.matvec_rows_max)) return error.MatvecRowsSelection;
+            }
+            if (Backend.small_batch_rows != 3 or Backend.matvec_rows_max != 8) return error.MatvecRowsSelection;
             // Each encoding with a multi-row body selects the instantiation
             // of exactly its token count.
             for ([_]struct { u32, []const u8 }{ .{ 12, "q4_k" }, .{ 13, "q5_k" }, .{ 14, "q6_k" }, .{ 23, "iq4_xs" } }) |body| {

@@ -314,3 +314,39 @@ already fold the shift into the address), wider weight loads per lane (one `uint
 and more rows per lane to share the input loads and the address math.
 The launch limiter reads 92 % (65 % in the multi-row captures); what it
 measures is still not established.
+
+## A word-outer multi-row matvec at 4 and 8 rows (2026-10-03)
+
+`make bench-matvec-rows ARGS=8 CAPTURE='rows-Q4_K-17408x5120-t<n>-rows'`
+on a candidate Q4_K multi-row body (not kept): per 4-byte word, each
+row's eight codes dequantized once, then each token's eight inputs
+loaded once and dotted into every row; each 8-lane group owns two rows
+and the four groups walk the same block. The benchmark read 0.60 ms (84
+GB/s) at 4 rows and 1.26 ms (40) at 8. Exports
+`rows-Q4_K-17408x5120-t4-rows_2026-10-03T2045_max.csv` and
+`…-t8-rows_2026-10-03T2046_max.csv` (not committed), at Maximum.
+
+| Counter | 4 rows | 8 rows |
+| --- | ---: | ---: |
+| ALU Utilization | 22.3 % | 36.9 % |
+| Instruction Throughput Limiter / Utilization | 86.5 / 12.1 % | 88.7 / 19.5 % |
+| F32 Limiter / Utilization | 35.1 / 23.9 % | 62.9 / 20.1 % |
+| Integer and Conditional Limiter / Utilization | 13.5 / 10.0 % | **72.7 / 41.6 %** |
+| Kernel ALU instructions (16 dispatches) | 13.8 × 10⁹ | **48.1 × 10⁹** |
+| ALU instruction mix: float / integer and complex / integer and conditional | 53.6 / 13.5 / 22.5 % | 27.3 / 13.4 / **56.4 %** |
+| Kernel Occupancy / Occupancy Manager Target | 25.0 / 37.8 % | 25.2 / 37.0 % |
+| L1 Register / Buffer Residency | 15.8 / 65.9 % | 28.4 / 60.6 % |
+| Stack L1 Read / Write Bandwidth | 0 / 0 | 0 / 0 |
+| Buffer L1 Read Bandwidth / Miss Rate | 356.4 / 11.3 % | 300.6 / 28.0 % |
+| Last Level Cache Limiter / MMU Limiter | 2.0 / 0.2 % | 1.0 / 0.5 % |
+
+**Reading: no spill, but a run-time-indexed accumulator array.** From
+4 to 8 rows the float instructions grow 1.8× (7.4 → 13.1 × 10⁹), as the
+doubled multiply-adds predict, while the integer and conditional ones
+grow 9× (3.1 → 27.1 × 10⁹), about 950 per thread per weight block:
+the select chains a register array compiles to when its index is not a
+compile-time constant. Large enough unrolled nests (word × token × row)
+are not unrolled whatever `#pragma unroll` asks, so the accumulators'
+indices must be constant in the loops the compiler keeps. At 4 rows the
+float work is near its minimum and the kernel is issue-bound at 25 %
+occupancy.

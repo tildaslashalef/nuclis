@@ -265,6 +265,55 @@ the K-quant body's form, `d·sa·Σqx − dmin·ma·Σx`):
 - Keep rule amended (user, 2026-10-03): a 1–2 % gain keeps when every
   pair is faster and within 0.5 % of the median change; `scripts/speed.py`
   prints KEEP for it, development.md § The speed loop states it.
+- Session 2 baseline (`make bench-matvec-rows ARGS=8` and `ARGS="8
+  frag"`, 2026-10-03, GB/s on 17408x5120 / 5120x17408): the `_tN`
+  bodies at 3 / 4 / 8 tokens read Q4_K 86 / 63 / 28, Q5_K 98 / 75 / 30,
+  Q6_K 124 / 88 / 32, IQ4_XS 108 / 103 / 23; the fragment tile reads
+  Q4_K 104–107, Q5_K 106–115, Q6_K 132–151, IQ4_XS 113–123 at every
+  count. The bodies decode one row at a time and reload each token's 32
+  inputs per row: about 7× the weight bytes of input reads per token.
+- Word-outer body: per 4-byte word, every row's 8 codes dequantized to
+  floats once (`fma(q, d·s, −dmin·m)`, the magic decode for K-quants, the
+  threadgroup table for IQ4_XS), then per token the word's 8 inputs
+  loaded once and dotted into every row. Prediction: at 4 tokens Q4_K and
+  IQ4_XS ≥ 150 GB/s on both FFN shapes, and every encoding at or above
+  the fragment tile through 8 tokens; 2 tokens not below today's
+  142 / 129 (Q4_K) and 159 / 150 (IQ4_XS).
+  Measured (GB/s, gate / down shape, Q4_K at 3 / 4 / 8 tokens), 4 rows
+  per SIMD group: 73 / 59 / 20 and 58 / 41 / 17, below the old body.
+  2 rows per SIMD group: 154 / 121 / 20 and 104 / 46 / 12; 1 row: 96 /
+  67 / 23 and 62 / 25 / 6. The down shape's rate scales with the rows
+  that share an input load: each SIMD group streams its 70 KB-per-token
+  input row, about 14× its weight bytes at 4 tokens. **Missed**; the
+  2-token case gained (Q4_K 142 → 205).
+- Rows across lane groups: each 8-lane group owns 2 rows and the four
+  groups walk the same block (one input load serves 8 rows; an 8-lane
+  reduction at the end). Q4_K 3 / 4 / 8 tokens 130 / 84 / 35 and
+  128 / 88 / 36; Q5_K 108 / 57 / 45 and 111 / 66 / 44; Q6_K 106 / 81 /
+  55 and 110 / 89 / 51; IQ4_XS 117 / 88 / 38 and 110 / 79 / 36: the
+  down shape no longer collapses, but every count ≥ 3 stays below the
+  tile. 2 tokens: Q4_K 214 / 202 (+51 / +56 %), Q5_K 211 / 200 (+44 /
+  +45 %), Q6_K 202 / 198 (+10 / +11 %), IQ4_XS 154 / 149 (−3 / −1 %).
+  At 8 tokens Q4_K takes 1.26 ms, about 8× its FMAs at full ALU rate,
+  with steps at 5 and 7 tokens: a spill or a failed unroll is
+  suspected. The captures (apple-gpu.md § A word-outer multi-row matvec)
+  show no spill but 9× the integer and conditional instructions at 8
+  rows (3.1 → 27.1 × 10⁹): select chains of a run-time-indexed `acc`.
+- Word loop rolled, each word read from memory (Q6_K through
+  `packed_ushort4`: its blocks are 2-byte aligned, a `uint2` load read
+  wrong values). GB/s, gate / down, 2 / 3 / 4 / 8 tokens: Q4_K 202 /
+  121 / 89 / 39 and 190 / 126 / 93 / 38; Q5_K 208 / 130 / 97 / 46 and
+  197 / 136 / 102 / 45; Q6_K 185 / 158 / 119 / 53 and 172 / 153 / 119 /
+  50; IQ4_XS 154 / 115 / 85 / 38 and 150 / 110 / 79 / 37. Beats the tile
+  at 3 tokens for the K-quants only; from 2 to 6 tokens the time grows
+  about 0.15 ms per token (issue at 25 % occupancy). Routed: 2 rows for
+  every body, 3 for Q4_K / Q5_K / Q6_K (`usesMatvecRows`); verify
+  batches of 2–3 rows are common, since p_min 0.7 stops the drafter's
+  chain. `make speed --verify-rows 2,3 --no-decode`, 5 pairs: C at 512
+  R=2 142.17 → 125.20 ms (+11.9 %, pairs +11.6..+12.2), R=3 171.21 →
+  160.74 (+6.1 %); at 4K R=2 149.54 → 132.19 (+11.6 %), R=3 184.39 →
+  172.13 (+6.7 %). **Kept.** Single-row decode and 4–8-row batches run
+  unchanged code.
 
 **Why, since ENGN-20.** Speculation is on for Qwen at draft 7, so a
 default turn spends its time in verify batches: at 512, C 164 ms = propose
