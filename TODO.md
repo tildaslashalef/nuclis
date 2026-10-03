@@ -231,6 +231,25 @@ the K-quant body's form, `d·sa·Σqx − dmin·ma·Σx`):
   decode 512 11.35 → 11.78 tok/s (+3.8 %), 4K 10.93 → 11.34 (+3.7 %);
   Gemma 26B-A4B 512 +0.19 %, Muse 512 −0.24 % (noise). **Kept; the
   512 decode prediction (≥ 11.5) is met.**
+- (e) Command-buffer split: none needed. Unprofiled 512 decode, 63
+  tokens: wall 5,347 ms, GPU busy 5,501 ms (first token included), so
+  the GPU never waits on encoding. (a) Metal-allocated weights: the
+  capture's MMU limiter is 0.3–2 %, so not tried.
+- K-quant group scales through `nu_magic` (two scales per `half2`
+  instead of four `float(uint)` conversions). No prediction was written
+  before measuring. Q4_K 250.6 / 237.8 / 252.2 / 230.0 GB/s (+25–34 %),
+  Q5_K +0.2–0.7 %. `make speed` 512 11.78 → 11.98 (+1.72 %, pairs
+  +1.61..+1.73), 4K 11.34 → 11.52 (+1.62 %, +1.55..+1.68): below the
+  2 % rule, reverted, patch at `.zig-cache/k23/kscales.patch`. Profile:
+  the standalone Q4_K ffn_down 3.03 → 2.28 ms, the gate+up segment
+  kernel only 33.4 → 32.5 ms, since its tensors are mostly IQ4_XS (61 of
+  128 gate/up; Q4_K 28, Q5_K 28, Q3_K 6, IQ4_NL 3 on the generic branch).
+- Where the step goes after the kept changes (`--profile`, 512,
+  `c151ee2`): matrices 76.1 ms; segment gate+up 33.4 at 194 GB/s,
+  DeltaNet projections 13.2 at 182, IQ4_XS ffn_down 6.4 at 179, Q5_K
+  6.1 / 4.7 at 220 / 200, Q6_K head 4.2 at 250, attention q/k/v 3.9 at
+  181, Q4_K ffn_down 3.0 at 166, IQ4_NL generic 1.4 at 105, IQ3_S + Q3_K
+  1.4 at 107–114.
 
 **Why, since ENGN-20.** Speculation is on for Qwen at draft 7, so a
 default turn spends its time in verify batches: at 512, C 164 ms = propose
