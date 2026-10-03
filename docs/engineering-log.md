@@ -169,6 +169,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-29 | Zig 0.17.0: eight breakage classes migrated, deprecations cleared, `@divCeil` adopted, the version read from the build root; Qwen 4K decode 10 % below the 0.16 records, cause open | 2026-10-03 |
 | REPO-30 | Zig 0.17 holds Qwen's 4K speed: `fd09aa4` under 0.16 and the tree under 0.17 measure the same (10.0 tok/s, C 194 ms); REPO-29's 4K loss was not the compiler or the code | 2026-10-03 |
 | KERN-23 | Weight streaming for one row and a few: the half magic-number decode (Q4_K, Q5_K), IQ4_XS's table in threadgroup memory, word-outer multi-row bodies routed at 2–3 rows; Qwen decode 512 10.37 → 11.78 tok/s, 2–3-row verify C 6–12 % cheaper; closed below its verify and speculation targets | 2026-10-03 |
+| REPO-31 | CI installs Zig 0.17.0: `.github/zig-toolchain` pins the four 0.17.0 tarball digests in place of 0.16.0's | 2026-10-03 |
 
 ## Context
 
@@ -7600,3 +7601,24 @@ occupancy of the word-outer body (fewer live registers: decoded values as
 half, fewer accumulators per lane); none was tried. The README's results
 table against llama.cpp (an acceptance record) still shows the pre-unit
 decode rates; it is re-measured with the acceptance runs.
+
+## REPO-31 — CI installs Zig 0.17.0 (2026-10-03)
+
+**Outcome.** REPO-29 raised `minimum_zig_version` to 0.17.0 but left
+`.github/zig-toolchain` on 0.16.0, so `.github/install-zig.sh` refused to
+install anything on the CI runners ("no digest for 0.17.0
+aarch64-macos"). The file now pins the 0.17.0 tarballs for the four hosts
+it lists, digests from https://ziglang.org/download/index.json; the
+0.16.0 lines are gone, since the script installs only the manifest's
+version.
+
+**Evidence.** `./.github/install-zig.sh <tmp>` on the M4 Pro downloaded
+`zig-aarch64-macos-0.17.0.tar.xz`, matched its digest, and printed
+`0.17.0`. The other three digests are taken from the index unverified by
+download.
+
+**Files.** `.github/zig-toolchain`, this log.
+
+**Remaining.** A Zig upgrade's checklist should name this file; the
+comment at its head already says the three must move together.
+
