@@ -247,8 +247,8 @@ pub const Layout = struct {
         const n = grid.patches();
         const gw = grid.width_patches;
         const gh = grid.height_patches;
-        const across = (gw + window - 1) / window;
-        const down = (gh + window - 1) / window;
+        const across = @divCeil(gw, window);
+        const down = @divCeil(gh, window);
         const order = try alloc.alloc(u32, n);
         errdefer alloc.free(order);
         const row_of = try alloc.alloc(u32, n);

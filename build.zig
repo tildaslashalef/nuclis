@@ -14,9 +14,12 @@ pub fn build(b: *std.Build) void {
     // Single source of truth for the version: parsed from this manifest so the
     // CLI's --version and the package version cannot drift (development.md §
     // Versioning). A manifest that cannot be read reports "unknown" rather
-    // than a version this build might not be.
+    // than a version this build might not be. Read from the build root, not
+    // the working directory (`zig build` may run in a subdirectory); the
+    // configure cache already tracks every package's manifest.
     const version = blk: {
-        const zon = std.Io.Dir.cwd().readFileAlloc(b.graph.io, "build.zig.zon", b.allocator, .limited(1 << 16)) catch
+        const zon_path = b.pathJoin(&.{ b.root.sub_path, "build.zig.zon" });
+        const zon = b.root.root_dir.handle.readFileAlloc(b.graph.io, zon_path, b.allocator, .limited(1 << 16)) catch
             break :blk "unknown";
         const key = ".version = \"";
         const start = std.mem.indexOf(u8, zon, key) orelse break :blk "unknown";

@@ -39,7 +39,7 @@ pub fn matmul(io: std.Io, m: Matmul, y: []f32) Error!void {
     if (m.rows == 0 or m.inner == 0 or m.outputs == 0 or m.x.len != m.rows * m.inner or
         m.w.len != m.outputs * m.inner or y.len != m.rows * m.outputs) return error.InvalidShape;
     if (m.bias) |b| if (b.len != m.outputs) return error.InvalidShape;
-    const tiles = (m.outputs + 3) / 4;
+    const tiles = @divCeil(m.outputs, 4);
     const tasks = taskCount(tiles);
     var group: std.Io.Group = .init;
     for (0..tasks) |t| {

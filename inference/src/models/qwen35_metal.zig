@@ -288,7 +288,7 @@ pub const Plan = struct {
         self.argmax_indices = try backend.create(metal.Backend.argmax_partials * 4);
         self.argmax_result = try backend.create(4);
         self.topk = try backend.topkBuffers(sampling.TopK.capacity);
-        self.penalty_history = try backend.create((vocabulary + 31) / 32 * 4);
+        self.penalty_history = try backend.create(@divCeil(vocabulary, 32) * 4);
         self.penalty_revision = std.math.maxInt(u64);
         self.chunk = chunk;
         self.padded = metal.Backend.matmulPadded(chunk);
@@ -502,7 +502,7 @@ pub const Plan = struct {
     /// shared-storage buffer is only read by the GPU at `commit`).
     fn syncPenalties(self: *Plan, p: sampling.Penalties) !void {
         if (p.history.revision == self.penalty_revision) return;
-        const words = (vocabulary + 31) / 32;
+        const words = @divCeil(vocabulary, 32);
         const out = @as([*]u32, @ptrCast(@alignCast(self.penalty_history.host)))[0..words];
         if (p.history.writeWords(out) != words) return error.InvalidShape;
         self.penalty_revision = p.history.revision;

@@ -26,7 +26,7 @@ const merged = model.merged_width;
 const adapter = model.adapter_width;
 const out_width = model.output_width;
 /// The patch row padded to the matmul tile's column multiple.
-pub const patch_columns = (model.patch_values + 63) / 64 * 64;
+pub const patch_columns = @divCeil(model.patch_values, 64) * 64;
 
 const Weight = struct { buffer: Buffer, matrix: cpu.Matrix };
 const Layer = struct {

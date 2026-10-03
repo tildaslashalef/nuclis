@@ -18,7 +18,7 @@ const Buffer = metal.Buffer;
 const hidden = model.hidden;
 const ffn = model.ffn;
 /// The FFN width rounded up to the matmul tile's column multiple.
-pub const ffn_padded = (ffn + 63) / 64 * 64;
+pub const ffn_padded = @divCeil(ffn, 64) * 64;
 const qkv_width = model.qkv_width;
 const merged = model.merged_width;
 const max_patches = model.max_patches;

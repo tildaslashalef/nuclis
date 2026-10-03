@@ -389,12 +389,12 @@ test "PTQ1_0 canonical packing decodes digit-major per run and the four-trit tai
     for (bytes[0..24], 0..) |*byte, j| {
         var value: u32 = 0;
         for (0..5) |k| value = value * 3 + @as(u32, @intCast((j + k) % 3));
-        byte.* = @intCast((value * 256 + 242) / 243);
+        byte.* = @intCast(@divCeil(value * 256, 243));
     }
     for (bytes[24..26], 0..) |*byte, j| {
         var value: u32 = 0;
         for (0..4) |k| value = value * 3 + @as(u32, @intCast((j + k) % 3));
-        byte.* = @intCast((value * 3 * 256 + 242) / 243);
+        byte.* = @intCast(@divCeil(value * 3 * 256, 243));
     }
     @memcpy(bytes[26..28], &[_]u8{ 0, 0x38 });
     var output: [128]f32 = undefined;

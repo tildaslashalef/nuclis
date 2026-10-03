@@ -104,11 +104,10 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             try o.inline_questions.append(arena, .{ .kind = std.meta.stringToEnum(profile.Kind, flag[2..]).?, .text = value });
         } else {
             // --option, --level, and --id attach to the latest inline question.
-            if (o.inline_questions.items.len == 0) {
+            const q = o.inline_questions.lastPtr() orelse {
                 diag.set("{s} follows the question it belongs to (--choice, --score, or --noul)", .{flag});
                 return error.MisplacedOption;
-            }
-            const q = &o.inline_questions.items[o.inline_questions.items.len - 1];
+            };
             if (std.mem.eql(u8, flag, "--id")) {
                 if (q.id != null) return error.DuplicateOption;
                 q.id = value;

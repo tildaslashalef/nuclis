@@ -138,7 +138,7 @@ pub const Encoder = struct {
             const size = token.text.len;
             var pos: usize = 0;
             while (std.mem.indexOfScalarPos(u8, text, pos, token.text[0])) |at| {
-                try spend(&special_work, (at - pos + 15) / 16);
+                try spend(&special_work, @divCeil(at - pos, 16));
                 pos = at + 1;
                 if (size > text.len - at) break;
                 try spend(&special_work, size);
@@ -147,7 +147,7 @@ pub const Encoder = struct {
                 marks[at] = id;
                 pos = at + size;
             }
-            try spend(&special_work, (text.len -| pos + 15) / 16);
+            try spend(&special_work, @divCeil(text.len -| pos, 16));
         }
         var output: std.ArrayList(u32) = .empty;
         errdefer output.deinit(alloc);

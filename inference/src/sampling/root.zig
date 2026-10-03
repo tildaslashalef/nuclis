@@ -129,9 +129,9 @@ pub const History = struct {
     }
     /// The set as little-endian u32 words for a device kernel (bit `id` in
     /// word `id / 32`, bit `id % 32`), zeroed first. `out` must hold at least
-    /// `(bit_length + 31) / 32`; returns the words written.
+    /// `@divCeil(bit_length, 32)`; returns the words written.
     pub fn writeWords(self: *const History, out: []u32) usize {
-        const words = (self.seen.bit_length + 31) / 32;
+        const words = @divCeil(self.seen.bit_length, 32);
         std.debug.assert(out.len >= words);
         @memset(out[0..words], 0);
         var it = self.seen.iterator(.{});

@@ -407,7 +407,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
                 const geometry = Backend.matmulGeometry(kernel);
                 // A chunk spanning several token tiles reads the weights once
                 // per tile, as `matmul`'s profile attribution counts them.
-                const token_tiles = (tokens + geometry.tokens - 1) / geometry.tokens;
+                const token_tiles = @divCeil(tokens, geometry.tokens);
                 const weight_mb = @as(f64, @floatFromInt(region.len)) / 1e6;
                 var best: f64 = std.math.inf(f64);
                 var samples: [rounds]f64 = undefined;
@@ -4007,12 +4007,12 @@ pub fn main(init: std.process.Init) !void {
     {
         const count = 4096;
         const logits_buf = try b.create(count * 4);
-        const words_buf = try b.create((count + 31) / 32 * 4);
+        const words_buf = try b.create(@divCeil(count, 32) * 4);
         var history = try inference.sampling.History.init(alloc, count);
         defer history.deinit();
         for (0..64) |i| try history.observe(@intCast(i * 61 + 3));
         try history.observe(count - 1);
-        _ = history.writeWords(@as([*]u32, @ptrCast(@alignCast(words_buf.host)))[0 .. (count + 31) / 32]);
+        _ = history.writeWords(@as([*]u32, @ptrCast(@alignCast(words_buf.host)))[0..@divCeil(count, 32)]);
         const options_list = [_]inference.sampling.Options{
             .{ .presence_penalty = 1.5 },
             .{ .repetition_penalty = 1.1 },

@@ -564,16 +564,16 @@ pub const Backend = struct {
                 const scratch = try self.splitScratch();
                 if (matrix.rows * splits * 4 > scratch.len) return error.InvalidShape;
                 const blocks = matrix.columns / 256;
-                const split_blocks = (blocks + splits - 1) / splits;
+                const split_blocks = @divCeil(blocks, splits);
                 const p: MatvecSplitParams = .{ .columns = @intCast(matrix.columns), .stride = @intCast(stride), .rows = @intCast(matrix.rows), .blocks = @intCast(blocks), .splits = @intCast(splits), .split_blocks = @intCast(split_blocks) };
-                const row_groups = (matrix.rows + rows_per_group - 1) / rows_per_group;
+                const row_groups = @divCeil(matrix.rows, rows_per_group);
                 try self.dispatch(split_kernel, &.{ weights, input, scratch }, p, @intCast(row_groups * splits), 32 * simdgroups_per_matvec_group, shape);
                 const rp: ReduceSplitsParams = .{ .rows = @intCast(matrix.rows), .splits = @intCast(splits) };
                 try self.dispatch(.reduce_splits, &.{ scratch, output }, rp, perElement(matrix.rows), 256, .{});
                 return;
             }
             const p: MatvecBlockParams = .{ .columns = @intCast(matrix.columns), .stride = @intCast(stride), .rows = @intCast(matrix.rows), .blocks = @intCast(matrix.columns / 256) };
-            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast((matrix.rows + rows_per_group - 1) / rows_per_group), 32 * simdgroups_per_matvec_group, shape);
+            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(@divCeil(matrix.rows, rows_per_group)), 32 * simdgroups_per_matvec_group, shape);
             return;
         };
         if (splits > 1) return error.InvalidShape;
@@ -623,7 +623,7 @@ pub const Backend = struct {
         const p: MatvecRowsParams = .{ .columns = @intCast(matrix.columns), .encoding = matrix.encoding, .stride = @intCast(stride), .rows = @intCast(matrix.rows), .tokens = @intCast(tokens), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride) };
         if (!self.generic_only) if (specializedMatvecRows(matrix.encoding, tokens, weights.offset, stride, input.offset)) |kernel| {
             const rows_per_group = rows_per_simdgroup * simdgroups_per_matvec_group;
-            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast((matrix.rows + rows_per_group - 1) / rows_per_group), 32 * simdgroups_per_matvec_group, shape);
+            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(@divCeil(matrix.rows, rows_per_group)), 32 * simdgroups_per_matvec_group, shape);
             return;
         };
         try self.dispatch(.matvec_rows, &.{ weights, input, output }, p, @intCast(matrix.rows), 32, shape);
@@ -661,7 +661,7 @@ pub const Backend = struct {
     /// generic tile (Qwen's 48-row β/α and 1,024-row projections).
     pub const small_matrix_rows = 1024;
     pub fn matmulPadded(tokens: usize) usize {
-        return (tokens + matmul_tile - 1) / matmul_tile * matmul_tile;
+        return @divCeil(tokens, matmul_tile) * matmul_tile;
     }
     /// Output tile of a matmul kernel and whether its operands are rounded to
     /// half; must match the instantiations in kernels.metal. The specialized
@@ -742,9 +742,9 @@ pub const Backend = struct {
             break :blk .matmul;
         };
         const geometry = matmulGeometry(kernel);
-        const row_tiles = (matrix.rows + geometry.rows - 1) / geometry.rows;
+        const row_tiles = @divCeil(matrix.rows, geometry.rows);
         // The buffers hold `padded` rows, a multiple of every token tile.
-        const token_tiles = (tokens + geometry.tokens - 1) / geometry.tokens;
+        const token_tiles = @divCeil(tokens, geometry.tokens);
         const p: MatmulParams = .{ .columns = @intCast(matrix.columns), .encoding = matrix.encoding, .stride = @intCast(stride), .rows = @intCast(matrix.rows), .tokens = @intCast(tokens), .in_stride = @intCast(in_stride), .out_stride = @intCast(out_stride), .row_tiles = @intCast(row_tiles) };
         // Weights are read once per token tile, so the profile attributes that many bytes.
         const shape: Shape = .{ .encoding = matrix.encoding, .rows = @intCast(matrix.rows), .columns = @intCast(matrix.columns), .bytes = matrix.bytes.len * token_tiles };
@@ -976,7 +976,7 @@ pub const Backend = struct {
             if (total_rows * splits * 4 > scratch.len) return error.InvalidShape;
             bindings[used] = scratch;
             p.splits = @intCast(splits);
-            p.split_blocks = @intCast((p.blocks + splits - 1) / splits);
+            p.split_blocks = @intCast(@divCeil(p.blocks, splits));
             p.total_rows = total_rows;
             p.partials_slot = @intCast(used);
             const groups: u32 = @intCast((total_rows / 16) * splits);
@@ -1022,7 +1022,7 @@ pub const Backend = struct {
         if (weights.len < tensor.bytes.len or indices.len < slots * 4 or indices.offset % 4 != 0) return error.InvalidShape;
         if (input.len < ((slots - 1) * in_stride + tensor.columns) * 4 or output.len < ((slots - 1) * out_stride + tensor.rows) * 4 or output.offset % 4 != 0) return error.InvalidShape;
         const specialized = !self.generic_only and specializedMatvec(tensor.encoding, weights.offset, stride, input.offset) != null;
-        const row_groups = (tensor.rows + 15) / 16;
+        const row_groups = @divCeil(tensor.rows, 16);
         const p: ExpertMatvecParams = .{
             .columns = @intCast(tensor.columns),
             .stride = std.math.cast(u32, stride) orelse return error.InvalidShape,
@@ -1077,7 +1077,7 @@ pub const Backend = struct {
     /// Σ ceil(count/32) ≤ n/32 + experts. This bounds the gathered matmul
     /// grid before the counts are known.
     pub fn expertTileBound(n: usize, experts: usize) usize {
-        return (n + expert_tile - 1) / expert_tile + experts;
+        return @divCeil(n, expert_tile) + experts;
     }
     /// Words of the lists buffer, in order: the tile count, `n`, the
     /// `experts + 1` exclusive prefix offsets, `expertTileBound` tiles of
@@ -1122,14 +1122,14 @@ pub const Backend = struct {
         const n = std.math.mul(usize, rows, k) catch return error.InvalidShape;
         if (n > std.math.maxInt(u32) / 4) return error.InvalidShape;
         const layout = expertListsLayout(n, tensor.experts);
-        const input_rows = (n + in_group - 1) / in_group;
+        const input_rows = @divCeil(n, in_group);
         if (weights.len < tensor.bytes.len or lists.len < layout.words * 4 or lists.offset % 4 != 0) return error.InvalidShape;
         if (input.len < ((input_rows - 1) * in_stride + tensor.columns) * 4 or input.offset % 16 != 0 or in_stride % 4 != 0) return error.InvalidShape;
         if (output.len < ((n - 1) * out_stride + tensor.rows) * 4 or output.offset % 4 != 0) return error.InvalidShape;
         const specialized = !self.generic_only and tensor.encoding == 2 and blockAligned(tensor.encoding, weights.offset, stride);
         const kernel: Kernel = if (specialized) .matmul_experts_q4_0 else .matmul_experts;
         const tile_rows: usize = if (specialized) 64 else 32;
-        const row_tiles = (tensor.rows + tile_rows - 1) / tile_rows;
+        const row_tiles = @divCeil(tensor.rows, tile_rows);
         const p: MatmulExpertsParams = .{
             .columns = @intCast(tensor.columns),
             .encoding = tensor.encoding,
@@ -1495,7 +1495,7 @@ pub const Backend = struct {
     /// Rows the `qkv` buffer must hold for `count` tokens (the kernel walks
     /// 32-token sub-chunks; rows past `count` are masked, never read).
     pub fn deltaChunkRows(count: usize) usize {
-        return (count + 31) / 32 * 32;
+        return @divCeil(count, 32) * 32;
     }
     /// Chunkwise DeltaNet: one dispatch per layer for a prefill chunk,
     /// threadgroup per (value head, 32 value rows), 32-token sub-chunks.
@@ -1594,7 +1594,7 @@ pub const Backend = struct {
     pub const decode_splits_max = 64;
     pub const decode_split_rows = 256;
     pub fn attentionDecodeSplits(visible: usize) usize {
-        return @min(decode_splits_max, (visible + decode_split_rows - 1) / decode_split_rows);
+        return @min(decode_splits_max, @divCeil(visible, decode_split_rows));
     }
     /// Floats the partial buffer must hold: `[query_heads][splits][2 + value_width]`.
     pub fn attentionDecodePartials(query_heads: usize, value_width: usize) usize {
@@ -1607,7 +1607,7 @@ pub const Backend = struct {
     pub fn attentionDecodeHeadGroups(query_heads: usize, kv_heads: usize, key_width: usize, value_width: usize) usize {
         const per_group: usize = if (key_width > 256 or value_width > 256) 4 else 8;
         const g = query_heads / kv_heads;
-        return (g + per_group - 1) / per_group;
+        return @divCeil(g, per_group);
     }
     /// Flash-decoding attention: two dispatches (split pass, merge)
     /// and no score buffer; `partials` needs `attentionDecodePartials`
@@ -1710,7 +1710,7 @@ pub const Backend = struct {
     pub fn attentionChunk(self: *Backend, keys: Buffer, values: Buffer, queries: Buffer, output: Buffer, s: AttentionChunkShape) !void {
         try checkAttentionChunk(s, keys, values, queries, output, s.precision.size());
         const p = attentionChunkParams(s);
-        const tiles = (s.count + 31) / 32;
+        const tiles = @divCeil(s.count, 32);
         const value_splits = (s.value_width + 255) / 256;
         // The register-reuse body has no span; a span takes the row-split body.
         const reuse = s.value_width == 256 and s.count <= self.attention_reuse_max_rows and s.span.end == 0;
@@ -1726,7 +1726,7 @@ pub const Backend = struct {
         try checkAttentionChunk(s, keys, values, queries, output, s.precision.size());
         if (s.span.end != 0) return error.InvalidShape;
         const p = attentionChunkParams(s);
-        const tiles = (s.count + 31) / 32;
+        const tiles = @divCeil(s.count, 32);
         const value_splits = (s.value_width + 255) / 256;
         try self.dispatch(if (s.precision == .f16) .attention_chunk_reuse_h else .attention_chunk_reuse, &.{ keys, values, queries, output }, p, @intCast(s.query_heads * tiles * value_splits), 128, .{});
     }
@@ -1799,7 +1799,7 @@ pub const Backend = struct {
     pub fn penalize(self: *Backend, logits: Buffer, count: usize, history: Buffer, repetition: f32, presence: f32) !void {
         if (count == 0 or count > std.math.maxInt(u32) or logits.len < count * 4) return error.InvalidShape;
         if (!std.math.isFinite(repetition) or repetition <= 0 or !std.math.isFinite(presence)) return error.InvalidShape;
-        const words = (count + 31) / 32;
+        const words = @divCeil(count, 32);
         if (history.len < words * 4) return error.InvalidShape;
         const p: PenalizeParams = .{ .count = @intCast(count), .history_words = @intCast(words), .repetition = repetition, .presence = presence };
         try self.dispatch(.penalize, &.{ logits, history }, p, perElement(count), 256, .{});

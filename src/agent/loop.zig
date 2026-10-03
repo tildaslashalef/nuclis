@@ -1209,7 +1209,7 @@ const Stub = struct {
     }
     /// Four bytes per token: a fixed density the budget tests can compute.
     fn count(_: *anyopaque, text: []const u8) anyerror!usize {
-        return (text.len + 3) / 4;
+        return @divCeil(text.len, 4);
     }
     fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, images: []const Image, sink: *stream.Sink) anyerror!Reply {
         _ = messages;

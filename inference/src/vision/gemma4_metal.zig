@@ -23,7 +23,7 @@ const siglip = model.siglip;
 const unified = model.unified;
 /// A SigLIP FFN width rounded up to the matmul tile's column multiple.
 pub fn ffnPadded(g: *const siglip.Geometry) usize {
-    return (g.ffn + 63) / 64 * 64;
+    return @divCeil(g.ffn, 64) * 64;
 }
 
 const Weight = struct { buffer: Buffer, matrix: cpu.Matrix };

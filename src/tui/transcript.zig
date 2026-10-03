@@ -369,21 +369,21 @@ pub const Transcript = struct {
     /// reasoning channel after answering would start a second block rather
     /// than grow one whose rows are already in the scrollback.
     fn openThinking(self: *Transcript) !*Block.Thinking {
-        if (self.blocks.items.len > 0) {
-            const last = &self.blocks.items[self.blocks.items.len - 1];
+        if (self.blocks.lastPtr()) |last| {
             if (last.* == .thinking and !last.thinking.closed) return &last.thinking;
         }
-        try self.blocks.append(self.alloc, .{ .thinking = .{} });
-        return &self.blocks.items[self.blocks.items.len - 1].thinking;
+        const block = try self.blocks.addOne(self.alloc);
+        block.* = .{ .thinking = .{} };
+        return &block.thinking;
     }
 
     fn openAnswer(self: *Transcript) !*Block.Answer {
-        if (self.blocks.items.len > 0) {
-            const last = &self.blocks.items[self.blocks.items.len - 1];
+        if (self.blocks.lastPtr()) |last| {
             if (last.* == .answer and !last.answer.closed) return &last.answer;
         }
-        try self.blocks.append(self.alloc, .{ .answer = .{} });
-        return &self.blocks.items[self.blocks.items.len - 1].answer;
+        const block = try self.blocks.addOne(self.alloc);
+        block.* = .{ .answer = .{} };
+        return &block.answer;
     }
 
     // ----- views -----

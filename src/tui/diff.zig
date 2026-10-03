@@ -111,8 +111,7 @@ pub fn compute(alloc: Allocator, old: []const u8, new: []const u8) Allocator.Err
         }
         const start = if (i >= context_lines) i - context_lines else 0;
         const end = @min(ops.len, i + 1 + context_lines);
-        if (ranges.items.len > 0) {
-            const last = &ranges.items[ranges.items.len - 1];
+        if (ranges.lastPtr()) |last| {
             if (last[1] >= start) {
                 last[1] = @max(last[1], end);
                 i = end;
