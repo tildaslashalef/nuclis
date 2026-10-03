@@ -265,3 +265,52 @@ the padded multiplies set the floor of any `simdgroup_matrix` body at
 small token counts on this GPU, and a body that does fewer F32
 operations per weight is a scalar one, which KERN-12 found register-bound
 past two rows.
+
+## `nu_matvec_iq4_xs` on Qwen's merged gate shape (2026-10-03)
+
+`make bench-kernels ARGS=IQ4_XS CAPTURE='matvec-IQ4_XS-69632x5120 (4
+ffn_gate)-block'`: 8 dispatches of the 69,632 × 5,120 IQ4_XS matvec
+(189.4 MB) in one command buffer, the per-lane decode the fused gate+up
+kernel shares, with the code table in threadgroup memory (`c151ee2`).
+Export `matvec-IQ4_XS-69632x5120-4-ffn_gate-block_2026-10-03T2026_max.csv`
+(not committed), profiled at Maximum; the benchmark read 219.1 GB/s
+best, and the replay's GPU time was not read.
+
+| Counter | IQ4_XS |
+| --- | ---: |
+| ALU Utilization | 21.0 % |
+| Instruction Throughput Limiter / Utilization | 71.3 / 14.3 % |
+| Integer and Conditional Limiter / Utilization | 28.6 / 24.7 % |
+| F32 Limiter / Utilization | 20.2 / 13.7 % |
+| Integer and Complex Limiter / Utilization | 8.5 / 7.2 % |
+| F16 Limiter | 0 % |
+| ALU instruction mix: integer and conditional / float / integer and complex | 58.8 / 32.7 / 8.5 % |
+| Kernel ALU instructions (8 dispatches) | 9.55 × 10⁹ |
+| Kernel Occupancy / Occupancy Manager Target | 54.6 / 85.2 % |
+| L1 Register / Buffer / Threadgroup Residency | 12.8 / 75.0 / 0.5 % |
+| Buffer L1 / Threadgroup Memory L1 Read Bandwidth | 578.7 / 566.6 |
+| Stack L1 Read / Write Bandwidth | 0 / 0 |
+| L1 Cache Limiter / Buffer L1 Miss Rate | 22.5 / 11.8 % |
+| Last Level Cache Limiter / Miss Rate | 11.3 / 95.6 % |
+| MMU Limiter / TLB Miss Rate | 13.1 / 26.3 % |
+| Compute Shader Launch Limiter | 91.7 % |
+
+(Bandwidths as Xcode exports them, GB/s.)
+
+**Reading: issue-bound on the table's addressing.** Memory is not the
+limit (last-level cache 11 %, MMU 13 %, L1 23 %), nothing spills, and
+occupancy is twice the Q4_K matvec's, though still below its target.
+The instruction throughput limiter (71 % at 14 % utilization) is the
+same issue-bound shape as Q4_K's, but the pipe has moved: 59 % of the
+ALU instructions are integer and conditional, against 15 % for Q4_K,
+and the integer and complex pipe that bound Q4_K is nearly idle. Each
+code costs a nibble extraction and a threadgroup address (one
+threadgroup load per code: 567 GB/s of threadgroup reads against 579 of
+buffer reads) for a single F32 multiply-add, and the FP16 pipe does
+nothing. The candidates, none measured yet, cut integer operations per
+code: nibbles extracted as ready-made byte offsets (`(w << 2) & 0x3c3c3c3c` and
+`(w >> 2) & 0x3c3c3c3c` index the float table, if the compiler does not
+already fold the shift into the address), wider weight loads per lane (one `uint4` instead of two `uint2`),
+and more rows per lane to share the input loads and the address math.
+The launch limiter reads 92 % (65 % in the multi-row captures); what it
+measures is still not established.

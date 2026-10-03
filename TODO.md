@@ -312,10 +312,13 @@ K-scale conversion (`.zig-cache/k23/kscales.patch`, +1.6 % medians,
 failed the rule twice); (f) the Q6_K head, already at 250 GB/s, only
 for the drafter's per-position cost. IQ4_XS is the remaining large
 lever: 61 of 128 gate/up tensors, the fused gate+up kernel at 194 GB/s
-for 33 ms of the step; what limits it now needs a capture (`make
-bench-kernels ARGS=IQ4_XS CAPTURE=…`, read in Xcode by the user).
-`make verify` (fast Metal tier) has not run yet; it runs once before
-the unit closes.
+for 33 ms of the step. Its capture (apple-gpu.md § `nu_matvec_iq4_xs`
+on Qwen's merged gate shape, 2026-10-03) reads it issue-bound on the
+integer and conditional pipe (59 % of its instructions: a nibble
+extraction and a threadgroup address per code), memory not limiting,
+no spill; the candidates are named there. `make verify` (fast Metal
+tier) passed 40/40 on `6a0d321` (session 1's kernels, 2026-10-03); it
+runs again before the unit closes if session 2 keeps a change.
 
 **Session 2 — the multi-row body.** Carry session 1's decode into the
 `_t3..t8` bodies with the accumulators bounded (rows × tokens per
