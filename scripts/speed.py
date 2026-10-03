@@ -10,8 +10,9 @@ the first run at a context prefills and saves it). Plain decode compares
 tokens/s; `--verify-rows` compares the verify batch cost C in ms
 (`bench --verify-rows R --accept a`, speculation on). Each row prints both
 medians, the change (positive is faster), the pairs' range of per-pair
-changes, and the keep rule's verdict: KEEP at >= 2 % faster, REGRESS below
--1 %, NOISE between; the change is KEEP when one row keeps and none
+changes, and the keep rule's verdict: KEEP at >= 2 % faster, or at >= 1 %
+when every pair is faster and within 0.5 % of the median change; REGRESS
+below -1 %, NOISE between; the change is KEEP when one row keeps and none
 regresses, over >= 5 pairs. `--json` prints the rows for the ledger.
 The contexts name the acceptance token arrays (512, 4096, 16384, 32639);
 another length takes that many tokens from the 32,639 array.
@@ -42,6 +43,10 @@ ACCEPTANCE = (512, 4096, 16384, 32639)
 # the run directory the acceptance workload names.
 EXTRA_RUNS = {"run-2026-09-06": ["boundary-2026-09-06"]}
 KEEP_PERCENT = 2.0
+# A smaller gain keeps when the interleaved pairs agree: every pair faster,
+# none further than the spread from the median change.
+TIGHT_KEEP_PERCENT = 1.0
+TIGHT_SPREAD_PERCENT = 0.5
 REGRESS_PERCENT = -1.0
 MIN_PAIRS = 5
 
@@ -72,8 +77,16 @@ def change_percent(base, candidate, higher_is_better):
     return (base - candidate) / base * 100.0
 
 
-def verdict(delta):
+def verdict(delta, pairs=()):
+    """The row's verdict from the median change and the per-pair changes."""
     if delta >= KEEP_PERCENT:
+        return "KEEP"
+    if (
+        delta >= TIGHT_KEEP_PERCENT
+        and pairs
+        and min(pairs) > 0
+        and max(abs(p - delta) for p in pairs) <= TIGHT_SPREAD_PERCENT
+    ):
         return "KEEP"
     if delta < REGRESS_PERCENT:
         return "REGRESS"
@@ -96,7 +109,7 @@ def summarize(label, base, candidate, higher_is_better):
         "change_percent": delta,
         "pair_min_percent": min(pairs),
         "pair_max_percent": max(pairs),
-        "verdict": verdict(delta),
+        "verdict": verdict(delta, pairs),
         "base_values": base,
         "candidate_values": candidate,
     }
@@ -289,6 +302,13 @@ class SelfTest(unittest.TestCase):
         self.assertEqual(verdict(1.99), "NOISE")
         self.assertEqual(verdict(-1.0), "NOISE")
         self.assertEqual(verdict(-1.01), "REGRESS")
+
+    def test_tight_pairs_keep_a_smaller_gain(self):
+        self.assertEqual(verdict(1.72, [1.61, 1.70, 1.72, 1.73, 1.73]), "KEEP")
+        self.assertEqual(verdict(1.0, [0.6, 1.0, 1.5]), "KEEP")
+        self.assertEqual(verdict(0.99, [0.99, 0.99]), "NOISE")
+        self.assertEqual(verdict(1.5, [0.9, 1.5, 2.1]), "NOISE")
+        self.assertEqual(verdict(1.2, [-0.1, 1.2, 1.3]), "NOISE")
 
     def test_summarize_uses_medians_and_pair_changes(self):
         row = summarize("512 decode", [10.0, 10.2, 9.8, 10.0, 10.1], [10.3, 10.4, 10.2, 10.3, 10.5], True)

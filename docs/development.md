@@ -360,8 +360,11 @@ about a minute per context instead of an eleven-minute 32K prefill:
 runs): keep a change when its median decode, or for a verify lever the
 batch cost C at the unit's row counts, improves by ≥ 2 % at one context or
 more and no context regresses by more than 1 %, over ≥ 5 interleaved
-pairs; then `make verify-auto` (and `make verify-long` for attention or
-cache changes), commit `perf(inference): …` with the rows in the body, and
+pairs. A gain of 1–2 % keeps too when every pair is faster and none lies
+more than 0.5 % from the median change: interleaved pairs agree far more
+closely than the 1.5 % between separate runs the 2 % allows for (amended
+2026-10-03, user). Then `make verify-auto` (and `make verify-long` for
+attention or cache changes), commit `perf(inference): …` with the rows in the body, and
 `make speed-base`. Otherwise revert and write the negative result down.
 
 ## Toolchain

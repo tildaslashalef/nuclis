@@ -124,7 +124,9 @@ Fast, cheap to abandon, and nothing lands without a measured gain.
    verify lever, the batch cost C at the unit's row counts) improves by
    **≥ 2 %** at one context or more and no context regresses by more than
    1 %, over ≥ 5 interleaved pairs; the record's run-to-run spread is about
-   1.5 %. Then `make verify-auto` (plus `make verify-long` for attention or
+   1.5 %. A 1–2 % gain keeps when every pair is faster and within 0.5 % of
+   the median change (amended 2026-10-03; `scripts/speed.py` prints it).
+   Then `make verify-auto` (plus `make verify-long` for attention or
    cache changes) and commit `perf(inference): …` with the numbers in the
    body. Refresh the base binary (`make speed-base`) after each kept commit.
 5. **Otherwise revert** (`git restore`, nothing committed), and add one
@@ -240,7 +242,8 @@ the K-quant body's form, `d·sa·Σqx − dmin·ma·Σx`):
   before measuring. Q4_K 250.6 / 237.8 / 252.2 / 230.0 GB/s (+25–34 %),
   Q5_K +0.2–0.7 %. `make speed` 512 11.78 → 11.98 (+1.72 %, pairs
   +1.61..+1.73), 4K 11.34 → 11.52 (+1.62 %, +1.55..+1.68): below the
-  2 % rule, reverted, patch at `.zig-cache/k23/kscales.patch`. Profile:
+  2 % rule, reverted, patch at `.zig-cache/k23/kscales.patch`; kept
+  under the amended rule (below). Profile:
   the standalone Q4_K ffn_down 3.03 → 2.28 ms, the gate+up segment
   kernel only 33.4 → 32.5 ms, since its tensors are mostly IQ4_XS (61 of
   128 gate/up; Q4_K 28, Q5_K 28, Q3_K 6, IQ4_NL 3 on the generic branch).
@@ -250,6 +253,9 @@ the K-quant body's form, `d·sa·Σqx − dmin·ma·Σx`):
   6.1 / 4.7 at 220 / 200, Q6_K head 4.2 at 250, attention q/k/v 3.9 at
   181, Q4_K ffn_down 3.0 at 166, IQ4_NL generic 1.4 at 105, IQ3_S + Q3_K
   1.4 at 107–114.
+- Keep rule amended (user, 2026-10-03): a 1–2 % gain keeps when every
+  pair is faster and within 0.5 % of the median change; `scripts/speed.py`
+  prints KEEP for it, development.md § The speed loop states it.
 
 **Why, since ENGN-20.** Speculation is on for Qwen at draft 7, so a
 default turn spends its time in verify batches: at 512, C 164 ms = propose
