@@ -140,7 +140,7 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_matmul_*` (specialized, ENGN-05) | 128 | 64-row × 64-token output tile (32×32 for chunks of ≤ 32 tokens) | a 32×32 quarter as 4×4 `simdgroup_float8x8` (2×2 in the small tile) | matrix loads and MACs | 8 KB half weight tile + 8 KB half activation tile (small tile: 4 KB, activations from device), `threadgroup_barrier` |
 | `nu_matmul_*_8` (KERN-11) | 128 | 16-row × 8-token output tile (two token tiles for 9..16) | 16 rows × 8 tokens over one K slice: two 8×8 accumulators sharing one B load, four groups split K | matrix loads and MACs | 8 KB half tile (16 rows × 64 k per group), `simdgroup_barrier` only |
 | `nu_matmul_*_f2` (KERN-24) | 128 | 16-row × 8-token output tile (token tiles as `_8`) | 16 rows × 8 tokens over one K slice: each lane decodes one 16-value segment per row straight into its `simdgroup_matrix` elements (K permuted per 64-column step), two float4 activation loads per token | matrix MACs; four K partials summed in a fixed order | 2 KB of K partials, one `threadgroup_barrier` |
-| `nu_matvec_rows_*_t<n>` (KERN-12) | 128 | 16 output rows × up to 8 tokens | 4 rows; 8 lanes per 256-value block; one accumulator per (row, token) | `simd_sum` across 32 lanes per (row, token) | none |
+| `nu_matvec_rows_*_t<n>` (KERN-12, KERN-23) | 128 | 32 output rows × up to 8 tokens | 8 rows: each 8-lane group owns 2 and the four walk the same block; one accumulator per (row, token) | `simd_shuffle_xor` across 8 lanes per (row, token) | 64 B IQ4 table (IQ4_XS), one `threadgroup_barrier` |
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
 | `nu_delta_chunk` | 128 | (value head, 32 value rows), all sub-chunks | an 8-row block of every 32×32 tile; column `tid` in the triangular solve | matrix MACs; no shuffles | 24 KB of 32×32 tiles, `threadgroup_barrier` per phase, `mem_device` per sub-chunk |
@@ -441,6 +441,20 @@ numbers and were reverted: 2 or 8 rows per SIMD group, 2 or 8 SIMD groups per
 threadgroup, issuing all rows' loads before arithmetic (worse: register
 pressure), and a float lookup table in place of `uchar4 → float4` conversion
 (mixed).
+
+**Half magic-number decode and the IQ4 table in threadgroup memory
+(KERN-23, 2026-10-03).** Q4_K and Q5_K codes are OR'd into the mantissas
+of halves of exponent 1024 (two codes per `half2`, the fifth bit at bit 4
+or 8), minus 1024: exact, and on the FP16 pipe instead of an
+integer-to-float conversion per value; high nibbles stay at ×16 and the
+group's scale carries the 1/16 (`nu_magic`, `nu_magic_nibbles`,
+`nu_magic_fives`). IQ4_XS reads its 16-entry table from a threadgroup copy
+(`nu_iq4_table`, one barrier) instead of the `constant` array, whose
+divergent reads cost 3–11 %. Same benchmark, 2026-10-03, Zig 0.17.0:
+Q4_K 200 / 179 / 200 GB/s on the three shapes above, Q5_K 256 / 251 /
+258, IQ4_XS 220 / 210 / 221; Qwen's plain decode at 512 10.37 → 11.78
+tok/s. The IQ4_XS kernel is now issue-bound on its table addressing
+([apple-gpu.md](apple-gpu.md#nu_matvec_iq4_xs-on-qwens-merged-gate-shape-2026-10-03)).
 
 The in-model profile ([bench.md](bench.md#per-kernel-profile)) named the
 limiter: on the same shape all four kernels take 0.8–0.9 ns per 256-value
@@ -1111,7 +1125,10 @@ Q4_0 and the ternary encodings and is slower than the tile at every count. The
 token count is a template parameter, one host name per encoding and count
 (`nu_matvec_rows_q4_k_t2` … `_t8`): a runtime `tokens` loop with `break` moves
 the accumulators to thread-local memory. `Backend.matmul` routes 2-row batches
-to the specialized bodies (`small_batch_rows = 2`, `route_small_batch`);
+to the specialized bodies, and since KERN-23 3-row batches of the K-quants
+(`usesMatvecRows`, `small_batch_rows = 3`; [the word-outer
+body](#the-word-outer-body-kern-23-2026-10-03) replaced the layout described
+here);
 `matvec_rows_max = 8` is the kernel range and `metal-check`'s sweep covers it.
 
 Method: `make bench-matvec-rows ARGS=8` (Apple M4 Pro, Zig 0.16.0,
@@ -1215,6 +1232,39 @@ table above).**
 | Q4_0 | 205 | 67.8 | 58.9 | 71.7 | 20.4 | 18.8 | 13.0 | 21.0 |
 | PQ2_0 | 97 | 45.3 | 45.3 | 45.3 | 13.7 | 9.2 | 7.7 | 13.6 |
 | PTQ1_0 | 83 | 21.8 | 29.0 | 29.0 | 10.4 | 6.7 | 6.1 | 8.6 |
+
+### The word-outer body (KERN-23, 2026-10-03)
+
+The `nu_matvec_rows_*` bodies were rewritten. Each 8-lane group of a SIMD
+group owns two rows and the four groups walk the same 256-value block, so
+one input load serves eight rows (the old mapping gave the groups four
+different blocks, and each SIMD group streamed its whole input row per
+token: on the 17,408-column shape, about 14× its weight bytes at 4
+tokens). Per 4-byte word, each row's eight codes are dequantized once with
+scale and bias folded in (`fma(q, d·s, −dmin·m)`, the half magic decode for
+the K-quants, the threadgroup table for IQ4_XS), then each token's eight
+inputs are loaded once and dotted into both rows. The word loop stays
+rolled and reads its word from memory: unrolled, the nest outgrew what the
+compiler unrolls, and the run-time-indexed accumulators compiled to select
+chains, 9× the integer instructions at 8 tokens
+([apple-gpu.md](apple-gpu.md#a-word-outer-multi-row-matvec-at-4-and-8-rows-2026-10-03)).
+Q6_K's 210-byte blocks are 2-byte aligned, so its words come through
+`packed_ushort4`.
+
+`make bench-matvec-rows ARGS=8` and `ARGS="8 frag"`, Zig 0.17.0, GB/s,
+gate / down shape; bold beats the fragment tile:
+
+| Encoding | 2 rows | 3 | 4 | 8 | fragment tile |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Q4_K | **202 / 190** | **121 / 126** | 89 / 93 | 39 / 38 | 107 / 104 |
+| Q5_K | **208 / 197** | **130 / 136** | 97 / 102 | 46 / 45 | 115 / 111 |
+| Q6_K | **185 / 172** | **158 / 153** | 119 / 119 | 53 / 50 | 151 / 135 |
+| IQ4_XS | **154 / 150** | 115 / 110 | 85 / 79 | 38 / 37 | 123 / 116 |
+
+From 2 to 6 tokens the time grows about 0.15 ms per token on the 50 MB
+FFN, issue at 25 % occupancy, so the tile keeps 4–8 rows. Qwen's verify C
+(`make speed`): 2 rows 142 → 125 ms at 512 and 150 → 132 at 4K, 3 rows
+171 → 161 and 184 → 172.
 
 ### The wide 32×8 tile (KERN-14, 2026-09-20; closed negative)
 

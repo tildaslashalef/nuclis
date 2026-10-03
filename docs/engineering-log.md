@@ -168,6 +168,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-28 | The README presents clef-flash beside Laya: the decision section renamed, a pull and image example, the trade-off table, a clef request to `serve` | 2026-10-03 |
 | REPO-29 | Zig 0.17.0: eight breakage classes migrated, deprecations cleared, `@divCeil` adopted, the version read from the build root; Qwen 4K decode 10 % below the 0.16 records, cause open | 2026-10-03 |
 | REPO-30 | Zig 0.17 holds Qwen's 4K speed: `fd09aa4` under 0.16 and the tree under 0.17 measure the same (10.0 tok/s, C 194 ms); REPO-29's 4K loss was not the compiler or the code | 2026-10-03 |
+| KERN-23 | Weight streaming for one row and a few: the half magic-number decode (Q4_K, Q5_K), IQ4_XS's table in threadgroup memory, word-outer multi-row bodies routed at 2–3 rows; Qwen decode 512 10.37 → 11.78 tok/s, 2–3-row verify C 6–12 % cheaper; closed below its verify and speculation targets | 2026-10-03 |
 
 ## Context
 
@@ -7417,3 +7418,185 @@ since the two agree, that gap predates the compiler change.
 
 **Remaining.** Nothing for the compiler. KERN-23 keeps `2ace031` as its
 base; its 4K rows compare against that base, not the records.
+
+## KERN-23 — Weight streaming for one row and a few: Qwen decode +14 %, 2–3-row verify batches 6–12 % cheaper (2026-10-03, two sessions)
+
+**Outcome.** The single-row matvec decodes Q4_K and Q5_K codes through
+half magic numbers (a code OR'd into a half of exponent 1024, minus 1024,
+on the FP16 pipe instead of an integer-to-float conversion) and reads
+IQ4_XS's table from a threadgroup copy; the bodies are shared by the
+standalone, split, segment, and gathered matvecs. The multi-row bodies
+(`nu_matvec_rows_*_t<n>`) were rewritten word-outer with rows across lane
+groups, and `matmul` routes 3-row K-quant batches to them as well as 2-row
+ones (`usesMatvecRows`). Qwen's plain decode at 512 rose 10.37 → 11.78
+tok/s (the unit's first prediction, ≥ 11.5, met); its 2- and 3-row verify
+batches got 6–12 % cheaper, and speculative prose at 512 reached 17.42 /
+16.55 tok/s (greedy / instruct). Closed below its other two predictions:
+a 4-row verify C ≤ 150 ms at 512 and speculative prose ≥ 18 tok/s. From
+4 rows the fragment tile stays faster than any scalar body measured: the
+word-outer body grows about 0.15 ms per token at 25 % occupancy. Designs:
+[metal-backend.md § The word-outer body](reference/metal-backend.md#the-word-outer-body-kern-23-2026-10-03)
+and the paragraph on the half decode in § the specialized matvec;
+counters: [apple-gpu.md § `nu_matvec_iq4_xs`](reference/apple-gpu.md#nu_matvec_iq4_xs-on-qwens-merged-gate-shape-2026-10-03)
+and [§ A word-outer multi-row matvec](reference/apple-gpu.md#a-word-outer-multi-row-matvec-at-4-and-8-rows-2026-10-03).
+
+**Evidence.** Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.17.0, ReleaseSafe,
+Qwen3.8-27B UD-Q4_K_M, F16 KV; `make speed`, 5 interleaved pairs on
+restored prefixes against the previous kept commit:
+
+| Commit | Change | Measured |
+| --- | --- | --- |
+| `e36b77d` | Q4_K half magic decode | decode 512 10.37 → 10.79 tok/s (+4.0 %), 4K 10.24 → 10.65 (+4.0 %) |
+| `1137eb2` | Q5_K half magic decode | decode 512 11.04 → 11.35 (+2.8 %), 4K 10.64 → 10.93 (+2.7 %) |
+| `c151ee2` | IQ4_XS table in threadgroup memory | decode 512 11.35 → 11.78 (+3.8 %), 4K 10.93 → 11.34 (+3.7 %); Gemma 26B-A4B and Muse 512 unchanged |
+| `2f1fe98` | word-outer multi-row bodies, 3-row K-quant routing | verify C 512 R=2 142.17 → 125.20 ms (+11.9 %), R=3 171.21 → 160.74 (+6.1 %); 4K R=2 149.54 → 132.19 (+11.6 %), R=3 184.39 → 172.13 (+6.7 %) |
+
+Speculation (`make spec-matrix`, draft 7, p_min 0.7, cooldown 90 s, 3
+pairs, after `2f1fe98`): at 512 greedy 11.53 → 17.42 tok/s (1.51×, C
+155.1 ms), instruct 11.44 → 16.55 (1.43×, C 159.4), against ENGN-20's
+16.5 / 15.9; at 32,639 greedy 8.92 → 11.22 (1.26×, C 263.3 ms; ENGN-20
+cold: 8.26 → 10.91, C 270.8). A first 32,639 run straight after the
+prefix's 11-minute prefill read 7.66 → 9.64, ENGN-20's hot figures: 90 s
+of cooldown does not undo a long prefill. The README's speculative row
+for Qwen carries the cold 512 and 32,639 cells. Correctness: `make test-metal` (the matvec and multi-row
+fixtures against the F64 references), `make verify-auto` (36 checks and
+gates, `qwen38-verify-depth-*` and `qwen38-generation-metal` among them),
+and `make verify` 40/40 on `6a0d321` and again on `2f1fe98`.
+
+**Ledger** (both sessions, as kept during the unit; session 1's
+opening rates `make bench-kernels` best GB/s at base, Qwen
+shapes 4×ffn_gate / 4×ffn_down / output / ffn_down: Q4_K 178.6 / 157.5 /
+179.5 / 150.3, Q5_K 211.5 / 205.4 / 209.7 / 190.6, Q6_K 251.1 / 246.2 /
+251.9 / 238.5, IQ4_XS 212.2 / 188.8 / 217.2 / 180.7; idea (c) is already
+the K-quant body's form, `d·sa·Σqx − dmin·ma·Σx`):
+
+- (b) Q4_K half magic-number decode, high nibbles kept at ×16 with the
+  1/16 folded into the group scale. Prediction: Q4_K ≥ 195 / 175 / 195 /
+  170 GB/s. Measured 199.9 / 178.5 / 199.8 / 177.4 (+11–18 %); `make
+  speed` decode 512 10.37 → 10.79 tok/s (+4.0 %), 4K 10.24 → 10.65
+  (+4.0 %), 5 pairs each within +3.8..+4.6 %. **Kept.**
+- (b) Q5_K, the same decode with the fifth bit OR'd in at bit 4 (low)
+  and bit 8 (high, ×16). Prediction: Q5_K ≥ 225 / 220 / 225 / 205 GB/s.
+  Measured 255.9 / 250.9 / 257.6 (+21–23 %); `make speed` decode 512
+  11.04 → 11.35 tok/s (+2.8 %), 4K 10.64 → 10.93 (+2.7 %). **Kept.**
+- IQ4_XS byte-pair table: a `constant half2[256]` indexed by a whole byte
+  gives its low and high nibble's values in one lookup (half the
+  lookups). Prediction: IQ4_XS ≥ 235 / 210 / 235 / 200 GB/s. Measured
+  157.8 / 155.9 / 159.7 / 153.9 (−26 %): a 1 KB constant table read at
+  divergent indices costs more than the halved count saves. Reverted;
+  the lookups' addressing, not their number, is the cost.
+- IQ4_XS table by `simd_shuffle` (one table entry per lane): 93.4 /
+  92.1 / 94.0 / 86.4 GB/s, a shuffle per code costs far more. Reverted.
+- IQ4_XS table in threadgroup memory (16 floats, filled behind one
+  barrier; the segment and gathered kernels fill it too). Prediction
+  ≥ 220 / 200 / 220 / 195 GB/s. Measured 219.6 / 209.8 / 220.7 / 199.9
+  (+2–11 %); the 256-entry `half2` pair table in threadgroup memory read
+  205.8 / 193.6 / 206.9 / 186.2 (bank conflicts, not kept). `make speed`
+  decode 512 11.35 → 11.78 tok/s (+3.8 %), 4K 10.93 → 11.34 (+3.7 %);
+  Gemma 26B-A4B 512 +0.19 %, Muse 512 −0.24 % (noise). **Kept; the
+  512 decode prediction (≥ 11.5) is met.**
+- (e) Command-buffer split: none needed. Unprofiled 512 decode, 63
+  tokens: wall 5,347 ms, GPU busy 5,501 ms (first token included), so
+  the GPU never waits on encoding. (a) Metal-allocated weights: the
+  capture's MMU limiter is 0.3–2 %, so not tried.
+- K-quant group scales through `nu_magic` (two scales per `half2`
+  instead of four `float(uint)` conversions). No prediction was written
+  before measuring. Q4_K 250.6 / 237.8 / 252.2 / 230.0 GB/s (+25–34 %),
+  Q5_K +0.2–0.7 %. `make speed` 512 11.78 → 11.98 (+1.72 %, pairs
+  +1.61..+1.73), 4K 11.34 → 11.52 (+1.62 %, +1.55..+1.68): below the
+  2 % rule, reverted, patch at `.zig-cache/k23/kscales.patch`. Under the
+  amended rule (below) it was measured again: 512 +0.94 % (pairs
+  −0.39..+1.73), 4K +1.75 % (+1.55..+2.32), NOISE; then one deciding
+  10-pair run, fixed in advance: 512 +1.58 % (−1.01..+5.65), 4K +1.55 %
+  (+1.22..+2.09), NOISE. **Reverted.** Every median reads +0.9..+1.8 %,
+  and the base binary itself read 11.60–11.78 tok/s across the runs, so
+  the machine was noisier late in the session; retry only on a cool
+  machine or stacked under a larger change to the same body. Profile:
+  the standalone Q4_K ffn_down 3.03 → 2.28 ms, the gate+up segment
+  kernel only 33.4 → 32.5 ms, since its tensors are mostly IQ4_XS (61 of
+  128 gate/up; Q4_K 28, Q5_K 28, Q3_K 6, IQ4_NL 3 on the generic branch).
+- Where the step goes after the kept changes (`--profile`, 512,
+  `c151ee2`): matrices 76.1 ms; segment gate+up 33.4 at 194 GB/s,
+  DeltaNet projections 13.2 at 182, IQ4_XS ffn_down 6.4 at 179, Q5_K
+  6.1 / 4.7 at 220 / 200, Q6_K head 4.2 at 250, attention q/k/v 3.9 at
+  181, Q4_K ffn_down 3.0 at 166, IQ4_NL generic 1.4 at 105, IQ3_S + Q3_K
+  1.4 at 107–114.
+- Keep rule amended (user, 2026-10-03): a 1–2 % gain keeps when every
+  pair is faster and within 0.5 % of the median change; `scripts/speed.py`
+  prints KEEP for it, development.md § The speed loop states it.
+- Session 2 baseline (`make bench-matvec-rows ARGS=8` and `ARGS="8
+  frag"`, 2026-10-03, GB/s on 17408x5120 / 5120x17408): the `_tN`
+  bodies at 3 / 4 / 8 tokens read Q4_K 86 / 63 / 28, Q5_K 98 / 75 / 30,
+  Q6_K 124 / 88 / 32, IQ4_XS 108 / 103 / 23; the fragment tile reads
+  Q4_K 104–107, Q5_K 106–115, Q6_K 132–151, IQ4_XS 113–123 at every
+  count. The bodies decode one row at a time and reload each token's 32
+  inputs per row: about 7× the weight bytes of input reads per token.
+- Word-outer body: per 4-byte word, every row's 8 codes dequantized to
+  floats once (`fma(q, d·s, −dmin·m)`, the magic decode for K-quants, the
+  threadgroup table for IQ4_XS), then per token the word's 8 inputs
+  loaded once and dotted into every row. Prediction: at 4 tokens Q4_K and
+  IQ4_XS ≥ 150 GB/s on both FFN shapes, and every encoding at or above
+  the fragment tile through 8 tokens; 2 tokens not below today's
+  142 / 129 (Q4_K) and 159 / 150 (IQ4_XS).
+  Measured (GB/s, gate / down shape, Q4_K at 3 / 4 / 8 tokens), 4 rows
+  per SIMD group: 73 / 59 / 20 and 58 / 41 / 17, below the old body.
+  2 rows per SIMD group: 154 / 121 / 20 and 104 / 46 / 12; 1 row: 96 /
+  67 / 23 and 62 / 25 / 6. The down shape's rate scales with the rows
+  that share an input load: each SIMD group streams its 70 KB-per-token
+  input row, about 14× its weight bytes at 4 tokens. **Missed**; the
+  2-token case gained (Q4_K 142 → 205).
+- Rows across lane groups: each 8-lane group owns 2 rows and the four
+  groups walk the same block (one input load serves 8 rows; an 8-lane
+  reduction at the end). Q4_K 3 / 4 / 8 tokens 130 / 84 / 35 and
+  128 / 88 / 36; Q5_K 108 / 57 / 45 and 111 / 66 / 44; Q6_K 106 / 81 /
+  55 and 110 / 89 / 51; IQ4_XS 117 / 88 / 38 and 110 / 79 / 36: the
+  down shape no longer collapses, but every count ≥ 3 stays below the
+  tile. 2 tokens: Q4_K 214 / 202 (+51 / +56 %), Q5_K 211 / 200 (+44 /
+  +45 %), Q6_K 202 / 198 (+10 / +11 %), IQ4_XS 154 / 149 (−3 / −1 %).
+  At 8 tokens Q4_K takes 1.26 ms, about 8× its FMAs at full ALU rate,
+  with steps at 5 and 7 tokens: a spill or a failed unroll is
+  suspected. The captures (apple-gpu.md § A word-outer multi-row matvec)
+  show no spill but 9× the integer and conditional instructions at 8
+  rows (3.1 → 27.1 × 10⁹): select chains of a run-time-indexed `acc`.
+- Word loop rolled, each word read from memory (Q6_K through
+  `packed_ushort4`: its blocks are 2-byte aligned, a `uint2` load read
+  wrong values). GB/s, gate / down, 2 / 3 / 4 / 8 tokens: Q4_K 202 /
+  121 / 89 / 39 and 190 / 126 / 93 / 38; Q5_K 208 / 130 / 97 / 46 and
+  197 / 136 / 102 / 45; Q6_K 185 / 158 / 119 / 53 and 172 / 153 / 119 /
+  50; IQ4_XS 154 / 115 / 85 / 38 and 150 / 110 / 79 / 37. Beats the tile
+  at 3 tokens for the K-quants only; from 2 to 6 tokens the time grows
+  about 0.15 ms per token (issue at 25 % occupancy). Routed: 2 rows for
+  every body, 3 for Q4_K / Q5_K / Q6_K (`usesMatvecRows`); verify
+  batches of 2–3 rows are common, since p_min 0.7 stops the drafter's
+  chain. `make speed --verify-rows 2,3 --no-decode`, 5 pairs: C at 512
+  R=2 142.17 → 125.20 ms (+11.9 %, pairs +11.6..+12.2), R=3 171.21 →
+  160.74 (+6.1 %); at 4K R=2 149.54 → 132.19 (+11.6 %), R=3 184.39 →
+  172.13 (+6.7 %). **Kept.** Single-row decode and 4–8-row batches run
+  unchanged code.
+- Speculative prose after `2f1fe98` (`make spec-matrix ARGS='--model
+  qwen38 --contexts 512 --drafts 7 --sampling greedy,instruct --cooldown
+  90'`, 3 pairs): greedy 11.53 → 17.42 tok/s (1.51×), instruct 11.44 →
+  16.55 (1.43×), against ENGN-20's 16.5 / 15.9; C 155.1 / 159.4 ms (was
+  164), 2.68 / 2.94 drafts proposed per batch. The third prediction
+  (≥ 18) is not met.
+
+**Files.** `inference/src/backends/metal/kernels.metal` (`nu_magic`,
+`nu_magic_nibbles`, `nu_magic_fives`, `nu_magic_word`, `nu_iq4_table`,
+the multi-row bodies and their store), `inference/src/backends/metal/root.zig`
+(`usesMatvecRows`, `small_batch_rows`, `matvec_rows_per_simdgroup`),
+`inference/metal-check.zig` (the routing selection check),
+`scripts/speed.py` (the amended keep rule), `docs/development.md`,
+`docs/reference/metal-backend.md`, `docs/reference/apple-gpu.md`,
+`docs/architecture.md`, `README.md` (the speculative table's Qwen row).
+
+**Remaining.** Each small, best measured on a cool machine: a
+specialized IQ4_NL matvec (1.4 ms of a step at 105 GB/s on the generic
+path); Q3_K and IQ3_S (107–114 GB/s, 1.4 ms); the K-scale conversion
+(`nu_magic` for the group scales, +1.6 % medians that failed the keep
+rule twice); IQ4_XS's table addressing (the capture's candidates: nibbles
+as byte offsets, one `uint4` load per lane, more rows per lane). A scalar
+multi-row body that beats the tile at 4–8 rows needs about twice the
+occupancy of the word-outer body (fewer live registers: decoded values as
+half, fewer accumulators per lane); none was tried. The README's results
+table against llama.cpp (an acceptance record) still shows the pre-unit
+decode rates; it is re-measured with the acceptance runs.

@@ -96,12 +96,12 @@ its rate is recorded.
 **Speculative decoding** is on by default: a small drafter proposes a
 few tokens and the model checks them in one batch, keeping what it would
 have produced itself. Decode with the switch off → on, greedy, at the
-entry's draft length (same M4 Pro, macOS 27.0, 2026-10-01; Qwen from a
-cooled chip, the others from one long, warm run):
+entry's draft length (same M4 Pro, macOS 27.0; Qwen on 2026-10-03 from a
+cooled chip, the others on 2026-10-01 from one long, warm run):
 
 | Model | Draft | 512 | 32,639 |
 | --- | ---: | ---: | ---: |
-| Qwen3.8-27B | 7 | 10.5 → 16.5 (1.57×) | 8.3 → 10.9 (1.32×) |
+| Qwen3.8-27B | 7 | 11.5 → 17.4 (1.51×) | 8.9 → 11.2 (1.26×) |
 | Gemma 4 12B QAT | 5 | 24.7 → 44.8 (1.83×) | 16.5 → 16.2 (0.98×) |
 | Gemma 4 E4B QAT | 6 | 46.9 → 98.6 (2.10×) | 33.0 → 38.7 (1.16×) |
 | Muse Glimmer 30B | 6 | 8.5 → 12.6 (1.50×) | 6.9 → 7.6 (1.12×) |
