@@ -16,9 +16,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: KERN-23 session 1** (its section is below the theme's). Before
-any change: run `make speed-base` on the clean tree at `d5eedb2` (or
-later), then record the unit's `Base:` at the first change. There is no
+**Next: REPO-29, the Zig 0.17.0 upgrade** (added 2026-10-03; its
+section is before KERN-23's). The installed compiler is 0.17.0 and the
+tree does not configure under it, so it goes first. **Then KERN-23
+session 1.** Before any KERN-23 change: run `make speed-base` on the
+clean tree after REPO-29 (built with Zig 0.17), then record the unit's `Base:` at the first change. There is no
 base binary now: `.zig-cache/` was cleaned after MODL-34 (2026-10-02),
 and MODL-34 changed `qwen35_metal.zig` anyway (the shape is read from
 the file; Qwen3.8's arithmetic and gates unchanged). The cleanup also
@@ -79,7 +81,8 @@ stays a tool for language models.
 
 | # | Unit | Sessions |
 | --- | --- | ---: |
-| 1 | KERN-23 — Weight streaming for one row and a few (closes the decode-speed theme) | 2 |
+| 1 | REPO-29 — Upgrade to Zig 0.17.0 (blocks everything: the tree does not build) | 1 |
+| 2 | KERN-23 — Weight streaming for one row and a few (closes the decode-speed theme) | 2 |
 | — | AGNT-19 — Saved prefixes for the agent across processes | queued after KERN-23 |
 
 ## The theme: decode speed on Metal
@@ -196,6 +199,113 @@ KERN-22 (decode attention 5.2 ms per step at 4K, 27.5 at 32K) and KERN-23
 Identifiers are provisional in this order; they are fixed in the order
 the units close. The units are independent of one another: re-rank them
 when a kept change moves the cost table.
+
+## REPO-29 — Upgrade to Zig 0.17.0 (1 session)
+
+Base: recorded when the unit starts.
+
+**Why first.** The installed compiler is 0.17.0 (`~/.local/opt/zig/stable`,
+0.16.0 removed), and the tree does not configure under it, so no gate, no
+`make speed-base`, and no KERN-23 experiment can run until this lands. A
+compiler upgrade is its own unit (AGENTS.md § Versioning).
+[Release notes](https://ziglang.org/download/0.17.0/release-notes.html).
+
+**Probe (2026-10-03, scratch worktree at `fd09aa4`, discarded).** Errors
+surface one class at a time; fixing each exposed the next. Not yet seen:
+anything past `@typeInfo` (the build stopped there). The probe's throwaway
+diff is in `.zig-cache/zig017/probe.patch` (not committed; its string
+helper `__rep` is a hack, do not apply it as is).
+
+1. **`b.args` removed** (configure). 15 sites in `build.zig`,
+   `inference/build.zig`, `huggingface/build.zig`:
+   `if (b.args) |args| run.addArgs(args);` → `run.addPassthruArgs();`.
+   `zig build <step> -- ARGS` and the Makefile/`gates.json` callers keep
+   working unchanged; check one (`make shot` or `zig build test-vocabulary --
+   …`) passes its arguments.
+2. **Array multiplication `**` removed** (parse). 77 sites, 18+ files.
+   - `[_]T{v} ** n` (array fill, ~40, mostly tests in `inference/src/quant/decode.zig`,
+     `backends/cpu/*.zig`, `generation-check.zig`, the two `failures` arrays in
+     `backends/cpu/root.zig:125` and `vision/muse_glimmer.zig:399`, `bpe.zig:55`,
+     `inspect.zig:164`) → `var x: [n]T = @splat(v);` (or `@as([n]T, @splat(v))`
+     in expressions); `qwen35.zig:425` nested → `[64][N]bool = @splat(@splat(false))`.
+   - `"s" ** n` (string repetition, ~35: `src/tui/{banner,editor,markdown,status}.zig`,
+     `src/help.zig:42`, `src/api/http.zig:236-238`, `src/api/decisions/service.zig:395,469`,
+     `inference/src/profiles/muse_glimmer.zig:531,938`). Single-byte ones become
+     `@as([n]u8, @splat(' '))` (`&` where a slice is needed); multi-byte
+     (`"─"`, `"line\n"`, `"<|patch|>"`, `"\"s\","`) need one comptime
+     `repeat(comptime s, comptime n) *const [s.len * n]u8` helper. Put it in
+     one place each package can reach (`inference/src/` text utilities and a
+     `src/` test helper, or `src/` only if inference's two sites take `@splat`/
+     a literal); no per-file copies. `src/tui/markdown.zig:926` repeats in a
+     comptime loop.
+   - Markdown test strings containing `**` inside literals are not operators;
+     leave them.
+3. **Removed std names** (sema): `EnumSet.initEmpty()` → `.empty`
+   (`src/model.zig` ×5, `inference/src/models/modernbert.zig:88`);
+   `std.ascii.indexOfIgnoreCase` → `findIgnoreCase` (`src/tui/theme.zig:474,487`).
+4. **`@typeInfo` is struct-of-arrays** (sema). 33 sites. `.fields` is gone:
+   enums have `field_names`/`field_values`, structs and unions
+   `field_names`/`field_types`/`field_attrs` (defaults via
+   `field_attrs[i].defaultValue(T)`). `inline for (info.field_names,
+   info.field_types) |name, T|` replaces `|field| field.name / field.type`;
+   `.fields.len` → `.field_names.len`. Heaviest file: `src/config.zig`
+   (12 sites, including default values); then `src/tui/{theme,event}.zig`,
+   `src/help.zig`, `src/completion.zig`, `inference/src/sampling/root.zig`,
+   `inference/src/backends/metal/root.zig:59` (the kernel table),
+   `gemma4_runtime.zig:134`, `vision/gemma4.zig:181`, `registry.zig:173`,
+   `src/agent/session.zig:331`, `src/bench.zig:384`.
+5. **Then** keep building (`zig build`, `zig build -Dmetal=true`, `zig build
+   test`, the check tools) until clean; record each new class here.
+
+**Silent changes to audit** (no compile error):
+- `@bitCast` on arrays/vectors changed meaning: grep found only scalar
+  casts (52 sites, `f32/f16 ↔ u32/u16`, `i8 ↔ u8`), unaffected. Re-grep after
+  the fixes for any `@Vector`/array operand.
+- `@hasDecl` is now true only for `pub` declarations, also in the same file.
+  19 sites, all capability probes in `inference/src/engine.zig`,
+  `registry.zig:67`, `generation-check.zig:317,2043` (`prefillRows`,
+  `verify`, `replayRows`, `drafter`, `bindDraft`, `embedded_draft`,
+  `preferredChunk`, …). A private decl now silently drops a path (e.g. a
+  family losing speculation). Check each probed name is `pub` on every
+  family's `Runtime`/`Plan`; the fast tier's speculative and vision gates
+  confirm.
+- `mem.eql` on float slices no longer short-circuits on identical pointers
+  (no float `mem.eql` found).
+
+**Deprecations, migrate in this unit** (removed in 0.18; cheap now):
+`std.fmt.allocPrint(a, …)` → `a.print(…)` (157 sites, mechanical);
+`@intFromEnum`/`@enumFromInt` → `@backingInt`/`@fromBackingInt` (47 sites;
+`zig fmt` rewrites them, check the diff); `std.DynamicBitSetUnmanaged` →
+`std.bit_set.Dynamic` (`sampling/root.zig:107`, `tokenizer/hf_json.zig:308`);
+any `std.builtin` / `@import("builtin").os|cpu` (none found). Run `zig build`
+with no deprecation warnings left. `std.posix` terminal/signal calls and
+`std.fs.path` still exist in 0.17; development.md's earlier migration list
+stays deferred.
+
+**Docs.** `build.zig.zon` ×3 `minimum_zig_version = "0.17.0"`;
+`docs/development.md § Toolchain` (tested compiler, release-notes link) and
+replace *Zig 0.16 usage audit* with a 0.17 one (what was migrated, what is
+deferred); `AGENTS.md:8` and `README.md:24` (0.17). Leave benchmark records
+and README:78's measured line as they are: they name the compiler they ran
+with. ZLS does not work with 0.17 yet (release notes, Build Server
+Protocol); note it in development.md.
+
+**Gates.** `make check`; `make lint-py` only if scripts change; `make
+verify-auto`; `make verify` (fast Metal tier: the compiler, LLVM 22, and the
+Objective-C bridge's clang all changed); `make verify-cpu` once (LLVM 22
+recompiles every CPU reference kernel; ~25 min). Happy path:
+`./zig-out/bin/nuclis --version`, a `nuclis chat` screenshot through `make
+shot`, and `nuclis serve` + one `/v1/models` request. Speed: no 0.16 base
+binary exists, so either fetch 0.16.0 into `.zig-cache/zig016/`, build `fd09aa4`
+with it as the `make speed` base, and record the A/B at 512 and 4K
+(decode and 4-row verify C) in bench.md; or record only the 0.17 numbers as
+KERN-23's fresh `make speed-base`. Recommend the A/B (LLVM 22 still has loop
+vectorization disabled; a host-side regression would otherwise be charged
+to KERN-23).
+
+**Lands when** the tree builds and every gate above passes under 0.17.0 with
+no deprecation left from the list, and `make speed-base` has been taken with
+the 0.17 binary for KERN-23.
 
 ## KERN-23 — Weight streaming for one row and a few: decode and the verify body (2 sessions)
 
