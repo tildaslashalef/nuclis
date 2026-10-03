@@ -16,10 +16,13 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: KERN-23 session 1.** REPO-29 closed 2026-10-03: the tree is on
-Zig 0.17.0 (engineering log). Its base binary is taken: `make speed-base`
-at `2ace031` (`.zig-cache/speed/base/`); record the unit's `Base:` at the
-first change. REPO-30 closed 2026-10-03: REPO-29's 4K loss is not
+**Next: KERN-23 session 2** (the multi-row body), or first the rest of
+session 1 (below). Session 1 (2026-10-03) met the unit's first
+prediction: Qwen's plain decode at 512 10.37 → 11.78 tok/s, at 4K 10.24
+→ 11.34, by three kept kernel changes (`e36b77d`, `1137eb2`, `c151ee2`);
+the base binary for `make speed` is `c151ee2`. Its ledger and the
+step's profile are in the KERN-23 section. REPO-29 closed 2026-10-03:
+the tree is on Zig 0.17.0. REPO-30 closed 2026-10-03: REPO-29's 4K loss is not
 one; `fd09aa4` under Zig 0.16 and the tree under 0.17 both read 10.0
 tok/s decode and a 4-row C of 194 ms at 4K, so KERN-23's 4K
 starting point is about 10.0 / 194, not REPO-29's 9.18 / 207. The 16K and 32K saved
@@ -296,6 +299,23 @@ only if a capture shows an MMU limiter; (e) the command buffer split so
 the GPU starts while the CPU encodes; (f) the Q6_K output head (about 1
 GB) as its own kernel, which the drafter pays per proposed position too.
 `--kernel-stats` reads each candidate's thread limit before it is timed.
+
+**Session 1 delivered** (ledger above): the half magic-number decode in
+the Q4_K and Q5_K bodies (shared by the standalone, split, segment, and
+gathered matvecs) and IQ4_XS's table in threadgroup memory; (c) was
+already the K-quant form, (e) and (a) need no code. **Left from session
+1**, each small (about 0.7 % of a step or less), so on a cool machine:
+a specialized IQ4_NL matvec (1.4 ms at 105 GB/s on the generic path,
+seven tensors, three inside fused segments); Q3_K and IQ3_S at 107–114
+GB/s (1.4 ms); (d) wider loads for IQ4_XS (two `uint2` per lane); the
+K-scale conversion (`.zig-cache/k23/kscales.patch`, +1.6 % medians,
+failed the rule twice); (f) the Q6_K head, already at 250 GB/s, only
+for the drafter's per-position cost. IQ4_XS is the remaining large
+lever: 61 of 128 gate/up tensors, the fused gate+up kernel at 194 GB/s
+for 33 ms of the step; what limits it now needs a capture (`make
+bench-kernels ARGS=IQ4_XS CAPTURE=…`, read in Xcode by the user).
+`make verify` (fast Metal tier) has not run yet; it runs once before
+the unit closes.
 
 **Session 2 — the multi-row body.** Carry session 1's decode into the
 `_t3..t8` bodies with the accumulators bounded (rows × tokens per
