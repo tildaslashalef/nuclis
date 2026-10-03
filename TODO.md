@@ -81,7 +81,7 @@ stays a tool for language models.
 
 | # | Unit | Sessions |
 | --- | --- | ---: |
-| 1 | REPO-29 — Upgrade to Zig 0.17.0, adopting its features, with a 0.16 → 0.17 speed A/B (blocks everything: the tree does not build) | 2 |
+| 1 | REPO-29 — Upgrade to Zig 0.17.0, adopting its features, with a speed sanity check against the 0.16 records (blocks everything: the tree does not build) | 2 |
 | 2 | KERN-23 — Weight streaming for one row and a few (closes the decode-speed theme) | 2 |
 | — | AGNT-19 — Saved prefixes for the agent across processes | queued after KERN-23 |
 
@@ -206,7 +206,7 @@ Base: recorded when the unit starts.
 
 **Sessions.** 1: the tree builds and tests clean under 0.17 (removals,
 silent changes, deprecations), `make check` and `make verify-auto` pass,
-committed. 2: the 0.17 features below, the speed A/B, `make verify`,
+committed. 2: the 0.17 features below, the speed sanity check, `make verify`,
 `make verify-cpu`, docs, close.
 
 **Why first.** The installed compiler is 0.17.0 (`~/.local/opt/zig/stable`,
@@ -352,21 +352,21 @@ recompiles every CPU reference kernel; ~25 min). Happy path:
 `./zig-out/bin/nuclis --version`, a `nuclis chat` screenshot through `make
 shot`, and `nuclis serve` + one `/v1/models` request.
 
-**Speed A/B against 0.16 (required, agreed 2026-10-03).** No 0.16 binary
-is left, so: `zigup install 0.16.0` (sha256 verified, does not switch
-`current`; the compiler is `~/.local/opt/zig/zig-aarch64-macos-0.16.0/zig`);
-check out `fd09aa4` into a scratch worktree, build it with
-that compiler exactly as `make speed-base` builds (`-Dmetal=true`, the
-same optimize mode), and place the binary and its revision where
-`make speed` reads its base (`.zig-cache/speed/base/`). Then `make speed
-ARGS='--contexts 512,4096 --verify-rows 1,4 --model qwen38'` with the 0.17
-tree: decode tok/s and the 4-row verify C, ≥ 5 interleaved pairs. Write the
-table into [bench.md](docs/reference/bench.md) as *Zig 0.16 → 0.17* with
-hardware, both compiler versions, revisions, and method. A regression
-beyond 1 % at either context is investigated (`--profile` to tell host
-time from GPU time) before the unit closes, not charged to KERN-23.
-Afterwards `make speed-base` with the 0.17 binary becomes KERN-23's base;
-remove the scratch worktree and `zigup gc` the 0.16 install.
+**Speed sanity check against the records (re-decided 2026-10-03, user).**
+No interleaved 0.16 → 0.17 A/B: the Metal kernels are compiled at run time
+by Apple's compiler, so Zig/LLVM only reach host time (encoding, the
+Objective-C bridge, sampling), a thin slice of a ~95 ms step. Instead:
+`make speed-base` with the 0.17 binary (KERN-23's base), then `make speed
+ARGS='--contexts 512,4096 --verify-rows 1,4 --model qwen38'` (base and
+tree are the same build, so both sides are 0.17 readings, ≥ 5 pairs).
+Compare against the latest 0.16 records in
+[bench.md](docs/reference/bench.md) § The DeltaNet replay tape (ENGN-19):
+plain decode 10.57 / 10.20 tok/s at 512 / 4K, 4-row (accept 1) C
+177.44 / 190.75 ms. Within 3 % (run-to-run spread ~1.5 %, plus not
+interleaved): record the readings and compiler in the log entry, done.
+Beyond 3 %: `--profile` to tell host time from GPU time, and only then
+`zigup install 0.16.0` and a real interleaved A/B on a scratch worktree at
+`fd09aa4`, before the unit closes, not charged to KERN-23.
 
 **Landed early (2026-10-03, before session 1):** AGENTS.md § Local
 toolchain notes records the `zigup` layout and the local std/langref;
@@ -374,8 +374,9 @@ development.md's paths point at `stable`. The log entry includes it.
 
 **Lands when** the tree builds and every gate above passes under 0.17.0,
 no deprecation from the list is left, the features above are adopted or
-recorded as not applicable, the 0.16 → 0.17 speed table is in bench.md,
-and `make speed-base` has been taken with the 0.17 binary for KERN-23.
+recorded as not applicable, the speed sanity check is within 3 % of the
+records (or a gap is explained), and `make speed-base` has been taken
+with the 0.17 binary for KERN-23.
 
 ## KERN-23 — Weight streaming for one row and a few: decode and the verify body (2 sessions)
 
