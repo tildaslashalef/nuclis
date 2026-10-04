@@ -180,7 +180,8 @@ same 2026-09-10 Qwen numbers sit in eight files. Survey of 2026-10-04
   repoint its link paths and anchors to the new tree (yes, 2026-10-04).
 - `llm-guide.md` may be edited in this unit: TOC, §27's level, the
   stale number (yes, 2026-10-04).
-- Still to ask: linking the log's summary table rows to their entries.
+- The log's summary table links each identifier to its entry (yes,
+  2026-10-04); new rows are written linked from then on.
 
 **The tree.** One rule per folder, so a new document has one home:
 
@@ -254,6 +255,12 @@ bonsai 39, laya 30, generation 28. Mechanical, with a checker.
    the log *at the previous tag*, where `worklog.md` does not exist —
    fall back to `docs/engineering-log.md` there, with a self-test case,
    or the first release after the rename breaks.
+   Then the table: each `| AREA-NN |` row's identifier becomes
+   `[AREA-NN](#<its heading's anchor>)`, generated from the headings
+   (`HEADING_RE`), checked by `make docs-check`. `changelog.py`'s
+   `ROW_RE` (:31) accepts both the bare and the linked form (older tags
+   hold bare rows), with self-test cases for both; AGENTS.md *Closing a
+   unit* says the new row is linked.
 3. The ADR, moved then removed. Into `engine/speculative-decoding.md` §
    "The Qwen verify budget", condensed: the rule C ≤ 50E and its
    derivation (ADR :178–280; elsewhere only in `scripts/spec-matrix.py`'s
