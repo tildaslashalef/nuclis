@@ -12,6 +12,7 @@ const inference = @import("inference");
 const paths = @import("../paths.zig");
 const tui = @import("../tui/root.zig");
 const session = @import("session.zig");
+const cache = @import("cache.zig");
 const tools = @import("tools/root.zig");
 const style = @import("../tui/style.zig");
 
@@ -185,6 +186,84 @@ pub fn find(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8,
         return try std.fs.path.join(alloc, &.{ dir_path, entry.name });
     }
     return null;
+}
+
+/// What an id or id prefix names among the workspace's sessions.
+pub const Match = union(enum) {
+    none,
+    one: Summary,
+    /// More than one: the ids, newest first, to say which were meant.
+    many: []Summary,
+
+    pub fn deinit(self: Match, alloc: Allocator) void {
+        switch (self) {
+            .none => {},
+            .one => |s| s.deinit(alloc),
+            .many => |list_| freeList(alloc, list_),
+        }
+    }
+};
+
+/// The session `query` names: a whole id, or a prefix of exactly one.
+pub fn match(alloc: Allocator, io: std.Io, root_dir: []const u8, cwd: []const u8, query: []const u8) !Match {
+    const sessions = try list(alloc, io, root_dir, cwd);
+    var kept: usize = 0;
+    for (sessions) |s| {
+        if (std.mem.startsWith(u8, s.id, query)) {
+            sessions[kept] = s;
+            kept += 1;
+        } else s.deinit(alloc);
+    }
+    if (kept == 0) {
+        alloc.free(sessions);
+        return .none;
+    }
+    // A whole id is never ambiguous, even when it prefixes no other.
+    if (kept == 1) {
+        const one = sessions[0];
+        alloc.free(sessions);
+        return .{ .one = one };
+    }
+    const shrunk = alloc.realloc(sessions, kept) catch sessions[0..kept];
+    return .{ .many = shrunk };
+}
+
+/// Deletes the session file at `path` and the token-cache states its turn
+/// boundaries name under `<root>/cache/prefix/` (`/save` exports stay).
+/// Returns the states removed. A file that cannot be read is still deleted.
+pub fn delete(alloc: Allocator, io: std.Io, root_dir: []const u8, path: []const u8) !usize {
+    var removed: usize = 0;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    if (session.load(arena.allocator(), io, .cwd(), path, null)) |loaded| {
+        const cache_dir = try paths.prefixCachePath(alloc, root_dir);
+        defer alloc.free(cache_dir);
+        for (loaded.records) |record| switch (record.entry) {
+            .assistant => |step| if (step.boundary) |b| {
+                removed += cache.removeDigest(io, cache_dir, b.digest);
+            },
+            else => {},
+        };
+    } else |_| {}
+    try std.Io.Dir.cwd().deleteFile(io, path);
+    return removed;
+}
+
+/// The `/list` rows: one per session, newest first, `current` (an id)
+/// marked. Strings in `alloc` (an arena, in the agent).
+pub fn listRows(alloc: Allocator, sessions: []const Summary, current: []const u8, ascii: bool) ![]const []const u8 {
+    var rows: std.ArrayList([]const u8) = .empty;
+    if (sessions.len == 0) {
+        try rows.append(alloc, "  no saved sessions for this workspace");
+        return rows.toOwnedSlice(alloc);
+    }
+    try rows.append(alloc, "  saved sessions, newest first (/resume continues one, /delete removes one)");
+    for (sessions) |s| {
+        const short = if (s.id.len > 8) s.id[0..8] else s.id;
+        const marker: []const u8 = if (std.mem.eql(u8, s.id, current)) (if (ascii) "*" else "●") else " ";
+        try rows.append(alloc, try alloc.print("  {s} {s}  {s}  {s: <6} ctx {d: <5}  {s}", .{ marker, short, s.time, s.effort, s.ctx_size, s.first_prompt }));
+    }
+    return rows.toOwnedSlice(alloc);
 }
 
 fn sessionsPath(alloc: Allocator, root_dir: []const u8, cwd: []const u8) ![]u8 {
@@ -381,6 +460,61 @@ test "listing finds sessions for the working directory and orders them newest fi
     const none = try list(alloc, io, root, "/work/other");
     defer freeList(alloc, none);
     try testing.expectEqual(@as(usize, 0), none.len);
+}
+
+test "an id prefix names one session or says which it could mean, and delete takes its cached states" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const alloc = testing.allocator;
+    const io = testing.io;
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    const cwd = "/work/proj";
+    const slug = try session.cwdSlug(alloc, cwd);
+    defer alloc.free(slug);
+    const header = "{{\"type\":\"session\",\"version\":1,\"id\":\"{s}\",\"time\":\"{s}\",\"cwd\":\"/work/proj\",\"model\":{{\"path\":\"/m\"}},\"effort\":\"low\",\"ctx_size\":8192}}\n";
+    const ids = [_][]const u8{ "ab12", "ab34", "cd56" };
+    const times = [_][]const u8{ "2026-10-04T09:00:00Z", "2026-10-04T10:00:00Z", "2026-10-04T11:00:00Z" };
+    for (ids, times) |id, time| {
+        const rel = try std.fmt.allocPrint(alloc, "agent/sessions/{s}/x_{s}.jsonl", .{ slug, id });
+        defer alloc.free(rel);
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(alloc);
+        try body.print(alloc, header, .{ id, time });
+        if (std.mem.eql(u8, id, "cd56")) try body.appendSlice(alloc, "{\"type\":\"assistant\",\"id\":1,\"parent\":null,\"time\":\"t\",\"answer\":\"a\",\"stop\":\"eos\",\"boundary\":{\"bytes\":9,\"digest\":42}}\n");
+        try tmp.dir.createDirPath(io, std.fs.path.dirname(rel).?);
+        try tmp.dir.writeFile(io, .{ .sub_path = rel, .data = body.items });
+    }
+    // Two cached states for the boundary (another model's too), one unrelated.
+    try tmp.dir.createDirPath(io, "cache/prefix");
+    for ([_][]const u8{ "0000000000000001-000000000000002a-0000000000000007.snap", "0000000000000002-000000000000002a-0000000000000009.snap", "0000000000000001-000000000000002b-0000000000000007.snap" }) |name| {
+        const rel = try std.fmt.allocPrint(alloc, "cache/prefix/{s}", .{name});
+        defer alloc.free(rel);
+        try tmp.dir.writeFile(io, .{ .sub_path = rel, .data = "x" });
+    }
+
+    const ambiguous = try match(alloc, io, root, cwd, "ab");
+    defer ambiguous.deinit(alloc);
+    try testing.expectEqual(@as(usize, 2), ambiguous.many.len);
+    try testing.expectEqualStrings("ab34", ambiguous.many[0].id);
+    const none = try match(alloc, io, root, cwd, "zz");
+    try testing.expect(none == .none);
+    const one = try match(alloc, io, root, cwd, "cd");
+    defer one.deinit(alloc);
+    try testing.expectEqualStrings("cd56", one.one.id);
+
+    try testing.expectEqual(@as(usize, 2), try delete(alloc, io, root, one.one.path));
+    const left = try list(alloc, io, root, cwd);
+    defer freeList(alloc, left);
+    try testing.expectEqual(@as(usize, 2), left.len);
+    try tmp.dir.access(io, "cache/prefix/0000000000000001-000000000000002b-0000000000000007.snap", .{});
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const rows = try listRows(arena.allocator(), left, "ab12", false);
+    try testing.expectEqual(@as(usize, 3), rows.len);
+    try testing.expect(std.mem.indexOf(u8, rows[2], "● ab12") != null);
+    try testing.expect(std.mem.indexOf(u8, rows[1], "  ab34") != null);
 }
 
 test {

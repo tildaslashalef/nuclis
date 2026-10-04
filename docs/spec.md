@@ -356,6 +356,8 @@ Read: [reference/laya.md](reference/laya.md), [reference/clef.md](reference/clef
 nuclis agent [--model <m>] [--think <e>] [--image-max-tokens auto|<n>] [--resume [<id>]] [--system-prompt <path>]
 nuclis agent -p "<prompt>" [--json] [--session <path>]
 nuclis agent ls [--json]
+nuclis agent rm <id>
+nuclis cache [ls] [--json] | clear
 nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--image <path>]... [--image-max-tokens auto|<n>] [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
 nuclis bench --model <m> (--prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32] [--speculative on|off] [--json]
 nuclis tokenize --model <m> --prompt-file <path> [--raw] [--json]
@@ -543,7 +545,8 @@ one command; the evaluation CLI stays separate.
 - One JSON object per line: a header (format version, id, time, working
   directory, the model's path and verified digest, effort, context size),
   then entries with `id` and `parent`: `user`, `assistant` (thinking,
-  answer, tool calls, stop, stats), `tool_result` (with its summary),
+  answer, tool calls, stop, stats, and on a turn's last step the
+  `boundary` of its state saved in the token cache), `tool_result` (with its summary),
   `effort`, `context`, `compaction`, `notice`.
 - Append-only, created at the first entry. A truncated last line is
   dropped on load; any other unparsable line or unknown entry type is a
@@ -551,9 +554,19 @@ one command; the evaluation CLI stays separate.
 - Entries store what the model saw and produced, never terminal styling.
   `/save` derives markdown from the same entries. A failed write is a dim
   notice, never a lost turn.
-- Resuming (`/resume`, `--resume [<id>]`, `latest` by default) replays
-  the kept conversation through the profile into a fresh session: a
-  prefill, never a state restore. `agent ls` lists a workspace's sessions.
+- Resuming (`/resume`, `--resume [<id>]`, `latest` by default) renders
+  the kept conversation through the profile into a fresh session. When the
+  file's last `boundary` starts that render and its state is on disk (same
+  model files, backend, context size, and build), the state is restored and
+  only the rest is prefilled; otherwise the whole conversation is
+  ([reference/session.md § The agent's token cache](reference/session.md#the-agents-token-cache)).
+- `agent ls` and `/list` list a workspace's sessions (`/list` marks the
+  one in use); `agent rm <id>` and `/delete [<id>]` delete one, named by
+  its id or a prefix of exactly one id (`/delete` alone picks it, and asks
+  before deleting; the session in use is refused), together with the
+  token-cache states its boundaries name. `/save` exports stay.
+- `nuclis cache` lists the token cache (each state's size and last use,
+  the total against `cache.disk_bytes`); `nuclis cache clear` empties it.
 
 ### 7.5 The loop
 

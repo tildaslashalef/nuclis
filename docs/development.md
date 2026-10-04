@@ -484,7 +484,8 @@ override is an error. Otherwise resolve the root from `HOME`.
     exports/               `/save` markdown exports
                            ([spec.md § Sessions and storage](spec.md#74-sessions-and-storage))
   cache/                   regenerable runtime data
-    prefix/                the agent's primed prefixes, one model state per file
+    prefix/                the agent's saved model states, one per file: primed prefixes
+                           and the last turn of each recorded session (`nuclis cache`)
                            (`cache.disk_bytes`; [reference/session.md § The agent's token cache](reference/session.md#the-agents-token-cache))
 ```
 

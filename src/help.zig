@@ -14,7 +14,7 @@ const std = @import("std");
 const style = @import("tui/style.zig");
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, decide, serve, completion };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, serve, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -27,6 +27,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .agent => agent(out, sty),
         .config => config(out, sty),
         .model => model(out, sty),
+        .cache => cache(out, sty),
         .decide => decide(out, sty),
         .serve => serve(out, sty),
         .completion => completion(out, sty),
@@ -127,6 +128,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "inspect", "an artifact's identity, dimensions, tensor encodings");
     try row(out, sty, "validate", "whether a file binds to its architecture's adapter");
     try row(out, sty, "model", "pull, list, and judge Hugging Face Hub artifacts");
+    try row(out, sty, "cache", "list or clear the agent's saved model states");
     try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
     try row(out, sty, "serve", "the nuclis API over HTTP: decisions, models kept open");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
@@ -160,6 +162,7 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try code(out, sty, "nuclis agent -p <text> [--json] [--session <path>]");
     try code(out, sty, "nuclis agent --print --prompt-file <path> [--json] [--session <path>]");
     try code(out, sty, "nuclis agent ls [--json]");
+    try code(out, sty, "nuclis agent rm <id>");
 
     try heading(out, sty, "Options:");
     try row(out, sty, "-p, --prompt <text>", "run one turn without a terminal and exit");
@@ -184,14 +187,15 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "Alt-Enter", "while a turn runs, queue the text for after it");
     try row(out, sty, "Shift-Enter, Ctrl-J", "newline");
     try row(out, sty, "Up, Down", "move in the input; history at its first and last row");
-    try row(out, sty, "Tab", "complete a /command or an @path, else fold thinking");
+    try row(out, sty, "Tab", "complete a /command or a fuzzy @path, else fold");
     try row(out, sty, "Ctrl-E", "expand a paste chip into editable text");
     try row(out, sty, "Ctrl-T, Ctrl-W", "cycle the reasoning effort, the context window");
     try row(out, sty, "Ctrl-N", "new session");
-    try row(out, sty, "Ctrl-C, Ctrl-D", "cancel the turn, or quit");
+    try row(out, sty, "Esc, Ctrl-C, Ctrl-D", "cancel the turn (Esc never quits), or quit");
 
     try heading(out, sty, "Commands:");
-    try row(out, sty, "/new, /resume [<id>]", "start a new session, or replay a saved one");
+    try row(out, sty, "/new, /resume [<id>]", "start a new session, or continue a saved one");
+    try row(out, sty, "/list, /delete [<id>]", "the saved sessions; delete one, picked or by id");
     try row(out, sty, "/ctx <n>, /think <e>", "the context window, the reasoning effort");
     try row(out, sty, "/save [path]", "export this session as markdown");
     try row(out, sty, "/help", "keys and commands, inside the surface");
@@ -606,6 +610,33 @@ fn config(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "Precedence: defaults < the model's profile < the file < the model's");
     try plain(out, "entry < flags. NUCLIS_HOME (an absolute path) moves ~/.nuclis. An unknown");
     try plain(out, "key or an out-of-range value is an error naming the key.");
+    try out.writeByte('\n');
+}
+
+fn cache(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis cache", "the agent's saved model states");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis cache [ls] [--json]");
+    try code(out, sty, "nuclis cache clear");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "ls", "each state's size and last use, newest first, and");
+    try more(out, "the total against cache.disk_bytes (the default)");
+    try row(out, sty, "clear", "delete every saved state");
+    try row(out, sty, "--json", "ls as one JSON object");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis cache", "what the cache holds and how much of its budget");
+    try example(out, sty, "nuclis cache clear", "free the space; the next start prefills again");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "The agent saves the model's state after the system prompt and tools,");
+    try plain(out, "and after each answered turn of a recorded session, under");
+    try plain(out, "~/.nuclis/cache/prefix. A start or a resume restores the state instead");
+    try plain(out, "of prefilling those tokens again. A state is bound to the model files,");
+    try plain(out, "the backend, the context size, and the nuclis build; any other combination");
+    try plain(out, "is a miss, never a wrong restore. Least recently used states go first");
+    try plain(out, "once cache.disk_bytes (8 GiB) is reached; 0 turns the directory off.");
     try out.writeByte('\n');
 }
 

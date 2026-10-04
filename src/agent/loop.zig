@@ -123,6 +123,8 @@ pub const Step = struct {
     /// The engine closed the reasoning at the budget.
     reasoning_cut: bool = false,
     reasoning_tokens: usize = 0,
+    /// Set on a turn's last step when its state was saved for a resume.
+    boundary: ?cache.Boundary = null,
 };
 
 /// One executed tool call and its typed result.
@@ -184,11 +186,15 @@ pub const Model = struct {
     /// one. The features are allocated with the given allocator.
     encode_image: *const fn (*anyopaque, Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage = noVision,
     /// Called when a turn ends in an answer: a boundary the next turn's
-    /// render starts with, worth keeping. Best effort, never an error.
-    checkpoint: *const fn (*anyopaque) void = noCheckpoint,
+    /// render starts with, worth keeping. Returns where the state was saved
+    /// to disk, which the session records for a resume; null when it was
+    /// not. Best effort, never an error.
+    checkpoint: *const fn (*anyopaque) ?cache.Boundary = noCheckpoint,
 };
 
-fn noCheckpoint(_: *anyopaque) void {}
+fn noCheckpoint(_: *anyopaque) ?cache.Boundary {
+    return null;
+}
 
 fn noVision(_: *anyopaque, _: Allocator, _: []const u8) anyerror!inference.engine.PreparedImage {
     return error.NoVision;
@@ -498,6 +504,9 @@ pub const Agent = struct {
                 call.id = self.next_id;
                 self.next_id += 1;
             };
+            // An answer ends the turn: its state is the boundary the next
+            // turn starts from, recorded with the entry so a resume finds it.
+            const boundary = if (!cancelled and calls.len == 0) self.model.checkpoint(self.model.context) else null;
             try self.events.record(self.events.context, .{ .assistant = .{
                 .thinking = self.thinking.written(),
                 .answer = self.answer.written(),
@@ -511,13 +520,11 @@ pub const Agent = struct {
                 .replay = reply.replay,
                 .reasoning_cut = reply.outcome.reasoning_cut,
                 .reasoning_tokens = reply.outcome.reasoning_tokens,
+                .boundary = boundary,
             } });
             if (cancelled) return .cancelled;
             try self.appendItem(.assistant, self.answer.written(), self.thinking.written(), calls, null, &.{});
-            if (calls.len == 0) {
-                self.model.checkpoint(self.model.context);
-                return .done;
-            }
+            if (calls.len == 0) return .done;
             try self.execute(calls);
             try self.deliverSteering();
         }
@@ -979,8 +986,18 @@ pub const Completer = struct {
     /// States at turn boundaries and primed prefixes, restored instead of
     /// re-prefilled when a render starts with one (`cache.zig`).
     cache: cache.Memory,
-    /// Primed prefixes across processes; null when disabled or unavailable.
+    /// Primed prefixes and turn ends across processes; null when disabled
+    /// or unavailable.
     disk: ?cache.Disk = null,
+    /// Save each turn's end to disk: only where a session file is written,
+    /// since nothing else can resume it.
+    save_turns: bool = false,
+    /// The disk key of this conversation's last saved turn, replaced by the
+    /// next one.
+    saved_turn: ?inference.prefix_cache.Key = null,
+    /// The resumed conversation's last saved turn, tried once by the next
+    /// step's fallback.
+    hint: ?cache.Boundary = null,
     /// Why the next step will not continue where the session stands, when
     /// the reason is known before the render (a reset, a cancel, a re-prime).
     cause: ?Replay.Cause = null,
@@ -1037,7 +1054,7 @@ pub const Completer = struct {
         }
         // A per-layer observer is a per-token contract: those runs prefill.
         const layer_observer = self.observer != null and self.observer.?.layer != null;
-        const disk_key = if (self.disk) |*d| d.key(tokens, session.layout_digest) else undefined;
+        const disk_key = if (self.disk) |*d| d.key(cache.textDigest(text), session.layout_digest) else undefined;
         if (!layer_observer) if (self.disk) |*d| {
             if (d.load(self.alloc, disk_key) catch null) |loaded| {
                 var snap = loaded;
@@ -1129,19 +1146,63 @@ pub const Completer = struct {
         self.images_fed = false;
     }
 
-    /// The turn ended in an answer: keep the state under what it consumed.
-    /// Skipped when images are in it, since their placeholder text does not
-    /// tell one image from another.
-    fn checkpoint(context: *anyopaque) void {
+    /// The turn ended in an answer: keep the state under what it consumed,
+    /// in memory and, when turns are saved, on disk in place of this
+    /// conversation's previous turn. Skipped when images are in it, since
+    /// their placeholder text does not tell one image from another.
+    fn checkpoint(context: *anyopaque) ?cache.Boundary {
         const self: *Completer = @ptrCast(@alignCast(context));
-        if (self.cache.budget == 0 or self.images_fed or self.seen.items.len == 0) return;
-        if (self.cache.exact(self.seen.items) != null) return;
-        var snap = self.eng.model.snapshot(self.alloc) catch return;
+        if (self.images_fed or self.seen.items.len == 0) return null;
+        const to_disk = self.save_turns and self.disk != null;
+        const in_memory = self.cache.budget > 0 and self.cache.exact(self.seen.items) == null;
+        if (!to_disk and !in_memory) return null;
+        var snap = self.eng.model.snapshot(self.alloc) catch return null;
         if (snap.span_count != 0) {
             snap.deinit();
-            return;
+            return null;
         }
-        self.keep(snap);
+        var saved: ?cache.Boundary = null;
+        if (to_disk) {
+            const boundary: cache.Boundary = .of(self.seen.items);
+            const d = &self.disk.?;
+            const k = d.key(boundary.digest, snap.layout_digest);
+            if (d.save(self.alloc, k, &snap)) {
+                if (self.saved_turn) |old| if (!std.meta.eql(old, k)) d.remove(old);
+                self.saved_turn = k;
+                saved = boundary;
+            } else |_| {}
+        }
+        if (in_memory) self.keep(snap) else snap.deinit();
+        return saved;
+    }
+
+    /// Continues a stored conversation: `reset(.resumed)`, and the next
+    /// step tries `boundary` (its last saved turn) on disk first.
+    pub fn resumeFrom(self: *Completer, boundary: ?cache.Boundary) void {
+        self.reset(.resumed);
+        self.hint = boundary;
+        self.saved_turn = null;
+    }
+
+    /// Restores the disk state at `b` when `full` starts with it; the tokens
+    /// restored, or null on a miss. The penalty history is rebuilt from the
+    /// text's encoding.
+    fn restoreBoundary(self: *Completer, b: cache.Boundary, full: []const u8) ?usize {
+        if (!b.prefixes(full)) return null;
+        const d = &(self.disk orelse return null);
+        const text = full[0..b.bytes];
+        var snap = (d.load(self.alloc, d.key(b.digest, self.eng.model.session().layout_digest)) catch return null) orelse return null;
+        const tokens = self.eng.encode(text) catch {
+            snap.deinit();
+            return null;
+        };
+        defer self.alloc.free(tokens);
+        const position = snap.position;
+        self.restoreSnapshot(&snap, text, tokens) catch {
+            snap.deinit();
+            return null;
+        };
+        return position;
     }
 
     /// Forgets every cached state (a re-opened engine cannot restore them).
@@ -1169,6 +1230,9 @@ pub const Completer = struct {
         self.seen.clearRetainingCapacity();
         self.primed_len = 0;
         self.cause = cause;
+        // A new conversation keeps the last one's saved turn: it can still
+        // be resumed.
+        if (cause == null) self.saved_turn = null;
     }
 
     pub fn deinit(self: *Completer) void {
@@ -1188,6 +1252,16 @@ pub const Completer = struct {
             const cause: ?Replay.Cause = self.cause orelse if (continued != null or self.seen.items.len == 0)
                 null
             else if (self.seen_effort != self.effort) .effort else .rewrite;
+            // A resumed conversation's last turn, from disk, unless memory
+            // holds as much.
+            if (self.hint) |b| {
+                self.hint = null;
+                const held = if (self.cache.longest(full)) |e| e.text.len else 0;
+                if (b.bytes > held and b.bytes > self.seen.items.len) if (self.restoreBoundary(b, full)) |restored| {
+                    if (cause) |c| replay = .{ .cause = c, .restored = restored };
+                    break :blk full[self.seen.items.len..];
+                };
+            }
             // A cached state further along than the session wins even when
             // the session could continue: a re-prime under a conversation
             // left it at the system block.
@@ -1346,9 +1420,10 @@ const Stub = struct {
     fn model(self: *Stub) Model {
         return .{ .context = self, .run = run, .count = count, .checkpoint = checkpoint };
     }
-    fn checkpoint(context: *anyopaque) void {
+    fn checkpoint(context: *anyopaque) ?cache.Boundary {
         const self: *Stub = @ptrCast(@alignCast(context));
         self.checkpoints += 1;
+        return .{ .bytes = self.checkpoints, .digest = 7 };
     }
     /// Four bytes per token: a fixed density the budget tests can compute.
     fn count(_: *anyopaque, text: []const u8) anyerror!usize {

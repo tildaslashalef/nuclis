@@ -143,6 +143,7 @@ pub fn run(
         .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
         .cache = .{ .alloc = alloc, .budget = settings.cache.memory_bytes },
         .disk = loop.cache.openDisk(alloc, io, root, settings.cache.disk_bytes, model_path, if (eng.model.drafter() != null) draft_path else null, @tagName(settings.backend)),
+        .save_turns = options.session != null,
     };
     defer completer.deinit();
     const workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
@@ -250,6 +251,7 @@ const Turn = struct {
                     .reasoning_cut = step.reasoning_cut,
                     .reasoning_tokens = step.reasoning_tokens,
                 },
+                .boundary = if (step.boundary) |b| .{ .bytes = b.bytes, .digest = b.digest } else null,
             } },
             .compaction => |c| .{ .compaction = .{ .first_kept = c.first_kept, .reason = c.reason } },
             .tool_result => |result| .{ .tool_result = .{

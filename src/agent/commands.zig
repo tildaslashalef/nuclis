@@ -16,7 +16,7 @@ const Allocator = std.mem.Allocator;
 
 /// The commands this phase implements. The table below is also the help text
 /// and the completion list.
-pub const Kind = enum { new, resume_session, ctx, think, save, image, help, shell };
+pub const Kind = enum { new, resume_session, list, delete, ctx, think, save, image, help, shell };
 
 pub const Spec = struct {
     kind: Kind,
@@ -29,6 +29,8 @@ pub const Spec = struct {
 pub const table = [_]Spec{
     .{ .kind = .new, .name = "new", .summary = "start a new session (as Ctrl-N)" },
     .{ .kind = .resume_session, .name = "resume", .summary = "pick a saved session and replay it" },
+    .{ .kind = .list, .name = "list", .summary = "this workspace's saved sessions" },
+    .{ .kind = .delete, .name = "delete", .argument = "[id]", .summary = "delete a saved session: pick one, or name it by id or id prefix" },
     .{ .kind = .ctx, .name = "ctx", .argument = "<n>", .summary = "context window in tokens (as Ctrl-W, with a value)" },
     .{ .kind = .think, .name = "think", .argument = "<effort>", .summary = "reasoning effort: off, low, medium, high, xhigh (as Ctrl-T)" },
     .{ .kind = .save, .name = "save", .argument = "[path]", .summary = "export this session as markdown" },
@@ -48,6 +50,9 @@ pub const Command = union(enum) {
     new,
     /// Open the session picker; the choice is made interactively.
     resume_session,
+    list,
+    /// An id or id prefix, or null to pick the session interactively.
+    delete: ?[]const u8,
     /// Validated as a number here; the range is the configuration's business.
     ctx: usize,
     /// The effort as written; the agent maps it onto the profile's enum.
@@ -89,6 +94,8 @@ pub fn parse(line: []const u8) ?Result {
         return switch (spec.kind) {
             .new => .{ .command = .new },
             .resume_session => .{ .command = .resume_session },
+            .list => .{ .command = .list },
+            .delete => .{ .command = .{ .delete = if (rest.len == 0) null else rest } },
             .help => .{ .command = .help },
             .ctx => if (std.fmt.parseInt(usize, rest, 10) catch null) |value|
                 .{ .command = .{ .ctx = value } }
@@ -138,6 +145,7 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
         .{ "Ctrl-X", "copy the last answer to the clipboard" },
         .{ "Ctrl-T / Ctrl-W", "cycle reasoning effort / context window" },
         .{ "Ctrl-N", "new session" },
+        .{ "Esc", "cancel a turn or a command; close a list or picker" },
         .{ "Ctrl-C / Ctrl-D", "cancel a turn, or quit" },
     };
     for (keys) |pair| try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ pair[0], pair[1] }));
@@ -298,6 +306,9 @@ test "a line is a command only when it is unmistakably one" {
     try testing.expect(parse("/save").?.command.save == null);
     try testing.expectEqualStrings("out.md", parse("/save out.md").?.command.save.?);
     try testing.expectEqualStrings("shots/a.png", parse("/image shots/a.png").?.command.image);
+    try testing.expectEqual(Command.list, parse("/list").?.command);
+    try testing.expect(parse("/delete").?.command.delete == null);
+    try testing.expectEqualStrings("1a2b", parse("/delete 1a2b").?.command.delete.?);
     try testing.expectEqual(Kind.image, parse("/image").?.usage.kind);
     // Anything else is a prompt, including the paths that start with a slash.
     try testing.expect(parse("/usr/bin/env is fine") == null);

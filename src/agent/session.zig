@@ -103,6 +103,9 @@ pub const Entry = union(enum) {
         tool_calls: []const Profile.ToolCall = &.{},
         stop: []const u8,
         stats: Stats = .{},
+        /// Where the turn's end was saved to the token cache, on a turn's
+        /// last step; absent otherwise and in older files.
+        boundary: ?Boundary = null,
     },
     tool_result: struct {
         call: []const u8,
@@ -118,6 +121,10 @@ pub const Entry = union(enum) {
     compaction: struct { first_kept: usize, reason: []const u8 },
     notice: struct { text: []const u8 },
 };
+
+/// A saved turn end (`agent/cache.zig`): the rendered text's first `bytes`
+/// bytes and their digest.
+pub const Boundary = struct { bytes: usize, digest: u64 };
 
 /// One attached image as the file records it.
 pub const ImageEntry = struct {
@@ -334,9 +341,15 @@ pub fn writeEntry(out: *std.Io.Writer, entry: Entry, id: u32, parent: ?u32, time
         inline else => |payload| {
             inline for (@typeInfo(@TypeOf(payload)).@"struct".field_names) |name| {
                 const value = @field(payload, name);
-                // A turn without images writes the line older readers know.
-                const skip = comptime std.mem.eql(u8, name, "images");
-                if (!skip or value.len != 0) {
+                // A turn without images or a boundary writes the line older
+                // readers know.
+                const absent = if (comptime std.mem.eql(u8, name, "images"))
+                    value.len == 0
+                else if (comptime @typeInfo(@TypeOf(value)) == .optional)
+                    value == null
+                else
+                    false;
+                if (!absent) {
                     try s.objectField(name);
                     try s.write(value);
                 }
@@ -473,6 +486,7 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
             .tool_calls = try readCalls(a, object.get("tool_calls")),
             .stop = try text(a, object, "stop"),
             .stats = readStats(object.get("stats")),
+            .boundary = readBoundary(object.get("boundary")),
         } };
         if (std.mem.eql(u8, kind, "tool_result")) break :blk .{ .tool_result = .{
             .call = try text(a, object, "call"),
@@ -535,6 +549,22 @@ fn readImages(a: Allocator, value: ?std.json.Value) ![]const ImageEntry {
         };
     }
     return images;
+}
+
+/// A malformed boundary is no boundary: it only ever saves a prefill.
+fn readBoundary(value: ?std.json.Value) ?Boundary {
+    const object = switch (value orelse .null) {
+        .object => |object| object,
+        else => return null,
+    };
+    const bytes = integer(object.get("bytes")) orelse return null;
+    // A digest above `maxInt(i64)` parses as a number string.
+    const digest: u64 = switch (object.get("digest") orelse .null) {
+        .integer => |n| @bitCast(n),
+        .number_string => |digits| std.fmt.parseInt(u64, digits, 10) catch return null,
+        else => return null,
+    };
+    return .{ .bytes = std.math.cast(usize, bytes) orelse return null, .digest = digest };
 }
 
 fn readStats(value: ?std.json.Value) Stats {
@@ -831,4 +861,24 @@ test "a user entry with images round-trips its paths and grids, and older files 
     defer document.deinit();
     try exportMarkdown(loaded, &document.writer);
     try testing.expect(std.mem.indexOf(u8, document.written(), "- image #1: `/tmp/a.png` (640×480 → 16×12 tokens)") != null);
+}
+
+test "an assistant entry's boundary round-trips, any digest, and is absent unless set" {
+    const a = testing.allocator;
+    var buffer: std.Io.Writer.Allocating = .init(a);
+    defer buffer.deinit();
+    try writeEntry(&buffer.writer, .{ .assistant = .{ .answer = "done", .stop = "eos", .boundary = .{ .bytes = 5120, .digest = 0xfedc_ba98_7654_3210 } } }, 1, null, "t1");
+    try writeEntry(&buffer.writer, .{ .assistant = .{ .answer = "more", .stop = "eos" } }, 2, 1, "t2");
+    try testing.expect(std.mem.indexOf(u8, buffer.written(), "\"boundary\":{\"bytes\":5120,\"digest\":18364758544493064720}") != null);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, buffer.written(), "boundary"));
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(a);
+    try source.appendSlice(a, "{\"type\":\"session\",\"version\":1,\"id\":\"a\",\"time\":\"t\",\"cwd\":\"/w\",\"model\":{\"path\":\"/m\"},\"effort\":\"off\",\"ctx_size\":8}\n");
+    try source.appendSlice(a, buffer.written());
+    const loaded = try parseText(a, source.items, null);
+    defer loaded.deinit();
+    const b = loaded.records[0].entry.assistant.boundary.?;
+    try testing.expectEqual(@as(usize, 5120), b.bytes);
+    try testing.expectEqual(@as(u64, 0xfedc_ba98_7654_3210), b.digest);
+    try testing.expect(loaded.records[1].entry.assistant.boundary == null);
 }

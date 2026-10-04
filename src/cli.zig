@@ -27,7 +27,7 @@ const api = @import("api/root.zig");
 pub const version = @import("build_options").version;
 pub const Diagnostic = config.Diagnostic;
 pub const Options = struct {
-    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, decide, serve, completion, complete },
+    command: enum { help, version, inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, serve, completion, complete },
     /// `completion <shell>`: which script to print.
     shell: completion.Shell = .fish,
     /// `__complete <words…>`: the words after `nuclis`, the last one being
@@ -58,8 +58,12 @@ pub const Options = struct {
     /// `agent --resume [<id>]`: replay a saved session before the first turn;
     /// `resume.latest` when no id followed the flag.
     resume_id: ?[]const u8 = null,
-    /// `agent ls` lists the workspace's sessions instead of running one.
-    agent_action: enum { run, ls } = .run,
+    /// `agent ls` lists the workspace's sessions instead of running one;
+    /// `agent rm <id>` deletes the one `session_id` names.
+    agent_action: enum { run, ls, rm } = .run,
+    session_id: []const u8 = "",
+    /// `cache ls` (the default) or `cache clear`: the agent's token cache.
+    cache_action: enum { ls, clear } = .ls,
     /// `agent --system-prompt <path>`: the file's text replaces the built
     /// prompt sections (a tuning aid; the instructions file still follows).
     system_prompt_file: ?[]const u8 = null,
@@ -94,6 +98,8 @@ pub fn parseArgs(args: []const []const u8) !Options {
         .config
     else if (std.mem.eql(u8, args[0], "model"))
         .model
+    else if (std.mem.eql(u8, args[0], "cache"))
+        .cache
     else if (std.mem.eql(u8, args[0], "decide"))
         .decide
     else if (std.mem.eql(u8, args[0], "serve"))
@@ -114,6 +120,23 @@ pub fn parseArgs(args: []const []const u8) !Options {
         if (args.len < 2) return error.MissingShell;
         if (args.len > 2) return error.UnknownOption;
         return .{ .command = .completion, .shell = std.meta.stringToEnum(completion.Shell, args[1]) orelse return error.UnknownShell };
+    }
+    if (command == .cache) {
+        var options: Options = .{ .command = .cache };
+        var rest = args[1..];
+        if (rest.len > 0 and !std.mem.startsWith(u8, rest[0], "-")) {
+            options.cache_action = std.meta.stringToEnum(@FieldType(Options, "cache_action"), rest[0]) orelse return error.UnknownCacheAction;
+            rest = rest[1..];
+        }
+        for (rest) |arg| {
+            if (std.mem.eql(u8, arg, "--json") and options.cache_action == .ls and !options.json) options.json = true else return error.UnknownOption;
+        }
+        return options;
+    }
+    if (command == .agent and args.len >= 2 and std.mem.eql(u8, args[1], "rm")) {
+        if (args.len < 3) return error.MissingSessionId;
+        if (args.len > 3) return error.UnknownOption;
+        return .{ .command = .agent, .agent_action = .rm, .session_id = args[2] };
     }
     var options: Options = .{ .command = command };
     var i: usize = 1;
@@ -540,6 +563,31 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         defer alloc.free(cwd);
         return agent.resume_mod.ls(alloc, io, dir, cwd, options.json, out, sty);
     }
+    if (options.command == .agent and options.agent_action == .rm) {
+        const dir = root orelse return error.MissingHome;
+        const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
+        defer alloc.free(cwd);
+        return removeSession(alloc, io, dir, cwd, options.session_id, out, sty, diag);
+    }
+    if (options.command == .cache) {
+        const dir = root orelse return error.MissingHome;
+        return switch (options.cache_action) {
+            .ls => {
+                // The budget the directory counts against; an unreadable
+                // file lists against the default rather than not at all.
+                var budget = (config.Config.Cache{}).disk_bytes;
+                if (config_path) |file| if (config.load(alloc, io, .cwd(), file, diag)) |loaded_value| {
+                    var loaded = loaded_value;
+                    defer loaded.deinit();
+                    budget = loaded.config.cache.disk_bytes;
+                } else |_| {
+                    diag.len = 0;
+                };
+                return agent.loop.cache.ls(alloc, io, dir, budget, options.json, out, sty);
+            },
+            .clear => agent.loop.cache.clear(alloc, io, dir, out, sty),
+        };
+    }
     if (options.command == .config) {
         const file = config_path orelse return error.MissingHome;
         switch (options.config_action) {
@@ -632,7 +680,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // error; the reason (which ids the tree has) is added here, where the
     // diagnostic lives.
     (switch (options.command) {
-        .help, .version, .config, .model, .decide, .serve, .completion, .complete => unreachable,
+        .help, .version, .config, .model, .cache, .decide, .serve, .completion, .complete => unreachable,
         .generate => generate.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .generate), options.generation, options.json, out),
         .bench => bench.run(alloc, io, path, config.resolve(&loaded, options.model, options.flags, .bench), options.benchmark, options.json, out, sty),
         .tokenize => blk: {
@@ -724,6 +772,30 @@ fn isSafetensors(io: std.Io, path: []const u8) !bool {
 /// for the diagnostics above.
 /// `decide`: its own flags, a checkpoint directory rather than a GGUF file,
 /// and none of the engine's keys.
+/// `nuclis agent rm <id>`: deletes the workspace's session `query` names
+/// (a whole id or a prefix of exactly one) and its token-cache states.
+fn removeSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []const u8, query: []const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    const found = try agent.resume_mod.match(alloc, io, root, cwd, query);
+    defer found.deinit(alloc);
+    switch (found) {
+        .none => {
+            diag.set("no saved session of {s} has an id starting {s} (`nuclis agent ls` lists them)", .{ cwd, query });
+            return error.SessionNotFound;
+        },
+        .many => |matches| {
+            var ids: [160]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&ids);
+            for (matches, 0..) |m, i| w.print("{s}{s}", .{ if (i > 0) ", " else "", if (m.id.len > 8) m.id[0..8] else m.id }) catch break;
+            diag.set("{d} sessions start {s} ({s}); give more of the id", .{ matches.len, query, w.buffered() });
+            return error.AmbiguousSession;
+        },
+        .one => |summary| {
+            const removed = try agent.resume_mod.delete(alloc, io, root, summary.path);
+            try out.print("{s}deleted{s} {s}{s}{s} {s}{s}{s} and {d} cached state{s}\n", .{ sty.on(.label), sty.off(), sty.on(.keyword), summary.id, sty.off(), sty.on(.dim), summary.first_prompt, sty.off(), removed, if (removed == 1) "" else "s" });
+        },
+    }
+}
+
 fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
@@ -849,6 +921,16 @@ test "agent print mode takes a prompt, JSON lines, and a session file" {
     try std.testing.expectEqualStrings(agent.resume_mod.latest, latest_print.print.resume_id.?);
     try std.testing.expectEqualStrings("hi", latest_print.print.prompt.?);
     // `agent ls` lists sessions; `--json` applies.
+    const rm = try parseArgs(&.{ "agent", "rm", "ab12" });
+    try std.testing.expect(rm.agent_action == .rm);
+    try std.testing.expectEqualStrings("ab12", rm.session_id);
+    try std.testing.expectError(error.MissingSessionId, parseArgs(&.{ "agent", "rm" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "agent", "rm", "a", "b" }));
+    try std.testing.expect((try parseArgs(&.{"cache"})).cache_action == .ls);
+    try std.testing.expect((try parseArgs(&.{ "cache", "ls", "--json" })).json);
+    try std.testing.expect((try parseArgs(&.{ "cache", "clear" })).cache_action == .clear);
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "cache", "clear", "--json" }));
+    try std.testing.expectError(error.UnknownCacheAction, parseArgs(&.{ "cache", "purge" }));
     const listing = try parseArgs(&.{ "agent", "ls", "--json" });
     try std.testing.expect(listing.agent_action == .ls);
     try std.testing.expect(listing.json);

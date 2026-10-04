@@ -174,7 +174,15 @@ const Ui = struct {
     /// (steering). Owned.
     queued: std.ArrayList(u8) = .empty,
     /// An open picker owns the keyboard while it is up; `none` otherwise.
-    picker: enum { none, resume_session } = .none,
+    /// `delete_session` picks a session to delete, `confirm_delete` asks
+    /// before `delete_target` goes.
+    picker: enum { none, resume_session, delete_session, confirm_delete } = .none,
+    /// The session file `/delete` will remove once confirmed. Owned.
+    delete_target: ?[]u8 = null,
+    /// The user root and the workspace, for the session commands; borrowed
+    /// from `run`.
+    root_dir: ?[]const u8 = null,
+    cwd: []const u8 = "",
     /// The paths the open picker offers, parallel to `comp`'s items. Owned.
     resume_paths: std.ArrayList([]u8) = .empty,
     /// A session path to replay on the next main-loop pass, set by the picker
@@ -210,6 +218,7 @@ const Ui = struct {
         for (self.resume_paths.items) |path| self.alloc.free(path);
         self.resume_paths.deinit(self.alloc);
         if (self.resume_request) |path| self.alloc.free(path);
+        if (self.delete_target) |path| self.alloc.free(path);
         if (self.model_label.len != 0) self.alloc.free(self.model_label);
     }
     fn newSession(self: *Ui) void {
@@ -596,6 +605,7 @@ const Ui = struct {
                     .reasoning_cut = step.reasoning_cut,
                     .reasoning_tokens = step.reasoning_tokens,
                 },
+                .boundary = if (step.boundary) |b| .{ .bytes = b.bytes, .digest = b.digest } else null,
             } },
             .compaction => |c| .{ .compaction = .{ .first_kept = c.first_kept, .reason = c.reason } },
             .tool_result => |result| .{ .tool_result = .{
@@ -628,6 +638,12 @@ const Ui = struct {
             },
             else => return err,
         });
+        // An ESC byte still alone after a read that brought nothing more is
+        // the key itself: a sequence's bytes arrive together.
+        if (n == held and keys.loneEscape(bytes[0..n])) {
+            self.pending_len = 0;
+            return self.handle(.escape);
+        }
         var i: usize = 0;
         while (i < n) {
             const decoded = keys.next(bytes[i..n]) orelse break;
@@ -663,10 +679,20 @@ const Ui = struct {
             switch (key) {
                 .up => self.comp.move(.previous),
                 .down => self.comp.move(.next),
-                .enter, .tab => try self.acceptResume(),
+                .enter, .tab => switch (self.picker) {
+                    .resume_session => try self.acceptResume(),
+                    .delete_session => try self.acceptDeletePick(),
+                    .confirm_delete => if (self.comp.selected == 1) try self.performDelete() else self.keepSession(),
+                    .none => {},
+                },
+                .text => |t| if (self.picker == .confirm_delete) {
+                    if (std.ascii.eqlIgnoreCase(t, "y")) try self.performDelete();
+                    if (std.ascii.eqlIgnoreCase(t, "n")) self.keepSession();
+                },
                 .ctrl => |c| {
                     if (c == 'c') self.closePicker();
                 },
+                .escape => if (self.picker == .confirm_delete) self.keepSession() else self.closePicker(),
                 else => {},
             }
             return;
@@ -678,6 +704,12 @@ const Ui = struct {
             // everything else is editing, including a paste.
             if (!self.ed.pasting) {
                 switch (key) {
+                    // Esc only ever cancels: pressed twice it does not quit.
+                    .escape => {
+                        interrupt.request();
+                        self.agent.userCancelled();
+                        return;
+                    },
                     .ctrl => |c| switch (c) {
                         'c' => {
                             // First press cancels the turn; a second quits.
@@ -724,6 +756,7 @@ const Ui = struct {
                 .up => return self.comp.move(.previous),
                 .down => return self.comp.move(.next),
                 .tab => return self.accept(),
+                .escape => return self.comp.set(&.{}),
                 else => {},
             }
         }
@@ -859,10 +892,15 @@ const Ui = struct {
         try self.comp.set(&.{});
     }
 
-    /// Opens the `/resume` picker from the sessions of this workspace. The
-    /// list is emptied and an explanatory notice is left when there is nothing
-    /// to choose, so a dead end always says why.
+    /// Opens the `/resume` picker from the sessions of this workspace (or,
+    /// with `.delete_session`, the `/delete` one). The list is emptied and
+    /// an explanatory notice is left when there is nothing to choose, so a
+    /// dead end always says why.
     fn openResumePicker(self: *Ui, root_dir: ?[]const u8, cwd: []const u8) !void {
+        return self.openSessionPicker(root_dir, cwd, .resume_session);
+    }
+
+    fn openSessionPicker(self: *Ui, root_dir: ?[]const u8, cwd: []const u8, mode: @FieldType(Ui, "picker")) !void {
         const root = root_dir orelse {
             try self.emit(.{ .notice = "  — no user root: cannot resume" });
             return;
@@ -894,8 +932,102 @@ const Ui = struct {
             });
         }
         try self.comp.set(items.items);
-        self.picker = .resume_session;
-        self.status = "resume";
+        self.picker = mode;
+        self.status = if (mode == .delete_session) "delete which?" else "resume";
+    }
+
+    /// `/list`: the workspace's sessions as an info block, this one marked.
+    fn listSessions(self: *Ui, a: std.mem.Allocator) !void {
+        const root = self.root_dir orelse {
+            try self.emit(.{ .notice = "  — no user root: no saved sessions" });
+            return;
+        };
+        const summaries = resume_mod.list(self.alloc, self.io, root, self.cwd) catch |err| {
+            try self.emit(.{ .notice = try a.print("  — {s} listing sessions", .{@errorName(err)}) });
+            return;
+        };
+        defer resume_mod.freeList(self.alloc, summaries);
+        const rows = try resume_mod.listRows(a, summaries, self.log.header.id, self.th.glyph_set == .ascii);
+        try self.emit(.{ .info = try std.mem.join(a, "\n", rows) });
+    }
+
+    /// `/delete [id]`: a session named by id or id prefix goes to the
+    /// confirmation; without one the picker chooses it first.
+    fn deleteCommand(self: *Ui, a: std.mem.Allocator, query: ?[]const u8) !void {
+        const root = self.root_dir orelse {
+            try self.emit(.{ .notice = "  — no user root: no saved sessions" });
+            return;
+        };
+        const q = query orelse return self.openSessionPicker(root, self.cwd, .delete_session);
+        const found = resume_mod.match(self.alloc, self.io, root, self.cwd, q) catch |err| {
+            try self.emit(.{ .notice = try a.print("  — {s} listing sessions", .{@errorName(err)}) });
+            return;
+        };
+        defer found.deinit(self.alloc);
+        switch (found) {
+            .none => try self.emit(.{ .notice = try a.print("  — no saved session of this workspace has an id starting {s} (/list shows them)", .{q}) }),
+            .many => |matches| {
+                var ids: std.ArrayList(u8) = .empty;
+                for (matches, 0..) |m, i| {
+                    if (i > 0) try ids.appendSlice(a, ", ");
+                    try ids.appendSlice(a, if (m.id.len > 8) m.id[0..8] else m.id);
+                }
+                try self.emit(.{ .notice = try a.print("  — {d} sessions start {s} ({s}); give more of the id", .{ matches.len, q, ids.items }) });
+            },
+            .one => |summary| try self.confirmDelete(a, summary.path),
+        }
+    }
+
+    fn acceptDeletePick(self: *Ui) !void {
+        if (self.comp.selected >= self.resume_paths.items.len) return;
+        const path = try self.alloc.dupe(u8, self.resume_paths.items[self.comp.selected]);
+        defer self.alloc.free(path);
+        self.closePicker();
+        var arena = std.heap.ArenaAllocator.init(self.alloc);
+        defer arena.deinit();
+        try self.confirmDelete(arena.allocator(), path);
+    }
+
+    /// Asks before deleting the session at `path`; the session in use is
+    /// refused, since its file is still being written.
+    fn confirmDelete(self: *Ui, a: std.mem.Allocator, path: []const u8) !void {
+        const id = sessionId(path);
+        const short = if (id.len > 8) id[0..8] else id;
+        if (std.mem.eql(u8, id, self.log.header.id)) {
+            try self.emit(.{ .notice = try a.print("  — {s} is this session; start another (/new) to delete it", .{short}) });
+            return;
+        }
+        self.delete_target = try self.alloc.dupe(u8, path);
+        const items = [_]choice.Item{
+            .{ .label = "keep it", .detail = "n" },
+            .{ .label = try a.print("delete {s}", .{short}), .detail = "y: the session file and its cached states" },
+        };
+        try self.comp.set(&items);
+        self.picker = .confirm_delete;
+        self.status = "delete?";
+    }
+
+    fn keepSession(self: *Ui) void {
+        self.closePicker();
+        self.emit(.{ .notice = "  — kept" }) catch {};
+    }
+
+    fn performDelete(self: *Ui) !void {
+        const path = self.delete_target orelse return;
+        self.delete_target = null;
+        defer self.alloc.free(path);
+        self.closePicker();
+        const short = blk: {
+            const id = sessionId(path);
+            break :blk if (id.len > 8) id[0..8] else id;
+        };
+        var note: [160]u8 = undefined;
+        const removed = resume_mod.delete(self.alloc, self.io, self.root_dir.?, path) catch |err| {
+            try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {s} deleting {s}", .{ @errorName(err), short }) catch "  — delete failed" });
+            return;
+        };
+        try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — deleted {s} and {d} cached state{s}", .{ short, removed, if (removed == 1) "" else "s" }) catch "  — deleted" });
+        self.status = "ready";
     }
 
     /// Dismisses the picker and drops what it offered. A resumed session is
@@ -903,6 +1035,8 @@ const Ui = struct {
     /// which owns the session file — replays it.
     fn closePicker(self: *Ui) void {
         self.picker = .none;
+        if (self.delete_target) |path| self.alloc.free(path);
+        self.delete_target = null;
         for (self.resume_paths.items) |path| self.alloc.free(path);
         self.resume_paths.clearRetainingCapacity();
         self.comp.set(&.{}) catch {};
@@ -1298,6 +1432,8 @@ fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Re
                 try ui.emit(.{ .notice = "  — new session" });
             },
             .resume_session => try ui.openResumePicker(root_dir, cwd),
+            .list => try ui.listSessions(a),
+            .delete => |query| try ui.deleteCommand(a, query),
             .think => |name| {
                 if (std.meta.stringToEnum(Profile.Effort, name)) |effort| {
                     ui.effort = effort;
@@ -1484,7 +1620,7 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     // the stored entries and prefilled on the next turn.
     ui.eng.model.reset();
     ui.tokens_seen.reset();
-    ui.completer.reset(.resumed);
+    ui.completer.resumeFrom(lastBoundary(loaded));
     ui.agent.resetConversation();
     ui.effort = effort;
     const built = try resume_mod.messages(a, loaded);
@@ -1495,6 +1631,27 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     if (rows.len > 0) try ui.scr.insertAbove(rows);
     ui.bar = .{};
     ui.status = "resumed";
+}
+
+/// The id in a session file's name, `<stamp>_<id>.jsonl`.
+fn sessionId(path: []const u8) []const u8 {
+    const name = std.fs.path.basename(path);
+    const stem = if (std.mem.endsWith(u8, name, ".jsonl")) name[0 .. name.len - ".jsonl".len] else name;
+    return if (std.mem.lastIndexOfScalar(u8, stem, '_')) |i| stem[i + 1 ..] else stem;
+}
+
+/// The stored conversation's last saved turn end, for the completer to
+/// restore from the token cache instead of replaying.
+fn lastBoundary(loaded: session_log.Loaded) ?loop.cache.Boundary {
+    var i = loaded.records.len;
+    while (i > 0) {
+        i -= 1;
+        switch (loaded.records[i].entry) {
+            .assistant => |step| if (step.boundary) |b| return .{ .bytes = b.bytes, .digest = b.digest },
+            else => {},
+        }
+    }
+    return null;
 }
 
 /// The attachments of each conversation entry of a stored session, parallel
@@ -1656,11 +1813,14 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
         .cache = .{ .alloc = alloc, .budget = settings.cache.memory_bytes },
         .disk = loop.cache.openDisk(alloc, io, root_dir, settings.cache.disk_bytes, model_path, if (eng.model.drafter() != null) draft_path else null, @tagName(settings.backend)),
+        // Session files are written under the root: a turn saved there can
+        // be resumed.
+        .save_turns = root_dir != null,
     };
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
     var agent: loop.Agent = undefined;
-    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .mmproj = if (settings.entry) |entry| entry.mmproj else null, .image_max_tokens = settings.image_max_tokens.count(), .model_path = model_path };
+    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .mmproj = if (settings.entry) |entry| entry.mmproj else null, .image_max_tokens = settings.image_max_tokens.count(), .model_path = model_path, .root_dir = root_dir, .cwd = cwd };
     defer ui.deinit();
     ed.probe = .{ .context = &ui, .call = Ui.dropProbe };
     // A polling tool reaches back into the driver while it runs, so keys are

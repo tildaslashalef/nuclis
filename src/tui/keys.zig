@@ -30,6 +30,9 @@ pub const Key = union(enum) {
     home,
     end,
     tab,
+    /// Esc: kitty's `CSI 27u`, or a lone ESC byte nothing followed (the
+    /// reader decides that, since it alone knows a read came back empty).
+    escape,
     ctrl: u8,
     /// Bracketed paste markers (`CSI 200~` / `CSI 201~`): between them the
     /// terminal delivers pasted text verbatim, newlines included.
@@ -62,6 +65,12 @@ pub fn next(bytes: []const u8) ?Decoded {
     if (len > bytes.len) return null;
     if (!std.unicode.utf8ValidateSlice(bytes[0..len])) return .{ .key = .ignored, .consumed = 1 };
     return .{ .key = .{ .text = bytes[0..len] }, .consumed = len };
+}
+
+/// A lone ESC byte: the escape key when no more bytes arrive, the start of
+/// a sequence when they do.
+pub fn loneEscape(bytes: []const u8) bool {
+    return bytes.len == 1 and bytes[0] == 27;
 }
 
 fn escape(bytes: []const u8) ?Decoded {
@@ -139,7 +148,7 @@ fn kitty(code: u32, modifiers: u32) Key {
         13 => if (modifiers & shift != 0) .newline else .enter,
         9 => .tab,
         127 => .backspace,
-        27 => .ignored,
+        27 => .escape,
         3 => .delete,
         // Kitty functional codes for arrows (63234-63237); plain presses
         // usually arrive as legacy CSI A/B/C/D instead.
@@ -179,6 +188,13 @@ test "legacy bytes decode to text, enter, controls" {
     try std.testing.expectEqualStrings("中", d.key.text);
     try std.testing.expectEqual(@as(usize, 3), d.consumed);
     try std.testing.expect(next("\xe4\xb8") == null); // split UTF-8: wait for more
+}
+
+test "esc is kitty's code 27, and a lone byte waits for the reader to decide" {
+    try std.testing.expectEqual(Key.escape, next("\x1b[27u").?.key);
+    try std.testing.expect(next("\x1b") == null);
+    try std.testing.expect(loneEscape("\x1b"));
+    try std.testing.expect(!loneEscape("\x1b["));
 }
 
 test "kitty protocol distinguishes shift+enter and encodes ctrl letters" {

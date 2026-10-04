@@ -10,18 +10,42 @@
 //! token, which BPE never merges across, so the remainder encodes alike.
 //!
 //! `Memory` lives in the process, least recently used out first under a byte
-//! budget. `Disk` keeps primed prefixes across processes through
-//! `inference.prefix_cache`, keyed by the model files, the executor, and the
-//! build; a hit refreshes a file's modification time, the eviction order.
-//! Neither touches the engine: the caller snapshots and restores.
+//! budget. `Disk` keeps primed prefixes and the last turn of each recorded
+//! conversation across processes through `inference.prefix_cache`, keyed by
+//! the rendered text's digest, the model files, the executor, and the build;
+//! a hit refreshes a file's modification time, the eviction order. Neither
+//! touches the engine: the caller snapshots and restores.
 const std = @import("std");
 const inference = @import("inference");
 const build_options = @import("build_options");
 const paths = @import("../paths.zig");
+const model_mod = @import("../model.zig");
+const style = @import("../tui/style.zig");
 
 const Allocator = std.mem.Allocator;
 const Snapshot = inference.session.Snapshot;
 const prefix_cache = inference.prefix_cache;
+
+/// Where a saved state stands in a render: its first `bytes` bytes, whose
+/// `textDigest` is `digest`. The session file records the last one so a
+/// resume can find the state on disk.
+pub const Boundary = struct {
+    bytes: usize,
+    digest: u64,
+
+    pub fn of(text: []const u8) Boundary {
+        return .{ .bytes = text.len, .digest = textDigest(text) };
+    }
+
+    /// Whether `full` begins with this boundary's text and goes past it.
+    pub fn prefixes(self: Boundary, full: []const u8) bool {
+        return self.bytes < full.len and textDigest(full[0..self.bytes]) == self.digest;
+    }
+};
+
+pub fn textDigest(text: []const u8) u64 {
+    return std.hash.Wyhash.hash(0, text);
+}
 
 /// One saved state. Owns its text, history, and snapshot.
 pub const Entry = struct {
@@ -164,8 +188,16 @@ pub const Disk = struct {
         self.* = undefined;
     }
 
-    pub fn key(self: *const Disk, tokens: []const u32, layout: u64) prefix_cache.Key {
-        return .{ .model = self.model, .tokens = prefix_cache.tokenDigest(tokens), .layout = layout };
+    /// The key of a state that consumed text with `digest` (`textDigest`);
+    /// the key's token half holds the text digest.
+    pub fn key(self: *const Disk, digest: u64, layout: u64) prefix_cache.Key {
+        return .{ .model = self.model, .tokens = digest, .layout = layout };
+    }
+
+    /// Deletes the state saved under `k`, if any.
+    pub fn remove(self: *Disk, k: prefix_cache.Key) void {
+        var name: [64]u8 = undefined;
+        self.dir.deleteFile(self.io, prefix_cache.fileName(&name, k)) catch {};
     }
 
     /// The state saved under `key`, or null. A file that does not match its
@@ -242,6 +274,133 @@ pub const Disk = struct {
     }
 };
 
+/// Deletes every state under `<root>/cache/prefix/` saved for text with
+/// `digest`, whatever the model, executor, build, or layout (the digest is
+/// the middle of the file name); the count deleted. A missing directory is
+/// nothing to delete.
+pub fn removeDigest(io: std.Io, dir_path: []const u8, digest: u64) usize {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return 0;
+    defer dir.close(io);
+    var middle: [18]u8 = undefined;
+    const needle = std.fmt.bufPrint(&middle, "-{x:0>16}-", .{digest}) catch unreachable;
+    var removed: usize = 0;
+    // Names are collected first: deleting while iterating may skip entries.
+    var names: [64][64]u8 = undefined;
+    var lens: [64]usize = undefined;
+    var count: usize = 0;
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (count == names.len) break;
+        if (entry.kind != .file or entry.name.len > 64 or !std.mem.endsWith(u8, entry.name, ".snap")) continue;
+        if (std.mem.indexOf(u8, entry.name, needle) == null) continue;
+        @memcpy(names[count][0..entry.name.len], entry.name);
+        lens[count] = entry.name.len;
+        count += 1;
+    }
+    for (names[0..count], lens[0..count]) |*name, len| {
+        dir.deleteFile(io, name[0..len]) catch continue;
+        removed += 1;
+    }
+    return removed;
+}
+
+/// `nuclis cache ls`: the saved states as JSON reads them; the text form
+/// prints the same fields.
+pub const Listing = struct {
+    schema_version: u32 = 1,
+    dir: []const u8,
+    budget_bytes: u64,
+    total_bytes: u64,
+    /// Most recently used first.
+    states: []const State,
+
+    pub const State = struct { file: []const u8, bytes: u64, last_used: []const u8 };
+
+    pub fn render(self: Listing, out: *std.Io.Writer, json: bool, sty: style.Style) !void {
+        if (json) {
+            try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
+            return out.writeByte('\n');
+        }
+        const off = sty.off();
+        var used: [16]u8 = undefined;
+        var budget: [16]u8 = undefined;
+        try out.print("{s}token cache{s} {s}{s}{s}: {d} state{s}, {s} of {s} {s}(cache.disk_bytes; least recently used out first){s}\n", .{
+            sty.on(.label),  off,                                   sty.on(.code),                      self.dir,                              off,
+            self.states.len, if (self.states.len == 1) "" else "s", byteLabel(&used, self.total_bytes), byteLabel(&budget, self.budget_bytes), sty.on(.dim),
+            off,
+        });
+        for (self.states) |state| {
+            var size: [16]u8 = undefined;
+            try out.print("  {s}{s: >10}{s}  {s}  {s}{s}{s}\n", .{ sty.on(.number), byteLabel(&size, state.bytes), off, state.last_used, sty.on(.dim), state.file, off });
+        }
+    }
+};
+
+/// `bytes` in binary units, one decimal: `236.4 MiB`, `4.0 GiB`.
+pub fn byteLabel(buffer: *[16]u8, bytes: u64) []const u8 {
+    const value: f64 = @floatFromInt(bytes);
+    if (bytes >= 1 << 30) return std.fmt.bufPrint(buffer, "{d:.1} GiB", .{value / (1 << 30)}) catch "?";
+    if (bytes >= 1 << 20) return std.fmt.bufPrint(buffer, "{d:.1} MiB", .{value / (1 << 20)}) catch "?";
+    return std.fmt.bufPrint(buffer, "{d} B", .{bytes}) catch "?";
+}
+
+/// `nuclis cache ls`: the states under `<root>/cache/prefix/` and the
+/// budget they count against. A missing directory lists nothing.
+pub fn ls(alloc: Allocator, io: std.Io, root_dir: []const u8, budget: u64, json: bool, out: *std.Io.Writer, sty: style.Style) !void {
+    const path = try paths.prefixCachePath(alloc, root_dir);
+    defer alloc.free(path);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var states: std.ArrayList(Listing.State) = .empty;
+    var total: u64 = 0;
+    if (std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true })) |dir| {
+        var disk: Disk = .{ .io = io, .dir = dir, .model = 0, .budget = budget };
+        defer disk.close();
+        const files = try disk.list(a);
+        std.mem.sort(Disk.File, files, {}, struct {
+            fn newer(_: void, x: Disk.File, y: Disk.File) bool {
+                return x.mtime.nanoseconds > y.mtime.nanoseconds;
+            }
+        }.newer);
+        for (files) |f| {
+            const stamp = try a.create([20]u8);
+            try states.append(a, .{ .file = f.name, .bytes = f.size, .last_used = model_mod.rfc3339(stamp, @intCast(@divFloor(f.mtime.nanoseconds, std.time.ns_per_s))) });
+            total += f.size;
+        }
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    const listing: Listing = .{ .dir = path, .budget_bytes = budget, .total_bytes = total, .states = states.items };
+    try listing.render(out, json, sty);
+}
+
+/// `nuclis cache clear`: deletes every saved state; says how many and how
+/// much. Nothing else lives in the directory, and nothing needs it.
+pub fn clear(alloc: Allocator, io: std.Io, root_dir: []const u8, out: *std.Io.Writer, sty: style.Style) !void {
+    const path = try paths.prefixCachePath(alloc, root_dir);
+    defer alloc.free(path);
+    var removed: usize = 0;
+    var freed: u64 = 0;
+    if (std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true })) |dir| {
+        var disk: Disk = .{ .io = io, .dir = dir, .model = 0, .budget = 0 };
+        defer disk.close();
+        const files = try disk.list(alloc);
+        defer Disk.freeList(alloc, files);
+        for (files) |f| {
+            disk.dir.deleteFile(io, f.name) catch continue;
+            removed += 1;
+            freed += f.size;
+        }
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    var label: [16]u8 = undefined;
+    try out.print("{s}token cache{s}: removed {d} state{s}, {s}\n", .{ sty.on(.label), sty.off(), removed, if (removed == 1) "" else "s", byteLabel(&label, freed) });
+}
+
 /// This build's identity: the version and commit, plus the executable's size
 /// and modification time when the tree differed from the commit, since two
 /// such builds share one. Null when a modified build cannot tell itself
@@ -286,6 +445,14 @@ fn fakeEntry(text: []const u8, n: usize) !Entry {
     const owned = try testing.allocator.dupe(u8, text);
     errdefer testing.allocator.free(owned);
     return .{ .text = owned, .tokens = n, .snapshot = try fakeSnapshot(n, @truncate(text.len)) };
+}
+
+test "a boundary prefixes a render that goes past its text" {
+    const b: Boundary = .of("system user hi answer");
+    try testing.expect(b.prefixes("system user hi answer<end> user more"));
+    try testing.expect(!b.prefixes("system user hi answer"));
+    try testing.expect(!b.prefixes("system user ho answer<end> user more"));
+    try testing.expect(!b.prefixes("short"));
 }
 
 test "the longest proper prefix wins, and an exact render is not a hit" {
@@ -333,7 +500,7 @@ test "a disk entry round-trips, misses on another build, and refuses a corrupt f
     defer disk.close();
     var snap = try fakeSnapshot(32, 3);
     defer snap.deinit();
-    const k = disk.key(&.{ 1, 2, 3 }, snap.layout_digest);
+    const k = disk.key(textDigest("system"), snap.layout_digest);
     try disk.save(testing.allocator, k, &snap);
     var back = (try disk.load(testing.allocator, k)).?;
     defer back.deinit();
@@ -356,6 +523,60 @@ test "a disk entry round-trips, misses on another build, and refuses a corrupt f
     try testing.expectError(error.FileNotFound, disk.dir.statFile(io, file, .{}));
 }
 
+test "a digest's states are removed whatever their model or layout" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const path = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(path);
+    var snap = try fakeSnapshot(8, 1);
+    defer snap.deinit();
+    for ([_]u64{ 1, 2 }) |model| {
+        var disk = try Disk.open(io, path, model, 1 << 20);
+        defer disk.close();
+        try disk.save(testing.allocator, disk.key(42, 7), &snap);
+        try disk.save(testing.allocator, disk.key(43, 7), &snap);
+    }
+    try testing.expectEqual(@as(usize, 2), removeDigest(io, path, 42));
+    try testing.expectEqual(@as(usize, 0), removeDigest(io, path, 42));
+    var disk = try Disk.open(io, path, 1, 1 << 20);
+    defer disk.close();
+    const left = try disk.list(testing.allocator);
+    defer Disk.freeList(testing.allocator, left);
+    try testing.expectEqual(@as(usize, 2), left.len);
+    try testing.expectEqual(@as(usize, 0), removeDigest(io, "/nonexistent/nuclis-cache", 42));
+}
+
+test "cache ls lists the states newest first and clear removes them" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    // No directory yet: an empty listing, not an error.
+    try ls(alloc, io, root, 1 << 30, false, &out.writer, .{});
+    try testing.expect(std.mem.indexOf(u8, out.written(), ": 0 states, 0 B of 1.0 GiB") != null);
+    try tmp.dir.createDirPath(io, "cache/prefix");
+    try tmp.dir.writeFile(io, .{ .sub_path = "cache/prefix/a.snap", .data = "xx" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "cache/prefix/b.snap", .data = "xxx" });
+    try tmp.dir.setTimestamps(io, "cache/prefix/a.snap", .{ .modify_timestamp = .{ .new = .{ .nanoseconds = 2 * std.time.ns_per_s } } });
+    try tmp.dir.setTimestamps(io, "cache/prefix/b.snap", .{ .modify_timestamp = .{ .new = .{ .nanoseconds = 1 * std.time.ns_per_s } } });
+    out.clearRetainingCapacity();
+    try ls(alloc, io, root, 1 << 30, true, &out.writer, .{});
+    const parsed = try std.json.parseFromSlice(Listing, alloc, out.written(), .{});
+    defer parsed.deinit();
+    try testing.expectEqual(@as(u64, 5), parsed.value.total_bytes);
+    try testing.expectEqualStrings("a.snap", parsed.value.states[0].file);
+    try testing.expectEqualStrings("1970-01-01T00:00:02Z", parsed.value.states[0].last_used);
+    out.clearRetainingCapacity();
+    try clear(alloc, io, root, &out.writer, .{});
+    try testing.expect(std.mem.indexOf(u8, out.written(), "removed 2 states, 5 B") != null);
+    try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "cache/prefix/a.snap", .{}));
+}
+
 test "the disk budget deletes the least recently used files first" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{ .iterate = true });
@@ -368,7 +589,7 @@ test "the disk budget deletes the least recently used files first" {
     defer snap.deinit();
     var keys: [3]prefix_cache.Key = undefined;
     for (&keys, 0..) |*k, i| {
-        k.* = disk.key(&.{@intCast(i)}, snap.layout_digest);
+        k.* = disk.key(i, snap.layout_digest);
         try disk.save(testing.allocator, k.*, &snap);
         // Explicit times: a fast file system may stamp all three alike.
         var name: [64]u8 = undefined;

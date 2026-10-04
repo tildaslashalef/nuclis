@@ -150,6 +150,11 @@ pub const commands = [_]Command{
             image_max_tokens,
         } ++ engine_flags) },
         .{ .name = "ls", .summary = "this workspace's saved sessions", .flags = &.{json} },
+        .{ .name = "rm", .summary = "delete a saved session and its cached states", .positionals = &.{.session} },
+    } },
+    .{ .name = "cache", .summary = "the agent's saved model states", .actions = &.{
+        .{ .name = "ls", .summary = "each state, newest first, and the budget", .flags = &.{json} },
+        .{ .name = "clear", .summary = "delete every saved state" },
     } },
     .{ .name = "generate", .summary = "one completion from a prompt", .actions = &.{.{ .flags = &([_]Flag{
         prompt,

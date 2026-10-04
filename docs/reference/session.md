@@ -212,16 +212,27 @@ removed.
   `cache.memory_bytes` (4 GiB; 0 keeps none). A Qwen state is 150 MB plus
   64 KiB per token, about 250 MB primed and 1.2 GB at 16K. A `/ctx` change
   drops it (the states are bound to the capacity).
-- **Disk tier**: the primed prefix only, under `<root>/cache/prefix/`
-  through `inference.prefix_cache` (header with the keys, content digest;
-  a file that fails either is deleted and reads as a miss). The key's
-  model half hashes the model files (and the draft companion when a
+- **Disk tier**: the primed prefix, and the last turn end of each
+  conversation that has a session file (each save replaces that
+  conversation's previous one), under `<root>/cache/prefix/` through
+  `inference.prefix_cache` (header with the keys, content digest; a file
+  that fails either is deleted and reads as a miss). The key's token half
+  is the digest of the rendered text the state consumed, which is also the
+  middle of the file name, so a session's states are found without loading
+  a model (`cache.removeDigest`, used by `/delete` and `agent rm`). The
+  key's model half hashes the model files (and the draft companion when a
   drafter is loaded), the executor, and the build: version and commit,
   plus the executable's size and modification time for a build from a
   modified tree, since such builds share a commit (`cache.buildId`). A
   different build misses, never restores. `cache.disk_bytes` (8 GiB; 0
   disables) bounds the directory; a hit refreshes a file's modification
   time and each save evicts the oldest beyond the budget.
+- **Resume.** The turn's last `assistant` entry records its `boundary`
+  (the text's byte length and digest). A resume (`Completer.resumeFrom`)
+  tries the file's last boundary before the memory tier: when the render
+  starts with it, the state is loaded from disk and the penalty history
+  is rebuilt from the text's encoding. The system block carries the date,
+  so a conversation resumed on another day misses and replays.
 - **Accounting.** A step that could not continue the session reports a
   `Replay` with its cause (`resumed`, `cancel`, `rewrite` for compaction or
   elision, `effort`, `context`, `failure`) and the tokens restored; the
