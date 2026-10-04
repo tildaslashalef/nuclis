@@ -29,7 +29,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=pathlib.Path, help="the harness output directory")
     parser.add_argument(
-        "--family", required=True, help="the profile family the run measured (qwen38, gemma4, muse-glimmer)"
+        "--family", required=True, help="the profile family the run measured (qwen38, gemma4, gemma4-e, muse-glimmer)"
     )
     parser.add_argument(
         "--output",
@@ -75,6 +75,8 @@ def main():
         "repetitions": config["repetitions"],
         "methodology": "See ../reference/reference-baseline.md. Greedy, seed 1, no prefix reuse, EOS ignored for the timed "
         "requests, one untimed warmup per length excluded from the means; rates are the server's own timings.",
+        "replayed_from": construction.get("replayed_from"),
+        "server_template_equal": construction.get("server_template_equal"),
         "prompt_file_sha256": {p.name: sha256_file(p) for p in sorted(args.run.glob("prompt-*.json"))},
         "smoke_response": json.loads((args.run / "smoke.json").read_text())["response"]["content"],
         "summary": summary["results"],

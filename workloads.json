@@ -349,7 +349,7 @@
       "kind": "acceptance",
       "model": "qwen38",
       "run": "run-2026-09-06",
-      "reference_records": "reference-2026-09-06.json,reference-boundary-2026-09-06.json",
+      "reference_records": "reference-2026-10-04-qwen38.json",
       "record_suffix": "",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/reference/bench.md#acceptance-runs"
@@ -358,7 +358,7 @@
       "kind": "acceptance",
       "model": "gemma4_qat",
       "run": "run-2026-09-12-gemma4-qat",
-      "reference_records": "reference-2026-09-12-gemma4-qat.json",
+      "reference_records": "reference-2026-10-04-gemma4-qat.json",
       "record_suffix": "gemma4-qat",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12"
@@ -367,16 +367,25 @@
       "kind": "acceptance",
       "model": "gemma4_26b_a4b",
       "run": "run-2026-09-18-gemma4-26b-a4b",
-      "reference_records": "reference-2026-09-18-gemma4-26b-a4b.json",
+      "reference_records": "reference-2026-10-04-gemma4-26b-a4b.json",
       "record_suffix": "gemma4-26b-a4b",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18"
+    },
+    "gemma4-e4b/acceptance": {
+      "kind": "acceptance",
+      "model": "gemma4_e4b",
+      "run": "run-2026-10-04-gemma4-e4b",
+      "reference_records": "reference-2026-10-04-gemma4-e4b.json",
+      "record_suffix": "gemma4-e4b",
+      "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
+      "evidence": "docs/reference/bench.md"
     },
     "muse/acceptance": {
       "kind": "acceptance",
       "model": "muse",
       "run": "run-2026-09-19-muse-glimmer",
-      "reference_records": "reference-2026-09-19-muse-glimmer.json",
+      "reference_records": "reference-2026-10-04-muse-glimmer.json",
       "record_suffix": "muse-glimmer",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/reference/bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19"

@@ -35,8 +35,11 @@ CLOSING = "\n```\n\nGive your review."
 THINKING_OFF = {
     "qwen38": "<think>\n\n</think>",
     "gemma4": "<|channel>thought\n<channel|>",
+    "gemma4-e": "<turn|>\n<|turn>model\n",
     "muse-glimmer": "Reasoning strength: high.",
 }
+# The thinking switch a template must not carry when its off marker is a bare generation prompt.
+THINKING_ON = {"gemma4-e": "<|think|>"}
 
 
 def timestamp():
@@ -304,8 +307,8 @@ def main():
     parser.add_argument(
         "--boundary-repetitions",
         type=int,
-        default=1,
-        help="repetitions for a prompt that fills the context with the output (the reference took one)",
+        default=3,
+        help="repetitions for a prompt that fills the context with the output",
     )
     parser.add_argument("--ctx-size", type=int, default=32768)
     parser.add_argument("--kv", default="f16", choices=("f16", "f32"))
@@ -358,7 +361,10 @@ def main():
     construction_path = args.fixtures / args.run / "prompt-construction.json"
     construction = json.loads(construction_path.read_text())
     family = construction.get("family", "qwen38")
-    if THINKING_OFF[family] not in construction["template"]:
+    if (
+        THINKING_OFF[family] not in construction["template"]
+        or THINKING_ON.get(family, "\0") in construction["template"]
+    ):
         raise RuntimeError("expected the reference's text template with reasoning disabled")
     corpus = reference_corpus()
     if hashlib.sha256(corpus.encode()).hexdigest() != construction["corpus_sha256"]:

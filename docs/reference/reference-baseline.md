@@ -126,6 +126,18 @@ the template's default `Reasoning strength: high.` line instead, since
 that template cannot switch reasoning off, writes `<|begin_of_text|>`, and
 gives the smoke request `low` strength and a 384-token budget so the
 model's reasoning message leaves room for the code it checks for.
+`--family gemma4-e` (Gemma 4 E2B/E4B) checks a bare generation prompt
+and the absence of `<|think|>`, since that template renders thinking off
+without the empty thought channel.
+
+`--replay <run>[,<run>…]` sends the committed arrays of those fixture runs
+under `tests/fixtures/` (the first run holding a size wins; the first
+supplies `prompt-construction.json`) instead of building them, so a later
+date measures the same tokens. It fails unless the server tokenizes the
+corpus into the fixture's body tokens, and records whether the server's
+own template rendering still equals the fixture's (Muse's carries the
+server's date, so it differs from day to day). Qwen replays
+`run-2026-09-06,boundary-2026-09-06`.
 
 Use a new output directory for every invocation. The harness refuses to overwrite
 an existing directory. It uses only the Python standard library, accepts only a

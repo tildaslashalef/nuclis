@@ -19,6 +19,8 @@ import urllib.parse
 import urllib.request
 
 
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+FIXTURES = ROOT / "tests" / "fixtures"
 REVISION = "7620399f58aebfd2196b74021f9581bcf7218cb9"
 
 # Per family: the text the template renders with the harness's default
@@ -30,11 +32,20 @@ REVISION = "7620399f58aebfd2196b74021f9581bcf7218cb9"
 # it explicitly. Muse Glimmer cannot switch reasoning off: its default system
 # turn says `Reasoning strength: high.` (and carries the server's date), and
 # the smoke answer follows a reasoning message, so that test asks for `low`
-# strength with a wider budget.
+# strength with a wider budget. The E4B/E2B template renders thinking off as
+# a bare generation prompt, so `gemma4-e` checks that and the absence of the
+# thinking switch `<|think|>` instead.
 FAMILIES = {
     "qwen38": {"thinking_off": "<think>\n\n</think>", "bos": "", "smoke_tokens": 96, "smoke_kwargs": None},
     "gemma4": {
         "thinking_off": "<|channel>thought\n<channel|>",
+        "bos": "<bos>",
+        "smoke_tokens": 96,
+        "smoke_kwargs": None,
+    },
+    "gemma4-e": {
+        "thinking_off": "<turn|>\n<|turn>model\n",
+        "thinking_on": "<|think|>",
         "bos": "<bos>",
         "smoke_tokens": 96,
         "smoke_kwargs": None,
@@ -94,8 +105,16 @@ def main():
         default=REVISION,
         help="the full commit the server must be built from (the mainline pin by default; the PrismML fork's for Bonsai)",
     )
+    parser.add_argument(
+        "--replay",
+        help="comma-separated fixture runs under tests/fixtures whose prompt-<n>.json arrays to send "
+        "(the first holding a size wins) instead of building them, so two dates measure identical tokens",
+    )
     args = parser.parse_args()
     family = FAMILIES[args.family]
+    replay = [FIXTURES / name for name in args.replay.split(",")] if args.replay else []
+    if any(not d.is_dir() for d in replay) or (replay and not (replay[0] / "prompt-construction.json").is_file()):
+        parser.error("--replay names fixture runs, the first holding prompt-construction.json")
     if not re.fullmatch(r"[0-9a-f]{40}", args.reference_revision):
         parser.error("--reference-revision must be a full commit hash")
     address = urllib.parse.urlparse(args.url)
@@ -161,6 +180,7 @@ def main():
             "generate": args.generate,
             "repetitions": args.repetitions,
             "capacity_check": args.capacity_check,
+            "replay": args.replay,
             "hardware": capture("sysctl", "-n", "machdep.cpu.brand_string", "hw.memsize", "hw.ncpu"),
             "os": capture("sw_vers"),
             "power": capture("pmset", "-g", "batt"),
@@ -175,26 +195,58 @@ def main():
     save("server-props.json", props)
     marker = "NUCLIS_BENCH_CONTENT"
     template = family["bos"] + request("/apply-template", {"messages": [{"role": "user", "content": marker}]})["prompt"]
-    if template.count(marker) != 1 or family["thinking_off"] not in template:
+    if (
+        template.count(marker) != 1
+        or family["thinking_off"] not in template
+        or family.get("thinking_on", "\0") in template
+    ):
         raise RuntimeError("expected the pinned text template with reasoning disabled")
     prefix, suffix = template.split(marker)
     prefix_tokens = tokenize(prefix, True)
     suffix_tokens = tokenize("\n```\n\nGive your review." + suffix, True)
     source = corpus()
     body_tokens = tokenize(source)
-    save(
-        "prompt-construction.json",
-        {
-            "family": args.family,
-            "template": template,
-            "corpus_sha256": hashlib.sha256(source.encode()).hexdigest(),
-            "prefix_tokens": prefix_tokens,
-            "suffix_tokens": suffix_tokens,
-            "method": "prefix + truncated synthetic-code token sequence + suffix",
-        },
-    )
+    construction = {
+        "family": args.family,
+        "template": template,
+        "corpus_sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "prefix_tokens": prefix_tokens,
+        "suffix_tokens": suffix_tokens,
+        "method": "prefix + truncated synthetic-code token sequence + suffix",
+    }
+    if replay:
+        # The fixture's construction is what the requests carry; the server's
+        # own rendering is compared, not required (Muse's carries the date).
+        replayed = json.loads((replay[0] / "prompt-construction.json").read_text())
+        if (
+            replayed.get("family", "qwen38") != args.family
+            or replayed["corpus_sha256"] != construction["corpus_sha256"]
+        ):
+            raise RuntimeError("the replayed run is for another family or corpus")
+        construction = replayed | {
+            "replayed_from": [d.relative_to(ROOT).as_posix() for d in replay],
+            "server_template_equal": template == replayed["template"],
+            "server_template_tokens_equal": (prefix_tokens, suffix_tokens)
+            == (replayed["prefix_tokens"], replayed["suffix_tokens"]),
+        }
+    save("prompt-construction.json", construction)
 
     def prompt(size):
+        if replay:
+            path = next((d / f"prompt-{size}.json" for d in replay if (d / f"prompt-{size}.json").is_file()), None)
+            if path is None:
+                raise RuntimeError(f"no replayed run holds a {size}-token prompt")
+            tokens = json.loads(path.read_text())
+            head, tail = len(construction["prefix_tokens"]), len(construction["suffix_tokens"])
+            if (
+                len(tokens) != size
+                or tokens[:head] != construction["prefix_tokens"]
+                or tokens[-tail:] != construction["suffix_tokens"]
+            ):
+                raise RuntimeError(f"{path} is not a {size}-token prompt of the replayed construction")
+            if tokens[head:-tail] != body_tokens[: size - head - tail]:
+                raise RuntimeError(f"the server tokenizes the corpus differently from {path}")
+            return tokens
         count = size - len(prefix_tokens) - len(suffix_tokens)
         if count <= 0 or count > len(body_tokens):
             raise RuntimeError("synthetic corpus cannot fill requested token count")
