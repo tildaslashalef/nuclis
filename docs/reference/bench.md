@@ -2356,4 +2356,4 @@ fixture's):
 | 32,639 | 144.53 ± 0.58 | 19.12 ± 0.30 | 143.72 / 20.94 | −8.7 % |
 
 The same shape as Qwen's: faster at short context, slower decode at 32K
-(the 2026-09 32K row was a single sample). Server RSS 7.3–8.1 GiB.
+(three samples on both dates). Server RSS 7.3–8.1 GiB.
