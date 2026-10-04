@@ -114,6 +114,9 @@ fn within(root: []const u8, abs: []const u8) bool {
 pub const Change = struct {
     path: []u8,
     diff: tui.diff.Diff,
+    /// Whether the model reads the unified text after the result; false when
+    /// it would only repeat what the model just wrote (a new file).
+    echo: bool = true,
 
     pub fn deinit(self: *Change, alloc: Allocator) void {
         alloc.free(self.path);
@@ -157,7 +160,10 @@ pub const Result = struct {
     }
 };
 
-pub const LineRange = struct { first: usize, total: usize };
+/// `count` lines from `first` of a file `total` lines long, whose content
+/// (as read, up to the byte bound) hashes to `digest`: enough for the loop to
+/// tell a repeated read of an unchanged file.
+pub const LineRange = struct { first: usize, count: usize, total: usize, digest: u64 };
 
 pub const Tool = struct {
     name: []const u8,

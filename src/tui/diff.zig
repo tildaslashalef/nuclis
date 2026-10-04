@@ -18,7 +18,9 @@
 //! diffed with an LCS table bounded by `max_cells`; a middle too large for the
 //! table degrades to "all removed, all added" rather than spending unbounded
 //! time. Rows are materialised only for the changed hunks plus `context_lines`
-//! of unchanged context, so a one-line edit in a large file stays small.
+//! of unchanged context, so a one-line edit in a large file stays small; the
+//! unified text keeps fewer (`unified_context_lines`), since the model pays
+//! for every line of it.
 //!
 //! Zig note. `Row.text` is owned by whoever creates it: `compute` allocates
 //! copies, and `cloneRows` copies a borrowed event's rows into a block. That
@@ -83,8 +85,12 @@ pub fn freeRows(alloc: Allocator, rows: []Row) void {
     alloc.free(rows);
 }
 
-/// Unchanged lines kept on each side of a hunk.
+/// Unchanged lines kept on each side of a hunk in the rows the transcript
+/// renders.
 pub const context_lines: usize = 3;
+/// The same for the unified text the model reads: it wrote the change, so one
+/// line placing it is enough, and every line is prefill it pays for.
+pub const unified_context_lines: usize = 1;
 /// Largest LCS middle (cells) before degrading to a whole-middle replacement.
 /// Bounds the diff of two large, wholly different files. At 8 bytes a cell
 /// this is 8 MiB, paid only for a genuinely large edit.
@@ -101,36 +107,34 @@ pub fn compute(alloc: Allocator, old: []const u8, new: []const u8) Allocator.Err
     const ops = try buildOps(alloc, old_lines.items, new_lines.items);
     defer alloc.free(ops);
 
-    var ranges: std.ArrayList([2]usize) = .empty;
-    defer ranges.deinit(alloc);
-    var i: usize = 0;
-    while (i < ops.len) {
-        if (ops[i].kind == .context) {
-            i += 1;
-            continue;
-        }
-        const start = if (i >= context_lines) i - context_lines else 0;
-        const end = @min(ops.len, i + 1 + context_lines);
-        if (ranges.lastPtr()) |last| {
-            if (last[1] >= start) {
-                last[1] = @max(last[1], end);
-                i = end;
-                continue;
-            }
-        }
-        try ranges.append(alloc, .{ start, end });
-        i = end;
-    }
+    const row_hunks = try hunks(alloc, ops, context_lines);
+    defer alloc.free(row_hunks);
+    const unified_hunks = try hunks(alloc, ops, unified_context_lines);
+    defer alloc.free(unified_hunks);
 
     var rows: std.ArrayList(Row) = .empty;
     errdefer {
         freeRows(alloc, rows.items);
         rows.deinit(alloc);
     }
+    for (row_hunks) |range| {
+        for (ops[range[0]..range[1]]) |op| {
+            const text = switch (op.kind) {
+                .context, .remove => old_lines.items[op.oi.?],
+                .add => new_lines.items[op.ni.?],
+            };
+            try rows.append(alloc, .{
+                .old_line = if (op.oi) |x| x + 1 else null,
+                .new_line = if (op.ni) |x| x + 1 else null,
+                .kind = op.kind,
+                .text = try alloc.dupe(u8, text),
+            });
+        }
+    }
+
     var unified: std.ArrayList(u8) = .empty;
     errdefer unified.deinit(alloc);
-
-    for (ranges.items) |range| {
+    for (unified_hunks) |range| {
         const start = range[0];
         const end = range[1];
         var old_start: usize = 0;
@@ -154,12 +158,6 @@ pub fn compute(alloc: Allocator, old: []const u8, new: []const u8) Allocator.Err
                 .context, .remove => old_lines.items[op.oi.?],
                 .add => new_lines.items[op.ni.?],
             };
-            try rows.append(alloc, .{
-                .old_line = if (op.oi) |x| x + 1 else null,
-                .new_line = if (op.ni) |x| x + 1 else null,
-                .kind = op.kind,
-                .text = try alloc.dupe(u8, text),
-            });
             const sign: u8 = switch (op.kind) {
                 .context => ' ',
                 .remove => '-',
@@ -176,6 +174,33 @@ pub fn compute(alloc: Allocator, old: []const u8, new: []const u8) Allocator.Err
 
     pairChanges(rows.items);
     return .{ .rows = try rows.toOwnedSlice(alloc), .unified = try unified.toOwnedSlice(alloc) };
+}
+
+/// The `[start, end)` op ranges of the hunks: every change with `context`
+/// unchanged ops on each side, overlapping ranges merged. Owned.
+fn hunks(alloc: Allocator, ops: []const Op, context: usize) Allocator.Error![][2]usize {
+    var ranges: std.ArrayList([2]usize) = .empty;
+    errdefer ranges.deinit(alloc);
+    var i: usize = 0;
+    while (i < ops.len) {
+        if (ops[i].kind == .context) {
+            i += 1;
+            continue;
+        }
+        // The context follows the whole run of changes, not its first line.
+        var run_end = i;
+        while (run_end < ops.len and ops[run_end].kind != .context) run_end += 1;
+        const start = if (i >= context) i - context else 0;
+        const end = @min(ops.len, run_end + context);
+        if (ranges.items.len > 0 and ranges.items[ranges.items.len - 1][1] >= start) {
+            const last = &ranges.items[ranges.items.len - 1];
+            last[1] = @max(last[1], end);
+        } else {
+            try ranges.append(alloc, .{ start, end });
+        }
+        i = end;
+    }
+    return ranges.toOwnedSlice(alloc);
 }
 
 const Op = struct {
@@ -424,10 +449,12 @@ test "context is elided beyond the hunk, so a large unchanged file stays small" 
         mut.deinit(testing.allocator);
     }
     // Three context lines on each side of the one changed line.
-    try testing.expectEqual(@as(usize, 7), d.rows.len);
+    try testing.expectEqual(@as(usize, 8), d.rows.len);
     try testing.expectEqual(Kind.remove, d.rows[3].kind);
     try testing.expectEqual(Kind.add, d.rows[4].kind);
-    try testing.expect(std.mem.indexOf(u8, d.unified, "@@ -48,6 +48,6 @@") != null);
+    try testing.expectEqual(Kind.context, d.rows[7].kind);
+    // The model's text keeps one line on each side.
+    try testing.expectEqualStrings("@@ -50,3 +50,3 @@\n line 49\n-line 50\n+changed\n line 51\n", d.unified);
 }
 
 test "a CRLF file diffs cleanly against itself" {

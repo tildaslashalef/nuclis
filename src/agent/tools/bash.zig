@@ -6,7 +6,9 @@
 //! one ordered stream rather than two interleaved approximations. Cancellation
 //! and the timeout both kill and reap the child, so an interrupted command
 //! leaves nothing behind; exceeding the output bound stops reading, kills the
-//! child, and returns the prefix with `truncated` set.
+//! child, and returns the prefix with `truncated` set. An output longer than
+//! `head_lines + tail_lines` reaches the model as its head and tail with the
+//! omitted count marked between them.
 //!
 //! The child sees a **minimal environment**: only `PATH`, `HOME`, `LANG`,
 //! `TERM`, and `TMPDIR` are forwarded from the parent, so a secret sitting in
@@ -29,6 +31,10 @@ pub const tool: root.Tool = .{
 };
 
 const max_output: usize = 1024 * 1024;
+/// Lines of a long output the model reads: its head and, since a failure
+/// reports at the end, a longer tail, with the count omitted between them.
+const head_lines: usize = 40;
+const tail_lines: usize = 80;
 const max_command: usize = 32 * 1024;
 const timeout_ns: i96 = 300 * std.time.ns_per_s;
 const poll_ms: i64 = 100;
@@ -144,6 +150,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
         try text.appendSlice(alloc, stderr_owned);
     }
     const lines = countLines(text.items);
+    try elide(alloc, &text, lines);
     // The detail row says only what went wrong; a clean run shows nothing
     // beyond its command.
     var summary: std.ArrayList(u8) = .empty;
@@ -165,7 +172,10 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
             try text.appendSlice(alloc, "\n[bash: could not read the command's output]");
             try summary.appendSlice(alloc, "could not read the output");
         },
-        .truncated => try summary.print(alloc, "output truncated at {d} bytes", .{max_output}),
+        .truncated => {
+            try text.print(alloc, "\n[bash: output stopped at {d} bytes and the command was killed]", .{max_output});
+            try summary.print(alloc, "output truncated at {d} bytes", .{max_output});
+        },
         .completed => {},
     }
     switch (term) {
@@ -193,6 +203,22 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
     const owned_summary: ?[]u8 = if (summary.items.len > 0) try summary.toOwnedSlice(alloc) else null;
     errdefer if (owned_summary) |s| alloc.free(s);
     return .{ .text = try text.toOwnedSlice(alloc), .truncated = outcome == .truncated, .is_error = is_error, .summary = owned_summary };
+}
+
+/// Keeps the first `head_lines` and last `tail_lines` of an output longer
+/// than both, with a marked count of the lines between.
+fn elide(alloc: std.mem.Allocator, text: *std.ArrayList(u8), lines: usize) std.mem.Allocator.Error!void {
+    if (lines <= head_lines + tail_lines) return;
+    var head_end: usize = 0;
+    for (0..head_lines) |_| head_end = std.mem.indexOfScalarPos(u8, text.items, head_end, '\n').? + 1;
+    // The tail starts after the newline that ends line `lines - tail_lines`.
+    var tail_start = text.items.len;
+    if (text.items[tail_start - 1] == '\n') tail_start -= 1;
+    for (0..tail_lines) |_| tail_start = std.mem.lastIndexOfScalar(u8, text.items[0..tail_start], '\n').?;
+    tail_start += 1;
+    var note: [48]u8 = undefined;
+    const marker = std.fmt.bufPrint(&note, "[bash: {d} lines omitted]\n", .{lines - head_lines - tail_lines}) catch unreachable;
+    try text.replaceRange(alloc, head_end, tail_start - head_end, marker);
 }
 
 fn countLines(text: []const u8) usize {
@@ -309,6 +335,22 @@ test "bash bounds the output and marks it truncated" {
     try testing.expect(result.truncated);
     try testing.expect(result.text.len <= max_output);
     try testing.expect(std.mem.startsWith(u8, result.summary.?, "output truncated at "));
+}
+
+test "a long output keeps its head and its tail with the omitted count between" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var result = try run(fixture.ws, alloc, "{\"command\":\"seq 1 500\"}");
+    defer result.deinit(alloc);
+    try testing.expect(std.mem.startsWith(u8, result.text, "1\n2\n"));
+    try testing.expect(std.mem.indexOf(u8, result.text, "\n40\n[bash: 380 lines omitted]\n421\n") != null);
+    try testing.expect(std.mem.endsWith(u8, result.text, "\n500\n"));
+
+    // At the bound nothing is omitted.
+    var whole = try run(fixture.ws, alloc, "{\"command\":\"seq 1 120\"}");
+    defer whole.deinit(alloc);
+    try testing.expect(std.mem.indexOf(u8, whole.text, "omitted") == null);
 }
 
 test "bash rejects an empty or oversized command as a result" {

@@ -684,12 +684,16 @@ marked; exceeding a limit is a typed result, not an abort.
 
 | Tool | Contract |
 | --- | --- |
-| `read_file` | a line-addressed region: offset and count, 200 lines by default, at most 2,000 lines; a file over 1 MiB serves its first MiB with the size stated and the shell named for the rest; the result says where to continue; non-UTF-8 is a typed error |
-| `write_file` | create or replace a UTF-8 text file, at most 1 MiB, by atomic replacement |
-| `edit_file` | replace one exact, unique, non-empty sequence; zero or several matches change nothing |
+| `read_file` | a line-addressed region: offset and count, 120 lines by default, at most 2,000 lines; a partial page ends with a note the model reads (its range, the total, where to continue), a whole file with none; a file over 1 MiB serves its first MiB with the size stated and the shell named for the rest; `outline` lists a markdown file's headings or a source file's definitions (Python, Zig, JS/TS, Go, Rust, C-family, shell) with line numbers, at most 400; non-UTF-8 is a typed error |
+| `write_file` | create or replace a UTF-8 text file, at most 1 MiB, by atomic replacement; the model reads a replacement's diff, a new file's line count only |
+| `edit_file` | replace one exact, unique, non-empty sequence; zero or several matches change nothing; the model reads the diff with one line of context (the transcript shows three) |
 | `glob` | one pattern (`*`, `?`, classes, `**`); hidden entries only when named; at most 200 results in stable order |
-| `grep` | literal, case-sensitive; skips hidden entries, symlinks, binary-looking files, and generated trees; at most 200 matches |
-| `bash` | one command with a minimal environment; combined output at most 1 MiB; 300 s; cancellation, the timeout, and the output bound kill and reap the child |
+| `grep` | literal, case-sensitive; `path` narrows it to a directory, a file, or a glob, `context` adds 0–5 lines around a match; grouped by file in path order; at most 50 matches with the total stated; skips hidden entries, symlinks, binary-looking files, generated trees, and what each directory's `.gitignore` excludes (a subset: negation, directory-only, anchoring, the glob wildcards) |
+| `bash` | one command with a minimal environment; combined output at most 1 MiB; 300 s; cancellation, the timeout, and the output bound kill and reap the child; an output over 120 lines reaches the model as its first 40 and last 80 with the omitted count between |
+
+A read of lines a file returned earlier in the same turn, from unchanged
+content and with that result still in the context, is answered with a
+one-line pointer to it rather than the lines again.
 
 Read: [reference/agent-concepts.md](reference/agent-concepts.md),
 [reference/tool-calling.md](reference/tool-calling.md).

@@ -147,11 +147,54 @@ own edit), so the repeated-read check saves nothing on this list. The
 largest results: `history.md` page one, 1,163 tokens (both seeds); a
 30-line sample of `big.txt`, 644.
 
+Tool lever group measured (uncommitted at the time of writing; variant
+`agnt20-tools`, `.zig-cache/agent-eval/agnt20-tools/`): `read_file` 120-line
+page with a model-visible range note and `outline`, `grep` path/context/
+grouping/50/`.gitignore` with `[no matches]`, the edit diff at 1 context
+line (rows keep 3; the hunk's trailing context now counts from the end of
+the change run), no echo of a new file's content, `bash` head 40 + tail 80,
+the repeated-read pointer. Against `agnt20-base`: tool-result tokens
+18,067 → 12,924 (−28 %; `read_file` 10,041 → 7,146, `bash` 3,189 → 1,699,
+`edit_file` 3,154 → 2,635, `write_file` 775 → 44, `grep` 820 → 1,273,
+`glob` 88 → 127); prompt tokens per run 872 → 586; steps 4.46 → 4.38;
+model seconds 54.1 → 44.5 (part of the run shared the GPU with the
+user's own session: indicative only); 12/13 tasks on every seed both
+(`history` passes one seed each); tool errors 3 → 1. The tools block is
+re-pinned at 3,392 bytes (+433, about 115 tokens).
+
 Fix from the user's testing (2026-10-04): Enter on the open `/` list
 sent `/` to the model; it now runs the highlighted command (`/` Enter
 opens `/model`'s picker, `/cl` Enter clears), and a bare `/` is a notice
 listing the commands. Evidence: `slash-open`, `slash-enter`, `slash-cl`,
 `slash-bare`.
+
+Fixed from the user's testing (2026-10-04, Gemma 4 12B QAT after
+`/model`, session `~/.nuclis/agent/sessions/Users-alef-Code-playground/20261004T124842Z_24844ed7…`),
+committed `4c55dfc`; every profile shared the causes (a read-only
+investigation tabled them per profile). The budget cut fired once, so a
+reopened thought ran to max-tokens (4,095 reasoning tokens, no answer):
+`Decoder.cutToken` now closes every reopen past the budget, after its
+header, and the speculative path checks it at every accepted draft (it
+overshot by 13). The model's own late close printed as `<channel|>`: a
+close with no reasoning open is dropped. A call cut by Esc printed as raw
+`<|tool_call>…`: an open call at a stop is a `tool_cut` notice, never
+text (at EOS a parsing body is still a call; a channel body keeps its
+grammar). A long call streamed nothing: `tool_progress` drives "writing a
+tool call… N KB" in the region. The missing `path` was the model's
+(Gemma's template sorts `content` first): `tools.checkArguments` names a
+missing or mistyped argument. Qwen values may contain `</parameter>`.
+Evidence: Gemma `--thinking-budget 64` wrote `notes.md` with the cut at
+68 tokens and no marker in the answer (`.zig-cache/gemma-repro/`); Qwen
+in the TUI held 1,025 and showed `writing a tool call… 1.5 KB`
+(`call-progress`, `call-done`). `make verify-auto` passed: unit,
+lint-py, 15 fast gates (Qwen, Gemma 4 E4B and 26B-A4B, Muse).
+
+Agreed with the user (2026-10-04), next in this session: output and
+thinking defaults. `generation.max_tokens` 4,096 → 8,192; a thinking
+budget at every effort, not only `low` (low 1,024 measured; medium 2,048
+and xhigh 4,096 proposed), never above half of `max_tokens`; medium
+measured on the task list before pinning; then the user's `nuclis.json`
+updated to match.
 
 **Session 2 (as planned): reading less.** Files: `src/agent/tools/grep.zig`,
 `read_file.zig`, `edit_file.zig`, `bash.zig`, `src/agent/loop.zig` (the

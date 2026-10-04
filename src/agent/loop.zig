@@ -255,6 +255,10 @@ pub const Agent = struct {
     /// Where the turn in progress begins in `history`; only earlier items may
     /// be dropped by compaction.
     turn_start: usize = 0,
+    /// The turn's line-addressed reads, so a repeat of an unchanged range is
+    /// answered with a pointer to the result still in the context. Cleared
+    /// with every turn.
+    reads: std.ArrayList(Read) = .empty,
 
     thinking: std.Io.Writer.Allocating,
     /// The answer content of the step, calls excluded: what the user read and
@@ -334,6 +338,8 @@ pub const Agent = struct {
         self.image_scratch.deinit(self.alloc);
         self.clearCalls();
         self.calls.deinit(self.alloc);
+        self.clearReads();
+        self.reads.deinit(self.alloc);
         for (self.steering.items) |text| self.alloc.free(text);
         self.steering.deinit(self.alloc);
         self.thinking.deinit();
@@ -384,6 +390,7 @@ pub const Agent = struct {
         self.clearHistory();
         self.turn_start = 0;
         self.clearCalls();
+        self.clearReads();
     }
 
     /// Rebuilds the conversation from a stored one (`/resume`, `--resume`), so
@@ -402,6 +409,7 @@ pub const Agent = struct {
         }
         self.next_id = @max(self.next_id, highest + 1);
         self.turn_start = self.history.items.len;
+        self.clearReads();
     }
 
     /// Encodes every attached image again through `model`'s projector: after
@@ -482,6 +490,7 @@ pub const Agent = struct {
     /// on, even when the turn fails.
     pub fn turn(self: *Agent, user: []const u8, images: []Image) !Stop {
         self.turn_start = self.history.items.len;
+        self.clearReads();
         if (self.turnCount() >= self.max_turns) {
             freeImages(self.alloc, images);
             return error.ConversationLimit;
@@ -709,13 +718,15 @@ pub const Agent = struct {
             defer if (joined) |bytes| self.alloc.free(bytes);
             if (result.change) |*change| {
                 try self.events.send(self.events.context, .{ .diff = .{ .path = change.path, .rows = change.diff.rows } });
-                joined = try self.alloc.print("{s}\n{s}", .{ result.text, change.diff.unified });
-                model_text = joined.?;
+                if (change.echo) {
+                    joined = try self.alloc.print("{s}\n{s}", .{ result.text, change.diff.unified });
+                    model_text = joined.?;
+                }
             }
 
             // The tool's own bounds are host ceilings; this cut is the one
             // that scales with the window, so one result cannot fill it.
-            var fitted = try self.fit(call, model_text);
+            var fitted = try self.fit(call, model_text, result.lines);
             defer if (fitted) |*f| f.deinit(self.alloc);
             var truncated = result.truncated;
             var summary: []const u8 = result.summary orelse "";
@@ -734,6 +745,20 @@ pub const Agent = struct {
                     try self.alloc.print("cut to {d} of {d} lines for the context", .{ f.kept_lines, f.total_lines });
                 summary = cut_summary.?;
             }
+
+            var repeat_text: ?[]u8 = null;
+            defer if (repeat_text) |t| self.alloc.free(t);
+            if (result.lines) |range| if (!result.is_error) {
+                const kept = if (fitted) |f| f.kept_lines else range.count;
+                if (try self.noteRead(call, range, kept)) |earlier| {
+                    repeat_text = try self.alloc.print("[unchanged since step {d}: lines {d} to {d} of this file are in that result above]", .{ earlier.step, range.first, range.first + range.count - 1 });
+                    model_text = repeat_text.?;
+                    if (cut_summary) |old| self.alloc.free(old);
+                    cut_summary = try self.alloc.print("unchanged since step {d}", .{earlier.step});
+                    summary = cut_summary.?;
+                    truncated = false;
+                }
+            };
 
             try self.events.send(self.events.context, .{ .tool_result = .{
                 .id = id,
@@ -754,6 +779,60 @@ pub const Agent = struct {
         }
     }
 
+    /// One line-addressed read of the turn in progress.
+    const Read = struct {
+        /// Canonical, owned (sentinel-terminated, as `resolve` allocates it).
+        path: [:0]u8,
+        first: usize,
+        count: usize,
+        digest: u64,
+        step: usize,
+        /// Its result's place counted from `turn_start`, which stays valid
+        /// when earlier turns are dropped.
+        item: usize,
+    };
+
+    fn clearReads(self: *Agent) void {
+        for (self.reads.items) |read| self.alloc.free(read.path);
+        self.reads.clearRetainingCapacity();
+    }
+
+    /// The earlier read of this turn whose result, still verbatim in the
+    /// history, holds every line `range` returned from the same content;
+    /// null otherwise, after recording this read (its first `kept` lines,
+    /// what the model will see) for the next call to find.
+    fn noteRead(self: *Agent, call: Profile.ToolCall, range: tools.LineRange, kept: usize) !?Read {
+        if (range.count == 0) return null;
+        const Args = struct { path: []const u8 };
+        const parsed = std.json.parseFromSlice(Args, self.alloc, call.arguments, .{ .ignore_unknown_fields = true }) catch return null;
+        defer parsed.deinit();
+        const abs = self.workspace.resolve(self.alloc, parsed.value.path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+        var owned = true;
+        defer if (owned) self.alloc.free(abs);
+        const last = range.first + range.count - 1;
+        for (self.reads.items) |read| {
+            if (read.digest != range.digest or !std.mem.eql(u8, read.path, abs)) continue;
+            if (range.first < read.first or last >= read.first + read.count) continue;
+            const at = self.turn_start + read.item;
+            if (at >= self.history.items.len or std.mem.startsWith(u8, self.history.items[at].content, elided_prefix)) continue;
+            return read;
+        }
+        if (kept == 0) return null;
+        try self.reads.append(self.alloc, .{
+            .path = abs,
+            .first = range.first,
+            .count = kept,
+            .digest = range.digest,
+            .step = self.steps_done,
+            .item = self.history.items.len - self.turn_start,
+        });
+        owned = false;
+        return null;
+    }
+
     /// A result cut to the budget: the kept prefix plus a note that says what
     /// was left out and how to ask for it.
     const Fitted = struct {
@@ -770,10 +849,11 @@ pub const Agent = struct {
     /// Null when `text` fits `result_budget`; otherwise the longest prefix at a
     /// line boundary that does, found by scaling the byte cut with the
     /// measured token density and recounting, plus the continuation note.
-    fn fit(self: *Agent, call: Profile.ToolCall, text: []const u8) !?Fitted {
+    /// `lines` is a read's range: its count, not the text's note, is the total.
+    fn fit(self: *Agent, call: Profile.ToolCall, text: []const u8, lines: ?tools.LineRange) !?Fitted {
         var tokens = try self.model.count(self.model.context, text);
         if (tokens <= self.result_budget) return null;
-        const total_lines = countLines(text);
+        const total_lines = if (lines) |range| range.count else countLines(text);
         var keep = text.len;
         var rounds: usize = 0;
         while (tokens > self.result_budget and keep > 0) : (rounds += 1) {
@@ -1753,6 +1833,7 @@ test "a mutation sends a diff event and the model reads the unified change" {
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "new.txt", .data = "old\n" });
     var stub: Stub = .{
         .answers = &.{ "", "done" },
         .calls = &.{&.{write_new}},
@@ -1768,10 +1849,28 @@ test "a mutation sends a diff event and the model reads the unified change" {
     try testing.expectEqual(@as(usize, 1), capture.results.items.len);
     // The model's `.tool` result carries the unified diff, not just the status
     // line, so it can see exactly what it changed.
-    try testing.expect(std.mem.indexOf(u8, agent.history.items[2].content, "+hello") != null);
+    try testing.expect(std.mem.indexOf(u8, agent.history.items[2].content, "-old\n+hello") != null);
     const contents = try fixture.tmp.dir.readFileAlloc(testing.io, "new.txt", alloc, .limited(1024));
     defer alloc.free(contents);
     try testing.expectEqualStrings("hello", contents);
+}
+
+test "a new file's diff is drawn for the user but not echoed to the model" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var stub: Stub = .{
+        .answers = &.{ "", "done" },
+        .calls = &.{&.{write_new}},
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("create it", &.{}));
+    try testing.expectEqual(@as(usize, 1), capture.diffs);
+    try testing.expectEqualStrings("created new.txt (1 line)", agent.history.items[2].content);
 }
 
 test "a result over the context budget is cut at a line and told how to continue" {
@@ -1809,7 +1908,7 @@ test "a result over the context budget is cut at a line and told how to continue
     try testing.expectEqualStrings(shown, agent.history.items[2].content);
 
     // A result that fits is left alone.
-    try testing.expect((try agent.fit(read_a, "short")) == null);
+    try testing.expect((try agent.fit(read_a, "short", null)) == null);
 }
 
 test "a single line over the budget is cut inside the line at a code point" {
@@ -1823,7 +1922,7 @@ test "a single line over the budget is cut inside the line at a code point" {
     defer agent.deinit();
     agent.result_budget = 4;
     // 40 bytes of two-byte code points on one line: 10 stub tokens.
-    var fitted = (try agent.fit(read_a, "éééééééééééééééééééé")).?;
+    var fitted = (try agent.fit(read_a, "éééééééééééééééééééé", null)).?;
     defer fitted.deinit(alloc);
     const note_at = std.mem.indexOf(u8, fitted.text, "\n[truncated").?;
     try testing.expect(note_at > 0 and note_at <= 16);
@@ -2029,9 +2128,10 @@ test "the tools block the profile renders is pinned to its measured size" {
     // Measured on the pinned Qwen artifact (2026-09-14): the six-tool block
     // added 720 prompt tokens / 2,896 bytes to the system prompt, ~9% of an
     // 8,192-token context before any conversation; `read_file`'s description
-    // grew it to 2,959 bytes on 2026-09-15. Pinned so a tool description
-    // edit cannot grow the context silently.
-    try testing.expectEqual(@as(usize, 2959), with_tools.len - without.len);
+    // grew it to 2,959 bytes on 2026-09-15; `grep`'s path and context and
+    // `read_file`'s outline to 3,392 (about 115 tokens more) on 2026-10-04.
+    // Pinned so a tool description edit cannot grow the context silently.
+    try testing.expectEqual(@as(usize, 3392), with_tools.len - without.len);
 }
 
 test "every step that reasoned closes its own thinking block" {
@@ -2079,11 +2179,17 @@ test "a full window first elides the turn's older tool results, keeping the last
     const alloc = testing.allocator;
     var fixture = try Fixture.init(alloc);
     defer fixture.deinit(alloc);
-    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\nthree" });
+    // Four files, so no read repeats another (a repeat would be a pointer).
+    for ([_][]const u8{ "a.txt", "b.txt", "c.txt", "d.txt" }) |name| try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = "one\ntwo\nthree" });
+    const read = struct {
+        fn of(comptime name: []const u8) Profile.ToolCall {
+            return .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"" ++ name ++ "\"}" };
+        }
+    };
     // Four read steps, then the window is full at the fifth completion.
     var stub: Stub = .{
         .answers = &.{ "", "", "", "", "done" },
-        .calls = &.{ &.{read_a}, &.{read_a}, &.{read_a}, &.{read_a} },
+        .calls = &.{ &.{read.of("a.txt")}, &.{read.of("b.txt")}, &.{read.of("c.txt")}, &.{read.of("d.txt")} },
         .context_full_at = 4,
     };
     var capture = Capture.init(alloc);
@@ -2105,6 +2211,31 @@ test "a full window first elides the turn's older tool results, keeping the last
     try testing.expectEqual(@as(usize, 1), capture.notices);
     // No earlier turn existed to drop; the turn's own results were enough.
     try testing.expectEqual(@as(usize, 0), agent.turn_start);
+}
+
+test "a repeated read of an unchanged range points at the earlier result; a changed file is read again" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    try fixture.tmp.dir.writeFile(testing.io, .{ .sub_path = "a.txt", .data = "one\ntwo\nthree" });
+    const part: Profile.ToolCall = .{ .id = 0, .name = "read_file", .arguments = "{\"path\":\"./a.txt\",\"offset\":2,\"count\":1}" };
+    const edit: Profile.ToolCall = .{ .id = 0, .name = "edit_file", .arguments = "{\"path\":\"a.txt\",\"old_string\":\"two\",\"new_string\":\"TWO\"}" };
+    var stub: Stub = .{
+        .answers = &.{ "", "", "", "", "done" },
+        .calls = &.{ &.{read_a}, &.{part}, &.{edit}, &.{part} },
+    };
+    var capture = Capture.init(alloc);
+    defer capture.deinit();
+    var agent = try Agent.init(alloc, testing.io, fixture.ws, stub.model(), capture.eventsSeam(), budget_default, .{ .root = fixture.ws.root });
+    defer agent.deinit();
+
+    try testing.expectEqual(Stop.done, try agent.turn("read, reread, edit, reread", &.{}));
+    // [user, (assistant, tool) x4, assistant]
+    try testing.expectEqualStrings("one\ntwo\nthree", agent.history.items[2].content);
+    // Line 2 lies inside step 1's whole-file read, under another spelling.
+    try testing.expectEqualStrings("[unchanged since step 1: lines 2 to 2 of this file are in that result above]", agent.history.items[4].content);
+    // After the edit the content differs, so the line is served again.
+    try testing.expectEqualStrings("TWO\n[lines 2 to 2 of 3 · truncated, continue with offset=3]", agent.history.items[8].content);
 }
 
 test "with nothing left to elide, a full window is the caller's error" {

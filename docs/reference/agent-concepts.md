@@ -267,9 +267,18 @@ name resolved through anything the child can influence.
 
 Finally, the split between `grep` and `bash` is deliberate. `grep` is literal,
 native, and bounded: one predictable contract that the tool layer can test
-without a shell. `bash` is the escape hatch for everything the fixed tools do
-not cover — regex, pipeline, `.gitignore` semantics — and it pays for that
-power with the process lifetime above.
+without a shell, and it reads each directory's `.gitignore` itself, so the
+same tree gives the same result on every machine. `bash` is the escape hatch
+for everything the fixed tools do not cover — regex, pipelines — and it pays
+for that power with the process lifetime above.
+
+What a tool returns is prefill the next step pays for: on the playground
+task list four fifths of a turn's prefilled tokens were tool results. So
+every result is shaped for the model's reading, not for completeness: a
+page rather than a file, a file's outline before its body, matches grouped
+under their path, a diff with one line of context, a long command output's
+head and tail, and a pointer instead of a range already in the context.
+Whatever is left out is stated with how to get it.
 
 One more turn of the same screw. When the terminal is in raw mode, Ctrl-C is a
 *key*, not a signal — ISIG is off — so the interrupt the engine's observer
@@ -305,7 +314,9 @@ are stripped first, because the common case is a small edit in a large file;
 the remaining middle goes through an LCS table, and a middle too large for the
 table degrades to "all removed, all added" rather than spending unbounded
 time. Only changed hunks plus three lines of context are materialised, so a
-one-line edit in a thousand-line file stays seven rows. Pairing a removal with
+one-line change in a thousand-line file stays eight rows; the unified text the
+model reads keeps one line on each side, since it wrote the change and pays
+for every line it reads back. Pairing a removal with
 the addition that replaced it is what lets the two-column view put them on one
 display row and highlight the bytes that differ, and it falls out of the same
 edit script.

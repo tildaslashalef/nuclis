@@ -9,8 +9,9 @@
 //! than blindly overwritten — the model is told why, as a result it can read.
 //!
 //! The old and new contents become a structured diff (`tui.diff`) attached to
-//! the result, which the loop turns into the `diff` event and the unified text
-//! the model and session record.
+//! the result, which the loop turns into the `diff` event and, for a
+//! replacement, the unified text the model and session record; a new file's
+//! diff would only repeat the content the model just wrote.
 const std = @import("std");
 const root = @import("root.zig");
 const tui = @import("../../tui/root.zig");
@@ -73,7 +74,7 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
 /// the failure paths above can return early without touching the file.
 fn commit(workspace: root.Workspace, alloc: std.mem.Allocator, display: []const u8, target: []const u8, old: []const u8, content: []const u8, existed: bool) std.mem.Allocator.Error!root.Result {
     const path_owned = try alloc.dupe(u8, display);
-    var change: root.Change = .{ .path = path_owned, .diff = undefined };
+    var change: root.Change = .{ .path = path_owned, .diff = undefined, .echo = existed };
     change.diff = tui.diff.compute(alloc, old, content) catch |err| {
         alloc.free(path_owned);
         return err;
@@ -85,9 +86,9 @@ fn commit(workspace: root.Workspace, alloc: std.mem.Allocator, display: []const 
         return root.fail(alloc, "write_file: {s}: {s}", .{ display, @errorName(err) });
     };
 
-    const text = try alloc.print("{s} {s} ({d} bytes)", .{ if (existed) "replaced" else "created", display, content.len });
-    errdefer alloc.free(text);
     const lines = std.mem.count(u8, content, "\n") + @intFromBool(content.len > 0 and content[content.len - 1] != '\n');
+    const text = try alloc.print("{s} {s} ({d} line{s})", .{ if (existed) "replaced" else "created", display, lines, if (lines == 1) "" else "s" });
+    errdefer alloc.free(text);
     const summary = if (existed) blk: {
         const counts = try root.changeSummary(alloc, change.diff.rows);
         defer alloc.free(counts);

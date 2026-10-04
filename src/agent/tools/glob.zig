@@ -108,7 +108,9 @@ const Walker = struct {
 
 // ----- pattern matching -----
 
-fn matchPattern(pattern: []const u8, path: []const u8) bool {
+/// Whether a workspace-relative `path` matches `pattern` (the `glob` syntax:
+/// `*` and `?` within a segment, `[...]`, `**` across segments).
+pub fn matchPattern(pattern: []const u8, path: []const u8) bool {
     return matchFrom(pattern, 0, path, 0);
 }
 
