@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/branding/nuclis.png" alt="nuclis logo: two teal bands forming an N around an amber diamond" width="160">
+</p>
+
 # nuclis
 
 A local inference engine for open-weight language models, written in Zig
