@@ -172,6 +172,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-31 | CI installs Zig 0.17.0: `.github/zig-toolchain` pins the four 0.17.0 tarball digests in place of 0.16.0's; `release` also reads digests from its own revision, so v0.4.0 publishes by dispatch | 2026-10-03 |
 | AGNT-19 | Token caching for the agent: the primed prefix and turn ends kept in memory and on disk, resume from the last turn, replay causes on the bar; `/list`, `/delete`, `agent rm`, `nuclis cache`; from testing: `bash` spawns again (broken since Zig 0.17), fuzzy `@`, Esc cancels. Task list wall −23 % per task, a 9.8K resume 126.5 → 2.05 s | 2026-10-04 |
 | AGNT-20 | A faster agent step: the command surface and `/model` (one picker, model switch in place), reading less (pages, outlines, grouped `grep` with `.gitignore`, one-line-context diffs, head-and-tail `bash`, repeat pointers; tool-result tokens −28 %), `max_tokens` 8192 and a reasoning cap at every effort; from testing: a reopened thought bounded, cut calls never shown as text, bad arguments named, Enter runs the highlighted command. Faster prefill dropped by the user | 2026-10-04 |
+| REPO-32 | `release` publishes tags that pin their own compiler: the installer takes the first matching digest and comes from the workflow's revision; REPO-31's append listed v0.5.0's 0.17.0 pin twice and failed its release | 2026-10-04 |
 
 ## Context
 
@@ -7874,3 +7875,32 @@ resume replays through the running model whatever `model` entries the file
 holds; command-line sampling flags do not carry across a switch. A model
 may still continue its plan as answer text after a cut (clean text now,
 no markers).
+
+## REPO-32 — `release` publishes tags that pin their own compiler (2026-10-04)
+
+**Outcome.** The v0.5.0 release run failed at "Install the pinned Zig" with
+a digest mismatch whose two digests were equal. REPO-31 made `release.yml`
+append the workflow revision's `.github/zig-toolchain` to the tag's, which
+v0.4.0 needed (its file pinned 0.16.0 only). v0.5.0 was cut after REPO-31,
+so its file already pinned 0.17.0 and the append listed the line twice;
+`install-zig.sh`'s awk printed every match, and `expected` held the digest
+twice, newline-joined. Every later tag would have failed the same way.
+
+`install-zig.sh` now takes the first matching line (the tag's own pin).
+Since the release job checks out the tag and so ran the tag's installer,
+`release.yml` also overwrites `.github/install-zig.sh` with the workflow
+revision's before running it, so v0.5.0 publishes by dispatch without
+moving the tag.
+
+**Evidence.** The old lookup on `v0.5.0`'s file with the fixed tree's
+appended printed the digest twice; the new one prints it once. The release
+step reproduced in worktrees of `v0.5.0` (two pin lines) and `v0.4.0` (one)
+with the fixed installer: both downloaded `zig-aarch64-macos-0.17.0.tar.xz`,
+matched the digest, and printed `0.17.0`.
+
+**Files.** `.github/install-zig.sh`, `.github/workflows/release.yml`,
+`docs/development.md` (§ Continuous integration and releases), this log.
+
+**Remaining.** REPO-31's evidence covered only a tag without the pin; the
+release path is still only exercised by a real tag. v0.5.0 needs a
+`release` dispatch from `main` with `tag: v0.5.0`.

@@ -1042,10 +1042,12 @@ unless:
 3. the installed `zig version` equals `minimum_zig_version`;
 4. `CHANGELOG.md` has a section for the tag.
 
-The Zig version is the tag's, but the digests are the tag's
-`.github/zig-toolchain` plus the workflow revision's, so a tag cut before
-its compiler was pinned is published by dispatching `release` from `main`
-with the tag as input, never by moving the tag.
+The Zig version is the tag's, but `install-zig.sh` is the workflow
+revision's and the digests are the tag's `.github/zig-toolchain` plus the
+workflow revision's (the first matching line wins, so a pin both carry is
+not a conflict). A tag cut before its compiler was pinned, or with a broken
+installer, is published by dispatching `release` from `main` with the tag
+as input, never by moving the tag.
 
 It then runs the same gate, builds `-Dmetal=true -Doptimize=ReleaseSafe`,
 asserts the binary reports the tag's version, and publishes three assets: the

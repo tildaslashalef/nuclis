@@ -53,12 +53,14 @@ jobs:
           echo "version=$manifest" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      # The tag's manifest picks the Zig version; the digests also come from
-      # the workflow's own revision, so a tag cut before its compiler was
-      # pinned can still be published by dispatch. The source archive is
-      # `git archive` of the tag, untouched by this edit.
+      # The tag's manifest picks the Zig version; the installer and extra
+      # digests come from the workflow's own revision, so a tag cut before
+      # its compiler was pinned, or with a broken installer, can still be
+      # published by dispatch. The source archive is `git archive` of the
+      # tag, untouched by these edits.
       - name: Install the pinned Zig
         run: |
+          git show "${{ github.sha }}:.github/install-zig.sh" > .github/install-zig.sh
           git show "${{ github.sha }}:.github/zig-toolchain" >> .github/zig-toolchain
           ./.github/install-zig.sh "$HOME/.local/zig"
 

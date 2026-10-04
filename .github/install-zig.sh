@@ -29,7 +29,9 @@ case "$(uname -s)-$(uname -m)" in
   *) echo "install-zig: unsupported host $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
 
-expected="$(awk -v v="$version" -v t="$target" '$1 == v && $2 == t { print $3 }' "$here/zig-toolchain")"
+# The first match only: the release workflow appends its own revision's pins
+# to the tag's, so a tag cut after a pin lists the same line twice.
+expected="$(awk -v v="$version" -v t="$target" '$1 == v && $2 == t { print $3; exit }' "$here/zig-toolchain")"
 if [ -z "$expected" ]; then
   echo "install-zig: .github/zig-toolchain has no digest for $version $target" >&2
   echo "  add one from https://ziglang.org/download/index.json" >&2
