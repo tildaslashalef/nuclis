@@ -2373,3 +2373,23 @@ the fixture's):
 
 The mixture of experts moved least: within ±5 % everywhere, 32K prefill
 −5 %. Server RSS 14.2–14.7 GiB.
+
+### Reference: Muse Glimmer 30B
+
+[reference-2026-10-04-muse-glimmer.json](../benchmarks/reference-2026-10-04-muse-glimmer.json),
+replaying `run-2026-09-19-muse-glimmer`. The server's own rendering
+differs from the fixture's, as expected: the template carries the
+server's date, so the replay is what keeps the 2026-09 tokens.
+
+| Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 96.43 ± 0.46 | 14.24 ± 0.01 | 95.28 / 13.69 | +4.0 % |
+| 4,096 | 89.79 ± 6.49 | 11.00 ± 1.14 | 93.01 / 12.14 | −9.4 % |
+| 16,384 | 78.67 ± 1.86 | 9.63 ± 0.20 | 80.96 / 10.07 | −4.3 % |
+| 32,639 | 75.43 ± 0.27 | 9.38 ± 0.08 | 76.86 / 9.98 | −6.0 % |
+
+The 4,096 row is disturbed: its three requests slowed one after the
+other (prefill 95.9 → 90.4 → 83.0, decode 12.3 → 10.6 → 10.1, 22:01–22:03
+local) while 512 before them was steady and 32,639 after them holds
+within ±0.3; no thermal warning was recorded. It is re-run alone below.
+Server RSS 15.2–15.5 GiB.

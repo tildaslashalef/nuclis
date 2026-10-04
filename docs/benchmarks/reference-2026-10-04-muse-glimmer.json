@@ -1,0 +1,384 @@
+{
+  "date": "2026-10-04",
+  "started_at": "2026-10-04T19:59:12.882272+00:00",
+  "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "family": "muse-glimmer",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+  "model_sha256": "82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38",
+  "build_info": "b10823-7620399f5",
+  "hardware": "Apple M4 Pro\n51539607552\n12",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434",
+  "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=23265379)\t100%; charged; 0:00 remaining present: true",
+  "context": 32768,
+  "output_tokens": 128,
+  "prompt_lengths": [
+    512,
+    4096,
+    16384,
+    32639
+  ],
+  "repetitions": 3,
+  "methodology": "See ../reference/reference-baseline.md. Greedy, seed 1, no prefix reuse, EOS ignored for the timed requests, one untimed warmup per length excluded from the means; rates are the server's own timings.",
+  "replayed_from": [
+    "tests/fixtures/run-2026-09-19-muse-glimmer"
+  ],
+  "server_template_equal": false,
+  "prompt_file_sha256": {
+    "prompt-16384.json": "e8593ba7b0834d6969f0b270300b332a7c2eee79dbf73404da266ad5db3b8a64",
+    "prompt-32639.json": "5771b1c7fdc1b7c10055db5fb04b90d38e1eec8e3298d24573f81d792fb3b26a",
+    "prompt-4096.json": "c743a1ae958c0104cb6c4278bf765c9e3bb936017cb8d63322f81daf14b4ce7e",
+    "prompt-512.json": "a2760e4ac8e15d2cfdc2e40f19eb2687e8877222986935426446907cfbce1af2",
+    "prompt-construction.json": "0e66c83e494dcc1a154a8f70e31b7154f87017a2f89bc7a48d43a95738528df7"
+  },
+  "smoke_response": " to=self<|message|>Write a Python function add(a, b) that returns their sum. Return only code.\n\nReturn only code. Probably just function definition.\n\nNo extra text. Probably just code block? \"Return only code.\" Might be just code lines.\n\nProvide:\n\ndef add(a, b):\n    return a + b\n\nThat's it.\n\nEnsure no extra explanation.<|start|>assistant to=user<|message|>def add(a, b):\n    return a + b",
+  "summary": [
+    {
+      "prompt_tokens": 512,
+      "phase": "warm",
+      "samples": 3,
+      "prompt_per_second": {
+        "mean": 96.43135720308113,
+        "sample_stdev": 0.46468622485960137
+      },
+      "predicted_per_second": {
+        "mean": 14.244815241249515,
+        "sample_stdev": 0.013212858060826043
+      }
+    },
+    {
+      "prompt_tokens": 4096,
+      "phase": "warm",
+      "samples": 3,
+      "prompt_per_second": {
+        "mean": 89.78548783755032,
+        "sample_stdev": 6.4906327311322585
+      },
+      "predicted_per_second": {
+        "mean": 10.996607086016724,
+        "sample_stdev": 1.1377842121052184
+      }
+    },
+    {
+      "prompt_tokens": 16384,
+      "phase": "warm",
+      "samples": 3,
+      "prompt_per_second": {
+        "mean": 78.67306913745902,
+        "sample_stdev": 1.860836586652536
+      },
+      "predicted_per_second": {
+        "mean": 9.633921384077365,
+        "sample_stdev": 0.20384595148865958
+      }
+    },
+    {
+      "prompt_tokens": 32639,
+      "phase": "warm",
+      "samples": 3,
+      "prompt_per_second": {
+        "mean": 75.42734988709044,
+        "sample_stdev": 0.2662196868692057
+      },
+      "predicted_per_second": {
+        "mean": 9.377702403401717,
+        "sample_stdev": 0.08440186665167095
+      }
+    }
+  ],
+  "samples": [
+    {
+      "phase": "warmup",
+      "prompt_tokens": 512,
+      "repetition": 0,
+      "output_tokens": 128,
+      "wall_seconds": 14.20582537498558,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 512,
+        "prompt_ms": 5294.752,
+        "prompt_per_token_ms": 10.3413125,
+        "prompt_per_second": 96.69952435921455,
+        "predicted_n": 128,
+        "predicted_ms": 8910.248,
+        "predicted_per_token_ms": 70.15943307086614,
+        "predicted_per_second": 14.253250863500096
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 512,
+      "repetition": 1,
+      "output_tokens": 128,
+      "wall_seconds": 14.20526370801963,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 512,
+        "prompt_ms": 5294.809,
+        "prompt_per_token_ms": 10.341423828125,
+        "prompt_per_second": 96.69848336361142,
+        "predicted_n": 128,
+        "predicted_ms": 8909.663,
+        "predicted_per_token_ms": 70.15482677165355,
+        "predicted_per_second": 14.254186718397767
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 512,
+      "repetition": 2,
+      "output_tokens": 128,
+      "wall_seconds": 14.207442499988247,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 512,
+        "prompt_ms": 5294.682,
+        "prompt_per_token_ms": 10.34117578125,
+        "prompt_per_second": 96.70080280553205,
+        "predicted_n": 128,
+        "predicted_ms": 8911.933,
+        "predicted_per_token_ms": 70.17270078740158,
+        "predicted_per_second": 14.25055596804868
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 512,
+      "repetition": 3,
+      "output_tokens": 128,
+      "wall_seconds": 14.265011582989246,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 512,
+        "prompt_ms": 5339.185,
+        "prompt_per_token_ms": 10.428095703125,
+        "prompt_per_second": 95.89478544009994,
+        "predicted_n": 128,
+        "predicted_ms": 8924.993,
+        "predicted_per_token_ms": 70.27553543307087,
+        "predicted_per_second": 14.229703037302102
+      }
+    },
+    {
+      "phase": "warmup",
+      "prompt_tokens": 4096,
+      "repetition": 0,
+      "output_tokens": 128,
+      "wall_seconds": 53.56188312501763,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 4096,
+        "prompt_ms": 43498.606,
+        "prompt_per_token_ms": 10.61977685546875,
+        "prompt_per_second": 94.16393711559401,
+        "predicted_n": 128,
+        "predicted_ms": 10062.124,
+        "predicted_per_token_ms": 79.22932283464567,
+        "predicted_per_second": 12.621589636541948
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 4096,
+      "repetition": 1,
+      "output_tokens": 128,
+      "wall_seconds": 53.03924212499987,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 4096,
+        "prompt_ms": 42700.211,
+        "prompt_per_token_ms": 10.424856201171876,
+        "prompt_per_second": 95.92458454128013,
+        "predicted_n": 128,
+        "predicted_ms": 10337.908,
+        "predicted_per_token_ms": 81.40085039370078,
+        "predicted_per_second": 12.28488394363734
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 4096,
+      "repetition": 2,
+      "output_tokens": 128,
+      "wall_seconds": 57.29995570902247,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 4096,
+        "prompt_ms": 45290.145,
+        "prompt_per_token_ms": 11.057164306640624,
+        "prompt_per_second": 90.43910104505076,
+        "predicted_n": 128,
+        "predicted_ms": 12008.718,
+        "predicted_per_token_ms": 94.5568346456693,
+        "predicted_per_second": 10.575650123518598
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 4096,
+      "repetition": 3,
+      "output_tokens": 128,
+      "wall_seconds": 61.8926537919906,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 4096,
+        "prompt_ms": 49353.692,
+        "prompt_per_token_ms": 12.0492412109375,
+        "prompt_per_second": 82.99277792632007,
+        "predicted_n": 128,
+        "predicted_ms": 12537.901,
+        "predicted_per_token_ms": 98.72362992125984,
+        "predicted_per_second": 10.129287190894233
+      }
+    },
+    {
+      "phase": "warmup",
+      "prompt_tokens": 16384,
+      "repetition": 0,
+      "output_tokens": 128,
+      "wall_seconds": 213.84048195800278,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 16384,
+        "prompt_ms": 200892.37,
+        "prompt_per_token_ms": 12.261497192382812,
+        "prompt_per_second": 81.55610887561335,
+        "predicted_n": 128,
+        "predicted_ms": 12946.194,
+        "predicted_per_token_ms": 101.93853543307087,
+        "predicted_per_second": 9.809832913055374
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 16384,
+      "repetition": 1,
+      "output_tokens": 128,
+      "wall_seconds": 217.26814879200538,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 16384,
+        "prompt_ms": 203986.502,
+        "prompt_per_token_ms": 12.450348022460938,
+        "prompt_per_second": 80.31903993333833,
+        "predicted_n": 128,
+        "predicted_ms": 13279.763,
+        "predicted_per_token_ms": 104.56506299212599,
+        "predicted_per_second": 9.56342368459437
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 16384,
+      "repetition": 2,
+      "output_tokens": 128,
+      "wall_seconds": 220.67704920802498,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 16384,
+        "prompt_ms": 207271.077,
+        "prompt_per_token_ms": 12.65082257080078,
+        "prompt_per_second": 79.0462433887966,
+        "predicted_n": 128,
+        "predicted_ms": 13404.144,
+        "predicted_per_token_ms": 105.54444094488188,
+        "predicted_per_second": 9.47468185958014
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 16384,
+      "repetition": 3,
+      "output_tokens": 128,
+      "wall_seconds": 226.6172287920199,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 16384,
+        "prompt_ms": 213739.873,
+        "prompt_per_token_ms": 13.045646545410156,
+        "prompt_per_second": 76.65392409024216,
+        "predicted_n": 128,
+        "predicted_ms": 12875.547,
+        "predicted_per_token_ms": 101.38225984251969,
+        "predicted_per_second": 9.863658608057584
+      }
+    },
+    {
+      "phase": "warmup",
+      "prompt_tokens": 32639,
+      "repetition": 0,
+      "output_tokens": 128,
+      "wall_seconds": 443.7396660000086,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 32639,
+        "prompt_ms": 430147.1,
+        "prompt_per_token_ms": 13.178930114280462,
+        "prompt_per_second": 75.87869359109942,
+        "predicted_n": 128,
+        "predicted_ms": 13590.085,
+        "predicted_per_token_ms": 107.00854330708661,
+        "predicted_per_second": 9.345048246570938
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 32639,
+      "repetition": 1,
+      "output_tokens": 128,
+      "wall_seconds": 447.9212318750215,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 32639,
+        "prompt_ms": 434474.194,
+        "prompt_per_token_ms": 13.311504457857165,
+        "prompt_per_second": 75.12298877755671,
+        "predicted_n": 128,
+        "predicted_ms": 13444.221,
+        "predicted_per_token_ms": 105.86000787401575,
+        "predicted_per_second": 9.446437989973537
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 32639,
+      "repetition": 2,
+      "output_tokens": 128,
+      "wall_seconds": 445.5728699580068,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 32639,
+        "prompt_ms": 432063.337,
+        "prompt_per_token_ms": 13.237640154416496,
+        "prompt_per_second": 75.54216524509229,
+        "predicted_n": 128,
+        "predicted_ms": 13506.084,
+        "predicted_per_token_ms": 106.34711811023622,
+        "predicted_per_second": 9.403169712257084
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 32639,
+      "repetition": 3,
+      "output_tokens": 128,
+      "wall_seconds": 445.31967850000365,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 32639,
+        "prompt_ms": 431636.339,
+        "prompt_per_token_ms": 13.224557707037592,
+        "prompt_per_second": 75.61689563862231,
+        "predicted_n": 128,
+        "predicted_ms": 13680.186,
+        "predicted_per_token_ms": 107.718,
+        "predicted_per_second": 9.283499507974527
+      }
+    }
+  ],
+  "memory_snapshots": {
+    "server_rss_kib_min": 15976416,
+    "server_rss_kib_max": 16222432,
+    "limitation": "RSS sampled between requests; not peak memory. Weights are memory-mapped."
+  },
+  "raw_local_directory": ".reference/2026-10-04-muse-glimmer"
+}
