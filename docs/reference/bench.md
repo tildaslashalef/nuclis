@@ -2341,3 +2341,19 @@ rendering of the template and its tokens equal the fixture's):
 
 The reference got faster too on the new OS, except decode at 32K. Server
 RSS 17.2–17.5 GiB between requests (weights memory-mapped).
+
+### Reference: Gemma 4 12B QAT
+
+[reference-2026-10-04-gemma4-qat.json](../benchmarks/reference-2026-10-04-gemma4-qat.json),
+replaying `run-2026-09-12-gemma4-qat` (the server's rendering equals the
+fixture's):
+
+| Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 226.66 ± 0.09 | 30.15 ± 0.18 | 224.46 / 27.69 | +8.9 % |
+| 4,096 | 221.32 ± 2.39 | 28.05 ± 0.51 | 216.82 / 25.69 | +9.2 % |
+| 16,384 | 171.55 ± 0.42 | 22.42 ± 0.46 | 158.78 / 22.10 | +1.5 % |
+| 32,639 | 144.53 ± 0.58 | 19.12 ± 0.30 | 143.72 / 20.94 | −8.7 % |
+
+The same shape as Qwen's: faster at short context, slower decode at 32K
+(the 2026-09 32K row was a single sample). Server RSS 7.3–8.1 GiB.
