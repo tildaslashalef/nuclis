@@ -656,8 +656,12 @@ A turn is a loop over steps, at most 16 per turn:
   only then does the turn end with a message naming the tokens needed
   and how to raise the window. A turn that alone cannot fit fails with a
   named reason.
-- Reasoning budget: at `low` effort one step reasons for at most
-  `agent.thinking_budget` tokens (1024 by default and in every catalogue entry `config init` writes, 0 for no cap); past it
+- Reasoning budget: one step reasons for at most `agent.thinking_budget`
+  tokens at `low` (1024 by default and in every catalogue entry `config
+  init` writes, 0 for no cap), twice that at `medium`, three times at
+  `high`, four times at `xhigh`, and never more than half of the step's
+  `generation.max_tokens` (8192 by default), so the answer and a long
+  call keep the rest; past it
   the engine emits the profile's close marker itself (Muse Glimmer's
   `<|eom|>`), so the model answers or calls a tool, and the transcript and
   the session step say the reasoning was cut. A model that reopens its

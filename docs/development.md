@@ -616,7 +616,7 @@ bring-up file. The example:
   "schema_version": 1,
   "engine":   { "model": "qwen3.8-27b", "backend": "metal", "ctx_size": 16384,
                 "kv_precision": "f16" },
-  "generation": { "max_tokens": 4096, "think": "off", "speculative": false, "draft_length": 4,
+  "generation": { "max_tokens": 8192, "think": "off", "speculative": false, "draft_length": 4,
                 "image_max_tokens": "auto",
                 "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,
                               "presence_penalty": null, "repetition_penalty": null } },

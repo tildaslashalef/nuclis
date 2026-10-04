@@ -129,7 +129,9 @@ pub const Config = struct {
         kv_precision: KvPrecision = .f16,
     };
     pub const Generation = struct {
-        max_tokens: usize = 4096,
+        /// One completion's output, an agent step's included: room for a
+        /// full reasoning budget and a long file body after it.
+        max_tokens: usize = 8192,
         think: Effort = .off,
         /// Speculative decoding: propose drafts with the model's draft source
         /// and verify them in batches (docs/spec.md § Speculative decoding).
@@ -695,10 +697,20 @@ pub const Resolved = struct {
     }
 };
 
-/// The reasoning cap one step runs with at `effort`: the budget at `low`,
-/// none otherwise or when the budget is 0.
-pub fn thinkingBudget(budget: usize, effort: Effort) ?usize {
-    return if (effort == .low and budget != 0) budget else null;
+/// The reasoning cap one step runs with at `effort`: `budget` at `low`, two,
+/// three, and four times it at `medium`, `high`, and `xhigh`, and never more
+/// than half of the step's `max_tokens`, so the answer and its calls keep the
+/// rest; none at `off` or when the budget is 0.
+pub fn thinkingBudget(budget: usize, effort: Effort, max_tokens: usize) ?usize {
+    if (budget == 0) return null;
+    const scale: usize = switch (effort) {
+        .off => return null,
+        .low => 1,
+        .medium => 2,
+        .high => 3,
+        .xhigh => 4,
+    };
+    return @max(@min(budget * scale, max_tokens / 2), 1);
 }
 
 /// The sampling profile belongs to the checkpoint. The catalogue records it
@@ -1402,7 +1414,7 @@ test "file values override defaults per key and the source is recorded" {
     try std.testing.expectEqual(@as(f32, 0), loaded.config.generation.sampling.temperature.?);
     try std.testing.expectEqual(@as(usize, 40), loaded.config.generation.sampling.top_k.?);
     try std.testing.expect(loaded.config.generation.sampling.top_p == null);
-    try std.testing.expectEqual(@as(usize, 4096), loaded.config.generation.max_tokens);
+    try std.testing.expectEqual(@as(usize, 8192), loaded.config.generation.max_tokens);
     try std.testing.expect(!loaded.config.agent.fold_thinking);
     try std.testing.expectEqual(@as(usize, 0), loaded.config.models.entries.len);
     try std.testing.expectEqual(.file, loaded.source("engine.model"));
@@ -1540,9 +1552,15 @@ test "unknown keys, wrong types, bad ranges, and wrong versions name the key" {
 }
 
 test "the reasoning budget applies at low only, and 0 turns it off" {
-    try std.testing.expectEqual(@as(?usize, 1024), thinkingBudget(1024, .low));
-    try std.testing.expectEqual(@as(?usize, null), thinkingBudget(0, .low));
-    for ([_]Effort{ .off, .medium, .high, .xhigh }) |effort| try std.testing.expectEqual(@as(?usize, null), thinkingBudget(512, effort));
+    try std.testing.expectEqual(@as(?usize, 1024), thinkingBudget(1024, .low, 8192));
+    try std.testing.expectEqual(@as(?usize, 2048), thinkingBudget(1024, .medium, 8192));
+    try std.testing.expectEqual(@as(?usize, 3072), thinkingBudget(1024, .high, 8192));
+    try std.testing.expectEqual(@as(?usize, 4096), thinkingBudget(1024, .xhigh, 8192));
+    // Half the output stays the answer's, whatever the effort asks.
+    try std.testing.expectEqual(@as(?usize, 2048), thinkingBudget(1024, .xhigh, 4096));
+    try std.testing.expectEqual(@as(?usize, 1), thinkingBudget(1024, .low, 1));
+    try std.testing.expectEqual(@as(?usize, null), thinkingBudget(0, .low, 8192));
+    try std.testing.expectEqual(@as(?usize, null), thinkingBudget(1024, .off, 8192));
 }
 
 test "resolve applies defaults < file < flags per command and records the source" {
@@ -1602,7 +1620,7 @@ test "resolve applies defaults < file < flags per command and records the source
     const plain = resolve(&none, null, .{}, .generate);
     try std.testing.expectEqual((Config.Engine{}).backend, plain.backend);
     try std.testing.expectEqual(@as(usize, 16384), plain.ctx_size);
-    try std.testing.expectEqual(@as(usize, 4096), plain.max_tokens);
+    try std.testing.expectEqual(@as(usize, 8192), plain.max_tokens);
     try std.testing.expectEqual(.off, plain.think);
     try std.testing.expectEqual(.qwen38, plain.profile);
     try std.testing.expectEqual(inference.profiles.Profile.qwen38.samplingDefaults(.off), plain.samplingOptions());

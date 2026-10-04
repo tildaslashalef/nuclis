@@ -88,7 +88,7 @@ fn engineOptions(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--backend cpu|metal", "default metal");
     try row(out, sty, "--ctx-size <n>", "context window in tokens, 1..32768; default 16384");
     try row(out, sty, "--kv f16|f32", "attention cache precision on the GPU; default f16");
-    try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 4096 (bench: 32)");
+    try row(out, sty, "--max-tokens <n>", "output budget, 1..16384; default 8192 (bench: 32)");
     try row(out, sty, "--speculative on|off", "verify drafts from the model's draft source; the");
     try more(out, "default is the model entry's verdict, else off");
     try row(out, sty, "--draft-length <n>", "drafts per verify batch, 1..15, capped by the");
@@ -173,8 +173,8 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--session <path>", "record a printed turn to this session file");
     try row(out, sty, "--resume [<id>]", "replay a saved session first; the latest without <id>");
     try row(out, sty, "--think <effort>", "off, low, medium, high, xhigh; default low");
-    try row(out, sty, "--thinking-budget <n>", "most reasoning tokens per step at low; 0 for no");
-    try more(out, "cap; default the model's entry, else 1024");
+    try row(out, sty, "--thinking-budget <n>", "reasoning cap at low (x2 medium ... x4 xhigh, at");
+    try more(out, "most max-tokens/2); 0 none; default entry, else 1024");
     try row(out, sty, "--system-prompt <path>", "the file's text replaces the built prompt");
     try more(out, "sections (for tuning); AGENTS.md still follows");
     try row(out, sty, "--image-max-tokens <n>", "most tokens a dropped image becomes: auto (the");

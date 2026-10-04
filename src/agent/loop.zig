@@ -1452,7 +1452,7 @@ pub const Completer = struct {
         // turns): it decides whether the completion opens in reasoning.
         var buffers = self.buffers;
         buffers.effort = self.effort;
-        buffers.thinking_budget = config.thinkingBudget(self.thinking_budget, self.effort);
+        buffers.thinking_budget = config.thinkingBudget(self.thinking_budget, self.effort, self.buffers.generated.len);
         const settings: inference.engine.Speculative = if (self.images_fed) .{ .enabled = false, .draft_length = self.speculative.draft_length } else self.speculative;
         const outcome = try inference.engine.complete(
             self.eng,
