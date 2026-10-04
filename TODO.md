@@ -198,11 +198,19 @@ links (31 from the log, 28 from `workloads.json`); `metal-backend.md` 66;
    (`roadmap.md`, `agent-spec.md`, `architecture.md#9-adding-a-model`)
    as an allow-list the check reads. Add it to `verify-auto`'s
    model-free checks for `*.md` paths.
-2. ADR removal: move ADR 0001's durable parts (§ Where the verify cost
-   goes, § External evidence surveyed 2026-09-30, § Quantitative stop
-   rules and the budget table, § Alternatives considered), condensed, to
-   a `speculative-decoding.md` section "The Qwen verify budget"; repoint
-   `bench.md` :1728, `speculative-decoding.md` :973, `apple-gpu.md` :155;
+2. ADR removal: move ADR 0001's durable parts, condensed, before
+   deleting it: the budget rule C ≤ 50E and its derivation (ADR :178–280;
+   elsewhere only in `scripts/spec-matrix.py`'s docstring and the log),
+   the external evidence surveyed 2026-09-30 (:91–117: MLX
+   `sdpa_vector`, metal-flash-attention, llama.cpp #29110, vLLM #58863,
+   DFlash2, SuffixDecoding, GDN Tree-Scan) and the alternatives
+   considered (:348–361) → a `speculative-decoding.md` section "The Qwen
+   verify budget"; where the verify cost goes (:78–90) and the
+   implementation observations (:293–326: verify misses the merged
+   gate/up and SiLU fusions; the 8-column tile runs 3–4 real rows) →
+   `metal-backend.md`. Its Confidence section is plan material; drop it.
+   Repoint `bench.md` :1728 and :2007, `speculative-decoding.md` :973,
+   `apple-gpu.md` :155;
    delete `docs/adr/`; AGENTS.md :39 (session protocol), :71 (durable
    knowledge), :391 (unit identifiers) lose the ADR clauses;
    `docs/README.md` :43 too.
@@ -210,14 +218,23 @@ links (31 from the log, 28 from `workloads.json`); `metal-backend.md` 66;
    `.github/workflows/ci.yml`, AGENTS.md (4), `development.md` (6),
    `llm-guide.md`, `docs/README.md`, `bench.md`, `eval.md`, `session.md`,
    `speculative-decoding.md`, `vision.md`, `spec.md`, `README.md`,
-   `scripts/changelog.py` (2; its self-test), `site/index.html`,
+   `scripts/changelog.py` (:6, :26 `LOG`; `closed_units(previous)` reads
+   the log *at the previous tag*, where `worklog.md` does not exist: fall
+   back to `docs/engineering-log.md` there, with a self-test case, or the
+   first release after the rename breaks), `site/index.html` (:350),
    `site/llms.txt`, `TODO.md`. Inside the log, only its links to the
    removed ADR and to renamed files (step 4) are repointed — ask the user
    before this pass; the alternative is leaving them dead and
    allow-listed.
-4. Names. `docs/reference/` stays flat (26 files; subfolders would move
-   every cited path for little gain); rename the misfits, each with its
-   inbound links: `qwen-validation.md` → `qwen3.8.md` (like `gemma4.md`,
+4. Names. Ask the user first: a `docs/models/` folder for the per-model
+   documents (gemma4 62 refs / 20 files incl. `gates.json` and six
+   `inference/*.zig`, muse-glimmer 31/19, bonsai 39/22, laya 30/16,
+   `clef.md` → `clef-flash.md` 13/9, a new `qwen3.8.md` gathering the
+   Qwen facts now spread over qwen-validation, generation, tokenizer,
+   gguf-inspection, prompt-profile; `new-model-guide.md` → its README),
+   or the flat folder below. Either way `bench.md` (164 refs) and
+   `metal-backend.md` (116) keep their paths. The flat option renames
+   only the misfits, each with its inbound links: `qwen-validation.md` → `qwen3.8.md` (like `gemma4.md`,
    `muse-glimmer.md`, `bonsai.md`), `gguf-inspection.md` → `gguf.md`,
    `reference-baseline.md` → `llama-cpp.md` (the oracle and its harness).
    Count each rename's references before it (`grep -rI`), run
@@ -225,7 +242,9 @@ links (31 from the log, 28 from `workloads.json`); `metal-backend.md` 66;
 5. The hub: `docs/README.md` lists every document, one line each,
    grouped (start here; using nuclis; how it works; per model; the
    record), and drops "for Qwen3.8-27B" (:3); `docs/reference/README.md`
-   (GitHub shows it under the bare file list) points back to it. Linked
+   (GitHub shows it under the bare file list) points back to it, and a
+   `docs/benchmarks/README.md` indexes the records by family and date
+   without renaming them (scripts write those paths). Linked
    from `README.md` (:199), `site/index.html` (a "Docs" link), and
    `site/llms.txt`. AGENTS.md :405–406 and `development.md` :1431 agree:
    documents are listed in `docs/README.md`. AGENTS.md :359 drops
@@ -263,7 +282,8 @@ links (31 from the log, 28 from `workloads.json`); `metal-backend.md` 66;
     `qwen3.8.md` :4, `generation.md` :1 ("bring-up"), :11–12, `cpu-reference.md`
     :308–313, `llama-cpp.md` :4–5 ("nuclis does not execute models yet"),
     `muse-glimmer.md` :444–445 (the projector shipped), `bonsai.md` :342
-    (the catalogue entry was removed 2026-09-26).
+    (the catalogue entry was removed 2026-09-26), `api.md` :372
+    ("Zig 0.16.0").
 11. Protected documents, navigation only, with the user's yes: a TOC for
     `llm-guide.md` and its §27 heading level (:1031, H2 among H3s); the
     log's summary table (:12–177) linking each row to its entry; check
