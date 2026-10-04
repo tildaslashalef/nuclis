@@ -1034,6 +1034,8 @@ const Ui = struct {
     /// not applied here: the picker only names a path, and the main loop —
     /// which owns the session file — replays it.
     fn closePicker(self: *Ui) void {
+        // The picker's prompt in the bar goes with it.
+        if (self.picker != .none and !self.busy) self.status = "ready";
         self.picker = .none;
         if (self.delete_target) |path| self.alloc.free(path);
         self.delete_target = null;
