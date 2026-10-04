@@ -172,6 +172,15 @@ about 17 tok/s. README lines 10–12 state "2×" and "2 min 35 s".
    pass). Update the README caption (speed, real time, speculative
    decoding) and log the session time and size.
 
+*Delivered 2026-10-04:* `make build` (ReleaseSafe, `0.6.0-dev`), the
+script unchanged but for its default `--speed 1`; Qwen's catalogue entry
+has speculation on at draft 7. Cast 86.1 s: warm-up 23.0 s (1447
+tokens), task submitted at 34.8 s, the answer at 70.6 s (about 36 s,
+seven steps: read README, `make test`, `find`, read `rect.py`, the
+edit, `make test`); status bar 21–27 tok/s. Frames read: the fix is
+`2 * (width + height)`, 5 tests OK. GIF at 1× 84.7 s, 2.43 MB (2×
+would be 44.3 s, 2.32 MB; the old one 4.39 MB). README caption updated.
+
 ### Track D — branding
 
 The user added `docs/branding/` (2026-10-04): `nuclis.svg` (512×512 viewBox,

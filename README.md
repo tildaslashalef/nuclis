@@ -10,8 +10,10 @@ made fast.
 ![nuclis agent with Qwen3.8-27B finding and fixing a failing test](docs/media/agent.gif)
 
 *`nuclis agent` with Qwen3.8-27B on an M4 Pro, fixing a broken function
-in a small Python project. Played back at 2× with pauses shortened; the
-real session took 2 min 35 s. Recorded by `scripts/agent-demo.py`.*
+in a small Python project, with speculative decoding on (21–27 tok/s on
+the status bar while it writes). Played back in real time, pauses over
+1.5 s shortened: after a 23 s warm-up the task took 36 s over seven
+steps. Recorded by `scripts/agent-demo.py`.*
 
 ## Status
 

@@ -83,7 +83,7 @@ def enter():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--stamp", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--speed", default="2", help="agg playback speed (default 2)")
+    parser.add_argument("--speed", default="1", help="agg playback speed (default 1, real time)")
     parser.add_argument("--idle", default="1.5", help="agg idle-time limit in seconds (default 1.5)")
     args = parser.parse_args()
     if args.stamp:
