@@ -385,7 +385,7 @@
       "kind": "acceptance",
       "model": "muse",
       "run": "run-2026-09-19-muse-glimmer",
-      "reference_records": "reference-2026-10-04-muse-glimmer.json",
+      "reference_records": "reference-2026-10-04-muse-glimmer-4k.json,reference-2026-10-04-muse-glimmer.json",
       "record_suffix": "muse-glimmer",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
       "evidence": "docs/reference/bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19"

@@ -246,14 +246,21 @@ def reference_revision(benchmarks, names):
 
 
 def reference_rows(benchmarks, names):
-    """Means of the accepted reference samples, read from the committed records."""
+    """Means of the accepted reference samples, read from the committed records.
+
+    The first record holding a prompt length supplies all of its samples, so a
+    re-run listed first replaces that length of a later record.
+    """
     rows = {}
     for name in names:
         path = benchmarks / name
         if not path.is_file():
             continue
         record = json.loads(path.read_text())
+        taken = set(rows)
         for sample in record.get("samples", []):
+            if sample["prompt_tokens"] in taken:
+                continue
             if sample.get("phase") not in ("warm", "measured", "capacity"):
                 continue
             if sample.get("phase") == "capacity" and not sample.get("accepted", False):
