@@ -1,7 +1,8 @@
-<div align="center">
+<p align="center">
   <img src="docs/branding/nuclis.png" alt="nuclis logo: two teal bands forming an N around an amber diamond" width="160">
-  <h1>nuclis</h1>
-</div>
+</p>
+
+<h1 align="center">nuclis</h1>
 
 A local inference engine for open-weight language models, written in Zig
 with a Metal backend for Apple Silicon, and a small coding agent on top of
