@@ -41,6 +41,8 @@ REQUIRED_FILES = [
     "site.webmanifest",
     "llms.txt",
     "og.png",
+    "wrangler.jsonc",
+    ".assetsignore",
 ]
 RESULTS_HEADER = "| Model | Decode, 512 | Decode, 32,639 | Prefill, 512 | Prefill, 32,639 |"
 SPEC_HEADER = "| Model | Draft | 512 | 32,639 |"
@@ -325,6 +327,9 @@ def check_files(problems):
     for origin in sorted(set(re.findall(r"fetch\(\s*\"(https://[^/\"]+)", (SITE / "site.js").read_text()))):
         if origin not in csp:
             problems.append(f"site/site.js fetches {origin}, which the CSP's connect-src does not allow")
+    ignored = (SITE / ".assetsignore").read_text().split() if (SITE / ".assetsignore").exists() else []
+    if "wrangler.jsonc" not in ignored:
+        problems.append("site/.assetsignore: wrangler.jsonc would be served as a page")
     robots = (SITE / "robots.txt").read_text() if (SITE / "robots.txt").exists() else ""
     if f"Sitemap: {ORIGIN}/sitemap.xml" not in robots:
         problems.append("site/robots.txt: no Sitemap line for the origin")

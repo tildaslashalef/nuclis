@@ -1,0 +1,16 @@
+// Cloudflare Workers static assets: this folder is the whole site, no code.
+// Workers Builds runs `npx wrangler deploy` with `site` as the root directory.
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "nuclis",
+  "compatibility_date": "2026-10-04",
+  "assets": {
+    "directory": ".",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  },
+  // Served only on the apex; no workers.dev copy to keep out of search results.
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "nuclis.dev", "custom_domain": true }]
+}

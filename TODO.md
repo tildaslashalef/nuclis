@@ -20,18 +20,21 @@ REPO-34 is open: the nuclis.dev website. The sketch in `site/` was agreed
 with the user over two iterations on 2026-10-04 (direction kept in the
 session's memory: fresh copy, one-line headers, icons, a download button,
 no counts that go stale, animations welcome). This unit makes it
-production-ready and deploys it. Next: the steps below, in order.
+production-ready and deploys it. Steps 1–5 and 7 are committed (`e030955` and the Workers config after
+it); step 6 waits on the push of `main` and the dashboard app. Then:
+`curl -sI https://nuclis.dev/` for the headers and certificate, and close
+the unit.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
-| REPO-34 | The nuclis.dev website: SEO, self-hosted fonts, headers, a model-free check, Cloudflare Pages deployment | 1 |
+| REPO-34 | The nuclis.dev website: SEO, self-hosted fonts, headers, a model-free check, Cloudflare deployment | 1 |
 
 ## REPO-34: the nuclis.dev website
 
 Base: `6aba718`
 
 A static site in `site/` (plain HTML, CSS, JS; no build step), served by
-Cloudflare Pages from this repository's `main`, on the apex `nuclis.dev`
+Cloudflare from this repository's `main`, on the apex `nuclis.dev`
 (zone already on the account, no DNS records yet). `nuclisapp.com` is out
 of scope.
 
@@ -64,14 +67,17 @@ of scope.
    (paths `site/**`, `scripts/site-check.py`, `README.md`); `make
    site-serve` previews on localhost:8000. CI's `paths-ignore` gains
    `site/**` so a site-only push builds nothing.
-6. **Deploy** with the `cf` CLI (`~/.bun/bin/cf`, authenticated by the
-   user): `cf pages create` a Git-connected project `nuclis` (owner
-   `tildaslashalef`, repo `nuclis`, production branch `main`, no build
-   command, output directory `site`, path includes `site/*`), then `cf
-   pages domains create` for `nuclis.dev`. The production deploy needs
-   `site/` on GitHub's `main`: pushing is the user's call.
+6. **Deploy.** Cloudflare's dashboard now calls Pages legacy, and `cf
+   pages create` with a Git source failed until the GitHub app was
+   installed; the site goes out as a Worker with static assets instead
+   (`site/wrangler.jsonc`: assets in `.`, `404-page`, `workers_dev` and
+   preview URLs off, the `nuclis.dev` custom-domain route;
+   `site/.assetsignore`). The user creates the app in the dashboard
+   (Workers & Pages → Create → Continue with GitHub → `nuclis`): root
+   directory `site`, no build command, deploy `npx wrangler deploy`,
+   watch paths `site/*`. Its first build needs `site/` on GitHub's `main`.
 7. **Docs.** `docs/development.md` gains *The website* (layout, preview,
-   check, deploy, the Pages settings); `AGENTS.md` names `site/` as the
+   check, deploy, the Workers settings); `AGENTS.md` names `site/` as the
    fourth tree; the README links nuclis.dev.
 
 Gates: `make site-check`, `make lint-py`, `make gates-validate`, `make

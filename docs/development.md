@@ -1015,7 +1015,8 @@ step and no dependency; what is in the folder is what is served.
 | `index.html` | the page; its head carries the canonical URL, Open Graph and Twitter tags, JSON-LD, and the `#bench` block of measured figures |
 | `site.js` | the agent replay, the engine strip, the drafter, the charts, the Decision Dungeons rooms, and the latest-release lookup |
 | `fonts/` | Archivo and JetBrains Mono, subset WOFF2 ([THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md#website-fonts)); a new subset gets a new file name, since `_headers` caches the folder as immutable |
-| `_headers` | Cloudflare's response headers: the CSP (no inline script or style anywhere), security headers, caching, `noindex` on `*.pages.dev` |
+| `_headers` | Cloudflare's response headers: the CSP (no inline script or style anywhere), security headers, caching |
+| `wrangler.jsonc`, `.assetsignore` | the Worker that serves the folder: its name, the 404 page, the `nuclis.dev` route |
 | `og.png` | the 1200×630 share card, rendered from `scripts/site-og.html` |
 | `robots.txt`, `sitemap.xml`, `site.webmanifest`, `llms.txt` | crawlers, installs, and language-model readers |
 
@@ -1053,15 +1054,17 @@ To test the CSP locally, put `_headers`' policy (less `frame-ancestors`)
 into a `<meta http-equiv="Content-Security-Policy">` of a copy and load it
 with `--enable-logging=stderr`: a violation prints as a `CONSOLE` line.
 
-**Deploy.** Cloudflare Pages project `nuclis`, connected to this
-repository: production branch `main`, no build command, output directory
-`site`, deployments only when a push touches `site/*`, previews for other
-branches at `<branch>.nuclis.pages.dev`. The custom domain is the apex
-`nuclis.dev` (the zone is on the same Cloudflare account, so Pages writes
-its DNS record). Pushing `main` is the deploy; nothing in CI deploys. The
-project was created with the `cf` CLI (`cf pages create`, `cf pages domains
-create`); `cf pages get nuclis` and `cf pages deployments list nuclis` show
-its state.
+**Deploy.** A Cloudflare Worker named `nuclis` with static assets and no
+code (`site/wrangler.jsonc`; `.assetsignore` keeps the config itself from
+being served), connected to this repository through Workers Builds: root
+directory `site`, no build command, deploy command `npx wrangler deploy`,
+production branch `main`, builds only when a push touches `site/*`. The
+config routes the apex `nuclis.dev` as a custom domain (the zone is on the
+same account, so the deploy writes its DNS record and Cloudflare issues the
+certificate) and turns `workers.dev` and preview URLs off, so the site has
+one address. Pushing `main` is the deploy; nothing in CI deploys. `npx
+wrangler deploy --dry-run` in `site/` validates the config without
+uploading.
 
 ## Continuous integration and releases
 
