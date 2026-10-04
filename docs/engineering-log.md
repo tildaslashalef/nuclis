@@ -174,6 +174,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-20 | A faster agent step: the command surface and `/model` (one picker, model switch in place), reading less (pages, outlines, grouped `grep` with `.gitignore`, one-line-context diffs, head-and-tail `bash`, repeat pointers; tool-result tokens −28 %), `max_tokens` 8192 and a reasoning cap at every effort; from testing: a reopened thought bounded, cut calls never shown as text, bad arguments named, Enter runs the highlighted command. Faster prefill dropped by the user | 2026-10-04 |
 | REPO-32 | `release` publishes tags that pin their own compiler: the installer takes the first matching digest and comes from the workflow's revision; REPO-31's append listed v0.5.0's 0.17.0 pin twice and failed its release | 2026-10-04 |
 | REPO-33 | CI 5 m 57 s → 2 m 16 s (docs-only pushes skipped, three parallel jobs, working caches); release notes led by highlights and units by area, every published release rewritten; draft-then-publish and build provenance; the README GIF re-recorded with speculation in real time (36 s task, 21–27 tok/s); the nuclis logo | 2026-10-04 |
+| REPO-34 | nuclis.dev: a static site in `site/` (the agent replay, the engine strip, the drafter, the measured charts, Decision Dungeons), self-hosted subset fonts, SEO and share card, a strict CSP, `make site-check` holding its figures to the README, served as Workers static assets from `main` | 2026-10-04 |
 
 ## Context
 
@@ -7983,3 +7984,90 @@ git revision, so the executable recompiles every commit; a Debug `metal`
 build would roughly halve it (offered, not taken). The draft-then-publish
 and attestation steps run first at the next tag. Icon sets from
 `nuclis.svg` for nuclis.dev, when the user asks.
+
+## REPO-34 — nuclis.dev, the website (2026-10-04)
+
+**Outcome.** The site was sketched with the user over two iterations
+(direction: fresh copy rather than the README's, one-line headers, icons,
+a download button, no counts that go stale, animation welcome), then made
+production-ready and deployed.
+
+*The page* (`site/index.html`, `style.css`, `site.js`; no build, no
+dependency): the hero "Right first. Then fast." over a live-text replay of
+the README's agent session in the TUI's own colours (the boxed banner
+becomes the TUI's plain lines on a narrow screen); an animated strip of
+Qwen3.8's 64 layers (prefill in one pass, then one token per pass, the
+attention caches growing a cell per token while the DeltaNet states stay
+one block; each layer's hover says which); the three checks; the two
+benchmark charts (dumbbells, palette validated for colour-vision
+deficiency, tooltips, a table view); a drafter illustration labelled as
+one; the model shelf; the agent's six tools; `decide` beside a Decision
+Dungeons card cycling its rooms; install tabs (release tarball with the
+quarantine step, or source); links out with icons. Animations run only on
+screen and show their end state under reduced motion.
+
+*Production.* Archivo and JetBrains Mono self-hosted: axes narrowed with
+`varLib.instancer` and glyphs subset to what the site sets (Archivo
+79 → 49 KB, JetBrains Mono 17 KB, box drawing kept for the replay),
+recorded in `THIRD_PARTY_NOTICES.md`. Canonical URL, Open Graph and
+Twitter tags, JSON-LD `SoftwareApplication`, a 1200×630 `og.png`
+rendered from `scripts/site-og.html`, `robots.txt`, `sitemap.xml`,
+`site.webmanifest`, `llms.txt`, `404.html`, a `<noscript>` account of
+the replay. `_headers`: a CSP with no inline script or style
+(`connect-src` adds only `api.github.com`, for the latest-release lookup
+that keeps the download button current), nosniff, referrer, permissions,
+COOP, HSTS; fonts cached as immutable. The measured figures moved from
+code into a `#bench` JSON block.
+
+*The check.* `scripts/site-check.py` (`make site-check`, standard
+library, `--self-test`): references and fragments resolve, nothing loads
+from another origin, head tags present, no inline style or executable
+script, JSON-LD and `#bench` parse, the page's version and download
+fallback name the newest `CHANGELOG.md` release, and `#bench` equals the
+README's *Results* and *Speculative decoding* tables. On its first run it
+found the page showing four speedups the README does not (1.81× for Gemma
+4 12B QAT where the README has 1.83×): the page divided its rounded
+rates, the README its unrounded ones. The page now prints the README's
+ratios, and the check compares them. `gates.json` runs it for `site/**`,
+the script, `README.md`, and `CHANGELOG.md`; `ci.yml` ignores `site/**`.
+
+*Deployment.* `cf pages create` with a Git source failed (the Cloudflare
+GitHub app was not installed), and the dashboard now calls Pages legacy,
+so the site is a Worker with static assets: `site/wrangler.jsonc` (assets
+in `.`, `404-page`, `workers_dev` and preview URLs off, the `nuclis.dev`
+custom-domain route) with `.assetsignore` keeping the config unserved. The
+user created the app in the dashboard (Continue with GitHub; root `/site`,
+deploy `npx wrangler deploy`, previews off), which also minted the build
+token; the build watch path was then narrowed to `site/*` with `cf builds
+triggers update`. `nuclisapp.com` was left alone, as asked.
+
+**Evidence.**
+- `make site-check` (7 self-tests, 49 references), `make lint-py`, `make
+  gates-validate`, `make verify-auto` (selects `manifests`, `python`,
+  `site`; no inference gate). CI `37217505353` green on `b5aa5fa`.
+- CSP: a copy with the policy as a `<meta>` loaded in headless Chromium
+  logged no violation; a planted inline script did log one. The live site
+  logs none.
+- Screenshots at 1440 and 390 px through both iterations and after the
+  fonts moved (kept under `/tmp`, not committed); the share card read back.
+- `npx wrangler deploy --dry-run` (wrangler 4.147.0) read the folder. The
+  first build deployed Worker `nuclis` at 16:42:39 UTC with `nuclis.dev`
+  attached and `workers.dev` disabled (`cf workers list`); the trigger
+  reads root `/site`, branch `main`, paths `site/*`.
+- Live: `curl -sI https://nuclis.dev/` returns 200 with every `_headers`
+  header; a font returns `max-age=31536000, immutable`; `/nope` returns 404
+  with the site's page; `/wrangler.jsonc` and `/.assetsignore` return 404;
+  the certificate is Google Trust Services WE1 for `nuclis.dev` and
+  `*.nuclis.dev`, renewed by Cloudflare.
+
+**Files.** `site/` (new), `scripts/site-check.py`, `scripts/site-og.html`,
+`gates.json`, `Makefile` (`site-check`, `site-serve`),
+`.github/workflows/ci.yml`, `.gitignore` (`.cloudflare/`, the `cf` CLI's
+account cache), `THIRD_PARTY_NOTICES.md`, `README.md` (links the site),
+`AGENTS.md` (`site/`), `docs/development.md` (§ The website, the layout,
+the checks), this log.
+
+**Remaining.** The page has no dark theme. The figures are copied by hand
+into `#bench` (the check catches drift, it does not write the copy). The
+benchmark rows are the README's, which predate macOS 27 and Zig 0.17 for
+the nuclis/llama.cpp table. Preview deployments are off.

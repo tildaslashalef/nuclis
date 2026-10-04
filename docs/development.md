@@ -1062,7 +1062,12 @@ production branch `main`, builds only when a push touches `site/*`. The
 config routes the apex `nuclis.dev` as a custom domain (the zone is on the
 same account, so the deploy writes its DNS record and Cloudflare issues the
 certificate) and turns `workers.dev` and preview URLs off, so the site has
-one address. Pushing `main` is the deploy; nothing in CI deploys. `npx
+one address. The app was created in the dashboard (Workers & Pages →
+Create → Continue with GitHub), which also mints the build token; the
+watch path was narrowed with `cf builds triggers update <trigger>
+--path-includes 'site/*'`, and `cf workers list` and `cf builds triggers
+list --external-script-id <worker id>` show the state. Pushing `main` is
+the deploy; nothing in CI deploys. `npx
 wrangler deploy --dry-run` in `site/` validates the config without
 uploading.
 
