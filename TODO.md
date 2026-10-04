@@ -24,7 +24,7 @@ idle opencode server stopped, display sleep blocked by Amphetamine.
 | Unit | What | Sessions |
 | --- | --- | --- |
 | ENGN-21 | Re-measure all families against llama.cpp at 512 / 4K / 16K / 32,639 on macOS 27; republish README, bench.md, nuclis.dev | 2 |
-| REPO-35 | The documents, restructured: a docs hub, `worklog.md`, no ADRs, consistent names, current state first, a link checker | 2 |
+| REPO-35 | The documents, restructured: guide/models/engine/app/benchmarks, a hub, `worklog.md`, no ADRs, current state first, a link checker | 3 |
 
 Order: ENGN-21 first (its session 2 rewrites README, `bench.md`, and the
 site); REPO-35 starts once it closes, from a tree that holds today's numbers.
@@ -160,137 +160,175 @@ numerical behaviour (a code fix found along the way is its own unit).
 Base: (set at the first change)
 
 **Why.** nuclis.dev links into `docs/` (`site/index.html` :203 bench,
-:320 "Setup guide" → `development.md`, :348–351 architecture, llm-guide,
-log, AGENTS; `site/llms.txt` :11–19). A newcomer lands in month-old lab
-notebooks: `bench.md` (2,375 lines) puts its current answer last,
-`development.md` opens with the author's machine, `docs/README.md` (the
-hub) is linked from nowhere and misses 12 documents, and the same
-2026-09-10 Qwen numbers sit in eight files. Survey of 2026-10-04 (an
-agent, read-only); its findings by file:line are folded into the steps.
+:320 "Setup guide" → `development.md`, :348–351; `site/llms.txt`
+:11–19), and a newcomer lands in month-old lab notebooks: `bench.md`
+(2,375 lines) puts its current answer last, `development.md` opens with
+the author's machine, the hub `docs/README.md` is linked from nowhere
+and misses 12 documents, `docs/reference/` is 26 files with no index and
+no grouping, Qwen (the first target) has no document of its own, and the
+same 2026-09-10 Qwen numbers sit in eight files. Survey of 2026-10-04
+(an agent, read-only); its file:line findings are folded in below.
 
-**Decisions (user, 2026-10-04).** `docs/engineering-log.md` becomes
-`docs/worklog.md`. `docs/adr/` is removed with every reference: ADR 0001
-(the Qwen decode verifier, *proposed*) was implemented with changes and no
-unit followed the ADR convention; its durable knowledge moves to
-`docs/reference/speculative-decoding.md` first. AGENTS.md drops ADRs from
-the session protocol.
+**Decisions (user, 2026-10-04).**
+- Restructure now, once, rather than live with the layout: the tree
+  below. Old paths get no stubs.
+- `docs/engineering-log.md` → `docs/worklog.md`.
+- `docs/adr/` removed with every reference (ADR 0001 was implemented
+  with changes; no unit followed the convention); its durable knowledge
+  moves first (step 3). AGENTS.md drops ADRs.
+- The log's *content* stays append-only, but one mechanical pass may
+  repoint its link paths and anchors to the new tree (yes, 2026-10-04).
+- `llm-guide.md` may be edited in this unit: TOC, §27's level, the
+  stale number (yes, 2026-10-04).
+- Still to ask: linking the log's summary table rows to their entries.
 
-**Constraints.** The log stays append-only in content; renaming it and
-repointing paths inside it is a mechanical pass, not a rewrite (step 3,
-user to confirm). `CHANGELOG.md`'s 162 log links pin release tags
-(`blob/v0.x/…`) and stay valid; leave them. Headings that other files
-cite keep their text (anchors): `bench.md` has 24 cited anchors, 117
-links (31 from the log, 28 from `workloads.json`); `metal-backend.md` 66;
-`development.md` 31. Reorder sections, never retitle a cited one.
+**The tree.** One rule per folder, so a new document has one home:
 
-**Session 1: mechanics** (paths, links, removals; no prose rewrite).
+```
+docs/
+  README.md            the hub: every document, one line each
+  spec.md              requirements (stays)
+  architecture.md      the map of the engine and app (stays)
+  development.md       contributing: toolchain, gates, the record, CI, releases
+  llm-guide.md         the companion on the inference stack (stays)
+  worklog.md           ← engineering-log.md
+  guide/               using nuclis
+    getting-started.md   new: install, ~/.nuclis, model pull, first chat (the site's "Setup guide")
+    configuration.md     ← development.md § User directories, the config file
+    api.md               ← reference/api.md (nuclis serve)
+    eval.md              ← reference/eval.md (nuclis eval)
+  models/              one file per family, plus the catalogue
+    README.md            ← reference/new-model-guide.md (adding a model) + the family list
+    catalogue.md         ← reference/artifacts.md (sources, pins, the models directory)
+    qwen3.8.md           ← reference/qwen-validation.md, gathering the Qwen facts now in
+                           generation, tokenizer, gguf-inspection, prompt-profile
+    gemma4.md  muse-glimmer.md  bonsai.md  laya.md    ← reference/<same>
+    clef-flash.md        ← reference/clef.md
+  engine/              the inference/ package, one file per subsystem
+    gguf.md              ← reference/gguf-inspection.md
+    safetensors.md  tokenizer.md  quantization.md  cpu-reference.md
+    metal-backend.md  apple-gpu.md  session.md  prompt-profile.md
+    tool-calling.md  vision.md  speculative-decoding.md    ← reference/<same>
+    sampling.md          ← reference/generation.md
+  app/                 the src/ package
+    agent.md             ← reference/agent-concepts.md
+    terminal.md          ← development.md :744–1006 (styled output, live region, transcript, renderer)
+  benchmarks/          the record: JSON records stay where scripts write them
+    README.md            ← bench.md's method, definitions, current results, and an index of the records
+    history.md           ← bench.md's dated sections, text unchanged
+    llama-cpp.md         ← reference/reference-baseline.md (the oracle and its harness)
+  media/  branding/    (stay)
+```
 
-1. `scripts/docs-check.py` + `make docs-check`, standard library: every
-   relative Markdown link and anchor in `*.md`, the `docs/...md#…`
-   strings in `workloads.json` / `gates.json` / `docs/benchmarks/*.json`,
-   and the repo links in `site/index.html` and `site/llms.txt` resolve
-   (GitHub anchor rule: lowercase, punctuation stripped, spaces →
-   hyphens, `-1` suffixes for repeats); `--self-test`. Known breakage it
-   must report today: `session.md#the-agents-token-cache` (development,
-   spec ×2, session), `session.md#row-checkpoints-engn-14`
+`docs/reference/` disappears. Costs measured by the survey: gemma4 62
+references in 20 files (`gates.json`, six `inference/*.zig`), bench 164
+(log 58, `workloads.json` 28), metal-backend 116 (log 47),
+reference-baseline 44 (17 benchmark JSON, 4 scripts), muse-glimmer 31,
+bonsai 39, laya 30, generation 28. Mechanical, with a checker.
+
+**Session 1: the checker and the moves** (paths and links only; no prose).
+
+1. `scripts/docs-check.py` + `make docs-check`, standard library, with
+   `--self-test`:
+   - *check*: every relative Markdown link and anchor in tracked `*.md`;
+     the `docs/…` paths (with `#anchors`) in `*.json`, `*.py`, `*.zig`,
+     `Makefile`, `.github/`; the `blob/main/…` links in `site/`. GitHub
+     anchor rule: lowercase, punctuation stripped except `-`, spaces →
+     hyphens, `-1`, `-2` for repeats. `CHANGELOG.md`'s `blob/v0.x/` links
+     pin tags and are skipped.
+   - *move*: `--move old=new[,old=new…]` does `git mv` and rewrites every
+     reference above, re-relativizing Markdown links from each file's
+     own directory (moved files' outgoing links too); `--move
+     old#anchor=new#anchor` rewrites anchors when sections move between
+     files. Reused for every later rename.
+   - Joins `verify-auto`'s model-free checks for `*.md` and `site/` paths.
+   First run reports today's breakage; fix it: `session.md#the-agents-token-cache`
+   (development :530, spec ×2, session), `session.md#row-checkpoints-engn-14`
    (speculative-decoding), `vision.md#the-qwen3-vl-projector-modl-21`
-   (gates.json ×2). Fix those; record the log's own dead links
-   (`roadmap.md`, `agent-spec.md`, `architecture.md#9-adding-a-model`)
-   as an allow-list the check reads. Add it to `verify-auto`'s
-   model-free checks for `*.md` paths.
-2. ADR removal: move ADR 0001's durable parts, condensed, before
-   deleting it: the budget rule C ≤ 50E and its derivation (ADR :178–280;
-   elsewhere only in `scripts/spec-matrix.py`'s docstring and the log),
-   the external evidence surveyed 2026-09-30 (:91–117: MLX
-   `sdpa_vector`, metal-flash-attention, llama.cpp #29110, vLLM #58863,
-   DFlash2, SuffixDecoding, GDN Tree-Scan) and the alternatives
-   considered (:348–361) → a `speculative-decoding.md` section "The Qwen
-   verify budget"; where the verify cost goes (:78–90) and the
-   implementation observations (:293–326: verify misses the merged
-   gate/up and SiLU fusions; the 8-column tile runs 3–4 real rows) →
-   `metal-backend.md`. Its Confidence section is plan material; drop it.
-   Repoint `bench.md` :1728 and :2007, `speculative-decoding.md` :973,
-   `apple-gpu.md` :155;
-   delete `docs/adr/`; AGENTS.md :39 (session protocol), :71 (durable
-   knowledge), :391 (unit identifiers) lose the ADR clauses;
-   `docs/README.md` :43 too.
-3. `git mv docs/engineering-log.md docs/worklog.md`; repoint
-   `.github/workflows/ci.yml`, AGENTS.md (4), `development.md` (6),
-   `llm-guide.md`, `docs/README.md`, `bench.md`, `eval.md`, `session.md`,
-   `speculative-decoding.md`, `vision.md`, `spec.md`, `README.md`,
-   `scripts/changelog.py` (:6, :26 `LOG`; `closed_units(previous)` reads
-   the log *at the previous tag*, where `worklog.md` does not exist: fall
-   back to `docs/engineering-log.md` there, with a self-test case, or the
-   first release after the rename breaks), `site/index.html` (:350),
-   `site/llms.txt`, `TODO.md`. Inside the log, only its links to the
-   removed ADR and to renamed files (step 4) are repointed — ask the user
-   before this pass; the alternative is leaving them dead and
-   allow-listed.
-4. Names. Ask the user first: a `docs/models/` folder for the per-model
-   documents (gemma4 62 refs / 20 files incl. `gates.json` and six
-   `inference/*.zig`, muse-glimmer 31/19, bonsai 39/22, laya 30/16,
-   `clef.md` → `clef-flash.md` 13/9, a new `qwen3.8.md` gathering the
-   Qwen facts now spread over qwen-validation, generation, tokenizer,
-   gguf-inspection, prompt-profile; `new-model-guide.md` → its README),
-   or the flat folder below. Either way `bench.md` (164 refs) and
-   `metal-backend.md` (116) keep their paths. The flat option renames
-   only the misfits, each with its inbound links: `qwen-validation.md` → `qwen3.8.md` (like `gemma4.md`,
-   `muse-glimmer.md`, `bonsai.md`), `gguf-inspection.md` → `gguf.md`,
-   `reference-baseline.md` → `llama-cpp.md` (the oracle and its harness).
-   Count each rename's references before it (`grep -rI`), run
-   `make docs-check` after.
-5. The hub: `docs/README.md` lists every document, one line each,
-   grouped (start here; using nuclis; how it works; per model; the
-   record), and drops "for Qwen3.8-27B" (:3); `docs/reference/README.md`
-   (GitHub shows it under the bare file list) points back to it, and a
-   `docs/benchmarks/README.md` indexes the records by family and date
-   without renaming them (scripts write those paths). Linked
-   from `README.md` (:199), `site/index.html` (a "Docs" link), and
-   `site/llms.txt`. AGENTS.md :405–406 and `development.md` :1431 agree:
-   documents are listed in `docs/README.md`. AGENTS.md :359 drops
-   `docs/roadmap.md`.
+   (`gates.json` ×2), and in the log `roadmap.md` ×2, `agent-spec.md` ×2,
+   `architecture.md#9-adding-a-model` (→ §10): repoint or unlink.
+2. The worklog: `--move docs/engineering-log.md=docs/worklog.md`; the
+   prose mentions too (AGENTS.md :59, :391, development :28, :1108,
+   bench :1061, new-model-guide :215, prompt-profile :134).
+   `scripts/changelog.py` (:6, :26 `LOG`): `closed_units(previous)` reads
+   the log *at the previous tag*, where `worklog.md` does not exist —
+   fall back to `docs/engineering-log.md` there, with a self-test case,
+   or the first release after the rename breaks.
+3. The ADR, moved then removed. Into `engine/speculative-decoding.md` §
+   "The Qwen verify budget", condensed: the rule C ≤ 50E and its
+   derivation (ADR :178–280; elsewhere only in `scripts/spec-matrix.py`'s
+   docstring and the log), the external evidence surveyed 2026-09-30
+   (:91–117: MLX `sdpa_vector`, metal-flash-attention, llama.cpp #29110,
+   vLLM #58863, DFlash2, SuffixDecoding, GDN Tree-Scan), the alternatives
+   considered (:348–361). Into `engine/metal-backend.md`: where the
+   verify cost goes (:78–90) and the implementation observations
+   (:293–326: verify misses the merged gate/up and SiLU fusions; the
+   8-column tile runs 3–4 real rows). Drop Confidence. Repoint bench
+   :1728, :2007, speculative-decoding :973, apple-gpu :155, the log's
+   :6356 link (to the new section); delete `docs/adr/`; AGENTS.md :39–41,
+   :71, :391 and `docs/README.md` :41–47 lose the ADR text.
+4. The tree, by `--move`, one commit per folder (engine, models, app +
+   guide, benchmarks), `make docs-check` clean after each: the plain
+   renames of the tree above. `bench.md` moves whole to
+   `benchmarks/README.md` here; its split is step 7.
+5. The hub: `docs/README.md` rewritten from the tree (one line per
+   document, grouped as the folders), "for Qwen3.8-27B" (:3) gone;
+   linked from `README.md` (:199, which links `docs/reference/` today),
+   `site/index.html` (a "Docs" link), `site/llms.txt`. AGENTS.md :405–406
+   and `development.md` :1431 agree: documents are listed in
+   `docs/README.md`. AGENTS.md :359 drops `docs/roadmap.md`; its
+   *Repository architecture* and other path mentions follow the tree.
+   Gates: `make docs-check`, `make site-check`, `make lint-py`,
+   `make verify-auto`, `zig build test` (the `.zig` comments changed).
 
-**Session 2: content** (current state first; history kept, below it).
+**Session 2: the splits** (content moves; history kept, below it).
 
-6. `bench.md`: after *Definitions*, a *Current results* section (the
-   ENGN-21 tables, the speculative defaults table now at :2296, the
-   README speculation table's source, which today lives only in the
-   log at KERN-23) and a table of contents; *Observations so far*
-   (:183–505, 2026-09-07 bring-up) moves under a *History* heading with
-   the dated sections, text unchanged. Where a dated section duplicates
-   a topic document's record (KERN-13/14/15/16/18 in
-   `metal-backend.md`; ENGN-12/14/15/16/20, MODL-19/20 in
-   `speculative-decoding.md`), keep its heading and replace the body by
-   one line and a link, or keep both — decide on reading them.
-7. `metal-backend.md`: a current-state lead and TOC, as
-   `speculative-decoding.md` :8–24 does; :7–8's "2026-09-07 review"
-   pointer resolved; "Performance observation" (:1778) labelled as
-   2026-09-07 on macOS 26.
-8. `development.md` split: a newcomer `docs/getting-started.md` (install,
-   `~/.nuclis`, configuration from :498, `nuclis model pull` from :573)
-   becomes the site's "Setup guide" target; the agent UI internals
-   (:744–1006: styled output, live region, transcript, renderer) move to
-   a `docs/reference/terminal.md`; cited headings leave a one-line stub.
-   Stale lines: :14 (eval shipped, APPS-14), :44 (macOS 26), :85–90
-   (copied numbers → link), :389, :407.
-9. One home per number: README and the site keep the headline tables;
-   `architecture.md` :518–534 (stale flowchart, "the switch lost" — ENGN-20
-   turned it on), `development.md` :85–90, `llm-guide.md` :33 (ask: the
-   guide changes only on request), `laya.md` :27, `reference-baseline`
-   (now `llama-cpp.md`) :223 link to `bench.md` instead of copying.
-10. Bring-up documents, current-state lead or fold: `gguf.md` :3,
-    `qwen3.8.md` :4, `generation.md` :1 ("bring-up"), :11–12, `cpu-reference.md`
-    :308–313, `llama-cpp.md` :4–5 ("nuclis does not execute models yet"),
-    `muse-glimmer.md` :444–445 (the projector shipped), `bonsai.md` :342
-    (the catalogue entry was removed 2026-09-26), `api.md` :372
-    ("Zig 0.16.0").
-11. Protected documents, navigation only, with the user's yes: a TOC for
-    `llm-guide.md` and its §27 heading level (:1031, H2 among H3s); the
-    log's summary table (:12–177) linking each row to its entry; check
+6. `development.md` → `guide/getting-started.md` (new: install, `~/.nuclis`,
+   `nuclis model pull` from :498, a first chat), `guide/configuration.md`
+   (:573…), `app/terminal.md` (:744–1006), each by `--move
+   development.md#… = …` for the anchors (31 inbound, 13 distinct, 6 from
+   the log). What stays is the contributor guide, with a TOC. The site's
+   "Setup guide" (:320) points at `guide/getting-started.md`.
+7. `benchmarks/README.md`: definitions, what to record, the acceptance
+   method, *Current results* (the ENGN-21 tables, the speculative
+   defaults table now at bench :2296, and the README speculation table's
+   source, today only in the log at KERN-23), and an index of the JSON
+   records by family and date. Every dated section, *Observations so
+   far* (:183–505) first among them, moves to `benchmarks/history.md`
+   with its heading text unchanged, by `--move` with anchors (24 cited,
+   117 links). The `<!-- bench:… -->` region (bench :1557) moves with its
+   section and `scripts/bench-report.py --write-doc` follows it.
+8. `models/qwen3.8.md`: the Qwen facts (architecture, hybrid schedule,
+   tokenizer, prompt profile, validation) gathered from qwen-validation,
+   generation, tokenizer, gguf, prompt-profile, as `gemma4.md` is for
+   Gemma; the sources keep a link.
+
+**Session 3: current state first.**
+
+9. Leads and TOCs on the long documents: `engine/metal-backend.md`
+   (a current-state lead like speculative-decoding :8–24; :7–8's
+   "2026-09-07 review" resolved; "Performance observation" :1778 labelled
+   2026-09-07, macOS 26), `llm-guide.md` (TOC; §27 at :1031 is H2 among
+   H3s), `models/gemma4.md`, `engine/vision.md`.
+10. One home per number: README and the site keep the headline tables;
+    `architecture.md` :518–534 (stale flowchart; "the switch lost" —
+    ENGN-20 turned it on), `development.md` :85–90, `llm-guide.md` :33,
+    `models/laya.md` :27, `benchmarks/llama-cpp.md` :223 link to
+    `benchmarks/README.md` instead of copying.
+11. Stale text: `engine/gguf.md` :3, `models/qwen3.8.md` (qwen-validation :4),
+    `engine/sampling.md` :1 ("bring-up"), :11–12, `engine/cpu-reference.md`
+    :308–313, `benchmarks/llama-cpp.md` :4–5 ("nuclis does not execute
+    models yet"), `models/muse-glimmer.md` :444–445 (the projector
+    shipped), `models/bonsai.md` :342–355 (catalogue entry removed
+    2026-09-26), `guide/api.md` :372 ("Zig 0.16.0"), development :14
+    (eval shipped), :44 (macOS 26), :389, :407. Duplicated unit records
+    (KERN-13/14/15/16/18 in metal-backend and history; ENGN-12/14/15/16/20,
+    MODL-19/20 in speculative-decoding and history): keep the topic
+    document's, reduce the history's body to a line and a link.
+12. Close: the log entry lists every move (old → new) and removal; check
     the log renders on GitHub at ~500 KB.
-12. Close: the log entry lists every rename and removal; `make
-    docs-check`, `make site-check`, `make lint-py`, `make verify-auto`.
 
 Gates: `make docs-check` (new), `make site-check`, `make lint-py`,
-`make verify-auto`. Documents and scripts only; no inference tier. The
-site's changed pages are looked at by the user.
+`make verify-auto`, `zig build test` when `.zig` comments change.
+Documents, scripts, and comments only; no inference tier. The site's
+changed pages are looked at by the user.
