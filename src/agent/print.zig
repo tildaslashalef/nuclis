@@ -175,6 +175,7 @@ pub fn run(
         defer loaded.deinit();
         const built = try resume_mod.messages(alloc, loaded);
         defer alloc.free(built);
+        completer.resumeFrom(resume_mod.lastBoundary(loaded));
         try agent.restore(built, &.{});
     }
 

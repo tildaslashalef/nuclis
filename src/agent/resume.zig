@@ -249,6 +249,20 @@ pub fn delete(alloc: Allocator, io: std.Io, root_dir: []const u8, path: []const 
     return removed;
 }
 
+/// The stored conversation's last saved turn end, for the completer to
+/// restore from the token cache instead of replaying.
+pub fn lastBoundary(loaded: session.Loaded) ?cache.Boundary {
+    var i = loaded.records.len;
+    while (i > 0) {
+        i -= 1;
+        switch (loaded.records[i].entry) {
+            .assistant => |step| if (step.boundary) |b| return .{ .bytes = b.bytes, .digest = b.digest },
+            else => {},
+        }
+    }
+    return null;
+}
+
 /// The `/list` rows: one per session, newest first, `current` (an id)
 /// marked. Strings in `alloc` (an arena, in the agent).
 pub fn listRows(alloc: Allocator, sessions: []const Summary, current: []const u8, ascii: bool) ![]const []const u8 {

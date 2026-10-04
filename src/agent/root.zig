@@ -1622,7 +1622,7 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     // the stored entries and prefilled on the next turn.
     ui.eng.model.reset();
     ui.tokens_seen.reset();
-    ui.completer.resumeFrom(lastBoundary(loaded));
+    ui.completer.resumeFrom(resume_mod.lastBoundary(loaded));
     ui.agent.resetConversation();
     ui.effort = effort;
     const built = try resume_mod.messages(a, loaded);
@@ -1640,20 +1640,6 @@ fn sessionId(path: []const u8) []const u8 {
     const name = std.fs.path.basename(path);
     const stem = if (std.mem.endsWith(u8, name, ".jsonl")) name[0 .. name.len - ".jsonl".len] else name;
     return if (std.mem.lastIndexOfScalar(u8, stem, '_')) |i| stem[i + 1 ..] else stem;
-}
-
-/// The stored conversation's last saved turn end, for the completer to
-/// restore from the token cache instead of replaying.
-fn lastBoundary(loaded: session_log.Loaded) ?loop.cache.Boundary {
-    var i = loaded.records.len;
-    while (i > 0) {
-        i -= 1;
-        switch (loaded.records[i].entry) {
-            .assistant => |step| if (step.boundary) |b| return .{ .bytes = b.bytes, .digest = b.digest },
-            else => {},
-        }
-    }
-    return null;
 }
 
 /// The attachments of each conversation entry of a stored session, parallel
