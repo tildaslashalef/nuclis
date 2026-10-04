@@ -919,7 +919,7 @@ at by running `./zig-out/bin/nuclis agent` in Ghostty directly.
 ### The agent's task list
 
 `scripts/agent-eval.py` (`make agent-eval VARIANT=<name> ARGS='…'`) runs
-twelve small tasks against the playground: a tiny Python geometry package
+thirteen small tasks against the playground: a tiny Python geometry package
 that `scripts/playground.py` generates on first use under
 `.zig-cache/playground/` (`make playground` builds it and prints the path)
 and commits with `git init` as the baseline its own `make reset` returns
@@ -932,8 +932,8 @@ test`). The tasks: whole-file questions (a line count
 and a maximum, the release list), edits (a rename, the repeated heading,
 a planted bug, a validation with its test), a new module with tests, a
 flag added to the CLI, a silent `exit 7`, a tree-wide `grep`, a three-bullet
-summary, and the 1 MiB file. Each task is one `nuclis agent --print` turn
-with a fixed seed from the committed baseline, checked by its own
+summary, the 1 MiB file, and "what is this project about". Each task is one
+`nuclis agent --print` turn with a fixed seed from the committed baseline, checked by its own
 predicate (file contents, a command's output, the answer's text) and
 scored on steps, tool calls, tool errors, failed edits, prompt and
 generated tokens, the model's seconds, the answer's length, and four
@@ -952,6 +952,10 @@ the means. This is how a change to the system prompt, a tool description,
 or the loop is judged: before and after, on the same list and seeds, and
 the log entry cites the table; the first record is
 [AGNT-13](engineering-log.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22).
+`scripts/agent-tokens.py <variant> [<variant> …]` says where a variant's
+prefill went: per tool, the calls, the tokens their results added (counted
+by `nuclis tokenize --raw`, the engine's own tokenizer), and each tool's
+share, with the variants side by side when given several.
 
 ### The agent without a terminal
 

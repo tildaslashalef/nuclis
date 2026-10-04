@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The agent's task list: twelve small coding tasks against the playground
+"""The agent's task list: thirteen small coding tasks against the playground
 project, each run as one `nuclis agent --print` turn and scored on whether it
 did the job and what it cost. The list is how a change to the system prompt,
 a tool description, or the loop is judged: run it before and after, compare.
@@ -200,6 +200,12 @@ def check_big(ws: Path, run: Run):
     return ok, f"{len(run.answer)} chars, {run.steps} steps"
 
 
+def check_about(ws: Path, run: Run):
+    low = run.answer.lower()
+    ok = ("geometr" in low or "shape" in low) and len(run.answer) <= 1500
+    return ok, f"names the geometry package, {len(run.answer)} chars"
+
+
 def check_validate(ws: Path, run: Run):
     probe = run_py(
         ws,
@@ -268,6 +274,7 @@ TASKS = [
         "Make polygon_area and polygon_perimeter in src/shapes/polygon.py raise ValueError('sides must be an integer') when sides is not an int, and add a test for it in tests/test_shapes.py.",
         check_validate,
     ),
+    Task("about", "What is this project about?", check_about),
 ]
 
 

@@ -16,7 +16,8 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: AGNT-20 session 2, reading less** (below). Session 1 (the
+**Next: AGNT-20 session 2, reading less** (below; the baseline is
+measured and committed, the tool changes are next). Session 1 (the
 command surface and `/model`) is delivered and committed (2026-10-04):
 see its section for what landed and what it measured. AGNT-19 (the token
 cache, session management, and the fixes from the user's testing) closed
@@ -128,7 +129,25 @@ entry).
   another model and back (Gemma 4 12B QAT and Qwen are both local), the
   `/resume` picker deleting a session, `/clear`.
 
-**Session 2: reading less.** Files: `src/agent/tools/grep.zig`,
+**Session 2: in progress.** Measured first (committed with the
+script): `scripts/agent-tokens.py`, and the task `about` ("What is this
+project about?") added to `scripts/agent-eval.py`. Baseline variant
+`agnt20-base` (`.zig-cache/agent-eval/agnt20-base/`: `agnt19-after`'s
+24 runs, identical calls and results to `agnt19-before` since the cache
+changes no decision, plus `about` on `1007b08`; 11/13 tasks on every
+seed): 116 steps, 22,678 prompt tokens, 18,067 of them tool results
+(80 %): `read_file` 48 calls 10,041 (56 %), `bash` 28 / 3,189 (18 %),
+`edit_file` 25 / 3,154 (17 %), `grep` 5 / 820, `write_file` 4 / 775,
+`glob` 6 / 88. Facts that correct the design below: `read_file` adds no
+line numbers (the `00001` was `big.txt`'s content), and the model never
+sees a tool's `summary` (only the transcript does): a read cut at 200
+lines, or a grep cut at 200 matches, is not marked to the model. No file
+in the baseline is re-read unchanged (the two re-reads follow the model's
+own edit), so the repeated-read check saves nothing on this list. The
+largest results: `history.md` page one, 1,163 tokens (both seeds); a
+30-line sample of `big.txt`, 644.
+
+**Session 2 (as planned): reading less.** Files: `src/agent/tools/grep.zig`,
 `read_file.zig`, `edit_file.zig`, `bash.zig`, `src/agent/loop.zig` (the
 repeated-read check), `src/agent/system_prompt.zig`, a new
 `scripts/agent-tokens.py` (the per-tool table above for any
