@@ -20,7 +20,11 @@ it is empty, ask what to work on and write the agreed plan here.
 then C (the README GIF); the user may add tracks until they say to close.
 REPO-32 (2026-10-04) fixed the failed v0.5.0 release: `install-zig.sh`
 takes the first matching digest, and `release.yml` runs the workflow
-revision's installer; v0.5.0 republished by dispatch from `main`.
+revision's installer. v0.5.0 published by dispatch from `main` (run
+`37209513321`, success; the assets verified against `SHA256SUMS`, the
+binary reports `nuclis 0.5.0`); REPO-33's log entry records this, since
+REPO-32's entry predates it. Track A is committed (`80791df`) and is
+measured on the runners after it is pushed.
 
 | # | Unit | Sessions |
 | --- | --- | ---: |
@@ -88,6 +92,23 @@ The release path is only exercised by a real tag (REPO-32's lesson).
    Changelog, git-cliff, release-please, changesets; Zig, Rust, Bun, Deno,
    llama.cpp releases) and report in chat with a recommendation before
    changing the format.
+   *Researched 2026-10-04.* Keep a Changelog: written for people, and
+   it lists "commit log diffs" as an anti-pattern. The common pattern
+   (Ollama, Zig, Rust's blog plus RELEASES.md, Neovim's `news.txt`):
+   a short hand-written layer stored outside the commits, above a
+   generated or edited list, ending with a compare link. git-cliff
+   offers `commit_parsers` and `link_parsers`, and the annotated tag
+   message `{{ message }}` as the highlights; release-please needs
+   PRs; changesets and towncrier need a fragment file per change,
+   which the engineering log already plays the part of. GitHub's
+   generated notes list merged PRs, so they show nothing in a
+   push-only repository. Robustness: run the dry run in CI on every
+   push; publish as a draft and attach every asset before publishing
+   (immutable releases, GA 2025-10, refuse assets added later); build
+   provenance with `actions/attest` (`id-token: write`,
+   `attestations: write`; users check it with
+   `gh attestation verify`). Recommendation: stay on the stdlib
+   script, no new tool.
 2. Likely direction (confirm with the user): a hand-written
    **Highlights** paragraph per release, then one bullet per closed unit
    (`AREA-NN` from commit subjects, title from the engineering log's
