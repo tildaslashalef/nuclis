@@ -173,6 +173,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | AGNT-19 | Token caching for the agent: the primed prefix and turn ends kept in memory and on disk, resume from the last turn, replay causes on the bar; `/list`, `/delete`, `agent rm`, `nuclis cache`; from testing: `bash` spawns again (broken since Zig 0.17), fuzzy `@`, Esc cancels. Task list wall −23 % per task, a 9.8K resume 126.5 → 2.05 s | 2026-10-04 |
 | AGNT-20 | A faster agent step: the command surface and `/model` (one picker, model switch in place), reading less (pages, outlines, grouped `grep` with `.gitignore`, one-line-context diffs, head-and-tail `bash`, repeat pointers; tool-result tokens −28 %), `max_tokens` 8192 and a reasoning cap at every effort; from testing: a reopened thought bounded, cut calls never shown as text, bad arguments named, Enter runs the highlighted command. Faster prefill dropped by the user | 2026-10-04 |
 | REPO-32 | `release` publishes tags that pin their own compiler: the installer takes the first matching digest and comes from the workflow's revision; REPO-31's append listed v0.5.0's 0.17.0 pin twice and failed its release | 2026-10-04 |
+| REPO-33 | CI 5 m 57 s → 2 m 16 s (docs-only pushes skipped, three parallel jobs, working caches); release notes led by highlights and units by area, every published release rewritten; draft-then-publish and build provenance; the README GIF re-recorded with speculation in real time (36 s task, 21–27 tok/s); the nuclis logo | 2026-10-04 |
 
 ## Context
 
@@ -7904,3 +7905,81 @@ matched the digest, and printed `0.17.0`.
 **Remaining.** REPO-31's evidence covered only a tag without the pin; the
 release path is still only exercised by a real tag. v0.5.0 needs a
 `release` dispatch from `main` with `tag: v0.5.0`.
+
+## REPO-33 — CI speed, release notes that lead with the work, the README GIF at speculative speed, the logo (2026-10-04)
+
+**Outcome.** One open unit, agreed with the user to take requests until
+they closed it.
+
+*CI.* `ci.yml` ran every push to `main` as one serial job. It now skips a
+push whose commits together touch only `docs/` or Markdown (GitHub filters
+per push: one code commit in a push runs it for all), and runs three
+parallel matrix jobs: `test` (format, semver, the newest notes sliced by
+`release-notes.sh`, `zig build test`), `metal` (ReleaseSafe, `--version`/
+`--help`), `cpu` (Debug, `-Dmetal=false`). The toolchain cache is keyed on
+the compiler version and `.github/zig-toolchain` (it was keyed on the whole
+manifest, so every version bump missed, and its `restore-keys` could never
+match); each job caches `.zig-cache` and Zig's global cache per commit,
+restoring the newest. `actions/cache` moved to v6.1.0 (Node 24).
+
+*Release notes.* Researched first (Keep a Changelog; git-cliff,
+release-please, changesets, towncrier; Zig, Rust, Ollama, Neovim, Deno,
+uv, llama.cpp): the readable pattern is a short hand-written layer above a
+generated list and a compare link. `scripts/changelog.py` now writes:
+highlights, the units closed in the release grouped by area (a unit
+counts where the log at the tag first lists it; titles from the log's
+heading or table row, linked to the anchor at the tag; follow-ups and
+in-progress units marked; a unit named nowhere in the plan or log, like
+the dropped REPO-11, left out), breaking changes, feat/fix/perf outside
+units, every commit in `<details>`, a compare link; `--range` and `--ref`
+regenerate a past section. `make release` asks for the highlights in
+`$VISUAL`/`$EDITOR` on a template listing the units (or `HIGHLIGHTS=<file>`),
+refuses empty text, and uses them as the tag message; `DRY_RUN=1` prints
+the section and tolerates a dirty tree. All five releases were rewritten
+with highlights the user approved (v0.4.0 leads with Zig 0.17), in
+`CHANGELOG.md` and on GitHub (`gh release edit`; tags unmoved).
+`release.yml` creates the release as a draft, checks it carries three
+assets, then publishes; it attests both tarballs with
+`actions/attest-build-provenance` v4.2.2, and the footer says how to check
+(`gh attestation verify`); the footer's methodology link is absolute.
+
+*The README.* The agent GIF re-recorded (`scripts/agent-demo.py`, default
+speed now 1×): played in real time with pauses over 1.5 s shortened.
+The user's logo (`docs/branding/nuclis.svg`, `nuclis.png`) heads the
+README, centred alone (`<h3 align="center">`, which the user's previewer
+and GitHub both honour; `<p>`/`<div align>` were not honoured there).
+
+v0.5.0, whose release failed at REPO-32, was published by dispatch
+(run `37209513321`).
+
+**Evidence.**
+- CI: old serial run 5 m 57 s (`37152348051`). First parallel run, all
+  caches cold (`37210607506`): 4 m 02 s. Warm (`37211094389`): 2 m 16 s,
+  `test` 1 m 17 s, `cpu` 44 s, `metal` 2 m 16 s, Zig install 0 s.
+  Locally, cold `-Dmetal=true`: Debug 43 s, ReleaseSafe 83 s.
+- v0.5.0: assets downloaded, `shasum -c SHA256SUMS` OK, the binary prints
+  `nuclis 0.5.0`; all five releases' notes replaced, v0.5.0 still Latest.
+- Changelog: v0.1.0–v0.5.0 list 44, 55, 24, 34, 3 closed units; v0.5.0's
+  old section had 24 one-commit lines. `release.ask_highlights` driven
+  with a scripted `$VISUAL` (text kept, `#` lines dropped; empty →
+  cancel; an editor error writes nothing). `release-notes.sh` slices
+  every section (largest 42 KB, under GitHub's limit).
+- GIF: cast 86.1 s; warm-up 23.0 s, task submitted at 34.8 s, answer at
+  70.6 s (about 36 s, seven steps; the old caption said 2 min 35 s);
+  21–27 tok/s on the status bar. Frames read: the edit is
+  `2 * (width + height)`, 5 tests OK. 84.7 s, 2.43 MB (was 4.39 MB).
+- `make lint-py`, `make verify-auto` before each commit; the workflows
+  parse; GitHub's Markdown API keeps `align="center"`.
+
+**Files.** `.github/workflows/ci.yml`, `.github/workflows/release.yml`,
+`.github/release-footer.md`, `scripts/changelog.py`, `scripts/release.py`,
+`scripts/agent-demo.py`, `Makefile`, `CHANGELOG.md`, `README.md`,
+`docs/media/agent.gif`, `docs/branding/`, `docs/development.md`
+(§ Continuous integration and releases, § Versioning), `AGENTS.md`
+(release recipe), this log.
+
+**Remaining.** `metal` bounds the CI wall because `build.zig` embeds the
+git revision, so the executable recompiles every commit; a Debug `metal`
+build would roughly halve it (offered, not taken). The draft-then-publish
+and attestation steps run first at the next tag. Icon sets from
+`nuclis.svg` for nuclis.dev, when the user asks.
