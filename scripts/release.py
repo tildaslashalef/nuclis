@@ -77,8 +77,9 @@ def next_dev(release):
 
 def ask_highlights(tag, range_spec):
     """The highlights from $VISUAL/$EDITOR on a template; '#' lines are dropped."""
-    units, breaking, _, _ = changelog.gather(range_spec)
-    titles = changelog.unit_titles()
+    previous = range_spec.split("..")[0] if ".." in range_spec else None
+    grouped = changelog.release_units(range_spec, previous, None)
+    breaking, _, _ = changelog.changes(range_spec)
     template = [
         f"# Highlights for {tag}: two to four sentences on what this release changes",
         "# for someone using nuclis, with the numbers that show it. Lines starting",
@@ -86,7 +87,8 @@ def ask_highlights(tag, range_spec):
         "#",
         "# Units:",
     ]
-    template += [f"#   {unit}  {titles.get(unit, ('(no log entry)', None))[0]}" for unit in units]
+    for heading, units in grouped:
+        template += [f"#   {heading}"] + [f"#     {unit}  {title}" for unit, title, _, _ in units]
     if breaking:
         template += ["#", "# Breaking:"] + [f"#   {entry}" for entry in breaking]
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"

@@ -126,6 +126,15 @@ The release path is only exercised by a real tag (REPO-32's lesson).
    first, then flips it, and attests the tarballs with
    `actions/attest-build-provenance` v4.2.2
    (`4d101475d8b20a2381f78447822ac1eab6504dd8`).
+   *Then, 2026-10-04:* the whole CHANGELOG is revamped to this format,
+   v0.1.0–v0.5.0, each with highlights drafted from the log and approved
+   by the user (e.g. v0.4.0 leads with the Zig 0.17 upgrade), and each
+   published release's notes replaced with `gh release edit` (tags never
+   move). Units are grouped by area (Models, Engine, Kernels, Agent,
+   Application, Terminal, Repository); a unit counts for the release whose
+   log first lists it (`--ref <tag>` reads the log and plan at the tag);
+   follow-ups and in-progress units are marked; a unit named only in a
+   commit and nowhere in the plan or log (REPO-11, dropped) is left out.
 3. Make the release path testable before a tag: a `make release
    DRY_RUN=1` that prints the generated section and the notes
    `release-notes.sh` would publish; a ci step that runs
@@ -158,7 +167,15 @@ about 17 tok/s. README lines 10–12 state "2×" and "2 min 35 s".
    pass). Update the README caption (speed, real time, speculative
    decoding) and log the session time and size.
 
+### Track D — branding
+
+The user added `docs/branding/` (2026-10-04): `nuclis.svg` (512×512 viewBox,
+teal `#087F8C` bands, an amber diamond) and `nuclis.png` (1254×1254 RGBA,
+transparent). The PNG heads the README (centred, `width="160"`). Later,
+when the user asks: icon sets generated from the SVG for the nuclis.dev
+website.
+
 ### Further tracks
 
-Requests the user adds during the unit are appended here as tracks D, E…
+Requests the user adds during the unit are appended here as tracks E, F…
 with the same level of detail.
