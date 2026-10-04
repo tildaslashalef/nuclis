@@ -2454,3 +2454,29 @@ on a 27–30B model, long enough to heat the chip from its cooled start,
 too short to settle; at 16K and longer the rate is the settled one. Both
 engines start each family from the same 10-minute cool-down, so the
 comparison holds; the 4K row carries the larger spread.
+
+### nuclis: Gemma 4 12B QAT
+
+[nuclis-2026-10-05-gemma4-qat.json](../benchmarks/nuclis-2026-10-05-gemma4-qat.json)
+(dated by its start after midnight), at `5ef0544`, clean, 00:50–01:35:
+
+| Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 207.02 ± 0.07 | 25.38 ± 0.02 | 179.45 / 23.96 | +5.9 % |
+| 4,096 | 159.40 ± 0.03 | 23.43 ± 0.05 | 143.25 / 20.71 | +13.1 % |
+| 16,384 | 104.62 ± 1.09 | 17.93 ± 0.35 | 98.67 / 17.87 | +0.3 % |
+| 32,639 | 72.42 ± 0.14 | 15.11 ± 0.23 | 73.04 / 16.24 | −6.9 % |
+
+Against today's reference:
+
+| Prompt tokens | Decode nuclis / llama.cpp | ratio | Prefill nuclis / llama.cpp | ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 25.38 / 30.15 | 0.84× | 207.02 / 226.66 | 0.91× |
+| 4,096 | 23.43 / 28.05 | 0.84× | 159.40 / 221.32 | 0.72× |
+| 16,384 | 17.93 / 22.42 | 0.80× | 104.62 / 171.55 | 0.61× |
+| 32,639 | 15.11 / 19.12 | 0.79× | 72.42 / 144.53 | 0.50× |
+
+Short-context prefill gained most (+15 % at 512, +11 % at 4K); 32K decode
+lost 7 %, as the reference's did (−8.7 %). The gap to the reference is
+unchanged in shape: decode 0.79–0.84×, prefill halving by 32K. Peak RSS
+10.8 GiB, footprint 11.0 GiB.
