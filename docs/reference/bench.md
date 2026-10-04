@@ -2357,3 +2357,19 @@ fixture's):
 
 The same shape as Qwen's: faster at short context, slower decode at 32K
 (three samples on both dates). Server RSS 7.3–8.1 GiB.
+
+### Reference: Gemma 4 26B-A4B
+
+[reference-2026-10-04-gemma4-26b-a4b.json](../benchmarks/reference-2026-10-04-gemma4-26b-a4b.json),
+replaying `run-2026-09-18-gemma4-26b-a4b` (the server's rendering equals
+the fixture's):
+
+| Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 584.62 ± 0.84 | 68.14 ± 0.17 | 580.76 / 68.02 | +0.2 % |
+| 4,096 | 559.48 ± 0.13 | 62.37 ± 0.04 | 548.41 / 60.82 | +2.5 % |
+| 16,384 | 456.93 ± 4.34 | 53.31 ± 0.30 | 459.46 / 50.67 | +5.2 % |
+| 32,639 | 325.68 ± 2.24 | 43.36 ± 0.61 | 343.38 / 44.09 | −1.6 % |
+
+The mixture of experts moved least: within ±5 % everywhere, 32K prefill
+−5 %. Server RSS 14.2–14.7 GiB.
