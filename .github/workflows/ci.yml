@@ -54,6 +54,10 @@ jobs:
                 exit 1
               }
               echo "version $version"
+              # The release path runs only on a tag; slice the newest notes now.
+              latest=$(sed -n 's/^## \[\(v[^]]*\)\].*/\1/p' CHANGELOG.md | head -1)
+              ./.github/release-notes.sh "$latest" > /dev/null
+              echo "release notes for $latest"
               zig build test --summary all
           - name: metal
             run: |

@@ -283,17 +283,19 @@ stale references. Do not claim build/test execution when no code or build exists
   acceptance (the 32K context record); until it passes, the tree stays on
   `0.1.0-dev`. Planned work never bumps the version; acceptance does.
 - Release recipe: `make release` strips the `-dev` suffix (the version is
-  derived from `build.zig.zon`, never passed in), writes the CHANGELOG
-  section, commits `chore(release): vX.Y.Z`, tags it (annotated), and bumps
+  derived from `build.zig.zon`, never passed in), asks for the release's
+  highlights (an editor, or `HIGHLIGHTS=<file>` when no one is at the
+  keyboard), writes the CHANGELOG section led by them and the units closed,
+  commits `chore(release): vX.Y.Z`, tags it (annotated), and bumps
   to the next `X.(Y+1).0-dev` in a follow-up commit. It never pushes.
   Before it, `make verify-cpu`, `make verify-long`, and `make
   verify-release` run the CPU, long-context, and release tiers once,
   since most units skip them.
 - Tag only forward, never retroactively. Benchmarks and test records cite the
   git revision, and published numbers cite the release tag once one exists.
-- `CHANGELOG.md` starts at the first tag, assembled from Conventional
-  Commits since the previous tag (`feat` → minor, `fix` → patch,
-  `!`/`BREAKING CHANGE` → flagged).
+- `CHANGELOG.md` starts at the first tag: per release, the highlights, the
+  units the commits name, breaking changes, and the full commit list folded
+  ([docs/development.md § Versioning](docs/development.md#versioning)).
 - The Zig toolchain is a separate axis: `minimum_zig_version` pins source
   compatibility, the exact compiler used is recorded in every benchmark
   record, and a Zig upgrade is its own unit of work.

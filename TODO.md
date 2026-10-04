@@ -116,6 +116,16 @@ The release path is only exercised by a real tag (REPO-32's lesson).
    breaking changes flagged; docs/chore/test commits collapse into a
    compare link (`/compare/vA...vB`). Where the highlights text lives and
    how `release.py` asks for it is decided with the user.
+   *Decided by the user 2026-10-04:* highlights drafted at release
+   (`release.py` opens `$VISUAL`/`$EDITOR` on a template listing the
+   units and breaking changes, refuses empty text, and uses the text as
+   the annotated tag message; `--highlights-file` for non-interactive
+   runs); section = highlights, units (log heading title, linked to the
+   anchor at the tag), breaking, outside units, every commit in
+   `<details>`, compare link. The release workflow publishes a draft
+   first, then flips it, and attests the tarballs with
+   `actions/attest-build-provenance` v4.2.2
+   (`4d101475d8b20a2381f78447822ac1eab6504dd8`).
 3. Make the release path testable before a tag: a `make release
    DRY_RUN=1` that prints the generated section and the notes
    `release-notes.sh` would publish; a ci step that runs

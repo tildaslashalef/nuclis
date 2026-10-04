@@ -255,11 +255,11 @@ test-hf: ## Offline tests of the huggingface package only (`make test` includes 
 
 # ---- releases --------------------------------------------------------------
 
-changelog: ## Insert the CHANGELOG section since the previous tag (ARGS='vX.Y.Z')
+changelog: ## Insert the CHANGELOG section since the previous tag (ARGS='vX.Y.Z [--dry-run] [--range A..B]')
 	python3 scripts/changelog.py $(ARGS)
 
-release: ## Cut a release from the manifest's -dev version: check, changelog, commit, tag, next-dev bump (DRY_RUN=1 to preview)
-	python3 scripts/release.py $(if $(DRY_RUN),--dry-run)
+release: ## Cut a release from the manifest's -dev version: highlights, check, changelog, commit, tag, next-dev bump (DRY_RUN=1 to preview, HIGHLIGHTS=file)
+	python3 scripts/release.py $(if $(DRY_RUN),--dry-run) $(if $(HIGHLIGHTS),--highlights-file $(HIGHLIGHTS))
 
 # ---- housekeeping ----------------------------------------------------------
 

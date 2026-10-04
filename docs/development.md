@@ -1023,11 +1023,16 @@ tools that are on every machine and nothing else, which is why neither `jq`
 nor Python appears in CI even though the repository's local tooling
 (`scripts/*.py`) is written in Python.
 
-**`ci.yml`** (push to `main`, pull requests): `zig fmt --check`, a semver
-check on `build.zig.zon`'s version, `zig build test`, a
-`-Dmetal=true -Doptimize=ReleaseSafe` build with `--version`/`--help`
-on the result, and a `-Dmetal=false` build so the non-Metal path keeps
-linking. That is `make check` minus the GPU. **Not** in CI: `test-metal`,
+**`ci.yml`** (push to `main`, pull requests; a push that touches only
+`docs/` or Markdown does not run it) has three parallel jobs: `test`
+(`zig fmt --check`, a semver check on `build.zig.zon`'s version, the
+newest `CHANGELOG.md` section sliced by `release-notes.sh`, `zig build
+test`), `metal` (a `-Dmetal=true -Doptimize=ReleaseSafe` build with
+`--version`/`--help` on the result), and `cpu` (a Debug `-Dmetal=false`
+build so the non-Metal path keeps linking). That is `make check` minus the
+GPU. The toolchain cache is keyed on the compiler version and its pins,
+so a release bump keeps it; each job also caches `.zig-cache` and Zig's
+global cache per commit, restoring the newest. **Not** in CI: `test-metal`,
 `verify`, `bench`, and anything that pulls a model — they need the pinned
 artifacts and the real M4 Pro, and a rate measured on a virtualised GPU is a
 number nobody should trust. Those gates stay local and their evidence stays
@@ -1050,10 +1055,13 @@ installer, is published by dispatching `release` from `main` with the tag
 as input, never by moving the tag.
 
 It then runs the same gate, builds `-Dmetal=true -Doptimize=ReleaseSafe`,
-asserts the binary reports the tag's version, and publishes three assets: the
-binary tarball (`nuclis-vX.Y.Z-aarch64-macos.tar.gz`), a source tarball
+asserts the binary reports the tag's version, attests both tarballs
+(`actions/attest-build-provenance`; check one with `gh attestation verify
+<file> -R tildaslashalef/nuclis`), and publishes three assets: the binary
+tarball (`nuclis-vX.Y.Z-aarch64-macos.tar.gz`), a source tarball
 (`nuclis-vX.Y.Z-src.tar.gz`, cut with `git archive` from the tag), and a
-`SHA256SUMS` covering both. The release notes are the tag's own section of
+`SHA256SUMS` covering both. The release is created as a draft with all
+three attached and made public only once the count checks. The release notes are the tag's own section of
 `CHANGELOG.md` plus a fixed footer, sliced by `.github/release-notes.sh`, so
 notes and changelog cannot drift.
 
@@ -1143,12 +1151,16 @@ build options.
 - **A tag that exists on the remote never moves.** Once a release is published
   the rule is absolute: the fix is the next number, never a moved tag.
 - **Release recipe.** `make release` runs the mechanical steps; `make release
-  DRY_RUN=1` previews them without touching anything. The version is derived
-  by stripping `-dev` from `build.zig.zon`, never passed in: the manifest is
-  the source of truth, and `release.yml` rejects a tag that disagrees with it.
-  It runs `make check`, writes the release's section into `CHANGELOG.md` from
-  Conventional Commits, commits `chore(release): vX.Y.Z`, creates the
-  annotated tag, then commits the next `X.(Y+1).0-dev`. It never pushes.
+  DRY_RUN=1` prints the section it would write without touching anything. The
+  version is derived by stripping `-dev` from `build.zig.zon`, never passed
+  in: the manifest is the source of truth, and `release.yml` rejects a tag
+  that disagrees with it. It first asks for the **highlights**, two to four
+  sentences on what the release changes for a user: `$VISUAL`/`$EDITOR`
+  opens on a template listing the units and breaking changes, or
+  `HIGHLIGHTS=<file>` supplies them; empty text cancels. It then runs `make
+  check`, writes the release's section into `CHANGELOG.md`, commits
+  `chore(release): vX.Y.Z`, creates the annotated tag with the highlights
+  as its message, then commits the next `X.(Y+1).0-dev`. It never pushes.
   1. `make verify` passes on the tree (needs the pinned models); commit any
      fix that turns up.
   2. `make release`.
@@ -1157,10 +1169,13 @@ build options.
 - Tags move only forward; never add a tag retroactively to an earlier commit.
 - Benchmark records cite the git revision, and the release tag once one
   exists.
-- `CHANGELOG.md` is assembled from Conventional Commits
-  starting at the first tag: `feat` → minor, `fix` → patch,
-  `!`/`BREAKING CHANGE` flagged as breaking. `make changelog` writes the
-  section since the previous tag locally before tagging.
+- `CHANGELOG.md` leads with the work, not the commits (`scripts/changelog.py`):
+  the highlights; one line per unit the commits name (`AREA-NN`), titled by
+  its engineering-log heading and linked to it at the tag; breaking changes
+  (`!` or `BREAKING CHANGE:`); `feat`/`fix`/`perf` commits outside any unit;
+  every commit folded into `<details>`; a compare link. `make changelog
+  ARGS='vX.Y.Z --dry-run'` previews it, `--range A..B` regenerates a past
+  one.
 - **The Zig toolchain is a separate axis.** `minimum_zig_version` pins source
   compatibility, the exact compiler is recorded in benchmark records, and Zig
   upgrades are their own unit of work.
