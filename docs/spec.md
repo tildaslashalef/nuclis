@@ -468,7 +468,9 @@ one command; the evaluation CLI stays separate.
   missing file out with a notice.
 - Up/Down move inside a multi-line input and recall history from the
   first and last rows; history persists across sessions (200 entries).
-- Tab completes a `/command` or an `@path`, else folds thinking. An
+- Tab completes a `/command` or an `@path`, else folds thinking; Enter
+  on an open command list runs the highlighted command, and a bare `/` is
+  answered with the command names, never sent to the model. An
   `@word` without a `/` matches fuzzily across the workspace tree (`@faq`
   offers `docs/faq.md`; characters in order, case-insensitive, basename and
   word starts first; `.git`, `node_modules`, `zig-out`, `.zig-cache`, and

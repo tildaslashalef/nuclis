@@ -765,6 +765,9 @@ const Ui = struct {
                 .up => return self.comp.move(.previous),
                 .down => return self.comp.move(.next),
                 .tab => return self.accept(),
+                // Enter on an open command list runs the highlighted command:
+                // a half-typed `/` is never sent to the model.
+                .enter => if (self.comp_kind == .command) return self.acceptCommand(),
                 .escape => return self.comp.set(&.{}),
                 else => {},
             }
@@ -1221,6 +1224,14 @@ const Ui = struct {
         try self.refreshCompletion();
     }
 
+    /// Takes the highlighted command's name into the editor and submits it.
+    fn acceptCommand(self: *Ui) !void {
+        const item = self.comp.current() orelse return;
+        try self.ed.replaceWord(item.label[0 .. std.mem.indexOfScalar(u8, item.label, ' ') orelse item.label.len]);
+        self.submit = true;
+        try self.comp.set(&.{});
+    }
+
     /// The spinner frame for this repaint, from the theme's glyph set. The
     /// same frame drives the thinking label and a running tool call.
     fn spinnerFrame(self: *Ui) []const u8 {
@@ -1541,7 +1552,10 @@ fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Re
                 try names.append(a, '/');
                 try names.appendSlice(a, spec.name);
             }
-            try ui.emit(.{ .notice = try a.print("  — /{s} is not a command; known: {s}", .{ word, names.items }) });
+            try ui.emit(.{ .notice = if (word.len == 0)
+                try a.print("  — a command name follows the slash: {s}", .{names.items})
+            else
+                try a.print("  — /{s} is not a command; known: {s}", .{ word, names.items }) });
         },
         .retired => |r| try ui.emit(.{ .notice = try a.print("  — /{s} is gone: {s}", .{ r.name, r.instead }) }),
         .usage => |spec| try ui.emit(.{ .notice = if (spec.kind == .shell)

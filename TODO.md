@@ -147,6 +147,12 @@ own edit), so the repeated-read check saves nothing on this list. The
 largest results: `history.md` page one, 1,163 tokens (both seeds); a
 30-line sample of `big.txt`, 644.
 
+Fix from the user's testing (2026-10-04): Enter on the open `/` list
+sent `/` to the model; it now runs the highlighted command (`/` Enter
+opens `/model`'s picker, `/cl` Enter clears), and a bare `/` is a notice
+listing the commands. Evidence: `slash-open`, `slash-enter`, `slash-cl`,
+`slash-bare`.
+
 **Session 2 (as planned): reading less.** Files: `src/agent/tools/grep.zig`,
 `read_file.zig`, `edit_file.zig`, `bash.zig`, `src/agent/loop.zig` (the
 repeated-read check), `src/agent/system_prompt.zig`, a new

@@ -87,9 +87,11 @@ pub fn parse(line: []const u8) ?Result {
         if (command.len == 0) return .{ .usage = shell_spec };
         return .{ .command = .{ .shell = .{ .command = command, .send = send } } };
     }
-    if (trimmed.len < 2 or trimmed[0] != '/') return null;
+    if (trimmed.len == 0 or trimmed[0] != '/') return null;
     const word_end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
     const word = trimmed[1..word_end];
+    // A bare slash is a command not finished, never a prompt for the model.
+    if (word.len == 0) return .{ .unknown = word };
     // A path, a fraction, or a date is not a command attempt.
     for (word) |c| if (!std.ascii.isAlphabetic(c)) return null;
     if (word.len > 16) return null;
@@ -284,8 +286,10 @@ test "a line is a command only when it is unmistakably one" {
     try testing.expect(parse("/usr/bin/env is fine") == null);
     try testing.expect(parse("/2 of them") == null);
     try testing.expect(parse("what is 1/2?") == null);
-    try testing.expect(parse("/") == null);
     try testing.expect(parse("") == null);
+    // A bare slash is an unfinished command, never a prompt.
+    try testing.expectEqualStrings("", parse("/").?.unknown);
+    try testing.expectEqualStrings("", parse(" / ").?.unknown);
     // A `/word` that names nothing is reported rather than sent to the model.
     try testing.expectEqualStrings("nope", parse("/nope").?.unknown);
     // A retired command says where its job went.
