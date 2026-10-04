@@ -2391,8 +2391,15 @@ server's date, so the replay is what keeps the 2026-09 tokens.
 The 4,096 row is disturbed: its three requests slowed one after the
 other (prefill 95.9 → 90.4 → 83.0, decode 12.3 → 10.6 → 10.1, 22:01–22:03
 local) while 512 before them was steady and 32,639 after them holds
-within ±0.3; no thermal warning was recorded. It is re-run alone below.
-Server RSS 15.2–15.5 GiB.
+within ±0.3; no thermal warning was recorded. Server RSS 15.2–15.5 GiB.
+
+Re-run alone on an idle machine after a 10-minute cool-down
+([reference-2026-10-04-muse-glimmer-4k.json](../benchmarks/reference-2026-10-04-muse-glimmer-4k.json),
+23:17): prefill **95.31 ± 1.01**, decode **12.25 ± 0.75** tok/s (2026-09:
+93.01 / 12.14). The decode fell again within the run (warmup 13.96, then
+12.71, 12.65, 11.38) while prefill held, so the spread at this length is
+the reference's own, not the machine's. The re-run's row is the published
+one (`muse/acceptance` lists its record first).
 
 ### Reference: Gemma 4 E4B QAT (first record)
 

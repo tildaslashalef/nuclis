@@ -1,0 +1,123 @@
+{
+  "date": "2026-10-04",
+  "started_at": "2026-10-04T21:17:40.721667+00:00",
+  "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+  "family": "muse-glimmer",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/Muse-Glimmer-30B-GGUF/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+  "model_sha256": "82bece304887a313ece08400bc030f6066c7bff5b906b0cd40308ec8a409fd38",
+  "build_info": "b10823-7620399f5",
+  "hardware": "Apple M4 Pro\n51539607552\n12",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434",
+  "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=23265379)\t100%; charged; 0:00 remaining present: true",
+  "context": 32768,
+  "output_tokens": 128,
+  "prompt_lengths": [
+    4096
+  ],
+  "repetitions": 3,
+  "methodology": "See ../reference/reference-baseline.md. Greedy, seed 1, no prefix reuse, EOS ignored for the timed requests, one untimed warmup per length excluded from the means; rates are the server's own timings.",
+  "replayed_from": [
+    "tests/fixtures/run-2026-09-19-muse-glimmer"
+  ],
+  "server_template_equal": false,
+  "prompt_file_sha256": {
+    "prompt-4096.json": "c743a1ae958c0104cb6c4278bf765c9e3bb936017cb8d63322f81daf14b4ce7e",
+    "prompt-construction.json": "0e66c83e494dcc1a154a8f70e31b7154f87017a2f89bc7a48d43a95738528df7"
+  },
+  "smoke_response": " to=self<|message|>Write a Python function add(a, b) that returns their sum. Return only code.\n\nReturn only code. Probably just function definition.\n\nNo extra text. Probably just code block? \"Return only code.\" Might be just code lines.\n\nProvide:\n\ndef add(a, b):\n    return a + b\n\nThat's it.\n\nEnsure no extra explanation.<|start|>assistant to=user<|message|>def add(a, b):\n    return a + b",
+  "summary": [
+    {
+      "prompt_tokens": 4096,
+      "phase": "warm",
+      "samples": 3,
+      "prompt_per_second": {
+        "mean": 95.31127566109619,
+        "sample_stdev": 1.0138387993746871
+      },
+      "predicted_per_second": {
+        "mean": 12.247826386546866,
+        "sample_stdev": 0.7496558828623596
+      }
+    }
+  ],
+  "samples": [
+    {
+      "phase": "warmup",
+      "prompt_tokens": 4096,
+      "repetition": 0,
+      "output_tokens": 128,
+      "wall_seconds": 50.29293633400812,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 4096,
+        "prompt_ms": 41191.644,
+        "prompt_per_token_ms": 10.0565537109375,
+        "prompt_per_second": 99.43764322686417,
+        "predicted_n": 128,
+        "predicted_ms": 9099.428,
+        "predicted_per_token_ms": 71.64903937007874,
+        "predicted_per_second": 13.956921248236702
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 4096,
+      "repetition": 1,
+      "output_tokens": 128,
+      "wall_seconds": 52.89235654202639,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 4096,
+        "prompt_ms": 42899.45,
+        "prompt_per_token_ms": 10.47349853515625,
+        "prompt_per_second": 95.47907956861918,
+        "predicted_n": 128,
+        "predicted_ms": 9991.06,
+        "predicted_per_token_ms": 78.66976377952756,
+        "predicted_per_second": 12.711363959379685
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 4096,
+      "repetition": 2,
+      "output_tokens": 128,
+      "wall_seconds": 52.60664545901818,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 4096,
+        "prompt_ms": 42564.36,
+        "prompt_per_token_ms": 10.391689453125,
+        "prompt_per_second": 96.23074327911895,
+        "predicted_n": 128,
+        "predicted_ms": 10040.183,
+        "predicted_per_token_ms": 79.05655905511811,
+        "predicted_per_second": 12.64917183282416
+      }
+    },
+    {
+      "phase": "warm",
+      "prompt_tokens": 4096,
+      "repetition": 3,
+      "output_tokens": 128,
+      "wall_seconds": 54.629582458990626,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 4096,
+        "prompt_ms": 43470.876,
+        "prompt_per_token_ms": 10.6130068359375,
+        "prompt_per_second": 94.22400413555044,
+        "predicted_n": 128,
+        "predicted_ms": 11157.044,
+        "predicted_per_token_ms": 87.85074015748032,
+        "predicted_per_second": 11.382943367436752
+      }
+    }
+  ],
+  "memory_snapshots": {
+    "server_rss_kib_min": 16225296,
+    "server_rss_kib_max": 16423296,
+    "limitation": "RSS sampled between requests; not peak memory. Weights are memory-mapped."
+  },
+  "raw_local_directory": ".reference/2026-10-04-muse-glimmer-4k"
+}
