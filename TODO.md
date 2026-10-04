@@ -71,6 +71,11 @@ key `zig-<hash>-<os>-<arch>`.
    `actions/cache` for `.zig-cache` and `~/.cache/zig` keyed per job on
    `hashFiles('**/*.zig', '**/build.zig.zon')` with a working prefix
    `restore-keys`. Keep it only if a warm run is measurably faster.
+   *First run, 2026-10-04 (`37210607506`, `4f5d9ed`, every cache cold):
+   success, wall 4 m 02 s (old layout 5 m 57 s): `test` 2 m 28 s, `cpu`
+   2 m 19 s, `metal` 4 m 00 s (its ReleaseSafe build 3 m 31 s with no
+   warm global cache; the old serial job built it after the tests had
+   warmed it). A warm run (the next code push) is still to measure.*
 5. Evidence: `gh run view <id> --json jobs` step times, a docs-only push
    that does not trigger, a code push before and after. Update
    `docs/development.md` § Continuous integration and releases and the
