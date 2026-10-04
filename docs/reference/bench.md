@@ -2393,3 +2393,20 @@ other (prefill 95.9 → 90.4 → 83.0, decode 12.3 → 10.6 → 10.1, 22:01–22
 local) while 512 before them was steady and 32,639 after them holds
 within ±0.3; no thermal warning was recorded. It is re-run alone below.
 Server RSS 15.2–15.5 GiB.
+
+### Reference: Gemma 4 E4B QAT (first record)
+
+[reference-2026-10-04-gemma4-e4b.json](../benchmarks/reference-2026-10-04-gemma4-e4b.json),
+on its own arrays (`--family gemma4-e`, no replay): E4B's template renders
+thinking off as a bare `<|turn>model\n`, so its prompts differ from the
+12B's in the template tokens (prefix 4, suffix 12). The arrays and the run
+are kept as `tests/fixtures/run-2026-10-04-gemma4-e4b/`.
+
+| Prompt tokens | Prefill tok/s | Decode tok/s |
+| ---: | ---: | ---: |
+| 512 | 597.96 ± 0.14 | 62.10 ± 0.01 |
+| 4,096 | 600.85 ± 0.10 | 59.26 ± 0.06 |
+| 16,384 | 516.49 ± 2.83 | 52.29 ± 0.07 |
+| 32,639 | 388.42 ± 2.24 | 44.58 ± 0.15 |
+
+Server RSS 4.6–4.7 GiB.
