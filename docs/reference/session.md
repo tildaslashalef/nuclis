@@ -210,8 +210,9 @@ removed.
   state.
 - **Memory tier**: in the process, least recently used out first under
   `cache.memory_bytes` (4 GiB; 0 keeps none). A Qwen state is 150 MB plus
-  64 KiB per token, about 250 MB primed and 1.2 GB at 16K. A `/ctx` change
-  drops it (the states are bound to the capacity).
+  64 KiB per token, about 250 MB primed and 1.2 GB at 16K. A context or
+  model change (`/model`, Ctrl-W) drops it (the states are bound to the
+  engine that made them).
 - **Disk tier**: the primed prefix, and the last turn end of each
   conversation that has a session file (each save replaces that
   conversation's previous one), under `<root>/cache/prefix/` through
@@ -219,7 +220,7 @@ removed.
   that fails either is deleted and reads as a miss). The key's token half
   is the digest of the rendered text the state consumed, which is also the
   middle of the file name, so a session's states are found without loading
-  a model (`cache.removeDigest`, used by `/delete` and `agent rm`). The
+  a model (`cache.removeDigest`, used by `/resume`'s Ctrl-D and `agent rm`). The
   key's model half hashes the model files (and the draft companion when a
   drafter is loaded), the executor, and the build: version and commit,
   plus the executable's size and modification time for a build from a
@@ -233,9 +234,16 @@ removed.
   starts with it, the state is loaded from disk and the penalty history
   is rebuilt from the text's encoding. The system block carries the date,
   so a conversation resumed on another day misses and replays.
+- **Model switch.** `/model` unloads the engine, opens the chosen file,
+  empties the memory tier, and re-opens the disk tier under the new
+  model's key, so a model used before restores its primed prefix from disk
+  (switching back to Qwen3.8 after Gemma 4 12B: 0.1 s, 2026-10-04). The
+  conversation is rendered through the new profile and prefilled whole
+  (cause `model`), and the session file records a `model` entry beside
+  `context` and `effort`.
 - **Accounting.** A step that could not continue the session reports a
   `Replay` with its cause (`resumed`, `cancel`, `rewrite` for compaction or
-  elision, `effort`, `context`, `failure`) and the tokens restored; the
+  elision, `effort`, `context`, `model`, `failure`) and the tokens restored; the
   bar shows `replayed <cause> <prefilled>, <restored> restored`, and the
   session file records `replay` and `restored_tokens` beside `replayed`.
 

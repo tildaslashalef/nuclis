@@ -151,6 +151,7 @@ pub const commands = [_]Command{
         } ++ engine_flags) },
         .{ .name = "ls", .summary = "this workspace's saved sessions", .flags = &.{json} },
         .{ .name = "rm", .summary = "delete a saved session and its cached states", .positionals = &.{.session} },
+        .{ .name = "export", .summary = "write a saved session as markdown", .positionals = &.{ .session, .file } },
     } },
     .{ .name = "cache", .summary = "the agent's saved model states", .actions = &.{
         .{ .name = "ls", .summary = "each state, newest first, and the budget", .flags = &.{json} },
@@ -700,6 +701,8 @@ test "paths go to the shell, and the user's state fills models, sessions, and ke
     try expectTexts(a, &.{ "agent", "--model", "" }, state, &.{ "mine", "qwen3.8-27b" });
     try expectTexts(a, &.{ "model", "pull", "q" }, state, &.{"qwen3.8-27b"});
     try expectTexts(a, &.{ "agent", "--resume", "" }, state, &.{ "abc123", "def456" });
+    try expectTexts(a, &.{ "agent", "export", "a" }, state, &.{"abc123"});
+    try testing.expect(try answerFor(a, &.{ "agent", "export", "abc123", "" }, state) == .file);
     // `--resume` alone is complete: a dash starts a flag, not an id.
     try expectTexts(a, &.{ "agent", "--resume", "--thinking" }, state, &.{"--thinking-budget"});
     try expectTexts(a, &.{ "agent", "--resume", "--think", "o" }, state, &.{"off"});

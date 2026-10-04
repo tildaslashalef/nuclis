@@ -46,6 +46,9 @@ pub const stop_tokens = [_][]const u8{ "<turn|>", "<eos>", "<|tool_response>" };
 pub const bos_token: ?[]const u8 = "<bos>";
 /// The image span placeholder, inside `<|image>` … `<image|>`.
 pub const image_placeholder: ?[]const u8 = "<|image|>";
+/// The template only switches thinking on; `low` is offered beside
+/// `medium` because the host caps reasoning there (`agent.thinking_budget`).
+pub const efforts = [_]Effort{ .off, .low, .medium };
 pub const reasoning: profiles.Reasoning = .{ .open = "<|channel>thought\n", .close = "<channel|>" };
 pub const stream_markers: profiles.StreamMarkers = .{
     .open = "<|channel>",

@@ -163,6 +163,7 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try code(out, sty, "nuclis agent --print --prompt-file <path> [--json] [--session <path>]");
     try code(out, sty, "nuclis agent ls [--json]");
     try code(out, sty, "nuclis agent rm <id>");
+    try code(out, sty, "nuclis agent export <id> [path]");
 
     try heading(out, sty, "Options:");
     try row(out, sty, "-p, --prompt <text>", "run one turn without a terminal and exit");
@@ -189,15 +190,14 @@ fn agent(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "Up, Down", "move in the input; history at its first and last row");
     try row(out, sty, "Tab", "complete a /command or a fuzzy @path, else fold");
     try row(out, sty, "Ctrl-E", "expand a paste chip into editable text");
-    try row(out, sty, "Ctrl-T, Ctrl-W", "cycle the reasoning effort, the context window");
-    try row(out, sty, "Ctrl-N", "new session");
+    try row(out, sty, "Ctrl-T, Ctrl-W", "cycle the effort, the context window (as /model)");
+    try row(out, sty, "Ctrl-N", "drop the conversation (as /clear)");
     try row(out, sty, "Esc, Ctrl-C, Ctrl-D", "cancel the turn (Esc never quits), or quit");
 
     try heading(out, sty, "Commands:");
-    try row(out, sty, "/new, /resume [<id>]", "start a new session, or continue a saved one");
-    try row(out, sty, "/list, /delete [<id>]", "the saved sessions; delete one, picked or by id");
-    try row(out, sty, "/ctx <n>, /think <e>", "the context window, the reasoning effort");
-    try row(out, sty, "/save [path]", "export this session as markdown");
+    try row(out, sty, "/model [name]", "switch the model; pick its effort and context window");
+    try row(out, sty, "/resume [<id>]", "continue a saved session; Ctrl-D in the list deletes");
+    try row(out, sty, "/clear", "drop the conversation; the session stays resumable");
     try row(out, sty, "/help", "keys and commands, inside the surface");
 
     try heading(out, sty, "Examples:");

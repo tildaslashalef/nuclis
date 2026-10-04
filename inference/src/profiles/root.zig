@@ -209,6 +209,22 @@ pub const Profile = enum {
         };
     }
 
+    /// The efforts that render distinctly, lowest first: what a chooser
+    /// offers and Ctrl-T cycles. Any other value still renders (collapsed).
+    pub fn efforts(self: Profile) []const Effort {
+        return switch (self) {
+            inline else => |p| &p.module().efforts,
+        };
+    }
+
+    /// The supported effort nearest `wanted`: itself, else the next one up,
+    /// else the highest.
+    pub fn nearestEffort(self: Profile, wanted: Effort) Effort {
+        const levels = self.efforts();
+        for (levels) |e| if (@backingInt(e) >= @backingInt(wanted)) return e;
+        return levels[levels.len - 1];
+    }
+
     /// The mode's defaults with the caller's overrides applied per option.
     pub fn samplingOptions(self: Profile, effort: Effort, overrides: SamplingOverrides) sampling.Options {
         return self.samplingDefaults(effort).override(overrides);
@@ -446,6 +462,22 @@ test "every profile names at least one stop token and both reasoning markers" {
     try std.testing.expectEqualStrings("<|eom|>", Profile.muse_glimmer.reasoning().close);
     try std.testing.expectEqualStrings("</think>", Profile.qwen38.reasoning().close);
     try std.testing.expectEqualStrings("<channel|>", Profile.gemma4.reasoning().close);
+}
+
+test "every profile offers its distinct efforts in order, and the nearest is supported" {
+    inline for (@typeInfo(Profile).@"enum".field_values) |value| {
+        const p: Profile = @fromBackingInt(@intCast(value));
+        const levels = p.efforts();
+        try std.testing.expect(levels.len >= 1);
+        for (levels[1..], levels[0 .. levels.len - 1]) |later, earlier| try std.testing.expect(@backingInt(later) > @backingInt(earlier));
+        inline for (@typeInfo(Effort).@"enum".field_values) |e| {
+            const nearest = p.nearestEffort(@fromBackingInt(@intCast(e)));
+            try std.testing.expect(std.mem.indexOfScalar(Effort, levels, nearest) != null);
+        }
+    }
+    try std.testing.expectEqual(Effort.xhigh, Profile.qwen38.nearestEffort(.high));
+    try std.testing.expectEqual(Effort.low, Profile.muse_glimmer.nearestEffort(.off));
+    try std.testing.expectEqual(Effort.medium, Profile.gemma4.nearestEffort(.xhigh));
 }
 
 test "a raw text's BOS is the template's opening token" {

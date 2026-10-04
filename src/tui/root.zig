@@ -15,7 +15,9 @@
 //! | `event` | the typed events a turn is made of: the producer/consumer seam |
 //! | `transcript` | blocks built from events; each closed one written once |
 //! | `status` | the instrumented bar, as a value with a pure `paint` |
-//! | `choice` | an inline list with a selection: pickers and completion |
+//! | `choice` | an inline list with a selection: completion |
+//! | `picker` | the chooser: search, current mark, option rows, confirmation |
+//! | `fuzzy` | the matcher completion and the pickers share |
 //! | `keys` | pure decoding of input bytes into `Key` values |
 //! | `view` | display width, wrapping, escape-aware truncation, control-byte sanitization |
 //! | `markdown` | small markdown into pre-styled, pre-wrapped rows |
@@ -39,6 +41,8 @@ pub const editor = @import("editor.zig");
 pub const transcript = @import("transcript.zig");
 pub const status = @import("status.zig");
 pub const choice = @import("choice.zig");
+pub const picker = @import("picker.zig");
+pub const fuzzy = @import("fuzzy.zig");
 pub const event = @import("event.zig");
 pub const keys = @import("keys.zig");
 pub const view = @import("view.zig");
@@ -58,6 +62,8 @@ test {
     _ = transcript;
     _ = status;
     _ = choice;
+    _ = picker;
+    _ = fuzzy;
     _ = event;
     _ = keys;
     _ = view;

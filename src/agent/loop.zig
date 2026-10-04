@@ -164,6 +164,8 @@ pub const Replay = struct {
         effort,
         /// The engine was re-opened at another context size.
         context,
+        /// Another model was loaded; its profile renders the conversation.
+        model,
         /// A failed turn reset the session.
         failure,
     };
@@ -400,6 +402,59 @@ pub const Agent = struct {
         }
         self.next_id = @max(self.next_id, highest + 1);
         self.turn_start = self.history.items.len;
+    }
+
+    /// Encodes every attached image again through `model`'s projector: after
+    /// a model switch the old rows mean nothing to the new model. An image
+    /// that fails (no projector, a moved file) leaves the model's view, its
+    /// marker text staying; returns how many did.
+    pub fn reencodeImages(self: *Agent) Allocator.Error!usize {
+        var dropped: usize = 0;
+        for (self.history.items) |*item| {
+            if (item.images.len == 0) continue;
+            // Encode first, commit after: a failed allocation leaves the
+            // item as it was.
+            const fresh = try self.alloc.alloc(?inference.engine.PreparedImage, item.images.len);
+            defer self.alloc.free(fresh);
+            var kept: usize = 0;
+            for (item.images, fresh) |image, *f| {
+                f.* = self.encodeAgain(image.path) catch null;
+                if (f.* != null) kept += 1;
+            }
+            const images = self.alloc.alloc(Image, kept) catch |err| return discard(self.alloc, fresh, err);
+            const refs = self.alloc.alloc(Profile.ImageRef, kept) catch |err| {
+                self.alloc.free(images);
+                return discard(self.alloc, fresh, err);
+            };
+            var at: usize = 0;
+            for (item.images, fresh) |*image, f| {
+                if (f) |prepared| {
+                    self.alloc.free(image.prepared.features);
+                    images[at] = .{ .path = image.path, .bytes = image.bytes, .prepared = prepared };
+                    refs[at] = images[at].ref();
+                    at += 1;
+                } else {
+                    image.deinit(self.alloc);
+                    dropped += 1;
+                }
+            }
+            self.alloc.free(item.images);
+            self.alloc.free(item.refs);
+            item.images = images;
+            item.refs = refs;
+        }
+        return dropped;
+    }
+
+    fn discard(alloc: Allocator, fresh: []const ?inference.engine.PreparedImage, err: Allocator.Error) Allocator.Error {
+        for (fresh) |f| if (f) |prepared| alloc.free(prepared.features);
+        return err;
+    }
+
+    fn encodeAgain(self: *Agent, path: []const u8) !inference.engine.PreparedImage {
+        const bytes = try engine.readImage(self.alloc, self.io, path);
+        defer self.alloc.free(bytes);
+        return self.model.encode_image(self.model.context, self.alloc, bytes);
     }
 
     /// The last assistant message with any answer text, for the clipboard;

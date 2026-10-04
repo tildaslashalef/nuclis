@@ -357,6 +357,7 @@ nuclis agent [--model <m>] [--think <e>] [--image-max-tokens auto|<n>] [--resume
 nuclis agent -p "<prompt>" [--json] [--session <path>]
 nuclis agent ls [--json]
 nuclis agent rm <id>
+nuclis agent export <id> [path]
 nuclis cache [ls] [--json] | clear
 nuclis generate --model <m> (--prompt <text> | --prompt-file <path>) [--raw] [--image <path>]... [--image-max-tokens auto|<n>] [--max-tokens <n>] [--think <e>] [--speculative on|off] [sampling flags] [--json]
 nuclis bench --model <m> (--prompt-file <path> | --prompt-tokens <json>) --max-tokens <n> [--ctx-size <n>] [--kv f16|f32] [--speculative on|off] [--json]
@@ -448,9 +449,10 @@ one command; the evaluation CLI stays separate.
   .bmp .ppm`, decoded by the vision contract) is `[image #N]`, whose bytes
   in the prompt are that marker and whose file is read at submit; a UTF-8
   text file within the input limit is `[file name, N lines]` over its
-  content, fenced and headed by the path. `/image <path>` attaches an image
-  the same way (completes like `@path`), and a typed image path in a
-  prompt is attached at submit for terminals that do not bracket pastes.
+  content, fenced and headed by the path. A typed image path in a prompt is
+  attached at submit: an `@path` (workspace-relative, as completion offers
+  it), or a path starting `/`, `~`, or `.` (what a drop types on a terminal
+  that does not bracket pastes).
   At most 8 images per prompt, numbered in attachment order and renumbered
   on deletion; Backspace removes a chip and its file; Ctrl-E turns an
   image chip back into its path. A model without a working projector
@@ -475,10 +477,11 @@ one command; the evaluation CLI stays separate.
   cycles the tool rows of the last turn through three views: the summary
   (each call's row, detail, and one result row), the output (the result's
   text under it, 40 rows then `… N more lines`), and folded (the call rows
-  stay, their detail, result, and diff rows go); Ctrl-T cycles effort; Ctrl-W cycles the
-  context window (2K to 32K, re-opening the engine); Ctrl-N starts a new
-  session; Ctrl-C cancels a turn, twice quits, or quits when idle; Ctrl-D
-  quits.
+  stay, their detail, result, and diff rows go); Ctrl-T cycles the efforts
+  the model's profile renders distinctly and Ctrl-W the context window (2K
+  to 32K, re-opening the engine), both accelerators for `/model`; Ctrl-N
+  is `/clear`; Ctrl-C cancels a turn, twice quits, or quits when idle;
+  Ctrl-D quits.
 - Ctrl-X copies the last answer to the clipboard through OSC 52 (at most
   256 KiB); Ctrl-G opens the input in `$VISUAL` or `$EDITOR` with the
   terminal released around the child and takes the edited text back.
@@ -502,6 +505,46 @@ one command; the evaluation CLI stays separate.
   until it is sent. Print mode has no steering.
 - The input box is framed; the frame's colour is the reasoning effort and
   its top edge carries the spinner while a turn runs.
+- **Commands.** A line is a command only when it starts with `/` and its
+  first word is ASCII letters (`/usr/bin/env` stays a prompt). A command is
+  an *action* (no argument, acts now; an argument is a usage error) or a
+  *chooser* (no argument opens its picker; the choice typed as the argument
+  skips it). The commands are `/model [name]`, `/resume [id]`, `/clear`,
+  and `/help`, plus `!`/`!!`; a retired command (`/new`, `/think`, `/ctx`,
+  `/list`, `/delete`, `/save`, `/image`) answers with where its job went.
+  A command typed during a turn waits for the turn's end instead of
+  steering it. Results are one-line `  — …` notices; anything longer is an
+  info block.
+- **Pickers.** Every chooser uses one picker: a title with the match count,
+  a search box (the `@` matcher), the list with the item in use marked,
+  optional option rows adjusted with ←/→, a dim line saying what Enter will
+  cost, and the footer `↑↓ move · ←→ adjust · Enter choose · Esc back`;
+  ↑/↓ move through the list and then the option rows. A destructive action
+  asks inside the picker, and only `y` confirms. Keys are accelerators for
+  commands and listed beside them in `/help`; no setting is reachable by a
+  key alone.
+- **`/model [name]`** offers the runnable models: the registry entries of
+  `nuclis.json` whose file is present, then catalogue names no entry
+  shadows (as `nuclis model ls` reports them), with option rows for the
+  effort (the levels the profile renders distinctly) and the context
+  window, at the running values for the running model and at the entry's
+  (the effort carried over) for another. A name, or a query only one model
+  matches, switches without the picker. Enter on another model unloads the
+  engine, opens the chosen file with its entry's settings (context,
+  speculation, draft length, thinking budget, sampling; backend, cache
+  precision, output ceiling, and image cap from the command line hold),
+  primes it (the token cache's disk tier serves a model used before), and
+  continues the conversation rendered through the new profile, which is a
+  full prefill; the conversation's images are encoded again by the new
+  projector, and one it cannot read leaves the model's view with a notice.
+  A failed open falls back to the previous model. On the running model,
+  Enter applies a new effort (re-priming) or window (re-opening).
+- **`/resume [id]`**: an id or a prefix of exactly one id resumes it;
+  otherwise the picker lists the workspace's sessions (newest first, the
+  one in use marked; the argument becomes the search) and Ctrl-D deletes
+  the selected one after the in-picker confirmation, refusing the session
+  in use. **`/clear`** drops the conversation into a fresh session file; the
+  old one stays resumable.
 
 ### 7.3 Transcript and status
 
@@ -539,7 +582,7 @@ one command; the evaluation CLI stays separate.
 ~/.nuclis/agent/
   sessions/<cwd-slug>/<timestamp>_<id>.jsonl   one file per session
   history.jsonl                                 prompt history
-  exports/                                      /save markdown exports
+  exports/                                      `agent export` markdown
 ```
 
 - One JSON object per line: a header (format version, id, time, working
@@ -547,12 +590,14 @@ one command; the evaluation CLI stays separate.
   then entries with `id` and `parent`: `user`, `assistant` (thinking,
   answer, tool calls, stop, stats, and on a turn's last step the
   `boundary` of its state saved in the token cache), `tool_result` (with its summary),
-  `effort`, `context`, `compaction`, `notice`.
+  `effort`, `context`, `model` (a `/model` switch: the name, file, digest,
+  context, and effort the conversation continued on; readers older than
+  the entry refuse the file, as any unknown type), `compaction`, `notice`.
 - Append-only, created at the first entry. A truncated last line is
   dropped on load; any other unparsable line or unknown entry type is a
   typed error naming the line; a newer format version is refused.
 - Entries store what the model saw and produced, never terminal styling.
-  `/save` derives markdown from the same entries. A failed write is a dim
+  `nuclis agent export` derives markdown from the same entries. A failed write is a dim
   notice, never a lost turn.
 - Resuming (`/resume`, `--resume [<id>]`, `latest` by default) renders
   the kept conversation through the profile into a fresh session. When the
@@ -560,11 +605,12 @@ one command; the evaluation CLI stays separate.
   model files, backend, context size, and build), the state is restored and
   only the rest is prefilled; otherwise the whole conversation is
   ([reference/session.md § The agent's token cache](reference/session.md#the-agents-token-cache)).
-- `agent ls` and `/list` list a workspace's sessions (`/list` marks the
-  one in use); `agent rm <id>` and `/delete [<id>]` delete one, named by
-  its id or a prefix of exactly one id (`/delete` alone picks it, and asks
-  before deleting; the session in use is refused), together with the
-  token-cache states its boundaries name. `/save` exports stay.
+- `agent ls` and the `/resume` picker list a workspace's sessions (the
+  picker marks the one in use); `agent rm <id>` and Ctrl-D in the picker
+  delete one, named by its id or a prefix of exactly one id (the picker
+  asks first and refuses the session in use), together with the
+  token-cache states its boundaries name. `agent export <id> [path]`
+  writes one as markdown, to `path` or under `exports/`; exports stay.
 - `nuclis cache` lists the token cache (each state's size and last use,
   the total against `cache.disk_bytes`); `nuclis cache clear` empties it.
 

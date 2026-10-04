@@ -17,6 +17,7 @@ pub const bos_token = gemma4.bos_token;
 pub const image_placeholder = gemma4.image_placeholder;
 pub const reasoning = gemma4.reasoning;
 pub const stream_markers = gemma4.stream_markers;
+pub const efforts = gemma4.efforts;
 pub const samplingDefaults = gemma4.samplingDefaults;
 pub const prefix = gemma4.prefix;
 

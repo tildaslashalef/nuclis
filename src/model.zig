@@ -985,6 +985,44 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
     return .{ .models_dir = models, .catalog = rows, .other = other.items, .outside_layout = outside, .missing = missing.items };
 }
 
+/// A model the agent can switch to (`/model`): a registry entry or a
+/// catalogue name, as `--model` would name it.
+pub const Runnable = struct {
+    name: []const u8,
+    /// Architecture, quantization, and size for a catalogue file; the file's
+    /// name otherwise.
+    detail: []const u8,
+};
+
+/// The generation models whose files are present, as `listing` found them:
+/// registry entries in the file's order, then catalogue names no entry
+/// shadows. Decision models, absent files, and catalogue files whose
+/// digest disagrees with the catalogue are left out.
+pub fn runnableModels(arena: Allocator, listing: Listing, registry: config.Models) ![]const Runnable {
+    var out: std.ArrayList(Runnable) = .empty;
+    entries: for (registry.entries) |named| {
+        if (named.entry.kind == .decision) continue;
+        for (listing.missing) |m| if (std.mem.eql(u8, m.name, named.name)) continue :entries;
+        const e = named.entry;
+        const location = e.path orelse if (e.repo != null and e.file != null) try std.fs.path.join(arena, &.{ e.repo.?, e.file.? }) else continue;
+        const detail = for (listing.catalog) |row| {
+            if (row.kind == .generation and std.mem.eql(u8, row.path, location)) break try catalogueDetail(arena, row);
+        } else std.fs.path.basename(location);
+        try out.append(arena, .{ .name = named.name, .detail = detail });
+    }
+    for (listing.catalog) |row| {
+        if (row.kind != .generation or registry.find(row.name) != null) continue;
+        if (row.status != .present and row.status != .unverified) continue;
+        try out.append(arena, .{ .name = row.name, .detail = try catalogueDetail(arena, row) });
+    }
+    return out.items;
+}
+
+fn catalogueDetail(arena: Allocator, row: CatalogRow) ![]const u8 {
+    var size: [16]u8 = undefined;
+    return arena.print("{s} · {s} · {s}", .{ row.architecture, row.quantization, humanSize(&size, row.size) });
+}
+
 fn collect(arena: Allocator, io: std.Io, dir: std.Io.Dir, prefix: []const u8, depth: u8, files: *std.ArrayList(Listed), outside: *usize) !void {
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
@@ -1430,6 +1468,21 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
         .{ .name = "local", .entry = .{ .path = "unsloth/Repo-GGUF/MTP/mtp-Repo.gguf" } },
     };
     const listing = try list(arena, io, root, .{ .entries = &entries });
+    // What `/model` offers: the entries whose file is present, in the file's
+    // order, then catalogue names no entry shadows (none here: the one
+    // present catalogue file is registered under its own name too).
+    const offered = try runnableModels(arena, listing, .{ .entries = &entries });
+    try std.testing.expectEqual(@as(usize, 4), offered.len);
+    try std.testing.expectEqualStrings("repo", offered[0].name);
+    try std.testing.expectEqualStrings("Repo-Q4.gguf", offered[0].detail);
+    try std.testing.expectEqualStrings("qwen3.8-27b", offered[1].name);
+    try std.testing.expectEqualStrings("qwen35 · UD-Q4_K_M · 16.46 GB", offered[1].detail);
+    try std.testing.expectEqualStrings("big", offered[2].name);
+    try std.testing.expectEqualStrings("local", offered[3].name);
+    // Without the registry, the present catalogue file is offered by name.
+    const bare = try runnableModels(arena, try list(arena, io, root, .{}), .{});
+    try std.testing.expectEqual(@as(usize, 1), bare.len);
+    try std.testing.expectEqualStrings("qwen3.8-27b", bare[0].name);
     try std.testing.expectEqualStrings("big", listing.catalog[0].registered.?.name);
     try std.testing.expect(listing.catalog[0].registered.?.profile == null);
     try std.testing.expectEqualStrings("local", listing.other[1].registered.?.name);

@@ -1,12 +1,10 @@
-//! An inline list with a selection: the one interactive component that is
-//! neither the editor nor the transcript.
+//! An inline list with a selection: the completion list under a `/command`
+//! or an `@path` being typed.
 //!
 //! It renders *inside the live region* — nuclis has no alternate screen and no
-//! overlay windows (docs/spec.md § The agent, Surface), so a picker is simply a
-//! few more rows above the prompt. One component serves every use: the slash
-//! command and `@` path completion of phase 1 session 2, the `/resume` session
-//! picker of phase 2, and — if a permission step is ever wanted — an approval
-//! prompt. That is why it exists before any of them does.
+//! overlay windows (docs/spec.md § The agent, Surface), so a list is simply a
+//! few more rows above the prompt. Choosers (`/resume`, `/model`) use
+//! `picker.zig`, which adds a search box, option rows, and confirmation.
 //!
 //! Ownership: `set` copies the labels, so a caller may rebuild the list from a
 //! frame arena on every keystroke without worrying about what the component

@@ -118,6 +118,9 @@ pub const Entry = union(enum) {
     },
     effort: struct { effort: []const u8 },
     context: struct { ctx_size: usize },
+    /// The conversation continued on another model (`/model`): the name it
+    /// was chosen by, its file and verified digest, and what it opened with.
+    model: struct { name: []const u8, path: []const u8, sha256: ?[]const u8 = null, ctx_size: usize, effort: []const u8 },
     compaction: struct { first_kept: usize, reason: []const u8 },
     notice: struct { text: []const u8 },
 };
@@ -497,6 +500,13 @@ fn readRecord(a: Allocator, object: std.json.ObjectMap) !Record {
         } };
         if (std.mem.eql(u8, kind, "effort")) break :blk .{ .effort = .{ .effort = try text(a, object, "effort") } };
         if (std.mem.eql(u8, kind, "context")) break :blk .{ .context = .{ .ctx_size = @intCast(integer(object.get("ctx_size")) orelse 0) } };
+        if (std.mem.eql(u8, kind, "model")) break :blk .{ .model = .{
+            .name = try text(a, object, "name"),
+            .path = try text(a, object, "path"),
+            .sha256 = if (string(object.get("sha256"))) |d| try a.dupe(u8, d) else null,
+            .ctx_size = @intCast(integer(object.get("ctx_size")) orelse 0),
+            .effort = try text(a, object, "effort"),
+        } };
         if (std.mem.eql(u8, kind, "compaction")) break :blk .{ .compaction = .{
             .first_kept = @intCast(integer(object.get("first_kept")) orelse 0),
             .reason = try text(a, object, "reason"),
@@ -656,6 +666,7 @@ pub fn exportMarkdown(loaded: Loaded, out: *std.Io.Writer) !void {
             },
             .effort => |e| try out.print("_effort: {s}_\n\n", .{e.effort}),
             .context => |c| try out.print("_context: {d}_\n\n", .{c.ctx_size}),
+            .model => |m| try out.print("_model: {s} (context {d}, effort {s})_\n\n", .{ m.name, m.ctx_size, m.effort }),
             .compaction => |c| try out.print("_older turns dropped ({s}), from turn {d}_\n\n", .{ c.reason, c.first_kept }),
             .notice => |n| try out.print("_{s}_\n\n", .{n.text}),
         }
@@ -881,4 +892,28 @@ test "an assistant entry's boundary round-trips, any digest, and is absent unles
     try testing.expectEqual(@as(usize, 5120), b.bytes);
     try testing.expectEqual(@as(u64, 0xfedc_ba98_7654_3210), b.digest);
     try testing.expect(loaded.records[1].entry.assistant.boundary == null);
+}
+
+test "a model entry round-trips, with or without a digest, and exports as one line" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const alloc = testing.allocator;
+    var s = try create(alloc, testing.io, tmp.dir, .{ .root_dir = "root", .id = "m", .time = "2026-10-04T10:00:00Z", .cwd = "/w", .model_path = "/q.gguf", .effort = "low", .ctx_size = 16384 });
+    defer s.deinit();
+    try s.append(.{ .user = .{ .text = "hi" } }, "t1");
+    try s.append(.{ .model = .{ .name = "gemma-4-12b", .path = "/g.gguf", .sha256 = "beef", .ctx_size = 8192, .effort = "off" } }, "t2");
+    try s.append(.{ .model = .{ .name = "mine", .path = "/x.gguf", .ctx_size = 4096, .effort = "medium" } }, "t3");
+    const loaded = try load(alloc, testing.io, tmp.dir, s.path.?, null);
+    defer loaded.deinit();
+    const first = loaded.records[1].entry.model;
+    try testing.expectEqualStrings("gemma-4-12b", first.name);
+    try testing.expectEqualStrings("/g.gguf", first.path);
+    try testing.expectEqualStrings("beef", first.sha256.?);
+    try testing.expectEqual(@as(usize, 8192), first.ctx_size);
+    try testing.expectEqualStrings("off", first.effort);
+    try testing.expect(loaded.records[2].entry.model.sha256 == null);
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try exportMarkdown(loaded, &out.writer);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "_model: gemma-4-12b (context 8192, effort off)_") != null);
 }

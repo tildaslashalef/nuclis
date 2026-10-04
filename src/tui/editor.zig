@@ -293,10 +293,10 @@ pub const Editor = struct {
         try self.insertChip(bytes, .{ .start = 0, .end = 0, .lines = std.mem.count(u8, body, "\n") + 1, .kind = .file, .attachment = self.attachments.items.len - 1 });
     }
 
-    /// At submit, on a terminal that does not bracket pastes: every
-    /// whitespace-separated word outside a chip that the probe reports as an
-    /// image becomes an image chip in place, so what is recorded shows what
-    /// was attached. Returns how many were attached.
+    /// At submit: every whitespace-separated word outside a chip that names
+    /// an image the probe can read (a path as a terminal without bracketed
+    /// paste types a drop, or an `@path`) becomes an image chip in place, so
+    /// what is recorded shows what was attached. Returns how many were.
     pub fn attachTypedImages(self: *Editor) !usize {
         const probe = self.probe orelse return 0;
         // The words first, so a replacement never moves one still to be
@@ -327,7 +327,9 @@ pub const Editor = struct {
             if (self.imageCount() >= max_images) break;
             const start: usize = @intCast(@as(isize, @intCast(word.start)) + shift_by);
             const end: usize = @intCast(@as(isize, @intCast(word.end)) + shift_by);
-            const path = (try droppedPath(self.alloc, self.buffer.items[start..end])) orelse continue;
+            const typed = self.buffer.items[start..end];
+            // `@path` names a workspace file the way completion offers it.
+            const path = (if (typed.len > 1 and typed[0] == '@') try self.alloc.dupe(u8, typed[1..]) else try droppedPath(self.alloc, typed)) orelse continue;
             defer self.alloc.free(path);
             const dropped = probe.call(probe.context, self.alloc, path) orelse continue;
             switch (dropped) {
@@ -1488,7 +1490,11 @@ test "typed image paths are attached at submit, and the ninth image is refused" 
     try testing.expectEqualStrings("compare [image #1] and [image #2] please", e.text());
     try testing.expectEqualStrings("/tmp/a.png", e.attachmentList()[0].path);
     try testing.expectEqualStrings("/tmp/b.png", e.attachmentList()[1].path);
-    var n: usize = 2;
+    // An `@path`, as completion offers it, attaches the workspace file.
+    try typeText(&e, " and @shots/c.png");
+    try testing.expectEqual(@as(usize, 1), try e.attachTypedImages());
+    try testing.expectEqualStrings("shots/c.png", e.attachmentList()[2].path);
+    var n: usize = 3;
     while (n < max_images) : (n += 1) try e.attachImage("/tmp/more.png");
     try testing.expectError(error.TooManyImages, e.attachImage("/tmp/nine.png"));
     // A drop past the bound is refused silently: the prompt is unchanged.

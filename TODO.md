@@ -16,8 +16,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: AGNT-20** (below), not started, planned 2026-10-04; it needs a
-``Base: `<rev>` `` line when its first session begins. AGNT-19 (the token
+**Next: AGNT-20 session 2, reading less** (below). Session 1 (the
+command surface and `/model`) is delivered and committed (2026-10-04):
+see its section for what landed and what it measured. AGNT-19 (the token
 cache, session management, and the fixes from the user's testing) closed
 on 2026-10-04: the task list's wall time per task fell 23 % (the primed
 prefix restored instead of prefilled), a 9.8K-token resume 126.5 → 2.05 s;
@@ -32,6 +33,8 @@ KERN-23 (Qwen plain decode at 512 11.78 tok/s, speculative prose about
 | 1 | AGNT-20 — A faster agent step: the command surface and `/model`, reading less, faster prefill | 3+ |
 
 ## AGNT-20 — A faster agent step: the command surface and `/model`, reading less, faster prefill (3 sessions, the third may take more)
+
+Base: `6bfae8c`
 
 Agreed with the user 2026-10-04 as one unit (no separate units for its
 parts). What the user's testing turns up during it is fixed inside it
@@ -49,7 +52,40 @@ tokens at about 67 tok/s, about 54 s. Two levers multiply: fewer tokens
 read (session 2) and faster prefill per token (session 3). Session 1 is
 the command surface the user asked for in the same discussion.
 
-**Session 1: the command surface and `/model`.** Files:
+**Session 1: delivered 2026-10-04.** `src/tui/picker.zig` (the one
+chooser: title and count, fuzzy search over `src/tui/fuzzy.zig`, current
+mark, ←/→ option rows in the ↑/↓ focus ring, a cost note, in-picker
+`y`-only confirmation; 6 tests), the command table rewritten
+(`/model [name]`, `/resume [id]`, `/clear`, `/help`; actions refuse an
+argument; retired commands answer with where their job went),
+`Profile.efforts()`/`nearestEffort` per profile (Qwen off/low/medium/xhigh,
+Gemma 4 off/low/medium, Muse low…xhigh; Ctrl-T cycles only those),
+`model.runnableModels` (registry entries with a present file, then
+unshadowed present catalogue names), the agent's model half as `Open`
+(engine, vocabulary-sized buffers, paths, digest) replaced in place by
+`switchModel` for `/model` and Ctrl-W alike (fallback to the previous model
+on a failed open; memory tier dropped, disk tier re-keyed;
+`Agent.reencodeImages` re-runs the new projector over the conversation's
+images), the session `model` entry, `nuclis agent export <id> [path]`
+(replacing `/save`), spec § 7.2/7.4, session.md, help, completion. Fixes
+from the session's own runs: a `/command` or `!` line typed during a turn
+is queued for the turn's end instead of being steered into the model; a
+typed `@path` to an image attaches (it did not; only `/`, `~`, `.` paths
+did). Evidence (`make shot`, `.zig-cache/tui/`): `model-open`,
+`model-filtered`, `switch-picker`, `switched`, `gemma-answer` (Gemma
+recalled the Qwen turn's prompt; `replayed model 34`), `back` (Qwen's
+primed prefix restored from disk in 0.1 s), `t1`–`t3` (Ctrl-T on Gemma:
+medium, off, low), `ctxw` (Ctrl-W to 32K through the same path),
+`resume-open`, `resume-confirm`, `resume-deleted`, `resumed`, `cleared`,
+`queued-command`, `after-turn`, `at-image`. `make verify-auto` passed
+(fmt, unit, the 11 fast gates its paths selected). Remaining limitations,
+for the log at close: `/model`'s option rows guess an uncatalogued
+registry file's profile (`qwen38` unless the entry forces one) until it is
+opened, after which the effort is clamped to the real profile; a resume
+replays through the running model, whatever `model` entries the file
+holds; command-line sampling flags do not carry across a switch.
+
+**Session 1 (as planned): the command surface and `/model`.** Files:
 `src/agent/commands.zig` (the table), `src/agent/root.zig` (pickers,
 `runCommand`, the engine reopen that `/ctx` uses today), `src/tui/choice.zig`
 (the picker), `src/help.zig`, `src/completion.zig`, `docs/spec.md`

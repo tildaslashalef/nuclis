@@ -59,9 +59,11 @@ pub const Options = struct {
     /// `resume.latest` when no id followed the flag.
     resume_id: ?[]const u8 = null,
     /// `agent ls` lists the workspace's sessions instead of running one;
-    /// `agent rm <id>` deletes the one `session_id` names.
-    agent_action: enum { run, ls, rm } = .run,
+    /// `agent rm <id>` deletes the one `session_id` names; `agent export
+    /// <id> [path]` writes it as markdown to `export_path` (or the default).
+    agent_action: enum { run, ls, rm, @"export" } = .run,
     session_id: []const u8 = "",
+    export_path: ?[]const u8 = null,
     /// `cache ls` (the default) or `cache clear`: the agent's token cache.
     cache_action: enum { ls, clear } = .ls,
     /// `agent --system-prompt <path>`: the file's text replaces the built
@@ -132,6 +134,11 @@ pub fn parseArgs(args: []const []const u8) !Options {
             if (std.mem.eql(u8, arg, "--json") and options.cache_action == .ls and !options.json) options.json = true else return error.UnknownOption;
         }
         return options;
+    }
+    if (command == .agent and args.len >= 2 and std.mem.eql(u8, args[1], "export")) {
+        if (args.len < 3) return error.MissingSessionId;
+        if (args.len > 4) return error.UnknownOption;
+        return .{ .command = .agent, .agent_action = .@"export", .session_id = args[2], .export_path = if (args.len == 4) args[3] else null };
     }
     if (command == .agent and args.len >= 2 and std.mem.eql(u8, args[1], "rm")) {
         if (args.len < 3) return error.MissingSessionId;
@@ -569,6 +576,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         defer alloc.free(cwd);
         return removeSession(alloc, io, dir, cwd, options.session_id, out, sty, diag);
     }
+    if (options.command == .agent and options.agent_action == .@"export") {
+        const dir = root orelse return error.MissingHome;
+        const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
+        defer alloc.free(cwd);
+        return exportSession(alloc, io, dir, cwd, options.session_id, options.export_path, out, sty, diag);
+    }
     if (options.command == .cache) {
         const dir = root orelse return error.MissingHome;
         return switch (options.cache_action) {
@@ -691,7 +704,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .agent => if (options.printing)
             agent.print_mode.run(alloc, io, environ, path, config.resolve(&loaded, options.model, options.flags, .agent), options.print, out, diag)
         else
-            agent.run(alloc, io, environ, path, root, config.resolve(&loaded, options.model, options.flags, .agent), options.generation.seed, options.resume_id, options.system_prompt_file, out),
+            agent.run(alloc, io, environ, path, root, config.resolve(&loaded, options.model, options.flags, .agent), .{ .loaded = &loaded, .flags = options.flags }, options.generation.seed, options.resume_id, options.system_prompt_file, out),
         .inspect, .validate => blk: {
             if (try isSafetensors(io, path)) {
                 if (options.command == .validate) {
@@ -794,6 +807,39 @@ fn removeSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []
             try out.print("{s}deleted{s} {s}{s}{s} {s}{s}{s} and {d} cached state{s}\n", .{ sty.on(.label), sty.off(), sty.on(.keyword), summary.id, sty.off(), sty.on(.dim), summary.first_prompt, sty.off(), removed, if (removed == 1) "" else "s" });
         },
     }
+}
+
+/// `agent export <id> [path]`: the session as markdown, derived from its
+/// entries (what the model saw), at `path` or under `<root>/agent/exports/`.
+fn exportSession(alloc: std.mem.Allocator, io: std.Io, root: []const u8, cwd: []const u8, query: []const u8, path: ?[]const u8, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
+    const found = try agent.resume_mod.match(alloc, io, root, cwd, query);
+    defer found.deinit(alloc);
+    const summary = switch (found) {
+        .none => {
+            diag.set("no saved session of {s} has an id starting {s} (`nuclis agent ls` lists them)", .{ cwd, query });
+            return error.SessionNotFound;
+        },
+        .many => |matches| {
+            diag.set("{d} sessions start {s}; give more of the id", .{ matches.len, query });
+            return error.AmbiguousSession;
+        },
+        .one => |one| one,
+    };
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var diagnostic: agent.session_log.Diagnostic = .{};
+    const loaded = agent.session_log.load(a, io, .cwd(), summary.path, &diagnostic) catch |err| {
+        diag.set("{s} reading {s} (line {d})", .{ @errorName(err), summary.path, diagnostic.line });
+        return err;
+    };
+    defer loaded.deinit();
+    const target = path orelse try agent.session_log.exportPath(a, root, loaded.header.id, loaded.header.time);
+    var document: std.Io.Writer.Allocating = .init(a);
+    try agent.session_log.exportMarkdown(loaded, &document.writer);
+    if (std.fs.path.dirname(target)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = document.written() });
+    try out.print("{s}exported{s} {s}{s}{s} to {s}{s}{s}\n", .{ sty.on(.label), sty.off(), sty.on(.keyword), summary.id, sty.off(), sty.on(.code), target, sty.off() });
 }
 
 fn runDecide(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path: ?[]const u8, words: []const []const u8, out: *std.Io.Writer, sty_detected: style.Style, diag: *config.Diagnostic) !void {
@@ -925,6 +971,13 @@ test "agent print mode takes a prompt, JSON lines, and a session file" {
     try std.testing.expect(rm.agent_action == .rm);
     try std.testing.expectEqualStrings("ab12", rm.session_id);
     try std.testing.expectError(error.MissingSessionId, parseArgs(&.{ "agent", "rm" }));
+    const exported = try parseArgs(&.{ "agent", "export", "ab12", "out.md" });
+    try std.testing.expect(exported.agent_action == .@"export");
+    try std.testing.expectEqualStrings("ab12", exported.session_id);
+    try std.testing.expectEqualStrings("out.md", exported.export_path.?);
+    try std.testing.expect((try parseArgs(&.{ "agent", "export", "ab12" })).export_path == null);
+    try std.testing.expectError(error.MissingSessionId, parseArgs(&.{ "agent", "export" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "agent", "export", "a", "b", "c" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "agent", "rm", "a", "b" }));
     try std.testing.expect((try parseArgs(&.{"cache"})).cache_action == .ls);
     try std.testing.expect((try parseArgs(&.{ "cache", "ls", "--json" })).json);
@@ -1324,4 +1377,35 @@ test "tokenize takes the prompt, the rendering, and the effort only" {
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "tokenize", "--prompt", "a", "--max-tokens", "4" }));
     try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "tokenize", "--prompt", "a", "--temperature", "0" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "tokenize", "--prompt", "a", "--raw", "--raw" }));
+}
+
+test "agent export writes a session of this workspace as markdown, found by id prefix" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(root);
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc);
+    defer alloc.free(cwd);
+    var environ: std.process.Environ.Map = .init(alloc);
+    defer environ.deinit();
+    try environ.put("NUCLIS_HOME", root);
+    var log = try agent.session_log.create(alloc, io, .cwd(), .{ .root_dir = root, .id = "feedc0de", .time = "2026-10-04T10:00:00Z", .cwd = cwd, .model_path = "/m.gguf", .effort = "low", .ctx_size = 8192 });
+    defer log.deinit();
+    try log.append(.{ .user = .{ .text = "what is this project?" } }, "2026-10-04T10:00:01Z");
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    var diag: config.Diagnostic = .{};
+    const target = try std.fs.path.join(alloc, &.{ root, "out", "s.md" });
+    defer alloc.free(target);
+    try run(alloc, io, &environ, try parseArgs(&.{ "agent", "export", "feed", target }), &out.writer, &diag);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "exported feedc0de") != null);
+    const document = try std.Io.Dir.cwd().readFileAlloc(io, target, alloc, .limited(1 << 16));
+    defer alloc.free(document);
+    try std.testing.expect(std.mem.indexOf(u8, document, "what is this project?") != null);
+    // Without a path it goes under the root's exports directory.
+    try run(alloc, io, &environ, try parseArgs(&.{ "agent", "export", "feedc0de" }), &out.writer, &diag);
+    try tmp.dir.access(io, "agent/exports/20261004T100000Z_feedc0de.md", .{});
+    try std.testing.expectError(error.SessionNotFound, run(alloc, io, &environ, try parseArgs(&.{ "agent", "export", "zz" }), &out.writer, &diag));
 }

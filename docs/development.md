@@ -481,7 +481,7 @@ override is an error. Otherwise resolve the root from `HOME`.
     history.jsonl          submitted prompts across sessions (TERM-01; append-only,
                            one JSON object per line, tail-read at startup)
     sessions/<cwd-slug>/   one append-only JSONL file per session
-    exports/               `/save` markdown exports
+    exports/               `nuclis agent export` markdown
                            ([spec.md § Sessions and storage](spec.md#74-sessions-and-storage))
   cache/                   regenerable runtime data
     prefix/                the agent's saved model states, one per file: primed prefixes
@@ -837,8 +837,8 @@ the event carries a preview (the chat builds one where
 tmux), the block also emits the preview's rows blank and then one raw row
 that climbs over them, places the image with the cursor kept, and comes
 back — the row model stays text, and the goldens never contain a sequence.
-The chat caps the picture to the rows above the live region. A drop, a
-`/image`, and a typed path all reach the same `Editor.attachImage`; the
+The chat caps the picture to the rows above the live region. A drop and a
+typed path both reach the same `Editor.attachImage`; the
 chat's `dropProbe` is the editor's only view of the file system.
 
 A mutation's diff is a header row (the path, `+N −M`), then rows of a
@@ -974,7 +974,7 @@ file is created at the first entry, so starting the agent and quitting writes
 nothing. On load, a truncated *last* line is dropped — that is where a crash
 lands — while any other unparsable line, or an unknown entry type, is a typed
 error naming the line number; a file from a newer `version` is refused
-outright. `/save` derives markdown from the same entries, so there is no
+outright. `nuclis agent export` derives markdown from the same entries, so there is no
 second transcript format.
 
 ### The agent's renderer

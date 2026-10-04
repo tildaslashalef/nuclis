@@ -48,6 +48,8 @@ pub const stop_tokens = [_][]const u8{ "<|eot|>", "<|end_of_text|>" };
 /// (` to=self`) arrives as ordinary text and the decoder routes on it.
 /// The image span placeholder, inside `<|image_start|>` … `<|image_end|>`.
 pub const image_placeholder: ?[]const u8 = "<|patch|>";
+/// No `off`: the template renders it as `low`.
+pub const efforts = [_]Effort{ .low, .medium, .high, .xhigh };
 pub const reasoning: profiles.Reasoning = .{ .open = "<|start|>assistant to=self<|message|>", .close = "<|eom|>" };
 pub const stream_markers: profiles.StreamMarkers = .{
     .open = "<|start|>",

@@ -180,8 +180,7 @@ extension becomes an `[image #N]` chip whose bytes in the buffer are the
 marker and whose path waits in the editor's attachments; a UTF-8 text file
 within the 128 KiB input limit becomes a `[file name, N lines]` chip over
 its fenced content, so the model reads a file `read_file` cannot reach.
-`/image <path>` and a typed image path at submit reach the same
-`Editor.attachImage`. The editor never touches the file system: tests
+A typed image path at submit reaches the same `Editor.attachImage`. The editor never touches the file system: tests
 supply the probe. At most 8 images per prompt; markers are single-digit, so
 renumbering after a deletion rewrites bytes of equal length in place.
 
@@ -223,7 +222,7 @@ passed-through image stayed put over the text (seen 2026-09-23, TERM-11);
 the harness therefore shows the detail row only, and the preview is looked
 at by running the chat in Ghostty directly. The session file records a user entry's images as
 `{path, width, height, width_tokens, height_tokens}` and no pixels (a turn
-without images writes the older line); `/save` lists them under the prompt;
+without images writes the older line); `nuclis agent export` lists them under the prompt;
 a resumed session decodes and encodes each image again and leaves a
 missing or unreadable one out of the model's view with a notice, the text
 keeping its marker.

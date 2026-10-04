@@ -41,6 +41,9 @@ pub const stop_tokens = [_][]const u8{ "<|im_end|>", "<|endoftext|>" };
 pub const bos_token: ?[]const u8 = null;
 /// The image span placeholder, inside `<|vision_start|>` … `<|vision_end|>`.
 pub const image_placeholder: ?[]const u8 = "<|image_pad|>";
+/// The levels that render differently: the template folds `high` into
+/// `xhigh`.
+pub const efforts = [_]Effort{ .off, .low, .medium, .xhigh };
 pub const reasoning: profiles.Reasoning = .{ .open = "<think>", .close = "</think>" };
 pub const stream_markers: profiles.StreamMarkers = .{
     .open = "<think>",

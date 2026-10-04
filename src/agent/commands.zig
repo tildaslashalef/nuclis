@@ -2,39 +2,39 @@
 //!
 //! A line the user submits is a prompt unless it is unmistakably a command:
 //! it starts with `/`, and its first word is nothing but ASCII letters. That
-//! rule is what keeps `/usr/bin/env is fine` a question and `/ctx 16384` an
-//! instruction, without a mode, a prefix key, or an escape (docs/spec.md § Editor).
-//! A line that starts with `!` is a shell command: `!cmd` runs it and sends
-//! its output to the model, `!!cmd` runs it for the user alone.
+//! rule is what keeps `/usr/bin/env is fine` a question and `/model qwen` an
+//! instruction, without a mode, a prefix key, or an escape (docs/spec.md
+//! § 7.2). A line that starts with `!` is a shell command: `!cmd` runs it and
+//! sends its output to the model, `!!cmd` runs it for the user alone.
 //!
-//! Parsing is pure and lives here; executing belongs to the agent, which owns
-//! the engine and the session. The table below is also the help text and the
-//! completion list, so the three can never disagree.
+//! A command is an *action* (no argument, acts now) or a *chooser* (no
+//! argument opens its picker; the choice typed as the argument skips it).
+//! Parsing is pure and lives here; executing belongs to the agent. The table
+//! is also the help text and the completion list, so the three agree.
 const std = @import("std");
+const fuzzy = @import("../tui/fuzzy.zig");
 
 const Allocator = std.mem.Allocator;
 
-/// The commands this phase implements. The table below is also the help text
-/// and the completion list.
-pub const Kind = enum { new, resume_session, list, delete, ctx, think, save, image, help, shell };
+pub const Kind = enum { clear, resume_session, model, help, shell };
+
+pub const Form = enum { action, chooser };
 
 pub const Spec = struct {
     kind: Kind,
     name: []const u8,
-    /// How the argument is written in help, empty when there is none.
+    form: Form = .action,
+    /// How a chooser's argument is written in help.
     argument: []const u8 = "",
     summary: []const u8,
+    /// The keys that do the same, listed beside the command in help.
+    keys: []const u8 = "",
 };
 
 pub const table = [_]Spec{
-    .{ .kind = .new, .name = "new", .summary = "start a new session (as Ctrl-N)" },
-    .{ .kind = .resume_session, .name = "resume", .summary = "pick a saved session and replay it" },
-    .{ .kind = .list, .name = "list", .summary = "this workspace's saved sessions" },
-    .{ .kind = .delete, .name = "delete", .argument = "[id]", .summary = "delete a saved session: pick one, or name it by id or id prefix" },
-    .{ .kind = .ctx, .name = "ctx", .argument = "<n>", .summary = "context window in tokens (as Ctrl-W, with a value)" },
-    .{ .kind = .think, .name = "think", .argument = "<effort>", .summary = "reasoning effort: off, low, medium, high, xhigh (as Ctrl-T)" },
-    .{ .kind = .save, .name = "save", .argument = "[path]", .summary = "export this session as markdown" },
-    .{ .kind = .image, .name = "image", .argument = "<path>", .summary = "attach an image to the prompt (or drop the file onto the window)" },
+    .{ .kind = .model, .name = "model", .form = .chooser, .argument = "[name]", .summary = "switch the model; its effort and context window", .keys = "Ctrl-T effort, Ctrl-W context" },
+    .{ .kind = .resume_session, .name = "resume", .form = .chooser, .argument = "[id]", .summary = "continue a saved session (Ctrl-D in the list deletes one)" },
+    .{ .kind = .clear, .name = "clear", .summary = "drop the conversation; the old session stays resumable", .keys = "Ctrl-N" },
     .{ .kind = .help, .name = "help", .summary = "keys and commands" },
 };
 
@@ -42,25 +42,28 @@ pub const table = [_]Spec{
 /// a `/word`, so it is neither completed nor listed among them.
 pub const shell_spec: Spec = .{ .kind = .shell, .name = "!", .argument = "<command>", .summary = "run a shell command and send its output; !! runs it without sending" };
 
+/// Commands that no longer exist and where their job went, so muscle memory
+/// gets a pointer rather than a bare "not a command".
+pub const retired = [_]struct { name: []const u8, instead: []const u8 }{
+    .{ .name = "new", .instead = "/clear (Ctrl-N)" },
+    .{ .name = "think", .instead = "/model, or Ctrl-T" },
+    .{ .name = "ctx", .instead = "/model, or Ctrl-W" },
+    .{ .name = "list", .instead = "/resume" },
+    .{ .name = "delete", .instead = "/resume, then Ctrl-D" },
+    .{ .name = "save", .instead = "nuclis agent export <id> [path]" },
+    .{ .name = "image", .instead = "drop the file onto the window, or type its path" },
+};
+
 /// A shell line: the command after the `!`, and whether its output is
 /// sent to the model as the next message (`!`) or only shown (`!!`).
 pub const Shell = struct { command: []const u8, send: bool };
 
 pub const Command = union(enum) {
-    new,
-    /// Open the session picker; the choice is made interactively.
-    resume_session,
-    list,
+    clear,
     /// An id or id prefix, or null to pick the session interactively.
-    delete: ?[]const u8,
-    /// Validated as a number here; the range is the configuration's business.
-    ctx: usize,
-    /// The effort as written; the agent maps it onto the profile's enum.
-    think: []const u8,
-    /// A path, or null for the default under `~/.nuclis/agent/exports/`.
-    save: ?[]const u8,
-    /// An image path to attach as a chip; the agent resolves and reads it.
-    image: []const u8,
+    resume_session: ?[]const u8,
+    /// A model name (or a fuzzy query for one), or null to pick it.
+    model: ?[]const u8,
     help,
     shell: Shell,
 };
@@ -69,7 +72,9 @@ pub const Result = union(enum) {
     command: Command,
     /// A `/word` that names nothing.
     unknown: []const u8,
-    /// A known command whose argument is missing or unreadable.
+    /// A retired command and what replaced it.
+    retired: struct { name: []const u8, instead: []const u8 },
+    /// A known command whose argument is missing or unwanted.
     usage: Spec,
 };
 
@@ -89,24 +94,22 @@ pub fn parse(line: []const u8) ?Result {
     for (word) |c| if (!std.ascii.isAlphabetic(c)) return null;
     if (word.len > 16) return null;
     const rest = std.mem.trim(u8, trimmed[word_end..], " \t");
+    const argument: ?[]const u8 = if (rest.len == 0) null else rest;
     for (table) |spec| {
         if (!std.ascii.eqlIgnoreCase(spec.name, word)) continue;
-        return switch (spec.kind) {
-            .new => .{ .command = .new },
-            .resume_session => .{ .command = .resume_session },
-            .list => .{ .command = .list },
-            .delete => .{ .command = .{ .delete = if (rest.len == 0) null else rest } },
-            .help => .{ .command = .help },
-            .ctx => if (std.fmt.parseInt(usize, rest, 10) catch null) |value|
-                .{ .command = .{ .ctx = value } }
-            else
-                .{ .usage = spec },
-            .think => if (rest.len == 0) .{ .usage = spec } else .{ .command = .{ .think = rest } },
-            .save => .{ .command = .{ .save = if (rest.len == 0) null else rest } },
-            .image => if (rest.len == 0) .{ .usage = spec } else .{ .command = .{ .image = rest } },
-            .shell => unreachable, // never in the table
+        // An action takes no argument: one given is a mistake, not ignored.
+        if (spec.form == .action and argument != null) return .{ .usage = spec };
+        return .{
+            .command = switch (spec.kind) {
+                .clear => .clear,
+                .help => .help,
+                .resume_session => .{ .resume_session = argument },
+                .model => .{ .model = argument },
+                .shell => unreachable, // never in the table
+            },
         };
     }
+    for (retired) |r| if (std.ascii.eqlIgnoreCase(r.name, word)) return .{ .retired = .{ .name = r.name, .instead = r.instead } };
     return .{ .unknown = word };
 }
 
@@ -123,32 +126,15 @@ pub fn matching(prefix: []const u8, out: *[table.len]Spec) []const Spec {
     return out[0..count];
 }
 
-/// The help text, as the rows an `info` block renders: a title, the keys,
-/// then the command table above, so the two halves of the interface are
-/// described in one place. Every command and key is spelled once; the same
-/// `table` drives completion, so help and completion cannot disagree. Caller
-/// owns the strings (an arena, in the agent).
+/// The help text, as the rows an `info` block renders: a title, the
+/// commands with the keys that do the same beside them, then the keys that
+/// belong to no command (editing, folding). Every command and key is spelled
+/// once; the same `table` drives completion. Caller owns the strings (an
+/// arena, in the agent).
 pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
     var rows: std.ArrayList([]const u8) = .empty;
     try rows.append(alloc, "");
     try rows.append(alloc, if (ascii) "nuclis agent - keys and commands" else "nuclis agent — keys and commands");
-    try rows.append(alloc, "");
-    try rows.append(alloc, "  keys");
-    const keys = [_][2][]const u8{
-        .{ "Enter", "send; while a turn runs, queue the message for the next one" },
-        .{ "Shift-Enter", "newline (Ctrl-J too)" },
-        .{ "Up / Down", "move in the input; history at the first and last row" },
-        .{ "Tab", "complete a /command or an @path, otherwise fold thinking" },
-        .{ "Ctrl-O", "cycle the tool rows of the last turn: summary, output, folded" },
-        .{ "Ctrl-E", "expand a paste, file, or image chip into editable text" },
-        .{ "Ctrl-G", "edit the input in $VISUAL or $EDITOR" },
-        .{ "Ctrl-X", "copy the last answer to the clipboard" },
-        .{ "Ctrl-T / Ctrl-W", "cycle reasoning effort / context window" },
-        .{ "Ctrl-N", "new session" },
-        .{ "Esc", "cancel a turn or a command; close a list or picker" },
-        .{ "Ctrl-C / Ctrl-D", "cancel a turn, or quit" },
-    };
-    for (keys) |pair| try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ pair[0], pair[1] }));
     try rows.append(alloc, "");
     try rows.append(alloc, "  commands");
     for (table) |spec| {
@@ -156,9 +142,28 @@ pub fn help(alloc: Allocator, ascii: bool) ![]const []const u8 {
             try alloc.print("/{s} {s}", .{ spec.name, spec.argument })
         else
             try alloc.print("/{s}", .{spec.name});
-        try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ name, spec.summary }));
+        const keys_note = if (spec.keys.len > 0) try alloc.print(" ({s})", .{spec.keys}) else "";
+        try rows.append(alloc, try alloc.print("    {s: <17}  {s}{s}", .{ name, spec.summary, keys_note }));
     }
     try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ "!<command>", shell_spec.summary }));
+    try rows.append(alloc, "");
+    try rows.append(alloc, "  keys");
+    const keys = [_][2][]const u8{
+        .{ "Enter", "send; while a turn runs, steer it with the message" },
+        .{ "Alt-Enter", "while a turn runs, queue the message for the next one" },
+        .{ "Shift-Enter", "newline (Ctrl-J too)" },
+        .{ "Up / Down", "move in the input; history at the first and last row" },
+        .{ "Tab", "complete a /command or an @path, otherwise fold thinking" },
+        .{ "Ctrl-O", "cycle the tool rows of the last turn: summary, output, folded" },
+        .{ "Ctrl-E", "expand a paste, file, or image chip into editable text" },
+        .{ "Ctrl-G", "edit the input in $VISUAL or $EDITOR" },
+        .{ "Ctrl-X", "copy the last answer to the clipboard" },
+        .{ "Esc", "cancel a turn; close a list or picker" },
+        .{ "Ctrl-C / Ctrl-D", "cancel a turn, or quit" },
+    };
+    for (keys) |pair| try rows.append(alloc, try alloc.print("    {s: <17}  {s}", .{ pair[0], pair[1] }));
+    try rows.append(alloc, "");
+    try rows.append(alloc, "  Drop a file onto the window, or type @path, to attach it (images too).");
     return rows.toOwnedSlice(alloc);
 }
 
@@ -259,57 +264,22 @@ pub fn fuzzyPaths(alloc: Allocator, io: std.Io, dir: std.Io.Dir, query: []const 
     return out;
 }
 
-/// How well `query` matches `path` as an in-order, case-insensitive
-/// subsequence, or null when it does not. Matched inside the last component
-/// when it can be, else across the path; consecutive characters, a
-/// character starting a word, and a basename that starts with the query
-/// score higher, and a longer path slightly lower.
-pub fn fuzzyScore(query: []const u8, path: []const u8) ?i32 {
-    if (query.len == 0) return 0;
-    const trimmed = std.mem.trimEnd(u8, path, "/");
-    const base = if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |i| i + 1 else 0;
-    var score: i32 = undefined;
-    if (subsequence(query, trimmed, base)) |s| {
-        score = s + 10;
-        if (std.ascii.startsWithIgnoreCase(trimmed[base..], query)) score += 20;
-    } else score = subsequence(query, trimmed, 0) orelse return null;
-    return score - @as(i32, @intCast(@min(trimmed.len, 400) / 8));
-}
-
-fn subsequence(query: []const u8, text: []const u8, from: usize) ?i32 {
-    var score: i32 = 0;
-    var at = from;
-    var previous: ?usize = null;
-    for (query) |c| {
-        const lower = std.ascii.toLower(c);
-        while (at < text.len and std.ascii.toLower(text[at]) != lower) at += 1;
-        if (at == text.len) return null;
-        score += 1;
-        if (previous != null and previous.? + 1 == at) score += 5;
-        if (at == 0 or std.mem.indexOfScalar(u8, "/_-. ", text[at - 1]) != null) score += 8;
-        previous = at;
-        at += 1;
-    }
-    return score;
-}
+/// The surface's fuzzy matcher (`tui/fuzzy.zig`), shared with the pickers.
+pub const fuzzyScore = fuzzy.score;
 
 // ----- tests -----
 
 const testing = std.testing;
 
 test "a line is a command only when it is unmistakably one" {
-    try testing.expectEqual(Command.new, parse("/new").?.command);
-    try testing.expectEqual(Command.resume_session, parse("/resume").?.command);
+    try testing.expectEqual(Command.clear, parse("/clear").?.command);
     try testing.expectEqual(Command.help, parse("  /help  ").?.command);
-    try testing.expectEqual(@as(usize, 16384), parse("/ctx 16384").?.command.ctx);
-    try testing.expectEqualStrings("medium", parse("/think medium").?.command.think);
-    try testing.expect(parse("/save").?.command.save == null);
-    try testing.expectEqualStrings("out.md", parse("/save out.md").?.command.save.?);
-    try testing.expectEqualStrings("shots/a.png", parse("/image shots/a.png").?.command.image);
-    try testing.expectEqual(Command.list, parse("/list").?.command);
-    try testing.expect(parse("/delete").?.command.delete == null);
-    try testing.expectEqualStrings("1a2b", parse("/delete 1a2b").?.command.delete.?);
-    try testing.expectEqual(Kind.image, parse("/image").?.usage.kind);
+    try testing.expect(parse("/resume").?.command.resume_session == null);
+    try testing.expectEqualStrings("1a2b", parse("/resume 1a2b").?.command.resume_session.?);
+    try testing.expect(parse("/model").?.command.model == null);
+    try testing.expectEqualStrings("gemma 12b", parse("/model  gemma 12b ").?.command.model.?);
+    // An action given an argument is a usage error, not an ignored word.
+    try testing.expectEqual(Kind.clear, parse("/clear everything").?.usage.kind);
     // Anything else is a prompt, including the paths that start with a slash.
     try testing.expect(parse("/usr/bin/env is fine") == null);
     try testing.expect(parse("/2 of them") == null);
@@ -318,10 +288,17 @@ test "a line is a command only when it is unmistakably one" {
     try testing.expect(parse("") == null);
     // A `/word` that names nothing is reported rather than sent to the model.
     try testing.expectEqualStrings("nope", parse("/nope").?.unknown);
-    // A known command with an unusable argument asks for the right one.
-    try testing.expectEqual(Kind.ctx, parse("/ctx lots").?.usage.kind);
-    try testing.expectEqual(Kind.ctx, parse("/ctx").?.usage.kind);
-    try testing.expectEqual(Kind.think, parse("/think").?.usage.kind);
+    // A retired command says where its job went.
+    try testing.expectEqualStrings("/model, or Ctrl-T", parse("/think high").?.retired.instead);
+    try testing.expectEqualStrings("save", parse("/save").?.retired.name);
+}
+
+test "every chooser takes an argument and no action does" {
+    for (table) |spec| {
+        try testing.expectEqual(spec.form == .chooser, spec.argument.len > 0);
+        try testing.expect(spec.summary.len > 0);
+    }
+    for (retired) |r| for (table) |spec| try testing.expect(!std.mem.eql(u8, r.name, spec.name));
 }
 
 test "a line that starts with ! is a shell command, sent or shown" {
@@ -344,9 +321,9 @@ test "a line that starts with ! is a shell command, sent or shown" {
 test "completion offers the commands that start with what was typed" {
     var buffer: [table.len]Spec = undefined;
     try testing.expectEqual(table.len, matching("", &buffer).len);
-    const n = matching("n", &buffer);
+    const n = matching("m", &buffer);
     try testing.expectEqual(@as(usize, 1), n.len);
-    try testing.expectEqualStrings("new", n[0].name);
+    try testing.expectEqualStrings("model", n[0].name);
     try testing.expectEqual(@as(usize, 0), matching("zzz", &buffer).len);
 }
 
@@ -365,6 +342,9 @@ test "the help text names every key and every command once" {
     }
     try testing.expect(std.mem.indexOf(u8, joined.items, "Shift-Enter") != null);
     try testing.expect(std.mem.indexOf(u8, joined.items, "queue the message") != null);
+    // The accelerators sit beside their command.
+    try testing.expect(std.mem.indexOf(u8, joined.items, "(Ctrl-T effort, Ctrl-W context)") != null);
+    try testing.expect(std.mem.indexOf(u8, joined.items, "(Ctrl-N)") != null);
     try testing.expect(std.mem.indexOf(u8, joined.items, "!<command>") != null);
     try testing.expect(std.mem.indexOf(u8, joined.items, "Ctrl-O") != null);
     try testing.expect(std.mem.indexOf(u8, joined.items, "Ctrl-G") != null);
@@ -447,13 +427,6 @@ test "a bare @ word matches fuzzily across the tree, best first" {
     defer free(alloc, inside);
     try testing.expectEqual(@as(usize, 1), inside.len);
     try testing.expectEqualStrings("docs/faq.md", inside[0]);
-}
-
-test "fuzzy scores prefer word starts and consecutive characters" {
-    try testing.expect(fuzzyScore("faq", "docs/faq.md").? > fuzzyScore("faq", "docs/fix_a_queue.md").?);
-    try testing.expect(fuzzyScore("rd", "README.md").? > fuzzyScore("rd", "src/bird.py").?);
-    try testing.expect(fuzzyScore("xyz", "docs/faq.md") == null);
-    try testing.expectEqual(@as(?i32, 0), fuzzyScore("", "anything"));
 }
 
 fn free(alloc: Allocator, items: []const []const u8) void {

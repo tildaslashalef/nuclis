@@ -30,7 +30,7 @@ const model = @import("../model.zig");
 const interrupt = @import("../interrupt.zig");
 const tui = @import("../tui/root.zig");
 const prompt_history = @import("history.zig");
-const session_log = @import("session.zig");
+pub const session_log = @import("session.zig");
 const commands = @import("commands.zig");
 pub const resume_mod = @import("resume.zig");
 pub const print_mode = @import("print.zig");
@@ -47,6 +47,7 @@ const keys = tui.keys;
 const theme = tui.theme;
 const markdown = tui.markdown;
 const choice = tui.choice;
+const picker = tui.picker;
 const Profile = inference.profiles;
 
 /// Idle height of the highlighted input box, in rows.
@@ -163,8 +164,13 @@ const Ui = struct {
     pending_len: usize = 0,
     /// Set after a Ctrl-C cancel so a second press during the same turn quits.
     cancel_pending: bool = false,
-    /// Context size requested with Ctrl-W; the main loop re-opens the engine.
+    /// Context size requested with Ctrl-W or `/model`; the main loop
+    /// re-opens the engine.
     ctx_request: ?usize = null,
+    /// A model chosen with `/model`; the main loop switches to it.
+    model_request: ?ModelRequest = null,
+    /// The configuration `/model` resolves an entry's settings from.
+    switching: Switching,
     /// Set the first time a session write failed, so the notice is printed
     /// once rather than after every turn.
     log_failed: bool = false,
@@ -173,18 +179,23 @@ const Ui = struct {
     /// A message typed while a turn was running, to be sent as the next one
     /// (steering). Owned.
     queued: std.ArrayList(u8) = .empty,
-    /// An open picker owns the keyboard while it is up; `none` otherwise.
-    /// `delete_session` picks a session to delete, `confirm_delete` asks
-    /// before `delete_target` goes.
-    picker: enum { none, resume_session, delete_session, confirm_delete } = .none,
-    /// The session file `/delete` will remove once confirmed. Owned.
-    delete_target: ?[]u8 = null,
+    /// The open chooser (`/resume`, `/model`); it owns the keyboard while
+    /// open.
+    pick: *picker.Picker,
+    pick_kind: enum { none, resume_session, model } = .none,
+    /// What each picker item names, parallel to its items: a session file's
+    /// path or a model's name. Owned.
+    pick_keys: std.ArrayList([]u8) = .empty,
+    /// The `/model` item that is the running model, and the values its
+    /// option rows stand for (efforts are the profile's static list).
+    pick_current: ?usize = null,
+    pick_efforts: []const Profile.Effort = &.{},
+    pick_contexts: [context_sizes.len + 1]usize = undefined,
+    pick_contexts_len: usize = 0,
     /// The user root and the workspace, for the session commands; borrowed
     /// from `run`.
     root_dir: ?[]const u8 = null,
     cwd: []const u8 = "",
-    /// The paths the open picker offers, parallel to `comp`'s items. Owned.
-    resume_paths: std.ArrayList([]u8) = .empty,
     /// A session path to replay on the next main-loop pass, set by the picker
     /// and consumed there because the loop owns the session file. Owned.
     resume_request: ?[]u8 = null,
@@ -215,10 +226,10 @@ const Ui = struct {
         self.forgetFrame();
         self.last_frame.deinit(self.alloc);
         self.queued.deinit(self.alloc);
-        for (self.resume_paths.items) |path| self.alloc.free(path);
-        self.resume_paths.deinit(self.alloc);
+        self.freeKeys();
+        self.pick_keys.deinit(self.alloc);
         if (self.resume_request) |path| self.alloc.free(path);
-        if (self.delete_target) |path| self.alloc.free(path);
+        if (self.model_request) |request| self.alloc.free(request.name);
         if (self.model_label.len != 0) self.alloc.free(self.model_label);
     }
     fn newSession(self: *Ui) void {
@@ -312,7 +323,11 @@ const Ui = struct {
         const editor_cap = @min(@as(usize, 6), size.rows -| 5);
         // The completion list sits between the turn and the input box, inside
         // the region like every other overlay: nuclis has no alternate screen.
-        const list = try self.comp.layout(a, .{
+        const list = if (self.pick.isOpen()) try self.pick.layout(a, .{
+            .width = columns -| 3,
+            .max_rows = @min(@as(usize, 10), size.rows / 3),
+            .th = self.th,
+        }) else try self.comp.layout(a, .{
             .width = columns -| 3,
             .max_rows = @min(@as(usize, 6), size.rows / 4),
             .th = self.th,
@@ -673,27 +688,21 @@ const Ui = struct {
             },
             else => {},
         }
-        if (self.picker != .none) {
-            // An open picker owns the keyboard: it moves, accepts, or is
-            // dismissed; nothing is typed into the editor beneath it.
-            switch (key) {
-                .up => self.comp.move(.previous),
-                .down => self.comp.move(.next),
-                .enter, .tab => switch (self.picker) {
+        if (self.pick.isOpen()) {
+            // An open picker owns the keyboard: typing filters it, nothing
+            // reaches the editor beneath it.
+            switch (try self.pick.handle(key)) {
+                .none, .declined => {},
+                .close => self.closePicker(),
+                .choose => switch (self.pick_kind) {
                     .resume_session => try self.acceptResume(),
-                    .delete_session => try self.acceptDeletePick(),
-                    .confirm_delete => if (self.comp.selected == 1) try self.performDelete() else self.keepSession(),
-                    .none => {},
+                    .model => try self.acceptModel(),
+                    .none => self.closePicker(),
                 },
-                .text => |t| if (self.picker == .confirm_delete) {
-                    if (std.ascii.eqlIgnoreCase(t, "y")) try self.performDelete();
-                    if (std.ascii.eqlIgnoreCase(t, "n")) self.keepSession();
-                },
-                .ctrl => |c| {
-                    if (c == 'c') self.closePicker();
-                },
-                .escape => if (self.picker == .confirm_delete) self.keepSession() else self.closePicker(),
-                else => {},
+                .moved => if (self.pick_kind == .model) try self.modelOptions(),
+                .adjusted => if (self.pick_kind == .model) try self.modelNote(),
+                .delete => try self.askDelete(),
+                .confirmed => try self.performDelete(),
             }
             return;
         }
@@ -778,13 +787,10 @@ const Ui = struct {
                     try self.scr.insertAbove(&.{.{ .text = std.fmt.bufPrint(&farewell, "bye {s}", .{self.th.glyphs().effort}) catch "bye", .style = .dim }});
                 },
                 't' => {
-                    self.effort = switch (self.effort) {
-                        .off => .low,
-                        .low => .medium,
-                        .medium => .high,
-                        .high => .xhigh,
-                        .xhigh => .off,
-                    };
+                    // Only the levels this profile renders differently.
+                    const levels = self.profile.efforts();
+                    const at = std.mem.indexOfScalar(Profile.Effort, levels, self.profile.nearestEffort(self.effort)).?;
+                    self.effort = levels[(at + 1) % levels.len];
                     self.record(.{ .effort = .{ .effort = @tagName(self.effort) } });
                 },
                 'n' => self.newSession(),
@@ -797,11 +803,10 @@ const Ui = struct {
                 'w' => {
                     // Cycle the context window; the main loop re-opens the
                     // engine because KV capacity is allocated at open time.
-                    const sizes = [_]usize{ 2048, 4096, 8192, 16384, 32768 };
                     const current = self.eng.model.session().capacity;
-                    self.ctx_request = for (sizes) |s| {
+                    self.ctx_request = for (context_sizes) |s| {
                         if (s > current) break s;
-                    } else sizes[0];
+                    } else context_sizes[0];
                 },
                 else => {},
             },
@@ -878,9 +883,11 @@ const Ui = struct {
     }
 
     /// Hands the editor's text to the turn in progress for its next step.
-    /// A full steering queue keeps the text in the editor and says so.
+    /// A full steering queue keeps the text in the editor and says so. A
+    /// command is for the agent, not the model: it waits for the turn's end.
     fn steer(self: *Ui) !void {
         if (self.ed.isEmpty()) return;
+        if (commands.parse(self.ed.text()) != null) return self.queue();
         self.agent.steer(self.ed.text()) catch |err| switch (err) {
             error.TooManySteered => {
                 self.status = "steering queue full";
@@ -892,25 +899,44 @@ const Ui = struct {
         try self.comp.set(&.{});
     }
 
-    /// Opens the `/resume` picker from the sessions of this workspace (or,
-    /// with `.delete_session`, the `/delete` one). The list is emptied and
-    /// an explanatory notice is left when there is nothing to choose, so a
-    /// dead end always says why.
-    fn openResumePicker(self: *Ui, root_dir: ?[]const u8, cwd: []const u8) !void {
-        return self.openSessionPicker(root_dir, cwd, .resume_session);
-    }
+    // ----- choosers -----
 
-    fn openSessionPicker(self: *Ui, root_dir: ?[]const u8, cwd: []const u8, mode: @FieldType(Ui, "picker")) !void {
-        const root = root_dir orelse {
-            try self.emit(.{ .notice = "  — no user root: cannot resume" });
+    /// `/resume [id]`: an id or id prefix naming one session resumes it;
+    /// otherwise the picker opens on this workspace's sessions, the argument
+    /// (words of a first prompt, say) typed into its search box.
+    fn resumeCommand(self: *Ui, a: std.mem.Allocator, query: ?[]const u8) !void {
+        const root = self.root_dir orelse {
+            try self.emit(.{ .notice = "  — no user root: no saved sessions" });
             return;
         };
-        const summaries = resume_mod.list(self.alloc, self.io, root, cwd) catch |err| {
+        if (query) |q| {
+            const found = resume_mod.match(self.alloc, self.io, root, self.cwd, q) catch |err| {
+                try self.emit(.{ .notice = try a.print("  — {s} listing sessions", .{@errorName(err)}) });
+                return;
+            };
+            defer found.deinit(self.alloc);
+            if (found == .one) {
+                if (std.mem.eql(u8, found.one.id, self.log.header.id)) {
+                    try self.emit(.{ .notice = "  — that is this session" });
+                    return;
+                }
+                self.resume_request = try self.alloc.dupe(u8, found.one.path);
+                return;
+            }
+        }
+        try self.openSessions(query orelse "");
+    }
+
+    /// Fills the picker with the workspace's sessions, newest first, this
+    /// one marked. A dead end (no root, no session) is a notice saying why.
+    fn openSessions(self: *Ui, query: []const u8) !void {
+        const summaries = resume_mod.list(self.alloc, self.io, self.root_dir.?, self.cwd) catch |err| {
             var note: [96]u8 = undefined;
             try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {s} listing sessions", .{@errorName(err)}) catch "  — cannot list sessions" });
             return;
         };
         defer resume_mod.freeList(self.alloc, summaries);
+        self.closePicker();
         if (summaries.len == 0) {
             try self.emit(.{ .notice = "  — no saved sessions for this workspace" });
             return;
@@ -919,135 +945,235 @@ const Ui = struct {
         var arena = std.heap.ArenaAllocator.init(self.alloc);
         defer arena.deinit();
         const a = arena.allocator();
-        var items: std.ArrayList(choice.Item) = .empty;
+        var items: std.ArrayList(picker.Item) = .empty;
         for (summaries) |summary| {
-            try self.resume_paths.append(self.alloc, try self.alloc.dupe(u8, summary.path));
+            try self.pick_keys.append(self.alloc, try self.alloc.dupe(u8, summary.path));
             const short = if (summary.id.len > 8) summary.id[0..8] else summary.id;
+            const about = if (summary.first_prompt.len > 0) summary.first_prompt else std.fs.path.basename(summary.cwd);
             try items.append(a, .{
                 .label = try a.print("{s}  {s}", .{ short, summary.time }),
-                .detail = if (summary.first_prompt.len > 0)
-                    try a.print("{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, summary.first_prompt })
-                else
-                    try a.print("{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, std.fs.path.basename(summary.cwd) }),
+                .detail = try a.print("{s} · ctx {d} · {s}", .{ summary.effort, summary.ctx_size, about }),
+                .search = try a.print("{s} {s}", .{ summary.id, about }),
+                .current = std.mem.eql(u8, summary.id, self.log.header.id),
             });
         }
-        try self.comp.set(items.items);
-        self.picker = mode;
-        self.status = if (mode == .delete_session) "delete which?" else "resume";
-    }
-
-    /// `/list`: the workspace's sessions as an info block, this one marked.
-    fn listSessions(self: *Ui, a: std.mem.Allocator) !void {
-        const root = self.root_dir orelse {
-            try self.emit(.{ .notice = "  — no user root: no saved sessions" });
-            return;
-        };
-        const summaries = resume_mod.list(self.alloc, self.io, root, self.cwd) catch |err| {
-            try self.emit(.{ .notice = try a.print("  — {s} listing sessions", .{@errorName(err)}) });
-            return;
-        };
-        defer resume_mod.freeList(self.alloc, summaries);
-        const rows = try resume_mod.listRows(a, summaries, self.log.header.id, self.th.glyph_set == .ascii);
-        try self.emit(.{ .info = try std.mem.join(a, "\n", rows) });
-    }
-
-    /// `/delete [id]`: a session named by id or id prefix goes to the
-    /// confirmation; without one the picker chooses it first.
-    fn deleteCommand(self: *Ui, a: std.mem.Allocator, query: ?[]const u8) !void {
-        const root = self.root_dir orelse {
-            try self.emit(.{ .notice = "  — no user root: no saved sessions" });
-            return;
-        };
-        const q = query orelse return self.openSessionPicker(root, self.cwd, .delete_session);
-        const found = resume_mod.match(self.alloc, self.io, root, self.cwd, q) catch |err| {
-            try self.emit(.{ .notice = try a.print("  — {s} listing sessions", .{@errorName(err)}) });
-            return;
-        };
-        defer found.deinit(self.alloc);
-        switch (found) {
-            .none => try self.emit(.{ .notice = try a.print("  — no saved session of this workspace has an id starting {s} (/list shows them)", .{q}) }),
-            .many => |matches| {
-                var ids: std.ArrayList(u8) = .empty;
-                for (matches, 0..) |m, i| {
-                    if (i > 0) try ids.appendSlice(a, ", ");
-                    try ids.appendSlice(a, if (m.id.len > 8) m.id[0..8] else m.id);
-                }
-                try self.emit(.{ .notice = try a.print("  — {d} sessions start {s} ({s}); give more of the id", .{ matches.len, q, ids.items }) });
-            },
-            .one => |summary| try self.confirmDelete(a, summary.path),
-        }
-    }
-
-    fn acceptDeletePick(self: *Ui) !void {
-        if (self.comp.selected >= self.resume_paths.items.len) return;
-        const path = try self.alloc.dupe(u8, self.resume_paths.items[self.comp.selected]);
-        defer self.alloc.free(path);
-        self.closePicker();
-        var arena = std.heap.ArenaAllocator.init(self.alloc);
-        defer arena.deinit();
-        try self.confirmDelete(arena.allocator(), path);
-    }
-
-    /// Asks before deleting the session at `path`; the session in use is
-    /// refused, since its file is still being written.
-    fn confirmDelete(self: *Ui, a: std.mem.Allocator, path: []const u8) !void {
-        const id = sessionId(path);
-        const short = if (id.len > 8) id[0..8] else id;
-        if (std.mem.eql(u8, id, self.log.header.id)) {
-            try self.emit(.{ .notice = try a.print("  — {s} is this session; start another (/new) to delete it", .{short}) });
-            return;
-        }
-        self.delete_target = try self.alloc.dupe(u8, path);
-        const items = [_]choice.Item{
-            .{ .label = "keep it", .detail = "n" },
-            .{ .label = try a.print("delete {s}", .{short}), .detail = "y: the session file and its cached states" },
-        };
-        try self.comp.set(&items);
-        self.picker = .confirm_delete;
-        self.status = "delete?";
-    }
-
-    fn keepSession(self: *Ui) void {
-        self.closePicker();
-        self.emit(.{ .notice = "  — kept" }) catch {};
-    }
-
-    fn performDelete(self: *Ui) !void {
-        const path = self.delete_target orelse return;
-        self.delete_target = null;
-        defer self.alloc.free(path);
-        self.closePicker();
-        const short = blk: {
-            const id = sessionId(path);
-            break :blk if (id.len > 8) id[0..8] else id;
-        };
-        var note: [160]u8 = undefined;
-        const removed = resume_mod.delete(self.alloc, self.io, self.root_dir.?, path) catch |err| {
-            try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {s} deleting {s}", .{ @errorName(err), short }) catch "  — delete failed" });
-            return;
-        };
-        try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — deleted {s} and {d} cached state{s}", .{ short, removed, if (removed == 1) "" else "s" }) catch "  — deleted" });
-        self.status = "ready";
-    }
-
-    /// Dismisses the picker and drops what it offered. A resumed session is
-    /// not applied here: the picker only names a path, and the main loop —
-    /// which owns the session file — replays it.
-    fn closePicker(self: *Ui) void {
-        // The picker's prompt in the bar goes with it.
-        if (self.picker != .none and !self.busy) self.status = "ready";
-        self.picker = .none;
-        if (self.delete_target) |path| self.alloc.free(path);
-        self.delete_target = null;
-        for (self.resume_paths.items) |path| self.alloc.free(path);
-        self.resume_paths.clearRetainingCapacity();
-        self.comp.set(&.{}) catch {};
+        try self.pick.open("Resume a session", items.items, query);
+        self.pick.deletable = true;
+        self.pick_kind = .resume_session;
+        self.status = "resume";
     }
 
     fn acceptResume(self: *Ui) !void {
-        if (self.comp.selected >= self.resume_paths.items.len) return;
-        self.resume_request = try self.alloc.dupe(u8, self.resume_paths.items[self.comp.selected]);
+        const index = self.pick.chosen() orelse return;
+        if (std.mem.eql(u8, sessionId(self.pick_keys.items[index]), self.log.header.id)) {
+            self.closePicker();
+            try self.emit(.{ .notice = "  — that is this session" });
+            return;
+        }
+        self.resume_request = try self.alloc.dupe(u8, self.pick_keys.items[index]);
         self.closePicker();
+    }
+
+    /// Ctrl-D in `/resume`: asks inside the picker. The session in use is
+    /// refused, since its file is still being written.
+    fn askDelete(self: *Ui) !void {
+        const index = self.pick.chosen() orelse return;
+        const id = sessionId(self.pick_keys.items[index]);
+        const short = if (id.len > 8) id[0..8] else id;
+        if (std.mem.eql(u8, id, self.log.header.id)) {
+            try self.pick.setNote("this session is in use: /clear first to delete it");
+            return;
+        }
+        var question: [96]u8 = undefined;
+        try self.pick.confirm(std.fmt.bufPrint(&question, "delete {s} and its cached states?", .{short}) catch "delete it?");
+    }
+
+    /// Deletes the chosen session and shows the list again without it.
+    fn performDelete(self: *Ui) !void {
+        const index = self.pick.chosen() orelse return;
+        const path = try self.alloc.dupe(u8, self.pick_keys.items[index]);
+        defer self.alloc.free(path);
+        const query = try self.alloc.dupe(u8, self.pick.query.items);
+        defer self.alloc.free(query);
+        const id = sessionId(path);
+        const short = if (id.len > 8) id[0..8] else id;
+        var note: [160]u8 = undefined;
+        const removed = resume_mod.delete(self.alloc, self.io, self.root_dir.?, path) catch |err| {
+            try self.pick.setNote(std.fmt.bufPrint(&note, "{s} deleting {s}", .{ @errorName(err), short }) catch "delete failed");
+            return;
+        };
+        try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — deleted {s} and {d} cached state{s}", .{ short, removed, if (removed == 1) "" else "s" }) catch "  — deleted" });
+        try self.openSessions(query);
+    }
+
+    /// `/model [name]`: a name (or a query only one model matches) switches
+    /// with the defaults the picker would show; otherwise the picker opens
+    /// on the runnable models, the running one marked.
+    fn modelCommand(self: *Ui, a: std.mem.Allocator, query: ?[]const u8) !void {
+        const root = self.root_dir orelse {
+            try self.emit(.{ .notice = "  — no user root: no models directory to choose from" });
+            return;
+        };
+        const registry = self.switching.loaded.config.models;
+        const listing = model.list(a, self.io, root, registry) catch |err| {
+            try self.emit(.{ .notice = try a.print("  — {s} listing models", .{@errorName(err)}) });
+            return;
+        };
+        const offered = try model.runnableModels(a, listing, registry);
+        if (offered.len == 0) {
+            try self.emit(.{ .notice = "  — no runnable model is present (`nuclis model ls`, `nuclis model pull <name>`)" });
+            return;
+        }
+        self.closePicker();
+        errdefer self.closePicker();
+        var items: std.ArrayList(picker.Item) = .empty;
+        var exact: ?usize = null;
+        for (offered, 0..) |r, i| {
+            const path = paths.modelPath(a, r.name, "", root, registry) catch "";
+            const current = std.mem.eql(u8, path, self.model_path);
+            if (current) self.pick_current = i;
+            try self.pick_keys.append(self.alloc, try self.alloc.dupe(u8, r.name));
+            try items.append(a, .{ .label = r.name, .detail = r.detail, .current = current });
+            if (query) |q| if (std.ascii.eqlIgnoreCase(q, r.name)) {
+                exact = i;
+            };
+        }
+        try self.pick.open("Model", items.items, if (exact != null) "" else query orelse "");
+        self.pick_kind = .model;
+        self.status = "model";
+        if (exact) |i| _ = self.pick.select(i);
+        try self.modelOptions();
+        if (query != null and (exact != null or self.pick.matches().len == 1)) return self.acceptModel();
+    }
+
+    /// The option rows for the selected model: the efforts its profile
+    /// renders and the context windows, at the running values for the
+    /// running model and at the entry's (the effort carried over) for
+    /// another.
+    fn modelOptions(self: *Ui) !void {
+        const index = self.pick.chosen() orelse return;
+        const current = self.pick_current == index;
+        const target = self.resolveModel(self.pick_keys.items[index]);
+        const profile = if (current) self.profile else target.forced_profile orelse target.profile;
+        self.pick_efforts = profile.efforts();
+        const effort = if (current) self.effort else profile.nearestEffort(self.effort);
+        const ctx = if (current) self.eng.model.session().capacity else target.ctx_size;
+        // The usual sizes, plus the entry's own when it is not one of them.
+        self.pick_contexts_len = 0;
+        var inserted = false;
+        for (context_sizes) |size| {
+            if (!inserted and ctx < size) {
+                self.pick_contexts[self.pick_contexts_len] = ctx;
+                self.pick_contexts_len += 1;
+                inserted = true;
+            }
+            if (size == ctx) inserted = true;
+            self.pick_contexts[self.pick_contexts_len] = size;
+            self.pick_contexts_len += 1;
+        }
+        if (!inserted) {
+            self.pick_contexts[self.pick_contexts_len] = ctx;
+            self.pick_contexts_len += 1;
+        }
+        var arena = std.heap.ArenaAllocator.init(self.alloc);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const effort_names = try a.alloc([]const u8, self.pick_efforts.len);
+        for (self.pick_efforts, effort_names) |e, *name| name.* = @tagName(e);
+        const ctx_names = try a.alloc([]const u8, self.pick_contexts_len);
+        var ctx_index: usize = 0;
+        for (self.pick_contexts[0..self.pick_contexts_len], ctx_names, 0..) |size, *name, i| {
+            name.* = if (size % 1024 == 0) try a.print("{d}K", .{size / 1024}) else try a.print("{d}", .{size});
+            if (size == ctx) ctx_index = i;
+        }
+        try self.pick.setOptions(&.{
+            .{ .name = "effort", .values = effort_names, .index = std.mem.indexOfScalar(Profile.Effort, self.pick_efforts, effort) orelse 0 },
+            .{ .name = "context", .values = ctx_names, .index = ctx_index },
+        });
+        try self.modelNote();
+    }
+
+    /// What Enter will cost, said before it is pressed.
+    fn modelNote(self: *Ui) !void {
+        const index = self.pick.chosen() orelse return;
+        const choice_now = self.modelChoice();
+        var note: [192]u8 = undefined;
+        const capacity = self.eng.model.session().capacity;
+        const conversation = self.agent.history.items.len > 0;
+        const text = if (self.pick_current != index)
+            std.fmt.bufPrint(&note, "Enter unloads {s} and loads {s}{s}", .{ self.model_label, self.pick_keys.items[index], if (conversation) "; the conversation is prefilled again through its profile" else "" }) catch "Enter switches the model"
+        else if (choice_now.ctx_size != capacity)
+            if (conversation) "a new context window re-opens the engine; the conversation is prefilled again" else "a new context window re-opens the engine"
+        else if (choice_now.effort != self.effort)
+            "a new effort primes the system block again"
+        else
+            "the model in use";
+        try self.pick.setNote(text);
+    }
+
+    const Chosen = struct { effort: Profile.Effort, ctx_size: usize };
+
+    fn modelChoice(self: *Ui) Chosen {
+        return .{
+            .effort = self.pick_efforts[self.pick.optionIndex(0)],
+            .ctx_size = self.pick_contexts[self.pick.optionIndex(1)],
+        };
+    }
+
+    /// Enter in `/model`: another model is switched to by the main loop;
+    /// the running one only takes the new effort and window.
+    fn acceptModel(self: *Ui) !void {
+        const index = self.pick.chosen() orelse return;
+        const chosen = self.modelChoice();
+        const current = self.pick_current == index;
+        const name = try self.alloc.dupe(u8, self.pick_keys.items[index]);
+        self.closePicker();
+        if (!current) {
+            if (self.model_request) |old| self.alloc.free(old.name);
+            self.model_request = .{ .name = name, .effort = chosen.effort, .ctx_size = chosen.ctx_size };
+            return;
+        }
+        defer self.alloc.free(name);
+        const effort_changed = chosen.effort != self.effort;
+        const ctx_changed = chosen.ctx_size != self.eng.model.session().capacity;
+        if (effort_changed) {
+            self.effort = chosen.effort;
+            self.record(.{ .effort = .{ .effort = @tagName(chosen.effort) } });
+        }
+        if (ctx_changed) {
+            // The re-open primes, with the new effort.
+            self.ctx_request = chosen.ctx_size;
+        } else if (effort_changed) {
+            var note: [64]u8 = undefined;
+            try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — effort {s}", .{@tagName(chosen.effort)}) catch "  — effort changed" });
+            // The effort is part of the system block: prime it again.
+            primeSession(self);
+        } else {
+            var note: [96]u8 = undefined;
+            try self.emit(.{ .notice = std.fmt.bufPrint(&note, "  — already on {s}", .{name}) catch "  — already on it" });
+        }
+    }
+
+    /// The settings `name` opens with: its entry over the file's globals,
+    /// the command-line flags that are not per-model on top.
+    fn resolveModel(self: *Ui, name: []const u8) config.Resolved {
+        return config.resolve(self.switching.loaded, name, self.switching.carried(), .agent);
+    }
+
+    fn freeKeys(self: *Ui) void {
+        for (self.pick_keys.items) |key| self.alloc.free(key);
+        self.pick_keys.clearRetainingCapacity();
+    }
+
+    /// Dismisses the chooser and what it offered. A choice is applied by
+    /// the main loop, which owns the session file and the engine.
+    fn closePicker(self: *Ui) void {
+        // The picker's prompt in the bar goes with it.
+        if (self.pick_kind != .none and !self.busy) self.status = "ready";
+        self.pick.clear();
+        self.pick_kind = .none;
+        self.pick_current = null;
+        self.freeKeys();
     }
 
     /// Rebuilds the completion list from the word under the cursor: the
@@ -1077,10 +1203,6 @@ const Ui = struct {
             for (try commands.completePaths(a, self.io, .cwd(), word[1..])) |path| {
                 try items.append(a, .{ .label = try a.print("@{s}", .{path}) });
             }
-        } else if (std.ascii.startsWithIgnoreCase(self.ed.text(), "/image ") and !self.ed.atFirstWord()) {
-            // The command's argument completes like an `@path`, bare.
-            self.comp_kind = .path;
-            for (try commands.completePaths(a, self.io, .cwd(), word)) |path| try items.append(a, .{ .label = path });
         } else {
             self.comp_kind = .none;
         }
@@ -1243,7 +1365,7 @@ fn primeSession(ui: *Ui) void {
         var note: [192]u8 = undefined;
         const text = if (err == error.ContextFull) blk: {
             const overflow = ui.completer.overflow orelse loop.Overflow{ .needed = 0, .capacity = ui.eng.model.session().capacity };
-            break :blk std.fmt.bufPrint(&note, "  — context window too small for the system prompt and tools: {d} tokens (prefix plus output budget) of {d}; raise it with /ctx <n>", .{ overflow.needed, overflow.capacity }) catch "  — context window too small for the system prompt and tools";
+            break :blk std.fmt.bufPrint(&note, "  — context window too small for the system prompt and tools: {d} tokens (prefix plus output budget) of {d}; raise it with /model or Ctrl-W", .{ overflow.needed, overflow.capacity }) catch "  — context window too small for the system prompt and tools";
         } else std.fmt.bufPrint(&note, "  — warm-up skipped: {s}", .{@errorName(err)}) catch "  — warm-up skipped";
         ui.emit(.{ .notice = text }) catch {};
         return;
@@ -1404,12 +1526,10 @@ fn reclaimSteering(ui: *Ui) !void {
     if (left.len > 0) ui.status = "queued";
 }
 
-/// Executes a slash command. Everything it can do, a key can do too (the
-/// table in `commands.zig` says which); what it adds is a value — a context
-/// size that is not on the cycle, an effort by name — and `/save`, which has
-/// no key at all. Every outcome is a dim notice in the transcript, so the
-/// conversation records what was asked of the agent as well as of the model.
-fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Result, root_dir: ?[]const u8, cwd: []const u8) !void {
+/// Executes a slash command. Every outcome is a dim notice in the
+/// transcript (or a picker), so the conversation records what was asked of
+/// the agent as well as of the model.
+fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Result) !void {
     var arena = std.heap.ArenaAllocator.init(ui.alloc);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1423,55 +1543,22 @@ fn runCommand(ui: *Ui, sampler: *inference.sampling.Sampler, parsed: commands.Re
             }
             try ui.emit(.{ .notice = try a.print("  — /{s} is not a command; known: {s}", .{ word, names.items }) });
         },
-        .usage => |spec| try ui.emit(.{ .notice = try a.print("  — usage: {s}{s} {s} — {s}", .{ if (spec.kind == .shell) "" else "/", spec.name, spec.argument, spec.summary }) }),
+        .retired => |r| try ui.emit(.{ .notice = try a.print("  — /{s} is gone: {s}", .{ r.name, r.instead }) }),
+        .usage => |spec| try ui.emit(.{ .notice = if (spec.kind == .shell)
+            try a.print("  — usage: !{s} — {s}", .{ spec.argument, spec.summary })
+        else
+            try a.print("  — /{s} takes no argument — {s}", .{ spec.name, spec.summary }) }),
         .command => |command| switch (command) {
             .help => {
                 const rows = try commands.help(a, ui.th.glyph_set == .ascii);
                 try ui.emit(.{ .info = try std.mem.join(a, "\n", rows) });
             },
-            .new => {
+            .clear => {
                 ui.newSession();
-                try ui.emit(.{ .notice = "  — new session" });
+                try ui.emit(.{ .notice = "  — cleared; the previous session stays in /resume" });
             },
-            .resume_session => try ui.openResumePicker(root_dir, cwd),
-            .list => try ui.listSessions(a),
-            .delete => |query| try ui.deleteCommand(a, query),
-            .think => |name| {
-                if (std.meta.stringToEnum(Profile.Effort, name)) |effort| {
-                    ui.effort = effort;
-                    ui.record(.{ .effort = .{ .effort = @tagName(effort) } });
-                    try ui.emit(.{ .notice = try a.print("  — think {s}", .{@tagName(effort)}) });
-                    // The effort is part of the system block: prime it again.
-                    primeSession(ui);
-                } else {
-                    try ui.emit(.{ .notice = try a.print("  — {s} is not an effort; known: off, low, medium, high, xhigh", .{name}) });
-                }
-            },
-            .ctx => |size| {
-                if (size == 0 or size > config.max_context) {
-                    try ui.emit(.{ .notice = try a.print("  — context must be between 1 and {d}", .{config.max_context}) });
-                } else {
-                    // The main loop re-opens the engine: KV capacity is
-                    // allocated at open time, so this cannot be done here.
-                    ui.ctx_request = size;
-                }
-            },
-            .save => |where| try saveSession(ui, a, root_dir, where),
-            .image => |path| {
-                // The same probe a drop goes through; the chip lands in the
-                // emptied editor so the question can be typed after it.
-                const dropped = (ui.probe(a, path) catch null) orelse {
-                    if (ui.eng.vision != null or ui.mmproj != null and editor.looksLikeImage(path)) try ui.emit(.{ .notice = try a.print("  — {s}: not an image file I can read", .{path}) });
-                    return;
-                };
-                switch (dropped) {
-                    .image => ui.ed.attachImage(path) catch |err| try ui.emit(.{ .notice = try a.print("  — {s} attaching {s}", .{ @errorName(err), path }) }),
-                    .text => |content| {
-                        a.free(content);
-                        try ui.emit(.{ .notice = try a.print("  — {s} is not an image; drop it to attach it as text", .{path}) });
-                    },
-                }
-            },
+            .resume_session => |query| try ui.resumeCommand(a, query),
+            .model => |query| try ui.modelCommand(a, query),
             .shell => |shell| try runShell(ui, sampler, shell),
         },
     }
@@ -1547,45 +1634,6 @@ fn runShell(ui: *Ui, sampler: *inference.sampling.Sampler, shell: commands.Shell
     ui.quiet_user = true;
     defer ui.quiet_user = false;
     try runTurn(ui, sampler, message, &.{});
-}
-
-/// `/save`: the session file as markdown. It is derived from the entries, not
-/// from the screen, so what is exported is what the model actually saw — and
-/// a session that has recorded nothing yet says so rather than writing an
-/// empty document.
-fn saveSession(ui: *Ui, a: std.mem.Allocator, root_dir: ?[]const u8, where: ?[]const u8) !void {
-    const source = ui.log.path orelse {
-        try ui.emit(.{ .notice = "  — no session file (no user root): nothing to save" });
-        return;
-    };
-    var diagnostic: session_log.Diagnostic = .{};
-    const loaded = session_log.load(a, ui.io, .cwd(), source, &diagnostic) catch |err| {
-        const reason = if (diagnostic.line > 0)
-            try a.print("  — {s} (line {d}) reading {s}", .{ @errorName(err), diagnostic.line, source })
-        else if (err == error.FileNotFound)
-            "  — nothing recorded in this session yet"
-        else
-            try a.print("  — {s} reading {s}", .{ @errorName(err), source });
-        try ui.emit(.{ .notice = reason });
-        return;
-    };
-    defer loaded.deinit();
-    const target = if (where) |path|
-        try a.dupe(u8, path)
-    else if (root_dir) |root|
-        try session_log.exportPath(a, root, loaded.header.id, loaded.header.time)
-    else {
-        try ui.emit(.{ .notice = "  — no user root: give /save a path" });
-        return;
-    };
-    var document: std.Io.Writer.Allocating = .init(a);
-    try session_log.exportMarkdown(loaded, &document.writer);
-    if (std.fs.path.dirname(target)) |parent| try std.Io.Dir.cwd().createDirPath(ui.io, parent);
-    std.Io.Dir.cwd().writeFile(ui.io, .{ .sub_path = target, .data = document.written() }) catch |err| {
-        try ui.emit(.{ .notice = try a.print("  — {s} writing {s}", .{ @errorName(err), target }) });
-        return;
-    };
-    try ui.emit(.{ .notice = try a.print("  — saved {s}", .{target}) });
 }
 
 /// `/resume` and `--resume`: replay a saved conversation into a fresh session
@@ -1707,41 +1755,209 @@ fn newSessionLog(alloc: std.mem.Allocator, io: std.Io, root_dir: ?[]const u8, cw
     });
 }
 
+/// The context windows Ctrl-W cycles and `/model` offers.
+const context_sizes = [_]usize{ 2048, 4096, 8192, 16384, 32768 };
+
+/// What `/model` needs to open another entry the way `--model` would: the
+/// loaded configuration and the command line's flags. Borrowed for the run.
+pub const Switching = struct {
+    loaded: *const config.Loaded,
+    flags: config.Flags = .{},
+
+    /// The flags that hold across a switch: where and how the engine runs,
+    /// the output ceiling, the image cap. The per-model ones (context,
+    /// effort, speculation, draft length, profile, thinking budget,
+    /// sampling) come from the chosen entry; the picker sets context and
+    /// effort itself.
+    fn carried(self: Switching) config.Flags {
+        return .{ .backend = self.flags.backend, .kv = self.flags.kv, .max_tokens = self.flags.max_tokens, .image_max_tokens = self.flags.image_max_tokens };
+    }
+};
+
+/// A `/model` choice waiting for the main loop. `name` is owned.
+const ModelRequest = struct { name: []u8, effort: Profile.Effort, ctx_size: usize };
+
+/// One model's half of the agent: the engine and everything sized by its
+/// vocabulary or keyed by its files. A switch or a context change replaces
+/// it in place, so the pointers the completer and the driver hold into it
+/// stay valid.
+const Open = struct {
+    eng: engine.Engine,
+    settings: config.Resolved,
+    /// Owned: the file, its draft source, and the digest its sidecar
+    /// verified (null without one).
+    model_path: []u8,
+    draft_path: ?[]u8,
+    digest: ?[]u8,
+    logits: []f32,
+    /// Sized for sampling whatever the current temperature: the effort can
+    /// switch profiles mid-session.
+    candidates: []inference.sampling.Candidate,
+    generated: []u32,
+    history: inference.sampling.History,
+    /// False once unloaded: a switch whose fallback also failed leaves
+    /// nothing to free.
+    alive: bool = true,
+
+    fn init(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved) !Open {
+        if (settings.ctx_size == 0 or settings.ctx_size > config.max_context or settings.max_tokens == 0 or settings.max_tokens > config.max_output_tokens) return error.InvalidGenerationBudget;
+        const path = try alloc.dupe(u8, model_path);
+        errdefer alloc.free(path);
+        const draft_path = try engine.draftPath(alloc, path, if (settings.entry) |entry| entry.mtp else null);
+        errdefer if (draft_path) |d| alloc.free(d);
+        const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
+        var eng = try engine.Engine.open(alloc, io, path, settings.backend, settings.ctx_size, settings.kv_precision, settings.forced_profile, draft);
+        errdefer eng.deinit();
+        // The file's own profile from here on: the configuration guessed one
+        // from the catalogue name without opening the file (`config show`).
+        if (eng.profile == null) return error.UnsupportedPromptTemplate;
+        const vocab = eng.vocab.tokens.len;
+        const logits = try alloc.alloc(f32, vocab);
+        errdefer alloc.free(logits);
+        const candidates = try alloc.alloc(inference.sampling.Candidate, vocab);
+        errdefer alloc.free(candidates);
+        const generated = try alloc.alloc(u32, settings.max_tokens);
+        errdefer alloc.free(generated);
+        var history = try inference.sampling.History.init(alloc, vocab);
+        errdefer history.deinit();
+        return .{ .eng = eng, .settings = settings, .model_path = path, .draft_path = draft_path, .digest = try readDigest(alloc, io, path), .logits = logits, .candidates = candidates, .generated = generated, .history = history };
+    }
+
+    fn deinit(self: *Open, alloc: std.mem.Allocator) void {
+        if (!self.alive) return;
+        self.alive = false;
+        self.history.deinit();
+        alloc.free(self.generated);
+        alloc.free(self.candidates);
+        alloc.free(self.logits);
+        self.eng.deinit();
+        if (self.digest) |d| alloc.free(d);
+        if (self.draft_path) |d| alloc.free(d);
+        alloc.free(self.model_path);
+    }
+
+    fn profile(self: *const Open) Profile.Profile {
+        return self.eng.profile.?;
+    }
+};
+
+/// The digest the model's sidecar verified, or null without a readable one.
+fn readDigest(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8) !?[]u8 {
+    // The sidecar's strings live in the arena; only the digest outlives it.
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const sidecar_path = model.sidecarPath(a, model_path) catch return null;
+    const sidecar = model.readSidecar(a, io, .cwd(), sidecar_path) catch return null;
+    return if (sidecar) |record| try alloc.dupe(u8, record.sha256) else null;
+}
+
+/// Points the driver and the completer at `open` (just opened or replaced):
+/// the profile, the effort it supports nearest `effort`, the sampling, the
+/// buffers, the draft settings, and the disk tier keyed by its files. The
+/// memory tier is emptied: its states belong to the engine that made them.
+fn bind(ui: *Ui, open: *Open, sampler: *inference.sampling.Sampler, label: []const u8, effort: Profile.Effort) !void {
+    const settings = open.settings;
+    ui.eng = &open.eng;
+    installTick(ui);
+    ui.profile = open.profile();
+    ui.effort = ui.profile.nearestEffort(effort);
+    ui.overrides = settings.sampling;
+    ui.mmproj = if (settings.entry) |entry| entry.mmproj else null;
+    ui.image_max_tokens = settings.image_max_tokens.count();
+    ui.model_path = open.model_path;
+    ui.draft_length = settings.draft_length;
+    ui.kv_label = @tagName(settings.kv_precision);
+    ui.tokens_seen = &open.history;
+    const owned = try ui.alloc.dupe(u8, label);
+    if (ui.model_label.len != 0) ui.alloc.free(ui.model_label);
+    ui.model_label = owned;
+    const c = ui.completer;
+    c.eng = &open.eng;
+    c.history = &open.history;
+    c.effort = ui.effort;
+    c.buffers = .{ .logits = open.logits, .candidates = open.candidates, .generated = open.generated, .effort = ui.effort };
+    c.thinking_budget = settings.thinking_budget;
+    c.speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length };
+    c.dropCache();
+    if (c.disk) |*d| d.close();
+    c.disk = loop.cache.openDisk(ui.alloc, ui.io, ui.root_dir, settings.cache.disk_bytes, open.model_path, if (open.eng.model.drafter() != null) open.draft_path else null, @tagName(settings.backend));
+    ui.agent.result_budget = loop.resultBudget(settings.ctx_size);
+    try sampler.setOptions(ui.profile.samplingOptions(ui.effort, ui.overrides));
+}
+
+/// The name a model is shown by: the one it was reached through when that
+/// is a registry or catalogue name, else the file's own.
+fn modelLabel(settings: config.Resolved, eng: *const engine.Engine) []const u8 {
+    const named = settings.entry != null or catalog.find(settings.model) != null;
+    return if (named) settings.model else eng.name;
+}
+
+/// Replaces the running model with `path` opened with `settings`, carrying
+/// the conversation: the engine is unloaded first (two models need not fit
+/// at once), the new one bound and primed, the conversation's images
+/// encoded again by its projector. Same file means a context change. On
+/// failure the previous model is opened again and the error returned; when
+/// that fails too, `open` is left unloaded (`alive` false) and the caller
+/// must end the session.
+fn switchModel(ui: *Ui, open: *Open, sampler: *inference.sampling.Sampler, path: []const u8, settings: config.Resolved, effort: Profile.Effort) !void {
+    const alloc = ui.alloc;
+    const same_file = std.mem.eql(u8, path, open.model_path);
+    const previous_path = try alloc.dupe(u8, open.model_path);
+    defer alloc.free(previous_path);
+    const previous_settings = open.settings;
+    const previous_effort = ui.effort;
+    const previous_label = try alloc.dupe(u8, ui.model_label);
+    defer alloc.free(previous_label);
+    ui.status = if (same_file) "resizing context…" else "loading model…";
+    try ui.draw();
+    open.deinit(alloc);
+    open.* = Open.init(alloc, ui.io, path, settings) catch |err| {
+        // Fall back rather than lose the session over a failed open.
+        open.* = Open.init(alloc, ui.io, previous_path, previous_settings) catch |again| {
+            ui.quit = true;
+            return again;
+        };
+        try bind(ui, open, sampler, previous_label, previous_effort);
+        ui.completer.reset(.context);
+        primeSession(ui);
+        return err;
+    };
+    try bind(ui, open, sampler, if (same_file) previous_label else modelLabel(settings, &open.eng), effort);
+    ui.completer.reset(if (same_file) .context else .model);
+    if (same_file) {
+        ui.record(.{ .context = .{ .ctx_size = settings.ctx_size } });
+    } else {
+        ui.record(.{ .model = .{ .name = ui.model_label, .path = open.model_path, .sha256 = open.digest, .ctx_size = settings.ctx_size, .effort = @tagName(ui.effort) } });
+        const dropped = try ui.agent.reencodeImages();
+        if (dropped > 0) {
+            var note: [128]u8 = undefined;
+            try ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {d} image{s} of the conversation left out: {s} cannot read {s}", .{ dropped, if (dropped == 1) "" else "s", ui.model_label, if (dropped == 1) "it" else "them" }) catch "  — images left out" });
+        }
+    }
+    primeSession(ui);
+    var note: [160]u8 = undefined;
+    try ui.emit(.{ .notice = if (same_file)
+        std.fmt.bufPrint(&note, "  — context {d}", .{settings.ctx_size}) catch "  — context resized"
+    else
+        std.fmt.bufPrint(&note, "  — {s} · {s} · ctx {d} · effort {s}", .{ ui.model_label, @tagName(ui.profile), settings.ctx_size, @tagName(ui.effort) }) catch "  — model switched" });
+    ui.status = if (same_file) "ctx resized" else "model switched";
+}
+
 /// `settings` is the configuration resolved for the agent (defaults < file
 /// < flags): the context window, the per-turn output ceiling (a stop token
 /// almost always ends the turn earlier; the 2,048 default keeps long code
 /// answers whole), the backend, the starting effort, the sampling
-/// overrides, and the initial thinking fold.
-pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, model_path: []const u8, root_dir: ?[]const u8, settings: config.Resolved, seed: ?u64, resume_id: ?[]const u8, system_prompt_file: ?[]const u8, out: *std.Io.Writer) !void {
-    const capacity = settings.ctx_size;
-    const limit = settings.max_tokens;
-    if (capacity == 0 or capacity > config.max_context or limit == 0 or limit > config.max_output_tokens) return error.InvalidGenerationBudget;
-    const backend = settings.backend;
-    const kv = settings.kv_precision;
+/// overrides, and the initial thinking fold. `switching` lets `/model`
+/// resolve another entry the same way.
+pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, model_path: []const u8, root_dir: ?[]const u8, settings: config.Resolved, switching: Switching, seed: ?u64, resume_id: ?[]const u8, system_prompt_file: ?[]const u8, out: *std.Io.Writer) !void {
     // Validates the overrides against the starting effort's profile before
     // the model loads; later efforts are rebuilt per turn (see `runTurn`).
     var sampler = try inference.sampling.Sampler.init(seed orelse 0, settings.samplingOptions());
     try out.writeAll("Loading model…\n");
     try out.flush();
-    const draft_path = try engine.draftPath(alloc, model_path, if (settings.entry) |entry| entry.mtp else null);
-    defer if (draft_path) |path| alloc.free(path);
-    const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
-    var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, kv, settings.forced_profile, draft);
-    defer eng.deinit();
-    // The file's own profile from here on: the configuration guessed one
-    // from the catalogue name without opening the file (`config show`).
-    const profile = eng.profile orelse return error.UnsupportedPromptTemplate;
-    try sampler.setOptions(profile.samplingOptions(settings.think, settings.sampling));
-    const logits = try alloc.alloc(f32, eng.vocab.tokens.len);
-    defer alloc.free(logits);
-    // Sized for sampling regardless of the current temperature: Ctrl-T can
-    // switch profiles mid-session.
-    const candidates = try alloc.alloc(inference.sampling.Candidate, eng.vocab.tokens.len);
-    defer alloc.free(candidates);
-    const generated = try alloc.alloc(u32, limit);
-    defer alloc.free(generated);
-    var history = try inference.sampling.History.init(alloc, eng.vocab.tokens.len);
-    defer history.deinit();
+    var open = try Open.init(alloc, io, model_path, settings);
+    defer open.deinit(alloc);
 
     // The prompt editor, seeded from `~/.nuclis/agent/history.jsonl` when
     // there is a user root. A missing or unreadable file is an empty
@@ -1765,18 +1981,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     // must too, or the coerced `[]u8` frees one byte short of the allocation.
     const cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", alloc) catch try alloc.dupeSentinel(u8, ".", 0);
     defer alloc.free(cwd);
-    const digest: ?[]const u8 = blk: {
-        // The sidecar's strings live in the allocator it is read with; only
-        // the digest outlives this block.
-        var arena = std.heap.ArenaAllocator.init(alloc);
-        defer arena.deinit();
-        const a = arena.allocator();
-        const sidecar_path = model.sidecarPath(a, model_path) catch break :blk null;
-        const sidecar = model.readSidecar(a, io, .cwd(), sidecar_path) catch break :blk null;
-        break :blk if (sidecar) |record| try alloc.dupe(u8, record.sha256) else null;
-    };
-    defer if (digest) |d| alloc.free(d);
-    var log = try newSessionLog(alloc, io, root_dir, cwd, model_path, digest, settings.think, capacity);
+    const start_effort = open.profile().nearestEffort(settings.think);
+    var log = try newSessionLog(alloc, io, root_dir, cwd, open.model_path, open.digest, start_effort, settings.ctx_size);
     defer log.deinit();
 
     var term = try terminal.Terminal.init(io, out);
@@ -1786,21 +1992,19 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     defer tr.deinit();
     var comp: choice.Choice = .{ .alloc = alloc };
     defer comp.deinit();
+    var pick: picker.Picker = .{ .alloc = alloc };
+    defer pick.deinit();
     // The loop and its completion side. The agent owns the conversation; the
-    // completer owns the session's consumed-text bookkeeping and points at the
-    // engine the main loop may re-open. The driver only presents and feeds
-    // input.
+    // completer owns the session's consumed-text bookkeeping and points at
+    // the model `bind` gives it. The driver only presents and feeds input.
     var completer: loop.Completer = .{
         .alloc = alloc,
-        .eng = &eng,
-        .effort = settings.think,
+        .eng = &open.eng,
+        .effort = start_effort,
         .sampler = &sampler,
-        .history = &history,
-        .buffers = .{ .logits = logits, .candidates = candidates, .generated = generated, .effort = settings.think },
-        .thinking_budget = settings.thinking_budget,
-        .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
+        .history = &open.history,
+        .buffers = undefined,
         .cache = .{ .alloc = alloc, .budget = settings.cache.memory_bytes },
-        .disk = loop.cache.openDisk(alloc, io, root_dir, settings.cache.disk_bytes, model_path, if (eng.model.drafter() != null) draft_path else null, @tagName(settings.backend)),
         // Session files are written under the root: a turn saved there can
         // be resumed.
         .save_turns = root_dir != null,
@@ -1808,15 +2012,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
     var agent: loop.Agent = undefined;
-    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .th = th, .agent = &agent, .completer = &completer, .effort = settings.think, .overrides = settings.sampling, .profile = profile, .tokens_seen = &history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .mmproj = if (settings.entry) |entry| entry.mmproj else null, .image_max_tokens = settings.image_max_tokens.count(), .model_path = model_path, .root_dir = root_dir, .cwd = cwd };
+    var ui: Ui = .{ .alloc = alloc, .io = io, .environ = environ, .eng = &open.eng, .term = &term, .scr = &scr, .ed = &ed, .tr = &tr, .log = &log, .comp = &comp, .pick = &pick, .switching = switching, .th = th, .agent = &agent, .completer = &completer, .effort = start_effort, .overrides = settings.sampling, .profile = open.profile(), .tokens_seen = &open.history, .turn_started = std.Io.Clock.awake.now(io), .notify = terminal.notificationsEnabled(environ), .preview = tui.graphics.enabled(environ), .root_dir = root_dir, .cwd = cwd };
     defer ui.deinit();
     ed.probe = .{ .context = &ui, .call = Ui.dropProbe };
     // A polling tool reaches back into the driver while it runs, so keys are
     // read and the running call's spinner advances during a long `bash`.
     workspace.tick = .{ .context = &ui, .call = toolTick };
-    installTick(&ui);
-    ui.draft_length = settings.draft_length;
-    ui.kv_label = @tagName(kv);
     // The observer carries both cancellation (`interrupt.check`, `Ctrl-C`) and
     // the progress beats the bar animates from.
     var trace: generate.Trace = .{
@@ -1839,8 +2040,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .instructions = instructions,
         .override = override,
     });
-    agent.result_budget = loop.resultBudget(capacity);
     defer agent.deinit();
+    try bind(&ui, &open, &sampler, modelLabel(settings, &open.eng), settings.think);
     if (instructions) |ins| {
         const m = completer.model();
         ui.instructions_name = ins.name;
@@ -1864,16 +2065,15 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             defer arena.deinit();
             const a = arena.allocator();
             const named = settings.entry != null or catalog.find(settings.model) != null;
-            ui.model_label = try alloc.dupe(u8, if (named) settings.model else eng.name);
             const welcome = try tui.banner.rows(a, .{
                 .version = version,
                 .name = if (named) settings.model else null,
-                .model = eng.name,
-                .backend = @tagName(eng.backend),
-                .profile = @tagName(profile),
-                .forced = eng.profile_forced,
-                .ctx_size = capacity,
-                .effort = @tagName(settings.think),
+                .model = open.eng.name,
+                .backend = @tagName(open.eng.backend),
+                .profile = @tagName(open.profile()),
+                .forced = open.eng.profile_forced,
+                .ctx_size = settings.ctx_size,
+                .effort = @tagName(ui.effort),
                 .workspace = try tui.banner.shortened(a, cwd, environ.get("HOME")),
             }, term.size().columns, th);
             try scr.insertAbove(welcome);
@@ -1882,9 +2082,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         primeSession(&ui);
         // A forced profile renders the pinned protocol onto a file whose own
         // template says something else: worth one line, every time.
-        if (eng.profile_forced) {
+        if (open.eng.profile_forced) {
             var note: [160]u8 = undefined;
-            ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — prompt profile {s} forced: the file's chat template is not the pinned one", .{@tagName(profile)}) catch "  — prompt profile forced" }) catch {};
+            ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — prompt profile {s} forced: the file's chat template is not the pinned one", .{@tagName(open.profile())}) catch "  — prompt profile forced" }) catch {};
         }
         // `--resume <id>`: locate the session and replay it before the first
         // prompt. A missing id is a notice, not a startup failure.
@@ -1893,7 +2093,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             const found = resume_mod.find(alloc, io, root_dir orelse "", cwd, id) catch null;
             if (found) |path| {
                 defer alloc.free(path);
-                performResume(&ui, alloc, io, path, root_dir, cwd, model_path, digest, &log) catch |err| {
+                performResume(&ui, alloc, io, path, root_dir, cwd, open.model_path, open.digest, &log) catch |err| {
                     ui.status = @errorName(err);
                 };
             } else {
@@ -1906,35 +2106,42 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             try ui.poll(100);
             if (ui.ctx_request) |newcap| {
                 ui.ctx_request = null;
-                const old_capacity = eng.model.session().capacity;
-                ui.status = "resizing context…";
-                try ui.draw();
-                eng.deinit();
-                if (engine.Engine.open(alloc, io, model_path, backend, newcap, kv, settings.forced_profile, draft)) |opened| {
-                    eng = opened;
-                    ui.eng = &eng;
-                    installTick(&ui);
-                    ui.completer.reset(.context);
-                    ui.tokens_seen.reset(); // same artifact, same vocabulary; a fresh session
-                    ui.agent.result_budget = loop.resultBudget(newcap);
-                    ui.record(.{ .context = .{ .ctx_size = newcap } });
-                    // The cached states belong to the old engine; prime anew.
-                    ui.completer.dropCache();
-                    primeSession(&ui);
-                    ui.status = "ctx resized";
-                } else |err| {
-                    // Fall back to the previous size rather than lose the
-                    // session over an allocation failure.
-                    eng = try engine.Engine.open(alloc, io, model_path, backend, old_capacity, kv, settings.forced_profile, draft);
-                    ui.eng = &eng;
-                    installTick(&ui);
+                // KV capacity is allocated at open time: the same file again.
+                var resized = open.settings;
+                resized.ctx_size = newcap;
+                const path = try alloc.dupe(u8, open.model_path);
+                defer alloc.free(path);
+                switchModel(&ui, &open, &sampler, path, resized, ui.effort) catch |err| {
+                    if (!open.alive) return err;
                     ui.status = @errorName(err);
-                }
+                    var note: [128]u8 = undefined;
+                    ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {s} opening a context of {d}; kept {d}", .{ @errorName(err), newcap, open.settings.ctx_size }) catch "  — context unchanged" }) catch {};
+                };
+                continue;
+            }
+            if (ui.model_request) |request| {
+                ui.model_request = null;
+                defer alloc.free(request.name);
+                var chosen = ui.resolveModel(request.name);
+                chosen.ctx_size = request.ctx_size;
+                chosen.think = request.effort;
+                const path = paths.modelPath(alloc, request.name, "", root_dir, switching.loaded.config.models) catch |err| {
+                    ui.emit(.{ .notice = "  — cannot locate that model" }) catch {};
+                    ui.status = @errorName(err);
+                    continue;
+                };
+                defer alloc.free(path);
+                switchModel(&ui, &open, &sampler, path, chosen, request.effort) catch |err| {
+                    if (!open.alive) return err;
+                    ui.status = @errorName(err);
+                    var note: [160]u8 = undefined;
+                    ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {s} opening {s}; back on {s}", .{ @errorName(err), request.name, ui.model_label }) catch "  — the model did not open" }) catch {};
+                };
                 continue;
             }
             if (ui.new_session) {
                 ui.new_session = false;
-                var fresh = newSessionLog(alloc, io, root_dir, cwd, model_path, digest, ui.effort, eng.model.session().capacity) catch null;
+                var fresh = newSessionLog(alloc, io, root_dir, cwd, open.model_path, open.digest, ui.effort, open.eng.model.session().capacity) catch null;
                 if (fresh) |*value| {
                     log.deinit();
                     log = value.*;
@@ -1948,7 +2155,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             if (ui.resume_request) |path| {
                 ui.resume_request = null;
                 defer alloc.free(path);
-                performResume(&ui, alloc, io, path, root_dir, cwd, model_path, digest, &log) catch |err| {
+                performResume(&ui, alloc, io, path, root_dir, cwd, open.model_path, open.digest, &log) catch |err| {
                     ui.status = @errorName(err);
                     var note: [96]u8 = undefined;
                     ui.emit(.{ .notice = std.fmt.bufPrint(&note, "  — {s} resuming session", .{@errorName(err)}) catch "  — resume failed" }) catch {};
@@ -1991,7 +2198,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 // A history write is a convenience, never a reason to lose a turn.
                 prompt_history.append(io, std.Io.Dir.cwd(), history_path.?, user, now) catch {};
             }
-            const outcome = if (parsed) |command| runCommand(&ui, &sampler, command, root_dir, cwd) else runTurn(&ui, &sampler, user, image_paths);
+            const outcome = if (parsed) |command| runCommand(&ui, &sampler, command) else runTurn(&ui, &sampler, user, image_paths);
             outcome catch |err| {
                 ui.agent.abortTurn();
                 ui.eng.model.reset();
@@ -2001,11 +2208,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 // The prompt is already in the transcript; say why nothing
                 // followed it, and close the turn so the next one starts on
                 // its own line. A full window says how full, and what to do.
-                var note: [160]u8 = undefined;
+                var note: [192]u8 = undefined;
                 const text = if (err == error.ContextFull) blk: {
                     ui.status = "context full";
                     const overflow = ui.completer.overflow orelse loop.Overflow{ .needed = 0, .capacity = ui.eng.model.session().capacity };
-                    break :blk std.fmt.bufPrint(&note, "  — context window full: the step needed {d} tokens (prompt plus output budget) of {d}; raise it with /ctx <n> (or --ctx-size), or start over with /new", .{ overflow.needed, overflow.capacity }) catch "  — context window full";
+                    break :blk std.fmt.bufPrint(&note, "  — context window full: the step needed {d} tokens (prompt plus output budget) of {d}; raise it with /model or Ctrl-W (or --ctx-size), or start over with /clear", .{ overflow.needed, overflow.capacity }) catch "  — context window full";
                 } else blk: {
                     ui.status = @errorName(err);
                     break :blk std.fmt.bufPrint(&note, "  — {s}", .{@errorName(err)}) catch "  — failed";
