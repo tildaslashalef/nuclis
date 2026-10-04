@@ -170,6 +170,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-30 | Zig 0.17 holds Qwen's 4K speed: `fd09aa4` under 0.16 and the tree under 0.17 measure the same (10.0 tok/s, C 194 ms); REPO-29's 4K loss was not the compiler or the code | 2026-10-03 |
 | KERN-23 | Weight streaming for one row and a few: the half magic-number decode (Q4_K, Q5_K), IQ4_XS's table in threadgroup memory, word-outer multi-row bodies routed at 2–3 rows; Qwen decode 512 10.37 → 11.78 tok/s, 2–3-row verify C 6–12 % cheaper; closed below its verify and speculation targets | 2026-10-03 |
 | REPO-31 | CI installs Zig 0.17.0: `.github/zig-toolchain` pins the four 0.17.0 tarball digests in place of 0.16.0's; `release` also reads digests from its own revision, so v0.4.0 publishes by dispatch | 2026-10-03 |
+| AGNT-19 | Token caching for the agent: the primed prefix and turn ends kept in memory and on disk, resume from the last turn, replay causes on the bar; `/list`, `/delete`, `agent rm`, `nuclis cache`; from testing: `bash` spawns again (broken since Zig 0.17), fuzzy `@`, Esc cancels. Task list wall −23 % per task, a 9.8K resume 126.5 → 2.05 s | 2026-10-04 |
 
 ## Context
 
@@ -7628,3 +7629,145 @@ download.
 `docs/development.md` (§ Continuous integration and releases), this log.
 
 **Remaining.** Nothing.
+
+## AGNT-19 — Token caching for the agent: turn-boundary snapshots in memory and on disk; session management (2026-10-04, two sessions)
+
+**Outcome.** The agent stops re-prefilling tokens it has already computed.
+`src/agent/cache.zig` keeps model states (`engine.Model.snapshot`, the
+drafter's carried row included) at two boundaries, the primed system block
+and tools (one per effort) and the end of every turn that ends in an
+answer, and `Completer` (`src/agent/loop.zig`) restores the longest one a
+render starts with, then prefills the rest:
+
+- **Memory tier**, in the process: least recently used out first under
+  `cache.memory_bytes` (4 GiB). It serves a cancel, an effort switch and
+  back, compaction down to the primed prefix, and a new conversation.
+- **Disk tier**, `<root>/cache/prefix/` through `inference.prefix_cache`:
+  the primed prefix (every start, every `agent --print`), and the last turn
+  of each conversation that has a session file, which replaces that
+  conversation's previous one. Keyed by the digest of the rendered text,
+  the model files (and draft companion), the executor, and the build
+  (version, commit, and for a modified tree the executable's size and
+  mtime: `revision` and `dirty` are new `build.zig` options). A different
+  build misses, never restores. `cache.disk_bytes` (8 GiB) bounds it,
+  least recently used out first.
+- **Resume**: the turn's last `assistant` entry records its `boundary`
+  (byte length and digest of the rendered text), and `/resume`,
+  `agent --resume`, and print mode's `--resume` restore that state when the
+  render starts with it.
+- **Accounting**: a step that cannot continue the session reports
+  `Replay{cause, restored}` (`resumed`, `cancel`, `rewrite`, `effort`,
+  `context`, `failure`); the bar shows `replayed <cause> <prefilled>,
+  <restored> restored` and the session file `replay` and
+  `restored_tokens`. The warm-up notice says where a restored prefix came
+  from.
+
+Design changes from the plan, all recorded in
+[session.md § The agent's token cache](reference/session.md#the-agents-token-cache):
+entries match on rendered text, not tokens (a turn's generated tokens need
+not be the canonical encoding of their text); a state holding an image is
+never kept (the placeholder text is the same for every image); the build
+folds into `prefix_cache.Key`'s model half, so the engine is unchanged; a
+cached state further along than the session wins even when the session
+could continue (a re-prime under a conversation left it at the system
+block).
+
+Session management (added to the unit by the user): `/list` (marks the
+session in use), `/delete [id]` (an id or a unique prefix, or a picker;
+asks; refuses the session in use), `nuclis agent rm <id>`, and `nuclis
+cache [ls|clear]`. Deleting a session removes the cache states its
+boundaries name, found by the digest in the file name without a model.
+
+Fixes from the user's testing, inside the unit: `bash` failed in every
+live agent since the Zig 0.17 migration (REPO-29, shipped in v0.4.0):
+0.17's Darwin spawn passes `Dir.cwd()` to `posix_spawn_file_actions_addfchdir_np`
+as `AT_FDCWD`, which it refuses with `EBADF` (`could not start a shell:
+Unexpected`); the child now inherits the process directory, with a test
+from `Dir.cwd()`. `@` completion is fuzzy for a word without `/`
+(`commands.completePaths`): `@faq` offers `docs/faq.md`. Esc cancels a
+turn, a command, or the warm-up (never quits) and closes a picker or the
+completion list: kitty's `CSI 27u` was decoded and discarded, and a lone
+ESC byte that no further byte follows within one poll is now the key.
+A second prefill after a step that read five files was those results
+(3,637 new tokens), not a replay.
+
+**Evidence** (Qwen3.8-27B Q4_K_M, Metal, M4 Pro, 16K window, ReleaseSafe
+unless stated).
+
+| Case | Before | After |
+| --- | ---: | ---: |
+| Start-up warm-up, 1,333 tokens (debug build) | 16.3 s | 1.0 s from disk, 0.4 s from memory |
+| `agent -p` wall, weights in the page cache, 3 pairs (debug build) | 17.4 s | 2.6 s |
+| Prompt after a cancel (`c4-after-cancel`) | whole conversation | `replayed cancel 41, 1369 restored` |
+| low → xhigh → low, then a prompt (`c7-after-effort`) | whole conversation | `replayed effort 17, 1427 restored` |
+| TUI `--resume latest` at 4,610 tokens, then a prompt (`s2-after-resume`) | whole conversation | `replayed resumed 237, 4610 restored` |
+| print `--resume` of a 9.8K-token session, wall | 126.5 s (8,505 tokens prefilled) | 2.05 s (19 tokens) |
+
+The turn-end save at 9,793 tokens (an 839 MB state; instrumented build,
+not committed): snapshot 132 ms, disk write 182 ms, on the turn's path. A
+primed entry is 238–251 MB, a 4.6K turn 456 MiB. A cold and a warm
+`agent -p` at temperature 0 give the same text with the drafter and
+without it.
+
+`make agent-eval` (12 tasks × seeds 1 and 2, `agent --print --session`,
+the playground): `agnt19-before` is `9f45bf0` with only the `bash` fix
+applied (that binary could not run `bash` at all), `agnt19-after` is
+`c1bb45a`, both ReleaseSafe, run one after the other.
+
+| Mean per task (24 runs) | Before | After |
+| --- | ---: | ---: |
+| Passed | 23/24 (11/12 tasks on every seed) | 23/24 (the same) |
+| Steps, prompt tokens, generated | 4.58, 856, 798 | identical, run by run |
+| Wall seconds | 73.7 | **56.6** (−17.1 s, median −17.3 s) |
+| Prefill seconds (model) | 13.9 | 14.2 |
+| Decode seconds (model) | 40.1 | 41.0 |
+
+The wall time saved is the primed prefix every process used to prefill.
+Model time rose 2 % overall, +11 % on seed 1 and −4 % on seed 2. Checked
+three ways: an ABBA run of `history` and `newfile` (seed 1) read model
+seconds of 65.1 / 109.2 (old), 79.4 / 117.7 (new), 70.9 / 108.0 (new),
+68.3 / 106.6 (old); one greedy 322-token answer from a cold and a warm
+start gave the same accepted drafts per step (1.168) and decode within
+13.2–13.6 tok/s, so a restored drafter is not stale; and the two
+binaries interleaved six times on that answer decoded at 12.44, 11.50,
+11.29, 11.05, 11.07, 10.84 tok/s (old, new, …), a series sliding with
+the machine's heat in which each new run sits 0–3 % below the
+interpolated old one. The first step's prefill of 30 tokens took 0.60–0.64 s
+with the old binary and 0.80–0.82 s with the new one in all six: a
+one-time cost per process that the primed prefill used to absorb (not
+isolated; the engine compiles its pipelines at open).
+
+Unit tests: longest-prefix choice, a boundary that must go past its text,
+budget eviction in both tiers, a build-key miss, a corrupt file refused
+and deleted, states removed by digest across models and layouts, `cache
+ls`/`clear`, the session `boundary` round trip at a digest above
+`maxInt(i64)`, prefix matching and deletion of sessions, the checkpoint
+offered only at a turn's answer, `bash` from `Dir.cwd()`, fuzzy path
+ranking, Esc decoding, `agent rm` and `cache` parsing. `make check`
+passes. Captures under `.zig-cache/tui/`: `c1`–`c8` (session 1),
+`f1-faq`, `f2-poly`, `f3-accepted`, `s1-cold-start`, `s1-turn`,
+`s1-esc` (Esc stopped a count at 53), `s1-list`, `s1-delete-picker`,
+`s1-delete-closed`, `s2-resumed`, `s2-after-resume`. No inference gate
+tiers (user, 2026-10-03): the unit uses only engine APIs those tiers
+cover.
+
+**Files.** `src/agent/cache.zig` (new), `src/agent/loop.zig`,
+`src/agent/root.zig`, `src/agent/print.zig`, `src/agent/resume.zig`,
+`src/agent/session.zig`, `src/agent/commands.zig`,
+`src/agent/tools/bash.zig`, `src/tui/keys.zig`, `src/tui/event.zig`,
+`src/tui/status.zig`, `src/config.zig`, `src/paths.zig`, `src/cli.zig`,
+`src/help.zig`, `src/completion.zig`, `build.zig`;
+`docs/reference/session.md` (§ The agent's token cache), `docs/spec.md`
+(§ 5.8, § 6, § 7.4, the agent's editor and loop bullets),
+`docs/development.md` (§ User directories, the example configuration).
+
+**Remaining.** The first prefill after a restored start costs about
+0.2 s more than it did after a prefilled one (cause not isolated), and the
+task list's model time rose 2 % (within the drift the interleaved checks
+measured, not shown to be zero). A conversation resumed on another day misses (the system
+block carries the date). Compaction still restarts from the primed prefix
+rather than the last turn it kept. A `/ctx` change drops the memory tier
+and misses on disk by layout. The turn-end save's cost grows with the
+context (about 0.3 s at 9.8K; not measured at 16K). The penalty history
+after a disk restore is rebuilt from the text's canonical encoding, not
+the generated tokens. Released v0.4.0 still carries the `bash` failure.
