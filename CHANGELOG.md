@@ -2,6 +2,39 @@
 
 Notable changes, newest first.
 
+## [v0.5.0] - 2026-10-04
+
+### Breaking Changes
+
+- **agent:** the command surface and /model (AGNT-20)
+
+### Features
+
+- **config:** max_tokens 8192 and a reasoning cap at every effort (AGNT-20)
+- **agent:** read less: pages, outlines, grouped grep, short diffs, repeat pointers (AGNT-20)
+- **agent:** the command surface and /model (AGNT-20)
+- **agent:** resume from the token cache, /list, /delete, agent rm, nuclis cache, Esc cancels (AGNT-19)
+- **agent:** token cache for the primed prefix and turn ends, in memory and on disk (AGNT-19 session 1)
+
+### Bug Fixes
+
+- **inference:** bound reopened reasoning, drop cut calls and stray closes, name bad tool arguments (AGNT-20)
+- **agent:** Enter on the command list runs the highlighted command; a bare slash is not a prompt (AGNT-20)
+- **agent:** print mode's --resume restores the last turn from the token cache (AGNT-19)
+- **agent:** a closed picker leaves the bar ready (AGNT-19)
+- **agent:** bash spawns from the process directory, fuzzy @ completion (AGNT-19)
+- **ci:** release installs Zig from the tag's version and the workflow's digests (REPO-31)
+- **ci:** pin Zig 0.17.0 tarball digests for install-zig (REPO-31)
+
+### Other
+
+- docs: close AGNT-20, the command surface, reading less, and the fixes from testing
+- test(agent): measure tool-result tokens per tool, add the about task (AGNT-20)
+- docs: close AGNT-19, the agent's token cache and session management
+- docs: plan AGNT-20, the command surface and /model, reading less, faster prefill
+- docs: AGNT-19 adds /list, /delete, and agent rm to session 2
+- chore: begin 0.5.0-dev
+
 ## [v0.4.0] - 2026-10-03
 
 ### Features
