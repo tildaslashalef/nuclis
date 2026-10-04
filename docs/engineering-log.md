@@ -171,6 +171,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | KERN-23 | Weight streaming for one row and a few: the half magic-number decode (Q4_K, Q5_K), IQ4_XS's table in threadgroup memory, word-outer multi-row bodies routed at 2–3 rows; Qwen decode 512 10.37 → 11.78 tok/s, 2–3-row verify C 6–12 % cheaper; closed below its verify and speculation targets | 2026-10-03 |
 | REPO-31 | CI installs Zig 0.17.0: `.github/zig-toolchain` pins the four 0.17.0 tarball digests in place of 0.16.0's; `release` also reads digests from its own revision, so v0.4.0 publishes by dispatch | 2026-10-03 |
 | AGNT-19 | Token caching for the agent: the primed prefix and turn ends kept in memory and on disk, resume from the last turn, replay causes on the bar; `/list`, `/delete`, `agent rm`, `nuclis cache`; from testing: `bash` spawns again (broken since Zig 0.17), fuzzy `@`, Esc cancels. Task list wall −23 % per task, a 9.8K resume 126.5 → 2.05 s | 2026-10-04 |
+| AGNT-20 | A faster agent step: the command surface and `/model` (one picker, model switch in place), reading less (pages, outlines, grouped `grep` with `.gitignore`, one-line-context diffs, head-and-tail `bash`, repeat pointers; tool-result tokens −28 %), `max_tokens` 8192 and a reasoning cap at every effort; from testing: a reopened thought bounded, cut calls never shown as text, bad arguments named, Enter runs the highlighted command. Faster prefill dropped by the user | 2026-10-04 |
 
 ## Context
 
@@ -7771,3 +7772,105 @@ and misses on disk by layout. The turn-end save's cost grows with the
 context (about 0.3 s at 9.8K; not measured at 16K). The penalty history
 after a disk restore is rebuilt from the text's canonical encoding, not
 the generated tokens. Released v0.4.0 still carries the `bash` failure.
+
+## AGNT-20 — A faster agent step: the command surface and `/model`, reading less, and the fixes from testing (2026-10-04, two sessions)
+
+**Outcome.** Planned as three sessions; the third (faster prefill) was
+dropped by the user at the close, so the unit closes on the first two.
+
+- **The command surface** (session 1): one chooser component
+  (`src/tui/picker.zig`: fuzzy search, current mark, ←/→ option rows,
+  in-picker `y` confirmation); the command table rewritten to actions and
+  choosers (`/model [name]`, `/resume [id]`, `/clear`, `/help`; retired
+  commands say where their job went); `/model` and Ctrl-W switch the model
+  in place (`switchModel`, fallback to the previous model on a failed
+  open, images re-encoded through the new projector); efforts per profile
+  (`Profile.efforts`, Ctrl-T cycles only those); the session `model`
+  entry; `nuclis agent export`. Enter on the open command list runs the
+  highlighted command and a bare `/` is a notice, never a prompt.
+- **Reading less** (session 2): tool results were 80 % of a turn's
+  prefilled tokens on the task list. `read_file` pages 120 lines and ends a
+  partial page with a note the model reads (it was never told a read was
+  partial: `summary` reached only the transcript), and `outline: true` lists
+  markdown headings or code definitions with line numbers; `grep` takes
+  `path` (directory, file, or glob) and `context` (0–5), groups by file in
+  path order, shows 50 matches with the total, says `[no matches]`, and
+  honours each directory's `.gitignore` natively
+  (`src/agent/tools/ignore.zig`); the model's edit diff keeps one context
+  line (`tui.diff.unified_context_lines`; the transcript keeps three, and a
+  hunk's trailing context now counts from the end of its change run); a new
+  file is not echoed back; a `bash` output over 120 lines keeps its first 40
+  and last 80; a repeated read of an unchanged range in the same turn is a
+  pointer to the earlier result (`Agent.noteRead`, keyed by canonical path,
+  range, and content digest, never to an elided result).
+  `scripts/agent-tokens.py` counts result tokens per tool with the
+  engine's tokenizer; the task list gained `about`.
+- **From the user's testing on Gemma 4** (every profile shared the causes):
+  the reasoning cut fired once, so a model reopening its thought ran to
+  `max-tokens` with no answer; `Decoder.cutToken` now closes every reopen
+  past the budget, after its header, and the speculative path checks it at
+  every accepted draft. A close token with no reasoning open is dropped
+  (it printed as `<channel|>`). A call open at a stop is a `tool_cut`
+  notice, never answer text (Esc printed raw `<|tool_call>…`); at EOS a
+  bracket body that parses is still a call. `tool_progress` drives
+  "writing a tool call… N KB" while a body streams. `tools.checkArguments`
+  checks a call against its schema and names a missing or mistyped
+  argument (Gemma's template sorts `content` before `path`, and the model
+  forgot `path` after 3 KB). A Qwen value may contain `</parameter>`.
+- **Defaults** (agreed with the user): `generation.max_tokens` 4096 → 8192;
+  `agent.thinking_budget` is the cap at `low`, ×2 `medium`, ×3 `high`, ×4
+  `xhigh`, never above `max_tokens / 2` (`config.thinkingBudget`); medium
+  and xhigh were uncapped.
+
+**Evidence** (Qwen3.8-27B Q4_K_M, Metal, M4 Pro, 16K window, ReleaseSafe,
+task list seeds 1 and 2, `.zig-cache/agent-eval/`). Baseline `agnt20-base`
+(`agnt19-after` plus `about` on `1007b08`) against `agnt20-tools`:
+
+| | base | tools |
+| --- | ---: | ---: |
+| tool-result tokens | 18,067 | 12,924 (−28 %) |
+| `read_file` / `bash` / `edit_file` | 10,041 / 3,189 / 3,154 | 7,146 / 1,699 / 2,635 |
+| `write_file` / `grep` / `glob` | 775 / 820 / 88 | 44 / 1,273 / 127 |
+| prompt tokens per run | 872 | 586 |
+| steps per run | 4.46 | 4.38 |
+| model seconds per run | 54.1 | 44.5 (part of the run shared the GPU) |
+| passed | 12/13 | 12/13 |
+| tool errors | 3 | 1 |
+
+Prefill was 23–26 % of the model's time on the list, at an effective 58–61
+tok/s over chunks of about 140 tokens (88 tok/s at a 512-token `bench`
+prompt). At `medium` with the new cap (`agnt20-medium-cap`, 10 seed-1 runs
+before the run was stopped) all passed, reasoning peaked at 690 tokens
+(median 22), and the cap never fired. Gemma 4 12B QAT,
+`--thinking-budget 64`: cut at 68 tokens, no marker in the answer, the
+file written (`.zig-cache/gemma-repro/`). TUI captures (`.zig-cache/tui/`):
+session 1's `model-open` … `at-image`; `slash-open`, `slash-enter`,
+`slash-cl`, `slash-bare`; `call-progress` (`writing a tool call… 1.5 KB`),
+`call-done` (Qwen's cut held at 1,025). `make verify-auto` passed: unit,
+lint-py, and 15 fast gates (Qwen, Gemma 4 E4B and 26B-A4B, Muse). Commits
+`1007b08`, `b86c5d1`, `c141cd5`, `4c55dfc`, `6fe11f1`, `ba75456`.
+
+**Files.** `src/tui/picker.zig` (new), `src/agent/commands.zig`,
+`src/agent/root.zig`, `src/agent/loop.zig`, `src/agent/session.zig`,
+`src/agent/tools/{read_file,grep,glob,bash,edit_file,write_file,root}.zig`,
+`src/agent/tools/ignore.zig` (new), `src/tui/diff.zig`,
+`src/tui/event.zig`, `src/tui/transcript.zig`, `src/config.zig`,
+`src/help.zig`, `inference/src/engine.zig`, `inference/src/events.zig`,
+`inference/src/profiles/{stream,gemma4,muse_glimmer,qwen38}.zig`,
+`scripts/agent-tokens.py` (new), `scripts/agent-eval.py`,
+`docs/spec.md` (§ 7.2, 7.4, 7.6, the reasoning budget),
+`docs/reference/{agent-concepts,prompt-profile,tool-calling,session}.md`,
+`docs/development.md`.
+
+**Remaining.** Faster prefill was not done (dropped). The system-prompt
+rule (locate with `grep` before reading) was not measured; the prompt text
+is unchanged, the tool descriptions grew the tools block to 3,392 bytes
+(about 115 tokens, re-pinned). The −30 % token target was missed by two
+points. The uncapped `medium` comparison and `high`/`xhigh` were not
+measured; their multipliers are proposals. The size line's byte format
+(`N B` under 1 KB) was not re-captured. From session 1: `/model`'s option
+rows guess an uncatalogued registry file's profile until it is opened; a
+resume replays through the running model whatever `model` entries the file
+holds; command-line sampling flags do not carry across a switch. A model
+may still continue its plan as answer text after a cut (clean text now,
+no markers).
