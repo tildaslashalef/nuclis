@@ -128,6 +128,19 @@
     "scripts/**/*.py",
     "pyproject.toml"
    ]
+  },
+  {
+   "name": "site",
+   "command": [
+    "make",
+    "site-check"
+   ],
+   "paths": [
+    "site/**",
+    "scripts/site-check.py",
+    "README.md",
+    "CHANGELOG.md"
+   ]
   }
  ],
  "requires": [

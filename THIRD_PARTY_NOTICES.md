@@ -148,6 +148,30 @@ sequence composition are independently written, and the values are retained
 with attribution because they are recognisably one designer's palette.
 Copyright (c) 2026 Pavel Pertsev, MIT License,
 [gruvbox LICENSE](https://github.com/morhetz/gruvbox/blob/master/LICENSE.md).
+The website's replay of the agent (`site/style.css`, the `--t-*` colours)
+reuses the same values so the replay looks like the terminal.
+
+### Website fonts
+
+`site/fonts/` serves two fonts to nuclis.dev, taken from
+[google/fonts at `9710da1`](https://github.com/google/fonts/tree/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl)
+and modified only by `fonttools`: the variable axes narrowed to the range
+the site uses (`varLib.instancer`) and the glyphs subset to the characters
+it sets (`subset`, WOFF2). Neither font declares a Reserved Font Name. Both
+are licensed under the
+[SIL Open Font License 1.1](https://openfontlicense.org/open-font-license-official-text/).
+
+#### Archivo — SIL Open Font License 1.1
+
+`site/fonts/archivo-v1.woff2`, from `ofl/archivo/Archivo[wdth,wght].ttf`
+(width 100–125, weight 400–700). Copyright 2020 The Archivo Project Authors
+(<https://github.com/Omnibus-Type/Archivo>).
+
+#### JetBrains Mono — SIL Open Font License 1.1
+
+`site/fonts/jetbrains-mono-v1.woff2`, from
+`ofl/jetbrainsmono/JetBrainsMono[wght].ttf` (weight 400–700). Copyright 2020
+The JetBrains Mono Project Authors (<https://github.com/JetBrains/JetBrainsMono>).
 
 ## References consulted, not copied
 

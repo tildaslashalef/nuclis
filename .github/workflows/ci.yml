@@ -11,7 +11,8 @@
 # measured on a virtualised GPU would be a number nobody should trust, and
 # their evidence belongs in docs/engineering-log.md.
 #
-# A push whose commits together touch only documentation does not run it;
+# A push whose commits together touch only documentation or the website
+# (`site/`) does not run it;
 # nothing here reads Markdown. The filter sees the whole push, not each commit.
 #
 # The compiler is installed by `.github/install-zig.sh`: the version comes from
@@ -25,9 +26,9 @@ name: ci
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**/*.md"]
+    paths-ignore: ["docs/**", "site/**", "**/*.md"]
   pull_request:
-    paths-ignore: ["docs/**", "**/*.md"]
+    paths-ignore: ["docs/**", "site/**", "**/*.md"]
   workflow_dispatch:
 
 permissions:

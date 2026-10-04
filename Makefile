@@ -25,7 +25,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT)
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
-        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf changelog release
+        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf changelog release site-check site-serve
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -150,6 +150,13 @@ PYRIGHT := uvx basedpyright@1.40.1
 
 fmt-py: ## Format the Python scripts in place (ruff)
 	$(RUFF) format scripts
+
+site-check: ## Check the nuclis.dev site in site/: references, head tags, CSP fit, versions, and the README's figures (no model, no network)
+	python3 scripts/site-check.py --self-test
+	python3 scripts/site-check.py
+
+site-serve: ## Preview the nuclis.dev site at http://localhost:8000 (Cloudflare's _headers are not applied)
+	python3 -m http.server 8000 --directory site
 
 lint-py: ## Lint, format-check, and type-check the Python scripts (ruff, basedpyright)
 	$(RUFF) check scripts

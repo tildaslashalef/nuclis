@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">nuclis Kernel N</title>
+  <desc id="desc">Two interlocking teal bands form an N around an amber diamond kernel.</desc>
+  <g id="bands" fill="#087F8C">
+    <path id="upper-band" d="M84 148 Q84 141 91 136 L172 84 Q178 80 184 80 H203 Q210 80 216 86 L324 184 Q329 189 329 195 V257 Q329 265 323 259 L264 201 Q257 194 250 201 L242 209 Q238 213 234 209 L181 161 Q168 148 168 164 V426 Q168 439 157 431 L91 383 Q84 378 84 371 Z"/>
+    <path id="lower-band" d="M345 88 Q345 75 356 84 L421 130 Q428 135 428 144 V365 Q428 372 421 377 L339 430 Q333 434 326 434 H305 Q298 434 292 428 L187 331 Q183 327 183 322 V251 Q183 242 190 249 L249 303 Q256 309 263 303 L269 297 Q273 293 278 299 L333 350 Q345 362 345 350 Z"/>
+  </g>
+  <path id="kernel" fill="#F5A623" d="M261 218 L291 248 Q296 253 291 258 L261 288 Q256 293 251 288 L221 258 Q216 253 221 248 L251 218 Q256 213 261 218 Z"/>
+</svg>

@@ -127,6 +127,11 @@ stale guidance instead of maintaining competing sources of truth.
 - Keep application-specific utilities inside `src/` until reuse justifies
   moving them to `inference/`.
 - The tool name `nuclis` and the package name `.nuclis` are decided.
+- `site/` is the nuclis.dev website: static files, no build, deployed by
+  Cloudflare Pages from `main`
+  ([docs/development.md § The website](docs/development.md#the-website)).
+  Its figures are copies of the README's tables that `make site-check`
+  holds equal; a change to it is looked at in screenshots, not gates.
 
 ## Shared engineering rules
 

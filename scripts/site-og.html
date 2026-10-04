@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- The nuclis.dev share card: render at 1200x630 into site/og.png
+     (docs/development.md § The website). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: "Archivo"; src: url("../site/fonts/archivo-v1.woff2") format("woff2"); font-weight: 400 700; font-stretch: 100% 125%; }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background: #F7FAFA; color: #0F2A2E; font-family: "Archivo", sans-serif;
+    display: grid; grid-template-rows: auto 1fr auto; padding: 64px 72px 56px; box-sizing: border-box;
+  }
+  .brand { display: flex; align-items: center; gap: 16px; font-size: 34px; font-weight: 650; font-variation-settings: "wdth" 118; letter-spacing: -.01em; }
+  .brand img { width: 56px; height: 56px; }
+  h1 { margin: 0; align-self: center; font-size: 132px; line-height: .92; font-weight: 660; letter-spacing: -.045em; font-variation-settings: "wdth" 125; }
+  .foot { display: grid; gap: 22px; }
+  .strip { display: flex; align-items: center; gap: 14px; }
+  .layers { flex: 1; display: grid; grid-template-columns: repeat(64, 1fr); gap: 3px; }
+  .layers i { height: 34px; border-radius: 2px; background: #EDF3F3; box-shadow: inset 0 0 0 1px #D5E2E3; }
+  .layers i:nth-child(4n) { background: #087F8C; box-shadow: none; }
+  .kernel { width: 40px; height: 40px; fill: #F5A623; }
+  .line { display: flex; justify-content: space-between; font-size: 26px; color: #4A6569; }
+  .line b { color: #0F2A2E; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="brand"><img src="../site/icons/nuclis.svg" alt="">nuclis</div>
+  <h1>Right first.<br>Then fast.</h1>
+  <div class="foot">
+    <div class="strip">
+      <div class="layers">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <svg class="kernel" viewBox="216 213 80 80"><path d="M261 218 L291 248 Q296 253 291 258 L261 288 Q256 293 251 288 L221 258 Q216 253 221 248 L251 218 Q256 213 261 218 Z"/></svg>
+    </div>
+    <div class="line"><span>A local inference engine for Apple Silicon, in Zig and Metal</span><b>nuclis.dev</b></div>
+  </div>
+</body>
+</html>

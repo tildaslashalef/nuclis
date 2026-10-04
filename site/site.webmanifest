@@ -1,0 +1,14 @@
+{
+  "name": "nuclis",
+  "short_name": "nuclis",
+  "description": "A local inference engine for Apple Silicon, right first, then fast.",
+  "start_url": "/",
+  "display": "browser",
+  "background_color": "#F7FAFA",
+  "theme_color": "#F7FAFA",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/nuclis.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

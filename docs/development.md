@@ -26,6 +26,7 @@ inference/           engine library: runtime, quantization, tokenizer,
 huggingface/         Hub download library (Xet) and its standalone binary;
                      imported by src/ only
 docs/                spec, architecture, guides, reference, engineering log
+site/                the nuclis.dev website: static HTML, CSS, JS, no build
 TODO.md              active plan: unfinished units only
 build.zig            build
 build.zig.zon        manifest; single source of the version
@@ -145,7 +146,7 @@ bound holds only for the whole run.
 the `Base:` line of the unit in progress in `TODO.md` (or `BASE=<rev>`),
 runs the model-free `checks` of `gates.json` the changed paths select
 (`fmt` over the changed Zig files, `unit` = `make test`, `test-metal`,
-`manifests`), then the matched `verify` gates cheapest first, one model
+`manifests`, `python`, `site`), then the matched `verify` gates cheapest first, one model
 at a time (the pinned files together outgrow the 48 GB, so interleaving
 models reloads each from disk: the same 27 gates took 298 s interleaved,
 220 s grouped; models
@@ -1003,6 +1004,65 @@ Two rules matter when reading it (TERM-01 step 6):
   becomes the next break point instead of breaking the row, so a word ending
   exactly at the last column keeps it.
 
+## The website
+
+`site/` is nuclis.dev: one page (`index.html`, `style.css`, `site.js`), a
+`404.html`, and the files crawlers and Cloudflare read. There is no build
+step and no dependency; what is in the folder is what is served.
+
+| File | Holds |
+| --- | --- |
+| `index.html` | the page; its head carries the canonical URL, Open Graph and Twitter tags, JSON-LD, and the `#bench` block of measured figures |
+| `site.js` | the agent replay, the engine strip, the drafter, the charts, the Decision Dungeons rooms, and the latest-release lookup |
+| `fonts/` | Archivo and JetBrains Mono, subset WOFF2 ([THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md#website-fonts)); a new subset gets a new file name, since `_headers` caches the folder as immutable |
+| `_headers` | Cloudflare's response headers: the CSP (no inline script or style anywhere), security headers, caching, `noindex` on `*.pages.dev` |
+| `og.png` | the 1200×630 share card, rendered from `scripts/site-og.html` |
+| `robots.txt`, `sitemap.xml`, `site.webmanifest`, `llms.txt` | crawlers, installs, and language-model readers |
+
+**Figures are copied, never typed twice.** The `#bench` block holds the
+README's *Results* and *Speculative decoding* tables, speedup ratios
+included (the README computes them from unrounded rates, so the page shows
+them as given rather than dividing its rounded ones). `make site-check`
+fails when the two differ, when the JSON-LD `softwareVersion` or the
+download button's fallback is not the newest `CHANGELOG.md` release, when a
+reference or `#fragment` does not resolve, when anything would load from
+another origin, or when an inline style or script would break the CSP.
+`gates.json` runs it when `site/`, `README.md`, or `CHANGELOG.md` changes,
+so a release or a new benchmark table that the page does not follow fails
+`make verify-auto`. The download button asks GitHub's API for the latest
+release when the page loads and keeps the checked fallback when it cannot.
+
+**Preview and look.** `make site-serve` serves the folder at
+<http://localhost:8000> (without `_headers`). Check a change at 1440 and
+390 px wide; any Chromium takes screenshots without a window:
+
+```sh
+chromium --headless --hide-scrollbars --window-size=1440,7800 \
+  --virtual-time-budget=9000 --screenshot=.zig-cache/site.png http://localhost:8000/
+```
+
+The share card is rendered the same way, from the template beside the
+scripts:
+
+```sh
+chromium --headless --hide-scrollbars --window-size=1200,630 --allow-file-access-from-files \
+  --screenshot=site/og.png "file://$PWD/scripts/site-og.html"
+```
+
+To test the CSP locally, put `_headers`' policy (less `frame-ancestors`)
+into a `<meta http-equiv="Content-Security-Policy">` of a copy and load it
+with `--enable-logging=stderr`: a violation prints as a `CONSOLE` line.
+
+**Deploy.** Cloudflare Pages project `nuclis`, connected to this
+repository: production branch `main`, no build command, output directory
+`site`, deployments only when a push touches `site/*`, previews for other
+branches at `<branch>.nuclis.pages.dev`. The custom domain is the apex
+`nuclis.dev` (the zone is on the same Cloudflare account, so Pages writes
+its DNS record). Pushing `main` is the deploy; nothing in CI deploys. The
+project was created with the `cf` CLI (`cf pages create`, `cf pages domains
+create`); `cf pages get nuclis` and `cf pages deployments list nuclis` show
+its state.
+
 ## Continuous integration and releases
 
 Two workflows under `.github/workflows/`, both on `macos-15` (Apple Silicon),
@@ -1024,7 +1084,7 @@ nor Python appears in CI even though the repository's local tooling
 (`scripts/*.py`) is written in Python.
 
 **`ci.yml`** (push to `main`, pull requests; a push whose commits together
-touch only `docs/` or Markdown does not run it, so one code commit in a
+touch only `docs/`, `site/`, or Markdown does not run it, so one code commit in a
 push runs it for all) has three parallel jobs: `test`
 (`zig fmt --check`, a semver check on `build.zig.zon`'s version, the
 newest `CHANGELOG.md` section sliced by `release-notes.sh`, `zig build

@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nuclis: a local inference engine for Apple Silicon, right first, then fast</title>
+  <meta name="description" content="nuclis runs open-weight language models on your Mac: an inference engine written from scratch in Zig and Metal, with a coding agent on top, checked layer by layer against llama.cpp.">
+  <link rel="canonical" href="https://nuclis.dev/">
+  <meta name="theme-color" content="#F7FAFA">
+  <meta name="color-scheme" content="light">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="nuclis">
+  <meta property="og:url" content="https://nuclis.dev/">
+  <meta property="og:title" content="nuclis: right first, then fast">
+  <meta property="og:description" content="A local inference engine for Apple Silicon, written from scratch in Zig and Metal, with a small coding agent on top.">
+  <meta property="og:image" content="https://nuclis.dev/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="nuclis: right first, then fast. The nuclis mark beside 64 layers of Qwen3.8.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="nuclis: right first, then fast">
+  <meta name="twitter:description" content="A local inference engine for Apple Silicon, written from scratch in Zig and Metal, with a small coding agent on top.">
+  <meta name="twitter:image" content="https://nuclis.dev/og.png">
+
+  <link rel="icon" href="/icons/nuclis.svg" type="image/svg+xml">
+  <link rel="icon" href="/icons/favicon.ico" sizes="48x48">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <link rel="preload" href="/fonts/archivo-v1.woff2" as="font" type="font/woff2" crossorigin>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "nuclis",
+    "description": "A local inference engine for open-weight language models on Apple Silicon, written in Zig with a Metal backend, with a small coding agent and typed decision models on top.",
+    "url": "https://nuclis.dev/",
+    "image": "https://nuclis.dev/og.png",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS",
+    "processorRequirements": "Apple Silicon (arm64)",
+    "softwareVersion": "0.5.0",
+    "downloadUrl": "https://github.com/tildaslashalef/nuclis/releases/latest",
+    "license": "https://opensource.org/license/mit",
+    "isAccessibleForFree": true,
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "author": { "@type": "Person", "name": "Ahmed ElSebaei", "url": "https://github.com/tildaslashalef" },
+    "sameAs": ["https://github.com/tildaslashalef/nuclis"],
+    "programmingLanguage": "Zig"
+  }
+  </script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<!-- icon set: 24px stroke icons; GitHub's mark is filled -->
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-github" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5v-15ZM5 19.5A1.5 1.5 0 0 0 6.5 21H19"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8 16 16 8m-6.5 0H16v6.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 5.5v-.5a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 5v8A1.5 1.5 0 0 0 6 14.5h.5"/></g></symbol>
+  <symbol id="i-replay" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v4h4"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 6.5h10M9 12h10M9 17.5h10M5 6.5h.01M5 12h.01M5 17.5h.01"/></symbol>
+  <symbol id="i-dice" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><g fill="currentColor"><circle cx="8.5" cy="8.5" r="1.4"/><circle cx="15.5" cy="15.5" r="1.4"/><circle cx="12" cy="12" r="1.4"/></g></symbol>
+  <symbol id="mark" viewBox="0 0 512 512">
+    <g fill="#087F8C">
+      <path d="M84 148 Q84 141 91 136 L172 84 Q178 80 184 80 H203 Q210 80 216 86 L324 184 Q329 189 329 195 V257 Q329 265 323 259 L264 201 Q257 194 250 201 L242 209 Q238 213 234 209 L181 161 Q168 148 168 164 V426 Q168 439 157 431 L91 383 Q84 378 84 371 Z"/>
+      <path d="M345 88 Q345 75 356 84 L421 130 Q428 135 428 144 V365 Q428 372 421 377 L339 430 Q333 434 326 434 H305 Q298 434 292 428 L187 331 Q183 327 183 322 V251 Q183 242 190 249 L249 303 Q256 309 263 303 L269 297 Q273 293 278 299 L333 350 Q345 362 345 350 Z"/>
+    </g>
+    <path fill="#F5A623" d="M261 218 L291 248 Q296 253 291 258 L261 288 Q256 293 251 288 L221 258 Q216 253 221 248 L251 218 Q256 213 261 218 Z"/>
+  </symbol>
+</svg>
+
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="/" aria-label="nuclis home">
+      <svg viewBox="0 0 512 512" aria-hidden="true"><use href="#mark"/></svg>
+      <span>nuclis</span>
+    </a>
+    <nav aria-label="Primary">
+      <a href="#inside">Inside</a>
+      <a href="#numbers">Numbers</a>
+      <a href="#models">Models</a>
+      <a href="#decide">Decisions</a>
+      <a href="https://github.com/tildaslashalef/nuclis" class="nav-icon" aria-label="nuclis on GitHub"><svg><use href="#i-github"/></svg></a>
+      <a href="#start" class="nav-dl"><svg><use href="#i-download"/></svg>Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero">
+  <div class="wrap">
+    <h1>Right first. <span>Then fast.</span></h1>
+    <div class="hero-sub">
+      <p class="lede">nuclis is an inference engine for Apple Silicon, written from scratch in Zig and Metal. Hand it a 27-billion-parameter model and a failing test suite, and watch it find the bug on your laptop, offline. Every layer was proven against a reference before a single kernel was tuned.</p>
+      <div class="hero-cta">
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="https://github.com/tildaslashalef/nuclis/releases/download/v0.5.0/nuclis-v0.5.0-aarch64-macos.tar.gz" data-release-asset>
+            <svg><use href="#i-download"/></svg>
+            <span>Download <small data-release-tag>v0.5.0</small></span>
+          </a>
+          <a class="btn btn-quiet" href="https://github.com/tildaslashalef/nuclis">
+            <svg><use href="#i-github"/></svg>
+            <span>Source</span>
+          </a>
+        </div>
+        <p class="hero-fine">For macOS on Apple Silicon. Free and open source.</p>
+      </div>
+    </div>
+  </div>
+
+  <figure class="wrap replay-fig">
+    <div class="term" id="term" role="img" aria-label="A replay of nuclis agent with Qwen3.8-27B finding and fixing a failing test in a small Python project.">
+      <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>nuclis agent</span></div>
+      <div class="term-body">
+        <div class="term-scroll"><div id="term-out"></div></div>
+        <div class="term-input" aria-hidden="true"><span class="t-spin" id="term-spin"></span><span class="t-prompt">&gt;</span><span id="term-typed"></span><span class="t-cursor"></span></div>
+        <div class="term-hint" aria-hidden="true">Enter send · Shift-Enter newline · ↑↓ history · Tab complete · /help</div>
+        <div class="term-status" aria-hidden="true">
+          <span id="st-gen">idle</span>
+          <span>step <b id="st-step">0</b>/16</span>
+          <span>ctx <b class="y" id="st-ctx">1447</b>/16384</span>
+          <span>pp <b id="st-pp">–</b> t/s</span>
+          <span>tg <b id="st-tg">–</b> t/s</span>
+        </div>
+      </div>
+    </div>
+    <figcaption>
+      <span>A real session, retyped: Qwen3.8-27B on an M4 Pro with speculative decoding on. The long pauses are trimmed; the rest runs at the speed it was recorded.</span>
+      <button class="link-btn" id="replay-again" type="button"><svg><use href="#i-replay"/></svg>Replay</button>
+    </figcaption>
+    <noscript><p class="noscript">The replay needs JavaScript. In words: asked to fix a failing test suite, the agent listed the project, read the Makefile, the README and <code>src/shapes/rect.py</code>, ran the tests, changed <code>return width + height</code> to <code>return 2 * (width + height)</code>, ran the tests again, and reported the fix: seven steps, 36 seconds.</p></noscript>
+  </figure>
+</section>
+
+<!-- The engine, animated: prefill, decode, and the two kinds of layer memory -->
+<section class="sec" id="inside">
+  <div class="wrap">
+    <h2>Every layer, cross-examined.</h2>
+    <p class="sec-lede">A token's trip through Qwen3.8 crosses 64 layers. Before any of them was made fast, each one ran beside a pinned llama.cpp on the same input, on the CPU and on the GPU, until their answers agreed. The reference is a witness, never a source: nothing was copied from it.</p>
+
+    <div class="engine" id="engine">
+      <div class="engine-head">
+        <p class="phase" id="eng-phase">&nbsp;</p>
+        <p class="probe" id="eng-probe">&nbsp;</p>
+      </div>
+      <div class="engine-row">
+        <div class="layers" id="layers" role="img" aria-label="Qwen3.8-27B's 64 layers: every fourth is full attention, whose cache grows with each token; the other 48 are Gated DeltaNet, whose state stays the same size."></div>
+        <svg class="kernel" id="kernel" viewBox="216 213 80 80" aria-hidden="true"><path d="M261 218 L291 248 Q296 253 291 258 L261 288 Q256 293 251 288 L221 258 Q216 253 221 248 L251 218 Q256 213 261 218 Z"/></svg>
+      </div>
+      <p class="stream" id="eng-stream" aria-hidden="true"></p>
+      <div class="engine-key">
+        <p><i class="k k-attn"></i><b>16 attention layers</b> remember every token they have seen. Watch their cache grow.</p>
+        <p><i class="k k-delta"></i><b>48 Gated DeltaNet layers</b> fold the past into a state that never grows, at token ten or token thirty thousand.</p>
+      </div>
+    </div>
+
+    <dl class="checks">
+      <div>
+        <dt>Bit for bit</dt>
+        <dd>Every quantized block decodes to exactly what the reference decodes. Not close: exactly.</dd>
+      </div>
+      <div>
+        <dt>Layer for layer</dt>
+        <dd>The real model on real prompts. Every layer's output and the final logits compared on both backends, inside a tolerance written down in advance.</dd>
+      </div>
+      <div>
+        <dt>Page for page</dt>
+        <dd>Four thousand tokens of a fixed text, scored within half a percent of the reference's perplexity.</dd>
+      </div>
+    </dl>
+    <p class="aside">A file it cannot run exactly is turned away at the door. Nothing is quietly requantized.</p>
+  </div>
+</section>
+
+<section class="sec" id="numbers">
+  <div class="wrap">
+    <h2>Honest numbers, one machine.</h2>
+    <p class="sec-lede">An M4 Pro with 48 GB, and the same tokens fed to nuclis and to llama.cpp. Qwen3.8 is where the tuning went, and it shows. The other families still run on kernels written for Qwen; their gap is the to-do list.</p>
+
+    <div class="chart-card">
+      <div class="chart-head">
+        <h3>Tokens per second</h3>
+        <div class="seg" role="group" aria-label="Phase">
+          <button type="button" data-phase="decode" aria-pressed="true">Decode</button>
+          <button type="button" data-phase="prefill" aria-pressed="false">Prefill</button>
+        </div>
+        <div class="seg" role="group" aria-label="Context length">
+          <button type="button" data-ctx="512" aria-pressed="true">512 tokens</button>
+          <button type="button" data-ctx="32639" aria-pressed="false">32,639 tokens</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="dot dot-n"></i>nuclis</span>
+        <span><i class="dot dot-r"></i>llama.cpp</span>
+      </div>
+      <div class="chart" id="chart-vs"></div>
+      <p class="chart-note">128 greedy tokens, the warm mean of three runs, release builds on both sides. <a class="icon-link" href="https://github.com/tildaslashalef/nuclis/blob/main/docs/reference/bench.md">How these were measured<svg><use href="#i-out"/></svg></a></p>
+    </div>
+
+    <div class="spec">
+      <div class="spec-copy">
+        <h3>Guess ahead, check in bulk.</h3>
+        <p>A small drafter guesses the next few tokens. The big model checks them all in a single pass and keeps exactly what it would have written anyway. Same words, sooner.</p>
+        <div class="draft" id="draft" aria-hidden="true">
+          <p class="draft-line" id="draft-line"></p>
+          <p class="draft-tally" id="draft-tally">&nbsp;</p>
+        </div>
+        <p class="fine">An illustration, not a measurement. The drafter guesses the bug; the model overrules it.</p>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head">
+          <h3>Decode, drafter off and on</h3>
+          <div class="seg" role="group" aria-label="Context length">
+            <button type="button" data-sctx="512" aria-pressed="true">512 tokens</button>
+            <button type="button" data-sctx="32639" aria-pressed="false">32,639 tokens</button>
+          </div>
+        </div>
+        <div class="legend">
+          <span><i class="dot dot-off"></i>off</span>
+          <span><i class="dot dot-n"></i>on</span>
+        </div>
+        <div class="chart" id="chart-spec"></div>
+        <p class="chart-note">On the agent's own task list, Qwen3.8 spends 38% less time in the model. Gemma 4 26B-A4B sits this one out: with 128 experts, checking a guess costs more than it saves.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="models">
+  <div class="wrap">
+    <h2>Pinned to the byte.</h2>
+    <p class="sec-lede">Each model in the catalogue is pinned to a repository, a commit and a SHA-256. You get the exact bytes that were measured, or you get an error. Every one reads images and brings its own drafter.</p>
+    <div class="shelf">
+      <article>
+        <h3>Qwen3.8 27B</h3>
+        <p>Three DeltaNet layers for every attention layer. The model everything was tuned on.</p>
+        <footer><code>qwen3.8-27b</code><span>16.5 GB</span></footer>
+      </article>
+      <article>
+        <h3>Gemma 4 12B QAT</h3>
+        <p>Trained knowing it would be quantized, so every matrix ships at 4 bits.</p>
+        <footer><code>gemma-4-12b-qat</code><span>6.7 GB</span></footer>
+      </article>
+      <article>
+        <h3>Gemma 4 26B-A4B</h3>
+        <p>A mixture of experts: 128 of them, 8 awake for any one token.</p>
+        <footer><code>gemma-4-26b-a4b</code><span>14.2 GB</span></footer>
+      </article>
+      <article>
+        <h3>Gemma 4 E4B QAT</h3>
+        <p>Built for small devices, with per-layer embeddings and layers that share a cache.</p>
+        <footer><code>gemma-4-e4b-qat</code><span>4.2 GB</span></footer>
+      </article>
+      <article>
+        <h3>Muse Glimmer 30B</h3>
+        <p>Dense, paired with a block drafter that guesses a run of tokens at once.</p>
+        <footer><code>muse-glimmer-30b</code><span>15.9 GB</span></footer>
+      </article>
+      <article class="shelf-more">
+        <h3>Something else?</h3>
+        <p>If its architecture has an adapter, it runs: finetunes, other quantizations, even a ternary Bonsai. <code>nuclis model inspect</code> tells you before you download 16&nbsp;GB.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="agent">
+  <div class="wrap">
+    <h2>An agent that knows its limits.</h2>
+    <p class="sec-lede"><code>nuclis agent</code> works in the folder you start it in, with six tools and no more. The host sets every limit: steps, output, results. When something is cut short it says so, and when a command fails the model reads the failure and tries again.</p>
+    <ul class="tools">
+      <li><code>bash</code><span>runs a command, on a leash</span></li>
+      <li><code>read</code><span>pages through a file</span></li>
+      <li><code>grep</code><span>finds it, grouped by file</span></li>
+      <li><code>glob</code><span>finds files by name</span></li>
+      <li><code>edit</code><span>changes lines, shows the diff</span></li>
+      <li><code>write</code><span>starts a new file</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="sec" id="decide">
+  <div class="wrap">
+    <h2>Questions with typed answers.</h2>
+    <div class="decide">
+      <div>
+        <p class="sec-lede">Not every question needs a paragraph back. <code>nuclis decide</code> asks a model yes or no, which one, or how much, and gets the answer in one pass without writing a word. Laya reads a 500-token log in a fifth of a second. Cloudflare's clef-flash takes on long states and pictures. <code>nuclis serve</code> keeps both warm behind a local HTTP API.</p>
+        <pre class="snip"><code><span class="c">$</span> nuclis decide --noul 'Does this log need a person now?' \
+    --state-file disk.log --state-file payments.log</code></pre>
+      </div>
+      <a class="dungeons" href="https://github.com/tildaslashalef/decision-dungeons">
+        <span class="dg-head"><svg><use href="#i-dice"/></svg>Decision Dungeons</span>
+        <span class="dg-copy">A playground of seeded worlds where a decision model makes every call, and every call is scored.</span>
+        <span class="dg-rooms" id="dg-rooms"></span>
+        <span class="dg-go"><svg><use href="#i-github"/></svg>Play it</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="sec start" id="start">
+  <div class="wrap">
+    <h2>From download to first token.</h2>
+    <div class="start-grid">
+      <div>
+        <div class="seg seg-lg" role="tablist" aria-label="Install method">
+          <button type="button" role="tab" aria-selected="true" aria-controls="cmd-bin" id="tab-bin">Download</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="cmd-src" id="tab-src">Build from source</button>
+        </div>
+        <p class="start-note" data-for="cmd-bin">Unpack it, let macOS trust it, pull a model about the size of a long film. The binary is not notarized, so macOS holds it until the third line says otherwise. Every release is attested: <code>gh attestation verify</code> shows where it was built.</p>
+        <p class="start-note" data-for="cmd-src" hidden>You need Zig 0.17.0 and the Command Line Tools. <code>make metal</code> builds the release binary with the Metal backend.</p>
+        <p class="start-links">
+          <a class="icon-link" href="https://github.com/tildaslashalef/nuclis/releases/latest" data-release-page><svg><use href="#i-download"/></svg>All downloads and checksums</a>
+          <a class="icon-link" href="https://github.com/tildaslashalef/nuclis/blob/main/docs/development.md"><svg><use href="#i-book"/></svg>Setup guide</a>
+        </p>
+      </div>
+      <div class="cmd">
+        <button class="copy" type="button" data-copy><svg><use href="#i-copy"/></svg><span>Copy</span></button>
+<pre id="cmd-bin" role="tabpanel" aria-labelledby="tab-bin"><code><span class="c"># unpack the release</span>
+tar xzf <span data-release-name>nuclis-v0.5.0-aarch64-macos</span>.tar.gz
+cd <span data-release-name>nuclis-v0.5.0-aarch64-macos</span>
+xattr -d com.apple.quarantine nuclis
+<span class="c"># fetch a model, then put it to work</span>
+./nuclis model pull qwen3.8-27b --all
+./nuclis agent</code></pre>
+<pre id="cmd-src" role="tabpanel" aria-labelledby="tab-src" hidden><code>git clone https://github.com/tildaslashalef/nuclis
+cd nuclis &amp;&amp; make metal
+./zig-out/bin/nuclis model pull qwen3.8-27b --all
+./zig-out/bin/nuclis config init --discover
+./zig-out/bin/nuclis agent</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec open">
+  <div class="wrap">
+    <h2>Built in the open, receipts included.</h2>
+    <div class="open-grid">
+      <p>nuclis began as a way to learn how inference really works, from the bytes on disk to the sampled token, and to learn Zig along the way. AI coding agents write much of the code. The rules they follow are public, every piece of work is logged with its evidence, and every number on this page was measured, never estimated.</p>
+      <ul class="reads">
+        <li><a href="https://github.com/tildaslashalef/nuclis/blob/main/docs/architecture.md"><svg><use href="#i-book"/></svg><span><b>Architecture</b>How a token flows through the engine</span></a></li>
+        <li><a href="https://github.com/tildaslashalef/nuclis/blob/main/docs/llm-guide.md"><svg><use href="#i-book"/></svg><span><b>The guide</b>Kernels, quantization and the runtime, written as they were built</span></a></li>
+        <li><a href="https://github.com/tildaslashalef/nuclis/blob/main/docs/engineering-log.md"><svg><use href="#i-log"/></svg><span><b>Engineering log</b>Every piece of work and the evidence it closed on</span></a></li>
+        <li><a href="https://github.com/tildaslashalef/nuclis/blob/main/AGENTS.md"><svg><use href="#i-log"/></svg><span><b>AGENTS.md</b>The instructions the agents work from</span></a></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-row">
+    <div class="foot-name">
+      <svg viewBox="0 0 512 512" aria-hidden="true"><use href="#mark"/></svg>
+      <p><em>nuclis</em>, from <em>nucleus</em>: Latin for kernel, the small, dense core where the mass is.</p>
+    </div>
+    <nav class="foot-links" aria-label="Elsewhere">
+      <a href="https://github.com/tildaslashalef/nuclis"><svg><use href="#i-github"/></svg>GitHub</a>
+      <a href="https://github.com/tildaslashalef/nuclis/releases"><svg><use href="#i-download"/></svg>Releases</a>
+      <a href="https://github.com/tildaslashalef/nuclis/blob/main/CHANGELOG.md"><svg><use href="#i-log"/></svg>Changelog</a>
+    </nav>
+  </div>
+</footer>
+
+<!-- Measured on the M4 Pro, copied from README.md's Results and Speculative
+     decoding tables; make site-check fails when the two differ. -->
+<script type="application/json" id="bench">
+{
+  "results": [
+    { "model": "Qwen3.8-27B", "decode": { "512": [10.62, 9.66], "32639": [7.55, 6.71] }, "prefill": { "512": [90.45, 89.19], "32639": [49.55, 67.28] } },
+    { "model": "Gemma 4 12B QAT", "decode": { "512": [23.96, 27.69], "32639": [16.24, 20.94] }, "prefill": { "512": [179.45, 224.46], "32639": [73.04, 143.72] } },
+    { "model": "Gemma 4 26B-A4B", "decode": { "512": [55.29, 68.02], "32639": [31.30, 44.09] }, "prefill": { "512": [500.42, 580.76], "32639": [134.74, 343.38] } },
+    { "model": "Muse Glimmer 30B", "decode": { "512": [9.60, 13.69], "32639": [6.62, 9.98] }, "prefill": { "512": [93.49, 95.28], "32639": [59.20, 76.86] } }
+  ],
+  "speculative": [
+    { "model": "Qwen3.8-27B", "draft": 7, "512": [11.5, 17.4], "32639": [8.9, 11.2], "ratio": { "512": "1.51", "32639": "1.26" } },
+    { "model": "Gemma 4 12B QAT", "draft": 5, "512": [24.7, 44.8], "32639": [16.5, 16.2], "ratio": { "512": "1.83", "32639": "0.98" } },
+    { "model": "Gemma 4 E4B QAT", "draft": 6, "512": [46.9, 98.6], "32639": [33.0, 38.7], "ratio": { "512": "2.10", "32639": "1.16" } },
+    { "model": "Muse Glimmer 30B", "draft": 6, "512": [8.5, 12.6], "32639": [6.9, 7.6], "ratio": { "512": "1.50", "32639": "1.12" } }
+  ]
+}
+</script>
+<div class="tip" id="tip" role="status" aria-live="polite" hidden></div>
+<script src="site.js" defer></script>
+</body>
+</html>

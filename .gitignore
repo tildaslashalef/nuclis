@@ -7,3 +7,4 @@ zig-out/
 .env.*
 !.env.example
 .reference/
+.cloudflare/

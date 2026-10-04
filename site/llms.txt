@@ -1,0 +1,20 @@
+# nuclis
+
+> A local inference engine for open-weight language models on Apple Silicon, written from scratch in Zig with a Metal backend, with a small coding agent (`nuclis agent`) and typed decision models (`nuclis decide`, `nuclis serve`) on top. Every layer is checked against a pinned llama.cpp build before it is optimized. MIT licensed; experimental, version 0.x.
+
+- Runs on macOS on Apple Silicon. Download a release binary or build with Zig 0.17.0.
+- Models are pinned to a repository, commit and SHA-256: Qwen3.8 27B, Gemma 4 (12B QAT, 26B-A4B, E4B QAT), Muse Glimmer 30B, and the decision models Laya and clef-flash.
+- Speculative decoding is on by default where it measured faster.
+
+## Docs
+
+- [README](https://github.com/tildaslashalef/nuclis/blob/main/README.md): what it is, quick start, measured results
+- [Architecture](https://github.com/tildaslashalef/nuclis/blob/main/docs/architecture.md): how a token flows through the engine
+- [Benchmarks](https://github.com/tildaslashalef/nuclis/blob/main/docs/reference/bench.md): methodology and every record
+- [Decision API](https://github.com/tildaslashalef/nuclis/blob/main/docs/reference/api.md): `nuclis serve` routes and errors
+- [Releases](https://github.com/tildaslashalef/nuclis/releases): binaries, source and checksums
+
+## Optional
+
+- [Engineering log](https://github.com/tildaslashalef/nuclis/blob/main/docs/engineering-log.md): every closed unit of work and its evidence
+- [Decision Dungeons](https://github.com/tildaslashalef/decision-dungeons): a playground where decision models make every call
