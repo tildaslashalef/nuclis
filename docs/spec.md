@@ -464,7 +464,12 @@ one command; the evaluation CLI stays separate.
   missing file out with a notice.
 - Up/Down move inside a multi-line input and recall history from the
   first and last rows; history persists across sessions (200 entries).
-- Tab completes a `/command` or an `@path`, else folds thinking; Ctrl-O
+- Tab completes a `/command` or an `@path`, else folds thinking. An
+  `@word` without a `/` matches fuzzily across the workspace tree (`@faq`
+  offers `docs/faq.md`; characters in order, case-insensitive, basename and
+  word starts first; `.git`, `node_modules`, `zig-out`, `.zig-cache`, and
+  `__pycache__` are not walked, at most 20,000 entries); one with a `/`
+  lists that directory by prefix, so Tab walks into it. Ctrl-O
   cycles the tool rows of the last turn through three views: the summary
   (each call's row, detail, and one result row), the output (the result's
   text under it, 40 rows then `… N more lines`), and folded (the call rows

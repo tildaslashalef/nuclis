@@ -66,7 +66,10 @@ fn run(workspace: root.Workspace, alloc: std.mem.Allocator, arguments: []const u
 
     var child = std.process.spawn(workspace.io, .{
         .argv = &argv,
-        .cwd = .{ .dir = workspace.dir },
+        // The agent's workspace is the process's own directory (`Dir.cwd()`,
+        // `AT_FDCWD`), which Darwin's `posix_spawn_file_actions_addfchdir_np`
+        // refuses as a bad descriptor: the child inherits it instead.
+        .cwd = if (workspace.dir.handle == std.Io.Dir.cwd().handle) .inherit else .{ .dir = workspace.dir },
         .environ_map = &env,
         .stdin = .ignore,
         .stdout = .pipe,
@@ -234,6 +237,18 @@ test "bash runs a command in the workspace and reports its output" {
     try testing.expect(!result.truncated);
     // A clean run has nothing to add under its command.
     try testing.expect(result.summary == null);
+}
+
+test "bash runs from the process's own directory, the agent's workspace" {
+    const alloc = testing.allocator;
+    var fixture = try Fixture.init(alloc);
+    defer fixture.deinit(alloc);
+    var ws = fixture.ws;
+    ws.dir = .cwd();
+    var result = try run(ws, alloc, "{\"command\":\"echo here\"}");
+    defer result.deinit(alloc);
+    try testing.expectEqualStrings("here\n", result.text);
+    try testing.expect(!result.is_error);
 }
 
 test "bash folds stderr into stdout, in order" {

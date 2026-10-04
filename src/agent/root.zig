@@ -938,13 +938,13 @@ const Ui = struct {
         } else if (word.len >= 1 and word[0] == '@') {
             self.comp_kind = .path;
             // The workspace is the process's working directory, always.
-            for (try commands.workspacePaths(a, self.io, .cwd(), word[1..])) |path| {
+            for (try commands.completePaths(a, self.io, .cwd(), word[1..])) |path| {
                 try items.append(a, .{ .label = try a.print("@{s}", .{path}) });
             }
         } else if (std.ascii.startsWithIgnoreCase(self.ed.text(), "/image ") and !self.ed.atFirstWord()) {
             // The command's argument completes like an `@path`, bare.
             self.comp_kind = .path;
-            for (try commands.workspacePaths(a, self.io, .cwd(), word)) |path| try items.append(a, .{ .label = path });
+            for (try commands.completePaths(a, self.io, .cwd(), word)) |path| try items.append(a, .{ .label = path });
         } else {
             self.comp_kind = .none;
         }

@@ -187,6 +187,104 @@ fn lessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
+/// What an `@` token offers: a query with a `/` (or none) lists that
+/// directory by prefix, so Tab walks into it; a bare word is matched
+/// fuzzily against the whole tree, so `@faq` finds `docs/faq.md`.
+pub fn completePaths(alloc: Allocator, io: std.Io, dir: std.Io.Dir, query: []const u8) ![]const []const u8 {
+    if (query.len == 0 or std.mem.indexOfScalar(u8, query, '/') != null) return workspacePaths(alloc, io, dir, query);
+    return fuzzyPaths(alloc, io, dir, query);
+}
+
+/// Entries the tree walk visits at most per completion: the list is rebuilt
+/// on every key, so a large tree is cut rather than slowing the editor.
+pub const max_walk = 20_000;
+
+/// Directories never walked: version control and build output, which hold
+/// nothing a prompt names and can hold most of a tree's entries.
+const skipped_dirs = [_][]const u8{ ".git", "node_modules", "zig-out", ".zig-cache", "__pycache__" };
+
+/// Workspace entries whose path matches `query` (`fuzzyScore`), best first,
+/// at most `max_paths`, directories with their trailing separator. Hidden
+/// entries take part only when the query starts with a dot.
+pub fn fuzzyPaths(alloc: Allocator, io: std.Io, dir: std.Io.Dir, query: []const u8) ![]const []const u8 {
+    const Hit = struct { path: []const u8, score: i32 };
+    var hits: std.ArrayList(Hit) = .empty;
+    defer hits.deinit(alloc);
+    errdefer for (hits.items) |hit| alloc.free(hit.path);
+    const hidden = query.len > 0 and query[0] == '.';
+    var root = dir.openDir(io, ".", .{ .iterate = true }) catch return &.{};
+    defer root.close(io);
+    var walker = try root.walkSelectively(alloc);
+    defer walker.deinit();
+    var visited: usize = 0;
+    while (visited < max_walk) : (visited += 1) {
+        const entry = (walker.next(io) catch continue) orelse break;
+        const name = entry.basename;
+        if (name.len == 0) continue;
+        if (entry.kind == .directory) {
+            const skip = for (skipped_dirs) |s| {
+                if (std.mem.eql(u8, name, s)) break true;
+            } else false;
+            if (skip or (name[0] == '.' and !hidden)) continue;
+            walker.enter(io, entry) catch {};
+        } else if (name[0] == '.' and !hidden) continue;
+        const score = fuzzyScore(query, entry.path) orelse continue;
+        const suffix: []const u8 = if (entry.kind == .directory) "/" else "";
+        const path = try alloc.print("{s}{s}", .{ entry.path, suffix });
+        hits.append(alloc, .{ .path = path, .score = score }) catch |err| {
+            alloc.free(path);
+            return err;
+        };
+    }
+    std.mem.sort(Hit, hits.items, {}, struct {
+        fn better(_: void, a: Hit, b: Hit) bool {
+            if (a.score != b.score) return a.score > b.score;
+            if (a.path.len != b.path.len) return a.path.len < b.path.len;
+            return std.mem.lessThan(u8, a.path, b.path);
+        }
+    }.better);
+    const kept = @min(hits.items.len, max_paths);
+    for (hits.items[kept..]) |hit| alloc.free(hit.path);
+    const out = try alloc.alloc([]const u8, kept);
+    for (hits.items[0..kept], out) |hit, *o| o.* = hit.path;
+    hits.clearRetainingCapacity();
+    return out;
+}
+
+/// How well `query` matches `path` as an in-order, case-insensitive
+/// subsequence, or null when it does not. Matched inside the last component
+/// when it can be, else across the path; consecutive characters, a
+/// character starting a word, and a basename that starts with the query
+/// score higher, and a longer path slightly lower.
+pub fn fuzzyScore(query: []const u8, path: []const u8) ?i32 {
+    if (query.len == 0) return 0;
+    const trimmed = std.mem.trimEnd(u8, path, "/");
+    const base = if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |i| i + 1 else 0;
+    var score: i32 = undefined;
+    if (subsequence(query, trimmed, base)) |s| {
+        score = s + 10;
+        if (std.ascii.startsWithIgnoreCase(trimmed[base..], query)) score += 20;
+    } else score = subsequence(query, trimmed, 0) orelse return null;
+    return score - @as(i32, @intCast(@min(trimmed.len, 400) / 8));
+}
+
+fn subsequence(query: []const u8, text: []const u8, from: usize) ?i32 {
+    var score: i32 = 0;
+    var at = from;
+    var previous: ?usize = null;
+    for (query) |c| {
+        const lower = std.ascii.toLower(c);
+        while (at < text.len and std.ascii.toLower(text[at]) != lower) at += 1;
+        if (at == text.len) return null;
+        score += 1;
+        if (previous != null and previous.? + 1 == at) score += 5;
+        if (at == 0 or std.mem.indexOfScalar(u8, "/_-. ", text[at - 1]) != null) score += 8;
+        previous = at;
+        at += 1;
+    }
+    return score;
+}
+
 // ----- tests -----
 
 const testing = std.testing;
@@ -298,6 +396,53 @@ test "path completion is workspace-relative, bounded, and hides dotfiles unless 
     const missing = try workspacePaths(alloc, io, tmp.dir, "nowhere/x");
     defer free(alloc, missing);
     try testing.expectEqual(@as(usize, 0), missing.len);
+}
+
+test "a bare @ word matches fuzzily across the tree, best first" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const io = testing.io;
+    const alloc = testing.allocator;
+    for ([_][]const u8{ "docs/faq.md", "docs/design.md", "src/shapes/polygon.py", "tests/test_polygon.py", "README.md", ".git/config", "node_modules/faq/index.js" }) |path| {
+        if (std.fs.path.dirname(path)) |parent| try tmp.dir.createDirPath(io, parent);
+        try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "" });
+    }
+
+    const faq = try completePaths(alloc, io, tmp.dir, "faq");
+    defer free(alloc, faq);
+    // Skipped directories are not walked: the one match is the document.
+    try testing.expectEqual(@as(usize, 1), faq.len);
+    try testing.expectEqualStrings("docs/faq.md", faq[0]);
+
+    // A basename match outranks one spread across directories.
+    const poly = try completePaths(alloc, io, tmp.dir, "poly");
+    defer free(alloc, poly);
+    try testing.expectEqualStrings("src/shapes/polygon.py", poly[0]);
+    try testing.expectEqualStrings("tests/test_polygon.py", poly[1]);
+
+    // Out of order is no match; case does not matter.
+    const none = try completePaths(alloc, io, tmp.dir, "qaf");
+    defer free(alloc, none);
+    try testing.expectEqual(@as(usize, 0), none.len);
+    const upper = try completePaths(alloc, io, tmp.dir, "DESIGN");
+    defer free(alloc, upper);
+    try testing.expectEqualStrings("docs/design.md", upper[0]);
+
+    // Directories match too, and a slash keeps the walk-into behaviour.
+    const docs = try completePaths(alloc, io, tmp.dir, "docs");
+    defer free(alloc, docs);
+    try testing.expectEqualStrings("docs/", docs[0]);
+    const inside = try completePaths(alloc, io, tmp.dir, "docs/f");
+    defer free(alloc, inside);
+    try testing.expectEqual(@as(usize, 1), inside.len);
+    try testing.expectEqualStrings("docs/faq.md", inside[0]);
+}
+
+test "fuzzy scores prefer word starts and consecutive characters" {
+    try testing.expect(fuzzyScore("faq", "docs/faq.md").? > fuzzyScore("faq", "docs/fix_a_queue.md").?);
+    try testing.expect(fuzzyScore("rd", "README.md").? > fuzzyScore("rd", "src/bird.py").?);
+    try testing.expect(fuzzyScore("xyz", "docs/faq.md") == null);
+    try testing.expectEqual(@as(?i32, 0), fuzzyScore("", "anything"));
 }
 
 fn free(alloc: Allocator, items: []const []const u8) void {

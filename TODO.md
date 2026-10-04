@@ -126,6 +126,23 @@ without the drafter. Not yet measured: the turn-end snapshot's cost at
 `/resume` at 16K. `make agent-eval` "before" runs against the `Base:`
 binary (build `9f45bf0` in a worktree), "after" against the closing one.
 
+*Fixes from the user's testing, inside this unit (user, 2026-10-04: what
+their playground testing turns up is investigated and fixed here, no
+separate units).*
+- `bash` always failed in the live agent (`could not start a shell:
+  Unexpected`; a debug build panics on `EBADF`): Zig 0.17's Darwin spawn
+  passes `.cwd = .{ .dir = Dir.cwd() }` to
+  `posix_spawn_file_actions_addfchdir_np` as `AT_FDCWD`, which it refuses.
+  Broken since the Zig 0.17 migration (REPO-29, shipped in v0.4.0); the
+  tests used a temporary directory, a real descriptor. The child now
+  inherits the process's directory when the workspace is it
+  (`src/agent/tools/bash.zig`), with a test from `Dir.cwd()`.
+- A second prefill after a step that read five files was the results
+  (3,637 new tokens), not a replay: expected, nothing to fix.
+- `@` completion is fuzzy for a word without `/` (`commands.completePaths`,
+  `fuzzyPaths`, `fuzzyScore`; two tests; `.zig-cache/tui/f1-faq`,
+  `f2-poly`, `f3-accepted` in `~/Code/playground`).
+
 **Session 2: `/resume` and the surface.** The session writer
 (`src/agent/session.zig`) saves the last completed turn's snapshot to the
 disk tier keyed by its tokens; `/resume` and `agent --resume` look it up
