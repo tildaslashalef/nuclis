@@ -29,7 +29,7 @@ exist under `.zig-cache/speed/prefix/`, 16K does not.
 
 | # | Unit | Sessions |
 | --- | --- | ---: |
-| 1 | AGNT-19 — Token caching for the agent: turn-boundary snapshots in memory and on disk | 2 |
+| 1 | AGNT-19 — Token caching for the agent: turn-boundary snapshots in memory and on disk; `/list`, `/delete`, `agent rm` | 2 |
 
 ## AGNT-19 — Token caching for the agent: snapshots at turn boundaries, in memory and on disk (2 sessions)
 
@@ -104,7 +104,24 @@ estimated. The disk tier for the primed prefix lands here too (start and
 disk tier keyed by its tokens; `/resume` and `agent --resume` look it up
 and prefill only the remainder, falling back to the replay on a miss.
 `nuclis cache ls` / `nuclis cache clear` (APPS surface, help and
-completion). Docs: `docs/reference/session.md` (the cache), 
+completion). Session management (user, 2026-10-04), since a deleted
+session must take its disk snapshot with it:
+
+- `/list`: prints `resume.Listing` (as `nuclis agent ls`) into the
+  transcript, read-only, the current session marked.
+- `/delete [id]`: an id or a unique id prefix (an ambiguous prefix is a
+  usage result listing the matches); no argument opens the `/resume`
+  picker in delete mode. Asks y/n; refuses the current session. Removes
+  the JSONL file and the session's disk-tier snapshot, never `/save`
+  exports.
+- `nuclis agent rm <id>`: the CLI counterpart of `agent ls`, same
+  resolution and refusal rules, no model load.
+
+One delete function (in `src/agent/resume.zig` beside `find`) serves
+both; `/list` and `/delete` are rows of `commands.zig`'s table, so help
+and completion follow; `agent rm` goes into `src/cli.zig` and
+`src/completion.zig`. Docs: `docs/reference/session.md` (the cache),
+`docs/spec.md` § Sessions and storage and the CLI synopsis,
 `docs/development.md` § User directories, the agent's help.
 
 **Predictions.** First prompt after start ≤ 0.5 s instead of about 11 s
@@ -115,10 +132,14 @@ primed prefill (about 11 s).
 
 **Correctness.** Unit tests in `cache.zig`: longest-prefix choice, a
 build-key miss, budget eviction in both tiers, a corrupt file refused.
+Unit tests for session management: `/list` and `/delete` parsing, an
+ambiguous prefix, refusing the current session, the snapshot removed
+with its session, `agent rm` argument errors.
 One hand-run end-to-end check on Qwen (not a gate): a fresh and a
 restored session give the same greedy tokens for one prompt, with and
 without the drafter. `make shot`: a cold start, a warm start showing the
-restore, a cancel then a prompt, a `/resume`.
+restore, a cancel then a prompt, a `/resume`, a `/list`, a `/delete`
+(picker and by id).
 
 Gates: `make check`, `make lint-py`, `make shot`, `make agent-eval
 VARIANT=…` (once before and once after, session 2). No inference gate
