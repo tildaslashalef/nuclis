@@ -12,3 +12,119 @@ test, and measure in [docs/development.md](docs/development.md).
 Session protocol (also in [AGENTS.md](AGENTS.md)): read this file first. If
 it lists work, summarize *Where we are* and ask the user how to continue. If
 it is empty, ask what to work on and write the agreed plan here.
+
+
+## Where we are
+
+**Next: REPO-33, track A (CI speed)**, then B (release and changelog),
+then C (the README GIF); the user may add tracks until they say to close.
+REPO-32 (2026-10-04) fixed the failed v0.5.0 release: `install-zig.sh`
+takes the first matching digest, and `release.yml` runs the workflow
+revision's installer; v0.5.0 republished by dispatch from `main`.
+
+| # | Unit | Sessions |
+| --- | --- | ---: |
+| 1 | REPO-33 — CI speed, release notes that lead with the work, the README GIF at speculative speed, and what the user adds | open |
+
+## REPO-33 — CI speed, release notes that lead with the work, the README GIF at speculative speed, and what the user adds (open)
+
+Base: `037ff9d`
+
+Agreed with the user 2026-10-04 as **one flexible unit**: further requests
+during it become new tracks below, and it closes only when the user says
+so. Each track commits on its own (`REPO-33` in the subject); the log
+entry is written once, at the close. No inference code changes are
+planned, so no Metal or CPU tier applies; `make verify-auto` before each
+commit, `make lint-py` for Python.
+
+### Track A — CI speed
+
+**Facts.** `ci.yml` runs on every push to `main` and every PR, one job on
+`macos-15`. Run `37152348051` (warm-ish, 5 m 57 s wall): install Zig 25 s
+(cache miss), `zig build test` 2 m 07 s, `-Dmetal=true -Doptimize=ReleaseSafe`
+1 m 18 s, `-Dmetal=false -Doptimize=ReleaseSafe` 1 m 22 s, post-cache 8 s.
+Of the last 60 commits, 25 touched only `docs/`, `*.md`, or `TODO.md`.
+The cache key hashes all of `build.zig.zon`, which every release bump
+changes, and `restore-keys: zig-<os>-<arch>-` can never prefix-match the
+key `zig-<hash>-<os>-<arch>`.
+
+**Do.**
+1. `paths-ignore` on `push` and `pull_request`: `docs/**`, `**/*.md`
+   (README, TODO, CHANGELOG, AGENTS, notices). `workflow_dispatch` stays.
+2. Three parallel jobs instead of one: `test` (fmt check, semver check,
+   `zig build test`), `metal` (Metal build, `--version`/`--help`/
+   `agent --help`), `cpu` (`-Dmetal=false` build, `--version`). Wall time
+   becomes the slowest job plus setup.
+3. Optimize mode: measure locally `zig build -Dmetal=true` Debug vs
+   ReleaseSafe from a clean `.zig-cache` (`time`, M4 Pro, note it is not the
+   runner). The ci builds only prove compile and link; `release.yml` keeps
+   ReleaseSafe. Choose by the numbers; record them in the log.
+4. Cache: toolchain key from `.github/zig-toolchain` plus the
+   `minimum_zig_version` value (not the whole manifest); a separate
+   `actions/cache` for `.zig-cache` and `~/.cache/zig` keyed per job on
+   `hashFiles('**/*.zig', '**/build.zig.zon')` with a working prefix
+   `restore-keys`. Keep it only if a warm run is measurably faster.
+5. Evidence: `gh run view <id> --json jobs` step times, a docs-only push
+   that does not trigger, a code push before and after. Update
+   `docs/development.md` § Continuous integration and releases and the
+   header comment of `ci.yml`.
+
+### Track B — release and changelog
+
+**Facts.** `make release` → `scripts/release.py` (`make check`, strip
+`-dev`, `scripts/changelog.py <tag>`, commit `chore(release): vX.Y.Z`,
+annotated tag, bump to `X.(Y+1).0-dev`; never pushes).
+`scripts/changelog.py` lists every commit since the previous tag under
+Breaking / Features / Bug Fixes / Performance / Other, one line per
+commit; v0.5.0's section has 24 lines for two agent units and two CI fixes.
+`.github/release-notes.sh` slices the tag's section for the GitHub notes.
+The release path is only exercised by a real tag (REPO-32's lesson).
+
+**Do.**
+1. Research how open-source projects write release notes (Keep a
+   Changelog, git-cliff, release-please, changesets; Zig, Rust, Bun, Deno,
+   llama.cpp releases) and report in chat with a recommendation before
+   changing the format.
+2. Likely direction (confirm with the user): a hand-written
+   **Highlights** paragraph per release, then one bullet per closed unit
+   (`AREA-NN` from commit subjects, title from the engineering log's
+   table row, linked to its log anchor), then fixes outside units,
+   breaking changes flagged; docs/chore/test commits collapse into a
+   compare link (`/compare/vA...vB`). Where the highlights text lives and
+   how `release.py` asks for it is decided with the user.
+3. Make the release path testable before a tag: a `make release
+   DRY_RUN=1` that prints the generated section and the notes
+   `release-notes.sh` would publish; a ci step that runs
+   `release-notes.sh` on the newest changelog section and the
+   installer's digest lookup on a duplicated pin file.
+4. Ask whether to regenerate v0.5.0's notes in the new format
+   (`gh release edit`; the tag does not move).
+5. Update `docs/development.md` § Versioning and AGENTS.md's release
+   recipe if the command surface changes.
+
+### Track C — the README GIF at speculative speed
+
+**Facts.** `scripts/agent-demo.py` records `nuclis agent` in tmux on a
+scratch clone of the playground (`scripts/playground.py`) with
+`rect_perimeter` broken, streams an asciicast to
+`.zig-cache/demo/agent.cast`, and renders `docs/media/agent.gif` with
+`agg` (`--speed 2 --idle-time-limit 1.5`). The current GIF (4.4 MB,
+2026-09-26) predates speculation by default; with it Qwen decodes at
+about 17 tok/s. README lines 10–12 state "2×" and "2 min 35 s".
+
+**Do.**
+1. Confirm the script still drives the agent after AGNT-20's command
+   surface (the `◆ ready` marker, Ctrl-C exit) and that the agent's
+   default model runs with its draft; fix the script if not.
+2. `zig build -Dmetal=true -Doptimize=ReleaseFast`, then
+   `python3 scripts/agent-demo.py`; read the cast's last timestamp for
+   the real session time. Try `--speed 1.5` or `1` if the real session is
+   short enough; keep the GIF near or under 5 MB.
+3. Look at frames before committing (the agent fixes the bug, tests
+   pass). Update the README caption (speed, real time, speculative
+   decoding) and log the session time and size.
+
+### Further tracks
+
+Requests the user adds during the unit are appended here as tracks D, E…
+with the same level of detail.
