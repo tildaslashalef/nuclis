@@ -1023,8 +1023,9 @@ tools that are on every machine and nothing else, which is why neither `jq`
 nor Python appears in CI even though the repository's local tooling
 (`scripts/*.py`) is written in Python.
 
-**`ci.yml`** (push to `main`, pull requests; a push that touches only
-`docs/` or Markdown does not run it) has three parallel jobs: `test`
+**`ci.yml`** (push to `main`, pull requests; a push whose commits together
+touch only `docs/` or Markdown does not run it, so one code commit in a
+push runs it for all) has three parallel jobs: `test`
 (`zig fmt --check`, a semver check on `build.zig.zon`'s version, the
 newest `CHANGELOG.md` section sliced by `release-notes.sh`, `zig build
 test`), `metal` (a `-Dmetal=true -Doptimize=ReleaseSafe` build with
