@@ -15,11 +15,19 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-ENGN-21 session 1 is under way: step 0's facts are settled and the step
-list below is rewritten from them. Next: step 1 (the harness changes),
-then the runs. The machine was checked on 2026-10-04 19:00: AC, no
-thermal warning, GPU 16–23 % (the display only), `sudo purge` done, the
-idle opencode server stopped, display sleep blocked by Amphetamine.
+ENGN-21 session 1 is under way (2026-10-04, from 20:01). Done: steps 1–2,
+and step 3 for all five families (reference records
+`docs/benchmarks/reference-2026-10-04-*.json`, sections in `bench.md` §
+The benchmarks on macOS 27; E4B's arrays in
+`tests/fixtures/run-2026-10-04-gemma4-e4b/`). Muse's 4,096 row was
+disturbed and is re-run alone (`reference-2026-10-04-muse-glimmer-4k.json`,
+listed first in `muse/acceptance`, whose rows now take the first record
+holding a length). Next: step 4, the nuclis runs, driven by
+`.zig-cache/bench/nuclis-family.sh <cooldown> <entry>` (and
+`reference-family.sh`, `rows.py` beside it). A site preview with four
+lengths and a coloured table is on branch `site-bench-table` (worktree
+`../nuclis-site`, September figures) awaiting the user's review; it
+becomes step 8.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
