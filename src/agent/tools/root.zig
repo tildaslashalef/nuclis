@@ -185,6 +185,44 @@ pub fn find(name: []const u8) ?Tool {
     return null;
 }
 
+/// Null when `arguments` is a JSON object holding every key the tool's
+/// schema requires, each present key of its declared type; otherwise the
+/// result naming what is wrong, so the model repairs that field instead of
+/// guessing (a long `write_file` body followed by a forgotten `path` is the
+/// case that taught it).
+pub fn checkArguments(alloc: Allocator, tool: Tool, arguments: []const u8) Allocator.Error!?Result {
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, arguments, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return try fail(alloc, "{s}: the arguments are not valid JSON; send one JSON object; nothing was done", .{tool.name}),
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return try fail(alloc, "{s}: the arguments must be a JSON object; nothing was done", .{tool.name});
+    const schema = std.json.parseFromSlice(std.json.Value, alloc, tool.parameters, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => unreachable, // the registry's schemas are tested to parse
+    };
+    defer schema.deinit();
+    const properties = schema.value.object.get("properties").?.object;
+    if (schema.value.object.get("required")) |required| for (required.array.items) |key| {
+        if (parsed.value.object.get(key.string) == null) return try fail(alloc, "{s}: the required argument \"{s}\" is missing; nothing was done", .{ tool.name, key.string });
+    };
+    var it = parsed.value.object.iterator();
+    while (it.next()) |entry| {
+        const property = properties.get(entry.key_ptr.*) orelse continue;
+        const want = property.object.get("type").?.string;
+        const ok = switch (entry.value_ptr.*) {
+            .string => std.mem.eql(u8, want, "string"),
+            .integer => std.mem.eql(u8, want, "integer") or std.mem.eql(u8, want, "number"),
+            .float, .number_string => std.mem.eql(u8, want, "number"),
+            .bool => std.mem.eql(u8, want, "boolean"),
+            else => false,
+        };
+        const article = if (std.mem.indexOfScalar(u8, "aeiou", want[0]) != null) "an" else "a";
+        if (!ok) return try fail(alloc, "{s}: the argument \"{s}\" must be {s} {s}; nothing was done", .{ tool.name, entry.key_ptr.*, article, want });
+    }
+    return null;
+}
+
 /// An expected failure, as a result the model reads.
 pub fn fail(alloc: Allocator, comptime format: []const u8, args: anytype) Allocator.Error!Result {
     return .{ .text = try alloc.print(format, args), .is_error = true };
@@ -260,6 +298,25 @@ test "the registry finds tools by name" {
     try std.testing.expect(find("edit_file") != null);
     try std.testing.expect(find("bash") != null);
     try std.testing.expect(find("nonexistent") == null);
+}
+
+test "checkArguments names a missing or mistyped argument and passes a good call" {
+    const alloc = std.testing.allocator;
+    const write = find("write_file").?;
+    var missing = (try checkArguments(alloc, write, "{\"content\":\"x\"}")).?;
+    defer missing.deinit(alloc);
+    try std.testing.expect(missing.is_error);
+    try std.testing.expectEqualStrings("write_file: the required argument \"path\" is missing; nothing was done", missing.text);
+
+    var typed = (try checkArguments(alloc, find("read_file").?, "{\"path\":\"a\",\"offset\":\"3\"}")).?;
+    defer typed.deinit(alloc);
+    try std.testing.expectEqualStrings("read_file: the argument \"offset\" must be an integer; nothing was done", typed.text);
+
+    var broken = (try checkArguments(alloc, write, "{\"path\":")).?;
+    defer broken.deinit(alloc);
+    try std.testing.expect(std.mem.indexOf(u8, broken.text, "not valid JSON") != null);
+
+    try std.testing.expect((try checkArguments(alloc, write, "{\"path\":\"a\",\"content\":\"\",\"extra\":1}")) == null);
 }
 
 test "every tool's subject is the first property of its schema" {

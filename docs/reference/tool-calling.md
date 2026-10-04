@@ -128,7 +128,7 @@ parses as JSON and takes anything else as a literal string (the reference's
 schema-aware typing needs the declaration, which the decoder does not
 have). A call body is complete at the turn's end, not at a bracket: the
 decoder completes an open body when the turn stopped on `<|eot|>` and
-releases it as text on a budget stop or a cancellation. And a body with
+cuts it (a `tool_cut` event, never text) on a budget stop or a cancellation. And a body with
 more than one invoke, or anything but parameters inside the invoke, is not
 a call: it is released as text rather than guessed at. Content, results,
 names, and argument strings carrying the ATEM markup or a control marker

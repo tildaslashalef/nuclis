@@ -11,17 +11,20 @@
 //! two control tokens that bracket a call and a parser for the body between
 //! them. The decoder recognises those tokens by id (the only structural signal
 //! a byte-stream consumer cannot see), collects the body as ordinary pieces,
-//! and emits one `tool_call` event when the closing token arrives. A call that
-//! is still open at EOS, a budget stop, or a cancellation is released as plain
-//! answer text and never surfaces for execution.
+//! and emits one `tool_call` event when the closing token arrives, with
+//! `tool_progress` events while the body grows. A call still open when the
+//! completion stops is parsed as if closed at EOS; otherwise (or when it does
+//! not parse) it is dropped with a `tool_cut` event: a partial call is
+//! neither an action nor answer text. A body that closes but does not parse
+//! is released as text, exactly as the model wrote it.
 //!
 //! The second grammar (`Markers.channel`, Muse Glimmer) is a sequence of
 //! messages `HEADER<|message|>BODY` ended by `<|eom|>` or the next
 //! `<|start|>`: the header is ordinary text (`assistant to=self`) that
 //! routes the body to thinking, the answer, or a tool parser, and a tool
 //! body is complete at the end of the turn (`<|eot|>` is a stop token), not
-//! at a closing bracket, so `end` completes it on EOS and releases it as
-//! text on any other stop.
+//! at a closing bracket, so `end` completes it on EOS and cuts it on any
+//! other stop.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const Utf8 = @import("../tokenizer/stream.zig").Stream;
@@ -48,6 +51,8 @@ pub const Channel = struct {
 /// A header longer than this is not one: its bytes are released as answer
 /// text (a model writing prose where a header belongs hides nothing).
 pub const header_limit = 256;
+/// A call body reports its size each time it grows past a multiple of this.
+pub const progress_step = 256;
 
 pub const Markers = struct {
     open: u32,
@@ -105,8 +110,48 @@ pub const Decoder = struct {
     /// also used at channel boundaries and therefore never emits a stop.
     /// Under the channel grammar a tool body open at EOS is a complete call.
     pub fn end(self: *Decoder, outcome: @import("../engine.zig").Outcome, sink: anytype) !void {
-        try self.finishWith(sink, self.markers.channel != null and outcome.stop == .eos);
+        if (self.in_tool) try self.endTool(outcome.stop == .eos, sink);
+        try self.finish(sink);
         try sink.send(.{ .stop = outcome });
+    }
+
+    /// The token that ends the reasoning once `reasoning` tokens have spent
+    /// `budget`, or null: never inside a call or a header being written, and
+    /// again after every reopen, so a model that resumes thinking past its
+    /// budget writes an empty block instead of unbounded thought.
+    pub fn cutToken(self: *const Decoder, reasoning: usize, budget: usize) ?u32 {
+        if (!self.thinking or self.in_tool or self.in_header or self.header or reasoning < budget) return null;
+        return if (self.markers.channel) |channel| channel.eom else self.markers.close;
+    }
+
+    /// A call still open when the completion stopped. At EOS a channel body
+    /// is closed by grammar (a call, or text when it does not parse), and a
+    /// bracket call missing only its closing token is still one call when it
+    /// parses; anything else is dropped and reported.
+    fn endTool(self: *Decoder, eos: bool, sink: anytype) !void {
+        self.in_tool = false;
+        if (eos and self.markers.channel != null) return self.finishChannelTool(sink);
+        defer self.tool_buf.clearRetainingCapacity();
+        if (eos) {
+            if (try self.markers.tool.?.parse(self.alloc, self.tool_buf.items)) |call| {
+                defer {
+                    self.alloc.free(call.name);
+                    self.alloc.free(call.arguments);
+                }
+                try sink.send(.{ .tool_call = call });
+                return;
+            }
+        }
+        self.thinking = false;
+        try sink.send(.{ .tool_cut = self.tool_buf.items.len });
+    }
+
+    /// Appends a body piece and reports the size when it crosses a step.
+    fn collectTool(self: *Decoder, piece: []const u8, sink: anytype) !void {
+        const before = self.tool_buf.items.len;
+        try self.tool_buf.appendSlice(self.alloc, piece);
+        const after = self.tool_buf.items.len;
+        if (before / progress_step != after / progress_step or (before == 0 and after != 0)) try sink.send(.{ .tool_progress = after });
     }
 
     /// `piece` is the decoded bytes of exactly `token`, not accumulated text.
@@ -133,14 +178,19 @@ pub const Decoder = struct {
         }
         // A call's body is opaque here: it is ordinary text until the closing
         // control token, and the profile parses it as one unit.
-        if (self.in_tool) {
-            try self.tool_buf.appendSlice(self.alloc, piece);
-            return;
-        }
+        if (self.in_tool) return self.collectTool(piece, sink);
         if (self.thinking and token == self.markers.close) {
             try self.finish(sink);
             self.thinking = false;
             self.trim_answer = true;
+            self.initial = false;
+            self.header = false;
+            self.matched = 0;
+            return;
+        }
+        // A close with no reasoning open (the model ending a thought the
+        // engine already closed) is a control token, never answer text.
+        if (!self.thinking and token == self.markers.close) {
             self.initial = false;
             return;
         }
@@ -218,10 +268,7 @@ pub const Decoder = struct {
             self.header_buf.clearRetainingCapacity();
             return;
         }
-        if (self.in_tool) {
-            try self.tool_buf.appendSlice(self.alloc, piece);
-            return;
-        }
+        if (self.in_tool) return self.collectTool(piece, sink);
         try self.text(piece, sink);
     }
 
@@ -303,36 +350,16 @@ pub const Decoder = struct {
         if (self.thinking) try sink.send(.{ .thinking = bytes }) else try sink.send(.{ .answer = bytes });
     }
 
-    /// Release incomplete header text, an open call, and an unfinished UTF-8
-    /// scalar at EOS, budget, context limit, cancellation, or a channel
-    /// boundary. A call still open here never reached its closing token, so it
-    /// is text, not an action.
+    /// Release incomplete header text and an unfinished UTF-8 scalar at a
+    /// stop or a channel boundary. An open call is `end`'s to settle; a
+    /// boundary inside a call is not one.
     pub fn finish(self: *Decoder, sink: anytype) !void {
-        try self.finishWith(sink, false);
-    }
-
-    /// `finish`, completing an open channel-grammar tool body when
-    /// `complete_tool` (the turn ended on its stop token).
-    fn finishWith(self: *Decoder, sink: anytype, complete_tool: bool) !void {
+        std.debug.assert(!self.in_tool);
         if (self.in_header) {
             self.in_header = false;
             self.thinking = false;
             try self.text(self.header_buf.items, sink);
             self.header_buf.clearRetainingCapacity();
-        }
-        if (self.in_tool and self.markers.channel != null) {
-            self.in_tool = false;
-            if (complete_tool) try self.finishChannelTool(sink) else {
-                self.thinking = false;
-                try self.text(self.tool_buf.items, sink);
-                self.tool_buf.clearRetainingCapacity();
-            }
-        }
-        if (self.in_tool) {
-            self.in_tool = false;
-            try self.text(self.tool_open_text.items, sink);
-            try self.text(self.tool_buf.items, sink);
-            self.tool_buf.clearRetainingCapacity();
         }
         if (self.header) {
             self.header = false;
@@ -431,16 +458,17 @@ test "UTF-8 split at every byte, cancelled thought, and no cross-channel scalar"
     try std.testing.expectEqualStrings("��", r.answer.written());
 }
 
-test "thinking off preserves marker text and leading answer newlines" {
+test "thinking off keeps leading answer newlines and drops a stray close" {
     var r = Recorder.init(std.testing.allocator);
     defer r.deinit();
     var d = Decoder.init(std.testing.allocator, .{ .open = 1, .close = 2 }, false);
     defer d.deinit();
     try d.feed(3, "\nanswer", &r);
+    // A control token, not text: shown, it would be re-encoded as one.
     try d.feed(2, "</think>", &r);
     try d.finish(&r);
     try std.testing.expectEqualStrings("", r.thinking.written());
-    try std.testing.expectEqualStrings("\nanswer</think>", r.answer.written());
+    try std.testing.expectEqualStrings("\nanswer", r.answer.written());
 }
 
 test "empty completion, partial header, and malformed header release no hidden bytes" {
@@ -480,6 +508,11 @@ const ToolSink = struct {
     name: std.Io.Writer.Allocating,
     arguments: std.Io.Writer.Allocating,
     calls: usize = 0,
+    /// The last `tool_progress` size and the `tool_cut` size, if any.
+    progress: usize = 0,
+    progress_events: usize = 0,
+    cut: ?usize = null,
+    stops: usize = 0,
 
     fn init(alloc: std.mem.Allocator) ToolSink {
         return .{ .alloc = alloc, .answer = .init(alloc), .name = .init(alloc), .arguments = .init(alloc) };
@@ -499,6 +532,12 @@ const ToolSink = struct {
                 try self.name.writer.writeAll(call.name);
                 try self.arguments.writer.writeAll(call.arguments);
             },
+            .tool_progress => |bytes| {
+                self.progress = bytes;
+                self.progress_events += 1;
+            },
+            .tool_cut => |bytes| self.cut = bytes,
+            .stop => self.stops += 1,
             else => return error.UnexpectedEvent,
         }
     }
@@ -587,24 +626,37 @@ test "the bracket pieces are copied, so a released call shows the marker the mod
     try d.feed(3, &buffer, &r);
     @memset(&buffer, 0xff);
     try d.feed(11, "BO", &r);
+    try d.feed(4, "</tool_call>", &r);
     try d.finish(&r);
-    try std.testing.expectEqualStrings("<tool_call>BO", r.answer.written());
+    try std.testing.expectEqualStrings("<tool_call>BO</tool_call>", r.answer.written());
 }
 
-test "a call still open at finish, or rejecting its body, is released as text" {
+test "a call open at a stop is cut, not text; at EOS a whole body is a call; a rejected body is text" {
+    const engine = @import("../engine.zig");
     var r = ToolSink.init(std.testing.allocator);
     defer r.deinit();
-    // Truncation: the closing control never arrives.
+    // Cancelled (or out of budget) before the closing control: dropped and
+    // reported, never shown as the model's answer.
     var truncated = toolDecoder();
     defer truncated.deinit();
     try truncated.feed(3, "<tool_call>", &r);
     try truncated.feed(11, "BO", &r);
-    try truncated.finish(&r);
+    try truncated.end(.{ .stop = .cancelled, .timing = .{} }, &r);
     try std.testing.expectEqual(@as(usize, 0), r.calls);
-    try std.testing.expectEqualStrings("<tool_call>BO", r.answer.written());
+    try std.testing.expectEqual(@as(?usize, 2), r.cut);
+    try std.testing.expectEqualStrings("", r.answer.written());
+
+    // EOS with a body that parses: the model only left out the close.
+    var unclosed = toolDecoder();
+    defer unclosed.deinit();
+    try unclosed.feed(3, "<tool_call>", &r);
+    try unclosed.feed(11, "BODY", &r);
+    try unclosed.end(@as(engine.Outcome, .{ .stop = .eos, .timing = .{} }), &r);
+    try std.testing.expectEqual(@as(usize, 1), r.calls);
 
     // Malformed: the body arrives but the parser refuses it.
     r.answer.clearRetainingCapacity();
+    r.calls = 0;
     var malformed = toolDecoder();
     defer malformed.deinit();
     try malformed.feed(3, "<tool_call>", &r);
@@ -613,6 +665,49 @@ test "a call still open at finish, or rejecting its body, is released as text" {
     try malformed.finish(&r);
     try std.testing.expectEqual(@as(usize, 0), r.calls);
     try std.testing.expectEqualStrings("<tool_call>\nNOPE\n</tool_call>", r.answer.written());
+}
+
+test "a growing call body reports its size; a stray close while answering is dropped" {
+    var r = ToolSink.init(std.testing.allocator);
+    defer r.deinit();
+    var d = toolDecoder();
+    defer d.deinit();
+    try d.feed(10, "plan", &r);
+    // The engine closed nothing here: the model's own close is no text.
+    try d.feed(2, "</think>", &r);
+    try d.feed(10, " done", &r);
+    try d.feed(3, "<tool_call>", &r);
+    const piece: [100]u8 = @splat('x');
+    for (0..6) |_| try d.feed(11, &piece, &r);
+    // 100 bytes (the first piece), then 300 and 600 cross 256 and 512.
+    try std.testing.expectEqual(@as(usize, 3), r.progress_events);
+    try std.testing.expectEqual(@as(usize, 600), r.progress);
+    try d.end(.{ .stop = .token_budget, .timing = .{} }, &r);
+    try std.testing.expectEqualStrings("plan done", r.answer.written());
+    try std.testing.expectEqual(@as(?usize, 600), r.cut);
+}
+
+test "past the budget every reopened reasoning block is cut again, after its header" {
+    var r = Recorder.init(std.testing.allocator);
+    defer r.deinit();
+    var d = Decoder.init(std.testing.allocator, .{ .open = 1, .close = 2, .open_suffix = "thought\n" }, true);
+    defer d.deinit();
+    try std.testing.expectEqual(@as(?u32, null), d.cutToken(9, 10));
+    try d.feed(1, "<|channel>", &r);
+    try std.testing.expectEqual(@as(?u32, null), d.cutToken(10, 10)); // the header is still due
+    try d.feed(3, "thought\nplan", &r);
+    try std.testing.expectEqual(@as(?u32, 2), d.cutToken(10, 10));
+    try d.feed(2, "<channel|>", &r);
+    try std.testing.expectEqual(@as(?u32, null), d.cutToken(11, 10)); // answering
+    // The model opens its reasoning again: closed again once its header is in.
+    try d.feed(1, "<|channel>", &r);
+    try std.testing.expectEqual(@as(?u32, null), d.cutToken(11, 10));
+    try d.feed(3, "thought\n", &r);
+    try std.testing.expectEqual(@as(?u32, 2), d.cutToken(11, 10));
+    try d.feed(2, "<channel|>", &r);
+    try d.feed(3, "answer", &r);
+    try std.testing.expectEqualStrings("plan", r.thinking.written());
+    try std.testing.expectEqualStrings("answer", r.answer.written());
 }
 
 fn allocationPaths(alloc: std.mem.Allocator) !void {

@@ -338,7 +338,7 @@ pub const Transcript = struct {
             },
             // A status beat is the bar's, not the transcript's: it describes
             // the turn's progress, never a row of the conversation.
-            .status => {},
+            .status, .call_progress => {},
             .turn_end => |end| {
                 // Everything still open is final now, whatever it was waiting
                 // for: a cancelled turn keeps the text it reached.

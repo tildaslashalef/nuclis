@@ -129,6 +129,8 @@ const Ui = struct {
     /// Work before a turn (the projector loading, an image encoding) is
     /// running: busy with this label in the live region, no loop step.
     preparing: ?[]const u8 = null,
+    /// Bytes of the tool call the model is writing; 0 when none is open.
+    call_bytes: usize = 0,
     /// A `!` command is running: busy, but no loop step on the bar.
     shell: bool = false,
     /// The project instructions file in the prompt, for the warm-up notice.
@@ -353,6 +355,13 @@ const Ui = struct {
                 .pulse = (self.frame / 5) % 2 == 0,
             });
             try rows.appendSlice(a, live);
+            if (self.call_bytes > 0) {
+                const written = if (self.call_bytes < 1024)
+                    try a.print("{d} B", .{self.call_bytes})
+                else
+                    try a.print("{d:.1} KB", .{@as(f64, @floatFromInt(self.call_bytes)) / 1024.0});
+                try rows.append(a, .{ .text = try a.print("{s} writing a tool call{s} {s}", .{ self.spinnerFrame(), self.th.glyphs().ellipsis, written }), .style = .thinking_header });
+            }
             clampTop(&rows, max_live);
         }
         try rows.appendSlice(a, list);
@@ -504,6 +513,11 @@ const Ui = struct {
         if (e == .user) try self.showAttachments();
         switch (e) {
             .status, .turn_end => self.bar.apply(e),
+            else => {},
+        }
+        switch (e) {
+            .call_progress => |bytes| self.call_bytes = bytes,
+            .tool_call, .turn_end => self.call_bytes = 0,
             else => {},
         }
     }

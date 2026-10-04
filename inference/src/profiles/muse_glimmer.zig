@@ -771,7 +771,7 @@ test "parseTool accepts the block's whitespace and refuses malformed, truncated,
     }
 }
 
-test "the channel decoder delivers two calls in one turn and releases an unfinished one" {
+test "the channel decoder delivers two calls in one turn and cuts an unfinished one" {
     const alloc = std.testing.allocator;
     const call_markers: profiles.stream.Markers = .{ .open = 100, .close = 101, .channel = .{ .start = 100, .message = 102, .eom = 101, .parse = parseTool } };
     const body1 = "<atem:function_calls>\n<atem:invoke name=\"read_file\">\n<atem:parameter name=\"path\">a.zig</atem:parameter>\n<atem:parameter name=\"offset\">3</atem:parameter>\n</atem:invoke>\n</atem:function_calls>";
@@ -804,8 +804,8 @@ test "the channel decoder delivers two calls in one turn and releases an unfinis
     try std.testing.expectEqualStrings("{\"path\":\"a.zig\",\"offset\":3}", sink.calls.items[0].arguments);
     try std.testing.expectEqualStrings("bash", sink.calls.items[1].name);
     try std.testing.expectEqualStrings("{\"command\":\"ls\"}", sink.calls.items[1].arguments);
-    // Cut off by the budget, the same body is text, not an action; a
-    // malformed body is released as text too.
+    // Cut off by the budget, the same body is dropped and reported, neither
+    // an action nor text; a malformed body is released as text.
     var cut = Sink.init(alloc);
     defer cut.deinit();
     var e = profiles.stream.Decoder.init(alloc, call_markers, true);
@@ -815,7 +815,8 @@ test "the channel decoder delivers two calls in one turn and releases an unfinis
     try e.feed(7, body2, &cut);
     try e.end(.{ .stop = .token_budget, .timing = .{ .prompt_tokens = 1, .generated_tokens = 1 } }, &cut);
     try std.testing.expectEqual(@as(usize, 0), cut.calls.items.len);
-    try std.testing.expectEqualStrings(body2, cut.answer.written());
+    try std.testing.expectEqualStrings("", cut.answer.written());
+    try std.testing.expectEqual(@as(?usize, body2.len), cut.cut);
     var bad = Sink.init(alloc);
     defer bad.deinit();
     var f = profiles.stream.Decoder.init(alloc, call_markers, true);
@@ -860,6 +861,7 @@ const Sink = struct {
     answer: std.Io.Writer.Allocating,
     calls: std.ArrayList(profiles.ToolCall) = .empty,
     stops: usize = 0,
+    cut: ?usize = null,
 
     fn init(alloc: std.mem.Allocator) Sink {
         return .{ .alloc = alloc, .thinking = .init(alloc), .answer = .init(alloc) };
@@ -878,6 +880,8 @@ const Sink = struct {
             .thinking => |t| try self.thinking.writer.writeAll(t),
             .answer => |t| try self.answer.writer.writeAll(t),
             .tool_call => |c| try self.calls.append(self.alloc, .{ .id = 0, .name = try self.alloc.dupe(u8, c.name), .arguments = try self.alloc.dupe(u8, c.arguments) }),
+            .tool_progress => {},
+            .tool_cut => |bytes| self.cut = bytes,
             .stop => self.stops += 1,
         }
     }

@@ -95,6 +95,9 @@ pub const Event = union(enum) {
     /// that draws inline images, the preview's escape sequence with the rows
     /// it occupies. The producer builds the sequence; the transcript places it.
     attachment: struct { label: []const u8, preview: ?Preview = null },
+    /// Bytes of a tool call the model is still writing, 0 once it closed or
+    /// was cut: a long call streams nothing else, so the region says so.
+    call_progress: usize,
     /// Dim system lines: a replay, dropped turns, a failure under a prompt.
     notice: []const u8,
     /// What a command *answered*, as opposed to what it remarked. `/help` is
@@ -126,6 +129,10 @@ pub const Event = union(enum) {
             .thinking_end => |seconds| {
                 try s.objectField("seconds");
                 try s.write(seconds);
+            },
+            .call_progress => |bytes| {
+                try s.objectField("bytes");
+                try s.write(bytes);
             },
             .attachment => |a| {
                 try s.objectField("label");
@@ -218,6 +225,7 @@ test "every event kind has a JSON line, with its own fields beside the type" {
         .{ .diff = .{ .path = "p", .rows = &.{} } },                 .{ .status = .{ .phase = .decode } },
         .{ .turn_end = .{ .stop = .eos } },                          .{ .notice = "n" },
         .{ .attachment = .{ .label = "image #1: a.png" } },          .{ .info = "i" },
+        .{ .call_progress = 2048 },
     };
     for (kinds) |kind| {
         buffer.clearRetainingCapacity();
@@ -243,6 +251,7 @@ test "an event is a value: no allocation, and the payloads the turn needs" {
         .{ .notice = "older turns dropped from context to fit" },
         .{ .info = "keys and commands" },
         .{ .attachment = .{ .label = "image #1: shot.png" } },
+        .{ .call_progress = 2048 },
     };
     try std.testing.expectEqual(@typeInfo(Event).@"union".field_names.len, events.len);
     try std.testing.expectEqualStrings("hello", events[0].user);

@@ -357,7 +357,7 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
         const key_end = std.mem.indexOfScalarPos(u8, body, key_start, '>') orelse break;
         const key = std.mem.trim(u8, body[key_start..key_end], " \t\r\n");
         const value_start = key_end + 1;
-        const value_end = std.mem.indexOfPos(u8, body, value_start, parameter_close) orelse break;
+        const value_end = valueEnd(body, value_start) orelse break;
         if (key.len > 0) {
             json.objectField(key) catch return error.OutOfMemory;
             try writeArgumentValue(&json, alloc, delimited(body[value_start..value_end]));
@@ -368,6 +368,24 @@ pub fn parseTool(alloc: std.mem.Allocator, body: []const u8) std.mem.Allocator.E
     const arguments_owned = try arguments.toOwnedSlice();
     errdefer alloc.free(arguments_owned);
     return .{ .id = 0, .name = name_owned, .arguments = arguments_owned };
+}
+
+/// Where the value starting at `from` ends: the first `</parameter>` that the
+/// next parameter, the function's close, or the body's end follows. A value
+/// may itself contain the marker (a file that documents this format); only
+/// its structural occurrence ends it.
+fn valueEnd(body: []const u8, from: usize) ?usize {
+    const close = "</parameter>";
+    var at = from;
+    var first: ?usize = null;
+    while (std.mem.indexOfPos(u8, body, at, close)) |found| {
+        if (first == null) first = found;
+        const rest = std.mem.trimStart(u8, body[found + close.len ..], " \t\r\n");
+        if (rest.len == 0 or std.mem.startsWith(u8, rest, "<parameter=") or std.mem.startsWith(u8, rest, "</function>")) return found;
+        at = found + close.len;
+    }
+    // No structural close: the first one, as the grammar reads it.
+    return first;
 }
 
 /// A parameter value on the wire: JSON when it parses as JSON, a literal
@@ -530,6 +548,17 @@ test "parseTool round-trips a rendered call and rejects malformed bodies" {
     try std.testing.expect((try parseTool(alloc, "no markers here")) == null);
     try std.testing.expect((try parseTool(alloc, "<parameter=x>1</parameter>")) == null);
     try std.testing.expect((try parseTool(alloc, "<function=>\n")) == null);
+}
+
+test "parseTool keeps a value that mentions the parameter close; only the structural one ends it" {
+    const alloc = std.testing.allocator;
+    const body = "<function=write_file>\n<parameter=content>\nend a value with </parameter> then go on\n</parameter>\n<parameter=path>\ndoc.md\n</parameter>\n</function>";
+    const parsed = (try parseTool(alloc, body)).?;
+    defer {
+        alloc.free(parsed.name);
+        alloc.free(parsed.arguments);
+    }
+    try std.testing.expectEqualStrings("{\"content\":\"end a value with </parameter> then go on\",\"path\":\"doc.md\"}", parsed.arguments);
 }
 
 test "parseTool strips only the delimiters: a value keeps its trailing newline and leading spaces, a padded number is still a number" {

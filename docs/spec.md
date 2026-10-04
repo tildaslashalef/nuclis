@@ -658,11 +658,18 @@ A turn is a loop over steps, at most 16 per turn:
   named reason.
 - Reasoning budget: at `low` effort one step reasons for at most
   `agent.thinking_budget` tokens (1024 by default and in every catalogue entry `config init` writes, 0 for no cap); past it
-  the engine emits the profile's close marker itself, so the model answers
-  or calls a tool, and the transcript and the session step say the
-  reasoning was cut. Effort is otherwise the template's own instruction,
-  which the model may exceed. A profile without a single close token
-  (Muse Glimmer's channels) is uncapped.
+  the engine emits the profile's close marker itself (Muse Glimmer's
+  `<|eom|>`), so the model answers or calls a tool, and the transcript and
+  the session step say the reasoning was cut. A model that reopens its
+  reasoning past the budget is closed again at once, after the block's
+  header, and the model's own late close is dropped, never shown as text.
+  Effort is otherwise the template's own instruction, which the model may
+  exceed.
+- A tool call the model is still writing shows its size in the region; a
+  call the step stopped inside (cancellation, the output budget) is
+  dropped with a notice, never executed and never shown as answer text.
+  Arguments are checked against the tool's schema before it runs, and a
+  missing or mistyped one is named in the result.
 - Failures are results: an unknown tool, invalid arguments, a timeout, a
   truncated call, an empty result, or an ordinary tool failure returns a
   typed result to the model. Only an inference-transport failure ends the

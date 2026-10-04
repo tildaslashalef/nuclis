@@ -805,6 +805,7 @@ pub const Agent = struct {
     fn runTool(self: *Agent, call: Profile.ToolCall) Allocator.Error!tools.Result {
         const tool = tools.find(call.name) orelse
             return tools.fail(self.alloc, "{s} is not a tool I have", .{call.name});
+        if (try tools.checkArguments(self.alloc, tool, call.arguments)) |problem| return problem;
         return tool.run(self.workspace, self.alloc, call.arguments);
     }
 
@@ -934,6 +935,15 @@ pub const Agent = struct {
             },
             // The profile decoded a native call; the host assigns its
             // correlation id once the step completes.
+            .tool_progress => |bytes| {
+                if (self.thinking_open and !self.thinking_ended) try self.endThinking();
+                try self.events.send(self.events.context, .{ .call_progress = bytes });
+            },
+            .tool_cut => |bytes| {
+                try self.events.send(self.events.context, .{ .call_progress = 0 });
+                var note: [96]u8 = undefined;
+                try self.events.send(self.events.context, .{ .notice = std.fmt.bufPrint(&note, "  — a tool call was cut off after {d} bytes, before it closed; nothing ran", .{bytes}) catch "  — a tool call was cut off before it closed; nothing ran" });
+            },
             .tool_call => |call| {
                 const name = try self.alloc.dupe(u8, call.name);
                 errdefer self.alloc.free(name);

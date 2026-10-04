@@ -1011,7 +1011,8 @@ test "the stream decoder drives the Gemma grammar end to end" {
                 .thinking => |t| try self.thinking.writer.writeAll(t),
                 .answer => |t| try self.answer.writer.writeAll(t),
                 .tool_call => |c| try self.calls.append(self.alloc, .{ .id = 0, .name = try self.alloc.dupe(u8, c.name), .arguments = try self.alloc.dupe(u8, c.arguments) }),
-                .stop => return error.UnexpectedEvent,
+                .tool_progress => {},
+                .tool_cut, .stop => return error.UnexpectedEvent,
             }
         }
     };

@@ -1153,16 +1153,16 @@ pub fn complete(
             try self.decoder.feed(id, piece, self.sink);
         }
 
-        /// Once per completion: the reasoning's own ending when it has
-        /// spent its budget, never inside a call or a header being written.
-        /// A channel message ends with `eom`, which is not a stop token.
+        /// The reasoning's own ending once it has spent its budget, never
+        /// inside a call or a header being written; again each time the
+        /// model reopens its reasoning, so a reopen past the budget is an
+        /// empty block rather than unbounded thought. A channel message
+        /// ends with `eom`, which is not a stop token.
         fn force(context: *anyopaque) ?u32 {
             const self: *@This() = @ptrCast(@alignCast(context));
-            const budget = self.budget orelse return null;
-            const d = &self.decoder;
-            if (self.cut or !d.thinking or d.in_tool or d.in_header or self.reasoning < budget) return null;
+            const close = self.decoder.cutToken(self.reasoning, self.budget orelse return null) orelse return null;
             self.cut = true;
-            return if (d.markers.channel) |c| c.eom else d.markers.close;
+            return close;
         }
     };
     var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, &eng.vocab, buffers.effort), .sink = sink, .budget = buffers.thinking_budget };
@@ -1402,11 +1402,15 @@ pub fn runLoop(
             const extras = s.choices[0 .. result.accepted + 1];
             var kept: usize = extras.len;
             var broke = false;
+            // A forced token may replace an accepted draft as well as the
+            // correction: it then ends the batch and seeds the next one.
+            var forced_at: ?usize = null;
             for (extras, 0..) |*slot, i| {
-                if (i == result.accepted) if (forcedToken(hooks)) |f| {
+                if (forcedToken(hooks)) |f| {
                     slot.* = f;
                     result.correction = f;
-                };
+                    if (i < result.accepted) forced_at = i;
+                }
                 const extra = slot.*;
                 generated[count] = extra;
                 count += 1;
@@ -1425,7 +1429,15 @@ pub fn runLoop(
                     broke = true;
                     break;
                 }
+                if (forced_at != null) break;
             }
+            if (!broke) if (forced_at) |i| {
+                // The session holds the seed and every accepted draft; keep
+                // only those before the replaced one, as a correction would.
+                const recover_start = std.Io.Clock.awake.now(eng.io);
+                const split = try eng.model.recover(eng.io, s.tokens[0 .. 1 + i]);
+                recordRecovery(&timing, i + 1, recover_start.durationTo(std.Io.Clock.awake.now(eng.io)), split);
+            };
             if (broke) {
                 // Discard the accepted drafts past the stop/budget: recover to
                 // the tokens actually emitted.

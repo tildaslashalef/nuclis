@@ -214,9 +214,11 @@ lives there: the shared `profiles/stream.zig` decoder holds the call's
 bracket token ids and a body parser, and the provisional in-app splitter,
 `src/agent/parse.zig`, is gone. Streaming still shapes the problem, and the
 state machine is the same idea the provisional parser had: the decoder collects
-the body between the two control tokens and never emits a call that is still
-open when the stream ends — after EOS, a budget stop, or a cancellation the
-bytes are released as plain answer text. It cannot emit `<tool_call>` as
+the body between the two control tokens and never executes a call that is
+still open when the stream ends: at EOS a body that parses is still one call,
+and anything else, after a budget stop or a cancellation, is dropped with a
+notice. Released as answer text, its markers would read as the model's prose
+and come back as control tokens the next turn. It cannot emit `<tool_call>` as
 ordinary text and then discover the call, because the opening token is
 recognized by id, which is the only signal a byte-stream consumer cannot see.
 That is the parser analog of §2's rule: a byte's meaning depends on what came

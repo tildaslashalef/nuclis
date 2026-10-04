@@ -167,7 +167,7 @@ Decoding uses the `<|tool_call>` / `<tool_call|>` control tokens (48/49)
 through the shared stream decoder and `gemma4.parseTool`, a bounded
 recursive-descent reader of the DSL (nesting depth 16, whitespace where the
 reference grammar allows it) that writes the JSON object the agent consumes;
-a malformed or truncated body is released as text. The model hands off by
+a malformed body is released as text, a truncated one cut (below). The model hands off by
 emitting `<|tool_response>` after its calls — Google's guide calls it an
 additional stop sequence and the reference marks it end-of-generation by
 name — so it is the profile's third stop token and several calls in one step
@@ -235,7 +235,7 @@ rejected. Decoding is the channel grammar above with `muse_glimmer.parseTool`
 on `to=NAME` bodies: a body that is one well-formed block yields the call
 (a value that parses as JSON keeps its type, anything else is a literal
 string), anything else is released as text; the body completes at
-`<|eom|>`, the next `<|start|>`, or the turn's `<|eot|>` stop, and is text
+`<|eom|>`, the next `<|start|>`, or the turn's `<|eot|>` stop, and is cut
 on a budget stop or a cancellation ([tool-calling.md](tool-calling.md)).
 
 Sampling defaults are the model card's "Best Practices" (temperature 1.0,
@@ -386,10 +386,17 @@ the agent assigns it) and arguments are a normalized JSON object. The Qwen
 decoder produces these: the shared `profiles/stream.zig` recognizes the
 `<tool_call>` / `</tool_call>` control tokens by vocabulary ID, collects the
 body as ordinary pieces, and hands it to `qwen38.parseTool`, which emits one
-call when the closing token arrives. A call still open at EOS, a budget stop,
-or a cancellation — and a body the parser refuses — is released as answer text
-and never executed, bracket text included (copied when the bracket arrives:
-a piece is the caller's per-token buffer). A reasoning channel the model
+call when the closing token arrives, with `tool_progress` events (the body's
+size) while it grows. A body the parser refuses after its closing token is
+released as answer text and never executed, bracket text included (copied
+when the bracket arrives: a piece is the caller's per-token buffer). A call
+still open when the completion stops is one call at EOS if it parses;
+otherwise, and on a budget stop or a cancellation, it is dropped with a
+`tool_cut` event: neither an action nor answer text. A close token that
+arrives while no reasoning is open (the model ending a thought the engine
+already cut) is dropped. A Qwen parameter value ends at the first
+`</parameter>` followed by the next parameter, `</function>`, or the body's
+end, so content that mentions the marker survives. A reasoning channel the model
 opens while answering is thinking from there, shown as a further block,
 whatever the effort (with thinking off, Gemma still opens an empty channel
 after a tool result); a closing token with no channel open stays literal. The Gemma decoder is the same machinery with its own
