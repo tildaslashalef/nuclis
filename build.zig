@@ -26,8 +26,24 @@ pub fn build(b: *std.Build) void {
         const rest = zon[start + key.len ..];
         break :blk rest[0 .. std.mem.indexOfScalar(u8, rest, '"') orelse break :blk "unknown"];
     };
+    // The commit the tree was built from, and whether the work tree differed
+    // from it: the agent's prefix cache keys saved model states by build, so
+    // a state is restored only into the build that computed it.
+    const root_path = b.root.root_dir.path orelse ".";
+    const revision = blk: {
+        var code: u8 = 0;
+        const out = b.runAllowFail(&.{ "git", "-C", root_path, "rev-parse", "--short=12", "HEAD" }, &code, .ignore) catch break :blk "unknown";
+        break :blk std.mem.trim(u8, out, " \n");
+    };
+    const dirty = blk: {
+        var code: u8 = 0;
+        const out = b.runAllowFail(&.{ "git", "-C", root_path, "status", "--porcelain" }, &code, .ignore) catch break :blk true;
+        break :blk out.len != 0;
+    };
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
+    build_options.addOption([]const u8, "revision", revision);
+    build_options.addOption(bool, "dirty", dirty);
 
     const inference = b.dependency("inference", .{ .target = target, .optimize = optimize, .metal = metal });
     // The Hub downloader is imported by the executable only (`nuclis model`);

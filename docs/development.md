@@ -483,7 +483,9 @@ override is an error. Otherwise resolve the root from `HOME`.
     sessions/<cwd-slug>/   one append-only JSONL file per session
     exports/               `/save` markdown exports
                            ([spec.md § Sessions and storage](spec.md#74-sessions-and-storage))
-  cache/                   regenerable runtime data (planned)
+  cache/                   regenerable runtime data
+    prefix/                the agent's primed prefixes, one model state per file
+                           (`cache.disk_bytes`; [reference/session.md § The agent's token cache](reference/session.md#the-agents-token-cache))
 ```
 
 Create directories only when an operation needs to write them. Inspection/help
@@ -621,6 +623,7 @@ bring-up file. The example:
                 "thinking_budget": 1024 },
   "decide":   { "model": "laya" },
   "serve":    { "host": "127.0.0.1", "port": 8000, "log": true },
+  "cache":    { "memory_bytes": 4294967296, "disk_bytes": 8589934592 },
   "models":   { "qwen3.8-27b": { "kind": null, "path": null,
                                  "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
                                  "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",

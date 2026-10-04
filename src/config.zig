@@ -112,6 +112,7 @@ pub const Config = struct {
     agent: Agent = .{},
     decide: Decide = .{},
     serve: Serve = .{},
+    cache: Cache = .{},
     models: Models = .{},
 
     pub const Engine = struct {
@@ -175,6 +176,15 @@ pub const Config = struct {
         /// Seconds a decision request may wait for the GPU before `529
         /// timeout`; a clef-flash request alone can hold it for minutes.
         timeout: u32 = 300,
+    };
+    /// The agent's token cache (`agent/cache.zig`): model states kept at
+    /// turn boundaries so a prefix is restored instead of prefilled again.
+    pub const Cache = struct {
+        /// Bytes of states kept in the process; 0 keeps none.
+        memory_bytes: u64 = 4 << 30,
+        /// Bytes of states kept under `<root>/cache/prefix/`; 0 disables
+        /// the directory.
+        disk_bytes: u64 = 8 << 30,
     };
 };
 
@@ -667,6 +677,8 @@ pub const Resolved = struct {
     instructions: []const u8,
     /// `agent.thinking_budget`; `thinkingBudget` applies it to an effort.
     thinking_budget: usize,
+    /// The agent's token cache budgets.
+    cache: Config.Cache,
     /// The file the values came from; null when only defaults and flags applied.
     config_file: ?[]const u8,
     origin: Origin,
@@ -732,6 +744,7 @@ pub fn resolve(loaded: *const Loaded, model: ?[]const u8, flags: Flags, command:
         .theme = cfg.agent.theme,
         .instructions = cfg.agent.instructions,
         .thinking_budget = flags.thinking_budget orelse e.agent.thinking_budget orelse cfg.agent.thinking_budget,
+        .cache = cfg.cache,
         .config_file = if (loaded.found) loaded.path else null,
         .origin = loaded.origin,
         .command = command,
@@ -1199,6 +1212,7 @@ pub const Effective = struct {
     agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8, thinking_budget: usize },
     decide: Config.Decide,
     serve: Config.Serve,
+    cache: Config.Cache,
     origin: Origin,
 
     pub fn from(loaded: *const Loaded) Effective {
@@ -1215,6 +1229,7 @@ pub const Effective = struct {
             .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions, .thinking_budget = agent.thinking_budget },
             .decide = loaded.config.decide,
             .serve = loaded.config.serve,
+            .cache = loaded.config.cache,
             .origin = origin,
         };
     }
@@ -1262,6 +1277,8 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         try s.write(view.decide);
         try s.objectField("serve");
         try s.write(view.serve);
+        try s.objectField("cache");
+        try s.write(view.cache);
         try s.endObject();
         try s.objectField("sources");
         try s.beginObject();
@@ -1319,6 +1336,7 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
     try walk(@TypeOf(view.agent), view.agent, "agent.", &rows);
     try walk(@TypeOf(view.decide), view.decide, "decide.", &rows);
     try walk(@TypeOf(view.serve), view.serve, "serve.", &rows);
+    try walk(@TypeOf(view.cache), view.cache, "cache.", &rows);
     for (loaded.config.models.entries) |named| {
         var entry_rows: struct {
             out: *std.Io.Writer,

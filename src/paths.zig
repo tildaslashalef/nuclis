@@ -39,6 +39,12 @@ pub fn agentPath(alloc: Allocator, root_dir: []const u8, inside: ?[]const u8) ![
     return std.fs.path.join(alloc, &.{ root_dir, agent_dir, relative });
 }
 
+/// `<root>/cache/prefix`, the agent's saved model states (`agent/cache.zig`).
+/// Not created here. Caller-owned storage.
+pub fn prefixCachePath(alloc: Allocator, root_dir: []const u8) ![]u8 {
+    return std.fs.path.join(alloc, &.{ root_dir, "cache", "prefix" });
+}
+
 /// Named beside `config_file` so the layout is stated once.
 pub const agent_dir = "agent";
 pub const history_file = "history.jsonl";

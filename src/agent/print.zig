@@ -141,6 +141,8 @@ pub fn run(
         .thinking_budget = settings.thinking_budget,
         .observer = trace.observer(),
         .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
+        .cache = .{ .alloc = alloc, .budget = settings.cache.memory_bytes },
+        .disk = loop.cache.openDisk(alloc, io, root, settings.cache.disk_bytes, model_path, if (eng.model.drafter() != null) draft_path else null, @tagName(settings.backend)),
     };
     defer completer.deinit();
     const workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
@@ -242,7 +244,9 @@ const Turn = struct {
                     .prefill_seconds = step.prefill_seconds,
                     .decode_seconds = step.decode_seconds,
                     .thinking_seconds = step.thinking_seconds,
-                    .replayed = step.replayed,
+                    .replayed = step.replay != null,
+                    .replay = if (step.replay) |r| @tagName(r.cause) else "",
+                    .restored_tokens = if (step.replay) |r| r.restored else 0,
                     .reasoning_cut = step.reasoning_cut,
                     .reasoning_tokens = step.reasoning_tokens,
                 },

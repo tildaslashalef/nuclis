@@ -65,8 +65,8 @@ pub const Status = struct {
     budget: usize = 0,
     /// Messages typed during the turn and waiting for its next step.
     steering: usize = 0,
-    /// The turn had to replay the conversation into a fresh session.
-    replayed: bool = false,
+    /// Set when the turn re-prefilled the conversation.
+    replay: ?event_mod.Replay = null,
     /// Mean accepted drafts per verify batch, from the turn's engine timing;
     /// null on an ordinary run. Shown inside the `spec` cell while non-null.
     accepted_per_step: ?f64 = null,
@@ -93,7 +93,7 @@ pub const Status = struct {
                 self.rates = .{};
                 self.prompt_tokens = end.stats.prompt_tokens;
                 self.generated = end.stats.generated;
-                self.replayed = end.stats.replayed;
+                self.replay = end.stats.replay;
                 self.accepted_per_step = end.stats.accepted_per_step;
                 if (end.stats.prompt_tokens > 0 and end.stats.prefill_seconds > 0)
                     self.rates.prefill = @as(f64, @floatFromInt(end.stats.prompt_tokens)) / end.stats.prefill_seconds;
@@ -136,7 +136,10 @@ pub const Status = struct {
         try left.writer.print(" t/s {s} {s} tg ", .{ gl.table_bar, gl.decode });
         try rate(&left.writer, self.rates.decode);
         try left.writer.writeAll(" t/s");
-        if (self.replayed) try left.writer.print(" {s} replayed", .{gl.table_bar});
+        if (self.replay) |r| {
+            try left.writer.print(" {s} replayed {s} {d}", .{ gl.table_bar, r.cause, r.prefilled });
+            if (r.restored > 0) try left.writer.print(", {d} restored", .{r.restored});
+        }
 
         // The settings, each cell its own string so the narrow bar can drop
         // them one at a time from the right.
@@ -312,7 +315,7 @@ test "a decoding bar shows the live count, and the end freezes the measurements"
         .prefill_seconds = 0.5,
         .decode_seconds = 10,
         .accepted_per_step = 2.33,
-        .replayed = true,
+        .replay = .{ .cause = "cancel", .prefilled = 31, .restored = 15800 },
     } } });
     const done = try painted(a, status, .{ .width = 160, .th = .{ .kind = .plain } });
     try testing.expect(!status.busy);
@@ -320,7 +323,7 @@ test "a decoding bar shows the live count, and the end freezes the measurements"
     try testing.expect(std.mem.indexOf(u8, done, "pp 62.00 t/s") != null); // 31 / 0.5
     try testing.expect(std.mem.indexOf(u8, done, "tg 39.90 t/s") != null); // 399 / 10
     try testing.expect(std.mem.indexOf(u8, done, "speculative on 4 · 2.33/step") != null);
-    try testing.expect(std.mem.indexOf(u8, done, "replayed") != null);
+    try testing.expect(std.mem.indexOf(u8, done, "replayed cancel 31, 15800 restored") != null);
 
     // A turn that produced one token has no decode interval to divide by.
     var single: Status = .{};

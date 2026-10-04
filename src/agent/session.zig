@@ -77,6 +77,10 @@ pub const Stats = struct {
     /// The step's reasoning time; 0 in files written before it was kept.
     thinking_seconds: f64 = 0,
     replayed: bool = false,
+    /// Why the step replayed (`loop.Replay.Cause`), empty when it did not or
+    /// in older files; `restored_tokens` came from the token cache.
+    replay: []const u8 = "",
+    restored_tokens: usize = 0,
     /// The engine closed the step's reasoning at `agent.thinking_budget`.
     reasoning_cut: bool = false,
     /// Generated tokens decoded as reasoning; 0 in older files.

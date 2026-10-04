@@ -16,8 +16,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-**Next: AGNT-19** (below), not started, its design agreed 2026-10-03; it needs a ``Base: `<rev>` ``
-line when its first session begins. The decode-speed theme (agreed
+**Next: AGNT-19 session 2** (below): session 1 landed on 2026-10-04
+(the cache, both tiers for the primed prefix, turn-end states in memory,
+the replay accounting; see *Session 1 delivered*). The decode-speed theme (agreed
 2026-09-30, toward ADR 0001's 20 tokens/s) closed with KERN-23 on
 2026-10-03: Qwen's plain decode at 512 10.37 → 11.78 tok/s, 2–3-row
 verify batches 6–12 % cheaper, speculative prose at 512 17.42 / 16.55
@@ -32,6 +33,8 @@ exist under `.zig-cache/speed/prefix/`, 16K does not.
 | 1 | AGNT-19 — Token caching for the agent: turn-boundary snapshots in memory and on disk; `/list`, `/delete`, `agent rm` | 2 |
 
 ## AGNT-19 — Token caching for the agent: snapshots at turn boundaries, in memory and on disk (2 sessions)
+
+Base: `9f45bf0`
 
 **Why.** Prefill runs at about 90 tok/s on Qwen, and the agent re-prefills
 tokens it has already computed in five places: every start (the system
@@ -98,6 +101,30 @@ line's `replayed` gains the cause and the tokens re-prefilled (start,
 resume, cancel, compaction, effort), so the gains are counted, not
 estimated. The disk tier for the primed prefix lands here too (start and
 `agent --print`); the build revision in `build.zig`.
+
+*Session 1 delivered (2026-10-04).* `src/agent/cache.zig` (`Memory`,
+`Disk`, `modelKey`, `buildId`, `openDisk`; four tests), `Completer` on it
+(`prime` returns `Primed{tokens, from}`; `run` restores the longest
+cached state, even over a session that could continue; `checkpoint`, a
+new `Model` hook the loop calls when a turn ends in an answer;
+`reset(cause)`, `dropCache`), `loop.Replay{cause, restored}` through
+`TurnStats.replay` to the bar and the session file (`replay`,
+`restored_tokens`), `cache.memory_bytes` / `cache.disk_bytes` in
+`src/config.zig`, `paths.prefixCachePath`, `revision` and `dirty` in
+`build.zig`'s options. Design changes from the text above, recorded in
+[session.md § The agent's token cache](docs/reference/session.md#the-agents-token-cache):
+matching is on rendered text, not tokens (generated tokens need not be
+the canonical encoding), states holding an image are not kept, a dirty
+build adds the executable's size and mtime to its key, and the key
+stays `prefix_cache.Key` with the build folded into its model half (no
+engine change). Measured: warm-up 16.3 s cold, 1.0 s from disk (the
+prediction said ≤ 0.5 s; reading 250 MB is the rest), 0.4 s from
+memory; cancel and effort replays restore 1,369 and 1,427 tokens
+(`.zig-cache/tui/c1`–`c8`); cold and warm greedy text identical with and
+without the drafter. Not yet measured: the turn-end snapshot's cost at
+16K (a 1.2 GB copy on the turn's path), to time in session 2 alongside
+`/resume` at 16K. `make agent-eval` "before" runs against the `Base:`
+binary (build `9f45bf0` in a worktree), "after" against the closing one.
 
 **Session 2: `/resume` and the surface.** The session writer
 (`src/agent/session.zig`) saves the last completed turn's snapshot to the

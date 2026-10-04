@@ -49,8 +49,17 @@ pub const TurnStats = struct {
     /// when speculation was off; the agent shows it to compare a live coding
     /// turn against `bench`.
     accepted_per_step: ?f64 = null,
-    /// The conversation had to be replayed into a fresh session.
-    replayed: bool = false,
+    /// Set when the turn re-prefilled the conversation.
+    replay: ?Replay = null,
+};
+
+/// Why a turn re-prefilled its conversation and what that cost: `prefilled`
+/// counts the prompt tokens of the steps that replayed, `restored` the
+/// tokens a cached state supplied instead.
+pub const Replay = struct {
+    cause: []const u8,
+    prefilled: usize = 0,
+    restored: usize = 0,
 };
 
 pub const Preview = struct { sequence: []const u8, rows: usize };

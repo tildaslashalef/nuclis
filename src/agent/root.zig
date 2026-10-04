@@ -67,7 +67,6 @@ const Stats = struct {
     generated: usize = 0,
     prefill_seconds: f64 = 0,
     decode_seconds: f64 = 0,
-    replayed: bool = false,
 
     fn prefillRate(self: Stats) ?f64 {
         return if (self.prompt_tokens > 0 and self.prefill_seconds > 0) @as(f64, @floatFromInt(self.prompt_tokens)) / self.prefill_seconds else null;
@@ -219,7 +218,7 @@ const Ui = struct {
         self.tr.reset();
         self.bar = .{};
         self.agent.resetConversation();
-        self.completer.reset();
+        self.completer.reset(null);
         self.eng.model.reset();
         self.tokens_seen.reset();
         self.stats = .{};
@@ -265,7 +264,7 @@ const Ui = struct {
         if (self.busy and !self.warming and !self.shell and self.preparing == null) {
             bar.prompt_tokens = self.stats.prompt_tokens;
             bar.generated = self.stats.generated;
-            bar.replayed = self.stats.replayed;
+            bar.replay = null;
             bar.step = @min(self.agent.steps_done + 1, self.agent.budget);
             bar.steering = self.agent.pendingSteering();
             bar.budget = self.agent.budget;
@@ -591,7 +590,9 @@ const Ui = struct {
                     .prefill_seconds = step.prefill_seconds,
                     .decode_seconds = step.decode_seconds,
                     .thinking_seconds = step.thinking_seconds,
-                    .replayed = step.replayed,
+                    .replayed = step.replay != null,
+                    .replay = if (step.replay) |r| @tagName(r.cause) else "",
+                    .restored_tokens = if (step.replay) |r| r.restored else 0,
                     .reasoning_cut = step.reasoning_cut,
                     .reasoning_tokens = step.reasoning_tokens,
                 },
@@ -1111,13 +1112,18 @@ fn primeSession(ui: *Ui) void {
         ui.emit(.{ .notice = text }) catch {};
         return;
     };
-    if (primed > 0) {
+    if (primed.tokens > 0) {
         var note: [192]u8 = undefined;
         const elapsed = seconds(ui.turn_started, std.Io.Clock.awake.now(ui.io));
+        const how = switch (primed.from) {
+            .prefill => "",
+            .memory => ", restored from memory",
+            .disk => ", restored from disk",
+        };
         const text = if (ui.instructions_name) |name|
-            std.fmt.bufPrint(&note, "  — warmed up in {d:.1}s · {d} tokens ({d} from {s})", .{ elapsed, primed, ui.instructions_tokens, name }) catch "  — warmed up"
+            std.fmt.bufPrint(&note, "  — warmed up in {d:.1}s · {d} tokens ({d} from {s}){s}", .{ elapsed, primed.tokens, ui.instructions_tokens, name, how }) catch "  — warmed up"
         else
-            std.fmt.bufPrint(&note, "  — warmed up in {d:.1}s · {d} tokens", .{ elapsed, primed }) catch "  — warmed up";
+            std.fmt.bufPrint(&note, "  — warmed up in {d:.1}s · {d} tokens{s}", .{ elapsed, primed.tokens, how }) catch "  — warmed up";
         ui.emit(.{ .notice = text }) catch {};
     }
 }
@@ -1478,7 +1484,7 @@ fn performResume(ui: *Ui, alloc: std.mem.Allocator, io: std.Io, path: []const u8
     // the stored entries and prefilled on the next turn.
     ui.eng.model.reset();
     ui.tokens_seen.reset();
-    ui.completer.reset();
+    ui.completer.reset(.resumed);
     ui.agent.resetConversation();
     ui.effort = effort;
     const built = try resume_mod.messages(a, loaded);
@@ -1648,6 +1654,8 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .buffers = .{ .logits = logits, .candidates = candidates, .generated = generated, .effort = settings.think },
         .thinking_budget = settings.thinking_budget,
         .speculative = .{ .enabled = settings.speculative, .draft_length = settings.draft_length },
+        .cache = .{ .alloc = alloc, .budget = settings.cache.memory_bytes },
+        .disk = loop.cache.openDisk(alloc, io, root_dir, settings.cache.disk_bytes, model_path, if (eng.model.drafter() != null) draft_path else null, @tagName(settings.backend)),
     };
     defer completer.deinit();
     var workspace: tools.Workspace = .{ .io = io, .dir = .cwd(), .root = cwd, .environ = environ };
@@ -1758,12 +1766,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     eng = opened;
                     ui.eng = &eng;
                     installTick(&ui);
-                    ui.completer.reset();
+                    ui.completer.reset(.context);
                     ui.tokens_seen.reset(); // same artifact, same vocabulary; a fresh session
                     ui.agent.result_budget = loop.resultBudget(newcap);
                     ui.record(.{ .context = .{ .ctx_size = newcap } });
-                    // The old snapshot belongs to the old engine; prime anew.
-                    ui.completer.dropPrimed();
+                    // The cached states belong to the old engine; prime anew.
+                    ui.completer.dropCache();
                     primeSession(&ui);
                     ui.status = "ctx resized";
                 } else |err| {
@@ -1840,7 +1848,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 ui.agent.abortTurn();
                 ui.eng.model.reset();
                 ui.tokens_seen.reset();
-                ui.completer.reset();
+                ui.completer.reset(.failure);
                 interrupt.clear();
                 // The prompt is already in the transcript; say why nothing
                 // followed it, and close the turn so the next one starts on
@@ -1876,5 +1884,6 @@ test {
     _ = print_mode;
     _ = tools;
     _ = loop;
+    _ = loop.cache;
     _ = stream;
 }

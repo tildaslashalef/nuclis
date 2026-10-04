@@ -270,7 +270,8 @@ One file, `~/.nuclis/nuclis.json`, with sections `engine` (model, backend,
 `speculative`, `draft_length`, `image_max_tokens`, sampling overrides),
 `agent` (`think`,
 `fold_thinking`, `theme`, `instructions`, `thinking_budget`), `decide`
-(`model`), and a `models` registry of named entries that
+(`model`), `cache` (`memory_bytes`, `disk_bytes`: the agent's token cache
+budgets, 0 to turn a tier off), and a `models` registry of named entries that
 locate a file (path, or repository and file with a pinned revision), name
 its companions, force a profile, and override any generation or agent key
 for that model only; an entry of `kind` `decision` is a decision
@@ -571,13 +572,16 @@ A turn is a loop over steps, at most 16 per turn:
   sentence is judged on the playground task list
   ([development.md § The agent's task list](development.md#the-agents-task-list));
   `--system-prompt <file>` replaces the built sections for that purpose.
-  The session is primed with the block before the first prompt and the
-  snapshot restored on a new session, a resume, or a replay; a window too
+  The session is primed with the block before the first prompt, restored
+  from the token cache when a state of it is kept; a window too
   small for it is a notice at startup, and the warm-up notice counts the
-  instructions file's tokens.
+  instructions file's tokens and says where a restored prefix came from.
 - Multi-turn without replay: the loop keeps the text the session has
   consumed and prefills only the increment; an effort change, a cancelled
-  turn, or compaction resets and replays, and the bar says so.
+  turn, or compaction restarts from the longest cached state the
+  conversation begins with (the primed prefix or a turn's end) and
+  replays the rest, and the bar names the cause and the tokens prefilled
+  and restored ([session.md § The agent's token cache](reference/session.md#the-agents-token-cache)).
 - Compaction: one tool result may not exceed an eighth of the context
   window in tokens (never below 256); it is cut at a line boundary with a
   note saying how to ask for the rest. When a step still does not fit,

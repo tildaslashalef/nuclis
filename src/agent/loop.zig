@@ -32,6 +32,7 @@ const tools = @import("tools/root.zig");
 const stream = @import("stream.zig");
 const interrupt = @import("../interrupt.zig");
 const config = @import("../config.zig");
+pub const cache = @import("cache.zig");
 pub const system_prompt = @import("system_prompt.zig");
 
 const Allocator = std.mem.Allocator;
@@ -117,8 +118,8 @@ pub const Step = struct {
     decode_seconds: f64 = 0,
     /// From the step's start to the end of its reasoning; 0 when it had none.
     thinking_seconds: f64 = 0,
-    /// The session had to be replayed for this step (compaction or a reset).
-    replayed: bool = false,
+    /// Set when the step could not continue the session where it stood.
+    replay: ?Replay = null,
     /// The engine closed the reasoning at the budget.
     reasoning_cut: bool = false,
     reasoning_tokens: usize = 0,
@@ -135,11 +136,35 @@ pub const Result = struct {
     summary: []const u8 = "",
 };
 
-/// What one completion step reported. `outcome` is the engine's; `replayed`
-/// says whether the conversation had to be rendered from an empty session.
+/// What one completion step reported. `outcome` is the engine's; `replay`
+/// is set when the conversation could not continue the session where it
+/// stood and was prefilled again from a cached state or from empty.
 pub const Reply = struct {
     outcome: inference.engine.Outcome,
-    replayed: bool = false,
+    replay: ?Replay = null,
+};
+
+/// Why a step re-prefilled the conversation, and how much of it a cached
+/// state restored instead.
+pub const Replay = struct {
+    cause: Cause,
+    /// Tokens restored from the cache rather than prefilled; 0 on a miss.
+    restored: usize = 0,
+
+    pub const Cause = enum {
+        /// A stored conversation is rendered into a fresh session.
+        resumed,
+        /// The previous step was cancelled and its state discarded.
+        cancel,
+        /// An earlier message renders differently (compaction, elision).
+        rewrite,
+        /// The reasoning effort changed the system block.
+        effort,
+        /// The engine was re-opened at another context size.
+        context,
+        /// A failed turn reset the session.
+        failure,
+    };
 };
 
 /// The completion side of a step. `messages` is the conversation to render
@@ -158,7 +183,12 @@ pub const Model = struct {
     /// Runs the projector over an image's encoded bytes; `NoVision` without
     /// one. The features are allocated with the given allocator.
     encode_image: *const fn (*anyopaque, Allocator, bytes: []const u8) anyerror!inference.engine.PreparedImage = noVision,
+    /// Called when a turn ends in an answer: a boundary the next turn's
+    /// render starts with, worth keeping. Best effort, never an error.
+    checkpoint: *const fn (*anyopaque) void = noCheckpoint,
 };
+
+fn noCheckpoint(_: *anyopaque) void {}
 
 fn noVision(_: *anyopaque, _: Allocator, _: []const u8) anyerror!inference.engine.PreparedImage {
     return error.NoVision;
@@ -240,7 +270,9 @@ pub const Agent = struct {
     agg_decode_seconds: f64 = 0,
     agg_speculative_steps: usize = 0,
     agg_accepted_drafts: usize = 0,
-    agg_replayed: bool = false,
+    /// The turn's first replay, and the prompt tokens its steps prefilled.
+    agg_replay: ?Replay = null,
+    agg_replay_prefilled: usize = 0,
     /// The last completed step's stop, so a turn that ended because its
     /// step ran out of output budget says so.
     last_stop: inference.engine.StopReason = .eos,
@@ -405,7 +437,8 @@ pub const Agent = struct {
         self.agg_decode_seconds = 0;
         self.agg_speculative_steps = 0;
         self.agg_accepted_drafts = 0;
-        self.agg_replayed = false;
+        self.agg_replay = null;
+        self.agg_replay_prefilled = 0;
 
         const stop = try self.steps();
         try self.emitTurnEnd(stop);
@@ -428,7 +461,10 @@ pub const Agent = struct {
             self.agg_decode_seconds += seconds(reply.outcome.timing.decode);
             self.agg_speculative_steps += reply.outcome.timing.speculative_steps;
             self.agg_accepted_drafts += reply.outcome.timing.accepted_drafts;
-            self.agg_replayed = self.agg_replayed or reply.replayed;
+            if (reply.replay) |r| {
+                if (self.agg_replay == null) self.agg_replay = r;
+                self.agg_replay_prefilled += reply.outcome.timing.prompt_tokens;
+            }
             self.last_stop = reply.outcome.stop;
 
             // A cancelled step is display-only: the model never saw its end,
@@ -472,13 +508,16 @@ pub const Agent = struct {
                 .prefill_seconds = seconds(reply.outcome.timing.prefill),
                 .decode_seconds = seconds(reply.outcome.timing.decode),
                 .thinking_seconds = self.thinking_seconds,
-                .replayed = reply.replayed,
+                .replay = reply.replay,
                 .reasoning_cut = reply.outcome.reasoning_cut,
                 .reasoning_tokens = reply.outcome.reasoning_tokens,
             } });
             if (cancelled) return .cancelled;
             try self.appendItem(.assistant, self.answer.written(), self.thinking.written(), calls, null, &.{});
-            if (calls.len == 0) return .done;
+            if (calls.len == 0) {
+                self.model.checkpoint(self.model.context);
+                return .done;
+            }
             try self.execute(calls);
             try self.deliverSteering();
         }
@@ -860,7 +899,7 @@ pub const Agent = struct {
                     .prefill_seconds = self.agg_prefill_seconds,
                     .decode_seconds = self.agg_decode_seconds,
                     .accepted_per_step = if (self.agg_speculative_steps > 0) @as(f64, @floatFromInt(self.agg_accepted_drafts)) / @as(f64, @floatFromInt(self.agg_speculative_steps)) else null,
-                    .replayed = self.agg_replayed,
+                    .replay = if (self.agg_replay) |r| .{ .cause = @tagName(r.cause), .prefilled = self.agg_replay_prefilled, .restored = r.restored } else null,
                 },
             },
         });
@@ -930,30 +969,27 @@ pub const Completer = struct {
     /// Rendered prompt plus generated text the session has consumed. Empty
     /// after a reset, which is what makes the next render replay.
     seen: std.ArrayList(u8) = .empty,
+    /// The effort `seen` was rendered at: a render at another one differs
+    /// in the system block, which names the replay's cause.
+    seen_effort: Profile.Effort = .off,
+    /// Bytes of `seen` that are the primed prefix; more means a conversation.
+    primed_len: usize = 0,
     /// Set when `run` last reported `ContextFull`, for the caller's message.
     overflow: ?Overflow = null,
-    /// The system block and tools already consumed: restored instead of
-    /// re-prefilled whenever a conversation starts from that prefix.
-    primed: ?Primed = null,
+    /// States at turn boundaries and primed prefixes, restored instead of
+    /// re-prefilled when a render starts with one (`cache.zig`).
+    cache: cache.Memory,
+    /// Primed prefixes across processes; null when disabled or unavailable.
+    disk: ?cache.Disk = null,
+    /// Why the next step will not continue where the session stands, when
+    /// the reason is known before the render (a reset, a cancel, a re-prime).
+    cause: ?Replay.Cause = null,
     /// An image prefill ran in this session: the drafter's cache is stale
     /// from then on, so speculation stays off until `reset`.
     images_fed: bool = false,
 
-    const Primed = struct {
-        text: []u8,
-        tokens: []u32,
-        snapshot: inference.session.Snapshot,
-
-        fn deinit(self: *Primed, alloc: Allocator) void {
-            alloc.free(self.text);
-            alloc.free(self.tokens);
-            self.snapshot.deinit();
-            self.* = undefined;
-        }
-    };
-
     pub fn model(self: *Completer) Model {
-        return .{ .context = self, .run = run, .count = count, .encode_image = encodeImage };
+        return .{ .context = self, .run = run, .count = count, .encode_image = encodeImage, .checkpoint = checkpoint };
     }
 
     /// The projector over one image's bytes, with the features moved to the
@@ -967,36 +1003,58 @@ pub const Completer = struct {
         return prepared;
     }
 
-    /// Prefills the system block and tools now, so the first turn — and every
-    /// session that starts from the same prefix — pays only its own message.
-    /// Replaces any earlier priming. On failure the session is reset and
-    /// nothing is primed; `ContextFull` (with `overflow` set) means the window
-    /// cannot hold the prefix plus the output budget. Returns the tokens
-    /// consumed, 0 when the profile has no prefix to prime.
-    pub fn prime(self: *Completer, system: []const u8, definitions: []const Profile.ToolDefinition) !usize {
-        self.dropPrimed();
+    /// Where a primed prefix came from.
+    pub const Primed = struct {
+        tokens: usize = 0,
+        from: enum { prefill, memory, disk } = .prefill,
+    };
+
+    /// Puts the system block and tools in the session now, so the first turn
+    /// — and every session that starts from the same prefix — pays only its
+    /// own message: restored from the memory tier, else the disk tier, else
+    /// prefilled and saved to both. On failure the session is reset;
+    /// `ContextFull` (with `overflow` set) means the window cannot hold the
+    /// prefix plus the output budget. `tokens` is 0 when the profile has no
+    /// prefix to prime.
+    pub fn prime(self: *Completer, system: []const u8, definitions: []const Profile.ToolDefinition) !Primed {
         const text = try self.eng.prefix(&.{.{ .role = .system, .content = system }}, definitions, self.effort);
-        errdefer self.alloc.free(text);
-        if (text.len == 0) {
-            self.alloc.free(text);
-            return 0;
-        }
+        defer self.alloc.free(text);
+        if (text.len == 0) return .{};
         const tokens = try self.eng.encode(text);
-        errdefer self.alloc.free(tokens);
+        defer self.alloc.free(tokens);
         const session = self.eng.model.session();
         if (tokens.len + self.buffers.generated.len > session.capacity) {
             self.overflow = .{ .needed = tokens.len + self.buffers.generated.len, .capacity = session.capacity };
             return error.ContextFull;
         }
+        // Re-priming under a conversation replays it on the next step.
+        if (self.seen.items.len > self.primed_len) self.cause = self.cause orelse .effort;
+        if (self.cache.exact(text)) |entry| {
+            if (self.restoreEntry(entry)) {
+                self.primed_len = text.len;
+                return .{ .tokens = tokens.len, .from = .memory };
+            } else |_| self.cache.remove(entry);
+        }
+        // A per-layer observer is a per-token contract: those runs prefill.
+        const layer_observer = self.observer != null and self.observer.?.layer != null;
+        const disk_key = if (self.disk) |*d| d.key(tokens, session.layout_digest) else undefined;
+        if (!layer_observer) if (self.disk) |*d| {
+            if (d.load(self.alloc, disk_key) catch null) |loaded| {
+                var snap = loaded;
+                if (self.restoreSnapshot(&snap, text, tokens)) {
+                    self.primed_len = text.len;
+                    return .{ .tokens = tokens.len, .from = .disk };
+                } else |_| snap.deinit();
+            }
+        };
         self.eng.model.reset();
         if (self.history) |h| h.reset();
         self.seen.clearRetainingCapacity();
+        self.primed_len = 0;
         // With a drafter, prime through `commitPrompt` so the primed snapshot
-        // carries the block's cache rows; a per-layer observer is a per-token
-        // contract and keeps the ordinary prefill (speculation is off then).
-        const drafter = self.eng.model.drafter();
-        const layer_observer = self.observer != null and self.observer.?.layer != null;
-        if (drafter != null and !layer_observer) {
+        // carries the block's cache rows; a per-layer observer keeps the
+        // ordinary prefill (speculation is off then).
+        if (self.eng.model.drafter() != null and !layer_observer) {
             inference.engine.commitPrompt(self.eng, tokens, self.buffers.logits, self.observer) catch |err| {
                 self.eng.model.reset();
                 return err;
@@ -1008,34 +1066,87 @@ pub const Completer = struct {
             };
         }
         if (self.history) |h| for (tokens) |token| try h.observe(token);
-        const snapshot = try self.eng.model.snapshot(self.alloc);
-        self.primed = .{ .text = text, .tokens = tokens, .snapshot = snapshot };
         try self.seen.appendSlice(self.alloc, text);
-        return tokens.len;
+        self.seen_effort = self.effort;
+        self.primed_len = text.len;
+        var snap = try self.eng.model.snapshot(self.alloc);
+        // A failed save costs the next process a prefill, nothing more.
+        if (!layer_observer) if (self.disk) |*d| d.save(self.alloc, disk_key, &snap) catch {};
+        self.keep(snap);
+        return .{ .tokens = tokens.len };
     }
 
-    /// Forgets the primed prefix (a re-opened engine cannot restore it).
-    pub fn dropPrimed(self: *Completer) void {
-        if (self.primed) |*p| p.deinit(self.alloc);
-        self.primed = null;
+    /// Restores a disk snapshot of `text` (`tokens`) and keeps it in memory.
+    /// The snapshot is consumed on success, the caller's on failure.
+    fn restoreSnapshot(self: *Completer, snap: *inference.session.Snapshot, text: []const u8, tokens: []const u32) !void {
+        self.eng.model.reset();
+        errdefer self.eng.model.reset();
+        try self.eng.model.restore(snap);
+        if (self.history) |h| {
+            h.reset();
+            for (tokens) |token| try h.observe(token);
+        }
+        self.seen.clearRetainingCapacity();
+        try self.seen.appendSlice(self.alloc, text);
+        self.seen_effort = self.effort;
+        self.images_fed = false;
+        self.keep(snap.*);
     }
 
-    /// When `full` starts with the primed prefix, puts the session back to
-    /// the primed state and returns what remains to prefill; null otherwise.
-    fn restorePrimed(self: *Completer, full: []const u8) !?[]const u8 {
-        const p = &(self.primed orelse return null);
-        if (!std.mem.startsWith(u8, full, p.text)) return null;
+    /// Hands `snap`, taken where the session stands, to the memory tier
+    /// under `seen` and the current history. Consumes `snap` either way.
+    fn keep(self: *Completer, snap: inference.session.Snapshot) void {
+        var owned = snap;
+        const text = self.alloc.dupe(u8, self.seen.items) catch {
+            owned.deinit();
+            return;
+        };
+        const bits: ?std.bit_set.Dynamic = if (self.history) |h| h.seen.clone(self.alloc) catch {
+            self.alloc.free(text);
+            owned.deinit();
+            return;
+        } else null;
+        _ = self.cache.insert(.{ .text = text, .tokens = owned.position, .history = bits, .snapshot = owned });
+    }
+
+    /// Puts the session at `entry`'s state. On failure the session is reset.
+    fn restoreEntry(self: *Completer, entry: *const cache.Entry) !void {
         // A reset first: `restore` needs a ready session, and a cancelled
         // step leaves a failed one.
         self.eng.model.reset();
-        try self.eng.model.restore(&p.snapshot);
+        errdefer self.eng.model.reset();
+        try self.eng.model.restore(&entry.snapshot);
         if (self.history) |h| {
             h.reset();
-            for (p.tokens) |token| try h.observe(token);
+            if (entry.history) |bits| {
+                h.seen.setUnion(bits);
+                h.revision += 1;
+            }
         }
         self.seen.clearRetainingCapacity();
-        try self.seen.appendSlice(self.alloc, p.text);
-        return full[p.text.len..];
+        try self.seen.appendSlice(self.alloc, entry.text);
+        self.seen_effort = self.effort;
+        self.images_fed = false;
+    }
+
+    /// The turn ended in an answer: keep the state under what it consumed.
+    /// Skipped when images are in it, since their placeholder text does not
+    /// tell one image from another.
+    fn checkpoint(context: *anyopaque) void {
+        const self: *Completer = @ptrCast(@alignCast(context));
+        if (self.cache.budget == 0 or self.images_fed or self.seen.items.len == 0) return;
+        if (self.cache.exact(self.seen.items) != null) return;
+        var snap = self.eng.model.snapshot(self.alloc) catch return;
+        if (snap.span_count != 0) {
+            snap.deinit();
+            return;
+        }
+        self.keep(snap);
+    }
+
+    /// Forgets every cached state (a re-opened engine cannot restore them).
+    pub fn dropCache(self: *Completer) void {
+        self.cache.clear();
     }
 
     fn count(context: *anyopaque, text: []const u8) anyerror!usize {
@@ -1049,35 +1160,60 @@ pub const Completer = struct {
     }
 
     /// Forgets what the session consumed, so the next step renders from an
-    /// empty session. Used when the engine is re-opened or a new conversation
-    /// starts; the session itself is reset by `inference` on the next render.
-    pub fn reset(self: *Completer) void {
+    /// empty session (or a cached prefix). `cause` names the replay when a
+    /// conversation continues (`/resume`, a re-opened engine, a failed
+    /// turn); null for a new one. The session itself is reset on the next
+    /// render.
+    pub fn reset(self: *Completer, cause: ?Replay.Cause) void {
         self.images_fed = false;
         self.seen.clearRetainingCapacity();
+        self.primed_len = 0;
+        self.cause = cause;
     }
 
     pub fn deinit(self: *Completer) void {
-        self.dropPrimed();
+        self.cache.deinit();
+        if (self.disk) |*d| d.close();
         self.seen.deinit(self.alloc);
     }
 
     fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, images: []const Image, sink: *stream.Sink) anyerror!Reply {
         const self: *Completer = @ptrCast(@alignCast(context));
-        var replayed = false;
+        var replay: ?Replay = null;
         const full = try self.eng.render(messages, definitions, self.effort);
         defer self.alloc.free(full);
         const remainder = blk: {
-            if (self.seen.items.len > 0) if (increment(self.seen.items, full)) |rest| break :blk rest;
-            // Nothing usable in the session: start from the primed prefix
-            // when the conversation begins with it, else from empty. Only a
-            // conversation that was in the session counts as a replay.
-            replayed = self.seen.items.len > 0;
-            if (try self.restorePrimed(full)) |rest| break :blk rest;
+            var continued: ?[]const u8 = if (self.seen.items.len > 0) increment(self.seen.items, full) else null;
+            // Only a conversation that was in the session counts as a replay.
+            const cause: ?Replay.Cause = self.cause orelse if (continued != null or self.seen.items.len == 0)
+                null
+            else if (self.seen_effort != self.effort) .effort else .rewrite;
+            // A cached state further along than the session wins even when
+            // the session could continue: a re-prime under a conversation
+            // left it at the system block.
+            if (self.cache.longest(full)) |entry| if (continued == null or entry.text.len > self.seen.items.len) {
+                const restored = entry.tokens;
+                if (self.restoreEntry(entry)) {
+                    if (cause) |c| replay = .{ .cause = c, .restored = restored };
+                    break :blk full[self.seen.items.len..];
+                } else |_| {
+                    self.cache.remove(entry);
+                    // The failed restore reset the session.
+                    continued = null;
+                }
+            };
+            if (continued) |rest| {
+                if (cause) |c| replay = .{ .cause = c };
+                break :blk rest;
+            }
             self.eng.model.reset();
             if (self.history) |h| h.reset();
             self.seen.clearRetainingCapacity();
+            if (cause) |c| replay = .{ .cause = c };
             break :blk full;
         };
+        self.cause = null;
+        self.primed_len = @min(self.primed_len, self.seen.items.len);
         const tokens = try self.eng.encode(remainder);
         defer self.alloc.free(tokens);
         const session = self.eng.model.session();
@@ -1114,13 +1250,14 @@ pub const Completer = struct {
         // The model consumed the prompt and every generated token except the
         // last one sampled (the stop token or the budget's final token).
         try self.seen.appendSlice(self.alloc, remainder);
+        self.seen_effort = self.effort;
         const timing = outcome.timing;
         const fed = if (timing.generated_tokens > 0) self.buffers.generated[0 .. timing.generated_tokens - 1] else self.buffers.generated[0..0];
         const fed_text = try inference.bpe.decode(self.alloc, &self.eng.vocab, fed, true, .{});
         defer self.alloc.free(fed_text);
         try self.seen.appendSlice(self.alloc, fed_text);
-        if (outcome.stop == .cancelled) self.seen.clearRetainingCapacity();
-        return .{ .outcome = outcome, .replayed = replayed };
+        if (outcome.stop == .cancelled) self.reset(.cancel);
+        return .{ .outcome = outcome, .replay = replay };
     }
 
     const Prefill = struct {
@@ -1203,9 +1340,15 @@ const Stub = struct {
     cancel_agent: ?*Agent = null,
     /// Reports the step at this index as one whose reasoning the engine cut.
     cut_at: ?usize = null,
+    /// Turn ends the loop offered to the cache.
+    checkpoints: usize = 0,
 
     fn model(self: *Stub) Model {
-        return .{ .context = self, .run = run, .count = count };
+        return .{ .context = self, .run = run, .count = count, .checkpoint = checkpoint };
+    }
+    fn checkpoint(context: *anyopaque) void {
+        const self: *Stub = @ptrCast(@alignCast(context));
+        self.checkpoints += 1;
     }
     /// Four bytes per token: a fixed density the budget tests can compute.
     fn count(_: *anyopaque, text: []const u8) anyerror!usize {
@@ -1413,6 +1556,8 @@ test "one call then an answer: the loop executes the call and sends the result b
     try testing.expectEqual(agent.history.items[1].tool_calls[0].id, agent.history.items[2].tool_call_id.?);
     try testing.expect(std.mem.indexOf(u8, agent.history.items[2].content, "hi there") != null);
     try testing.expectEqualStrings("The file says hi there.", agent.history.items[3].content);
+    // Only the answer ends the turn: the step that called is no boundary.
+    try testing.expectEqual(@as(usize, 1), stub.checkpoints);
 }
 
 test "a step whose reasoning was cut says so once and records it" {
@@ -1667,6 +1812,7 @@ test "a cancelled step stops the loop before any call runs" {
     try testing.expectEqual(Stop.cancelled, try agent.turn("go", &.{}));
     try testing.expectEqual(@as(usize, 0), capture.calls);
     try testing.expectEqual(@as(usize, 0), capture.results.items.len);
+    try testing.expectEqual(@as(usize, 0), stub.checkpoints);
 }
 
 test "an unknown tool is an error result the model reads, not a failure" {

@@ -59,12 +59,9 @@ anything else is `SnapshotMismatch` with the session untouched. Rows past
 the restored position are not cleared, and nothing reads them: attention
 sees `[0, position + 1)` after its own write, recurrent state is whole.
 
-The agent uses one snapshot as its **primed prefix** (ENGN-09): at startup
-the completer prefills the system block and tool definitions, snapshots
-the session, and whenever a conversation must start from that prefix again
-— a new session, a `/resume`, a replay after elision — restores it and
-prefills only what follows. A re-opened engine (a `/ctx` change) primes
-anew, since the snapshot is bound to its capacity and layout.
+The agent keeps snapshots at turn boundaries and restores the longest one
+a render starts with, in memory and on disk: see
+[§ The agent's token cache](#the-agents-token-cache).
 
 Why copy instead of rewind: 48 of the 64 layers are recurrent, and their
 matrix after token *n* is a function of every token before it. Truncating a
@@ -73,9 +70,7 @@ it was at *m < n*. A snapshot is the only rewind that exists, and it is
 explicit about its cost.
 
 `engine.Model.snapshot`/`restore` expose the pair on both executors; the
-chat and the agent loop are the intended callers (turn-boundary
-checkpoints instead of replaying the conversation after a cancel), wired
-in the agent's phase 2. The model's pair also carries what a loaded
+agent's token cache is their caller. The model's pair also carries what a loaded
 drafter keeps outside the session (`Drafter.carried`: an MTP head's
 pending target hidden row, 20 KB for Qwen), in `Snapshot.carried`, and
 refuses a snapshot whose carried length differs before touching the
@@ -188,3 +183,59 @@ steps and exercises the refusals.
 This replaced ENGN-14's row checkpoints (a 150 MB recurrent copy per batch
 row, 1.25 GB for eight, written by the chunk kernel and restored by a host
 copy); see the [engineering log](../engineering-log.md) for both.
+
+## The agent's token cache (AGNT-19)
+
+The agent re-prefilled tokens it had already computed whenever the session
+could not continue where it stood: every start (the system block and tools),
+a cancelled step, an effort change, compaction. `src/agent/cache.zig` keeps
+snapshots at **boundaries** and `Completer` (`src/agent/loop.zig`) restores
+the longest one a render starts with, then prefills the rest. New tokens
+(a tool result, the user's message) are never cached; only re-prefill is
+removed.
+
+- **Boundaries.** The primed prefix, one per effort (the effort is part
+  of the system block), and the end of every turn that ends in an answer
+  (`Model.checkpoint`, called by the loop). Both sit before a control token,
+  which BPE never merges across, so the remainder encodes the same alone.
+  A state with an image in it is not kept: the placeholder text is the same
+  for every image.
+- **Matching** is on the rendered text the state consumed, not on tokens:
+  a turn's generated tokens need not be the canonical encoding of their
+  text, so re-encoding the render would miss them. A hit must be a proper
+  prefix, leaving a token whose logits the next sample needs. A cached
+  state further along than the session wins even when the session could
+  continue (after a re-prime under a conversation, the session stands at
+  the system block). The penalty history is a 31 KB bitset copied with the
+  state.
+- **Memory tier**: in the process, least recently used out first under
+  `cache.memory_bytes` (4 GiB; 0 keeps none). A Qwen state is 150 MB plus
+  64 KiB per token, about 250 MB primed and 1.2 GB at 16K. A `/ctx` change
+  drops it (the states are bound to the capacity).
+- **Disk tier**: the primed prefix only, under `<root>/cache/prefix/`
+  through `inference.prefix_cache` (header with the keys, content digest;
+  a file that fails either is deleted and reads as a miss). The key's
+  model half hashes the model files (and the draft companion when a
+  drafter is loaded), the executor, and the build: version and commit,
+  plus the executable's size and modification time for a build from a
+  modified tree, since such builds share a commit (`cache.buildId`). A
+  different build misses, never restores. `cache.disk_bytes` (8 GiB; 0
+  disables) bounds the directory; a hit refreshes a file's modification
+  time and each save evicts the oldest beyond the budget.
+- **Accounting.** A step that could not continue the session reports a
+  `Replay` with its cause (`resumed`, `cancel`, `rewrite` for compaction or
+  elision, `effort`, `context`, `failure`) and the tokens restored; the
+  bar shows `replayed <cause> <prefilled>, <restored> restored`, and the
+  session file records `replay` and `restored_tokens` beside `replayed`.
+
+**Evidence** (Qwen3.8-27B Q4_K_M, Metal, M4 Pro, 16K window, dirty build of
+2026-10-04 on `9f45bf0`). Start-up warm-up of the 1,333-token prefix at
+`low` (`make shot`, `.zig-cache/tui/c1-start`, `c8-warm-start`, `c6-low`):
+16.3 s prefilled, 1.0 s from disk, 0.4 s from memory. `agent -p` wall time
+with the weights in the page cache, three pairs: 17.4 s cold, 2.6 s with
+the disk entry. A cancel then a prompt (`c4-after-cancel`): `replayed
+cancel 41, 1369 restored`; low → xhigh → low then a prompt
+(`c7-after-effort`): `replayed effort 17, 1427 restored`. A cold and a
+warm `agent -p` at temperature 0 give the same text with the drafter and
+without it. A primed entry on disk is 242–251 MB.
+
