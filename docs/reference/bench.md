@@ -2417,3 +2417,40 @@ are kept as `tests/fixtures/run-2026-10-04-gemma4-e4b/`.
 | 32,639 | 388.42 ± 2.24 | 44.58 ± 0.15 |
 
 Server RSS 4.6–4.7 GiB.
+
+### nuclis: Qwen3.8-27B
+
+[nuclis-2026-10-04.json](../benchmarks/nuclis-2026-10-04.json), at
+`d008abf` (clean tree; the binary built at `c55604c`, documents and scripts
+only between), 23:31–00:40:
+
+| Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 94.21 ± 0.04 | 11.67 ± 0.01 | 90.45 / 10.62 | +9.9 % |
+| 4,096 | 85.35 ± 1.94 | 10.38 ± 0.76 | 83.70 / 10.20 | +1.8 % |
+| 16,384 | 62.69 ± 0.39 | 8.30 ± 0.06 | 62.70 / 8.27 | +0.3 % |
+| 32,639 | 48.91 ± 0.04 | 7.53 ± 0.03 | 49.55 / 7.55 | −0.2 % |
+
+Against today's reference:
+
+| Prompt tokens | Decode nuclis / llama.cpp | ratio | Prefill nuclis / llama.cpp | ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 11.67 / 10.21 | 1.14× | 94.21 / 92.03 | 1.02× |
+| 4,096 | 10.38 / 10.02 | 1.04× | 85.35 / 95.49 | 0.89× |
+| 16,384 | 8.30 / 7.54 | 1.10× | 62.69 / 79.31 | 0.79× |
+| 32,639 | 7.53 / 6.56 | 1.15× | 48.91 / 69.30 | 0.71× |
+
+Decode still leads at every length. KERN-23's gain shows at 512 (+9.9 %)
+and fades with context, where attention, not the matvecs, dominates.
+Prefill falls behind from 4K on. Peak RSS 2.4 GiB (weights mapped),
+footprint 2.6–2.7 GiB.
+
+**The 4,096 step on the slow dense models.** Its decode fell within the
+run (11.22 → 10.21 → 9.71) while 512 before it and 16K/32K after it held
+within ±0.06; the Muse reference did the same at 4K (12.62 → 10.13, and
+again on its re-run). The fast models' 4K rows are flat (12B QAT, 26B-A4B,
+E4B within ±0.5 %). At 4K each request runs about a minute at full load
+on a 27–30B model, long enough to heat the chip from its cooled start,
+too short to settle; at 16K and longer the rate is the settled one. Both
+engines start each family from the same 10-minute cool-down, so the
+comparison holds; the 4K row carries the larger spread.

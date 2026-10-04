@@ -1,0 +1,652 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-05",
+  "label": "warm",
+  "purged_before_first_run": false,
+  "started_at": "2026-10-04T21:31:30+00:00",
+  "finished_at": "2026-10-04T22:40:47+00:00",
+  "methodology": "See ../reference/bench.md#acceptance-runs and ../reference/reference-baseline.md. Each run feeds the reference harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident model pages).",
+  "nuclis_version": "nuclis 0.6.0-dev",
+  "git_revision": "d008abf5abdd4b8f3d5683f79ead85f00b4b90c8",
+  "git_dirty": false,
+  "build_mode": "safe",
+  "zig_version": "0.17.0",
+  "hardware": {
+    "cpu": "Apple M4 Pro",
+    "memory_bytes": 51539607552,
+    "cpu_cores": 12,
+    "gpu": "Graphics/Displays:\n\n    Apple M4 Pro:\n\n      Chipset Model: Apple M4 Pro\n      Type: GPU\n      Bus: Built-In\n      Total Number of Cores: 16\n      Vendor: Apple (0x106b)\n      Metal Support: Metal 4\n      Displays:\n        Studio Display:\n          Display Type: Retina LCD\n          Resolution: 5120 x 2880 Retina\n          Display Serial Number: CPYT6CY65X\n          Display Firmware Version: Version 26.4 (Build 23E246)\n          Main Display: Yes\n          Mirror: Off\n          Online: Yes\n          Automatically Adjust Brightness: Yes"
+  },
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434",
+  "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=23265379)\t100%; charged; 0:00 remaining present: true",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "model_sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+  "backend": "metal",
+  "kv_precision": "f16",
+  "context": 32768,
+  "output_tokens": 128,
+  "warmup_runs": 1,
+  "repetitions": 3,
+  "boundary_repetitions": 3,
+  "prompts": [
+    {
+      "prompt_tokens": 512,
+      "corpus_tokens": 493,
+      "text_file": ".zig-cache/prompts/reference/prompt-512.txt",
+      "text_sha256": "3747401a3d40014d952eba16d8ea03495c3d0d56e1a97af9e88ea847a9099ea3",
+      "text_bytes": 1295,
+      "text_tokens": 511,
+      "text_ids_equal_reference": false,
+      "reference_fixture": "tests/fixtures/run-2026-09-06/prompt-512.json",
+      "reference_fixture_sha256": "4043b51f3b40205517d309a67163712601d35739b3c68e88483bdd318ebcb005"
+    },
+    {
+      "prompt_tokens": 4096,
+      "corpus_tokens": 4077,
+      "text_file": ".zig-cache/prompts/reference/prompt-4096.txt",
+      "text_sha256": "11d9074d266b8df0654d9c3d477d10552e6bd04799f043977a1aa0b36e81fc00",
+      "text_bytes": 9519,
+      "text_tokens": 4096,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-06/prompt-4096.json",
+      "reference_fixture_sha256": "338fc6a792f88e0703b631358ed2089e542b8e6315570055335bdbf77339bb0a"
+    },
+    {
+      "prompt_tokens": 16384,
+      "corpus_tokens": 16365,
+      "text_file": ".zig-cache/prompts/reference/prompt-16384.txt",
+      "text_sha256": "b31ef30007317098a6814de355d0e032fa6ece4875b9c3f3e3940ec59954b033",
+      "text_bytes": 37725,
+      "text_tokens": 16384,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-09-06/prompt-16384.json",
+      "reference_fixture_sha256": "353fb179aa85e76710196ca7e9327dd754e2b73987a393b306b70a7f05d28130"
+    },
+    {
+      "prompt_tokens": 32639,
+      "corpus_tokens": 32620,
+      "text_file": ".zig-cache/prompts/reference/prompt-32639.txt",
+      "text_sha256": "9fd1075aada618d0f2dd7f262fa6253854cee655f25e315d358a40abbf0ecf5c",
+      "text_bytes": 75040,
+      "text_tokens": 32639,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/boundary-2026-09-06/prompt-32639.json",
+      "reference_fixture_sha256": "6f3ea62a995d7fd78d8bd927c913e6e371f7645fff70decbd1842a19f6c45cab"
+    }
+  ],
+  "summary": [
+    {
+      "prompt_tokens": 512,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 94.20546423209451,
+        "sample_stdev": 0.036071863454302196
+      },
+      "decode_tokens_per_second": {
+        "mean": 11.66818345529894,
+        "sample_stdev": 0.008365499934152611
+      },
+      "first_token_milliseconds": {
+        "mean": 5434.929972,
+        "sample_stdev": 2.0816241067050516
+      },
+      "session_bytes": 2304376832,
+      "peak_resident_bytes": 2555297792
+    },
+    {
+      "prompt_tokens": 4096,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 85.3505725543036,
+        "sample_stdev": 1.9418779854335821
+      },
+      "decode_tokens_per_second": {
+        "mean": 10.381445268684384,
+        "sample_stdev": 0.7649803584952692
+      },
+      "first_token_milliseconds": {
+        "mean": 48007.093055666664,
+        "sample_stdev": 1106.784425984884
+      },
+      "session_bytes": 2304376832,
+      "peak_resident_bytes": 2555363328
+    },
+    {
+      "prompt_tokens": 16384,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 62.68764509486884,
+        "sample_stdev": 0.3922566916300283
+      },
+      "decode_tokens_per_second": {
+        "mean": 8.29633352312276,
+        "sample_stdev": 0.06420404871404134
+      },
+      "first_token_milliseconds": {
+        "mean": 261366.12675,
+        "sample_stdev": 1632.6797466441665
+      },
+      "session_bytes": 2304376832,
+      "peak_resident_bytes": 2555461632
+    },
+    {
+      "prompt_tokens": 32639,
+      "samples": 3,
+      "prefill_tokens_per_second": {
+        "mean": 48.91457549424834,
+        "sample_stdev": 0.03772204553425442
+      },
+      "decode_tokens_per_second": {
+        "mean": 7.531841725792526,
+        "sample_stdev": 0.026059442859996423
+      },
+      "first_token_milliseconds": {
+        "mean": 667265.5878196667,
+        "sample_stdev": 514.4004313413603
+      },
+      "session_bytes": 2304376832,
+      "peak_resident_bytes": 2555478016
+    }
+  ],
+  "family": "qwen38",
+  "reference": {
+    "revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
+    "run": "run-2026-09-06",
+    "rows": [
+      {
+        "prompt_tokens": 512,
+        "samples": 3,
+        "source": "reference-2026-10-04-qwen38.json",
+        "prefill_tokens_per_second": 92.02824076310661,
+        "decode_tokens_per_second": 10.209122247013038
+      },
+      {
+        "prompt_tokens": 4096,
+        "samples": 3,
+        "source": "reference-2026-10-04-qwen38.json",
+        "prefill_tokens_per_second": 95.4946781503622,
+        "decode_tokens_per_second": 10.015006175185269
+      },
+      {
+        "prompt_tokens": 16384,
+        "samples": 3,
+        "source": "reference-2026-10-04-qwen38.json",
+        "prefill_tokens_per_second": 79.30608324449562,
+        "decode_tokens_per_second": 7.539919067514276
+      },
+      {
+        "prompt_tokens": 32639,
+        "samples": 3,
+        "source": "reference-2026-10-04-qwen38.json",
+        "prefill_tokens_per_second": 69.30371322605433,
+        "decode_tokens_per_second": 6.560174609473798
+      }
+    ]
+  },
+  "runs": [
+    {
+      "prompt_tokens": 512,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-06/prompt-512.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 2555297792,
+      "peak_footprint_bytes": 2789545576,
+      "memory_before": {
+        "timestamp": "2026-10-04T21:31:30+00:00",
+        "swap": "total = 2048.00M  used = 415.56M  free = 1632.44M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-10-04T21:32:42+00:00",
+        "swap": "total = 2048.00M  used = 415.56M  free = 1632.44M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "safe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 2304376832,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 266.044458,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 11723.045917,
+            "first_token_milliseconds": 11723.046292,
+            "decode_milliseconds": 10873.45375,
+            "prefill_tokens_per_second": 43.674656196435336,
+            "decode_tokens_per_second": 11.679821602220914,
+            "gpu_busy_milliseconds": 16259.92066640174,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5437.252375,
+            "first_token_milliseconds": 5437.253208,
+            "decode_milliseconds": 10893.284208,
+            "prefill_tokens_per_second": 94.16520784544234,
+            "decode_tokens_per_second": 11.658559308195734,
+            "gpu_busy_milliseconds": 16237.976958218496,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5434.301958,
+            "first_token_milliseconds": 5434.302292,
+            "decode_milliseconds": 10880.480166,
+            "prefill_tokens_per_second": 94.21633246681652,
+            "decode_tokens_per_second": 11.6722789860743,
+            "gpu_busy_milliseconds": 16220.249125006376,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 512,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 5433.233958,
+            "first_token_milliseconds": 5433.234416,
+            "decode_milliseconds": 10879.144459,
+            "prefill_tokens_per_second": 94.23485238402466,
+            "decode_tokens_per_second": 11.673712071626788,
+            "gpu_busy_milliseconds": 16219.77037479519,
+            "speculative": false
+          }
+        ],
+        "mean_prefill_tokens_per_second": 94.20546423209451,
+        "mean_decode_tokens_per_second": 11.668183455298939,
+        "mean_first_token_milliseconds": 5434.929972000001
+      }
+    },
+    {
+      "prompt_tokens": 4096,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-06/prompt-4096.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 2555363328,
+      "peak_footprint_bytes": 2795394688,
+      "memory_before": {
+        "timestamp": "2026-10-04T21:32:42+00:00",
+        "swap": "total = 2048.00M  used = 415.56M  free = 1632.44M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-10-04T21:36:43+00:00",
+        "swap": "total = 2048.00M  used = 415.56M  free = 1632.44M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "safe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 2304376832,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 225.89825,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 47523.985625,
+            "first_token_milliseconds": 47523.986333,
+            "decode_milliseconds": 11334.382542,
+            "prefill_tokens_per_second": 86.1880573805514,
+            "decode_tokens_per_second": 11.204845039365534,
+            "gpu_busy_milliseconds": 58596.13816678757,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 47363.503042,
+            "first_token_milliseconds": 47363.503542,
+            "decode_milliseconds": 11322.433167,
+            "prefill_tokens_per_second": 86.48008987780815,
+            "decode_tokens_per_second": 11.216670315188976,
+            "gpu_busy_milliseconds": 58555.26595810079,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 47372.688333,
+            "first_token_milliseconds": 47372.689,
+            "decode_milliseconds": 12435.35175,
+            "prefill_tokens_per_second": 86.46332188723835,
+            "decode_tokens_per_second": 10.212819271477382,
+            "gpu_busy_milliseconds": 59676.49233332486,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 4096,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 49285.085958,
+            "first_token_milliseconds": 49285.086625,
+            "decode_milliseconds": 13072.775125,
+            "prefill_tokens_per_second": 83.10830589786428,
+            "decode_tokens_per_second": 9.714846219386796,
+            "gpu_busy_milliseconds": 62223.76954148058,
+            "speculative": false
+          }
+        ],
+        "mean_prefill_tokens_per_second": 85.3505725543036,
+        "mean_decode_tokens_per_second": 10.381445268684384,
+        "mean_first_token_milliseconds": 48007.093055666664
+      }
+    },
+    {
+      "prompt_tokens": 16384,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-09-06/prompt-16384.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 2555461632,
+      "peak_footprint_bytes": 2822854296,
+      "memory_before": {
+        "timestamp": "2026-10-04T21:36:43+00:00",
+        "swap": "total = 2048.00M  used = 415.56M  free = 1632.44M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-10-04T21:55:04+00:00",
+        "swap": "total = 2048.00M  used = 415.56M  free = 1632.44M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "safe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 2304376832,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 234.622125,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 256114.348708,
+            "first_token_milliseconds": 256114.349291,
+            "decode_milliseconds": 14864.222459,
+            "prefill_tokens_per_second": 63.97142558646589,
+            "decode_tokens_per_second": 8.544005604753577,
+            "gpu_busy_milliseconds": 270528.42712489655,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 259603.130792,
+            "first_token_milliseconds": 259603.1315,
+            "decode_milliseconds": 15173.1725,
+            "prefill_tokens_per_second": 63.111719608371125,
+            "decode_tokens_per_second": 8.370035996097718,
+            "gpu_busy_milliseconds": 274451.06333328295,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 261669.238917,
+            "first_token_milliseconds": 261669.239584,
+            "decode_milliseconds": 15363.363375,
+            "prefill_tokens_per_second": 62.61339723312649,
+            "decode_tokens_per_second": 8.266419071143007,
+            "gpu_busy_milliseconds": 276702.2515833669,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 16384,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 262826.0085,
+            "first_token_milliseconds": 262826.009166,
+            "decode_milliseconds": 15389.191125,
+            "prefill_tokens_per_second": 62.337818443108915,
+            "decode_tokens_per_second": 8.252545502127553,
+            "gpu_busy_milliseconds": 277885.4351246555,
+            "speculative": false
+          }
+        ],
+        "mean_prefill_tokens_per_second": 62.68764509486885,
+        "mean_decode_tokens_per_second": 8.29633352312276,
+        "mean_first_token_milliseconds": 261366.12674999997
+      }
+    },
+    {
+      "prompt_tokens": 32639,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/boundary-2026-09-06/prompt-32639.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "32768",
+        "--kv",
+        "f16",
+        "--repeat",
+        "3",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 2555478016,
+      "peak_footprint_bytes": 2873628288,
+      "memory_before": {
+        "timestamp": "2026-10-04T21:55:04+00:00",
+        "swap": "total = 2048.00M  used = 415.56M  free = 1632.44M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-10-04T22:40:41+00:00",
+        "swap": "total = 2048.00M  used = 415.56M  free = 1632.44M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "safe",
+        "context": 32768,
+        "kv_precision": "f16",
+        "session_bytes": 2304376832,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 3,
+        "load_milliseconds": 235.767625,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 667345.294208,
+            "first_token_milliseconds": 667345.294708,
+            "decode_milliseconds": 16802.824625,
+            "prefill_tokens_per_second": 48.90871379970649,
+            "decode_tokens_per_second": 7.558253021997484,
+            "gpu_busy_milliseconds": 683343.0270830868,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 666685.338875,
+            "first_token_milliseconds": 666685.3395,
+            "decode_milliseconds": 16824.7955,
+            "prefill_tokens_per_second": 48.957128793437654,
+            "decode_tokens_per_second": 7.548382980345883,
+            "gpu_busy_milliseconds": 682827.3811253312,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 667445.748834,
+            "first_token_milliseconds": 667445.749625,
+            "decode_milliseconds": 16831.580834,
+            "prefill_tokens_per_second": 48.90135274218014,
+            "decode_tokens_per_second": 7.5453399922756175,
+            "gpu_busy_milliseconds": 683593.4315833729,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 667665.673667,
+            "first_token_milliseconds": 667665.674334,
+            "decode_milliseconds": 16929.265333,
+            "prefill_tokens_per_second": 48.88524494712722,
+            "decode_tokens_per_second": 7.501802204756076,
+            "gpu_busy_milliseconds": 683903.7168751529,
+            "speculative": false
+          }
+        ],
+        "mean_prefill_tokens_per_second": 48.91457549424833,
+        "mean_decode_tokens_per_second": 7.531841725792525,
+        "mean_first_token_milliseconds": 667265.5878196666
+      }
+    }
+  ]
+}
