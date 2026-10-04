@@ -75,7 +75,13 @@ key `zig-<hash>-<os>-<arch>`.
    success, wall 4 m 02 s (old layout 5 m 57 s): `test` 2 m 28 s, `cpu`
    2 m 19 s, `metal` 4 m 00 s (its ReleaseSafe build 3 m 31 s with no
    warm global cache; the old serial job built it after the tests had
-   warmed it). A warm run (the next code push) is still to measure.*
+   warmed it). Warm run (`37211094389`, `82d21db`): wall 2 m 16 s
+   (−62 %): `test` 1 m 17 s, `cpu` 44 s, `metal` 2 m 16 s; the toolchain
+   cache hit (install 0 s). `metal` stays the bound because `build.zig`
+   embeds `git rev-parse HEAD` in the build options, so the executable
+   recompiles on every commit whatever the cache holds; a Debug `metal`
+   build would roughly halve it (locally 43 s vs 83 s cold), if the user
+   wants it.*
 5. Evidence: `gh run view <id> --json jobs` step times, a docs-only push
    that does not trigger, a code push before and after. Update
    `docs/development.md` § Continuous integration and releases and the
