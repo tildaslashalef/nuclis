@@ -59,6 +59,9 @@ key `zig-<hash>-<os>-<arch>`.
    ReleaseSafe from a clean `.zig-cache` (`time`, M4 Pro, note it is not the
    runner). The ci builds only prove compile and link; `release.yml` keeps
    ReleaseSafe. Choose by the numbers; record them in the log.
+   *Measured 2026-10-04, M4 Pro, empty local and global caches
+   (`ZIG_GLOBAL_CACHE_DIR`; 0.17 has no `--global-cache-dir`):
+   `-Dmetal=true` Debug 43 s, ReleaseSafe 83 s.*
 4. Cache: toolchain key from `.github/zig-toolchain` plus the
    `minimum_zig_version` value (not the whole manifest); a separate
    `actions/cache` for `.zig-cache` and `~/.cache/zig` keyed per job on

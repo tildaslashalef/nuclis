@@ -1,14 +1,18 @@
-# Every push and pull request: the checks that need nothing but a compiler.
+# Pushes and pull requests that touch code: the checks that need nothing but
+# a compiler.
 #
-# What runs here is exactly what `make check` runs minus the GPU: the format
-# check, the default unit tests (no model, no network, no GPU), a build with
-# the Metal backend so the Objective-C bridge and the framework links are
-# covered, and a CPU-only build so the `error.MetalNotEnabled` path keeps
-# linking. What does *not* run here, deliberately: `test-metal`, `compare`,
-# `bench`, and anything that pulls a model. Those need the pinned 16.5 GB
-# artifact and the real M4 Pro; a number measured on a virtualised GPU would
-# be a number nobody should trust, and their evidence belongs in
-# docs/engineering-log.md.
+# What runs here is `make check` minus the GPU, as three parallel jobs: the
+# format check and the default unit tests (no model, no network, no GPU); a
+# ReleaseSafe build with the Metal backend so the Objective-C bridge and the
+# framework links are covered; and a CPU-only Debug build so the
+# `error.MetalNotEnabled` path keeps linking. What does *not* run here,
+# deliberately: `test-metal`, `compare`, `bench`, and anything that pulls a
+# model. Those need the pinned 16.5 GB artifact and the real M4 Pro; a number
+# measured on a virtualised GPU would be a number nobody should trust, and
+# their evidence belongs in docs/engineering-log.md.
+#
+# A push that touches only documentation does not run it; nothing here reads
+# Markdown.
 #
 # The compiler is installed by `.github/install-zig.sh`: the version comes from
 # `minimum_zig_version` in build.zig.zon and the SHA-256 from
@@ -21,7 +25,9 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["docs/**", "**/*.md"]
   workflow_dispatch:
 
 permissions:
@@ -33,54 +39,68 @@ concurrency:
 
 jobs:
   check:
+    name: ${{ matrix.name }}
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: test
+            run: |
+              zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/
+              version=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon)
+              printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || {
+                echo "build.zig.zon .version '$version' is not MAJOR.MINOR.PATCH[-prerelease]" >&2
+                exit 1
+              }
+              echo "version $version"
+              zig build test --summary all
+          - name: metal
+            run: |
+              zig build -Dmetal=true -Doptimize=ReleaseSafe
+              ./zig-out/bin/nuclis --version
+              ./zig-out/bin/nuclis --help > /dev/null
+              ./zig-out/bin/nuclis agent --help > /dev/null
+          - name: cpu
+            run: |
+              zig build -Dmetal=false
+              ./zig-out/bin/nuclis --version
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 
+      - name: The manifest's compiler
+        id: zig
+        run: echo "version=$(sed -n 's/.*\.minimum_zig_version = "\([^"]*\)".*/\1/p' build.zig.zon)" >> "$GITHUB_OUTPUT"
+
+      # Keyed on the compiler alone, so a version bump in build.zig.zon does
+      # not throw it away.
       - name: Cache the toolchain
-        id: cache
+        id: toolchain
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ~/.local/zig
-            ~/.cache/zig
-          key: zig-${{ hashFiles('build.zig.zon', '.github/zig-toolchain') }}-${{ runner.os }}-${{ runner.arch }}
-          restore-keys: zig-${{ runner.os }}-${{ runner.arch }}-
+          path: ~/.local/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ steps.zig.outputs.version }}-${{ hashFiles('.github/zig-toolchain') }}
 
       - name: Install the pinned Zig
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.toolchain.outputs.cache-hit != 'true'
         run: ./.github/install-zig.sh "$HOME/.local/zig"
 
       - run: echo "$HOME/.local/zig" >> "$GITHUB_PATH"
+
+      # Zig's caches, per job and compiler. Every run saves under its own
+      # commit and restores the newest prefix match, so a change to one
+      # package leaves the others' artifacts warm.
+      - name: Cache the build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            .zig-cache
+            ~/.cache/zig
+          key: build-${{ matrix.name }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.zig.outputs.version }}-${{ github.sha }}
+          restore-keys: build-${{ matrix.name }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.zig.outputs.version }}-
+
       - run: zig version
-
-      - name: Format
-        run: zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/
-
-      - name: The manifest version is semver
-        run: |
-          version=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon)
-          printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || {
-            echo "build.zig.zon .version '$version' is not MAJOR.MINOR.PATCH[-prerelease]" >&2
-            exit 1
-          }
-          echo "version $version"
-
-      - name: Unit tests
-        run: zig build test --summary all
-
-      - name: Metal build
-        run: zig build -Dmetal=true -Doptimize=ReleaseSafe
-
-      - name: The binary answers for itself
-        run: |
-          ./zig-out/bin/nuclis --version
-          ./zig-out/bin/nuclis --help > /dev/null
-          ./zig-out/bin/nuclis agent --help > /dev/null
-
-      - name: CPU-only build links without the Metal bridge
-        run: |
-          zig build -Dmetal=false -Doptimize=ReleaseSafe
-          ./zig-out/bin/nuclis --version
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.run }}
