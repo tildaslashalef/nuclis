@@ -24,6 +24,10 @@ idle opencode server stopped, display sleep blocked by Amphetamine.
 | Unit | What | Sessions |
 | --- | --- | --- |
 | ENGN-21 | Re-measure all families against llama.cpp at 512 / 4K / 16K / 32,639 on macOS 27; republish README, bench.md, nuclis.dev | 2 |
+| REPO-35 | The documents, restructured: a docs hub, `worklog.md`, no ADRs, consistent names, current state first, a link checker | 2 |
+
+Order: ENGN-21 first (its session 2 rewrites README, `bench.md`, and the
+site); REPO-35 starts once it closes, from a tree that holds today's numbers.
 
 ## ENGN-21: the benchmarks, measured again
 
@@ -150,3 +154,123 @@ open, display sleep off; note the start state (`pmset -g batt`,
 Gates: `make lint-py`, `make workloads-validate`, `make site-check`,
 `make verify-auto`. No inference tier: the unit measures, it changes no
 numerical behaviour (a code fix found along the way is its own unit).
+
+## REPO-35: the documents, restructured
+
+Base: (set at the first change)
+
+**Why.** nuclis.dev links into `docs/` (`site/index.html` :203 bench,
+:320 "Setup guide" → `development.md`, :348–351 architecture, llm-guide,
+log, AGENTS; `site/llms.txt` :11–19). A newcomer lands in month-old lab
+notebooks: `bench.md` (2,375 lines) puts its current answer last,
+`development.md` opens with the author's machine, `docs/README.md` (the
+hub) is linked from nowhere and misses 12 documents, and the same
+2026-09-10 Qwen numbers sit in eight files. Survey of 2026-10-04 (an
+agent, read-only); its findings by file:line are folded into the steps.
+
+**Decisions (user, 2026-10-04).** `docs/engineering-log.md` becomes
+`docs/worklog.md`. `docs/adr/` is removed with every reference: ADR 0001
+(the Qwen decode verifier, *proposed*) was implemented with changes and no
+unit followed the ADR convention; its durable knowledge moves to
+`docs/reference/speculative-decoding.md` first. AGENTS.md drops ADRs from
+the session protocol.
+
+**Constraints.** The log stays append-only in content; renaming it and
+repointing paths inside it is a mechanical pass, not a rewrite (step 3,
+user to confirm). `CHANGELOG.md`'s 162 log links pin release tags
+(`blob/v0.x/…`) and stay valid; leave them. Headings that other files
+cite keep their text (anchors): `bench.md` has 24 cited anchors, 117
+links (31 from the log, 28 from `workloads.json`); `metal-backend.md` 66;
+`development.md` 31. Reorder sections, never retitle a cited one.
+
+**Session 1: mechanics** (paths, links, removals; no prose rewrite).
+
+1. `scripts/docs-check.py` + `make docs-check`, standard library: every
+   relative Markdown link and anchor in `*.md`, the `docs/...md#…`
+   strings in `workloads.json` / `gates.json` / `docs/benchmarks/*.json`,
+   and the repo links in `site/index.html` and `site/llms.txt` resolve
+   (GitHub anchor rule: lowercase, punctuation stripped, spaces →
+   hyphens, `-1` suffixes for repeats); `--self-test`. Known breakage it
+   must report today: `session.md#the-agents-token-cache` (development,
+   spec ×2, session), `session.md#row-checkpoints-engn-14`
+   (speculative-decoding), `vision.md#the-qwen3-vl-projector-modl-21`
+   (gates.json ×2). Fix those; record the log's own dead links
+   (`roadmap.md`, `agent-spec.md`, `architecture.md#9-adding-a-model`)
+   as an allow-list the check reads. Add it to `verify-auto`'s
+   model-free checks for `*.md` paths.
+2. ADR removal: move ADR 0001's durable parts (§ Where the verify cost
+   goes, § External evidence surveyed 2026-09-30, § Quantitative stop
+   rules and the budget table, § Alternatives considered), condensed, to
+   a `speculative-decoding.md` section "The Qwen verify budget"; repoint
+   `bench.md` :1728, `speculative-decoding.md` :973, `apple-gpu.md` :155;
+   delete `docs/adr/`; AGENTS.md :39 (session protocol), :71 (durable
+   knowledge), :391 (unit identifiers) lose the ADR clauses;
+   `docs/README.md` :43 too.
+3. `git mv docs/engineering-log.md docs/worklog.md`; repoint
+   `.github/workflows/ci.yml`, AGENTS.md (4), `development.md` (6),
+   `llm-guide.md`, `docs/README.md`, `bench.md`, `eval.md`, `session.md`,
+   `speculative-decoding.md`, `vision.md`, `spec.md`, `README.md`,
+   `scripts/changelog.py` (2; its self-test), `site/index.html`,
+   `site/llms.txt`, `TODO.md`. Inside the log, only its links to the
+   removed ADR and to renamed files (step 4) are repointed — ask the user
+   before this pass; the alternative is leaving them dead and
+   allow-listed.
+4. Names. `docs/reference/` stays flat (26 files; subfolders would move
+   every cited path for little gain); rename the misfits, each with its
+   inbound links: `qwen-validation.md` → `qwen3.8.md` (like `gemma4.md`,
+   `muse-glimmer.md`, `bonsai.md`), `gguf-inspection.md` → `gguf.md`,
+   `reference-baseline.md` → `llama-cpp.md` (the oracle and its harness).
+   Count each rename's references before it (`grep -rI`), run
+   `make docs-check` after.
+5. The hub: `docs/README.md` lists every document, one line each,
+   grouped (start here; using nuclis; how it works; per model; the
+   record), and drops "for Qwen3.8-27B" (:3); `docs/reference/README.md`
+   (GitHub shows it under the bare file list) points back to it. Linked
+   from `README.md` (:199), `site/index.html` (a "Docs" link), and
+   `site/llms.txt`. AGENTS.md :405–406 and `development.md` :1431 agree:
+   documents are listed in `docs/README.md`. AGENTS.md :359 drops
+   `docs/roadmap.md`.
+
+**Session 2: content** (current state first; history kept, below it).
+
+6. `bench.md`: after *Definitions*, a *Current results* section (the
+   ENGN-21 tables, the speculative defaults table now at :2296, the
+   README speculation table's source, which today lives only in the
+   log at KERN-23) and a table of contents; *Observations so far*
+   (:183–505, 2026-09-07 bring-up) moves under a *History* heading with
+   the dated sections, text unchanged. Where a dated section duplicates
+   a topic document's record (KERN-13/14/15/16/18 in
+   `metal-backend.md`; ENGN-12/14/15/16/20, MODL-19/20 in
+   `speculative-decoding.md`), keep its heading and replace the body by
+   one line and a link, or keep both — decide on reading them.
+7. `metal-backend.md`: a current-state lead and TOC, as
+   `speculative-decoding.md` :8–24 does; :7–8's "2026-09-07 review"
+   pointer resolved; "Performance observation" (:1778) labelled as
+   2026-09-07 on macOS 26.
+8. `development.md` split: a newcomer `docs/getting-started.md` (install,
+   `~/.nuclis`, configuration from :498, `nuclis model pull` from :573)
+   becomes the site's "Setup guide" target; the agent UI internals
+   (:744–1006: styled output, live region, transcript, renderer) move to
+   a `docs/reference/terminal.md`; cited headings leave a one-line stub.
+   Stale lines: :14 (eval shipped, APPS-14), :44 (macOS 26), :85–90
+   (copied numbers → link), :389, :407.
+9. One home per number: README and the site keep the headline tables;
+   `architecture.md` :518–534 (stale flowchart, "the switch lost" — ENGN-20
+   turned it on), `development.md` :85–90, `llm-guide.md` :33 (ask: the
+   guide changes only on request), `laya.md` :27, `reference-baseline`
+   (now `llama-cpp.md`) :223 link to `bench.md` instead of copying.
+10. Bring-up documents, current-state lead or fold: `gguf.md` :3,
+    `qwen3.8.md` :4, `generation.md` :1 ("bring-up"), :11–12, `cpu-reference.md`
+    :308–313, `llama-cpp.md` :4–5 ("nuclis does not execute models yet"),
+    `muse-glimmer.md` :444–445 (the projector shipped), `bonsai.md` :342
+    (the catalogue entry was removed 2026-09-26).
+11. Protected documents, navigation only, with the user's yes: a TOC for
+    `llm-guide.md` and its §27 heading level (:1031, H2 among H3s); the
+    log's summary table (:12–177) linking each row to its entry; check
+    the log renders on GitHub at ~500 KB.
+12. Close: the log entry lists every rename and removal; `make
+    docs-check`, `make site-check`, `make lint-py`, `make verify-auto`.
+
+Gates: `make docs-check` (new), `make site-check`, `make lint-py`,
+`make verify-auto`. Documents and scripts only; no inference tier. The
+site's changed pages are looked at by the user.
