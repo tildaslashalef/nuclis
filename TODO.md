@@ -15,11 +15,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-ENGN-21 is planned and not started: re-measure every family against the
-pinned llama.cpp on today's machine (macOS 27.0.1, Zig 0.17.0, after
-KERN-23's +14 % Qwen decode), at all four acceptance lengths, then
-republish the README, `docs/reference/bench.md`, and nuclis.dev. The user
-runs it in a fresh session. Next: step 0 of the unit.
+ENGN-21 session 1 is under way: step 0's facts are settled and the step
+list below is rewritten from them. Next: step 1 (the harness changes),
+then the runs. The machine was checked on 2026-10-04 19:00: AC, no
+thermal warning, GPU 16–23 % (the display only), `sudo purge` done, the
+idle opencode server stopped, display sleep blocked by Amphetamine.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ runs it in a fresh session. Next: step 0 of the unit.
 
 ## ENGN-21: the benchmarks, measured again
 
-Base: (set at the first change)
+Base: `78e7ec4`
 
 **Why.** The README's main table is from macOS 26.6.2, Zig 0.16.0, and
 trees before KERN-23 (Qwen decode +14 % on 2026-10-03); its reference
@@ -46,41 +46,89 @@ files declare 128K–256K) are out of scope: no token arrays, reference
 runs, or gates exist there; a later unit if wanted.
 
 **Session 1: measure.** Machine on AC, nothing else on the GPU, lid
-open, idle 15 min before the first run; note the start state
-(`pmset -g batt`, `pmset -g therm`).
+open, display sleep off; note the start state (`pmset -g batt`,
+`pmset -g therm`) in each record (the harnesses capture `pmset`).
 
-0. *Facts first, then rewrite this step list and commit it before any
-   run.* Read `docs/reference/reference-baseline.md` (the reference
-   harness, `scripts/reference-baseline.py` → `scripts/reference-record.py`),
-   `scripts/nuclis-baseline.py`, and `workloads.json`'s `*/acceptance`
-   entries. Settle: whether the reference harness can replay the existing
-   token arrays (`tests/fixtures/run-*/prompt-<n>.json`) so both dates
-   measure identical tokens (preferred), or must regenerate them; how the
-   E4B run gets its arrays (no `gemma4-e4b/acceptance` workload or
-   `reference-*-gemma4-e4b.json` exists yet; add both); the expected wall
-   time per family on each side (Qwen nuclis took 46 min, 26B-A4B 65 min).
-1. Build: `make metal`, record `git rev-parse --short HEAD`, `nuclis
-   --version`, `zig version` (must equal `~/.local/opt/zig/stable/zig
-   version`), `sw_vers`, `system_profiler SPHardwareDataType | grep -E
-   'Chip|Memory'`.
-2. Reference, family by family, cool-down (10 min idle) between: Qwen,
-   Gemma 12B QAT, 26B-A4B, Muse, E4B → `docs/benchmarks/reference-<date>-<family>.json`.
-3. nuclis acceptance, same order and cool-downs: `make workload
-   NAME=<entry>/acceptance` with `reference_records` pointed at step 2's
-   records → `docs/benchmarks/nuclis-<date>-<suffix>.json`; the script
-   re-hashes each pinned file after its runs.
-4. Speculation pairs in one session from a cooled chip, at each entry's
-   catalogue draft length (README: Qwen 7, 12B QAT 5, E4B 6, Muse 6),
-   512 and 32,639, plus the 26B-A4B pair that justifies keeping it off;
-   reports copied to `docs/benchmarks/speculative-<date>/`.
-5. After each family, write its numbers into `docs/reference/bench.md`
-   (a new dated section per record, older records kept) and commit, so
-   the transcript is never the only copy. Run long jobs in the
-   background and keep their output out of the context (`tail`, `grep`).
+*Facts (step 0, 2026-10-04).*
+- nuclis replays committed arrays (`scripts/nuclis-baseline.py`,
+  `load_reference_prompt`); the reference harness rebuilds them through
+  the server every run. The rebuild is deterministic for Gemma (12B,
+  12B QAT, 26B-A4B arrays are byte-identical) but not for Muse: its
+  template carries the server's date. So the reference must **replay**
+  the committed arrays (step 1a).
+- Qwen's arrays: `run-2026-09-06/` holds 512–16,384 and
+  `boundary-2026-09-06/` the 32,639 one (equal to the Bonsai run's).
+- E4B's template (`241c50d8…`) differs from the 12B's: thinking off
+  renders no empty `<|channel>thought\n<channel|>`, so the harness's
+  `gemma4` check fails on it and the 12B arrays are not E4B's prompts
+  (the 2026-10-01 speculation rows used them anyway). E4B gets its own
+  arrays from the harness (no replay) under a new family `gemma4-e`.
+  The pinned reference runs E4B (MODL-27 traces and perplexity).
+- `reference-record.py` names records `reference-<date>-<family>`: the
+  three Gemma files collide, so pass `--output` with the workload suffix.
+- Repetitions (user, 2026-10-04): one warmup and **three** measured
+  requests at every length on both sides, 32,639 included (before: the
+  Qwen reference and every nuclis boundary run took one).
+- Wall time from the last records (reference / nuclis, minutes, three
+  at 32K): Qwen 53 / 69, 12B QAT 25 / 45, 26B-A4B 10 / 23, Muse 48 / 61,
+  E4B ~10 / ~15; with 10-minute cool-downs about 7 h. A run that crosses
+  midnight dates its record by its start; that is fine.
+
+1. Harness changes, committed before any run (gates: `make lint-py`,
+   `make workloads-validate`):
+   a. `scripts/reference-baseline.py --replay <dir>[,<dir>…]` (fixture
+      run directories under `tests/fixtures/`, the first holding a size
+      wins): sends those `prompt-<n>.json` arrays instead of building
+      them; still checks the server's revision, slot, template marker,
+      and smoke; fails unless the server tokenizes the corpus into the
+      fixture's body tokens; saves the fixture's
+      `prompt-construction.json` plus `replayed_from` and whether the
+      server's own prefix/suffix tokens equal it (false only for Muse).
+   b. Family `gemma4-e` in `reference-baseline.py` (`FAMILIES`: BOS
+      `<bos>`, marker `<turn|>\n<|turn>model\n`, and `<|think|>` must be
+      absent) and `nuclis-baseline.py` (`THINKING_OFF`, same rule).
+   c. `nuclis-baseline.py --boundary-repetitions` default 3.
+   d. `workloads.json`: `gemma4-e4b/acceptance` (model `gemma4_e4b`, run
+      `run-2026-10-04-gemma4-e4b`, suffix `gemma4-e4b`); every
+      acceptance entry's `reference_records` → the new records (Qwen's
+      becomes one file, `reference-<date>-qwen38.json`).
+2. Build: `make metal`; record `git rev-parse --short HEAD`, `nuclis
+   --version`, `zig version` (= `~/.local/opt/zig/stable/zig version`),
+   `sw_vers`, `system_profiler SPHardwareDataType | grep -E 'Chip|Memory'`.
+3. Reference, in order Qwen, 12B QAT, 26B-A4B, Muse, E4B, 10 min idle
+   between: start `llama-server` with the flags of
+   `reference-baseline.md` § Run the workload on the family's file
+   (`gates.json` `models`) in the background, then
+   `python3 scripts/reference-baseline.py --family <f>
+   --prompt-lengths 512,4096,16384,32639 --server-pid <pid>
+   --output-dir .reference/<date>-<suffix> --replay <runs>` (E4B: no
+   `--replay`), stop the server, then `python3 scripts/reference-record.py
+   .reference/<date>-<suffix> --family <f> --output
+   docs/benchmarks/reference-<date>-<suffix>.json`. Replay runs: Qwen
+   `run-2026-09-06,boundary-2026-09-06`; 12B QAT
+   `run-2026-09-12-gemma4-qat`; 26B-A4B `run-2026-09-18-gemma4-26b-a4b`;
+   Muse `run-2026-09-19-muse-glimmer`. E4B's output directory's
+   `prompt-*.json`, `prompt-construction.json`, and the files the other
+   runs keep are copied to `tests/fixtures/run-2026-10-04-gemma4-e4b/`
+   (and `tests/fixtures/provenance.md` gains its line).
+4. nuclis, same order and cool-downs: `make workload
+   NAME=<entry>/acceptance` → `docs/benchmarks/nuclis-<date>[-<suffix>].json`;
+   the script re-hashes each pinned file after its runs.
+5. Speculation pairs in one sitting from a cooled chip: `make
+   spec-matrix ARGS='--model <key> --contexts 512,32639 --drafts <n>
+   --sampling greedy --cooldown 90'` at the catalogue draft (Qwen 7, 12B
+   QAT 5, E4B 6, Muse 6; 26B-A4B 4, the pair that keeps it off); the
+   arrays are each family's acceptance run (`speed.family_run`, so E4B's
+   own once 1d lands); `--report --json` copied to
+   `docs/benchmarks/speculative-<date>/<key>.json`.
+6. After each family, its numbers go into `docs/reference/bench.md` (a
+   new dated section per record, older records kept) and are committed.
+   Long jobs run in the background; their output stays out of the
+   context (`tail`, `grep`).
 
 **Session 2: publish.**
 
-6. README: *Results* becomes two tables, decode and prefill, each with
+7. README: *Results* becomes two tables, decode and prefill, each with
    the four lengths as `nuclis / llama.cpp`, five rows; the header line
    names machine, OS, Zig, build, reference revision, method. The
    speculation table regenerated. Recheck every prose claim against the
@@ -88,15 +136,15 @@ open, idle 15 min before the first run; note the start state
    other families' gap, "short code reaches 20 tokens/s", "38 % less
    model time" (re-measure with `make agent-eval` or drop the number),
    "26B-A4B stays off".
-7. `scripts/site-check.py`: `RESULTS_HEADER` and `readme_results` follow
+8. `scripts/site-check.py`: `RESULTS_HEADER` and `readme_results` follow
    the new tables (self-test updated); `site/index.html` `#bench` gains
    the 4,096 and 16,384 columns and the E4B row; `site/site.js` charts
    offer the four lengths (the context toggle becomes four buttons);
    page copy that cites numbers rechecked ("Qwen3.8 is where the tuning
    went"). Screenshots at 1440 and 390 px; push deploys the site.
-8. `docs/reference/metal-backend.md` or `architecture.md` § Where
+9. `docs/reference/metal-backend.md` or `architecture.md` § Where
    performance goes, only if a family's gap moved materially.
-9. Close: log entry with every record path, the machine state, and the
+10. Close: log entry with every record path, the machine state, and the
    deltas against the 2026-09 records.
 
 Gates: `make lint-py`, `make workloads-validate`, `make site-check`,
