@@ -190,9 +190,12 @@
           <button type="button" data-phase="decode" aria-pressed="true">Decode</button>
           <button type="button" data-phase="prefill" aria-pressed="false">Prefill</button>
         </div>
-        <div class="seg" role="group" aria-label="Context length">
-          <button type="button" data-ctx="512" aria-pressed="true">512 tokens</button>
-          <button type="button" data-ctx="32639" aria-pressed="false">32,639 tokens</button>
+        <div class="seg seg-ctx" role="group" aria-label="Prompt length in tokens">
+          <span class="seg-label" aria-hidden="true">Prompt</span>
+          <button type="button" data-ctx="512" aria-pressed="true">512</button>
+          <button type="button" data-ctx="4096" aria-pressed="false">4,096</button>
+          <button type="button" data-ctx="16384" aria-pressed="false">16,384</button>
+          <button type="button" data-ctx="32639" aria-pressed="false">32,639</button>
         </div>
       </div>
       <div class="legend">
@@ -375,10 +378,10 @@ cd nuclis &amp;&amp; make metal
 <script type="application/json" id="bench">
 {
   "results": [
-    { "model": "Qwen3.8-27B", "decode": { "512": [10.62, 9.66], "32639": [7.55, 6.71] }, "prefill": { "512": [90.45, 89.19], "32639": [49.55, 67.28] } },
-    { "model": "Gemma 4 12B QAT", "decode": { "512": [23.96, 27.69], "32639": [16.24, 20.94] }, "prefill": { "512": [179.45, 224.46], "32639": [73.04, 143.72] } },
-    { "model": "Gemma 4 26B-A4B", "decode": { "512": [55.29, 68.02], "32639": [31.30, 44.09] }, "prefill": { "512": [500.42, 580.76], "32639": [134.74, 343.38] } },
-    { "model": "Muse Glimmer 30B", "decode": { "512": [9.60, 13.69], "32639": [6.62, 9.98] }, "prefill": { "512": [93.49, 95.28], "32639": [59.20, 76.86] } }
+    { "model": "Qwen3.8-27B", "decode": { "512": [10.62, 9.66], "4096": [10.20, 9.21], "16384": [8.27, 7.32], "32639": [7.55, 6.71] }, "prefill": { "512": [90.45, 89.19], "4096": [83.70, 89.26], "16384": [62.70, 74.07], "32639": [49.55, 67.28] } },
+    { "model": "Gemma 4 12B QAT", "decode": { "512": [23.96, 27.69], "4096": [20.71, 25.69], "16384": [17.87, 22.10], "32639": [16.24, 20.94] }, "prefill": { "512": [179.45, 224.46], "4096": [143.25, 216.82], "16384": [98.67, 158.78], "32639": [73.04, 143.72] } },
+    { "model": "Gemma 4 26B-A4B", "decode": { "512": [55.29, 68.02], "4096": [49.44, 60.82], "16384": [39.55, 50.67], "32639": [31.30, 44.09] }, "prefill": { "512": [500.42, 580.76], "4096": [346.17, 548.41], "16384": [206.44, 459.46], "32639": [134.74, 343.38] } },
+    { "model": "Muse Glimmer 30B", "decode": { "512": [9.60, 13.69], "4096": [8.26, 12.14], "16384": [7.19, 10.07], "32639": [6.62, 9.98] }, "prefill": { "512": [93.49, 95.28], "4096": [80.51, 93.01], "16384": [67.83, 80.96], "32639": [59.20, 76.86] } }
   ],
   "speculative": [
     { "model": "Qwen3.8-27B", "draft": 7, "512": [11.5, 17.4], "32639": [8.9, 11.2], "ratio": { "512": "1.51", "32639": "1.26" } },

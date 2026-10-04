@@ -31,6 +31,8 @@
 
   --chart-n: #008C99;      /* nuclis */
   --chart-r: #C47A12;      /* llama.cpp */
+  --text-n: #00737E;       /* the same hues, dark enough for small digits */
+  --text-r: #9C5F0B;
 
   /* the agent's real colours: gruvbox roles on the recording's terminal */
   --t-bg: #282A36;
@@ -275,6 +277,24 @@ p code, dd code, li code { background: var(--paper-2); padding: .08em .35em; bor
 .chart-table th, .chart-table td { text-align: right; padding: 6px 0 6px 16px; border-bottom: 1px solid var(--paper-2); font-weight: 400; }
 .chart-table th:first-child { text-align: left; padding-left: 0; }
 .chart-table tbody th { color: var(--ink); }
+.seg-label { align-self: center; padding: 0 8px 0 9px; font: 500 .78rem var(--sans); color: var(--slate); text-transform: uppercase; letter-spacing: .06em; }
+.chart-table summary .v-n, .chart-table summary .v-r { font-weight: 600; }
+.v-n { color: var(--text-n); }
+.v-r { color: var(--text-r); }
+.table-scroll { overflow-x: auto; }
+.vs-table table { margin-top: 14px; }
+.vs-table thead th { color: var(--slate); font-size: .8rem; letter-spacing: .02em; padding-bottom: 8px; }
+.vs-table td { font-variant-numeric: tabular-nums; white-space: nowrap; padding: 9px 12px 9px 20px; vertical-align: top; }
+.vs-table td .v { font-weight: 600; font-size: .95rem; }
+.vs-table .v-sep { margin: 0 .35em; color: var(--mist); }
+.vs-table .v-x { display: block; margin-top: 2px; font-size: .78rem; color: var(--slate); }
+.vs-table .v-x.win { color: var(--text-n); font-weight: 600; }
+.vs-table .grp th { padding: 20px 0 6px; text-align: left; font: 600 .74rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--slate); border-bottom: 1px solid var(--mist); }
+.vs-table tbody:first-of-type .grp th { padding-top: 8px; }
+.vs-table tbody.on .grp th { color: var(--ink); }
+.vs-table thead th.on { color: var(--ink); font-weight: 600; }
+.vs-table td.on { background: var(--paper); }
+.vs-table tbody.on td.on { background: var(--teal-wash); background: color-mix(in srgb, var(--teal-wash) 55%, #fff); }
 
 .spec { display: grid; grid-template-columns: minmax(0, 24rem) minmax(0, 1fr); gap: 56px; align-items: start; margin-top: 80px; }
 .spec-copy h3 { font-size: 1.5rem; font-variation-settings: "wdth" 115; letter-spacing: -.02em; line-height: 1.2; }
@@ -399,6 +419,10 @@ p code, dd code, li code { background: var(--paper-2); padding: .08em .35em; bor
   .half { display: block; width: auto; }
 }
 @media (max-width: 560px) {
+  .seg-ctx { flex-wrap: wrap; }
+  .vs-table td { padding: 8px 6px 8px 10px; }
+  .vs-table td .v { display: block; font-size: .88rem; }
+  .vs-table .v-sep { display: none; }
   .shelf { grid-template-columns: 1fr; }
   .tools { grid-template-columns: 1fr 1fr; }
   .tools li, .tools li + li { padding: 16px 12px 16px 0; border-left: 0; border-top: 1px solid var(--mist); }

@@ -240,14 +240,16 @@
   // tables; `make site-check` holds the two equal.
   const bench = JSON.parse($("#bench").textContent);
   const names = bench.results.map((r) => r.model);
-  const byCtx = (rows, pick) => ({ 512: rows.map((r) => pick(r)["512"]), 32639: rows.map((r) => pick(r)["32639"]) });
+  const CTX = ["512", "4096", "16384", "32639"];
+  const byCtx = (rows, pick, keys = CTX) => Object.fromEntries(keys.map((c) => [c, rows.map((r) => pick(r)[c])]));
   // [nuclis, llama.cpp] tokens/s
   const vs = { decode: byCtx(bench.results, (r) => r.decode), prefill: byCtx(bench.results, (r) => r.prefill) };
   // [off, on] decode tokens/s, and each entry's draft length
   const specNames = bench.speculative.map((r) => r.model);
   const specDraft = bench.speculative.map((r) => r.draft);
-  const spec = byCtx(bench.speculative, (r) => r);
-  const specRatio = byCtx(bench.speculative, (r) => r.ratio);
+  const SPEC_CTX = ["512", "32639"];
+  const spec = byCtx(bench.speculative, (r) => r, SPEC_CTX);
+  const specRatio = byCtx(bench.speculative, (r) => r.ratio, SPEC_CTX);
 
   const NS = "http://www.w3.org/2000/svg";
   const el = (tag, attrs = {}, parent) => {
@@ -265,7 +267,8 @@
   // filter changes so they can move, and it rebuilds when the width changes.
   function dumbbell(host, { rows, ratioHead, kinds }) {
     let marks, grid, Wd, L, H, last;
-    const R = 92, top = 34;
+    // The right margin holds the ratio column; a long heading needs more of it.
+    const R = ratioHead.length > 12 ? 132 : 92, top = 34;
     const move = (n, x, y) => { n.style.transform = `translate(${x}px, ${y}px)`; };
 
     function build() {
@@ -349,7 +352,7 @@
     const key = b.dataset.phase ? "phase" : "ctx";
     b.parentElement.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
     if (key === "phase") phase = b.dataset.phase; else ctx = b.dataset.ctx;
-    drawVs();
+    drawVs(); markVsTable();
   }));
 
   // speculation off -> on
@@ -377,8 +380,27 @@
       rows.map((r) => `<tr>${r.map((c, i) => (i ? `<td>${c}</td>` : `<th scope="row">${c}</th>`)).join("")}</tr>`).join("")}</tbody></table>`;
     host.after(d);
   };
-  table(vsHost, "Show the numbers: nuclis / llama.cpp, tokens per second", ["Model", "Decode 512", "Decode 32,639", "Prefill 512", "Prefill 32,639"],
-    names.map((n, i) => [n, ...["decode", "prefill"].flatMap((p) => ["512", "32639"].map((c) => `${vs[p][c][i][0].toFixed(2)} / ${vs[p][c][i][1].toFixed(2)}`))]));
+  // nuclis vs llama.cpp: one group per phase, a column per prompt length; the
+  // chart's phase and length are highlighted so the two views read together.
+  const vsTable = document.createElement("details");
+  vsTable.className = "chart-table vs-table";
+  const cellVs = ([n, r]) =>
+    `<span class="v v-n">${n.toFixed(2)}</span><span class="v-sep">/</span><span class="v v-r">${r.toFixed(2)}</span>` +
+    `<span class="v-x${n >= r ? " win" : ""}">${(n / r).toFixed(2)}×</span>`;
+  vsTable.innerHTML = `<summary>Show the numbers: <span class="v-n">nuclis</span> / <span class="v-r">llama.cpp</span>, tokens per second</summary>
+    <div class="table-scroll"><table>
+      <thead><tr><th scope="col">Prompt tokens</th>${CTX.map((c) => `<th scope="col" data-col="${c}">${(+c).toLocaleString("en")}</th>`).join("")}</tr></thead>
+      ${["decode", "prefill"].map((p) => `<tbody data-group="${p}">
+        <tr class="grp"><th scope="rowgroup" colspan="${CTX.length + 1}">${p === "decode" ? "Decode" : "Prefill"}</th></tr>
+        ${names.map((nm, i) => `<tr><th scope="row">${nm}</th>${CTX.map((c) => `<td data-col="${c}">${cellVs(vs[p][c][i])}</td>`).join("")}</tr>`).join("")}
+      </tbody>`).join("")}
+    </table></div>`;
+  vsHost.after(vsTable);
+  const markVsTable = () => {
+    vsTable.querySelectorAll("[data-col]").forEach((n) => n.classList.toggle("on", n.dataset.col === ctx));
+    vsTable.querySelectorAll("[data-group]").forEach((n) => n.classList.toggle("on", n.dataset.group === phase));
+  };
+  markVsTable();
   table(specHost, "Show the numbers: off → on, tokens per second", ["Model", "Draft", "512", "32,639"],
     specNames.map((n, i) => [n, specDraft[i], ...["512", "32639"].map((c) => `${spec[c][i][0].toFixed(1)} → ${spec[c][i][1].toFixed(1)}`)]));
 
