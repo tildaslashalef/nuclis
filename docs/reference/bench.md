@@ -91,7 +91,8 @@ tokens, context, and greedy sampling; see [reference-baseline.md](reference-base
 The v0.1 acceptance workload is the reference's
 ([reference-baseline.md](reference-baseline.md)): 512, 4,096, 16,384, and
 32,639 prompt tokens, 128 output tokens, greedy, one warmup, three measured
-repetitions (one at 32,639, as the reference took), context 32,768, F16
+repetitions (since 2026-10-04 at 32,639 too; the 2026-09 records took one
+there), context 32,768, F16
 KV cache. `make workload NAME=qwen38/acceptance` (`scripts/nuclis-baseline.py`) runs it and writes
 `docs/benchmarks/nuclis-<date>.json`. The prompts are the reference
 harness's own token arrays under `tests/fixtures/`, fed through `bench
@@ -2307,3 +2308,36 @@ Both Gemma entries break even at 32K, where the verify attention grows
 with the batch's rows; the decode-attention lever (KERN-22) is what moves
 that end.
 
+
+## The benchmarks on macOS 27 (ENGN-21, 2026-10-04)
+
+Every family re-measured on both engines on one machine and OS, so the
+README's columns share a date. Apple M4 Pro (12 CPU, 16 GPU cores), 48 GB,
+macOS 27.0.1 (26A434), AC, no thermal warning recorded, display kept on;
+`sudo purge` once before the first run. nuclis `c55604c` (0.6.0-dev,
+ReleaseSafe, Zig 0.17.0); the reference at `7620399` (built with AppleClang
+21.0.0), the server flags of [reference-baseline.md](reference-baseline.md#run-the-workload).
+Both sides take one warmup and **three** measured requests at every length,
+32,639 included (the 2026-09 records took one there), 128 greedy output
+tokens, context 32,768, F16 KV. The reference **replays** the committed
+token arrays (`--replay`), so both dates and both engines process identical
+tokens; Gemma 4 E4B, never measured before, gets its own arrays
+(`tests/fixtures/run-2026-10-04-gemma4-e4b/`). Ten minutes idle between
+families. Rates are mean ± sample standard deviation; Δ is against the
+family's 2026-09 record on macOS 26.
+
+### Reference: Qwen3.8-27B
+
+[reference-2026-10-04-qwen38.json](../benchmarks/reference-2026-10-04-qwen38.json),
+replaying `run-2026-09-06` and `boundary-2026-09-06` (the server's own
+rendering of the template and its tokens equal the fixture's):
+
+| Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 92.03 ± 0.07 | 10.21 ± 0.00 | 89.19 / 9.66 | +5.7 % |
+| 4,096 | 95.49 ± 1.48 | 10.02 ± 0.21 | 89.26 / 9.21 | +8.8 % |
+| 16,384 | 79.31 ± 2.06 | 7.54 ± 0.28 | 74.07 / 7.32 | +3.1 % |
+| 32,639 | 69.30 ± 0.25 | 6.56 ± 0.03 | 67.28 / 6.71 | −2.2 % |
+
+The reference got faster too on the new OS, except decode at 32K. Server
+RSS 17.2–17.5 GiB between requests (weights memory-mapped).
