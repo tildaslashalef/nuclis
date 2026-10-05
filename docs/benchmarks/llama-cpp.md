@@ -79,7 +79,7 @@ otherwise insists on the mainline pin) and `--family qwen38`, the fork's
 revision recorded as the reference side of
 [reference-2026-09-18-bonsai.json](reference-2026-09-18-bonsai.json)
 and read from there by `nuclis-baseline.py` into the nuclis record
-([benchmarks](README.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+([benchmarks](history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
 
 ## Run the workload
 

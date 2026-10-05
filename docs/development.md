@@ -370,7 +370,7 @@ about a minute per context instead of an eleven-minute 32K prefill:
   paired ratio holds while the absolute rates do not; `--cooldown 90`
   (seconds idle before each cell) gives cold-chip rates. This is how a
   catalogue verdict is set
-  ([benchmarks § The re-priced speculative verdicts](benchmarks/README.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)).
+  ([benchmarks § The re-priced speculative verdicts](benchmarks/history.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)).
 
 **The keep rule** ([TODO.md](../TODO.md) while the decode-speed theme
 runs): keep a change when its median decode, or for a verify lever the

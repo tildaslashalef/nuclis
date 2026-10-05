@@ -36,7 +36,7 @@
       "kv": "f16",
       "warmup": 1,
       "repeat": 3,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/prose512-draft": {
       "kind": "bench",
@@ -49,7 +49,7 @@
       "repeat": 3,
       "pair": true,
       "draft_length": 4,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/code-draft": {
       "kind": "bench",
@@ -63,7 +63,7 @@
       "repeat": 3,
       "pair": true,
       "draft_length": 4,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/prose512-greedy-d2": {
       "kind": "bench",
@@ -77,7 +77,7 @@
       "pair": true,
       "draft_length": 2,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/prose512-greedy-d4": {
       "kind": "bench",
@@ -91,7 +91,7 @@
       "pair": true,
       "draft_length": 4,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/prose512-greedy-d7": {
       "kind": "bench",
@@ -105,7 +105,7 @@
       "pair": true,
       "draft_length": 7,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/prose512-instruct-d2": {
       "kind": "bench",
@@ -125,7 +125,7 @@
       "pair": true,
       "draft_length": 2,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/prose512-instruct-d4": {
       "kind": "bench",
@@ -145,7 +145,7 @@
       "pair": true,
       "draft_length": 4,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/prose512-instruct-d7": {
       "kind": "bench",
@@ -165,7 +165,7 @@
       "pair": true,
       "draft_length": 7,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/code-greedy-d2": {
       "kind": "bench",
@@ -180,7 +180,7 @@
       "pair": true,
       "draft_length": 2,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/code-greedy-d4": {
       "kind": "bench",
@@ -195,7 +195,7 @@
       "pair": true,
       "draft_length": 4,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/code-greedy-d7": {
       "kind": "bench",
@@ -210,7 +210,7 @@
       "pair": true,
       "draft_length": 7,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/code-instruct-d4": {
       "kind": "bench",
@@ -231,7 +231,7 @@
       "pair": true,
       "draft_length": 4,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/prose4k-greedy-d4": {
       "kind": "bench",
@@ -245,7 +245,7 @@
       "pair": true,
       "draft_length": 4,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "qwen38/spec/prose4k-instruct-d4": {
       "kind": "bench",
@@ -265,7 +265,7 @@
       "pair": true,
       "draft_length": 4,
       "baseline": true,
-      "evidence": "docs/benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21"
     },
     "gemma4-qat/prose512": {
       "kind": "bench",
@@ -276,7 +276,7 @@
       "kv": "f16",
       "warmup": 1,
       "repeat": 3,
-      "evidence": "docs/benchmarks/README.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12"
+      "evidence": "docs/benchmarks/history.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12"
     },
     "gemma4-qat/prose512-draft": {
       "kind": "bench",
@@ -290,7 +290,7 @@
       "pair": true,
       "draft_length": 4,
       "note": "MODL-19's row at draft 4: 2.256 accepted/step, verify 135.9 ms, 25.40 \u2192 22.83 tok/s, 0.899\u00d7",
-      "evidence": "docs/benchmarks/README.md#the-gemma-4-draft-pair-modl-19-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-gemma-4-draft-pair-modl-19-2026-09-21"
     },
     "gemma4-26b-a4b/prose512": {
       "kind": "bench",
@@ -301,7 +301,7 @@
       "kv": "f16",
       "warmup": 1,
       "repeat": 3,
-      "evidence": "docs/benchmarks/README.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18"
+      "evidence": "docs/benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18"
     },
     "muse/prose512": {
       "kind": "bench",
@@ -312,7 +312,7 @@
       "kv": "f16",
       "warmup": 1,
       "repeat": 3,
-      "evidence": "docs/benchmarks/README.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19"
+      "evidence": "docs/benchmarks/history.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19"
     },
     "muse/prose512-draft": {
       "kind": "bench",
@@ -331,7 +331,7 @@
         }
       },
       "note": "the family whose entry turns speculation on; the bar is the verdict's condition (MODL-20 measured 1.234\u00d7)",
-      "evidence": "docs/benchmarks/README.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21"
+      "evidence": "docs/benchmarks/history.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21"
     },
     "bonsai/prose512": {
       "kind": "bench",
@@ -343,7 +343,7 @@
       "warmup": 1,
       "repeat": 3,
       "note": "the Bonsai run's token arrays are the Qwen run's",
-      "evidence": "docs/benchmarks/README.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18"
+      "evidence": "docs/benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18"
     },
     "qwen38/acceptance": {
       "kind": "acceptance",
@@ -361,7 +361,7 @@
       "reference_records": "reference-2026-10-04-gemma4-qat.json",
       "record_suffix": "gemma4-qat",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
-      "evidence": "docs/benchmarks/README.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12"
+      "evidence": "docs/benchmarks/history.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12"
     },
     "gemma4-26b-a4b/acceptance": {
       "kind": "acceptance",
@@ -370,7 +370,7 @@
       "reference_records": "reference-2026-10-04-gemma4-26b-a4b.json",
       "record_suffix": "gemma4-26b-a4b",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
-      "evidence": "docs/benchmarks/README.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18"
+      "evidence": "docs/benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18"
     },
     "gemma4-e4b/acceptance": {
       "kind": "acceptance",
@@ -388,7 +388,7 @@
       "reference_records": "reference-2026-10-04-muse-glimmer-4k.json,reference-2026-10-04-muse-glimmer.json",
       "record_suffix": "muse-glimmer",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
-      "evidence": "docs/benchmarks/README.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19"
+      "evidence": "docs/benchmarks/history.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19"
     },
     "bonsai/acceptance": {
       "kind": "acceptance",
@@ -397,7 +397,7 @@
       "reference_records": "reference-2026-09-18-bonsai.json",
       "record_suffix": "bonsai",
       "note": "scripts/nuclis-baseline.py: the four-length arrays, /usr/bin/time, hardware, the reference rows; writes docs/benchmarks/nuclis-<date>-<suffix>.json",
-      "evidence": "docs/benchmarks/README.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18"
+      "evidence": "docs/benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18"
     }
   }
 }

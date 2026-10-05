@@ -323,7 +323,7 @@ the kernels are at the set's multiply-rate ceiling (§ Ternary matvecs and
 tiles), so the rate the byte count promises needs a different ternary
 arithmetic in the matvec, the follow-up named there. The fork on the same
 machine decodes at 17.0 tok/s at 512 tokens ([benchmarks § Bonsai
-acceptance record](../benchmarks/README.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+acceptance record](../benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
 
 **PTQ1_0, and the entry's move.** The denser packing on the same plan
 (`--model <PTQ1_0 path>`, 2026-09-18, the same `make bench` protocol, two
@@ -354,4 +354,4 @@ MODL-17 closed the same day: the Metal plan applies the rotation and
 matches the traces in both cache precisions, the profile is the pinned
 Qwen3.8 one through the catalogue entry, and the acceptance record
 against the fork's server, the agent check, and the PTQ1_0 measurement
-are in [benchmarks](../benchmarks/README.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18).
+are in [benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18).

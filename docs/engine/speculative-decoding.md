@@ -298,7 +298,7 @@ F16 KV, ctx 32768, the 512-token Gemma acceptance prompt, 128 output tokens,
 greedy, one warmup and three measured runs per configuration on one loaded
 model (`--speculative on` runs the off/on pair); per-batch costs divide the
 sample's fields by `speculative_steps`. Table in
-[benchmarks § The Gemma 4 draft pair](../benchmarks/README.md#the-gemma-4-draft-pair-modl-19-2026-09-21).
+[benchmarks § The Gemma 4 draft pair](../benchmarks/history.md#the-gemma-4-draft-pair-modl-19-2026-09-21).
 
 | draft | accepted/step | proposed/step | tokens/batch | verify ms | propose ms | decode off → on tok/s | speedup |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -505,7 +505,7 @@ acceptance workload: 1.234× at draft 4, 1.163× at 8, 1.222× at 15, with
 proposals to 1.83 / 2.12 / 2.36 per step (of 4 / 8 / 15 requested). The
 verify batch (172.9–188.2 ms for 2.8–3.4 rows) is the cost; recovery is the
 position rewind alone (1 µs) and `commit` ~2 ms. Facts and the table:
-[benchmarks § The Muse Glimmer DFlash draft pair](../benchmarks/README.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21).
+[benchmarks § The Muse Glimmer DFlash draft pair](../benchmarks/history.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21).
 Memory on Metal: the session is 2,415,919,104 bytes (2304 MiB) at 32,768
 with the five draft caches (640 MiB of it), the drafter's device workspace
 149,861,504 bytes, and the verify scratch 53,862,464 bytes.
@@ -642,7 +642,7 @@ prefix).
 acceptance*): the target-draw rule replaces `min(1, p/q)`, and the draft
 contract lost its logits rows. `Timing.accept` isolates the host decision.
 
-**The record** is in [benchmarks § Speculative decoding record](../benchmarks/README.md#speculative-decoding-record-engn-12-2026-09-20)
+**The record** is in [benchmarks § Speculative decoding record](../benchmarks/history.md#speculative-decoding-record-engn-12-2026-09-20)
 (`make workload NAME='qwen38/spec/*'`): off by default for the Qwen entry; the
 per-batch costs — verify 225–250 ms at 512 and ≈ 342 ms at 4K, recovery
 99–272 ms on rejection, the sampled decision 46–78 ms, proposal 6.2 ms per
@@ -814,7 +814,7 @@ Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 c
 Qwen3.8-27B UD-Q4_K_M, Metal, F16 KV, ctx 32768, 128 output tokens, one
 warmup and three measured runs per configuration, off/on pairs on one
 loaded model (`d31c5cd`; the full table is in
-[benchmarks § The KERN-13 quick pass](../benchmarks/README.md#the-kern-13-quick-pass-2026-09-20)):
+[benchmarks § The KERN-13 quick pass](../benchmarks/history.md#the-kern-13-quick-pass-2026-09-20)):
 
 | configuration | decode off tok/s (before KERN-13) | decode off tok/s (now) |
 | --- | ---: | ---: |
@@ -864,7 +864,7 @@ configuration falls back to full rows.
 
 Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 code"`,
 same workload and methodology as the KERN-13 pass above
-([benchmarks § The ENGN-15 quick pass](../benchmarks/README.md#the-engn-15-quick-pass-2026-09-20)):
+([benchmarks § The ENGN-15 quick pass](../benchmarks/history.md#the-engn-15-quick-pass-2026-09-20)):
 
 | configuration | accept before (KERN-13 pass) | accept now | fallbacks | speedup before → now |
 | --- | ---: | ---: | ---: | ---: |
@@ -898,7 +898,7 @@ Q6_K 114.0 → 84.6, Q3_K 63.0 → 47.1 GB/s), ties on Q5_K, and wins only
 ≤ 150 GB/s bar. Nothing routes to it, the 16×8 tile and the two-row matvec
 routing stay as they were, and full-model verify latency is unchanged.
 Numbers: [metal-backend.md § The wide 32×8 tile](metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative)
-and [benchmarks § Small-batch tile sweep](../benchmarks/README.md#small-batch-tile-sweep-kern-14-2026-09-20).
+and [benchmarks § Small-batch tile sweep](../benchmarks/history.md#small-batch-tile-sweep-kern-14-2026-09-20).
 The verify lever that remains is KERN-16's long-context attention (and, for
 the short-context batch, ENGN-16's proposal policy, which trims what the
 verify is asked to do rather than making it cheaper).
@@ -946,7 +946,7 @@ output tokens):
 | code, greedy, d7 | 2.31 | 1.48 (−36 %) | 1.312 / 1.323 | 1.330 / 1.332 | 1.252 / 1.258 |
 
 The shipped configuration's gate pass (`--only prose512 code`; table in
-[benchmarks § The ENGN-16 quick pass](../benchmarks/README.md#the-engn-16-quick-pass-2026-09-20))
+[benchmarks § The ENGN-16 quick pass](../benchmarks/history.md#the-engn-16-quick-pass-2026-09-20))
 reads code instruct 1.35×, code greedy 1.33× at draft 7 (within 1 % of the
 control), prose instruct 1.00 / 1.03× at drafts 4 / 7 (was 0.98 / 1.01),
 and drafts per accepted token of 1.24–1.73. The acceptance's prose bar of
@@ -965,7 +965,7 @@ verify batch from 257 to 177 ms at 512 and from 1,121 to 279 ms at
 family's real speculation at 512, 4K, 16K, and 32,639 tokens on saved
 prefixes, greedy and with the profile's sampling, at every draft length.
 The tables and the rule are in
-[benchmarks § The re-priced speculative verdicts](../benchmarks/README.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01).
+[benchmarks § The re-priced speculative verdicts](../benchmarks/history.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01).
 
 - **Qwen3.8-27B, on at draft 7.** Cold, prose runs 1.25–1.57× (15.9–16.5
   tok/s at 512, 10.6–10.9 at 32,639) and the short code prompt 1.92–1.95×,
@@ -1006,7 +1006,7 @@ verify budget is 50E less the batch's measured non-verify costs.
 
 **Its last pricing** (2026-10-01, draft 7, cold chip, greedy / instruct,
 real runs on saved prefixes; [benchmarks § The re-priced speculative
-verdicts](../benchmarks/README.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)):
+verdicts](../benchmarks/history.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)):
 
 | Context | E | Budget 50E | Measured C | of which verify | C / 50E | tok/s, plain → speculative |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

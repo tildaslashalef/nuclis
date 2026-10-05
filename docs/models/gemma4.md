@@ -255,7 +255,7 @@ ids as the fixture), and a two-turn `nuclis agent` session under a
 pseudo-terminal (`expect`): thought folded as "Thought for 29.1s", answers
 144 then 145, the second turn a prefix extension of the first (ctx 87 →
 16x tokens), Ctrl-D exit. The acceptance record against the reference
-harness is in [benchmarks](../benchmarks/README.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12).
+harness is in [benchmarks](../benchmarks/history.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12).
 
 ## Reference oracle status
 
@@ -488,7 +488,7 @@ against the pinned digests on 2026-09-12 (3.8 s, existing files reused),
 and `model ls` lists the K-quant directory in its second group. The
 profile fixtures apply unchanged (same template digest). The acceptance
 record on the QAT file is in
-[benchmarks](../benchmarks/README.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12).
+[benchmarks](../benchmarks/history.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12).
 
 ## Gemma 4 26B-A4B: the expert configuration (MODL-09)
 
@@ -651,7 +651,7 @@ the expert projections alone through per-token F32 matvecs the gap is
 still 1.1e-1 relative RMS, because the dense tiles' rounding already
 moves the router. The check records the expert configuration's own
 bounds (2e1 / 5e-1) beside the 12B's. The acceptance record
-([benchmarks](../benchmarks/README.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18))
+([benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18))
 ran the reference's arrays greedy to the token budget at every length,
 which is what a rate record can say about it; per-token agreement on
 real prompts stays the trace comparison's job.
@@ -659,7 +659,7 @@ real prompts stays the trace comparison's job.
 **First-look rates** (`nuclis bench`, Metal, greedy, `--kv f16`, three
 measured runs; Apple M4 Pro 48 GB, macOS 26.6.2, Zig 0.16.0 ReleaseSafe,
 2026-09-18; the acceptance record against the reference harness is in
-[benchmarks](../benchmarks/README.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)):
+[benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)):
 
 | Workload | Chunk | Prefill tok/s | Decode tok/s | First token |
 | --- | ---: | ---: | ---: | ---: |
@@ -687,7 +687,7 @@ effective rate is roughly 120 GB/s against the 12B's 148. The per-kernel
 profile ranked the follow-ups (the expert down projection at 114 GB/s on
 its 704-wide rows, then the launch-bound norms, then the wide
 flash-decoding kernel at long context;
-[benchmarks](../benchmarks/README.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+[benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 The Qwen `make bench` is unchanged the same day (40.05 / 10.67 tok/s
 against 40.27 / 10.80).
 
@@ -696,7 +696,7 @@ reference harness on its own arrays: prefill / decode 500.42 / 55.29 at
 512, 346.17 / 49.44 at 4K, 206.44 / 39.55 at 16K, 134.74 / 31.30 at 32,639
 tok/s, the reference at 580.76 / 68.02, 548.41 / 60.82, 459.46 / 50.67,
 343.38 / 44.09; session 6.87 GiB, peak footprint 8.0 GB
-([benchmarks](../benchmarks/README.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+([benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 `nuclis agent --model gemma-4-26b-a4b` (Metal, context 8,192, `--think
 medium`, `--print --json`) on "create greeting.txt with hello world, then
 read it back" issued `write_file` then `read_file` and answered from the

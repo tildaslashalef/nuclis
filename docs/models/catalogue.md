@@ -76,7 +76,7 @@ the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
 ahead of their adapters. The 26B-A4B is supported since 2026-09-18: the
 expert layers run on both backends (MODL-09) and it has its own reference
 traces, acceptance record, and agent check (MODL-10;
-[benchmarks](../benchmarks/README.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+[benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 Since MODL-11 (2026-09-19) the Muse adapter binds the file and the CPU
 reference matches the pinned reference's traces on it, so `inspect` says
 *supported*; the Metal plan (MODL-12) and the profile with its acceptance
@@ -89,7 +89,7 @@ and 143) in a Hadamard-rotated basis ([bonsai.md](bonsai.md)). Since
 MODL-16 the Qwen adapter binds it and `inspect` says *supported*; since
 MODL-17 both backends run it against the fork's traces and it has its
 acceptance record and agent check
-([benchmarks](../benchmarks/README.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+([benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
 The PTQ1_0 file was pulled and verified on 2026-09-18 for the packing
 measurement (`nuclis model pull prism-ml/Ternary-Bonsai-2-27B-gguf --file
 Ternary-Bonsai-2-27B-PTQ1_0.gguf --revision 6ed5e12b…`) and became the

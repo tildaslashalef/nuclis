@@ -1,0 +1,2030 @@
+# Benchmark history
+
+Every dated benchmark record, oldest first, kept as written: the numbers of their day on the tree and OS of their day. The current results, the method, and the index of the JSON records are in [README.md](README.md).
+
+## Warm record — 2026-09-10
+
+[nuclis-2026-09-10.json](nuclis-2026-09-10.json). Apple M4 Pro
+(12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2 (25G83), AC power, Zig 0.16.0,
+ReleaseSafe, `nuclis 0.1.0-dev` built from the ENGN-07 tree, pinned artifact
+SHA-256 `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`
+re-hashed after the runs, backend metal, `--kv f16 --ctx-size 32768
+--max-tokens 128`. Nothing else used the GPU; the runs went 512 → 32,639 in
+one 46-minute sequence, so each length follows the previous one's load.
+Mean ± sample standard deviation over the measured runs; the reference
+columns are its accepted warm means (three samples; one at 32,639):
+
+| Prompt tokens | Prefill tok/s | Reference | Decode tok/s | Reference | Decode ms/step | First token | Warmup (prefill / decode) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 512 | 90.45 ± 0.52 | 89.19 | 10.62 ± 0.02 | 9.66 | 94.2 | 5.66 s | 88.2 / 10.61 |
+| 4,096 | 83.70 ± 0.37 | 89.26 | 10.20 ± 0.11 | 9.21 | 97.4–99.2 | 48.9 s | 83.0 / 10.23 |
+| 16,384 | 62.70 ± 0.57 | 74.07 | 8.27 ± 0.04 | 7.32 | 120.4–121.5 | 261 s | 65.3 / 8.74 |
+| 32,639 | 49.55 (one run) | 67.28 | 7.55 (one run) | 6.71 | 132.5 | 659 s | 48.9 / 8.03 |
+
+Every sample stopped with `stop_reason token_budget` at exactly the fixture's
+token count and 128 generated tokens; 32,639 + 128 = 32,767 fits the 32,768
+context with one token to spare and nothing truncated (a prompt that does
+not fit is `ContextFull` before any run). Decode is above the reference at
+every length (+10 % at 512, +11 % at 4K, +13 % at 16K, +13 % at 32K).
+Prefill is at the reference at 512 (+1 %) and below it as the prompt grows
+(−6 % at 4K, −15 % at 16K, −26 % at 32K): the batched attention chunk
+kernel's cost grows with the visible cache (ENGN-05 measured the matmul
+tile at the reference's rate at 4K; ENGN-08 profiled the kernel at 30 % of
+the 16K prefill and found it latency-bound, not cache-bound:
+[metal-backend.md § ENGN-08](../engine/metal-backend.md#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change),
+KERN-16 in [TODO.md](../../TODO.md)). The 16K row is lower than the 66.5 / 8.92
+measured after the 13,399-token docs prompt in KERN-08 because the prompt is
+longer (the decode rate at 16K context is what this row states) and the
+run followed the 4K row without a cool-down.
+
+**Memory.** The session block (KV cache and recurrent state, page-padded)
+is 2,304,376,832 bytes (2.15 GiB) at 32,768 capacity in every run. Peak
+resident set of the whole `bench` process (`/usr/bin/time -l`) was
+2.35 GiB at every length, and its peak physical footprint 2.76–2.84 GB;
+sampled with `footprint` during a run, the process is 2.2 GiB of
+`MALLOC_LARGE` (the session and scratch), 0.23 GB of graphics
+allocations, and only 25 MB of mapped file. The 16.46 GB weight file is
+memory-mapped and read by the GPU, and macOS charges those pages to
+system wired memory, not to the process (`vm_stat` showed 20.5 GiB wired
+during a run on a machine also running an editor and a browser). The
+headroom statement is therefore a calculation, not a single measurement:
+48 GiB total − 16.46 GB weights − 2.84 GB process peak ≈ 29 GiB free for
+the OS and tools at 32K context. Swap in use fell from 1,188 MB before the
+first run to 1,012 MB after the last; no run grew it.
+
+## Cold-start row — 2026-09-10
+
+[nuclis-2026-09-10-cold.json](nuclis-2026-09-10-cold.json).
+After `sudo purge` (`vm_stat` free pages 380K →
+2.5M; the script's header-only `tokenize` check ran first and touches only
+the vocabulary pages), one process, 512 prompt tokens, no warmup, one run:
+
+| Prompt tokens | Load | Prefill tok/s | First token | Decode tok/s | Decode ms/step | GPU busy |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 (cold) | 777 ms | 43.42 | 11.79 s | 10.55 | 94.8 | 17.6 s |
+
+Against the warm row (90.45 / 5.66 s / 10.62): loading is unchanged
+because mapping does not page anything in; the first prefill pays for
+faulting the 16.46 GB of weights from the SSD, about 6 s more than warm;
+decode is at the warm rate because every weight is resident by the first
+generated token. Peak footprint 2.77 GB, as warm. This is one sample
+labelled cold; it is not averaged with the warm rows.
+
+**Not done.** The `--trace-dir` comparison at a long position (8,192): both harnesses trace every position (64 layers × 20 KB per token,
+about 10 GB per side at that depth) and nuclis's tracer synchronizes the
+GPU after every layer, so neither can produce a single-position trace
+within a session; a positional filter is a follow-up if long-position
+numerics are ever in doubt (the F16 attention kernels are checked against
+the F64 reference at 32,000 rows in `test-metal`).
+
+## Observations so far
+
+These are smoke observations from the synchronous bring-up bridge, not
+acceptance results. 2026-09-07, Apple M4 Pro 48 GiB, macOS 26.6.2, Zig 0.16.0
+ReleaseSafe, pinned artifact, 22-token chat prompt, 16 output tokens, context
+256, one warmup and two measured runs:
+
+```text
+run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms
+ 1         22   16  token_budget       9221.9      2.39    9222.4      6355.5      2.36  10712.2
+ 2         22   16  token_budget       9774.4      2.25    9774.9      6643.9      2.26  11524.0
+```
+
+With the GPU-resident plan (one command buffer per token), the same workload:
+
+```text
+run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms
+ 1         22   16  token_budget       4103.5      5.36    4103.5      3005.9      4.99   6640.8
+ 2         22   16  token_budget       4098.2      5.37    4098.2      2995.4      5.01   6627.2
+```
+
+Decode improved from 2.3 to 5.0 tok/s and GPU busy time is ~93 % of wall time,
+so the remaining gap to the bandwidth floor (~17 tok/s) and to the reference
+(9.66 tok/s at 512 context) is inside the kernels, chiefly `nu_matvec`
+geometry (~200 ms per token to read 16.1 GB is ~80 GB/s of a published 273).
+
+With specialized matvec kernels for Q4_K/Q5_K/Q6_K/IQ4_XS (`make bench`:
+64 output tokens, context 2048, three measured runs, 2026-09-07):
+
+```text
+run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms
+ 1         22   64  token_budget       2500.3      8.80    2500.3      7357.9      8.56   8635.9
+ 2         22   64  token_budget       2675.2      8.22    2675.2      7395.0      8.52   8720.7
+ 3         22   64  token_budget       2488.8      8.84    2488.8      7382.4      8.53   8803.8
+Measured mean over 3 runs: prefill      8.62 tok/s, decode      8.54 tok/s, first token 2554.7 ms
+```
+
+The same command on the generic kernels immediately before measured 4.93 tok/s
+decode. Per-kernel bandwidth is in
+[metal-backend.md § Specialized matvec](../engine/metal-backend.md#specialized-matvec).
+
+The first per-kernel profile (below) showed that this run was committing 64
+command buffers per token, not one: the CLI's layer observer, which exists for
+Ctrl-C and the time limit, forced a `commit` after every layer on the GPU plan.
+Splitting the observer into a values-free `check` and a trace-only `layer`
+callback removed those round trips with no kernel change (2026-09-07):
+
+```text
+run    prompt  gen  stop           prefill ms  pp tok/s  first ms   decode ms  tg tok/s   gpu ms
+ 1         22   64  token_budget       2189.4     10.05    2189.4      6495.3      9.70   8596.1
+ 2         22   64  token_budget       2185.8     10.07    2185.8      6500.8      9.69   8603.9
+ 3         22   64  token_budget       2190.1     10.05    2190.1      6498.9      9.69   8601.0
+Measured mean over 3 runs: prefill     10.05 tok/s, decode      9.69 tok/s, first token 2188.4 ms
+```
+
+GPU busy time per token is unchanged (~101 ms); wall time per decode step fell
+from 117 to 103 ms, so decode is now GPU-bound. This is a 22-token prompt at
+context 2048; it is not the reference's 512-token workload, and the 32K
+acceptance runs (ENGN-07) remain.
+
+KERN-03, Q3_K/IQ3_S specialized kernels (2026-09-08), same `make bench`
+workload, Apple M4 Pro 48 GiB, macOS 26, Zig 0.16.0 ReleaseSafe, pinned
+artifact SHA-256 `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`:
+
+| Run | Prefill tok/s | Decode tok/s | GPU busy ms (85 steps) |
+| --- | ---: | ---: | ---: |
+| 1 | 10.61 | 10.23 | 8171.6 |
+| 2 | 10.65 | 10.23 | 8175.7 |
+| 3 | 10.65 | 10.22 | 8177.0 |
+| Mean | 10.63 | 10.23 | 8174.8 |
+
+One warmup, all runs generated 64 tokens and stopped at `token_budget`.
+Mean decode is 5.6 % above the recorded 9.69 tok/s baseline; GPU busy time
+is 96.2 ms/step. This remains a short-context smoke measurement, not ENGN-07
+acceptance. IQ4_NL still uses the generic kernel.
+
+KERN-04 merged projections (2026-09-08), same hardware, artifact, build mode,
+and standard `make bench` workload as KERN-03, with the artifact now under
+`~/.nuclis/models/qwen/`:
+
+| Run | Prefill tok/s | Decode tok/s | GPU busy ms (85 steps) |
+| --- | ---: | ---: | ---: |
+| 1 | 10.90 | 10.49 | 7955.5 |
+| 2 | 10.90 | 10.59 | 7910.2 |
+| 3 | 11.27 | 10.81 | 7733.3 |
+| Mean | 11.02 | 10.63 | 7866.3 |
+
+All runs stopped at the 64-token budget; one warmup preceded the three measured
+runs. The mean decode rate is 3.9 % above KERN-03's recorded 10.23 tok/s. Individual
+samples show variation; this is a short-prompt observation, not a long-context
+acceptance result. Mean GPU busy time is 92.5 ms/step. Prompt processing still
+uses sequential token steps; ENGN-02–ENGN-04 address its remaining throughput limit.
+
+KERN-05 (2026-09-08) closed without a kernel change (every hypothesis measured
+below the 5 % kernel-benchmark bar; the record is in
+[metal-backend.md § KERN-05](../engine/metal-backend.md#kern-05--per-block-cost-research-2026-09-08-closed-without-a-kernel-change)).
+The same `make bench` workload at the end of the session, kernels identical
+to KERN-04: 11.09 tok/s prefill, 10.64 decode (runs 10.63 / 10.66 / 10.64), GPU
+busy 7,844 ms per 85 steps (92.3 ms/step). The per-kernel profile budget
+above is unchanged and was not re-recorded.
+
+KERN-06 (2026-09-08), GPU partial top-k sampling, same hardware, artifact,
+build, and `make bench` workload (22 prompt tokens, 64 generated, context
+2048, one warmup, three measured runs; decode ms/step is
+`decode_milliseconds / 63`). All configurations produced 64 tokens at
+`token_budget`; the GPU path's tokens were checked bit-identical to the
+reference path at fixed seeds (48 tokens × four configurations, including one
+with 23 fallbacks) by comparing `generate --json` with and without
+`--logits`, which forces the reference path:
+
+| Sampling | Path | Decode tok/s | Decode ms/step | vs greedy | Fallbacks / run |
+| --- | --- | ---: | ---: | ---: | ---: |
+| greedy | GPU argmax | 10.77 | 92.9 | — | — |
+| T 0.7, top-k 40, top-p 0.95 | GPU top-k | 10.69 | 93.6 | +0.7 ms | 0 |
+| T 1.0, top-k 20, top-p 0.95 (thinking profile) | GPU top-k | 10.67 | 93.7 | +0.8 ms | 0 |
+| T 0.7, top-k 0, top-p 0.95 (nucleus, GPU denominator) | GPU top-k | 10.51 | 95.1 | +2.2 ms | 0 |
+| T 0.7, top-k 0, top-p 1 (ineligible) | full readback + CPU sort | 8.68 | 115.2 | +22.3 ms | — |
+
+The last row is the pre-KERN-06 cost of every sampled token (the plan's 19 ms
+estimate was taken at 9.69 tok/s greedy). The nucleus row's GPU busy time was
+itself 1.9 ms/step above the top-k rows in this session (7,970 vs 7,805 ms per
+85 steps with identical GPU work), so its CPU-side cost is within the 2 ms
+acceptance bound; the top-k rows are within it outright. Greedy measured
+10.77 here against 10.64 earlier in the session with the same binary's
+kernels; the spread is the usual short-prompt variation.
+
+ENGN-02 chunked prefill (2026-09-08), same hardware and artifact. Standard
+`make bench` workload: prefill 35.02 tok/s (was 11.1; the 22-token prompt is
+one chunk), decode 10.79 (unchanged), first token 628 ms (was ~1,980).
+Longer raw prompts with `bench --raw --prompt-file … --max-tokens 32
+--ctx-size 4096 --repeat 2`: 543 tokens → 51.3 tok/s prefill, 10.50 decode;
+3,547 tokens → 33.3 prefill, 7.76 decode (the decode drop is attention over
+the longer cache). The reference does 89.2/89.3 prefill at 512/4,096. These
+are not the acceptance workloads (ENGN-07 builds the reference's exact prompts);
+details in [metal-backend.md § Prefill in chunks](../engine/metal-backend.md#prefill-in-chunks-engn-02).
+
+ENGN-03 causal tiled attention (2026-09-09), same hardware, artifact, and
+methodology (`bench --raw --prompt-file … --max-tokens 32 --ctx-size 4096
+--repeat 2`, one warmup and two runs; prompts are prefixes of
+`docs/architecture.md` and `docs/spec.md`, 545 and 3,657 tokens; flags given
+explicitly so the record does not depend on `~/.nuclis/nuclis.json`):
+
+| Prompt tokens | Prefill tok/s | ENGN-02 | Reference (llama.cpp) | Decode after the prompt |
+| ---: | ---: | ---: | ---: | ---: |
+| 22 (`make bench`, context 2,048, 64 output) | 35.3 | 35.0 | — | 10.47 |
+| 545 | 51.4 | 51.3 at 543 | 89.2 at 512 | 10.36 |
+| 3,657 | 50.6 | 33.3 at 3,547 | 89.3 at 4,096 | 8.48 |
+
+Prefill no longer falls with prompt length: attention over a chunk is one
+dispatch per layer instead of three per token. The rate at 512 is unchanged
+because attention was a small share there. Decode is untouched by ENGN-03 (the
+`step` path keeps the three-dispatch kernels); its spread here (10.36–10.47
+short, 8.48 after 3.6K) is the usual run-to-run variation and the longer
+visible cache.
+
+ENGN-04 chunkwise DeltaNet (2026-09-09), same hardware, artifact, and
+methodology; the 16K prompt is a 53,300-byte prefix of the docs at
+`--ctx-size 16384 --repeat 1` (one warmup and one run, about five minutes
+each):
+
+| Prompt tokens | Prefill tok/s | ENGN-03 | Reference (llama.cpp) | Decode after the prompt | Reference decode |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 22 (`make bench`) | 34.9 | 35.3 | — | 10.33 | 9.66 at 512 |
+| 545 | 52.6 | 51.4 | 89.2 at 512 | 10.28 | 9.66 |
+| 3,657 | 53.0 | 50.6 | 89.3 at 4,096 | 8.61 | 9.21 |
+| 13,399 | 42.6 | — | 74.1 at 16,384 | 4.67 | 7.32 |
+
+Nothing steps per token inside a prefill chunk any more. The gain from ENGN-04
+is small (about 2 tok/s) because the per-token DeltaNet dispatches were a
+small share at these lengths once attention was batched; prefill now sits
+on the matmul tile's ceiling of 42–57 tok/s (`make bench-matmul`), which
+is ENGN-05. The fall at 13K (53 → 43) is `nu_attention_chunk` reading a 13K-row
+F32 cache for each of the six query heads of a KV group (KERN-07, KERN-08). Decode
+at 13K context is 4.67 against the reference's 7.32: the three-dispatch
+decode attention over an F32 cache is the long-context lever KERN-07 and KERN-08
+were reordered before ENGN-07 to pull.
+
+ENGN-05 matmul tile ceiling (2026-09-09), same hardware, artifact, and
+methodology (`bench --raw --prompt-file … --max-tokens 32 --ctx-size 4096
+--repeat 2`; the 22-token row is `make bench` with `--repeat 3 --warmup 1`):
+
+| Prompt tokens | Prefill tok/s | ENGN-04 | Reference (llama.cpp) | Decode after the prompt | First token ms |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 22 (`make bench`) | 39.1 | 34.9 | — | 10.30 | 563 |
+| 545 | 83.8 | 52.6 | 89.2 at 512 | 10.15 | 6,507 |
+| 3,657 | 81.7 | 53.0 | 89.3 at 4,096 | 8.63 | 44,783 |
+
+The batched matmul now runs through per-encoding tiles with half operands
+and F32 accumulation in 64×64 tiles (`make bench-matmul`: 4.9–5.2 TFLOP/s,
+was 2.3–3.1; per-lever table in
+[metal-backend.md § Kernels](../engine/metal-backend.md#kernels)). Prefill is within
+6–9 % of the reference at 512 and 4K; decode is untouched. The 16K row was
+not rerun (ENGN-05 does not change attention). Chunked vs stepped logits moved
+from 2.8e-5 to 2.4–2.6e-3 max abs with identical argmax (bound 2e-2).
+
+KERN-07 F16 KV cache (2026-09-10), same hardware, artifact, and methodology,
+both cache precisions back to back with every flag explicit (`bench --raw
+--prompt-file … --max-tokens 32 --ctx-size 4096 --repeat 2 --kv f16|f32`;
+the 16K row `--ctx-size 16384 --repeat 1`, one warmup and one run; the
+22-token row is `make bench` with `ARGS='--kv …'`, 64 output tokens,
+three runs). Session bytes are the `bench` header's figure:
+
+| Prompt tokens | Context | KV | Session | Prefill tok/s | Decode after the prompt | First token ms | Reference (llama.cpp, F16 KV) |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| 22 | 2,048 | f16 | 278 MiB | 39.7 | 10.59 | 554 | 9.66 decode at 512 |
+| 22 | 2,048 | f32 | 406 MiB | 39.7 | 10.62 | 554 | |
+| 3,657 | 4,096 | f16 | 406 MiB | 83.1 | 8.88 | 44,020 | 89.3 / 9.21 at 4,096 |
+| 3,657 | 4,096 | f32 | 662 MiB | 82.0 | 8.55 | 44,611 | |
+| 13,399 | 16,384 | f16 | 1,174 MiB | 67.3 | 5.59 | 198,978 | 74.1 / 7.32 at 16,384 |
+| 13,399 | 16,384 | f32 | 2,198 MiB | 61.3 | 4.58 | 218,720 | |
+
+Halving the cache is worth +22 % decode and +10 % prefill after the 13K
+prompt (5.59 vs 4.58, 67.3 vs 61.3), +4 % / +1 % after 3.6K, and nothing
+at 2K, where attention is a small share of the token. Both precisions
+were measured in the same session; the ENGN-04 row's 42.6 / 4.67 at 13K was
+F32 before ENGN-05, so the F32 row here (61.3 / 4.58) is the honest
+same-day baseline. The remaining gap to the reference at 16K is the
+three-dispatch decode attention over a `[heads][visible]` score buffer,
+which KERN-08 replaces with one split-K pass. Greedy tokens on the 22-token
+and 545-token pinned prompts are identical in both precisions
+([metal-backend.md § F16 KV cache](../engine/metal-backend.md#f16-kv-cache-kern-07)).
+
+KERN-08 flash-decoding attention (2026-09-10), same hardware, artifact, and
+methodology, F16 cache. The 32K row is a 30,650-token prefix of the docs
+(`.zig-cache/prompts/p32k.txt`, 128,000 bytes of `docs/*.md` and
+`docs/reference/*.md` concatenated in the order architecture, spec,
+llm-guide, metal-backend, engineering-log, cpu-reference, development,
+the former agent spec, cut at a UTF-8 boundary) at `--ctx-size 32768 --max-tokens 64
+--repeat 1 --warmup 0`: no warmup, so its prefill includes the process's
+first-dispatch costs and the decode rate covers 63 steps. The three-pass
+row was taken with the KERN-07 binary the same day, alone on the GPU:
+
+| Prompt tokens | Context | Decode kernels | Prefill tok/s | Decode after the prompt | Decode ms/step | First token ms |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 30,650 | 32,768 | three-pass (KERN-07) | 49.2 | 2.65 | 377 | 622,694 |
+| 30,650 | 32,768 | flash decoding | 51.0 | 8.09 | 124 ms | 600,510 |
+| 13,399 | 16,384 | three-pass (KERN-07) | 67.3 | 5.59 | 179 | 198,978 |
+| 13,399 | 16,384 | flash decoding | 66.5 | 8.92 | 112 | 201,450 |
+| 22 (`make bench`) | 2,048 | three-pass (KERN-07) | 39.7 | 10.59 | 94 | 554 |
+| 22 (`make bench`) | 2,048 | flash decoding | 40.0 | 10.63 | 94 | 550 |
+
+Decode at 32K is 3.05× faster than the three-pass kernels and above the
+reference's 6.71 at that context; at 16K it is 8.92 against the
+reference's 7.32. The 2K rows are taken after a cool-down: run straight
+after the two long rows, the same `make bench` gave 33.1 / 9.15 and then
+35.3 / 9.53 (prefill / decode), a 10–15 % dip on the prefill path this
+unit does not touch, which is the machine's sustained-load behaviour and
+not the kernel. Record the preceding load with any short-workload row.
+
+MODL-01 (2026-09-08), the official Qwen3.8 sampling profiles measured with
+`make bench` and explicit flags (the same 22-token workload, 64 generated,
+context 2048, one warmup, three measured runs; decode ms/step is
+`decode_milliseconds / 63`), same hardware, artifact, and build:
+
+| Sampling | Path | Decode tok/s | Decode ms/step | vs greedy | Fallbacks / run |
+| --- | --- | ---: | ---: | ---: | ---: |
+| greedy (this session) | GPU argmax | 10.60 | 94.4 | — | — |
+| thinking profile: T 1.0, top-k 20, top-p 0.95 | GPU top-k | 10.57 | 94.7 | +0.3 ms | 0 |
+| instruct profile: T 0.7, top-k 20, top-p 0.8, presence 1.5 | full readback + penalties + CPU sort | 8.69 | 115.1 | +20.7 ms | — |
+
+The instruct profile pays the pre-KERN-06 cost on every token because its
+presence penalty must be applied to all 248,320 logits before the sort; a
+GPU penalty kernel is a measured follow-up (KERN-13 in [TODO.md](../../TODO.md)). The
+thinking profile stays on the GPU path. Prefill (34.7 tok/s) and first
+token (634 ms greedy, 654 ms instruct) are unchanged in definition; the
+greedy row was re-measured in the same session as the profiles (10.60 vs
+10.77 in the KERN-06 session, the usual short-prompt spread). Token equivalence
+between the GPU path and the reference path (`generate --json` with and
+without `--logits`) was re-checked with `min_p` in play: identical tokens
+for `--top-k 0 --min-p 0.05` (39 tokens to EOS), `--top-k 0 --top-p 1
+--min-p 0.02 --temperature 1.5` (48 tokens, decided entirely through the
+`min_p` prefix, 0 fallbacks), `--top-k 20 --min-p 0.1` (48), and the
+instruct profile (10 tokens to EOS, both runs on the full path).
+
+Incremental KERN-04 experiments on that same workload:
+
+| Version | Mean prefill tok/s | Mean decode tok/s |
+| --- | ---: | ---: |
+| DeltaNet projections only | 10.77 | 10.37 |
+| Plus sequential gate/up per SIMD group (rejected) | 10.67 | 10.24 |
+| Plus gate/up split across SIMD groups (kept) | 10.95 | 10.49 |
+| Plus attention projections (final) | 11.02 | 10.63 |
+
+KERN-11 (2026-09-19) short-chunk prefill matmul, same hardware, artifact,
+build, and standard `make bench` workload (22 prompt tokens, 64 generated,
+context 2048, one warmup, three measured runs). The 22-token chunk now runs
+the 16-row × 8-token split tile (three token tiles) instead of one 32×32 tile;
+decode is untouched. Before is the same build with `small_chunk_tokens = 8`,
+which selects the 32×32 tile for this prompt:
+
+| Version | Prefill tok/s | First token ms | Decode tok/s |
+| --- | ---: | ---: | ---: |
+| Before (32×32 tile) | 38.78 | 567.3 | 10.22 |
+| After (16×8 split tile, threshold 24) | 43.01 | 511.5 | 10.20 |
+
+Prefill +10.9 %, first token −9.8 %, decode within noise. The per-shape
+kernel rates and the experiments behind the tile are in
+[metal-backend.md § Small-chunk tile](../engine/metal-backend.md#small-chunk-tile-kern-11-2026-09-19).
+
+KERN-12 (2026-09-20) multi-row matvec, same machine and build: the kernel
+reads the weight bytes once per batch instead of once per token and was meant
+to serve the verify, replay, and commit batches (2–8 rows). On the two FFN
+shapes (`make bench-matvec-rows`, Apple M4 Pro, Zig 0.16.0, ReleaseSafe) it
+beats the 16×8 tile at 2 rows (143–182 GB/s against 88–116) and for
+Q6_K/IQ4_XS at 3, but at 5 rows streams 49–67 and at 8 rows 20–33, below the
+tile, so it fails the unit's ≥ 150 / ≥ 120 GB/s targets. `Backend.matmul`
+routes only 2-row batches of the specialized encodings to it
+(`small_batch_rows = 2`); the verify (5 rows) is unchanged. Full table, method,
+and the register/FMA analysis are in
+[metal-backend.md § Multi-row matvec](../engine/metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target).
+A repeat-1 spot run at the close revision (512 prose, draft 4, F16 KV, ctx
+32768) measured verify 232–288 ms and recover 170–217 ms per batch, within the
+speculative record's range for verify. Recovery here is aggregate milliseconds
+per speculative step, not latency conditioned on two-row replay. ENGN-14 now
+refreshes the record immediately after the recovery change, including recovery
+calls/timings by accepted length; ENGN-17 retains the final defaults record.
+
+The corrected two-row sweep (2026-09-20, `27303ed` plus REPO-08) forces the
+specialized tile control and includes all four head encodings. All specialized
+cases still win: FFN 127.7–181.9 GB/s vs tile 87.7–116.2, head 146.8–188.0
+vs 89.2–114.1. Routing stays at two tokens. Method and individual rates:
+[corrected control](../engine/metal-backend.md#corrected-two-row-control-repo-08-2026-09-20).
+
+## Gemma 4 12B: first look (MODL-06, 2026-09-11)
+
+The second family's rates on the same machine, method, and build as
+above (greedy, context 2,048, three measured runs after one warmup), not
+an acceptance record: the reference harness run on the same token arrays
+is MODL-07's. Both cache precisions, since Gemma's F16 tolerance is its own
+([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11)).
+
+| Workload | Prefill tok/s | Decode tok/s | First token |
+| --- | ---: | ---: | ---: |
+| 9-token raw prompt (the `make bench` text through Gemma's tokenizer), 64 out, `--kv f16` | 36.8 | 21.2 | 245 ms |
+| same, `--kv f32` | 36.8 | 21.2 | 245 ms |
+| `tests/fixtures/run-2026-09-06/prompt-512.json` as an opaque id array, 128 out, `--kv f16` | 199.7 | 20.25 | 2,564 ms |
+| same, `--kv f32` | 199.0 | 20.20 | 2,572 ms |
+| `llama-bench` `7620399`, same file, `-p 512 -n 128 -ngl 99 -fa 1 -ctk f16 -ctv f16 -r 3` | 219.9 ± 2.4 | 24.9 ± 0.15 | — |
+
+Weights are 7.35 GB, so 20.2 tok/s reads 148 GB/s against the reference's
+183; the 512-token prefill is at 91 % of the reference. The K-quant file
+has 43 of 48 layers' projections in Q4_K, `attn_v` mostly Q6_K, and the
+Q5_K embedding as the tied output head (1.0 GB read per token for the
+head alone). Nothing here was tuned for Gemma; the per-kernel profile and
+the levers are a follow-up after MODL-07.
+
+## Gemma 4 12B acceptance record (MODL-07, 2026-09-12)
+
+The v0.1 acceptance workload on the second family, each side on its own
+token arrays since the tokenizers differ: the reference harness ran on
+the Gemma file with `--family gemma4`
+(`tests/fixtures/run-2026-09-12-gemma4/`, summarized in
+[reference-2026-09-12-gemma4.json](reference-2026-09-12-gemma4.json):
+512, 4,096, 16,384, and 32,639 prompt tokens, three measured repetitions
+at every length after one warmup, 128 output tokens, greedy, context
+32,768, F16 cache, `llama-server 7620399` with the recipe's flags on Metal),
+and `make workload NAME=gemma4-12b/acceptance` fed those arrays through `bench --prompt-tokens`
+([nuclis-2026-09-12-gemma4.json](nuclis-2026-09-12-gemma4.json);
+since 2026-09-12 that target is `make workload NAME=gemma4-12b/acceptance`, the catalogue's
+file having moved to the QAT checkpoint below).
+Every array starts with `<bos>` and the Gemma template's user turn; the
+script verified that `nuclis tokenize` reproduces the reference's corpus
+tokens through every cut (32,619 tokens) and that all four text
+renderings tokenize to exactly their array's count (Qwen's 512 array does
+not). Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2, AC power,
+Zig 0.16.0, ReleaseSafe, `nuclis 0.1.0-dev` from the MODL-07 tree, artifact
+SHA-256 `90fd944d…` (the K-quant file), `--kv f16 --ctx-size 32768
+--max-tokens 128`, one 29-minute sequence 512 → 32,639 with nothing else on
+the GPU. Mean ± sample standard deviation over the measured runs (one at
+32,639); the reference columns are its warm means over three samples:
+
+| Prompt tokens | Prefill tok/s | Reference | Decode tok/s | Reference | Decode ms/step | First token | Warmup (prefill / decode) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 512 | 192.97 ± 2.99 | 209.85 | 19.82 ± 0.31 | 24.51 | 49.7–51.3 | 2.7 s | 187.1 / 18.93 |
+| 4,096 | 155.31 ± 0.11 | 200.10 | 18.91 ± 0.16 | 22.57 | 52.6–53.4 | 26.4 s | 154.5 / 19.01 |
+| 16,384 | 103.04 ± 0.13 | 153.54 | 14.65 ± 0.04 | 16.34 | 68.0–68.4 | 159 s | 105.6 / 15.14 |
+| 32,639 | 74.04 (one run) | 142.80 | 14.04 (one run) | 16.05 | 71.2 | 441 s | 73.7 / 13.20 |
+
+Every sample stopped with `token_budget` at exactly the array's count and
+128 generated tokens. Decode is at 81 % of the reference at 512, 84 % at
+4K, 90 % at 16K, and 87 % at 32K (7.35 GB of weights at 19.8 tok/s is
+146 GB/s effective; the tied Q5_K embedding is 1.0 GB of that per token).
+Prefill is at 92 % at 512 and falls with length (78 % at 4K, 67 % at 16K,
+52 % at 32K): the reference's own rate falls too (210 → 143), but
+nuclis's falls faster, as Qwen's did before ENGN-08 found the chunk attention
+kernel latency-bound. Nothing in MODL-06 or MODL-07 was tuned for Gemma; the
+per-kernel profile on this file is the follow-up this record points at,
+and the 512-wide global layers' chunk attention (scores recomputed per
+value split, MODL-06) is the first thing to profile.
+
+**Memory.** The session block is 11,274,289,152 bytes (10.5 GiB) at
+32,768 capacity: every one of the 40 sliding layers is allocated for the
+full capacity although it reads only the last 1,024 rows ([gemma4.md §
+Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11)); a ring layout for
+those layers would cut it to about 0.35 GB and is a session-layout change
+of its own. Peak resident set of the `bench` process was
+10.75 GiB at every length and its peak footprint 11.74–11.80 GB; the
+7.37 GB weight file is memory-mapped and charged to wired memory, so the
+headroom is a calculation: 48 GiB − 7.37 GB − 11.8 GB ≈ 29 GiB at 32K
+context, the same as Qwen's because the session is five times larger
+and the weights 9 GB smaller.
+
+## Gemma 4 12B acceptance record, QAT file (MODL-08, 2026-09-12)
+
+The same workload on the catalogue's file after MODL-08 switched the entry to
+Google's quantization-aware-trained checkpoint (every weight matrix
+Q4_0, SHA-256 `90fd44e2…`, 6.72 GB). The reference harness ran again on
+this file (`tests/fixtures/run-2026-09-12-gemma4-qat/`,
+[reference-2026-09-12-gemma4-qat.json](reference-2026-09-12-gemma4-qat.json);
+its token arrays are byte-identical to the K-quant run's, since the two
+files share vocabulary and template, and `nuclis tokenize` reproduces
+every cut as before), and `make workload NAME=gemma4-12b/acceptance` fed them through `bench
+--prompt-tokens` ([nuclis-2026-09-12-gemma4-qat.json](nuclis-2026-09-12-gemma4-qat.json)).
+Same hardware, OS, and build mode as the record above; `nuclis 0.1.0-dev`
+from the MODL-08 tree; `--kv f16 --ctx-size
+32768 --max-tokens 128`; one 30-minute sequence 512 → 32,639. The
+reference ran on AC power; the nuclis process reports **battery power**
+(the machine was unplugged between the two), which the 512-token spread
+below may reflect. Mean ± sample standard deviation over three measured
+runs (one at 32,639); the reference columns are its warm means:
+
+| Prompt tokens | Prefill tok/s | Reference | Decode tok/s | Reference | First token |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 179.45 ± 19.32 | 224.46 ± 0.70 | 23.96 ± 0.97 | 27.69 ± 0.14 | 2.9 s |
+| 4,096 | 143.25 ± 1.90 | 216.82 ± 2.10 | 20.71 ± 1.34 | 25.69 ± 0.31 | 28.6 s |
+| 16,384 | 98.67 ± 1.06 | 158.78 ± 23.31 | 17.87 ± 0.56 | 22.10 ± 2.79 | 166 s |
+| 32,639 | 73.04 (one run) | 143.72 ± 3.95 | 16.24 (one run) | 20.94 ± 1.46 | 447 s |
+
+Every sample stopped with `token_budget` at the array's count and 128
+generated tokens. Against the K-quant record above, decode rose at every
+length (19.82 → 23.96 at 512, 14.04 → 16.24 at 32K: 6.7 GB of Q4_0 read
+through the fastest kernel of the set, [metal-backend.md § Specialized
+matvec](../engine/metal-backend.md#specialized-matvec)) and stands at 87 % of the
+reference at 512, 81 % at 4K and 16K, 78 % at 32K. Prefill fell slightly
+(192.97 → 179.45 at 512 inside that row's spread, 155 → 143 at 4K,
+103 → 99 at 16K, 74 → 73 at 32K) while the reference's rose on the same
+file (210 → 224), so nuclis is at 80 % of the reference at 512 and 51 %
+at 32K: the Q4_0 matmul tile decodes two 16-value segments per 32-value
+block with two 8-byte loads and a scale read each, where the K-quant
+tiles amortize their loads over 256 values, and the long-context fall is
+the chunk attention latency already named for the K-quant file. Both are
+the per-kernel profile's first targets.
+The reference's own 16K row has a 15 % spread this time (132–175 tok/s),
+so ratios at that length are indicative.
+
+**Memory.** Session block 11,274,289,152 bytes (10.5 GiB, the same
+full-capacity sliding caches), peak resident set 11.54 GiB, peak footprint
+11.77–11.81 GB at every length; the weight file is 0.65 GB smaller than
+the K-quant one.
+
+## Gemma 4 26B-A4B acceptance record (MODL-10, 2026-09-18)
+
+The v0.1 acceptance workload on the catalogue's mixture of experts,
+`gemma-4-26b-a4b` (`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf`, SHA-256
+`a7c5bc71…`, 14.25 GB, every matrix Q4_0, 128 experts of which 8 per
+token). The reference harness ran on this file
+(`tests/fixtures/run-2026-09-18-gemma4-26b-a4b/`,
+[reference-2026-09-18-gemma4-26b-a4b.json](reference-2026-09-18-gemma4-26b-a4b.json):
+`llama-server 7620399` with the recipe's flags at 32,768 context, F16
+cache, three measured repetitions at every length after one warmup; its
+token arrays are byte-identical to the two 12B runs', since the three
+files share vocabulary and template, and `nuclis tokenize` reproduces the
+corpus through every cut and every text rendering to its array's count),
+and `make workload NAME=gemma4-26b-a4b/acceptance` fed the arrays through `bench
+--prompt-tokens` ([nuclis-2026-09-18-gemma4-26b-a4b.json](nuclis-2026-09-18-gemma4-26b-a4b.json)).
+Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2, AC power on
+both sides, Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` from the MODL-10
+tree (`56ef7d4` plus this unit's Makefile and documents), `--kv f16
+--ctx-size 32768 --max-tokens 128`, the family's prefill chunk of 512,
+one 15-minute sequence 512 → 32,639 with nothing else on the GPU. Mean ±
+sample standard deviation over three measured runs (one at 32,639); the
+reference columns are its warm means over three samples:
+
+| Prompt tokens | Prefill tok/s | Reference | Decode tok/s | Reference | Decode ms/step | First token | Warmup (prefill / decode) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 512 | 500.42 ± 4.65 | 580.76 ± 5.35 | 55.29 ± 0.05 | 68.02 ± 0.12 | 18.1 | 1.0 s | 416.9 / 55.29 |
+| 4,096 | 346.17 ± 1.29 | 548.41 ± 4.12 | 49.44 ± 0.64 | 60.82 ± 0.28 | 20.0–20.5 | 11.8 s | 341.8 / 49.16 |
+| 16,384 | 206.44 ± 1.21 | 459.46 ± 3.28 | 39.55 ± 0.18 | 50.67 ± 2.32 | 25.2–25.4 | 79.4 s | 207.8 / 39.92 |
+| 32,639 | 134.74 (one run) | 343.38 ± 11.81 | 31.30 (one run) | 44.09 ± 0.10 | 31.9 | 242 s | 135.8 / 31.47 |
+
+Every sample stopped with `token_budget` at exactly the array's count and
+128 generated tokens, on both sides. The half-tile rounding that the
+generation check measures on random tokens (3.5e-1 relative RMS through
+the routed layers) does not show here: the workload is greedy on the
+reference's own arrays and every run met its budget with the same stop,
+which is what the record can say about it; per-token agreement with the
+reference on real prompts remains the trace comparison's job, not this
+table's.
+
+**Decode** is at 81 % of the reference at 512 and 4K, 78 % at 16K, and
+71 % at 32K. The step reads about 2.1 GB of Q4_0 weights (eight experts
+of 704 plus the 2,112-wide shared FFN on every layer, the attention
+projections, and the tied 262,144-row head; a sum over the tensor shapes),
+so 18.1 ms is 118 GB/s effective against the reference's 146 at 14.7 ms.
+The gap widens with context faster than the reference's: from 512 to 32K
+nuclis adds 13.8 ms per step and the reference 8.0, for the same five
+global layers reading two KV heads over the whole context (0.67 GB per
+step at 32K in F16, about 3.3 ms of bytes), so the flash-decoding kernel
+on the two-KV-head, 16-query-head geometry is well above its byte cost at
+long context.
+
+**Prefill** is at 86 % of the reference at 512 and falls to 63 % at 4K,
+45 % at 16K, and 39 % at 32K, the steepest fall of the three Gemma
+records (the 12B QAT's is 80 % → 51 %): the reference's rate falls 581 →
+343 over the same lengths, nuclis's 500 → 135. Two things compound here
+beyond the chunk attention latency already named for the 12B: the
+gathered expert tiles are dispatched per 512-token chunk (64 chunks at
+32K, each with its own routing, list build, and two gathered matmuls), and
+the global layers' chunk attention with two KV heads scores the whole
+prefix per chunk.
+
+**Per-kernel profile** (`make bench-profile MODEL=<26b-a4b file>
+ARGS="--kv f16"`, 22-token prompt, 2,048 context, 192 measured steps,
+2026-09-18): 915 dispatches per step, 23.8 ms attributed of 28.7 ms
+command-buffer time. Profile mode costs this model far more than the 12B's
+8 %: the same prompt decodes at 57.9 tok/s unprofiled and 33.4 profiled,
+so the shares below are indicative and the absolute times pessimistic.
+Removing the amortized prefill (the gathered and dense matmul tiles, about
+3.3 ms/step), a decode step attributes about 20.5 ms:
+
+| Part | ms/step | Share | Note |
+| --- | ---: | ---: | --- |
+| Expert matvecs (gate-up, down) | 5.6 | 27 % | gate-up 162 GB/s, down **114 GB/s** (704-wide rows) |
+| Dense matvecs (head, attention, shared FFN, router) | 8.8 | 43 % | 114–180 GB/s; the tied head 2.3 ms alone at 180 GB/s |
+| RMS norms | 2.9 | 14 % | 331 dispatches of ~9 µs: launch latency (eight norms per expert layer) |
+| Attention (decode, wide decode, merge) | 1.6 | 8 % | 2K context |
+| Routing glue (`route`, `combine_experts`, `gelu_mul_rows`) | 0.8 | 4 % | 90 dispatches |
+| RoPE, adds, packing, scales | 0.7 | 3 % | |
+
+Against the 12B's profile, the matvecs hold less of their isolated
+bandwidth (the expert down projection and the 2,112-wide shared FFN down
+at 114 GB/s against 191–224 for the 12B's shapes: narrow rows leave the
+per-row threadgroup lanes idle, the follow-up KERN-09 named) and the
+launch-bound part grew from 337 to 421 small dispatches per step. In
+order: the expert down kernel's idle lanes, a fused norm-and-scale or a
+batched norm launch, and the wide flash-decoding kernel at long context.
+
+**Memory.** Session block 7,381,975,040 bytes (6.87 GiB) at 32,768
+capacity (25 sliding layers × 2 × 2,048 and 5 global layers × 2 × 1,024
+halves per position, the sliding caches allocated for the full capacity as
+on the 12B); peak resident set 7.21 GiB and peak footprint 7.94–8.01 GB at
+every length; the 14.25 GB weight file is memory-mapped and charged to
+wired memory, so the headroom is 48 GiB − 14.25 GB − 8.0 GB ≈ 29 GB at 32K.
+The reference server's resident set between requests was 15.08–15.62 GB.
+
+## Bonsai 2 27B acceptance record (MODL-17, 2026-09-18)
+
+The v0.1 acceptance workload on the catalogue's ternary entry,
+`bonsai-2-27b` (`Ternary-Bonsai-2-27B-PQ2_0.gguf`, SHA-256 `3907dc16…`,
+7.21 GB, Qwen3.8-27B's architecture with every matrix PQ2_0 in a
+Hadamard-rotated basis, [bonsai.md](../models/bonsai.md)). The reference side is the
+**PrismML fork** of llama.cpp at `prism-b10687-5d80cff` (commit
+`5d80cff0…`, the only decoder of the file; stock llama.cpp rejects it),
+its server started with the recipe's flags minus `--lazy-mode` (which its
+base does not know) at 32,768 context, F16 cache, and the workload harness
+run against it with `--family qwen38 --reference-revision 5d80cff0…`
+(`tests/fixtures/run-2026-09-18-bonsai/`,
+[reference-2026-09-18-bonsai.json](reference-2026-09-18-bonsai.json):
+three measured repetitions at every length after one warmup, 32,639
+included). Its token arrays are byte-identical to the Qwen3.8 run's
+(`run-2026-09-06` and the boundary run; the file shares the vocabulary and
+its single-user-turn rendering), and `make workload NAME=bonsai/acceptance` fed them through
+`bench --prompt-tokens`
+([nuclis-2026-09-18-bonsai.json](nuclis-2026-09-18-bonsai.json)).
+Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2, AC power on both
+sides, Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` from the MODL-17 tree
+(`7177307` plus this unit's plan, Makefile, and documents), `--kv f16
+--ctx-size 32768 --max-tokens 128`, the Qwen prefill chunk, one 65-minute
+sequence 512 → 32,639 with nothing else on the GPU. Mean ± sample standard
+deviation over three measured runs (one at 32,639); the reference columns
+are the fork's warm means over three samples:
+
+| Prompt tokens | Prefill tok/s | Fork | Decode tok/s | Fork | Decode ms/step | First token | Warmup (prefill / decode) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 512 | 93.69 ± 0.10 | 97.54 ± 0.31 | 13.87 ± 0.00 | 17.05 ± 0.08 | 72.1 | 5.5 s | 94.5 / 13.96 |
+| 4,096 | 86.01 ± 0.02 | 99.07 ± 0.26 | 13.26 ± 0.00 | 16.61 ± 0.07 | 75.4 | 47.6 s | 86.8 / 13.34 |
+| 16,384 | 66.35 ± 0.01 | 79.69 ± 2.88 | 11.72 ± 0.00 | 13.42 ± 0.18 | 85.3 | 247 s | 66.3 / 11.71 |
+| 32,639 | 50.63 (one run) | 84.76 ± 3.90 | 10.20 (one run) | 12.83 ± 0.04 | 98.0 | 645 s | 50.6 / 10.20 |
+
+Every sample stopped with `token_budget` at exactly the array's count and
+128 generated tokens, on both sides. Beside the Qwen3.8-27B record on the
+same arrays (ENGN-07: 90.45 / 83.70 / 62.70 / 49.55 prefill, 10.62 / 10.20
+/ 8.27 / 7.55 decode), the ternary file decodes **31–35 % faster** at every
+length and prefills at the same rate — the prefill tiles are compute-bound
+and the ternary tiles match the set, so a file less than half the size
+gains nothing there.
+
+**Decode** is at 81 % of the fork at 512 and 80 % at 4K, 87 % at 16K, and
+80 % at 32K. The step reads 7.2 GB of ternary weights, so 72.1 ms is 100
+GB/s effective against the fork's 123 at 58.6 ms; the kernels are at the
+set's multiply-rate ceiling
+([metal-backend.md § Ternary matvecs and tiles](../engine/metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18):
+a ternary byte carries twice the values of a Q4_0 byte, and the same
+values per second is half the byte rate), the transform is 2.1 % and the
+gather 0.2 % of the step
+([§ The rotation on the Qwen plan](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18)).
+The byte count alone projected two to three times the Qwen rate; the
+kernel set delivers 1.3×, and the fork's own kernels 1.6× over the
+mainline Qwen record (17.05 against 9.66 at 512). Closing the rest is a
+different ternary arithmetic in the matvec (packed integer products, or
+one decoded weight across several inputs), a kernel experiment of its
+own. From 512 to 32K nuclis adds 25.9 ms per step
+and the fork 19.9: the same attention-and-recurrent growth as the Qwen
+record (KERN-08's flash-decoding kernel over 16 attention layers, the 48
+DeltaNet states), on a smaller base.
+
+**Prefill** is at 96 % of the fork at 512, 87 % at 4K, 83 % at 16K, and
+60 % at 32K, the Qwen plan's own long-context curve (the fork's rate holds
+at 80–99 over the four lengths where nuclis's falls 94 → 51, the chunk
+attention latency ENGN-08 measured), unchanged by the encoding.
+
+**Agent check** (Metal, context 8,192, `--think medium`, `-p --json`,
+`--model bonsai-2-27b` with the catalogue's forced `.qwen38` profile):
+"create greeting.txt with hello world, then read it back" issued
+`write_file` then `read_file` in three steps and answered from the
+contents, `hello world` on disk; **176** prompt tokens, **210** generated
+(three thinking spans of 5.6, 4.9, and 2.0 s), prefill **3.19 s**, decode
+**15.1 s** (72 ms per token in the loop, the record's 512-token rate),
+`replayed: true`, stop `eos`.
+
+**Memory.** Session block 2,304,376,832 bytes (2.15 GiB) at 32,768 capacity
+(16 attention layers × 2 × 1,024 halves per position plus the 48 recurrent
+states), peak resident set 2.36 GiB at every length; the 7.21 GB file is
+memory-mapped, so the headroom is 48 GiB − 7.2 GB − 2.4 GB ≈ 38 GB at 32K.
+
+**PTQ1_0.** The record above is the PQ2_0 file's. The denser packing of the
+same weights (`Ternary-Bonsai-2-27B-PTQ1_0.gguf`, 5.95 GB) measured on the
+same plan the same day by `make bench` (22-token prompt, 64 output tokens,
+context 2,048, two rounds): 13.05 / 13.01 tok/s decode against PQ2_0's
+12.87, prefill 39.3 against 39.1, and it matches the PQ2_0 traces on both
+cache precisions ([bonsai.md](../models/bonsai.md#metal-plan-modl-17-2026-09-18)).
+Not slower at 1.26 GB less, so the catalogue entry moved to it (decided
+2026-09-18); the acceptance workload was not re-run on it.
+
+## Muse Glimmer 30B: first look (MODL-12, 2026-09-19)
+
+The third family's rates on the same machine, method, and build as
+above (greedy, context 2,048, three measured runs after one warmup), not
+an acceptance record: the reference harness run on the same token arrays
+is MODL-13's. The prompt is raw because the profile does not exist yet;
+the 512-token array is the first 512 ids of `docs/spec.md`'s opening
+6,000 bytes through Muse's tokenizer (the Qwen arrays carry ids above
+its vocabulary). Both cache precisions, since Muse's F16 tolerance is
+its own ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19),
+which also holds the per-kernel profile).
+
+| Workload | Prefill tok/s | Decode tok/s | First token |
+| --- | ---: | ---: | ---: |
+| 10-token raw prompt (the `make bench` text through Muse's tokenizer), 64 out, `--kv f16` | 18.3 | 9.99 | 547 ms |
+| same, `--kv f32` | 18.2 | 9.91 | 549 ms |
+| 512-token array, 128 out, `--kv f16` | 93.2 | 9.59 | 5,492 ms |
+| same, `--kv f32` | 93.0 | 9.52 | 5,504 ms |
+| `llama-bench` `7620399`, same file, `-p 512 -n 128 -ngl 99 -fa 1 -ctk f16 -ctv f16 -r 3` | 101.9 ± 0.1 | 14.08 ± 0.11 | — |
+
+Weights are 15.87 GB, so 9.99 tok/s reads 159 GB/s against the
+reference's 223 (71 %); the 512-token prefill is at 91 %. The Qwen
+`make bench` the same day: 39.75 / 10.44 tok/s, unchanged.
+
+## Muse Glimmer 30B acceptance record (MODL-13, 2026-09-19)
+
+The v0.1 acceptance workload on the third family, each side on its own
+token arrays since the tokenizers differ: the reference harness ran on
+the Muse file with `--family muse-glimmer`
+(`tests/fixtures/run-2026-09-19-muse-glimmer/`, summarized in
+[reference-2026-09-19-muse-glimmer.json](reference-2026-09-19-muse-glimmer.json):
+512, 4,096, 16,384, and 32,639 prompt tokens, three measured repetitions
+at every length after one warmup, 128 output tokens, greedy, context
+32,768, F16 cache, `llama-server 7620399` with the recipe's flags on Metal;
+the template's default `Reasoning strength: high.` system turn, dated
+2026-09-19 by the server's clock, heads every array), and
+`make workload NAME=muse/acceptance` fed those arrays through `bench --prompt-tokens`
+([nuclis-2026-09-19-muse-glimmer.json](nuclis-2026-09-19-muse-glimmer.json)).
+Every array starts with `<|begin_of_text|>` and that system turn; the
+script verified that `nuclis tokenize` reproduces the reference's corpus
+tokens through every cut (32,577 tokens) and that all four text renderings
+tokenize to exactly their array's count. The first attempt refused the
+191 KB corpus with `WorkLimitExceeded`: the encoder's special-token scan
+charged every one of Muse's 2,048 reserved markers per byte, exhausting its
+1 GiB budget at 18 KB of text; the scan now searches each marker's first
+byte ([tokenizer.md](../engine/tokenizer.md)), and the run below is on that fix.
+Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2, AC power,
+Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` at `bbac7ac`, artifact
+SHA-256 `82bece30…`, `--kv f16 --ctx-size 32768 --max-tokens 128`, one
+42-minute sequence 512 → 32,639 with nothing else on the GPU. Mean ± sample
+standard deviation over the measured runs (one at 32,639); the reference
+columns are its warm means over three samples:
+
+| Prompt tokens | Prefill tok/s | Reference | Decode tok/s | Reference | Decode ms/step | First token | Warmup (prefill / decode) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 512 | 93.49 ± 0.09 | 95.28 | 9.60 ± 0.00 | 13.69 | 103.3–103.4 | 5.5 s | 91.1 / 9.61 |
+| 4,096 | 80.51 ± 2.65 | 93.01 | 8.26 ± 0.22 | 12.14 | 116.5–122.3 | 49–52 s | 83.2 / 9.14 |
+| 16,384 | 67.83 ± 0.17 | 80.96 | 7.19 ± 0.03 | 10.07 | 137.5–138.6 | 241–242 s | 68.8 / 7.30 |
+| 32,639 | 59.20 (one run) | 76.86 | 6.62 (one run) | 9.98 | 149.9 | 551 s | 59.2 / 6.61 |
+
+Every sample stopped with `token_budget` at exactly the array's count and
+128 generated tokens. Decode is at 70 % of the reference at 512, 68 % at
+4K, 71 % at 16K, and 66 % at 32K (15.87 GB of weights at 9.60 tok/s is
+152 GB/s effective against the reference's 217); prefill is at 98 % at
+512 and falls with length (87 % at 4K, 84 % at 16K, 77 % at 32K), the
+reference's own rate falling too (95 → 77). The gap is the widest of the
+four families and is spread over the large Q4_K matvecs
+([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19)
+has the per-kernel profile); the 4K row's decode drifted from 9.14 tok/s
+on its warmup to 8.12 on its third sample within four minutes, which no
+other length showed and which was not investigated (thermal is the
+obvious suspect). Both are the performance theme's material: KERN-15
+measured the matvec half of the gap and closed negative
+([§ Split-K matvec sweep](#split-k-matvec-sweep-kern-15-2026-09-21)),
+not this unit's.
+
+**Memory.** The session block is 1,744,830,464 bytes (1.63 GiB) at
+32,768 capacity: 52 layers × 2 × 256 halves per position, every sliding
+layer allocated for the full capacity although it reads only the last
+2,048 rows (a ring layout would be a session-layout change of its own). Peak
+resident set of the `bench` process was 1.80 GiB at every length and its
+peak footprint 2.17–2.22 GB; the 15.88 GB weight file is memory-mapped and
+charged to wired memory, so the headroom is a calculation: 48 GiB −
+15.9 GB − 2.2 GB ≈ 30 GiB at 32K context, with the vision projector
+(1.4 GB) and the DFlash drafter (1.6 GB) still to come.
+
+## Speculative decoding record (ENGN-12, 2026-09-20)
+
+The first measurement of speculative generation on Qwen3.8-27B with its
+embedded draft head, taken to decide the catalogue entry's default and to
+size the per-batch costs the performance units attack
+([speculative-decoding.md](../engine/speculative-decoding.md), the plan in
+[TODO.md](../../TODO.md)). `make workload NAME='qwen38/spec/*'`
+(then `scripts/nuclis-speculative.py`, now the `qwen38/spec/*` workloads; the reports are under
+[benchmarks/speculative-2026-09-20/](speculative-2026-09-20/))
+ran twelve configurations, each as off/on pairs on one loaded model (the
+drafter loaded in both): the reference corpus arrays at 512 and 4,096
+tokens and the fixed code prompt `Write a Zig function that reverses a
+string.` (`--raw`, 10 tokens), greedy and with the instruct profile's
+sampling (`--temperature 0.7 --top-p 0.8 --top-k 20 --presence-penalty
+1.5`, seed 0), draft lengths 2, 4, 7, 128 output tokens, context 32,768,
+F16 KV, one warmup, three measured repetitions (two at 4K). Apple M4 Pro
+(12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2 (25G83), AC power, Zig
+0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` at `3d5cb94`, artifact SHA-256
+`322e194f…`, backend metal, one 62-minute sequence (10:45–11:47) with
+nothing else on the GPU (metadata reads of other files ran on the CPU
+during some configurations). Session block 2,595,487,744 bytes (the 32K
+session, the block's own cache, and the 150 MB checkpoint region). Means
+over the measured runs; per-batch costs are the run's milliseconds divided
+by its verify batches; every sample stopped on `token_budget`:
+
+| configuration | prompt | draft | accepted/step | tokens/batch | verify ms | accept ms | recover ms | prefill off → on (s) | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| prose 512, greedy | 512 | 2 | 1.23 | 2.23 | 224.5 | 0.0 | 99.3 | 5.63 → 16.73 | 10.43 → 6.31 | 0.60× |
+| prose 512, greedy | 512 | 4 | 1.67 | 2.65 | 234.9 | 0.0 | 182.2 | 5.67 → 17.48 | 10.07 → 5.67 | 0.56× |
+| prose 512, greedy | 512 | 7 | 2.28 | 3.26 | 242.4 | 0.0 | 208.0 | 6.15 → 18.87 | 9.06 → 6.09 | 0.67× |
+| prose 512, instruct | 512 | 2 | 1.27 | 2.26 | 237.9 | 46.1 | 106.7 | 6.03 → 18.66 | 8.03 → 5.35 | 0.67× |
+| prose 512, instruct | 512 | 4 | 1.68 | 2.67 | 244.2 | 54.1 | 184.4 | 6.08 → 19.13 | 7.95 → 5.04 | 0.63× |
+| prose 512, instruct | 512 | 7 | 1.92 | 2.92 | 242.8 | 59.0 | 219.9 | 6.15 → 19.13 | 7.80 → 4.96 | 0.64× |
+| code, greedy | 10 | 2 | 1.35 | 2.35 | 239.2 | 0.0 | 102.7 | 0.39 → 0.57 | 9.00 → 6.30 | 0.70× |
+| code, greedy | 10 | 4 | 2.34 | 3.34 | 250.6 | 0.0 | 140.7 | 0.39 → 0.55 | 8.91 → 7.56 | 0.85× |
+| code, greedy | 10 | 7 | 2.97 | 3.97 | 237.6 | 0.0 | 190.4 | 0.40 → 0.56 | 9.01 → 7.90 | 0.88× |
+| code, instruct | 10 | 4 | 2.79 | 3.78 | 226.8 | 77.5 | 98.5 | 0.36 → 0.53 | 7.94 → 8.22 | 1.04× |
+| prose 4K, greedy | 4,096 | 4 | 1.98 | 2.95 | 343.6 | 0.0 | 239.2 | 53.05 → 176.01 | 8.49 → 4.62 | 0.54× |
+| prose 4K, instruct | 4,096 | 4 | 1.55 | 2.54 | 340.9 | 52.0 | 271.9 | 53.18 → 174.87 | 7.63 → 3.57 | 0.47× |
+
+**Reading.** The switch loses on every row but one, and that one (code,
+instruct, draft 4: 1.04×) wins only because its baseline pays the
+penalty-path readback (7.94 tok/s against 8.9–9.0 greedy). The costs are
+fixed per batch and the batches advance too few tokens: a verify batch
+costs 225–250 ms at 512 tokens of context (2.4–2.6 ordinary steps of ≈ 95
+ms) and 341–344 ms at 4K, where the small-chunk attention reads the whole
+visible cache; recovery costs 99–272 ms whenever a draft is rejected (the
+rewind plus a whole-stack replay of the accepted prefix through the same
+small-chunk path; free on full acceptance, which is why it grows with the
+draft length); the sampled path adds 46–78 ms per batch of host time for
+its per-row full-vocabulary sorts (`accept ms`); proposal costs 6.2 ms per
+draft and the drafter's commit 6.2 ms per accepted token (inside
+`decode`, not separated in this record). Acceptance is 1.2–3.0 drafts per
+batch: 42 % per proposed draft on prose at draft 4, 58–68 % on the code
+prompt. The speculative prefill is 2.9–3.3× the ordinary one (16.7 s
+against 5.6 s at 512; 176 s against 53 s at 4K) because the prompt is
+committed through 8-row verify chunks with the output head and a
+per-token drafter commit. The "off" baseline drifted within the sequence
+(10.43 tok/s in the first configuration to 9.0 after ten minutes and 8.5 at
+4K), which the interleaved pairs absorb: the speedup is always the pair's
+ratio. Draft length 7 was never worse than 4 in this record (the extra
+drafts are cheap to propose and the recover cost grows only on
+rejection), but the default stays 4 until the proposal policy exists.
+
+**Verdict.** `generation.speculative` stays off by default for the Qwen
+entry, `draft_length` 4; the carried MODL-18 item "decode rate unchanged
+with the drafter loaded but switched off" holds against the 2026-09-10
+record within the sequence's drift (10.43 against 10.62 tok/s at 512 with
+the drafter loaded, its cache and checkpoint region allocated) and gets an
+in-process baseline in ENGN-17. The per-batch costs above are the plan's
+cost table; the targets are in `TODO.md`.
+
+## The speculative verdict record (ENGN-17, 2026-09-21)
+
+The final measurement of Qwen3.8-27B's embedded draft head on the finished
+path (ENGN-13 through ENGN-16, KERN-13 through KERN-18), taken to set the
+catalogue entries' defaults and to close the performance theme's plan. Two
+baselines are measured: the true baseline with the switch off — `bench` now
+opens `.none`, so no drafter weights, scratch, or draft cache are loaded —
+and the pair's loaded-but-off sample. `make workload NAME='qwen38/spec/*'`
+(then `scripts/nuclis-speculative.py --baseline`, now the `qwen38/spec/*`
+workloads of `workloads.json` with the table from `scripts/bench-report.py`; reports under
+[benchmarks/speculative-2026-09-21/](speculative-2026-09-21/))
+ran the twelve configurations of the ENGN-12 record as off/on pairs on one
+loaded model plus a no-drafter baseline pass per configuration: the
+reference corpus arrays at 512 and 4,096 tokens and the fixed code prompt
+`Write a Zig function that reverses a string.` (`--raw`, 10 tokens), greedy
+and with the instruct profile's sampling (`--temperature 0.7 --top-p 0.8
+--top-k 20 --presence-penalty 1.5`, seed 0), draft lengths 2, 4, 7, 128
+output tokens, context 32,768, F16 KV, one warmup, three measured
+repetitions (two at 4K). Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB,
+macOS 26.6.2 (25G83), AC power, Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev`
+at `981f74d` plus the ENGN-17 change, artifact SHA-256 `322e194f…`, backend
+metal, one 52-minute sequence (18:39–19:32) with nothing else on the GPU.
+Means over the measured runs; per-batch costs are the run's milliseconds
+divided by its verify batches; every sample stopped on `token_budget`:
+
+| configuration | prompt | draft | accepted/step | proposed/step | drafts/accepted | tokens/batch | propose ms | verify ms | accept ms | recover ms | checkpoint ms | commit ms | prefill off → on (s) | decode baseline → off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code, greedy | 10 | 2 | 1.35 | 1.81 | 1.34 | 2.35 | 11.2 | 218.5 | 0.00 | 6.0 | 3.15 | 4.38 | 0.35 → 0.37 | 10.27 → 10.47 → 9.67 | 0.92× |
+| code, greedy | 10 | 4 | 2.17 | 2.92 | 1.34 | 3.17 | 18.0 | 225.0 | 0.00 | 6.2 | 2.81 | 4.41 | 0.35 → 0.38 | 10.11 → 10.35 → 12.39 | 1.20× |
+| code, greedy | 10 | 7 | 2.53 | 3.75 | 1.48 | 3.53 | 23.1 | 227.7 | 0.00 | 8.7 | 3.00 | 4.33 | 0.35 → 0.39 | 10.16 → 10.21 → 13.22 | 1.30× |
+| code, instruct | 10 | 4 | 2.53 | 3.14 | 1.24 | 3.50 | 19.3 | 229.0 | 0.03 | 6.4 | 2.88 | 4.27 | 0.35 → 0.38 | 10.26 → 10.42 → 13.37 | 1.28× |
+| prose 512, greedy | 512 | 2 | 1.12 | 1.62 | 1.45 | 2.12 | 10.1 | 222.9 | 0.00 | 7.7 | 3.60 | 5.32 | 5.78 → 5.89 | 10.50 → 10.53 → 8.48 | 0.81× |
+| prose 512, greedy | 512 | 4 | 1.49 | 2.27 | 1.53 | 2.49 | 14.2 | 227.2 | 0.00 | 9.8 | 3.25 | 5.31 | 5.77 → 5.89 | 10.62 → 10.54 → 9.59 | 0.91× |
+| prose 512, greedy | 512 | 7 | 1.70 | 2.68 | 1.57 | 2.70 | 16.6 | 227.6 | 0.00 | 10.7 | 3.12 | 5.28 | 5.75 → 5.86 | 10.62 → 10.62 → 10.26 | 0.97× |
+| prose 512, instruct | 512 | 2 | 1.22 | 1.69 | 1.39 | 2.22 | 10.4 | 226.0 | 0.02 | 6.0 | 3.22 | 4.89 | 5.75 → 5.86 | 10.56 → 10.58 → 8.85 | 0.84× |
+| prose 512, instruct | 512 | 4 | 1.56 | 2.45 | 1.57 | 2.55 | 15.1 | 228.2 | 0.03 | 8.2 | 2.89 | 5.10 | 5.75 → 5.86 | 10.57 → 10.56 → 9.82 | 0.93× |
+| prose 512, instruct | 512 | 7 | 1.68 | 2.90 | 1.73 | 2.68 | 18.0 | 229.1 | 0.03 | 10.5 | 3.05 | 5.14 | 5.74 → 5.85 | 10.55 → 10.56 → 10.07 | 0.95× |
+| prose 4K, greedy | 4,096 | 4 | 1.51 | 2.06 | 1.36 | 2.49 | 13.2 | 309.1 | 0.00 | 6.3 | 2.90 | 9.39 | 49.83 → 50.99 | 10.09 → 10.07 → 7.30 | 0.73× |
+| prose 4K, instruct | 4,096 | 4 | 1.53 | 2.40 | 1.56 | 2.51 | 15.4 | 319.2 | 0.02 | 10.0 | 3.07 | 9.52 | 49.86 → 51.07 | 10.21 → 9.63 → 7.04 | 0.73× |
+
+**Verdict: off for the Qwen entry, `draft_length` 4.** Code greedy reads
+0.92 / 1.20 / 1.30× at drafts 2 / 4 / 7 and code instruct 1.28× at draft 4;
+prose 512 reads 0.81 / 0.91 / 0.97× greedy and 0.84 / 0.93 / 0.95× instruct;
+4K reads 0.73× both. The bar was code ≥ 1.5× and prose ≥ 0.9× at the chosen
+length: code tops at 1.30× and prose never reaches 0.9 at 4K, so the switch
+stays off. What the performance units bought over the ENGN-12 record is
+visible in the cost columns — the sampled decision 46–78 ms → 0.00–0.03 ms
+(ENGN-15's device readback), recovery 99–272 ms → 6.0–10.7 ms (ENGN-14's
+row checkpoints; the 150 MB copy is 2.8–3.6 ms of it), the prompt commit
+2.9–3.3× → 1.02–1.03× (ENGN-13's plan chunk), the proposal policy's
+drafts/accepted 1.24–1.73 and tokens/batch 2.12–3.53 (ENGN-16) — but the
+verify batch stays the verdict's cost: 218.5–229.1 ms at 512 and 309.2–319.2
+ms at 4K for 2.1–3.5 tokens, 1.6–1.8 ordinary decode steps, with the
+small-chunk tiles' row-flat work and the chunk attention over the visible
+cache. Every other batch cost is now negligible; the levers left are a
+cheaper small-batch verify (KERN-12's 2-row route, KERN-14's tile, and
+KERN-16's window were the measured attempts, all closed below their
+targets) and the proposal policy, which the record shows is already near
+its ceiling (63–81 % of proposed positions accepted, highest on the code
+prompt with the instruct profile).
+
+**Both baselines.** The pair's loaded-but-off decode equals the no-drafter
+baseline within ±2.4 % on eleven of the twelve configurations; the twelfth
+(`prose 4K, instruct`) read 9.63 against its baseline's 10.21, which a
+focused repeat at 4K did not reproduce (loaded-off 10.25–10.32 vs baseline
+10.24–10.27 tok/s over two pairs each, same flags): the MODL-18 item
+"decode rate unchanged with the drafter loaded but switched off" holds, and
+that configuration's pair-off samples were the drifted ones. Loading the
+drafter costs memory and load time, not rate: the session grows 2,304 →
+3,851 MB (the 640 MB draft cache and the 150 MB checkpoint region among
+it) and `load_milliseconds` 790 → 1,247 ms. The sequence's baselines read
+10.1–10.6 tok/s; the ENGN-12 sequence read 10.43 early and 8.5 at 4K, so
+the path's rate improvement is real but partly a cooler sequence.
+
+**The cost table** of *Where we are* in [TODO.md](../../TODO.md) is
+refreshed from this record; the catalogue defaults it sets are Qwen off
+(this record), Gemma off
+([§ The Gemma 4 draft pair](#the-gemma-4-draft-pair-modl-19-2026-09-21)),
+Muse on ([§ The Muse Glimmer DFlash draft pair](#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)),
+each at `draft_length` 4.
+
+## Recovery by row checkpoints (ENGN-14, 2026-09-20)
+
+The second speculative-decoding record, taken after the whole-stack replay
+was replaced by per-row recurrent checkpoints
+([speculative-decoding.md § Recovery by accepted length](../engine/speculative-decoding.md#recovery-by-accepted-length-engn-14-2026-09-20),
+the worklog; replaced by the verify tape, [session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape-engn-19)). Same
+methodology, corpus, prompts, sampling, draft lengths, context, and
+precision as the ENGN-12 record above; `make workload NAME='qwen38/spec/*'`
+(then `scripts/nuclis-speculative.py`, now the `qwen38/spec/*` workloads; reports under
+[benchmarks/speculative-2026-09-20-recovery/](speculative-2026-09-20-recovery/))
+ran twelve configurations in one 46-minute sequence (20:49–21:35), each an
+off/on pair on one loaded model. Apple M4 Pro (12 CPU, 16 GPU cores),
+48 GiB, macOS 26.6.2 (25G83), AC power, Zig 0.16.0, ReleaseSafe,
+`nuclis 0.2.0-dev` at `417aea0`, artifact SHA-256 `322e194f…`, backend
+metal, nothing else on the GPU. Session block 3,850,633,216 bytes (the 32K
+session, the block's own cache, the 150 MB checkpoint region, and the
+1,255,146,752-byte row region). Means over the measured runs; per-batch
+costs are the run's milliseconds divided by its verify batches; every
+sample stopped on `token_budget`:
+
+| configuration | prompt | draft | accepted/step | tokens/batch | verify ms | accept ms | recover ms | prefill off → on (s) | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| prose 512, greedy | 512 | 2 | 1.23 | 2.23 | 254.1 | 0.0 | 9.7 | 5.93 → 6.15 | 10.31 → 7.78 | 0.75× |
+| prose 512, greedy | 512 | 4 | 1.67 | 2.65 | 287.0 | 0.0 | 22.2 | 7.61 → 6.88 | 8.26 → 7.67 | 0.93× |
+| prose 512, greedy | 512 | 7 | 2.28 | 3.26 | 261.2 | 0.0 | 21.2 | 6.14 → 6.23 | 9.35 → 9.70 | 1.04× |
+| prose 512, instruct | 512 | 2 | 1.36 | 2.35 | 249.7 | 54.9 | 6.4 | 6.29 → 6.35 | 8.18 → 7.07 | 0.86× |
+| prose 512, instruct | 512 | 4 | 1.82 | 2.80 | 256.3 | 61.4 | 11.1 | 6.28 → 6.38 | 7.99 → 7.68 | 0.96× |
+| prose 512, instruct | 512 | 7 | 2.06 | 3.05 | 264.6 | 65.2 | 13.0 | 6.39 → 6.52 | 7.78 → 7.66 | 0.98× |
+| code, greedy | 10 | 2 | 1.35 | 2.35 | 254.6 | 0.0 | 8.1 | 0.41 → 0.44 | 8.81 → 8.29 | 0.94× |
+| code, greedy | 10 | 4 | 2.34 | 3.34 | 257.6 | 0.0 | 9.8 | 0.38 → 0.43 | 9.15 → 11.13 | 1.22× |
+| code, greedy | 10 | 7 | 2.97 | 3.97 | 250.3 | 0.0 | 15.3 | 0.37 → 0.42 | 9.32 → 12.51 | 1.34× |
+| code, instruct | 10 | 4 | 2.79 | 3.78 | 241.2 | 76.6 | 6.3 | 0.35 → 0.37 | 8.56 → 10.57 | 1.23× |
+| prose 4K, greedy | 4,096 | 4 | 1.98 | 2.95 | 371.7 | 0.0 | 17.7 | 52.44 → 55.29 | 8.72 → 6.85 | 0.79× |
+| prose 4K, instruct | 4,096 | 4 | 1.79 | 2.77 | 362.2 | 62.6 | 12.2 | 60.13 → 55.18 | 7.67 → 5.64 | 0.74× |
+
+Per-batch cost breakdown (ms), same samples:
+
+| configuration | propose | verify | accept | recover | checkpoint | commit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| prose 512, greedy, d2 | 12.8 | 254.1 | 0.0 | 9.7 | 5.2 | 5.6 |
+| prose 512, greedy, d4 | 26.3 | 287.0 | 0.0 | 22.2 | 5.0 | 5.7 |
+| prose 512, greedy, d7 | 43.5 | 261.2 | 0.0 | 21.2 | 4.5 | 5.6 |
+| prose 512, instruct, d2 | 13.2 | 249.7 | 54.9 | 6.4 | 3.0 | 5.8 |
+| prose 512, instruct, d4 | 25.1 | 256.3 | 61.4 | 11.1 | 2.9 | 8.2 |
+| prose 512, instruct, d7 | 42.8 | 264.6 | 65.2 | 13.0 | 2.9 | 9.6 |
+| code, greedy, d2 | 12.7 | 254.6 | 0.0 | 8.1 | 3.8 | 4.7 |
+| code, greedy, d4 | 24.9 | 257.6 | 0.0 | 9.8 | 3.4 | 4.7 |
+| code, greedy, d7 | 43.0 | 250.3 | 0.0 | 15.3 | 3.8 | 4.7 |
+| code, instruct, d4 | 25.3 | 241.2 | 76.6 | 6.3 | 2.8 | 4.9 |
+| prose 4K, greedy, d4 | 26.2 | 371.7 | 0.0 | 17.7 | 4.6 | 10.9 |
+| prose 4K, instruct, d4 | 34.0 | 362.2 | 62.5 | 12.2 | 3.0 | 15.3 |
+
+**Reading.** Recovery is out of the picture: 6–22 ms per batch at every
+accepted length (all of it one 150 MB slot copy; replay zero), against the
+99–272 ms of the ENGN-12 record, and `checkpoint` is 3–5 ms. What decides
+a configuration now is the verify batch over the tokens it advances: 250–287
+ms at 512 for 2.2–4.0 tokens (63–126 ms per token against an ordinary step
+of ≈ 95–105 ms), 362–372 ms at 4K. Verify barely scales with rows (254 ms
+at 3 rows against 250 ms at 8), so proposing fewer drafts buys little; the
+code prompt wins because acceptance is high (2.34–2.97 drafts per batch,
+1.22–1.34× at draft 4–7) and prose loses because 1.23–2.28 accepted drafts
+do not amortize a ~2.6-step batch. The sampled path still pays its host
+acceptance (55–77 ms, the full-vocabulary sorts), which is ENGN-15 and
+KERN-13's target; the verify itself is the new KERN-14 (small-batch tile)
+and KERN-16 (long-context attention) territory. The plan was rewritten from
+this table: [TODO.md](../../TODO.md).
+
+## Gemma 4 12B QAT decode, first per-kernel profile (2026-09-12)
+
+`make bench-profile MODEL=<qat file> ARGS="--kv f16"` on the catalogue's
+Q4_0 file, 22-token prompt, 2,048 context, 192 measured steps: 882
+dispatches per step, 40.0 ms attributed of 44.3 ms command-buffer time
+(profile mode, ~8 % pessimistic). Removing the amortized prefill
+(`matmul_q4_0_32`, 3.5 ms/step, which is this run's 22-token prefill
+spread over the steps), a decode step is 36.5 ms of GPU time:
+
+| Part | ms/step | Share | Note |
+| --- | ---: | ---: | --- |
+| Weight matvecs (7 shapes) | 30.9 | 85 % | 191–224 GB/s, 217 GB/s weighted |
+| RMS norms | 2.7 | 7 % | 337 dispatches of ~8 µs: launch latency, not bytes |
+| Attention (decode, wide decode, merge) | 2.1 | 6 % | 2K context, so latency-bound |
+| RoPE, elementwise epilogues, sampling | 0.7 | 2 % | |
+
+The matvec kernels run at the same rate inside the model as alone on
+fixture matrices (204–230 GB/s, § Kernel micro-benchmark), so nothing is
+lost to the token schedule: decode is weight reading plus about 5.5 ms of
+everything else. Whole-step effective bandwidth is 184 GB/s against the
+reference's 186 GB/s at 27.69 tok/s on the same file, while nuclis
+measures 23.96 tok/s (41.7 ms/step) in the acceptance run, so the 5.6 ms
+gap is *not* in the Q4_0 decode kernel. The two candidates it leaves are
+the 337 norm launches (Gemma has six norms per layer; the same 2.7 ms
+costs Qwen's 101 ms step 2.7 % and this 41.7 ms step 6.5 %, which is why
+the Qwen tuning does not transfer for free to a smaller model) and the
+matvecs' own 75–82 % of the published 273 GB/s, whose limiter KERN-05
+measured as per-block instruction work. The 15,360-wide fused gate/up
+projection alone is 38 % of the step.
+
+Prefill in the same run: the 32-token matmul tile runs at 25–29 GB/s on a
+22-token prompt, the known small-M case (ENGN-05; one token tile leaves too
+few threadgroups), not a Q4_0 property.
+
+Follow-ups from this profile: the norm launches became KERN-18 across all
+three families, the split-K candidate for the matvecs was KERN-15 and
+measured behind the single pass, and the Q4_0 prefill tile is untaken.
+
+## The KERN-13 quick pass (2026-09-20)
+
+The device penalty kernel (KERN-13) landed; a full record waits for ENGN-17.
+This is the unit's gate pass, `make workload NAME='qwen38/spec/*' ARGS="--only prose512
+code"`, which covers the prose-512 and code configurations (the 4K pair was
+not re-measured). Same methodology as the ENGN-14 record above: Apple M4 Pro
+(12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2 (25G83), AC power, Zig 0.16.0,
+ReleaseSafe, `nuclis 0.2.0-dev` at `d31c5cd`, artifact SHA-256 `322e194f…`,
+backend metal, F16 KV, context 32,768, 128 output tokens, one warmup and
+three measured runs (two at 4K, not run here) per configuration, off/on
+pairs on one loaded model; reports under `.zig-cache/bench/spec/`. Every
+sample stopped on `token_budget`; `topk_fallbacks` was 0 at every measured
+sample in both the off and on halves. The off half of the instruct
+configurations is the new penalized GPU path; the accept half still reads
+the full verify rows back (ENGN-15).
+
+| configuration | prompt | draft | accepted/step | tokens/batch | verify ms | accept ms | recover ms | prefill off → on (s) | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code, greedy | 10 | 2 | 1.35 | 2.35 | 257.3 | 0.0 | 10.3 | 0.40 → 0.45 | 8.66 → 8.11 | 0.94× |
+| code, greedy | 10 | 4 | 2.34 | 3.34 | 273.1 | 0.0 | 12.7 | 0.40 → 0.45 | 8.67 → 10.41 | 1.20× |
+| code, greedy | 10 | 7 | 2.97 | 3.97 | 268.8 | 0.0 | 18.9 | 0.40 → 0.44 | 8.74 → 11.63 | 1.33× |
+| code, instruct | 10 | 4 | 2.79 | 3.77 | 252.4 | 91.3 | 6.8 | 0.37 → 0.45 | 8.74 → 9.83 | 1.12× |
+| prose 512, greedy | 512 | 2 | 1.23 | 2.23 | 248.8 | 0.0 | 11.2 | 5.89 → 6.03 | 10.22 → 7.86 | 0.77× |
+| prose 512, greedy | 512 | 4 | 1.67 | 2.65 | 262.8 | 0.0 | 20.5 | 5.99 → 6.28 | 9.50 → 8.31 | 0.87× |
+| prose 512, greedy | 512 | 7 | 2.28 | 3.26 | 268.6 | 0.0 | 20.0 | 6.23 → 6.46 | 9.21 → 9.51 | 1.03× |
+| prose 512, instruct | 512 | 2 | 1.36 | 2.35 | 251.1 | 62.9 | 6.7 | 6.38 → 6.61 | 9.04 → 6.87 | 0.76× |
+| prose 512, instruct | 512 | 4 | 1.82 | 2.80 | 265.5 | 71.7 | 11.7 | 6.50 → 6.62 | 8.87 → 7.31 | 0.82× |
+| prose 512, instruct | 512 | 7 | 2.06 | 3.05 | 264.2 | 77.9 | 13.7 | 6.52 → 6.66 | 8.80 → 7.47 | 0.85× |
+
+**Reading.** The instruct baseline moved from the ENGN-14 record's 8.18 /
+7.99 / 7.78 tok/s (prose d2/d4/d7) to 9.04 / 8.87 / 8.80, and from 8.56 to
+8.74 on code — inside the spread of the greedy off baselines (code
+8.66–8.74; prose 9.21–10.22 across the record's consecutive runs is clock
+drift over the 25-minute sequence, not a path difference). The sampled
+accept time is unchanged (62.8–91.3 ms): it still sorts the full verify
+rows, which ENGN-15 moves onto the device readback. Verify and recover are
+where ENGN-14 left them (249–273 ms and 6.8–20.5 ms per batch).
+
+## The ENGN-15 quick pass (2026-09-20)
+
+The verify batch's per-row top-k readback landed (ENGN-15): the sampled
+acceptance no longer reads and sorts the full logits of every verify row.
+This is the unit's gate pass, `make workload NAME='qwen38/spec/*' ARGS="--only prose512
+code"` (the 4K pair waits for ENGN-17). Same methodology and revision line as
+[the KERN-13 quick pass](#the-kern-13-quick-pass-2026-09-20) — the runs above
+were taken immediately before these, `nuclis 0.2.0-dev` at `d31c5cd` plus the
+ENGN-15 change, artifact SHA-256 `322e194f…`; reports under
+`.zig-cache/bench/spec/`. Every sample stopped on `token_budget`. `accept`
+is the host acceptance per batch in microseconds now that the full-row sorts
+are gone; `fallbacks` counts sampled rows whose readback could not decide
+(0 everywhere: the readback decided every row).
+
+| configuration | draft | accepted/step | tokens/batch | verify ms | accept µs | recover ms | propose ms | fallbacks | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code, greedy | 2 | 1.35 | 2.35 | 263.8 | 0.1 | 9.3 | 13.0 | 0 | 8.27 → 7.97 | 0.96× |
+| code, greedy | 4 | 2.34 | 3.34 | 271.8 | 0.2 | 13.4 | 25.8 | 0 | 8.67 → 10.43 | 1.20× |
+| code, greedy | 7 | 2.97 | 3.97 | 271.8 | 0.1 | 18.3 | 44.6 | 0 | 8.66 → 11.53 | 1.33× |
+| code, instruct | 4 | 2.79 | 3.77 | 274.5 | 36.9 | 10.6 | 25.8 | 0 | 8.64 → 11.79 | 1.36× |
+| prose 512, greedy | 2 | 1.23 | 2.23 | 262.2 | 0.1 | 7.6 | 12.9 | 0 | 9.43 → 7.65 | 0.81× |
+| prose 512, greedy | 4 | 1.67 | 2.65 | 291.1 | 0.2 | 16.2 | 25.8 | 0 | 8.34 → 7.72 | 0.93× |
+| prose 512, greedy | 7 | 2.28 | 3.26 | 294.3 | 0.1 | 18.6 | 45.1 | 0 | 8.25 → 8.84 | 1.07× |
+| prose 512, instruct | 2 | 1.36 | 2.35 | 282.8 | 18.8 | 8.1 | 13.2 | 0 | 8.20 → 7.50 | 0.92× |
+| prose 512, instruct | 4 | 1.82 | 2.80 | 297.3 | 21.6 | 15.0 | 25.7 | 0 | 8.20 → 8.06 | 0.98× |
+| prose 512, instruct | 7 | 2.06 | 3.05 | 297.2 | 23.8 | 18.6 | 44.0 | 0 | 8.19 → 8.24 | 1.01× |
+
+**Reading.** Accept fell from 62.8–91.3 ms per batch (the KERN-13 pass) to
+0.02–0.04 ms — 18.8–36.9 µs with penalties, 0.1–0.2 µs for the greedy
+sampled path — against the ≤ 5 ms target, two orders of magnitude under it.
+The instruct speedups moved with it: code 1.36× at draft 4 (was 1.12× in
+the KERN-13 pass) and prose 512 0.92 / 0.98 / 1.01× (was 0.76 / 0.82 /
+0.85×). Verify (262–297 ms) and propose (13–45 ms) are now the whole batch;
+KERN-14 and ENGN-16 are next. The prose off baselines sit lower than the
+KERN-13 pass (8.20 vs 8.80–9.04) — the same clock drift within the session's
+runs, and the speedup columns are same-run pairs.
+
+## Small-batch tile sweep (KERN-14, 2026-09-20)
+
+The verify batch's small-batch tile experiment: a 32-output-row variant of
+the 16×8 split-K tile, measured by `make bench-matvec-rows ARGS="8 head"`
+against `Backend.matmulTile`'s 16×8 control (nothing routes to the
+candidate; `Backend.matmulTile32` calls it directly). Apple M4 Pro (48 GiB),
+Zig 0.16.0, ReleaseSafe, `d31c5cd` plus the unit's change, minimum of three
+measured command buffers after one warm-up, sixteen dispatches per buffer,
+synthetic quantization fixtures, no model loaded. Rates are logical weight
+bytes per GPU second. 16×8 → 32×8 GB/s at 2 / 5 / 8 tokens:
+
+| encoding | shape | 2 rows | 5 rows | 8 rows |
+| --- | --- | --- | --- | --- |
+| Q4_K | 17,408×5,120 | 96.3 → 87.7 | 96.8 → 88.7 | 96.7 → 87.7 |
+| Q4_K | 5,120×17,408 | 93.2 → 82.0 | 94.4 → 85.0 | 92.5 → 84.9 |
+| Q4_K | 248,320×5,120 | 92.3 → 86.3 | 92.2 → 85.6 | 95.3 → 87.1 |
+| Q5_K | 17,408×5,120 | 111.0 → 109.5 | 110.0 → 109.8 | 112.0 → 108.0 |
+| Q5_K | 5,120×17,408 | 105.6 → 104.3 | 109.4 → 100.7 | 106.2 → 102.1 |
+| Q5_K | 248,320×5,120 | 108.5 → 107.2 | 106.4 → 106.9 | 106.6 → 104.7 |
+| Q6_K | 17,408×5,120 | 114.4 → 90.0 | 114.0 → 84.6 | 114.1 → 90.8 |
+| Q6_K | 5,120×17,408 | 109.1 → 82.6 | 105.0 → 87.8 | 106.1 → 87.0 |
+| Q6_K | 248,320×5,120 | 108.6 → 88.0 | 109.2 → 89.0 | 110.2 → 90.1 |
+| IQ4_XS | 17,408×5,120 | 91.0 → 89.9 | 90.5 → 92.7 | 90.1 → 88.3 |
+| IQ4_XS | 5,120×17,408 | 87.4 → 89.0 | 85.9 → 89.3 | 87.1 → 89.4 |
+| IQ4_XS | 248,320×5,120 | 83.2 → 89.8 | 83.0 → 89.5 | 85.6 → 88.8 |
+| Q3_K | 17,408×5,120 | 63.6 → 47.7 | 63.0 → 47.1 | 58.5 → 45.2 |
+| Q3_K | 5,120×17,408 | 51.6 → 38.2 | 57.2 → 46.1 | 58.2 → 45.8 |
+| IQ3_S | 17,408×5,120 | 64.9 → 60.0 | 62.3 → 56.6 | 60.5 → 53.9 |
+| IQ3_S | 5,120×17,408 | 60.0 → 55.4 | 60.7 → 55.0 | 59.3 → 54.7 |
+
+**Reading.** The 32-row group loses 8–26 % on the Qwen FFN encodings at 5
+rows (Q4_K 96.8→88.7, Q6_K 114.0→84.6, Q3_K 63.0→47.1), ties on Q5_K, and
+wins only ~5–8 % on the wide head and IQ4_XS. No case reaches the ≤ 150
+GB/s bar. The 16×8 tile stays the verify control; the full-model verify
+latency is unchanged (262–297 ms per batch, the ENGN-15 pass above), since
+production routing never selects the candidate. Verdict in
+[metal-backend.md § The wide 32×8 tile](../engine/metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative).
+
+## Split-K matvec sweep (KERN-15, 2026-09-21)
+
+The row-poor decode matvec experiment: split-K twins of the Q4_K/Q5_K
+specialized matvec (`nu_matvec_q4_k_split`, `nu_matvec_q5_k_split`) and of
+the plain segment merge (`nu_matvec_segments_split`), each writing a
+`[split][row]` partial buffer reduced by `nu_reduce_splits` /
+`nu_segment_reduce_splits`, measured by `make bench-matvec-split` against
+the single-pass kernel (splits 1 is the control). Nothing routes to the
+split path: only `Backend.matvecSplits` / `matvecSegmentsSplits` force it,
+and the `make test-metal` exactness fixture holds it against the F64 CPU
+reference at 6,656 rows and at the four-segment merge for every split.
+Apple M4 Pro (48 GiB), Zig 0.16.0, ReleaseSafe, `10cf6ba` plus the unit's
+change; five command buffers per case (two warm-ups) with 64 dispatches per
+buffer below 8,192 rows and 8 above (the clock policy of `--matvec-bench`),
+best of three measured rounds, synthetic quantization fixtures, no model
+loaded. Rates are logical weight bytes per GPU second; single pass →
+2 / 4 / 8 splits:
+
+| encoding | shape | 1 (control) | 2 | 4 | 8 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Q4_K | 6,656×19,968 (Muse ffn_down) | 151.0 | 145.9 | 148.1 | 138.8 |
+| Q4_K | 6,656×4,096 (Muse attention output) | 157.7 | 150.7 | 135.5 | 124.3 |
+| Q4_K | 5,120×17,408 (Qwen ffn_down) | 152.8 | 146.1 | 146.6 | 134.5 |
+| Q4_K | 8,704×6,656 (Muse q/k/v/gate merge, four segments) | 152.1 | 157.4 | 150.3 | 158.5 |
+| Q5_K | 6,656×19,968 | 193.0 | 193.4 | 198.4 | 193.3 |
+| Q5_K | 6,656×4,096 | 175.0 | 170.3 | 159.0 | 130.6 |
+| Q5_K | 5,120×17,408 | 191.2 | 190.9 | 184.8 | 172.6 |
+
+**Reading.** The unit's hypothesis — a 6,656–8,704-row matrix launches too
+few 16-row groups to keep the weight bus busy — is refuted. Splitting K
+multiplies the group count and the partial traffic is 0.2 % of the weight
+bytes, yet every Q4_K plain shape loses 2–10 % and the loss grows with the
+split count: the signature of a per-group cost (the `simd_sum`/store tail
+and the second launch), not of insufficient parallelism. Q5_K's single win
+is +2.8 % at 4 splits on a shape Muse uses as Q4_K, and its other cells are
+within noise. The merged projection's ~4 % at 2 and 8 splits is the only
+reproducible gain — the segment kernel's groups are three times shorter
+than the plain matvec's — but it is far below the unit's ≥ 190 GB/s bar,
+and that bucket is global: routing it would touch the other families'
+merges, which were not measured. No bucket routes. The Q4_K rate is the
+kernel's ~0.9 ns per 256-value block (144 bytes) against Q5_K's 176, not
+the row count; reaching the bar needs per-block arithmetic, not more K
+parallelism. Verdict in
+[metal-backend.md § Split-K](../engine/metal-backend.md#split-k-kern-15-2026-09-21-closed-negative).
+
+## The ENGN-16 quick pass (2026-09-20)
+
+The proposal policy's gate pass: `engine.draft_p_min = 0.7` (the early stop
+on the block's top-candidate probability; the adaptive-length half closed
+negative and is not shipped). Same methodology and revision line as the
+KERN-13 and ENGN-15 quick passes above — the runs were taken after the
+ENGN-15 pass, `nuclis 0.2.0-dev` at `d31c5cd` plus the ENGN-16 change,
+artifact SHA-256 `322e194f…`; reports under `.zig-cache/bench/spec/`.
+`proposed/step` and `drafts/accepted` are new columns from
+`Sample.proposed_per_step`; the unpoliced control's drafts/accepted is
+`draft_length / accepted` except for the final partial batch (measured
+2.16 for prose d4 and 2.31 for code d7 in the interleaved A/B). Every
+sample stopped on `token_budget`.
+
+| configuration | draft | accepted/step | proposed/step | drafts/accepted | tokens/batch | verify ms | propose ms | recover ms | decode off → on tok/s | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code, greedy | 2 | 1.35 | 1.81 | 1.34 | 2.35 | 249.8 | 12.1 | 12.0 | 8.44 → 8.20 | 0.97× |
+| code, greedy | 4 | 2.17 | 2.92 | 1.34 | 3.17 | 255.7 | 19.5 | 13.8 | 8.47 → 10.54 | 1.24× |
+| code, greedy | 7 | 2.53 | 3.75 | 1.48 | 3.53 | 258.6 | 24.9 | 17.2 | 8.50 → 11.31 | 1.33× |
+| code, instruct | 4 | 2.53 | 3.14 | 1.24 | 3.50 | 259.4 | 21.0 | 13.6 | 8.50 → 11.44 | 1.35× |
+| prose 512, greedy | 2 | 1.12 | 1.62 | 1.45 | 2.12 | 233.9 | 10.5 | 16.4 | 10.04 → 7.67 | 0.76× |
+| prose 512, greedy | 4 | 1.49 | 2.27 | 1.53 | 2.49 | 253.6 | 15.2 | 21.0 | 8.59 → 8.23 | 0.96× |
+| prose 512, greedy | 7 | 1.70 | 2.68 | 1.57 | 2.70 | 260.0 | 17.9 | 22.5 | 8.17 → 8.64 | 1.06× |
+| prose 512, instruct | 2 | 1.22 | 1.69 | 1.39 | 2.22 | 250.7 | 11.3 | 13.2 | 8.48 → 7.65 | 0.90× |
+| prose 512, instruct | 4 | 1.56 | 2.45 | 1.57 | 2.54 | 254.0 | 16.2 | 19.0 | 8.41 → 8.44 | 1.00× |
+| prose 512, instruct | 7 | 1.68 | 2.90 | 1.73 | 2.66 | 256.4 | 19.1 | 20.3 | 8.46 → 8.68 | 1.03× |
+
+**Reading.** The policy trims 25–45 % of the proposed positions (propose
+10–25 ms per batch against 13–45 unpoliced) and gives prose instruct its
+first ≥ 1× rows (1.00 / 1.03× at drafts 4 / 7 against 0.98 / 1.01× in the
+ENGN-15 pass), while code holds: 1.35× instruct and 1.33× greedy at draft 7
+(1.33× unpoliced). Drafts per accepted token fall on every row; prose draft
+4 reads 1.57 against the interleaved control's measured 2.16 (−27 %), three
+points short of the unit's 30 % bar, while its decode rate rose — the bar's
+purpose. Verify (234–260 ms) is still the whole batch.
+
+## The Gemma 4 draft pair (MODL-19, 2026-09-21)
+
+The `gemma4-assistant` companion's off/on pair on the Gemma acceptance
+workload: `gemma-4-12b-qat` (QAT, every matrix Q4_0), Metal, F16 KV, ctx
+32768, `tests/fixtures/run-2026-09-12-gemma4-qat/prompt-512.json`, 128
+output tokens, greedy, the companion loaded (`--speculative on`), one warmup
+and three measured runs per configuration on one loaded model. Nuclis
+`0.2.0-dev` at `4bc7b8d` plus the MODL-19 change; reports under
+`.zig-cache/bench/gemma-modl19*.json`. Per-batch costs are the sample fields
+divided by `speculative_steps`; `tokens/batch` is
+`(generated_tokens − 1) / speculative_steps`; the speedup is the pair's
+`decode_tokens_per_second` on/off. Every sample stopped on `token_budget`.
+Ordinary decode on this workload is 25.2–25.4 tok/s (39.5 ms per token).
+
+| draft | accepted/step | proposed/step | tokens/batch | verify ms | propose ms | accept µs | recover ms | commit ms | checkpoint ms | decode off → on tok/s | speedup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 1.510 | 1.941 | 2.490 | 136.0 | 3.9 | 0.1 | 0.001 | 0.001 | 0.000 | 25.24 → 17.80 | 0.705× |
+| 4 | 2.256 | 3.385 | 3.256 | 135.9 | 6.8 | 0.1 | 0.001 | 0.002 | 0.000 | 25.40 → 22.83 | 0.899× |
+| 7 | 2.735 | 4.971 | 3.735 | 136.2 | 9.8 | 0.2 | 0.001 | 0.002 | 0.000 | 25.16 → 25.60 | 1.017× |
+
+Reproduced on 2026-09-21 by `make workload NAME=gemma4-qat/prose512-draft`
+(draft 4; the table below is generated by `scripts/bench-report.py
+--write-doc`, REPO-10):
+
+<!-- bench:gemma4-qat-prose512-draft -->
+| report | prompt | sampling | draft | accepted/step | proposed/step | drafts/accepted | tokens/batch | propose ms | verify ms | accept ms | recover ms | checkpoint ms | commit ms | prefill off → on (s) | decode baseline → off → on tok/s | speedup |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| gemma4-qat-prose512-draft-2026-09-21 | 512 | greedy | 4 | 2.26 | 3.38 | 1.50 | 3.26 | 6.7 | 133.9 | 0.00 | 0.0 | 0.00 | 0.00 | 2.55 → 2.54 | — → 25.74 → 23.17 | 0.90× |
+
+Generated by `scripts/bench-report.py` from `docs/benchmarks/gemma4-qat-prose512-draft-2026-09-21.json` (metal, 32768 ctx / f16 KV / ReleaseSafe); means over the measured runs.
+<!-- /bench:gemma4-qat-prose512-draft -->
+
+**Reading.** The drafter's proposals are accurate (55 % acceptance per
+position at draft 7) and every non-verify cost is negligible: the head reads
+the target's caches rather than owning one, so `commit` is a row copy and
+recovery is the position rewind alone (1 µs per batch against Qwen's 12.7 ms
+slot copy). The verify batch is flat at 136 ms across draft 2, 4, and 7 —
+3 to 8 rows cost the same because that batch measures the 512-row attention
+and the per-layer dispatches, not the row work — so the pair's break-even
+sits at about 3.7 tokens per batch and only draft 7 reaches it. The Gemma
+head is therefore a correct adapter with a negative default at the plan's
+draft length; the levers are `max_draft_length` (the 8-row tile bound) or a
+cheaper small-batch verify, both ENGN-17's call.
+
+## The Muse Glimmer DFlash draft pair (MODL-20, 2026-09-21)
+
+The `dflash-kquant` companion's off/on pair on the Muse acceptance workload:
+`muse-glimmer-30b`, Metal, F16 KV, ctx 32768,
+`tests/fixtures/run-2026-09-19-muse-glimmer/prompt-512.json`, 128 output
+tokens, greedy, the companion loaded (`--speculative on`), one warmup and
+three measured runs per configuration on one loaded model. Nuclis
+`0.2.0-dev` at `316accc` plus the MODL-20 change; reports under
+`.zig-cache/bench/muse-modl20-draft{4,8,15}.json`. Per-batch costs are the
+sample fields divided by `speculative_steps`; `tokens/batch` is
+`(generated_tokens − 1) / speculative_steps`; the speedup is the pair's
+`decode_tokens_per_second` on/off. Every sample stopped on `token_budget`.
+Each pair is interleaved on one loaded model, which is what the ratio uses;
+the off baselines drift down across the three configurations (9.67, 9.35,
+9.13 tok/s at 512) over the ten-minute sequence.
+
+| draft | accepted/step | proposed/step | tokens/batch | verify ms | propose ms | accept µs | recover ms | commit ms | checkpoint ms | decode off → on tok/s | speedup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 1.415 | 1.830 | 2.396 | 172.9 | 26.0 | 0.1 | 0.001 | 1.99 | 0.001 | 9.67 → 11.93 | 1.234× |
+| 8 | 1.560 | 2.120 | 2.540 | 183.0 | 48.5 | 0.1 | 0.001 | 2.04 | 0.001 | 9.35 → 10.88 | 1.163× |
+| 15 | 1.723 | 2.362 | 2.702 | 188.2 | 51.8 | 0.1 | 0.001 | 2.11 | 0.001 | 9.13 → 11.16 | 1.222× |
+
+**Reading.** The drafter pays on every length — the first positive family
+verdict, 1.16–1.23× — and the proposals are accurate: 73–77 % of the
+positions it does propose are accepted, and the early stop (`draft_p_min =
+0.7`, ENGN-16) trims hard, so only 1.83 / 2.12 / 2.36 positions of the 4 / 8
+/ 15 requested are ever forwarded. Every non-verify cost is negligible:
+recovery is the position rewind alone (1 µs per batch; Muse Glimmer is
+attention-only), `accept` is 0.1 µs (sampled acceptance's device readback
+is not used on the greedy path), and the prompt commit adds 1.2–2.9 % to
+the prefill (1.012–1.029×). The verify batch is the cost and the lever:
+172.9–188.2 ms for 2.8–3.4 rows, 1.7–1.8 ordinary decode steps, because the
+batch's matmuls run the padded small-chunk tiles; the block proposal grows
+with the requested length (5 / 9 / 16 rows through the small-batch tiles:
+26.0 / 48.5 / 51.8 ms). Draft 8 is the worst of the three — 22 ms more
+proposal and 10 ms more verify than draft 4 for 0.14 more tokens per batch —
+while draft 15's longer batches recover the ground (1.222×). The best
+measured length is 4 (1.234×) with 15 statistically tied; ENGN-17 sets the
+entry's default from this record. Memory: the session is 2,415,919,104
+bytes (2304 MiB) at 32,768 with the five draft caches (640 MiB of it), the
+drafter's device workspace is 149,861,504 bytes, and the verify scratch
+53,862,464 bytes.
+
+## Prefill attention sweep (KERN-16, 2026-09-21)
+
+The register-reuse chunk attention (`nu_attention_chunk_reuse` /
+`_h`: the four SIMD groups of a (head, 32-query) tile split the value
+columns and publish the probability tile through threadgroup memory)
+against the shipped row-split body, measured by `make bench-attention`
+(`metal-check --attention-bench`). One command buffer issues
+`max(1, 65536 / visible)` dispatches (a prefill chunk of 256 queries or a
+verify-shaped count) after two warm-ups; best of three measured rounds;
+the model geometry (24 query heads, 4 KV heads, 256-wide) with synthetic
+F32 and F16 caches, no model loaded. Apple M4 Pro (48 GiB), Zig 0.16.0,
+ReleaseSafe, `652a0cc` plus the unit's change. GPU ms per dispatch
+(a full layer: 24 heads × the tile count):
+
+| visible | count | row-split f16 | register-reuse f16 | Δ | row-split f32 | register-reuse f32 | Δ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 256 | 3.684 | 3.688 | +0.1 % | 3.951 | 4.101 | +3.8 % |
+| 4,096 | 256 | 35.179 | 34.246 | −2.6 % | 38.054 | 37.960 | −0.2 % |
+| 8,192 | 256 | 71.653 | 69.932 | −2.4 % | 76.276 | 75.120 | −1.5 % |
+| 16,384 | 256 | 145.031 | 138.064 | −4.8 % | 159.276 | 149.165 | −6.3 % |
+| 32,512 | 256 | 282.230 | 273.058 | −3.2 % | 307.087 | 291.255 | −5.2 % |
+| 512 | 64 | 1.139 | 1.097 | −3.7 % | 1.344 | 1.329 | −1.1 % |
+| 4,096 | 64 | 8.945 | 7.757 | −13.3 % | 10.477 | 8.998 | −14.1 % |
+| 16,384 | 64 | 36.121 | 31.382 | −13.1 % | 41.407 | 35.191 | −15.0 % |
+| 512 | 8 | 0.862 | 0.767 | −11.0 % | 0.995 | 0.872 | −12.4 % |
+| 2,048 | 8 | 3.610 | 3.163 | −12.4 % | 4.652 | 3.841 | −17.4 % |
+| 4,096 | 8 | 7.621 | 6.460 | −15.2 % | 9.329 | 7.702 | −17.4 % |
+| 16,384 | 8 | 30.642 | 25.806 | −15.8 % | 37.239 | 30.618 | −17.8 % |
+| 16,384 | 1 | 30.704 | 25.831 | −15.9 % | 37.338 | 30.777 | −17.6 % |
+
+**Reading.** The unit's thesis was that the row-split body pairs every
+8×8 multiply with ~1.5 `simdgroup_load`s and that reusing a V block over
+four row blocks (and a published P block over eight column blocks) would
+lift the long-context prefill the 32K acceptance needs. The reuse body is
+correct and consistently ahead, but only by 2–5 % at the 256-row prefill
+chunks (0 % at 512, −4.8 % at 16K): the loads it removes were not the
+limiter. The kernel is flat at ~640–750 GFLOP/s F16 and ~610–700 F32
+across the sweep, and the F32 cache — twice the bytes per block —
+costs only 5–10 %, so neither matrix throughput nor memory traffic is the
+limit; the fixed per-tile instruction and latency chain is, and the reuse
+body changes 84 of ~500 instructions per SIMD group per tile. Where the
+body wins by 11–16 % is the verify-shaped counts (1–64 rows), because
+there each of the four groups carries a quarter of the value columns
+instead of one group carrying all 256; that is the window the shipped
+routing uses (`attention_reuse_max_rows = 64`, 256-wide values only).
+Run-to-run spread is ~1.5 % (the same 32,512/256 case measured 281.2 ms
+then 282.2 ms for the row-split body in two sweeps). Verdict in
+[metal-backend.md § KERN-16](../engine/metal-backend.md#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative).
+
+## Fused norm sweep (KERN-18, 2026-09-21)
+
+The fused norm kernels (`nu_rmsnorm_add`, `nu_add_rmsnorm`,
+`nu_rmsnorm_rope`) against the pairs they replace, forced off by
+`bench --unfused-norms` (`Backend.fused_norms = false`). Apple M4 Pro
+(48 GiB), Zig 0.16.0, ReleaseSafe, `1d82c18` plus the unit's change.
+**Measurement note:** the profile and rate runs were taken with the
+drafter *not* loaded (a local `.none` open) because the shipped `bench`
+now loads Qwen's embedded block and measures the off/on pair, and because
+`bench` on the Gemma and Muse entries currently fails with
+`DraftSourceMissing` (their registry companions wait on MODL-19/20 while
+the config's `generation.speculative` is true). This is the 2026-09-07
+profile's condition, the one the unit's baselines came from; ENGN-17's
+default change re-measures consistently.
+
+`bench --profile`, canonical workload (ctx 2,048, 64 tokens, F16 KV,
+greedy), dispatch counts per step (192 measured command buffers, three of
+them prefill; the per-decode-step count is `dispatches − prefill·savings`
+and is the design's layer count):
+
+| model | body | total/step | rmsnorm | add / add_scale | rope | fused kernels |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Qwen3.8-27B | unfused | 938.8 | 209.0 | 128.0 | 31.5 | — |
+| Qwen3.8-27B | fused | 844.3 | 114.5 | 65.0 | — | add_rmsnorm 63.0, rmsnorm_rope 31.5 |
+| Gemma 4 12B QAT | unfused | 882.2 | 337.0 | 95.3 | 94.5 | — |
+| Gemma 4 12B QAT | fused | 693.2 | 148.0 | — | — | rmsnorm_add 94.5, rmsnorm_rope 94.5 |
+| Muse Glimmer 30B | unfused | 922.9 | 314.0 | 102.4 | 76.8 | — |
+| Muse Glimmer 30B | fused | 743.8 | 134.8 | — | — | rmsnorm_add 102.4, rmsnorm_rope 76.8 |
+
+Per decode step the fusion removes 96 dispatches on Qwen (64 post norms,
+32 q/k norms), 192 on Gemma, and 182 on Muse; the blended totals move
+−94.5, −189.0, and −179.2. The bars were ≤ 1,150 (−86) on Qwen, ≤ 705
+(−177) on Gemma, and ≤ 737 (−185, 20 %) on Muse: Qwen and Gemma pass,
+Muse misses by three because its 13 global layers do not rotate q/k and
+only 182 of the assumed 208 dispatches pair.
+
+`bench` decode at 512 (128 tokens, F16 KV, greedy, two or three
+interleaved off/on pairs; the best and mean of the off path):
+
+| model | unfused tok/s | fused tok/s | ratio | bar |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.8-27B | 10.814 / 10.742 | 10.788 / 10.744 | 1.000× | ≥ 1.01× ✗ |
+| Gemma 4 12B QAT | 27.387 / 27.379 | 27.517 / 27.515 | 1.005× | ≥ 1.04× ✗ |
+| Muse Glimmer 30B | 9.993 / 9.936 | 10.018 / 9.975 | 1.004× | ≥ 1.02× ✗ |
+
+With the drafter loaded, Qwen's shipped path reads 10.814 unfused against
+10.788 fused (0.998×) — the same conclusion within the run-to-run spread
+(~0.5 %). Prefill is unchanged (43.8 / 104.3 / 72.9 tok/s both ways).
+**Reading.** The 2026-09-07 profile's ~13 µs per `rmsnorm` dispatch was
+kernel work, not a launch floor: the norm kernels move their row twice and
+the fused kernel moves it the same way in one dispatch, so the saving is
+the removed launch (~2–4 µs of ~7–10 µs), about 0.4 ms of Gemma's 39 ms
+step. The dispatch reduction is real (10–21 %) and shipped; the speed bars
+are missed and the unit closes below its target. Verdict in
+[metal-backend.md § KERN-18](../engine/metal-backend.md#fused-decode-norms-kern-18-2026-09-21-closed-below-its-target).
+
+## The decode-speed baseline (ENGN-18, 2026-09-30)
+
+The opening record of the decode-speed theme
+([speculative-decoding.md § The Qwen verify budget](../engine/speculative-decoding.md#the-qwen-verify-budget)), taken with the speed
+loop's tools ([development.md § The speed loop](../development.md#the-speed-loop)):
+every run restores a saved prefix (the acceptance array less its last
+token) and feeds the last token, so no prefill rate is reported. Apple M4
+Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 27.0 (26A428), AC power, Zig
+0.16.0, ReleaseSafe, `nuclis 0.4.0-dev` at `beccae1`, pinned Qwen3.8-27B
+artifact (`322e194f…`), backend metal, `--ctx-size 32768 --kv f16`, no
+warm-up, one process per row, nothing else on the GPU; the reference
+harness's token arrays (512, 4,096, 16,384 from `run-2026-09-06`, 32,639
+from `boundary-2026-09-06`). The saved prefixes are 190 MB, 425 MB,
+1.23 GB, and 2.30 GB without the draft block (192 MB, 442 MB, 1.30 GB
+with it); a restore took 71 / 167 / 481 / 848–969 ms at 512 / 4K / 16K /
+32K, against a 32K prefill of 640 s (666 s with the draft block).
+
+**Plain decode** (`--speculative off`, the drafter not loaded; 128 tokens,
+greedy, three runs, mean ± sample standard deviation; every run stopped on
+`token_budget`):
+
+| Prompt tokens | Decode tok/s | ms/step | 2026-09-10 record |
+| ---: | ---: | ---: | ---: |
+| 512 | 10.56 ± 0.01 | 94.7 | 10.62 |
+| 4,096 | 10.19 ± 0.01 | 98.1 | 10.20 |
+| 16,384 | 9.25 ± 0.00 | 108.1 | 8.27 |
+| 32,639 | 8.28 ± 0.00 | 120.8 | 7.55 (one run) |
+
+512 and 4K match the acceptance record. 16K and 32K read 12 % and 10 %
+higher. The record ran each length straight after its own prefill (4.4
+and 11 minutes of full GPU load), so its decode started on a hot chip.
+These runs restore a prefix and decode at once; the difference is
+consistent with that, though no temperature was recorded to prove it. The
+speed loop compares interleaved processes of equal history, so neither
+condition biases a keep decision; published end-to-end numbers stay the
+acceptance workload's.
+
+**Real speculation at depth** (`--speculative on --draft-length 4`, the
+embedded MTP head, 128 tokens, three off/on pairs on one loaded model;
+greedy, and the instruct profile's sampling `--temperature 0.7 --top-p
+0.8 --top-k 20 --presence-penalty 1.5 --seed 0`). Per-batch components are
+the runs' totals divided by their batches; **E** is emitted tokens per
+batch (generated − 1 over batches), **C** the decode wall time per batch
+(every component and the loop between them), so the rate is E / C and 20
+tok/s needs C ≤ 50E:
+
+| Prompt | sampling | accepted/step | proposed/step | E | propose | checkpoint | verify | recover | commit | C ms | 50E ms | C / 50E | decode off → on tok/s | speedup |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | greedy | 1.49 | 2.27 | 2.49 | 13.9 | 2.9 | 225.6 | 8.8 | 5.3 | 256.5 | 124.5 | 2.06 | 10.50 → 9.71 | 0.92× |
+| 512 | instruct | 1.46 | 2.39 | 2.46 | 14.8 | 2.9 | 228.1 | 8.8 | 5.2 | 259.8 | 122.9 | 2.11 | 10.46 → 9.46 | 0.90× |
+| 4,096 | greedy | 1.51 | 2.06 | 2.49 | 13.0 | 3.0 | 310.5 | 6.4 | 9.4 | 342.4 | 124.5 | 2.75 | 9.98 → 7.27 | 0.73× |
+| 4,096 | instruct | 1.42 | 2.39 | 2.41 | 15.1 | 3.0 | 319.8 | 9.6 | 9.5 | 356.9 | 120.6 | 2.96 | 9.91 → 6.76 | 0.68× |
+| 16,384 | greedy | 1.67 | 2.44 | 2.65 | 16.9 | 3.0 | 629.9 | 8.5 | 25.6 | 683.9 | 132.3 | 5.17 | 9.21 → 3.87 | 0.42× |
+| 16,384 | instruct | 1.42 | 2.41 | 2.40 | 16.8 | 3.0 | 629.6 | 8.4 | 23.4 | 681.1 | 119.8 | 5.68 | 9.19 → 3.52 | 0.38× |
+| 32,639 | greedy | 1.82 | 2.62 | 2.82 | 20.2 | 3.0 | 1040.9 | 8.1 | 48.5 | 1120.7 | 141.1 | 7.94 | 8.31 → 2.52 | 0.30× |
+| 32,639 | instruct | 1.75 | 2.55 | 2.74 | 19.7 | 3.0 | 1043.3 | 8.5 | 45.3 | 1119.9 | 137.1 | 8.17 | 8.29 → 2.45 | 0.30× |
+
+The host acceptance decision is under 0.1 ms in every row. These are the
+first long-context acceptance counts: E holds at 2.4–2.8 from 512 to
+32,639 (it even rises a little with depth, the long prose being
+repetitive), so the budget 50E stays at 120–141 ms at every depth while
+the verify batch grows from 226 ms to 1,041 ms and the drafter's commit
+from 5 ms to 48 ms (its own attention over the whole cache). Acceptance is not what fails at depth;
+the verify cost is.
+
+**The verify batch cost C(R, depth)** (`--speculative on --verify-rows R
+--accept a` with a = ⌊(R − 1)/2⌋, 16 forced batches per run, three runs;
+fixed drafts, so no acceptance noise). ms per batch, the whole batch C
+and, in parentheses, its verify forward; the first run of each cell reads
+1–5 % above the next two, which agree within 0.2 %:
+
+| R (accepted) | 512 | 4,096 | 16,384 | 32,639 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 (0) | 242.8 (233.5) | 334.1 (324.5) | 645.4 (635.3) | 1,056.6 (1,045.4) |
+| 2 (0) | 220.8 (189.9) | 312.0 (280.7) | 622.9 (590.1) | 1,034.3 (999.8) |
+| 3 (1) | 275.6 (241.0) | 372.3 (331.8) | 702.5 (641.3) | 1,140.1 (1,050.9) |
+| 4 (1) | 284.8 (244.4) | 382.3 (335.4) | 712.1 (644.0) | 1,153.0 (1,055.7) |
+| 5 (2) | 301.6 (253.6) | 399.3 (344.9) | 731.1 (654.7) | 1,170.7 (1,064.7) |
+| 8 (3) | 315.7 (249.9) | 414.3 (341.1) | 748.6 (651.3) | 1,190.0 (1,060.8) |
+
+The other components per batch: propose 6.2–7.9 ms per draft (7.3 ms
+for one draft at 512, 9.3 ms at 32K); checkpoint 2.7–3.2 ms; recover
+13.9–14.2 ms whenever a draft is rejected (one row-checkpoint copy) and 0
+at R = 1; commit 4–11 ms at 512 and 4K, 29–31 ms at 16K, 55–57 ms at 32K
+for two to four rows (the MTP block's attention over the whole cache;
+6–8 ms for one row, which takes the single-token path).
+
+**Reading.** The verify forward is flat in R from 3 to 8 rows at every
+depth (241–254 ms at 512, 1,051–1,065 ms at 32K): its cost is fixed per
+batch, not per row. That cost is 2.6× a single-row decode step at 512
+(244 against 95 ms at R = 4) and 8.7× at 32K (1,056 against 121 ms), and a one-row
+verify is no cheaper than a four-row one (the batched path runs even
+there): the verify schedule, not the row count, is what a lever must
+change. R = 2 is the cheapest batch everywhere, its forward 44–46 ms under
+R = 1's: two rows take the multi-row matvec route, which three and more do not.
+
+**Where the time goes** (`--profile`, 31 decode steps or 16 verify
+batches, each profile its own process; profile mode serializes every
+dispatch, so absolute times read high):
+
+| ms per step or batch | decode 4K | decode 32K | 4-row verify 4K | 4-row verify 32K |
+| --- | ---: | ---: | ---: | ---: |
+| matrix (weight matvec / matmul) | 84.8 (86 %) | 84.8 (70 %) | 236.8 (59 %) | 235.6 (21 %) |
+| attention | 5.2 (5 %) | 27.5 (23 %) | 106.3 (27 %) | 823.6 (74 %) |
+| DeltaNet | 1.9 (2 %) | 1.9 (2 %) | 43.5 (11 %) | 42.7 (4 %) |
+| output head | 4.2 (4 %) | 4.1 (3 %) | 8.8 (2 %) | 8.7 (1 %) |
+| norms | 2.3 | 2.3 | 2.3 | 2.5 |
+| attributed / command buffer | 98.9 / 99.0 | 121.1 / 121.2 | 398.8 / 330.0 | 1,114.2 / 1,047.1 |
+
+Largest rows: decode, `matvec_segments` (the fused projections) 36.1 +
+15.5 + 4.3 ms and `attention_decode_h` 5.0 ms at 4K, 26.8 ms at 32K;
+verify, `attention_chunk_reuse_h` 106.0 ms at 4K and 823.3 ms at 32K
+(the KERN-16 sweep's per-layer cost over 16 layers predicted 103 ms at
+4K; it did not reach 32K), the eight-token-wide tiles `matmul_iq4_xs_8` 52.0,
+`matmul_q5_k_8` 25.4, `matmul_q4_k_8` 24.0 ms, `delta_chunk` 38.3 ms, and
+the 48 × 5,120 Q8_0 β/α projections on the generic tile, 15.7 ms. So at 4K
+a 4-row verify's weight work is 2.8× a decode step's and its attention
+20×; at 32K attention alone is 6.8 decode steps.
+
+## The DeltaNet replay tape (ENGN-19, 2026-10-01)
+
+Verify batches of up to 8 rows on Qwen's Metal plan step the DeltaNet
+recurrence per token without writing the state, and recovery replays the
+accepted rows from a tape
+([session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape-engn-19)).
+Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe, Qwen3.8-27B
+UD-Q4_K_M, F16 KV, `--ctx-size 32768`, restored prefixes; `make speed`,
+5 interleaved pairs, base `2a6b1ac` (KERN-24's close), batch cost C in ms:
+
+| Rows (accepted) | 512 | 4,096 | 16,384 | 32,639 |
+| --- | ---: | ---: | ---: | ---: |
+| 4 (1) | 225.86 → 177.44 (+21.4 %) | 239.37 → 190.75 (+20.3 %) | 279.95 → 231.74 (+17.2 %) | 328.80 → 279.11 (+15.1 %) |
+| 4 (0) | 229.19 → 180.41 (+21.3 %) | 243.46 → 195.43 (+19.7 %) | — | — |
+| 4 (3) | 211.96 → 178.68 (+15.7 %) | 226.85 → 192.89 (+15.0 %) | — | — |
+| 8 (3) | 260.65 → 209.87 (+19.5 %) | 286.80 → 235.44 (+17.9 %) | — | — |
+
+Plain decode is unchanged (10.57 / 10.20 / 9.25 / 8.30 tok/s, within
+±0.3 %). Phases at 4K, 4 rows (one process, 32 batches, ms): checkpoint
+2.9–3.2 (unchanged), verify 203–210 → 160–170, recover 14.4–16.2 → 2.0–2.8
+(it now also runs when every draft is accepted, where it cost 0). Under
+`--profile` (4K, 4 rows, accept 1) the DeltaNet family is 6.4 ms per batch
+(was 41.3): `delta_rows` 3.4 ms where `delta_chunk` was 37.9.
+
+## The re-priced speculative verdicts (ENGN-20, 2026-10-01)
+
+Real speculation re-measured at the verify costs after KERN-21, KERN-24,
+and ENGN-19, to reset the catalogue's speculative defaults. `make
+spec-matrix` (`scripts/spec-matrix.py`): per cell one `nuclis bench
+--speculative on --draft-length L --repeat 3 --warmup 0 --max-tokens 128
+--ctx-size 32768 --kv f16` process, three off/on pairs on one loaded model;
+numeric contexts restore the speed loop's saved prefix of the family's
+acceptance array, `code` is the ENGN-17 prompt (`Write a Zig function that
+reverses a string.`, `--raw`). Greedy, and the profile's instruct sampling
+(Qwen 0.7 / 0.8 / 20, presence 1.5, seed 0). **E** is emitted tokens per
+batch, **C** the decode time per batch, per-batch costs in ms; the speedup
+is the median of the three pairs' on/off ratios (range in parentheses).
+Apple M4 Pro MacBook Pro (Mac16,8), 48 GiB, macOS 27.0 (26A428), AC power,
+Zig 0.16.0, ReleaseSafe, `c7b6d2b`, metal; Qwen3.8-27B UD-Q4_K_M with its
+embedded MTP head, the other entries with their catalogue companions. The
+derived rows of every table are committed under
+[benchmarks/speculative-2026-10-01/](speculative-2026-10-01/)
+(`make spec-matrix ARGS='… --report --json'` regenerates them from the
+saved reports).
+
+**The chip heats.** The first matrix ran as one 75-minute sequence. Plain
+decode fell from 10.48 tok/s in its first cell to a steady 9.07 at 512
+(8.77 at 4K, 8.05 at 16K, 7.33 at 32K), against ENGN-18's cold 10.56 /
+10.19 / 9.25 / 8.28, and the verify batch slowed with it (C 183 ms at 512
+draft 4 hot, 162–166 ms cold). A cold pass (`--cooldown 90`: 90 s idle
+before each cell, which brought plain decode back to 10.5 tok/s at 512)
+at drafts 5 and 7 read the same speedups within the pairs' spread: the
+ratio is a paired measurement and the heat slows both sides. The hot
+matrix ranks the draft lengths; the cold pass gives the rates.
+
+**Qwen3.8-27B, hot** (reports under `.zig-cache/spec/qwen38/c7b6d2b/`):
+
+| context | sampling | draft | accepted | proposed | E | propose | verify | recover | commit | C ms | C / 50E | off → on tok/s | speedup (pairs) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code | greedy | 2 | 1.35 | 1.81 | 2.35 | 11.2 | 139.5 | 2.3 | 3.5 | 159.6 | 1.36 | 10.48 → 14.74 | 1.407× (1.40–1.41) |
+| code | greedy | 3 | 1.76 | 2.46 | 2.76 | 15.1 | 139.4 | 2.4 | 3.5 | 163.6 | 1.19 | 10.54 → 16.87 | 1.599× (1.60–1.60) |
+| code | greedy | 4 | 2.17 | 2.92 | 3.17 | 18.0 | 143.5 | 2.6 | 3.4 | 170.6 | 1.07 | 10.23 → 18.61 | 1.821× (1.81–1.82) |
+| code | greedy | 5 | 2.26 | 3.36 | 3.26 | 21.0 | 153.4 | 2.8 | 3.5 | 183.8 | 1.13 | 9.82 → 17.72 | 1.824× (1.76–1.83) |
+| code | greedy | 6 | 2.34 | 3.50 | 3.34 | 22.2 | 157.6 | 2.8 | 3.7 | 189.5 | 1.13 | 9.55 → 17.64 | 1.865× (1.81–1.87) |
+| code | greedy | 7 | 2.53 | 3.75 | 3.53 | 23.8 | 159.1 | 2.9 | 3.4 | 192.4 | 1.09 | 9.48 → 18.34 | 1.958× (1.89–1.96) |
+| code | instruct | 2 | 1.52 | 1.84 | 2.51 | 11.6 | 156.0 | 3.8 | 3.2 | 177.9 | 1.42 | 9.41 → 14.09 | 1.501× (1.47–1.52) |
+| code | instruct | 3 | 1.99 | 2.52 | 2.98 | 16.1 | 160.3 | 4.4 | 3.4 | 187.4 | 1.26 | 9.28 → 15.91 | 1.667× (1.65–1.83) |
+| code | instruct | 4 | 2.48 | 3.17 | 3.46 | 20.6 | 165.9 | 5.5 | 3.4 | 198.7 | 1.15 | 9.20 → 17.47 | 1.911× (1.80–1.99) |
+| code | instruct | 5 | 2.58 | 3.54 | 3.56 | 22.9 | 166.1 | 5.0 | 3.4 | 200.6 | 1.13 | 9.15 → 17.78 | 1.971× (1.85–2.01) |
+| code | instruct | 6 | 2.65 | 3.88 | 3.63 | 25.1 | 167.7 | 5.8 | 3.7 | 205.5 | 1.13 | 9.12 → 17.69 | 1.939× (1.84–2.04) |
+| code | instruct | 7 | 2.83 | 4.23 | 3.81 | 27.4 | 168.3 | 6.1 | 3.6 | 208.6 | 1.09 | 9.12 → 18.29 | 1.965× (1.92–2.13) |
+| 512 | greedy | 2 | 1.12 | 1.62 | 2.12 | 10.5 | 155.0 | 2.4 | 4.3 | 175.4 | 1.66 | 9.09 → 12.07 | 1.344× (1.29–1.35) |
+| 512 | greedy | 3 | 1.49 | 2.16 | 2.49 | 14.1 | 159.2 | 2.6 | 4.0 | 183.0 | 1.47 | 9.07 → 13.60 | 1.517× (1.46–1.52) |
+| 512 | greedy | 4 | 1.49 | 2.27 | 2.49 | 14.9 | 158.1 | 2.6 | 4.1 | 182.9 | 1.47 | 9.07 → 13.62 | 1.518× (1.47–1.52) |
+| 512 | greedy | 5 | 1.59 | 2.43 | 2.59 | 15.8 | 159.2 | 2.7 | 4.2 | 185.1 | 1.43 | 9.07 → 14.00 | 1.562× (1.51–1.56) |
+| 512 | greedy | 6 | 1.65 | 2.56 | 2.65 | 16.8 | 160.0 | 2.7 | 4.2 | 186.8 | 1.41 | 9.06 → 14.16 | 1.583× (1.53–1.58) |
+| 512 | greedy | 7 | 1.70 | 2.68 | 2.70 | 17.5 | 161.3 | 2.7 | 4.1 | 188.8 | 1.40 | 9.03 → 14.31 | 1.602× (1.55–1.61) |
+| 512 | instruct | 2 | 1.16 | 1.68 | 2.16 | 10.9 | 158.8 | 2.4 | 4.0 | 179.4 | 1.66 | 8.99 → 12.10 | 1.360× (1.23–1.45) |
+| 512 | instruct | 3 | 1.39 | 2.13 | 2.38 | 14.0 | 159.7 | 3.5 | 4.2 | 184.5 | 1.55 | 8.97 → 12.96 | 1.421× (1.33–1.59) |
+| 512 | instruct | 4 | 1.46 | 2.39 | 2.46 | 15.6 | 159.5 | 3.3 | 4.1 | 185.8 | 1.51 | 8.96 → 13.30 | 1.446× (1.36–1.65) |
+| 512 | instruct | 5 | 1.56 | 2.65 | 2.56 | 17.4 | 161.7 | 2.6 | 4.2 | 189.2 | 1.48 | 8.96 → 13.59 | 1.506× (1.36–1.68) |
+| 512 | instruct | 6 | 1.56 | 2.78 | 2.56 | 18.2 | 162.0 | 2.7 | 4.2 | 190.4 | 1.49 | 8.93 → 13.50 | 1.505× (1.36–1.68) |
+| 512 | instruct | 7 | 1.63 | 2.94 | 2.63 | 19.3 | 162.7 | 2.7 | 4.2 | 192.1 | 1.46 | 8.92 → 13.74 | 1.526× (1.40–1.71) |
+| 4,096 | greedy | 2 | 1.35 | 1.61 | 2.35 | 10.9 | 165.6 | 2.5 | 3.9 | 186.2 | 1.58 | 8.69 → 12.63 | 1.473× (1.42–1.47) |
+| 4,096 | greedy | 3 | 1.46 | 2.02 | 2.44 | 13.7 | 168.5 | 5.6 | 4.0 | 195.1 | 1.60 | 8.72 → 12.52 | 1.450× (1.40–1.46) |
+| 4,096 | greedy | 4 | 1.51 | 2.06 | 2.49 | 14.0 | 165.0 | 5.7 | 4.2 | 192.1 | 1.54 | 8.75 → 12.97 | 1.500× (1.44–1.50) |
+| 4,096 | greedy | 5 | 1.78 | 2.37 | 2.76 | 16.1 | 167.5 | 6.9 | 4.0 | 197.8 | 1.43 | 8.75 → 13.96 | 1.616× (1.56–1.62) |
+| 4,096 | greedy | 6 | 1.78 | 2.52 | 2.76 | 17.1 | 168.4 | 6.1 | 4.0 | 199.0 | 1.44 | 8.76 → 13.87 | 1.603× (1.54–1.61) |
+| 4,096 | greedy | 7 | 1.84 | 2.80 | 2.82 | 19.0 | 172.5 | 6.2 | 4.1 | 205.0 | 1.45 | 8.77 → 13.77 | 1.586× (1.53–1.59) |
+| 4,096 | instruct | 2 | 1.14 | 1.65 | 2.13 | 11.2 | 166.7 | 3.9 | 4.3 | 189.3 | 1.78 | 8.74 → 11.26 | 1.257× (1.24–1.37) |
+| 4,096 | instruct | 3 | 1.35 | 2.13 | 2.34 | 14.4 | 170.6 | 4.6 | 4.3 | 197.3 | 1.69 | 8.76 → 11.91 | 1.314× (1.25–1.52) |
+| 4,096 | instruct | 4 | 1.42 | 2.39 | 2.41 | 16.1 | 171.8 | 5.0 | 4.3 | 200.4 | 1.66 | 8.77 → 12.11 | 1.314× (1.27–1.56) |
+| 4,096 | instruct | 5 | 1.49 | 2.60 | 2.47 | 17.5 | 172.8 | 4.9 | 4.4 | 202.9 | 1.64 | 8.77 → 12.30 | 1.325× (1.28–1.62) |
+| 4,096 | instruct | 6 | 1.55 | 2.81 | 2.54 | 19.1 | 174.9 | 4.9 | 4.4 | 206.6 | 1.63 | 8.78 → 12.42 | 1.350× (1.26–1.64) |
+| 4,096 | instruct | 7 | 1.57 | 2.90 | 2.56 | 19.6 | 175.5 | 4.9 | 4.3 | 207.6 | 1.62 | 8.77 → 12.47 | 1.346× (1.25–1.67) |
+| 16,384 | greedy | 2 | 1.23 | 1.65 | 2.23 | 12.3 | 194.5 | 2.5 | 5.7 | 218.2 | 1.96 | 8.04 → 10.21 | 1.288× (1.23–1.29) |
+| 16,384 | greedy | 3 | 1.51 | 2.06 | 2.49 | 15.4 | 200.4 | 5.0 | 6.0 | 230.1 | 1.85 | 8.05 → 10.82 | 1.363× (1.30–1.37) |
+| 16,384 | greedy | 4 | 1.67 | 2.44 | 2.65 | 18.2 | 206.6 | 5.3 | 6.0 | 239.3 | 1.81 | 8.09 → 11.05 | 1.387× (1.33–1.39) |
+| 16,384 | greedy | 5 | 1.70 | 2.55 | 2.70 | 19.0 | 207.8 | 2.7 | 6.1 | 238.8 | 1.77 | 8.11 → 11.32 | 1.416× (1.35–1.42) |
+| 16,384 | greedy | 6 | 1.67 | 2.62 | 2.65 | 19.6 | 209.1 | 5.2 | 6.1 | 243.2 | 1.84 | 8.10 → 10.88 | 1.362× (1.30–1.36) |
+| 16,384 | greedy | 7 | 1.72 | 2.77 | 2.70 | 20.6 | 212.3 | 5.3 | 6.1 | 247.6 | 1.83 | 8.08 → 10.91 | 1.369× (1.31–1.37) |
+| 16,384 | instruct | 2 | 1.17 | 1.69 | 2.16 | 12.6 | 196.3 | 3.1 | 5.6 | 220.8 | 2.04 | 8.06 → 9.83 | 1.238× (1.14–1.28) |
+| 16,384 | instruct | 3 | 1.15 | 1.98 | 2.14 | 14.8 | 199.1 | 3.4 | 6.0 | 226.5 | 2.12 | 8.05 → 9.47 | 1.164× (1.15–1.21) |
+| 16,384 | instruct | 4 | 1.42 | 2.41 | 2.40 | 18.0 | 207.8 | 5.9 | 6.2 | 241.1 | 2.01 | 8.06 → 10.01 | 1.216× (1.13–1.38) |
+| 16,384 | instruct | 5 | 1.46 | 2.66 | 2.44 | 19.9 | 212.2 | 5.7 | 6.3 | 247.4 | 2.03 | 8.04 → 9.92 | 1.233× (1.13–1.34) |
+| 16,384 | instruct | 6 | 1.42 | 2.69 | 2.41 | 20.1 | 213.2 | 4.8 | 5.9 | 247.4 | 2.05 | 8.05 → 9.81 | 1.247× (1.10–1.31) |
+| 16,384 | instruct | 7 | 1.51 | 2.87 | 2.49 | 21.5 | 215.5 | 6.8 | 6.3 | 253.4 | 2.04 | 8.05 → 9.88 | 1.209× (1.12–1.35) |
+| 32,639 | greedy | 2 | 1.40 | 1.74 | 2.40 | 14.4 | 232.3 | 2.5 | 7.4 | 259.9 | 2.17 | 7.32 → 9.22 | 1.281× (1.22–1.28) |
+| 32,639 | greedy | 3 | 1.54 | 2.16 | 2.54 | 18.0 | 242.6 | 2.6 | 7.9 | 274.3 | 2.16 | 7.34 → 9.26 | 1.281× (1.22–1.28) |
+| 32,639 | greedy | 4 | 1.82 | 2.62 | 2.82 | 21.8 | 256.6 | 2.7 | 8.4 | 292.7 | 2.07 | 7.34 → 9.64 | 1.335× (1.27–1.34) |
+| 32,639 | greedy | 5 | 1.89 | 2.80 | 2.89 | 23.3 | 261.4 | 2.7 | 8.4 | 299.0 | 2.07 | 7.34 → 9.65 | 1.336× (1.27–1.34) |
+| 32,639 | greedy | 6 | 1.89 | 2.93 | 2.89 | 24.4 | 265.2 | 2.7 | 8.4 | 304.0 | 2.11 | 7.34 → 9.49 | 1.315× (1.25–1.31) |
+| 32,639 | greedy | 7 | 1.95 | 3.02 | 2.95 | 25.2 | 268.6 | 2.8 | 8.5 | 308.3 | 2.09 | 7.34 → 9.58 | 1.327× (1.26–1.33) |
+| 32,639 | instruct | 2 | 1.22 | 1.70 | 2.22 | 14.1 | 230.6 | 2.5 | 7.6 | 258.1 | 2.33 | 7.32 → 8.59 | 1.189× (1.09–1.25) |
+| 32,639 | instruct | 3 | 1.53 | 2.13 | 2.52 | 17.7 | 243.0 | 4.3 | 8.2 | 276.5 | 2.19 | 7.31 → 9.15 | 1.233× (1.17–1.36) |
+| 32,639 | instruct | 4 | 1.75 | 2.55 | 2.74 | 21.2 | 257.2 | 4.5 | 8.5 | 294.7 | 2.15 | 7.31 → 9.33 | 1.246× (1.19–1.39) |
+| 32,639 | instruct | 5 | 1.75 | 2.68 | 2.74 | 22.3 | 259.7 | 4.5 | 8.6 | 298.5 | 2.18 | 7.32 → 9.21 | 1.202× (1.20–1.37) |
+| 32,639 | instruct | 6 | 1.81 | 2.80 | 2.80 | 23.3 | 262.5 | 4.6 | 8.6 | 302.3 | 2.16 | 7.32 → 9.30 | 1.224× (1.20–1.38) |
+| 32,639 | instruct | 7 | 1.85 | 2.87 | 2.84 | 23.9 | 264.6 | 4.7 | 8.8 | 305.2 | 2.15 | 7.33 → 9.35 | 1.226× (1.21–1.39) |
+
+Geometric mean of the eight prose speedups (512 to 32,639, both samplings)
+by draft length: 1.301 / 1.338 / 1.366 / 1.392 / 1.392 / 1.392 at 2–7, the
+worst cell 1.16–1.22×; code 1.41 / 1.60 / 1.82 / 1.82 / 1.87 / 1.96×
+greedy and 1.50 / 1.67 / 1.91 / 1.97 / 1.94 / 1.97× instruct. Every cell is
+above 1.0×. The verify batch grows only 3–16 ms from draft 4 to 7 (the
+fragment tile's flat cost), the proposal 6–7 ms per drafted position, and
+the drafter's commit is 3–9 ms at every depth (ENGN-18 measured 48 ms at
+32K, before KERN-21's split pass).
+**Qwen3.8-27B, cold** (`--cooldown 90`, drafts 5 and 7, and the think-on
+sampling `thinking` 1.0 / 0.95 / 20, the agent's default; reports under
+`.zig-cache/spec/qwen38/c7b6d2b-cold/`):
+
+| context | sampling | draft | accepted | proposed | E | propose | verify | recover | commit | C ms | C / 50E | off → on tok/s | speedup (pairs) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code | greedy | 5 | 2.26 | 3.36 | 3.26 | 20.5 | 141.9 | 2.6 | 3.4 | 171.5 | 1.05 | 10.56 → 18.99 | 1.798× (1.80–1.80) |
+| code | greedy | 7 | 2.53 | 3.75 | 3.53 | 22.9 | 142.2 | 2.7 | 3.3 | 174.1 | 0.99 | 10.55 → 20.26 | 1.920× (1.92–1.92) |
+| code | instruct | 5 | 2.58 | 3.54 | 3.56 | 21.6 | 144.0 | 4.5 | 3.2 | 176.5 | 0.99 | 10.51 → 20.21 | 1.963× (1.81–1.99) |
+| code | instruct | 7 | 2.83 | 4.23 | 3.81 | 25.8 | 144.6 | 5.3 | 3.3 | 182.3 | 0.96 | 10.51 → 20.93 | 1.951× (1.93–2.10) |
+| 512 | greedy | 5 | 1.59 | 2.43 | 2.59 | 14.9 | 137.2 | 2.4 | 3.9 | 161.7 | 1.25 | 10.47 → 16.03 | 1.532× (1.53–1.53) |
+| 512 | greedy | 7 | 1.70 | 2.68 | 2.70 | 16.5 | 138.2 | 2.5 | 3.8 | 164.1 | 1.21 | 10.47 → 16.47 | 1.572× (1.57–1.57) |
+| 512 | instruct | 5 | 1.56 | 2.65 | 2.56 | 16.3 | 138.7 | 2.4 | 3.9 | 164.5 | 1.29 | 10.42 → 15.62 | 1.475× (1.38–1.64) |
+| 512 | instruct | 7 | 1.63 | 2.94 | 2.63 | 18.0 | 138.9 | 2.4 | 3.9 | 166.5 | 1.27 | 10.42 → 15.86 | 1.491× (1.41–1.66) |
+| 4,096 | greedy | 5 | 1.78 | 2.37 | 2.76 | 15.1 | 144.6 | 6.1 | 3.7 | 172.5 | 1.25 | 10.11 → 16.00 | 1.583× (1.58–1.58) |
+| 4,096 | greedy | 7 | 1.84 | 2.80 | 2.82 | 17.8 | 148.3 | 5.5 | 3.7 | 178.5 | 1.26 | 10.12 → 15.81 | 1.563× (1.56–1.56) |
+| 4,096 | instruct | 5 | 1.49 | 2.60 | 2.47 | 16.5 | 149.9 | 4.3 | 4.1 | 178.0 | 1.44 | 10.07 → 14.02 | 1.299× (1.30–1.58) |
+| 4,096 | instruct | 7 | 1.57 | 2.90 | 2.56 | 18.4 | 151.6 | 4.4 | 4.0 | 181.6 | 1.42 | 10.08 → 14.26 | 1.319× (1.28–1.65) |
+| 16,384 | greedy | 5 | 1.70 | 2.55 | 2.70 | 17.9 | 181.4 | 2.5 | 5.5 | 210.4 | 1.56 | 9.20 → 12.84 | 1.396× (1.40–1.40) |
+| 16,384 | greedy | 7 | 1.72 | 2.77 | 2.70 | 19.3 | 184.8 | 4.8 | 5.6 | 217.7 | 1.61 | 9.20 → 12.41 | 1.349× (1.35–1.35) |
+| 16,384 | instruct | 5 | 1.46 | 2.66 | 2.44 | 18.6 | 184.5 | 5.1 | 5.7 | 217.1 | 1.78 | 9.16 → 11.30 | 1.269× (1.12–1.32) |
+| 16,384 | instruct | 7 | 1.51 | 2.87 | 2.49 | 20.1 | 187.2 | 6.0 | 5.8 | 222.3 | 1.79 | 9.16 → 11.26 | 1.245× (1.11–1.33) |
+| 32,639 | greedy | 5 | 1.89 | 2.80 | 2.89 | 21.7 | 228.4 | 2.5 | 7.5 | 263.3 | 1.82 | 8.27 → 10.96 | 1.326× (1.32–1.33) |
+| 32,639 | greedy | 7 | 1.95 | 3.02 | 2.95 | 23.4 | 234.0 | 2.5 | 7.7 | 270.8 | 1.83 | 8.26 → 10.91 | 1.320× (1.32–1.32) |
+| 32,639 | instruct | 5 | 1.75 | 2.68 | 2.74 | 20.8 | 227.0 | 4.1 | 7.8 | 262.9 | 1.92 | 8.23 → 10.46 | 1.252× (1.19–1.36) |
+| 32,639 | instruct | 7 | 1.85 | 2.87 | 2.84 | 22.3 | 231.6 | 4.2 | 7.9 | 269.2 | 1.89 | 8.24 → 10.60 | 1.278× (1.20–1.38) |
+| code | thinking | 5 | 1.78 | 3.15 | 2.76 | 19.3 | 141.7 | 4.1 | 3.7 | 172.0 | 1.25 | 10.51 → 16.06 | 1.536× (1.48–1.57) |
+| code | thinking | 7 | 1.86 | 3.51 | 2.84 | 21.5 | 141.7 | 4.2 | 3.8 | 174.3 | 1.23 | 10.51 → 16.32 | 1.525× (1.52–1.61) |
+| 512 | thinking | 5 | 1.67 | 2.69 | 2.65 | 16.6 | 141.1 | 5.5 | 3.7 | 170.0 | 1.28 | 10.43 → 15.63 | 1.431× (1.43–1.64) |
+| 512 | thinking | 7 | 1.74 | 3.09 | 2.72 | 19.0 | 141.2 | 5.6 | 3.7 | 172.8 | 1.27 | 10.42 → 15.80 | 1.469× (1.44–1.64) |
+| 4,096 | thinking | 5 | 1.62 | 2.69 | 2.61 | 17.1 | 151.1 | 3.5 | 4.0 | 179.0 | 1.37 | 10.07 → 14.58 | 1.456× (1.43–1.46) |
+| 4,096 | thinking | 7 | 1.69 | 3.01 | 2.68 | 19.2 | 152.6 | 3.6 | 4.1 | 182.6 | 1.36 | 10.07 → 14.70 | 1.439× (1.43–1.51) |
+
+Geometric means at draft 5 / 7: prose (eight cells) 1.386 / 1.387, the
+worst cell 1.25×; code 1.88 / 1.94×; thinking 1.47 / 1.48×. Short code
+reaches the 20 tok/s budget at draft 7: 20.26 greedy and 20.93 instruct
+(C / 50E 0.99 and 0.96). Prose 512 runs at 15.9–16.5 tok/s, 4K at
+14.3–16.0, 16K at 11.3–12.8, 32,639 at 10.5–11.0.
+
+**The proposal threshold** (draft 7, the hot sequence; `--draft-p-min`;
+0.7 is the matrix's cell above):
+
+| context | sampling | p_min | accepted | proposed | E | propose | verify | recover | commit | C ms | C / 50E | off → on tok/s | speedup (pairs) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code | greedy | 0 | 2.97 | 6.84 | 3.97 | 42.2 | 157.3 | 3.0 | 3.5 | 209.3 | 1.05 | 10.42 → 18.98 | 1.824× (1.79–1.85) |
+| code | greedy | 0.5 | 2.74 | 5.06 | 3.74 | 38.0 | 206.2 | 3.6 | 4.4 | 255.6 | 1.37 | 7.94 → 14.66 | 1.854× (1.72–2.00) |
+| code | greedy | 0.6 | 2.53 | 4.17 | 3.53 | 28.4 | 180.8 | 3.2 | 3.7 | 219.2 | 1.24 | 8.25 → 16.11 | 1.942× (1.94–1.98) |
+| code | greedy | 0.8 | 2.26 | 3.33 | 3.26 | 21.8 | 164.8 | 2.9 | 3.7 | 196.4 | 1.21 | 8.95 → 16.58 | 1.867× (1.82–1.87) |
+| code | instruct | 0 | 3.07 | 6.84 | 4.05 | 44.7 | 182.6 | 5.6 | 3.6 | 239.9 | 1.18 | 9.02 → 16.92 | 1.855× (1.80–1.98) |
+| code | instruct | 0.5 | 2.95 | 5.02 | 3.93 | 32.9 | 175.7 | 5.5 | 3.7 | 221.0 | 1.13 | 8.91 → 17.81 | 1.939× (1.92–2.14) |
+| code | instruct | 0.6 | 2.83 | 4.58 | 3.81 | 30.1 | 172.8 | 6.2 | 3.6 | 216.0 | 1.13 | 8.89 → 17.67 | 1.937× (1.89–2.13) |
+| code | instruct | 0.8 | 2.39 | 3.21 | 3.37 | 21.0 | 163.1 | 5.6 | 3.6 | 196.5 | 1.17 | 8.93 → 17.21 | 1.870× (1.81–2.10) |
+| 512 | greedy | 0 | 2.28 | 6.85 | 3.26 | 45.3 | 183.9 | 7.6 | 4.1 | 244.2 | 1.50 | 8.97 → 13.33 | 1.496× (1.46–1.50) |
+| 512 | greedy | 0.5 | 1.84 | 3.58 | 2.82 | 23.6 | 166.4 | 6.8 | 4.0 | 204.1 | 1.45 | 8.98 → 13.83 | 1.558× (1.50–1.56) |
+| 512 | greedy | 0.6 | 1.72 | 2.96 | 2.70 | 19.4 | 163.1 | 6.5 | 4.1 | 196.3 | 1.45 | 9.01 → 13.76 | 1.546× (1.49–1.55) |
+| 512 | greedy | 0.8 | 1.59 | 2.55 | 2.59 | 16.7 | 158.2 | 2.6 | 4.0 | 184.8 | 1.43 | 9.03 → 14.02 | 1.572× (1.51–1.57) |
+| 512 | instruct | 0 | 2.02 | 6.78 | 3.00 | 44.4 | 184.3 | 5.2 | 4.2 | 241.3 | 1.61 | 9.02 → 12.44 | 1.401× (1.31–1.43) |
+| 512 | instruct | 0.5 | 1.86 | 4.39 | 2.84 | 28.7 | 171.7 | 5.0 | 4.1 | 212.8 | 1.50 | 9.00 → 13.39 | 1.454× (1.42–1.60) |
+| 512 | instruct | 0.6 | 1.76 | 3.65 | 2.74 | 24.0 | 167.7 | 4.8 | 4.0 | 203.9 | 1.49 | 9.00 → 13.47 | 1.477× (1.40–1.62) |
+| 512 | instruct | 0.8 | 1.54 | 2.49 | 2.54 | 16.2 | 158.1 | 2.6 | 4.1 | 184.2 | 1.45 | 9.04 → 13.85 | 1.547× (1.37–1.68) |
+| 4,096 | greedy | 0 | 2.28 | 6.92 | 3.26 | 46.9 | 206.4 | 7.9 | 4.3 | 268.8 | 1.65 | 8.83 → 12.11 | 1.387× (1.34–1.39) |
+| 4,096 | greedy | 0.5 | 1.91 | 4.07 | 2.89 | 27.6 | 185.3 | 7.2 | 4.1 | 227.5 | 1.58 | 8.81 → 12.69 | 1.458× (1.40–1.46) |
+| 4,096 | greedy | 0.6 | 1.84 | 3.33 | 2.82 | 22.6 | 177.2 | 5.2 | 4.2 | 212.4 | 1.51 | 8.79 → 13.29 | 1.528× (1.47–1.54) |
+| 4,096 | greedy | 0.8 | 1.72 | 2.47 | 2.70 | 16.7 | 168.5 | 6.0 | 4.0 | 198.4 | 1.47 | 8.83 → 13.62 | 1.562× (1.51–1.56) |
+| 4,096 | instruct | 0 | 1.86 | 6.87 | 2.84 | 46.5 | 209.5 | 5.4 | 4.4 | 269.1 | 1.89 | 8.81 → 10.76 | 1.107× (1.08–1.49) |
+| 4,096 | instruct | 0.5 | 1.74 | 4.06 | 2.72 | 27.5 | 186.7 | 5.3 | 4.4 | 227.2 | 1.67 | 8.77 → 12.17 | 1.290× (1.21–1.67) |
+| 4,096 | instruct | 0.6 | 1.68 | 3.45 | 2.66 | 23.4 | 181.0 | 5.2 | 4.3 | 217.2 | 1.63 | 8.77 → 12.45 | 1.341× (1.24–1.69) |
+| 4,096 | instruct | 0.8 | 1.51 | 2.43 | 2.51 | 16.4 | 169.6 | 3.3 | 4.3 | 196.8 | 1.57 | 8.79 → 12.87 | 1.422× (1.28–1.69) |
+
+Geometric mean over the six configurations: p_min 0 → 1.489, 0.5 →
+1.576, 0.6 → 1.613, **0.7 → 1.649**, 0.8 → 1.631. Proposing every position
+(0) still loses: the verify batch is not flat in its rows (at 512 and 4K,
+184–210 ms carrying 6.8 proposed drafts against 161–176 ms carrying 2.7–2.9
+at 0.7), and each extra position costs 6.5 ms of proposal. `engine.draft_p_min` stays 0.7.
+
+**Gemma 4 12B QAT** (`gemma-4-12b-qat` with its MTP companion, hot
+sequence; instruct is the card's 1.0 / 0.95 / 64; the `code` rows are the
+raw Qwen prompt, informational only: untemplated, Gemma's head accepts
+under one draft per batch, and sampled at temperature 1 the off runs vary
+20.9–26.2 tok/s; reports under `.zig-cache/spec/gemma4_qat/c7b6d2b/`):
+
+| context | sampling | draft | accepted | proposed | E | propose | verify | recover | commit | C ms | C / 50E | off → on tok/s | speedup (pairs) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code | greedy | 2 | 0.91 | 1.70 | 1.90 | 3.6 | 58.7 | 0.0 | 0.0 | 62.4 | 0.66 | 26.54 → 30.40 | 1.155× (1.12–1.16) |
+| code | greedy | 3 | 0.94 | 2.14 | 1.92 | 3.9 | 58.9 | 0.0 | 0.0 | 62.7 | 0.65 | 26.50 → 30.67 | 1.157× (1.16–1.16) |
+| code | greedy | 4 | 0.94 | 2.42 | 1.92 | 4.4 | 58.9 | 0.0 | 0.0 | 63.3 | 0.66 | 26.50 → 30.40 | 1.148× (1.15–1.15) |
+| code | greedy | 5 | 0.94 | 2.67 | 1.92 | 4.8 | 59.0 | 0.0 | 0.0 | 63.8 | 0.66 | 26.47 → 30.15 | 1.138× (1.14–1.14) |
+| code | greedy | 6 | 0.94 | 2.79 | 1.92 | 5.1 | 59.0 | 0.0 | 0.0 | 64.1 | 0.67 | 26.46 → 30.04 | 1.135× (1.13–1.14) |
+| code | greedy | 7 | 0.94 | 2.85 | 1.92 | 5.9 | 69.8 | 0.0 | 0.0 | 75.6 | 0.79 | 23.56 → 25.81 | 1.083× (1.07–1.13) |
+| code | instruct | 2 | 0.44 | 1.63 | 1.43 | 3.9 | 83.5 | 0.0 | 0.0 | 87.5 | 1.22 | 20.94 → 17.15 | 0.973× (0.50–1.09) |
+| code | instruct | 3 | 0.44 | 2.03 | 1.44 | 4.4 | 74.1 | 0.0 | 0.0 | 78.4 | 1.09 | 22.85 → 19.04 | 0.943× (0.55–1.07) |
+| code | instruct | 4 | 0.45 | 2.28 | 1.45 | 4.5 | 66.8 | 0.0 | 0.0 | 71.3 | 0.98 | 24.00 → 20.89 | 0.924× (0.65–1.07) |
+| code | instruct | 5 | 0.48 | 2.48 | 1.48 | 4.8 | 64.8 | 0.0 | 0.0 | 69.6 | 0.94 | 24.78 → 21.70 | 0.895× (0.67–1.08) |
+| code | instruct | 6 | 0.49 | 2.65 | 1.49 | 5.0 | 63.7 | 0.0 | 0.0 | 68.7 | 0.92 | 25.50 → 22.25 | 0.876× (0.67–1.09) |
+| code | instruct | 7 | 0.49 | 2.80 | 1.49 | 5.3 | 63.3 | 0.0 | 0.0 | 68.7 | 0.92 | 25.48 → 22.26 | 0.887× (0.67–1.08) |
+| 512 | greedy | 2 | 1.51 | 1.94 | 2.49 | 4.0 | 64.7 | 0.0 | 0.0 | 68.7 | 0.55 | 24.67 → 36.34 | 1.481× (1.44–1.50) |
+| 512 | greedy | 3 | 1.89 | 2.68 | 2.89 | 5.5 | 65.7 | 0.0 | 0.0 | 71.2 | 0.49 | 24.78 → 40.69 | 1.672× (1.57–1.68) |
+| 512 | greedy | 4 | 2.26 | 3.38 | 3.26 | 6.9 | 67.4 | 0.0 | 0.0 | 74.4 | 0.46 | 24.70 → 43.93 | 1.797× (1.72–1.81) |
+| 512 | greedy | 5 | 2.43 | 4.14 | 3.43 | 8.5 | 68.4 | 0.0 | 0.0 | 76.9 | 0.45 | 24.70 → 44.81 | 1.830× (1.76–1.85) |
+| 512 | greedy | 6 | 2.63 | 4.63 | 3.63 | 9.4 | 69.2 | 0.0 | 0.0 | 78.7 | 0.43 | 24.74 → 46.27 | 1.899× (1.80–1.91) |
+| 512 | greedy | 7 | 2.74 | 4.97 | 3.74 | 10.2 | 69.3 | 0.0 | 0.0 | 79.5 | 0.43 | 24.76 → 47.14 | 1.934× (1.84–1.94) |
+| 512 | instruct | 2 | 1.24 | 1.82 | 2.23 | 3.7 | 65.7 | 0.0 | 0.0 | 69.4 | 0.62 | 24.40 → 32.16 | 1.317× (1.28–1.36) |
+| 512 | instruct | 3 | 1.55 | 2.50 | 2.54 | 5.1 | 66.7 | 0.0 | 0.0 | 71.8 | 0.57 | 24.43 → 35.41 | 1.493× (1.37–1.49) |
+| 512 | instruct | 4 | 1.72 | 3.15 | 2.72 | 6.4 | 68.1 | 0.0 | 0.0 | 74.5 | 0.55 | 24.53 → 36.66 | 1.562× (1.34–1.59) |
+| 512 | instruct | 5 | 1.84 | 3.63 | 2.82 | 7.4 | 69.1 | 0.0 | 0.0 | 76.4 | 0.54 | 24.51 → 37.11 | 1.556× (1.37–1.62) |
+| 512 | instruct | 6 | 1.92 | 3.94 | 2.91 | 8.0 | 69.9 | 0.0 | 0.0 | 77.9 | 0.54 | 24.52 → 37.67 | 1.525× (1.38–1.71) |
+| 512 | instruct | 7 | 1.99 | 4.30 | 2.98 | 8.8 | 70.4 | 0.0 | 0.0 | 79.2 | 0.53 | 24.45 → 37.84 | 1.568× (1.39–1.68) |
+| 4,096 | greedy | 2 | 1.54 | 1.88 | 2.54 | 4.7 | 77.6 | 0.0 | 0.0 | 82.4 | 0.65 | 22.16 → 30.93 | 1.404× (1.34–1.44) |
+| 4,096 | greedy | 3 | 1.95 | 2.58 | 2.95 | 6.4 | 78.6 | 0.0 | 0.0 | 84.9 | 0.58 | 22.63 → 34.88 | 1.532× (1.51–1.58) |
+| 4,096 | greedy | 4 | 2.10 | 3.22 | 3.10 | 7.9 | 81.1 | 0.0 | 0.0 | 89.1 | 0.57 | 22.68 → 34.88 | 1.525× (1.52–1.57) |
+| 4,096 | greedy | 5 | 2.53 | 3.44 | 3.53 | 8.4 | 81.4 | 0.0 | 0.0 | 89.8 | 0.51 | 22.88 → 39.40 | 1.750× (1.66–1.75) |
+| 4,096 | greedy | 6 | 2.53 | 4.08 | 3.53 | 9.9 | 83.7 | 0.0 | 0.0 | 93.6 | 0.53 | 23.07 → 37.79 | 1.674× (1.56–1.68) |
+| 4,096 | greedy | 7 | 2.74 | 4.35 | 3.74 | 10.5 | 84.4 | 0.0 | 0.0 | 95.0 | 0.51 | 23.21 → 39.43 | 1.744× (1.61–1.74) |
+| 4,096 | instruct | 2 | 1.12 | 1.88 | 2.12 | 4.5 | 75.0 | 0.0 | 0.0 | 79.5 | 0.75 | 22.92 → 26.63 | 1.169× (1.13–1.19) |
+| 4,096 | instruct | 3 | 1.27 | 2.47 | 2.27 | 6.0 | 77.4 | 0.0 | 0.0 | 83.4 | 0.74 | 22.84 → 27.21 | 1.194× (1.16–1.22) |
+| 4,096 | instruct | 4 | 1.47 | 3.05 | 2.47 | 7.3 | 80.5 | 0.0 | 0.0 | 87.9 | 0.71 | 22.88 → 28.17 | 1.236× (1.21–1.24) |
+| 4,096 | instruct | 5 | 1.57 | 3.57 | 2.57 | 8.6 | 83.3 | 0.0 | 0.0 | 91.9 | 0.71 | 22.85 → 28.01 | 1.240× (1.19–1.24) |
+| 4,096 | instruct | 6 | 1.63 | 3.88 | 2.63 | 9.3 | 84.7 | 0.0 | 0.0 | 94.0 | 0.72 | 22.74 → 27.96 | 1.237× (1.21–1.24) |
+| 4,096 | instruct | 7 | 1.65 | 4.22 | 2.65 | 10.1 | 86.3 | 0.0 | 0.0 | 96.5 | 0.73 | 22.66 → 27.44 | 1.208× (1.20–1.22) |
+| 16,384 | greedy | 2 | 1.29 | 1.89 | 2.27 | 6.8 | 100.9 | 0.0 | 0.0 | 107.7 | 0.95 | 18.62 → 21.07 | 1.149× (1.10–1.15) |
+| 16,384 | greedy | 3 | 1.72 | 2.40 | 2.70 | 8.1 | 98.4 | 0.0 | 0.0 | 106.5 | 0.79 | 19.72 → 25.37 | 1.287× (1.29–1.29) |
+| 16,384 | greedy | 4 | 2.20 | 3.27 | 3.17 | 11.5 | 114.4 | 0.0 | 0.0 | 125.9 | 0.79 | 18.74 → 25.21 | 1.346× (1.34–1.35) |
+| 16,384 | greedy | 5 | 2.28 | 3.77 | 3.26 | 13.0 | 118.1 | 0.0 | 0.0 | 131.1 | 0.81 | 18.97 → 24.84 | 1.309× (1.30–1.32) |
+| 16,384 | greedy | 6 | 2.37 | 4.18 | 3.34 | 14.2 | 121.1 | 0.0 | 0.0 | 135.2 | 0.81 | 19.30 → 24.71 | 1.280× (1.28–1.29) |
+| 16,384 | greedy | 7 | 2.37 | 4.50 | 3.34 | 15.2 | 123.5 | 0.0 | 0.0 | 138.6 | 0.83 | 19.48 → 24.11 | 1.234× (1.23–1.25) |
+| 16,384 | instruct | 2 | 1.25 | 1.87 | 2.24 | 6.3 | 94.3 | 0.0 | 0.0 | 100.6 | 0.90 | 19.49 → 22.29 | 1.151× (1.12–1.16) |
+| 16,384 | instruct | 3 | 1.57 | 2.59 | 2.56 | 8.7 | 102.2 | 0.0 | 0.0 | 110.9 | 0.87 | 19.54 → 23.11 | 1.196× (1.11–1.24) |
+| 16,384 | instruct | 4 | 1.82 | 3.23 | 2.80 | 10.8 | 110.0 | 0.0 | 0.0 | 120.8 | 0.86 | 19.56 → 23.20 | 1.171× (1.17–1.22) |
+| 16,384 | instruct | 5 | 2.04 | 3.70 | 3.02 | 12.4 | 115.8 | 0.0 | 0.0 | 128.1 | 0.85 | 19.56 → 23.63 | 1.185× (1.17–1.27) |
+| 16,384 | instruct | 6 | 2.09 | 4.20 | 3.07 | 14.0 | 121.2 | 0.0 | 0.0 | 135.2 | 0.88 | 19.56 → 22.78 | 1.157× (1.10–1.24) |
+| 16,384 | instruct | 7 | 2.09 | 4.58 | 3.07 | 15.3 | 125.5 | 0.0 | 0.0 | 140.8 | 0.92 | 19.56 → 21.87 | 1.110× (1.06–1.19) |
+| 32,639 | greedy | 2 | 1.19 | 1.91 | 2.19 | 9.5 | 121.7 | 0.0 | 0.0 | 131.2 | 1.20 | 16.20 → 16.69 | 1.031× (1.03–1.03) |
+| 32,639 | greedy | 3 | 1.54 | 2.44 | 2.54 | 11.3 | 130.8 | 0.0 | 0.0 | 142.1 | 1.12 | 16.45 → 17.87 | 1.087× (1.08–1.09) |
+| 32,639 | greedy | 4 | 1.70 | 3.15 | 2.70 | 14.5 | 145.4 | 0.0 | 0.0 | 160.0 | 1.18 | 16.46 → 16.89 | 1.026× (1.03–1.03) |
+| 32,639 | greedy | 5 | 1.76 | 3.59 | 2.76 | 16.5 | 154.5 | 0.0 | 0.0 | 170.9 | 1.24 | 16.46 → 16.15 | 0.981× (0.98–0.98) |
+| 32,639 | greedy | 6 | 1.89 | 4.05 | 2.89 | 18.5 | 163.4 | 0.0 | 0.0 | 182.0 | 1.26 | 16.45 → 15.86 | 0.964× (0.96–0.96) |
+| 32,639 | greedy | 7 | 1.89 | 4.41 | 2.89 | 20.2 | 170.6 | 0.0 | 0.0 | 190.8 | 1.32 | 16.46 → 15.12 | 0.919× (0.92–0.92) |
+| 32,639 | instruct | 2 | 1.19 | 1.83 | 2.18 | 8.4 | 119.8 | 0.0 | 0.0 | 128.2 | 1.18 | 16.34 → 16.98 | 1.042× (1.03–1.05) |
+| 32,639 | instruct | 3 | 1.52 | 2.61 | 2.51 | 12.0 | 135.8 | 0.0 | 0.0 | 147.8 | 1.18 | 16.35 → 16.96 | 1.032× (1.03–1.05) |
+| 32,639 | instruct | 4 | 1.78 | 3.26 | 2.76 | 15.0 | 149.4 | 0.0 | 0.0 | 164.4 | 1.19 | 16.34 → 16.80 | 1.029× (1.01–1.05) |
+| 32,639 | instruct | 5 | 1.90 | 3.55 | 2.89 | 16.3 | 155.7 | 0.0 | 0.0 | 171.9 | 1.19 | 16.34 → 16.86 | 1.079× (0.94–1.08) |
+| 32,639 | instruct | 6 | 1.97 | 3.99 | 2.95 | 18.3 | 164.3 | 0.0 | 0.0 | 182.6 | 1.24 | 16.35 → 16.28 | 1.033× (0.89–1.07) |
+| 32,639 | instruct | 7 | 1.97 | 4.29 | 2.95 | 19.7 | 170.3 | 0.0 | 0.0 | 189.9 | 1.29 | 16.35 → 15.70 | 0.992× (0.84–1.05) |
+
+Geometric mean of the eight prose cells by draft length: 1.209 / 1.294 /
+1.312 / **1.336** / 1.313 / 1.296 at 2–7; the worst cell 1.031 / 1.032 /
+1.026 / 0.981 / 0.964 / 0.919, always 32,639 greedy. MODL-19 measured
+0.899× at draft 4 and a 136 ms verify at 512; it is 67 ms now. At depth
+the verify grows with its rows (122 → 171 ms at 32K from 1.9 to 4.4
+proposed): the few-query verify attention is linear in rows, so 32K is
+where longer drafts stop paying.
+
+**Muse Glimmer 30B** (`muse-glimmer-30b` with its DFlash drafter, hot
+sequence, card sampling; `code` informational as for Gemma; reports under
+`.zig-cache/spec/muse/c7b6d2b/`):
+
+| context | sampling | draft | accepted | proposed | E | propose | verify | recover | commit | C ms | C / 50E | off → on tok/s | speedup (pairs) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code | greedy | 2 | 0.92 | 1.48 | 1.92 | 25.0 | 139.0 | 0.0 | 1.8 | 165.8 | 1.72 | 9.88 → 11.62 | 1.195× (1.14–1.20) |
+| code | greedy | 4 | 1.05 | 1.58 | 2.05 | 22.7 | 139.3 | 0.0 | 1.9 | 163.8 | 1.60 | 9.83 → 12.50 | 1.272× (1.27–1.28) |
+| code | greedy | 6 | 1.08 | 1.61 | 2.08 | 24.2 | 144.4 | 0.0 | 1.9 | 170.5 | 1.64 | 9.49 → 12.21 | 1.302× (1.26–1.30) |
+| code | greedy | 8 | 1.15 | 1.68 | 2.15 | 47.0 | 153.4 | 0.0 | 2.0 | 202.4 | 1.88 | 8.99 → 10.64 | 1.189× (1.17–1.19) |
+| code | greedy | 11 | 1.15 | 1.66 | 2.15 | 50.1 | 158.3 | 0.0 | 2.0 | 210.4 | 1.96 | 8.61 → 10.23 | 1.199× (1.16–1.20) |
+| code | greedy | 15 | 1.15 | 1.68 | 2.15 | 51.3 | 159.8 | 0.0 | 2.0 | 213.1 | 1.98 | 8.58 → 10.10 | 1.190× (1.15–1.19) |
+| code | instruct | 2 | 0.76 | 1.37 | 1.75 | 25.3 | 156.3 | 0.0 | 2.0 | 183.6 | 2.10 | 8.51 → 9.52 | 1.121× (1.09–1.14) |
+| code | instruct | 4 | 0.87 | 1.53 | 1.86 | 25.9 | 156.5 | 0.0 | 2.0 | 184.5 | 1.99 | 8.54 → 10.08 | 1.181× (1.18–1.18) |
+| code | instruct | 6 | 0.87 | 1.54 | 1.86 | 26.5 | 156.3 | 0.0 | 2.0 | 184.9 | 1.99 | 8.54 → 10.05 | 1.171× (1.16–1.20) |
+| code | instruct | 8 | 0.85 | 1.54 | 1.83 | 48.5 | 156.3 | 0.0 | 2.1 | 206.9 | 2.26 | 8.54 → 8.86 | 1.027× (1.01–1.07) |
+| code | instruct | 11 | 0.87 | 1.57 | 1.86 | 49.6 | 156.7 | 0.0 | 2.0 | 208.4 | 2.24 | 8.56 → 8.92 | 1.033× (1.02–1.08) |
+| code | instruct | 15 | 0.86 | 1.60 | 1.85 | 50.6 | 157.8 | 0.0 | 2.0 | 210.5 | 2.28 | 8.58 → 8.79 | 1.024× (1.00–1.05) |
+| 512 | greedy | 2 | 1.10 | 1.54 | 2.08 | 25.5 | 163.4 | 0.0 | 2.0 | 190.9 | 1.83 | 8.32 → 10.90 | 1.316× (1.30–1.32) |
+| 512 | greedy | 4 | 1.42 | 1.83 | 2.40 | 26.4 | 161.9 | 0.0 | 2.0 | 190.3 | 1.59 | 8.43 → 12.59 | 1.505× (1.46–1.52) |
+| 512 | greedy | 6 | 1.42 | 1.94 | 2.40 | 27.3 | 161.1 | 0.0 | 2.0 | 190.4 | 1.59 | 8.49 → 12.59 | 1.499× (1.45–1.50) |
+| 512 | greedy | 8 | 1.56 | 2.12 | 2.54 | 48.0 | 168.2 | 0.0 | 2.0 | 218.2 | 1.72 | 8.49 → 11.64 | 1.387× (1.34–1.39) |
+| 512 | greedy | 11 | 1.56 | 2.16 | 2.54 | 49.7 | 168.1 | 0.0 | 2.1 | 219.9 | 1.73 | 8.49 → 11.55 | 1.375× (1.33–1.38) |
+| 512 | greedy | 15 | 1.72 | 2.36 | 2.70 | 51.3 | 170.6 | 0.0 | 2.1 | 224.0 | 1.66 | 8.48 → 12.07 | 1.437× (1.38–1.45) |
+| 512 | instruct | 2 | 1.18 | 1.59 | 2.16 | 25.2 | 163.6 | 0.0 | 2.0 | 190.8 | 1.76 | 8.47 → 11.36 | 1.335× (1.28–1.41) |
+| 512 | instruct | 4 | 1.50 | 2.04 | 2.49 | 26.3 | 163.5 | 0.0 | 2.0 | 191.8 | 1.54 | 8.48 → 13.04 | 1.478× (1.43–1.71) |
+| 512 | instruct | 6 | 1.62 | 2.23 | 2.61 | 27.3 | 164.4 | 0.0 | 2.0 | 193.7 | 1.48 | 8.49 → 13.55 | 1.557× (1.47–1.76) |
+| 512 | instruct | 8 | 1.76 | 2.39 | 2.74 | 49.2 | 173.0 | 0.0 | 2.1 | 224.2 | 1.64 | 8.49 → 12.25 | 1.392× (1.39–1.55) |
+| 512 | instruct | 11 | 1.78 | 2.44 | 2.76 | 51.0 | 174.4 | 0.0 | 2.1 | 227.5 | 1.65 | 8.49 → 12.18 | 1.381× (1.36–1.57) |
+| 512 | instruct | 15 | 1.99 | 2.75 | 2.98 | 52.8 | 177.8 | 0.0 | 2.1 | 232.8 | 1.56 | 8.48 → 12.80 | 1.500× (1.44–1.58) |
+| 4,096 | greedy | 2 | 0.98 | 1.55 | 1.98 | 27.4 | 188.4 | 0.0 | 2.0 | 217.8 | 2.20 | 7.82 → 9.11 | 1.173× (1.15–1.17) |
+| 4,096 | greedy | 4 | 1.05 | 1.81 | 2.05 | 28.8 | 185.9 | 0.0 | 2.0 | 216.7 | 2.12 | 8.05 → 9.45 | 1.188× (1.15–1.19) |
+| 4,096 | greedy | 6 | 1.21 | 1.90 | 2.19 | 30.4 | 181.6 | 0.0 | 2.0 | 214.0 | 1.95 | 8.19 → 10.23 | 1.264× (1.22–1.26) |
+| 4,096 | greedy | 8 | 1.25 | 1.89 | 2.23 | 52.9 | 182.9 | 0.0 | 2.0 | 237.9 | 2.14 | 8.18 → 9.37 | 1.157× (1.12–1.16) |
+| 4,096 | greedy | 11 | 1.33 | 2.13 | 2.31 | 56.0 | 189.3 | 0.0 | 2.0 | 247.3 | 2.14 | 8.18 → 9.34 | 1.155× (1.12–1.16) |
+| 4,096 | greedy | 15 | 1.42 | 2.06 | 2.40 | 59.7 | 190.0 | 0.0 | 2.0 | 251.7 | 2.10 | 8.16 → 9.52 | 1.179× (1.14–1.18) |
+| 4,096 | instruct | 2 | 1.02 | 1.58 | 2.02 | 26.2 | 182.8 | 0.0 | 2.0 | 211.0 | 2.09 | 8.14 → 9.58 | 1.155× (1.11–1.27) |
+| 4,096 | instruct | 4 | 1.11 | 1.88 | 2.10 | 28.3 | 185.6 | 0.0 | 2.0 | 215.9 | 2.05 | 8.14 → 9.78 | 1.163× (1.14–1.30) |
+| 4,096 | instruct | 6 | 1.20 | 2.02 | 2.19 | 30.2 | 186.6 | 0.0 | 2.0 | 218.9 | 2.00 | 8.15 → 10.03 | 1.186× (1.17–1.34) |
+| 4,096 | instruct | 8 | 1.32 | 2.08 | 2.31 | 52.1 | 188.3 | 0.0 | 2.0 | 242.3 | 2.10 | 8.15 → 9.57 | 1.119× (1.11–1.29) |
+| 4,096 | instruct | 11 | 1.26 | 2.21 | 2.25 | 55.3 | 193.2 | 0.0 | 2.0 | 250.5 | 2.22 | 8.14 → 9.02 | 1.070× (1.06–1.20) |
+| 4,096 | instruct | 15 | 1.40 | 2.23 | 2.40 | 58.9 | 194.1 | 0.0 | 2.0 | 255.0 | 2.13 | 8.13 → 9.41 | 1.133× (1.10–1.24) |
+| 16,384 | greedy | 2 | 1.12 | 1.55 | 2.12 | 27.0 | 216.7 | 0.0 | 2.0 | 245.8 | 2.32 | 7.19 → 8.61 | 1.204× (1.19–1.20) |
+| 16,384 | greedy | 4 | 1.35 | 1.87 | 2.35 | 28.4 | 216.6 | 0.0 | 1.9 | 246.9 | 2.10 | 7.49 → 9.53 | 1.287× (1.24–1.29) |
+| 16,384 | greedy | 6 | 1.44 | 2.21 | 2.44 | 30.1 | 223.1 | 0.0 | 1.9 | 255.1 | 2.09 | 7.57 → 9.57 | 1.280× (1.23–1.28) |
+| 16,384 | greedy | 8 | 1.54 | 2.26 | 2.54 | 52.1 | 226.2 | 0.0 | 2.0 | 280.3 | 2.21 | 7.56 → 9.06 | 1.213× (1.17–1.22) |
+| 16,384 | greedy | 11 | 1.59 | 2.33 | 2.59 | 55.4 | 228.7 | 0.0 | 2.0 | 286.0 | 2.21 | 7.54 → 9.06 | 1.215× (1.17–1.22) |
+| 16,384 | greedy | 15 | 1.70 | 2.57 | 2.70 | 55.3 | 224.9 | 0.0 | 1.9 | 282.1 | 2.09 | 7.86 → 9.58 | 1.218× (1.21–1.23) |
+| 16,384 | instruct | 2 | 1.04 | 1.52 | 2.04 | 25.1 | 201.7 | 0.0 | 1.9 | 228.7 | 2.24 | 7.89 → 9.01 | 1.078× (1.07–1.26) |
+| 16,384 | instruct | 4 | 1.42 | 2.08 | 2.41 | 28.0 | 223.0 | 0.0 | 2.0 | 253.0 | 2.10 | 7.55 → 9.61 | 1.214× (1.20–1.39) |
+| 16,384 | instruct | 6 | 1.48 | 2.35 | 2.47 | 30.1 | 229.9 | 0.0 | 2.0 | 262.0 | 2.12 | 7.49 → 9.50 | 1.231× (1.19–1.38) |
+| 16,384 | instruct | 8 | 1.56 | 2.26 | 2.56 | 51.9 | 227.1 | 0.0 | 2.0 | 281.1 | 2.20 | 7.51 → 9.19 | 1.176× (1.13–1.36) |
+| 16,384 | instruct | 11 | 1.67 | 2.33 | 2.66 | 54.8 | 230.9 | 0.0 | 2.0 | 287.6 | 2.16 | 7.53 → 9.35 | 1.226× (1.13–1.37) |
+| 16,384 | instruct | 15 | 1.87 | 2.69 | 2.86 | 58.6 | 247.0 | 0.0 | 2.0 | 307.7 | 2.15 | 7.51 → 9.41 | 1.290× (1.11–1.36) |
+| 32,639 | greedy | 2 | 0.97 | 1.48 | 1.95 | 26.3 | 245.9 | 0.0 | 2.0 | 274.1 | 2.81 | 6.63 → 7.13 | 1.084× (1.06–1.09) |
+| 32,639 | greedy | 4 | 1.10 | 1.75 | 2.08 | 27.7 | 249.4 | 0.0 | 2.0 | 279.1 | 2.68 | 6.86 → 7.46 | 1.102× (1.06–1.10) |
+| 32,639 | greedy | 6 | 1.17 | 1.86 | 2.15 | 29.6 | 251.7 | 0.0 | 1.9 | 283.3 | 2.63 | 6.89 → 7.60 | 1.119× (1.07–1.12) |
+| 32,639 | greedy | 8 | 1.21 | 1.83 | 2.19 | 51.6 | 250.8 | 0.0 | 2.0 | 304.4 | 2.78 | 6.87 → 7.19 | 1.062× (1.02–1.06) |
+| 32,639 | greedy | 11 | 1.21 | 1.84 | 2.19 | 54.8 | 254.8 | 0.0 | 2.0 | 311.6 | 2.85 | 6.86 → 7.03 | 1.038× (1.00–1.04) |
+| 32,639 | greedy | 15 | 1.33 | 1.95 | 2.31 | 58.4 | 261.6 | 0.0 | 2.0 | 322.0 | 2.79 | 6.85 → 7.17 | 1.062× (1.02–1.06) |
+| 32,639 | instruct | 2 | 1.03 | 1.56 | 2.02 | 25.7 | 246.5 | 0.0 | 2.0 | 274.1 | 2.72 | 6.83 → 7.36 | 1.069× (1.04–1.12) |
+| 32,639 | instruct | 4 | 1.15 | 1.92 | 2.14 | 27.8 | 259.5 | 0.0 | 1.9 | 289.3 | 2.70 | 6.84 → 7.41 | 1.090× (1.02–1.14) |
+| 32,639 | instruct | 6 | 1.29 | 2.08 | 2.28 | 29.7 | 265.2 | 0.0 | 2.0 | 296.9 | 2.60 | 6.85 → 7.70 | 1.096× (1.06–1.23) |
+| 32,639 | instruct | 8 | 1.38 | 2.07 | 2.37 | 51.5 | 265.7 | 0.0 | 2.0 | 319.1 | 2.70 | 6.83 → 7.45 | 1.063× (0.99–1.23) |
+| 32,639 | instruct | 11 | 1.42 | 2.13 | 2.41 | 54.5 | 271.5 | 0.0 | 2.0 | 328.0 | 2.72 | 6.83 → 7.39 | 1.057× (0.98–1.22) |
+| 32,639 | instruct | 15 | 1.54 | 2.32 | 2.52 | 58.2 | 282.4 | 0.0 | 2.1 | 342.6 | 2.72 | 6.83 → 7.40 | 1.070× (0.97–1.22) |
+
+Geometric mean of the eight prose cells: 1.173 / 1.245 / **1.270** / 1.190 /
+1.183 / 1.227 at drafts 2 / 4 / 6 / 8 / 11 / 15, the worst cell 1.04–1.10×
+(always 32,639). The block's proposal costs 25–30 ms up to draft 6 and
+47–60 ms from 8 (MODL-20's record: 1.234× at draft 4).
+
+**Gemma 4 26B-A4B** (`gemma-4-26b-a4b` with its MTP companion, hot, card
+sampling; reports under `.zig-cache/spec/gemma4_26b_a4b/c7b6d2b/`):
+
+| context | sampling | draft | accepted | proposed | E | propose | verify | recover | commit | C ms | C / 50E | off → on tok/s | speedup (pairs) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code | greedy | 2 | 1.67 | 1.94 | 2.65 | 4.1 | 50.3 | 0.0 | 0.0 | 54.4 | 0.41 | 57.09 → 48.66 | 0.860× (0.84–0.86) |
+| code | greedy | 4 | 3.00 | 3.72 | 3.97 | 6.5 | 55.9 | 0.0 | 0.0 | 62.5 | 0.31 | 57.69 → 63.51 | 1.100× (1.09–1.11) |
+| code | greedy | 7 | 4.57 | 6.09 | 5.52 | 10.5 | 60.4 | 0.0 | 0.0 | 71.0 | 0.26 | 57.75 → 77.81 | 1.346× (1.34–1.36) |
+| code | instruct | 2 | 1.63 | 1.96 | 2.61 | 3.5 | 59.2 | 0.0 | 0.0 | 62.7 | 0.48 | 55.86 → 42.07 | 0.745× (0.66–0.86) |
+| code | instruct | 4 | 2.92 | 3.79 | 3.89 | 6.6 | 68.2 | 0.0 | 0.0 | 74.8 | 0.38 | 56.03 → 53.52 | 0.941× (0.77–1.15) |
+| code | instruct | 7 | 4.12 | 6.13 | 5.08 | 10.5 | 76.5 | 0.0 | 0.0 | 87.0 | 0.34 | 56.56 → 61.69 | 1.064× (0.80–1.41) |
+| 512 | greedy | 2 | 1.35 | 1.83 | 2.35 | 3.5 | 60.0 | 0.0 | 0.0 | 63.5 | 0.54 | 54.01 → 37.04 | 0.686× (0.69–0.69) |
+| 512 | greedy | 4 | 1.78 | 3.07 | 2.76 | 5.8 | 70.4 | 0.0 | 0.0 | 76.2 | 0.55 | 54.41 → 36.21 | 0.666× (0.66–0.67) |
+| 512 | greedy | 7 | 2.28 | 4.28 | 3.26 | 8.1 | 79.2 | 0.0 | 0.0 | 87.3 | 0.54 | 54.40 → 37.28 | 0.685× (0.68–0.69) |
+| 512 | instruct | 2 | 1.23 | 1.84 | 2.22 | 3.5 | 60.7 | 0.0 | 0.0 | 64.2 | 0.58 | 53.19 → 34.60 | 0.652× (0.60–0.70) |
+| 512 | instruct | 4 | 1.74 | 3.12 | 2.72 | 5.9 | 72.5 | 0.0 | 0.0 | 78.4 | 0.58 | 53.17 → 34.89 | 0.670× (0.59–0.71) |
+| 512 | instruct | 7 | 2.02 | 4.46 | 3.00 | 8.4 | 82.2 | 0.0 | 0.0 | 90.6 | 0.60 | 53.15 → 33.35 | 0.635× (0.56–0.69) |
+| 4,096 | greedy | 2 | 1.21 | 1.86 | 2.19 | 4.3 | 65.8 | 0.0 | 0.0 | 70.1 | 0.64 | 48.76 → 31.24 | 0.640× (0.64–0.64) |
+| 4,096 | greedy | 4 | 1.72 | 3.21 | 2.70 | 7.3 | 79.8 | 0.0 | 0.0 | 87.1 | 0.64 | 48.85 → 31.02 | 0.635× (0.63–0.64) |
+| 4,096 | greedy | 7 | 2.12 | 4.56 | 3.10 | 10.4 | 91.5 | 0.0 | 0.0 | 102.0 | 0.66 | 48.40 → 30.38 | 0.628× (0.63–0.63) |
+| 4,096 | instruct | 2 | 1.45 | 1.88 | 2.44 | 4.3 | 68.5 | 0.0 | 0.0 | 72.9 | 0.60 | 47.37 → 33.58 | 0.726× (0.67–0.73) |
+| 4,096 | instruct | 4 | 2.24 | 3.46 | 3.23 | 7.9 | 85.5 | 0.0 | 0.0 | 93.4 | 0.58 | 47.37 → 34.75 | 0.756× (0.66–0.78) |
+| 4,096 | instruct | 7 | 2.57 | 4.80 | 3.56 | 11.0 | 97.6 | 0.0 | 0.0 | 108.6 | 0.61 | 47.41 → 33.45 | 0.723× (0.58–0.81) |
+
+Negative on every prose cell (0.63–0.76×). Its verify grows with the
+batch's rows (60 → 98 ms from 1.8 to 4.8 proposed at 4K) where the dense
+models' is nearly flat, presumably because each row routes to its own
+experts, so a batch streams more of the expert weights than one row does.
+The entry stays off, and the matrix was not extended to 16K and 32K.
+
+**Gemma 4 E4B QAT** (`gemma-4-e4b-qat` with its MTP companion, hot, card
+sampling, on the 12B QAT run's token arrays: the family shares vocabulary
+and template; reports under `.zig-cache/spec/gemma4_e4b/c7b6d2b/`):
+
+| context | sampling | draft | accepted | proposed | E | propose | verify | recover | commit | C ms | C / 50E | off → on tok/s | speedup (pairs) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| code | greedy | 2 | 1.65 | 1.94 | 2.65 | 2.3 | 27.9 | 0.0 | 0.0 | 30.2 | 0.23 | 53.42 → 87.64 | 1.643× (1.63–1.65) |
+| code | greedy | 4 | 3.27 | 3.77 | 4.23 | 4.3 | 27.9 | 0.0 | 0.0 | 32.2 | 0.15 | 53.41 → 131.41 | 2.460× (2.46–2.47) |
+| code | greedy | 7 | 5.10 | 6.19 | 6.05 | 6.9 | 28.1 | 0.0 | 0.0 | 35.0 | 0.12 | 53.42 → 172.69 | 3.232× (3.23–3.24) |
+| code | instruct | 2 | 1.89 | 1.97 | 2.86 | 2.2 | 29.2 | 0.0 | 0.0 | 31.4 | 0.22 | 52.15 → 91.24 | 1.763× (1.72–1.76) |
+| code | instruct | 4 | 3.73 | 3.84 | 4.70 | 4.4 | 30.1 | 0.0 | 0.0 | 34.4 | 0.15 | 52.18 → 136.73 | 2.618× (2.54–2.71) |
+| code | instruct | 7 | 5.86 | 6.38 | 6.80 | 7.3 | 31.5 | 0.0 | 0.0 | 38.8 | 0.11 | 51.88 → 175.97 | 3.341× (3.19–3.65) |
+| 512 | greedy | 2 | 1.33 | 1.80 | 2.31 | 2.4 | 29.5 | 0.0 | 0.0 | 31.9 | 0.28 | 46.66 → 72.47 | 1.553× (1.55–1.55) |
+| 512 | greedy | 3 | 1.78 | 2.52 | 2.76 | 3.3 | 29.4 | 0.0 | 0.0 | 32.6 | 0.24 | 47.05 → 84.58 | 1.801× (1.79–1.80) |
+| 512 | greedy | 4 | 2.05 | 3.00 | 3.02 | 3.9 | 29.6 | 0.0 | 0.0 | 33.4 | 0.22 | 46.84 → 90.42 | 1.928× (1.92–1.94) |
+| 512 | greedy | 5 | 2.28 | 3.44 | 3.26 | 4.5 | 29.7 | 0.0 | 0.0 | 34.2 | 0.21 | 46.95 → 95.35 | 2.031× (2.03–2.04) |
+| 512 | greedy | 6 | 2.46 | 3.92 | 3.43 | 5.1 | 29.7 | 0.0 | 0.0 | 34.8 | 0.20 | 46.85 → 98.56 | 2.096× (2.09–2.12) |
+| 512 | greedy | 7 | 2.46 | 4.27 | 3.43 | 5.6 | 29.9 | 0.0 | 0.0 | 35.4 | 0.21 | 46.81 → 96.88 | 2.070× (2.07–2.07) |
+| 512 | instruct | 2 | 1.31 | 1.81 | 2.30 | 2.4 | 30.7 | 0.0 | 0.0 | 33.0 | 0.29 | 45.91 → 70.12 | 1.578× (1.34–1.66) |
+| 512 | instruct | 3 | 1.58 | 2.39 | 2.56 | 3.1 | 30.9 | 0.0 | 0.0 | 34.1 | 0.27 | 45.87 → 75.89 | 1.724× (1.42–1.82) |
+| 512 | instruct | 4 | 1.49 | 2.81 | 2.49 | 3.6 | 31.1 | 0.0 | 0.0 | 34.8 | 0.28 | 45.90 → 72.03 | 1.520× (1.44–1.75) |
+| 512 | instruct | 5 | 1.93 | 3.18 | 2.91 | 4.2 | 31.5 | 0.0 | 0.0 | 35.7 | 0.25 | 45.87 → 83.27 | 1.924× (1.47–2.05) |
+| 512 | instruct | 6 | 2.00 | 3.45 | 2.98 | 4.5 | 31.6 | 0.0 | 0.0 | 36.1 | 0.24 | 45.90 → 84.33 | 1.889× (1.49–2.13) |
+| 512 | instruct | 7 | 2.10 | 3.76 | 3.07 | 4.9 | 31.8 | 0.0 | 0.0 | 36.7 | 0.24 | 45.94 → 85.98 | 1.982× (1.47–2.16) |
+| 4,096 | greedy | 2 | 1.33 | 1.80 | 2.31 | 2.4 | 32.3 | 0.0 | 0.0 | 34.7 | 0.30 | 45.22 → 66.48 | 1.471× (1.47–1.47) |
+| 4,096 | greedy | 3 | 1.95 | 2.65 | 2.95 | 3.6 | 33.7 | 0.0 | 0.0 | 37.3 | 0.25 | 45.38 → 79.27 | 1.748× (1.74–1.75) |
+| 4,096 | greedy | 4 | 2.05 | 3.19 | 3.02 | 4.3 | 33.9 | 0.0 | 0.0 | 38.2 | 0.25 | 45.41 → 79.14 | 1.744× (1.74–1.75) |
+| 4,096 | greedy | 5 | 2.12 | 3.59 | 3.10 | 4.8 | 34.7 | 0.0 | 0.0 | 39.5 | 0.25 | 45.38 → 78.49 | 1.730× (1.73–1.73) |
+| 4,096 | greedy | 6 | 2.46 | 3.84 | 3.43 | 5.2 | 35.2 | 0.0 | 0.0 | 40.4 | 0.24 | 45.39 → 84.95 | 1.871× (1.87–1.87) |
+| 4,096 | greedy | 7 | 2.46 | 4.14 | 3.43 | 5.6 | 35.3 | 0.0 | 0.0 | 40.9 | 0.24 | 45.37 → 83.94 | 1.851× (1.85–1.85) |
+| 4,096 | instruct | 2 | 0.97 | 1.73 | 1.96 | 2.3 | 33.4 | 0.0 | 0.0 | 35.7 | 0.36 | 44.53 → 55.44 | 1.219× (1.12–1.40) |
+| 4,096 | instruct | 3 | 1.20 | 2.24 | 2.19 | 3.0 | 34.5 | 0.0 | 0.0 | 37.5 | 0.34 | 44.59 → 58.77 | 1.320× (1.18–1.45) |
+| 4,096 | instruct | 4 | 1.33 | 2.54 | 2.32 | 3.4 | 34.7 | 0.0 | 0.0 | 38.1 | 0.33 | 44.62 → 61.47 | 1.352× (1.23–1.55) |
+| 4,096 | instruct | 5 | 1.40 | 2.84 | 2.40 | 3.8 | 35.3 | 0.0 | 0.0 | 39.2 | 0.33 | 44.54 → 62.14 | 1.336× (1.21–1.64) |
+| 4,096 | instruct | 6 | 1.48 | 3.12 | 2.47 | 4.2 | 35.9 | 0.0 | 0.0 | 40.1 | 0.32 | 44.54 → 62.45 | 1.383× (1.22–1.61) |
+| 4,096 | instruct | 7 | 1.48 | 3.30 | 2.47 | 4.4 | 36.1 | 0.0 | 0.0 | 40.6 | 0.33 | 44.59 → 61.76 | 1.360× (1.21–1.59) |
+| 16,384 | greedy | 2 | 1.25 | 1.77 | 2.23 | 2.8 | 42.2 | 0.0 | 0.0 | 45.1 | 0.40 | 39.04 → 49.45 | 1.267× (1.27–1.27) |
+| 16,384 | greedy | 3 | 1.67 | 2.40 | 2.65 | 4.3 | 51.4 | 0.0 | 0.0 | 55.6 | 0.42 | 36.47 → 47.65 | 1.305× (1.30–1.31) |
+| 16,384 | greedy | 4 | 1.89 | 2.93 | 2.89 | 5.5 | 57.0 | 0.0 | 0.0 | 62.5 | 0.43 | 35.67 → 46.25 | 1.320× (1.23–1.35) |
+| 16,384 | greedy | 5 | 2.12 | 3.32 | 3.10 | 6.1 | 58.1 | 0.0 | 0.0 | 64.3 | 0.41 | 35.86 → 48.21 | 1.379× (1.26–1.40) |
+| 16,384 | greedy | 6 | 2.12 | 3.49 | 3.10 | 6.2 | 56.6 | 0.0 | 0.0 | 62.7 | 0.41 | 36.36 → 49.41 | 1.375× (1.31–1.39) |
+| 16,384 | greedy | 7 | 2.28 | 3.79 | 3.26 | 6.6 | 56.1 | 0.0 | 0.0 | 62.6 | 0.38 | 37.11 → 52.11 | 1.398× (1.40–1.42) |
+| 16,384 | instruct | 2 | 1.12 | 1.76 | 2.10 | 2.9 | 45.5 | 0.0 | 0.0 | 48.5 | 0.46 | 37.35 → 43.51 | 1.178× (1.07–1.25) |
+| 16,384 | instruct | 3 | 1.42 | 2.29 | 2.40 | 3.8 | 47.3 | 0.0 | 0.0 | 51.1 | 0.43 | 37.86 → 47.36 | 1.287× (1.08–1.39) |
+| 16,384 | instruct | 4 | 1.50 | 2.73 | 2.49 | 4.4 | 48.1 | 0.0 | 0.0 | 52.5 | 0.42 | 38.47 → 47.86 | 1.184× (1.13–1.42) |
+| 16,384 | instruct | 5 | 1.69 | 2.96 | 2.66 | 4.7 | 49.2 | 0.0 | 0.0 | 53.9 | 0.40 | 38.47 → 50.07 | 1.326× (1.12–1.46) |
+| 16,384 | instruct | 6 | 1.76 | 3.19 | 2.74 | 5.1 | 50.3 | 0.0 | 0.0 | 55.4 | 0.40 | 38.44 → 49.97 | 1.329× (1.13–1.44) |
+| 16,384 | instruct | 7 | 1.84 | 3.39 | 2.82 | 5.4 | 51.3 | 0.0 | 0.0 | 56.7 | 0.40 | 38.46 → 50.28 | 1.350× (1.14–1.44) |
+| 32,639 | greedy | 2 | 1.17 | 1.73 | 2.15 | 3.3 | 54.3 | 0.0 | 0.0 | 57.6 | 0.53 | 33.40 → 37.39 | 1.119× (1.11–1.13) |
+| 32,639 | greedy | 3 | 1.61 | 2.33 | 2.59 | 4.4 | 60.3 | 0.0 | 0.0 | 64.7 | 0.50 | 33.32 → 40.06 | 1.205× (1.18–1.22) |
+| 32,639 | greedy | 4 | 1.72 | 2.70 | 2.70 | 5.3 | 64.8 | 0.0 | 0.0 | 70.1 | 0.52 | 32.97 → 38.62 | 1.171× (1.15–1.19) |
+| 32,639 | greedy | 5 | 1.82 | 2.96 | 2.82 | 5.8 | 68.7 | 0.0 | 0.0 | 74.5 | 0.53 | 32.58 → 37.95 | 1.174× (1.12–1.20) |
+| 32,639 | greedy | 6 | 1.98 | 3.21 | 2.95 | 6.2 | 70.3 | 0.0 | 0.0 | 76.5 | 0.52 | 33.01 → 38.65 | 1.163× (1.13–1.22) |
+| 32,639 | greedy | 7 | 2.05 | 3.38 | 3.02 | 6.7 | 72.4 | 0.0 | 0.0 | 79.0 | 0.52 | 32.69 → 38.33 | 1.161× (1.14–1.21) |
+| 32,639 | instruct | 2 | 1.22 | 1.81 | 2.22 | 3.5 | 58.2 | 0.0 | 0.0 | 61.7 | 0.56 | 32.57 → 35.97 | 1.089× (1.02–1.21) |
+| 32,639 | instruct | 3 | 1.23 | 2.27 | 2.22 | 4.4 | 62.7 | 0.0 | 0.0 | 67.2 | 0.61 | 32.45 → 33.03 | 1.027× (0.99–1.03) |
+| 32,639 | instruct | 4 | 1.39 | 2.75 | 2.38 | 5.3 | 67.1 | 0.0 | 0.0 | 72.4 | 0.61 | 32.53 → 32.91 | 1.032× (0.96–1.05) |
+| 32,639 | instruct | 5 | 1.44 | 3.03 | 2.43 | 5.9 | 69.5 | 0.0 | 0.0 | 75.4 | 0.62 | 32.64 → 32.22 | 0.995× (0.94–1.03) |
+| 32,639 | instruct | 6 | 1.47 | 3.25 | 2.46 | 6.3 | 71.5 | 0.0 | 0.0 | 77.9 | 0.63 | 32.55 → 31.60 | 0.990× (0.92–1.00) |
+| 32,639 | instruct | 7 | 1.49 | 3.38 | 2.47 | 6.6 | 72.8 | 0.0 | 0.0 | 79.4 | 0.64 | 32.69 → 31.21 | 0.979× (0.90–0.99) |
+
+Geometric mean of the eight prose cells: 1.297 / 1.402 / 1.379 / 1.448 /
+**1.468** / 1.473 at drafts 2–7, the worst cell 1.089 / 1.027 / 1.032 /
+0.995 / 0.990 / 0.979 (32,639 instruct). The raw code prompt reaches 173
+tok/s greedy at draft 7 (3.2×), the head accepting 5.1 of 6.2 proposals.
+
+**The verdicts.** One rule for every family: an entry turns speculation on
+at draft length L when no prose cell at L reads below 0.98× (the drift
+band) and the geometric mean of its prose cells is ≥ 1.10×; L is the
+qualifying length with the best mean. The `code` rows count for Qwen
+alone, whose record (ENGN-17) made the raw prompt a workload; for the
+others they are untemplated and informational.
+
+| Entry | ENGN-17 | ENGN-20 | Prose geometric mean at L | Worst prose cell at L |
+| --- | --- | --- | ---: | ---: |
+| `qwen3.8-27b` | off, 4 | **on, 7** | 1.387 (cold) | 1.245× (16K instruct) |
+| `gemma-4-12b-qat` | off, 4 | **on, 5** | 1.336 | 0.981× (32K greedy) |
+| `gemma-4-e4b-qat` | off, 4 (unmeasured) | **on, 6** | 1.468 | 0.990× (32K instruct) |
+| `gemma-4-26b-a4b` | off, 4 (unmeasured) | off, 4 | 0.70 (2–7 at 512, 4K) | 0.63× |
+| `muse-glimmer-30b` | on, 4 | **on, 6** | 1.270 | 1.096× (32K greedy) |
+
+Both Gemma entries break even at 32K, where the verify attention grows
+with the batch's rows; the decode-attention lever (KERN-22) is what moves
+that end.
+
+

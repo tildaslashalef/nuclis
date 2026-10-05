@@ -540,7 +540,7 @@ were identical in four configurations including `--top-k 0 --top-p 1 --min-p
 `make compare` 129 files max abs **1.22e-4**; `make bench` greedy **10.60**
 decode / **34.70** prefill, instruct profile **8.69** (+20.7 ms/token, full
 readback for the presence penalty), thinking profile **10.57** with 0 fallbacks
-([benchmarks](benchmarks/README.md#observations-so-far)).
+([benchmarks](benchmarks/history.md#observations-so-far)).
 
 **Files.** `inference/src/sampling/root.zig`, `inference/src/profiles/qwen38.zig`,
 `inference/src/engine.zig`, `src/generate.zig`, `src/cli.zig`,
@@ -570,7 +570,7 @@ tests; `make compare` unchanged (129 files, max abs 1.22e-4);
 `make test-generation-metal` chunked vs stepped max abs **2.5e-5**, relative RMS
 1.2e-6, identical argmax. `make bench` prefill **35.3**, decode **10.47**; raw
 prompts: 545 tokens **51.4**, 3,657 tokens **50.6**, against the reference's
-89.2/89.3 at 512/4,096 ([benchmarks](benchmarks/README.md#observations-so-far)).
+89.2/89.3 at 512/4,096 ([benchmarks](benchmarks/history.md#observations-so-far)).
 
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`,
@@ -603,7 +603,7 @@ test-generation-metal` chunked vs stepped max abs **2.8e-5**, relative RMS
 1.2e-6, identical argmax. `make bench` prefill **34.9**, decode **10.33**; raw
 prompts: 545 tokens **52.6**, 3,657 tokens **53.0**, 13,399 tokens at context
 16,384 **42.6** with decode **4.67** (reference 74.1 / 7.32)
-([benchmarks](benchmarks/README.md#observations-so-far)).
+([benchmarks](benchmarks/history.md#observations-so-far)).
 
 **Files.** `inference/src/backends/cpu/recurrent.zig`,
 `inference/src/backends/metal/kernels.metal`,
@@ -669,7 +669,7 @@ tests; `make compare` unchanged (129 files, max abs 1.22e-4);
 2.32e-3 / 2.59e-3**, relative RMS 1.1–1.2e-4, identical argmax. `make bench`
 prefill **39.1** (was 34.9), decode **10.30**; raw prompts: 545 tokens **83.8**
 (was 52.6; reference 89.2), 3,657 tokens **81.7** (was 53.0; reference 89.3)
-([benchmarks](benchmarks/README.md#observations-so-far)).
+([benchmarks](benchmarks/history.md#observations-so-far)).
 
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`, `inference/generation-check.zig`,
@@ -717,7 +717,7 @@ decode attention over the score buffer that KERN-08 replaces. Prefill at 13K was
 42.6 before the matmul tiles landed and 61.3 with the F32 cache at this point.
 Session bytes: **278 / 406 MiB** at 2,048, **406 / 662** at 4,096, **1,174 /
 2,198** at 16,384 (f16 / f32)
-([benchmarks](benchmarks/README.md#observations-so-far)).
+([benchmarks](benchmarks/history.md#observations-so-far)).
 
 **Files.** `inference/src/runtime/session.zig`,
 `inference/src/backends/metal/kernels.metal`,
@@ -785,7 +785,7 @@ about **30 ms**. The same command run straight after 40 minutes of sustained GPU
 load gave **33–35 / 9.2–9.5** on prefill and decode alike, including the prefill
 path this unit does not touch, so short-workload rows are taken on a rested
 machine and long runs are labelled with what preceded them
-([benchmarks](benchmarks/README.md#observations-so-far)).
+([benchmarks](benchmarks/history.md#observations-so-far)).
 
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`,
@@ -1098,7 +1098,7 @@ answered 144 then 145. Acceptance record: prefill / decode **192.97 / 19.82** at
 512, **155.31 / 18.91** at 4K, **103.04 / 14.65** at 16K, **74.04 / 14.04** at
 32,639 against the reference's **209.85 / 24.51**, **200.10 / 22.57**, **153.54
 / 16.34**, **142.80 / 16.05**; session **10.5 GiB** at 32K, peak footprint
-**11.8 GB** ([benchmarks](benchmarks/README.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12)).
+**11.8 GB** ([benchmarks](benchmarks/history.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12)).
 
 **Files.** `inference/src/profiles/gemma4.zig`, `inference/src/profiles/root.zig`,
 `inference/src/engine.zig`, `src/catalog.zig`, `src/cli.zig`,
@@ -1133,7 +1133,7 @@ bench-kernels`: Q4_0 **228.8 / 211.7 / 229.6 / 206.5 GB/s** on the four shapes
 16.24** at 32,639 against the reference's **224.46 / 27.69**, **216.82 / 25.69**,
 **158.78 / 22.10**, **143.72 / 20.94**; session **10.5 GiB**, footprint **11.8
 GB**
-([benchmarks](benchmarks/README.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12)).
+([benchmarks](benchmarks/history.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12)).
 
 **Files.** `inference/src/quant/decode.zig`,
 `inference/src/backends/metal/dequant.metal`,
@@ -2217,7 +2217,7 @@ reference's **580.76 / 68.02**, **548.41 / 60.82**, **459.46 / 50.67**,
 **343.38 / 44.09** (decode 81 / 81 / 78 / 71 %, prefill 86 / 63 / 45 /
 39 %); every sample on both sides stopped on the token budget; session
 **6.87 GiB** at 32K, peak footprint **8.0 GB**
-([benchmarks](benchmarks/README.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+([benchmarks](benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 Profile (22-token prompt, 2K context): 915 dispatches per step, a decode
 step about 20.5 ms attributed of which expert matvecs 27 % (down
 projection **114 GB/s** on 704-wide rows), dense matvecs 43 %, norms 14 %
@@ -2519,7 +2519,7 @@ arrays (byte-identical, verified): decode **13.87 / 13.26 / 11.72 /
 16.61 / 13.42 / 12.83 (80–87 %), prefill 93.69 / 86.01 / 66.35 / 50.63
 against 97.54 / 99.07 / 79.69 / 84.76 (96 % → 60 %); every sample stopped
 on `token_budget` on both sides; session 2.15 GiB, peak RSS 2.36 GiB
-([benchmarks](benchmarks/README.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+([benchmarks](benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
 Agent check (Metal, context 8,192, `--think medium`, `-p --json`):
 `write_file` then `read_file` in three steps, `hello world` on disk, 176
 prompt tokens, 210 generated, prefill 3.19 s, decode 15.1 s, `replayed:
@@ -2765,7 +2765,7 @@ precedence (`fix(tokenizer)`, its own test with 2,048 markers over
 removed, BOS prepended); `make test-vocabulary` on the Muse file (20
 standalone strings, 28 prompts), the Qwen file (20 and 35), and the QAT
 Gemma file (20 and 14). The acceptance run
-([benchmarks](benchmarks/README.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19)):
+([benchmarks](benchmarks/history.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19)):
 **9.60 / 8.26 / 7.19 / 6.62 tok/s decode** and **93.49 / 80.51 /
 67.83 / 59.20 prefill** at 512 / 4,096 / 16,384 / 32,639 tokens against
 the reference's 13.69 / 12.14 / 10.07 / 9.98 and 95.28 / 93.01 / 80.96 /
@@ -3130,7 +3130,7 @@ budget, EOS, cancellation, and context-limit edges; `make compare` and
 instruct profile's sampling produces coherent code (36 of 48 tokens from
 accepted drafts), and a real SIGINT during a speculative decode ends with
 "generation cancelled after 383 tokens" and exit 0. The record
-([benchmarks § Speculative decoding record](benchmarks/README.md#speculative-decoding-record-engn-12-2026-09-20),
+([benchmarks § Speculative decoding record](benchmarks/history.md#speculative-decoding-record-engn-12-2026-09-20),
 [benchmarks/speculative-2026-09-20/](benchmarks/speculative-2026-09-20/)),
 twelve off/on configurations at `3d5cb94`: greedy speculation at
 0.56–0.67× on the 512-token corpus prompt, 0.85–0.88× on the code prompt
@@ -3390,7 +3390,7 @@ the backend's bounds validation before any measurement.
 **Evidence.** The full record (12 configurations, 46 minutes, 20:49–21:35,
 `417aea0`, `nuclis 0.2.0-dev`, Apple M4 Pro 48 GiB, macOS 26.6.2, artifact
 SHA-256 `322e194f…`, one loaded model, nothing else on the GPU;
-[benchmarks § Recovery record](benchmarks/README.md#recovery-by-row-checkpoints-engn-14-2026-09-20),
+[benchmarks § Recovery record](benchmarks/history.md#recovery-by-row-checkpoints-engn-14-2026-09-20),
 reports under
 [benchmarks/speculative-2026-09-20-recovery/](benchmarks/speculative-2026-09-20-recovery/)).
 `recover` fell from 150–182 ms to **6–22 ms per batch** at every accepted
@@ -3468,7 +3468,7 @@ and `make speculative-check-metal`'s existing phases pass. The unit's gate
 pass `make speculative-record ARGS="--only prose512 code"` (`d31c5cd`,
 `nuclis 0.2.0-dev`, Apple M4 Pro 48 GiB, macOS 26.6.2, artifact SHA-256
 `322e194f…`, reports under `.zig-cache/bench/spec/`; table in
-[benchmarks § The KERN-13 quick pass](benchmarks/README.md#the-kern-13-quick-pass-2026-09-20))
+[benchmarks § The KERN-13 quick pass](benchmarks/history.md#the-kern-13-quick-pass-2026-09-20))
 puts the instruct off baselines at 9.04 / 8.87 / 8.80 tok/s (prose d2/d4/d7)
 and 8.74 (code d4), against 8.18 / 7.99 / 7.78 and 8.56 in the ENGN-14
 record and inside the greedy off band (code 8.66–8.74; prose 9.21–10.22,
@@ -3526,7 +3526,7 @@ sets, including the deferrals. `make check`, `make compare` (f32 6.1e-5 /
 7.7e-7, f16 2.5e-2 / 1.9e-4). The unit's gate pass
 `make speculative-record ARGS="--only prose512 code"` (same revision and
 workload as the KERN-13 pass, reports under `.zig-cache/bench/spec/`; table
-in [benchmarks § The ENGN-15 quick pass](benchmarks/README.md#the-engn-15-quick-pass-2026-09-20))
+in [benchmarks § The ENGN-15 quick pass](benchmarks/history.md#the-engn-15-quick-pass-2026-09-20))
 measures `accept` at **18.8–36.9 µs per batch** with penalties and
 0.1–0.2 µs for the greedy sampled path, against the ≤ 5 ms target and the
 62.8–91.3 ms of the KERN-13 pass, with `topk_fallbacks` 0 at every
@@ -3567,7 +3567,7 @@ head/FFN split shows no promising half.
 **Evidence.** `make bench-matvec-rows ARGS="8 head"` (Apple M4 Pro 48 GiB,
 Zig 0.16.0, ReleaseSafe, `d31c5cd` plus the change; minimum of three
 measured command buffers after one warm-up, sixteen dispatches per buffer;
-[benchmarks § Small-batch tile sweep](benchmarks/README.md#small-batch-tile-sweep-kern-14-2026-09-20)).
+[benchmarks § Small-batch tile sweep](benchmarks/history.md#small-batch-tile-sweep-kern-14-2026-09-20)).
 At 5 rows, 16×8 → 32×8 GB/s: Q4_K 96.8 → 88.7 (gate), 94.4 → 85.0 (down);
 Q6_K 114.0 → 84.6 and 105.0 → 87.8; Q3_K 63.0 → 47.1 and 57.2 → 46.1;
 IQ3_S 62.3 → 56.6 and 60.7 → 55.0; Q5_K 110.0 → 109.8 and 109.4 → 100.7;
@@ -3621,7 +3621,7 @@ trims more prose (−34 %) but costs code 4.4 %. The adaptive length alone
 (code draft 7): accepted/step 1.91 against 2.97 and speedup 1.02 against
 1.32. The unit's gate pass (`--only prose512 code`, reports under
 `.zig-cache/bench/spec/`; table in
-[benchmarks § The ENGN-16 quick pass](benchmarks/README.md#the-engn-16-quick-pass-2026-09-20)):
+[benchmarks § The ENGN-16 quick pass](benchmarks/history.md#the-engn-16-quick-pass-2026-09-20)):
 code instruct 1.35×, code greedy 1.33× at draft 7 (within 1 % of the
 control), prose instruct 1.00 / 1.03× at drafts 4 / 7 (was 0.98 / 1.01×),
 drafts/accepted 1.24–1.73. `make check`, `make compare` (f32 6.1e-5 /
@@ -3676,7 +3676,7 @@ the merged projections) was removed with the negative verdict.
 ReleaseSafe, `10cf6ba` plus the change; five command buffers, 64 dispatches
 per buffer below 8,192 rows and 8 above, best of three measured rounds;
 table and reading in
-[benchmarks § Split-K matvec sweep](benchmarks/README.md#split-k-matvec-sweep-kern-15-2026-09-21)).
+[benchmarks § Split-K matvec sweep](benchmarks/history.md#split-k-matvec-sweep-kern-15-2026-09-21)).
 Single pass → 2/4/8 splits, GB/s of weight bytes: Q4_K 6,656×19,968 151.0 →
 145.9/148.1/138.8; Q4_K 6,656×4,096 157.7 → 150.7/135.5/124.3; Q4_K
 5,120×17,408 152.8 → 146.1/146.6/134.5; the four-segment 8,704×6,656 merge
@@ -3754,7 +3754,7 @@ reuse F16 ms 3.684 → 3.688 at 512, 35.179 → 34.246 at 4,096, 71.653 →
 32,512; at count 8, 0.862 → 0.767, 3.610 → 3.163, 7.621 → 6.460, 30.642 →
 25.806; at count 64, 1.139 → 1.097, 8.945 → 7.757, 36.121 → 31.382; at
 count 1 and 16,384 visible, 30.704 → 25.831. F32 in the table in
-[benchmarks § Prefill attention sweep](benchmarks/README.md#prefill-attention-sweep-kern-16-2026-09-21);
+[benchmarks § Prefill attention sweep](benchmarks/history.md#prefill-attention-sweep-kern-16-2026-09-21);
 run-to-run spread ~1.5 %. `make test-metal` passes with both bodies on the
 MODL-06 windowed/wide cases (F32 2.980e-6, F16 1.929e-4) and on a new
 poisoned-future-range fixture: counts 1–256, F32 and F16, every cache row
@@ -3893,7 +3893,7 @@ Greedy off/on identity over 64 tokens (`Write a haiku about the sea.`,
 Metal, template prompt). Load errors through a temporary `NUCLIS_HOME`:
 missing companion → `DraftSourceMissing`, `clip` projector → mismatch, 26B
 head on the 12B target → mismatch. Bench pair in
-[benchmarks § The Gemma 4 draft pair](benchmarks/README.md#the-gemma-4-draft-pair-modl-19-2026-09-21);
+[benchmarks § The Gemma 4 draft pair](benchmarks/history.md#the-gemma-4-draft-pair-modl-19-2026-09-21);
 the facts, trace, and verdict in
 [speculative-decoding.md § The Gemma 4 assistant heads](engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
 `make check` passes (455/455) with the machine quiet; note that the Metal
@@ -3981,7 +3981,7 @@ the shared cap change touches stay green: `make compare` (f32 6.1e-5 /
 cases, the penalty and verify-top-k checks), `make compare-draft-metal`
 (1.5e-5 / 7.9e-7, greedy 9419/271), and `make check` (all green).
 Record and table:
-[benchmarks § The Muse Glimmer DFlash draft pair](benchmarks/README.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21);
+[benchmarks § The Muse Glimmer DFlash draft pair](benchmarks/history.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21);
 memory: session 2,415,919,104 bytes (2304 MiB, the five draft caches 640 MiB
 of it), workspace 149,861,504 bytes, verify scratch 53,862,464 bytes.
 Reports under `.zig-cache/bench/muse-modl20-draft{4,8,15}.json`.
@@ -4039,7 +4039,7 @@ twelve pairs and twelve baselines are committed under
 `docs/benchmarks/speculative-2026-09-21/`.
 
 **Evidence.** The record in
-[benchmarks § The speculative verdict record](benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21)
+[benchmarks § The speculative verdict record](benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21)
 (`981f74d` plus the change, one 52-minute sequence): per-batch costs propose
 10.1–23.1 ms, checkpoint 2.8–3.6 ms, verify 218.5–229.1 ms at 512 and
 309.2–319.2 ms at 4K, accept 0.00–0.03 ms (was 46–78), recover 6.0–10.7 ms
@@ -4186,7 +4186,7 @@ with a path.
 (70 s): 2.26 accepted / 3.38 proposed per batch, 3.26 tokens per batch,
 verify 133.9 ms, 25.74 → 23.17 tok/s, 0.90× — MODL-19's row read 2.256 /
 3.385 / 3.256, 135.9 ms, 25.40 → 22.83, 0.899×. The generated table is in
-[benchmarks § The Gemma 4 draft pair](benchmarks/README.md#the-gemma-4-draft-pair-modl-19-2026-09-21)
+[benchmarks § The Gemma 4 draft pair](benchmarks/history.md#the-gemma-4-draft-pair-modl-19-2026-09-21)
 between markers, from
 [benchmarks/gemma4-qat-prose512-draft-2026-09-21.json](benchmarks/gemma4-qat-prose512-draft-2026-09-21.json).
 `--check muse/prose512-draft` on that Gemma report misses its bar (0.900
@@ -6359,7 +6359,7 @@ proposed: amortize Qwen decode through a dedicated small-batch verifier,
 with the correctness gates a candidate must pass and quantitative stop
 rules. Its budget arithmetic (a batch emitting E tokens in C ms reaches
 20 tokens/s only when C ≤ 50E) sets the verify budgets from the
-[speculative verdict record](benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21):
+[speculative verdict record](benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21):
 about 99 ms at prose 512, 93 ms at 4K, and 137 ms on the short code prompt,
 against 227–309 ms measured. From 4K up the budget is below today's
 single-row step (98 ms at 4K, 132 ms at 32K), so the verifier alone cannot
@@ -6416,7 +6416,7 @@ calculation; the Qwen correctness gates it names are not implemented, and
   prefix used to propose its first draft from a zeroed row (acceptance
   only, never output).
 
-**Evidence.** [benchmarks § The decode-speed baseline](benchmarks/README.md#the-decode-speed-baseline-engn-18-2026-09-30),
+**Evidence.** [benchmarks § The decode-speed baseline](benchmarks/history.md#the-decode-speed-baseline-engn-18-2026-09-30),
 at `beccae1`, M4 Pro, macOS 27.0, ReleaseSafe, F16 KV, 32,768 context:
 plain decode 10.56 / 10.19 / 9.25 / 8.28 tok/s at 512 / 4K / 16K / 32,639
 (512 and 4K at the 2026-09-10 record; 16K and 32K 10–12 % above it, whose
@@ -6797,7 +6797,7 @@ mean. `engine.draft_p_min` stays 0.7.
   `src/agent/root.zig` does. Found when the agent task list's "on" run
   reproduced the "off" run's tokens.
 
-**Evidence.** [benchmarks § The re-priced speculative verdicts](benchmarks/README.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01),
+**Evidence.** [benchmarks § The re-priced speculative verdicts](benchmarks/history.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01),
 the derived rows under `docs/benchmarks/speculative-2026-10-01/`. Apple M4
 Pro MacBook Pro (Mac16,8), 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe,
 `c7b6d2b`, F16 KV, context 32,768, 128 output tokens, three off/on pairs
@@ -6863,7 +6863,7 @@ code at 20 tokens/s, the agent task list's 38 % less model time, and
 why Gemma 4 26B-A4B stays off.
 
 **Evidence.** Every number is a row of
-[benchmarks § The re-priced speculative verdicts](benchmarks/README.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)
+[benchmarks § The re-priced speculative verdicts](benchmarks/history.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)
 or of ENGN-20's log entry (Qwen's from the cold pass at draft 7; the
 others from the hot matrix at their default length, greedy), and the
 README says which. Documentation only: no build or test was run.
