@@ -1,13 +1,42 @@
 # Metal backend
 
-The Metal backend runs the pinned Qwen text schedule on the GPU: one command
+The Metal backend runs a model's text schedule on the GPU: one command
 buffer per token, every activation resident on the GPU, and the CPU supplying a
 token ID and reading back either logits or a greedy token. It is numerically
-validated against the CPU reference and llama.cpp traces. For the surrounding
-stack see [architecture.md](../architecture.md); for the performance plan see
-the 2026-09-07 review. What the GPU itself is (limits, dynamic caching) and
-what its counters say about our hot kernels is in
-[apple-gpu.md](apple-gpu.md).
+validated against the CPU reference and llama.cpp traces, for every family
+in the catalogue; Qwen3.8 was the first and is the one the kernels are tuned
+for. For the surrounding stack see
+[architecture.md](../architecture.md), and for where decode and prefill time
+goes today [§ 11 Where performance goes](../architecture.md#11-where-performance-goes);
+the current rates are the README's [Results](../../README.md#results). What
+the GPU itself is (limits, dynamic caching) and what its counters say about
+our hot kernels is in [apple-gpu.md](apple-gpu.md).
+
+The sections below describe the backend as it is; the dated ones record how
+a part of it was built or measured, kept as written.
+
+**The backend:**
+
+- [Build and run](#build-and-run)
+- [Files and ownership](#files-and-ownership)
+- [Execution model](#execution-model)
+- [Kernels](#kernels)
+- [Specialized matvec](#specialized-matvec)
+- [Numerical evidence](#numerical-evidence)
+- [Limits](#limits)
+- [Where a verify batch's cost goes](#where-a-verify-batchs-cost-goes)
+
+**How parts of it were built** (dated):
+
+- [Performance observation](#performance-observation) (2026-09-07)
+- [Prefill in chunks (ENGN-02)](#prefill-in-chunks-engn-02)
+- [Merged projections (KERN-04)](#merged-projections-kern-04)
+- [F16 KV cache (KERN-07)](#f16-kv-cache-kern-07)
+- [Flash-decoding attention (KERN-08)](#flash-decoding-attention-kern-08)
+- [Few-query verify attention (KERN-21, 2026-09-30)](#few-query-verify-attention-kern-21-2026-09-30)
+- [Long-context prefill attention (ENGN-08, 2026-09-10, closed without a kernel change)](#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change)
+- [Long-context prefill attention, second attempt (KERN-16, 2026-09-21, closed negative)](#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative)
+- [Fused decode norms (KERN-18, 2026-09-21, closed below its target)](#fused-decode-norms-kern-18-2026-09-21-closed-below-its-target)
 
 ## Build and run
 
@@ -1776,6 +1805,10 @@ The second model's numbers are in
 [gemma4.md § Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11).
 
 ## Performance observation
+
+*Dated 2026-09-07, macOS 26: the first Metal numbers and the steps that
+followed, kept as history; today's rates are the README's
+[Results](../../README.md#results).*
 
 `make bench`: 22-token chat prompt, 64 output tokens, context 2048, greedy,
 ReleaseSafe, Apple M4 Pro 48 GiB, macOS 26, one warmup and three measured runs.

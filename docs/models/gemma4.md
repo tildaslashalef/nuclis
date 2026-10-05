@@ -15,6 +15,21 @@ model card. Images (the two projectors and the language model's
 bidirectional image spans on its sliding layers) are in
 [vision.md § Gemma 4's projectors](../engine/vision.md#gemma-4s-projectors-modl-22-2026-09-23).
 
+**Contents.**
+
+- [Artifacts](#artifacts)
+- [Metadata (`gemma4.*`)](#metadata-gemma4)
+- [Tensors (667)](#tensors-667)
+- [Forward pass (from the reference graph, `gemma4.cpp`)](#forward-pass-from-the-reference-graph-gemma4cpp)
+- [Tokenizer](#tokenizer)
+- [Chat template and profile (MODL-07, 2026-09-12)](#chat-template-and-profile-modl-07-2026-09-12)
+- [Reference oracle status](#reference-oracle-status)
+- [CPU reference against the oracle (MODL-05, 2026-09-11)](#cpu-reference-against-the-oracle-modl-05-2026-09-11)
+- [Metal plan (MODL-06, 2026-09-11)](#metal-plan-modl-06-2026-09-11)
+- [Q4_0 path and the QAT file (MODL-08, 2026-09-12)](#q4_0-path-and-the-qat-file-modl-08-2026-09-12)
+- [Gemma 4 26B-A4B: the expert configuration (MODL-09)](#gemma-4-26b-a4b-the-expert-configuration-modl-09)
+- [Gemma 4 E4B: per-layer embeddings and shared KV (MODL-27, 2026-09-26)](#gemma-4-e4b-per-layer-embeddings-and-shared-kv-modl-27-2026-09-26)
+
 ## Artifacts
 
 | | K-quant (bring-up, MODL-05–MODL-07) | QAT (the catalogue's file since MODL-08) |

@@ -7,6 +7,15 @@ that built it are in the [worklog](../worklog.md): `MODL-21`
 (Qwen3.8), `AGNT-15` (the chat), `MODL-24` (decode after an image),
 `MODL-22` (Gemma 4), and `MODL-23` (Muse Glimmer).
 
+**Contents.**
+
+- [The contract](#the-contract)
+- [The Qwen3-VL projector (MODL-21, 2026-09-22)](#the-qwen3-vl-projector-modl-21-2026-09-22)
+- [Images in the chat (AGNT-15, 2026-09-23)](#images-in-the-chat-agnt-15-2026-09-23)
+- [Decode after an image (MODL-24, 2026-09-23)](#decode-after-an-image-modl-24-2026-09-23)
+- [Gemma 4's projectors (MODL-22, 2026-09-23)](#gemma-4s-projectors-modl-22-2026-09-23)
+- [Muse Glimmer's projector (MODL-23, 2026-09-23)](#muse-glimmers-projector-modl-23-2026-09-23)
+
 ## The contract
 
 A *projector file* is the catalogue's `mmproj` companion, a GGUF of

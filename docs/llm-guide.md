@@ -16,8 +16,22 @@ idea turned out to be wrong and a measurement said so.
 A note on the hardware, because it is a character in the story: an Apple
 M4 Pro with 48 GB of unified memory and a 273 GB/s memory bus. The models
 are Qwen3.8-27B (the pinned target: 64 layers, 16 of them attention and 48
-recurrent), Gemma 4 in a dense 12B and a sparse 26B, Muse Glimmer 30B, and
+recurrent), Gemma 4 in a dense 12B, a sparse 26B, and a small E4B, Muse
+Glimmer 30B, and
 Bonsai 2, which is Qwen3.8 again at 1.58 bits per weight.
+
+**Contents.**
+
+- **Part One — The problem**: [1. The numbers that decide everything](#1-the-numbers-that-decide-everything), [2. What an engine is](#2-what-an-engine-is)
+- **Part Two — The file**: [3. A directory you can trust](#3-a-directory-you-can-trust), [4. Eleven ways to store a weight](#4-eleven-ways-to-store-a-weight), [5. The rotated basis](#5-the-rotated-basis)
+- **Part Three — Text**: [6. Tokens are bytes with a history](#6-tokens-are-bytes-with-a-history), [7. The prompt profile is a contract](#7-the-prompt-profile-is-a-contract)
+- **Part Four — One token on the CPU**: [8. Slow on purpose](#8-slow-on-purpose), [9. Attention reads, DeltaNet writes](#9-attention-reads-deltanet-writes), [10. A layer, a token, a session](#10-a-layer-a-token-a-session)
+- **Part Five — The GPU**: [11. Crossing the bridge](#11-crossing-the-bridge), [12. Lanes, SIMD groups, and where they live](#12-lanes-simd-groups-and-where-they-live), [13. The matvec that reads 16 GB](#13-the-matvec-that-reads-16-gb), [14. Fewer dispatches, same math](#14-fewer-dispatches-same-math), [15. Sampling on the device](#15-sampling-on-the-device)
+- **Part Six — Prefill is a different problem**: [16. Arithmetic intensity flips](#16-arithmetic-intensity-flips), [17. Attention in tiles: online softmax](#17-attention-in-tiles-online-softmax), [18. DeltaNet in chunks: the triangular solve](#18-deltanet-in-chunks-the-triangular-solve), [19. Experts: sparsity's gift and bill](#19-experts-sparsitys-gift-and-bill)
+- **Part Seven — Long context**: [20. Half the bytes: the F16 cache](#20-half-the-bytes-the-f16-cache), [21. Flash decoding](#21-flash-decoding), [22. Checkpoints, not rewinds](#22-checkpoints-not-rewinds)
+- **Part Eight — Speculation**: [23. Guessing ahead, and paying to check](#23-guessing-ahead-and-paying-to-check)
+- **Part Nine — Families**: [24. The registry table](#24-the-registry-table), [25. What a second architecture costs](#25-what-a-second-architecture-costs)
+- **Part Ten — Honesty**: [26. Measuring, and what counts as knowing](#26-measuring-and-what-counts-as-knowing), [27. What it took](#27-what-it-took)
 
 ---
 
@@ -29,15 +43,16 @@ Start with a division. The Qwen file is 16.1 GB of weights. To produce one
 token, a dense model reads every weight once. At 273 GB/s that read takes
 59 ms, so the fastest this machine can ever decode this model is about 17
 tokens per second, whatever the code looks like. llama.cpp, a mature
-engine with years of Metal work in it, reaches 9.66 on the same file.
-nuclis reaches 10.62. The gap between 10 and 17 is the entire subject of
-Part Five.
+engine with years of Metal work in it, reaches 10.2 on the same file after
+a 512-token prompt; nuclis reaches 11.7 (both measured 2026-10-04; every
+family and length is in the README's [Results](../README.md#results)).
+The gap between 12 and 17 is the entire subject of Part Five.
 
 The second number is the prompt. Reading the prompt (*prefill*) is a
 different problem from producing the answer (*decode*): the same 16 GB of
 weights can be multiplied against 512 prompt tokens at once, so the bytes
 are amortized and the arithmetic units become the limit. The reference
-prefills at 89 tokens per second and decodes at 9.66; both numbers come
+prefills at 92 tokens per second and decodes at 10.2; both numbers come
 from the same weights on the same bus, and the ratio is Part Six.
 
 The third is memory. 27 billion parameters at two bytes each would be 54
@@ -1028,7 +1043,7 @@ Read: [benchmarks](benchmarks/README.md),
 
 ---
 
-## 27. What it took
+### 27. What it took
 
 Twelve things, in the order they became true.
 
