@@ -23,9 +23,12 @@ and the speculation pairs; all records under `docs/benchmarks/`
 `bench.md` § The benchmarks on macOS 27 with its caveats (the 4K step on
 the slow dense models drifts as the chip heats; one slow 16K request on
 each Gemma run; Muse's 4K reference re-run). Next: session 2, step 7.
-The site preview (branch `site-bench-table`, worktree `../nuclis-site`:
-four lengths, a coloured table grouped by phase, E4B) now carries these
-numbers and waits for the user's review; step 8 merges it.
+The site's new numbers section (four lengths, a coloured table grouped
+by phase, E4B, today's numbers) is merged into `main` (`f6caef7`), so
+`make site-check` fails (31 problems) until step 7 gives the README the
+same tables: do not push before then (a push deploys the site). Step 8
+is left with `site-check.py`'s header and parser, its self-test, and the
+page copy.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
