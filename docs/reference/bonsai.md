@@ -281,7 +281,7 @@ the transform (the plain file keeps its one dispatch; the BF16 rows go
 through the merged kernel's generic branch), on the prefill path they are
 simply dispatched first. `ssm_out`'s input is regathered from the tiled
 head order to the grouped one by the row-gather kernel added for it
-([metal-backend.md § The rotation on the Qwen plan](metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18))
+([metal-backend.md § The rotation on the Qwen plan](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18))
 into a scratch of one decode row and `padded` prefill rows, then
 transformed there. Nothing changes on a plain Qwen file (`make bench` on
 `qwen3.8-27b` after the change: 10.42 tok/s decode, 39.3 prefill on the
@@ -318,7 +318,7 @@ GB/s of weight bytes where the Q4_K kernels move 170–200: 7.2 GB at 93
 GB/s effective is 77.7 ms, 16.4 GB at 170 is 96. The per-kernel profile
 puts the matvecs at about 80 % of the step (97–116 GB/s), the transform
 at 2.1 %, the gather at 0.2 %
-([metal-backend.md](metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18));
+([metal-backend.md](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18));
 the kernels are at the set's multiply-rate ceiling (§ Ternary matvecs and
 tiles), so the rate the byte count promises needs a different ternary
 arithmetic in the matvec, the follow-up named there. The fork on the same
@@ -345,11 +345,11 @@ MODL-16 closed on 2026-09-18: the file validates and binds, the three
 encodings decode against the fork's fixtures, the CPU reference applies
 the rotation and matches the fork's traces. KERN-10 closed the same day:
 the Metal decoders, matvecs, and tiles for the three encodings
-([metal-backend.md § Ternary](metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18):
+([metal-backend.md § Ternary](../engine/metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18):
 PQ2_0 119 GB/s, PTQ1_0 88 GB/s on the output head — at the kernel set's
 multiply rate, half the Q4_0 byte rate by density) and the transform
 kernel (`nu_hadamard`, 1.3–2.2 ms per token as 258 dispatches,
-[§ The Hadamard transform kernel](metal-backend.md#the-hadamard-transform-kernel-kern-10-session-2-2026-09-18)).
+[§ The Hadamard transform kernel](../engine/metal-backend.md#the-hadamard-transform-kernel-kern-10-session-2-2026-09-18)).
 MODL-17 closed the same day: the Metal plan applies the rotation and
 matches the traces in both cache precisions, the profile is the pinned
 Qwen3.8 one through the catalogue entry, and the acceptance record

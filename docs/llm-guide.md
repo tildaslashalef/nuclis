@@ -107,7 +107,7 @@ verdict names the first offender by tensor name, because "unsupported" with
 no noun costs an afternoon.
 
 Read: `inference/src/formats/gguf.zig`, `src/model.zig` (`inspect`),
-[reference/gguf-inspection.md](reference/gguf-inspection.md).
+[engine/gguf.md](engine/gguf.md).
 
 ### 4. Eleven ways to store a weight
 
@@ -168,7 +168,7 @@ as approximation, so a one-hot input reproduces the decoder's expression
 exactly and the fixture columns stay exact on the GPU.
 
 Read: `inference/src/quant/decode.zig`, `inference/src/tensor/encoding.zig`,
-[reference/quantization.md](reference/quantization.md).
+[engine/quantization.md](engine/quantization.md).
 
 ### 5. The rotated basis
 
@@ -239,7 +239,7 @@ token arrays on an 83,384-token corpus at every cut the benchmarks use,
 including a 32,620-token one.
 
 Read: `inference/src/tokenizer/encode.zig`, `bpe.zig`, `stream.zig`,
-[reference/tokenizer.md](reference/tokenizer.md).
+[engine/tokenizer.md](engine/tokenizer.md).
 
 ### 7. The prompt profile is a contract
 
@@ -279,8 +279,8 @@ pushing a per-profile type into every caller.
 
 Read: `inference/src/profiles/root.zig`, `profiles/gemma4.zig` (the
 module comment is the contract),
-[reference/prompt-profile.md](reference/prompt-profile.md),
-[reference/tool-calling.md](reference/tool-calling.md).
+[engine/prompt-profile.md](engine/prompt-profile.md),
+[engine/tool-calling.md](engine/tool-calling.md).
 
 ---
 
@@ -312,7 +312,7 @@ every finite value first, then write. A failure leaves the caller's buffers
 untouched, and tests assert that.
 
 Read: `inference/src/backends/cpu/vector.zig`, `rope.zig`,
-[reference/cpu-reference.md](reference/cpu-reference.md).
+[engine/cpu-reference.md](engine/cpu-reference.md).
 
 ### 9. Attention reads, DeltaNet writes
 
@@ -377,7 +377,7 @@ two, restore, compute it again, identical logits on both backends.
 
 Read: `models/qwen35_runtime.zig` (`fullAttention`, `linearAttention`),
 `inference/src/runtime/session.zig`,
-[reference/session.md](reference/session.md).
+[engine/session.md](engine/session.md).
 
 ---
 
@@ -451,7 +451,7 @@ this and no Zig vector types either; it is scalar F64 loops so that it
 stays the plain statement of the math.
 
 Read: `kernels.metal` starting with `nu_add` and `nu_rmsnorm`,
-[reference/metal-backend.md § Kernel geometry](reference/metal-backend.md#kernel-geometry).
+[engine/metal-backend.md § Kernel geometry](engine/metal-backend.md#kernel-geometry).
 
 ### 13. The matvec that reads 16 GB
 
@@ -501,7 +501,7 @@ lever is a different geometry, not a shorter loop.
 
 Read: `kernels.metal` (`nu_matvec_q4_k` and its neighbours),
 `Backend.specializedMatvec`,
-[reference/metal-backend.md § KERN-05](reference/metal-backend.md#kern-05--per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
+[engine/metal-backend.md § KERN-05](engine/metal-backend.md#kern-05--per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
 
 ### 14. Fewer dispatches, same math
 
@@ -569,7 +569,7 @@ greedy.
 
 Read: `inference/src/sampling/root.zig`, `nu_topk_partial` and
 `nu_penalize` in `kernels.metal`,
-[reference/generation.md § Sampling profiles](reference/generation.md#sampling-profiles-and-the-selection-chain-modl-01).
+[engine/sampling.md § Sampling profiles](engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01).
 
 ---
 
@@ -615,7 +615,7 @@ behind the single pass at every split count and was closed with its
 numbers. Threadgroup count is not what bounds those kernels.
 
 Read: `nu_matmul_t` in `kernels.metal`, `Backend.matmul`,
-[reference/metal-backend.md](reference/metal-backend.md) (the tile sweeps).
+[engine/metal-backend.md](engine/metal-backend.md) (the tile sweeps).
 
 ### 17. Attention in tiles: online softmax
 
@@ -687,7 +687,7 @@ carried state within 1.2e-7.
 
 Read: `inference/src/backends/cpu/recurrent.zig` (`deltaChunk`),
 `nu_delta_chunk` in `kernels.metal`,
-[reference/cpu-reference.md](reference/cpu-reference.md).
+[engine/cpu-reference.md](engine/cpu-reference.md).
 
 ### 19. Experts: sparsity's gift and bill
 
@@ -728,7 +728,7 @@ dense one's.
 
 Read: `inference/src/backends/cpu/experts.zig`, `nu_route`,
 `nu_expert_lists`, `nu_matmul_experts_t` in `kernels.metal`,
-[reference/metal-backend.md § Gathered expert kernels](reference/metal-backend.md#gathered-expert-kernels-kern-09).
+[engine/metal-backend.md § Gathered expert kernels](engine/metal-backend.md#gathered-expert-kernels-kern-09).
 
 ---
 
@@ -775,7 +775,7 @@ the loop). The QAT file, incidentally, was tighter than the K-quant on
 every path. `--kv f32` exists for numerical work.
 
 Read: `nu_pack_half`, the `_h` instantiations in `kernels.metal`,
-[reference/session.md](reference/session.md),
+[engine/session.md](engine/session.md),
 [reference/gemma4.md](reference/gemma4.md).
 
 ### 21. Flash decoding
@@ -837,7 +837,7 @@ the prompt appears.
 
 Read: `Session.snapshot`, `restore`, `checkpoint`, `rewind`, `truncate` in
 `session.zig`, `src/agent/loop.zig` (`increment`, `Completer.prime`),
-[reference/session.md](reference/session.md).
+[engine/session.md](engine/session.md).
 
 ---
 
@@ -917,7 +917,7 @@ poorly: the tile pads every 8×8 multiply, and a scalar body pays about
 
 Read: `inference/src/runtime/draft.zig`, `speculativeBatch` in `engine.zig`,
 `models/dflash.zig`, `models/gemma4_assistant.zig`,
-[reference/speculative-decoding.md](reference/speculative-decoding.md),
+[engine/speculative-decoding.md](engine/speculative-decoding.md),
 [reference/bench.md § The speculative verdict record](reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
 ---

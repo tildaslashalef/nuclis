@@ -30,7 +30,7 @@ guides worth reading before touching an artifact:
   the repo card does.
 - A filename encoding (`Q4_K_M`, `Q4_K_XL`) names the dominant type only.
   Every tensor's actual encoding is enumerated by `nuclis inspect`
-  ([gguf-inspection.md](gguf-inspection.md)) and the loader rejects
+  ([gguf.md](../engine/gguf.md)) and the loader rejects
   unimplemented encodings explicitly; it never requantizes. Implemented
   (checked 2026-09-09 against `quant/decode.zig` and the Qwen binder, Q4_0
   added 2026-09-12 by MODL-08): F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL,
@@ -133,7 +133,7 @@ its size). Its pulled companions, verified 2026-09-11 and 2026-09-12:
 | Companion | Purpose | Qwen3.8-27B | Gemma 4 |
 | --- | --- | --- | --- |
 | Main GGUF | Text model | `Qwen3.8-27B-UD-Q4_K_M.gguf` (pinned) | `gemma-4-12b-it-UD-Q4_K_XL.gguf` (7.37 GB), `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (16.9 GB) |
-| `mmproj-*.gguf` | Vision encoder and projector | `mmproj-BF16.gguf` (931,146,432 B; `clip`, `qwen3vl_merger`, see [gguf-inspection.md](gguf-inspection.md)), `mmproj-F16.gguf` (927,607,488 B) | 12B: `mmproj-BF16.gguf` and `mmproj-F16.gguf` (175,115,840 B each), `mmproj-F32.gguf` (209,522,240 B); 26B-A4B: `mmproj-BF16.gguf` (1.19 GB) |
+| `mmproj-*.gguf` | Vision encoder and projector | `mmproj-BF16.gguf` (931,146,432 B; `clip`, `qwen3vl_merger`, see [gguf.md](../engine/gguf.md)), `mmproj-F16.gguf` (927,607,488 B) | 12B: `mmproj-BF16.gguf` and `mmproj-F16.gguf` (175,115,840 B each), `mmproj-F32.gguf` (209,522,240 B); 26B-A4B: `mmproj-BF16.gguf` (1.19 GB) |
 | `MTP/mtp-*.gguf` | Multi-token-prediction draft head | `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` (1,369,590,656 B); the main file also embeds one prediction block | 12B: `MTP/mtp-gemma-4-12b-it-BF16.gguf` and `-F16.gguf` (861,520,128 B each), `MTP/mtp-gemma-4-12b-it-Q8_0.gguf` (465,109,248 B), plus a root-level `mtp-gemma-4-12b-it.gguf` of the Q8_0 size; `MTP/README.md`. 26B-A4B: `MTP/mtp-gemma-4-26B-A4B-it.gguf` (462 MB); not embedded |
 | `imatrix_unsloth.gguf*` | Calibration statistics, not weights | `imatrix_unsloth.gguf` (13,642,656 B) | `imatrix_unsloth.gguf_file` (7,480,640 B) |
 

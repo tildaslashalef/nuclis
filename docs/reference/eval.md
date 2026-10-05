@@ -84,7 +84,7 @@ Gemma 4 12B.
 Gemma's SPM-style splitter makes each line one BPE piece. The merge used
 to rescan the piece after every merge, so wikitext's paragraph lines
 exceeded the chat's work bounds (`WorkLimitExceeded`) and `eval` scaled them;
-the queued merge ([tokenizer.md § BPE](tokenizer.md#bpe-and-id-to-byte-decoding))
+the queued merge ([tokenizer.md § BPE](../engine/tokenizer.md#bpe-and-id-to-byte-decoding))
 made the work linear, and `eval` now only widens the input and work bounds
 in proportion to the text (capped at 16 MiB). The 1.29 MB test text encodes
 in about 0.26 s on Gemma.
@@ -205,7 +205,7 @@ Building `prefillRows` surfaced a gap in a sibling path: Gemma 4's Metal
 `verify` ran the head over every row without the final soft-cap, so sampled
 speculative acceptance on Gemma drew from uncapped logits (row 0 of
 `<bos>Hello,` 27.8 from the stepped logits). Fixed and gated; the facts are in
-[speculative-decoding.md § The Gemma 4 assistant heads](speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
+[speculative-decoding.md § The Gemma 4 assistant heads](../engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
 
 ## Regenerating a reference
 

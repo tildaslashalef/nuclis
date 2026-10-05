@@ -1043,7 +1043,7 @@ pub const Timing = struct {
     decode: std.Io.Duration = .zero,
     gpu_seconds: ?f64 = null,
     /// Present when the GPU partial top-k path sampled this run: how many
-    /// tokens needed the full-logit fallback (see reference/generation.md).
+    /// tokens needed the full-logit fallback (see docs/engine/sampling.md).
     topk_fallbacks: ?usize = null,
     /// Speculative decoding: verify batches run, drafts accepted and
     /// proposed across them, and time spent in the model's `propose`,
@@ -1245,7 +1245,7 @@ pub fn runLoop(
     // dispatch before selection, so the readback is the vector the sampler
     // would sort); the CPU reference leaves them to the sampler. An executor
     // that cannot apply them keeps both GPU selection paths off, exactly as
-    // before (see reference/generation.md).
+    // before (see docs/engine/sampling.md).
     const penalties: ?inference.sampling.Penalties = if (sampler.options.penaltiesActive()) .{
         .history = history orelse return error.HistoryRequired,
         .repetition = sampler.options.repetition_penalty,

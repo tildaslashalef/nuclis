@@ -68,7 +68,7 @@ The trace harness (`scripts/reference-generation.cpp`, public C API only)
 builds against this checkout unchanged with its include and library paths
 in place of the mainline ones, into
 `.zig-cache/generation/prism-reference-generation`
-([generation.md](generation.md#numerical-traces)). The fork's server takes
+([sampling.md](../engine/sampling.md#numerical-traces)). The fork's server takes
 the mainline one's flags below except `--lazy-mode`, which its older base
 does not know (drop it; the rest are accepted); `--jinja` renders the
 Bonsai template, while the fork's `llama-completion --jinja` aborts at its

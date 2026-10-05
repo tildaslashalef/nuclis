@@ -1,9 +1,9 @@
 // Opt-in numerical trace helper for the pinned llama.cpp API.
-// Build/run instructions live in docs/reference/generation.md. Outputs are
+// Build/run instructions live in docs/engine/sampling.md. Outputs are
 // local artifacts. With --mtp-draft it additionally opens the file as an MTP
 // context and dumps, per prompt position, the prediction block's pair inputs
 // (target h_{p-1}, token x_p), its greedy draft token, and its output h — the
-// pinned oracle for the Qwen draft head (docs/reference/speculative-decoding.md).
+// pinned oracle for the Qwen draft head (docs/engine/speculative-decoding.md).
 // `--assistant-draft DRAFT_MODEL` is the Gemma 4 companion form: it loads the
 // gemma4-assistant file, points its context at the target (`ctx_other`) so the
 // head reads the target's layer-46/47 caches, and dumps the same rows for the

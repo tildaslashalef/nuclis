@@ -3,7 +3,7 @@
 //! with one rendered difference, read from the two templates' diff — with
 //! thinking off, the generation prompt opens no empty thought channel.
 //! Everything else (turns, tools, reasoning, sampling, markers) is Gemma 4's;
-//! docs/reference/prompt-profile.md § Gemma 4 E-series.
+//! docs/engine/prompt-profile.md § Gemma 4 E-series.
 const std = @import("std");
 const gemma4 = @import("gemma4.zig");
 const profiles = @import("root.zig");

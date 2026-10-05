@@ -4,7 +4,7 @@
 //! `bind` validates the companion file; `Runtime` is the CPU reference
 //! (F64 accumulation); the host-side tables (positions, RoPE, the summed
 //! patch kernel) are shared with the Metal plan. Facts, provenance, and the
-//! trace: docs/reference/vision.md § The Qwen3-VL projector.
+//! trace: docs/engine/vision.md § The Qwen3-VL projector.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const weights = @import("../runtime/weights.zig");

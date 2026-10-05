@@ -4,7 +4,7 @@
 //! target's token embedding and output head: its cache is filled from the
 //! target's layer-2/14/26/38/50 *input* residuals through `fc`, and a
 //! 16-row mask block proposes up to 15 drafts in one forward. The facts and
-//! their provenance are in docs/reference/speculative-decoding.md § The Muse
+//! their provenance are in docs/engine/speculative-decoding.md § The Muse
 //! Glimmer DFlash drafter; the reference's mask token, non-causal block
 //! attention, and anchor-first sampling are part of the pinned
 //! configuration, so a file that changes them is refused rather than run.

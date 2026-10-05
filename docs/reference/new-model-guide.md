@@ -109,7 +109,7 @@ it writes `<bos>` as text (raw prompts and the profile alike).
 ## 4. Pin the oracle and compare
 
 `scripts/reference-generation.cpp` (built as in
-[generation.md § Numerical traces](generation.md#numerical-traces))
+[sampling.md § Numerical traces](../engine/sampling.md#numerical-traces))
 writes every layer's output and the final logits for a short prompt; it
 does not add BOS, so write `<bos>` in the prompt text. Run it once,
 commit the traces under `tests/fixtures/<family>-<prompt>/` with a row in
@@ -139,7 +139,7 @@ parameter the existing one lacks: Gemma needed four scalar epilogues, a
 GELU mode of the fused gate pair, per-pair RoPE factors, a wider
 instantiation of the decode attention template, and a window mask plus
 value-column splits on the chunk attention kernel, and not one
-Gemma-specific kernel ([metal-backend.md](metal-backend.md)). Every new
+Gemma-specific kernel ([metal-backend.md](../engine/metal-backend.md)). Every new
 kernel or mode gets a `metal-check` fixture against `cpu.*` over the new
 family's geometry.
 

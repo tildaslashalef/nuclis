@@ -13,7 +13,7 @@ oracle, never copied. Where a fact comes from the reference source rather
 than the file, the sentence says so. Nothing below is from memory of the
 model card. Images (the two projectors and the language model's
 bidirectional image spans on its sliding layers) are in
-[vision.md § Gemma 4's projectors](vision.md#gemma-4s-projectors-modl-22-2026-09-23).
+[vision.md § Gemma 4's projectors](../engine/vision.md#gemma-4s-projectors-modl-22-2026-09-23).
 
 ## Artifacts
 
@@ -198,18 +198,18 @@ embedded in the tree (18,922 bytes ending in a newline, the digest above).
 Finetunes converted with the earlier 17,530-byte revision (digest
 `dc311bb0…`) render history differently and are refused; they run under
 `--prompt-profile gemma4`
-([prompt-profile.md § Evidence](prompt-profile.md#evidence-and-reproduction)).
+([prompt-profile.md § Evidence](../engine/prompt-profile.md#evidence-and-reproduction)).
 
 `inference/src/profiles/gemma4.zig` implements the text and tool-calling
 subset (system/developer, user, assistant, tool declarations, calls, and
 responses; no images or prefill) and is registered as
 `profiles.Profile.gemma4`, selected by the template digest. The tool path is
-in [prompt-profile.md § Gemma 4](prompt-profile.md#gemma-4-gemma4) and
-[tool-calling.md](tool-calling.md).
+in [prompt-profile.md § Gemma 4](../engine/prompt-profile.md#gemma-4-gemma4) and
+[tool-calling.md](../engine/tool-calling.md).
 What the reference's own rendering established, each with a fixture case
 (`inference/src/profiles/fixtures/gemma4-text.json`, 14 prompts and 20
 token strings captured from `llama-server 7620399` on the K-quant file,
-[prompt-profile.md](prompt-profile.md#gemma-4-gemma4)):
+[prompt-profile.md](../engine/prompt-profile.md#gemma-4-gemma4)):
 
 - The server's `/apply-template` output has no `<bos>` (its tokenizer adds
   BOS); the profile renders `<bos>` as text because the tree's encoder
@@ -297,7 +297,7 @@ order. One CPU step is 33.7 s for the three-token prompt (ReleaseSafe, M4
 Pro), a reference number for the Metal plan of MODL-06, not a benchmark.
 
 Recipe (the harness compiled as in
-[generation.md](generation.md#numerical-traces)): `reference-generation
+[sampling.md](../engine/sampling.md#numerical-traces)): `reference-generation
 <file> '<bos>Hello,' <dir>` (the harness does not add BOS; `parse_special`
 is on, so the marker in the text supplies it), then `nuclis generate
 --backend cpu --prompt-tokens <ids.json> --max-tokens 1 --ctx-size 8
@@ -335,7 +335,7 @@ path).
 as `Backend` encoder calls, one command buffer per token (`step`) or per
 prompt chunk (`prefill`), the same shape as the Qwen plan. What the
 schedule needed from the backend, and what it reused unchanged
-([metal-backend.md](metal-backend.md)):
+([metal-backend.md](../engine/metal-backend.md)):
 
 | Operation | Kernel | Status |
 | --- | --- | --- |
@@ -417,7 +417,7 @@ matrices is Q4_0, an encoding the parser stored and the CPU decoder
 refused until this sub-unit. Q4_0 is IQ4_NL's block (an F16 scale `d`,
 then sixteen bytes whose low nibbles are values 0–15 and high nibbles
 16–31) with the code itself as the value: `d · (q − 8)`, no table
-([quantization.md](quantization.md#equations-and-evidence)). What the
+([quantization.md](../engine/quantization.md#equations-and-evidence)). What the
 tree gained, each pinned by the reference's own fixture:
 
 - `quant.row` id 2 and the eight-block Q4_0 row in
@@ -441,7 +441,7 @@ tree gained, each pinned by the reference's own fixture:
   segments rather than sixteen; the decode is the generic decoder's
   expression in the same operation order, so the F32 view is
   bit-identical and only the half rounding remains
-  ([metal-backend.md § Prefill in chunks](metal-backend.md#prefill-in-chunks-engn-02)).
+  ([metal-backend.md § Prefill in chunks](../engine/metal-backend.md#prefill-in-chunks-engn-02)).
 - `gemma4.executableEncoding` lists id 2; Qwen's does not (its executable
   set is that adapter's claim about the files it binds, not the kernels'
   capability). `model inspect` on the QAT file: `supported`.
@@ -598,7 +598,7 @@ a 15,360-wide FFN). `nuclis validate` reports the binding
 configurations from one schedule: `feedForward` (decode) and
 `feedForwardChunk` (prefill) mirror the CPU reference's `feedForward`,
 and the expert branch is the gathered kernels of
-[metal-backend.md § Gathered expert kernels](metal-backend.md#gathered-expert-kernels-kern-09):
+[metal-backend.md § Gathered expert kernels](../engine/metal-backend.md#gathered-expert-kernels-kern-09):
 
 | Operation | Decode (`step`) | Prefill (`prefill`, per chunk of `count` rows) |
 | --- | --- | --- |
@@ -674,7 +674,7 @@ measured runs; Apple M4 Pro 48 GB, macOS 26.6.2, Zig 0.16.0 ReleaseSafe,
 **The chunk for this family is 512** (`Plan.preferredChunk`; the engine's
 default stays 256 for the dense configurations): 10–14 % more prefill
 than 256 because a chunk's 4,096 slot rows fill the gathered 32-row
-tiles better ([metal-backend.md](metal-backend.md#gathered-expert-kernels-kern-09):
+tiles better ([metal-backend.md](../engine/metal-backend.md#gathered-expert-kernels-kern-09):
 69 % against 50 %), for 80 MB of expert workspace and 0.15 GB of chunk
 activations; 1,024 buys 6 % more only on long prompts for twice that
 again and a coarser cancellation grain (about a second per chunk), and
@@ -756,7 +756,7 @@ reference (`7620399`):
   each block's q/k/v/out and gate/up/down carry `input_min/max` and
   `output_min/max` scalars, `y = clamp(W · clamp(x))` (`gemma4v.cpp`,
   `build_mm`), a `clamp` kernel on Metal
-  ([vision.md](vision.md#gemma-4s-projectors-modl-22-2026-09-23)).
+  ([vision.md](../engine/vision.md#gemma-4s-projectors-modl-22-2026-09-23)).
 
 **Measured at bring-up** (M4 Pro, the pinned reference, Metal, F32 cache):
 

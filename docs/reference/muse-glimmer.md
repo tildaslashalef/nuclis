@@ -31,7 +31,7 @@ Companions, pulled and verified the same day: `mmproj-kquant.gguf`
 (1,400,328,928 B, SHA-256 `f48b4523…`, the `mmproj` role, not executed) and
 `dflash-kquant.gguf` (1,631,205,312 B, `27d9a805…`, a DFlash drafter carried
 under the `mtp` role; bound and run by the CPU reference since MODL-20,
-[speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](../engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
 Digests and the rest of the repository's listing are in
 [artifacts.md](artifacts.md). The quantization choice (Meta's "K-Quant-17GB"
 tier, 1.0 % measured degradation, wide headroom on 48 GB) is recorded in the
@@ -124,7 +124,7 @@ cache (`build_attn_inp_kv_iswa`); the plan for the Metal unit keeps the
 full context on every layer and masks. It also exposes each layer's input
 residual (`t_layer_inp`) for the DFlash drafter; the drafter keeps five of
 them (layers 2, 14, 26, 38, 50) per consumed row
-([speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
+([speculative-decoding.md § The Muse Glimmer DFlash drafter](../engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
 
 ## Tokenizer
 
@@ -214,7 +214,7 @@ trailing newline. It differs from the Hub repository's
 `chat_template.jinja`; the profile pins the file's digest as always.
 Facts the fixture capture confirmed, which `profiles/muse_glimmer.zig`
 implements (MODL-13; the clauses are in
-[prompt-profile.md § Muse Glimmer](prompt-profile.md#muse-glimmer-muse_glimmer),
+[prompt-profile.md § Muse Glimmer](../engine/prompt-profile.md#muse-glimmer-muse_glimmer),
 the tool protocol in AGNT-10):
 
 - The prompt opens with `bos_token` as text, but the server's
@@ -301,7 +301,7 @@ is the reference, not a way to run the model.
 above as `Backend` encoder calls, one command buffer per token (`step`)
 or per prompt chunk (`prefill`), the same shape as the Gemma plan. What
 the schedule needed from the backend, and what it reused unchanged
-([metal-backend.md](metal-backend.md)):
+([metal-backend.md](../engine/metal-backend.md)):
 
 | Operation | Kernel | Status |
 | --- | --- | --- |
@@ -321,7 +321,7 @@ and the block's **non-causal** attention — every row sees the anchor and
 all mask rows — runs one `nu_attention_decode` per block row, because the
 causal chunk kernels' mask cannot express it and the block is only 16 rows
 (facts in
-[speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](../engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
 
 Every cache is allocated for the full session capacity, sliding layers
 included (the CPU reference does the same): 52 × 2 × 256 halves per
@@ -423,7 +423,7 @@ Muse decode at 512 ≥ 10.5 tok/s — was not met, so the MODL-13 acceptance
 record above stays the current one. The sweep is
 [bench.md § Split-K matvec sweep](bench.md#split-k-matvec-sweep-kern-15-2026-09-21);
 the kernel note is
-[metal-backend.md § Split-K](metal-backend.md#split-k-kern-15-2026-09-21-closed-negative).
+[metal-backend.md § Split-K](../engine/metal-backend.md#split-k-kern-15-2026-09-21-closed-negative).
 
 ## Status
 
@@ -439,7 +439,7 @@ decoder, the `high` effort), the catalogue pin, and the acceptance record
 ([bench.md](bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19):
 9.60 tok/s decode at 512 tokens, 6.62 at 32,639, against the reference's
 13.69 and 9.98), and AGNT-10 with the ATEM tool protocol
-([tool-calling.md](tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).
+([tool-calling.md](../engine/tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).
 The family is complete for text; the vision projector is planned (MODL-23
 in [TODO.md](../../TODO.md)). The DFlash drafter closed in MODL-20
 (2026-09-21): the CPU reference and its pinned trace in session 1, the
@@ -447,4 +447,4 @@ Metal plan and the acceptance record in session 2 — the pair measures
 1.163–1.234× at draft lengths 4, 8, and 15
 ([bench.md § The Muse Glimmer DFlash draft pair](bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21);
 facts in
-[speculative-decoding.md § The Muse Glimmer DFlash drafter](speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](../engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).

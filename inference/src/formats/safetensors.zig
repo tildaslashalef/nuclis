@@ -6,7 +6,7 @@
 //! size is its shape times its dtype, and sorted by offset the tensors tile
 //! the buffer exactly, without holes or overlap. The Document owns an arena.
 //! Offsets need not be aligned, so values are read as unaligned little
-//! endian. Format summary: docs/reference/safetensors.md.
+//! endian. Format summary: docs/engine/safetensors.md.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const Allocator = std.mem.Allocator;

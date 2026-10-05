@@ -53,7 +53,7 @@ sequenceDiagram
 - **Speculative decoding** replaces the step with a batch: a draft source
   proposes `k` tokens, one `verify` forward scores them all, the accepted
   prefix is kept and the session recovered to it. The switch is per
-  catalogue entry ([reference/speculative-decoding.md](reference/speculative-decoding.md)).
+  catalogue entry ([engine/speculative-decoding.md](engine/speculative-decoding.md)).
 - The CLI owns presentation, files, timing, and cancellation, never
   weights or math. The loop, `Engine`, and the `Model` union live in the
   library so `generate`, `bench`, and the agent share one API; the
@@ -63,7 +63,7 @@ sequenceDiagram
   edges (`tokenizer/encode.zig` in, `tokenizer/stream.zig` out).
 
 **Read:** `inference/src/engine.zig` (`runLoop`, `speculativeBatch`),
-[reference/generation.md](reference/generation.md).
+[engine/sampling.md](engine/sampling.md).
 
 ## 2. The repository as layers
 
@@ -147,7 +147,7 @@ signals, and the network.
 | Layer | Knows about | Must not know about |
 | --- | --- | --- |
 | `formats/gguf` | bytes, offsets, metadata types | what a tensor name means |
-| `formats/safetensors` | the JSON header, dtypes, the tiled byte buffer, a shard index ([reference](reference/safetensors.md)) | what a tensor name means; Laya's loader (`models/laya.zig`) binds it |
+| `formats/safetensors` | the JSON header, dtypes, the tiled byte buffer, a shard index ([reference](engine/safetensors.md)) | what a tensor name means; Laya's loader (`models/laya.zig`) binds it |
 | `quant`, `tensor` | block layouts, decode equations | which tensor is which |
 | `tokenizer`, `profiles` | vocabularies, merges, the chat template, tool grammar | layers, kernels |
 | `runtime/session` | "a layer has KV rows" or "recurrent state" | how big, or why |
@@ -256,7 +256,7 @@ flowchart LR
   `failed` until `reset()`, so a half-finished token is never mistaken for
   committed state.
 
-**Read:** [reference/session.md](reference/session.md),
+**Read:** [engine/session.md](engine/session.md),
 `runtime/session.zig`, `runtime/weights.zig`.
 
 ## 4. One Qwen layer
@@ -293,7 +293,7 @@ The other families on the same wrapper:
 | Muse Glimmer 30B | 52 | 39 windowed (2,048), 13 global | dense; the `llama4` tokenizer splitter ([reference/muse-glimmer.md](reference/muse-glimmer.md)) |
 | Bonsai 2 27B | 64 | Qwen's | ternary weights in a Hadamard-rotated basis ([reference/bonsai.md](reference/bonsai.md)) |
 
-**Read:** [reference/cpu-reference.md](reference/cpu-reference.md) (the
+**Read:** [engine/cpu-reference.md](engine/cpu-reference.md) (the
 equations and tolerances), `models/qwen35_runtime.zig` (`fullAttention`,
 `linearAttention`), [llm-guide.md § 9](llm-guide.md#9-attention-reads-deltanet-writes).
 
@@ -321,7 +321,7 @@ The precision is `engine.kv_precision`, F16 by default on the GPU: half
 the block and half the bytes each decode step streams, at a rounding the
 trace gates bound per mode. `--kv f32` is for numerical work.
 
-**Read:** [reference/session.md](reference/session.md),
+**Read:** [engine/session.md](engine/session.md),
 [llm-guide.md § 20](llm-guide.md#20-half-the-bytes-the-f16-cache) and
 [§ 21](llm-guide.md#21-flash-decoding), `Backend.attentionDecode` and
 `attentionChunk` in `backends/metal/root.zig`.
@@ -354,8 +354,8 @@ flowchart LR
   what varies between them is parameters and instantiations of existing
   kernels, not operation order, so a shared op list was not extracted.
 
-**Read:** [reference/metal-backend.md § Execution model](reference/metal-backend.md#execution-model),
-[reference/generation.md § Numerical traces](reference/generation.md#numerical-traces).
+**Read:** [engine/metal-backend.md § Execution model](engine/metal-backend.md#execution-model),
+[engine/sampling.md § Numerical traces](engine/sampling.md#numerical-traces).
 
 ## 7. Metal for a Zig programmer
 
@@ -381,7 +381,7 @@ flowchart LR
   grid and thread count and holds the constants the kernels assume; only
   `kernels.metal` names a lane or a SIMD group. The three kernel shapes
   (reductions, tiles on the matrix unit, elementwise) and every kernel's
-  geometry are tabulated in [reference/metal-backend.md § Kernel geometry](reference/metal-backend.md#kernel-geometry).
+  geometry are tabulated in [engine/metal-backend.md § Kernel geometry](engine/metal-backend.md#kernel-geometry).
 - **Unified memory.** The GPU addresses the mapped file and the session
   block directly through `newBufferWithBytesNoCopy`, page-aligned, with no
   copy. The mapping must outlive the backend.
@@ -393,7 +393,7 @@ flowchart LR
 - Objective-C appears only in `bridge.m`, without automatic reference
   counting, so every retain and release is explicit.
 
-**Read:** [reference/metal-backend.md](reference/metal-backend.md),
+**Read:** [engine/metal-backend.md](engine/metal-backend.md),
 [llm-guide.md § 11–§ 13](llm-guide.md#11-crossing-the-bridge), `bridge.m`,
 then `kernels.metal` from `nu_add` and `nu_rmsnorm` before `nu_matvec`.
 
@@ -493,7 +493,7 @@ What the families that went through the seam actually needed:
 | Q4_0 (the QAT file) | a `quant.row` arm, a generic GPU decoder, a specialized matvec and tile, the adapter's `executableEncoding` claim | [gemma4.md § Q4_0 path](reference/gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12) |
 | Muse Glimmer 30B | a tokenizer splitter, a windowed schedule with global layers, a profile with a reasoning channel and its own tool grammar; no new kernel | [muse-glimmer.md](reference/muse-glimmer.md) |
 | Bonsai 2 27B | two ternary encodings, the Hadamard transform, a rotation contract in the Qwen adapter; the Qwen plan otherwise | [bonsai.md](reference/bonsai.md) |
-| draft sources | Qwen's embedded block; `gemma4_assistant.zig`, a second GGUF reading the target's caches; `dflash.zig`, a block drafter | [speculative-decoding.md](reference/speculative-decoding.md) |
+| draft sources | Qwen's embedded block; `gemma4_assistant.zig`, a second GGUF reading the target's caches; `dflash.zig`, a block drafter | [speculative-decoding.md](engine/speculative-decoding.md) |
 
 Registration is one line: the adapter publishes a `family` namespace
 (`architecture`, `executableEncoding`, `Binding`/`bind`, `Runtime`, `Plan`)
@@ -504,8 +504,8 @@ stop set, the reasoning markers, and the tool path in both directions.
 Nothing under `src/` names an adapter or a profile module.
 
 **Read:** [reference/new-model-guide.md](reference/new-model-guide.md)
-(the order of work), [reference/prompt-profile.md](reference/prompt-profile.md),
-[reference/tool-calling.md](reference/tool-calling.md),
+(the order of work), [engine/prompt-profile.md](engine/prompt-profile.md),
+[engine/tool-calling.md](engine/tool-calling.md),
 [llm-guide.md § 24–§ 25](llm-guide.md#24-the-registry-table).
 
 ## 11. Where performance goes
@@ -529,15 +529,15 @@ Levers that were built, measured, and kept out, each with its table in the
 record: a multi-row matvec that wins only at 2–3 rows, a wider small-batch
 tile, a split-K matvec, register-reuse prefill attention (shipped only for
 chunks of 17–64 rows; verify batches of up to 16 take the split pass of
-[few-query verify attention](reference/metal-backend.md#few-query-verify-attention-kern-21-2026-09-30)), fused decode norms (shipped
+[few-query verify attention](engine/metal-backend.md#few-query-verify-attention-kern-21-2026-09-30)), fused decode norms (shipped
 for the dispatch count, not for speed), and speculation on the 26B-A4B,
 whose verify grows with every drafted row (each row routes to its own
 experts) until it costs more than the accepted drafts save. The other
 entries speculate by default.
 
 **Read:** [reference/bench.md](reference/bench.md),
-[reference/metal-backend.md](reference/metal-backend.md),
-[reference/apple-gpu.md](reference/apple-gpu.md) (the GPU's counters on our kernels),
+[engine/metal-backend.md](engine/metal-backend.md),
+[engine/apple-gpu.md](engine/apple-gpu.md) (the GPU's counters on our kernels),
 [llm-guide.md § 13](llm-guide.md#13-the-matvec-that-reads-16-gb) and
 [§ 23](llm-guide.md#23-guessing-ahead-and-paying-to-check),
 [../TODO.md](../TODO.md) for what is next.
@@ -605,5 +605,5 @@ Each is enforced or documented in the file it names.
   greedy decode uses GPU argmax; sliding caches are allocated for the full
   capacity; the ternary matvec keeps its arithmetic.
 
-**Read:** [reference/metal-backend.md](reference/metal-backend.md),
-[reference/session.md](reference/session.md), `runtime/session.zig`.
+**Read:** [engine/metal-backend.md](engine/metal-backend.md),
+[engine/session.md](engine/session.md), `runtime/session.zig`.

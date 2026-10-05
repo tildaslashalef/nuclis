@@ -201,7 +201,7 @@ bench-matmul: ## Throughput of the batched prefill matmul on model shapes, 256 t
 bench-matvec-rows: ## Multi-row matvec vs the 16x8 tile at 1-8 rows, or ARGS=<max rows> (no model)
 	$(CAPTURE_ENV) $(ZIG) build bench-matvec-rows $(METAL) $(if $(ARGS),-- $(ARGS))
 
-bench-hadamard: ## GPU time of one token's 258 Hadamard transforms on the Bonsai schedule, and per block (no model; docs/reference/metal-backend.md)
+bench-hadamard: ## GPU time of one token's 258 Hadamard transforms on the Bonsai schedule, and per block (no model; docs/engine/metal-backend.md)
 	$(ZIG) build bench-hadamard $(METAL)
 
 bench-experts: ## GB/s of the gathered expert kernels on the 26B-A4B shape, 8 of 128 experts; prefill tiles over ARGS tokens (no model)

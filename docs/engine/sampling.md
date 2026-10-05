@@ -152,7 +152,7 @@ same token is produced from a 2 KB readback instead of 1 MB of logits:
   reports `gpu_topk_fallbacks`; `bench` shows a per-run fallback column.
 - The `--logits` option needs the full vector and therefore keeps the
   reference path; comparing a `--logits` run with a plain run at the same
-  seed is the end-to-end equivalence check (recorded in [bench.md](bench.md)).
+  seed is the end-to-end equivalence check (recorded in [bench.md](../reference/bench.md)).
 
 Greedy decoding with a penalty active takes the same device argmax, after
 `nu_penalize`; the raw logits are only read back when a full vector was
@@ -217,7 +217,7 @@ across tokens; malformed bytes and an incomplete character at termination become
 U+FFFD. JSON (schema 2) buffers the result and includes backend, sampling
 settings, seed, prompt count, exact generated IDs, text, `stop_reason`
 (`eos`, `token_budget`, `context_limit`, or `cancelled`), and load/prefill/first-token/decode
-milliseconds with GPU busy time on Metal; definitions are in [bench.md](bench.md).
+milliseconds with GPU busy time on Metal; definitions are in [bench.md](../reference/bench.md).
 Token IDs preserve information lost by text presentation.
 
 Cancellation is checked at each layer boundary through the observer's `check`
@@ -249,7 +249,7 @@ information; keep them in ignored local storage. Later generated-token steps
 produce layer traces too, but do not overwrite the initial prompt logits file.
 
 The reference helper requires the pinned checkout from
-[reference-baseline.md](reference-baseline.md). It uses public APIs and selects
+[reference-baseline.md](../reference/reference-baseline.md). It uses public APIs and selects
 GPU offload, F32 KV, disabled flash attention, and one token per decode call.
 It refuses to run without a GPU. Build against the relocated checkout:
 
@@ -337,12 +337,12 @@ script takes the geometry as flags (`--embedding`, `--layers`, `--vocab`;
 the defaults are Qwen3.8's), so the same pair serves Gemma 4
 (`make gate NAME='gemma4-trace-*'` on the K-quant entry, `gemma4-qat-trace-*`
 on the QAT file, each against its own traces;
-[gemma4.md](gemma4.md#cpu-reference-against-the-oracle-modl-05-2026-09-11)).
+[gemma4.md](../reference/gemma4.md#cpu-reference-against-the-oracle-modl-05-2026-09-11)).
 Top-five IDs and reference greedy margin are reported for diagnosis. The
 harness also builds unchanged against the PrismML fork (the include and
 library paths of `.reference/prism-llama.cpp`, output
 `.zig-cache/generation/prism-reference-generation`), which is how the Bonsai
-2 27B traces were captured ([bonsai.md](bonsai.md#oracle-the-prismml-fork)).
+2 27B traces were captured ([bonsai.md](../reference/bonsai.md#oracle-the-prismml-fork)).
 
 The explicit session test runs the real two-token sequence in two independent
 sessions and after reset following injected cancellation in layer 3. Logits must

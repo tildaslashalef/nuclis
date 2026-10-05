@@ -148,7 +148,7 @@ Requirements:
   path); models live under `models/<owner>/<repo>/<file>`.
 
 Read: [reference/artifacts.md](reference/artifacts.md),
-[reference/gguf-inspection.md](reference/gguf-inspection.md), and the
+[engine/gguf.md](engine/gguf.md), and the
 family documents [reference/gemma4.md](reference/gemma4.md),
 [reference/muse-glimmer.md](reference/muse-glimmer.md),
 [reference/bonsai.md](reference/bonsai.md).
@@ -195,7 +195,7 @@ one more layout in the same block.
 - `reset()` rebuilds every kind of state. Different sessions share no
   mutable state.
 
-Read: [reference/session.md](reference/session.md).
+Read: [engine/session.md](engine/session.md).
 
 ### 5.5 Execution
 
@@ -216,8 +216,8 @@ Read: [reference/session.md](reference/session.md).
   **must** produce the same token as the reference sampler for the same
   seed or defer to it; it **must not** disagree.
 
-Read: [reference/generation.md](reference/generation.md),
-[reference/metal-backend.md](reference/metal-backend.md).
+Read: [engine/sampling.md](engine/sampling.md),
+[engine/metal-backend.md](engine/metal-backend.md).
 
 ### 5.6 Speculative decoding
 
@@ -246,7 +246,7 @@ batch; the accepted prefix is kept and the session recovered to it.
 - The acceptance rule and the recovery scheme are not user-visible
   settings.
 
-Read: [reference/speculative-decoding.md](reference/speculative-decoding.md).
+Read: [engine/speculative-decoding.md](engine/speculative-decoding.md).
 
 ### 5.7 Extension rules
 
@@ -606,7 +606,7 @@ one command; the evaluation CLI stays separate.
   file's last `boundary` starts that render and its state is on disk (same
   model files, backend, context size, and build), the state is restored and
   only the rest is prefilled; otherwise the whole conversation is
-  ([reference/session.md § The agent's token cache](reference/session.md#the-agents-token-cache-agnt-19)).
+  ([engine/session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19)).
 - `agent ls` and the `/resume` picker list a workspace's sessions (the
   picker marks the one in use); `agent rm <id>` and Ctrl-D in the picker
   delete one, named by its id or a prefix of exactly one id (the picker
@@ -647,7 +647,7 @@ A turn is a loop over steps, at most 16 per turn:
   turn, or compaction restarts from the longest cached state the
   conversation begins with (the primed prefix or a turn's end) and
   replays the rest, and the bar names the cause and the tokens prefilled
-  and restored ([session.md § The agent's token cache](reference/session.md#the-agents-token-cache-agnt-19)).
+  and restored ([session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19)).
 - Compaction: one tool result may not exceed an eighth of the context
   window in tokens (never below 256); it is cut at a line boundary with a
   note saying how to ask for the rest. When a step still does not fit,
@@ -700,7 +700,7 @@ content and with that result still in the context, is answered with a
 one-line pointer to it rather than the lines again.
 
 Read: [reference/agent-concepts.md](reference/agent-concepts.md),
-[reference/tool-calling.md](reference/tool-calling.md).
+[engine/tool-calling.md](engine/tool-calling.md).
 
 ### 7.7 Print mode
 
@@ -783,7 +783,7 @@ Gemma 4's two (the 12B's unified
 embedder, the 26B-A4B's SigLIP encoder, with the language model's
 bidirectional image spans), and Muse Glimmer's windowed encoder
 (`generate --image`, the chat's image chip, the shared
-`inference/src/vision/` contract, [reference/vision.md](reference/vision.md)).
+`inference/src/vision/` contract, [engine/vision.md](engine/vision.md)).
 Speculation stays off in a conversation once an image is in it.
 PDF attachments are not planned: nothing in the tree extracts their text. Deferred, to be taken through the existing seams as
 concrete requirements arrive: an OpenAI-compatible service for the

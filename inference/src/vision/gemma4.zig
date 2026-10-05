@@ -7,7 +7,7 @@
 //! Both place one token per 48×48 pixels, raster order. `bind` validates the
 //! companion file; `Runtime` is the CPU reference (F64 accumulation), and
 //! the host-side tables are shared with the Metal plan
-//! (`gemma4_metal.zig`). Facts and traces: docs/reference/vision.md
+//! (`gemma4_metal.zig`). Facts and traces: docs/engine/vision.md
 //! § Gemma 4's projectors.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");

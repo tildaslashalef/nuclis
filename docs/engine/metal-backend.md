@@ -26,7 +26,7 @@ Without `-Dmetal=true`, `inference.metal.Backend.init` returns
 `inference/metal-check.zig`, an explicit GPU fixture and lifecycle check
 needing a Metal device but no model. `test-generation --metal` runs the session
 isolation/reset protocol on the GPU plan. Full-model layer comparison uses the
-same `--logits`/`--trace-dir` oracle as the CPU backend ([generation.md](generation.md)).
+same `--logits`/`--trace-dir` oracle as the CPU backend ([sampling.md](sampling.md)).
 
 ## Files and ownership
 
@@ -37,8 +37,8 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([generation.md](generat
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
 | `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
-| `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule (MODL-06) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](gemma4.md#metal-plan-modl-06-2026-09-11)). |
-| `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule (MODL-12) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19)). |
+| `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule (MODL-06) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../reference/gemma4.md#metal-plan-modl-06-2026-09-11)). |
+| `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule (MODL-12) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../reference/muse-glimmer.md#metal-plan-modl-12-2026-09-19)). |
 | `metal-check.zig` | Explicit GPU checks against pinned fixtures and CPU references; `--matvec-bench` measures the matvec kernels' achieved bandwidth. |
 
 The MSL source is assembled at compile time: the IQ3_S codebook is emitted from
@@ -113,7 +113,7 @@ synchronous contract is what makes the following simple:
   own encoder and timed by its start/end stamps (nanoseconds, same timeline as
   `GPUStartTime`; measured). The per-dispatch encoders cost ~8 ms per token,
   reported as the gap between attributed and command-buffer time, so profiled
-  rates are diagnostic. Methodology and results: [bench.md](bench.md#per-kernel-profile).
+  rates are diagnostic. Methodology and results: [bench.md](../reference/bench.md#per-kernel-profile).
 
 ## Kernels
 
@@ -363,7 +363,7 @@ memory, and leave the rest to the grid.
   reduction, 8-way threadgroup pick, owner retires the winner); the final
   pass is a 64-way merge of sorted lists with one cursor per list. 2 KB
   read back per sampled token; contract in
-  [generation.md](generation.md#sampling-on-the-gpu-without-reading-the-vocabulary-back-kern-06).
+  [sampling.md](sampling.md#sampling-on-the-gpu-without-reading-the-vocabulary-back-kern-06).
 
 ### History penalties (KERN-13, 2026-09-20)
 
@@ -456,7 +456,7 @@ Q4_K 200 / 179 / 200 GB/s on the three shapes above, Q5_K 256 / 251 /
 tok/s. The IQ4_XS kernel is now issue-bound on its table addressing
 ([apple-gpu.md](apple-gpu.md#nu_matvec_iq4_xs-on-qwens-merged-gate-shape-2026-10-03)).
 
-The in-model profile ([bench.md](bench.md#per-kernel-profile)) named the
+The in-model profile ([bench.md](../reference/bench.md#per-kernel-profile)) named the
 limiter: on the same shape all four kernels take 0.8–0.9 ns per 256-value
 block, so Q4_K's lower GB/s is only its smaller block, not its access pattern.
 The kernels are bound by per-block instruction work shared by all four
@@ -541,14 +541,14 @@ the scratch, and the forcing API (`Backend.matvecSplits` /
 `matvecSegmentsSplits`, strict about split-capable encodings) stay as the
 measured fixture, the exactness of which `make test-metal` holds at 2/4/8
 splits against the F64 CPU reference. The sweep and its reading are in
-[bench.md § Split-K matvec sweep](bench.md#split-k-matvec-sweep-kern-15-2026-09-21);
+[bench.md § Split-K matvec sweep](../reference/bench.md#split-k-matvec-sweep-kern-15-2026-09-21);
 the family-facing note in
-[muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19).
+[muse-glimmer.md § Metal plan](../reference/muse-glimmer.md#metal-plan-modl-12-2026-09-19).
 
 ### Ternary matvecs and tiles (KERN-10, 2026-09-18)
 
 Bonsai 2 27B's PQ2_0 (id 142, 34 B per 128 values) and PTQ1_0 (id 143,
-28 B; [bonsai.md](bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc))
+28 B; [bonsai.md](../reference/bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc))
 got `nu_dequant_pq2_0` / `nu_dequant_ptq1_0` (and `nu_dequant_bf16` for
 the file's `ssm_alpha` / `ssm_beta` rows) in the generic library,
 `nu_matvec_pq2_0` / `nu_matvec_ptq1_0`, and the `nu_tile_*` decoders
@@ -606,7 +606,7 @@ tiles match the set.
 ### The Hadamard transform kernel (KERN-10 session 2, 2026-09-18)
 
 `nu_hadamard` is the activation side of the folded rotation
-(`cpu.hadamard`, [bonsai.md § Rotation](bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it)):
+(`cpu.hadamard`, [bonsai.md § Rotation](../reference/bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it)):
 in place over `rows` rows of `width` floats at a stride, per 1,024-block,
 forward `x = H (signs ⊙ x)` or inverse `x = signs ⊙ (H x)`, scale 1/32
 exactly. One 256-thread group per block of one row; each thread owns four
@@ -640,7 +640,7 @@ token, not from this number.
 ### The rotation on the Qwen plan (MODL-17, 2026-09-18)
 
 `qwen35_metal.zig` applies the transform where the CPU reference does
-([bonsai.md § Metal plan](bonsai.md#metal-plan-modl-17-2026-09-18)): the
+([bonsai.md § Metal plan](../reference/bonsai.md#metal-plan-modl-17-2026-09-18)): the
 inverse over the embedding row(s) after the gather, the forward over the
 normed residual before the mixer's projections, over the mixer output
 before `attn_output` / `ssm_out`, over the normed residual before the FFN
@@ -816,7 +816,7 @@ is half the executed one. Larger chunks fill the tiles (the third column
 is `n / (32 · tiles)`), which is why the per-token cost falls with the
 chunk while the GB/s does not move; the adapter's chunk size for this
 family is a memory/latency trade the Metal plan decides (512, measured in
-[gemma4.md § 26B-A4B](gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)). Against the
+[gemma4.md § 26B-A4B](../reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)). Against the
 alternative of looping the decode kernels over the chunk (2,048 × 3.3 MB
 = 6.8 GB per layer at the decode rate, about 40 ms), the tiles are four
 times faster at 256 tokens and six at 1,024. Follow-ups, not in scope: a
@@ -828,7 +828,7 @@ families.
 **In the adapter** (MODL-09, 2026-09-18). `gemma4_metal.zig` records the
 decode chain after the dense FFN of every 26B-A4B layer and the prefill
 chain over each chunk's rows, both from the same `feedForward` shape as
-the CPU reference ([gemma4.md § 26B-A4B](gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
+the CPU reference ([gemma4.md § 26B-A4B](../reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
 The three expert tensors are wrapped whole (no copy, 14.2 GB resident)
 and the router, an F32 128 × 2,816 matrix, is the first F32 matrix a plan
 dispatches: the generic matvec and the generic F32 tile decode it
@@ -935,7 +935,7 @@ scale extraction, and integer-to-float conversions); and register
 footprint mattered through occupancy.
 
 `make bench` after the session, kernels unchanged: 10.64 tok/s decode
-([bench.md](bench.md)).
+([bench.md](../reference/bench.md)).
 
 ## Prefill in chunks (ENGN-02)
 
@@ -1301,7 +1301,7 @@ acceptance bar (the best tile at 5 rows is Q5_K's 110 GB/s). Halving the
 activation reads did not pay for the wider tile's register pressure and
 longer per-step dependency chain; the 16×8 control stands and production
 routing is untouched (the two-row matvec routing included). The numbers are
-in [bench.md § Small-batch tile sweep](bench.md#small-batch-tile-sweep-kern-14-2026-09-20);
+in [bench.md § Small-batch tile sweep](../reference/bench.md#small-batch-tile-sweep-kern-14-2026-09-20);
 the full-model verify latency is unchanged from the ENGN-15 quick pass
 (262–297 ms), since nothing routes to the candidate.
 
@@ -1452,7 +1452,7 @@ identical in both precisions. Half assumes |k|, |v| < 65,504 after the
 key norm and RoPE, checked like ENGN-05's activation assumption: through the
 generation check and the pinned prompts, never per element.
 
-Performance is in [bench.md § Observations](bench.md#observations-so-far)
+Performance is in [bench.md § Observations](../reference/bench.md#observations-so-far)
 (KERN-07 rows).
 
 ## Flash-decoding attention (KERN-08)
@@ -1491,7 +1491,7 @@ shape at 257 visible (two splits, the second short), 1,021, 16,385 (64
 uneven splits), and 32,000 rows against the F64 CPU reference: F32 cache 2.2e-8 / 1.2e-8 / 7.5e-9 / 4.7e-9 max abs, F16 cache over the rounded rows 1.9e-8 / 1.3e-8 / 5.1e-9 / 4.2e-9 (bounds 2e-5 up to 1,021 rows and 1e-4 above); shape rejections (a group of 9, a width of 264, a short partial buffer, a short cache).
 Full model: `make gate NAME=qwen38-trace-f32` 129 files, max abs 6.1e-5 (was 1.22e-4: each row is now accumulated once in F32 rather than through a stored score), `make gate NAME=qwen38-trace-f16` 2.50e-2 / 1.9e-4 at the F16 tolerance, greedy unchanged. `test-generation --metal` unchanged
 (bit-identical sessions, snapshot round trip). Performance:
-[bench.md § Observations](bench.md#observations-so-far) (KERN-08 rows).
+[bench.md § Observations](../reference/bench.md#observations-so-far) (KERN-08 rows).
 
 ## Few-query verify attention (KERN-21, 2026-09-30)
 
@@ -1633,7 +1633,7 @@ budget, F32 operands doubling the block costs. The row-split body stays as
 the control and as the 512-wide sibling.
 
 **Verdict: closed negative against its acceptance.** The sweep is in
-[bench.md § Prefill attention sweep](bench.md#prefill-attention-sweep-kern-16-2026-09-21).
+[bench.md § Prefill attention sweep](../reference/bench.md#prefill-attention-sweep-kern-16-2026-09-21).
 At the 256-row prefill chunks the reuse body is 2–5 % ahead in F16 at
 4K–32K (−4.8 % at 16K, −3.2 % at 32,512) and level at 512, against the
 attention cut the unit's acceptance needed (prefill at 32,639 within 10 %
@@ -1690,7 +1690,7 @@ they replace and against `cpu.rmsNorm`/`cpu.rope` over the model widths
 the CPU). A fused `generate` on Qwen3.8-27B reproduces the greedy text.
 
 **Measured verdict.** Dispatch counts and decode rates are in
-[bench.md § Fused norm sweep](bench.md#fused-norm-sweep-kern-18-2026-09-21);
+[bench.md § Fused norm sweep](../reference/bench.md#fused-norm-sweep-kern-18-2026-09-21);
 in brief, `bench --profile` reads 938.8 → 844.3 dispatches per step on
 Qwen, 882.2 → 693.2 on Gemma 4 12B, 922.9 → 743.8 on Muse (per decode step
 −96, −192, −182, the design counts; the profile averages dilute them with
@@ -1773,7 +1773,7 @@ separate the half-tile rounding from the chunk schedule: Qwen 2.4e-3 /
 1.1e-4 with the specialized tiles, 2.8e-5 / 1.2e-6 with the F32 tiles;
 F16 cache 5.5e-4 / 2.4e-5 stepped, 2.6e-3 / 1.3e-4 chunked (2026-09-11).
 The second model's numbers are in
-[gemma4.md § Metal plan](gemma4.md#metal-plan-modl-06-2026-09-11).
+[gemma4.md § Metal plan](../reference/gemma4.md#metal-plan-modl-06-2026-09-11).
 
 ## Performance observation
 
@@ -1866,7 +1866,7 @@ since is named.
 - **Attention grid.** `Backend.attentionChunk` dispatches `query_heads ×
   ceil(count/32) × value_splits` threadgroups, so a small verify ran 24
   threadgroups per value split, each walking the whole visible cache, in a
-  32-row tile at least 75 % padding. The [prefill attention sweep](bench.md#prefill-attention-sweep-kern-16-2026-09-21)
+  32-row tile at least 75 % padding. The [prefill attention sweep](../reference/bench.md#prefill-attention-sweep-kern-16-2026-09-21)
   priced it at 8 rows, F16: 0.767 / 6.46 / 25.8 ms per layer at 512 / 4K /
   16K visible, the same at 1 row as at 8; over Qwen's 16 full-attention
   layers about 12 / 103 / 413 ms per verify, while single-row flash decoding
@@ -1887,8 +1887,8 @@ since is named.
   verify, and wrote each row's recurrent checkpoint inside the kernel (cost
   booked to verify, not to recover). Since: the per-token verify with a
   replay tape (DeltaNet 41 → 6 ms, recover 14 → 2–3 ms per 4-row batch at
-  4K; [bench.md § The DeltaNet replay tape](bench.md#the-deltanet-replay-tape-engn-19-2026-10-01)).
+  4K; [bench.md § The DeltaNet replay tape](../reference/bench.md#the-deltanet-replay-tape-engn-19-2026-10-01)).
 - **Drafters differ.** Qwen's MTP proposals are serial forwards with a
-  private draft cache; [Muse's DFlash](bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)
+  private draft cache; [Muse's DFlash](../reference/bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)
   proposes differently and has no DeltaNet state to recover, so its
   economics do not transfer to Qwen.

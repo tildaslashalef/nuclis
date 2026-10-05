@@ -3,7 +3,7 @@
 //! Glimmer's), and
 //! the executor picks its CPU reference or Metal plan. The engine and the
 //! checks hold this value instead of naming an adapter; its methods are
-//! the contract of docs/reference/vision.md § The contract.
+//! the contract of docs/engine/vision.md § The contract.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const weights = @import("../runtime/weights.zig");

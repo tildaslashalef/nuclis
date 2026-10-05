@@ -217,18 +217,18 @@ KERN-03's 10.23. All stages and raw profiles are in
 output rows per SIMD group and eight lanes per 256-value block, factored scales
 (`Σ(d·s·q − dmin·m)·x = d·s·Σ(q·x) − dmin·m·Σx`), packed-byte code assembly, and
 per-block vector loads. Design and geometry in
-[metal-backend.md § Specialized matvec](reference/metal-backend.md#specialized-matvec).
+[metal-backend.md § Specialized matvec](engine/metal-backend.md#specialized-matvec).
 
 **Evidence.** `make bench` (64 output tokens, context 2048, three measured runs,
 Apple M4 Pro, ReleaseSafe, pinned artifact) took decode from **4.93 → 8.54
 tok/s**; `make compare` passed with max abs **9.2e-5**. All four kernels landed
 at **0.8–0.9 ns per 256-value block** against the ~0.5 ns/block bandwidth
 floor; best-of-five bandwidth figures are in
-[metal-backend.md](reference/metal-backend.md#specialized-matvec).
+[metal-backend.md](engine/metal-backend.md#specialized-matvec).
 
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
-`docs/reference/metal-backend.md`.
+`docs/engine/metal-backend.md`.
 
 **Remaining.** Q3_K, IQ3_S, and IQ4_NL still ran through the generic kernel;
 the remaining encodings and the per-block cost question were picked up by later
@@ -253,7 +253,7 @@ decode became GPU-bound.
 
 **Files.** `inference/src/backends/metal/root.zig`,
 `inference/src/runtime/observer.zig`, `src/bench.zig`, `docs/reference/bench.md`,
-`docs/reference/metal-backend.md`.
+`docs/engine/metal-backend.md`.
 
 **Remaining.** The profile named the per-block instruction work as the limiter
 (the bandwidth floor is ≈ 0.5 ns/block), which set the target for the
@@ -265,7 +265,7 @@ specialized-kernel work that followed.
 ms/token) onto a compile-time variant of the specialized four-row template,
 with separate decode bodies and per-block vector loads. IQ4_NL was deferred and
 stays generic; Q8_0 stays generic. Details in
-[metal-backend.md § Specialized matvec](reference/metal-backend.md#specialized-matvec).
+[metal-backend.md § Specialized matvec](engine/metal-backend.md#specialized-matvec).
 
 **Evidence.** Strict one-hot fixture equality and the wide-row tolerance
 passed; `make check` passed 114 unit tests plus Metal fixtures; `make compare`
@@ -274,11 +274,11 @@ bench` measured **10.23 tok/s** decode and **10.63** prefill versus the recorded
 9.69 decode; the profile put Q3_K at 2.29 ms/step and IQ3_S at 1.34,
 **0.934–0.969 ns/block** across both model shapes, meeting the ≤ 1.0 target. See
 [bench.md](reference/bench.md) and
-[metal-backend.md](reference/metal-backend.md#specialized-matvec).
+[metal-backend.md](engine/metal-backend.md#specialized-matvec).
 
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
-`docs/reference/bench.md`, `docs/reference/metal-backend.md`.
+`docs/reference/bench.md`, `docs/engine/metal-backend.md`.
 
 **Remaining.** IQ4_NL stayed on the generic path; no session or step contract
 changed.
@@ -290,7 +290,7 @@ once per matrix: FFN `gate+up` with the `silu(g)·u` epilogue, DeltaNet
 `qkv+z+β+α`, and attention `qg+k+v`. A `MatvecSegments` parameter struct selects
 up to four segments by a uniform prefix scan and branches uniformly to the
 existing bodies; a compact buffer table resolves the binding slots. Design in
-[metal-backend.md § Merged projections](reference/metal-backend.md#merged-projections-kern-04).
+[metal-backend.md § Merged projections](engine/metal-backend.md#merged-projections-kern-04).
 
 **Evidence.** `make check` passed 114 unit tests and Metal fixtures, including
 exact merged/separate equality across every fixture encoding, generic
@@ -306,7 +306,7 @@ profile: [nuclis-profile-c12-2026-09-08.json](benchmarks/nuclis-profile-c12-2026
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`,
 `inference/src/models/qwen35_metal.zig`, `inference/metal-check.zig`,
-`docs/reference/metal-backend.md`,
+`docs/engine/metal-backend.md`,
 `docs/benchmarks/nuclis-profile-c12-2026-09-08.json`.
 
 **Remaining.** The initial sequential FFN pair regressed 10.37 → 10.24 tok/s;
@@ -320,7 +320,7 @@ spend 0.8–0.9 ns per 256-value block. Five hypotheses were each measured with
 fixtures → `make bench-kernels` → `make bench` → `make compare`; none moved the
 needle and none was kept, so the kernels are byte-identical to KERN-04.
 Negatives and the mechanisms in
-[metal-backend.md § Per-block cost](reference/metal-backend.md#kern-05--per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
+[metal-backend.md § Per-block cost](engine/metal-backend.md#kern-05--per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
 
 **Evidence.** Against Q4_K baselines of **179 / 158 / 180 / 152 GB/s**: (1) two
 blocks per lane iteration **−35 %** (register footprint); (2) threadgroup input
@@ -338,7 +338,7 @@ is unsupported on this device and exports empty tables.
 
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`, `inference/metal-check.zig`, `Makefile`,
-`AGENTS.md`, `docs/reference/metal-backend.md`.
+`AGENTS.md`, `docs/engine/metal-backend.md`.
 
 **Remaining.** The bench harness gained the real 5,120×17,408 shape,
 64-dispatch batches for small matrices, and a Q4_K exact-fixture check; one
@@ -442,7 +442,7 @@ the existing `Sampler.select` on the `K` candidates plus a GPU exp-sum. The
 contract stays exact through an uncertainty band (`total_band = 1e-5`, measured
 GPU error 9.6e-8) that defers any decision inside it before the RNG advances,
 so a fallback token is the reference token by construction. Contract in
-[generation.md](reference/generation.md#sampling-on-the-gpu-without-reading-the-vocabulary-back-kern-06).
+[sampling.md](engine/sampling.md#sampling-on-the-gpu-without-reading-the-vocabulary-back-kern-06).
 
 **Evidence.** Sampled decode went **8.68 → 10.69 tok/s** with bit-identical
 tokens. Unit tests covered the option grid (top-k {0, 1, 40, 256, 300} × top-p
@@ -460,7 +460,7 @@ greedy **10.77**, GPU top-k **10.69** (0.7/0.95/40) and **10.67**
 `inference/src/backends/metal/root.zig`, `inference/src/sampling/root.zig`,
 `inference/src/models/qwen35_metal.zig`, `inference/src/engine.zig`,
 `src/generate.zig`, `inference/metal-check.zig`,
-`docs/reference/generation.md`, `docs/reference/bench.md`.
+`docs/engine/sampling.md`, `docs/reference/bench.md`.
 
 **Remaining.** The plan's 1,000-vector × 5-seed grid runs at reduced size (20 ×
 3) in the default unit test to keep the suite fast; the GPU fixture covers the
@@ -497,7 +497,7 @@ with matrix–matrix kernels for the projections and FFN:
 activation buffers, `rows = C` norms, `nu_matmul_<enc>` tiles through the
 generic decoder, and batched KV writes. Mixers stayed per token inside the
 chunk. Design in
-[metal-backend.md § Prefill in chunks](reference/metal-backend.md#prefill-in-chunks-engn-02).
+[metal-backend.md § Prefill in chunks](engine/metal-backend.md#prefill-in-chunks-engn-02).
 
 **Evidence.** Prefill went **11 → 51 tok/s** at 543 tokens (**35** on the
 22-token `make bench`); chunked vs stepped max abs **3.1e-5**, relative RMS
@@ -510,7 +510,7 @@ TFLOP/s** on the FFN shapes (`make bench-matmul`).
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`,
 `inference/src/models/qwen35_metal.zig`, `inference/generation-check.zig`,
-`inference/metal-check.zig`, `docs/reference/metal-backend.md`,
+`inference/metal-check.zig`, `docs/engine/metal-backend.md`,
 `docs/reference/bench.md`.
 
 **Remaining.** Chunked-vs-incremental was covered by the 32-token chunk check
@@ -526,7 +526,7 @@ later levers.
 conversation state observed by `engine.runLoop`. The Qwen adapter's
 `samplingDefaults(effort)` holds the official per-mode table and `generate`/`chat`
 default to it; `bench` never applies it. Table and chain order in
-[generation.md](reference/generation.md#sampling-profiles-and-the-selection-chain-modl-01).
+[sampling.md](engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01).
 
 **Evidence.** `make check` passed 125 default tests (was 118): boundary
 validation, hand-computed penalty cases pinning repetition-before-presence,
@@ -544,7 +544,7 @@ readback for the presence penalty), thinking profile **10.57** with 0 fallbacks
 
 **Files.** `inference/src/sampling/root.zig`, `inference/src/profiles/qwen38.zig`,
 `inference/src/engine.zig`, `src/generate.zig`, `src/cli.zig`,
-`docs/reference/generation.md`, `docs/reference/bench.md`.
+`docs/engine/sampling.md`, `docs/reference/bench.md`.
 
 **Remaining.** A GPU penalty kernel is deferred (the retired roadmap);
 the chat's per-turn option rebuild was reviewed, not exercised interactively.
@@ -559,7 +559,7 @@ causally over `cache[0 .. position + C]` in one dispatch per layer, without a
 SIMD groups of 8 query rows, 32-position key tiles, online softmax with a
 diagonal-matrix rescale, `simdgroup_float8x8` for Q·Kᵀ and P·V, and zero-padded
 tail sub-blocks. Wired into `Plan.attentionChunk`; the `step` path is
-unchanged. Contract in [metal-backend.md § Kernels](reference/metal-backend.md#kernels).
+unchanged. Contract in [metal-backend.md § Kernels](engine/metal-backend.md#kernels).
 
 **Evidence.** `test-metal`: 256 query rows at positions 1,792..2,047 over a
 2,048-row cache vs the F64 CPU reference per row gave max abs **3.9e-7** (bound
@@ -575,7 +575,7 @@ prompts: 545 tokens **51.4**, 3,657 tokens **50.6**, against the reference's
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`,
 `inference/src/models/qwen35_metal.zig`, `inference/metal-check.zig`,
-`inference/generation-check.zig`, `docs/reference/metal-backend.md`.
+`inference/generation-check.zig`, `docs/engine/metal-backend.md`.
 
 **Remaining.** The kernel uses a threadgroup per query head (not per KV head) so
 each SIMD group's 32 output accumulators stay in registers; six query heads
@@ -591,8 +591,8 @@ state as chunk sums). Stage 2 added `nu_delta_chunk` behind `Backend.deltaChunk`
 a threadgroup per (value head, 32 value rows) looping over 32-token sub-chunks
 with the state streamed from the session buffer; `Plan.deltaChunk` replaced the
 per-token loop and `step` is unchanged. Equations in
-[cpu-reference.md](reference/cpu-reference.md#chunkwise-deltanet-engn-04-stage-1) and
-[metal-backend.md § Kernels](reference/metal-backend.md#kernels).
+[cpu-reference.md](engine/cpu-reference.md#chunkwise-deltanet-engn-04-stage-1) and
+[metal-backend.md § Kernels](engine/metal-backend.md#kernels).
 
 **Evidence.** `test-metal`: a 70-token chunk (sub-chunks 32, 32, 6) on the model
 shape with L2-normalized q/k and NaN past the chunk gave output max abs
@@ -609,7 +609,7 @@ prompts: 545 tokens **52.6**, 3,657 tokens **53.0**, 13,399 tokens at context
 `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`,
 `inference/src/models/qwen35_metal.zig`, `inference/metal-check.zig`,
-`docs/reference/cpu-reference.md`, `docs/reference/metal-backend.md`.
+`docs/engine/cpu-reference.md`, `docs/engine/metal-backend.md`.
 
 **Remaining.** Sub-chunks are 32 tokens, not the planned 64, because the state
 is streamed from device memory and the sub-chunk only sizes the threadgroup
@@ -655,7 +655,7 @@ types, and staging, with thirteen instantiations: per-encoding tile decoders
 order, half operands with F32 accumulation, and 64×64 tiles with the activation
 tile staged transposed. `Backend.matmul` selects by encoding, alignment, and
 chunk length, with a 32×32 set for short chunks and the generic F32 tile as
-fallback. Full table in [metal-backend.md § Kernels](reference/metal-backend.md#kernels).
+fallback. Full table in [metal-backend.md § Kernels](engine/metal-backend.md#kernels).
 
 **Evidence.** Lever-by-lever on the Q4_K gate shape (ms per 256-token chunk):
 baseline 14.71; per-encoding decoders 13.73; staged F32 activations 12.55; F32
@@ -673,7 +673,7 @@ prefill **39.1** (was 34.9), decode **10.30**; raw prompts: 545 tokens **83.8**
 
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`, `inference/generation-check.zig`,
-`inference/metal-check.zig`, `docs/reference/metal-backend.md`,
+`inference/metal-check.zig`, `docs/engine/metal-backend.md`,
 `docs/reference/bench.md`.
 
 **Remaining.** The reference was approached, not matched: within 6–9 % at 512
@@ -691,7 +691,7 @@ on 16-byte boundaries; and `Layout.attention.precision` (`f32` | `f16`) landed
 with `--kv`, `engine.kv_precision` (default `f16`), decode attention templated
 on the cache type, `nu_pack_half`, and a half chunk kernel. `make compare` split
 into `compare-f32` (unchanged thresholds) and `compare-f16` (its own tolerance).
-Design in [metal-backend.md § F16 KV cache](reference/metal-backend.md#f16-kv-cache-kern-07).
+Design in [metal-backend.md § F16 KV cache](engine/metal-backend.md#f16-kv-cache-kern-07).
 
 **Evidence.** `test-metal`: packed halves exact; half decode attention at 1,021
 visible **1.1e-8** against the CPU over the rounded cache (bound 2e-5) and
@@ -724,7 +724,7 @@ Session bytes: **278 / 406 MiB** at 2,048, **406 / 662** at 4,096, **1,174 /
 `inference/src/backends/metal/root.zig`,
 `inference/src/models/qwen35_metal.zig`, `inference/src/engine.zig`,
 `src/config.zig`, `src/cli.zig`, `inference/metal-check.zig`,
-`docs/reference/generation.md`, `docs/reference/metal-backend.md`.
+`docs/engine/sampling.md`, `docs/engine/metal-backend.md`.
 
 **Remaining.** No F16-output matvec variant; the decode kernels still made three
 dispatches over a score buffer (replaced by KERN-08); the CPU reference has no
@@ -739,7 +739,7 @@ recurrent history and matrix whole) and `Session.restore` requires a matching
 capacity, `layout_digest` (a Wyhash of every layout field and the capacity), and
 byte count, else `SnapshotMismatch` with the session untouched.
 `engine.Model.snapshot`/`restore` dispatch to either executor. The new reference
-is [session.md](reference/session.md).
+is [session.md](engine/session.md).
 
 **Evidence.** `make test-generation` and `make test-generation-metal`: step
 token 1, snapshot (**157,024,256 bytes**), step token 2 → A; restore, step token
@@ -753,7 +753,7 @@ sessions, a truncated snapshot). No kernel or plan change: `make compare` and
 
 **Files.** `inference/src/runtime/session.zig`, `inference/src/engine.zig`,
 `inference/src/models/qwen35_metal.zig`,
-`inference/src/models/qwen35_runtime.zig`, `docs/reference/session.md`.
+`inference/src/models/qwen35_runtime.zig`, `docs/engine/session.md`.
 
 **Remaining.** The snapshot is plain `[]u8`, not page-aligned `f32`; the chat is
 not wired to it (that lands with the agent's turn-boundary checkpoint).
@@ -790,7 +790,7 @@ machine and long runs are labelled with what preceded them
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`,
 `inference/src/models/qwen35_metal.zig`, `inference/metal-check.zig`,
-`src/main.zig`, `docs/reference/metal-backend.md`, `docs/reference/bench.md`.
+`src/main.zig`, `docs/engine/metal-backend.md`, `docs/reference/bench.md`.
 
 **Remaining.** No vectorized (`float4`/`half4`) row loads and no
 simdgroup-matrix variant; the kernel is above the ~10 ms a 2 GB read would take
@@ -847,7 +847,7 @@ measured, not addressed.
 is unchanged. The first per-kernel profile of a long prefill showed the chunk
 attention as the growing prefill cost, and three shared-stage variants were
 measured and rejected. Detail in
-[metal-backend.md § Long-context prefill attention](reference/metal-backend.md#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change).
+[metal-backend.md § Long-context prefill attention](engine/metal-backend.md#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change).
 
 **Evidence.** The 16,384-token reference array with an F16 cache:
 `nu_attention_chunk_h` **75.5 s of 256.5 s (29.6 %)**, the matmuls about 60 %,
@@ -861,7 +861,7 @@ F32 **3.87e-7**, half **1.81e-4**, unchanged bounds). `make check` passes;
 [nuclis-profile-16k-2026-09-10.json](benchmarks/nuclis-profile-16k-2026-09-10.json).
 
 **Files.** `inference/src/backends/metal/kernels.metal`,
-`inference/metal-check.zig`, `docs/reference/metal-backend.md`,
+`inference/metal-check.zig`, `docs/engine/metal-backend.md`,
 `docs/benchmarks/nuclis-profile-16k-2026-09-10.json`.
 
 **Remaining.** The per-head cache re-reads were cache hits; the kernel is
@@ -1103,7 +1103,7 @@ answered 144 then 145. Acceptance record: prefill / decode **192.97 / 19.82** at
 **Files.** `inference/src/profiles/gemma4.zig`, `inference/src/profiles/root.zig`,
 `inference/src/engine.zig`, `src/catalog.zig`, `src/cli.zig`,
 `scripts/tokenizer-fixtures.py`, `scripts/reference-record.py`,
-`docs/reference/prompt-profile.md`, `docs/reference/bench.md`.
+`docs/engine/prompt-profile.md`, `docs/reference/bench.md`.
 
 **Remaining.** The Q4_0 path and the QAT catalogue entry (MODL-08), Gemma
 performance work and the windowed-cache ring layout (roadmap), the seam test
@@ -1194,7 +1194,7 @@ type, a bounded `Limits.tools` (default 64) and a shared 1 MiB input budget, and
 `profiles.validate` as the single conversation check. Both profiles accept a
 structurally valid tool input at `validate` and then reject it with
 `error.ToolsUnsupported` until the native syntax lands. Sources and limits in
-[tool-calling.md](reference/tool-calling.md); explanation in
+[tool-calling.md](engine/tool-calling.md); explanation in
 [agent-concepts § 2](reference/agent-concepts.md#2-why-a-streaming-parser-needs-token-boundaries).
 
 **Evidence.** Session 1: `make check` **298 default tests** plus Metal fixtures;
@@ -1218,8 +1218,8 @@ prompt tokens, Gemma 18).
 **Files.** `inference/src/events.zig`, `inference/src/engine.zig`,
 `inference/src/profiles/root.zig`, `inference/src/profiles/qwen38.zig`,
 `inference/src/profiles/gemma4.zig`, `src/agent/stream.zig`,
-`src/agent/print.zig`, `src/tui/view.zig`, `docs/reference/tool-calling.md`,
-`docs/reference/prompt-profile.md`, `docs/agent-spec.md`.
+`src/agent/print.zig`, `src/tui/view.zig`, `docs/engine/tool-calling.md`,
+`docs/engine/prompt-profile.md`, `docs/agent-spec.md`.
 
 **Remaining.** Native rendering and parsing remain the open tool work (AGNT-05):
 render definitions into the Qwen system block, assistant calls, and tool results
@@ -1420,8 +1420,8 @@ Metal fixture suite. The fixtures were captured on 2026-09-14 with llama.cpp
 **Files.** `inference/src/profiles/qwen38.zig`,
 `inference/src/profiles/gemma4.zig`, `inference/src/profiles/root.zig`,
 `inference/src/profiles/fixtures/qwen38-tools.json`,
-`scripts/profile-tools-fixtures.py`, `docs/reference/prompt-profile.md`,
-`docs/reference/tool-calling.md`.
+`scripts/profile-tools-fixtures.py`, `docs/engine/prompt-profile.md`,
+`docs/engine/tool-calling.md`.
 
 **Remaining.** The streaming tool-call decoder, the profile-driven loop, and the
 deletion of `src/agent/parse.zig` were the next unit (AGNT-06).
@@ -1452,7 +1452,7 @@ Qwen3.8-27B (Metal, context 8192) issued `write_file greeting.txt` then
 `inference/src/profiles/qwen38.zig`, `inference/src/profiles/gemma4.zig`,
 `inference/src/profiles/root.zig`, `src/agent/loop.zig`,
 `src/agent/tools/root.zig`, `src/agent/parse.zig` (deleted),
-`docs/reference/prompt-profile.md`, `docs/reference/tool-calling.md`,
+`docs/engine/prompt-profile.md`, `docs/engine/tool-calling.md`,
 `docs/reference/agent-concepts.md` §8.
 
 **Remaining.** Session assistant entries still record only the answer text, not
@@ -1690,7 +1690,7 @@ prompt and tools: 2889 tokens (prefix plus output budget) of 1024`.
 
 **Files.** `inference/src/profiles/{root,qwen38,gemma4}.zig`,
 `inference/src/engine.zig`, `src/agent/loop.zig`, `src/agent/root.zig`,
-`src/agent/print.zig`, `docs/agent-spec.md`, `docs/reference/session.md`.
+`src/agent/print.zig`, `docs/agent-spec.md`, `docs/engine/session.md`.
 
 **Remaining.** The interactive warm-up bar, Enter queueing during it, and the
 `/new` restore were not driven on a real TTY in this session; print mode
@@ -1765,7 +1765,7 @@ incremented).
 `inference/src/profiles/qwen38.zig`, `inference/src/profiles/root.zig`,
 `inference/src/profiles/fixtures/gemma4-tools.json`,
 `inference/vocabulary-check.zig`, `scripts/profile-tools-fixtures.py`,
-`docs/reference/prompt-profile.md`, `docs/reference/tool-calling.md`,
+`docs/engine/prompt-profile.md`, `docs/engine/tool-calling.md`,
 `docs/reference/gemma4.md`, `docs/reference/agent-concepts.md`,
 `docs/architecture.md`, `docs/agent-spec.md`, `docs/spec.md`,
 `THIRD_PARTY_NOTICES.md`.
@@ -1884,7 +1884,7 @@ tool and answered (Metal, context 4096).
 `scripts/profile-alias-check.py`, `src/config.zig`, `src/cli.zig`,
 `src/help.zig`, `src/tokenize.zig`, `src/generate.zig`, `src/bench.zig`,
 `src/agent/root.zig`, `src/agent/print.zig`, `docs/spec.md`,
-`docs/development.md`, `docs/reference/prompt-profile.md`,
+`docs/development.md`, `docs/engine/prompt-profile.md`,
 `docs/reference/gemma4.md`.
 
 **Remaining.** A forced profile renders the pinned protocol, so a file
@@ -1990,7 +1990,7 @@ the model still opens an empty channel after a tool result — and both
 profiles remove control markers from the assistant's own content and
 reasoning instead of refusing them; user and tool content and tool names
 are still refused (the template's `strip_thinking` is the model for the
-rule, [prompt-profile.md § Shared contract](reference/prompt-profile.md#shared-contract)).
+rule, [prompt-profile.md § Shared contract](engine/prompt-profile.md#shared-contract)).
 The output budget itself is a setting: `--max-tokens` and
 `generate.max_tokens` go to 4096, and a long file body inside a call
 needs it. Related: the turn's end reported `eos` when its step had run out
@@ -2008,7 +2008,7 @@ rendered, ran `bash`, and answered.
 
 **Files.** `inference/src/profiles/stream.zig`,
 `inference/src/profiles/gemma4.zig`, `inference/src/profiles/qwen38.zig`,
-`src/agent/loop.zig`, `docs/reference/prompt-profile.md`.
+`src/agent/loop.zig`, `docs/engine/prompt-profile.md`.
 
 **Remaining.** The strip is not pinned by a reference fixture (the fixture
 scripts synthesize clean cases); a truncated call is still text the model
@@ -2109,14 +2109,14 @@ chunk, with the useful rate set by the tile fill — 50 % at 256 tokens
 (10.5 ms per layer-chunk), 69 % at 512, 81 % at 1,024 (27.0 ms) — four
 to six times faster than looping the decode kernels over the chunk.
 Details and the tables in
-[metal-backend.md § Gathered expert kernels](reference/metal-backend.md#gathered-expert-kernels-kern-09).
+[metal-backend.md § Gathered expert kernels](engine/metal-backend.md#gathered-expert-kernels-kern-09).
 
 **Files.** `inference/src/backends/cpu/experts.zig`,
 `inference/src/backends/cpu/root.zig`,
 `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
 `inference/build.zig`, `build.zig`, `Makefile`,
-`docs/reference/cpu-reference.md`, `docs/reference/metal-backend.md`,
+`docs/engine/cpu-reference.md`, `docs/engine/metal-backend.md`,
 `docs/reference/bench.md`, `docs/development.md`, `docs/llm-guide.md`
 (§ 48).
 
@@ -2176,7 +2176,7 @@ rates (`--kv f16`): 22-token prompt 122.6 / 57.9 tok/s; 512-token array
 `inference/src/runtime/weights.zig`, `inference/src/engine.zig`,
 `inference/metal-check.zig`, `inference/generation-check.zig`,
 `tests/fixtures/gemma4-26b-a4b-hello-comma/`, `Makefile`, `README.md`,
-`docs/reference/gemma4.md`, `docs/reference/metal-backend.md`,
+`docs/reference/gemma4.md`, `docs/engine/metal-backend.md`,
 `docs/reference/artifacts.md`, `docs/architecture.md`,
 `docs/development.md`.
 
@@ -2461,7 +2461,7 @@ variant is left to MODL-17's profile. `make check`.
 
 **Files.** `inference/src/backends/metal/dequant.metal`, `kernels.metal`,
 `root.zig`, `inference/metal-check.zig`, `build.zig`, `Makefile`,
-`docs/reference/metal-backend.md`, `docs/reference/bonsai.md`,
+`docs/engine/metal-backend.md`, `docs/reference/bonsai.md`,
 `docs/development.md`.
 
 **Remaining.** The Metal plan does not yet dispatch the transform or run
@@ -2532,7 +2532,7 @@ true`, stop `eos`. `make check`: 413 tests and `test-metal`.
 `tests/fixtures/run-2026-09-18-bonsai/`, `tests/fixtures/provenance.md`,
 `docs/benchmarks/reference-2026-09-18-bonsai.json`,
 `docs/benchmarks/nuclis-2026-09-18-bonsai.json`, `docs/reference/bonsai.md`,
-`docs/reference/bench.md`, `docs/reference/metal-backend.md`,
+`docs/reference/bench.md`, `docs/engine/metal-backend.md`,
 `docs/reference/artifacts.md`, `docs/reference/reference-baseline.md`,
 `docs/development.md`, `docs/spec.md`, `README.md`.
 
@@ -2666,8 +2666,8 @@ within 6.0e-6, greedy token 372 on both sides with identical top-5, in
 `inference/src/backends/cpu/rope.zig`, `scripts/tokenizer-fixtures.py`,
 `scripts/reference-split.cpp`, `tests/fixtures/muse-glimmer-hello-comma/`,
 `tests/fixtures/provenance.md`, `Makefile`, `src/catalog.zig`,
-`docs/reference/muse-glimmer.md`, `docs/reference/tokenizer.md`,
-`docs/reference/new-model-guide.md`, `docs/reference/prompt-profile.md`,
+`docs/reference/muse-glimmer.md`, `docs/engine/tokenizer.md`,
+`docs/reference/new-model-guide.md`, `docs/engine/prompt-profile.md`,
 `docs/reference/artifacts.md`, `docs/architecture.md`,
 `docs/development.md`, `THIRD_PARTY_NOTICES.md`.
 
@@ -2719,7 +2719,7 @@ The Qwen `make bench` is unchanged (39.75 / 10.44 tok/s). `make check`:
 `inference/src/backends/metal/{root.zig,kernels.metal}`,
 `inference/metal-check.zig`, `inference/generation-check.zig`,
 `Makefile`, `docs/reference/muse-glimmer.md`,
-`docs/reference/metal-backend.md`, `docs/reference/bench.md`,
+`docs/engine/metal-backend.md`, `docs/reference/bench.md`,
 `docs/architecture.md`, `docs/development.md`.
 
 **Remaining.** Decode at 71 % of the reference: the Q4_K matvecs read
@@ -2815,7 +2815,7 @@ argument strings carrying the markup or a control marker are rejected.
 Gemma's shapes plus a declaration whose texts need JSON escaping and a
 multi-line string argument; the fixture was captured while the
 reference server was up for MODL-13 and landed in that unit's commit.
-[tool-calling.md](reference/tool-calling.md) records the format and
+[tool-calling.md](engine/tool-calling.md) records the format and
 the three facts that shaped the implementation.
 
 **Evidence.** The 52 tool fixtures match byte for byte; the parser
@@ -2898,7 +2898,7 @@ prompt): prefill 38.78 → 43.01 tok/s, first token 567.3 → 511.5 ms, decode
 10.22 → 10.20 (unchanged).
 
 **Files.** `inference/src/backends/metal/kernels.metal`, `root.zig`,
-`inference/metal-check.zig`, `docs/reference/metal-backend.md`,
+`inference/metal-check.zig`, `docs/engine/metal-backend.md`,
 `docs/reference/bench.md`, `docs/roadmap.md`.
 
 **Remaining.** The tile is 37–64 % of the matvec rate, not 70 %. Levers not
@@ -3058,7 +3058,7 @@ same sources; a hand-written file with a custom `models` map loads and
 resolves unchanged.
 
 **Files.** `src/config.zig`, `src/cli.zig`, `src/help.zig`,
-`docs/development.md`, `docs/reference/generation.md`, `docs/spec.md`,
+`docs/development.md`, `docs/engine/sampling.md`, `docs/spec.md`,
 `docs/llm-guide.md`, `docs/worklog.md`, `TODO.md`.
 
 ### REPO-06 — DiffusionGemma structured reads and kev research (2026-09-20)
@@ -3189,7 +3189,7 @@ on the touched sources (comment edits only).
 **Files.** `docs/roadmap.md` (deleted), `AGENTS.md`, `docs/README.md`,
 `docs/agent-spec.md`, `docs/llm-guide.md`, `docs/reference/bench.md`,
 `docs/reference/gemma4.md`, `docs/reference/muse-glimmer.md`,
-`docs/reference/tool-calling.md`, `docs/reference/metal-backend.md`,
+`docs/engine/tool-calling.md`, `docs/engine/metal-backend.md`,
 `TODO.md`, `src/catalog.zig`, `inference/src/formats/gguf.zig`,
 `inference/src/models/muse_glimmer_metal.zig`,
 `inference/src/models/gemma4_metal.zig`, `docs/worklog.md`.
@@ -3289,7 +3289,7 @@ header twice as often as the matvec's 32-value slice.
 **Evidence.** `make bench-matvec-rows` (Apple M4 Pro, Zig 0.16.0, ReleaseSafe,
 two FFN shapes 17,408×5,120 and 5,120×17,408, three measured command buffers
 after a warm-up, 16 dispatches each) is the table in
-[metal-backend.md § Multi-row matvec](reference/metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target):
+[metal-backend.md § Multi-row matvec](engine/metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target):
 Q4_K 143/128, 86/84, 53/52, 28/27 at 2/3/5/8 rows (gate/down); Q5_K 148/137,
 98/92, 61/60, 30/28; Q6_K 182/179, 125/121, 67/63, 33/31; IQ4_XS 172/154,
 109/94, 65/49, 23/20. `make test-metal` exactness at 2/5/8 rows for every
@@ -3334,7 +3334,7 @@ A profiler fixture pins the actual control and production kernel identities.
 Zig 0.16.0, ReleaseSafe, `27303ed` plus this repair: all four specialized
 encodings beat the tile on both FFN shapes and the head (twelve cases). FFN
 127.7–181.9 vs 87.7–116.2 GB/s; head 146.8–188.0 vs 89.2–114.1.
-[Method and table](reference/metal-backend.md#corrected-two-row-control-repo-08-2026-09-20).
+[Method and table](engine/metal-backend.md#corrected-two-row-control-repo-08-2026-09-20).
 Formatting and 450 CPU tests passed via `make check`; its Metal stage could not
 access the device in the sandbox, then `make test-metal` passed outside it,
 including the dispatch regression and 2/5/8-row error 5.64e-8 (bound 4e-6).
@@ -3742,7 +3742,7 @@ per-group instructions per tile buys little. The design, the register
 budget, and the untried levers (bank-conflict padding of the score and P
 tiles, vectorized staged K/V with double buffering, and a phase ablation)
 are recorded in
-[metal-backend.md § KERN-16](reference/metal-backend.md#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative).
+[metal-backend.md § KERN-16](engine/metal-backend.md#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative).
 
 **Evidence.** `make bench-attention` (`metal-check --attention-bench`;
 Apple M4 Pro 48 GiB, Zig 0.16.0, ReleaseSafe, `652a0cc` plus the change;
@@ -3800,7 +3800,7 @@ step add+RMSNorm (64 per token) and full-attention q/k norms (32), Gemma's
 attention and FFN post norms (96) and q/k norms (96), Muse's post norms
 (104) and sliding q/k norms (78; its 13 global layers have no rotation).
 The design, the kernels, and the reading are in
-[metal-backend.md § KERN-18](reference/metal-backend.md#fused-decode-norms-kern-18-2026-09-21-closed-below-its-target).
+[metal-backend.md § KERN-18](engine/metal-backend.md#fused-decode-norms-kern-18-2026-09-21-closed-below-its-target).
 
 **Evidence.** `make test-metal` (new `checkFusedNorms`): every fused kernel
 against the pair it replaces and against `cpu.rmsNorm`/`cpu.rope` over the
@@ -3895,7 +3895,7 @@ missing companion → `DraftSourceMissing`, `clip` projector → mismatch, 26B
 head on the 12B target → mismatch. Bench pair in
 [bench.md § The Gemma 4 draft pair](reference/bench.md#the-gemma-4-draft-pair-modl-19-2026-09-21);
 the facts, trace, and verdict in
-[speculative-decoding.md § The Gemma 4 assistant heads](reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
+[speculative-decoding.md § The Gemma 4 assistant heads](engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
 `make check` passes (455/455) with the machine quiet; note that the Metal
 profile fixture's 20 µs encoder-jitter allowance tripped twice under load
 (`profile check` read 95 µs over the command-buffer span at load average
@@ -3931,7 +3931,7 @@ batch is the cost (172.9–188.2 ms for 2.8–3.4 rows, 1.7–1.8 ordinary
 steps); recovery is the position rewind alone (1 µs per batch; the family is
 attention-only) and the prompt commit adds 1.2–2.9 % to prefill. Session 1
 (CPU reference, contract fit, pinned trace) is recorded in
-[speculative-decoding.md § The Muse Glimmer DFlash drafter](reference/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20);
+[speculative-decoding.md § The Muse Glimmer DFlash drafter](engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20);
 session 2 delivered the Metal plan, the trace on both executors, the
 record, and this verdict. ENGN-17 sets the entry's default from the record.
 
@@ -4325,7 +4325,7 @@ tree.
 
 **Files.** `docs/architecture.md`, `docs/llm-guide.md`,
 `docs/agent-spec.md`, `docs/reference/agent-concepts.md`,
-`docs/reference/gemma4.md`, `docs/reference/metal-backend.md`, `TODO.md`,
+`docs/reference/gemma4.md`, `docs/engine/metal-backend.md`, `TODO.md`,
 and this log.
 
 **Remaining.** The guide has no section on the tokenizer's Unicode table
@@ -4634,7 +4634,7 @@ the answer ends with `hello`.
 **Files.** `inference/src/profiles/qwen38.zig`, `src/agent/tools/read_file.zig`,
 `src/agent/loop.zig`, `src/agent/root.zig`, `src/tui/keys.zig`,
 `src/tui/editor.zig`, `src/tui/status.zig`, `src/help.zig`, `docs/spec.md`
-§ 7.2 and § 7.6, `docs/reference/tool-calling.md`, `TODO.md`, and this log.
+§ 7.2 and § 7.6, `docs/engine/tool-calling.md`, `TODO.md`, and this log.
 
 **Remaining.** Muse's ATEM parser has its own delimiters and trims as
 before; it was not measured. A steered message is delivered only at a step
@@ -4700,7 +4700,7 @@ encoding, span location, the `runLoop` images path),
 `inference/generation-check.zig` (`--vision-check`), `gates.json` and
 `scripts/gates.py` (the `{mmproj}` placeholder and the two vision gates),
 `scripts/reference-vision.cpp`, `src/generate.zig`, `src/engine.zig`,
-`src/cli.zig`, `src/help.zig`, `docs/reference/vision.md`, `docs/spec.md`,
+`src/cli.zig`, `src/help.zig`, `docs/engine/vision.md`, `docs/spec.md`,
 `TODO.md`, and this log.
 
 **Remaining.** The projector runs as its own command buffer, separate from
@@ -4783,7 +4783,7 @@ details and preview rows), `src/agent/commands.zig` (`/image`),
 height`, `complete(images)`), `scripts/tui-shot.py` (`paste=`,
 `allow-passthrough`), `docs/spec.md` § Editor and § 10,
 `docs/development.md` § The agent's transcript and the harness,
-`docs/reference/vision.md` § Images in the chat.
+`docs/engine/vision.md` § Images in the chat.
 
 **Remaining.** The preview's rendering was not photographed: the harness's
 Ghostty window lookup needs the screen-recording permission this session
@@ -4847,7 +4847,7 @@ gate (nothing numerical).
 `src/tui/terminal.zig` (`cursorPosition`, `findCursorReport`),
 `src/tui/graphics.zig` (`box` with the room above, no passthrough, tmux
 excluded), `src/agent/root.zig`, `scripts/tui-shot.py`, `docs/spec.md`,
-`docs/development.md`, `docs/reference/vision.md`.
+`docs/development.md`, `docs/engine/vision.md`.
 
 **Remaining.** The blank rows a grow leaves under the transcript are slack
 and stay until the next insertion fills them. A terminal that answers no
@@ -4867,7 +4867,7 @@ check gains a diagnostic mode (`--vision-image <file> --vision-oracle
 <dir>`: projector rows per block, last logits and greedy tokens on the
 oracle's rows, teacher-forced agreement) and the vision gate a permanent
 check that decode after an image equals one prefill. Facts:
-[vision.md § Decode after an image](reference/vision.md#decode-after-an-image-modl-24-2026-09-23).
+[vision.md § Decode after an image](engine/vision.md#decode-after-an-image-modl-24-2026-09-23).
 The Gemma 4 and Muse vision units (MODL-22, MODL-23) now carry the three
 checks this defect taught in their acceptance.
 
@@ -4883,7 +4883,7 @@ selected the whole Metal tier: 27/27 in 484 s. The CPU tier was not run
 check).
 
 **Files.** `inference/src/models/qwen35_metal.zig`,
-`inference/generation-check.zig`, `docs/reference/vision.md`, `TODO.md`.
+`inference/generation-check.zig`, `docs/engine/vision.md`, `TODO.md`.
 
 **Remaining.** The CPU vision gate with the new check is unrun. The oracle
 comparison on a real photo is a manual diagnostic, not a gate: the photo
@@ -4975,7 +4975,7 @@ one value; the span only moves a sliding row's last visible key to the
 span's end. The facts were read from the pinned reference and the two
 files first and committed as the unit's rewritten section (`f253d13`).
 Facts, tables, and traces:
-[vision.md § Gemma 4's projectors](reference/vision.md#gemma-4s-projectors-modl-22-2026-09-23).
+[vision.md § Gemma 4's projectors](engine/vision.md#gemma-4s-projectors-modl-22-2026-09-23).
 
 **Evidence.** The synthetic fixture at the reference's `--image-min-tokens
 4` (3×2 tokens), both entries, both executors: projector rows 6.3e-5 max
@@ -5025,7 +5025,7 @@ fixtures under `inference/src/vision/fixtures/` (two inventories,
 `gemma4.zig`, `qwen38.zig`, `muse_glimmer.zig`,
 `inference/generation-check.zig`, `inference/metal-check.zig`,
 `src/generate.zig`, `scripts/reference-vision.cpp`, `gates.json`,
-`docs/reference/vision.md`, `metal-backend.md`, `gemma4.md`,
+`docs/engine/vision.md`, `metal-backend.md`, `gemma4.md`,
 `docs/spec.md`, `README.md`, `TODO.md`.
 
 **Remaining.** The 26B's SigLIP encodes a 1,100-token image in 17.1 s
@@ -5058,7 +5058,7 @@ on `generate` and `agent`) for all three families, and `generate --json`
 reports `image_milliseconds`. Session 1 read the facts and pinned the
 fixture (`e06b551`), the plan took the setting (`a73029e`). Facts, traces,
 and timings:
-[vision.md § Muse Glimmer's projector](reference/vision.md#muse-glimmers-projector-modl-23-2026-09-23).
+[vision.md § Muse Glimmer's projector](engine/vision.md#muse-glimmers-projector-modl-23-2026-09-23).
 
 **Evidence.** Patches equal the reference's im2col bit for bit (the
 fixture, 14,112 values, a unit test; the photo as a PNG, 9.6 M values).
@@ -5110,7 +5110,7 @@ the fixtures `fixtures/muse-glimmer-mmproj.json` and
 `inference/generation-check.zig`, `inference/metal-check.zig`;
 `src/config.zig`, `src/cli.zig`, `src/help.zig`, `src/generate.zig`,
 `src/agent/root.zig`; `scripts/reference-vision.cpp` (`--n-ctx`,
-`--vision-flash`, `--n-batch`); `gates.json`; `docs/reference/vision.md`,
+`--vision-flash`, `--n-batch`); `gates.json`; `docs/engine/vision.md`,
 `docs/spec.md`, `docs/development.md`, `TODO.md`.
 
 **Remaining.** The global blocks' attention is the encoder's limiter
@@ -5139,7 +5139,7 @@ both executors and the matmul tiles) and requires an element encoding for
 carries the allowed set, so the Gemma adapters keep F32/BF16. No other
 code changed: Bonsai's language model is the Qwen3.8 adapter, whose
 residual stream is in the unrotated basis, so feature rows enter as they
-are. Facts: [vision.md § The Qwen3-VL projector](reference/vision.md#the-qwen3-vl-projector-modl-21-2026-09-22).
+are. Facts: [vision.md § The Qwen3-VL projector](engine/vision.md#the-qwen3-vl-projector-modl-21-2026-09-22).
 
 **Evidence.** A unit test binds the file's committed inventory
 (`fixtures/bonsai2-mmproj.json`: 334 tensors, Q8_0 `attn_qkv` and
@@ -5151,7 +5151,7 @@ water, the boulders, the snow-capped mountains, and "a few small evergreen
 trees" on the right shore. No gate was run, the user's call.
 
 **Files.** `inference/src/vision/qwen3vl.zig`, `qwen3vl_metal.zig` (doc
-comments), `fixtures/bonsai2-mmproj.json`; `docs/reference/vision.md`,
+comments), `fixtures/bonsai2-mmproj.json`; `docs/engine/vision.md`,
 `docs/spec.md`, `TODO.md`.
 
 **Remaining.** No oracle trace is pinned for this file and no vision gate
@@ -5199,7 +5199,7 @@ is off by default on both Gemma entries (ENGN-17), and every recorded Gemma
 pair is greedy, so no published number moves. The verify batch now applies
 the cap after the head; `verifyGreedy` does not need it. Found while
 building APPS-14's all-rows path, which shares the head sequence. Facts:
-[speculative-decoding.md § The Gemma 4 assistant heads](reference/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
+[speculative-decoding.md § The Gemma 4 assistant heads](engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
 
 **Evidence.** `generation-check`'s Gemma draft trace now compares every
 `verify` row of `<bos>Hello,` against the stepped logits through the
@@ -5211,7 +5211,7 @@ The top-k check (`verifyTopKCheck`) never saw the gap because it compares
 
 **Files.** `inference/src/models/gemma4_metal.zig`,
 `inference/generation-check.zig`,
-`docs/reference/speculative-decoding.md`, `TODO.md`.
+`docs/engine/speculative-decoding.md`, `TODO.md`.
 
 **Remaining.** No sampled Gemma speculative pair has been measured, before
 or after.
@@ -5237,7 +5237,7 @@ line now tokenizes (9,032 ids, exact round trip) and `generate` prefills its
 gates pass, `make check` 554 tests, and `gemma4-perplexity` is unchanged
 (588.9540, −0.200 %). `eval` no longer widens the per-piece bounds. Files:
 `inference/src/tokenizer/bpe.zig`, `src/eval.zig`,
-`docs/reference/tokenizer.md`, `docs/reference/eval.md`.
+`docs/engine/tokenizer.md`, `docs/reference/eval.md`.
 
 **Follow-up 2 (2026-09-24): a long-context perplexity tier, partly
 recorded.** At 512-token windows no gate passes a sliding window (Gemma 4's
@@ -5649,7 +5649,7 @@ dtype histogram, metadata; `--json` from the same snapshot), and the new
 `--tensor <name>` prints one tensor's dtype, shape, and first eight values;
 `validate` on one is `NotRunnable`. No llama.cpp oracle: the format
 specification and independent reads of real files are the checks
-([reference/safetensors.md](reference/safetensors.md)).
+([engine/safetensors.md](engine/safetensors.md)).
 
 **Evidence.** 572/572 unit tests and `make check`. The loader's tests are
 written from the wire format: a padded header with an unaligned F16, a
@@ -5668,7 +5668,7 @@ size, all parse. No Metal tier: nothing in the runtime calls the loader.
 
 **Files.** `inference/src/formats/safetensors.zig`,
 `inference/src/root.zig`, `src/cli.zig`, `src/inspect.zig`, `src/help.zig`,
-`docs/reference/safetensors.md`, `docs/architecture.md`,
+`docs/engine/safetensors.md`, `docs/architecture.md`,
 `THIRD_PARTY_NOTICES.md`, `docs/worklog.md`, `TODO.md`.
 
 **Remaining.** No family binds a safetensors checkpoint; `config.json` and
@@ -5684,13 +5684,13 @@ support a Jev-like decision model, was answered by the Laya plan
 (MODL-30, MODL-31, AGNT-18), which now carries the one conclusion still
 in use (Laya pays as a filter over many states, not as a faster answer to
 one question). The two links to it (`TODO.md`,
-`docs/reference/safetensors.md`) were rewritten; the older log entries
+`docs/engine/safetensors.md`) were rewritten; the older log entries
 keep naming the file, as a record of what those units wrote.
 
 **Evidence.** `git grep` finds no link to the file outside this log.
 
 **Files.** `docs/research/typesafe-jev.md` (deleted), `TODO.md`,
-`docs/reference/safetensors.md`, `docs/worklog.md`.
+`docs/engine/safetensors.md`, `docs/worklog.md`.
 
 ## TERM-13 — Exit keeps the transcript (2026-09-27)
 
@@ -5873,7 +5873,7 @@ or family forward changed.
 `inference/laya-check.zig`, `inference/build.zig`, `build.zig`,
 `src/{decide,cli,help,completion,catalog,config,model}.zig`, `gates.json`
 (`laya-vocabulary`, `laya-cpu`, model `laya`), `docs/reference/laya.md`
-(new), `docs/reference/tokenizer.md`, `docs/reference/artifacts.md`,
+(new), `docs/engine/tokenizer.md`, `docs/reference/artifacts.md`,
 `docs/spec.md`, `docs/architecture.md`, `docs/development.md`,
 `THIRD_PARTY_NOTICES.md`, `TODO.md`, `docs/worklog.md`.
 
@@ -6342,7 +6342,7 @@ three reruns passed with identical numbers. `make verify`: 36/36 in
 `inference/src/models/{qwen35,gemma4,muse_glimmer}_runtime.zig`,
 `inference/src/vision/{gemma4,qwen3vl,muse_glimmer,projector}.zig`,
 `inference/src/engine.zig`, `inference/{generation,metal}-check.zig`,
-`docs/reference/speculative-decoding.md`, `docs/development.md`,
+`docs/engine/speculative-decoding.md`, `docs/development.md`,
 `AGENTS.md`, `TODO.md`, `docs/worklog.md`.
 
 **Remaining.** `muse-vision-cpu` (447 s) and `qwen38-speculative-cpu`
@@ -6354,7 +6354,7 @@ comparison is to the documented hours.
 
 ## REPO-24 — Qwen decode at 20 tokens/s: evidence and experiment proposal (2026-09-30)
 
-**Outcome.** ADR 0001 (its durable parts now in [speculative-decoding.md § The Qwen verify budget](reference/speculative-decoding.md#the-qwen-verify-budget)), status
+**Outcome.** ADR 0001 (its durable parts now in [speculative-decoding.md § The Qwen verify budget](engine/speculative-decoding.md#the-qwen-verify-budget)), status
 proposed: amortize Qwen decode through a dedicated small-batch verifier,
 with the correctness gates a candidate must pass and quantitative stop
 rules. Its budget arithmetic (a batch emitting E tokens in C ms reaches
@@ -6446,7 +6446,7 @@ captures of its attention and matmul instead.
 `inference/src/backends/metal/root.zig`, the six family executors'
 drafters (`qwen35_*`, `gemma4_*`, `muse_glimmer_*`), `scripts/speed.py`,
 `Makefile`, `docs/development.md`, `docs/reference/bench.md`,
-`docs/reference/session.md`, `docs/reference/speculative-decoding.md`,
+`docs/engine/session.md`, `docs/engine/speculative-decoding.md`,
 `docs/adr/0001-qwen-decode-verifier.md`, `TODO.md`.
 
 **Limitations.** A saved prefix is prefilled as one chunked prompt less
@@ -6476,7 +6476,7 @@ read as shares. The prefix files (0.2–2.3 GB each) accumulate under
   bridge `nu_metal_pipeline_stats`, `Backend.pipelineStats`) prints each
   pipeline's `maxTotalThreadsPerThreadgroup`, `threadExecutionWidth`, and
   static threadgroup memory.
-- [apple-gpu.md](reference/apple-gpu.md): the device (queried and
+- [apple-gpu.md](engine/apple-gpu.md): the device (queried and
   measured, Apple's tech talks 111373–111375 cited), registers and
   occupancy under dynamic caching, how to read a capture, and four kernel
   readings; linked from architecture.md § 11 and metal-backend.md.
@@ -6515,8 +6515,8 @@ gates); no numerical path changed.
 **Files.** `inference/src/backends/metal/bridge.m`,
 `inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
 `src/bench.zig`, `src/cli.zig`, `src/help.zig`, `src/completion.zig`,
-`Makefile`, `docs/reference/apple-gpu.md`,
-`docs/reference/metal-backend.md`, `docs/reference/bench.md`,
+`Makefile`, `docs/engine/apple-gpu.md`,
+`docs/engine/metal-backend.md`, `docs/reference/bench.md`,
 `docs/development.md`, `docs/architecture.md`, `TODO.md`.
 
 **Limitations.** Xcode 27 has no command-line reader, so every reading
@@ -6597,7 +6597,7 @@ verify-long`, `make check`, `make lint-py` pass.
 `inference/metal-check.zig`, `inference/generation-check.zig`,
 `inference/src/runtime/prefix_cache.zig` (from `src/`),
 `inference/src/root.zig`, `src/bench.zig`, `scripts/speed.py`,
-`gates.json`, `docs/reference/metal-backend.md`,
+`gates.json`, `docs/engine/metal-backend.md`,
 `docs/architecture.md`, `docs/development.md`, `TODO.md`.
 
 **Limitations.** Rows share nothing: the cost is linear in rows (about
@@ -6629,9 +6629,9 @@ and at most that many rows runs the generic multi-row matvec (Qwen's
 `make bench-matvec-rows ARGS="<rows> frag"` (`fragBench`, with capture
 labels) compares the tile with every fragment variant. The design and
 rates are in [metal-backend.md § The register-fragment
-tile](reference/metal-backend.md#the-register-fragment-tile-kern-24-2026-10-01-below-its-target),
+tile](engine/metal-backend.md#the-register-fragment-tile-kern-24-2026-10-01-below-its-target),
 the counters in [apple-gpu.md § The register-fragment verify
-matmul](reference/apple-gpu.md#the-register-fragment-verify-matmul-2026-10-01).
+matmul](engine/apple-gpu.md#the-register-fragment-verify-matmul-2026-10-01).
 
 **Evidence.** Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe,
 pinned artifacts; `make speed` (5 interleaved pairs, restored prefixes,
@@ -6718,7 +6718,7 @@ ENGN-14's row checkpoints are gone: `Session.init`'s `row_checkpoints`, the
 scan), `rowSlotLayer`, and the slot writes in `nu_delta_chunk` and
 `nu_convolution_history`. The tape is 28,385,280 bytes of plan memory, only
 with a drafter. Design in
-[session.md § Pending rows and the verify tape](reference/session.md#pending-rows-and-the-verify-tape-engn-19).
+[session.md § Pending rows and the verify tape](engine/session.md#pending-rows-and-the-verify-tape-engn-19).
 
 **Evidence.** Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe,
 Qwen3.8-27B UD-Q4_K_M, F16 KV; priced first at `e35381b` (4K, 4 rows:
@@ -7442,10 +7442,10 @@ batches got 6–12 % cheaper, and speculative prose at 512 reached 17.42 /
 a 4-row verify C ≤ 150 ms at 512 and speculative prose ≥ 18 tok/s. From
 4 rows the fragment tile stays faster than any scalar body measured: the
 word-outer body grows about 0.15 ms per token at 25 % occupancy. Designs:
-[metal-backend.md § The word-outer body](reference/metal-backend.md#the-word-outer-body-kern-23-2026-10-03)
+[metal-backend.md § The word-outer body](engine/metal-backend.md#the-word-outer-body-kern-23-2026-10-03)
 and the paragraph on the half decode in § the specialized matvec;
-counters: [apple-gpu.md § `nu_matvec_iq4_xs`](reference/apple-gpu.md#nu_matvec_iq4_xs-on-qwens-merged-gate-shape-2026-10-03)
-and [§ A word-outer multi-row matvec](reference/apple-gpu.md#a-word-outer-multi-row-matvec-at-4-and-8-rows-2026-10-03).
+counters: [apple-gpu.md § `nu_matvec_iq4_xs`](engine/apple-gpu.md#nu_matvec_iq4_xs-on-qwens-merged-gate-shape-2026-10-03)
+and [§ A word-outer multi-row matvec](engine/apple-gpu.md#a-word-outer-multi-row-matvec-at-4-and-8-rows-2026-10-03).
 
 **Evidence.** Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.17.0, ReleaseSafe,
 Qwen3.8-27B UD-Q4_K_M, F16 KV; `make speed`, 5 interleaved pairs on
@@ -7593,7 +7593,7 @@ the multi-row bodies and their store), `inference/src/backends/metal/root.zig`
 (`usesMatvecRows`, `small_batch_rows`, `matvec_rows_per_simdgroup`),
 `inference/metal-check.zig` (the routing selection check),
 `scripts/speed.py` (the amended keep rule), `docs/development.md`,
-`docs/reference/metal-backend.md`, `docs/reference/apple-gpu.md`,
+`docs/engine/metal-backend.md`, `docs/engine/apple-gpu.md`,
 `docs/architecture.md`, `README.md` (the speculative table's Qwen row).
 
 **Remaining.** Each small, best measured on a cool machine: a
@@ -7668,7 +7668,7 @@ render starts with, then prefills the rest:
   from.
 
 Design changes from the plan, all recorded in
-[session.md § The agent's token cache](reference/session.md#the-agents-token-cache-agnt-19):
+[session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19):
 entries match on rendered text, not tokens (a turn's generated tokens need
 not be the canonical encoding of their text); a state holding an image is
 never kept (the placeholder text is the same for every image); the build
@@ -7762,7 +7762,7 @@ cover.
 `src/agent/tools/bash.zig`, `src/tui/keys.zig`, `src/tui/event.zig`,
 `src/tui/status.zig`, `src/config.zig`, `src/paths.zig`, `src/cli.zig`,
 `src/help.zig`, `src/completion.zig`, `build.zig`;
-`docs/reference/session.md` (§ The agent's token cache), `docs/spec.md`
+`docs/engine/session.md` (§ The agent's token cache), `docs/spec.md`
 (§ 5.8, § 6, § 7.4, the agent's editor and loop bullets),
 `docs/development.md` (§ User directories, the example configuration).
 

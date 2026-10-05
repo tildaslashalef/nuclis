@@ -3,7 +3,7 @@
 //! their draft source. Four trained heads, one per proposed position, that
 //! read the target's sliding (layer `n_layer − 2`) and global (layer
 //! `n_layer − 1`) key/value caches and write neither; the facts and their
-//! provenance are in docs/reference/speculative-decoding.md § The Gemma 4
+//! provenance are in docs/engine/speculative-decoding.md § The Gemma 4
 //! assistant heads. Three pinned heads, keyed by their target's width (the
 //! 12B's 3840, the 26B-A4B's 2816, the E4B's 2560); the E4B's is also
 //! narrower inside (`Config`). The binder is deliberately narrow: a file

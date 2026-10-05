@@ -6,7 +6,7 @@
 //! schedule is `gemma4_runtime.zig`'s, which remains the CPU reference these
 //! results are compared against (docs/reference/gemma4.md). An image span
 //! is one prefill chunk whose sliding-layer attention is bidirectional
-//! (`prefillVision`; docs/reference/vision.md).
+//! (`prefillVision`; docs/engine/vision.md).
 //!
 //! What this plan asks of the backend beyond the Qwen plan, all of it
 //! decided by the forward pass rather than by this file: the tanh-GELU gate
@@ -20,7 +20,7 @@
 //! per-layer embedding (existing matvec, norm, and GELU-pair kernels) and
 //! shared layers reading an earlier layer's cache, and on the expert
 //! configuration the gathered kernels (`route`, `matvecExperts`, and for
-//! chunks `expertLists` + `matmulExperts`; docs/reference/metal-backend.md
+//! chunks `expertLists` + `matmulExperts`; docs/engine/metal-backend.md
 //! § Gathered expert kernels). Every expert matrix is wrapped resident; a
 //! token's dispatches read only its selected experts' bytes.
 //!

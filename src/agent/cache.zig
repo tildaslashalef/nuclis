@@ -1,6 +1,6 @@
 //! The agent's token cache: model states saved at turn boundaries, so a
 //! conversation that begins with a saved prefix restores it instead of
-//! prefilling it again (docs/reference/session.md § The agent's token cache).
+//! prefilling it again (docs/engine/session.md § The agent's token cache).
 //!
 //! Recurrent layers cannot be rewound by truncating the KV cache, so a state
 //! resumes only where a snapshot was taken: the cache is a set of snapshots

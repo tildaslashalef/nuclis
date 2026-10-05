@@ -1,5 +1,5 @@
 //! Image preprocessing for the projectors, exact to the reference's
-//! pipeline (docs/reference/vision.md § Preprocessing): the smart size
+//! pipeline (docs/engine/vision.md § Preprocessing): the smart size
 //! (round to the patch·merge grid, then the pixel bounds), a
 //! Pillow-compatible separable resize (bicubic or Lanczos) in 22-bit fixed
 //! point,

@@ -133,7 +133,7 @@ cover a 3–4 vector, denominator clamping, zero, and tiny values. Four RoPE cas
 use a synthetic 256-channel head at positions 0, 1, 127, and 32,767, with rotary
 width 64, base 10,000,000, IMRoPE mode 40, sections `[11,11,10,0]`, positions
 `[p,p,p,0]`, frequency scale 1, extension factor 0, and attention factor 1.
-The [reference guide](reference-baseline.md) documents rebuilding the checkout.
+The [reference guide](../reference/reference-baseline.md) documents rebuilding the checkout.
 
 L2 fixtures use absolute tolerance `1e-7`. RoPE's rotated channels use `5e-6`
 through position 127 and `1e-3` at 32,767; tails match exactly. The largest
@@ -318,7 +318,7 @@ do not yet generate text.
 for a mixture-of-experts layer's routing and expert projections; the chain
 a model applies before the router logits (norms, scales) and after the sum
 (post norms) belongs to its adapter (Gemma 4 26B-A4B's is in
-[gemma4.md](gemma4.md)).
+[gemma4.md](../reference/gemma4.md)).
 
 `ExpertMatrix` is a borrowed 3-D encoded tensor `[experts][rows][columns]`
 (GGUF dimension 2 is the expert): `experts` contiguous `rows × columns`
@@ -349,7 +349,7 @@ Metal decode chain (`route`, `matvecExperts`, `geluMulRows`,
 
 [hadamard.zig](../../inference/src/backends/cpu/hadamard.zig) is the
 reference for the transform a Hadamard-folded file (Bonsai 2 27B,
-[bonsai.md](bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it))
+[bonsai.md](../reference/bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it))
 needs on every projection input: `forward(x, signs, block)` multiplies each
 element by its ±1 sign and then applies the normalized Sylvester
 Walsh-Hadamard transform in place to every `block` consecutive elements
@@ -362,7 +362,7 @@ Tests check the butterflies against the parity-defined matrix for blocks
 1, 2, 8, and 1024, the round trip, a constant and a delta block by hand,
 and that rejected shapes leave the input untouched. Which activations
 take it, and the value-head regathering before `ssm_out`, are the
-adapter's runtime's business ([bonsai.md](bonsai.md#cpu-reference-against-the-fork-modl-16-2026-09-18)).
+adapter's runtime's business ([bonsai.md](../reference/bonsai.md#cpu-reference-against-the-fork-modl-16-2026-09-18)).
 
 ## Validation and limits
 
@@ -392,6 +392,6 @@ executes on the CPU and Metal backends.
 ## Full-model composition
 
 The CPU references now execute the full pinned Qwen text schedule through
-`models/qwen35_runtime.zig`. See [generation](generation.md) for CLI usage,
+`models/qwen35_runtime.zig`. See [generation](sampling.md) for CLI usage,
 full-layer/logit comparisons, and explicit session isolation/reset checks.
 Metal remains pending; this implementation is for numerical bring-up.

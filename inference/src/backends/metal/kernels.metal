@@ -3122,7 +3122,7 @@ kernel void nu_argmax_final(device const float * values [[buffer(0)]],
     result[0] = idx;
 }
 
-// ---- The vision projectors' kernels (docs/reference/vision.md) ----------
+// ---- The vision projectors' kernels (docs/engine/vision.md) ----------
 // LayerNorm over `rows` rows of `width`: y = (x - mean) / sqrt(var + eps) · w
 // + b, the population variance in F32 over a two-pass reduction. One
 // 256-thread group per row; `output` may alias `input` exactly.

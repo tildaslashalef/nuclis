@@ -4,7 +4,7 @@
 //! it in history, renders a native tools block, and renders assistant calls and
 //! tool results in the template's own syntax. Multimodal content and assistant
 //! prefill are absent. It owns no tokenizer or model equations. See
-//! docs/reference/prompt-profile.md.
+//! docs/engine/prompt-profile.md.
 //!
 //! The profile also carries the model's official per-mode sampling defaults
 //! (`samplingDefaults`): they belong to the checkpoint's recommended usage,

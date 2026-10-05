@@ -38,7 +38,7 @@ HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 HTML_ID = re.compile(r"<a\s+(?:id|name)=\"([^\"]+)\"")
 ROOT_PATH = re.compile(r"(?<![\w./-])(docs/[\w./-]+\.md)(#[\w-]+)?")
 SITE_LINK = re.compile(rf"https://github\.com/{REPO}/(?:blob|tree)/main/([\w./-]+?)(#[\w-]+)?(?=[\"'\s)<]|$)")
-TEXT_SUFFIXES = (".json", ".py", ".zig")
+TEXT_SUFFIXES = (".json", ".py", ".zig", ".metal", ".cpp", ".m", ".h", ".sh")
 # Paths that tests and examples in code name as data, not as documents.
 CODE_DATA_PATHS = {"docs/x.md", "docs/a.md", "docs/faq.md", "docs/design.md", "docs/history.md", "docs/fix_a_queue.md"}
 
@@ -76,24 +76,36 @@ def anchors(markdown):
     return out
 
 
-def links(markdown):
-    """(start, end, target) of each link target outside code, in document order."""
-    out = []
-    fence = None
-    offset = 0
+def mask_code(markdown):
+    """`markdown` with fenced blocks and code spans blanked, offsets kept."""
+    out, fence = [], None
     for line in markdown.splitlines(keepends=True):
         stripped = line.lstrip()
         if stripped.startswith(("```", "~~~")):
             marker = stripped[:3]
             fence = None if fence == marker else (fence or marker)
-        elif not fence:
-            spans = [m.span() for m in CODE_SPAN.finditer(line)]
-            for pattern in (LINK, REF_DEF):
-                for m in pattern.finditer(line):
-                    if any(a <= m.start() < b for a, b in spans):
-                        continue
-                    out.append((offset + m.start(2), offset + m.end(2), m[2]))
-        offset += len(line)
+            out.append(re.sub(r"[^\n]", " ", line))
+        elif fence:
+            out.append(re.sub(r"[^\n]", " ", line))
+        else:
+            out.append(CODE_SPAN.sub(lambda m: "`" + "x" * (len(m[0]) - 2) + "`", line))
+    return "".join(out)
+
+
+def links(markdown):
+    """(start, end, target, text span or None) of each link outside code, in document order.
+
+    Link text may wrap onto following lines, as Markdown allows.
+    """
+    masked = mask_code(markdown)
+    out = []
+    for m in LINK.finditer(masked):
+        if "\n\n" in m[1]:
+            continue
+        lead = 2 if m[1].startswith("!") else 1
+        out.append((m.start(2), m.end(2), markdown[m.start(2) : m.end(2)], (m.start(1) + lead, m.end(1) - 2)))
+    for m in REF_DEF.finditer(masked):
+        out.append((m.start(2), m.end(2), markdown[m.start(2) : m.end(2)], None))
     return sorted(out)
 
 
@@ -122,13 +134,35 @@ def relative(source, target_path):
     return rel
 
 
+def display(path):
+    """How link text names a document: its path under docs/, a folder for its README."""
+    rel = path.removeprefix("docs/")
+    return posixpath.dirname(rel) if posixpath.basename(rel) == "README.md" else rel
+
+
+def rename_text(label, old, new):
+    """Link text naming `old` (by root path, docs path, or file name) renamed to `new`."""
+    forms = [
+        (old, "docs/" + display(new)),
+        (old.removeprefix("docs/"), display(new)),
+        (posixpath.basename(old), posixpath.basename(display(new)) or display(new)),
+    ]
+    forms = sorted({f for f in forms if f[0] != f[1]}, key=lambda f: -len(f[0]))
+    if not forms:
+        return label
+    pattern = re.compile(r"(?<![\w./-])(" + "|".join(re.escape(o) for o, _ in forms) + r")(?![\w/-])")
+    lookup = dict(forms)
+    return pattern.sub(lambda m: lookup[m[1]], label)
+
+
 def rewrite_markdown(text, old_source, new_source, moves, anchor_moves):
     """`text` with each relative link re-pointed after `moves` ({old: new} paths).
 
-    Links are read from `old_source`'s directory and written from `new_source`'s.
+    Links are read from `old_source`'s directory and written from `new_source`'s;
+    link text that names a moved document is renamed with it.
     """
     parts, last = [], 0
-    for start, end, target in links(text):
+    for start, end, target, span in links(text):
         if is_external(target):
             continue
         path, anchor = split_target(target)
@@ -144,6 +178,11 @@ def rewrite_markdown(text, old_source, new_source, moves, anchor_moves):
             trailing = "/" if path.endswith("/") and not new_target.endswith("/") else ""
             new = relative(new_source, new_target) + trailing + (f"#{anchor}" if anchor else "")
         if new != target and (new_target != old_target or new_source != old_source or key in anchor_moves):
+            if span and new_target != old_target:
+                label = text[span[0] : span[1]]
+                parts.append(text[last : span[0]])
+                parts.append(rename_text(label, old_target, new_target))
+                last = span[1]
             parts.append(text[last:start])
             parts.append(new)
             last = end
@@ -225,7 +264,7 @@ def check(files):
             continue
         if is_markdown(path):
             text = (ROOT / path).read_text()
-            for start, _, target in links(text):
+            for start, _, target, _ in links(text):
                 if is_external(target):
                     continue
                 line = text.count("\n", 0, start) + 1
@@ -248,19 +287,22 @@ def check(files):
 def move(spec):
     moves, anchor_moves = parse_moves(spec)
     files = tracked()
+    moved_now = {}
     for old, new in moves.items():
         if old in files:
             os.makedirs(ROOT / posixpath.dirname(new), exist_ok=True)
             subprocess.run(["git", "mv", old, new], cwd=ROOT, check=True)
+            moved_now[new] = old
         elif new not in files:
             raise SystemExit(f"docs-check: {old} is not a tracked file")
-    # An interrupted move is resumed: the files list after the moves, by old path.
-    files = [next((o for o, n in moves.items() if n == p), p) for p in tracked()]
+    # A resumed move: a file moved by an earlier run is already rewritten from
+    # its new place, so only this run's moves are read from their old one.
+    files = [moved_now.get(p, p) for p in tracked()]
     changed = 0
     for old_path in files:
         if old_path in NO_REWRITE:
             continue
-        new_path = moves.get(old_path, old_path)
+        new_path = moves.get(old_path, old_path) if old_path in moved_now.values() else old_path
         file = ROOT / new_path
         if is_markdown(old_path):
             text = file.read_text()
@@ -310,7 +352,7 @@ class SelfTest(unittest.TestCase):
 
     def test_links_skip_code(self):
         doc = "[a](x.md) `[b](y.md)` [`c`](z.md#q)\n```\n[d](w.md)\n```\n[r]: ref.md\n"
-        self.assertEqual([t for _, _, t in links(doc)], ["x.md", "z.md#q", "ref.md"])
+        self.assertEqual([t for _, _, t, _ in links(doc)], ["x.md", "z.md#q", "ref.md"])
 
     def test_resolve_and_relative(self):
         self.assertEqual(resolve("docs/reference/a.md", "../spec.md#x"), "docs/spec.md")
@@ -327,6 +369,18 @@ class SelfTest(unittest.TestCase):
         text = "[s](../spec.md) [g](gguf.md#a) [self](#x)"
         out = rewrite_markdown(text, "docs/reference/gemma4.md", "docs/models/gemma4.md", moves, {})
         self.assertEqual(out, "[s](../spec.md) [g](../reference/gguf.md#a) [self](#x)")
+
+    def test_link_text_follows_the_move(self):
+        moves = {
+            "docs/reference/bench.md": "docs/benchmarks/README.md",
+            "docs/reference/clef.md": "docs/models/clef-flash.md",
+        }
+        text = "[bench.md § Runs](reference/bench.md#runs) [reference/clef.md](reference/clef.md) [the clef](reference/clef.md)"
+        out = rewrite_markdown(text, "docs/spec.md", "docs/spec.md", moves, {})
+        self.assertEqual(
+            out,
+            "[benchmarks § Runs](benchmarks/README.md#runs) [models/clef-flash.md](models/clef-flash.md) [the clef](models/clef-flash.md)",
+        )
 
     def test_rewrite_anchor_moved(self):
         am = {("docs/development.md", "config"): ("docs/guide/configuration.md", "config")}

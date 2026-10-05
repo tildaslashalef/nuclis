@@ -5,7 +5,7 @@
 //! The behavior it encodes — `<|start|>ROLE<|message|>…<|eot|>` turns, one
 //! system turn per leading system message (or a synthesized one), the
 //! reasoning-strength line, reasoning kept as its own `to=self` message —
-//! is specified with fixture-backed clauses in docs/reference/prompt-profile.md.
+//! is specified with fixture-backed clauses in docs/engine/prompt-profile.md.
 //!
 //! Two deviations, both decided: the synthesized system turn omits the
 //! template's `Current date:` line (the profile takes no clock; the tests
@@ -13,7 +13,7 @@
 //! always opens its reasoning message).
 //!
 //! Tool calling is the template's ATEM protocol (`fixtures/muse_glimmer-tools.json`,
-//! docs/reference/tool-calling.md): declarations as JSON lines in the
+//! docs/engine/tool-calling.md): declarations as JSON lines in the
 //! system turn, each call its own `assistant to=NAME` message holding an
 //! `<atem:function_calls>` block, each result its own `tool NAME` turn.
 //! The stream decoder's channel grammar hands a `to=NAME` body to `parseTool`.

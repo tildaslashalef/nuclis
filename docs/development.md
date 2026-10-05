@@ -53,7 +53,7 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   Its companions `mmproj-BF16.gguf` and `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`
   sit beside it, verified and not executed
   ([reference/artifacts.md](reference/artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11),
-  [reference/gguf-inspection.md](reference/gguf-inspection.md#companion-files-in-modelsqwen-2026-09-08)).
+  [engine/gguf.md](engine/gguf.md#companion-files-in-modelsqwen-2026-09-08)).
 - Two ignored directories hold local state. `.zig-cache/` is disposable:
   Zig's build cache (`make clean-cache` drops it; it grows with every
   build), gate traces and results, the generated playground; `make
@@ -250,7 +250,7 @@ an error.
 Adding a family adds its gates to the manifest and nothing to the
 Makefile ([new-model-guide.md](reference/new-model-guide.md)). The
 manifest's numbers are the accepted tolerances the reference documents
-justify (Qwen's F16 bound in [metal-backend.md](reference/metal-backend.md),
+justify (Qwen's F16 bound in [metal-backend.md](engine/metal-backend.md),
 Gemma's in [gemma4.md](reference/gemma4.md), Muse's in
 [muse-glimmer.md](reference/muse-glimmer.md), Bonsai's in
 [bonsai.md](reference/bonsai.md)); the CPU rows and the F32 cache run at
@@ -487,7 +487,7 @@ override is an error. Otherwise resolve the root from `HOME`.
   cache/                   regenerable runtime data
     prefix/                the agent's saved model states, one per file: primed prefixes
                            and the last turn of each recorded session (`nuclis cache`)
-                           (`cache.disk_bytes`; [reference/session.md § The agent's token cache](reference/session.md#the-agents-token-cache-agnt-19))
+                           (`cache.disk_bytes`; [engine/session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19))
 ```
 
 Create directories only when an operation needs to write them. Inspection/help
@@ -661,7 +661,7 @@ applies to models with no entry, and `--speculative` overrides either.
   revision of the template, which the engine would otherwise refuse as
   `UnsupportedPromptTemplate`; the agent prints a notice at startup, and
   the rendering is the pinned protocol's, not necessarily the file's own
-  ([prompt-profile.md § Evidence](reference/prompt-profile.md#evidence-and-reproduction)).
+  ([prompt-profile.md § Evidence](engine/prompt-profile.md#evidence-and-reproduction)).
   `nuclis config set <key> <value>` changes one key by its dotted name
   (`engine.model hauhau`, `generation.sampling.temperature 0.7`,
   `models.<name>.profile gemma4`; `null` clears an override): the file's
@@ -720,7 +720,7 @@ applies to models with no entry, and `--speculative` overrides either.
   Laya request takes milliseconds, a clef-flash one seconds to minutes,
   and a request waits for every pass ahead of it.
 - Sampling entries are overrides: `null` means the official profile of the
-  reasoning mode ([generation.md](reference/generation.md#sampling-profiles-and-the-selection-chain-modl-01)),
+  reasoning mode ([sampling.md](engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01)),
   so the file never freezes a model's recommended settings. The profile is
   the adapter's (`qwen38` for the one adapter; the catalogue records it per
   entry so `config show` names it without opening the file; the adapter registry dispatches
@@ -1363,7 +1363,7 @@ prints each pipeline's `maxTotalThreadsPerThreadgroup`,
 GPU the thread limit stays 1,024 whatever a kernel's registers
 (dynamic caching), so register pressure is read only from a capture;
 the threadgroup-memory column is the cheap check
-([apple-gpu.md § Registers and occupancy](reference/apple-gpu.md#registers-and-occupancy-under-dynamic-caching)).
+([apple-gpu.md § Registers and occupancy](engine/apple-gpu.md#registers-and-occupancy-under-dynamic-caching)).
 
 For one kernel on one shape, capture a micro-benchmark instead: `make
 bench-kernels ARGS=Q4_K CAPTURE='matvec-Q4_K-5120x17408 (ffn_down)-block'`
@@ -1381,7 +1381,7 @@ checked against the replay's GPU time, which at Maximum matches the
 benchmark's rate), for example
 `matvec-Q4_K-5120x17408-ffn_down-block_2026-09-30T0947_max.csv`, reads
 it, copies the numbers that matter into
-[apple-gpu.md](reference/apple-gpu.md) citing the file name, and deletes
+[apple-gpu.md](engine/apple-gpu.md) citing the file name, and deletes
 the capture (the `.gputrace`), keeping the CSV. About 1 GB each:
 the benchmark's buffers are sized for its largest shape, and the capture
 holds whole buffers.

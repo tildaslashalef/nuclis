@@ -48,7 +48,7 @@ pub const Layer = struct {
 /// full-attention decoder layer of the main shape. Bound only when the file
 /// declares the 65th block; the text schedule never references it. The head
 /// shares `token_embd` and `output` with the text binding
-/// (docs/reference/speculative-decoding.md § The Qwen3.8 draft head).
+/// (docs/engine/speculative-decoding.md § The Qwen3.8 draft head).
 pub const DraftBlock = struct {
     eh_proj: *const Tensor,
     enorm: *const Tensor,

@@ -10,7 +10,7 @@ zig build -Doptimize=ReleaseSafe
 ./zig-out/bin/nuclis validate --model /path/to/model.gguf --json
 ```
 
-Path selection follows [inspection](gguf-inspection.md): an explicit path, then
+Path selection follows [inspection](../engine/gguf.md): an explicit path, then
 the shared root selected by `NUCLIS_HOME` or `HOME`. The command writes no user
 files. Errors produce a nonzero exit code. `inspect` remains a generic container
 tool and can inspect other architectures with recognized tensor layouts.
@@ -41,7 +41,7 @@ The adapter checks every required tensor's dimensions and encoding, then rejects
 unconsumed tensors. Normalization, convolution, and recurrent scalar tensors
 require F32. Matrix tensors accept the nine layouts needed by this initial
 artifact: F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ3_S, and IQ4_XS.
-This is a structural allowlist; numerical acceptance is evidence from [generation.md](generation.md) and [metal-backend.md](metal-backend.md), not from binding.
+This is a structural allowlist; numerical acceptance is evidence from [sampling.md](../engine/sampling.md) and [metal-backend.md](../engine/metal-backend.md), not from binding.
 The validator does not enforce the exact per-tensor quantization choices or
 establish artifact identity. The full-file hash remains a separate check.
 

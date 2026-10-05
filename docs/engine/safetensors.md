@@ -2,7 +2,7 @@
 
 nuclis reads safetensors checkpoints as a second artifact format beside
 GGUF: `nuclis model pull` fetches a set with its configuration and
-tokenizer files ([artifacts.md § Safetensors artifacts](artifacts.md#safetensors-artifacts)),
+tokenizer files ([artifacts.md § Safetensors artifacts](../reference/artifacts.md#safetensors-artifacts)),
 and `inference/src/formats/safetensors.zig` reads and maps it. No model
 family runs one yet; this is the container layer an experimental family
 (Laya, a typed-decision encoder, planned in `TODO.md`) would bind to. There is no llama.cpp oracle here: the format contract and

@@ -176,7 +176,7 @@ pub const TopK = struct {
 /// `retained >= top_p · total` is taken only when `retained` lies outside
 /// `total · (1 ± total_band)`; inside the band the sampler asks for the full
 /// vocabulary. `metal-check` asserts the GPU sum's error is ≤ 2e-6, so the
-/// band holds with a 5× margin (see reference/generation.md).
+/// band holds with a 5× margin (see docs/engine/sampling.md).
 pub const total_band: f64 = 1e-5;
 
 pub const Sampler = struct {

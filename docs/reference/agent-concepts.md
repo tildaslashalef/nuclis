@@ -103,7 +103,7 @@ A tool call uses the same boundary: the profile converts its native
 syntax into a complete call with host correlation ID, name, and JSON-object
 arguments. The agent validates the registered tool and executes it only after
 the completion hands back control. Qwen and Gemma serialize calls and results
-differently ([the evidence](tool-calling.md)); Qwen's native path is
+differently ([the evidence](../engine/tool-calling.md)); Qwen's native path is
 implemented (§8), and Gemma's remains unsupported until its own fixtures exist.
 `generate` and `bench` retain the raw `runLoop` path.
 
@@ -373,7 +373,7 @@ puts a small XML-like body inside; the bracket tokens are what makes decoding
 possible (§8). Gemma 4's template uses an ordinary-token grammar,
 `<|tool_call>call:NAME{…}<tool_call|>`, and its result handoff resumes the model
 turn and can reopen the thought channel — neither is the same shape as Qwen's
-`<tool_response>` fold. ([The evidence](tool-calling.md) records the
+`<tool_response>` fold. ([The evidence](../engine/tool-calling.md) records the
 two formats.)
 
 The lesson is where the difference is allowed to live. The loop sees only

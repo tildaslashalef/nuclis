@@ -562,7 +562,7 @@ fn recoveryCheck(comptime spec: Spec, comptime Model: type, alloc: std.mem.Alloc
 /// the first position's target hidden. Both the block's `h_nextn` and its
 /// greedy token must match. The trace was captured from the pinned reference
 /// with an F32 cache; the tolerances are the bring-up block tolerances
-/// (docs/reference/speculative-decoding.md).
+/// (docs/engine/speculative-decoding.md).
 fn checkDraft(comptime spec: Spec, alloc: std.mem.Allocator, io: std.Io, view: inference.weights.View, binding: spec.Family.Binding, draft: Draft, backend: ?*inference.metal.Backend) !void {
     const Runtime = spec.Family.Runtime;
     const hidden = 5120;

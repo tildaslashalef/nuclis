@@ -3,10 +3,10 @@
 //! pinned llama.cpp server rendered from it. The template text is not in the
 //! tree; `fixtures/gemma4-text.json` is its evidence. The behavior it encodes
 //! — turns, the thinking switch, dropped reasoning, and the `<bos>` prefix —
-//! is specified with fixture-backed clauses in docs/reference/prompt-profile.md.
+//! is specified with fixture-backed clauses in docs/engine/prompt-profile.md.
 //!
 //! Tool calling is the template's own DSL (`fixtures/gemma4-tools.json`,
-//! docs/reference/tool-calling.md): declarations in the system turn, and
+//! docs/engine/tool-calling.md): declarations in the system turn, and
 //! calls, results, and the follow-up all inside one `model` turn. The model
 //! hands off by emitting `<|tool_response>`, which is therefore a stop token.
 //! It owns no tokenizer or model equations.

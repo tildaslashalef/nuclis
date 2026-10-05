@@ -6,7 +6,7 @@
 //! the post-norm; the rotary positions come from each patch's grid cell,
 //! never from its row. `bind` validates the companion file; `Runtime` is the
 //! CPU reference (F64 accumulation); the host tables are shared with the
-//! Metal plan. Facts and provenance: docs/reference/vision.md § Muse Glimmer.
+//! Metal plan. Facts and provenance: docs/engine/vision.md § Muse Glimmer.
 const std = @import("std");
 const gguf = @import("../formats/gguf.zig");
 const weights = @import("../runtime/weights.zig");

@@ -1,5 +1,5 @@
 // Opt-in oracle for the vision projectors, against the pinned llama.cpp's
-// libmtmd. Build/run instructions live in docs/reference/vision.md; outputs
+// libmtmd. Build/run instructions live in docs/engine/vision.md; outputs
 // are local artifacts under .zig-cache/, copied into tests/fixtures/vision/
 // only as a reviewed fixture commit.
 //

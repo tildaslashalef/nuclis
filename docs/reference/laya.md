@@ -11,7 +11,7 @@ multilingual one beside it (an mmBERT-base encoder,
 
 | Part | Files | Status |
 | --- | --- | --- |
-| Tokenizer | `inference/src/tokenizer/hf_json.zig`, `gpt2.zig`, `nfc.zig`, `bpe.zig` | landed ([tokenizer.md § Hugging Face `tokenizer.json`](tokenizer.md#hugging-face-tokenizerjson)) |
+| Tokenizer | `inference/src/tokenizer/hf_json.zig`, `gpt2.zig`, `nfc.zig`, `bpe.zig` | landed ([tokenizer.md § Hugging Face `tokenizer.json`](../engine/tokenizer.md#hugging-face-tokenizerjson)) |
 | Encoder and head, CPU | `inference/src/models/modernbert.zig`, `modernbert_runtime.zig`, `laya.zig`, `inference/src/backends/cpu/dense.zig` | landed (below) |
 | Encoder and head, Metal | `inference/src/models/laya_metal.zig`, `inference/src/backends/metal/` (`attentionSegments`, `geluErfMulRows`) | landed (below) |
 | Input contract, calibration, `Decider` | `inference/src/profiles/laya.zig`, `inference/src/decide.zig` | landed (below) |
@@ -370,7 +370,7 @@ Nothing in the model code changed: the forward, the Metal plan, and the
 
 - **Tokenizer.** Gemma's vocabulary as a Metaspace `tokenizer.json`
   (byte fallback, 580,604 merges, 249 added tokens), the second shape of
-  `hf_json.zig` ([tokenizer.md § Hugging Face `tokenizer.json`](tokenizer.md#hugging-face-tokenizerjson)).
+  `hf_json.zig` ([tokenizer.md § Hugging Face `tokenizer.json`](../engine/tokenizer.md#hugging-face-tokenizerjson)).
   Numbers split to single digits, so the same English log line is about
   40 % more tokens than under the root set.
 - **Special tokens.** `tokenizer_config.json` names `<bos>` (2) as
