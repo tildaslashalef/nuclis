@@ -2502,8 +2502,9 @@ Against today's reference:
 | 16,384 | 37.93 / 53.31 | 0.71× | 206.89 / 456.93 | 0.45× |
 | 32,639 | 31.23 / 43.36 | 0.72× | 136.86 / 325.68 | 0.42× |
 
-The 16,384 spread is one request (decode 35.79 among 39.15, 39.20; its
-prefill dipped with it); without it the row reads 39.18. Otherwise
+The 16,384 decode spread is one request (35.79 between 39.20 and 38.79;
+without it the row reads 39.00); prefill fell from 214 to 203 on the last
+two requests. Otherwise
 unchanged from 2026-09 within ±2.3 %: the mixture of experts gained
 nothing from the new OS on either engine. Peak RSS 7.3 GiB, footprint
 7.5 GiB.
