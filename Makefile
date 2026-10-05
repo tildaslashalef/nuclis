@@ -25,7 +25,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT)
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
-        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf version site-check site-serve docs-check
+        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -267,8 +267,18 @@ test-hf: ## Offline tests of the huggingface package only (`make test` includes 
 # ---- releases --------------------------------------------------------------
 
 # ---- releases (docs/development.md § Versioning) ----------------------------
-# The version PR sets the three manifests; an annotated tag on its merge
-# releases them (`release.yml`).
+# What merged, for the highlights; the version PR; the annotated tag on its
+# merge, which `release.yml` publishes (scripts/release.py).
+
+release-draft: ## What merged since the last tag, the suggested version, where the highlights go
+	python3 scripts/release.py --self-test
+	python3 scripts/release.py draft
+
+release: ## Open the version PR: make release V=X.Y.Z TIERS='ran' (highlights in .zig-cache/highlights-vX.Y.Z.txt)
+	python3 scripts/release.py open "$(V)" --tiers "$(TIERS)"
+
+tag: ## Tag the merged version PR and push it: make tag V=X.Y.Z (release.yml publishes)
+	python3 scripts/release.py tag "$(V)"
 
 version: ## Set the version in the three build.zig.zon files: make version V=X.Y.Z (the release's version PR)
 	@printf '%s' "$(V)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$$' || { echo "usage: make version V=X.Y.Z (got '$(V)')" >&2; exit 1; }

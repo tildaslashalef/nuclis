@@ -783,17 +783,24 @@ package format requires a `.version`; the path dependencies ignore it), and
 - **SemVer with the 0.x convention.** Before 1.0 the minor number is the
   breaking axis: a release with breaking changes or features bumps the
   minor, one with only fixes the patch.
-- **Releasing** is two steps, both the user's call:
-  1. **The version pull request.** On `main`, run `make verify`, `make
-     verify-cpu`, `make verify-long`, and `make verify-release` (they need
-     the pinned models; most units skip these tiers). Then a branch with
-     `make version V=X.Y.Z`, and a pull request `chore(release): vX.Y.Z`
-     whose description drafts the **highlights**: two to four sentences on
-     what the release changes for a user. Merge it.
-  2. **The tag.** On the merge commit, `git tag -a vX.Y.Z` with the
-     highlights as its message (`-F <file>`, or the editor), then `git push
-     origin vX.Y.Z`. `release.yml` does the rest. The tag is signed when
-     git signs tags (`tag.gpgSign`), and GitHub marks it verified.
+- **Releasing** (`scripts/release.py`; an agent runs it on "release"):
+
+  | Step | Command | What it does |
+  | --- | --- | --- |
+  | Gather | `make release-draft` | the pull requests merged since the last tag, each with the first paragraph of its *What and why*; the suggested version; where the highlights go |
+  | Write | (the agent) | the highlights, in `.zig-cache/highlights-vX.Y.Z.txt` |
+  | Verify | `make verify`, `verify-cpu`, `verify-long`, `verify-release` | the release tiers on `main` (the pinned models, about an hour); skipped when no engine code changed |
+  | Propose | `make release V=X.Y.Z TIERS='…'` | from an up-to-date `main`: the branch, `make version`, the commit, the push, and the pull request `chore(release): vX.Y.Z` with the highlights and the tiers in its description |
+  | Merge | the user | |
+  | Tag | `make tag V=X.Y.Z` | on `main` at `origin/main` with the manifest at `X.Y.Z`: the annotated tag with the highlights as its message, signed when git signs tags (`tag.gpgSign`), pushed; `release.yml` publishes |
+
+  Each step refuses before changing anything when its conditions fail (a
+  dirty tree, `main` behind, a version not above the last, a tag that
+  exists, no highlights). **Good highlights** are two to four sentences for
+  someone who uses nuclis: what changed for them first (a model, a speed, a
+  command), measured numbers only, each one in the benchmark record; no
+  internal names, unit jargon, or file paths. They head the release notes,
+  above the generated list of pull requests.
 - **A tag that exists on the remote never moves.** A ruleset refuses
   updating or deleting a `v*` tag; the fix is the next number.
 - `CHANGELOG.md` keeps the releases up to v0.5.0; from v0.6.0 the
