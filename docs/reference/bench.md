@@ -2536,3 +2536,21 @@ The largest gain of the night: decode +9 to +22 % over 2026-09, from
 to after KERN-23's matvec work, which Qwen's +9.9 % also reflects; the
 share due to the OS was not separated. The 4,096 step drifts as on the other slow
 dense runs (10.96 → 9.90 → 9.40). Peak RSS 1.8 GiB, footprint 2.1 GiB.
+
+### nuclis: Gemma 4 E4B QAT (first record)
+
+[nuclis-2026-10-05-gemma4-e4b.json](../benchmarks/nuclis-2026-10-05-gemma4-e4b.json),
+at `f72a81c`, clean, 03:28–03:45, on its own arrays:
+
+| Prompt tokens | Prefill tok/s | Decode tok/s | Decode nuclis / llama.cpp | Prefill nuclis / llama.cpp |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 531.03 ± 0.39 | 46.84 ± 0.02 | 0.75× | 0.89× |
+| 4,096 | 430.80 ± 0.06 | 45.40 ± 0.04 | 0.77× | 0.72× |
+| 16,384 | 276.77 ± 4.57 | 38.02 ± 1.97 | 0.73× | 0.54× |
+| 32,639 | 189.30 ± 0.18 | 33.08 ± 0.38 | 0.74× | 0.49× |
+
+The same shape as the 12B's, a little further behind on decode. The 16K
+spread is again one request (35.74 after 39.15, 39.17; without it 39.16),
+as on the 26B-A4B: both Gemma runs lost about 9 % on one 16K request,
+with prefill dipping too; not investigated. Peak RSS 2.0 GiB, footprint
+2.2 GiB.
