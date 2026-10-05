@@ -15,11 +15,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-The pull request workflow and release-please are in review (branch
-`pr-workflow-and-release-please`). Once it merges and the repository
-settings in its description are applied, release-please opens the v0.6.0
-release pull request; merging that cuts v0.6.0 and archives the worklog at
-its tag. Next: the unit below, after v0.6.0 is published.
+Releases are tag-driven (the pull request for it is in review, branch
+`tag-driven-releases`). Next: v0.6.0, cut the new way: a version pull
+request (`make version V=0.6.0`, the highlights drafted in its description),
+then the user's annotated tag on its merge; it archives the worklog at the
+tag. Then the unit below.
 
 | Unit | What | Sessions |
 | --- | --- | --- |

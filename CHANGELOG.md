@@ -1,10 +1,11 @@
 # Changelog
 
-Notable changes, newest first. From v0.6.0 on, release-please writes each
-section from the merged pull requests' titles, led by the release's
-highlights; each line links its pull request, whose description is the
-record of the work. Releases up to v0.5.0 list the units they closed, linked
-to the worklog at their tag.
+From v0.6.0 on, each release's notes are on the
+[Releases page](https://github.com/tildaslashalef/nuclis/releases): the
+highlights, then every pull request merged since the previous release, each
+linked to its description, the record of the work. This file keeps the
+releases up to v0.5.0, newest first, with the units they closed linked to
+the worklog at their tag.
 
 ## [v0.5.0] - 2026-10-04
 

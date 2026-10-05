@@ -25,7 +25,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT)
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
-        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf site-check site-serve docs-check
+        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf version site-check site-serve docs-check
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -265,6 +265,18 @@ test-hf: ## Offline tests of the huggingface package only (`make test` includes 
 	$(ZIG) build test-hf
 
 # ---- releases --------------------------------------------------------------
+
+# ---- releases (docs/development.md § Versioning) ----------------------------
+# The version PR sets the three manifests; an annotated tag on its merge
+# releases them (`release.yml`).
+
+version: ## Set the version in the three build.zig.zon files: make version V=X.Y.Z (the release's version PR)
+	@printf '%s' "$(V)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$$' || { echo "usage: make version V=X.Y.Z (got '$(V)')" >&2; exit 1; }
+	@for f in build.zig.zon inference/build.zig.zon huggingface/build.zig.zon; do \
+	  sed -i.bak -E 's/^(    \.version = )"[^"]*",$$/\1"$(V)",/' $$f && rm -f $$f.bak; \
+	  grep -q '^    \.version = "$(V)",$$' $$f || { echo "$$f: no .version line set to $(V)" >&2; exit 1; }; \
+	done
+	@echo "version $(V) in build.zig.zon, inference/build.zig.zon, huggingface/build.zig.zon"
 
 # ---- housekeeping ----------------------------------------------------------
 
