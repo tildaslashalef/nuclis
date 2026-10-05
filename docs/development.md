@@ -1426,9 +1426,11 @@ license texts on the web. Do not commit license text files.
 - Keep product requirements and acceptance criteria in [spec.md](spec.md); the
   the active plan lives in [../TODO.md](../TODO.md) and closed units in
   [worklog.md](worklog.md).
-- Add supporting architecture decisions, benchmark reports, and operating guides
-  under `docs/` when there is concrete information to record.
-- Link new documents from [README.md](README.md).
+- Add a document under `docs/` when there is concrete information to record,
+  in the folder whose rule it fits, and give it a line in
+  [README.md](README.md), the hub.
 - Label proposed behavior, implemented behavior, and measured results accurately.
 - Update existing authoritative guidance instead of copying it into a new file.
-- Use relative repository links and remove stale links when moving documents.
+- Use relative repository links. Move a document with `make docs-check
+  ARGS='--move old=new'`, which rewrites every reference; `make docs-check`
+  fails on any link or anchor that does not resolve.

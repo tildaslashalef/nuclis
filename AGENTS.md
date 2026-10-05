@@ -356,7 +356,7 @@ save the next reader the most time.
 
 ### Unit identifiers
 
-`TODO.md`, `docs/roadmap.md`, and `docs/worklog.md` label
+`TODO.md` and `docs/worklog.md` label
 units with an `AREA-NN` identifier (`AGNT-07`, `MODL-03`): a frozen
 four-letter area and a zero-padded sequence number within that area.
 
@@ -403,6 +403,11 @@ benchmark artifacts containing private data, API keys, or user session data.
 Use small, attributable test fixtures. Keep model files outside the repository.
 
 `docs/` is the project documentation hub. Keep exactly one authoritative spec
-([docs/spec.md](docs/spec.md)), link supporting docs from
-[docs/architecture.md](docs/architecture.md), and record durable decisions
-there when needed. Do not require an external project checkout to work here.
+([docs/spec.md](docs/spec.md)). Every document is listed in
+[docs/README.md](docs/README.md) and lives in the folder its rule names:
+`guide/` (using nuclis), `models/` (one file per family), `engine/` (the
+`inference/` package, one file per subsystem), `app/` (the `src/` package),
+`benchmarks/` (the method and the records). A new document gets its line
+there; `make docs-check` holds every link, and `make docs-check
+ARGS='--move old=new'` moves a document with its references. Do not
+require an external project checkout to work here.

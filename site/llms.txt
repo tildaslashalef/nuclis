@@ -9,6 +9,7 @@
 ## Docs
 
 - [README](https://github.com/tildaslashalef/nuclis/blob/main/README.md): what it is, quick start, measured results
+- [All documents](https://github.com/tildaslashalef/nuclis/blob/main/docs/README.md): every document, by folder
 - [Architecture](https://github.com/tildaslashalef/nuclis/blob/main/docs/architecture.md): how a token flows through the engine
 - [Benchmarks](https://github.com/tildaslashalef/nuclis/blob/main/docs/benchmarks/README.md): methodology and every record
 - [Decision API](https://github.com/tildaslashalef/nuclis/blob/main/docs/guide/api.md): `nuclis serve` routes and errors
