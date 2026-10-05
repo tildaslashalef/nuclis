@@ -268,6 +268,13 @@ def check(files):
             tagged[(tag, path)] = None if text is None else anchors(text)
         found = tagged[(tag, path)]
         if found is None:
+            if (
+                at_tag(tag, ".") is None
+                and subprocess.run(
+                    ["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"], cwd=ROOT, capture_output=True
+                ).returncode
+            ):
+                return f"{where}: tag {tag} is not in this clone (git fetch --tags)"
             return f"{where}: {path} does not exist at {tag}"
         if anchor and anchor not in found:
             return f"{where}: {path} at {tag} has no #{anchor}"
