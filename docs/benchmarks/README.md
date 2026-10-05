@@ -14,7 +14,7 @@ zig build -Dmetal=true -Doptimize=ReleaseSafe
 Defaults: 1 warmup, 3 measured runs, 32 output tokens, the pinned chat
 template with thinking off (`--raw` sends literal text). The model,
 backend, and context come from `~/.nuclis/nuclis.json` when it exists
-(8,192 context by default; `make bench` passes `--ctx-size 2048`
+(16,384 context by default; `make bench` passes `--ctx-size 2048`
 explicitly), and the report records the file it ran with (`Config:` /
 `config`) so a published number names its configuration. The output
 budget, repetitions, and sampling never come from the file.
