@@ -32,10 +32,14 @@ NO_REWRITE = {"scripts/docs-check.py"}
 LINKS_ONLY = {"TODO.md"}
 LINK = re.compile(r"(!?\[(?:[^\]\[]|\[[^\]]*\])*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
 REF_DEF = re.compile(r"^( {0,3}\[[^\]]+\]:\s+)(\S+)", re.MULTILINE)
-CODE_SPAN = re.compile(r"`+[^`\n]*`+")
+# A code span: a run of backticks, then text without that run or a blank line
+# (spans may wrap lines), then the same run.
+CODE_SPAN = re.compile(r"(`+)((?:(?!\n[ \t]*\n)(?!\1)[\s\S])*?)\1")
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 HTML_ID = re.compile(r"<a\s+(?:id|name)=\"([^\"]+)\"")
 ROOT_PATH = re.compile(r"(?<![\w./-])(docs/[\w./-]+\.md)(#[\w-]+)?")
+# A link into a tagged revision of this repository, checked against that tag.
+TAG_LINK = re.compile(rf"^https://github\.com/{REPO}/blob/(v[\w.-]+)/([\w./-]+?)(?:#([\w-]+))?$")
 SITE_LINK = re.compile(rf"https://github\.com/{REPO}/(?:blob|tree)/main/([\w./-]+?)(#[\w-]+)?(?=[\"'\s)<]|$)")
 TEXT_SUFFIXES = (".json", ".py", ".zig", ".metal", ".cpp", ".m", ".h", ".sh")
 # Paths that tests and examples in code name as data, not as documents.
@@ -87,8 +91,8 @@ def mask_code(markdown):
         elif fence:
             out.append(re.sub(r"[^\n]", " ", line))
         else:
-            out.append(CODE_SPAN.sub(lambda m: "`" + "x" * (len(m[0]) - 2) + "`", line))
-    return "".join(out)
+            out.append(line)
+    return CODE_SPAN.sub(lambda m: re.sub(r"[^\n]", "x", m[0]), "".join(out))
 
 
 def links(markdown):
@@ -247,9 +251,27 @@ def is_other_text(path):
     ) and "/fixtures/" not in path
 
 
+def at_tag(tag, path):
+    """The text of `path` at `tag`, or None when the tag or the path is absent."""
+    out = subprocess.run(["git", "show", f"{tag}:{path}"], cwd=ROOT, capture_output=True, text=True)
+    return out.stdout if out.returncode == 0 else None
+
+
 def check(files):
     problems = []
     cache = {}
+    tagged = {}
+
+    def judge_tagged(where, tag, path, anchor):
+        if (tag, path) not in tagged:
+            text = at_tag(tag, path)
+            tagged[(tag, path)] = None if text is None else anchors(text)
+        found = tagged[(tag, path)]
+        if found is None:
+            return f"{where}: {path} does not exist at {tag}"
+        if anchor and anchor not in found:
+            return f"{where}: {path} at {tag} has no #{anchor}"
+        return None
 
     def anchors_of(path):
         if path not in cache:
@@ -270,9 +292,15 @@ def check(files):
         if is_markdown(path):
             text = (ROOT / path).read_text()
             for start, _, target, _ in links(text):
+                line = text.count("\n", 0, start) + 1
+                tagged_link = TAG_LINK.match(target)
+                if tagged_link:
+                    problem = judge_tagged(f"{path}:{line}", *tagged_link.groups())
+                    if problem:
+                        problems.append(problem)
+                    continue
                 if is_external(target):
                     continue
-                line = text.count("\n", 0, start) + 1
                 problem = judge(f"{path}:{line}", resolve(path, target), split_target(target)[1])
                 if problem:
                     problems.append(problem)
@@ -355,6 +383,10 @@ class SelfTest(unittest.TestCase):
         doc = '# A\n## A\n```\n# B\n```\n<a id="x"></a>\n'
         self.assertEqual(anchors(doc), {"a", "a-1", "x"})
 
+    def test_code_spans_wrap_lines(self):
+        doc = "see `git show\nv0.6.0:x` (`| [ID](#anchor) |`) and [real](y.md)\n"
+        self.assertEqual([t for _, _, t, _ in links(doc)], ["y.md"])
+
     def test_links_skip_code(self):
         doc = "[a](x.md) `[b](y.md)` [`c`](z.md#q)\n```\n[d](w.md)\n```\n[r]: ref.md\n"
         self.assertEqual([t for _, _, t, _ in links(doc)], ["x.md", "z.md#q", "ref.md"])
@@ -398,6 +430,12 @@ class SelfTest(unittest.TestCase):
         out = rewrite_paths(text, moves, {})
         self.assertIn('"docs/worklog.md#repo-07"', out)
         self.assertIn('blob/main/docs/worklog.md"', out)
+
+    def test_tag_link(self):
+        m = TAG_LINK.match("https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-21--x")
+        assert m is not None
+        self.assertEqual(m.groups(), ("v0.6.0", "docs/worklog.md", "kern-21--x"))
+        self.assertIsNone(TAG_LINK.match("https://github.com/tildaslashalef/nuclis/blob/main/docs/x.md"))
 
     def test_parse_moves(self):
         moves, am = parse_moves("a.md=b.md, c.md#x=d.md")
