@@ -176,6 +176,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | [REPO-33](#repo-33--ci-speed-release-notes-that-lead-with-the-work-the-readme-gif-at-speculative-speed-the-logo-2026-10-04) | CI 5 m 57 s → 2 m 16 s (docs-only pushes skipped, three parallel jobs, working caches); release notes led by highlights and units by area, every published release rewritten; draft-then-publish and build provenance; the README GIF re-recorded with speculation in real time (36 s task, 21–27 tok/s); the nuclis logo | 2026-10-04 |
 | [REPO-34](#repo-34--nuclisdev-the-website-2026-10-04) | nuclis.dev: a static site in `site/` (the agent replay, the engine strip, the drafter, the measured charts, Decision Dungeons), self-hosted subset fonts, SEO and share card, a strict CSP, `make site-check` holding its figures to the README, served as Workers static assets from `main` | 2026-10-04 |
 | [ENGN-21](#engn-21--the-benchmarks-measured-again-on-macos-27-2026-10-0405-two-sessions) | The benchmarks measured again on macOS 27: all five families on both engines at 512 / 4K / 16K / 32,639, three requests each, the reference replaying the committed arrays; Qwen decodes 1.04–1.15× the reference, the others 0.71–0.84×; E4B's first record; README, bench.md, and nuclis.dev republished at four lengths | 2026-10-05 |
+| [REPO-35](#repo-35--the-documents-restructured-a-tree-by-kind-a-hub-the-worklog-no-adrs-current-state-first-2026-10-05-three-sessions) | The documents restructured into `guide/`, `models/`, `engine/`, `app/`, `benchmarks/` with a hub; the log renamed `worklog.md` and its table linked; the ADR folder removed; `make docs-check` holds every link and moves documents | 2026-10-05 |
 
 ## Context
 
@@ -8162,3 +8163,103 @@ requests would separate heat from the engines). Copies of the 2026-09
 numbers remain in `development.md`, `llm-guide.md`, `laya.md`,
 `reference-baseline.md`, and `bench.md`'s older sections; REPO-35 gives
 each number one home. Lengths beyond 32K are not measured.
+
+## REPO-35 — The documents, restructured: a tree by kind, a hub, the worklog, no ADRs, current state first (2026-10-05, three sessions)
+
+**Outcome.** nuclis.dev links into `docs/`, and a newcomer used to land in
+month-old notebooks under one flat `docs/reference/` of 26 files, with a hub
+nothing linked. The documents now have one home per kind, decided with the
+user to take the pain once:
+
+| Folder | Rule | Documents |
+| --- | --- | --- |
+| `docs/` | the long-lived five and the log | `README.md` (the hub), `spec.md`, `architecture.md`, `development.md`, `llm-guide.md`, `worklog.md` |
+| `guide/` | using nuclis | `getting-started.md` (new; the site's setup guide), `configuration.md`, `api.md`, `eval.md` |
+| `models/` | one file per family | `README.md` (adding a model), `catalogue.md`, `qwen3.8.md`, `gemma4.md`, `muse-glimmer.md`, `bonsai.md`, `laya.md`, `clef-flash.md` |
+| `engine/` | the `inference/` package, a file per subsystem | `gguf.md`, `safetensors.md`, `tokenizer.md`, `quantization.md`, `cpu-reference.md`, `metal-backend.md`, `apple-gpu.md`, `session.md`, `sampling.md`, `speculative-decoding.md`, `prompt-profile.md`, `tool-calling.md`, `vision.md` |
+| `app/` | the `src/` package | `agent.md`, `terminal.md` (new) |
+| `benchmarks/` | the method and the records | `README.md` (current results, method, the records' index), `history.md` (new), `llama-cpp.md`, the JSON records |
+
+Moves: `engineering-log.md` → `worklog.md`; `reference/bench.md` →
+`benchmarks/README.md`, its 26 dated sections → `benchmarks/history.md`;
+`reference/reference-baseline.md` → `benchmarks/llama-cpp.md`;
+`reference/gguf-inspection.md` → `engine/gguf.md`; `reference/generation.md`
+→ `engine/sampling.md`; `reference/new-model-guide.md` → `models/README.md`;
+`reference/artifacts.md` → `models/catalogue.md`;
+`reference/qwen-validation.md` → `models/qwen3.8.md`; `reference/clef.md` →
+`models/clef-flash.md`; `reference/agent-concepts.md` → `app/agent.md`;
+`reference/{api,eval}.md` → `guide/`; the other reference documents keep
+their names under `engine/` or `models/`. `development.md`'s user
+directories and model download → `guide/getting-started.md`, its
+configuration file → `guide/configuration.md`, its agent rendering sections →
+`app/terminal.md`; it keeps the contributor guide, with a table of contents.
+No stubs at old paths; `CHANGELOG.md`'s links pin release tags and still
+resolve.
+
+*Removed.* `docs/adr/` (ADR 0001, proposed, implemented with changes, and its
+template; no unit followed the convention). Its durable parts moved first:
+the C ≤ 50E budget, its last pricing, the external evidence surveyed
+2026-09-30, and the alternatives to `engine/speculative-decoding.md` § The
+Qwen verify budget; where a verify batch's cost goes to
+`engine/metal-backend.md`. AGENTS.md no longer mentions ADRs or a roadmap.
+
+*The checker.* `scripts/docs-check.py` (`make docs-check`, `--self-test`, in
+`verify-auto` for `*.md` and `site/`): every relative Markdown link and
+anchor (links that wrap lines included, code skipped), the `docs/…` paths in
+JSON, Python, Zig, Metal, and C++ files, and the site's repository links.
+`--move old=new[,…]` does the `git mv` and rewrites every reference,
+re-relativizing from each file's directory, renaming link text that names the
+moved document (a folder `README.md` reads as its folder), and moving
+anchors with `old.md#a=new.md#b`; an interrupted move resumes. Its first runs
+found these broken links, all fixed: `session.md`'s token-cache and row-checkpoint
+anchors, `vision.md`'s projector anchor in `gates.json`, and in the log
+`roadmap.md`, `agent-spec.md` (unlinked, text kept), an old section number,
+and a benchmark path.
+
+*The log.* Renamed with the user's yes to one mechanical pass over its links
+(paths and anchors only, text unchanged); each row of its table now links
+its entry (164), AGENTS.md's closing rule writes new rows that way, and
+`scripts/changelog.py` reads either the bare or the linked row and falls back
+to `docs/engineering-log.md` at tags from before the rename (a new
+`--self-test`, run by `make changelog`).
+
+*Current state first.* `docs/README.md` lists every document by folder and
+is linked from the README, the site ("All documents"), and `llms.txt`;
+AGENTS.md and `development.md` now give one listing rule. `metal-backend.md`
+opens with what the backend is today and contents split into the backend and
+its dated history; `llm-guide.md` (edited with the user's yes) has contents,
+today's numbers in § 1, and § 27 at its level; `gemma4.md` and `vision.md`
+have contents; `models/qwen3.8.md` is Qwen's family document (the
+architecture at a glance from the file's metadata, where each fact lives).
+Stale text replaced: `development.md` (eval shipped, macOS 27, copied
+numbers → links, two bring-up sentences), `architecture.md` § 11 (closed
+with ENGN-21), `gguf.md`, `sampling.md` (retitled *Generation and
+sampling*), `cpu-reference.md`, `muse-glimmer.md` (the projector shipped),
+`bonsai.md` (its catalogue entry left on 2026-09-26), `laya.md` and the
+README's decision section (today's prefill, 5.4 s per 512-token state),
+`llama-cpp.md`'s introduction.
+
+**Evidence.**
+- `make docs-check` clean after every move commit; `make site-check`,
+  `make lint-py`, `make workloads-validate`, `make gates-validate`, `zig
+  build test`, `make verify-auto` (the fast Metal gates it selected for the
+  changed comments all pass). The CPU and long-context tiers it names were
+  not run: the `.zig`, `.metal`, and `.cpp` changes are path strings in
+  comments.
+- `scripts/changelog.py v0.6.0 --dry-run` links the new entries at
+  `docs/worklog.md`; its self-test reads v0.5.0's log at the old path.
+
+**Files.** `docs/` (the tree above), `scripts/docs-check.py` (new),
+`scripts/changelog.py`, `scripts/nuclis-baseline.py` and
+`scripts/reference-record.py` (the records' methodology pointers),
+`docs/benchmarks/*.json` (the same pointers), `gates.json`, `workloads.json`,
+`Makefile`, `.github/workflows/ci.yml`, `AGENTS.md`, `README.md`,
+`site/index.html`, `site/llms.txt`, `tests/fixtures/provenance.md`, comments
+in `inference/`, `src/`, and `scripts/`, `TODO.md`, this log.
+
+**Remaining.** The log is 525 KB; whether GitHub still renders a Markdown
+file of that size is unchecked (look after the push; if it does not, split
+the log). Units recorded both in `benchmarks/history.md` and in a topic
+document (KERN-13/14/15/16/18, ENGN-12/14/15/16/20, MODL-19/20) keep both
+copies: the history is kept as written. External deep links to old paths
+(not the site's) break; GitHub does not redirect renamed files.
