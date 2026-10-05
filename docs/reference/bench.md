@@ -2508,3 +2508,30 @@ two requests. Otherwise
 unchanged from 2026-09 within ±2.3 %: the mixture of experts gained
 nothing from the new OS on either engine. Peak RSS 7.3 GiB, footprint
 7.5 GiB.
+
+### nuclis: Muse Glimmer 30B
+
+[nuclis-2026-10-05-muse-glimmer.json](../benchmarks/nuclis-2026-10-05-muse-glimmer.json),
+at `b7c0b02`, clean, 02:18–03:18; its 4,096 reference row is the re-run's
+(the record names each row's source):
+
+| Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 96.41 ± 0.02 | 11.62 ± 0.00 | 93.49 / 9.60 | +20.9 % |
+| 4,096 | 84.13 ± 2.59 | 10.09 ± 0.80 | 80.51 / 8.26 | +22.1 % |
+| 16,384 | 68.56 ± 0.38 | 8.08 ± 0.04 | 67.83 / 7.19 | +12.4 % |
+| 32,639 | 59.59 ± 0.01 | 7.19 ± 0.01 | 59.20 / 6.62 | +8.6 % |
+
+Against today's reference:
+
+| Prompt tokens | Decode nuclis / llama.cpp | ratio | Prefill nuclis / llama.cpp | ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 11.62 / 14.24 | 0.82× | 96.41 / 96.43 | 1.00× |
+| 4,096 | 10.09 / 12.25 | 0.82× | 84.13 / 95.31 | 0.88× |
+| 16,384 | 8.08 / 9.63 | 0.84× | 68.56 / 78.67 | 0.87× |
+| 32,639 | 7.19 / 9.38 | 0.77× | 59.59 / 75.43 | 0.79× |
+
+The largest gain of the night: decode +9 to +22 % over 2026-09, from
+0.70× of the reference at 512 to 0.82×; the dense Q4_K matvecs it shares
+with Qwen (KERN-23) carry it. The 4,096 step drifts as on the other slow
+dense runs (10.96 → 9.90 → 9.40). Peak RSS 1.8 GiB, footprint 2.1 GiB.
