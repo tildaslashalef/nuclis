@@ -15,11 +15,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-Releases are tag-driven (the pull request for it is in review, branch
-`tag-driven-releases`). Next: v0.6.0, cut the new way: a version pull
-request (`make version V=0.6.0`, the highlights drafted in its description),
-then the user's annotated tag on its merge; it archives the worklog at the
-tag. Then the unit below.
+v0.6.0 is being released: this version pull request, then the user's
+annotated tag `v0.6.0` on its merge, which archives `docs/worklog.md` at the
+tag. Next: the unit below.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
