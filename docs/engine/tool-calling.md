@@ -1,7 +1,7 @@
 # Tool calling: model evidence and the engine seam
 
-Research checked 2026-09-13 for AGNT-01, extended 2026-09-16 for AGNT-09
-and 2026-09-19 for AGNT-10. These are format findings and design
+Research checked 2026-09-13 for [AGNT-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-01--completion-events-and-the-tool-seam-2026-09-13--2026-09-14), extended 2026-09-16 for [AGNT-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-09--gemma-4-native-tool-calling-2026-09-16)
+and 2026-09-19 for [AGNT-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-10--muse-glimmer-atem-tool-calling-rendering-decoding-fixtures-2026-09-19). These are format findings and design
 constraints; all three profiles implement their native path
 ([prompt-profile.md](prompt-profile.md)).
 
@@ -15,8 +15,8 @@ with configurable thinking and no previous-turn thoughts in ordinary history.
 Neither card alone defines the complete wire format.
 
 The engine's pinned Gemma artifacts are **12B**, not the requested 26B-A4B.
-The latter's numerical implementation landed as MODL-10 (2026-09-18). The existing
-[artifact record](../models/catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11)
+The latter's numerical implementation landed as [MODL-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-10--gemma-4-26b-a4b-catalogue-verdict-acceptance-record-agent-check-2026-09-18) (2026-09-18). The existing
+[artifact record](../models/catalogue.md#pinned-commits-and-digests-2026-09-11)
 and [profile fixtures](prompt-profile.md#evidence-and-reproduction) remain
 authoritative for implemented behavior. A live upstream template is evidence
 for interface design, not permission to replace a pinned profile.
@@ -138,7 +138,7 @@ released text loses the markup instead.
 
 ## Consequences for implementation
 
-AGNT-01 establishes the shared boundary: profiles receive token IDs plus decoded
+[AGNT-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-01--completion-events-and-the-tool-seam-2026-09-13--2026-09-14) establishes the shared boundary: profiles receive token IDs plus decoded
 pieces and emit thinking, answer, complete tool calls, and completion stop
 events. The agent consumes semantic events and owns execution. `runLoop`
 remains the raw primitive for measured generation paths.
@@ -148,7 +148,7 @@ history needs assistant call records and tool-result correlation, not only a
 new role tag. Normalize arguments to a JSON object at the boundary, while
 letting each profile serialize its native format. IDs are host correlation
 data when the model format provides none. Reject unsupported tool inputs
-explicitly in AGNT-01; neither existing profile should silently render them as
+explicitly in [AGNT-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-01--completion-events-and-the-tool-seam-2026-09-13--2026-09-14); neither existing profile should silently render them as
 ordinary text.
 
 Qwen rendering and decoding are both pinned

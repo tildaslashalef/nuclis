@@ -401,7 +401,7 @@ pub const Runtime = struct {
         return @intCast(best);
     }
 
-    // --- the DFlash drafter (MODL-20) ----------------------------------
+    // --- the DFlash drafter --------------------------------------------
 
     fn draftMm(d: *Draft, tensor: *const Tensor, input: []const f32, output: []f32) !void {
         try cpu.matvec(d.io, try d.binding.view.matrix(tensor), input, output, d.row);

@@ -289,7 +289,7 @@ The other families on the same wrapper:
 | Family | Layers | Mixers | What is different |
 | --- | --- | --- | --- |
 | Gemma 4 12B | 48 | sliding-window attention (1,024) and global attention with 512-wide heads | tanh GELU, RoPE factors, scaled residuals, capped logits ([models/gemma4.md](models/gemma4.md)) |
-| Gemma 4 26B-A4B | 30 | as the 12B | the feed-forward is 128 experts, 8 active per token ([models/gemma4.md § 26B-A4B](models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)) |
+| Gemma 4 26B-A4B | 30 | as the 12B | the feed-forward is 128 experts, 8 active per token ([models/gemma4.md § 26B-A4B](models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)) |
 | Muse Glimmer 30B | 52 | 39 windowed (2,048), 13 global | dense; the `llama4` tokenizer splitter ([models/muse-glimmer.md](models/muse-glimmer.md)) |
 | Bonsai 2 27B | 64 | Qwen's | ternary weights in a Hadamard-rotated basis ([models/bonsai.md](models/bonsai.md)) |
 
@@ -489,8 +489,8 @@ What the families that went through the seam actually needed:
 | Case | New | Reference |
 | --- | --- | --- |
 | Gemma 4 12B | `cpu.gelu`, RoPE factors; on the GPU four scalar epilogues, a GELU pair mode, a window parameter on the chunk attention, a wider instantiation of decode attention, a `tanh` clamp | [gemma4.md](models/gemma4.md) |
-| Gemma 4 26B-A4B | not a second adapter: `gemma4.configs` selects by block count; `cpu.experts` and the gathered kernels; `weights.View.expertMatrix`; a per-plan `preferredChunk` | [gemma4.md § 26B-A4B](models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09) |
-| Q4_0 (the QAT file) | a `quant.row` arm, a generic GPU decoder, a specialized matvec and tile, the adapter's `executableEncoding` claim | [gemma4.md § Q4_0 path](models/gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12) |
+| Gemma 4 26B-A4B | not a second adapter: `gemma4.configs` selects by block count; `cpu.experts` and the gathered kernels; `weights.View.expertMatrix`; a per-plan `preferredChunk` | [gemma4.md § 26B-A4B](models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-2026-09-18) |
+| Q4_0 (the QAT file) | a `quant.row` arm, a generic GPU decoder, a specialized matvec and tile, the adapter's `executableEncoding` claim | [gemma4.md § Q4_0 path](models/gemma4.md#q4_0-path-and-the-qat-file-2026-09-12) |
 | Muse Glimmer 30B | a tokenizer splitter, a windowed schedule with global layers, a profile with a reasoning channel and its own tool grammar; no new kernel | [muse-glimmer.md](models/muse-glimmer.md) |
 | Bonsai 2 27B | two ternary encodings, the Hadamard transform, a rotation contract in the Qwen adapter; the Qwen plan otherwise | [bonsai.md](models/bonsai.md) |
 | draft sources | Qwen's embedded block; `gemma4_assistant.zig`, a second GGUF reading the target's caches; `dflash.zig`, a block drafter | [speculative-decoding.md](engine/speculative-decoding.md) |
@@ -523,13 +523,13 @@ Qwen3.8 decodes 1.04–1.15× the reference at every length and prefills
 level at 512, falling to 0.71× at 32K; the
 other families decode 0.71–0.84× and prefill 0.42–0.91×. The numbers are
 the README's [Results](../README.md#results), the record
-[benchmarks § The benchmarks on macOS 27](benchmarks/README.md#the-benchmarks-on-macos-27-engn-21-2026-10-04).
+[benchmarks § The benchmarks on macOS 27](benchmarks/README.md#the-benchmarks-on-macos-27-2026-10-04).
 
 Levers that were built, measured, and kept out, each with its table in the
 record: a multi-row matvec that wins only at 2–3 rows, a wider small-batch
 tile, a split-K matvec, register-reuse prefill attention (shipped only for
 chunks of 17–64 rows; verify batches of up to 16 take the split pass of
-[few-query verify attention](engine/metal-backend.md#few-query-verify-attention-kern-21-2026-09-30)), fused decode norms (shipped
+[few-query verify attention](engine/metal-backend.md#few-query-verify-attention-2026-09-30)), fused decode norms (shipped
 for the dispatch count, not for speed), and speculation on the 26B-A4B,
 whose verify grows with every drafted row (each row routes to its own
 experts) until it costs more than the accepted drafts save. The other

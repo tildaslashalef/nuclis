@@ -562,7 +562,7 @@ pub const Runtime = struct {
         }
     }
 
-    // --- the draft head (MODL-19) --------------------------------------
+    // --- the draft head ------------------------------------------------
 
     /// The target cache a head block reads: that of the target's last
     /// sliding layer for a sliding block, its last (global) layer otherwise,

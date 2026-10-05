@@ -361,9 +361,9 @@ save the next reader the most time.
 ### No unit identifiers
 
 Units are named by what they do, and referenced by their pull request.
-The `AREA-NN` identifiers of the work before v0.6.0 (`KERN-21`, `MODL-08`)
-are history: they resolve in `docs/worklog.md` as it stands at the `v0.6.0`
-tag. Never add a new one. Where an old one remains in a heading, a comment,
+The `AREA-NN` identifiers of the work before v0.6.0 ([KERN-21](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-21--few-query-verify-attention-through-the-split-pass-2026-09-30), [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12))
+are history: they resolve in [the worklog archived at the `v0.6.0`
+tag](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md), and every one left in the documents links its entry there. Never add a new one. Where an old one remains in a heading, a comment,
 or the gate manifests, the sentence must read correctly without it; code
 comments never need one.
 

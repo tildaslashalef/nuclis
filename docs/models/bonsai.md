@@ -190,7 +190,7 @@ at the beginning.` instead of merging. So the digest is not an alias (an
 alias must render every case), and the difference is a stricter input
 contract, not a different rendering: for every conversation the file's own
 template accepts, the pinned profile renders the same bytes. **Decided
-2026-09-18 (MODL-17): the catalogue entry's `profile = .qwen38`**, forced
+2026-09-18 ([MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18)): the catalogue entry's `profile = .qwen38`**, forced
 at open the way a registry entry's profile is (the catalogue's pin is now
 a forced profile, not only the sampling default, so `--model bonsai-2-27b`
 renders without any registry entry; by path, `--prompt-profile qwen38`
@@ -212,7 +212,7 @@ fork's server renders it.
 (2026-09-17), pinned by tag since the fork has already retired one format.
 Built as the mainline recipe with `.reference/prism-llama.cpp`
 in place of the mainline checkout
-([llama-cpp.md § The second oracle](../benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
+([llama-cpp.md § The second oracle](../benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)).
 Two pins, never one moving one: `scripts/quant-fixtures.py` carries
 `PRISM_REVISION` beside `REVISION`, and `profile-alias-check.py` takes
 `--reference-revision`.
@@ -235,7 +235,7 @@ Runs on 2026-09-18 (M4 Pro, Metal, the PQ2_0 file):
   has RMS 7.03 (Qwen 5.46) and a peak of 327 (Qwen 91). The payload of
   `make gate NAME=bonsai-trace-cpu` (session 2).
 
-## CPU reference against the fork (MODL-16, 2026-09-18)
+## CPU reference against the fork (2026-09-18)
 
 [`cpu/hadamard.zig`](../../inference/src/backends/cpu/hadamard.zig) is the
 transform: `forward` (signs, then the butterflies per block, F64 scratch,
@@ -264,7 +264,7 @@ on the PQ2_0 file, then `compare-generation.py` against
 same top three logits as the fork to three decimals (353: 11.505, 1204:
 9.753, 198: 9.348). The two positions take about 56 s on the CPU.
 
-## Metal plan (MODL-17, 2026-09-18)
+## Metal plan (2026-09-18)
 
 [`qwen35_metal.zig`](../../inference/src/models/qwen35_metal.zig) uploads
 the three sign vectors (F32) and, when `value_grouped`, a 48-entry gather
@@ -281,7 +281,7 @@ the transform (the plain file keeps its one dispatch; the BF16 rows go
 through the merged kernel's generic branch), on the prefill path they are
 simply dispatched first. `ssm_out`'s input is regathered from the tiled
 head order to the grouped one by the row-gather kernel added for it
-([metal-backend.md § The rotation on the Qwen plan](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18))
+([metal-backend.md § The rotation on the Qwen plan](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-2026-09-18))
 into a scratch of one decode row and `padded` prefill rows, then
 transformed there. Nothing changes on a plain Qwen file (`make bench` on
 `qwen3.8-27b` after the change: 10.42 tok/s decode, 39.3 prefill on the
@@ -318,12 +318,12 @@ GB/s of weight bytes where the Q4_K kernels move 170–200: 7.2 GB at 93
 GB/s effective is 77.7 ms, 16.4 GB at 170 is 96. The per-kernel profile
 puts the matvecs at about 80 % of the step (97–116 GB/s), the transform
 at 2.1 %, the gather at 0.2 %
-([metal-backend.md](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18));
+([metal-backend.md](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-2026-09-18));
 the kernels are at the set's multiply-rate ceiling (§ Ternary matvecs and
 tiles), so the rate the byte count promises needs a different ternary
 arithmetic in the matvec, the follow-up named there. The fork on the same
 machine decodes at 17.0 tok/s at 512 tokens ([benchmarks § Bonsai
-acceptance record](../benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+acceptance record](../benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
 
 **PTQ1_0, and the entry's move.** The denser packing on the same plan
 (`--model <PTQ1_0 path>`, 2026-09-18, the same `make bench` protocol, two
@@ -341,20 +341,20 @@ path.
 
 ## Status
 
-MODL-16 closed on 2026-09-18: the file validates and binds, the three
+[MODL-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-16--bonsai-2-27b-oracle-facts-ternary-encodings-hadamard-transform-cpu-reference-2026-09-18) closed on 2026-09-18: the file validates and binds, the three
 encodings decode against the fork's fixtures, the CPU reference applies
-the rotation and matches the fork's traces. KERN-10 closed the same day:
+the rotation and matches the fork's traces. [KERN-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-10--ternary-matvec-and-matmul-tiles-the-walsh-hadamard-kernel-2026-09-18) closed the same day:
 the Metal decoders, matvecs, and tiles for the three encodings
-([metal-backend.md § Ternary](../engine/metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18):
+([metal-backend.md § Ternary](../engine/metal-backend.md#ternary-matvecs-and-tiles-2026-09-18):
 PQ2_0 119 GB/s, PTQ1_0 88 GB/s on the output head — at the kernel set's
 multiply rate, half the Q4_0 byte rate by density) and the transform
 kernel (`nu_hadamard`, 1.3–2.2 ms per token as 258 dispatches,
-[§ The Hadamard transform kernel](../engine/metal-backend.md#the-hadamard-transform-kernel-kern-10-session-2-2026-09-18)).
-MODL-17 closed the same day: the Metal plan applies the rotation and
+[§ The Hadamard transform kernel](../engine/metal-backend.md#the-hadamard-transform-kernel-session-2-2026-09-18)).
+[MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18) closed the same day: the Metal plan applies the rotation and
 matches the traces in both cache precisions, the profile is the pinned
 Qwen3.8 one through the catalogue entry, and the acceptance record
 against the fork's server, the agent check, and the PTQ1_0 measurement
-are in [benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18).
+are in [benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18).
 The catalogue entry left on 2026-09-26 when the catalogue was trimmed to five
 entries ([catalogue.md](catalogue.md)); the file still binds, runs, and keeps
 its gates, pulled by repository and file name.

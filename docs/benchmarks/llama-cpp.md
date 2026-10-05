@@ -40,7 +40,7 @@ with Command Line Tools even though `xcrun --find metal` found no standalone
 compiler. Initial shader compilation and subsequent driver-cache hits can have
 different startup costs. No system toolchain changes are required for this path.
 
-## The second oracle: the PrismML fork (MODL-16, 2026-09-18)
+## The second oracle: the PrismML fork (2026-09-18)
 
 Bonsai 2 27B ([bonsai.md](../models/bonsai.md)) is stored in two encodings the
 mainline reference rejects, so its oracle is the PrismML fork of llama.cpp
@@ -76,13 +76,13 @@ the mainline one's flags below except `--lazy-mode`, which its older base
 does not know (drop it; the rest are accepted); `--jinja` renders the
 Bonsai template, while the fork's `llama-completion --jinja` aborts at its
 own start-up template self-test on that template (see bonsai.md). The
-Bonsai acceptance run (MODL-17, 2026-09-18) ran the workload harness
+Bonsai acceptance run ([MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18), 2026-09-18) ran the workload harness
 against that server with `--reference-revision 5d80cff0…` (the harness
 otherwise insists on the mainline pin) and `--family qwen38`, the fork's
 revision recorded as the reference side of
 [reference-2026-09-18-bonsai.json](reference-2026-09-18-bonsai.json)
 and read from there by `nuclis-baseline.py` into the nuclis record
-([benchmarks](history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+([benchmarks](history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
 
 ## Run the workload
 

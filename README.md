@@ -129,7 +129,7 @@ Short code on Qwen3.8 reaches 20.9 tokens/s, and on 2026-10-01 the
 agent's task list spent 38 % less model time. Gemma 4 26B-A4B stays off
 (0.67× at 512): on that mixture of experts the batch grows dearer with
 every drafted token than it saves. Methodology, variance, and every
-record: [docs/benchmarks](docs/benchmarks/README.md#the-benchmarks-on-macos-27-engn-21-2026-10-04).
+record: [docs/benchmarks](docs/benchmarks/README.md#the-benchmarks-on-macos-27-2026-10-04).
 
 ## Decision models: Laya and clef-flash
 
@@ -221,7 +221,7 @@ curl -s localhost:8000/v1/systemone -d '{"model": "clef-flash",
 - [docs/llm-guide.md](docs/llm-guide.md): the concepts behind each
   component, written as they were built.
 - [Merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged): every change, with its
-  evidence; [docs/worklog.md](docs/worklog.md) holds the work before
+  evidence; [docs/worklog.md](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md) holds the work before
   v0.6.0.
 
 ## Design rules

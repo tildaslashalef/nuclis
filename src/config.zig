@@ -1930,7 +1930,7 @@ test "the written initial file parses back exactly and shows the entry shape" {
     try std.testing.expect(gen.entry != null);
     try std.testing.expectEqual(.qwen38, gen.profile);
     try std.testing.expectEqual(@as(usize, 16384), gen.ctx_size);
-    // The entry carries the measured speculative verdict (ENGN-20): Qwen's
+    // The entry carries the measured speculative verdict: Qwen's
     // embedded head pays at draft 7, the mixture-of-experts Gemma's does not.
     try std.testing.expectEqual(true, gen.entry.?.generation.speculative.?);
     try std.testing.expectEqual(@as(usize, 7), gen.entry.?.generation.draft_length.?);

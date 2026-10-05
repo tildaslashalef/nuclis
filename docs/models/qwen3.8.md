@@ -29,12 +29,12 @@ fixture](../../inference/src/models/fixtures/qwen35-27b.json)):
 | --- | --- |
 | Binding and structural validation | below |
 | Tokenizer (BPE over the GGUF vocabulary) | [engine/tokenizer.md](../engine/tokenizer.md) |
-| Chat template, reasoning markers, sampling profile | [engine/prompt-profile.md § Qwen3.8](../engine/prompt-profile.md#qwen38-qwen38), [engine/sampling.md § Sampling profiles](../engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01) |
+| Chat template, reasoning markers, sampling profile | [engine/prompt-profile.md § Qwen3.8](../engine/prompt-profile.md#qwen38-qwen38), [engine/sampling.md § Sampling profiles](../engine/sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08) |
 | Tool calls | [engine/tool-calling.md § Qwen](../engine/tool-calling.md#qwen-xml-like-calls-json-declarations) |
 | CPU forward, DeltaNet, traces against the reference | [engine/cpu-reference.md](../engine/cpu-reference.md), [engine/sampling.md § Numerical traces](../engine/sampling.md#numerical-traces) |
 | Metal plan and its kernels | [engine/metal-backend.md](../engine/metal-backend.md) |
-| Draft head and speculation budget | [engine/speculative-decoding.md § The Qwen3.8 draft head](../engine/speculative-decoding.md#the-qwen38-draft-head-modl-18), [§ The Qwen verify budget](../engine/speculative-decoding.md#the-qwen-verify-budget) |
-| Vision projector | [engine/vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector-modl-21-2026-09-22) |
+| Draft head and speculation budget | [engine/speculative-decoding.md § The Qwen3.8 draft head](../engine/speculative-decoding.md#the-qwen38-draft-head-2026-09-20), [§ The Qwen verify budget](../engine/speculative-decoding.md#the-qwen-verify-budget) |
+| Vision projector | [engine/vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector-2026-09-22) |
 | Companion files and the catalogue entry | [catalogue.md](catalogue.md) |
 
 ## Structural validation

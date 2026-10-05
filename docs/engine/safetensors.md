@@ -70,7 +70,7 @@ nuclis inspect --model <checkpoint> --tensor type_emb.weight            # one te
 
 `nuclis validate` on a safetensors path is `NotRunnable`.
 
-## Evidence (MODL-29, 2026-09-27)
+## Evidence (2026-09-27)
 
 - Laya (`convaiinnovations/laya` at `55cf4c4e`, root set): 206 tensors,
   205 F16 and 1 F32, header 21,536 bytes, 842,587,666 tensor bytes in a

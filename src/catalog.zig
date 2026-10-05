@@ -51,7 +51,7 @@ pub const Entry = struct {
     /// pin a protocol onto a file whose own template digest is not).
     profile: Profile,
     companions: []const Companion,
-    /// The measured speculative verdict (ENGN-20): whether the switch is on
+    /// The measured speculative verdict: whether the switch is on
     /// by default for this entry and the draft length the record chose. The
     /// entry's value wins over the global default (a user's `--speculative`
     /// still overrides it), because the verdict is a property of the family's
@@ -122,7 +122,7 @@ pub const entries = [_]Entry{
     // The mixture-of-experts sibling, QAT file only: the K-quant release
     // stores expert down-projections as Q5_1, which no kernel executes.
     // Pinned 2026-09-17 by the pull; runnable once the adapter binds the
-    // expert tensors (MODL-09), supported with its acceptance record (MODL-10).
+    // expert tensors, supported with its acceptance record.
     .{
         .name = "gemma-4-26b-a4b",
         .repo = "unsloth/gemma-4-26B-A4B-it-qat-GGUF",
@@ -146,7 +146,7 @@ pub const entries = [_]Entry{
     // The on-device E4B, QAT file only: per-layer embeddings and shared
     // KV layers in the adapter, its own template revision (`gemma4_e`, no
     // empty thought channel with thinking off), and a causal image span.
-    // Pinned 2026-09-26 by the pull (MODL-27).
+    // Pinned 2026-09-26 by the pull.
     .{
         .name = "gemma-4-e4b-qat",
         .repo = "unsloth/gemma-4-E4B-it-qat-GGUF",
@@ -236,7 +236,7 @@ pub const Artifact = struct {
 
 pub const decision_entries = [_]DecisionEntry{
     // Laya's English root checkpoint, a ModernBERT-large encoder with a
-    // typed-decision head (MODL-30); pinned 2026-09-27 by the pull.
+    // typed-decision head; pinned 2026-09-27 by the pull.
     .{
         .name = "laya",
         .repo = "convaiinnovations/laya",
@@ -249,7 +249,7 @@ pub const decision_entries = [_]DecisionEntry{
         .support = &.{ "encoder/config.json", "rl_agent_config.json", "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json" },
     },
     // The multilingual checkpoint beside it, an mmBERT-base encoder with the
-    // same head (MODL-33); no routing by language, the caller picks it.
+    // same head; no routing by language, the caller picks it.
     .{
         .name = "laya-multilingual",
         .repo = "convaiinnovations/laya",
@@ -264,7 +264,7 @@ pub const decision_entries = [_]DecisionEntry{
     // Cloudflare's clef-flash: the joint schema head and support files from
     // Cloudflare's repository, the Qwen3.5-9B backbone as bartowski's Q6_K
     // GGUF (llama.cpp b11279, imatrix) and its BF16 projector; pinned
-    // 2026-10-02 by the pull (MODL-34).
+    // 2026-10-02 by the pull.
     .{
         .name = "clef-flash",
         .repo = "Cloudflare/clef-flash",
@@ -417,7 +417,7 @@ test "the table is well formed: unique names, 40-character commits, 64-character
     try std.testing.expectEqual(Profile.muse_glimmer, find("muse-glimmer-30b").?.profile);
     // Files outside the catalogue run through discovery, not by name.
     try std.testing.expect(find("gemma-4-12b") == null and find("bonsai-2-27b") == null);
-    // The measured speculative verdicts (ENGN-20): every drafter pays but the mixture-of-experts head.
+    // The measured speculative verdicts: every drafter pays but the mixture-of-experts head.
     try std.testing.expect(find("qwen3.8-27b").?.speculative);
     try std.testing.expectEqual(@as(usize, 7), find("qwen3.8-27b").?.draft_length);
     try std.testing.expectEqual(@as(usize, 5), find("gemma-4-12b-qat").?.draft_length);

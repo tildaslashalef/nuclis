@@ -135,7 +135,7 @@ lifetimes, throughput, and generation quality remain unmeasured.
 
 ## Companion files in models/qwen (2026-09-08)
 
-(The directory was `models/qwen/` when this was recorded; since MODL-03 on
+(The directory was `models/qwen/` when this was recorded; since [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11) on
 2026-09-11 the same files live under `models/unsloth/Qwen3.8-27B-GGUF/`,
 pulled by `nuclis model pull qwen3.8-27b --all` with provenance sidecars,
 and the imatrix, `config.json`, and `README.md` are no longer kept locally.)

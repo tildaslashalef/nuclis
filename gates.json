@@ -390,7 +390,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/vision.md#the-qwen3-vl-projector-modl-21-2026-09-22"
+   "evidence": "docs/engine/vision.md#the-qwen3-vl-projector-2026-09-22"
   },
   {
    "name": "qwen38-vision-cpu",
@@ -422,7 +422,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/vision.md#the-qwen3-vl-projector-modl-21-2026-09-22"
+   "evidence": "docs/engine/vision.md#the-qwen3-vl-projector-2026-09-22"
   },
   {
    "name": "qwen38-speculative-metal",
@@ -619,7 +619,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen38-draft-head-modl-18"
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen38-draft-head-2026-09-20"
   },
   {
    "name": "qwen38-draft-trace-cpu",
@@ -663,7 +663,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen38-draft-head-modl-18"
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen38-draft-head-2026-09-20"
   },
   {
    "name": "qwen38-draft-stats",
@@ -687,7 +687,7 @@
     "kind": "exit"
    },
    "note": "prints the per-depth acceptance table; a change to the block's forward or commit must reproduce it within one draft per cell",
-   "evidence": "docs/engine/speculative-decoding.md#the-qwen38-draft-head-modl-18"
+   "evidence": "docs/engine/speculative-decoding.md#the-qwen38-draft-head-2026-09-20"
   },
   {
    "name": "qwen38-vocabulary",
@@ -1382,7 +1382,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/vision.md#gemma-4s-projectors-modl-22-2026-09-23"
+   "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
   },
   {
    "name": "gemma4-26b-a4b-vision-cpu",
@@ -1415,7 +1415,7 @@
     "kind": "exit"
    },
    "note": "about 5 minutes",
-   "evidence": "docs/engine/vision.md#gemma-4s-projectors-modl-22-2026-09-23"
+   "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
   },
   {
    "name": "gemma4-qat-draft-trace-metal",
@@ -1453,7 +1453,7 @@
     "kind": "exit"
    },
    "note": "the check compares its rows against inference/src/models/fixtures/gemma4-mtp itself",
-   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
+   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
   },
   {
    "name": "gemma4-qat-draft-trace-cpu",
@@ -1492,7 +1492,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
+   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
   },
   {
    "name": "muse-trace-cpu",
@@ -1733,7 +1733,7 @@
     "kind": "exit"
    },
    "note": "the check compares its rows against inference/src/models/fixtures/muse-dflash itself",
-   "evidence": "docs/engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20"
+   "evidence": "docs/engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-2026-09-21"
   },
   {
    "name": "muse-draft-trace-cpu",
@@ -1773,7 +1773,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20"
+   "evidence": "docs/engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-2026-09-21"
   },
   {
    "name": "muse-vocabulary",
@@ -1830,7 +1830,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/vision.md#muse-glimmers-projector-modl-23-2026-09-23"
+   "evidence": "docs/engine/vision.md#muse-glimmers-projector-2026-09-23"
   },
   {
    "name": "muse-vision-cpu",
@@ -1862,7 +1862,7 @@
     "kind": "exit"
    },
    "note": "about an hour (about 30 s per language-model token on the CPU)",
-   "evidence": "docs/engine/vision.md#muse-glimmers-projector-modl-23-2026-09-23"
+   "evidence": "docs/engine/vision.md#muse-glimmers-projector-2026-09-23"
   },
   {
    "name": "bonsai-trace-cpu",
@@ -2097,7 +2097,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "qwen38-perplexity-full",
@@ -2138,7 +2138,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "gemma4-26b-a4b-perplexity",
@@ -2179,7 +2179,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "muse-perplexity",
@@ -2222,7 +2222,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "muse-perplexity-full",
@@ -2263,7 +2263,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "gemma4-e4b-trace-cpu",
@@ -2430,7 +2430,7 @@
     "max_relative_rms": 0.002
    },
    "evidence": "docs/models/gemma4.md",
-   "note": "measured 0.013 / 4.3e-4 at bring-up (MODL-27); the 12B's 1.0 / 0.05 is its unscaled keys' rounding"
+   "note": "measured 0.013 / 4.3e-4 at bring-up (2026-09-26); the 12B's 1.0 / 0.05 is its unscaled keys' rounding"
   },
   {
    "name": "gemma4-e4b-generation-metal",
@@ -2533,7 +2533,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/vision.md#gemma-4s-projectors-modl-22-2026-09-23"
+   "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
   },
   {
    "name": "gemma4-e4b-vision-cpu",
@@ -2565,7 +2565,7 @@
     "kind": "exit"
    },
    "note": "about 12 minutes",
-   "evidence": "docs/engine/vision.md#gemma-4s-projectors-modl-22-2026-09-23"
+   "evidence": "docs/engine/vision.md#gemma-4s-projectors-2026-09-23"
   },
   {
    "name": "gemma4-e4b-draft-trace-metal",
@@ -2603,7 +2603,7 @@
     "kind": "exit"
    },
    "note": "the check compares its rows against inference/src/models/fixtures/gemma4-mtp-e4b itself",
-   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
+   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
   },
   {
    "name": "gemma4-e4b-draft-trace-cpu",
@@ -2642,7 +2642,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19"
+   "evidence": "docs/engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21"
   },
   {
    "name": "gemma4-e4b-vocabulary",
@@ -2706,7 +2706,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "gemma4-e4b-perplexity-full",
@@ -2747,7 +2747,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-2026-09-24"
   },
   {
    "name": "gemma4-e4b-perplexity-4k",

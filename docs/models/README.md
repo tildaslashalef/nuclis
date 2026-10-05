@@ -2,7 +2,7 @@
 
 The starter guide the spec asked for
 ([spec § Interfaces and extension rules](../spec.md#57-extension-rules)),
-written while Gemma 4 12B went through the seam (MODL-04–MODL-07, 2026-09-11 to
+written while Gemma 4 12B went through the seam ([MODL-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-04--adapter-registry-2026-09-11)–[MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12), 2026-09-11 to
 2026-09-12) and validated by that use. It is the order of work, the
 commands, the gates, and the mistakes already made once. The extension
 rule it enforces: a new family is a new adapter, its tests and prompt
@@ -23,17 +23,17 @@ the transcript will not survive.
   runnable` naming the first tensor whose layout no kernel executes).
   An encoding the tree does not execute is a kernel unit of its own;
   never plan to requantize. Gemma's QAT file (Q4_0) took one session,
-  MODL-08: a fixture from the pinned reference decoder, the CPU row decoder,
+  [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12): a fixture from the pinned reference decoder, the CPU row decoder,
   the generic GPU dequantizer (bit-identical to the CPU), a specialized
   matvec and matmul tile built from the nearest existing block kernel,
   the adapter's `executableEncoding`, and the file's own traces and
-  acceptance record ([gemma4.md § Q4_0 path](gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12)).
+  acceptance record ([gemma4.md § Q4_0 path](gemma4.md#q4_0-path-and-the-qat-file-2026-09-12)).
   Bring the adapter up on a file the kernels already execute first, if
   the repository offers one; the encoding unit then has an oracle of its
   own on the same architecture.
 - Pull it (`nuclis model pull <owner/repo> --file <name>`) and record the
   commit, size, and SHA-256 from the sidecar in
-  [catalogue.md](catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11).
+  [catalogue.md](catalogue.md#pinned-commits-and-digests-2026-09-11).
   The companions (`mmproj`, `mtp`) go into the same table; the catalogue
   entry will need their digests.
 - Confirm the pinned llama.cpp reference (`7620399`,
@@ -68,7 +68,7 @@ a Gemma key to it is not.
 values it accepts and `tokenizer/encode.zig` the splitters. A new model
 or `pre` value needs its own splitter and possibly its own merge alphabet
 (Gemma: SPM-style BPE over code points with U+2581 spaces and `<0xNN>`
-byte fallback, MODL-05; Muse: the `llama4` label, MODL-11). Read the
+byte fallback, [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11); Muse: the `llama4` label, [MODL-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-11--muse-glimmer-30b-artifact-pin-facts-tokenizer-binding-cpu-reference-2026-09-19)). Read the
 regex the reference *runs* for the label, not the one the tokenizer
 declares: `llama-vocab.cpp` may substitute a rewritten form, and the
 generic path in `unicode.cpp` collapses every Unicode class it does not
@@ -212,7 +212,7 @@ the reference's ids.
 
 ## 8. Close
 
-The worklog entry (design deviations, measured numbers, gate
+The pull request's record (design deviations, measured numbers, gate
 results, what was left out), the reference documents the unit changed,
 a llm-guide section if a concept was new, `THIRD_PARTY_NOTICES.md` for
 the template's origin, and the diff checked against the extension rule.

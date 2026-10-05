@@ -417,7 +417,7 @@ pub const Runtime = struct {
         try self.mm(linear.output, try self.rotateGrouped(mixed_out), self.projected);
     }
 
-    // --- the prediction block (MODL-18) --------------------------------
+    // --- the prediction block ------------------------------------------
 
     /// One row of the block at `position`: pair the token with `h_prev`,
     /// project, run the full-attention layer over the block's own cache, the

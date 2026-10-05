@@ -30,7 +30,7 @@ Every command in `nuclis --help` works: `agent`, `generate`, `bench`,
 `serve`, `config`, and `completion`. The engine runs on the CPU reference
 and, built with `-Dmetal=true`, on the Metal backend. [../TODO.md](../TODO.md) says what is in progress, the
 [merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) what changed and why, and
-[worklog.md](worklog.md) the work before v0.6.0.
+[worklog.md](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md) the work before v0.6.0.
 
 ```text
 src/                 executable: CLI, model commands, config
@@ -68,10 +68,10 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`,
   from [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF)
   at commit `4ca720788d1e01f1bff70c033e0d0028fd02e502`, pulled from a
-  clean state by `nuclis model pull qwen3.8-27b --all` on 2026-09-11 (MODL-03).
+  clean state by `nuclis model pull qwen3.8-27b --all` on 2026-09-11 ([MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-03--models-directory-catalogue-and-registry-2026-09-11)).
   Its companions `mmproj-BF16.gguf` and `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`
   sit beside it, verified and not executed
-  ([models/catalogue.md](models/catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11),
+  ([models/catalogue.md](models/catalogue.md#pinned-commits-and-digests-2026-09-11),
   [engine/gguf.md](engine/gguf.md#companion-files-in-modelsqwen-2026-09-08)).
 - Two ignored directories hold local state. `.zig-cache/` is disposable:
   Zig's build cache (`make clean-cache` drops it; it grows with every
@@ -85,7 +85,7 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   PrismML fork `5d80cff` (release `prism-b10687-5d80cff`), the only decoder
   of Bonsai 2 27B's ternary encodings, beside it under
   `.reference/prism-llama.cpp` with the same recipe
-  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
+  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)).
   The decision model's oracle is the `laya` 0.3.20 Python package in a venv
   at `.reference/laya-venv` (Python 3.12 through `uv`; the recipe
   heads `scripts/laya-reference.py`; `--subfolder multilingual` for the
@@ -140,7 +140,7 @@ make the registry cheaper than the recipes it replaced:
 | --- | --- | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the Metal plan, and the 12B QAT file's CPU gates | the Metal plan | the CPU reference |
 | covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities (`*-perplexity-full`), the Gemma 12B QAT file, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
-| cost | minutes (40 gates in 311 s measured 2026-10-02 with `clef-sequences` and `clef-metal`, MODL-34; 38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; worklog, REPO-20, MODL-31, MODL-33; then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 25 min (15 gates, 1,523 s measured 2026-10-02 with `clef-cpu`, 368 s; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, KERN-19, MODL-34) |
+| cost | minutes (40 gates in 311 s measured 2026-10-02 with `clef-sequences` and `clef-metal`, [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one); 38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; worklog, [REPO-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-20--fast-verification-gates-re-derived-from-code-paths-a-release-tier-make-verify-auto-2026-09-29), [MODL-31](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-31--laya-on-metal-packed-batches-bidirectional-windowed-attention-over-sequence-bounds-2026-09-29), [MODL-33](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-33--laya-multilingual-the-metaspace-tokenizer-the-checkpoints-own-special-tokens-checked-on-both-backends-2026-09-29); then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 25 min (15 gates, 1,523 s measured 2026-10-02 with `clef-cpu`, 368 s; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, [KERN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-19--a-threaded-cpu-reference-bit-identical-the-cpu-tier-in-22-minutes-2026-09-30), [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same (CPU gates as `verify-cpu`) | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | every unit that touched the inference stack | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
@@ -371,7 +371,7 @@ about a minute per context instead of an eleven-minute 32K prefill:
   paired ratio holds while the absolute rates do not; `--cooldown 90`
   (seconds idle before each cell) gives cold-chip rates. This is how a
   catalogue verdict is set
-  ([benchmarks § The re-priced speculative verdicts](benchmarks/history.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)).
+  ([benchmarks § The re-priced speculative verdicts](benchmarks/history.md#the-re-priced-speculative-verdicts-2026-10-01)).
 
 **The keep rule** ([TODO.md](../TODO.md) while the decode-speed theme
 runs): keep a change when its median decode, or for a verify lever the
@@ -431,7 +431,7 @@ mode used.
 
 Audited 2026-10-03 against the
 [0.17.0 release notes](https://ziglang.org/download/0.17.0/release-notes.html)
-([REPO-29](worklog.md#repo-29--zig-0170-the-tree-migrated-and-its-features-adopted-2026-10-03-two-sessions)); counts are grep results over the
+([REPO-29](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-29--zig-0170-the-tree-migrated-and-its-features-adopted-2026-10-03-two-sessions)); counts are grep results over the
 tree. 0.16's adoption of the `Io` interface stands, as does the decision to
 skip its concurrency layer.
 
@@ -569,7 +569,7 @@ judged on the pass marks, the habit counts, and the medians rather than
 the means. This is how a change to the system prompt, a tool description,
 or the loop is judged: before and after, on the same list and seeds, and
 the log entry cites the table; the first record is
-[AGNT-13](worklog.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22).
+[AGNT-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22).
 `scripts/agent-tokens.py <variant> [<variant> …]` says where a variant's
 prefill went: per tool, the calls, the tokens their results added (counted
 by `nuclis tokenize --raw`, the engine's own tokenizer), and each tool's

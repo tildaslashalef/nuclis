@@ -116,7 +116,7 @@ layer 3 and after `final_norm`, not at layer 27 or in the head, whose
 values reach 10²–10⁴.)
 
 Measured 2026-09-29, Apple M4 Pro (12 cores), Zig 0.16.0, ReleaseFast,
-the MODL-30 session 2 commit; worst stage per request:
+the [MODL-30](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-30--laya-on-the-cpu-end-to-end-the-oracle-tokenizerjson-modernbert-and-the-decision-head-nuclis-decide-2026-09-29) session 2 commit; worst stage per request:
 
 | Request | Tokens | Options | ms | scaled max \|Δ\| (stage) | rel RMS | scaled logit \|Δ\| |
 | --- | ---: | ---: | ---: | --- | --- | --- |
@@ -179,7 +179,7 @@ zig build test-laya -Doptimize=ReleaseSafe -- ~/.nuclis/models/convaiinnovations
 (gate `laya-metal`, tier verify). The same fixtures and the same bounds
 as the CPU forward; with a trace the plan commits after every stage and
 the host reads the residual rows. Measured 2026-09-29, Apple M4 Pro,
-Zig 0.16.0, ReleaseFast, the MODL-31 commit; worst stage per request, the
+Zig 0.16.0, ReleaseFast, the [MODL-31](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-31--laya-on-metal-packed-batches-bidirectional-windowed-attention-over-sequence-bounds-2026-09-29) commit; worst stage per request, the
 times with a commit per traced stage (31 command buffers; the first
 includes pipeline warm-up):
 
@@ -329,7 +329,7 @@ the matrices are too narrow to fill the cores).
 **Metal against the CPU**, as a filter runs: one noul question over 1,
 10, and 50 synthetic log states of about 60 and about 500 tokens
 (`nuclis decide --backend … --json --request`, `timings_ms`). Apple M4
-Pro, Zig 0.16.0, ReleaseSafe, the MODL-31 commit, best of three, the
+Pro, Zig 0.16.0, ReleaseSafe, the [MODL-31](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-31--laya-on-metal-packed-batches-bidirectional-windowed-attention-over-sequence-bounds-2026-09-29) commit, best of three, the
 pipelines compiled and the checkpoint in the page cache:
 
 | States × state tokens | Input tokens | Encode, Metal | Encode, CPU | Metal, tokens/s |
@@ -389,7 +389,7 @@ French log whose one error line sits past position 512. The tensors kept
 are encoder layers 0, 1, 3, and 21, `final`, and both head layers; the
 bounds are the root set's. Gates `laya-multilingual-vocabulary`,
 `laya-multilingual-cpu`, `laya-multilingual-metal`, tier verify. Measured
-2026-09-29, Apple M4 Pro, Zig 0.16.0, ReleaseFast, the MODL-33 commit;
+2026-09-29, Apple M4 Pro, Zig 0.16.0, ReleaseFast, the [MODL-33](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-33--laya-multilingual-the-metaspace-tokenizer-the-checkpoints-own-special-tokens-checked-on-both-backends-2026-09-29) commit;
 worst stage per request, CPU then Metal:
 
 | Request | Tokens | Options | CPU ms | CPU scaled max \|Δ\| (stage) | CPU scaled logit \|Δ\| | Metal ms | Metal scaled max \|Δ\| (stage) | Metal scaled logit \|Δ\| |
@@ -418,7 +418,7 @@ ms on the CPU and 28 ms on Metal.
 
 **Time per call**, measured the way the root set's was (one noul over
 synthetic log states, `nuclis decide --json`, `timings_ms`, ReleaseSafe,
-best of three, the MODL-33 commit, Apple M4 Pro), with states sized to
+best of three, the [MODL-33](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-33--laya-multilingual-the-metaspace-tokenizer-the-checkpoints-own-special-tokens-checked-on-both-backends-2026-09-29) commit, Apple M4 Pro), with states sized to
 this tokenizer. The root set on the same states, Metal, is on the right.
 The CPU skipped the 50-state rows of long states:
 

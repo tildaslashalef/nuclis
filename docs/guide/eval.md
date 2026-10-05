@@ -3,8 +3,8 @@
 `nuclis eval` measures a model's perplexity on a text: the one number that
 ranks a quantization, a cache precision, or a kernel's rounding against the
 reference over thousands of positions, where the trace gates see two or
-three. The unit that built it is `APPS-14` in the
-[worklog](../worklog.md); `MODL-26` is the Gemma 4 `verify`
+three. The unit that built it is [APPS-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-14--teacher-forced-eval-perplexity-against-the-references-per-token-run-the-all-rows-prefill-a-gate-per-family-2026-09-24) in the
+[worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md); [MODL-26](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-26--gemma-4s-metal-verify-rows-carry-the-final-soft-cap-2026-09-24) is the Gemma 4 `verify`
 fix it surfaced.
 
 ## The method
@@ -116,7 +116,7 @@ So the pinned references are **per-token runs** (`--ubatch 1`, which adds
 `-b <ctx> -ub 1`), for every family. The per-token reference is slow
 (it decodes one token per call) but is written once.
 
-## The reference record (APPS-14, 2026-09-24)
+## The reference record (2026-09-24)
 
 wikitext-2-raw `wiki.test.raw` (1,290,590 bytes, SHA-256 `173c87a5…`,
 fetched by `make eval-corpus`), eight windows of 512 (4,096 tokens, 2,040
@@ -179,7 +179,7 @@ reference's per-token run, as the 512 record does.
 
 | Model | nuclis | reference, per-token | difference | status |
 | --- | ---: | ---: | ---: | --- |
-| Gemma 4 12B | 752.989 ± 46.78 | 751.820 ± 46.67 | +0.155 % | gate `gemma4-perplexity-4k` (149 s; retired 2026-09-29 with the file, REPO-19) |
+| Gemma 4 12B | 752.989 ± 46.78 | 751.820 ± 46.67 | +0.155 % | gate `gemma4-perplexity-4k` (149 s; retired 2026-09-29 with the file, [REPO-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-19--the-gemma-4-12b-k-quant-files-gates-retired-with-the-file-2026-09-29)) |
 | Gemma 4 26B-A4B | 992.812 ± 56.10 | 1010.894 ± 57.18 | **−1.789 %** | open: no gate |
 | Qwen3.8-27B, Muse Glimmer | — | not recorded | — | reference run stopped |
 
@@ -204,13 +204,13 @@ stopped before they finished. `scripts/reference-perplexity.py --ctx 4096
 --chunks 4 --ubatch 1` produces them, and each then gets a
 `*-perplexity-4k` gate in `gates.json`.
 
-## Gemma 4's verify rows (MODL-26, 2026-09-24)
+## Gemma 4's verify rows (2026-09-24)
 
 Building `prefillRows` surfaced a gap in a sibling path: Gemma 4's Metal
 `verify` ran the head over every row without the final soft-cap, so sampled
 speculative acceptance on Gemma drew from uncapped logits (row 0 of
 `<bos>Hello,` 27.8 from the stepped logits). Fixed and gated; the facts are in
-[speculative-decoding.md § The Gemma 4 assistant heads](../engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
+[speculative-decoding.md § The Gemma 4 assistant heads](../engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21).
 
 ## Regenerating a reference
 

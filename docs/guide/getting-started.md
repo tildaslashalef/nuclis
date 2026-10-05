@@ -72,7 +72,7 @@ an error).
 More on each: the models layout in [models/catalogue.md](../models/catalogue.md),
 the settings in [configuration.md](configuration.md), sessions in
 [spec.md § Sessions and storage](../spec.md#74-sessions-and-storage), the
-saved states in [engine/session.md § The agent's token cache](../engine/session.md#the-agents-token-cache-agnt-19).
+saved states in [engine/session.md § The agent's token cache](../engine/session.md#the-agents-token-cache-2026-10-04).
 
 ## Model download
 

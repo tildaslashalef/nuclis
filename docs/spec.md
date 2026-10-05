@@ -3,7 +3,7 @@
 This is the authoritative statement of what nuclis is, what it must do, and
 the decisions that bound how it does it. It states requirements and
 accepted decisions, not status: what changed and why is in the
-[merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) (before v0.6.0, the [worklog](worklog.md)), what it does next in
+[merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) (before v0.6.0, the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md)), what it does next in
 [TODO.md](../TODO.md), how it is built and measured in
 [development.md](development.md), how it is structured in
 [architecture.md](architecture.md), and the facts behind each component in
@@ -123,7 +123,7 @@ A file outside the catalogue whose architecture has an adapter is
 *runnable*: `config init --discover` registers it (the profile by template
 digest, the family's forced when none matches). The Gemma 4 12B K-quant
 release and Bonsai 2 27B (Qwen3.8 ternary, which renders the Qwen profile
-by force) left the catalogue on 2026-09-26 (APPS-17) and run this way.
+by force) left the catalogue on 2026-09-26 ([APPS-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-17--the-catalogue-at-five-entries-the-registry-in-name-order-2026-09-26)) and run this way.
 
 Requirements:
 
@@ -606,7 +606,7 @@ one command; the evaluation CLI stays separate.
   file's last `boundary` starts that render and its state is on disk (same
   model files, backend, context size, and build), the state is restored and
   only the rest is prefilled; otherwise the whole conversation is
-  ([engine/session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19)).
+  ([engine/session.md § The agent's token cache](engine/session.md#the-agents-token-cache-2026-10-04)).
 - `agent ls` and the `/resume` picker list a workspace's sessions (the
   picker marks the one in use); `agent rm <id>` and Ctrl-D in the picker
   delete one, named by its id or a prefix of exactly one id (the picker
@@ -647,7 +647,7 @@ A turn is a loop over steps, at most 16 per turn:
   turn, or compaction restarts from the longest cached state the
   conversation begins with (the primed prefix or a turn's end) and
   replays the rest, and the bar names the cause and the tokens prefilled
-  and restored ([session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19)).
+  and restored ([session.md § The agent's token cache](engine/session.md#the-agents-token-cache-2026-10-04)).
 - Compaction: one tool result may not exceed an eighth of the context
   window in tokens (never below 256); it is cut at a line boundary with a
   note saying how to ask for the rest. When a step still does not fit,

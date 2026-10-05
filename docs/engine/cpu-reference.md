@@ -183,11 +183,11 @@ other or any input. No allocation or I/O occurs; the function borrows all buffer
 
 Dot products, scaled scores, exponentials, and weighted sums remain F64. This
 avoids narrowing large finite dot products into F32 infinity before softmax.
-The reference's cache is F32 by decision (KERN-07): `Session.Rows.floats` asserts
+The reference's cache is F32 by decision ([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)): `Session.Rows.floats` asserts
 an `f32` layout, the CPU runtime never asks for another, and an `f16`
 request on `--backend cpu` runs F32 and reports it. The F16 cache is a GPU
 layout whose tolerance against this reference is recorded in
-[metal-backend.md § F16 KV cache](metal-backend.md#f16-kv-cache-kern-07).
+[metal-backend.md § F16 KV cache](metal-backend.md#f16-kv-cache-2026-09-10).
 Subtracting the maximum makes exponentials at most one, with at least one
 nonzero term. Values are accumulated with these unnormalized weights and divided
 by their sum before the final F32 conversion. The existing F32 softmax API is
@@ -266,7 +266,7 @@ both output and final state. Expected convolution history is the explicit window
 shift, not an output of `ggml_ssm_conv`. Regenerate with
 `scripts/cpu-vector-fixtures.py`; no model or GPU is needed.
 
-### Chunkwise DeltaNet (ENGN-04, stage 1)
+### Chunkwise DeltaNet (2026-09-09, stage 1)
 
 `recurrent.deltaChunk(chunk, state, next_state, output, scratch)` computes
 `C` consecutive steps of the same head without stepping the matrix per
@@ -308,7 +308,7 @@ against this function and against the sequential steps.
 A checkpoint test demonstrates buffer restoration at the primitive level.
 Session rollback must restore convolution history and DeltaNet matrices
 along with attention KV and token position; the session does that
-([session.md § Checkpoint and rewind](session.md#checkpoint-and-rewind-engn-11)),
+([session.md § Checkpoint and rewind](session.md#checkpoint-and-rewind-2026-09-19)),
 and the full model composed from these primitives generates text
 ([§ Full-model composition](#full-model-composition)).
 
@@ -343,7 +343,7 @@ per-expert `down_scale[e_s]`, times `weights[s]`, summed over the slots
 in F64. Scratch is `Ffn.scratchLen()` floats plus one F64 per output. The
 Metal decode chain (`route`, `matvecExperts`, `geluMulRows`,
 `matvecExperts`, `combineExperts`) is checked against it in `test-metal`
-([metal-backend.md § Gathered expert kernels](metal-backend.md#gathered-expert-kernels-kern-09)).
+([metal-backend.md § Gathered expert kernels](metal-backend.md#gathered-expert-kernels-2026-09-18)).
 
 ## The Hadamard rotation's activation side
 
@@ -362,7 +362,7 @@ Tests check the butterflies against the parity-defined matrix for blocks
 1, 2, 8, and 1024, the round trip, a constant and a delta block by hand,
 and that rejected shapes leave the input untouched. Which activations
 take it, and the value-head regathering before `ssm_out`, are the
-adapter's runtime's business ([bonsai.md](../models/bonsai.md#cpu-reference-against-the-fork-modl-16-2026-09-18)).
+adapter's runtime's business ([bonsai.md](../models/bonsai.md#cpu-reference-against-the-fork-2026-09-18)).
 
 ## Validation and limits
 

@@ -10,7 +10,7 @@ on: recurrent state is never rewound by changing a length.
 
 | Layout | Regions | View the layer sees |
 | --- | --- | --- |
-| `attention { key_row, value_row, precision }` | `capacity` key rows and `capacity` value rows, stored as F32 or F16 (`precision`, KERN-07) | `Rows`: `range(first, count)` is a byte range for a GPU binding; `floats(first, count)` is the F32 view the CPU reference reads (asserts `f32`) |
+| `attention { key_row, value_row, precision }` | `capacity` key rows and `capacity` value rows, stored as F32 or F16 (`precision`, [KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)) | `Rows`: `range(first, count)` is a byte range for a GPU binding; `floats(first, count)` is the F32 view the CPU reference reads (asserts `f32`) |
 | `recurrent { history, matrix }` | that many F32 values each, whole | `[]f32` |
 
 `Session.memory` is one page-aligned byte block (`[]align(16384) u8`), so a
@@ -42,7 +42,7 @@ block. The synchronous Metal backend waits on every command buffer, so
 these are always valid between steps; an asynchronous backend would have to
 fence first.
 
-## Snapshot and restore (ENGN-06)
+## Snapshot and restore (2026-09-10)
 
 `Session.snapshot(gpa)` copies the **used** extent into a caller-owned
 `Snapshot`: each attention layer's rows `[0, position)` (keys then values,
@@ -61,7 +61,7 @@ sees `[0, position + 1)` after its own write, recurrent state is whole.
 
 The agent keeps snapshots at turn boundaries and restores the longest one
 a render starts with, in memory and on disk: see
-[§ The agent's token cache](#the-agents-token-cache-agnt-19).
+[§ The agent's token cache](#the-agents-token-cache-2026-10-04).
 
 Why copy instead of rewind: 48 of the 64 layers are recurrent, and their
 matrix after token *n* is a function of every token before it. Truncating a
@@ -89,7 +89,7 @@ round trip under every allocation failure, the used-extent size, the
 untouched unused row, precision and capacity mismatches, and a truncated
 snapshot.
 
-## Checkpoint and rewind (ENGN-11)
+## Checkpoint and rewind (2026-09-19)
 
 A snapshot copies at `snapshot()` time whatever the caller then holds in
 the heap; the recovery of a speculative verify batch cannot pay that: it
@@ -119,7 +119,7 @@ batch's rows are rewritten by the same forward, and never by truncating a
 position alone. Qwen's Metal plan avoids both the rewind and the forward:
 its verify leaves the recurrent state at the batch's start and keeps a
 tape that replays the accepted rows
-([§ Pending rows and the verify tape](#pending-rows-and-the-verify-tape-engn-19)).
+([§ Pending rows and the verify tape](#pending-rows-and-the-verify-tape-2026-10-01)).
 
 `reset()` and `restore()` clear the recorded position: both rewrite the
 state, so the region's bytes are stale and are only read after a fresh
@@ -129,7 +129,7 @@ operation used by the loop: the tape replay when the batch kept one, else
 rewind then `prefill(accepted)` on a recurrent model, and
 `truncate(checkpoint + accepted.len)` on an attention-only one.
 
-A model with an embedded draft block (Qwen's `blk.64`, MODL-18) adds the
+A model with an embedded draft block (Qwen's `blk.64`, [MODL-18](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-18--qwen38-draft-head-the-embedded-prediction-block-on-the-cpu-reference-and-the-metal-plan-2026-09-19--2026-09-20-two-sessions)) adds the
 block's attention cache as **one more layout in the same session** while the
 drafter is loaded, so the checkpoint/rewind/truncate contract above covers
 it with no second mechanism: the block's rows are rewritten by `commit`
@@ -147,7 +147,7 @@ so the family's chunk-versus-step bound applies (Qwen 27B ≤ 2.9e-3 max abs
 and 1.5e-4 relative RMS over a 4- and an 8-row batch, argmax equal; Bonsai
 ≤ 8.6e-6; Gemma 4 and Muse exactly zero at these small tiles).
 
-## Pending rows and the verify tape (ENGN-19)
+## Pending rows and the verify tape (2026-10-01)
 
 A verify batch of at most `max_draft_rows` (8) on Qwen's Metal plan does
 not advance the recurrent layers. Per DeltaNet layer it copies the rows'
@@ -180,11 +180,11 @@ test-metal`); `make gate NAME=qwen38-generation-metal` checks the recovery
 at every accepted length of a 4- and an 8-row batch against sequential
 steps and exercises the refusals.
 
-This replaced ENGN-14's row checkpoints (a 150 MB recurrent copy per batch
+This replaced [ENGN-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-14--recovery-without-the-whole-stack-replay-2026-09-20-two-sessions)'s row checkpoints (a 150 MB recurrent copy per batch
 row, 1.25 GB for eight, written by the chunk kernel and restored by a host
-copy); see the [worklog](../worklog.md) for both.
+copy); see the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md) for both.
 
-## The agent's token cache (AGNT-19)
+## The agent's token cache (2026-10-04)
 
 The agent re-prefilled tokens it had already computed whenever the session
 could not continue where it stood: every start (the system block and tools),
