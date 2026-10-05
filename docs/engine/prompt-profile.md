@@ -348,8 +348,8 @@ file, it replays every pinned text, tool, and token case through
 stream is byte-identical, records the digest with the file's identity in
 `fixtures/<profile>-aliases.json`; the profile's `template_aliases` lists
 the same digests and `profiles.forTemplate` accepts them. Checked on
-2026-09-17 for the 17,530-byte Gemma 4 revision that finetunes such as
-`Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf` ship
+2026-09-17 for the 17,530-byte Gemma 4 revision that community Gemma 4 12B
+finetunes ship
 (`dc311bb0…`): **18 of 38 cases differ**, all in history rendering — a
 thought on an earlier tool-call step is dropped (the pinned template keeps
 it), two consecutive assistant messages become two turns, and a tool-result

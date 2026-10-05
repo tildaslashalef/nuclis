@@ -15,17 +15,18 @@ Read [docs/architecture.md](docs/architecture.md) for the stack overview and
 workflow and toolchain conventions live in
 [docs/development.md](docs/development.md); every other document is listed
 in [docs/README.md](docs/README.md), one folder per kind (`guide/`,
-`models/`, `engine/`, `app/`, `benchmarks/`). The plan and the log are described in
+`models/`, `engine/`, `app/`, `benchmarks/`). The plan and the record are described in
 the session protocol below.
 
 ## The session protocol
 
-Two files carry the project's state, and every session starts from them:
+Work arrives as **units**: one unit is one session, one branch, and one pull
+request, however many tasks it holds. Two places carry the state:
 
-| File | Holds | Changes when |
+| Where | Holds | Changes when |
 | --- | --- | --- |
-| [TODO.md](TODO.md) | the active plan: unfinished units only, with a *Where we are* hand-off note | a plan is written, a session ends, a unit closes |
-| [docs/worklog.md](docs/worklog.md) | the durable, append-only record of every unit ever closed, with its evidence | a unit closes (entry **and** table row, together) |
+| [TODO.md](TODO.md) | the queue: the units agreed and not yet merged, each with its design, and a *Where we are* hand-off note | a plan is written, a session ends, a unit merges |
+| the unit's pull request | the record: what changed and why, the evidence, what remains (`.github/pull_request_template.md`) | the session opens it and keeps it current; the user merges it |
 
 **A fresh session is in one of two states.** Read `TODO.md` first; it
 tells you which.
@@ -34,53 +35,52 @@ tells you which.
    the user wants to continue, then continue that unit. Do not replan.
 2. **It is empty.** Nothing is in progress. Ask what to work on, agree the
    theme with the user, and write the plan into `TODO.md` in its format
-   (where-we-are note, order, unit table, unit designs) before touching
-   code. There is no roadmap file and no decision-record folder: a unit
-   needs no record beyond the plan and the log, and a design that outlives
-   it goes to a reference document.
+   (where-we-are note, unit table, unit designs) before touching code.
+   There is no roadmap and no issue tracker: the queue is `TODO.md`, and a
+   design that outlives its unit goes to the document under `docs/` that
+   owns it.
 
-**Ending a session** leaves `TODO.md` able to restart the next one on
-its own: the current unit's section says what the session delivered and
-what remains, *Where we are* says where to pick up. A unit the plan marks
-as several sessions closes once, at its end.
-
-**A unit's section records ``Base: `<rev>` ``** on its own line, the
-commit before its first change, so `make verify-auto` diffs the whole
-unit, committed work included.
+**A unit starts on its own branch** from an up-to-date `main`, named for
+the work (`few-query-verify-attention`); its section in `TODO.md` records
+``Base: `<rev>` ``, the commit it branched from, so `make verify-auto`
+diffs the whole unit.
 
 **A unit's section is written for whoever implements it next**, which may
-be another model: files, functions, numbers, and gate commands, not
-intent. A unit whose design waits on facts (a file's header, a
-reference's driver) reads them in its first session and ends that session
-by rewriting its section at that level, committed before any code.
+be another model: files, functions, numbers, and gate commands, not intent.
+Refer to code and documents by name and heading, never by line number. A
+unit whose design waits on facts (a file's header, a reference's driver)
+reads them first and rewrites its section at that level, committed before
+any code.
 
-**Closing a unit** happens in one commit: append its outcome, evidence,
-files, and remaining limitations to the worklog and add its row to
-the log's table, its identifier linking the entry's heading
-(`| [AREA-NN](#anchor) |`, checked by `make docs-check`); update the
-documents it changed; delete its section and
-row from `TODO.md`; refresh *Where we are*. When the last unit closes,
-empty `TODO.md` back to its header.
+**Finishing a unit**: the checks pass; the documents it changed are
+updated; its section and row leave `TODO.md` and *Where we are* names the
+next unit; the branch is pushed and the pull request opened (or updated)
+with a Conventional Commit title and the record in its description. The
+user reviews and merges it; a squash merge makes the title the commit's
+subject and the description its body, so `git log main` is the history
+of the work. A session that ends before the unit is finished leaves the
+branch pushed, the section saying what was delivered and what remains,
+and the pull request as a draft.
 
-**Nothing closes silently.** Work that lands outside a planned unit (a
-catalogue entry, a process decision, a side fix) is still a unit: give it
-the next identifier of its area and log it in the commit that lands it.
+**Nothing lands silently.** A side fix found inside a unit goes into that
+unit's pull request and its record; work outside any unit is a small unit
+of its own, with its own branch and pull request.
 
-**Durable knowledge never lives only in `TODO.md`**: requirements go to
-`docs/spec.md`, environment facts to `docs/development.md`, designs that
-outlive a unit, and the decisions behind them, to a reference document.
+**Durable knowledge never lives only in `TODO.md` or a pull request**:
+requirements go to `docs/spec.md`, environment facts to
+`docs/development.md`, designs and the decisions behind them to the
+document under `docs/` that owns them.
 
 ## Session hygiene
 
-One session per unit of `TODO.md` (two for units the plan marks as two
-sessions). Inside a unit, compact at sub-unit boundaries (after a commit)
-with a note of what to keep: the current unit, the changed files, the gate
-commands, and any measured numbers not yet written into the docs. Never let
+One session per unit. Compact only between tasks (after a commit) with a
+note of what to keep: the unit, the changed files, the gate commands, and
+any measured numbers not yet written into the docs. Never let
 auto-compaction fire mid-measurement. Keep tool output out of the context:
 pipe builds and benchmarks through `grep`/`tail`, read documents by section,
 and write measurements into the docs as soon as they are taken so the
-transcript is not the only copy. The hand-off is `TODO.md`, never the
-conversation.
+transcript is not the only copy. The hand-off is `TODO.md` and the pull
+request, never the conversation.
 
 ## Working mode
 
@@ -99,7 +99,7 @@ stack in chat, building on previous explanations.
 [docs/llm-guide.md](docs/llm-guide.md) is the user's companion on the
 inference stack itself (kernels, quantization, the runtime, model
 architectures), not on the application or the agent. **Extend it only when
-the user asks**, never as a routine part of closing a unit; when they do,
+the user asks**, never as a routine part of finishing a unit; when they do,
 keep examples grounded in actual implementation status, and read the guide
 before repeating or extending an explanation.
 
@@ -193,7 +193,7 @@ For code changes, once build scaffolding exists:
    surface (`src/tui/`, `src/agent/root.zig`) is exercised through the
    screenshot harness, `make shot ARGS='<steps>'` (`scripts/tui-shot.py`):
    drive the keys, drops, and pastes in tmux, read the captures under
-   `.zig-cache/tui/`, fix, repeat; the log cites the captures as evidence
+   `.zig-cache/tui/`, fix, repeat; the pull request cites the captures as evidence
    ([docs/development.md § Looking at the agent without a person at the
    keyboard](docs/development.md#looking-at-the-agent-without-a-person-at-the-keyboard)).
 4. Run broader checks when shared code or unresolved risks justify them.
@@ -277,60 +277,57 @@ stale references. Do not claim build/test execution when no code or build exists
 
 ## Versioning and releases
 
-- The root `build.zig.zon` `.version` is the single source of truth. The
-  package manifests under `inference/` and `huggingface/` carry the same
-  version because the Zig package format requires one, but the path
-  dependencies ignore it; `make release` bumps all three together so they
-  cannot drift. The executable exposes the version as `nuclis --version`, fed
-  from the root manifest through build options.
+- The root `build.zig.zon` `.version` is the single source of truth, the
+  last released version. The manifests under `inference/` and
+  `huggingface/` carry the same version because the Zig package format
+  requires one; release-please updates all three together (the `//
+  x-release-please-version` marker on each line). The executable reports
+  it as `nuclis --version`, fed from the root manifest through build
+  options.
 - [Semantic Versioning](https://semver.org/) with the 0.x convention: while
-  `0.y.z`, the **minor** is the breaking axis. `0.1.0` is the spec's v0.1
-  acceptance (the 32K context record); until it passes, the tree stays on
-  `0.1.0-dev`. Planned work never bumps the version; acceptance does.
-- Release recipe: `make release` strips the `-dev` suffix (the version is
-  derived from `build.zig.zon`, never passed in), asks for the release's
-  highlights (an editor, or `HIGHLIGHTS=<file>` when no one is at the
-  keyboard), writes the CHANGELOG section led by them and the units closed,
-  commits `chore(release): vX.Y.Z`, tags it (annotated), and bumps
-  to the next `X.(Y+1).0-dev` in a follow-up commit. It never pushes.
-  Before it, `make verify-cpu`, `make verify-long`, and `make
-  verify-release` run the CPU, long-context, and release tiers once,
-  since most units skip them.
-- Tag only forward, never retroactively. Benchmarks and test records cite the
-  git revision, and published numbers cite the release tag once one exists.
-- `CHANGELOG.md` starts at the first tag: per release, the highlights, the
-  units the commits name, breaking changes, and the full commit list folded
-  ([docs/development.md § Versioning](docs/development.md#versioning)).
+  `0.y.z`, the **minor** is the breaking axis (`bump-minor-pre-major`).
+- Releases are cut by [release-please](https://github.com/googleapis/release-please)
+  (`release-please-config.json`, `.github/workflows/release-please.yml`):
+  every merge to `main` updates a standing release pull request with the
+  next version and its CHANGELOG section, built from the merged titles.
+  Merging that pull request is the release, and it is the user's call:
+  release-please tags it with a draft release, and `release.yml` builds,
+  attests, uploads, and publishes it. Before it, write the highlights at
+  the top of its CHANGELOG section, and run `make verify-cpu`, `make
+  verify-long`, and `make verify-release` once, since most units skip
+  those tiers.
+- Tag only forward, never retroactively. Benchmarks and test records cite
+  the git revision, and published numbers cite the release tag once one
+  exists.
 - The Zig toolchain is a separate axis: `minimum_zig_version` pins source
   compatibility, the exact compiler used is recorded in every benchmark
   record, and a Zig upgrade is its own unit of work.
 
 ## Repository hygiene
 
-### Commits and implementation tracking
+### Commits, branches, and pull requests
 
 Use [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/#specification):
 `type(optional-scope): short description`. Use `feat` for features, `fix` for
-bug fixes, and `docs`, `build`, `test`, `refactor`, `perf`, or `chore` when those
-better describe the change. Scopes such as `nuclis`, `inference`, and `gguf`
-are optional. Mark breaking changes with `!` or a `BREAKING CHANGE:` footer.
+bug fixes, and `docs`, `build`, `test`, `refactor`, `perf`, `ci`, or `chore`
+when those better describe the change. Scopes such as `nuclis`,
+`inference`, `metal`, and `gguf` are optional. Mark breaking changes with
+`!` or a `BREAKING CHANGE:` footer. The pull request's title follows the
+same form: it is what the release notes list.
 
-Commit each coherent, verified unit of work: a feature with its tests and docs,
-a focused fix, or a self-contained documentation update. Do not commit every
-small edit, and do not combine unrelated completed work into a large end-of-task
-commit. Inspect the staged diff and run applicable checks before committing.
-Use short subjects; add a body only when it explains a useful reason or tradeoff.
-Routine local commits are authorized. Publishing or pushing is a separate action.
-Do not add `Co-Authored-By:` or any other co-author/attribution trailer to
-commits.
+Commit each coherent, verified step on the unit's branch: a feature with its
+tests and docs, a focused fix, or a self-contained documentation update.
+Do not commit every small edit. Inspect the staged diff and run applicable
+checks before committing. Use short subjects; add a body only when it
+explains a useful reason or tradeoff. Do not add `Co-Authored-By:` or any
+other co-author/attribution trailer to commits or pull requests.
 
-[TODO.md](TODO.md) tracks the units in progress and
-[docs/worklog.md](docs/worklog.md) the
-units that closed. Update them in the same commit as the work they describe.
-Close a unit only when its acceptance checks pass; record partial work and
-missing prerequisites explicitly in `TODO.md`. Keep requirements in
-[docs/spec.md](docs/spec.md), and link evidence or supporting docs instead of
-duplicating the specification.
+**Authorized without asking:** commits on the unit's branch, pushing that
+branch, opening the unit's pull request and updating its description.
+**Never:** pushing to `main` (the ruleset refuses it), merging a pull
+request (the user's review), force-pushing a branch others may have
+fetched, rewriting `main`'s history, or opening issues (the project uses
+none).
 
 ### Code comments
 
@@ -347,50 +344,21 @@ save the next reader the most time.
 - **Inline (`//`): the non-obvious why, never the what.** If a comment restates
   the next line, fix the code or delete the comment.
 - **No history or plan narration.** Do not write "was X, now Y", "step 7", or a
-  unit identifier as the subject of a sentence (see *Unit identifiers*). A
+  unit identifier as the subject of a sentence (see *No unit identifiers*). A
   comment must stay true after the plan is gone.
 - **No duplicated specifications.** If the text lives in `docs/`, the comment
   is one line and a link.
 - Prefer one to three lines. A paragraph is a smell; a multi-paragraph comment
   block almost always belongs in a document.
 
-### Unit identifiers
+### No unit identifiers
 
-`TODO.md` and `docs/worklog.md` label
-units with an `AREA-NN` identifier (`AGNT-07`, `MODL-03`): a frozen
-four-letter area and a zero-padded sequence number within that area.
-
-The areas are frozen. Adding one means recording it in this table first,
-never retrofitting an identifier onto closed work.
-
-| Area | Covers |
-| --- | --- |
-| `APPS` | CLI surface, configuration, command behavior, user-facing application features |
-| `AGNT` | the embedded agent loop, tools, and tool-call handling |
-| `ENGN` | engine, runtime, scheduling, session state, prefill and decode performance |
-| `KERN` | compute kernels and the KV cache |
-| `MODL` | model adapters, quantization, tokenizer, prompt profiles, model artifacts |
-| `TERM` | terminal rendering and interaction |
-| `REPO` | repository, toolchain, versioning, release, and documentation infrastructure |
-
-Numbers are assigned within an area in the order units close, are never
-reused, and a unit that spans sessions keeps one number. The area letters are
-arbitrary; the number carries no meaning beyond sequence.
-
-`docs/worklog.md` is append-only and is never emptied, so a
-closed unit's heading is its identifier's **permanent anchor**. Treat an
-identifier as a *citation*, never as the explanation:
-
-- **Code comments must stand alone.** Deleting every identifier from a comment
-  must not lose what it says or why. Prefer "the profile will own decoding"
-  over "tool-call decoding lives in the profile"; cite the identifier, at
-  most, as an extra pointer.
-- **Current docs** (architecture, llm-guide, reference) may cite an identifier
-  as a link to its log entry, but the sentence must read correctly if the
-  identifier is removed.
-- **The log and the live plan** (the log itself and `TODO.md`) keep
-  identifiers as keys. On close, the identifier migrates to the log and its
-  anchor becomes permanent; never reuse an identifier for a different unit.
+Units are named by what they do, and referenced by their pull request.
+The `AREA-NN` identifiers of the work before v0.6.0 (`KERN-21`, `MODL-08`)
+are history: they resolve in `docs/worklog.md` as it stands at the `v0.6.0`
+tag. Never add a new one. Where an old one remains in a heading, a comment,
+or the gate manifests, the sentence must read correctly without it; code
+comments never need one.
 
 ### User data
 

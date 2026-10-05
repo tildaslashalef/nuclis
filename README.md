@@ -220,8 +220,9 @@ curl -s localhost:8000/v1/systemone -d '{"model": "clef-flash",
   model families, the engine's subsystems, the app, and the benchmarks.
 - [docs/llm-guide.md](docs/llm-guide.md): the concepts behind each
   component, written as they were built.
-- [docs/worklog.md](docs/worklog.md): every closed unit of
-  work and its evidence.
+- [Merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged): every change, with its
+  evidence; [docs/worklog.md](docs/worklog.md) holds the work before
+  v0.6.0.
 
 ## Design rules
 

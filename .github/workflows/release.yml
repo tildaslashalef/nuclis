@@ -1,20 +1,24 @@
-# A `v*` tag publishes a release: the same checks as CI, a ReleaseSafe build
-# with the Metal backend, one binary tarball and one source tarball, a
-# `SHA256SUMS` that covers both, and a build provenance attestation for each
-# tarball (`gh attestation verify`). The release is created as a draft with
-# every asset attached and published last, so a failed upload never leaves a
-# public release missing files.
+# Publishes the draft release release-please opened for a tag: the same
+# checks as CI, a ReleaseSafe build with the Metal backend, one binary
+# tarball and one source tarball, a `SHA256SUMS` that covers both, and a
+# build provenance attestation for each tarball (`gh attestation verify`).
+# The assets are attached to the draft and it is published last, so a failed
+# upload never leaves a public release missing files.
 #
-# The tag is the trigger and `build.zig.zon` is the truth: the job refuses a
-# malformed tag, a tag that disagrees with the manifest, or a release whose
-# section is missing from CHANGELOG.md — all before it builds anything. The
-# notes are the tag's own section of CHANGELOG.md plus a fixed footer, both
-# assembled by `.github/release-notes.sh`, so there is nothing to write twice.
+# `release-please.yml` calls it when a release PR merges; dispatch re-runs it
+# for an existing tag. `build.zig.zon` is the truth: the job refuses a
+# malformed tag, a tag that disagrees with the manifest, or a tag with no
+# draft release, all before it builds anything. The notes are release-please's
+# CHANGELOG section plus `.github/release-footer.md`.
 name: release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: The tag release-please created
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -27,7 +31,7 @@ permissions:
   attestations: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -36,14 +40,14 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: The tag is semver and the manifest agrees
         id: version
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
+          tag="${{ inputs.tag }}"
           if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "refusing to publish: $tag is not vMAJOR.MINOR.PATCH[-prerelease]" >&2
             exit 1
@@ -52,7 +56,6 @@ jobs:
           echo "tag $tag, manifest $manifest"
           if [ "$tag" != "v$manifest" ]; then
             echo "refusing to publish: the tag says $tag and build.zig.zon says $manifest" >&2
-            echo "(was the -dev suffix stripped in the release commit?)" >&2
             exit 1
           fi
           echo "version=$manifest" >> "$GITHUB_OUTPUT"
@@ -86,10 +89,17 @@ jobs:
           zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/
           zig build test --summary all
 
-      - name: The release notes exist before anything is built
+      - name: The draft release exists before anything is built
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          tag="${{ steps.version.outputs.tag }}"
+          draft=$(gh release view "$tag" --json isDraft --jq .isDraft) || {
+            echo "refusing to publish: $tag has no release (release-please opens it as a draft)" >&2
+            exit 1
+          }
+          echo "release $tag, draft $draft"
           mkdir -p dist
-          ./.github/release-notes.sh "${{ steps.version.outputs.tag }}" > dist/notes.md
 
       - name: Build
         run: zig build -Dmetal=true -Doptimize=ReleaseSafe
@@ -146,13 +156,15 @@ jobs:
             *) kind="--latest" ;;
           esac
           tag="${{ steps.version.outputs.tag }}"
-          gh release create "$tag" --draft \
-            --title "nuclis $tag" \
-            --notes-file dist/notes.md \
-            $kind \
+          gh release upload "$tag" --clobber \
             dist/"nuclis-$tag-aarch64-macos.tar.gz" \
             dist/"nuclis-$tag-src.tar.gz" \
             dist/SHA256SUMS
+          # release-please's notes are the CHANGELOG section; the footer (how
+          # to verify and run the build) is appended once.
+          gh release view "$tag" --json body --jq .body > dist/notes.md
+          grep -q '^### The attached build' dist/notes.md || cat .github/release-footer.md >> dist/notes.md
+          gh release edit "$tag" --title "nuclis $tag" --notes-file dist/notes.md
           assets=$(gh release view "$tag" --json assets --jq '.assets | length')
           [ "$assets" = 3 ] || {
             echo "refusing to publish: the draft has $assets assets, not 3" >&2

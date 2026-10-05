@@ -26,9 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "tildaslashalef/nuclis"
 SKIP = {"CHANGELOG.md"}
-# Files whose `docs/…` strings are test data or a deliberate old path (the
-# changelog reads the log at tags from before its rename).
-NO_REWRITE = {"scripts/docs-check.py", "scripts/changelog.py"}
+# Files whose `docs/…` strings are this script's own test data.
+NO_REWRITE = {"scripts/docs-check.py"}
 # The plan names old paths on purpose; only its Markdown links follow a move.
 LINKS_ONLY = {"TODO.md"}
 LINK = re.compile(r"(!?\[(?:[^\]\[]|\[[^\]]*\])*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")

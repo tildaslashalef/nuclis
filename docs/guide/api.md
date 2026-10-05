@@ -334,19 +334,19 @@ object is for nuclis clients.
 ```
 
 Every decision model of the catalogue and the registry is listed, pulled
-or not. `present`: its weights are on disk; `loaded`: it is open now;
-`default`: a request without `model` gets it; `family`: `laya` or `clef`,
-known before the model is pulled; `packs`: whether the states of a
-request and the requests waiting together share one GPU pass (Laya),
-or each state is one pass after the other, its cost linear in tokens
-(clef-flash: send one state per request, every question in it, one or two
-requests in flight; [clef-flash.md § Time per decision](../models/clef-flash.md#time-per-decision));
-`images`: it reads a request's `images` (clef-flash with its projector
-pulled); `max_len` and `head_max_len`: its sequence and question budgets
-in tokens (`head_max_len` is null for clef-flash, which has no
-per-question budget, and both are null for a Laya model not pulled);
-`owned_by`: the repository's owner, `local` for a directory; `created` is
-always 0.
+or not:
+
+| Field | Meaning |
+| --- | --- |
+| `present` | its weights are on disk |
+| `loaded` | it is open now |
+| `default` | a request without `model` gets it |
+| `family` | `laya` or `clef`, known before the model is pulled |
+| `packs` | `true`: the states of a request, and the requests waiting with it, share one GPU pass (Laya). `false`: each state is its own pass, its cost linear in tokens (clef-flash: send one state per request with every question in it, and keep one or two requests in flight; [clef-flash.md § Time per decision](../models/clef-flash.md#time-per-decision)) |
+| `images` | it reads a request's `images` (clef-flash with its projector pulled) |
+| `max_len`, `head_max_len` | its sequence and question budgets in tokens; `head_max_len` is null for clef-flash (no per-question budget), and both are null for a Laya model not yet pulled |
+| `owned_by` | the repository's owner, `local` for a directory |
+| `created` | always 0 |
 
 ## `GET /v1/health`
 

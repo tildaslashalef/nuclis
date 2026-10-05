@@ -1,50 +1,36 @@
 # Configuring nuclis
 
-Every setting lives in one file, `~/.nuclis/nuclis.json`; a flag overrides
-it for one run. Where the file and the rest of `~/.nuclis` live:
-[getting-started.md § User directories](getting-started.md#user-directories).
+Every setting lives in one file, `~/.nuclis/nuclis.json`, and a
+command-line flag overrides it for one run. Where the file and the rest of
+`~/.nuclis` live: [getting-started.md § User directories](getting-started.md#user-directories).
+The schema and its defaults are `src/config.zig`.
 
 ## Configuration file
 
-`nuclis.json` is one sectioned document (`engine`, `generation`, `agent`,
-`decide`, and the `models` registry) with a `schema_version`. The sections name a
-*scope*, not a command: `engine` (the artifact and its session) and
-`generation` (how tokens are produced: budget, effort, speculative decoding,
-sampling) are shared by `generate` and `agent`; `agent` holds only the chat
-surface's own settings (`think`, `fold_thinking`, `theme`, `instructions`,
-`thinking_budget`, and was named
-`chat` until 2026-09-11, see
-[spec.md § Configuration](../spec.md#58-configuration)); `bench` reads `engine` plus
-its own flags. The section was named `generate` until 2026-09-20, when the
-rename made the scope explicit;
-`src/config.zig` is its schema and the built-in defaults. `nuclis config
-init` writes the defaults with every catalogue model as a registry entry
-(one today), so the file shows the entry shape with the catalogue's facts
-(the entries are optional: a catalogue name resolves without one), then
-prints the effective engine keys, each catalogue model's local status,
-and the `nuclis model pull <name>` to run next (the example below).
+```sh
+nuclis config init               # write the file: defaults, every catalogue model registered
+nuclis config init --discover    # also register the models you downloaded yourself
+nuclis config show               # every setting in effect, and where it came from
+nuclis config set <key> <value>  # change one setting by its dotted name
+```
 
-`nuclis config init --discover [--dry-run] [--json]` registers what the
-catalogue does not name: it walks `<root>/models` as `model ls` does,
-skips the files a registry entry already locates and the companions
-(sidecar role, or a name carrying `mmproj`, `mtp`, or `dflash`), reads each
-remaining file's GGUF directory and judges it as `model inspect` does (an
-adapter for its architecture, every tensor in the executable set, the
-binding), and writes one entry per runnable file: the name is the
-repository's last path segment lower-cased (`-gguf` dropped; a taken name
-gains the quantization suffix, then a counter; never a catalogue name),
-the entry is `repo` + `file` + `revision` from the sidecar (or `path` when
-there is none), companions beside the file fill `mmproj` and `mtp`,
-`profile` is forced to the family's when the template digest matches no
-profile (the finetune case, otherwise left to the digest), and
-`generation.speculative` / `draft_length` take the catalogue's verdict for
-the same architecture (off when the family drafts from a companion that
-is absent). Every skipped file is reported with its reason, a header that
-fails to parse included; the file is created first when absent and kept
-when present, and `--dry-run` prints the report without writing
-(APPS-15). Discovered on 2026-09-21: the HauhauCS Gemma 4 12B finetune
-with its projector and a forced `gemma4` profile, and the Bonsai 2 PQ2_0
-bring-up file. The example:
+`init` keeps a file that already exists, and ends by saying which model to
+pull next. The file has one section per scope, not per command:
+
+| Section | Holds | Read by |
+| --- | --- | --- |
+| `engine` | the model and its session: backend, context, cache precision | every model command |
+| `generation` | how tokens are produced: output budget, reasoning effort, speculative decoding, sampling | `generate`, `agent` |
+| `agent` | the chat surface's own settings | `agent` |
+| `decide` | the decision model | `decide`, `serve` |
+| `serve` | where the API listens | `serve` |
+| `cache` | the agent's saved model states | `agent` |
+| `models` | your named models (the registry) | anything that takes `--model` |
+
+`bench` reads only `engine`; its output budget, repetitions, and greedy
+sampling stay on its command line so runs remain comparable.
+
+A file as `init` writes it:
 
 ```json
 {
@@ -70,108 +56,167 @@ bring-up file. The example:
 }
 ```
 
-Each entry's `generation.speculative` / `generation.draft_length` is the
-family's measured verdict (`src/catalog.zig`; [benchmarks § Definitions](../benchmarks/README.md#definitions)),
-so a fresh file already turns speculation on for the family whose record
-pays and off for the rest; a user's global `generation.speculative` still
-applies to models with no entry, and `--speculative` overrides either.
+## What overrides what
 
-- Precedence: built-in defaults < the model's sampling profile < the
-  file's global sections < the registry entry the model names < command-line
-  flags. `NUCLIS_HOME` only moves the root; there are no per-key environment
-  overrides and no per-project files. `nuclis config show [--json]` prints
-  the effective value of every key with its source (`default`, `profile`,
-  `file`, `model`, `flag`), one line above the table naming the model, how
-  it resolved (registry entry, catalogue name, path), its profile, and that
-  a `null` sampling key takes the profile's value for the configured
-  `generation.think`; then each registry entry's stated keys. The profile
-  named there is the catalogue entry's (the first profile for a bare path
-  or an unknown registry name), chosen without opening the file; a run
-  samples with the opened file's own profile, selected by its template
-  digest, so a Gemma file reached through a path still gets Gemma's
-  defaults (MODL-07). An entry's `profile` (`qwen38`, `gemma4`) or the
-  `--prompt-profile` flag forces that profile on the file whatever its
-  template digest — the way to run a finetune converted with another
-  revision of the template, which the engine would otherwise refuse as
-  `UnsupportedPromptTemplate`; the agent prints a notice at startup, and
-  the rendering is the pinned protocol's, not necessarily the file's own
-  ([prompt-profile.md § Evidence](../engine/prompt-profile.md#evidence-and-reproduction)).
-  `nuclis config set <key> <value>` changes one key by its dotted name
-  (`engine.model hauhau`, `generation.sampling.temperature 0.7`,
-  `models.<name>.profile gemma4`; `null` clears an override): the file's
-  own text is edited so stated keys and their order survive, the result
-  goes through the same loader before it is written (a refused value
-  leaves the file untouched and names the key), `engine.model` must
-  resolve to a file that exists, and a missing file is created as `init`
-  writes it. Entries are created by `model pull --register`, never by
-  `set` (`models.<name>.<key>` on an unknown name says so). The JSON form
-  carries the file as loaded (`config`, the registry as a map), the
-  `effective` view, and the `sources` map. The flag layer is visible in each
-  command's own report (`generate --json`, the `bench` report's `config`
-  and settings fields).
-- `engine.model` is a registry entry name, a catalogue name (`qwen3.8-27b`,
-  the default), or a path, tried in that order; a path resolves under
-  `<root>/models` unless absolute. `--model` takes the same forms, a path
-  being as given. `engine.backend` defaults to `metal` when the build
-  has it, `cpu` otherwise. `engine.kv_precision` (`f16` default, `f32`;
-  flag `--kv`) is the attention cache layout on the GPU: `f16` halves the
-  cache's memory and the bytes attention reads per token (KERN-07); the CPU
-  reference always keeps F32, and every report (`generate --json`, the
-  `bench` header and JSON) states the precision the session actually used
-  beside its `session_bytes`. `bench` takes model, backend, and context
-  (the entry's `ctx_size` included) from the file and keeps its output
-  budget (32), repetitions, and greedy sampling on the command line so runs
-  stay comparable; its report records the file it ran with.
-- The registry: `models` maps a name (1..64 printable characters, no `/`,
-  not ending in `.gguf`) to an entry that locates a model one way, `path`
-  (relative to `<root>/models` unless absolute) or `repo` + `file` (the
-  layout `model pull` writes, `<root>/models/<repo>/<file>`) with an
-  optional `revision`; optional `mmproj` and `mtp` companion file names
-  in the same directory (recorded for the units that will load them, the vision unit
-  and the MTP unit, and used by `model pull <name> --with`); and optional
-  `ctx_size`, `generation` (`max_tokens`, `think`, `speculative`, `draft_length`, `image_max_tokens`, `sampling`), and `agent`
-  (`think`, `fold_thinking`) overrides that apply only while that entry is
-  the model, `null` meaning the global value. Entries pin no digest (a
-  pull by entry name takes the Hub's). A registry name shadows a catalogue
-  name for `--model`/`engine.model`; `model pull` tries the catalogue
-  first, since it needs nothing from the file. An entry with `"kind":
-  "decision"` (written by `model pull --register` for a Laya layout) is a
-  decision checkpoint: `repo` + `file` or `path` name its weights, whose
-  directory `nuclis decide` opens; text commands refuse it by name.
-- `decide.model` (default `laya`) is the checkpoint `nuclis decide` opens,
-  and the one `nuclis serve` opens at start and uses for a request naming
-  no model or a `jev-…` id:
-  a registry entry of kind `decision`, a decision catalogue name
-  ([catalogue.md § The catalogue](../models/catalogue.md#the-catalogue)),
-  or a directory (under `<root>/models` unless absolute); `--model` takes
-  the same forms. A text model's name is refused.
-- `serve.host` (default `127.0.0.1`, an IP literal or `localhost`) and
-  `serve.port` (default 8000) are where `nuclis serve` listens; `--host`
-  and `--port` override them for a run. `serve.log` (default `true`)
-  writes a line per request to stdout; `--quiet` turns it off for a run.
-  `serve.timeout` (default 300 seconds, `--timeout` for a run) is how
-  long a decision request may wait for the GPU before `529 timeout`: a
-  Laya request takes milliseconds, a clef-flash one seconds to minutes,
-  and a request waits for every pass ahead of it.
-- Sampling entries are overrides: `null` means the official profile of the
-  reasoning mode ([sampling.md](../engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01)),
-  so the file never freezes a model's recommended settings. The profile is
-  the adapter's (`qwen38` for the one adapter; the catalogue records it per
-  entry so `config show` names it without opening the file; the adapter registry dispatches
-  per architecture).
-- Validation: unknown keys are rejected with their dotted path (registry
-  keys as `models.<name>.<key>`, so an unknown companion such as
-  `imatrix` is named), wrong types and enum values name the key and the
-  accepted form, ranges are the same as for flags (context 1..32768,
-  tokens 1..16384, sampling options through the sampler's rules), an entry
-  must locate its model one way, the file is bounded at 64 KiB, and a
-  `schema_version` other than 1 is an error that states the migration
-  (move the file aside, `config init`, copy settings back). Adding a key
-  with a default does not bump the version (the registry was added to
-  schema 1; a file without it loads with an empty one); renaming or
-  re-typing one does, except the `chat` → `agent` section rename, whose
-  keys and defaults are unchanged: a file with a `chat` section is
-  rejected with a message that says to rename it. Keys arrive with the features that read them
-  (`engine.kv_precision` arrived with KERN-07; an `agent` section comes with
-  the embedded agent).
+From weakest to strongest:
 
+1. the built-in defaults;
+2. the model's sampling profile (the official settings for its reasoning mode);
+3. the file's sections;
+4. the registry entry of the model in use;
+5. command-line flags.
+
+There are no per-key environment variables and no per-project files;
+`NUCLIS_HOME` only moves the root.
+
+## The settings
+
+### `engine`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `model` | `qwen3.8-27b` | a registry entry, a catalogue name, or a path (under `~/.nuclis/models` unless absolute), tried in that order; flag `--model` |
+| `backend` | `metal` (`cpu` in a build without Metal) | where the model runs |
+| `ctx_size` | `16384` | the context window in tokens, 1..32,768 |
+| `kv_precision` | `f16` | the attention cache on the GPU: `f16` halves its memory and the bytes read per token; `f32` otherwise. The CPU always keeps F32. Flag `--kv` |
+
+### `generation`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `max_tokens` | `8192` | the most tokens one completion (one agent step) produces, 1..16,384 |
+| `think` | `off` | reasoning effort: `off`, `low`, `medium`, `high`, `xhigh` |
+| `speculative` | `false` | speculative decoding with the model's drafter; flag `--speculative` |
+| `draft_length` | `4` | drafted tokens per step |
+| `image_max_tokens` | `auto` | the most tokens one image becomes, or a positive integer |
+| `sampling.*` | `null` | overrides of the profile: `temperature`, `top_k`, `top_p`, `min_p`, `presence_penalty`, `repetition_penalty` |
+
+`null` sampling keys take the official profile for the reasoning mode
+([engine/sampling.md](../engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01)),
+so the file never freezes a model's recommended settings.
+
+Speculation is decided per model: each catalogue entry `init` writes
+carries its family's measured verdict in its own `generation.speculative`
+and `draft_length` (on where it pays, off where it does not;
+[benchmarks/README.md](../benchmarks/README.md#speculation-pairs)). The
+global `generation.speculative` applies to models without an entry.
+
+### `agent`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `think` | `low` | the agent's reasoning effort |
+| `fold_thinking` | `true` | start with reasoning folded (Tab unfolds) |
+| `theme` | `gruvbox-dark` | the terminal palette |
+| `instructions` | `auto` | the project file the agent reads: `auto` (`AGENTS.md`, then `CLAUDE.md`), `off`, or a path in the workspace |
+| `thinking_budget` | `1024` | the most reasoning tokens a step spends at `low` before the engine closes the reasoning; `0` for no cap |
+
+### `decide` and `serve`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `decide.model` | `laya` | the decision model `nuclis decide` opens, and `nuclis serve` opens at start: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
+| `serve.host` | `127.0.0.1` | an IP literal or `localhost`; beyond loopback the API is reachable from the network with no authentication. Flag `--host` |
+| `serve.port` | `8000` | flag `--port` |
+| `serve.log` | `true` | a line per request on stdout; `--quiet` turns it off |
+| `serve.timeout` | `300` | seconds a request may wait for the GPU before `529 timeout` (a clef-flash request can hold it for minutes); flag `--timeout` |
+
+### `cache`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `memory_bytes` | 4 GiB | the agent's saved model states kept in memory; `0` keeps none |
+| `disk_bytes` | 8 GiB | the same under `~/.nuclis/cache/prefix/`; `0` disables it |
+
+## Naming your models: the registry
+
+`models` maps a name to a model, so `--model <name>` and `engine.model`
+can use it. Entries are optional for catalogue models (a catalogue name
+works without one) and are written by `config init` (the catalogue's),
+`config init --discover`, and `model pull --register`, never by `config set`.
+
+| Field | Meaning |
+| --- | --- |
+| `repo` + `file` (+ `revision`) | a downloaded model in the layout `model pull` writes, `~/.nuclis/models/<repo>/<file>` |
+| `path` | instead, a file anywhere (under `~/.nuclis/models` unless absolute) |
+| `mmproj`, `mtp` | companion files in the same folder: the vision projector and the drafter |
+| `profile` | force a prompt profile (`qwen38`, `gemma4`, …) whatever the file's template |
+| `ctx_size`, `generation`, `agent` | overrides that apply only while this model is in use; `null` means the global value |
+| `kind` | `"decision"` for a decision model (`nuclis decide` opens it; text commands refuse it) |
+
+- **Names** are 1..64 printable characters, no `/`, not ending in `.gguf`.
+- **A registry name wins over a catalogue name** for `--model` and
+  `engine.model`; `model pull` tries the catalogue first.
+- **Entries pin no digest.** Pulling by entry name takes the Hub's.
+- **A forced `profile`** runs a finetune converted with another revision of
+  its family's template, which nuclis would otherwise refuse
+  (`UnsupportedPromptTemplate`). The agent says so at startup, and the
+  prompt is rendered the pinned way, not necessarily the file's own
+  ([engine/prompt-profile.md](../engine/prompt-profile.md#evidence-and-reproduction)).
+  `--prompt-profile` does the same for one run.
+
+## Registering what you already downloaded
+
+`nuclis config init --discover [--dry-run] [--json]` walks
+`~/.nuclis/models` and writes an entry for every runnable model file that
+neither the catalogue nor an existing entry covers:
+
+- **Skipped:** files an entry already locates, and companions (by sidecar
+  role, or a name carrying `mmproj`, `mtp`, or `dflash`).
+- **Judged** as `nuclis model inspect` judges: an adapter for the
+  architecture, every tensor in the executable set, the binding. Every
+  skipped file is reported with its reason.
+- **Named** after the repository's last path segment, lower-cased, `-gguf`
+  dropped; a taken name gains the quantization, then a counter. Never a
+  catalogue name.
+- **Filled:** `repo`, `file`, and `revision` from the sidecar (or `path`
+  without one); companions beside the file as `mmproj` and `mtp`; the
+  family's `profile` when the template matches none (a finetune); the
+  catalogue's speculation verdict for the same architecture.
+- `--dry-run` reports without writing; the file is created if absent and
+  otherwise kept.
+
+## Changing one setting
+
+```sh
+nuclis config set engine.model gemma-4-12b-qat
+nuclis config set generation.sampling.temperature 0.7
+nuclis config set models.gemma-4-12b-qat.ctx_size 32768
+nuclis config set generation.sampling.top_k null     # clear an override
+```
+
+- The file's own text is edited, so your keys and their order survive.
+- The result is validated before it is written; a refused value leaves the
+  file as it was and names the key.
+- `engine.model` must resolve to a file that exists.
+- `models.<name>.<key>` needs an existing entry (create one with `model
+  pull --register`).
+
+## Seeing what is in effect
+
+`nuclis config show [--json]` prints every key's effective value and its
+source: `default`, `profile`, `file`, `model` (the registry entry), or
+`flag`. Above the table it names the model, how it resolved (registry
+entry, catalogue name, or path), and its profile; below, each registry
+entry's own keys.
+
+The profile named there is the catalogue's, chosen without opening the
+file. A run samples with the profile of the file it opens (chosen by its
+template digest), so a Gemma file reached by path still gets Gemma's
+defaults. Each command's own report (`generate --json`, `bench`) shows the
+flags it ran with.
+
+## Validation
+
+- Unknown keys are rejected with their dotted path
+  (`models.<name>.imatrix` included).
+- Wrong types and values name the key and the accepted form; ranges are the
+  flags' (context 1..32,768, tokens 1..16,384, sampling options as the
+  sampler checks them).
+- An entry must locate its model one way: `path`, or `repo` + `file`.
+- The file is limited to 64 KiB.
+- A `schema_version` other than 1 is an error that states the migration:
+  move the file aside, run `config init`, copy your settings back. A new
+  key with a default does not change the version.
+- A file with a `chat` section (the old name of `agent`) is refused with a
+  message saying to rename it.
