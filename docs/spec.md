@@ -385,7 +385,7 @@ nuclis --help | <command> --help | --version
 | `validate` | whether the file binds to its family's adapter, with the layer composition |
 | `model` | pull with digest verification and sidecars, list the artifacts under the root, judge a file at the four levels of §4 |
 | `decide` | typed questions about states through a decision checkpoint (`decide.model`, default `laya`): a Jev-shaped request (`questions`, `state` or `states`), a questions file with states from flags, or questions inline, and images (`--image`, a request's `images`) for clef-flash; one state renders each answer with its distribution, several render ranked by the first question; `--json` is one Jev response per state (answers with exactly Jev's fields, extras under `nuclis`), with load, tokenize, and encode timings |
-| `serve` | the nuclis API over HTTP/1.1 ([reference/api.md](reference/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `GET /v1/models` lists the decision models in OpenAI's shape, `GET /v1/health` the queue; `serve.host`, `serve.port` (default 8000), `serve.log`, and `serve.timeout` (the wait for the GPU, default 300 s) in the file, the flags over them; `decide.model` opened at start unless `--model` names others; a coloured line per response on stdout; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
+| `serve` | the nuclis API over HTTP/1.1 ([guide/api.md](guide/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `GET /v1/models` lists the decision models in OpenAI's shape, `GET /v1/health` the queue; `serve.host`, `serve.port` (default 8000), `serve.log`, and `serve.timeout` (the wait for the GPU, default 300 s) in the file, the flags over them; `decide.model` opened at start unless `--model` names others; a coloured line per response on stdout; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
 | `config` | write the file with every catalogue model registered (`--discover` adds runnable files the catalogue does not name), show effective values with their source layer, set one key |
 | `agent` | §7 |
 | `completion` | a thin script per shell: every Tab runs the hidden `nuclis __complete <words…>`, which answers from one command table (held to the parser and the help pages by tests) and the user's state: registered and catalogue models, the workspace's sessions, config keys and their values; paths go back to the shell; a failure completes nothing |
@@ -699,7 +699,7 @@ A read of lines a file returned earlier in the same turn, from unchanged
 content and with that result still in the context, is answered with a
 one-line pointer to it rather than the lines again.
 
-Read: [reference/agent-concepts.md](reference/agent-concepts.md),
+Read: [app/agent.md](app/agent.md),
 [engine/tool-calling.md](engine/tool-calling.md).
 
 ### 7.7 Print mode
@@ -761,7 +761,7 @@ API lookup tool, and a second product surface.
   family's perplexity on a pinned text within 0.5 % of the reference's, at
   512-token windows per unit and, for Gemma 4 12B so far, at 4,096 (past
   its sliding windows) in a long-context tier run before a release
-  ([reference/eval.md](reference/eval.md)). Every
+  ([guide/eval.md](guide/eval.md)). Every
   threshold is written down per numerical mode; passes are recorded with
   dates and observed maxima.
 - **Workloads** (`make workload`) are the benchmarks in `workloads.json`;

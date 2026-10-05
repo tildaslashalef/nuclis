@@ -2097,7 +2097,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
   },
   {
    "name": "qwen38-perplexity-full",
@@ -2138,7 +2138,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
   },
   {
    "name": "gemma4-26b-a4b-perplexity",
@@ -2179,7 +2179,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
   },
   {
    "name": "muse-perplexity",
@@ -2222,7 +2222,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
   },
   {
    "name": "muse-perplexity-full",
@@ -2263,7 +2263,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
   },
   {
    "name": "gemma4-e4b-trace-cpu",
@@ -2706,7 +2706,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
   },
   {
    "name": "gemma4-e4b-perplexity-full",
@@ -2747,7 +2747,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/eval.md#the-reference-record-apps-14-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-reference-record-apps-14-2026-09-24"
   },
   {
    "name": "gemma4-e4b-perplexity-4k",
@@ -2788,7 +2788,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/eval.md#the-long-context-record-2026-09-24"
+   "evidence": "docs/guide/eval.md#the-long-context-record-2026-09-24"
   },
   {
    "name": "qwen38-verify-depth-16k",

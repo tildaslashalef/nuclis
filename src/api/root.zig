@@ -4,7 +4,7 @@
 //! drains the queued decisions before the connections close. The
 //! layers stay apart: the transport and the router know no model, a service
 //! never touches a socket, and only the executor's worker runs a model.
-//! docs/reference/api.md.
+//! docs/guide/api.md.
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../config.zig");

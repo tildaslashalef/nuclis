@@ -21,7 +21,7 @@ Detailed engineering documents under [reference/](reference/):
 
 | Document | Purpose |
 | --- | --- |
-| [agent-concepts.md](reference/agent-concepts.md) | Agent and terminal concepts behind `nuclis agent`, taught as they are implemented here |
+| [agent.md](app/agent.md) | Agent and terminal concepts behind `nuclis agent`, taught as they are implemented here |
 | [catalogue.md](models/catalogue.md) | Model artifact sources, Unsloth quantization conventions, companion files, the models directory |
 | [bench.md](reference/bench.md) | `bench`, `bench --profile`, `make bench-kernels`: timing definitions and methodology |
 | [cpu-reference.md](engine/cpu-reference.md) | CPU linear/vector/attention/recurrent references and numerical precision |

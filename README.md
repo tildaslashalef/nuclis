@@ -191,7 +191,7 @@ TypeSafe's Jev protocol, so a Jev client only changes its base URL; a warm
 decision takes 14 ms (`laya-multilingual`) to 34 ms (`laya`), and requests
 that arrive together share a GPU pass. A request picks its model by name,
 so one server answers with Laya and clef-flash side by side. Routes,
-errors, and rates: [docs/reference/api.md](docs/reference/api.md).
+errors, and rates: [docs/guide/api.md](docs/guide/api.md).
 
 ```sh
 nuclis serve

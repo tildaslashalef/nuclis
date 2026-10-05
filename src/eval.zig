@@ -4,7 +4,7 @@
 //! it has one); the negative log-likelihood of every actual next token in the
 //! window's second half is summed in F64. This is the reference's
 //! `llama-perplexity` method, so `--reference` compares against its run on
-//! the same file (docs/reference/eval.md).
+//! the same file (docs/guide/eval.md).
 const std = @import("std");
 const inference = @import("inference");
 const engine = @import("engine.zig");

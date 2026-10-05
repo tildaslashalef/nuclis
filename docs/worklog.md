@@ -1195,7 +1195,7 @@ type, a bounded `Limits.tools` (default 64) and a shared 1 MiB input budget, and
 structurally valid tool input at `validate` and then reject it with
 `error.ToolsUnsupported` until the native syntax lands. Sources and limits in
 [tool-calling.md](engine/tool-calling.md); explanation in
-[agent-concepts § 2](reference/agent-concepts.md#2-why-a-streaming-parser-needs-token-boundaries).
+[agent-concepts § 2](app/agent.md#2-why-a-streaming-parser-needs-token-boundaries).
 
 **Evidence.** Session 1: `make check` **298 default tests** plus Metal fixtures;
 `make compare` 129 files per precision, Qwen F32 max abs **6.103515625e-5** /
@@ -1254,7 +1254,7 @@ ASCII golden test is unchanged. Provenance recorded in
 `src/tui/graphemes.zig`, `src/tui/view.zig`, `src/tui/editor.zig`,
 `src/tui/root.zig`, `src/tui/fixtures/GraphemeBreakTest.txt`,
 `THIRD_PARTY_NOTICES.md`, `docs/roadmap.md`,
-`docs/reference/agent-concepts.md` §4.
+`docs/app/agent.md` §4.
 
 **Remaining.** OSC 8 hyperlinks and focus tracking/notifications followed before
 the agent loop; cursor motion now never splits a cluster.
@@ -1327,7 +1327,7 @@ KV, context 8192, output budget 512, `--think low`) the JSON stream showed the
 
 **Files.** `src/agent/loop.zig`, `src/agent/parse.zig`, `src/agent/stream.zig`,
 `src/agent/print.zig`, `src/agent/root.zig`, `docs/agent-spec.md`,
-`docs/reference/agent-concepts.md` §5.
+`docs/app/agent.md` §5.
 
 **Remaining.** The provisional parser lived in its own file so its later
 deletion would be a one-import diff; the `Model.run` seam took rendered
@@ -1355,7 +1355,7 @@ context 8192, output budget 1024, `--think low`) ran `grep "pub fn readPrompt"`
 
 **Files.** `src/agent/tools/grep.zig`, `src/agent/tools/bash.zig`,
 `src/agent/tools/root.zig`, `src/agent/print.zig`, `src/cli.zig`,
-`docs/agent-spec.md`, `docs/reference/agent-concepts.md` §6.
+`docs/agent-spec.md`, `docs/app/agent.md` §6.
 
 **Remaining.** The interactive surface had still not been driven on a real TTY
 (none in this environment); print mode exercises the same loop and tools, so the
@@ -1390,7 +1390,7 @@ world`, with the `--json` stream showing the diff.
 `src/tui/theme.zig`, `src/tui/root.zig`, `src/agent/tools/write_file.zig`,
 `src/agent/tools/edit_file.zig`, `src/agent/tools/root.zig`,
 `src/agent/tools/bash.zig`, `src/agent/loop.zig`, `src/agent/root.zig`,
-`docs/agent-spec.md`, `docs/reference/agent-concepts.md` §6–7.
+`docs/agent-spec.md`, `docs/app/agent.md` §6–7.
 
 **Remaining.** The interactive tick has not been driven on a real TTY; the
 manual checklist is carried forward. Decoding the native call syntax was still
@@ -1453,7 +1453,7 @@ Qwen3.8-27B (Metal, context 8192) issued `write_file greeting.txt` then
 `inference/src/profiles/root.zig`, `src/agent/loop.zig`,
 `src/agent/tools/root.zig`, `src/agent/parse.zig` (deleted),
 `docs/engine/prompt-profile.md`, `docs/engine/tool-calling.md`,
-`docs/reference/agent-concepts.md` §8.
+`docs/app/agent.md` §8.
 
 **Remaining.** Session assistant entries still record only the answer text, not
 the decoded calls, so `/resume` could not yet re-render a tool conversation
@@ -1521,7 +1521,7 @@ kernel or plan changed).
 **Files.** `src/agent/session.zig`, `src/agent/loop.zig`, `src/agent/resume.zig`,
 `src/agent/root.zig`, `src/agent/print.zig`, `src/agent/commands.zig`,
 `src/cli.zig`, `src/tui/status.zig`, `src/tui/transcript.zig`,
-`docs/agent-spec.md`, `docs/spec.md`, `docs/reference/agent-concepts.md`.
+`docs/agent-spec.md`, `docs/spec.md`, `docs/app/agent.md`.
 
 **Remaining.** The interactive surface is still undriven on a real TTY; the
 manual checklist (paste, resize, Ctrl-C, scrollback, the `/resume` picker) is
@@ -1766,7 +1766,7 @@ incremented).
 `inference/src/profiles/fixtures/gemma4-tools.json`,
 `inference/vocabulary-check.zig`, `scripts/profile-tools-fixtures.py`,
 `docs/engine/prompt-profile.md`, `docs/engine/tool-calling.md`,
-`docs/models/gemma4.md`, `docs/reference/agent-concepts.md`,
+`docs/models/gemma4.md`, `docs/app/agent.md`,
 `docs/architecture.md`, `docs/agent-spec.md`, `docs/spec.md`,
 `THIRD_PARTY_NOTICES.md`.
 
@@ -4324,7 +4324,7 @@ target headings; the function and kernel names the new text cites
 tree.
 
 **Files.** `docs/architecture.md`, `docs/llm-guide.md`,
-`docs/agent-spec.md`, `docs/reference/agent-concepts.md`,
+`docs/agent-spec.md`, `docs/app/agent.md`,
 `docs/models/gemma4.md`, `docs/engine/metal-backend.md`, `TODO.md`,
 and this log.
 
@@ -5237,7 +5237,7 @@ line now tokenizes (9,032 ids, exact round trip) and `generate` prefills its
 gates pass, `make check` 554 tests, and `gemma4-perplexity` is unchanged
 (588.9540, −0.200 %). `eval` no longer widens the per-piece bounds. Files:
 `inference/src/tokenizer/bpe.zig`, `src/eval.zig`,
-`docs/engine/tokenizer.md`, `docs/reference/eval.md`.
+`docs/engine/tokenizer.md`, `docs/guide/eval.md`.
 
 **Follow-up 2 (2026-09-24): a long-context perplexity tier, partly
 recorded.** At 512-token windows no gate passes a sliding window (Gemma 4's
@@ -5261,7 +5261,7 @@ mid-run, so those families have no 4K record. `make gates-validate` passes
 (50 gates); `make verify-long` was not run as a tier (its one gate's result
 is the run above). Files: `scripts/gates.py`, `gates.json`, `Makefile`,
 `AGENTS.md`, `docs/development.md`, `docs/spec.md`,
-`docs/reference/eval.md`, `tests/fixtures/perplexity/*-c4096x4.json`,
+`docs/guide/eval.md`, `tests/fixtures/perplexity/*-c4096x4.json`,
 `tests/fixtures/provenance.md`.
 
 ## APPS-14 — Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family (2026-09-24)
@@ -5295,7 +5295,7 @@ at 1e-5, so the discrepancy was the reference's batched path.
 `scripts/reference-perplexity.py` writes the references; `make eval-corpus`
 fetches wikitext-2-raw into `.zig-cache/eval/` and checks its digest, and
 the gate targets run it first. Building the seam surfaced MODL-26. Facts:
-[eval.md](reference/eval.md).
+[eval.md](guide/eval.md).
 
 **Evidence.** wikitext-2-raw `wiki.test.raw`, eight windows of 512 (4,096
 tokens, 2,040 scored), F16 cache, Metal, against llama.cpp `7620399`
@@ -5337,7 +5337,7 @@ changed (the CPU executor's `prefillRows` steps).
 `muse_glimmer.zig`, `inference/generation-check.zig`;
 `scripts/reference-perplexity.py` (new), `Makefile`, `gates.json`,
 `tests/fixtures/perplexity/` (new), `tests/fixtures/provenance.md`;
-`docs/reference/eval.md` (new), `docs/spec.md`, `docs/architecture.md`,
+`docs/guide/eval.md` (new), `docs/spec.md`, `docs/architecture.md`,
 `docs/development.md`, `TODO.md`.
 
 **Remaining.** Bonsai 2 has no perplexity reference (its encodings decode
@@ -5909,7 +5909,7 @@ verify-cpu, 1 verify-long), 10 models, valid.
 
 **Files.** `gates.json`, `Makefile` (the `verify-long` help),
 `docs/development.md` (the tier table), `docs/models/gemma4.md`,
-`docs/reference/eval.md`, `tests/fixtures/provenance.md`,
+`docs/guide/eval.md`, `tests/fixtures/provenance.md`,
 `docs/worklog.md`.
 
 **Remaining.** `workloads.json` still defines `gemma4-12b/prose512` and
@@ -5994,7 +5994,7 @@ self-tests.
 `inference/generation-check.zig`, `inference/metal-check.zig`,
 `src/eval.zig`, `src/help.zig`, `Makefile`, `workloads.json`,
 `AGENTS.md`, `docs/development.md` (§ Gates, § What each gate protects,
-the workload list), `docs/reference/eval.md`, `TODO.md`,
+the workload list), `docs/guide/eval.md`, `TODO.md`,
 `docs/worklog.md`.
 
 **Remaining.** The CPU tier was not re-timed: its baseline run was
@@ -7077,7 +7077,7 @@ the planned 2×, the ceiling Laya's Metal encode allows (below).
   again when it asks, or when it is submitted while running).
 
 **Evidence.** Apple M4 Pro, ReleaseFast, Metal, `ab -k` on loopback, the
-full tables in [api.md § Measured rates](reference/api.md#measured-rates):
+full tables in [api.md § Measured rates](guide/api.md#measured-rates):
 
 | Measure | Target | Measured |
 | --- | --- | --- |
@@ -7121,7 +7121,7 @@ tier.
 `src/api/decisions/{service,pool,batcher}.zig`,
 `src/decision/{request,response,catalog,tiny}.zig`, `src/decide.zig`,
 `src/cli.zig`, `src/help.zig`, `src/completion.zig`,
-`inference/src/decide.zig`; `docs/reference/api.md` (new),
+`inference/src/decide.zig`; `docs/guide/api.md` (new),
 `docs/{architecture,spec,development}.md`, `docs/models/laya.md`,
 `TODO.md`, and this log.
 
@@ -7176,7 +7176,7 @@ defaults; `make check` passed (637 tests).
 
 **Files.** `src/api/{log,http,root}.zig`, `src/api/decisions/service.zig`,
 `src/config.zig`, `src/cli.zig`, `src/help.zig`, `src/completion.zig`;
-`docs/reference/api.md`, `docs/{architecture,spec,development}.md`,
+`docs/guide/api.md`, `docs/{architecture,spec,development}.md`,
 `README.md`, `TODO.md`, and this log.
 
 **Remaining.** The log has no file sink or rotation (redirect stdout);

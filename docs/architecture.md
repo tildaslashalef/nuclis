@@ -197,7 +197,7 @@ its options in beside the order it is answered in
 ### The API layer
 
 `nuclis serve` (`src/api/`) keeps decision models open behind an HTTP/1.1
-server speaking TypeSafe's Jev protocol ([api.md](reference/api.md)). Its
+server speaking TypeSafe's Jev protocol ([api.md](guide/api.md)). Its
 layers stay apart so a second service (an OpenAI-compatible one for the
 language models) is a new directory and one registration:
 
@@ -420,7 +420,7 @@ flowchart LR
 - **Perplexity** is the long-text check the traces cannot be: `nuclis eval`
   scores 4,096 tokens of a pinned text teacher-forced, and each family's
   gate holds it within 0.5 % of the reference's per-token run on the same
-  tokens ([reference/eval.md](reference/eval.md)).
+  tokens ([guide/eval.md](guide/eval.md)).
 - **Gates and workloads are data.** Every model-specific check is a gate in
   `gates.json`, tiered by cost and selected by changed paths; every
   benchmark is a workload in `workloads.json` with its report saved by
@@ -430,7 +430,7 @@ flowchart LR
 
 **Read:** [development.md § Gates](development.md#gates) and
 [§ The record](development.md#the-record),
-[reference/bench.md](reference/bench.md), [reference/eval.md](reference/eval.md),
+[reference/bench.md](reference/bench.md), [guide/eval.md](guide/eval.md),
 `inference/metal-check.zig`.
 
 ## 9. Zig constructs this codebase leans on

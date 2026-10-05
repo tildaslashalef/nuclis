@@ -1,7 +1,7 @@
 //! The API's error body, shared by every service and the transport:
 //! `{"error": {"code", "message"}}` with the HTTP status that fits. Codes are
 //! stable identifiers clients branch on; messages are for people.
-//! docs/reference/api.md § Errors.
+//! docs/guide/api.md § Errors.
 const std = @import("std");
 
 pub const ApiError = struct {

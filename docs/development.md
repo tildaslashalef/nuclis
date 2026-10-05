@@ -193,7 +193,7 @@ gates read wikitext-2-raw's test text, fetched into `.reference/eval/` and
 checked against its SHA-256 by `make eval-corpus`, which `verify`,
 `verify-changed`, and `gate` run first (a no-op once the file is there);
 their references are pinned under `tests/fixtures/perplexity/`
-([reference/eval.md](reference/eval.md)).
+([guide/eval.md](guide/eval.md)).
 
 ### What each gate protects
 
@@ -1325,7 +1325,7 @@ nearly all as failed while every one is a 200: read the
 `Length:` breakdown and `Non-2xx responses`. Compare served responses
 with `nuclis decide --json` after masking `timings_ms`, and read the
 batching counters from `GET /v1/health` before and after a run.
-[reference/api.md § Measured rates](reference/api.md#measured-rates)
+[guide/api.md § Measured rates](guide/api.md#measured-rates)
 holds the record.
 
 ### GPU counters by capture

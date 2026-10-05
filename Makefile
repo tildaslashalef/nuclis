@@ -225,7 +225,7 @@ shot: metal ## Drive `nuclis agent` in tmux and capture its screen: make shot AR
 model-ls: build ## List the model files (GGUF, safetensors) under <root>/models with their provenance sidecars
 	$(BIN) model ls $(ARGS)
 
-# ---- the perplexity gates' text (docs/reference/eval.md) --------------------
+# ---- the perplexity gates' text (docs/guide/eval.md) --------------------
 # Fetched, never committed; the pinned references name its SHA-256 and
 # `nuclis eval --reference` refuses any other file.
 

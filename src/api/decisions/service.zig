@@ -5,7 +5,7 @@
 //! thread, then waits in the batcher, whose GPU item opens the model if
 //! needed and answers every waiting request for it in one pass; a handler
 //! never touches a socket or a model directly.
-//! docs/reference/api.md § Decisions.
+//! docs/guide/api.md § Decisions.
 const std = @import("std");
 const repeat = @import("../../text.zig").repeat;
 const inference = @import("inference");

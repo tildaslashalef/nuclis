@@ -300,7 +300,7 @@ refuses a text model.
 
 `nuclis serve` answers the same request over HTTP with the models kept
 open: `POST /v1/decisions` returns these bytes, timings aside, and `POST
-/v1/systemone` is Jev's own call ([api.md](../reference/api.md)); a served request's
+/v1/systemone` is Jev's own call ([api.md](../guide/api.md)); a served request's
 `"model"` chooses the checkpoint.
 
 Checked through the fresh binary, 2026-09-29: the 8 fixture requests

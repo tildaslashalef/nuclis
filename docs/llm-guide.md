@@ -8,7 +8,7 @@ written to be read end to end in an evening and to be revisited one section
 at a time; each section ends with the files to read next.
 
 It is not about the agent or the terminal (that is
-[reference/agent-concepts.md](reference/agent-concepts.md)), not the map of
+[app/agent.md](app/agent.md)), not the map of
 the code ([architecture.md](architecture.md)), and not the requirements
 ([spec.md](spec.md)). It is about the ideas, and about the moments where an
 idea turned out to be wrong and a measurement said so.

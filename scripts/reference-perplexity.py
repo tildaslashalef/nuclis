@@ -6,7 +6,7 @@ window size and count, parses its running and final estimates, and records
 the text's SHA-256 (eval refuses a different file), the exact flags, and the
 checkout revision. `--ubatch 1` makes the reference decode one token per
 kernel call: on Gemma 4 12B its batched path disagrees with its own
-per-token path by 1.2 % (docs/reference/eval.md), and the per-token path is
+per-token path by 1.2 % (docs/guide/eval.md), and the per-token path is
 the one its trace harness validates.
 """
 
