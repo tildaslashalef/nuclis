@@ -15,8 +15,8 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-v0.6.0 is published (2026-10-05); the release helper is in review (branch
-`release-helper`). Next: the unit below.
+The worklog's retirement is in progress on branch `retire-worklog`, the
+last unit queued.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
@@ -24,14 +24,31 @@ v0.6.0 is published (2026-10-05); the release helper is in review (branch
 
 ## Retire the worklog and identifiers
 
-After v0.6.0 is published. `docs/worklog.md` deleted (it stays at the
-`v0.6.0` tag); its links repointed to
-`https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#<anchor>`.
-Headings: `(AREA-NN, date)` → `(date)`, `(AREA-NN)` alone → the unit's
-close date from the log's table, through `docs-check --move` anchor moves
-(88 headings). Code comments: identifiers removed (13 files). Remaining
-prose mentions (about 500, mostly `benchmarks/history.md`,
-`engine/metal-backend.md`, `engine/speculative-decoding.md`): linked to the
-archived entry. `gates.json` and `workloads.json` evidence anchors follow.
-AGENTS.md's area table goes; the site's "Worklog" link becomes the
-releases and merged PRs.
+Base: `a95c4a1`
+
+`ARCHIVE` = `https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md`.
+Each identifier's anchor and close date come from the table of `git show
+v0.6.0:docs/worklog.md` (`| [ID](#anchor) | title | date |`).
+
+1. `docs-check` also checks `blob/<tag>/<path>#anchor` links whose tag
+   exists locally: the path at that tag, and the anchor in it.
+2. Headings (88): `(ID, …)` → `(…)`, `(ID)` → `(<close date>)`,
+   `(ID session N, …)` → `(session N, …)`; the six with the ID in their
+   text get a name (`The KERN-13 quick pass` → `The penalty-kernel quick
+   pass`, ENGN-15 → sampled acceptance, ENGN-16 → proposal policy, `KERN-05
+   — per-block cost research` → `Per-block cost research`, `(KERN-10
+   session 2, …)`, `(AGNT-01 session 1)`). New anchors are checked unique
+   per file, and every reference follows through `docs-check --move`
+   anchor moves.
+3. Prose (about 440 lines in `*.md`): an identifier outside code and link
+   text becomes `[ID](ARCHIVE#anchor)`; links into `worklog.md` become
+   `ARCHIVE#anchor`.
+4. Code comments (12 files) and the notes in `gates.json` and
+   `workloads.json`: the identifier removed, the sentence kept true.
+5. `docs/worklog.md` deleted; the hub, README, `spec.md`,
+   `development.md`, AGENTS.md § No unit identifiers, the site's
+   "Worklog" link, and `llms.txt` point at the merged pull requests and
+   the archive.
+
+Gates: `make docs-check`, `make site-check`, `make lint-py`, `zig build
+test` (comments), `make verify-auto`.
