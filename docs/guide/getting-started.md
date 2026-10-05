@@ -47,104 +47,135 @@ nuclis agent                           # the chat, with tools, in this directory
 
 ## User directories
 
-nuclis uses `~/.nuclis` as its user configuration/data root. `NUCLIS_HOME`,
-when set, overrides it and must be an absolute path. An empty or relative
-override is an error. Otherwise resolve the root from `HOME`.
+Everything nuclis keeps lives under one root, `~/.nuclis`. Set
+`NUCLIS_HOME` to an absolute path to move it (an empty or relative value is
+an error).
 
 ```text
 ~/.nuclis/
-  models/                  model artifacts: <owner>/<repo>/<file> plus a provenance
-                           sidecar <file>.nuclis.json per verified file ([models/catalogue.md](models/catalogue.md))
-  nuclis.json              engine configuration (APPS-03; `nuclis config init` writes it)
-  agent/                   the agent's data root (`paths.agentPath`; TERM-01)
-    history.jsonl          submitted prompts across sessions (TERM-01; append-only,
-                           one JSON object per line, tail-read at startup)
-    sessions/<cwd-slug>/   one append-only JSONL file per session
-    exports/               `nuclis agent export` markdown
-                           ([spec.md § Sessions and storage](spec.md#74-sessions-and-storage))
-  cache/                   regenerable runtime data
-    prefix/                the agent's saved model states, one per file: primed prefixes
-                           and the last turn of each recorded session (`nuclis cache`)
-                           (`cache.disk_bytes`; [engine/session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19))
+  nuclis.json              your settings (`nuclis config init` writes it)
+  models/<owner>/<repo>/   downloaded models, each file with a <file>.nuclis.json
+                           sidecar recording where it came from and its digest
+  agent/
+    history.jsonl          prompts you submitted, across sessions
+    sessions/<cwd-slug>/   one file per conversation, per working directory
+    exports/               `nuclis agent export` output
+  cache/prefix/            the agent's saved model states (`nuclis cache` manages them)
 ```
 
-Create directories only when an operation needs to write them. Inspection/help
-must not create settings or directories. Do not migrate or overwrite existing
-user files implicitly. Credentials remain environment-only (`HF_TOKEN` for
-gated Hub repositories; public ones need none).
+- **Nothing is created until it is needed.** `--help` and inspection
+  commands write nothing, and existing files are never migrated or
+  overwritten behind your back.
+- **Credentials come from the environment only:** `HF_TOKEN`, for gated
+  Hugging Face repositories. Public ones need none.
+
+More on each: the models layout in [models/catalogue.md](../models/catalogue.md),
+the settings in [configuration.md](configuration.md), sessions in
+[spec.md § Sessions and storage](../spec.md#74-sessions-and-storage), the
+saved states in [engine/session.md § The agent's token cache](../engine/session.md#the-agents-token-cache-agnt-19).
 
 ## Model download
 
-`nuclis model pull <name> [--with mmproj,mtp | --all]` fetches a catalogue
-entry (`src/catalog.zig`, the only source of "supported": name, repository,
-file, pinned commit, digests, companions with the unit that will load them;
-`qwen3.8-27b` today) into `<root>/models/<owner>/<repo>/<file>` through the
-`huggingface` package ([its README](../../huggingface/README.md): native Xet
-reconstruction, SHA-256 verified, atomic publication, verified reuse of a
-file already in place) and writes the sidecar beside each file; the Hub's
-digest at the pinned commit must equal the catalogue's (`CatalogMismatch`
-otherwise, and no sidecar). `nuclis model pull <owner/repo> [--file <name>]
-[--revision <rev>] [--role main|mmproj|mtp|imatrix]` fetches any other
-artifact by repository id (a GGUF, or a safetensors set with its config
-and tokenizer files, [models/catalogue.md § Safetensors
-artifacts](../models/catalogue.md#safetensors-artifacts)): the revision (`main` by default; a tag, branch, or
-commit) is resolved once, printed as the 40-character commit, and that
-commit pins the transfer and is what the sidecar records; a repository
-with several artifacts and no `--file` prints the choices with sizes and fails
-with `SelectionRequired`; exact names match in full, subdirectories
-included (`--file MTP/mtp-Qwen3.8-27B-Q4_0.gguf` keeps the subdirectory).
-Both forms take `--force` and `--json` and need the root and nothing from
-`nuclis.json`. A registry entry name (`nuclis model pull gemma`, see
-[§ Configuration file](configuration.md#configuration-file)) is the one form that reads the
-file: it pulls the entry's `repo`/`file` at its `revision` (`main` when
-unset) with the Hub's digest, `--with mmproj,mtp` or `--all` adding the
-entry's companion names; an entry that names a `path` has nothing to pull
-(`NotPullable`), and a name that is none of the three forms is
-`UnknownModel`. A second pull of the same file hashes it, downloads nothing,
-and rewrites the sidecar. A sidecar recording other content is `ExistingFileMismatch` unless
-`--force` replaces file and sidecar; a differing file nuclis never verified
-is the same error from the package, and `--force` replaces it too. Progress
-is one updating line on stderr (bytes, rate, ETA) on a terminal, phase lines
-otherwise; Ctrl-C cancels through the package's sink, which removes the
-partial file (a second Ctrl-C kills the process the ordinary way and may
-leave the temporary file). `nuclis model ls [--json]` prints the catalogue
-with each entry's local status from its sidecar alone (`present`,
-`absent`, `mismatch`, `unverified`: the file is there without a sidecar)
-and its companions beneath with a "not loaded yet" note, then the other
-model files (GGUF, safetensors weights) in the layout with their sidecar facts (runnable only if their
-architecture has an adapter); files above `<owner>/<repo>/` are counted,
-not listed; every listed file that a registry entry locates (`path`, or
-`repo` and `file`) says `registered as <name>`, with the profile when the
-entry forces one, and entries whose file is absent are listed last (a
-`nuclis.json` that fails to load leaves the listing unannotated with one
-warning line). `make model-ls` wraps it. `nuclis model pull <owner/repo>
---file <name> --register <name> [--profile <p>]` also writes the pull as a
-registry entry (`repo`, `file`, the resolved commit, and the forced
-profile) once every file is verified, so `--model <name>` and `config set
-engine.model <name>` work from then on; a companion role fills the same
-entry's `mmproj`/`mtp`, a name that locates other content is refused, a
-catalogue name is refused before the transfer unless it names the
-catalogue's own file (the registry resolves first, so such an entry would
-shadow the catalogue; the loader rejects one however it got there), and a
-registry-entry pull refuses `--register`. `--model` and `engine.model`
-accept a registry entry, a catalogue name, or a path; a missing file
-fails before anything opens, naming the resolved path.
+### Pull a model nuclis supports
 
-`nuclis model inspect (<name> | <owner/repo> --file <name>) [--revision <rev>]
-[--json]` answers "will this quantization load" before a download. It lists
-the repository at the resolved commit, fetches the head of the file through
-the package's `readRange` in 8 MiB windows until the GGUF directory parses
-(never past the parser's 64 MiB directory bound; the Qwen directory is
-11.0 MB and Gemma 4 12B's 15.8 MB, two requests and about 4 s each on
-2026-09-11), prints what `inspect` prints for a local file, and ends with
-a verdict: `supported` (the catalogue pins the Hub's digest for the file
-and the adapter binds the directory), `runnable` (an adapter for
-`general.architecture` binds it, but the file is not in the catalogue or
-carries another digest), or `not runnable` naming the first offending
-tensor and its encoding (a layout nuclis does not store, or one outside
-the adapter's executable set), the missing adapter (`gemma4`, `clip`), or
-the adapter's rejection; a catalogue companion (`mmproj-BF16.gguf`) is
-reported as the companion it is. Nothing is written and no weights are
-downloaded; a repository with several GGUFs and no `--file` lists them as
-`pull` does.
+The catalogue is the list of models nuclis ships support for, each pinned
+to an exact commit and SHA-256 digest:
 
+| Name | What it is |
+| --- | --- |
+| `qwen3.8-27b` | Qwen3.8-27B, the default model (16.5 GB) |
+| `gemma-4-12b-qat` | Gemma 4 12B, quantization-aware (6.7 GB) |
+| `gemma-4-26b-a4b` | Gemma 4 26B-A4B, a mixture of experts (14.3 GB) |
+| `gemma-4-e4b-qat` | Gemma 4 E4B, the small one (4.2 GB) |
+| `muse-glimmer-30b` | Muse Glimmer 30B (15.9 GB) |
+| `laya`, `laya-multilingual` | decision encoders for `nuclis decide` |
+| `clef-flash` | Cloudflare's decision model for `nuclis decide` |
+
+```sh
+nuclis model pull qwen3.8-27b             # the model alone
+nuclis model pull qwen3.8-27b --all       # with its drafter and vision companions
+nuclis model pull qwen3.8-27b --with mtp  # or pick them: mmproj, mtp
+nuclis model ls                           # what is here, and whether it verifies
+```
+
+Files land in `~/.nuclis/models/<owner>/<repo>/<file>`, each SHA-256
+verified before it is published. If the Hub's digest at the pinned commit
+is not the catalogue's, the pull stops before writing a sidecar
+(`CatalogMismatch`).
+
+### Pull any other model from Hugging Face
+
+```sh
+nuclis model pull <owner/repo> --file <name> [--revision <rev>]
+nuclis model pull <owner/repo> --file <name> --register mymodel   # and name it
+```
+
+- The revision (`main` by default; a tag, branch, or commit) is resolved
+  once to a commit, printed, and recorded in the sidecar.
+- Without `--file`, a repository with several files lists them with their
+  sizes and stops (`SelectionRequired`). Names match in full, folders
+  included: `--file MTP/mtp-Qwen3.8-27B-Q4_0.gguf`.
+- A safetensors set comes with its config and tokenizer files
+  ([models/catalogue.md § Safetensors artifacts](../models/catalogue.md#safetensors-artifacts)).
+- `--role mmproj|mtp|imatrix` marks a companion file.
+- `--register <name> [--profile <p>]` writes the pull into `nuclis.json` as a
+  named model once every file verifies, so `--model <name>` and `nuclis
+  config set engine.model <name>` work from then on; a companion `--role`
+  fills the same entry's `mmproj` or `mtp`. A name that already locates
+  other content is refused, and so is a catalogue name unless the pull is
+  that catalogue entry's own file.
+
+Whether such a file actually runs depends on its architecture having an
+adapter; `nuclis model inspect` tells you before you download (below).
+
+### Pull a model you named in your settings
+
+`nuclis model pull <entry>` pulls a model entry from `nuclis.json` (its
+`repo`, `file`, and `revision`, `main` when unset; `--with` and `--all`
+add its companions). An entry that points at a local `path` has nothing to
+pull (`NotPullable`); a name that is neither an entry, a catalogue name,
+nor `owner/repo` is `UnknownModel`. The entries are described in
+[configuration.md § Configuration file](configuration.md#configuration-file).
+
+### What happens on a second pull, and on failure
+
+- **Pulling again** re-hashes the file and downloads nothing.
+- **A file that does not match** its sidecar, or that nuclis never verified,
+  is refused (`ExistingFileMismatch`); `--force` replaces it.
+- **Progress** is one updating line (bytes, rate, time left) on a terminal,
+  plain lines otherwise. **Ctrl-C** stops the download and removes the
+  partial file; a second Ctrl-C kills the process and may leave a temporary
+  file behind.
+- Every form takes `--json` for scripts.
+
+The download itself is the `huggingface` package's work (Xet
+reconstruction, SHA-256 verification, atomic publication):
+[its README](../../huggingface/README.md).
+
+### Check a model before downloading it
+
+```sh
+nuclis model inspect gemma-4-e4b-qat
+nuclis model inspect <owner/repo> --file <name> [--revision <rev>]
+```
+
+It reads only the head of the file from the Hub, in 8 MiB windows, until
+the GGUF directory parses (a few seconds; nothing is written), prints what
+`nuclis inspect` prints for a local file, and ends with a verdict:
+
+- **supported**: in the catalogue with the Hub's digest, and an adapter
+  binds it;
+- **runnable**: an adapter for its architecture binds it, but it is not a
+  catalogue file;
+- **not runnable**: names the first tensor or encoding nuclis cannot run,
+  the missing adapter, or the adapter's reason.
+
+### What is on disk
+
+`nuclis model ls [--json]` (or `make model-ls`) lists the catalogue with each
+model's status (`present`, `absent`, `mismatch`, or `unverified` when the
+file has no sidecar) and its companions, then every other model file in the
+folder with its facts, and marks the files your settings name (`registered
+as <name>`). `--model` and `engine.model` accept a settings entry, a
+catalogue name, or a path; a missing file fails before anything loads,
+naming the path it looked for.
