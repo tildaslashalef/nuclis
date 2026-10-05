@@ -1,8 +1,47 @@
-# Qwen structural validation
+# Qwen3.8-27B: the first target
 
-`nuclis validate` checks the initial Qwen3.8-27B GGUF profile and constructs typed
-weight bindings. It is a prerequisite for implementing execution. A successful
-result makes no claim about tokenizer correctness, numerical accuracy, or speed.
+Qwen3.8-27B is the family nuclis was built around and the one its kernels
+are tuned for: catalogue entry `qwen3.8-27b`, file
+`unsloth/Qwen3.8-27B-GGUF` `Qwen3.8-27B-UD-Q4_K_M.gguf` (16.5 GB), adapter
+`qwen35` ([inference/src/models/qwen35.zig](../../inference/src/models/qwen35.zig)).
+Its speed against the reference is the README's
+[Results](../../README.md#results).
+
+## At a glance
+
+From the file's `qwen35.*` metadata (the [descriptor
+fixture](../../inference/src/models/fixtures/qwen35-27b.json)):
+
+| Fact | Value |
+| --- | --- |
+| Blocks | 64 text layers plus one auxiliary prediction block (the MTP head) |
+| Schedule | hybrid: full attention where layer % 4 == 3 (16 layers), Gated DeltaNet elsewhere (48) |
+| Width | embedding 5,120, feed-forward 17,408 |
+| Attention | 24 query heads, 4 KV heads, key and value length 256; RoPE base 10,000,000 over 64 dimensions in four sections |
+| DeltaNet | inner size 6,144, 16 groups, state 128, 48 time-step heads, convolution kernel 4 |
+| Vocabulary | 248,320 tokens; RMS norm epsilon 1e-6 |
+| Context | 262,144 declared; nuclis measures up to 32,768 |
+| Weights | nine encodings (F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ3_S, IQ4_XS); 16.1 GB in the text decoder |
+
+## Where its facts live
+
+| Topic | Document |
+| --- | --- |
+| Binding and structural validation | below |
+| Tokenizer (BPE over the GGUF vocabulary) | [engine/tokenizer.md](../engine/tokenizer.md) |
+| Chat template, reasoning markers, sampling profile | [engine/prompt-profile.md § Qwen3.8](../engine/prompt-profile.md#qwen38-qwen38), [engine/sampling.md § Sampling profiles](../engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01) |
+| Tool calls | [engine/tool-calling.md § Qwen](../engine/tool-calling.md#qwen-xml-like-calls-json-declarations) |
+| CPU forward, DeltaNet, traces against the reference | [engine/cpu-reference.md](../engine/cpu-reference.md), [engine/sampling.md § Numerical traces](../engine/sampling.md#numerical-traces) |
+| Metal plan and its kernels | [engine/metal-backend.md](../engine/metal-backend.md) |
+| Draft head and speculation budget | [engine/speculative-decoding.md § The Qwen3.8 draft head](../engine/speculative-decoding.md#the-qwen38-draft-head-modl-18), [§ The Qwen verify budget](../engine/speculative-decoding.md#the-qwen-verify-budget) |
+| Vision projector | [engine/vision.md § The Qwen3-VL projector](../engine/vision.md#the-qwen3-vl-projector-modl-21-2026-09-22) |
+| Companion files and the catalogue entry | [catalogue.md](catalogue.md) |
+
+## Structural validation
+
+`nuclis validate` checks the Qwen3.8-27B GGUF profile and constructs typed
+weight bindings. A successful result makes no claim about tokenizer
+correctness, numerical accuracy, or speed; those are the documents above.
 
 ```sh
 zig build -Doptimize=ReleaseSafe
@@ -15,7 +54,7 @@ the shared root selected by `NUCLIS_HOME` or `HOME`. The command writes no user
 files. Errors produce a nonzero exit code. `inspect` remains a generic container
 tool and can inspect other architectures with recognized tensor layouts.
 
-## Accepted profile
+### Accepted profile
 
 The adapter accepts the metadata dimensions and tensor forms observed in the
 [pinned artifact](../spec.md#4-supported-models-and-artifacts). It verifies required
@@ -24,7 +63,7 @@ epsilon, RoPE base and sections, vocabulary size, and quantization version.
 Unknown `qwen35.*` metadata is rejected so an unimplemented schedule or RoPE
 override cannot silently alter the interpretation. Other model sizes, tied output
 embeddings, alternate projection packing, and other auxiliary layouts need an
-explicit future extension.
+explicit extension.
 
 | Part | Layers | Tensors | Stored bytes |
 | --- | ---: | ---: | ---: |
@@ -49,7 +88,7 @@ Tokenizer vocabulary length is checked against embedding dimensions. Tokenizer
 algorithms, merges, special-token behavior, and prompt rendering remain separate
 work. A matching display name is neither required nor evidence of compatibility.
 
-## Implementation and ownership
+### Implementation and ownership
 
 [qwen35.zig](../../inference/src/models/qwen35.zig) exposes `bind(allocator,
 document)`. The document must already have passed generic GGUF parsing. The
@@ -73,7 +112,7 @@ arrays of at most 16 elements, while larger arrays retain descriptors. That
 shared facility lets this adapter validate the four RoPE sections without
 materializing a large vocabulary or adding Qwen key names to the container parser.
 
-## Evidence and references
+### Evidence and references
 
 On 2026-09-06, the downloaded artifact passed the adapter and produced the counts
 above. A 39 KB [descriptor fixture](../../inference/src/models/fixtures/qwen35-27b.json)
@@ -96,5 +135,6 @@ Layout interpretation was checked against the
 [Qwen35 implementation at llama.cpp revision 7620399](https://github.com/ggml-org/llama.cpp/blob/7620399f58aebfd2196b74021f9581bcf7218cb9/src/models/qwen35.cpp)
 and the [upstream model configuration](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json).
 The former distinguishes main and auxiliary blocks and accounts for gated query
-dimensions. This revision is a source reference, not yet a tested performance
-baseline. No external implementation code was copied into this adapter.
+dimensions. That revision is also the pinned performance reference
+([benchmarks/llama-cpp.md](../benchmarks/llama-cpp.md)). No external
+implementation code was copied into this adapter.

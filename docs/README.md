@@ -33,7 +33,7 @@ below.
 | --- | --- |
 | [README.md](models/README.md) | Bringing a new model family in: the order of work, the gates, mistakes already made |
 | [catalogue.md](models/catalogue.md) | Where the files come from, quantization conventions, companion files, the models directory |
-| [qwen3.8.md](models/qwen3.8.md) | Qwen3.8-27B: weight bindings and structural validation |
+| [qwen3.8.md](models/qwen3.8.md) | Qwen3.8-27B, the first target: the architecture at a glance, where each of its facts lives, validation |
 | [gemma4.md](models/gemma4.md) | Gemma 4 (12B, 26B-A4B, E4B): artifact facts, forward pass, plans, profile |
 | [muse-glimmer.md](models/muse-glimmer.md) | Muse Glimmer 30B: artifact facts against the reference |
 | [bonsai.md](models/bonsai.md) | Bonsai 2 27B: the ternary file and its fork |
