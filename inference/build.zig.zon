@@ -1,7 +1,7 @@
 .{
     .name = .inference,
     .fingerprint = 0xdd5c89e9fffac85d,
-    .version = "0.5.0",
+    .version = "0.6.0",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{ "build.zig", "build.zig.zon", "src" },
