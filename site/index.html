@@ -190,9 +190,12 @@
           <button type="button" data-phase="decode" aria-pressed="true">Decode</button>
           <button type="button" data-phase="prefill" aria-pressed="false">Prefill</button>
         </div>
-        <div class="seg" role="group" aria-label="Context length">
-          <button type="button" data-ctx="512" aria-pressed="true">512 tokens</button>
-          <button type="button" data-ctx="32639" aria-pressed="false">32,639 tokens</button>
+        <div class="seg seg-ctx" role="group" aria-label="Prompt length in tokens">
+          <span class="seg-label" aria-hidden="true">Prompt</span>
+          <button type="button" data-ctx="512" aria-pressed="true">512</button>
+          <button type="button" data-ctx="4096" aria-pressed="false">4,096</button>
+          <button type="button" data-ctx="16384" aria-pressed="false">16,384</button>
+          <button type="button" data-ctx="32639" aria-pressed="false">32,639</button>
         </div>
       </div>
       <div class="legend">
@@ -375,16 +378,17 @@ cd nuclis &amp;&amp; make metal
 <script type="application/json" id="bench">
 {
   "results": [
-    { "model": "Qwen3.8-27B", "decode": { "512": [10.62, 9.66], "32639": [7.55, 6.71] }, "prefill": { "512": [90.45, 89.19], "32639": [49.55, 67.28] } },
-    { "model": "Gemma 4 12B QAT", "decode": { "512": [23.96, 27.69], "32639": [16.24, 20.94] }, "prefill": { "512": [179.45, 224.46], "32639": [73.04, 143.72] } },
-    { "model": "Gemma 4 26B-A4B", "decode": { "512": [55.29, 68.02], "32639": [31.30, 44.09] }, "prefill": { "512": [500.42, 580.76], "32639": [134.74, 343.38] } },
-    { "model": "Muse Glimmer 30B", "decode": { "512": [9.60, 13.69], "32639": [6.62, 9.98] }, "prefill": { "512": [93.49, 95.28], "32639": [59.20, 76.86] } }
+    { "model": "Qwen3.8-27B", "decode": { "512": [11.67, 10.21], "4096": [10.38, 10.02], "16384": [8.30, 7.54], "32639": [7.53, 6.56] }, "prefill": { "512": [94.21, 92.03], "4096": [85.35, 95.49], "16384": [62.69, 79.31], "32639": [48.91, 69.30] } },
+    { "model": "Gemma 4 12B QAT", "decode": { "512": [25.38, 30.15], "4096": [23.43, 28.05], "16384": [17.93, 22.42], "32639": [15.11, 19.12] }, "prefill": { "512": [207.02, 226.66], "4096": [159.40, 221.32], "16384": [104.62, 171.55], "32639": [72.42, 144.53] } },
+    { "model": "Gemma 4 E4B QAT", "decode": { "512": [46.84, 62.10], "4096": [45.40, 59.26], "16384": [38.02, 52.29], "32639": [33.08, 44.58] }, "prefill": { "512": [531.03, 597.96], "4096": [430.80, 600.85], "16384": [276.77, 516.49], "32639": [189.30, 388.42] } },
+    { "model": "Gemma 4 26B-A4B", "decode": { "512": [54.02, 68.14], "4096": [48.64, 62.37], "16384": [37.93, 53.31], "32639": [31.23, 43.36] }, "prefill": { "512": [521.06, 584.62], "4096": [358.23, 559.48], "16384": [206.89, 456.93], "32639": [136.86, 325.68] } },
+    { "model": "Muse Glimmer 30B", "decode": { "512": [11.62, 14.24], "4096": [10.09, 12.25], "16384": [8.08, 9.63], "32639": [7.19, 9.38] }, "prefill": { "512": [96.41, 96.43], "4096": [84.13, 95.31], "16384": [68.56, 78.67], "32639": [59.59, 75.43] } }
   ],
   "speculative": [
-    { "model": "Qwen3.8-27B", "draft": 7, "512": [11.5, 17.4], "32639": [8.9, 11.2], "ratio": { "512": "1.51", "32639": "1.26" } },
-    { "model": "Gemma 4 12B QAT", "draft": 5, "512": [24.7, 44.8], "32639": [16.5, 16.2], "ratio": { "512": "1.83", "32639": "0.98" } },
-    { "model": "Gemma 4 E4B QAT", "draft": 6, "512": [46.9, 98.6], "32639": [33.0, 38.7], "ratio": { "512": "2.10", "32639": "1.16" } },
-    { "model": "Muse Glimmer 30B", "draft": 6, "512": [8.5, 12.6], "32639": [6.9, 7.6], "ratio": { "512": "1.50", "32639": "1.12" } }
+    { "model": "Qwen3.8-27B", "draft": 7, "512": [11.6, 17.4], "32639": [7.9, 9.8], "ratio": { "512": "1.50", "32639": "1.26" } },
+    { "model": "Gemma 4 12B QAT", "draft": 5, "512": [25.4, 46.5], "32639": [15.8, 15.5], "ratio": { "512": "1.85", "32639": "0.98" } },
+    { "model": "Gemma 4 E4B QAT", "draft": 6, "512": [46.9, 81.9], "32639": [33.6, 37.5], "ratio": { "512": "1.75", "32639": "1.12" } },
+    { "model": "Muse Glimmer 30B", "draft": 6, "512": [11.6, 16.1], "32639": [7.3, 7.8], "ratio": { "512": "1.42", "32639": "1.08" } }
   ]
 }
 </script>
