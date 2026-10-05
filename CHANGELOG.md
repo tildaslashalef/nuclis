@@ -6,6 +6,90 @@ highlights; each line links its pull request, whose description is the
 record of the work. Releases up to v0.5.0 list the units they closed, linked
 to the worklog at their tag.
 
+## [0.6.0](https://github.com/tildaslashalef/nuclis/compare/v0.5.0...v0.6.0) (2026-10-05)
+
+
+### Features
+
+* **release:** notes led by highlights and units, draft-then-publish, build provenance (REPO-33) ([4f5d9ed](https://github.com/tildaslashalef/nuclis/commit/4f5d9edec31b34e6e3145cf09b47c6555d7c2a93))
+* **release:** units grouped by area and counted where the log closes them (REPO-33) ([f34866d](https://github.com/tildaslashalef/nuclis/commit/f34866d36a240b8f35b4465af689132292b569b2))
+* **site:** four prompt lengths, a coloured numbers table grouped by phase (ENGN-21 preview, September figures) ([af84e28](https://github.com/tildaslashalef/nuclis/commit/af84e288c540a904fe2948d2d8c7c5a7276cfd0c))
+* **site:** nuclis.dev, a static site with SEO, self-hosted fonts, a strict CSP, and a check (REPO-34) ([e030955](https://github.com/tildaslashalef/nuclis/commit/e03095559cb1535b07cf90de3ba7ead0ea49d419))
+* **site:** the preview on the 2026-10-04/05 records, E4B added (ENGN-21 preview) ([7b56040](https://github.com/tildaslashalef/nuclis/commit/7b560400e752b40e9cac36233cf763649f26061f))
+
+
+### Fixes
+
+* **ci:** release takes the first pinned digest and the workflow's installer (REPO-32) ([037ff9d](https://github.com/tildaslashalef/nuclis/commit/037ff9d2cbb1da7dffc6d8369bef56cd9889b5c3))
+
+
+### Build
+
+* **bench:** replay committed arrays on the reference, family gemma4-e, E4B acceptance workload (ENGN-21) ([c55604c](https://github.com/tildaslashalef/nuclis/commit/c55604c4e3f97f5d64d141adad1a1608afd656ab))
+* **bench:** the first reference record holding a length supplies it; Muse's 4K re-run listed first (ENGN-21) ([cfa5d14](https://github.com/tildaslashalef/nuclis/commit/cfa5d149bd0e85c3b7519b44b7139405e14954cb))
+* **docs:** docs-check, every documentation link resolves and documents move with their references; today's broken anchors fixed (REPO-35) ([36d8cc3](https://github.com/tildaslashalef/nuclis/commit/36d8cc3348ea3fbdaaeabc5654a7501ae1b27bc5))
+* **release:** pull requests as the record, release-please for releases ([#1](https://github.com/tildaslashalef/nuclis/issues/1)) ([d1d4588](https://github.com/tildaslashalef/nuclis/commit/d1d45880390b48394a769c339805f2b738ea2b8f))
+* **site:** serve nuclis.dev as Workers static assets (REPO-34) ([b5aa5fa](https://github.com/tildaslashalef/nuclis/commit/b5aa5fa68e3bf807eee609f06f2186ec8a1bd3e9))
+
+
+### Documentation
+
+* bench.md moves to docs/benchmarks/README.md, reference-baseline to benchmarks/llama-cpp.md; docs/reference/ is gone (REPO-35) ([ab294d3](https://github.com/tildaslashalef/nuclis/commit/ab294d31c2f9423d826766be98db6bc910ddb2a4))
+* benchmarks/README.md leads with the current results, the method, and an index of the records; every dated section moves to benchmarks/history.md (REPO-35) ([96ad496](https://github.com/tildaslashalef/nuclis/commit/96ad4968e730d24b9643ae7a7f6dfcb445fe8f17))
+* **bench:** Muse's 4K reference re-run, the spread is the reference's own (ENGN-21) ([d008abf](https://github.com/tildaslashalef/nuclis/commit/d008abf5abdd4b8f3d5683f79ead85f00b4b90c8))
+* **bench:** Muse's gain, attribution not measured (ENGN-21) ([f72a81c](https://github.com/tildaslashalef/nuclis/commit/f72a81cd537cfef3797538b7634ed4c8251c8b7b))
+* **bench:** nuclis Gemma 4 12B QAT on macOS 27 (ENGN-21) ([781a084](https://github.com/tildaslashalef/nuclis/commit/781a084ad12e77c779e6b9bcba421978b0407811))
+* **bench:** nuclis Gemma 4 26B-A4B on macOS 27 (ENGN-21) ([f71ad6e](https://github.com/tildaslashalef/nuclis/commit/f71ad6e46fd4dbe215a8de6da81ade9486d3fd7a))
+* **bench:** nuclis Gemma 4 E4B, its first acceptance record (ENGN-21) ([7c34501](https://github.com/tildaslashalef/nuclis/commit/7c345014faa7dfc3169f910e299ee62282c4dec3))
+* **bench:** nuclis Muse Glimmer on macOS 27, decode +9 to +22 % (ENGN-21) ([17223dd](https://github.com/tildaslashalef/nuclis/commit/17223dd7f0c35d27da2b4449c2836fcacc30fb7a))
+* **bench:** nuclis Qwen on macOS 27, decode ahead at every length (ENGN-21) ([5ef0544](https://github.com/tildaslashalef/nuclis/commit/5ef0544874584330c61d124055fd0227a5eaba4c))
+* **bench:** the 12B QAT reference's 32K row, three samples on both dates (ENGN-21) ([ba7a678](https://github.com/tildaslashalef/nuclis/commit/ba7a67853f39933306b2c3c558cbe10212f9809f))
+* **bench:** the 26B-A4B 16K samples, read correctly (ENGN-21) ([b7c0b02](https://github.com/tildaslashalef/nuclis/commit/b7c0b02835c52e6fc28f2d3ef9416995899de526))
+* **bench:** the Gemma 4 12B QAT reference on macOS 27 (ENGN-21) ([1697bfb](https://github.com/tildaslashalef/nuclis/commit/1697bfbebee40a5c0728ac3315319a652a454df0))
+* **bench:** the Gemma 4 26B-A4B reference on macOS 27 (ENGN-21) ([9156b2e](https://github.com/tildaslashalef/nuclis/commit/9156b2e07e7aedd33664b6d76b64990ce1f5f5bf))
+* **bench:** the Gemma 4 E4B reference, its own arrays as fixtures (ENGN-21) ([2d5886b](https://github.com/tildaslashalef/nuclis/commit/2d5886b698938a7a317b1a76f20a408581d95c2d))
+* **bench:** the Muse Glimmer reference on macOS 27, its 4K row disturbed (ENGN-21) ([525ab18](https://github.com/tildaslashalef/nuclis/commit/525ab18e2c5f81197a1c0435071f74f2a63760e8))
+* **bench:** the Qwen reference on macOS 27 (ENGN-21) ([6cec80b](https://github.com/tildaslashalef/nuclis/commit/6cec80b210873e7c0e43e8787708d920d9babce3))
+* **bench:** the speculation pairs on macOS 27 (ENGN-21) ([21bf2ea](https://github.com/tildaslashalef/nuclis/commit/21bf2eaec18f4035fe95bb4c697bcfa693221035))
+* **changelog:** every release led by its highlights and units by area (REPO-33) ([82d21db](https://github.com/tildaslashalef/nuclis/commit/82d21dbc99ddadff692638400b533f79edf1821f))
+* close ENGN-21, the benchmarks on macOS 27 ([845bad5](https://github.com/tildaslashalef/nuclis/commit/845bad562f1e55ba946a6e629d45e1b7b6728842))
+* close REPO-33, CI speed, release notes led by the work, the GIF, the logo ([6aba718](https://github.com/tildaslashalef/nuclis/commit/6aba718ffb511a1243f08399a51d677e5165eeec))
+* close REPO-34, nuclis.dev ([77fe688](https://github.com/tildaslashalef/nuclis/commit/77fe6885a40cec981ef86858c1532818508b5558))
+* close REPO-35, the documents restructured ([178411f](https://github.com/tildaslashalef/nuclis/commit/178411fa08267ed09667d01423a8f5f565caee15))
+* current state first: metal-backend.md's lead and grouped contents, llm-guide.md's contents and today's numbers, contents for gemma4.md and vision.md (REPO-35) ([31a7c35](https://github.com/tildaslashalef/nuclis/commit/31a7c352b4317b3a76a25221743f2ed25dc70c86))
+* development.md split: guide/getting-started.md (the site's setup guide), guide/configuration.md, app/terminal.md; the contributor guide keeps a TOC (REPO-35) ([1491a3a](https://github.com/tildaslashalef/nuclis/commit/1491a3a3329c7520ebb72e48382a48677ff8a52f))
+* models/qwen3.8.md becomes Qwen's family document: the architecture at a glance and where each fact lives (REPO-35) ([75b2259](https://github.com/tildaslashalef/nuclis/commit/75b2259207d850693185419682cf1414bca8fb8e))
+* one home per number: laya.md and the README's decision section on today's prefill, llama-cpp.md introduced as the oracle with its first run dated (REPO-35) ([a0f579c](https://github.com/tildaslashalef/nuclis/commit/a0f579cfa60fd4b89bfebf4022189486db68db10))
+* per-model documents move to docs/models/ (new-model-guide → README, artifacts → catalogue, qwen-validation → qwen3.8, clef → clef-flash); provenance.md checked (REPO-35) ([7211dae](https://github.com/tildaslashalef/nuclis/commit/7211dae2b857964f06fbdb21f8fadbf46f214d20))
+* plan REPO-33, CI speed, release notes, and the README GIF ([5a7539d](https://github.com/tildaslashalef/nuclis/commit/5a7539d28cb3ac58e713457cc855641b5a21fb4b))
+* **readme:** centre only the logo (REPO-33) ([033662a](https://github.com/tildaslashalef/nuclis/commit/033662a4e8c10382185a2abd06eebd99f4d9f928))
+* **readme:** centre the logo and the title together (REPO-33) ([a01b25e](https://github.com/tildaslashalef/nuclis/commit/a01b25ec14fd2ce0e3b79d02cd4325a2c28baef7))
+* **readme:** logo and title as separate centred blocks (REPO-33) ([3db25f9](https://github.com/tildaslashalef/nuclis/commit/3db25f9e5b4bb3ee16a2d42cddd6d7ed92e030e2))
+* **readme:** the agent GIF re-recorded with speculation, in real time (REPO-33) ([efea1ee](https://github.com/tildaslashalef/nuclis/commit/efea1ee8e3e1ebcce4003bada3d6822acf08e199))
+* **readme:** the results at four lengths on macOS 27, decode and prefill tables; site-check reads them (ENGN-21) ([538c1e2](https://github.com/tildaslashalef/nuclis/commit/538c1e2ea82e5a9e6200354b2270df9546792eb6))
+* stale bring-up text replaced: gguf.md, sampling.md (retitled), cpu-reference.md, muse-glimmer.md's projector, bonsai.md's catalogue entry (REPO-35) ([519f76c](https://github.com/tildaslashalef/nuclis/commit/519f76c08ab8152c129361e1e4c2f857bc96b84d))
+* the ADR folder removed; the Qwen verify budget and its evidence kept in speculative-decoding.md and metal-backend.md (REPO-35) ([2846296](https://github.com/tildaslashalef/nuclis/commit/28462967cad38e8c751a4343194cb2bb49cdf530))
+* the agent's concepts move to docs/app/agent.md, the API and eval guides to docs/guide/ (REPO-35) ([1cd7f15](https://github.com/tildaslashalef/nuclis/commit/1cd7f150b3a71ed0ee87f34b150910051ec97ada))
+* the engineering log becomes docs/worklog.md, its table linking every entry; changelog reads either path (REPO-35) ([0c70830](https://github.com/tildaslashalef/nuclis/commit/0c70830946cd3ae4048e53621c355cacdf9e3add))
+* the hub lists every document by folder; README, the site, and llms.txt link it; AGENTS.md and development.md name one listing rule (REPO-35) ([4465281](https://github.com/tildaslashalef/nuclis/commit/4465281025cd58a6429045e440bada30cae90b68))
+* the inference stack's documents move to docs/engine/ (gguf-inspection → gguf, generation → sampling); docs-check reads wrapped links and resumes moves (REPO-35) ([8fa37ed](https://github.com/tildaslashalef/nuclis/commit/8fa37edf972e52d0b0d76c1e620ccb23996857e3))
+* the nuclis logo in docs/branding, at the head of the README (REPO-33) ([0957039](https://github.com/tildaslashalef/nuclis/commit/0957039a7c5faa30aa51204fa6181fe965a9d3a3))
+* **todo:** ENGN-21 session 1 done, the hand-off ([67521d2](https://github.com/tildaslashalef/nuclis/commit/67521d28ae22b6243897014b85e25749a5dc1814))
+* **todo:** ENGN-21 step 0, the facts and the rewritten step list ([f149f59](https://github.com/tildaslashalef/nuclis/commit/f149f59f589ca7d8ed8e7477df2f0a07592a09aa))
+* **todo:** ENGN-21 steps 7-8 done ([661bc3c](https://github.com/tildaslashalef/nuclis/commit/661bc3c65818a3afa6019292a531dfbd796d9122))
+* **todo:** ENGN-21 the benchmarks, measured again ([78e7ec4](https://github.com/tildaslashalef/nuclis/commit/78e7ec41260d0f02e3acc103f71a361240d525d5))
+* **todo:** ENGN-21 the site section merged, site-check red until the README follows ([092df76](https://github.com/tildaslashalef/nuclis/commit/092df7624c48c68597379d0877a9e8bd7800e8ec))
+* **todo:** ENGN-21 where we are, the reference runs done ([5e43b9f](https://github.com/tildaslashalef/nuclis/commit/5e43b9fdc6503a1ee9caaa22b79956389ccf4c35))
+* **todo:** REPO-33 first parallel CI run ([bb2db71](https://github.com/tildaslashalef/nuclis/commit/bb2db7140a18a1213ee2a7145640b0cc83246926))
+* **todo:** REPO-33 release-notes research, v0.5.0 published ([0313cb6](https://github.com/tildaslashalef/nuclis/commit/0313cb603b68acfdb3e773664dd7d7bf73504ba0))
+* **todo:** REPO-33 warm CI run ([902df7b](https://github.com/tildaslashalef/nuclis/commit/902df7bb6a8318306b7a75796b9c861ec66ff9d5))
+* **todo:** REPO-34 the nuclis.dev website ([7f54c9e](https://github.com/tildaslashalef/nuclis/commit/7f54c9ed1f1f96371fda36a06aee7662271164c6))
+* **todo:** REPO-35 session 1 done ([a6b7924](https://github.com/tildaslashalef/nuclis/commit/a6b79245bf7eaaaf0778ba15b008dc17223369ee))
+* **todo:** REPO-35 the docs tree, decided ([8009fc5](https://github.com/tildaslashalef/nuclis/commit/8009fc52c3f8a09fd1191a30cd15c2f357b472b6))
+* **todo:** REPO-35 the documents, restructured ([1f5d889](https://github.com/tildaslashalef/nuclis/commit/1f5d889fb0c78ba3f7064e8e7ad895a901c98730))
+* **todo:** REPO-35 the log's table links its entries ([af6e1ad](https://github.com/tildaslashalef/nuclis/commit/af6e1ad132135ae91bd0970abd57484043fe6e9a))
+* **todo:** REPO-35 the survey's second pass: changelog fallback, ADR parts, the models/ option ([5575617](https://github.com/tildaslashalef/nuclis/commit/55756171c895362cc8f07d65aab59ab4b61c1d3d))
+
 ## [v0.5.0] - 2026-10-04
 
 The agent gets faster per step. A token cache keeps the primed prompt and each turn's end in memory and on disk, so a session resumes without prefilling it again (a 9.8K-token resume 126.5 → 2.05 s; task wall time −23 %). Tools read less (pages, outlines, grouped `grep`, short diffs; tool-result tokens −28 %), and a new command surface with `/model` switches models in place. Breaking: the slash commands changed.
