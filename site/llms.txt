@@ -17,5 +17,5 @@
 
 ## Optional
 
-- [Worklog](https://github.com/tildaslashalef/nuclis/blob/main/docs/worklog.md): every closed unit of work and its evidence
+- [Pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged): every change since v0.6.0, each with its record; earlier work in [the archived worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md)
 - [Decision Dungeons](https://github.com/tildaslashalef/decision-dungeons): a playground where decision models make every call

@@ -212,7 +212,7 @@ the reference's ids.
 
 ## 8. Close
 
-The worklog entry (design deviations, measured numbers, gate
+The pull request's record (design deviations, measured numbers, gate
 results, what was left out), the reference documents the unit changed,
 a llm-guide section if a concept was new, `THIRD_PARTY_NOTICES.md` for
 the template's origin, and the diff checked against the extension rule.
