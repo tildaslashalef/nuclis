@@ -15,13 +15,15 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-REPO-35 is planned and not started: the documents restructured into
-`guide/`, `models/`, `engine/`, `app/`, `benchmarks/` with a hub, the log
-renamed `worklog.md`, the ADR folder removed, current state first, and a
-link checker that also performs the moves. ENGN-21 closed on 2026-10-05
-(the benchmarks on macOS 27; the README, `bench.md`, and the site carry
-them). Next: session 1 of REPO-35, step 1 (`scripts/docs-check.py`).
-Nothing is pushed yet; a push deploys nuclis.dev.
+REPO-35 session 1 is done (2026-10-05): `make docs-check` (check and
+`--move`), the log renamed `docs/worklog.md` with its table linking every
+entry, the ADR folder removed (its knowledge in `engine/speculative-decoding.md`
+§ The Qwen verify budget and `engine/metal-backend.md` § Where a verify
+batch's cost goes), the tree in place (`guide/`, `models/`, `engine/`,
+`app/`, `benchmarks/`; `docs/reference/` gone), and the hub
+`docs/README.md` linked from the README, the site, and `llms.txt`. Next:
+session 2, step 6. Line numbers in the steps below are the old files';
+re-find them by text. Nothing is pushed; a push deploys nuclis.dev.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
@@ -159,6 +161,13 @@ bonsai 39, laya 30, generation 28. Mechanical, with a checker.
    *Repository architecture* and other path mentions follow the tree.
    Gates: `make docs-check`, `make site-check`, `make lint-py`,
    `make verify-auto`, `zig build test` (the `.zig` comments changed).
+
+*Session 1 delivered* steps 1–5. Beyond the plan: `docs-check` also
+renames link text that names a moved document, reads links that wrap
+lines, checks `tests/fixtures/provenance.md`, covers `.metal`/`.cpp`
+comments, and resumes an interrupted move; `changelog.py` gained a
+self-test (run by `make changelog`); the benchmark records' methodology
+pointers follow their documents.
 
 **Session 2: the splits** (content moves; history kept, below it).
 
