@@ -1,8 +1,11 @@
 # Pinned Metal reference baseline
 
-This guide records the reference configuration for Qwen3.8-27B on the target
-Mac. Measurements here belong to llama.cpp; nuclis does not execute models yet.
-Use matching token inputs and settings for a later comparison.
+The pinned llama.cpp is nuclis's numerical oracle and its speed reference:
+how to build it, how the harness drives its server on the same token arrays
+nuclis runs, and how a run becomes a record. Every family's reference runs
+are in [README.md](README.md) (current) and [history.md](history.md); the
+results at the end of this page are the first, Qwen-only run of
+2026-09-06.
 
 ## Build the reference
 
@@ -216,6 +219,7 @@ valid resident-memory calculation.
 
 ## Results
 
+*The first run, 2026-09-06, macOS 26; today's are in [README.md](README.md).*
 Warm request rates, mean ± sample standard deviation over three repetitions:
 
 | Prompt tokens | Output tokens | Prompt tokens/s | Decode tokens/s |

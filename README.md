@@ -145,8 +145,8 @@ nuclis decide --noul 'Does this log show a failure that needs a person now?' \
 
 It reads fast. On Metal, `laya` reads 2,400–3,500 tokens/s and
 `laya-multilingual` 3,400–8,700: a 500-token log is judged in 0.1–0.2 s,
-and 50 of them in 4–10 s. Qwen3.8-27B reads the same log at 90 tokens/s
-(5.7 s), so Laya can filter 30 search hits or 50 log sections and hand the
+and 50 of them in 4–10 s. Qwen3.8-27B reads the same log at 94 tokens/s
+(5.3 s), so Laya can filter 30 search hits or 50 log sections and hand the
 language model only the few that matter. Whether the agent gains from that
 is the experiment still to run.
 
