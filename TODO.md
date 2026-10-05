@@ -15,13 +15,12 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-v0.6.0 is being released: this version pull request, then the user's
-annotated tag `v0.6.0` on its merge, which archives `docs/worklog.md` at the
-tag. Next: the unit below.
+v0.6.0 is published (2026-10-05); the release helper is in review (branch
+`release-helper`). Next: the unit below.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
-| Retire the worklog and identifiers | after v0.6.0: delete `docs/worklog.md`, IDs out of headings and comments, the rest linked to the archived entry | 1 |
+| Retire the worklog and identifiers | delete `docs/worklog.md` (archived at `v0.6.0`), IDs out of headings and comments, the rest linked to the archived entry | 1 |
 
 ## Retire the worklog and identifiers
 

@@ -286,16 +286,23 @@ stale references. Do not claim build/test execution when no code or build exists
 - [Semantic Versioning](https://semver.org/) with the 0.x convention: while
   `0.y.z`, the **minor** is the breaking axis; a release with features
   bumps the minor, one with only fixes the patch.
-- **A release is a version pull request and an annotated tag**, and both
-  are the user's call ([docs/development.md § Versioning](docs/development.md#versioning)).
-  When asked, an agent runs `make verify-cpu`, `make verify-long`, and
-  `make verify-release` on `main`, opens `chore(release): vX.Y.Z` with `make
-  version`, and drafts the highlights in its description. After the merge,
-  the user tags the merge commit (`git tag -a vX.Y.Z`, the message being
-  the highlights) and pushes the tag; `release.yml` builds, attests, writes
-  the notes (the highlights, then GitHub's list of the pull requests merged
-  since the previous release), and publishes. An agent pushes a tag only
-  when the user says so for that release.
+- **A release is a version pull request and an annotated tag**
+  ([docs/development.md § Versioning](docs/development.md#versioning)).
+  When the user says "release", an agent:
+  1. runs `make release-draft` and writes the highlights from it to
+     `.zig-cache/highlights-vX.Y.Z.txt`, at the version it suggests unless
+     the user names one;
+  2. runs the release tiers the user wants (`make verify`, `make
+     verify-cpu`, `make verify-long`, `make verify-release`; all may be
+     skipped when no engine code changed, and the record says so);
+  3. shows the user the highlights, then opens the version pull request
+     with `make release V=X.Y.Z TIERS='<what ran>'`, and stops.
+
+  Merging it and `make tag V=X.Y.Z` (the signed, annotated tag whose
+  message is the highlights, pushed) happen only on the user's word for
+  that release; `release.yml` then builds, attests, and publishes, the
+  notes being the highlights and GitHub's list of the pull requests merged
+  since the previous release.
 - Tags never move and are never added retroactively (a ruleset refuses
   updating or deleting a `v*` tag). Benchmarks and test records cite the git
   revision, and published numbers cite the release tag once one exists.
