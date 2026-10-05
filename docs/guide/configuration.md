@@ -92,7 +92,7 @@ There are no per-key environment variables and no per-project files;
 | `sampling.*` | `null` | overrides of the profile: `temperature`, `top_k`, `top_p`, `min_p`, `presence_penalty`, `repetition_penalty` |
 
 `null` sampling keys take the official profile for the reasoning mode
-([engine/sampling.md](../engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01)),
+([engine/sampling.md](../engine/sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08)),
 so the file never freezes a model's recommended settings.
 
 Speculation is decided per model: each catalogue entry `init` writes

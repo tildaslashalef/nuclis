@@ -40,7 +40,7 @@ with Command Line Tools even though `xcrun --find metal` found no standalone
 compiler. Initial shader compilation and subsequent driver-cache hits can have
 different startup costs. No system toolchain changes are required for this path.
 
-## The second oracle: the PrismML fork (MODL-16, 2026-09-18)
+## The second oracle: the PrismML fork (2026-09-18)
 
 Bonsai 2 27B ([bonsai.md](../models/bonsai.md)) is stored in two encodings the
 mainline reference rejects, so its oracle is the PrismML fork of llama.cpp
@@ -82,7 +82,7 @@ otherwise insists on the mainline pin) and `--family qwen38`, the fork's
 revision recorded as the reference side of
 [reference-2026-09-18-bonsai.json](reference-2026-09-18-bonsai.json)
 and read from there by `nuclis-baseline.py` into the nuclis record
-([benchmarks](history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+([benchmarks](history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
 
 ## Run the workload
 

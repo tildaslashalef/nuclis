@@ -71,7 +71,7 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   clean state by `nuclis model pull qwen3.8-27b --all` on 2026-09-11 (MODL-03).
   Its companions `mmproj-BF16.gguf` and `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`
   sit beside it, verified and not executed
-  ([models/catalogue.md](models/catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11),
+  ([models/catalogue.md](models/catalogue.md#pinned-commits-and-digests-2026-09-11),
   [engine/gguf.md](engine/gguf.md#companion-files-in-modelsqwen-2026-09-08)).
 - Two ignored directories hold local state. `.zig-cache/` is disposable:
   Zig's build cache (`make clean-cache` drops it; it grows with every
@@ -85,7 +85,7 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   PrismML fork `5d80cff` (release `prism-b10687-5d80cff`), the only decoder
   of Bonsai 2 27B's ternary encodings, beside it under
   `.reference/prism-llama.cpp` with the same recipe
-  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
+  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)).
   The decision model's oracle is the `laya` 0.3.20 Python package in a venv
   at `.reference/laya-venv` (Python 3.12 through `uv`; the recipe
   heads `scripts/laya-reference.py`; `--subfolder multilingual` for the
@@ -371,7 +371,7 @@ about a minute per context instead of an eleven-minute 32K prefill:
   paired ratio holds while the absolute rates do not; `--cooldown 90`
   (seconds idle before each cell) gives cold-chip rates. This is how a
   catalogue verdict is set
-  ([benchmarks § The re-priced speculative verdicts](benchmarks/history.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)).
+  ([benchmarks § The re-priced speculative verdicts](benchmarks/history.md#the-re-priced-speculative-verdicts-2026-10-01)).
 
 **The keep rule** ([TODO.md](../TODO.md) while the decode-speed theme
 runs): keep a change when its median decode, or for a verify lever the

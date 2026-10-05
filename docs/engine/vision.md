@@ -10,11 +10,11 @@ that built it are in the [worklog](../worklog.md): `MODL-21`
 **Contents.**
 
 - [The contract](#the-contract)
-- [The Qwen3-VL projector (MODL-21, 2026-09-22)](#the-qwen3-vl-projector-modl-21-2026-09-22)
-- [Images in the chat (AGNT-15, 2026-09-23)](#images-in-the-chat-agnt-15-2026-09-23)
-- [Decode after an image (MODL-24, 2026-09-23)](#decode-after-an-image-modl-24-2026-09-23)
-- [Gemma 4's projectors (MODL-22, 2026-09-23)](#gemma-4s-projectors-modl-22-2026-09-23)
-- [Muse Glimmer's projector (MODL-23, 2026-09-23)](#muse-glimmers-projector-modl-23-2026-09-23)
+- [The Qwen3-VL projector (MODL-21, 2026-09-22)](#the-qwen3-vl-projector-2026-09-22)
+- [Images in the chat (AGNT-15, 2026-09-23)](#images-in-the-chat-2026-09-23)
+- [Decode after an image (MODL-24, 2026-09-23)](#decode-after-an-image-2026-09-23)
+- [Gemma 4's projectors (MODL-22, 2026-09-23)](#gemma-4s-projectors-2026-09-23)
+- [Muse Glimmer's projector (MODL-23, 2026-09-23)](#muse-glimmers-projector-2026-09-23)
 
 ## The contract
 
@@ -84,7 +84,7 @@ faster encode and prefill (Muse's timings below). A resumed chat re-encodes
 its images at the current cap; the conversation is prefilled anew, so the
 recorded grid binds nothing.
 
-## The Qwen3-VL projector (MODL-21, 2026-09-22)
+## The Qwen3-VL projector (2026-09-22)
 
 The file is `unsloth/Qwen3.8-27B-GGUF/mmproj-BF16.gguf` (931 MB; 224 F32 +
 110 BF16 tensors), `clip.projector_type = qwen3vl_merger`. Read from the
@@ -179,7 +179,7 @@ names the turquoise water, the boulders, the snow-capped mountains, and
 the evergreens on the right shore. No oracle trace is pinned for this
 file.
 
-## Images in the chat (AGNT-15, 2026-09-23)
+## Images in the chat (2026-09-23)
 
 **The path in.** A file dropped onto the terminal arrives as a bracketed
 paste of its path (Terminal.app and iTerm2 backslash-escape spaces, some
@@ -257,7 +257,7 @@ the macOS pasteboard is a bridge call. PDF is not extracted. A conversation
 that has fed an image runs without speculation. The preview assumes 1:2 cells, is
 re-transmitted on a fold or resize replay, and is not drawn under tmux.
 
-## Decode after an image (MODL-24, 2026-09-23)
+## Decode after an image (2026-09-23)
 
 **The defect.** The Metal plan's decode step passed one number to its
 full-attention layers for three jobs: the rotary angle, the cache row the
@@ -293,7 +293,7 @@ prefill of the same tokens (bound 2e-2): 2.8e-3 with the fix, 0.82 with it
 reverted. The 4×3-token fixture alone could not catch the defect (a shift
 of 8 rows left the eight greedy tokens unchanged); the new check does.
 
-## Gemma 4's projectors (MODL-22, 2026-09-23)
+## Gemma 4's projectors (2026-09-23)
 
 Two different companions, read from the pinned `7620399f5`
 (`tools/mtmd/models/gemma4uv.cpp`, `gemma4v.cpp`, `clip.cpp` `build_vit`
@@ -447,7 +447,7 @@ rows track the reference only as far as F32 activations track BF16 ones.
 The 12B file's audio embedder is not loaded. A span must fit the context
 (`ContextFull` otherwise).
 
-## Muse Glimmer's projector (MODL-23, 2026-09-23)
+## Muse Glimmer's projector (2026-09-23)
 
 Read from the pinned `7620399f5` (`tools/mtmd/models/muse-glimmer.cpp`,
 `clip.cpp` `build_vit` and its MUSE_GLIMMER hparams at 1683–1692 and

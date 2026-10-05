@@ -129,7 +129,7 @@ Short code on Qwen3.8 reaches 20.9 tokens/s, and on 2026-10-01 the
 agent's task list spent 38 % less model time. Gemma 4 26B-A4B stays off
 (0.67× at 512): on that mixture of experts the batch grows dearer with
 every drafted token than it saves. Methodology, variance, and every
-record: [docs/benchmarks](docs/benchmarks/README.md#the-benchmarks-on-macos-27-engn-21-2026-10-04).
+record: [docs/benchmarks](docs/benchmarks/README.md#the-benchmarks-on-macos-27-2026-10-04).
 
 ## Decision models: Laya and clef-flash
 

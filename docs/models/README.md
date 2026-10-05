@@ -27,13 +27,13 @@ the transcript will not survive.
   the generic GPU dequantizer (bit-identical to the CPU), a specialized
   matvec and matmul tile built from the nearest existing block kernel,
   the adapter's `executableEncoding`, and the file's own traces and
-  acceptance record ([gemma4.md § Q4_0 path](gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12)).
+  acceptance record ([gemma4.md § Q4_0 path](gemma4.md#q4_0-path-and-the-qat-file-2026-09-12)).
   Bring the adapter up on a file the kernels already execute first, if
   the repository offers one; the encoding unit then has an oracle of its
   own on the same architecture.
 - Pull it (`nuclis model pull <owner/repo> --file <name>`) and record the
   commit, size, and SHA-256 from the sidecar in
-  [catalogue.md](catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11).
+  [catalogue.md](catalogue.md#pinned-commits-and-digests-2026-09-11).
   The companions (`mmproj`, `mtp`) go into the same table; the catalogue
   entry will need their digests.
 - Confirm the pinned llama.cpp reference (`7620399`,

@@ -42,7 +42,7 @@ block. The synchronous Metal backend waits on every command buffer, so
 these are always valid between steps; an asynchronous backend would have to
 fence first.
 
-## Snapshot and restore (ENGN-06)
+## Snapshot and restore (2026-09-10)
 
 `Session.snapshot(gpa)` copies the **used** extent into a caller-owned
 `Snapshot`: each attention layer's rows `[0, position)` (keys then values,
@@ -61,7 +61,7 @@ sees `[0, position + 1)` after its own write, recurrent state is whole.
 
 The agent keeps snapshots at turn boundaries and restores the longest one
 a render starts with, in memory and on disk: see
-[§ The agent's token cache](#the-agents-token-cache-agnt-19).
+[§ The agent's token cache](#the-agents-token-cache-2026-10-04).
 
 Why copy instead of rewind: 48 of the 64 layers are recurrent, and their
 matrix after token *n* is a function of every token before it. Truncating a
@@ -89,7 +89,7 @@ round trip under every allocation failure, the used-extent size, the
 untouched unused row, precision and capacity mismatches, and a truncated
 snapshot.
 
-## Checkpoint and rewind (ENGN-11)
+## Checkpoint and rewind (2026-09-19)
 
 A snapshot copies at `snapshot()` time whatever the caller then holds in
 the heap; the recovery of a speculative verify batch cannot pay that: it
@@ -119,7 +119,7 @@ batch's rows are rewritten by the same forward, and never by truncating a
 position alone. Qwen's Metal plan avoids both the rewind and the forward:
 its verify leaves the recurrent state at the batch's start and keeps a
 tape that replays the accepted rows
-([§ Pending rows and the verify tape](#pending-rows-and-the-verify-tape-engn-19)).
+([§ Pending rows and the verify tape](#pending-rows-and-the-verify-tape-2026-10-01)).
 
 `reset()` and `restore()` clear the recorded position: both rewrite the
 state, so the region's bytes are stale and are only read after a fresh
@@ -147,7 +147,7 @@ so the family's chunk-versus-step bound applies (Qwen 27B ≤ 2.9e-3 max abs
 and 1.5e-4 relative RMS over a 4- and an 8-row batch, argmax equal; Bonsai
 ≤ 8.6e-6; Gemma 4 and Muse exactly zero at these small tiles).
 
-## Pending rows and the verify tape (ENGN-19)
+## Pending rows and the verify tape (2026-10-01)
 
 A verify batch of at most `max_draft_rows` (8) on Qwen's Metal plan does
 not advance the recurrent layers. Per DeltaNet layer it copies the rows'
@@ -184,7 +184,7 @@ This replaced ENGN-14's row checkpoints (a 150 MB recurrent copy per batch
 row, 1.25 GB for eight, written by the chunk kernel and restored by a host
 copy); see the [worklog](../worklog.md) for both.
 
-## The agent's token cache (AGNT-19)
+## The agent's token cache (2026-10-04)
 
 The agent re-prefilled tokens it had already computed whenever the session
 could not continue where it stood: every start (the system block and tools),

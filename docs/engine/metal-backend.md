@@ -29,14 +29,14 @@ a part of it was built or measured, kept as written.
 **How parts of it were built** (dated):
 
 - [Performance observation](#performance-observation) (2026-09-07)
-- [Prefill in chunks (ENGN-02)](#prefill-in-chunks-engn-02)
-- [Merged projections (KERN-04)](#merged-projections-kern-04)
-- [F16 KV cache (KERN-07)](#f16-kv-cache-kern-07)
-- [Flash-decoding attention (KERN-08)](#flash-decoding-attention-kern-08)
-- [Few-query verify attention (KERN-21, 2026-09-30)](#few-query-verify-attention-kern-21-2026-09-30)
-- [Long-context prefill attention (ENGN-08, 2026-09-10, closed without a kernel change)](#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change)
-- [Long-context prefill attention, second attempt (KERN-16, 2026-09-21, closed negative)](#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative)
-- [Fused decode norms (KERN-18, 2026-09-21, closed below its target)](#fused-decode-norms-kern-18-2026-09-21-closed-below-its-target)
+- [Prefill in chunks (ENGN-02)](#prefill-in-chunks-2026-09-08)
+- [Merged projections (KERN-04)](#merged-projections-2026-09-08)
+- [F16 KV cache (KERN-07)](#f16-kv-cache-2026-09-10)
+- [Flash-decoding attention (KERN-08)](#flash-decoding-attention-2026-09-10)
+- [Few-query verify attention (KERN-21, 2026-09-30)](#few-query-verify-attention-2026-09-30)
+- [Long-context prefill attention (ENGN-08, 2026-09-10, closed without a kernel change)](#long-context-prefill-attention-2026-09-10-closed-without-a-kernel-change)
+- [Long-context prefill attention, second attempt (KERN-16, 2026-09-21, closed negative)](#long-context-prefill-attention-second-attempt-2026-09-21-closed-negative)
+- [Fused decode norms (KERN-18, 2026-09-21, closed below its target)](#fused-decode-norms-2026-09-21-closed-below-its-target)
 
 ## Build and run
 
@@ -66,8 +66,8 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([sampling.md](sampling.
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
 | `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
-| `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule (MODL-06) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11)). |
-| `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule (MODL-12) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19)). |
+| `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule (MODL-06) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-2026-09-11)). |
+| `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule (MODL-12) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19)). |
 | `metal-check.zig` | Explicit GPU checks against pinned fixtures and CPU references; `--matvec-bench` measures the matvec kernels' achieved bandwidth. |
 
 The MSL source is assembled at compile time: the IQ3_S codebook is emitted from
@@ -156,7 +156,7 @@ which cross-lane operations it relies on. The concepts are explained in
 [llm-guide.md § 12](../llm-guide.md#12-lanes-simd-groups-and-where-they-live);
 the SIMD-level optimizations of the decode matvec are in
 [§ Specialized matvec](#specialized-matvec) and the negative results in
-[§ KERN-05](#kern-05--per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
+[§ KERN-05](#per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
 Thread counts are the numbers `Backend` passes to `dispatch`.
 
 | Kernel | Threads / group | One threadgroup owns | One SIMD group owns | Cross-lane ops | Threadgroup memory |
@@ -263,14 +263,14 @@ memory, and leave the rest to the grid.
   walks keys to the span's end; the register-reuse body refuses a span.
   Gemma 4 passes an image chunk's span on its sliding layers, and its
   SigLIP projector runs a whole patch set as one span
-  ([vision.md § Gemma 4's projectors](vision.md#gemma-4s-projectors-modl-22-2026-09-23)).
+  ([vision.md § Gemma 4's projectors](vision.md#gemma-4s-projectors-2026-09-23)).
   Evidence: a span inside a 300-row chunk with poisoned keys and values
   after it, a span longer than a window of 8, an F16 span, and the
   projector's 16×72 geometry at 200 and 9,900 rows (every 97th compared),
   F32 within 1e-5 (relative past 1) of the F64 reference per row.
 - `nu_delta_chunk` (ENGN-04): chunkwise DeltaNet for a prefill chunk in one
   dispatch per layer, the WY form of `cpu.recurrent.deltaChunk`
-  ([cpu-reference.md § Chunkwise DeltaNet](cpu-reference.md#chunkwise-deltanet-engn-04-stage-1)).
+  ([cpu-reference.md § Chunkwise DeltaNet](cpu-reference.md#chunkwise-deltanet-2026-09-09-stage-1)).
   Threadgroup per (value head, block of 32 value rows), four per head, 128
   threads; it loops over 32-token sub-chunks with the state carried in the
   session buffer (each group reads and writes only its own 32 state rows,
@@ -323,11 +323,11 @@ memory, and leave the rest to the grid.
   splits the K range across the four SIMD groups with a `simdgroup_barrier`-
   only loop and serves chunks of at most `small_chunk_tokens` (24) tokens,
   where the 32-row tile's barrier-bound loop streams weight bytes far below
-  the matvec floor; see [§ Small-chunk tile](#small-chunk-tile-kern-11-2026-09-19).
+  the matvec floor; see [§ Small-chunk tile](#small-chunk-tile-2026-09-19).
   Production now takes the register-fragment set (`nu_matmul_*_f2`, the same
   16×8 geometry without staging, every specialized encoding and IQ4_NL) for
   those chunks and keeps `_8` as the benchmark control (`matmulTile`); see
-  [§ The register-fragment tile](#the-register-fragment-tile-kern-24-2026-10-01-below-its-target).
+  [§ The register-fragment tile](#the-register-fragment-tile-2026-10-01-below-its-target).
   A 2–8-token batch with no specialized tile and at most
   `small_matrix_rows` (1,024) rows runs the generic multi-row matvec
   instead of a tile. The generic instantiation
@@ -371,10 +371,10 @@ memory, and leave the rest to the grid.
   traffic (one token tile, too few threadgroups, a latency-bound K loop),
   hence the 32×32 set for short chunks; short prompts remain far from the
   weight-bandwidth floor (KERN-12's multi-row matvec closes below its target —
-  see [§ Multi-row matvec](#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target)
+  see [§ Multi-row matvec](#multi-row-matvec-2026-09-20-closed-below-its-target)
   — and KERN-15's split-K measured behind the single pass; see
-  [§ Split-K](#split-k-kern-15-2026-09-21-closed-negative)).
-- Mixture of experts (KERN-09; see [§ Gathered expert kernels](#gathered-expert-kernels-kern-09)):
+  [§ Split-K](#split-k-2026-09-21-closed-negative)).
+- Mixture of experts (KERN-09; see [§ Gathered expert kernels](#gathered-expert-kernels-2026-09-18)):
   `nu_route` (softmax and top-k with renormalized weights per logit row),
   `nu_matvec_experts` (a matvec over the selected experts' slices of a 3-D
   tensor, any encoding through the segment bodies), `nu_gelu_mul_rows`
@@ -392,9 +392,9 @@ memory, and leave the rest to the grid.
   reduction, 8-way threadgroup pick, owner retires the winner); the final
   pass is a 64-way merge of sorted lists with one cursor per list. 2 KB
   read back per sampled token; contract in
-  [sampling.md](sampling.md#sampling-on-the-gpu-without-reading-the-vocabulary-back-kern-06).
+  [sampling.md](sampling.md#sampling-on-the-gpu-without-reading-the-vocabulary-back-2026-09-08).
 
-### History penalties (KERN-13, 2026-09-20)
+### History penalties (2026-09-20)
 
 `nu_penalize` applies the sampler's presence/repetition penalties to the
 logits buffer in place, one thread per logit: for a token in the history
@@ -412,7 +412,7 @@ operation; `test-metal` checks every logit sign (positive, negative, zero,
 negative zero) against the CPU sampler, exact except that Metal's fast math
 flushes subnormal operands to zero (a residual below the smallest normal
 F32, unresolvable in any softmax). The costs and the record rows are in
-[speculative-decoding.md § The device penalty kernel](speculative-decoding.md#the-device-penalty-kernel-kern-13-2026-09-20).
+[speculative-decoding.md § The device penalty kernel](speculative-decoding.md#the-device-penalty-kernel-2026-09-20).
 
 ## Specialized matvec
 
@@ -541,7 +541,7 @@ values with one scale and no group coefficients to unpack: 0.9 ns per
 generic kernel on Q4_0 is also the fastest generic case for the same
 reason. In the QAT Gemma file every matrix takes this kernel.
 
-### Split-K (KERN-15, 2026-09-21; closed negative)
+### Split-K (2026-09-21; closed negative)
 
 The row-poor decode matvec experiment. `nu_matvec_q4_k_split` and
 `nu_matvec_q5_k_split` instantiate the shared Q4_K/Q5_K decode body with a
@@ -570,11 +570,11 @@ the scratch, and the forcing API (`Backend.matvecSplits` /
 `matvecSegmentsSplits`, strict about split-capable encodings) stay as the
 measured fixture, the exactness of which `make test-metal` holds at 2/4/8
 splits against the F64 CPU reference. The sweep and its reading are in
-[benchmarks § Split-K matvec sweep](../benchmarks/history.md#split-k-matvec-sweep-kern-15-2026-09-21);
+[benchmarks § Split-K matvec sweep](../benchmarks/history.md#split-k-matvec-sweep-2026-09-21);
 the family-facing note in
-[muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19).
+[muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19).
 
-### Ternary matvecs and tiles (KERN-10, 2026-09-18)
+### Ternary matvecs and tiles (2026-09-18)
 
 Bonsai 2 27B's PQ2_0 (id 142, 34 B per 128 values) and PTQ1_0 (id 143,
 28 B; [bonsai.md](../models/bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc))
@@ -632,7 +632,7 @@ PTQ1_0 9.69 / 4,711 and 10.78 / 4,234, Q4_0 in the same run 9.66 / 4,724
 and 10.05 / 4,540: the prefill tiles are compute-bound and the ternary
 tiles match the set.
 
-### The Hadamard transform kernel (KERN-10 session 2, 2026-09-18)
+### The Hadamard transform kernel (session 2, 2026-09-18)
 
 `nu_hadamard` is the activation side of the folded rotation
 (`cpu.hadamard`, [bonsai.md § Rotation](../models/bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it)):
@@ -666,10 +666,10 @@ that precedes two of the four activations per layer; whether the 2–3 %
 justifies it is read from MODL-17's per-kernel profile of the whole
 token, not from this number.
 
-### The rotation on the Qwen plan (MODL-17, 2026-09-18)
+### The rotation on the Qwen plan (2026-09-18)
 
 `qwen35_metal.zig` applies the transform where the CPU reference does
-([bonsai.md § Metal plan](../models/bonsai.md#metal-plan-modl-17-2026-09-18)): the
+([bonsai.md § Metal plan](../models/bonsai.md#metal-plan-2026-09-18)): the
 inverse over the embedding row(s) after the gather, the forward over the
 normed residual before the mixer's projections, over the mixer output
 before `attn_output` / `ssm_out`, over the normed residual before the FFN
@@ -699,7 +699,7 @@ precedes two of the four activations would save at most about 1 % of the
 token, and the token is bound by the ternary matvecs' multiply rate
 (§ Ternary matvecs and tiles), which is where the next kernel work goes.
 
-### Gathered expert kernels (KERN-09)
+### Gathered expert kernels (2026-09-18)
 
 A mixture-of-experts layer stores each expert projection as a 3-D tensor
 `[experts][rows][columns]` (GGUF dimension 2 is the expert), the experts
@@ -845,7 +845,7 @@ is half the executed one. Larger chunks fill the tiles (the third column
 is `n / (32 · tiles)`), which is why the per-token cost falls with the
 chunk while the GB/s does not move; the adapter's chunk size for this
 family is a memory/latency trade the Metal plan decides (512, measured in
-[gemma4.md § 26B-A4B](../models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)). Against the
+[gemma4.md § 26B-A4B](../models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)). Against the
 alternative of looping the decode kernels over the chunk (2,048 × 3.3 MB
 = 6.8 GB per layer at the decode rate, about 40 ms), the tiles are four
 times faster at 256 tokens and six at 1,024. Follow-ups, not in scope: a
@@ -857,7 +857,7 @@ families.
 **In the adapter** (MODL-09, 2026-09-18). `gemma4_metal.zig` records the
 decode chain after the dense FFN of every 26B-A4B layer and the prefill
 chain over each chunk's rows, both from the same `feedForward` shape as
-the CPU reference ([gemma4.md § 26B-A4B](../models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
+the CPU reference ([gemma4.md § 26B-A4B](../models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)).
 The three expert tensors are wrapped whole (no copy, 14.2 GB resident)
 and the router, an F32 128 × 2,816 matrix, is the first F32 matrix a plan
 dispatches: the generic matvec and the generic F32 tile decode it
@@ -878,7 +878,7 @@ configuration's own bounds (2e1 / 5e-1) beside the 12B's and keeps the
 F32-tile bound (5e-3 / 2e-4) unchanged, which is the one that proves the
 schedule.
 
-### KERN-05 — per-block cost research (2026-09-08, closed without a kernel change)
+### Per-block cost research (2026-09-08, closed without a kernel change)
 
 The unit spent one session on the plan's five hypotheses against the 0.8–0.9
 ns/block observation. Method per hypothesis: fixtures (`make test-metal`) →
@@ -966,7 +966,7 @@ footprint mattered through occupancy.
 `make bench` after the session, kernels unchanged: 10.64 tok/s decode
 ([benchmarks](../benchmarks/README.md)).
 
-## Prefill in chunks (ENGN-02)
+## Prefill in chunks (2026-09-08)
 
 `Plan.prefill(tokens, …)` consumes a prompt in chunks of up to `chunk` tokens
 (256 from the engine, clamped to the session capacity), one command buffer
@@ -1055,7 +1055,7 @@ Prefill is within 6–9 % of the reference at 512 and 4K; the remaining gap
 is spread over attention, DeltaNet, norms, and the generic-tile tensors
 (7 IQ4_NL and 106 Q8_0 tensors in this artifact).
 
-### Small-chunk tile (KERN-11, 2026-09-19)
+### Small-chunk tile (2026-09-19)
 
 A prompt's first tokens run through `Backend.matmul` as one short chunk. The
 32×32 tile gives a 5,120-row projection 160 threadgroups whose K loop carries
@@ -1139,7 +1139,7 @@ blocked activation read, or keeping the activations in threadgroup memory
 across a row strip) are recorded in the log, not shipped; the unit closes
 below its floor on this record.
 
-### Multi-row matvec (KERN-12, 2026-09-20; closed below its target)
+### Multi-row matvec (2026-09-20; closed below its target)
 
 A verify batch (`1 + k` ≤ 8 rows), the recovery replay (`a + 1` rows), and the
 decode-time commit (`a + 1` rows) are small batches that `Backend.matmul`
@@ -1156,7 +1156,7 @@ token count is a template parameter, one host name per encoding and count
 the accumulators to thread-local memory. `Backend.matmul` routes 2-row batches
 to the specialized bodies, and since KERN-23 3-row batches of the K-quants
 (`usesMatvecRows`, `small_batch_rows = 3`; [the word-outer
-body](#the-word-outer-body-kern-23-2026-10-03) replaced the layout described
+body](#the-word-outer-body-2026-10-03) replaced the layout described
 here);
 `matvec_rows_max = 8` is the kernel range and `metal-check`'s sweep covers it.
 
@@ -1202,7 +1202,7 @@ A reference-style `1 row per lane group × NT tokens` body was also measured and
 rejected: it decodes a 256-value block header once per 16-value segment instead
 of once per 32 values, and Q4_K fell to 55 GB/s at 2 rows.
 
-#### Corrected two-row control (REPO-08, 2026-09-20)
+#### Corrected two-row control (2026-09-20)
 
 `make bench-matvec-rows ARGS="2 head"`, Apple M4 Pro (48 GiB), Zig 0.16.0,
 ReleaseSafe, revision `27303ed` plus the REPO-08 repair committed with this
@@ -1262,7 +1262,7 @@ table above).**
 | PQ2_0 | 97 | 45.3 | 45.3 | 45.3 | 13.7 | 9.2 | 7.7 | 13.6 |
 | PTQ1_0 | 83 | 21.8 | 29.0 | 29.0 | 10.4 | 6.7 | 6.1 | 8.6 |
 
-### The word-outer body (KERN-23, 2026-10-03)
+### The word-outer body (2026-10-03)
 
 The `nu_matvec_rows_*` bodies were rewritten. Each 8-lane group of a SIMD
 group owns two rows and the four groups walk the same 256-value block, so
@@ -1295,7 +1295,7 @@ FFN, issue at 25 % occupancy, so the tile keeps 4–8 rows. Qwen's verify C
 (`make speed`): 2 rows 142 → 125 ms at 512 and 150 → 132 at 4K, 3 rows
 171 → 161 and 184 → 172.
 
-### The wide 32×8 tile (KERN-14, 2026-09-20; closed negative)
+### The wide 32×8 tile (2026-09-20; closed negative)
 
 The verify batch's small-batch tile was the plan's largest single lever
 (241–297 ms per batch at 512 tokens, 70–80 % of a speculative batch), so
@@ -1330,11 +1330,11 @@ acceptance bar (the best tile at 5 rows is Q5_K's 110 GB/s). Halving the
 activation reads did not pay for the wider tile's register pressure and
 longer per-step dependency chain; the 16×8 control stands and production
 routing is untouched (the two-row matvec routing included). The numbers are
-in [benchmarks § Small-batch tile sweep](../benchmarks/history.md#small-batch-tile-sweep-kern-14-2026-09-20);
+in [benchmarks § Small-batch tile sweep](../benchmarks/history.md#small-batch-tile-sweep-2026-09-20);
 the full-model verify latency is unchanged from the ENGN-15 quick pass
 (262–297 ms), since nothing routes to the candidate.
 
-### The register-fragment tile (KERN-24, 2026-10-01; below its target)
+### The register-fragment tile (2026-10-01; below its target)
 
 The 16×8 tile decodes weights into threadgroup memory and reloads them as
 8×8 fragments; its time per dispatch was flat across encodings
@@ -1386,7 +1386,7 @@ The unit's 150 GB/s bar is met only by Q6_K's gate shape.
 `matmulKernel` forces any instantiation for measurement; `_f2hh` and
 `_f4` stay as measured variants.
 
-## Merged projections (KERN-04)
+## Merged projections (2026-09-08)
 
 `Backend.matvecSegments` accepts up to four borrowed matrix/output descriptors
 sharing one input. Each segment has a row count, encoding, stride, and weight
@@ -1418,7 +1418,7 @@ for the standalone fallback. Each SIMD group still computes four rows with the
 same reduction order. This layout replaces the plan's initial sequential pair
 per SIMD group, which measured a regression; the outcome records both variants.
 
-## F16 KV cache (KERN-07)
+## F16 KV cache (2026-09-10)
 
 `session.Layout.attention` carries a `precision` (`f32` or `f16`); the
 session block is bytes and each attention layer exposes `Rows` views
@@ -1484,7 +1484,7 @@ generation check and the pinned prompts, never per element.
 Performance is in [benchmarks § Observations](../benchmarks/history.md#observations-so-far)
 (KERN-07 rows).
 
-## Flash-decoding attention (KERN-08)
+## Flash-decoding attention (2026-09-10)
 
 `Backend.attentionDecode` replaces the three-pass decode attention in the
 plan: two dispatches, no `[heads][visible]` score buffer, and every cache
@@ -1522,7 +1522,7 @@ Full model: `make gate NAME=qwen38-trace-f32` 129 files, max abs 6.1e-5 (was 1.2
 (bit-identical sessions, snapshot round trip). Performance:
 [benchmarks § Observations](../benchmarks/history.md#observations-so-far) (KERN-08 rows).
 
-## Few-query verify attention (KERN-21, 2026-09-30)
+## Few-query verify attention (2026-09-30)
 
 A verify batch (a seed and its drafts, 2–16 rows) and a drafter's batched
 commit ran the prefill chunk body, whose grid is one threadgroup per query
@@ -1584,7 +1584,7 @@ a causal limit off by the batch reads 4.7e-2 relative RMS with the greedy
 token unchanged, which is why the gate bounds the RMS and not only the
 argmax.
 
-## Long-context prefill attention (ENGN-08, 2026-09-10, closed without a kernel change)
+## Long-context prefill attention (2026-09-10, closed without a kernel change)
 
 ENGN-07 measured prefill at the reference's rate at 512 tokens and −6 / −15 /
 −26 % at 4K / 16K / 32,639, with the matmul tiles at the reference's speed
@@ -1632,7 +1632,7 @@ with a partial-score reduction) or accepts 1:1. That is a register-budget
 study first (48 live matrices per SIMD group), then a kernel; it was not
 started in ENGN-08's session.
 
-## Long-context prefill attention, second attempt (KERN-16, 2026-09-21, closed negative)
+## Long-context prefill attention, second attempt (2026-09-21, closed negative)
 
 ENGN-08 left one untried lever on the table: register-level reuse in
 `nu_attention_chunk`. Its body gives each of the four SIMD groups of a
@@ -1662,7 +1662,7 @@ budget, F32 operands doubling the block costs. The row-split body stays as
 the control and as the 512-wide sibling.
 
 **Verdict: closed negative against its acceptance.** The sweep is in
-[benchmarks § Prefill attention sweep](../benchmarks/history.md#prefill-attention-sweep-kern-16-2026-09-21).
+[benchmarks § Prefill attention sweep](../benchmarks/history.md#prefill-attention-sweep-2026-09-21).
 At the 256-row prefill chunks the reuse body is 2–5 % ahead in F16 at
 4K–32K (−4.8 % at 16K, −3.2 % at 32,512) and level at 512, against the
 attention cut the unit's acceptance needed (prefill at 32,639 within 10 %
@@ -1681,7 +1681,7 @@ loads (the ENGN-08 variant done with double buffering rather than 16
 barriers and scalar copies), and an ablation that removes one phase at a
 time to identify the per-tile limiter rather than guessing at it.
 
-## Fused decode norms (KERN-18, 2026-09-21, closed below its target)
+## Fused decode norms (2026-09-21, closed below its target)
 
 The 2026-09-07 profile showed every family's decode step paying 200–340
 `rmsnorm` dispatches (2.1–3.6 ms of a 37–110 ms step) and read the
@@ -1719,7 +1719,7 @@ they replace and against `cpu.rmsNorm`/`cpu.rope` over the model widths
 the CPU). A fused `generate` on Qwen3.8-27B reproduces the greedy text.
 
 **Measured verdict.** Dispatch counts and decode rates are in
-[benchmarks § Fused norm sweep](../benchmarks/history.md#fused-norm-sweep-kern-18-2026-09-21);
+[benchmarks § Fused norm sweep](../benchmarks/history.md#fused-norm-sweep-2026-09-21);
 in brief, `bench --profile` reads 938.8 → 844.3 dispatches per step on
 Qwen, 882.2 → 693.2 on Gemma 4 12B, 922.9 → 743.8 on Muse (per decode step
 −96, −192, −182, the design counts; the profile averages dilute them with
@@ -1789,7 +1789,7 @@ rounds fewer times. With KERN-03 Q3_K/IQ3_S (2026-09-08), all 129 files
 still pass, maximum absolute error `0.0001220703125`. KERN-04 merged projections
 retain that maximum; `make gate NAME=qwen38-generation-metal` was rerun on 2026-09-08.
 With the F16 cache (KERN-07, 2026-09-10) the same comparison holds at the F16
-tolerance stated in [§ F16 KV cache](#f16-kv-cache-kern-07): layer files up
+tolerance stated in [§ F16 KV cache](#f16-kv-cache-2026-09-10): layer files up
 to 2.5e-2 absolute / 1.9e-4 relative RMS, logits 9.2e-4 / 5.3e-5, greedy
 unchanged.
 `test-generation --metal`
@@ -1802,7 +1802,7 @@ separate the half-tile rounding from the chunk schedule: Qwen 2.4e-3 /
 1.1e-4 with the specialized tiles, 2.8e-5 / 1.2e-6 with the F32 tiles;
 F16 cache 5.5e-4 / 2.4e-5 stepped, 2.6e-3 / 1.3e-4 chunked (2026-09-11).
 The second model's numbers are in
-[gemma4.md § Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11).
+[gemma4.md § Metal plan](../models/gemma4.md#metal-plan-2026-09-11).
 
 ## Performance observation
 
@@ -1853,7 +1853,7 @@ budget per token (profile mode): specialized matvec 83.7 ms, generic matvec
 (rmsnorm 2.7 ms in 209 launch-bound dispatches). The reference decodes at 9.66
 tok/s at 512 context; the bandwidth floor is ~59 ms per token. Prefill ran
 one token per command buffer at decode speed until ENGN-02 (see [Prefill in
-chunks](#prefill-in-chunks-engn-02)). These are smoke observations on a short
+chunks](#prefill-in-chunks-2026-09-08)). These are smoke observations on a short
 prompt, not the acceptance runs (ENGN-07).
 
 ## Limits
@@ -1899,13 +1899,13 @@ since is named.
 - **Attention grid.** `Backend.attentionChunk` dispatches `query_heads ×
   ceil(count/32) × value_splits` threadgroups, so a small verify ran 24
   threadgroups per value split, each walking the whole visible cache, in a
-  32-row tile at least 75 % padding. The [prefill attention sweep](../benchmarks/history.md#prefill-attention-sweep-kern-16-2026-09-21)
+  32-row tile at least 75 % padding. The [prefill attention sweep](../benchmarks/history.md#prefill-attention-sweep-2026-09-21)
   priced it at 8 rows, F16: 0.767 / 6.46 / 25.8 ms per layer at 512 / 4K /
   16K visible, the same at 1 row as at 8; over Qwen's 16 full-attention
   layers about 12 / 103 / 413 ms per verify, while single-row flash decoding
   grew only from 94 to 98 ms per step from 512 to 4K. Verify attention
   decided every context from 4K up. Since: [few-query verify
-  attention](#few-query-verify-attention-kern-21-2026-09-30) splits the keys
+  attention](#few-query-verify-attention-2026-09-30) splits the keys
   for batches of up to 16 rows.
 - **Missed fusions.** `qwen35_metal.zig:recordLayers` runs separate gate and
   up matmuls and a standalone SiLU multiply, where the single-row `step` uses
@@ -1920,8 +1920,8 @@ since is named.
   verify, and wrote each row's recurrent checkpoint inside the kernel (cost
   booked to verify, not to recover). Since: the per-token verify with a
   replay tape (DeltaNet 41 → 6 ms, recover 14 → 2–3 ms per 4-row batch at
-  4K; [benchmarks § The DeltaNet replay tape](../benchmarks/history.md#the-deltanet-replay-tape-engn-19-2026-10-01)).
+  4K; [benchmarks § The DeltaNet replay tape](../benchmarks/history.md#the-deltanet-replay-tape-2026-10-01)).
 - **Drafters differ.** Qwen's MTP proposals are serial forwards with a
-  private draft cache; [Muse's DFlash](../benchmarks/history.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)
+  private draft cache; [Muse's DFlash](../benchmarks/history.md#the-muse-glimmer-dflash-draft-pair-2026-09-21)
   proposes differently and has no DeltaNet state to recover, so its
   economics do not transfer to Qwen.

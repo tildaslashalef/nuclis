@@ -516,7 +516,7 @@ lever is a different geometry, not a shorter loop.
 
 Read: `kernels.metal` (`nu_matvec_q4_k` and its neighbours),
 `Backend.specializedMatvec`,
-[engine/metal-backend.md § KERN-05](engine/metal-backend.md#kern-05--per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
+[engine/metal-backend.md § KERN-05](engine/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
 
 ### 14. Fewer dispatches, same math
 
@@ -542,7 +542,7 @@ says where the real win would be: the norm inside the kernel that produces
 its input, an epilogue, not a merge.
 
 Read: `Backend.matvecSegments`, `rmsNormAdd` and `rmsNormRope` in
-`root.zig`, [benchmarks § Fused norm sweep](benchmarks/history.md#fused-norm-sweep-kern-18-2026-09-21).
+`root.zig`, [benchmarks § Fused norm sweep](benchmarks/history.md#fused-norm-sweep-2026-09-21).
 
 ### 15. Sampling on the device
 
@@ -584,7 +584,7 @@ greedy.
 
 Read: `inference/src/sampling/root.zig`, `nu_topk_partial` and
 `nu_penalize` in `kernels.metal`,
-[engine/sampling.md § Sampling profiles](engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01).
+[engine/sampling.md § Sampling profiles](engine/sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08).
 
 ---
 
@@ -665,7 +665,7 @@ sits flat at 640 to 750 GFLOP/s, so the long-context deficit is not a load
 problem, and the next attempt would start from a different lever.
 
 Read: `nu_attention_chunk_t` in `kernels.metal`,
-[benchmarks § Prefill attention sweep](benchmarks/history.md#prefill-attention-sweep-kern-16-2026-09-21).
+[benchmarks § Prefill attention sweep](benchmarks/history.md#prefill-attention-sweep-2026-09-21).
 
 ### 18. DeltaNet in chunks: the triangular solve
 
@@ -743,7 +743,7 @@ dense one's.
 
 Read: `inference/src/backends/cpu/experts.zig`, `nu_route`,
 `nu_expert_lists`, `nu_matmul_experts_t` in `kernels.metal`,
-[engine/metal-backend.md § Gathered expert kernels](engine/metal-backend.md#gathered-expert-kernels-kern-09).
+[engine/metal-backend.md § Gathered expert kernels](engine/metal-backend.md#gathered-expert-kernels-2026-09-18).
 
 ---
 
@@ -933,7 +933,7 @@ poorly: the tile pads every 8×8 multiply, and a scalar body pays about
 Read: `inference/src/runtime/draft.zig`, `speculativeBatch` in `engine.zig`,
 `models/dflash.zig`, `models/gemma4_assistant.zig`,
 [engine/speculative-decoding.md](engine/speculative-decoding.md),
-[benchmarks § The speculative verdict record](benchmarks/history.md#the-speculative-verdict-record-engn-17-2026-09-21).
+[benchmarks § The speculative verdict record](benchmarks/history.md#the-speculative-verdict-record-2026-09-21).
 
 ---
 

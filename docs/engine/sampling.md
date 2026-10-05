@@ -42,7 +42,7 @@ section); the file's `generation.sampling` entries and then `--temperature`,
 selects greedy. Greedy ties select the lowest token
 ID. Nonfinite logits are errors.
 
-### Sampling profiles and the selection chain (MODL-01)
+### Sampling profiles and the selection chain (2026-09-08)
 
 `generate` and `chat` sample with the checkpoint's official settings of the
 reasoning mode `--think` selects. The tables live in the profile modules
@@ -101,14 +101,14 @@ repetition penalty finite and > 0.
 
 On the Metal backend the prompt is consumed in chunks of up to 256 tokens
 through batched matrix kernels (ENGN-02; see
-[metal-backend.md § Prefill in chunks](metal-backend.md#prefill-in-chunks-engn-02));
+[metal-backend.md § Prefill in chunks](metal-backend.md#prefill-in-chunks-2026-09-08));
 `--trace-dir` requests per-layer activations per token and therefore steps
 the prompt token by token, as the CPU reference always does. Chunked and
 stepped prompts agree within the tolerance recorded there, not bit for bit.
 `prefill_milliseconds` keeps its definition (all prompt tokens, logits for
 the last).
 
-### Sampling on the GPU without reading the vocabulary back (KERN-06)
+### Sampling on the GPU without reading the vocabulary back (2026-09-08)
 
 The reference sampler (`inference/src/sampling/root.zig`, `Sampler.select`)
 sorts all 248,320 logits by (value descending, id ascending), exponentiates
@@ -160,7 +160,7 @@ Greedy decoding with a penalty active takes the same device argmax, after
 asked for (a trace or `--logits`), and then it is unpenalized for the CPU
 sampler.
 
-### Speculative verification and the loop (ENGN-12)
+### Speculative verification and the loop (2026-09-20)
 
 When a drafter is loaded and the speculative switch is on, the loop batches
 the step instead of feeding one token at a time. `Executor.verify` returns the
@@ -295,7 +295,7 @@ the Metal plan (`--metal`) and writes `p0-h.f32`, `p1-h.f32`,
 those rows and the greedy tokens against the pinned directory
 (`make gate NAME=qwen38-draft-trace-metal`, both backends). `--draft-stats` instead reports the
 per-depth acceptance statistic and draft latency
-([speculative-decoding.md § Acceptance statistic](speculative-decoding.md#the-qwen38-draft-head-modl-18)).
+([speculative-decoding.md § Acceptance statistic](speculative-decoding.md#the-qwen38-draft-head-2026-09-20)).
 
 `--dflash-draft DRAFT_MODEL` is Muse Glimmer's DFlash form, following the
 reference's `draft-dflash` driver: after the target decodes position `i`,
@@ -323,7 +323,7 @@ full-model smoke thresholds, not general per-kernel or quality acceptance limits
 They are the accepted numbers for the F32 cache (`make gate NAME=qwen38-trace-f32`); the
 F16 cache (KERN-07) has its own documented tolerance, 0.03 / 0.0002 on the layer
 files with the logits inside the bring-up numbers (`make gate NAME=qwen38-trace-f16`;
-[metal-backend.md § F16 KV cache](metal-backend.md#f16-kv-cache-kern-07)).
+[metal-backend.md § F16 KV cache](metal-backend.md#f16-kv-cache-2026-09-10)).
 
 The accepted outputs of this procedure are committed as fixtures under
 [tests/fixtures/](../../tests/fixtures/) (`reference-hello-comma/` and
@@ -338,7 +338,7 @@ script takes the geometry as flags (`--embedding`, `--layers`, `--vocab`;
 the defaults are Qwen3.8's), so the same pair serves Gemma 4
 (`make gate NAME='gemma4-trace-*'` on the K-quant entry, `gemma4-qat-trace-*`
 on the QAT file, each against its own traces;
-[gemma4.md](../models/gemma4.md#cpu-reference-against-the-oracle-modl-05-2026-09-11)).
+[gemma4.md](../models/gemma4.md#cpu-reference-against-the-oracle-2026-09-11)).
 Top-five IDs and reference greedy margin are reported for diagnosis. The
 harness also builds unchanged against the PrismML fork (the include and
 library paths of `.reference/prism-llama.cpp`, output

@@ -116,7 +116,7 @@ So the pinned references are **per-token runs** (`--ubatch 1`, which adds
 `-b <ctx> -ub 1`), for every family. The per-token reference is slow
 (it decodes one token per call) but is written once.
 
-## The reference record (APPS-14, 2026-09-24)
+## The reference record (2026-09-24)
 
 wikitext-2-raw `wiki.test.raw` (1,290,590 bytes, SHA-256 `173c87a5…`,
 fetched by `make eval-corpus`), eight windows of 512 (4,096 tokens, 2,040
@@ -204,13 +204,13 @@ stopped before they finished. `scripts/reference-perplexity.py --ctx 4096
 --chunks 4 --ubatch 1` produces them, and each then gets a
 `*-perplexity-4k` gate in `gates.json`.
 
-## Gemma 4's verify rows (MODL-26, 2026-09-24)
+## Gemma 4's verify rows (2026-09-24)
 
 Building `prefillRows` surfaced a gap in a sibling path: Gemma 4's Metal
 `verify` ran the head over every row without the final soft-cap, so sampled
 speculative acceptance on Gemma drew from uncapped logits (row 0 of
 `<bos>Hello,` 27.8 from the stepped logits). Fixed and gated; the facts are in
-[speculative-decoding.md § The Gemma 4 assistant heads](../engine/speculative-decoding.md#the-gemma-4-assistant-heads-modl-19).
+[speculative-decoding.md § The Gemma 4 assistant heads](../engine/speculative-decoding.md#the-gemma-4-assistant-heads-2026-09-21).
 
 ## Regenerating a reference
 

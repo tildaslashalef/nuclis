@@ -27,7 +27,7 @@ spelling the same text do not. Gemma's `thought\n` suffix is ordinary text
 following the opening control, so the decoder handles its partial arrival.
 The agent stores the channels directly for history and session logging;
 `generate`/`agent` sample with the profile's defaults for the
-`--think` effort ([sampling.md](sampling.md#sampling-profiles-and-the-selection-chain-modl-01)).
+`--think` effort ([sampling.md](sampling.md#sampling-profiles-and-the-selection-chain-2026-09-08)).
 Nothing under `src/` names a profile module; the executable uses the tag.
 
 ## Shared contract
@@ -335,7 +335,7 @@ Captures: Qwen3.8 on 2026-09-07 (re-captured 2026-09-12 with the seven
 conversations, 2026-09-19 with `high`), Gemma 4 on 2026-09-12, Muse
 Glimmer on 2026-09-19, all with llama.cpp
 `7620399f58aebfd2196b74021f9581bcf7218cb9` on the pinned files
-([catalogue.md](../models/catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11)).
+([catalogue.md](../models/catalogue.md#pinned-commits-and-digests-2026-09-11)).
 The templates are adapted, not copied; their origins and licenses are in
 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
 
@@ -367,7 +367,7 @@ them; every other prompt and token stream is byte-identical
 ([bonsai.md § Chat template](../models/bonsai.md#chat-template)). Not an alias
 either; MODL-17 chooses the entry's profile from that evidence.
 
-## Completion events (AGNT-01 session 1)
+## Completion events (2026-09-14, session 1)
 
 `engine.complete` wraps `runLoop` with profile decoding. Its caller supplies
 sampling scratch (`CompletionBuffers`), the effort used to render the prompt,

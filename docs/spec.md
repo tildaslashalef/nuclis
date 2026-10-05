@@ -606,7 +606,7 @@ one command; the evaluation CLI stays separate.
   file's last `boundary` starts that render and its state is on disk (same
   model files, backend, context size, and build), the state is restored and
   only the rest is prefilled; otherwise the whole conversation is
-  ([engine/session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19)).
+  ([engine/session.md § The agent's token cache](engine/session.md#the-agents-token-cache-2026-10-04)).
 - `agent ls` and the `/resume` picker list a workspace's sessions (the
   picker marks the one in use); `agent rm <id>` and Ctrl-D in the picker
   delete one, named by its id or a prefix of exactly one id (the picker
@@ -647,7 +647,7 @@ A turn is a loop over steps, at most 16 per turn:
   turn, or compaction restarts from the longest cached state the
   conversation begins with (the primed prefix or a turn's end) and
   replays the rest, and the bar names the cause and the tokens prefilled
-  and restored ([session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19)).
+  and restored ([session.md § The agent's token cache](engine/session.md#the-agents-token-cache-2026-10-04)).
 - Compaction: one tool result may not exceed an eighth of the context
   window in tokens (never below 256); it is cut at a line boundary with a
   note saying how to ask for the rest. When a step still does not fit,

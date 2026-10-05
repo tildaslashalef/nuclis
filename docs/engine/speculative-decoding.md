@@ -7,7 +7,7 @@ the [worklog](../worklog.md).
 
 As of 2026-10-01 every catalogue family with a draft source is measured
 and the defaults follow the record
-([§ The re-priced verdicts](#the-re-priced-verdicts-engn-20-2026-10-01)):
+([§ The re-priced verdicts](#the-re-priced-verdicts-2026-10-01)):
 Qwen3.8-27B on at draft 7, Gemma 4 12B QAT on at 5, Gemma 4 E4B on at 6,
 Muse Glimmer on at 6, Gemma 4 26B-A4B off. What exists: the draft
 contract in `runtime/draft.zig`; three draft sources (Qwen's embedded
@@ -23,7 +23,7 @@ off/on pair on one loaded model, and `make spec-matrix` runs the record.
 The sections below follow the units in order, so the early ones carry
 the costs and verdicts of their day; the last section holds today's.
 
-## The draft contract (MODL-18)
+## The draft contract (2026-09-20)
 
 `inference/src/runtime/draft.zig` owns the model-independent interface: a
 family exposes a `Drafter` (a host pointer and five function pointers)
@@ -39,7 +39,7 @@ session; `bytes()` reports the workspace it owns beyond the session's. There is 
 *same* `Session`, so ENGN-11's checkpoint/rewind/truncate cover it and the
 generation loop only needs `reset` on a session reset.
 
-## The recovery contract (ENGN-11)
+## The recovery contract (2026-09-19)
 
 A verify batch feeds the main model the last chosen token followed by `k`
 drafts in one forward and keeps every row's logits. If `a` drafts are
@@ -60,7 +60,7 @@ prefix. The two state kinds recover differently:
 The session owns the mechanism: a page-aligned region inside the byte
 block, one recurrent copy, `checkpoint`/`rewind`/`truncate` with their
 refusals, all described in [session.md § Checkpoint and
-rewind](session.md#checkpoint-and-rewind-engn-11). `engine.Model.recover`
+rewind](session.md#checkpoint-and-rewind-2026-09-19). `engine.Model.recover`
 is the accepted-prefix operation, and `generation-check` exercises it per
 accepted length on every family, on both executors: replay is bit-identical
 to sequential decoding on the CPU, and within the family's
@@ -76,9 +76,9 @@ context-long replay. A bounded alternative — per-token recurrent
 checkpoints written by the DeltaNet chunk kernel, `(k + 1) × 150 MB` of
 device scratch on Qwen — was not needed by these numbers and is not built;
 ENGN-14 measures recovery by accepted length and reopens it
-([§ Recovery by accepted length](#recovery-by-accepted-length-engn-14-2026-09-20)).
+([§ Recovery by accepted length](#recovery-by-accepted-length-2026-09-20)).
 
-## The Qwen3.8 draft head (MODL-18)
+## The Qwen3.8 draft head (2026-09-20)
 
 Facts confirmed on 2026-09-19 from the pinned reference
 (`7620399f5`): the dense MTP graph `src/models/qwen35.cpp:485-639`, the
@@ -175,7 +175,7 @@ and takes a checkpoint/rewind across a block row: the hidden is
 reproduced byte for byte and two independently reset drafters propose the
 same greedy chain.
 
-## The Gemma 4 assistant heads (MODL-19)
+## The Gemma 4 assistant heads (2026-09-21)
 
 Facts confirmed on 2026-09-21 from the pinned reference (`7620399f5`): the
 graph `src/models/gemma4-assistant.cpp` (200 lines, all of it), the KV
@@ -298,7 +298,7 @@ F16 KV, ctx 32768, the 512-token Gemma acceptance prompt, 128 output tokens,
 greedy, one warmup and three measured runs per configuration on one loaded
 model (`--speculative on` runs the off/on pair); per-batch costs divide the
 sample's fields by `speculative_steps`. Table in
-[benchmarks § The Gemma 4 draft pair](../benchmarks/history.md#the-gemma-4-draft-pair-modl-19-2026-09-21).
+[benchmarks § The Gemma 4 draft pair](../benchmarks/history.md#the-gemma-4-draft-pair-2026-09-21).
 
 | draft | accepted/step | proposed/step | tokens/batch | verify ms | propose ms | decode off → on tok/s | speedup |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -334,7 +334,7 @@ without the cap and passes with it. The top-k check never saw this because
 it compares `verify` with itself. Found by `nuclis eval` (APPS-14), whose
 all-rows path shares the head sequence.
 
-## The Muse Glimmer DFlash drafter (MODL-20)
+## The Muse Glimmer DFlash drafter (2026-09-21)
 
 Facts confirmed on 2026-09-21 from the pinned reference (`7620399f5`): the
 drafter graph `src/models/dflash.cpp` (the encoder/decoder duality at
@@ -505,7 +505,7 @@ acceptance workload: 1.234× at draft 4, 1.163× at 8, 1.222× at 15, with
 proposals to 1.83 / 2.12 / 2.36 per step (of 4 / 8 / 15 requested). The
 verify batch (172.9–188.2 ms for 2.8–3.4 rows) is the cost; recovery is the
 position rewind alone (1 µs) and `commit` ~2 ms. Facts and the table:
-[benchmarks § The Muse Glimmer DFlash draft pair](../benchmarks/history.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21).
+[benchmarks § The Muse Glimmer DFlash draft pair](../benchmarks/history.md#the-muse-glimmer-dflash-draft-pair-2026-09-21).
 Memory on Metal: the session is 2,415,919,104 bytes (2304 MiB) at 32,768
 with the five draft caches (640 MiB of it), the drafter's device workspace
 149,861,504 bytes, and the verify scratch 53,862,464 bytes.
@@ -518,7 +518,7 @@ and used to size the engine's speculative scratch. The configuration and
 `--draft-length` validate against the host bound; a length above a family's
 block is a typed `InvalidDraftLength` at run time.
 
-## The verify batch and the loop (ENGN-12, session 1)
+## The verify batch and the loop (2026-09-20, session 1)
 
 Implemented and checked on 2026-09-20; the configuration and the benchmark
 are session 2.
@@ -601,7 +601,7 @@ speculation is off: `runLoop` asks the drafter only while
 The block's own `attn_k`/`attn_v` are Q8_0, already in
 `qwen35.executableEncoding`.
 
-## The switch, the bench pair, and the record (ENGN-12, session 2)
+## The switch, the bench pair, and the record (2026-09-20, session 2)
 
 **Configuration.** `generation.speculative` (default off) and
 `generation.draft_length` (default 4, 1 ≤ n ≤ `engine.max_draft_length` =
@@ -642,7 +642,7 @@ prefix).
 acceptance*): the target-draw rule replaces `min(1, p/q)`, and the draft
 contract lost its logits rows. `Timing.accept` isolates the host decision.
 
-**The record** is in [benchmarks § Speculative decoding record](../benchmarks/history.md#speculative-decoding-record-engn-12-2026-09-20)
+**The record** is in [benchmarks § Speculative decoding record](../benchmarks/history.md#speculative-decoding-record-2026-09-20)
 (`make workload NAME='qwen38/spec/*'`): off by default for the Qwen entry; the
 per-batch costs — verify 225–250 ms at 512 and ≈ 342 ms at 4K, recovery
 99–272 ms on rejection, the sampled decision 46–78 ms, proposal 6.2 ms per
@@ -650,7 +650,7 @@ draft, commit 6.2 ms per token, the prefill at 2.9–3.3× — are the cost
 table the plan's performance units (ENGN-13 to ENGN-17, KERN-12, KERN-13)
 target.
 
-## The prompt commit and the batched drafter commit (ENGN-13)
+## The prompt commit and the batched drafter commit (2026-09-20)
 
 **Prompt commit through `prefill` (2026-09-20).** `Plan.prefill` gained a
 `hidden_rows` readback — every row's post-`output_norm` hidden, checked
@@ -700,7 +700,7 @@ doubles a number.` (ctx 4096, 32 tokens) settled at **spec 2.56/step**,
 within the range `bench` measures for the code prompt (1.2–3.0 accepted at
 draft 4).
 
-## Small batches: the multi-row matvec and the 2-row routing (KERN-12)
+## Small batches: the multi-row matvec and the 2-row routing (2026-09-20)
 
 The verify batch (`1 + k` rows), the recovery replay (`a + 1`), and the
 decode-time commit (`a + 1`) all reach `Backend.matmul`, which served them with
@@ -708,7 +708,7 @@ the 16×8 split tile. KERN-12 added `nu_matvec_rows_*_t2..t8`: one SIMD group
 per four output rows, a decoded weight slice multiplied against every activation
 row before the next slice is fetched, one accumulator per (row, token). The
 sweep (`make bench-matvec-rows`, both FFN shapes, in
-[metal-backend.md § Multi-row matvec](metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target))
+[metal-backend.md § Multi-row matvec](metal-backend.md#multi-row-matvec-2026-09-20-closed-below-its-target))
 shows it wins at **2 rows only** for every specialized encoding (143–182 GB/s
 against the tile's 88–116) and for Q6_K/IQ4_XS at 3; at 5 rows it is 49–67 and
 at 8 rows 20–33, below the tile. `Backend.matmul` therefore routes only 2-row
@@ -731,7 +731,7 @@ before and after replacing replay with recurrent-state copies. `make gate NAME='
 `make gate NAME=qwen38-draft-stats` (28/31, 24/30, 20/29, 18/28 and 29/31, 25/30, 24/29, 24/28)
 are unchanged.
 
-## Recovery by accepted length (ENGN-14, 2026-09-20)
+## Recovery by accepted length (2026-09-20)
 
 The aggregate `recover_milliseconds / speculative_steps` mixed accepted
 lengths together, which hid that the replay's cost is governed by its row
@@ -782,16 +782,16 @@ overflowed on a layer whose chunk decay reached `cum = −114`, writing `inf`
 into slots and NaN into the state on restore. And the slot writes are only
 gated by `row_states > 0`: ordinary prefill, decode, and the prompt commit
 pass 0, and the kernels take the same code path as before. The layout and
-the refusals are in [session.md § Pending rows and the verify tape](session.md#pending-rows-and-the-verify-tape-engn-19), which replaced them.
+the refusals are in [session.md § Pending rows and the verify tape](session.md#pending-rows-and-the-verify-tape-2026-10-01), which replaced them.
 
-## The device penalty kernel (KERN-13, 2026-09-20)
+## The device penalty kernel (2026-09-20)
 
 A sampler with a presence or repetition penalty changes the sort itself, so
 before this unit the loop turned both GPU selection paths off while one was
 active: every such token read the full 248,320-logit row back and sorted it
 on the host, and the ordinary decode step measured 7.7–8.6 tok/s on the
 instruct profile against 8.8–10.3 greedy (the ENGN-14 record). `nu_penalize`
-([metal-backend.md § History penalties](metal-backend.md#history-penalties-kern-13-2026-09-20))
+([metal-backend.md § History penalties](metal-backend.md#history-penalties-2026-09-20))
 applies the penalties on the device in place — before the argmax and before
 the three top-k passes — so the readback is the vector the CPU sampler
 would sort: repetition first (`l / r` for positive, `l · r` for negative
@@ -814,7 +814,7 @@ Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 c
 Qwen3.8-27B UD-Q4_K_M, Metal, F16 KV, ctx 32768, 128 output tokens, one
 warmup and three measured runs per configuration, off/on pairs on one
 loaded model (`d31c5cd`; the full table is in
-[benchmarks § The KERN-13 quick pass](../benchmarks/history.md#the-kern-13-quick-pass-2026-09-20)):
+[benchmarks § The KERN-13 quick pass](../benchmarks/history.md#the-penalty-kernel-quick-pass-2026-09-20)):
 
 | configuration | decode off tok/s (before KERN-13) | decode off tok/s (now) |
 | --- | ---: | ---: |
@@ -834,7 +834,7 @@ readback decided every token. The speculative speedups move little
 (ENGN-15); what this unit fixes is ordinary decode with penalties, which is
 no longer 12–25 % below greedy.
 
-## Sampled acceptance on the device readback (ENGN-15, 2026-09-20)
+## Sampled acceptance on the device readback (2026-09-20)
 
 The sampled acceptance used to call `Sampler.distribution` on every verify
 row: a full-vocabulary sort per row on the host, measured at 62.8–91.3 ms
@@ -864,7 +864,7 @@ configuration falls back to full rows.
 
 Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 code"`,
 same workload and methodology as the KERN-13 pass above
-([benchmarks § The ENGN-15 quick pass](../benchmarks/history.md#the-engn-15-quick-pass-2026-09-20)):
+([benchmarks § The ENGN-15 quick pass](../benchmarks/history.md#the-sampled-acceptance-quick-pass-2026-09-20)):
 
 | configuration | accept before (KERN-13 pass) | accept now | fallbacks | speedup before → now |
 | --- | ---: | ---: | ---: | ---: |
@@ -885,7 +885,7 @@ rows-mode row, reading the resident row back when the readback defers
 `selectFromHistory` against `select` for hundreds of random vectors and
 option sets, including the deferrals.
 
-## The small-batch tile experiment (KERN-14, 2026-09-20, closed negative)
+## The small-batch tile experiment (2026-09-20, closed negative)
 
 Verify stayed the batch's whole cost after ENGN-15 (262–297 ms at 512
 tokens), so the plan's largest single lever was the small-batch matmul
@@ -897,13 +897,13 @@ Q6_K 114.0 → 84.6, Q3_K 63.0 → 47.1 GB/s), ties on Q5_K, and wins only
 5–8 % on the wide head; the best tile at 5 rows is 110 GB/s against the
 ≤ 150 GB/s bar. Nothing routes to it, the 16×8 tile and the two-row matvec
 routing stay as they were, and full-model verify latency is unchanged.
-Numbers: [metal-backend.md § The wide 32×8 tile](metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative)
-and [benchmarks § Small-batch tile sweep](../benchmarks/history.md#small-batch-tile-sweep-kern-14-2026-09-20).
+Numbers: [metal-backend.md § The wide 32×8 tile](metal-backend.md#the-wide-328-tile-2026-09-20-closed-negative)
+and [benchmarks § Small-batch tile sweep](../benchmarks/history.md#small-batch-tile-sweep-2026-09-20).
 The verify lever that remains is KERN-16's long-context attention (and, for
 the short-context batch, ENGN-16's proposal policy, which trims what the
 verify is asked to do rather than making it cheaper).
 
-## The proposal policy (ENGN-16, 2026-09-20)
+## The proposal policy (2026-09-20)
 
 The drafter asked for `k = draft_length` positions every batch, at ~6.3 ms
 per block forward (12.7–43.5 ms per batch). Two policies were in the plan:
@@ -946,7 +946,7 @@ output tokens):
 | code, greedy, d7 | 2.31 | 1.48 (−36 %) | 1.312 / 1.323 | 1.330 / 1.332 | 1.252 / 1.258 |
 
 The shipped configuration's gate pass (`--only prose512 code`; table in
-[benchmarks § The ENGN-16 quick pass](../benchmarks/history.md#the-engn-16-quick-pass-2026-09-20))
+[benchmarks § The ENGN-16 quick pass](../benchmarks/history.md#the-proposal-policy-quick-pass-2026-09-20))
 reads code instruct 1.35×, code greedy 1.33× at draft 7 (within 1 % of the
 control), prose instruct 1.00 / 1.03× at drafts 4 / 7 (was 0.98 / 1.01),
 and drafts per accepted token of 1.24–1.73. The acceptance's prose bar of
@@ -956,7 +956,7 @@ lower — is met with an 8–10 % gain, and every other criterion passes.
 `bench.Sample` gained `proposed_per_step`, so the record's tables print
 proposed, accepted, and drafts per accepted token.
 
-## The re-priced verdicts (ENGN-20, 2026-10-01)
+## The re-priced verdicts (2026-10-01)
 
 KERN-21 (the split verify attention), KERN-24 (the register-fragment
 verify matmul), and ENGN-19 (the DeltaNet replay tape) cut Qwen's 4-row
@@ -965,7 +965,7 @@ verify batch from 257 to 177 ms at 512 and from 1,121 to 279 ms at
 family's real speculation at 512, 4K, 16K, and 32,639 tokens on saved
 prefixes, greedy and with the profile's sampling, at every draft length.
 The tables and the rule are in
-[benchmarks § The re-priced speculative verdicts](../benchmarks/history.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01).
+[benchmarks § The re-priced speculative verdicts](../benchmarks/history.md#the-re-priced-speculative-verdicts-2026-10-01).
 
 - **Qwen3.8-27B, on at draft 7.** Cold, prose runs 1.25–1.57× (15.9–16.5
   tok/s at 512, 10.6–10.9 at 32,639) and the short code prompt 1.92–1.95×,
@@ -1006,7 +1006,7 @@ verify budget is 50E less the batch's measured non-verify costs.
 
 **Its last pricing** (2026-10-01, draft 7, cold chip, greedy / instruct,
 real runs on saved prefixes; [benchmarks § The re-priced speculative
-verdicts](../benchmarks/history.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)):
+verdicts](../benchmarks/history.md#the-re-priced-speculative-verdicts-2026-10-01)):
 
 | Context | E | Budget 50E | Measured C | of which verify | C / 50E | tok/s, plain → speculative |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

@@ -31,7 +31,7 @@ Prefill is at the reference at 512 (+1 %) and below it as the prompt grows
 kernel's cost grows with the visible cache (ENGN-05 measured the matmul
 tile at the reference's rate at 4K; ENGN-08 profiled the kernel at 30 % of
 the 16K prefill and found it latency-bound, not cache-bound:
-[metal-backend.md § ENGN-08](../engine/metal-backend.md#long-context-prefill-attention-engn-08-2026-09-10-closed-without-a-kernel-change),
+[metal-backend.md § ENGN-08](../engine/metal-backend.md#long-context-prefill-attention-2026-09-10-closed-without-a-kernel-change),
 KERN-16 in [TODO.md](../../TODO.md)). The 16K row is lower than the 66.5 / 8.92
 measured after the 13,399-token docs prompt in KERN-08 because the prompt is
 longer (the decode rate at 16K context is what this row states) and the
@@ -172,7 +172,7 @@ uses sequential token steps; ENGN-02–ENGN-04 address its remaining throughput 
 
 KERN-05 (2026-09-08) closed without a kernel change (every hypothesis measured
 below the 5 % kernel-benchmark bar; the record is in
-[metal-backend.md § KERN-05](../engine/metal-backend.md#kern-05--per-block-cost-research-2026-09-08-closed-without-a-kernel-change)).
+[metal-backend.md § KERN-05](../engine/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change)).
 The same `make bench` workload at the end of the session, kernels identical
 to KERN-04: 11.09 tok/s prefill, 10.64 decode (runs 10.63 / 10.66 / 10.64), GPU
 busy 7,844 ms per 85 steps (92.3 ms/step). The per-kernel profile budget
@@ -211,7 +211,7 @@ Longer raw prompts with `bench --raw --prompt-file … --max-tokens 32
 3,547 tokens → 33.3 prefill, 7.76 decode (the decode drop is attention over
 the longer cache). The reference does 89.2/89.3 prefill at 512/4,096. These
 are not the acceptance workloads (ENGN-07 builds the reference's exact prompts);
-details in [metal-backend.md § Prefill in chunks](../engine/metal-backend.md#prefill-in-chunks-engn-02).
+details in [metal-backend.md § Prefill in chunks](../engine/metal-backend.md#prefill-in-chunks-2026-09-08).
 
 ENGN-03 causal tiled attention (2026-09-09), same hardware, artifact, and
 methodology (`bench --raw --prompt-file … --max-tokens 32 --ctx-size 4096
@@ -297,7 +297,7 @@ same-day baseline. The remaining gap to the reference at 16K is the
 three-dispatch decode attention over a `[heads][visible]` score buffer,
 which KERN-08 replaces with one split-K pass. Greedy tokens on the 22-token
 and 545-token pinned prompts are identical in both precisions
-([metal-backend.md § F16 KV cache](../engine/metal-backend.md#f16-kv-cache-kern-07)).
+([metal-backend.md § F16 KV cache](../engine/metal-backend.md#f16-kv-cache-2026-09-10)).
 
 KERN-08 flash-decoding attention (2026-09-10), same hardware, artifact, and
 methodology, F16 cache. The 32K row is a 30,650-token prefix of the docs
@@ -374,7 +374,7 @@ which selects the 32×32 tile for this prompt:
 
 Prefill +10.9 %, first token −9.8 %, decode within noise. The per-shape
 kernel rates and the experiments behind the tile are in
-[metal-backend.md § Small-chunk tile](../engine/metal-backend.md#small-chunk-tile-kern-11-2026-09-19).
+[metal-backend.md § Small-chunk tile](../engine/metal-backend.md#small-chunk-tile-2026-09-19).
 
 KERN-12 (2026-09-20) multi-row matvec, same machine and build: the kernel
 reads the weight bytes once per batch instead of once per token and was meant
@@ -386,7 +386,7 @@ tile, so it fails the unit's ≥ 150 / ≥ 120 GB/s targets. `Backend.matmul`
 routes only 2-row batches of the specialized encodings to it
 (`small_batch_rows = 2`); the verify (5 rows) is unchanged. Full table, method,
 and the register/FMA analysis are in
-[metal-backend.md § Multi-row matvec](../engine/metal-backend.md#multi-row-matvec-kern-12-2026-09-20-closed-below-its-target).
+[metal-backend.md § Multi-row matvec](../engine/metal-backend.md#multi-row-matvec-2026-09-20-closed-below-its-target).
 A repeat-1 spot run at the close revision (512 prose, draft 4, F16 KV, ctx
 32768) measured verify 232–288 ms and recover 170–217 ms per batch, within the
 speculative record's range for verify. Recovery here is aggregate milliseconds
@@ -398,15 +398,15 @@ The corrected two-row sweep (2026-09-20, `27303ed` plus REPO-08) forces the
 specialized tile control and includes all four head encodings. All specialized
 cases still win: FFN 127.7–181.9 GB/s vs tile 87.7–116.2, head 146.8–188.0
 vs 89.2–114.1. Routing stays at two tokens. Method and individual rates:
-[corrected control](../engine/metal-backend.md#corrected-two-row-control-repo-08-2026-09-20).
+[corrected control](../engine/metal-backend.md#corrected-two-row-control-2026-09-20).
 
-## Gemma 4 12B: first look (MODL-06, 2026-09-11)
+## Gemma 4 12B: first look (2026-09-11)
 
 The second family's rates on the same machine, method, and build as
 above (greedy, context 2,048, three measured runs after one warmup), not
 an acceptance record: the reference harness run on the same token arrays
 is MODL-07's. Both cache precisions, since Gemma's F16 tolerance is its own
-([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11)).
+([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-2026-09-11)).
 
 | Workload | Prefill tok/s | Decode tok/s | First token |
 | --- | ---: | ---: | ---: |
@@ -423,7 +423,7 @@ Q5_K embedding as the tied output head (1.0 GB read per token for the
 head alone). Nothing here was tuned for Gemma; the per-kernel profile and
 the levers are a follow-up after MODL-07.
 
-## Gemma 4 12B acceptance record (MODL-07, 2026-09-12)
+## Gemma 4 12B acceptance record (2026-09-12)
 
 The v0.1 acceptance workload on the second family, each side on its own
 token arrays since the tokenizers differ: the reference harness ran on
@@ -470,7 +470,7 @@ value split, MODL-06) is the first thing to profile.
 **Memory.** The session block is 11,274,289,152 bytes (10.5 GiB) at
 32,768 capacity: every one of the 40 sliding layers is allocated for the
 full capacity although it reads only the last 1,024 rows ([gemma4.md §
-Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11)); a ring layout for
+Metal plan](../models/gemma4.md#metal-plan-2026-09-11)); a ring layout for
 those layers would cut it to about 0.35 GB and is a session-layout change
 of its own. Peak resident set of the `bench` process was
 10.75 GiB at every length and its peak footprint 11.74–11.80 GB; the
@@ -479,7 +479,7 @@ headroom is a calculation: 48 GiB − 7.37 GB − 11.8 GB ≈ 29 GiB at 32K
 context, the same as Qwen's because the session is five times larger
 and the weights 9 GB smaller.
 
-## Gemma 4 12B acceptance record, QAT file (MODL-08, 2026-09-12)
+## Gemma 4 12B acceptance record, QAT file (2026-09-12)
 
 The same workload on the catalogue's file after MODL-08 switched the entry to
 Google's quantization-aware-trained checkpoint (every weight matrix
@@ -527,7 +527,7 @@ full-capacity sliding caches), peak resident set 11.54 GiB, peak footprint
 11.77–11.81 GB at every length; the weight file is 0.65 GB smaller than
 the K-quant one.
 
-## Gemma 4 26B-A4B acceptance record (MODL-10, 2026-09-18)
+## Gemma 4 26B-A4B acceptance record (2026-09-18)
 
 The v0.1 acceptance workload on the catalogue's mixture of experts,
 `gemma-4-26b-a4b` (`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf`, SHA-256
@@ -622,7 +622,7 @@ every length; the 14.25 GB weight file is memory-mapped and charged to
 wired memory, so the headroom is 48 GiB − 14.25 GB − 8.0 GB ≈ 29 GB at 32K.
 The reference server's resident set between requests was 15.08–15.62 GB.
 
-## Bonsai 2 27B acceptance record (MODL-17, 2026-09-18)
+## Bonsai 2 27B acceptance record (2026-09-18)
 
 The v0.1 acceptance workload on the catalogue's ternary entry,
 `bonsai-2-27b` (`Ternary-Bonsai-2-27B-PQ2_0.gguf`, SHA-256 `3907dc16…`,
@@ -668,11 +668,11 @@ gains nothing there.
 80 % at 32K. The step reads 7.2 GB of ternary weights, so 72.1 ms is 100
 GB/s effective against the fork's 123 at 58.6 ms; the kernels are at the
 set's multiply-rate ceiling
-([metal-backend.md § Ternary matvecs and tiles](../engine/metal-backend.md#ternary-matvecs-and-tiles-kern-10-2026-09-18):
+([metal-backend.md § Ternary matvecs and tiles](../engine/metal-backend.md#ternary-matvecs-and-tiles-2026-09-18):
 a ternary byte carries twice the values of a Q4_0 byte, and the same
 values per second is half the byte rate), the transform is 2.1 % and the
 gather 0.2 % of the step
-([§ The rotation on the Qwen plan](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-modl-17-2026-09-18)).
+([§ The rotation on the Qwen plan](../engine/metal-backend.md#the-rotation-on-the-qwen-plan-2026-09-18)).
 The byte count alone projected two to three times the Qwen rate; the
 kernel set delivers 1.3×, and the fork's own kernels 1.6× over the
 mainline Qwen record (17.05 against 9.66 at 512). Closing the rest is a
@@ -707,11 +707,11 @@ same weights (`Ternary-Bonsai-2-27B-PTQ1_0.gguf`, 5.95 GB) measured on the
 same plan the same day by `make bench` (22-token prompt, 64 output tokens,
 context 2,048, two rounds): 13.05 / 13.01 tok/s decode against PQ2_0's
 12.87, prefill 39.3 against 39.1, and it matches the PQ2_0 traces on both
-cache precisions ([bonsai.md](../models/bonsai.md#metal-plan-modl-17-2026-09-18)).
+cache precisions ([bonsai.md](../models/bonsai.md#metal-plan-2026-09-18)).
 Not slower at 1.26 GB less, so the catalogue entry moved to it (decided
 2026-09-18); the acceptance workload was not re-run on it.
 
-## Muse Glimmer 30B: first look (MODL-12, 2026-09-19)
+## Muse Glimmer 30B: first look (2026-09-19)
 
 The third family's rates on the same machine, method, and build as
 above (greedy, context 2,048, three measured runs after one warmup), not
@@ -720,7 +720,7 @@ is MODL-13's. The prompt is raw because the profile does not exist yet;
 the 512-token array is the first 512 ids of `docs/spec.md`'s opening
 6,000 bytes through Muse's tokenizer (the Qwen arrays carry ids above
 its vocabulary). Both cache precisions, since Muse's F16 tolerance is
-its own ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19),
+its own ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19),
 which also holds the per-kernel profile).
 
 | Workload | Prefill tok/s | Decode tok/s | First token |
@@ -735,7 +735,7 @@ Weights are 15.87 GB, so 9.99 tok/s reads 159 GB/s against the
 reference's 223 (71 %); the 512-token prefill is at 91 %. The Qwen
 `make bench` the same day: 39.75 / 10.44 tok/s, unchanged.
 
-## Muse Glimmer 30B acceptance record (MODL-13, 2026-09-19)
+## Muse Glimmer 30B acceptance record (2026-09-19)
 
 The v0.1 acceptance workload on the third family, each side on its own
 token arrays since the tokenizers differ: the reference harness ran on
@@ -778,13 +778,13 @@ Every sample stopped with `token_budget` at exactly the array's count and
 512 and falls with length (87 % at 4K, 84 % at 16K, 77 % at 32K), the
 reference's own rate falling too (95 → 77). The gap is the widest of the
 four families and is spread over the large Q4_K matvecs
-([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19)
+([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-2026-09-19)
 has the per-kernel profile); the 4K row's decode drifted from 9.14 tok/s
 on its warmup to 8.12 on its third sample within four minutes, which no
 other length showed and which was not investigated (thermal is the
 obvious suspect). Both are the performance theme's material: KERN-15
 measured the matvec half of the gap and closed negative
-([§ Split-K matvec sweep](#split-k-matvec-sweep-kern-15-2026-09-21)),
+([§ Split-K matvec sweep](#split-k-matvec-sweep-2026-09-21)),
 not this unit's.
 
 **Memory.** The session block is 1,744,830,464 bytes (1.63 GiB) at
@@ -797,7 +797,7 @@ charged to wired memory, so the headroom is a calculation: 48 GiB −
 15.9 GB − 2.2 GB ≈ 30 GiB at 32K context, with the vision projector
 (1.4 GB) and the DFlash drafter (1.6 GB) still to come.
 
-## Speculative decoding record (ENGN-12, 2026-09-20)
+## Speculative decoding record (2026-09-20)
 
 The first measurement of speculative generation on Qwen3.8-27B with its
 embedded draft head, taken to decide the catalogue entry's default and to
@@ -869,7 +869,7 @@ the drafter loaded, its cache and checkpoint region allocated) and gets an
 in-process baseline in ENGN-17. The per-batch costs above are the plan's
 cost table; the targets are in `TODO.md`.
 
-## The speculative verdict record (ENGN-17, 2026-09-21)
+## The speculative verdict record (2026-09-21)
 
 The final measurement of Qwen3.8-27B's embedded draft head on the finished
 path (ENGN-13 through ENGN-16, KERN-13 through KERN-18), taken to set the
@@ -946,16 +946,16 @@ the path's rate improvement is real but partly a cooler sequence.
 **The cost table** of *Where we are* in [TODO.md](../../TODO.md) is
 refreshed from this record; the catalogue defaults it sets are Qwen off
 (this record), Gemma off
-([§ The Gemma 4 draft pair](#the-gemma-4-draft-pair-modl-19-2026-09-21)),
-Muse on ([§ The Muse Glimmer DFlash draft pair](#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)),
+([§ The Gemma 4 draft pair](#the-gemma-4-draft-pair-2026-09-21)),
+Muse on ([§ The Muse Glimmer DFlash draft pair](#the-muse-glimmer-dflash-draft-pair-2026-09-21)),
 each at `draft_length` 4.
 
-## Recovery by row checkpoints (ENGN-14, 2026-09-20)
+## Recovery by row checkpoints (2026-09-20)
 
 The second speculative-decoding record, taken after the whole-stack replay
 was replaced by per-row recurrent checkpoints
-([speculative-decoding.md § Recovery by accepted length](../engine/speculative-decoding.md#recovery-by-accepted-length-engn-14-2026-09-20),
-the worklog; replaced by the verify tape, [session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape-engn-19)). Same
+([speculative-decoding.md § Recovery by accepted length](../engine/speculative-decoding.md#recovery-by-accepted-length-2026-09-20),
+the worklog; replaced by the verify tape, [session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape-2026-10-01)). Same
 methodology, corpus, prompts, sampling, draft lengths, context, and
 precision as the ENGN-12 record above; `make workload NAME='qwen38/spec/*'`
 (then `scripts/nuclis-speculative.py`, now the `qwen38/spec/*` workloads; reports under
@@ -1055,7 +1055,7 @@ Follow-ups from this profile: the norm launches became KERN-18 across all
 three families, the split-K candidate for the matvecs was KERN-15 and
 measured behind the single pass, and the Q4_0 prefill tile is untaken.
 
-## The KERN-13 quick pass (2026-09-20)
+## The penalty-kernel quick pass (2026-09-20)
 
 The device penalty kernel (KERN-13) landed; a full record waits for ENGN-17.
 This is the unit's gate pass, `make workload NAME='qwen38/spec/*' ARGS="--only prose512
@@ -1093,13 +1093,13 @@ accept time is unchanged (62.8–91.3 ms): it still sorts the full verify
 rows, which ENGN-15 moves onto the device readback. Verify and recover are
 where ENGN-14 left them (249–273 ms and 6.8–20.5 ms per batch).
 
-## The ENGN-15 quick pass (2026-09-20)
+## The sampled-acceptance quick pass (2026-09-20)
 
 The verify batch's per-row top-k readback landed (ENGN-15): the sampled
 acceptance no longer reads and sorts the full logits of every verify row.
 This is the unit's gate pass, `make workload NAME='qwen38/spec/*' ARGS="--only prose512
 code"` (the 4K pair waits for ENGN-17). Same methodology and revision line as
-[the KERN-13 quick pass](#the-kern-13-quick-pass-2026-09-20) — the runs above
+[the KERN-13 quick pass](#the-penalty-kernel-quick-pass-2026-09-20) — the runs above
 were taken immediately before these, `nuclis 0.2.0-dev` at `d31c5cd` plus the
 ENGN-15 change, artifact SHA-256 `322e194f…`; reports under
 `.zig-cache/bench/spec/`. Every sample stopped on `token_budget`. `accept`
@@ -1130,7 +1130,7 @@ KERN-14 and ENGN-16 are next. The prose off baselines sit lower than the
 KERN-13 pass (8.20 vs 8.80–9.04) — the same clock drift within the session's
 runs, and the speedup columns are same-run pairs.
 
-## Small-batch tile sweep (KERN-14, 2026-09-20)
+## Small-batch tile sweep (2026-09-20)
 
 The verify batch's small-batch tile experiment: a 32-output-row variant of
 the 16×8 split-K tile, measured by `make bench-matvec-rows ARGS="8 head"`
@@ -1166,9 +1166,9 @@ wins only ~5–8 % on the wide head and IQ4_XS. No case reaches the ≤ 150
 GB/s bar. The 16×8 tile stays the verify control; the full-model verify
 latency is unchanged (262–297 ms per batch, the ENGN-15 pass above), since
 production routing never selects the candidate. Verdict in
-[metal-backend.md § The wide 32×8 tile](../engine/metal-backend.md#the-wide-328-tile-kern-14-2026-09-20-closed-negative).
+[metal-backend.md § The wide 32×8 tile](../engine/metal-backend.md#the-wide-328-tile-2026-09-20-closed-negative).
 
-## Split-K matvec sweep (KERN-15, 2026-09-21)
+## Split-K matvec sweep (2026-09-21)
 
 The row-poor decode matvec experiment: split-K twins of the Q4_K/Q5_K
 specialized matvec (`nu_matvec_q4_k_split`, `nu_matvec_q5_k_split`) and of
@@ -1211,9 +1211,9 @@ merges, which were not measured. No bucket routes. The Q4_K rate is the
 kernel's ~0.9 ns per 256-value block (144 bytes) against Q5_K's 176, not
 the row count; reaching the bar needs per-block arithmetic, not more K
 parallelism. Verdict in
-[metal-backend.md § Split-K](../engine/metal-backend.md#split-k-kern-15-2026-09-21-closed-negative).
+[metal-backend.md § Split-K](../engine/metal-backend.md#split-k-2026-09-21-closed-negative).
 
-## The ENGN-16 quick pass (2026-09-20)
+## The proposal-policy quick pass (2026-09-20)
 
 The proposal policy's gate pass: `engine.draft_p_min = 0.7` (the early stop
 on the block's top-candidate probability; the adaptive-length half closed
@@ -1249,7 +1249,7 @@ ENGN-15 pass), while code holds: 1.35× instruct and 1.33× greedy at draft 7
 points short of the unit's 30 % bar, while its decode rate rose — the bar's
 purpose. Verify (234–260 ms) is still the whole batch.
 
-## The Gemma 4 draft pair (MODL-19, 2026-09-21)
+## The Gemma 4 draft pair (2026-09-21)
 
 The `gemma4-assistant` companion's off/on pair on the Gemma acceptance
 workload: `gemma-4-12b-qat` (QAT, every matrix Q4_0), Metal, F16 KV, ctx
@@ -1293,7 +1293,7 @@ head is therefore a correct adapter with a negative default at the plan's
 draft length; the levers are `max_draft_length` (the 8-row tile bound) or a
 cheaper small-batch verify, both ENGN-17's call.
 
-## The Muse Glimmer DFlash draft pair (MODL-20, 2026-09-21)
+## The Muse Glimmer DFlash draft pair (2026-09-21)
 
 The `dflash-kquant` companion's off/on pair on the Muse acceptance workload:
 `muse-glimmer-30b`, Metal, F16 KV, ctx 32768,
@@ -1336,7 +1336,7 @@ bytes (2304 MiB) at 32,768 with the five draft caches (640 MiB of it), the
 drafter's device workspace is 149,861,504 bytes, and the verify scratch
 53,862,464 bytes.
 
-## Prefill attention sweep (KERN-16, 2026-09-21)
+## Prefill attention sweep (2026-09-21)
 
 The register-reuse chunk attention (`nu_attention_chunk_reuse` /
 `_h`: the four SIMD groups of a (head, 32-query) tile split the value
@@ -1383,9 +1383,9 @@ instead of one group carrying all 256; that is the window the shipped
 routing uses (`attention_reuse_max_rows = 64`, 256-wide values only).
 Run-to-run spread is ~1.5 % (the same 32,512/256 case measured 281.2 ms
 then 282.2 ms for the row-split body in two sweeps). Verdict in
-[metal-backend.md § KERN-16](../engine/metal-backend.md#long-context-prefill-attention-second-attempt-kern-16-2026-09-21-closed-negative).
+[metal-backend.md § KERN-16](../engine/metal-backend.md#long-context-prefill-attention-second-attempt-2026-09-21-closed-negative).
 
-## Fused norm sweep (KERN-18, 2026-09-21)
+## Fused norm sweep (2026-09-21)
 
 The fused norm kernels (`nu_rmsnorm_add`, `nu_add_rmsnorm`,
 `nu_rmsnorm_rope`) against the pairs they replace, forced off by
@@ -1439,9 +1439,9 @@ the fused kernel moves it the same way in one dispatch, so the saving is
 the removed launch (~2–4 µs of ~7–10 µs), about 0.4 ms of Gemma's 39 ms
 step. The dispatch reduction is real (10–21 %) and shipped; the speed bars
 are missed and the unit closes below its target. Verdict in
-[metal-backend.md § KERN-18](../engine/metal-backend.md#fused-decode-norms-kern-18-2026-09-21-closed-below-its-target).
+[metal-backend.md § KERN-18](../engine/metal-backend.md#fused-decode-norms-2026-09-21-closed-below-its-target).
 
-## The decode-speed baseline (ENGN-18, 2026-09-30)
+## The decode-speed baseline (2026-09-30)
 
 The opening record of the decode-speed theme
 ([speculative-decoding.md § The Qwen verify budget](../engine/speculative-decoding.md#the-qwen-verify-budget)), taken with the speed
@@ -1560,12 +1560,12 @@ the 48 × 5,120 Q8_0 β/α projections on the generic tile, 15.7 ms. So at 4K
 a 4-row verify's weight work is 2.8× a decode step's and its attention
 20×; at 32K attention alone is 6.8 decode steps.
 
-## The DeltaNet replay tape (ENGN-19, 2026-10-01)
+## The DeltaNet replay tape (2026-10-01)
 
 Verify batches of up to 8 rows on Qwen's Metal plan step the DeltaNet
 recurrence per token without writing the state, and recovery replays the
 accepted rows from a tape
-([session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape-engn-19)).
+([session.md § Pending rows and the verify tape](../engine/session.md#pending-rows-and-the-verify-tape-2026-10-01)).
 Apple M4 Pro 48 GiB, macOS 27.0, Zig 0.16.0, ReleaseSafe, Qwen3.8-27B
 UD-Q4_K_M, F16 KV, `--ctx-size 32768`, restored prefixes; `make speed`,
 5 interleaved pairs, base `2a6b1ac` (KERN-24's close), batch cost C in ms:
@@ -1584,7 +1584,7 @@ Plain decode is unchanged (10.57 / 10.20 / 9.25 / 8.30 tok/s, within
 `--profile` (4K, 4 rows, accept 1) the DeltaNet family is 6.4 ms per batch
 (was 41.3): `delta_rows` 3.4 ms where `delta_chunk` was 37.9.
 
-## The re-priced speculative verdicts (ENGN-20, 2026-10-01)
+## The re-priced speculative verdicts (2026-10-01)
 
 Real speculation re-measured at the verify costs after KERN-21, KERN-24,
 and ENGN-19, to reset the catalogue's speculative defaults. `make

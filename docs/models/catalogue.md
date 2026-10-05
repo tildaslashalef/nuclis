@@ -44,7 +44,7 @@ guides worth reading before touching an artifact:
   *supported* only when the catalogue pins it (see [the catalogue](#the-catalogue)). Every
   correctness fixture and benchmark record cites the pinned file.
 
-### Pinned commits and digests (MODL-02, 2026-09-11)
+### Pinned commits and digests (2026-09-11)
 
 Resolved and verified by `nuclis model pull` into a scratch home; the
 values MODL-03's catalogue and the Gemma 4 12B records cite:
@@ -76,7 +76,7 @@ the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
 ahead of their adapters. The 26B-A4B is supported since 2026-09-18: the
 expert layers run on both backends (MODL-09) and it has its own reference
 traces, acceptance record, and agent check (MODL-10;
-[benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+[benchmarks](../benchmarks/history.md#gemma-4-26b-a4b-acceptance-record-2026-09-18)).
 Since MODL-11 (2026-09-19) the Muse adapter binds the file and the CPU
 reference matches the pinned reference's traces on it, so `inspect` says
 *supported*; the Metal plan (MODL-12) and the profile with its acceptance
@@ -89,12 +89,12 @@ and 143) in a Hadamard-rotated basis ([bonsai.md](bonsai.md)). Since
 MODL-16 the Qwen adapter binds it and `inspect` says *supported*; since
 MODL-17 both backends run it against the fork's traces and it has its
 acceptance record and agent check
-([benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+([benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
 The PTQ1_0 file was pulled and verified on 2026-09-18 for the packing
 measurement (`nuclis model pull prism-ml/Ternary-Bonsai-2-27B-gguf --file
 Ternary-Bonsai-2-27B-PTQ1_0.gguf --revision 6ed5e12b…`) and became the
 entry's file the same day, measured not slower than PQ2_0 on the whole
-token at 1.26 GB less ([bonsai.md](bonsai.md#metal-plan-modl-17-2026-09-18));
+token at 1.26 GB less ([bonsai.md](bonsai.md#metal-plan-2026-09-18));
 the PQ2_0 file stays the traces' source. The repository also lists
 `Ternary-Bonsai-2-27B-F16.gguf` (53,808,408,928 B). The 26B-A4B
 repository also lists `mmproj-F16.gguf` (1,193,058,784 B), `mmproj-F32.gguf`
