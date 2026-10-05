@@ -3,18 +3,18 @@
 How nuclis turns an image into embedding rows the language model consumes,
 family by family. The shared contract, the preprocessing, each projector's
 tensor facts and provenance, the pinned traces, and the memory. The units
-that built it are in the [worklog](../worklog.md): `MODL-21`
-(Qwen3.8), `AGNT-15` (the chat), `MODL-24` (decode after an image),
-`MODL-22` (Gemma 4), and `MODL-23` (Muse Glimmer).
+that built it are in the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md): [MODL-21](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-21--the-vision-contract-image-input-and-the-qwen38-projector-on-both-executors-2026-09-22)
+(Qwen3.8), [AGNT-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-15--images-and-text-files-in-the-chat-drop-image-the-chips-the-projector-turn-the-detail-row-and-preview-sessions-2026-09-23) (the chat), [MODL-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-24--decode-after-an-image-the-metal-steps-cache-row-and-rotary-position-separated-the-vision-gate-compares-decode-with-one-prefill-2026-09-23) (decode after an image),
+[MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23) (Gemma 4), and [MODL-23](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-23--muse-glimmers-windowed-vision-encoder-on-both-executors-the-image-token-cap-2026-09-23) (Muse Glimmer).
 
 **Contents.**
 
 - [The contract](#the-contract)
-- [The Qwen3-VL projector (MODL-21, 2026-09-22)](#the-qwen3-vl-projector-2026-09-22)
-- [Images in the chat (AGNT-15, 2026-09-23)](#images-in-the-chat-2026-09-23)
-- [Decode after an image (MODL-24, 2026-09-23)](#decode-after-an-image-2026-09-23)
-- [Gemma 4's projectors (MODL-22, 2026-09-23)](#gemma-4s-projectors-2026-09-23)
-- [Muse Glimmer's projector (MODL-23, 2026-09-23)](#muse-glimmers-projector-2026-09-23)
+- [The Qwen3-VL projector (2026-09-22)](#the-qwen3-vl-projector-2026-09-22)
+- [Images in the chat (2026-09-23)](#images-in-the-chat-2026-09-23)
+- [Decode after an image (2026-09-23)](#decode-after-an-image-2026-09-23)
+- [Gemma 4's projectors (2026-09-23)](#gemma-4s-projectors-2026-09-23)
+- [Muse Glimmer's projector (2026-09-23)](#muse-glimmers-projector-2026-09-23)
 
 ## The contract
 
@@ -164,7 +164,7 @@ The gates are `qwen38-vision-metal` (Metal tier) and `qwen38-vision-cpu`
 overrides are not in this unit. The projector runs as its own command
 buffer, separate from the language model's.
 
-**Bonsai 2 (MODL-25, 2026-09-23).** Its `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf`
+**Bonsai 2 ([MODL-25](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-25--bonsai-2s-projector-through-the-qwen3-vl-adapter-q8_0-and-f16-weights-2026-09-23), 2026-09-23).** Its `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf`
 is this projector with the same metadata and tensors, re-encoded: the
 matrices Q8_0, `ffn_down` F16 (its 4,304 columns are not a multiple of
 Q8_0's 32-value block), vectors and the patch kernel F32. `bind` accepts
@@ -199,7 +199,7 @@ completer's `Engine.encodeImage`), giving a `loop.Image` — path, file size,
 the `PreparedImage` with its grid, decoded size, and feature rows. The
 projector is loaded on the first attachment (`visionAvailable`), and an
 entry without one, or one whose projector cannot be bound (Gemma's until
-MODL-22, Muse's until MODL-23, Bonsai's until MODL-25), refuses the chip with a notice and
+[MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23), Muse's until [MODL-23](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-23--muse-glimmers-windowed-vision-encoder-on-both-executors-the-image-token-cap-2026-09-23), Bonsai's until [MODL-25](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-25--bonsai-2s-projector-through-the-qwen3-vl-adapter-q8_0-and-f16-weights-2026-09-23)), refuses the chip with a notice and
 leaves the paste as text. A failure reading or encoding an image is a
 notice naming it and the turn is not sent. The agent owns the images beside
 the history item (`Item.images` and the profile's `ImageRef`s), frees them
@@ -215,7 +215,7 @@ advance across later turns without engine changes.
 **Speculation.** `runLoop` runs an image prefill without the drafter, whose
 cache is stale from then on; the completer therefore turns speculation off
 for the session once an image has been fed (`images_fed`) and `reset`
-restores it. No entry with a projector has speculation on (ENGN-17), so
+restores it. No entry with a projector has speculation on ([ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21)), so
 nothing measurable changes today.
 
 **What is shown and stored.** The transcript's user block gets one dim
@@ -227,7 +227,7 @@ transmission (`f=24`, base64 in 4096-byte chunks, `q=2`, `C=1`) over a box
 of at most 12 rows, fewer when less room stands above the live region,
 whose aspect assumes 1:2 cells. Not under tmux (`TMUX` set): tmux redraws
 lines itself and cannot scroll a picture it does not know about, so a
-passed-through image stayed put over the text (seen 2026-09-23, TERM-11);
+passed-through image stayed put over the text (seen 2026-09-23, [TERM-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-11--the-region-re-anchors-on-a-resize-from-the-terminals-cursor-report-the-preview-fits-above-the-region-and-is-off-under-tmux-2026-09-23));
 the harness therefore shows the detail row only, and the preview is looked
 at by running the chat in Ghostty directly. The session file records a user entry's images as
 `{path, width, height, width_tokens, height_tokens}` and no pixels (a turn
@@ -243,13 +243,13 @@ the red rectangle (the ground it called a black strip); `/image` attached
 the same file as a chip after `/image nope.png` was refused; a dropped
 `README.md` became `[file README.md, 219 lines]`; the Gemma 4 12B entry
 refused the drop with `no vision support yet for this model: MissingMetadata
-loading the projector` (it captions since MODL-22); and the captioned session resumed with its detail
+loading the projector` (it captions since [MODL-22](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23)); and the captioned session resumed with its detail
 row replayed and the follow-up `What colour is the rectangle?` answered
 `red` from the re-encoded image. The captures are under `.zig-cache/tui/`
 (`chip`, `caption`, `filechip`, `imagecmd`, `refusal`, `replay`,
 `resumed`). The preview's sequence, box, and downscale are pinned by unit
 tests; its rendering was first seen the next day in a Ghostty window
-attached to the harness's tmux session (TERM-11), where it drew correctly
+attached to the harness's tmux session ([TERM-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-11--the-region-re-anchors-on-a-resize-from-the-terminals-cursor-report-the-preview-fits-above-the-region-and-is-off-under-tmux-2026-09-23)), where it drew correctly
 and then failed to follow the scrolling text, which is why tmux is excluded.
 
 **Limits.** Clipboard images (Cmd-V of a bitmap) are not taken: reaching

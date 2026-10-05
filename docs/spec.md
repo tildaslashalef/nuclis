@@ -3,7 +3,7 @@
 This is the authoritative statement of what nuclis is, what it must do, and
 the decisions that bound how it does it. It states requirements and
 accepted decisions, not status: what changed and why is in the
-[merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) (before v0.6.0, the [worklog](worklog.md)), what it does next in
+[merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) (before v0.6.0, the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md)), what it does next in
 [TODO.md](../TODO.md), how it is built and measured in
 [development.md](development.md), how it is structured in
 [architecture.md](architecture.md), and the facts behind each component in
@@ -123,7 +123,7 @@ A file outside the catalogue whose architecture has an adapter is
 *runnable*: `config init --discover` registers it (the profile by template
 digest, the family's forced when none matches). The Gemma 4 12B K-quant
 release and Bonsai 2 27B (Qwen3.8 ternary, which renders the Qwen profile
-by force) left the catalogue on 2026-09-26 (APPS-17) and run this way.
+by force) left the catalogue on 2026-09-26 ([APPS-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-17--the-catalogue-at-five-entries-the-registry-in-name-order-2026-09-26)) and run this way.
 
 Requirements:
 

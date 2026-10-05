@@ -183,7 +183,7 @@ other or any input. No allocation or I/O occurs; the function borrows all buffer
 
 Dot products, scaled scores, exponentials, and weighted sums remain F64. This
 avoids narrowing large finite dot products into F32 infinity before softmax.
-The reference's cache is F32 by decision (KERN-07): `Session.Rows.floats` asserts
+The reference's cache is F32 by decision ([KERN-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10)): `Session.Rows.floats` asserts
 an `f32` layout, the CPU runtime never asks for another, and an `f16`
 request on `--backend cpu` runs F32 and reports it. The F16 cache is a GPU
 layout whose tolerance against this reference is recorded in

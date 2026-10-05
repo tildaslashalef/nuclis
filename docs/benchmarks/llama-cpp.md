@@ -76,7 +76,7 @@ the mainline one's flags below except `--lazy-mode`, which its older base
 does not know (drop it; the rest are accepted); `--jinja` renders the
 Bonsai template, while the fork's `llama-completion --jinja` aborts at its
 own start-up template self-test on that template (see bonsai.md). The
-Bonsai acceptance run (MODL-17, 2026-09-18) ran the workload harness
+Bonsai acceptance run ([MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18), 2026-09-18) ran the workload harness
 against that server with `--reference-revision 5d80cff0…` (the harness
 otherwise insists on the mainline pin) and `--family qwen38`, the fork's
 revision recorded as the reference side of

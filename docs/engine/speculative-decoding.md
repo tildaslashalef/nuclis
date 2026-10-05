@@ -3,7 +3,7 @@
 The reference document of the speculative-decoding theme. Its requirements
 are in the [spec](../spec.md#56-speculative-decoding); the units that fill it
 in are planned in [TODO.md](../../TODO.md); closed outcomes are cited from
-the [worklog](../worklog.md).
+the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md).
 
 As of 2026-10-01 every catalogue family with a draft source is measured
 and the defaults follow the record
@@ -36,7 +36,7 @@ state it keeps outside the session (the MTP heads' pending target hidden
 row; empty for DFlash), which `Model.snapshot`/`restore` copy with the
 session; `bytes()` reports the workspace it owns beyond the session's. There is deliberately no
 `rewind`: the drafter's own attention cache is one more layout in the
-*same* `Session`, so ENGN-11's checkpoint/rewind/truncate cover it and the
+*same* `Session`, so [ENGN-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-11--speculative-state-recovery-checkpoint-rewind-truncate-recover-2026-09-19-one-session)'s checkpoint/rewind/truncate cover it and the
 generation loop only needs `reset` on a session reset.
 
 ## The recovery contract (2026-09-19)
@@ -70,12 +70,12 @@ NAME='qwen38-generation-*'`, recorded in the log).
 Measured costs on Qwen 27B (2026-09-19): region 156,893,184 bytes;
 checkpoint and rewind 3 ms per batch on Metal and 2 ms on the CPU
 reference (one 150 MB copy each way); the replay is a short-chunk prefill
-(KERN-11's tile). Losing `k − a` drafts
+([KERN-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-11--small-chunk-prefill-matmul-near-the-weight-bandwidth-floor-2026-09-19-two-sessions)'s tile). Losing `k − a` drafts
 therefore costs one 150 MB copy plus an `a + 1`-token prefill, not a
 context-long replay. A bounded alternative — per-token recurrent
 checkpoints written by the DeltaNet chunk kernel, `(k + 1) × 150 MB` of
 device scratch on Qwen — was not needed by these numbers and is not built;
-ENGN-14 measures recovery by accepted length and reopens it
+[ENGN-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-14--recovery-without-the-whole-stack-replay-2026-09-20-two-sessions) measures recovery by accepted length and reopens it
 ([§ Recovery by accepted length](#recovery-by-accepted-length-2026-09-20)).
 
 ## The Qwen3.8 draft head (2026-09-20)
@@ -313,25 +313,25 @@ microseconds — and the verify batch is 136 ms regardless of whether it
 carries 3 or 8 rows, because at these counts it is the 512-row attention and
 the per-layer dispatches, not the row work. Break-even needs `tokens/batch`
 above `(verify + propose) / 39.5 ms` ≈ 3.7, which only draft 7 reaches
-(1.017×). Two facts for ENGN-17: the record's default for the Gemma entries
+(1.017×). Two facts for [ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21): the record's default for the Gemma entries
 is off at draft 4 and no better than parity at draft 7; and the row-flat
 verify cost says the lever is `max_draft_length` (the 8-row tile bound)
-rather than anything in the drafter, which ENGN-17 may raise if the head is
+rather than anything in the drafter, which [ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21) may raise if the head is
 ever to pay.
 
-**The rows carry the soft-cap (MODL-26, 2026-09-24).** Until then the Metal
+**The rows carry the soft-cap ([MODL-26](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-26--gemma-4s-metal-verify-rows-carry-the-final-soft-cap-2026-09-24), 2026-09-24).** Until then the Metal
 `verify` ran the head over every row without Gemma's final
 `30 · tanh(x / 30)`, which `step` and the CPU `verify` apply. Greedy
 acceptance was unaffected (the cap is monotonic, so each row's argmax
 held), but the full rows and the per-row top-k that sampled acceptance
 draws from were the uncapped logits: on `<bos>Hello,` row 0 sat 27.8 from
-the stepped logits at max abs. Every Gemma record above and in ENGN-17 is
+the stepped logits at max abs. Every Gemma record above and in [ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21) is
 greedy, so its numbers stand; a sampled Gemma pair ran on the wrong
 distribution. `gemma4_metal.verify` now applies the cap, and
 `gemma4-qat-draft-trace-metal` compares every `verify` row with the
 stepped logits through the generic F32 tiles (5e-3 / 2e-4). It fails
 without the cap and passes with it. The top-k check never saw this because
-it compares `verify` with itself. Found by `nuclis eval` (APPS-14), whose
+it compares `verify` with itself. Found by `nuclis eval` ([APPS-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-14--teacher-forced-eval-perplexity-against-the-references-per-token-run-the-all-rows-prefill-a-gate-per-family-2026-09-24)), whose
 all-rows path shares the head sequence.
 
 ## The Muse Glimmer DFlash drafter (2026-09-21)
@@ -412,7 +412,7 @@ so `reset` is a no-op and recovery is the session's position rewind
 
 **The proposal policy.** The reference's `p_min` compares the top candidate's
 probability renormalized over its `top_k = 10` sampler; our `draft_p_min`
-(ENGN-16) compares the full-vocabulary softmax at the argmax. That is a
+([ENGN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-16--draft-proposal-policy-the-p_min-early-stop-shipped-the-adaptive-length-dropped-2026-09-20)) compares the full-vocabulary softmax at the argmax. That is a
 policy difference, not an equation: the candidates are argmax either way,
 and the shared contract's stop rule applies (the low-confidence position is
 still proposed, then the chain stops).
@@ -454,7 +454,7 @@ in the harness reproduce that comparison; the trace checked in is the
 Metal run, as for the other families.
 
 **Load errors.** `Engine.open` maps the companion through the same
-`DraftRequest.{file,preferred}` path as MODL-19 and requires the `dflash`
+`DraftRequest.{file,preferred}` path as [MODL-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-19--gemma-4-draft-heads-the-gemma4-assistant-companion-as-a-second-gguf-correct-but-a-negative-default-at-the-plans-draft-length-2026-09-21) and requires the `dflash`
 architecture, the target's width, the target's vocabulary count, the 6656
 feature width, and the `target_layers` list; a missing file is
 `DraftSourceMissing` and everything else `DraftSourceMismatch`. Exercised
@@ -511,7 +511,7 @@ with the five draft caches (640 MiB of it), the drafter's device workspace
 149,861,504 bytes, and the verify scratch 53,862,464 bytes.
 
 **The draft-length cap (2026-09-21).** Muse's block proposes 15 in one
-forward, so the host's static bound moved from 7 (KERN-11's 8-row verify
+forward, so the host's static bound moved from 7 ([KERN-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-11--small-chunk-prefill-matmul-near-the-weight-bandwidth-floor-2026-09-19-two-sessions)'s 8-row verify
 tile) to 15, and the effective bound is now the loaded drafter's own
 `Drafter.max_proposals` (Qwen 7, Gemma 7, Muse 15), enforced by `runLoop`
 and used to size the engine's speculative scratch. The configuration and
@@ -537,7 +537,7 @@ batch is at most the plan's chunk and `max_verify_rows = 16`; the loop uses
 at most `max_draft_length + 1 = 8`.
 
 **The loop.** `runLoop` takes a `Speculative{ enabled, draft_length }`
-setting; `max_draft_length = 7` is the host bound (KERN-11's 8-row tile less
+setting; `max_draft_length = 7` is the host bound ([KERN-11](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-11--small-chunk-prefill-matmul-near-the-weight-bandwidth-floor-2026-09-19-two-sessions)'s 8-row tile less
 the seed). When a drafter is loaded and the switch is on, it first commits
 the prompt to the drafter in verify-sized chunks (the block's cache is
 filled from the target hidden of every committed position), then each step:
@@ -647,7 +647,7 @@ contract lost its logits rows. `Timing.accept` isolates the host decision.
 per-batch costs — verify 225–250 ms at 512 and ≈ 342 ms at 4K, recovery
 99–272 ms on rejection, the sampled decision 46–78 ms, proposal 6.2 ms per
 draft, commit 6.2 ms per token, the prefill at 2.9–3.3× — are the cost
-table the plan's performance units (ENGN-13 to ENGN-17, KERN-12, KERN-13)
+table the plan's performance units ([ENGN-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-13--prompt-commit-at-the-plans-chunk-and-the-batched-drafter-commit-2026-09-20) to [ENGN-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21), [KERN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-12--a-multi-row-matvec-for-28-rows-the-2-row-routing-2026-09-20-two-sessions-closed-below-its-target), [KERN-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20))
 target.
 
 ## The prompt commit and the batched drafter commit (2026-09-20)
@@ -680,8 +680,8 @@ the CPU `Runtime.commit` stays per token as the reference. The scratch
 Both meet the unit's targets (≤ 1.10× at 512, ≤ 1.15× at 4K, and
 `commit_milliseconds / speculative_steps` ≤ 8 ms at 512). Accepted drafts per
 batch was 1.667 at 512 and 1.977 at 4K. The serial prompt commit measured
-1.59× at `db9cf80` and the ENGN-12 record's old `verify`-per-8-rows path
-2.85×. `make gate NAME=qwen38-draft-stats` reproduces MODL-18 (28/31, 24/30, 20/29, 18/28 and
+1.59× at `db9cf80` and the [ENGN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-12--batched-verification-speculative-generation-greedy-and-sampled-the-switch-and-the-draft-length-the-benchmark-record-2026-09-20-two-sessions) record's old `verify`-per-8-rows path
+2.85×. `make gate NAME=qwen38-draft-stats` reproduces [MODL-18](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-18--qwen38-draft-head-the-embedded-prediction-block-on-the-cpu-reference-and-the-metal-plan-2026-09-19--2026-09-20-two-sessions) (28/31, 24/30, 20/29, 18/28 and
 29/31, 25/30, 24/29, 24/28), `make gate NAME=qwen38-speculative-metal` is unchanged
 (7/24 and 6/21 accepted), `make gate NAME=qwen38-draft-trace-metal` unchanged (3 rows,
 1.5e-5 / 7.9e-7), and `make check`, `make gate NAME='qwen38-trace-*'` (f32 6.1e-5 / 7.7e-7,
@@ -704,7 +704,7 @@ draft 4).
 
 The verify batch (`1 + k` rows), the recovery replay (`a + 1`), and the
 decode-time commit (`a + 1`) all reach `Backend.matmul`, which served them with
-the 16×8 split tile. KERN-12 added `nu_matvec_rows_*_t2..t8`: one SIMD group
+the 16×8 split tile. [KERN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-12--a-multi-row-matvec-for-28-rows-the-2-row-routing-2026-09-20-two-sessions-closed-below-its-target) added `nu_matvec_rows_*_t2..t8`: one SIMD group
 per four output rows, a decoded weight slice multiplied against every activation
 row before the next slice is fetched, one accumulator per (row, token). The
 sweep (`make bench-matvec-rows`, both FFN shapes, in
@@ -724,7 +724,7 @@ warmup 1, repeat 1, one loaded model) measured `verify_milliseconds /
 speculative_steps` 232–288 ms and `recover_milliseconds / speculative_steps`
 170–217 ms. These are aggregate costs per speculative step, mixing accepted
 lengths and steps without replay; they do not establish two-row recovery latency
-or the effect of its routing. ENGN-14 must measure recovery by accepted length
+or the effect of its routing. [ENGN-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-14--recovery-without-the-whole-stack-replay-2026-09-20-two-sessions) must measure recovery by accepted length
 before and after replacing replay with recurrent-state copies. `make gate NAME='qwen38-trace-*'`
 (f32 6.1e-5 / 7.7e-7, f16 2.5e-2 / 1.9e-4), `make gate NAME=qwen38-generation-metal`,
 `make gate NAME=qwen38-speculative-metal` (12 tokens greedy, the loop edge cases), and
@@ -771,9 +771,9 @@ batch** for up to five 150 MB slot writes and their recompute — and
 batch). `session_bytes` is 3,850,633,216 with the 1,255,146,752-byte row
 region. The off/on pair at draft 4 greedy reads 0.85× (8.56 vs 10.04 tok/s)
 against session 1's 0.62×; prose still loses, now to the verify batch
-rather than recovery: sampled acceptance (ENGN-15), the proposal policy
-(ENGN-16), the small-batch tile (KERN-14), and long-context attention
-(KERN-16) are the remaining levers.
+rather than recovery: sampled acceptance ([ENGN-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-15--sampled-acceptance-on-the-gpu-top-k-readback-2026-09-20)), the proposal policy
+([ENGN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-16--draft-proposal-policy-the-p_min-early-stop-shipped-the-adaptive-length-dropped-2026-09-20)), the small-batch tile ([KERN-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-14--the-wide-328-small-batch-tile-measured-closed-negative-2026-09-20)), and long-context attention
+([KERN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-16--long-context-prefill-attention-register-level-reuse-measured-25--at-chunk-sizes-closed-negative-2026-09-21)) are the remaining levers.
 
 Two facts for the next revisiter. The kernel computes each row's state as
 `S_r = γ_r S₀ + Σ_{s≤r} r(r,s) U[s]ᵀK[s]` with every exponent ≤ 0; the
@@ -790,7 +790,7 @@ A sampler with a presence or repetition penalty changes the sort itself, so
 before this unit the loop turned both GPU selection paths off while one was
 active: every such token read the full 248,320-logit row back and sorted it
 on the host, and the ordinary decode step measured 7.7–8.6 tok/s on the
-instruct profile against 8.8–10.3 greedy (the ENGN-14 record). `nu_penalize`
+instruct profile against 8.8–10.3 greedy (the [ENGN-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-14--recovery-without-the-whole-stack-replay-2026-09-20-two-sessions) record). `nu_penalize`
 ([metal-backend.md § History penalties](metal-backend.md#history-penalties-2026-09-20))
 applies the penalties on the device in place — before the argmax and before
 the three top-k passes — so the readback is the vector the CPU sampler
@@ -814,9 +814,9 @@ Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 c
 Qwen3.8-27B UD-Q4_K_M, Metal, F16 KV, ctx 32768, 128 output tokens, one
 warmup and three measured runs per configuration, off/on pairs on one
 loaded model (`d31c5cd`; the full table is in
-[benchmarks § The KERN-13 quick pass](../benchmarks/history.md#the-penalty-kernel-quick-pass-2026-09-20)):
+[benchmarks § The penalty-kernel quick pass (2026-09-20)](../benchmarks/history.md#the-penalty-kernel-quick-pass-2026-09-20)):
 
-| configuration | decode off tok/s (before KERN-13) | decode off tok/s (now) |
+| configuration | decode off tok/s (before [KERN-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20)) | decode off tok/s (now) |
 | --- | ---: | ---: |
 | code, greedy, d2/d4/d7 | 8.81 / 9.15 / 9.32 | 8.66 / 8.67 / 8.74 |
 | code, instruct, d4 | 8.56 | 8.74 |
@@ -831,14 +831,14 @@ kernel). `topk_fallbacks` is 0 at every configuration: the penalized
 readback decided every token. The speculative speedups move little
 (code greedy 1.20× at draft 4 against 1.22×, prose 512 greedy 0.88 against
 0.93), because the acceptance decision still sorts the full rows
-(ENGN-15); what this unit fixes is ordinary decode with penalties, which is
+([ENGN-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-15--sampled-acceptance-on-the-gpu-top-k-readback-2026-09-20)); what this unit fixes is ordinary decode with penalties, which is
 no longer 12–25 % below greedy.
 
 ## Sampled acceptance on the device readback (2026-09-20)
 
 The sampled acceptance used to call `Sampler.distribution` on every verify
 row: a full-vocabulary sort per row on the host, measured at 62.8–91.3 ms
-per batch in the KERN-13 quick pass (17–22 % of an instruct batch). Now the
+per batch in the [KERN-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20) quick pass (17–22 % of an instruct batch). Now the
 verify batch has two output modes (`engine.VerifyOutput`): full `rows`, as
 before, and `topk` — one `sampling.TopK` per row from the device partial
 top-k over that row, with every row's logits left resident in
@@ -863,10 +863,10 @@ sampled path still uses `verifyGreedy`; only the temperature-0-with-penalty
 configuration falls back to full rows.
 
 Measured 2026-09-20, `make workload NAME='qwen38/spec/*' ARGS="--only prose512 code"`,
-same workload and methodology as the KERN-13 pass above
-([benchmarks § The ENGN-15 quick pass](../benchmarks/history.md#the-sampled-acceptance-quick-pass-2026-09-20)):
+same workload and methodology as the [KERN-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20) pass above
+([benchmarks § The sampled-acceptance quick pass (2026-09-20)](../benchmarks/history.md#the-sampled-acceptance-quick-pass-2026-09-20)):
 
-| configuration | accept before (KERN-13 pass) | accept now | fallbacks | speedup before → now |
+| configuration | accept before ([KERN-13](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20) pass) | accept now | fallbacks | speedup before → now |
 | --- | ---: | ---: | ---: | ---: |
 | code, instruct, d4 | 91.3 ms | 36.9 µs | 0 | 1.12× → 1.36× |
 | prose 512, instruct, d2 | 62.9 ms | 18.8 µs | 0 | 0.76× → 0.92× |
@@ -887,7 +887,7 @@ option sets, including the deferrals.
 
 ## The small-batch tile experiment (2026-09-20, closed negative)
 
-Verify stayed the batch's whole cost after ENGN-15 (262–297 ms at 512
+Verify stayed the batch's whole cost after [ENGN-15](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-15--sampled-acceptance-on-the-gpu-top-k-readback-2026-09-20) (262–297 ms at 512
 tokens), so the plan's largest single lever was the small-batch matmul
 tile. The experiment: a 32-output-row variant of the 16×8 split-K tile,
 exactness-gated and measured against `Backend.matmulTile` as the fixed
@@ -899,8 +899,8 @@ Q6_K 114.0 → 84.6, Q3_K 63.0 → 47.1 GB/s), ties on Q5_K, and wins only
 routing stay as they were, and full-model verify latency is unchanged.
 Numbers: [metal-backend.md § The wide 32×8 tile](metal-backend.md#the-wide-328-tile-2026-09-20-closed-negative)
 and [benchmarks § Small-batch tile sweep](../benchmarks/history.md#small-batch-tile-sweep-2026-09-20).
-The verify lever that remains is KERN-16's long-context attention (and, for
-the short-context batch, ENGN-16's proposal policy, which trims what the
+The verify lever that remains is [KERN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-16--long-context-prefill-attention-register-level-reuse-measured-25--at-chunk-sizes-closed-negative-2026-09-21)'s long-context attention (and, for
+the short-context batch, [ENGN-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-16--draft-proposal-policy-the-p_min-early-stop-shipped-the-adaptive-length-dropped-2026-09-20)'s proposal policy, which trims what the
 verify is asked to do rather than making it cheaper).
 
 ## The proposal policy (2026-09-20)
@@ -946,7 +946,7 @@ output tokens):
 | code, greedy, d7 | 2.31 | 1.48 (−36 %) | 1.312 / 1.323 | 1.330 / 1.332 | 1.252 / 1.258 |
 
 The shipped configuration's gate pass (`--only prose512 code`; table in
-[benchmarks § The ENGN-16 quick pass](../benchmarks/history.md#the-proposal-policy-quick-pass-2026-09-20))
+[benchmarks § The proposal-policy quick pass (2026-09-20)](../benchmarks/history.md#the-proposal-policy-quick-pass-2026-09-20))
 reads code instruct 1.35×, code greedy 1.33× at draft 7 (within 1 % of the
 control), prose instruct 1.00 / 1.03× at drafts 4 / 7 (was 0.98 / 1.01),
 and drafts per accepted token of 1.24–1.73. The acceptance's prose bar of
@@ -958,8 +958,8 @@ proposed, accepted, and drafts per accepted token.
 
 ## The re-priced verdicts (2026-10-01)
 
-KERN-21 (the split verify attention), KERN-24 (the register-fragment
-verify matmul), and ENGN-19 (the DeltaNet replay tape) cut Qwen's 4-row
+[KERN-21](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-21--few-query-verify-attention-through-the-split-pass-2026-09-30) (the split verify attention), [KERN-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target) (the register-fragment
+verify matmul), and [ENGN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-19--the-deltanet-replay-tape-2026-10-01) (the DeltaNet replay tape) cut Qwen's 4-row
 verify batch from 257 to 177 ms at 512 and from 1,121 to 279 ms at
 32,639, and Gemma's by about half. `make spec-matrix` re-measured every
 family's real speculation at 512, 4K, 16K, and 32,639 tokens on saved
@@ -1038,11 +1038,11 @@ without shown data; the status column is as of that date):
 
 | Technique | Mechanism | Evidence | Our status then |
 | --- | --- | --- | --- |
-| Split-KV few-query attention with GQA packing | One threadgroup per (KV head, key split), rows = 6 query heads × T queries, per-row causal limit, partial merge | MLX [`sdpa_vector_2pass`](https://github.com/ml-explore/mlx/blob/main/mlx/backend/metal/scaled_dot_product_attention.cpp); llama.cpp `flash_attn_ext_vec`; [Open-TQ-Metal](https://arxiv.org/html/2604.16957v1) §3.2 split-K on an M1 Max (M) | Single-row decode only; KERN-21 added it for verify |
-| Register-fragment verify matmul | Decode quantized weights straight into 8×8 fragment elements, K permuted per lane; no threadgroup staging | [metal-flash-attention](https://github.com/philipturner/metal-flash-attention) design (C); [llama.cpp #29110](https://github.com/ggml-org/llama.cpp/pull/29110) 4-row register tile 1.6–1.9× (M, M3 Ultra); MLX `qmv_wide` (C) | Untried then; KERN-24 |
-| Per-token recurrent verify plus replay | Below ~64 tokens the recurrent form beats the chunk (WY) form; verify keeps a frozen state and a per-token tape, commit replays the accepted prefix | [vLLM #58863](https://github.com/vllm-project/vllm/pull/58863) 1.3–2.3 ms/cycle (M, GB10); mlx-lm `gated_delta_step` (C) | Row checkpoints then; the replay tape since (ENGN-19) |
+| Split-KV few-query attention with GQA packing | One threadgroup per (KV head, key split), rows = 6 query heads × T queries, per-row causal limit, partial merge | MLX [`sdpa_vector_2pass`](https://github.com/ml-explore/mlx/blob/main/mlx/backend/metal/scaled_dot_product_attention.cpp); llama.cpp `flash_attn_ext_vec`; [Open-TQ-Metal](https://arxiv.org/html/2604.16957v1) §3.2 split-K on an M1 Max (M) | Single-row decode only; [KERN-21](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-21--few-query-verify-attention-through-the-split-pass-2026-09-30) added it for verify |
+| Register-fragment verify matmul | Decode quantized weights straight into 8×8 fragment elements, K permuted per lane; no threadgroup staging | [metal-flash-attention](https://github.com/philipturner/metal-flash-attention) design (C); [llama.cpp #29110](https://github.com/ggml-org/llama.cpp/pull/29110) 4-row register tile 1.6–1.9× (M, M3 Ultra); MLX `qmv_wide` (C) | Untried then; [KERN-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target) |
+| Per-token recurrent verify plus replay | Below ~64 tokens the recurrent form beats the chunk (WY) form; verify keeps a frozen state and a per-token tape, commit replays the accepted prefix | [vLLM #58863](https://github.com/vllm-project/vllm/pull/58863) 1.3–2.3 ms/cycle (M, GB10); mlx-lm `gated_delta_step` (C) | Row checkpoints then; the replay tape since ([ENGN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-19--the-deltanet-replay-tape-2026-10-01)) |
 | Block softmax, contiguous loads in decode attention | Lane owns contiguous `half8` channels; one max/rescale per key block | MLX `sdpa_vector`; metal-flash-attention | Per-key `simd_sum` and rescale |
-| GPU counters by capture | `MTLCaptureManager` `.gputrace`: utilization, limiters, occupancy | [Apple tech talk 111374](https://developer.apple.com/videos/play/tech-talks/111374/) | Unused then; `make capture` since (KERN-20) |
+| GPU counters by capture | `MTLCaptureManager` `.gputrace`: utilization, limiters, occupancy | [Apple tech talk 111374](https://developer.apple.com/videos/play/tech-talks/111374/) | Unused then; `make capture` since ([KERN-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-20--seeing-inside-the-gpu-metal-captures-pipeline-statistics-apple-gpumd-2026-09-30)) |
 | Target-trained drafter | DFlash 2 checkpoint for this model | [z-lab/Qwen3.8-27B-DFlash2](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2): τ 9–20 % above MTP (C, H200) | Not adopted |
 | Suffix / prompt-lookup drafts | Free exact drafts from the prompt and history | [SuffixDecoding](https://arxiv.org/abs/2411.04975): 1.8–4.5× on agent traces (M, vLLM) | None |
 | Root-sibling verification | One extra row carrying the head's second candidate | [GDN Tree-Scan](https://arxiv.org/html/2609.23900v1): +27 % at B = 1 (M, GB10) | Chain-only |

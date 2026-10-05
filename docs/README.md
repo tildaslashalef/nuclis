@@ -16,7 +16,7 @@ below.
 | [spec.md](spec.md) | **The authoritative spec**: requirements, scope, acceptance criteria |
 | [llm-guide.md](llm-guide.md) | The inference stack's concepts, taught as they are implemented here |
 | [development.md](development.md) | Contributing: toolchain, build and test, gates, the record, CI, releases |
-| [worklog.md](worklog.md) | Every unit of work before v0.6.0 with its outcome and evidence; later work is recorded in its pull request |
+| [worklog.md](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md) | Every unit of work before v0.6.0 with its outcome and evidence; later work is recorded in its pull request |
 
 ## Using nuclis: `guide/`
 

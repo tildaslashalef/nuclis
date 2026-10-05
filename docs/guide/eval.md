@@ -3,8 +3,8 @@
 `nuclis eval` measures a model's perplexity on a text: the one number that
 ranks a quantization, a cache precision, or a kernel's rounding against the
 reference over thousands of positions, where the trace gates see two or
-three. The unit that built it is `APPS-14` in the
-[worklog](../worklog.md); `MODL-26` is the Gemma 4 `verify`
+three. The unit that built it is [APPS-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-14--teacher-forced-eval-perplexity-against-the-references-per-token-run-the-all-rows-prefill-a-gate-per-family-2026-09-24) in the
+[worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md); [MODL-26](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-26--gemma-4s-metal-verify-rows-carry-the-final-soft-cap-2026-09-24) is the Gemma 4 `verify`
 fix it surfaced.
 
 ## The method
@@ -179,7 +179,7 @@ reference's per-token run, as the 512 record does.
 
 | Model | nuclis | reference, per-token | difference | status |
 | --- | ---: | ---: | ---: | --- |
-| Gemma 4 12B | 752.989 ± 46.78 | 751.820 ± 46.67 | +0.155 % | gate `gemma4-perplexity-4k` (149 s; retired 2026-09-29 with the file, REPO-19) |
+| Gemma 4 12B | 752.989 ± 46.78 | 751.820 ± 46.67 | +0.155 % | gate `gemma4-perplexity-4k` (149 s; retired 2026-09-29 with the file, [REPO-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-19--the-gemma-4-12b-k-quant-files-gates-retired-with-the-file-2026-09-29)) |
 | Gemma 4 26B-A4B | 992.812 ± 56.10 | 1010.894 ± 57.18 | **−1.789 %** | open: no gate |
 | Qwen3.8-27B, Muse Glimmer | — | not recorded | — | reference run stopped |
 

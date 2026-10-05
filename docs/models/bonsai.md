@@ -190,7 +190,7 @@ at the beginning.` instead of merging. So the digest is not an alias (an
 alias must render every case), and the difference is a stricter input
 contract, not a different rendering: for every conversation the file's own
 template accepts, the pinned profile renders the same bytes. **Decided
-2026-09-18 (MODL-17): the catalogue entry's `profile = .qwen38`**, forced
+2026-09-18 ([MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18)): the catalogue entry's `profile = .qwen38`**, forced
 at open the way a registry entry's profile is (the catalogue's pin is now
 a forced profile, not only the sampling default, so `--model bonsai-2-27b`
 renders without any registry entry; by path, `--prompt-profile qwen38`
@@ -341,16 +341,16 @@ path.
 
 ## Status
 
-MODL-16 closed on 2026-09-18: the file validates and binds, the three
+[MODL-16](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-16--bonsai-2-27b-oracle-facts-ternary-encodings-hadamard-transform-cpu-reference-2026-09-18) closed on 2026-09-18: the file validates and binds, the three
 encodings decode against the fork's fixtures, the CPU reference applies
-the rotation and matches the fork's traces. KERN-10 closed the same day:
+the rotation and matches the fork's traces. [KERN-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-10--ternary-matvec-and-matmul-tiles-the-walsh-hadamard-kernel-2026-09-18) closed the same day:
 the Metal decoders, matvecs, and tiles for the three encodings
 ([metal-backend.md § Ternary](../engine/metal-backend.md#ternary-matvecs-and-tiles-2026-09-18):
 PQ2_0 119 GB/s, PTQ1_0 88 GB/s on the output head — at the kernel set's
 multiply rate, half the Q4_0 byte rate by density) and the transform
 kernel (`nu_hadamard`, 1.3–2.2 ms per token as 258 dispatches,
 [§ The Hadamard transform kernel](../engine/metal-backend.md#the-hadamard-transform-kernel-session-2-2026-09-18)).
-MODL-17 closed the same day: the Metal plan applies the rotation and
+[MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18) closed the same day: the Metal plan applies the rotation and
 matches the traces in both cache precisions, the profile is the pinned
 Qwen3.8 one through the catalogue entry, and the acceptance record
 against the fork's server, the agent check, and the PTQ1_0 measurement

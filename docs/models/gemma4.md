@@ -1,7 +1,7 @@
 # Gemma 4: facts from the artifacts and the reference
 
-The second architecture through the adapter seam (MODL-04–MODL-08), and
-since MODL-09 also the 26B-A4B mixture of experts
+The second architecture through the adapter seam ([MODL-04](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-04--adapter-registry-2026-09-11)–[MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)), and
+since [MODL-09](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-09--gemma-4-26b-a4b-artifact-pin-facts-adapter-cpu-reference-metal-plan-2026-09-18-two-sessions) also the 26B-A4B mixture of experts
 ([§ Gemma 4 26B-A4B](#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)),
 bound by the same adapter as a second pinned configuration. Everything here was
 read on 2026-09-11 from the pinned files with `scripts/gguf-inventory.py`
@@ -22,17 +22,17 @@ bidirectional image spans on its sliding layers) are in
 - [Tensors (667)](#tensors-667)
 - [Forward pass (from the reference graph, `gemma4.cpp`)](#forward-pass-from-the-reference-graph-gemma4cpp)
 - [Tokenizer](#tokenizer)
-- [Chat template and profile (MODL-07, 2026-09-12)](#chat-template-and-profile-2026-09-12)
+- [Chat template and profile (2026-09-12)](#chat-template-and-profile-2026-09-12)
 - [Reference oracle status](#reference-oracle-status)
-- [CPU reference against the oracle (MODL-05, 2026-09-11)](#cpu-reference-against-the-oracle-2026-09-11)
-- [Metal plan (MODL-06, 2026-09-11)](#metal-plan-2026-09-11)
-- [Q4_0 path and the QAT file (MODL-08, 2026-09-12)](#q4_0-path-and-the-qat-file-2026-09-12)
-- [Gemma 4 26B-A4B: the expert configuration (MODL-09)](#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)
-- [Gemma 4 E4B: per-layer embeddings and shared KV (MODL-27, 2026-09-26)](#gemma-4-e4b-per-layer-embeddings-and-shared-kv-2026-09-26)
+- [CPU reference against the oracle (2026-09-11)](#cpu-reference-against-the-oracle-2026-09-11)
+- [Metal plan (2026-09-11)](#metal-plan-2026-09-11)
+- [Q4_0 path and the QAT file (2026-09-12)](#q4_0-path-and-the-qat-file-2026-09-12)
+- [Gemma 4 26B-A4B: the expert configuration (2026-09-18)](#gemma-4-26b-a4b-the-expert-configuration-2026-09-18)
+- [Gemma 4 E4B: per-layer embeddings and shared KV (2026-09-26)](#gemma-4-e4b-per-layer-embeddings-and-shared-kv-2026-09-26)
 
 ## Artifacts
 
-| | K-quant (bring-up, MODL-05–MODL-07) | QAT (the catalogue's file since MODL-08) |
+| | K-quant (bring-up, [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11)–[MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12)) | QAT (the catalogue's file since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)) |
 | --- | --- | --- |
 | Repository | `unsloth/gemma-4-12b-it-GGUF` | `unsloth/gemma-4-12B-it-qat-GGUF` |
 | File | `gemma-4-12b-it-UD-Q4_K_XL.gguf` | `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` |
@@ -81,7 +81,7 @@ array; the upstream `config.json` says `layer_types` alternate
 `sliding_attention` ×5, `full_attention` ×1, with `global_head_dim` 512.
 
 The parser must retain 48-element arrays: `formats/gguf` keeps values for
-numeric arrays of at most 16 elements today (a Qwen-era bound), so MODL-05
+numeric arrays of at most 16 elements today (a Qwen-era bound), so [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11)
 raises that bound (a format-level capacity, not a Gemma key).
 
 ## Tensors (667)
@@ -109,7 +109,7 @@ Encodings per role in the K-quant file: attention and gate/up matrices
 Q4_K on 43 layers and Q5_K on 5; `attn_v` Q6_K on 35 layers, Q5_K on 5;
 `ffn_down` Q4_K/Q5_K/Q6_K (22/5/21); `attn_output` Q4_K everywhere;
 `token_embd` Q5_K. All are in the executable set, as is the QAT file's
-Q4_0 since MODL-08 ([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)).
+Q4_0 since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) ([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)).
 
 **Values read from the file.** `rope_freqs.weight` is 64 ones followed by
 192 values of 1e30. `layer_output_scale` is a per-layer scalar between
@@ -192,10 +192,10 @@ response markers, the channel markers, `<|"|>`) are rendered as text by the
 reference so a chat parser can read them.
 
 The tree's `tokenizer/vocabulary.zig` accepted only `model = "gpt2"` and
-`tokenizer/pre.zig` the `qwen35` splitter until MODL-05 added Gemma's
+`tokenizer/pre.zig` the `qwen35` splitter until [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11) added Gemma's
 vocabulary model and splitter (below); the stop set is `<turn|>` 106 and
 `<eos>` 1 (the QAT file names 1 as EOS and 106 as EOT), owned by the
-profile since MODL-07.
+profile since [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12).
 
 ## Chat template and profile (2026-09-12)
 
@@ -228,7 +228,7 @@ token strings captured from `llama-server 7620399` on the K-quant file,
 
 - The server's `/apply-template` output has no `<bos>` (its tokenizer adds
   BOS); the profile renders `<bos>` as text because the tree's encoder
-  never adds it (MODL-05). Token streams are identical: `[2, 105, …]`.
+  never adds it ([MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11)). Token streams are identical: `[2, 105, …]`.
 - `developer` arrives at the template as `system`; later system messages
   are `<|turn>system\n…<turn|>\n` turns of their own, empty ones included.
 - Thinking is a switch: `off` pre-closes an empty channel in the
@@ -256,9 +256,9 @@ even when the configuration guessed another from a bare path.
 `90fd944d…`) with its companions `mmproj-BF16.gguf` (175,115,840 B,
 `2e269f90…`) and `mtp-gemma-4-12b-it.gguf` (465,109,248 B, `145db909…`),
 and `gemma-4-12b-qat` is the QAT file
-([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)). Between MODL-07
+([§ Q4_0 path](#q4_0-path-and-the-qat-file-2026-09-12)). Between [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12)
 and that day one name pointed at whichever file was newest, which made
-`nuclis model pull gemma-4-12b` mean different bytes in different weeks. Since 2026-09-26 (APPS-17) only `gemma-4-12b-qat` is in the
+`nuclis model pull gemma-4-12b` mean different bytes in different weeks. Since 2026-09-26 ([APPS-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#apps-17--the-catalogue-at-five-entries-the-registry-in-name-order-2026-09-26)) only `gemma-4-12b-qat` is in the
 catalogue; the K-quant file runs through `config init --discover`
 ([catalogue.md § The catalogue](catalogue.md#the-catalogue)).
 A registry entry of the same name still shadows either.
@@ -295,7 +295,7 @@ and the real file: 667 tensors, 7,350,597,824 bytes, 40 sliding and 8
 global layers) and `gemma4_runtime.zig` executes the forward pass above on
 the CPU. Compared against the reference's per-layer outputs on
 `<bos>Hello,` (tokens `[2, 9259, 236764]`, three positions, the traces
-pinned under `tests/fixtures/gemma4-hello-comma/`; since MODL-08 that target
+pinned under `tests/fixtures/gemma4-hello-comma/`; since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) that target
 is `make gate NAME='gemma4-trace-f*'`):
 
 | Comparison | Measured | Threshold |
@@ -309,7 +309,7 @@ Layer 0 at position 0 agrees to 3.8e-6 absolute, so the embedding scale,
 the raw-weight norms, and the unscaled attention are the reference's; the
 error grows slowly with depth and position as expected of F32 summation
 order. One CPU step is 33.7 s for the three-token prompt (ReleaseSafe, M4
-Pro), a reference number for the Metal plan of MODL-06, not a benchmark.
+Pro), a reference number for the Metal plan of [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11), not a benchmark.
 
 Recipe (the harness compiled as in
 [sampling.md](../engine/sampling.md#numerical-traces)): `reference-generation
@@ -329,7 +329,7 @@ in place within F32). The session layout is per layer (2048-wide rows on
 sliding layers, 512 on global ones). The Metal plan is
 [§ Metal plan](#metal-plan-2026-09-11).
 
-**Tokenizer (implemented in MODL-05).** `tokenizer/vocabulary.zig` accepts
+**Tokenizer (implemented in [MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11)).** `tokenizer/vocabulary.zig` accepts
 `tokenizer.ggml.model = "gemma4"` (`pre` is implied), `bpe.encodeSpmBudget`
 runs the shared merge scan over code points with `<0xNN>` byte fallback,
 `Encoder.encodeSpm` is the newline-run splitter with U+2581 escaping, and
@@ -402,13 +402,13 @@ tokens: chunks of 64 / 48 / 32 at 8.6e-2 / 8.6e-2 / 2.6e-2 max abs and
 2.5e-3 / 2.6e-3 / 7.5e-4 relative RMS (recorded bounds 1e-1 / 4e-3; Qwen's
 are 2e-2 / 1e-3), same greedy token. Forcing the generic F32 tiles brings
 the chunked run to 4.8e-4 / 1.2e-5, so the gap is the half-operand
-rounding of the specialized matmul tiles (ENGN-05) on Gemma's larger
+rounding of the specialized matmul tiles ([ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)) on Gemma's larger
 activations, not the chunk schedule (window mask, wide heads, the
 value-as-key copy).
 
 **First-look rates** (`nuclis bench`, Metal, greedy, context 2,048, three
 measured runs; Apple M4 Pro 48 GB, macOS 26.6.2, Zig 0.16.0 ReleaseSafe,
-2026-09-11; not the acceptance record, which MODL-07 takes against the
+2026-09-11; not the acceptance record, which [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12) takes against the
 reference harness):
 
 | Workload | Prefill tok/s | Decode tok/s | First token |
@@ -420,8 +420,8 @@ reference harness):
 | Reference `llama-bench` `7620399` on the same file (`-p 512 -n 128 -ngl 99 -fa 1 -ctk f16 -ctv f16 -r 3`) | 219.9 ± 2.4 | 24.9 ± 0.15 | — |
 
 Decode is 81 % of the reference (7.35 GB of weights at 20.2 tok/s is
-148 GB/s effective) and prefill 91 %; both are follow-ups after MODL-07, not
-part of MODL-06. The Qwen `make bench` is unchanged by the shared-kernel
+148 GB/s effective) and prefill 91 %; both are follow-ups after [MODL-07](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12), not
+part of [MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11). The Qwen `make bench` is unchanged by the shared-kernel
 changes (40.27 / 10.80 tok/s the same day).
 
 ## Q4_0 path and the QAT file (2026-09-12)
@@ -476,7 +476,7 @@ and the F16 cache in particular: the key-rounding sensitivity measured on
 the K-quant file is prompt- and checkpoint-dependent, and the tolerance
 stays the family's recorded one. The K-quant comparisons ran as `make
 gate NAME='gemma4-trace-*'` until 2026-09-29, when the K-quant file's
-nine gates were retired with the file (REPO-19); the QAT, E4B, and 26B-A4B
+nine gates were retired with the file ([REPO-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-19--the-gemma-4-12b-k-quant-files-gates-retired-with-the-file-2026-09-29)); the QAT, E4B, and 26B-A4B
 gates cover the family, and the K-quant results above stay as the record.
 
 **Generation check** (`make gate NAME=gemma4-qat-generation-metal` on the QAT
@@ -487,7 +487,7 @@ at 4.4e-1 / 4.2e-1 / 1.5e-1 max abs and 1.4e-2 / 1.3e-2 / 4.7e-3
 relative RMS, same greedy token; through the generic F32 tiles 7.8e-4 /
 3.2e-5 (bound 5e-3 / 2e-4, unchanged), so the schedule and the Q4_0
 decode are exact and the gap is the half-operand rounding of the
-specialized tiles (ENGN-05), which this checkpoint amplifies about five times
+specialized tiles ([ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)), which this checkpoint amplifies about five times
 more than the K-quant file (8.6e-2 / 2.6e-2 at chunks 64 / 32 there).
 The family's chunk bound moved from 1e-1 / 4e-3 to 6e-1 / 2e-2 to cover
 both files, recorded in `generation-check.zig`; the F16 cache on this
@@ -523,7 +523,7 @@ the 12B files; `tokenizer.ggml.add_bos_token` is `false` here (the 12B's
 is `true`), which changes nothing: the encoder never adds BOS and the
 profile writes it. The catalogue entry `gemma-4-26b-a4b` and its
 companions (`mmproj-BF16.gguf`, `MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf`)
-were pinned ahead of this unit (MODL-14).
+were pinned ahead of this unit ([MODL-14](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-14--catalogue-entries-ahead-of-their-adapters-roadmap-reordered-around-speculation-2026-09-17)).
 
 **Metadata against the 12B.** Shared and identical: `context_length`,
 `attention.head_count` 16, `sliding_window` 1024, `key_length` /
@@ -706,7 +706,7 @@ flash-decoding kernel at long context;
 The Qwen `make bench` is unchanged the same day (40.05 / 10.67 tok/s
 against 40.27 / 10.80).
 
-**Acceptance record and agent check (MODL-10, 2026-09-18).** Against the
+**Acceptance record and agent check ([MODL-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-10--gemma-4-26b-a4b-catalogue-verdict-acceptance-record-agent-check-2026-09-18), 2026-09-18).** Against the
 reference harness on its own arrays: prefill / decode 500.42 / 55.29 at
 512, 346.17 / 49.44 at 4K, 206.44 / 39.55 at 16K, 134.74 / 31.30 at 32,639
 tok/s, the reference at 580.76 / 68.02, 548.41 / 60.82, 459.46 / 50.67,

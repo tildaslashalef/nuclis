@@ -8,7 +8,7 @@ kernels; the CLI still provides structural inspection and validation only.
 Implemented encodings are F32 (ID 0), F16 (1), Q4_0 (2), Q8_0 (8), Q3_K (11),
 Q4_K (12), Q5_K (13), Q6_K (14), IQ4_NL (20), IQ3_S (21), and IQ4_XS (23).
 This covers all nine encodings in the pinned Qwen artifact, plus F16, plus
-Q4_0 (MODL-08, 2026-09-12: the only weight encoding of the catalogue's Gemma 4
+Q4_0 ([MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12), 2026-09-12: the only weight encoding of the catalogue's Gemma 4
 12B file). A [CPU matrix-vector reference](cpu-reference.md) consumes these
 rows. Inspection also recognizes the BF16 layout; row decoding rejects it
 explicitly.
@@ -102,7 +102,7 @@ Colocated tests cover hand-calculated blocks, signed extremes, every IQ4 lookup
 index, half-row ordering, independent block scales, F16 subnormals/signed zero/
 infinity/NaN, little-endian F32 values, and invalid inputs. A small committed
 [fixture](../../inference/src/quant/fixtures/simple.json) contains eight Q8_0,
-eight IQ4_NL, and (since MODL-08) eight Q4_0 blocks with outputs from the pinned
+eight IQ4_NL, and (since [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)) eight Q4_0 blocks with outputs from the pinned
 C CPU decoders. The Zig results match exactly; these simple equations do not
 require a tolerance. The Q8 fixture covers all 256 byte representations; the
 Q4_0 and IQ4_NL payloads are the same bytes, so the two decoders are pinned

@@ -516,7 +516,7 @@ lever is a different geometry, not a shorter loop.
 
 Read: `kernels.metal` (`nu_matvec_q4_k` and its neighbours),
 `Backend.specializedMatvec`,
-[engine/metal-backend.md § KERN-05](engine/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
+[engine/metal-backend.md § Per-block cost research (2026-09-08, closed without a kernel change)](engine/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
 
 ### 14. Fewer dispatches, same math
 
@@ -1039,7 +1039,7 @@ from a hunch.
 
 Read: [benchmarks](benchmarks/README.md),
 [development.md § Gates](development.md#gates),
-[worklog.md](worklog.md).
+[worklog.md](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md).
 
 ---
 

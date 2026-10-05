@@ -19,7 +19,7 @@ or an unset or `dumb` `TERM` disable styling completely, so scripts and the test
 see exactly the same bytes; the tests pin the plain form with
 `style.Style.none`. The renderers take a `style.Style` explicitly and pad
 text before wrapping it in escapes, so alignment never depends on them.
-The palette lives in `src/tui/theme.zig` (TERM-01): named palettes selected by
+The palette lives in `src/tui/theme.zig` ([TERM-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-01--agent-terminal-surface-2026-09-12)): named palettes selected by
 `agent.theme`, behind a semantic style enum that a theme cannot change, so
 a theme changes colour and never layout. `src/tui/style.zig` is the same
 palette applied to one-shot reports.
@@ -30,7 +30,7 @@ to carry the meaning. Stacking both halves an already low-contrast foreground
 and made notices and the help page unreadable on a translucent terminal
 (reported and fixed 2026-09-12).
 
-Glyphs are a separate axis from colour (TERM-01 step 6). Every decoration the
+Glyphs are a separate axis from colour ([TERM-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-01--agent-terminal-surface-2026-09-12) step 6). Every decoration the
 agent draws — bullets, task boxes, rules, table joints, fold arrows, the
 spinner, the status-bar labels — is named in `theme.Glyphs`, with a Unicode
 table and an ASCII one. The ASCII table is selected when the locale does not
@@ -63,7 +63,7 @@ every operation is pinned by golden tests that need no TTY.
 ## The agent's transcript
 
 Between the renderer and the screen sits `src/tui/transcript.zig`, the
-answer to "what is on the screen, and who may rewrite it" (TERM-01 step 7). The
+answer to "what is on the screen, and who may rewrite it" ([TERM-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-01--agent-terminal-surface-2026-09-12) step 7). The
 agent produces typed events (`src/tui/event.zig`: user, thinking, answer,
 tool call, tool result, diff, notice, status, turn end); the transcript turns
 them into blocks and offers three views of those blocks:
@@ -149,7 +149,7 @@ JSON lines is something a test can assert on and a terminal is not.
 ## The agent's session files
 
 `src/agent/session.zig` writes one append-only JSONL file per conversation
-under `~/.nuclis/agent/sessions/<cwd-slug>/<stamp>_<id>.jsonl` (TERM-01 step 8).
+under `~/.nuclis/agent/sessions/<cwd-slug>/<stamp>_<id>.jsonl` ([TERM-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-01--agent-terminal-surface-2026-09-12) step 8).
 The first line is a header (format `version`, session id, time, working
 directory, the model path and the digest its pull sidecar recorded, effort,
 context size); every later line is an entry carrying `id` and `parent`, so a
@@ -164,7 +164,7 @@ second transcript format.
 ## The agent's renderer
 
 `src/tui/markdown.zig` turns a turn's text into pre-styled, pre-wrapped rows.
-Two rules matter when reading it (TERM-01 step 6):
+Two rules matter when reading it ([TERM-01](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#term-01--agent-terminal-surface-2026-09-12) step 6):
 
 - **Streaming.** `markdown.split(text)` divides a partial turn into the
   blocks that can no longer change and the one still being written: a blank

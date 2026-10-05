@@ -108,7 +108,7 @@ handoff resumes the model turn; see its section below and
 
 Turns are `<|turn>role\n…<turn|>\n`; the assistant's role name is `model`.
 The prompt starts with `<bos>` as text: the tree's encoder never adds BOS
-(MODL-05), so the profile writes the marker the template emits (the reference
+([MODL-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11)), so the profile writes the marker the template emits (the reference
 server strips it from `/apply-template` output because its tokenizer adds
 it back; the token streams are identical, and the fixture test prepends it).
 The first message, when system or developer, goes into the system turn;
@@ -212,7 +212,7 @@ ended by `<|eom|>` (200007) or the next `<|start|>` (200022), the first
 header arriving as ordinary text (` to=self`) because the prompt ends
 inside it. The header routes the body: `assistant to=self` is thinking,
 `assistant` or `assistant to=user` the answer, any other `to=NAME` a tool
-body when the profile parses one (AGNT-10) and answer text otherwise. A
+body when the profile parses one ([AGNT-10](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#agnt-10--muse-glimmer-atem-tool-calling-rendering-decoding-fixtures-2026-09-19)) and answer text otherwise. A
 header still open at a stop, or longer than 256 bytes, is released as
 answer text. `<|eot|>` (200008) and `<|end_of_text|>` (200001) are the
 stop tokens; `<|eom|>` is not, since the model continues after it.
@@ -365,7 +365,7 @@ differ**, the `merged_system_*` histories, which that template refuses
 (`System message must be at the beginning.`) where the pinned one merges
 them; every other prompt and token stream is byte-identical
 ([bonsai.md § Chat template](../models/bonsai.md#chat-template)). Not an alias
-either; MODL-17 chooses the entry's profile from that evidence.
+either; [MODL-17](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18) chooses the entry's profile from that evidence.
 
 ## Completion events (2026-09-14, session 1)
 

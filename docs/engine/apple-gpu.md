@@ -26,7 +26,7 @@ unless a row names a measurement.
 | Memory bandwidth | 273 GB/s published; best kernel alone 248 GB/s (Q6_K matvec), a Qwen decode step about 63 % of peak | Apple; [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec), [benchmarks](../benchmarks/history.md#the-decode-speed-baseline-2026-09-30) |
 | SIMD width | 32 threads, every pipeline | `threadExecutionWidth` (`nuclis bench --kernel-stats`) |
 | Threads per threadgroup | 1,024; every pipeline keeps the full 1,024 (below) | `maxThreadsPerThreadgroup`, `--kernel-stats` |
-| Threadgroup memory | 32 KiB per threadgroup; occupancy falls off a cliff between 16 and 24 KB per group (the 64 × 64 prefill tile fits only with half operands); our largest static use is `nu_delta_chunk`, 28,160 B | `maxThreadgroupMemoryLength`; measured in [metal-backend.md § Kernels](metal-backend.md#kernels) (ENGN-05); `--kernel-stats` |
+| Threadgroup memory | 32 KiB per threadgroup; occupancy falls off a cliff between 16 and 24 KB per group (the 64 × 64 prefill tile fits only with half operands); our largest static use is `nu_delta_chunk`, 28,160 B | `maxThreadgroupMemoryLength`; measured in [metal-backend.md § Kernels](metal-backend.md#kernels) ([ENGN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09)); `--kernel-stats` |
 | Matrix unit | `simdgroup_matrix` 8 × 8; operands of one type (no half → float matrix conversion in MSL); half operands with F32 accumulation reach 4.9–5.2 TFLOP/s in 64 × 64 tiles, F32 operands 3.3–3.5; Apple publishes no peak | measured, [metal-backend.md § Kernels](metal-backend.md#kernels) |
 | Per-lane arithmetic | scalar: building a `float4` value by value cost 3–4× one `uchar4 → float4` cast (Q5_K matvec 113 → 210 GB/s) | measured, [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
 | Loads | the specialized matvecs load `uint4` (16-byte-aligned blocks), `uint2`, or `packed_ushort4` by block alignment; no controlled sweep of load width against rate yet | [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec) |
@@ -109,7 +109,7 @@ complex (the Q4_K nibble unpacking, scale extraction, and integer-to-float
 conversions), and that pipe is the limiter 69–71 % of the time while only 38–39 %
 utilized. Occupancy is half what the occupancy manager targets, with 192
 registers per thread and a small spill, so fewer SIMD groups are in
-flight to hide load latency. KERN-05 cut instruction count without a gain;
+flight to hide load latency. [KERN-05](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-05--per-block-cost-of-the-specialized-kernels-2026-09-08) cut instruction count without a gain;
 what this adds is *which* instructions: the integer and complex ones.
 That ranks the single-row matvec's ideas: a decode that produces floats
 without integer-to-float conversions (the half magic-number form), fewer
@@ -155,7 +155,7 @@ dispatches, about 6,800 threads each (the dispatch is 24 threadgroups per
 value split, one per query head: [metal-backend.md § Where a verify batch's cost goes](metal-backend.md#where-a-verify-batchs-cost-goes)), cannot hide the latency of
 walking 4,096 cached rows. What traffic there is, is mostly the thread's own
 stack: 116 GB/s of spill reads and writes against 16 GB/s of buffer
-reads, with the L1 evicting every line. Both point at the design KERN-21
+reads, with the L1 evicting every line. Both point at the design [KERN-21](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-21--few-query-verify-attention-through-the-split-pass-2026-09-30)
 proposes: split the keys so hundreds of threadgroups share the walk, and
 keep per-thread state small enough not to spill. It also explains the
 sweep's finding that 1 and 8 rows cost the same: rows are not what the
@@ -169,7 +169,7 @@ limit (last-level cache 9 %, MMU 3 %). The tile stages every decoded
 weight through threadgroup memory (321 GB/s of threadgroup reads for
 689 GB/s of buffer reads), and its 8-wide fragment computes 8 token
 columns for 4 real ones, so half its float work multiplies padding. That
-ranks KERN-24's ideas: decode straight into register fragments (drop the
+ranks [KERN-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target)'s ideas: decode straight into register fragments (drop the
 staging instructions), and route small row counts to a body that does not
 compute padded columns: the multi-row matvec already reads 103 GB/s at 4
 tokens on this shape against the tile's 90.5.
@@ -258,12 +258,12 @@ case in 0.234 ms, about 6 TFLOP/s of 8 × 8 work: the multiplies alone are
 (the MMAs multiplying the integer codes from a half table, the group
 scale applied once to the partial product) measured no gain, nor did
 F32 weight fragments, shared block headers, fewer rows per SIMD group, or
-a software-pipelined decode (KERN-24's ledger). At 4 tokens half of every
+a software-pipelined decode ([KERN-24](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target)'s ledger). At 4 tokens half of every
 8 × 8 multiply is padding columns, and nothing can fill them (a column
 shares its A operand, so it cannot carry another K range or row set);
 the padded multiplies set the floor of any `simdgroup_matrix` body at
 small token counts on this GPU, and a body that does fewer F32
-operations per weight is a scalar one, which KERN-12 found register-bound
+operations per weight is a scalar one, which [KERN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-12--a-multi-row-matvec-for-28-rows-the-2-row-routing-2026-09-20-two-sessions-closed-below-its-target) found register-bound
 past two rows.
 
 ## `nu_matvec_iq4_xs` on Qwen's merged gate shape (2026-10-03)

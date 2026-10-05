@@ -21,7 +21,7 @@ make test-hf              # offline library tests
 ```
 
 The package is self-contained (`build.zig`, `build.zig.zon`, `src/`) and a
-path dependency of the root build since MODL-02 (2026-09-11): `nuclis model pull`
+path dependency of the root build since [MODL-02](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-02--model-download-through-the-huggingface-package-2026-09-11) (2026-09-11): `nuclis model pull`
 and `model ls` (`src/model.zig`) are the host of the API below, and
 `zig build test` at the root runs these tests too. Only the executable imports
 it; the inference library never does.
