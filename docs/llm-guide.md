@@ -527,7 +527,7 @@ says where the real win would be: the norm inside the kernel that produces
 its input, an epilogue, not a merge.
 
 Read: `Backend.matvecSegments`, `rmsNormAdd` and `rmsNormRope` in
-`root.zig`, [reference/bench.md § Fused norm sweep](reference/bench.md#fused-norm-sweep-kern-18-2026-09-21).
+`root.zig`, [benchmarks § Fused norm sweep](benchmarks/README.md#fused-norm-sweep-kern-18-2026-09-21).
 
 ### 15. Sampling on the device
 
@@ -650,7 +650,7 @@ sits flat at 640 to 750 GFLOP/s, so the long-context deficit is not a load
 problem, and the next attempt would start from a different lever.
 
 Read: `nu_attention_chunk_t` in `kernels.metal`,
-[reference/bench.md § Prefill attention sweep](reference/bench.md#prefill-attention-sweep-kern-16-2026-09-21).
+[benchmarks § Prefill attention sweep](benchmarks/README.md#prefill-attention-sweep-kern-16-2026-09-21).
 
 ### 18. DeltaNet in chunks: the triangular solve
 
@@ -918,7 +918,7 @@ poorly: the tile pads every 8×8 multiply, and a scalar body pays about
 Read: `inference/src/runtime/draft.zig`, `speculativeBatch` in `engine.zig`,
 `models/dflash.zig`, `models/gemma4_assistant.zig`,
 [engine/speculative-decoding.md](engine/speculative-decoding.md),
-[reference/bench.md § The speculative verdict record](reference/bench.md#the-speculative-verdict-record-engn-17-2026-09-21).
+[benchmarks § The speculative verdict record](benchmarks/README.md#the-speculative-verdict-record-engn-17-2026-09-21).
 
 ---
 
@@ -1022,7 +1022,7 @@ a table that says what was measured and what it rules out. A plan that
 starts from those tables asks a different question than one that starts
 from a hunch.
 
-Read: [reference/bench.md](reference/bench.md),
+Read: [benchmarks](benchmarks/README.md),
 [development.md § Gates](development.md#gates),
 [worklog.md](worklog.md).
 

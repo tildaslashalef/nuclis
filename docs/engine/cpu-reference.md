@@ -133,7 +133,7 @@ cover a 3–4 vector, denominator clamping, zero, and tiny values. Four RoPE cas
 use a synthetic 256-channel head at positions 0, 1, 127, and 32,767, with rotary
 width 64, base 10,000,000, IMRoPE mode 40, sections `[11,11,10,0]`, positions
 `[p,p,p,0]`, frequency scale 1, extension factor 0, and attention factor 1.
-The [reference guide](../reference/reference-baseline.md) documents rebuilding the checkout.
+The [reference guide](../benchmarks/llama-cpp.md) documents rebuilding the checkout.
 
 L2 fixtures use absolute tolerance `1e-7`. RoPE's rotated channels use `5e-6`
 through position 127 and `1e-3` at 32,767; tails match exactly. The largest

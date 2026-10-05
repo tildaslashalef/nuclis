@@ -84,12 +84,12 @@ Hardware, macOS version, Zig version and build mode (the report includes the
 mode), the artifact hash, the backend, prompt token count, output budget,
 context, warmup policy, power mode, and whether other GPU work was running.
 Compare against the pinned reference only at equal prompt tokens, output
-tokens, context, and greedy sampling; see [reference-baseline.md](reference-baseline.md).
+tokens, context, and greedy sampling; see [llama-cpp.md](llama-cpp.md).
 
 ## Acceptance runs
 
 The v0.1 acceptance workload is the reference's
-([reference-baseline.md](reference-baseline.md)): 512, 4,096, 16,384, and
+([llama-cpp.md](llama-cpp.md)): 512, 4,096, 16,384, and
 32,639 prompt tokens, 128 output tokens, greedy, one warmup, three measured
 repetitions (since 2026-10-04 at 32,639 too; the 2026-09 records took one
 there), context 32,768, F16
@@ -107,7 +107,7 @@ tokens as text), which is why the runs take arrays rather than text.
 
 ### Warm record — 2026-09-10
 
-[nuclis-2026-09-10.json](../benchmarks/nuclis-2026-09-10.json). Apple M4 Pro
+[nuclis-2026-09-10.json](nuclis-2026-09-10.json). Apple M4 Pro
 (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2 (25G83), AC power, Zig 0.16.0,
 ReleaseSafe, `nuclis 0.1.0-dev` built from the ENGN-07 tree, pinned artifact
 SHA-256 `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`
@@ -157,7 +157,7 @@ first run to 1,012 MB after the last; no run grew it.
 
 ### Cold-start row — 2026-09-10
 
-[nuclis-2026-09-10-cold.json](../benchmarks/nuclis-2026-09-10-cold.json).
+[nuclis-2026-09-10-cold.json](nuclis-2026-09-10-cold.json).
 After `sudo purge` (`vm_stat` free pages 380K →
 2.5M; the script's header-only `tokenize` check ran first and touches only
 the vocabulary pages), one process, 512 prompt tokens, no warmup, one run:
@@ -532,12 +532,12 @@ The v0.1 acceptance workload on the second family, each side on its own
 token arrays since the tokenizers differ: the reference harness ran on
 the Gemma file with `--family gemma4`
 (`tests/fixtures/run-2026-09-12-gemma4/`, summarized in
-[reference-2026-09-12-gemma4.json](../benchmarks/reference-2026-09-12-gemma4.json):
+[reference-2026-09-12-gemma4.json](reference-2026-09-12-gemma4.json):
 512, 4,096, 16,384, and 32,639 prompt tokens, three measured repetitions
 at every length after one warmup, 128 output tokens, greedy, context
 32,768, F16 cache, `llama-server 7620399` with the recipe's flags on Metal),
 and `make workload NAME=gemma4-12b/acceptance` fed those arrays through `bench --prompt-tokens`
-([nuclis-2026-09-12-gemma4.json](../benchmarks/nuclis-2026-09-12-gemma4.json);
+([nuclis-2026-09-12-gemma4.json](nuclis-2026-09-12-gemma4.json);
 since 2026-09-12 that target is `make workload NAME=gemma4-12b/acceptance`, the catalogue's
 file having moved to the QAT checkpoint below).
 Every array starts with `<bos>` and the Gemma template's user turn; the
@@ -588,11 +588,11 @@ The same workload on the catalogue's file after MODL-08 switched the entry to
 Google's quantization-aware-trained checkpoint (every weight matrix
 Q4_0, SHA-256 `90fd44e2…`, 6.72 GB). The reference harness ran again on
 this file (`tests/fixtures/run-2026-09-12-gemma4-qat/`,
-[reference-2026-09-12-gemma4-qat.json](../benchmarks/reference-2026-09-12-gemma4-qat.json);
+[reference-2026-09-12-gemma4-qat.json](reference-2026-09-12-gemma4-qat.json);
 its token arrays are byte-identical to the K-quant run's, since the two
 files share vocabulary and template, and `nuclis tokenize` reproduces
 every cut as before), and `make workload NAME=gemma4-12b/acceptance` fed them through `bench
---prompt-tokens` ([nuclis-2026-09-12-gemma4-qat.json](../benchmarks/nuclis-2026-09-12-gemma4-qat.json)).
+--prompt-tokens` ([nuclis-2026-09-12-gemma4-qat.json](nuclis-2026-09-12-gemma4-qat.json)).
 Same hardware, OS, and build mode as the record above; `nuclis 0.1.0-dev`
 from the MODL-08 tree; `--kv f16 --ctx-size
 32768 --max-tokens 128`; one 30-minute sequence 512 → 32,639. The
@@ -637,14 +637,14 @@ The v0.1 acceptance workload on the catalogue's mixture of experts,
 `a7c5bc71…`, 14.25 GB, every matrix Q4_0, 128 experts of which 8 per
 token). The reference harness ran on this file
 (`tests/fixtures/run-2026-09-18-gemma4-26b-a4b/`,
-[reference-2026-09-18-gemma4-26b-a4b.json](../benchmarks/reference-2026-09-18-gemma4-26b-a4b.json):
+[reference-2026-09-18-gemma4-26b-a4b.json](reference-2026-09-18-gemma4-26b-a4b.json):
 `llama-server 7620399` with the recipe's flags at 32,768 context, F16
 cache, three measured repetitions at every length after one warmup; its
 token arrays are byte-identical to the two 12B runs', since the three
 files share vocabulary and template, and `nuclis tokenize` reproduces the
 corpus through every cut and every text rendering to its array's count),
 and `make workload NAME=gemma4-26b-a4b/acceptance` fed the arrays through `bench
---prompt-tokens` ([nuclis-2026-09-18-gemma4-26b-a4b.json](../benchmarks/nuclis-2026-09-18-gemma4-26b-a4b.json)).
+--prompt-tokens` ([nuclis-2026-09-18-gemma4-26b-a4b.json](nuclis-2026-09-18-gemma4-26b-a4b.json)).
 Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2, AC power on
 both sides, Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` from the MODL-10
 tree (`56ef7d4` plus this unit's Makefile and documents), `--kv f16
@@ -737,13 +737,13 @@ its server started with the recipe's flags minus `--lazy-mode` (which its
 base does not know) at 32,768 context, F16 cache, and the workload harness
 run against it with `--family qwen38 --reference-revision 5d80cff0…`
 (`tests/fixtures/run-2026-09-18-bonsai/`,
-[reference-2026-09-18-bonsai.json](../benchmarks/reference-2026-09-18-bonsai.json):
+[reference-2026-09-18-bonsai.json](reference-2026-09-18-bonsai.json):
 three measured repetitions at every length after one warmup, 32,639
 included). Its token arrays are byte-identical to the Qwen3.8 run's
 (`run-2026-09-06` and the boundary run; the file shares the vocabulary and
 its single-user-turn rendering), and `make workload NAME=bonsai/acceptance` fed them through
 `bench --prompt-tokens`
-([nuclis-2026-09-18-bonsai.json](../benchmarks/nuclis-2026-09-18-bonsai.json)).
+([nuclis-2026-09-18-bonsai.json](nuclis-2026-09-18-bonsai.json)).
 Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB, macOS 26.6.2, AC power on both
 sides, Zig 0.16.0, ReleaseSafe, `nuclis 0.2.0-dev` from the MODL-17 tree
 (`7177307` plus this unit's plan, Makefile, and documents), `--kv f16
@@ -844,14 +844,14 @@ The v0.1 acceptance workload on the third family, each side on its own
 token arrays since the tokenizers differ: the reference harness ran on
 the Muse file with `--family muse-glimmer`
 (`tests/fixtures/run-2026-09-19-muse-glimmer/`, summarized in
-[reference-2026-09-19-muse-glimmer.json](../benchmarks/reference-2026-09-19-muse-glimmer.json):
+[reference-2026-09-19-muse-glimmer.json](reference-2026-09-19-muse-glimmer.json):
 512, 4,096, 16,384, and 32,639 prompt tokens, three measured repetitions
 at every length after one warmup, 128 output tokens, greedy, context
 32,768, F16 cache, `llama-server 7620399` with the recipe's flags on Metal;
 the template's default `Reasoning strength: high.` system turn, dated
 2026-09-19 by the server's clock, heads every array), and
 `make workload NAME=muse/acceptance` fed those arrays through `bench --prompt-tokens`
-([nuclis-2026-09-19-muse-glimmer.json](../benchmarks/nuclis-2026-09-19-muse-glimmer.json)).
+([nuclis-2026-09-19-muse-glimmer.json](nuclis-2026-09-19-muse-glimmer.json)).
 Every array starts with `<|begin_of_text|>` and that system turn; the
 script verified that `nuclis tokenize` reproduces the reference's corpus
 tokens through every cut (32,577 tokens) and that all four text renderings
@@ -908,7 +908,7 @@ size the per-batch costs the performance units attack
 ([speculative-decoding.md](../engine/speculative-decoding.md), the plan in
 [TODO.md](../../TODO.md)). `make workload NAME='qwen38/spec/*'`
 (then `scripts/nuclis-speculative.py`, now the `qwen38/spec/*` workloads; the reports are under
-[benchmarks/speculative-2026-09-20/](../benchmarks/speculative-2026-09-20/))
+[benchmarks/speculative-2026-09-20/](speculative-2026-09-20/))
 ran twelve configurations, each as off/on pairs on one loaded model (the
 drafter loaded in both): the reference corpus arrays at 512 and 4,096
 tokens and the fixed code prompt `Write a Zig function that reverses a
@@ -982,7 +982,7 @@ opens `.none`, so no drafter weights, scratch, or draft cache are loaded —
 and the pair's loaded-but-off sample. `make workload NAME='qwen38/spec/*'`
 (then `scripts/nuclis-speculative.py --baseline`, now the `qwen38/spec/*`
 workloads of `workloads.json` with the table from `scripts/bench-report.py`; reports under
-[benchmarks/speculative-2026-09-21/](../benchmarks/speculative-2026-09-21/))
+[benchmarks/speculative-2026-09-21/](speculative-2026-09-21/))
 ran the twelve configurations of the ENGN-12 record as off/on pairs on one
 loaded model plus a no-drafter baseline pass per configuration: the
 reference corpus arrays at 512 and 4,096 tokens and the fixed code prompt
@@ -1062,7 +1062,7 @@ the worklog; replaced by the verify tape, [session.md § Pending rows and the ve
 methodology, corpus, prompts, sampling, draft lengths, context, and
 precision as the ENGN-12 record above; `make workload NAME='qwen38/spec/*'`
 (then `scripts/nuclis-speculative.py`, now the `qwen38/spec/*` workloads; reports under
-[benchmarks/speculative-2026-09-20-recovery/](../benchmarks/speculative-2026-09-20-recovery/))
+[benchmarks/speculative-2026-09-20-recovery/](speculative-2026-09-20-recovery/))
 ran twelve configurations in one 46-minute sequence (20:49–21:35), each an
 off/on pair on one loaded model. Apple M4 Pro (12 CPU, 16 GPU cores),
 48 GiB, macOS 26.6.2 (25G83), AC power, Zig 0.16.0, ReleaseSafe,
@@ -1152,7 +1152,7 @@ rather than hidden:
 
 `make bench-profile` runs it with the `bench` workload. Record (2026-09-07,
 Apple M4 Pro, ReleaseSafe, 255 measured steps):
-[benchmarks/nuclis-profile-2026-09-07.json](../benchmarks/nuclis-profile-2026-09-07.json).
+[benchmarks/nuclis-profile-2026-09-07.json](nuclis-profile-2026-09-07.json).
 Grouped by encoding, ms per token of the 104.8 ms attributed (109.0 ms
 command-buffer time in profile mode; 101 ms unprofiled):
 
@@ -1193,7 +1193,7 @@ occupancy effect that also explains the micro-benchmark's slower
 that is now the measured target for kernel work rather than a guess.
 
 KERN-03 profile (2026-09-08), same workload and 255 measured steps:
-[raw report](../benchmarks/nuclis-profile-2026-09-08.json). Attributed GPU time
+[raw report](nuclis-profile-2026-09-08.json). Attributed GPU time
 is 99.38 ms/step; command-buffer GPU time is 103.31 ms/step. Dispatch count
 remains 1,236 per step, with no unsampled dispatches.
 
@@ -1218,7 +1218,7 @@ as an equal wall-time gain. Only the unprofiled benchmark above establishes
 that gain.
 
 KERN-04 profile (2026-09-08), 255 measured steps:
-[raw report](../benchmarks/nuclis-profile-c12-2026-09-08.json). Dispatches fell
+[raw report](nuclis-profile-c12-2026-09-08.json). Dispatches fell
 from 1,236 to 932 per step (304 removed). Attributed time is 92.49 ms/step,
 command-buffer time 97.61 ms/step; no dispatches were unsampled. Each merged
 entry reports the combined rows and weight bytes, with encoding omitted because
@@ -1882,7 +1882,7 @@ Apple M4 Pro MacBook Pro (Mac16,8), 48 GiB, macOS 27.0 (26A428), AC power,
 Zig 0.16.0, ReleaseSafe, `c7b6d2b`, metal; Qwen3.8-27B UD-Q4_K_M with its
 embedded MTP head, the other entries with their catalogue companions. The
 derived rows of every table are committed under
-[benchmarks/speculative-2026-10-01/](../benchmarks/speculative-2026-10-01/)
+[benchmarks/speculative-2026-10-01/](speculative-2026-10-01/)
 (`make spec-matrix ARGS='… --report --json'` regenerates them from the
 saved reports).
 
@@ -2316,7 +2316,7 @@ README's columns share a date. Apple M4 Pro (12 CPU, 16 GPU cores), 48 GB,
 macOS 27.0.1 (26A434), AC, no thermal warning recorded, display kept on;
 `sudo purge` once before the first run. nuclis `c55604c` (0.6.0-dev,
 ReleaseSafe, Zig 0.17.0); the reference at `7620399` (built with AppleClang
-21.0.0), the server flags of [reference-baseline.md](reference-baseline.md#run-the-workload).
+21.0.0), the server flags of [llama-cpp.md](llama-cpp.md#run-the-workload).
 Both sides take one warmup and **three** measured requests at every length,
 32,639 included (the 2026-09 records took one there), 128 greedy output
 tokens, context 32,768, F16 KV. The reference **replays** the committed
@@ -2328,7 +2328,7 @@ family's 2026-09 record on macOS 26.
 
 ### Reference: Qwen3.8-27B
 
-[reference-2026-10-04-qwen38.json](../benchmarks/reference-2026-10-04-qwen38.json),
+[reference-2026-10-04-qwen38.json](reference-2026-10-04-qwen38.json),
 replaying `run-2026-09-06` and `boundary-2026-09-06` (the server's own
 rendering of the template and its tokens equal the fixture's):
 
@@ -2344,7 +2344,7 @@ RSS 17.2–17.5 GiB between requests (weights memory-mapped).
 
 ### Reference: Gemma 4 12B QAT
 
-[reference-2026-10-04-gemma4-qat.json](../benchmarks/reference-2026-10-04-gemma4-qat.json),
+[reference-2026-10-04-gemma4-qat.json](reference-2026-10-04-gemma4-qat.json),
 replaying `run-2026-09-12-gemma4-qat` (the server's rendering equals the
 fixture's):
 
@@ -2360,7 +2360,7 @@ The same shape as Qwen's: faster at short context, slower decode at 32K
 
 ### Reference: Gemma 4 26B-A4B
 
-[reference-2026-10-04-gemma4-26b-a4b.json](../benchmarks/reference-2026-10-04-gemma4-26b-a4b.json),
+[reference-2026-10-04-gemma4-26b-a4b.json](reference-2026-10-04-gemma4-26b-a4b.json),
 replaying `run-2026-09-18-gemma4-26b-a4b` (the server's rendering equals
 the fixture's):
 
@@ -2376,7 +2376,7 @@ The mixture of experts moved least: within ±5 % everywhere, 32K prefill
 
 ### Reference: Muse Glimmer 30B
 
-[reference-2026-10-04-muse-glimmer.json](../benchmarks/reference-2026-10-04-muse-glimmer.json),
+[reference-2026-10-04-muse-glimmer.json](reference-2026-10-04-muse-glimmer.json),
 replaying `run-2026-09-19-muse-glimmer`. The server's own rendering
 differs from the fixture's, as expected: the template carries the
 server's date, so the replay is what keeps the 2026-09 tokens.
@@ -2394,7 +2394,7 @@ local) while 512 before them was steady and 32,639 after them holds
 within ±0.3; no thermal warning was recorded. Server RSS 15.2–15.5 GiB.
 
 Re-run alone on an idle machine after a 10-minute cool-down
-([reference-2026-10-04-muse-glimmer-4k.json](../benchmarks/reference-2026-10-04-muse-glimmer-4k.json),
+([reference-2026-10-04-muse-glimmer-4k.json](reference-2026-10-04-muse-glimmer-4k.json),
 23:17): prefill **95.31 ± 1.01**, decode **12.25 ± 0.75** tok/s (2026-09:
 93.01 / 12.14). The decode fell again within the run (warmup 13.96, then
 12.71, 12.65, 11.38) while prefill held, so the spread at this length is
@@ -2403,7 +2403,7 @@ one (`muse/acceptance` lists its record first).
 
 ### Reference: Gemma 4 E4B QAT (first record)
 
-[reference-2026-10-04-gemma4-e4b.json](../benchmarks/reference-2026-10-04-gemma4-e4b.json),
+[reference-2026-10-04-gemma4-e4b.json](reference-2026-10-04-gemma4-e4b.json),
 on its own arrays (`--family gemma4-e`, no replay): E4B's template renders
 thinking off as a bare `<|turn>model\n`, so its prompts differ from the
 12B's in the template tokens (prefix 4, suffix 12). The arrays and the run
@@ -2420,7 +2420,7 @@ Server RSS 4.6–4.7 GiB.
 
 ### nuclis: Qwen3.8-27B
 
-[nuclis-2026-10-04.json](../benchmarks/nuclis-2026-10-04.json), at
+[nuclis-2026-10-04.json](nuclis-2026-10-04.json), at
 `d008abf` (clean tree; the binary built at `c55604c`, documents and scripts
 only between), 23:31–00:40:
 
@@ -2457,7 +2457,7 @@ comparison holds; the 4K row carries the larger spread.
 
 ### nuclis: Gemma 4 12B QAT
 
-[nuclis-2026-10-05-gemma4-qat.json](../benchmarks/nuclis-2026-10-05-gemma4-qat.json)
+[nuclis-2026-10-05-gemma4-qat.json](nuclis-2026-10-05-gemma4-qat.json)
 (dated by its start after midnight), at `5ef0544`, clean, 00:50–01:35:
 
 | Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
@@ -2483,7 +2483,7 @@ unchanged in shape: decode 0.79–0.84×, prefill halving by 32K. Peak RSS
 
 ### nuclis: Gemma 4 26B-A4B
 
-[nuclis-2026-10-05-gemma4-26b-a4b.json](../benchmarks/nuclis-2026-10-05-gemma4-26b-a4b.json),
+[nuclis-2026-10-05-gemma4-26b-a4b.json](nuclis-2026-10-05-gemma4-26b-a4b.json),
 at `781a084`, clean, 01:45–02:08:
 
 | Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
@@ -2511,7 +2511,7 @@ nothing from the new OS on either engine. Peak RSS 7.3 GiB, footprint
 
 ### nuclis: Muse Glimmer 30B
 
-[nuclis-2026-10-05-muse-glimmer.json](../benchmarks/nuclis-2026-10-05-muse-glimmer.json),
+[nuclis-2026-10-05-muse-glimmer.json](nuclis-2026-10-05-muse-glimmer.json),
 at `b7c0b02`, clean, 02:18–03:18; its 4,096 reference row is the re-run's
 (the record names each row's source):
 
@@ -2539,7 +2539,7 @@ dense runs (10.96 → 9.90 → 9.40). Peak RSS 1.8 GiB, footprint 2.1 GiB.
 
 ### nuclis: Gemma 4 E4B QAT (first record)
 
-[nuclis-2026-10-05-gemma4-e4b.json](../benchmarks/nuclis-2026-10-05-gemma4-e4b.json),
+[nuclis-2026-10-05-gemma4-e4b.json](nuclis-2026-10-05-gemma4-e4b.json),
 at `f72a81c`, clean, 03:28–03:45, on its own arrays:
 
 | Prompt tokens | Prefill tok/s | Decode tok/s | Decode nuclis / llama.cpp | Prefill nuclis / llama.cpp |
@@ -2557,7 +2557,7 @@ with prefill dipping too; not investigated. Peak RSS 2.0 GiB, footprint
 
 ### Speculation pairs
 
-[speculative-2026-10-05/](../benchmarks/speculative-2026-10-05/), at
+[speculative-2026-10-05/](speculative-2026-10-05/), at
 `7c34501`, 03:56–04:54, in one sitting after a 10-minute cool-down and
 90 s idle before each cell (`make spec-matrix ARGS='--model <key>
 --contexts 512,32639 --drafts <n> --sampling greedy --cooldown 90'`):
@@ -2583,5 +2583,5 @@ Short code on Qwen (`--contexts code --drafts 7 --sampling greedy
 --cooldown 90`, 09:52 on 2026-10-05, the binary of the runs above; the
 tree's only change was `scripts/site-check.py`, so the report's revision
 reads `092df76+dirty`): **11.79 → 20.87 tok/s, 1.77×**, C / 50E 0.96
-([qwen38-code.json](../benchmarks/speculative-2026-10-05/qwen38-code.json)).
+([qwen38-code.json](speculative-2026-10-05/qwen38-code.json)).
 The README's "20 tokens/s on short code" holds on macOS 27.0.1 (2026-10-01: 20.26).

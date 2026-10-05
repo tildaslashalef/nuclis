@@ -18,7 +18,7 @@
     32639
   ],
   "repetitions": 3,
-  "methodology": "See ../reference/reference-baseline.md. Greedy, seed 1, no prefix reuse, EOS ignored for the timed requests, one untimed warmup per length excluded from the means; rates are the server's own timings.",
+  "methodology": "See llama-cpp.md. Greedy, seed 1, no prefix reuse, EOS ignored for the timed requests, one untimed warmup per length excluded from the means; rates are the server's own timings.",
   "prompt_file_sha256": {
     "prompt-16384.json": "e8593ba7b0834d6969f0b270300b332a7c2eee79dbf73404da266ad5db3b8a64",
     "prompt-32639.json": "5771b1c7fdc1b7c10055db5fb04b90d38e1eec8e3298d24573f81d792fb3b26a",

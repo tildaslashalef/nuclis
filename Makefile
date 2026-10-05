@@ -178,10 +178,10 @@ validate: metal ## Validate the Qwen structural profile
 generate: metal ## Generate text: make generate PROMPT='...' BACKEND=cpu|metal ARGS='--max-tokens 64'
 	$(BIN) generate --backend $(BACKEND) --model "$(MODEL)" --prompt "$(PROMPT)" $(ARGS)
 
-bench: metal ## Repeated prefill/decode measurement (see docs/reference/bench.md)
+bench: metal ## Repeated prefill/decode measurement (see docs/benchmarks/README.md)
 	$(BIN) bench --backend $(BACKEND) --model "$(MODEL)" --prompt "$(PROMPT)" --max-tokens 64 --ctx-size 2048 $(ARGS)
 
-bench-profile: metal ## Per-kernel GPU time per token from GPU timestamps (diagnostic; see docs/reference/bench.md)
+bench-profile: metal ## Per-kernel GPU time per token from GPU timestamps (diagnostic; see docs/benchmarks/README.md)
 	$(BIN) bench --backend metal --model "$(MODEL)" --prompt "$(PROMPT)" --max-tokens 64 --ctx-size 2048 --profile $(ARGS)
 
 # CAPTURE=<substring> on bench-kernels, bench-matvec-rows, bench-attention:

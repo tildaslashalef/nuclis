@@ -77,9 +77,9 @@ Bonsai acceptance run (MODL-17, 2026-09-18) ran the workload harness
 against that server with `--reference-revision 5d80cff0…` (the harness
 otherwise insists on the mainline pin) and `--family qwen38`, the fork's
 revision recorded as the reference side of
-[reference-2026-09-18-bonsai.json](../benchmarks/reference-2026-09-18-bonsai.json)
+[reference-2026-09-18-bonsai.json](reference-2026-09-18-bonsai.json)
 and read from there by `nuclis-baseline.py` into the nuclis record
-([bench.md](bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+([benchmarks](README.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
 
 ## Run the workload
 
@@ -238,7 +238,7 @@ completed boundary workload, but does not pass our strict no-truncation check.
 The follow-up below leaves one token of margin (32,639 + 128) and verifies the
 flag, counts, and memory without weakening the guard.
 
-A compact [measurement record](../benchmarks/reference-2026-09-06.json) preserves
+A compact [measurement record](reference-2026-09-06.json) preserves
 all nine accepted timings, input-file hashes, and the flagged capacity result.
 Saved warm/warmup memory snapshots showed zero swap usage; they are not peak
 memory measurements. The reference process was no longer running when checked
@@ -274,7 +274,7 @@ snapshots and process RSS, not continuous peak GPU/unified-memory measurements.
 They do not establish zero-swap memory acceptance. Normal development activity,
 including Zig compilation during warmup, continued alongside this check.
 
-The [compact follow-up record](../benchmarks/reference-boundary-2026-09-06.json)
+The [compact follow-up record](reference-boundary-2026-09-06.json)
 retains both timings, explicit acceptance flags/counts, input and response hashes,
 and memory counters. Raw evidence is in
 `tests/fixtures/boundary-2026-09-06/`; device/allocation evidence is in

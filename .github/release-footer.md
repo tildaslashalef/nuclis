@@ -25,4 +25,4 @@ zig build -Doptimize=ReleaseSafe
 
 Every number in this repository was measured on one machine — an M4 Pro with
 48 GiB — and nothing has been run on other hardware. Full methodology is in
-[docs/reference/bench.md](https://github.com/tildaslashalef/nuclis/blob/main/docs/reference/bench.md).
+[docs/benchmarks/README.md](https://github.com/tildaslashalef/nuclis/blob/main/docs/benchmarks/README.md).

@@ -66,7 +66,7 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   PrismML fork `5d80cff` (release `prism-b10687-5d80cff`), the only decoder
   of Bonsai 2 27B's ternary encodings, beside it under
   `.reference/prism-llama.cpp` with the same recipe
-  ([reference-baseline.md § The second oracle](reference/reference-baseline.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
+  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
   The decision model's oracle is the `laya` 0.3.20 Python package in a venv
   at `.reference/laya-venv` (Python 3.12 through `uv`; the recipe
   heads `scripts/laya-reference.py`; `--subfolder multilingual` for the
@@ -84,10 +84,10 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   `tests/fixtures/reference-hello-comma`. Accepted reference warm rates
   (prefill/decode tok/s): 512 in = 89.19/9.66; 4K = 89.26/9.21;
   16K = 74.07/7.32; 32,639 = 67.28/6.71
-  ([reference-baseline.md](reference/reference-baseline.md)). nuclis on the
+  ([llama-cpp.md](benchmarks/llama-cpp.md)). nuclis on the
   same token arrays (ENGN-07 record, 2026-09-10): 512 = 90.45/10.62; 4K =
   83.70/10.20; 16K = 62.70/8.27; 32,639 = 49.55/7.55
-  ([bench.md § Acceptance runs](reference/bench.md#acceptance-runs)).
+  ([benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs)).
 - `make help` lists all tasks. Per-commit: `make check` (fmt-check, unit
   tests, `test-metal`, the gate manifest's validation; about 75 s). Per
   unit: `make verify`, the Metal tier of the gate registry
@@ -99,7 +99,7 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   `bench-matmul` with `ARGS=<tokens>`, `bench-matvec-split`,
   `bench-matvec-rows`, `bench-hadamard`, `bench-experts`,
   `bench-attention`, `bench-profile`, `trace`) measure and never gate;
-  [bench.md](reference/bench.md) says what each records. `generate
+  [benchmarks](benchmarks/README.md) says what each records. `generate
   --prompt-tokens <json>` feeds a token array untokenized, as `bench` does.
 
 ## Gates
@@ -355,7 +355,7 @@ about a minute per context instead of an eleven-minute 32K prefill:
   paired ratio holds while the absolute rates do not; `--cooldown 90`
   (seconds idle before each cell) gives cold-chip rates. This is how a
   catalogue verdict is set
-  ([bench.md § The re-priced speculative verdicts](reference/bench.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)).
+  ([benchmarks § The re-priced speculative verdicts](benchmarks/README.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)).
 
 **The keep rule** ([TODO.md](../TODO.md) while the decode-speed theme
 runs): keep a change when its median decode, or for a verify lever the
@@ -383,7 +383,7 @@ Local language reference: `doc/langref.html` inside the Zig install
 (`~/.local/opt/zig/stable/doc/langref.html` on the author's machine).
 
 The Metal backend additionally needs Apple's SDK/frameworks and the
-Objective-C compiler. The [reference baseline](reference/reference-baseline.md)
+Objective-C compiler. The [reference baseline](benchmarks/llama-cpp.md)
 compiles embedded shader source through Metal at runtime using Command Line
 Tools; a standalone `metal` compiler is needed only for an offline shader
 build path. Pin nuclis's tested macOS/SDK requirements during backend
@@ -637,7 +637,7 @@ bring-up file. The example:
 ```
 
 Each entry's `generation.speculative` / `generation.draft_length` is the
-family's measured verdict (`src/catalog.zig`; [bench.md § Definitions](reference/bench.md#definitions)),
+family's measured verdict (`src/catalog.zig`; [benchmarks § Definitions](benchmarks/README.md#definitions)),
 so a fresh file already turns speculation on for the family whose record
 pays and off for the rest; a user's global `generation.speculative` still
 applies to models with no entry, and `--speculative` overrides either.
@@ -1214,7 +1214,7 @@ build options.
   breaking axis: breaking changes bump the minor, compatible additions and
   fixes bump the patch.
 - **0.1.0** marks the spec's v0.1 acceptance (the 32K context record), measured
-  in [reference/bench.md § Acceptance runs](reference/bench.md#acceptance-runs).
+  in [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs).
   The tree stays on `0.1.0-dev` until that release is tagged, then returns to
   `0.2.0-dev` in the commit after the tag.
 - **A tag that exists on the remote never moves.** Once a release is published

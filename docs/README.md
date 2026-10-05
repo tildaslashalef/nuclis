@@ -17,13 +17,13 @@ agent.
 
 ## Reference
 
-Detailed engineering documents under [reference/](reference/):
+Detailed engineering documents:
 
 | Document | Purpose |
 | --- | --- |
 | [agent.md](app/agent.md) | Agent and terminal concepts behind `nuclis agent`, taught as they are implemented here |
 | [catalogue.md](models/catalogue.md) | Model artifact sources, Unsloth quantization conventions, companion files, the models directory |
-| [bench.md](reference/bench.md) | `bench`, `bench --profile`, `make bench-kernels`: timing definitions and methodology |
+| [benchmarks](benchmarks/README.md) | `bench`, `bench --profile`, `make bench-kernels`: timing definitions and methodology |
 | [cpu-reference.md](engine/cpu-reference.md) | CPU linear/vector/attention/recurrent references and numerical precision |
 | [gemma4.md](models/gemma4.md) | Gemma 4 12B: artifact facts with provenance, forward pass, tokenizer, CPU reference and Metal plan evidence, profile |
 | [sampling.md](engine/sampling.md) | Native CPU generation, streaming/sampling, full-model traces |
@@ -33,7 +33,7 @@ Detailed engineering documents under [reference/](reference/):
 | [models](models/README.md) | Bringing a new model family through the seam: order of work, gates, mistakes already made |
 | [quantization.md](engine/quantization.md) | Row decoders, ownership, pinned numerical fixtures |
 | [qwen3.8.md](models/qwen3.8.md) | Qwen profile constraints, weight bindings, validation evidence |
-| [reference-baseline.md](reference/reference-baseline.md) | Pinned llama.cpp baseline and comparison measurements |
+| [llama-cpp.md](benchmarks/llama-cpp.md) | Pinned llama.cpp baseline and comparison measurements |
 | [speculative-decoding.md](engine/speculative-decoding.md) | Speculative decoding: recovery and draft contracts, per-family draft sources, measurements |
 | [tokenizer.md](engine/tokenizer.md) | Native qwen35 encoding/decoding and vocabulary ownership |
 

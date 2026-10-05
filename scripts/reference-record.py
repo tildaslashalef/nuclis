@@ -73,7 +73,7 @@ def main():
         "output_tokens": config["generate"],
         "prompt_lengths": config["prompt_lengths"],
         "repetitions": config["repetitions"],
-        "methodology": "See ../reference/reference-baseline.md. Greedy, seed 1, no prefix reuse, EOS ignored for the timed "
+        "methodology": "See llama-cpp.md. Greedy, seed 1, no prefix reuse, EOS ignored for the timed "
         "requests, one untimed warmup per length excluded from the means; rates are the server's own timings.",
         "replayed_from": construction.get("replayed_from"),
         "server_template_equal": construction.get("server_template_equal"),

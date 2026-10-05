@@ -25,7 +25,7 @@ itself saves nothing. It pays as a **filter**: one question fanned out over
 many states the language model never reads (30 search hits, every log
 section, each diff hunk), where the language model's prefill is the cost
 avoided: nuclis prefills Qwen3.8-27B at 90.45 tok/s at 512 tokens on
-Metal ([bench.md § Acceptance runs](../reference/bench.md#acceptance-runs)), so each
+Metal ([benchmarks § Acceptance runs](../benchmarks/README.md#acceptance-runs)), so each
 512-token state it skips saves about 5.7 s of prefill and its context,
 against about 0.2 s for Laya to judge it on Metal, or 2.9 s on the CPU
 while the GPU stays free (below).

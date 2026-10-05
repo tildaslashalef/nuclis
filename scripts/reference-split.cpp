@@ -2,7 +2,7 @@
 // regex, straight from its `unicode_regex_split` (token ids cannot show
 // boundaries: BPE merges hide them). Input: strings separated by U+001E on
 // stdin; output: pieces separated by U+001F, records by U+001E. Build against
-// the reference checkout (docs/reference/reference-baseline.md):
+// the reference checkout (docs/benchmarks/llama-cpp.md):
 //
 //   R=.reference/llama.cpp
 //   clang++ -std=c++17 -O1 -I $R/src -I $R/include -I $R/ggml/include \

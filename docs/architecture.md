@@ -4,7 +4,7 @@ The map of the engine: what the pieces are, how a token flows through them,
 and where each idea lives so you can read the code next. Sections are short
 by design and end with **Read** pointers; the reasoning behind the design,
 with its measurements, is in [llm-guide.md](llm-guide.md), and the facts
-per component are in [reference/](reference/).
+per component are in the documents [README.md](README.md) lists.
 
 nuclis has two components: the engine library under `inference/`, and the
 executable under `src/`, which embeds the `generate`/`bench` CLI and the
@@ -430,7 +430,7 @@ flowchart LR
 
 **Read:** [development.md § Gates](development.md#gates) and
 [§ The record](development.md#the-record),
-[reference/bench.md](reference/bench.md), [guide/eval.md](guide/eval.md),
+[benchmarks](benchmarks/README.md), [guide/eval.md](guide/eval.md),
 `inference/metal-check.zig`.
 
 ## 9. Zig constructs this codebase leans on
@@ -523,7 +523,7 @@ Qwen3.8 decodes 1.04–1.15× the reference at every length and prefills
 level at 512, falling to 0.71× at 32K; the
 other families decode 0.71–0.84× and prefill 0.42–0.91×. The numbers are
 the README's [Results](../README.md#results), the record
-[bench.md § The benchmarks on macOS 27](reference/bench.md#the-benchmarks-on-macos-27-engn-21-2026-10-04).
+[benchmarks § The benchmarks on macOS 27](benchmarks/README.md#the-benchmarks-on-macos-27-engn-21-2026-10-04).
 
 Levers that were built, measured, and kept out, each with its table in the
 record: a multi-row matvec that wins only at 2–3 rows, a wider small-batch
@@ -535,7 +535,7 @@ whose verify grows with every drafted row (each row routes to its own
 experts) until it costs more than the accepted drafts save. The other
 entries speculate by default.
 
-**Read:** [reference/bench.md](reference/bench.md),
+**Read:** [benchmarks](benchmarks/README.md),
 [engine/metal-backend.md](engine/metal-backend.md),
 [engine/apple-gpu.md](engine/apple-gpu.md) (the GPU's counters on our kernels),
 [llm-guide.md § 13](llm-guide.md#13-the-matvec-that-reads-16-gb) and

@@ -7,7 +7,7 @@ accepted decisions, not status: what the tree does today is in the
 [TODO.md](../TODO.md), how it is built and measured in
 [development.md](development.md), how it is structured in
 [architecture.md](architecture.md), and the facts behind each component in
-[reference/](reference/). Numbers appear here only as acceptance criteria;
+the documents [README.md](README.md) lists. Numbers appear here only as acceptance criteria;
 the measurements that meet them live in the record they cite.
 
 *Must* is a requirement, *should* a strong default that a unit may depart
@@ -723,7 +723,7 @@ API lookup tool, and a second product surface.
   length of the reference workload **must** complete on its token budget
   with no swap growth, with headroom left for the operating system and
   the user's tools. The record is
-  [reference/bench.md § Acceptance runs](reference/bench.md#acceptance-runs).
+  [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs).
 - Weights stay quantized on the GPU path; prefill is chunked with planned
   scratch.
 - Claims are made against the pinned llama.cpp build on the exact token

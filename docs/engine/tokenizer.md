@@ -181,7 +181,7 @@ and retain no references after returning. Neither inserts special IDs.
 The byte alphabet is the GPT-2 byte-level mapping the vocabulary is stored in
 ([notices](../../THIRD_PARTY_NOTICES.md)).
 The scan-based merge core is an independent implementation, checked against the
-[pinned reference](../reference/reference-baseline.md) and synthetic ordering examples.
+[pinned reference](../benchmarks/llama-cpp.md) and synthetic ordering examples.
 
 ## Hugging Face `tokenizer.json`
 

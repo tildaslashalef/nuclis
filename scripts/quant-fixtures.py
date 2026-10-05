@@ -22,7 +22,7 @@ import subprocess
 
 REVISION = "7620399f58aebfd2196b74021f9581bcf7218cb9"
 # The PrismML fork at release prism-b10687-5d80cff: the only decoder of the
-# Prism-private ternary encodings (docs/reference/reference-baseline.md).
+# Prism-private ternary encodings (docs/benchmarks/llama-cpp.md).
 PRISM_REVISION = "5d80cff0b8cb9f2bf823cfc4e71e3abb97f290d6"
 
 

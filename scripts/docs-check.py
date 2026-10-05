@@ -140,9 +140,11 @@ def display(path):
     return posixpath.dirname(rel) if posixpath.basename(rel) == "README.md" else rel
 
 
-def rename_text(label, old, new):
-    """Link text naming `old` (by root path, docs path, or file name) renamed to `new`."""
+def rename_text(label, old, new, written=None):
+    """Link text naming `old` (by root path, docs path, file name, or the link's own
+    relative path `written` -> its rewritten form) renamed to `new`."""
     forms = [
+        *([written] if written else []),
         (old, "docs/" + display(new)),
         (old.removeprefix("docs/"), display(new)),
         (posixpath.basename(old), posixpath.basename(display(new)) or display(new)),
@@ -181,7 +183,7 @@ def rewrite_markdown(text, old_source, new_source, moves, anchor_moves):
             if span and new_target != old_target:
                 label = text[span[0] : span[1]]
                 parts.append(text[last : span[0]])
-                parts.append(rename_text(label, old_target, new_target))
+                parts.append(rename_text(label, old_target, new_target, (path, split_target(new)[0])))
                 last = span[1]
             parts.append(text[last:start])
             parts.append(new)

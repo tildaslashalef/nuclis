@@ -181,7 +181,7 @@ code from them is present in nuclis.
 
 - **llama.cpp** `7620399f58aebfd2196b74021f9581bcf7218cb9` (MIT) — GGUF format,
   quantization semantics, tokenizer behavior, Metal reference performance.
-  Built under `.reference/` by [docs/reference/reference-baseline.md](docs/reference/reference-baseline.md);
+  Built under `.reference/` by [docs/benchmarks/llama-cpp.md](docs/benchmarks/llama-cpp.md);
   `scripts/*.py` and `scripts/reference-generation.cpp` call its public API.
   Fixtures under `inference/src/**/fixtures/` and traces are outputs of
   running it, not copies of it.

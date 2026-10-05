@@ -37,11 +37,11 @@ the transcript will not survive.
   The companions (`mmproj`, `mtp`) go into the same table; the catalogue
   entry will need their digests.
 - Confirm the pinned llama.cpp reference (`7620399`,
-  [reference-baseline.md](../reference/reference-baseline.md)) loads and runs the file
+  [llama-cpp.md](../benchmarks/llama-cpp.md)) loads and runs the file
   (`llama-completion -ngl 99 -no-cnv`, then `--jinja --single-turn` for a
   chat answer). If it does not, there is no oracle and the unit stops here.
 
-## 1. Facts with provenance (`docs/reference/<family>.md`)
+## 1. Facts with provenance (`docs/models/<family>.md`)
 
 Read the file, not the model card. `scripts/gguf-inventory.py <file>
 --out inference/src/models/fixtures/<family>.json` is an independent
@@ -201,13 +201,13 @@ the reference's ids.
   (`scripts/reference-baseline.py --family <family> --output-dir
   .reference/<family>-<date> --prompt-lengths
   512,4096,16384,32639` against the server started with the
-  [reference recipe](../reference/reference-baseline.md#run-the-workload) at 32K),
+  [reference recipe](../benchmarks/llama-cpp.md#run-the-workload) at 32K),
   its token arrays committed under `tests/fixtures/run-<date>-<family>/`,
   a `docs/benchmarks/reference-<date>-<family>.json` summary, then
   `scripts/nuclis-baseline.py --run run-<date>-<family>
   --reference-records reference-<date>-<family>.json` (a `make
   baseline-<family>` target) and the table in
-  [bench.md](../reference/bench.md#acceptance-runs) with hardware, build, artifact,
+  [benchmarks](../benchmarks/README.md#acceptance-runs) with hardware, build, artifact,
   context, and methodology stated.
 
 ## 8. Close

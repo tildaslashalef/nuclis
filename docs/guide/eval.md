@@ -122,7 +122,7 @@ wikitext-2-raw `wiki.test.raw` (1,290,590 bytes, SHA-256 `173c87a5…`,
 fetched by `make eval-corpus`), eight windows of 512 (4,096 tokens, 2,040
 scored), F16 cache, Metal, Apple M4 Pro 48 GB, Zig 0.16.0 ReleaseSafe;
 llama.cpp `7620399` built with the recipe of
-[reference-baseline.md](../reference/reference-baseline.md) plus the `llama-perplexity`
+[llama-cpp.md](../benchmarks/llama-cpp.md) plus the `llama-perplexity`
 target.
 
 | Model (file) | nuclis | reference, per-token (pinned) | difference | reference, batched | nuclis eval time |

@@ -113,7 +113,7 @@ synchronous contract is what makes the following simple:
   own encoder and timed by its start/end stamps (nanoseconds, same timeline as
   `GPUStartTime`; measured). The per-dispatch encoders cost ~8 ms per token,
   reported as the gap between attributed and command-buffer time, so profiled
-  rates are diagnostic. Methodology and results: [bench.md](../reference/bench.md#per-kernel-profile).
+  rates are diagnostic. Methodology and results: [benchmarks](../benchmarks/README.md#per-kernel-profile).
 
 ## Kernels
 
@@ -456,7 +456,7 @@ Q4_K 200 / 179 / 200 GB/s on the three shapes above, Q5_K 256 / 251 /
 tok/s. The IQ4_XS kernel is now issue-bound on its table addressing
 ([apple-gpu.md](apple-gpu.md#nu_matvec_iq4_xs-on-qwens-merged-gate-shape-2026-10-03)).
 
-The in-model profile ([bench.md](../reference/bench.md#per-kernel-profile)) named the
+The in-model profile ([benchmarks](../benchmarks/README.md#per-kernel-profile)) named the
 limiter: on the same shape all four kernels take 0.8–0.9 ns per 256-value
 block, so Q4_K's lower GB/s is only its smaller block, not its access pattern.
 The kernels are bound by per-block instruction work shared by all four
@@ -541,7 +541,7 @@ the scratch, and the forcing API (`Backend.matvecSplits` /
 `matvecSegmentsSplits`, strict about split-capable encodings) stay as the
 measured fixture, the exactness of which `make test-metal` holds at 2/4/8
 splits against the F64 CPU reference. The sweep and its reading are in
-[bench.md § Split-K matvec sweep](../reference/bench.md#split-k-matvec-sweep-kern-15-2026-09-21);
+[benchmarks § Split-K matvec sweep](../benchmarks/README.md#split-k-matvec-sweep-kern-15-2026-09-21);
 the family-facing note in
 [muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19).
 
@@ -935,7 +935,7 @@ scale extraction, and integer-to-float conversions); and register
 footprint mattered through occupancy.
 
 `make bench` after the session, kernels unchanged: 10.64 tok/s decode
-([bench.md](../reference/bench.md)).
+([benchmarks](../benchmarks/README.md)).
 
 ## Prefill in chunks (ENGN-02)
 
@@ -1301,7 +1301,7 @@ acceptance bar (the best tile at 5 rows is Q5_K's 110 GB/s). Halving the
 activation reads did not pay for the wider tile's register pressure and
 longer per-step dependency chain; the 16×8 control stands and production
 routing is untouched (the two-row matvec routing included). The numbers are
-in [bench.md § Small-batch tile sweep](../reference/bench.md#small-batch-tile-sweep-kern-14-2026-09-20);
+in [benchmarks § Small-batch tile sweep](../benchmarks/README.md#small-batch-tile-sweep-kern-14-2026-09-20);
 the full-model verify latency is unchanged from the ENGN-15 quick pass
 (262–297 ms), since nothing routes to the candidate.
 
@@ -1452,7 +1452,7 @@ identical in both precisions. Half assumes |k|, |v| < 65,504 after the
 key norm and RoPE, checked like ENGN-05's activation assumption: through the
 generation check and the pinned prompts, never per element.
 
-Performance is in [bench.md § Observations](../reference/bench.md#observations-so-far)
+Performance is in [benchmarks § Observations](../benchmarks/README.md#observations-so-far)
 (KERN-07 rows).
 
 ## Flash-decoding attention (KERN-08)
@@ -1491,7 +1491,7 @@ shape at 257 visible (two splits, the second short), 1,021, 16,385 (64
 uneven splits), and 32,000 rows against the F64 CPU reference: F32 cache 2.2e-8 / 1.2e-8 / 7.5e-9 / 4.7e-9 max abs, F16 cache over the rounded rows 1.9e-8 / 1.3e-8 / 5.1e-9 / 4.2e-9 (bounds 2e-5 up to 1,021 rows and 1e-4 above); shape rejections (a group of 9, a width of 264, a short partial buffer, a short cache).
 Full model: `make gate NAME=qwen38-trace-f32` 129 files, max abs 6.1e-5 (was 1.22e-4: each row is now accumulated once in F32 rather than through a stored score), `make gate NAME=qwen38-trace-f16` 2.50e-2 / 1.9e-4 at the F16 tolerance, greedy unchanged. `test-generation --metal` unchanged
 (bit-identical sessions, snapshot round trip). Performance:
-[bench.md § Observations](../reference/bench.md#observations-so-far) (KERN-08 rows).
+[benchmarks § Observations](../benchmarks/README.md#observations-so-far) (KERN-08 rows).
 
 ## Few-query verify attention (KERN-21, 2026-09-30)
 
@@ -1633,7 +1633,7 @@ budget, F32 operands doubling the block costs. The row-split body stays as
 the control and as the 512-wide sibling.
 
 **Verdict: closed negative against its acceptance.** The sweep is in
-[bench.md § Prefill attention sweep](../reference/bench.md#prefill-attention-sweep-kern-16-2026-09-21).
+[benchmarks § Prefill attention sweep](../benchmarks/README.md#prefill-attention-sweep-kern-16-2026-09-21).
 At the 256-row prefill chunks the reuse body is 2–5 % ahead in F16 at
 4K–32K (−4.8 % at 16K, −3.2 % at 32,512) and level at 512, against the
 attention cut the unit's acceptance needed (prefill at 32,639 within 10 %
@@ -1690,7 +1690,7 @@ they replace and against `cpu.rmsNorm`/`cpu.rope` over the model widths
 the CPU). A fused `generate` on Qwen3.8-27B reproduces the greedy text.
 
 **Measured verdict.** Dispatch counts and decode rates are in
-[bench.md § Fused norm sweep](../reference/bench.md#fused-norm-sweep-kern-18-2026-09-21);
+[benchmarks § Fused norm sweep](../benchmarks/README.md#fused-norm-sweep-kern-18-2026-09-21);
 in brief, `bench --profile` reads 938.8 → 844.3 dispatches per step on
 Qwen, 882.2 → 693.2 on Gemma 4 12B, 922.9 → 743.8 on Muse (per decode step
 −96, −192, −182, the design counts; the profile averages dilute them with
@@ -1866,7 +1866,7 @@ since is named.
 - **Attention grid.** `Backend.attentionChunk` dispatches `query_heads ×
   ceil(count/32) × value_splits` threadgroups, so a small verify ran 24
   threadgroups per value split, each walking the whole visible cache, in a
-  32-row tile at least 75 % padding. The [prefill attention sweep](../reference/bench.md#prefill-attention-sweep-kern-16-2026-09-21)
+  32-row tile at least 75 % padding. The [prefill attention sweep](../benchmarks/README.md#prefill-attention-sweep-kern-16-2026-09-21)
   priced it at 8 rows, F16: 0.767 / 6.46 / 25.8 ms per layer at 512 / 4K /
   16K visible, the same at 1 row as at 8; over Qwen's 16 full-attention
   layers about 12 / 103 / 413 ms per verify, while single-row flash decoding
@@ -1887,8 +1887,8 @@ since is named.
   verify, and wrote each row's recurrent checkpoint inside the kernel (cost
   booked to verify, not to recover). Since: the per-token verify with a
   replay tape (DeltaNet 41 → 6 ms, recover 14 → 2–3 ms per 4-row batch at
-  4K; [bench.md § The DeltaNet replay tape](../reference/bench.md#the-deltanet-replay-tape-engn-19-2026-10-01)).
+  4K; [benchmarks § The DeltaNet replay tape](../benchmarks/README.md#the-deltanet-replay-tape-engn-19-2026-10-01)).
 - **Drafters differ.** Qwen's MTP proposals are serial forwards with a
-  private draft cache; [Muse's DFlash](../reference/bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)
+  private draft cache; [Muse's DFlash](../benchmarks/README.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)
   proposes differently and has no DeltaNet state to recover, so its
   economics do not transfer to Qwen.

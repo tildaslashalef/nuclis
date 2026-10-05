@@ -302,7 +302,7 @@ Gemma 4: 20 and 14; Muse Glimmer: 20 and 28). Default tests exercise committed f
 synthetic vocabularies only.
 
 Capture, with the reference built as in
-[reference-baseline.md](../reference/reference-baseline.md): start the server on the
+[llama-cpp.md](../benchmarks/llama-cpp.md): start the server on the
 artifact from the repository root (`--reasoning off` is the Qwen recipe's
 and does not affect `/apply-template`):
 

@@ -13,9 +13,9 @@ task abilities; it is not a second product.
 Read [docs/architecture.md](docs/architecture.md) for the stack overview and
 [docs/spec.md](docs/spec.md) for scope and acceptance criteria. Shared
 workflow and toolchain conventions live in
-[docs/development.md](docs/development.md); detailed reference documents
-(benchmarks, Metal backend, CPU reference, GGUF, prompt profile) live under
-[docs/reference/](docs/reference/). The plan and the log are described in
+[docs/development.md](docs/development.md); every other document is listed
+in [docs/README.md](docs/README.md), one folder per kind (`guide/`,
+`models/`, `engine/`, `app/`, `benchmarks/`). The plan and the log are described in
 the session protocol below.
 
 ## The session protocol
@@ -341,7 +341,7 @@ save the next reader the most time.
 - **Module doc (`//!`): a short orientation.** What the module is, where it
   sits, and the one or two facts needed to use or change it safely — roughly a
   dozen lines. Design history, format specifications, and teaching belong in
-  `docs/reference/` or `docs/llm-guide.md`; summarize and link, do not restate.
+  a document under `docs/` (see [docs/README.md](docs/README.md)) or `docs/llm-guide.md`; summarize and link, do not restate.
 - **Declarations (`///`): the contract.** One or two sentences: what it does,
   what it owns, what it may return. Rationale only where it is surprising.
 - **Inline (`//`): the non-obvious why, never the what.** If a comment restates

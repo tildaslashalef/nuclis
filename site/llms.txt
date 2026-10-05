@@ -10,7 +10,7 @@
 
 - [README](https://github.com/tildaslashalef/nuclis/blob/main/README.md): what it is, quick start, measured results
 - [Architecture](https://github.com/tildaslashalef/nuclis/blob/main/docs/architecture.md): how a token flows through the engine
-- [Benchmarks](https://github.com/tildaslashalef/nuclis/blob/main/docs/reference/bench.md): methodology and every record
+- [Benchmarks](https://github.com/tildaslashalef/nuclis/blob/main/docs/benchmarks/README.md): methodology and every record
 - [Decision API](https://github.com/tildaslashalef/nuclis/blob/main/docs/guide/api.md): `nuclis serve` routes and errors
 - [Releases](https://github.com/tildaslashalef/nuclis/releases): binaries, source and checksums
 

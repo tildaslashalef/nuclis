@@ -2,7 +2,7 @@
   "date": "2026-09-06",
   "reference_revision": "7620399f58aebfd2196b74021f9581bcf7218cb9",
   "model_sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
-  "methodology": "See ../reference/reference-baseline.md. Warmups excluded; capacity boundary flagged and excluded from accepted samples.",
+  "methodology": "See llama-cpp.md. Warmups excluded; capacity boundary flagged and excluded from accepted samples.",
   "hardware": "Apple M4 Pro, 12 CPU cores, 16 GPU cores, 48 GiB",
   "context": 32768,
   "output_tokens": 128,

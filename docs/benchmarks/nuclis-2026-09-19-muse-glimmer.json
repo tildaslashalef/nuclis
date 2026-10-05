@@ -5,7 +5,7 @@
   "purged_before_first_run": false,
   "started_at": "2026-09-19T08:15:55+00:00",
   "finished_at": "2026-09-19T08:57:51+00:00",
-  "methodology": "See ../reference/bench.md#acceptance-runs and ../reference/reference-baseline.md. Each run feeds the reference harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident model pages).",
+  "methodology": "See README.md#acceptance-runs and llama-cpp.md. Each run feeds the reference harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident model pages).",
   "nuclis_version": "nuclis 0.2.0-dev",
   "git_revision": "bbac7acaa96a6ebf732dac371289493576879e92",
   "git_dirty": true,

@@ -23,7 +23,7 @@ unless a row names a measurement.
 | --- | --- | --- |
 | GPU | Apple M4 Pro, 16 cores, Apple family 9 (not 10), Metal 4 | `supportsFamily`, `system_profiler` |
 | Unified memory | 48 GiB; `recommendedMaxWorkingSetSize` 40.2 GB; `maxBufferLength` 30.2 GB | `MTLDevice` |
-| Memory bandwidth | 273 GB/s published; best kernel alone 248 GB/s (Q6_K matvec), a Qwen decode step about 63 % of peak | Apple; [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec), [bench.md](../reference/bench.md#the-decode-speed-baseline-engn-18-2026-09-30) |
+| Memory bandwidth | 273 GB/s published; best kernel alone 248 GB/s (Q6_K matvec), a Qwen decode step about 63 % of peak | Apple; [metal-backend.md § Specialized matvec](metal-backend.md#specialized-matvec), [benchmarks](../benchmarks/README.md#the-decode-speed-baseline-engn-18-2026-09-30) |
 | SIMD width | 32 threads, every pipeline | `threadExecutionWidth` (`nuclis bench --kernel-stats`) |
 | Threads per threadgroup | 1,024; every pipeline keeps the full 1,024 (below) | `maxThreadsPerThreadgroup`, `--kernel-stats` |
 | Threadgroup memory | 32 KiB per threadgroup; occupancy falls off a cliff between 16 and 24 KB per group (the 64 × 64 prefill tile fits only with half operands); our largest static use is `nu_delta_chunk`, 28,160 B | `maxThreadgroupMemoryLength`; measured in [metal-backend.md § Kernels](metal-backend.md#kernels) (ENGN-05); `--kernel-stats` |

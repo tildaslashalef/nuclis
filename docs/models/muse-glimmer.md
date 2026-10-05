@@ -421,7 +421,7 @@ measured fixture and the exactness gates. The remaining per-family lever is
 per-block arithmetic on the Q4_K kernels, and the unit's acceptance — the two row-poor shapes ≥ 190 GB/s and
 Muse decode at 512 ≥ 10.5 tok/s — was not met, so the MODL-13 acceptance
 record above stays the current one. The sweep is
-[bench.md § Split-K matvec sweep](../reference/bench.md#split-k-matvec-sweep-kern-15-2026-09-21);
+[benchmarks § Split-K matvec sweep](../benchmarks/README.md#split-k-matvec-sweep-kern-15-2026-09-21);
 the kernel note is
 [metal-backend.md § Split-K](../engine/metal-backend.md#split-k-kern-15-2026-09-21-closed-negative).
 
@@ -436,7 +436,7 @@ day: the Metal plan matches the traces in both cache precisions, passes
 the generation check, and runs the file at 9.9 tok/s. MODL-13 closed the
 same day with the profile (`profiles/muse_glimmer.zig`, the channel-grammar
 decoder, the `high` effort), the catalogue pin, and the acceptance record
-([bench.md](../reference/bench.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19):
+([benchmarks](../benchmarks/README.md#muse-glimmer-30b-acceptance-record-modl-13-2026-09-19):
 9.60 tok/s decode at 512 tokens, 6.62 at 32,639, against the reference's
 13.69 and 9.98), and AGNT-10 with the ATEM tool protocol
 ([tool-calling.md](../engine/tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).
@@ -445,6 +445,6 @@ in [TODO.md](../../TODO.md)). The DFlash drafter closed in MODL-20
 (2026-09-21): the CPU reference and its pinned trace in session 1, the
 Metal plan and the acceptance record in session 2 — the pair measures
 1.163–1.234× at draft lengths 4, 8, and 15
-([bench.md § The Muse Glimmer DFlash draft pair](../reference/bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21);
+([benchmarks § The Muse Glimmer DFlash draft pair](../benchmarks/README.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21);
 facts in
 [speculative-decoding.md § The Muse Glimmer DFlash drafter](../engine/speculative-decoding.md#the-muse-glimmer-dflash-drafter-modl-20)).

@@ -152,7 +152,7 @@ same token is produced from a 2 KB readback instead of 1 MB of logits:
   reports `gpu_topk_fallbacks`; `bench` shows a per-run fallback column.
 - The `--logits` option needs the full vector and therefore keeps the
   reference path; comparing a `--logits` run with a plain run at the same
-  seed is the end-to-end equivalence check (recorded in [bench.md](../reference/bench.md)).
+  seed is the end-to-end equivalence check (recorded in [benchmarks](../benchmarks/README.md)).
 
 Greedy decoding with a penalty active takes the same device argmax, after
 `nu_penalize`; the raw logits are only read back when a full vector was
@@ -217,7 +217,7 @@ across tokens; malformed bytes and an incomplete character at termination become
 U+FFFD. JSON (schema 2) buffers the result and includes backend, sampling
 settings, seed, prompt count, exact generated IDs, text, `stop_reason`
 (`eos`, `token_budget`, `context_limit`, or `cancelled`), and load/prefill/first-token/decode
-milliseconds with GPU busy time on Metal; definitions are in [bench.md](../reference/bench.md).
+milliseconds with GPU busy time on Metal; definitions are in [benchmarks](../benchmarks/README.md).
 Token IDs preserve information lost by text presentation.
 
 Cancellation is checked at each layer boundary through the observer's `check`
@@ -249,7 +249,7 @@ information; keep them in ignored local storage. Later generated-token steps
 produce layer traces too, but do not overwrite the initial prompt logits file.
 
 The reference helper requires the pinned checkout from
-[reference-baseline.md](../reference/reference-baseline.md). It uses public APIs and selects
+[llama-cpp.md](../benchmarks/llama-cpp.md). It uses public APIs and selects
 GPU offload, F32 KV, disabled flash attention, and one token per decode call.
 It refuses to run without a GPU. Build against the relocated checkout:
 

@@ -417,7 +417,7 @@ def main():
         "purged_before_first_run": args.purge,
         "started_at": started,
         "finished_at": timestamp(),
-        "methodology": "See ../reference/bench.md#acceptance-runs and ../reference/reference-baseline.md. Each run feeds the reference "
+        "methodology": "See README.md#acceptance-runs and llama-cpp.md. Each run feeds the reference "
         "harness's exact token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a "
         "fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident "
         "memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident "

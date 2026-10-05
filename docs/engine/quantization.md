@@ -149,7 +149,7 @@ zig build test
 ```
 
 To regenerate on macOS, build the pinned reference following
-[reference-baseline.md](../reference/reference-baseline.md), then run:
+[llama-cpp.md](../benchmarks/llama-cpp.md), then run:
 
 ```sh
 python3 scripts/quant-fixtures.py
