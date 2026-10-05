@@ -2532,6 +2532,7 @@ Against today's reference:
 | 32,639 | 7.19 / 9.38 | 0.77× | 59.59 / 75.43 | 0.79× |
 
 The largest gain of the night: decode +9 to +22 % over 2026-09, from
-0.70× of the reference at 512 to 0.82×; the dense Q4_K matvecs it shares
-with Qwen (KERN-23) carry it. The 4,096 step drifts as on the other slow
+0.70× of the reference at 512 to 0.82×. Its tree moved from `2026-09-19`'s
+to after KERN-23's matvec work, which Qwen's +9.9 % also reflects; the
+share due to the OS was not separated. The 4,096 step drifts as on the other slow
 dense runs (10.96 → 9.90 → 9.40). Peak RSS 1.8 GiB, footprint 2.1 GiB.
