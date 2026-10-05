@@ -15,19 +15,17 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-ENGN-21 session 1 is under way (2026-10-04, from 20:01). Done: steps 1–2,
-and step 3 for all five families (reference records
-`docs/benchmarks/reference-2026-10-04-*.json`, sections in `bench.md` §
-The benchmarks on macOS 27; E4B's arrays in
-`tests/fixtures/run-2026-10-04-gemma4-e4b/`). Muse's 4,096 row was
-disturbed and is re-run alone (`reference-2026-10-04-muse-glimmer-4k.json`,
-listed first in `muse/acceptance`, whose rows now take the first record
-holding a length). Next: step 4, the nuclis runs, driven by
-`.zig-cache/bench/nuclis-family.sh <cooldown> <entry>` (and
-`reference-family.sh`, `rows.py` beside it). A site preview with four
-lengths and a coloured table is on branch `site-bench-table` (worktree
-`../nuclis-site`, September figures) awaiting the user's review; it
-becomes step 8.
+ENGN-21 session 1 is done (2026-10-04 20:01 → 10-05 04:54): every
+family measured on both engines at the four lengths, three requests each,
+and the speculation pairs; all records under `docs/benchmarks/`
+(`reference-2026-10-04-*`, `nuclis-2026-10-04.json`,
+`nuclis-2026-10-05-*`, `speculative-2026-10-05/`), every number in
+`bench.md` § The benchmarks on macOS 27 with its caveats (the 4K step on
+the slow dense models drifts as the chip heats; one slow 16K request on
+each Gemma run; Muse's 4K reference re-run). Next: session 2, step 7.
+The site preview (branch `site-bench-table`, worktree `../nuclis-site`:
+four lengths, a coloured table grouped by phase, E4B) now carries these
+numbers and waits for the user's review; step 8 merges it.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
@@ -137,6 +135,11 @@ open, display sleep off; note the start state (`pmset -g batt`,
    new dated section per record, older records kept) and are committed.
    Long jobs run in the background; their output stays out of the
    context (`tail`, `grep`).
+
+*Session 1 delivered* steps 1–6 as planned, plus: the reference takes
+the first record holding a length (`nuclis-baseline.py`
+`reference_rows`), so Muse's 4K re-run replaces that row; records crossing
+midnight are dated 2026-10-05.
 
 **Session 2: publish.**
 
