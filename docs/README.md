@@ -13,7 +13,7 @@ agent.
 | [architecture.md](architecture.md) | **Start here.** The engine stack in ten short sections with diagrams |
 | [development.md](development.md) | Toolchain, build/test commands, user directories, versioning, conventions |
 | [llm-guide.md](llm-guide.md) | LLM and inference concepts, taught as they are implemented here |
-| [engineering-log.md](engineering-log.md) | Dated outcomes and evidence of every closed unit |
+| [worklog.md](worklog.md) | Dated outcomes and evidence of every closed unit |
 
 ## Reference
 

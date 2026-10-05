@@ -3,7 +3,7 @@
 This file is the only progress tracker. It holds **unfinished work only**:
 where we are, what is next, and the design of each remaining unit. When a
 unit closes, its outcome moves to
-[docs/engineering-log.md](docs/engineering-log.md) and
+[docs/worklog.md](docs/worklog.md) and
 its section is deleted here; when the last unit closes, this file is emptied
 back to this header. Requirements live in [docs/spec.md](docs/spec.md); the
 engine map in [docs/architecture.md](docs/architecture.md); how to build,

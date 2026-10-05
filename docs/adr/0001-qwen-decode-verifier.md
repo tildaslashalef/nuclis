@@ -361,6 +361,6 @@ is the first candidate).
 
 ## Related
 
-- [Engineering log](../engineering-log.md#repo-24--qwen-decode-at-20-tokenss-evidence-and-experiment-proposal-2026-09-30).
+- [Engineering log](../worklog.md#repo-24--qwen-decode-at-20-tokenss-evidence-and-experiment-proposal-2026-09-30).
 - [Speculative recovery and draft sources](../reference/speculative-decoding.md).
 - [Metal execution and kernel experiments](../reference/metal-backend.md).

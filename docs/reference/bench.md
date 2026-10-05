@@ -1058,7 +1058,7 @@ each at `draft_length` 4.
 The second speculative-decoding record, taken after the whole-stack replay
 was replaced by per-row recurrent checkpoints
 ([speculative-decoding.md § Recovery by accepted length](speculative-decoding.md#recovery-by-accepted-length-engn-14-2026-09-20),
-the engineering log; replaced by the verify tape, [session.md § Pending rows and the verify tape](session.md#pending-rows-and-the-verify-tape-engn-19)). Same
+the worklog; replaced by the verify tape, [session.md § Pending rows and the verify tape](session.md#pending-rows-and-the-verify-tape-engn-19)). Same
 methodology, corpus, prompts, sampling, draft lengths, context, and
 precision as the ENGN-12 record above; `make workload NAME='qwen38/spec/*'`
 (then `scripts/nuclis-speculative.py`, now the `qwen38/spec/*` workloads; reports under

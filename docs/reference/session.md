@@ -182,7 +182,7 @@ steps and exercises the refusals.
 
 This replaced ENGN-14's row checkpoints (a 150 MB recurrent copy per batch
 row, 1.25 GB for eight, written by the chunk kernel and restored by a host
-copy); see the [engineering log](../engineering-log.md) for both.
+copy); see the [worklog](../worklog.md) for both.
 
 ## The agent's token cache (AGNT-19)
 

@@ -220,7 +220,7 @@ curl -s localhost:8000/v1/systemone -d '{"model": "clef-flash",
   each model family's facts.
 - [docs/llm-guide.md](docs/llm-guide.md): the concepts behind each
   component, written as they were built.
-- [docs/engineering-log.md](docs/engineering-log.md): every closed unit of
+- [docs/worklog.md](docs/worklog.md): every closed unit of
   work and its evidence.
 
 ## Design rules

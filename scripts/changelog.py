@@ -3,7 +3,7 @@
 
 A section is: the hand-written highlights, one line per unit the release's
 commits name (`AREA-NN` in the subject; the title is the unit's heading in
-docs/engineering-log.md, linked at the tag), breaking changes, feat/fix/perf
+docs/worklog.md, linked at the tag), breaking changes, feat/fix/perf
 commits outside any unit, every commit folded into a `<details>` block, and
 a compare link. Commits are the non-merge ones since the previous tag. If
 CHANGELOG.md does not exist it is created; otherwise the section is inserted
@@ -20,15 +20,20 @@ import datetime
 import pathlib
 import re
 import subprocess
+import sys
+import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / "CHANGELOG.md"
-LOG = "docs/engineering-log.md"
+LOG = "docs/worklog.md"
+# The log's path before the documents were restructured; tags up to v0.5.0 hold it.
+OLD_LOG = "docs/engineering-log.md"
 TODO = "TODO.md"
 HEADER_RE = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?: (?P<subject>.+)$")
 BREAKING_FOOTER_RE = re.compile(r"^BREAKING CHANGE: (.+)$", re.MULTILINE)
 UNIT_RE = re.compile(r"\b([A-Z]{4}-\d{2})\b")
-ROW_RE = re.compile(r"^\| ([A-Z]{4}-\d{2}) \| (.+?) \| \d{4}-\d{2}-\d{2} \|$", re.MULTILINE)
+# A table row; its identifier is bare in older logs and links its entry since the restructure.
+ROW_RE = re.compile(r"^\| (?:\[)?([A-Z]{4}-\d{2})(?:\]\(#[\w-]+\))? \| (.+?) \| \d{4}-\d{2}-\d{2} \|$", re.MULTILINE)
 HEADING_RE = re.compile(r"^#{2,4} ([A-Z]{4}-\d{2}) — (.+)$", re.MULTILINE)
 SUFFIX_RE = re.compile(r" \([^()]*\)$")
 OUTSIDE_TYPES = ("feat", "fix", "perf")
@@ -95,7 +100,11 @@ def closed_units(ref):
     The table is the complete registry; entries written with a heading give
     the shorter title and an anchor.
     """
-    text = read_at(ref, LOG)
+    return parse_units(read_at(ref, LOG) or read_at(ref, OLD_LOG))
+
+
+def parse_units(text):
+    """{id: (title, anchor or None)} from a log's table rows and entry headings."""
     units: dict[str, tuple[str, str | None]] = {unit: (title, None) for unit, title in ROW_RE.findall(text)}
     for unit, rest in HEADING_RE.findall(text):
         units[unit] = (SUFFIX_RE.sub("", rest), slug(f"{unit} — {rest}"))
@@ -193,7 +202,30 @@ def write(section):
     CHANGELOG.write_text(new)
 
 
+class SelfTest(unittest.TestCase):
+    def test_rows_bare_and_linked(self):
+        text = (
+            "| REPO-07 | The roadmap retired | 2026-09-10 |\n"
+            "| [ENGN-21](#engn-21--the-benchmarks) | The benchmarks, measured again | 2026-10-05 |\n"
+        )
+        units = parse_units(text)
+        self.assertEqual(units["REPO-07"], ("The roadmap retired", None))
+        self.assertEqual(units["ENGN-21"], ("The benchmarks, measured again", None))
+
+    def test_heading_gives_title_and_anchor(self):
+        units = parse_units("| ENGN-21 | long | 2026-10-05 |\n\n## ENGN-21 — The benchmarks (2026-10-05)\n")
+        self.assertEqual(units["ENGN-21"], ("The benchmarks", "engn-21--the-benchmarks-2026-10-05"))
+
+    def test_a_tag_before_the_rename_reads_the_old_path(self):
+        # v0.5.0 predates docs/worklog.md; its log is found at the old path.
+        units = closed_units("v0.5.0")
+        self.assertIn("REPO-31", units)
+
+
 def main():
+    if "--self-test" in sys.argv:
+        sys.argv = sys.argv[:1]
+        unittest.main(module=__name__, verbosity=1)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("version", help="the release tag, e.g. v0.6.0")
     parser.add_argument("--date", default=datetime.date.today().isoformat())

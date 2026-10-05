@@ -11,171 +11,171 @@ never rewritten, and numbers are as measured on the stated workload (see
 
 | Unit | Title | Closed |
 | --- | --- | --- |
-| KERN-01 | Specialized matvec for Q4_K, Q5_K, Q6_K, IQ4_XS | 2026-09-07 |
-| KERN-02 | Per-kernel GPU profile, `Observer` check/layer split | 2026-09-07 |
-| KERN-03 | Specialized matvec for Q3_K, IQ3_S (IQ4_NL deferred) | 2026-09-08 |
-| KERN-04 | Merged projections via a segment table | 2026-09-08 |
-| KERN-05 | Per-block cost of the specialized kernels | 2026-09-08 |
-| APPS-01 | `--think` reasoning effort | 2026-09-08 |
-| APPS-02 | `nuclis chat` playground | 2026-09-08 |
-| REPO-01 | Repository restructure: standalone `src/` + `inference/` | 2026-09-08 |
-| REPO-02 | Reference oracle promoted to committed `tests/fixtures/` | 2026-09-08 |
-| REPO-03 | Version wiring: `nuclis --version` from the manifest | 2026-09-08 |
-| KERN-06 | GPU partial top-k for sampled decoding | 2026-09-08 |
-| ENGN-01 | Library engine API: the engine seam moved into `inference` | 2026-09-08 |
-| ENGN-02 | Chunked prefill with the batched matmul | 2026-09-08 |
-| MODL-01 | Qwen3.8 sampling profiles, `min_p`, penalties | 2026-09-08 |
-| ENGN-03 | Causal tiled attention for prefill | 2026-09-09 |
-| ENGN-04 | Chunkwise DeltaNet (WY form) | 2026-09-09 |
-| APPS-03 | Engine configuration `~/.nuclis/nuclis.json` | 2026-09-09 |
-| ENGN-05 | Matmul tile ceiling: specialized half-operand 64×64 tiles | 2026-09-09 |
-| KERN-07 | F16 KV cache as a session layout option | 2026-09-10 |
-| ENGN-06 | Session snapshot and restore | 2026-09-10 |
-| KERN-08 | Flash-decoding attention | 2026-09-10 |
-| ENGN-07 | 32K acceptance run and benchmark record | 2026-09-10 |
-| ENGN-08 | Long-context prefill attention | 2026-09-10 |
-| MODL-02 | Model download through the `huggingface` package | 2026-09-11 |
-| MODL-03 | Models directory, catalogue, and registry | 2026-09-11 |
-| APPS-04 | Styled command output | 2026-09-11 |
-| APPS-05 | `config init` registers the catalogue; `chat` → `agent` | 2026-09-11 |
-| MODL-04 | Adapter registry | 2026-09-11 |
-| MODL-05 | Gemma 4 12B facts, binding, CPU reference, tokenizer | 2026-09-11 |
-| MODL-06 | Gemma 4 12B Metal plan | 2026-09-11 |
-| MODL-07 | Gemma 4 12B profile, catalogue, acceptance, new-model guide | 2026-09-12 |
-| MODL-08 | Q4_0 path and the QAT catalogue entry | 2026-09-12 |
-| TERM-01 | Agent terminal surface | 2026-09-12 |
-| AGNT-01 | Completion events and the tool seam | 2026-09-13 / 2026-09-14 |
-| TERM-02 | Grapheme-correct width, wrapping, and cursor motion | 2026-09-14 |
-| TERM-03 | OSC 8 hyperlinks in markdown | 2026-09-14 |
-| TERM-04 | Focus tracking and turn-complete notifications | 2026-09-14 |
-| AGNT-02 | The agent loop: state machine, provisional parser, read tools | 2026-09-14 |
-| AGNT-03 | Read tools and `bash` | 2026-09-14 |
-| AGNT-04 | Mutations and diffs | 2026-09-14 |
-| AGNT-05 | Qwen tool rendering and pinned fixtures | 2026-09-14 |
-| AGNT-06 | Tool-call decoding and the profile-driven loop | 2026-09-14 |
-| REPO-04 | Comment and identifier hygiene | 2026-09-14 |
-| AGNT-07 | Polish, resume, and the agent plan closed | 2026-09-14 |
-| TERM-05 | Two-row tool lines: call and detail | 2026-09-15 |
-| AGNT-08 | Context budget: bounded results, in-turn elision, honest failure | 2026-09-15 |
-| TERM-06 | Per-step thinking blocks with their own duration | 2026-09-15 |
-| ENGN-09 | Primed sessions: prefill the prefix at startup, restore it on new | 2026-09-15 |
-| APPS-06 | `nuclis agent ls` and `--resume` to the newest session | 2026-09-16 |
-| AGNT-09 | Gemma 4 native tool calling | 2026-09-16 |
-| MODL-14 | Catalogue entries ahead of their adapters; roadmap reordered around speculation | 2026-09-17 |
-| TERM-07 | Rows released by a shrinking live region are reused, not left as gaps | 2026-09-17 |
-| APPS-07 | `--prompt-profile` and the registry's `profile`; the template-alias gate | 2026-09-17 |
-| APPS-08 | `model pull`: a leaked path per file and a leading slash in the sidecar's file name | 2026-09-17 |
-| APPS-09 | `config set`, `model pull --register`, registry names in `model ls` | 2026-09-17 |
-| AGNT-11 | A truncated tool call no longer bricks the session; reopened thought channels; copied bracket pieces | 2026-09-17 |
-| APPS-10 | `model ls` as one aligned grid | 2026-09-17 |
-| TERM-08 | The welcome: ASCII wordmark and session facts; the model's name on the status bar | 2026-09-17 |
-| KERN-09 | Expert routing and gathered expert kernels (decode and prefill) | 2026-09-17 / 2026-09-18 |
-| MODL-09 | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2026-09-18 (two sessions) |
-| MODL-10 | Gemma 4 26B-A4B: catalogue verdict, acceptance record, agent check | 2026-09-18 |
-| MODL-15 | Bonsai 2 27B accepted ahead of Muse: artifact pinned, facts read, three units planned | 2026-09-18 |
-| MODL-16 | Bonsai 2 27B: oracle, facts, ternary encodings, Hadamard transform, CPU reference | 2026-09-18 |
-| KERN-10 | Ternary matvec and matmul tiles, the Walsh-Hadamard kernel | 2026-09-18 |
-| APPS-11 | `model pull`: a verified file whose encoding this build does not store keeps its sidecar | 2026-09-18 |
-| REPO-05 | README for a public repository: project status, contributions, disclosure | 2026-09-18 |
-| MODL-17 | Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance | 2026-09-18 |
-| AGNT-12 | An empty tool result no longer aborts the turn | 2026-09-18 |
-| APPS-12 | The default context window is 16K | 2026-09-18 |
-| TERM-09 | A step that answers and then calls a tool no longer holds the turn in the live region | 2026-09-18 |
-| MODL-11 | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2026-09-19 |
-| MODL-12 | Muse Glimmer 30B: Metal plan | 2026-09-19 |
-| MODL-13 | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 2026-09-19 |
-| AGNT-10 | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 2026-09-19 |
-| ENGN-10 | Muse Glimmer decode gap: the experiments accepted into the performance theme | 2026-09-19 |
-| KERN-11 | Small-chunk prefill matmul near the weight-bandwidth floor | 2026-09-19 |
-| ENGN-11 | Speculative state recovery: checkpoint, rewind, truncate, recover | 2026-09-19 |
-| MODL-18 | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2026-09-20 |
-| APPS-13 | The configuration section is `generation`, not `generate` | 2026-09-20 |
-| ENGN-12 | Batched verification, speculative generation (greedy and sampled), the switch and the draft length, the benchmark record | 2026-09-20 |
-| REPO-07 | The roadmap file retired; themes are agreed in session and, when architectural, recorded as ADRs on request | 2026-09-20 |
+| [KERN-01](#kern-01--specialized-matvec-for-q4_k-q5_k-q6_k-iq4_xs-2026-09-07) | Specialized matvec for Q4_K, Q5_K, Q6_K, IQ4_XS | 2026-09-07 |
+| [KERN-02](#kern-02--per-kernel-gpu-profile-observer-checklayer-split-2026-09-07) | Per-kernel GPU profile, `Observer` check/layer split | 2026-09-07 |
+| [KERN-03](#kern-03--specialized-matvec-for-q3_k-iq3_s-iq4_nl-deferred-2026-09-08) | Specialized matvec for Q3_K, IQ3_S (IQ4_NL deferred) | 2026-09-08 |
+| [KERN-04](#kern-04--merged-projections-via-a-segment-table-2026-09-08) | Merged projections via a segment table | 2026-09-08 |
+| [KERN-05](#kern-05--per-block-cost-of-the-specialized-kernels-2026-09-08) | Per-block cost of the specialized kernels | 2026-09-08 |
+| [APPS-01](#apps-01----think-reasoning-effort-2026-09-08) | `--think` reasoning effort | 2026-09-08 |
+| [APPS-02](#apps-02--nuclis-chat-playground-2026-09-08) | `nuclis chat` playground | 2026-09-08 |
+| [REPO-01](#repo-01--repository-restructure-standalone-src--inference-2026-09-08) | Repository restructure: standalone `src/` + `inference/` | 2026-09-08 |
+| [REPO-02](#repo-02--reference-oracle-promoted-to-committed-testsfixtures-2026-09-08) | Reference oracle promoted to committed `tests/fixtures/` | 2026-09-08 |
+| [REPO-03](#repo-03--version-wiring-nuclis---version-from-the-manifest-2026-09-08) | Version wiring: `nuclis --version` from the manifest | 2026-09-08 |
+| [KERN-06](#kern-06--gpu-partial-top-k-for-sampled-decoding-2026-09-08) | GPU partial top-k for sampled decoding | 2026-09-08 |
+| [ENGN-01](#engn-01--library-engine-api-the-engine-seam-moved-into-inference-2026-09-08) | Library engine API: the engine seam moved into `inference` | 2026-09-08 |
+| [ENGN-02](#engn-02--chunked-prefill-with-the-batched-matmul-2026-09-08) | Chunked prefill with the batched matmul | 2026-09-08 |
+| [MODL-01](#modl-01--qwen38-sampling-profiles-min_p-penalties-2026-09-08) | Qwen3.8 sampling profiles, `min_p`, penalties | 2026-09-08 |
+| [ENGN-03](#engn-03--causal-tiled-attention-for-prefill-2026-09-09) | Causal tiled attention for prefill | 2026-09-09 |
+| [ENGN-04](#engn-04--chunkwise-deltanet-wy-form-2026-09-09) | Chunkwise DeltaNet (WY form) | 2026-09-09 |
+| [APPS-03](#apps-03--engine-configuration-nuclisnuclisjson-2026-09-09) | Engine configuration `~/.nuclis/nuclis.json` | 2026-09-09 |
+| [ENGN-05](#engn-05--matmul-tile-ceiling-specialized-half-operand-6464-tiles-2026-09-09) | Matmul tile ceiling: specialized half-operand 64×64 tiles | 2026-09-09 |
+| [KERN-07](#kern-07--f16-kv-cache-as-a-session-layout-option-2026-09-10) | F16 KV cache as a session layout option | 2026-09-10 |
+| [ENGN-06](#engn-06--session-snapshot-and-restore-2026-09-10) | Session snapshot and restore | 2026-09-10 |
+| [KERN-08](#kern-08--flash-decoding-attention-2026-09-10) | Flash-decoding attention | 2026-09-10 |
+| [ENGN-07](#engn-07--32k-acceptance-run-and-benchmark-record-2026-09-10) | 32K acceptance run and benchmark record | 2026-09-10 |
+| [ENGN-08](#engn-08--long-context-prefill-attention-2026-09-10) | Long-context prefill attention | 2026-09-10 |
+| [MODL-02](#modl-02--model-download-through-the-huggingface-package-2026-09-11) | Model download through the `huggingface` package | 2026-09-11 |
+| [MODL-03](#modl-03--models-directory-catalogue-and-registry-2026-09-11) | Models directory, catalogue, and registry | 2026-09-11 |
+| [APPS-04](#apps-04--styled-command-output-2026-09-11) | Styled command output | 2026-09-11 |
+| [APPS-05](#apps-05--config-init-registers-the-catalogue-chat--agent-2026-09-11) | `config init` registers the catalogue; `chat` → `agent` | 2026-09-11 |
+| [MODL-04](#modl-04--adapter-registry-2026-09-11) | Adapter registry | 2026-09-11 |
+| [MODL-05](#modl-05--gemma-4-12b-facts-binding-cpu-reference-tokenizer-2026-09-11) | Gemma 4 12B facts, binding, CPU reference, tokenizer | 2026-09-11 |
+| [MODL-06](#modl-06--gemma-4-12b-metal-plan-2026-09-11) | Gemma 4 12B Metal plan | 2026-09-11 |
+| [MODL-07](#modl-07--gemma-4-12b-profile-catalogue-acceptance-new-model-guide-2026-09-12) | Gemma 4 12B profile, catalogue, acceptance, new-model guide | 2026-09-12 |
+| [MODL-08](#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12) | Q4_0 path and the QAT catalogue entry | 2026-09-12 |
+| [TERM-01](#term-01--agent-terminal-surface-2026-09-12) | Agent terminal surface | 2026-09-12 |
+| [AGNT-01](#agnt-01--completion-events-and-the-tool-seam-2026-09-13--2026-09-14) | Completion events and the tool seam | 2026-09-13 / 2026-09-14 |
+| [TERM-02](#term-02--grapheme-correct-width-wrapping-and-cursor-motion-2026-09-14) | Grapheme-correct width, wrapping, and cursor motion | 2026-09-14 |
+| [TERM-03](#term-03--osc-8-hyperlinks-in-markdown-2026-09-14) | OSC 8 hyperlinks in markdown | 2026-09-14 |
+| [TERM-04](#term-04--focus-tracking-and-turn-complete-notifications-2026-09-14) | Focus tracking and turn-complete notifications | 2026-09-14 |
+| [AGNT-02](#agnt-02--the-agent-loop-state-machine-provisional-parser-read-tools-2026-09-14) | The agent loop: state machine, provisional parser, read tools | 2026-09-14 |
+| [AGNT-03](#agnt-03--read-tools-and-bash-2026-09-14) | Read tools and `bash` | 2026-09-14 |
+| [AGNT-04](#agnt-04--mutations-and-diffs-2026-09-14) | Mutations and diffs | 2026-09-14 |
+| [AGNT-05](#agnt-05--qwen-tool-rendering-and-pinned-fixtures-2026-09-14) | Qwen tool rendering and pinned fixtures | 2026-09-14 |
+| [AGNT-06](#agnt-06--tool-call-decoding-and-the-profile-driven-loop-2026-09-14) | Tool-call decoding and the profile-driven loop | 2026-09-14 |
+| [REPO-04](#repo-04--comment-and-identifier-hygiene-2026-09-14) | Comment and identifier hygiene | 2026-09-14 |
+| [AGNT-07](#agnt-07--polish-resume-and-the-agent-plan-closed-2026-09-14) | Polish, resume, and the agent plan closed | 2026-09-14 |
+| [TERM-05](#term-05--two-row-tool-lines-call-and-detail-2026-09-15) | Two-row tool lines: call and detail | 2026-09-15 |
+| [AGNT-08](#agnt-08--context-budget-bounded-results-in-turn-elision-honest-failure-2026-09-15) | Context budget: bounded results, in-turn elision, honest failure | 2026-09-15 |
+| [TERM-06](#term-06--per-step-thinking-blocks-with-their-own-duration-2026-09-15) | Per-step thinking blocks with their own duration | 2026-09-15 |
+| [ENGN-09](#engn-09--primed-sessions-prefill-the-prefix-at-startup-restore-it-on-new-2026-09-15) | Primed sessions: prefill the prefix at startup, restore it on new | 2026-09-15 |
+| [APPS-06](#apps-06--nuclis-agent-ls-and---resume-to-the-newest-session-2026-09-16) | `nuclis agent ls` and `--resume` to the newest session | 2026-09-16 |
+| [AGNT-09](#agnt-09--gemma-4-native-tool-calling-2026-09-16) | Gemma 4 native tool calling | 2026-09-16 |
+| [MODL-14](#modl-14--catalogue-entries-ahead-of-their-adapters-roadmap-reordered-around-speculation-2026-09-17) | Catalogue entries ahead of their adapters; roadmap reordered around speculation | 2026-09-17 |
+| [TERM-07](#term-07--rows-released-by-a-shrinking-live-region-are-reused-not-left-as-gaps-2026-09-17) | Rows released by a shrinking live region are reused, not left as gaps | 2026-09-17 |
+| [APPS-07](#apps-07----prompt-profile-and-the-registrys-profile-the-template-alias-gate-2026-09-17) | `--prompt-profile` and the registry's `profile`; the template-alias gate | 2026-09-17 |
+| [APPS-08](#apps-08--model-pull-a-leaked-path-per-file-and-a-leading-slash-in-the-sidecars-file-name-2026-09-17) | `model pull`: a leaked path per file and a leading slash in the sidecar's file name | 2026-09-17 |
+| [APPS-09](#apps-09--config-set-model-pull---register-registry-names-in-model-ls-2026-09-17) | `config set`, `model pull --register`, registry names in `model ls` | 2026-09-17 |
+| [AGNT-11](#agnt-11--a-truncated-tool-call-no-longer-bricks-the-session-reopened-thought-channels-copied-bracket-pieces-2026-09-17) | A truncated tool call no longer bricks the session; reopened thought channels; copied bracket pieces | 2026-09-17 |
+| [APPS-10](#apps-10--model-ls-as-one-aligned-grid-2026-09-17) | `model ls` as one aligned grid | 2026-09-17 |
+| [TERM-08](#term-08--the-welcome-ascii-wordmark-and-session-facts-the-models-name-on-the-status-bar-2026-09-17) | The welcome: ASCII wordmark and session facts; the model's name on the status bar | 2026-09-17 |
+| [KERN-09](#kern-09--expert-routing-and-gathered-expert-kernels-decode-and-prefill-2026-09-17--2026-09-18) | Expert routing and gathered expert kernels (decode and prefill) | 2026-09-17 / 2026-09-18 |
+| [MODL-09](#modl-09--gemma-4-26b-a4b-artifact-pin-facts-adapter-cpu-reference-metal-plan-2026-09-18-two-sessions) | Gemma 4 26B-A4B: artifact pin, facts, adapter, CPU reference, Metal plan | 2026-09-18 (two sessions) |
+| [MODL-10](#modl-10--gemma-4-26b-a4b-catalogue-verdict-acceptance-record-agent-check-2026-09-18) | Gemma 4 26B-A4B: catalogue verdict, acceptance record, agent check | 2026-09-18 |
+| [MODL-15](#modl-15--bonsai-2-27b-accepted-ahead-of-muse-artifact-pinned-facts-read-three-units-planned-2026-09-18) | Bonsai 2 27B accepted ahead of Muse: artifact pinned, facts read, three units planned | 2026-09-18 |
+| [MODL-16](#modl-16--bonsai-2-27b-oracle-facts-ternary-encodings-hadamard-transform-cpu-reference-2026-09-18) | Bonsai 2 27B: oracle, facts, ternary encodings, Hadamard transform, CPU reference | 2026-09-18 |
+| [KERN-10](#kern-10--ternary-matvec-and-matmul-tiles-the-walsh-hadamard-kernel-2026-09-18) | Ternary matvec and matmul tiles, the Walsh-Hadamard kernel | 2026-09-18 |
+| [APPS-11](#apps-11--model-pull-a-verified-file-whose-encoding-this-build-does-not-store-keeps-its-sidecar-2026-09-18) | `model pull`: a verified file whose encoding this build does not store keeps its sidecar | 2026-09-18 |
+| [REPO-05](#repo-05--readme-for-a-public-repository-project-status-contributions-disclosure-2026-09-18) | README for a public repository: project status, contributions, disclosure | 2026-09-18 |
+| [MODL-17](#modl-17--bonsai-2-27b-the-qwen-plan-on-rotated-weights-catalogue-acceptance-2026-09-18) | Bonsai 2 27B: the Qwen plan on rotated weights, catalogue, acceptance | 2026-09-18 |
+| [AGNT-12](#agnt-12--an-empty-tool-result-no-longer-aborts-the-turn-2026-09-18) | An empty tool result no longer aborts the turn | 2026-09-18 |
+| [APPS-12](#apps-12--the-default-context-window-is-16k-2026-09-18) | The default context window is 16K | 2026-09-18 |
+| [TERM-09](#term-09--a-step-that-answers-and-then-calls-a-tool-no-longer-holds-the-turn-in-the-live-region-2026-09-18) | A step that answers and then calls a tool no longer holds the turn in the live region | 2026-09-18 |
+| [MODL-11](#modl-11--muse-glimmer-30b-artifact-pin-facts-tokenizer-binding-cpu-reference-2026-09-19) | Muse Glimmer 30B: artifact pin, facts, tokenizer, binding, CPU reference | 2026-09-19 |
+| [MODL-12](#modl-12--muse-glimmer-30b-metal-plan-2026-09-19) | Muse Glimmer 30B: Metal plan | 2026-09-19 |
+| [MODL-13](#modl-13--muse-glimmer-30b-profile-text-reasoning-channel-catalogue-acceptance-2026-09-19) | Muse Glimmer 30B: profile (text, reasoning channel), catalogue, acceptance | 2026-09-19 |
+| [AGNT-10](#agnt-10--muse-glimmer-atem-tool-calling-rendering-decoding-fixtures-2026-09-19) | Muse Glimmer ATEM tool calling: rendering, decoding, fixtures | 2026-09-19 |
+| [ENGN-10](#engn-10--muse-glimmer-decode-gap-the-experiments-accepted-into-the-performance-theme-2026-09-19) | Muse Glimmer decode gap: the experiments accepted into the performance theme | 2026-09-19 |
+| [KERN-11](#kern-11--small-chunk-prefill-matmul-near-the-weight-bandwidth-floor-2026-09-19-two-sessions) | Small-chunk prefill matmul near the weight-bandwidth floor | 2026-09-19 |
+| [ENGN-11](#engn-11--speculative-state-recovery-checkpoint-rewind-truncate-recover-2026-09-19-one-session) | Speculative state recovery: checkpoint, rewind, truncate, recover | 2026-09-19 |
+| [MODL-18](#modl-18--qwen38-draft-head-the-embedded-prediction-block-on-the-cpu-reference-and-the-metal-plan-2026-09-19--2026-09-20-two-sessions) | Qwen3.8 draft head: the embedded prediction block on the CPU reference and the Metal plan | 2026-09-20 |
+| [APPS-13](#apps-13--the-configuration-section-is-generation-not-generate-2026-09-20) | The configuration section is `generation`, not `generate` | 2026-09-20 |
+| [ENGN-12](#engn-12--batched-verification-speculative-generation-greedy-and-sampled-the-switch-and-the-draft-length-the-benchmark-record-2026-09-20-two-sessions) | Batched verification, speculative generation (greedy and sampled), the switch and the draft length, the benchmark record | 2026-09-20 |
+| [REPO-07](#repo-07--the-roadmap-file-retired-themes-are-agreed-in-session-and-when-architectural-recorded-as-adrs-on-request-2026-09-20) | The roadmap file retired; themes are agreed in session and, when architectural, recorded as ADRs on request | 2026-09-20 |
 
-| REPO-06 | DiffusionGemma structured reads and kev research | 2026-09-20 |
-| ENGN-13 | Prompt commit at the plan's chunk and the batched drafter commit | 2026-09-20 |
-| KERN-12 | Multi-row matvec for 2–8 rows: 2-row routing shipped, closed below its target | 2026-09-20 (two sessions) |
-| REPO-08 | Repair the multi-row benchmark controls and hand-off | 2026-09-20 |
-| ENGN-14 | Recovery without the whole-stack replay: per-row recurrent checkpoints | 2026-09-20 (two sessions) |
-| KERN-13 | A GPU penalty kernel: the token history applied on the device before the top-k | 2026-09-20 |
-| ENGN-15 | Sampled acceptance on the GPU top-k readback | 2026-09-20 |
-| KERN-14 | The wide 32×8 small-batch tile: measured, closed negative | 2026-09-20 |
-| ENGN-16 | Draft proposal policy: the `p_min` early stop shipped, the adaptive length dropped | 2026-09-20 |
-| KERN-15 | Split-K decode matvec for row-poor shapes: measured behind the single pass, closed negative | 2026-09-21 |
-| KERN-16 | Long-context prefill attention: register-level reuse measured 2–5 % at chunk sizes, closed negative; the verify-shaped window shipped | 2026-09-21 |
-| KERN-18 | Fused decode norms: −182…−192 dispatches per decode step shipped, the speed bars missed; closed below its target | 2026-09-21 |
-| MODL-19 | Gemma 4 draft heads: the `gemma4-assistant` companion adapter, traces at 1.1e-4, a negative default at draft 4 (1.017× only at draft 7) | 2026-09-21 |
-| MODL-20 | Muse Glimmer DFlash drafter: the companion, the CPU reference and its trace, the Metal plan, a positive verdict at 1.16–1.23× | 2026-09-21 (two sessions) |
-| ENGN-17 | The speculative verdict: Qwen and Gemma off, Muse on; the full record and `bench`'s true baseline | 2026-09-21 |
-| REPO-09 | One gate registry: tiers, change triggers, and the model-specific checks as data | 2026-09-21 |
-| REPO-10 | Benchmark workloads as data and generated record tables | 2026-09-21 |
-| APPS-15 | `config init --discover` and self-contained help pages | 2026-09-21 |
-| APPS-16 | Output budget: default 4096, cap 16384 | 2026-09-21 |
-| REPO-12 | The architecture guide follows the KV cache end to end; the inference guide rewritten as one narrative | 2026-09-22 |
-| REPO-13 | One specification: `spec.md` rewritten as a technical specification with the agent spec merged in | 2026-09-22 |
-| TERM-10 | Chat polish: the repaint tick, the frame, the operation rows, the banded diff, and the editor's shell and keys | 2026-09-21 / 2026-09-22 |
-| AGNT-13 | The system prompt as sections, measured: the playground task list, the guidelines that changed behaviour, the instructions file | 2026-09-22 |
-| AGNT-14 | Three measured fixes: the Qwen decoder keeps a value's trailing newline, `read_file` serves the first MiB, Enter steers a running turn | 2026-09-22 |
-| MODL-21 | The vision contract, image input, and the Qwen3.8 projector on both executors | 2026-09-22 |
-| AGNT-15 | Images and text files in the chat: drop, `/image`, the chips, the projector turn, the detail row and preview, sessions | 2026-09-23 |
-| REPO-14 | The screenshot harness is the validation step for surface changes | 2026-09-23 |
-| TERM-11 | The region re-anchors on a resize from the terminal's cursor report; the preview fits above the region and is off under tmux | 2026-09-23 |
-| MODL-24 | Decode after an image: the Metal step's cache row and rotary position separated; the vision gate compares decode with one prefill | 2026-09-23 |
-| TERM-12 | A spinner row while the projector loads and images encode | 2026-09-23 |
-| AGNT-16 | AGNT-14's follow-ups: the Muse value contract pinned and measured, steering that restarts a reasoning-only step, the guessed-path guideline measured and dropped | 2026-09-23 |
-| MODL-22 | Gemma 4 vision: the unified embedder (12B) and the SigLIP encoder (26B-A4B) on both executors; bidirectional image spans | 2026-09-23 |
-| MODL-23 | Muse Glimmer's windowed vision encoder on both executors; the image token cap for every family | 2026-09-23 (two sessions) |
-| MODL-25 | Bonsai 2's projector through the Qwen3-VL adapter: Q8_0 and F16 weights | 2026-09-23 |
-| REPO-15 | The CPU tier leaves the unit routine: when a unit changes what the CPU reference computes, and before a release | 2026-09-23 |
-| MODL-26 | Gemma 4's Metal `verify` rows carry the final soft-cap | 2026-09-24 |
-| APPS-14 | Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family | 2026-09-24 |
-| REPO-16 | `scripts/nuclis_mem_usage.py`: a running process's memory split into GPU and CPU; Qwen3.8-27B measured, exit cleanup checked | 2026-09-26 |
-| AGNT-17 | Blank bash output said; the paged-file rule; Ctrl-O's output view; a reasoning budget at `low` for every family, per model in the catalogue | 2026-09-26 |
-| APPS-17 | The catalogue at five entries; the registry written in name order; `--dry-run` writes nothing | 2026-09-26 |
-| MODL-27 | Gemma 4 E4B QAT: per-layer embeddings, shared KV, a causal image span, the clipped-linear projector, its draft head, the `gemma4_e` profile | 2026-09-27 |
-| REPO-17 | README rewritten: the models grouped, `--discover`, a recorded agent session | 2026-09-27 |
-| MODL-28 | Safetensors sets through the Hub client and `model pull`, pinned like GGUF | 2026-09-27 |
-| MODL-29 | A generic safetensors loader and `nuclis inspect` on it | 2026-09-27 |
-| REPO-18 | `docs/research/` removed; its conclusion carried into the plan | 2026-09-27 |
-| TERM-13 | Exit keeps the transcript: the margin reset no longer homes the cursor onto the banner | 2026-09-27 |
-| APPS-18 | Shell completion answered by the binary (`nuclis completion fish\|bash\|zsh`, `__complete`); `make install` | 2026-09-27 |
-| MODL-32 | The Hub listing keeps its digests in ReleaseFast builds | 2026-09-29 |
-| MODL-30 | Laya on the CPU end to end: the oracle, `tokenizer.json`, ModernBERT and the decision head, `nuclis decide` | 2026-09-29 |
-| REPO-19 | The Gemma 4 12B K-quant file's gates retired with the file | 2026-09-29 |
-| REPO-20 | Fast verification: gates re-derived from code paths (`make verify` 704 s → 246 s), a release tier, `make verify-auto` | 2026-09-29 |
-| MODL-31 | Laya on Metal: packed batches, bidirectional windowed attention over sequence bounds, 13–20× the CPU | 2026-09-29 |
-| MODL-33 | Laya multilingual: the Metaspace tokenizer, the checkpoint's own special tokens, checked on both backends | 2026-09-29 |
-| REPO-21 | The agent's playground generated under `.zig-cache`; the Python scripts typed (basedpyright) and formatted (ruff) | 2026-09-29 |
-| REPO-22 | `.reference/` for durable local state (oracles, venvs, pinned downloads); `.zig-cache` disposable, `make clean-cache` | 2026-09-29 |
-| REPO-23 | The README's Laya section: the experiment and its results | 2026-09-29 |
-| REPO-25 | A gate whose model is absent is skipped, not failed; `--strict` for releases | 2026-09-30 |
-| KERN-19 | A threaded CPU reference, bit-identical: every core through `cpu.matvec`, the CPU tier in 22 min | 2026-09-30 |
-| REPO-24 | Qwen decode at 20 tokens/s: the evidence, the verify budgets, and ADR 0001 (proposed) | 2026-09-30 |
-| ENGN-18 | The speed loop: saved prefixes, verify cost at depth, interleaved A/B, and the decode-speed baseline | 2026-09-30 |
-| KERN-20 | Seeing inside the GPU: Metal captures read in Xcode, `bench --kernel-stats`, `apple-gpu.md`; KERN-05's and KERN-12's questions answered | 2026-09-30 |
-| KERN-21 | Few-query verify attention through the flash-decoding split pass: the 4-row verify batch 25–78 % cheaper from 4K up on Qwen, Gemma, and Muse; checked at depth | 2026-09-30 |
-| KERN-24 | The register-fragment small-batch tile and two routings: Qwen's 4-row verify C 16 % cheaper, Gemma 12B QAT's 23 %; closed below its target (the padded 8×8 multiplies are the floor) | 2026-10-01 |
-| ENGN-19 | The DeltaNet replay tape: verify steps the recurrence without writing the state, recovery replays the accepted rows; Qwen's verify C 48–51 ms cheaper at every depth, the 1.25 GB row-slot region gone | 2026-10-01 |
-| ENGN-20 | Speculation re-priced per family: Qwen on at draft 7 (short code 20.3–20.9 tok/s), Gemma 12B QAT on at 5, E4B on at 6, Muse at 6, 26B-A4B off; `make spec-matrix`, `bench --draft-p-min`; `agent --print` loads the drafter | 2026-10-02 |
-| REPO-26 | The README states the speculative defaults and their measured rates | 2026-10-02 |
-| REPO-27 | External review fixes: a failed recording is discarded (the destroy-while-recording hang gone), the kernel table derived, `--file` names a support file's weights, other formats' folders skipped, parser property tests | 2026-10-02 |
-| AGNT-18 | The agent's `decide` tool: dropped before it started; decision models are served by `nuclis serve` | 2026-10-02 |
-| KERN-22 | Long-context decode attention: dropped before it started, a small win at 32K only | 2026-10-02 |
-| APPS-19 | `nuclis serve`, the nuclis API: decisions over HTTP, TypeSafe's Jev call, batched across requests (1.24–1.30×, the model's packing ceiling); closed below its throughput target | 2026-10-02 |
-| APPS-20 | `nuclis serve` configured and logged: the `serve` section (host, port 8000, log), the default model opened at start, a coloured line per request | 2026-10-02 |
-| MODL-34 | clef-flash: Cloudflare's 9B decision model (Qwen3.5 backbone, joint schema head) on both backends, text and images, in `decide` and `serve`; qwen35 reads its shape from the file | 2026-10-02 |
-| REPO-28 | The README presents clef-flash beside Laya: the decision section renamed, a pull and image example, the trade-off table, a clef request to `serve` | 2026-10-03 |
-| REPO-29 | Zig 0.17.0: eight breakage classes migrated, deprecations cleared, `@divCeil` adopted, the version read from the build root; Qwen 4K decode 10 % below the 0.16 records, cause open | 2026-10-03 |
-| REPO-30 | Zig 0.17 holds Qwen's 4K speed: `fd09aa4` under 0.16 and the tree under 0.17 measure the same (10.0 tok/s, C 194 ms); REPO-29's 4K loss was not the compiler or the code | 2026-10-03 |
-| KERN-23 | Weight streaming for one row and a few: the half magic-number decode (Q4_K, Q5_K), IQ4_XS's table in threadgroup memory, word-outer multi-row bodies routed at 2–3 rows; Qwen decode 512 10.37 → 11.78 tok/s, 2–3-row verify C 6–12 % cheaper; closed below its verify and speculation targets | 2026-10-03 |
-| REPO-31 | CI installs Zig 0.17.0: `.github/zig-toolchain` pins the four 0.17.0 tarball digests in place of 0.16.0's; `release` also reads digests from its own revision, so v0.4.0 publishes by dispatch | 2026-10-03 |
-| AGNT-19 | Token caching for the agent: the primed prefix and turn ends kept in memory and on disk, resume from the last turn, replay causes on the bar; `/list`, `/delete`, `agent rm`, `nuclis cache`; from testing: `bash` spawns again (broken since Zig 0.17), fuzzy `@`, Esc cancels. Task list wall −23 % per task, a 9.8K resume 126.5 → 2.05 s | 2026-10-04 |
-| AGNT-20 | A faster agent step: the command surface and `/model` (one picker, model switch in place), reading less (pages, outlines, grouped `grep` with `.gitignore`, one-line-context diffs, head-and-tail `bash`, repeat pointers; tool-result tokens −28 %), `max_tokens` 8192 and a reasoning cap at every effort; from testing: a reopened thought bounded, cut calls never shown as text, bad arguments named, Enter runs the highlighted command. Faster prefill dropped by the user | 2026-10-04 |
-| REPO-32 | `release` publishes tags that pin their own compiler: the installer takes the first matching digest and comes from the workflow's revision; REPO-31's append listed v0.5.0's 0.17.0 pin twice and failed its release | 2026-10-04 |
-| REPO-33 | CI 5 m 57 s → 2 m 16 s (docs-only pushes skipped, three parallel jobs, working caches); release notes led by highlights and units by area, every published release rewritten; draft-then-publish and build provenance; the README GIF re-recorded with speculation in real time (36 s task, 21–27 tok/s); the nuclis logo | 2026-10-04 |
-| REPO-34 | nuclis.dev: a static site in `site/` (the agent replay, the engine strip, the drafter, the measured charts, Decision Dungeons), self-hosted subset fonts, SEO and share card, a strict CSP, `make site-check` holding its figures to the README, served as Workers static assets from `main` | 2026-10-04 |
-| ENGN-21 | The benchmarks measured again on macOS 27: all five families on both engines at 512 / 4K / 16K / 32,639, three requests each, the reference replaying the committed arrays; Qwen decodes 1.04–1.15× the reference, the others 0.71–0.84×; E4B's first record; README, bench.md, and nuclis.dev republished at four lengths | 2026-10-05 |
+| [REPO-06](#repo-06--diffusiongemma-structured-reads-and-kev-research-2026-09-20) | DiffusionGemma structured reads and kev research | 2026-09-20 |
+| [ENGN-13](#engn-13--prompt-commit-at-the-plans-chunk-and-the-batched-drafter-commit-2026-09-20) | Prompt commit at the plan's chunk and the batched drafter commit | 2026-09-20 |
+| [KERN-12](#kern-12--a-multi-row-matvec-for-28-rows-the-2-row-routing-2026-09-20-two-sessions-closed-below-its-target) | Multi-row matvec for 2–8 rows: 2-row routing shipped, closed below its target | 2026-09-20 (two sessions) |
+| [REPO-08](#repo-08--repair-the-multi-row-benchmark-controls-and-hand-off-2026-09-20) | Repair the multi-row benchmark controls and hand-off | 2026-09-20 |
+| [ENGN-14](#engn-14--recovery-without-the-whole-stack-replay-2026-09-20-two-sessions) | Recovery without the whole-stack replay: per-row recurrent checkpoints | 2026-09-20 (two sessions) |
+| [KERN-13](#kern-13--a-gpu-penalty-kernel-the-token-history-applied-on-the-device-before-the-top-k-2026-09-20) | A GPU penalty kernel: the token history applied on the device before the top-k | 2026-09-20 |
+| [ENGN-15](#engn-15--sampled-acceptance-on-the-gpu-top-k-readback-2026-09-20) | Sampled acceptance on the GPU top-k readback | 2026-09-20 |
+| [KERN-14](#kern-14--the-wide-328-small-batch-tile-measured-closed-negative-2026-09-20) | The wide 32×8 small-batch tile: measured, closed negative | 2026-09-20 |
+| [ENGN-16](#engn-16--draft-proposal-policy-the-p_min-early-stop-shipped-the-adaptive-length-dropped-2026-09-20) | Draft proposal policy: the `p_min` early stop shipped, the adaptive length dropped | 2026-09-20 |
+| [KERN-15](#kern-15--split-k-decode-matvec-measured-behind-the-single-pass-closed-negative-2026-09-21) | Split-K decode matvec for row-poor shapes: measured behind the single pass, closed negative | 2026-09-21 |
+| [KERN-16](#kern-16--long-context-prefill-attention-register-level-reuse-measured-25--at-chunk-sizes-closed-negative-2026-09-21) | Long-context prefill attention: register-level reuse measured 2–5 % at chunk sizes, closed negative; the verify-shaped window shipped | 2026-09-21 |
+| [KERN-18](#kern-18--fused-decode-norms-182192-dispatches-per-decode-step-shipped-the-speed-bars-missed-closed-below-its-target-2026-09-21) | Fused decode norms: −182…−192 dispatches per decode step shipped, the speed bars missed; closed below its target | 2026-09-21 |
+| [MODL-19](#modl-19--gemma-4-draft-heads-the-gemma4-assistant-companion-as-a-second-gguf-correct-but-a-negative-default-at-the-plans-draft-length-2026-09-21) | Gemma 4 draft heads: the `gemma4-assistant` companion adapter, traces at 1.1e-4, a negative default at draft 4 (1.017× only at draft 7) | 2026-09-21 |
+| [MODL-20](#modl-20--muse-glimmer-dflash-drafter-the-companion-the-cpu-reference-and-its-trace-the-metal-plan-a-positive-verdict-2026-09-21-two-sessions) | Muse Glimmer DFlash drafter: the companion, the CPU reference and its trace, the Metal plan, a positive verdict at 1.16–1.23× | 2026-09-21 (two sessions) |
+| [ENGN-17](#engn-17--the-speculative-verdict-qwen-and-gemma-off-muse-on-the-full-record-and-benchs-true-baseline-2026-09-21) | The speculative verdict: Qwen and Gemma off, Muse on; the full record and `bench`'s true baseline | 2026-09-21 |
+| [REPO-09](#repo-09--one-gate-registry-tiers-change-triggers-and-the-model-specific-checks-as-data-2026-09-21) | One gate registry: tiers, change triggers, and the model-specific checks as data | 2026-09-21 |
+| [REPO-10](#repo-10--benchmark-workloads-as-data-and-generated-record-tables-2026-09-21) | Benchmark workloads as data and generated record tables | 2026-09-21 |
+| [APPS-15](#apps-15--config-init---discover-and-self-contained-help-pages-2026-09-21) | `config init --discover` and self-contained help pages | 2026-09-21 |
+| [APPS-16](#apps-16--output-budget-default-4096-cap-16384-2026-09-21) | Output budget: default 4096, cap 16384 | 2026-09-21 |
+| [REPO-12](#repo-12--the-architecture-guide-follows-the-kv-cache-end-to-end-the-inference-guide-rewritten-as-one-narrative-2026-09-22) | The architecture guide follows the KV cache end to end; the inference guide rewritten as one narrative | 2026-09-22 |
+| [REPO-13](#repo-13--one-specification-specmd-rewritten-as-a-technical-specification-with-the-agent-spec-merged-in-2026-09-22) | One specification: `spec.md` rewritten as a technical specification with the agent spec merged in | 2026-09-22 |
+| [TERM-10](#term-10--chat-polish-the-repaint-tick-the-frame-the-operation-rows-the-banded-diff-and-the-editors-shell-and-keys-2026-09-21--2026-09-22) | Chat polish: the repaint tick, the frame, the operation rows, the banded diff, and the editor's shell and keys | 2026-09-21 / 2026-09-22 |
+| [AGNT-13](#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22) | The system prompt as sections, measured: the playground task list, the guidelines that changed behaviour, the instructions file | 2026-09-22 |
+| [AGNT-14](#agnt-14--three-measured-fixes-the-qwen-decoder-keeps-a-values-trailing-newline-read_file-serves-the-first-mib-enter-steers-a-running-turn-2026-09-22) | Three measured fixes: the Qwen decoder keeps a value's trailing newline, `read_file` serves the first MiB, Enter steers a running turn | 2026-09-22 |
+| [MODL-21](#modl-21--the-vision-contract-image-input-and-the-qwen38-projector-on-both-executors-2026-09-22) | The vision contract, image input, and the Qwen3.8 projector on both executors | 2026-09-22 |
+| [AGNT-15](#agnt-15--images-and-text-files-in-the-chat-drop-image-the-chips-the-projector-turn-the-detail-row-and-preview-sessions-2026-09-23) | Images and text files in the chat: drop, `/image`, the chips, the projector turn, the detail row and preview, sessions | 2026-09-23 |
+| [REPO-14](#repo-14--the-screenshot-harness-is-the-validation-step-for-surface-changes-2026-09-23) | The screenshot harness is the validation step for surface changes | 2026-09-23 |
+| [TERM-11](#term-11--the-region-re-anchors-on-a-resize-from-the-terminals-cursor-report-the-preview-fits-above-the-region-and-is-off-under-tmux-2026-09-23) | The region re-anchors on a resize from the terminal's cursor report; the preview fits above the region and is off under tmux | 2026-09-23 |
+| [MODL-24](#modl-24--decode-after-an-image-the-metal-steps-cache-row-and-rotary-position-separated-the-vision-gate-compares-decode-with-one-prefill-2026-09-23) | Decode after an image: the Metal step's cache row and rotary position separated; the vision gate compares decode with one prefill | 2026-09-23 |
+| [TERM-12](#term-12--a-spinner-row-while-the-projector-loads-and-images-encode-2026-09-23) | A spinner row while the projector loads and images encode | 2026-09-23 |
+| [AGNT-16](#agnt-16--agnt-14s-follow-ups-the-muse-value-contract-pinned-and-measured-steering-that-restarts-a-reasoning-only-step-the-guessed-path-guideline-measured-and-dropped-2026-09-23) | AGNT-14's follow-ups: the Muse value contract pinned and measured, steering that restarts a reasoning-only step, the guessed-path guideline measured and dropped | 2026-09-23 |
+| [MODL-22](#modl-22--gemma-4-vision-the-unified-embedder-12b-and-the-siglip-encoder-26b-a4b-on-both-executors-bidirectional-image-spans-2026-09-23) | Gemma 4 vision: the unified embedder (12B) and the SigLIP encoder (26B-A4B) on both executors; bidirectional image spans | 2026-09-23 |
+| [MODL-23](#modl-23--muse-glimmers-windowed-vision-encoder-on-both-executors-the-image-token-cap-2026-09-23) | Muse Glimmer's windowed vision encoder on both executors; the image token cap for every family | 2026-09-23 (two sessions) |
+| [MODL-25](#modl-25--bonsai-2s-projector-through-the-qwen3-vl-adapter-q8_0-and-f16-weights-2026-09-23) | Bonsai 2's projector through the Qwen3-VL adapter: Q8_0 and F16 weights | 2026-09-23 |
+| [REPO-15](#repo-15--the-cpu-tier-leaves-the-unit-routine-it-runs-when-a-unit-changes-what-the-cpu-reference-computes-and-before-a-release-2026-09-23) | The CPU tier leaves the unit routine: when a unit changes what the CPU reference computes, and before a release | 2026-09-23 |
+| [MODL-26](#modl-26--gemma-4s-metal-verify-rows-carry-the-final-soft-cap-2026-09-24) | Gemma 4's Metal `verify` rows carry the final soft-cap | 2026-09-24 |
+| [APPS-14](#apps-14--teacher-forced-eval-perplexity-against-the-references-per-token-run-the-all-rows-prefill-a-gate-per-family-2026-09-24) | Teacher-forced `eval`: perplexity against the reference's per-token run, the all-rows prefill, a gate per family | 2026-09-24 |
+| [REPO-16](#repo-16--scriptsnuclis_mem_usagepy-a-running-processs-memory-split-into-gpu-and-cpu-2026-09-26) | `scripts/nuclis_mem_usage.py`: a running process's memory split into GPU and CPU; Qwen3.8-27B measured, exit cleanup checked | 2026-09-26 |
+| [AGNT-17](#agnt-17--the-playground-fixes-blank-output-said-the-paged-file-rule-tool-output-in-the-transcript-a-reasoning-budget-2026-09-26) | Blank bash output said; the paged-file rule; Ctrl-O's output view; a reasoning budget at `low` for every family, per model in the catalogue | 2026-09-26 |
+| [APPS-17](#apps-17--the-catalogue-at-five-entries-the-registry-in-name-order-2026-09-26) | The catalogue at five entries; the registry written in name order; `--dry-run` writes nothing | 2026-09-26 |
+| [MODL-27](#modl-27--gemma-4-e4b-qat-per-layer-embeddings-shared-kv-vision-draft-head-2026-09-27) | Gemma 4 E4B QAT: per-layer embeddings, shared KV, a causal image span, the clipped-linear projector, its draft head, the `gemma4_e` profile | 2026-09-27 |
+| [REPO-17](#repo-17--readme-rewritten-with-a-recorded-agent-session-2026-09-27) | README rewritten: the models grouped, `--discover`, a recorded agent session | 2026-09-27 |
+| [MODL-28](#modl-28--safetensors-sets-through-the-hub-client-and-model-pull-2026-09-27) | Safetensors sets through the Hub client and `model pull`, pinned like GGUF | 2026-09-27 |
+| [MODL-29](#modl-29--a-generic-safetensors-loader-and-nuclis-inspect-on-it-2026-09-27) | A generic safetensors loader and `nuclis inspect` on it | 2026-09-27 |
+| [REPO-18](#repo-18--docsresearch-removed-2026-09-27) | `docs/research/` removed; its conclusion carried into the plan | 2026-09-27 |
+| [TERM-13](#term-13--exit-keeps-the-transcript-2026-09-27) | Exit keeps the transcript: the margin reset no longer homes the cursor onto the banner | 2026-09-27 |
+| [APPS-18](#apps-18--shell-completion-answered-by-the-binary-make-install-2026-09-27) | Shell completion answered by the binary (`nuclis completion fish\|bash\|zsh`, `__complete`); `make install` | 2026-09-27 |
+| [MODL-32](#modl-32--the-hub-listing-keeps-its-digests-in-releasefast-builds-2026-09-29) | The Hub listing keeps its digests in ReleaseFast builds | 2026-09-29 |
+| [MODL-30](#modl-30--laya-on-the-cpu-end-to-end-the-oracle-tokenizerjson-modernbert-and-the-decision-head-nuclis-decide-2026-09-29) | Laya on the CPU end to end: the oracle, `tokenizer.json`, ModernBERT and the decision head, `nuclis decide` | 2026-09-29 |
+| [REPO-19](#repo-19--the-gemma-4-12b-k-quant-files-gates-retired-with-the-file-2026-09-29) | The Gemma 4 12B K-quant file's gates retired with the file | 2026-09-29 |
+| [REPO-20](#repo-20--fast-verification-gates-re-derived-from-code-paths-a-release-tier-make-verify-auto-2026-09-29) | Fast verification: gates re-derived from code paths (`make verify` 704 s → 246 s), a release tier, `make verify-auto` | 2026-09-29 |
+| [MODL-31](#modl-31--laya-on-metal-packed-batches-bidirectional-windowed-attention-over-sequence-bounds-2026-09-29) | Laya on Metal: packed batches, bidirectional windowed attention over sequence bounds, 13–20× the CPU | 2026-09-29 |
+| [MODL-33](#modl-33--laya-multilingual-the-metaspace-tokenizer-the-checkpoints-own-special-tokens-checked-on-both-backends-2026-09-29) | Laya multilingual: the Metaspace tokenizer, the checkpoint's own special tokens, checked on both backends | 2026-09-29 |
+| [REPO-21](#repo-21--a-generated-playground-the-python-scripts-typed-and-formatted-2026-09-29) | The agent's playground generated under `.zig-cache`; the Python scripts typed (basedpyright) and formatted (ruff) | 2026-09-29 |
+| [REPO-22](#repo-22--reference-for-durable-local-state-zig-cache-disposable-2026-09-29) | `.reference/` for durable local state (oracles, venvs, pinned downloads); `.zig-cache` disposable, `make clean-cache` | 2026-09-29 |
+| [REPO-23](#repo-23--the-readmes-laya-section-the-experiment-and-its-results-2026-09-29) | The README's Laya section: the experiment and its results | 2026-09-29 |
+| [REPO-25](#repo-25--a-gate-whose-model-is-absent-is-skipped-not-failed-2026-09-30) | A gate whose model is absent is skipped, not failed; `--strict` for releases | 2026-09-30 |
+| [KERN-19](#kern-19--a-threaded-cpu-reference-bit-identical-the-cpu-tier-in-22-minutes-2026-09-30) | A threaded CPU reference, bit-identical: every core through `cpu.matvec`, the CPU tier in 22 min | 2026-09-30 |
+| [REPO-24](#repo-24--qwen-decode-at-20-tokenss-evidence-and-experiment-proposal-2026-09-30) | Qwen decode at 20 tokens/s: the evidence, the verify budgets, and ADR 0001 (proposed) | 2026-09-30 |
+| [ENGN-18](#engn-18--the-speed-loop-saved-prefixes-verify-cost-at-depth-interleaved-ab-and-the-decode-speed-baseline-2026-09-30) | The speed loop: saved prefixes, verify cost at depth, interleaved A/B, and the decode-speed baseline | 2026-09-30 |
+| [KERN-20](#kern-20--seeing-inside-the-gpu-metal-captures-pipeline-statistics-apple-gpumd-2026-09-30) | Seeing inside the GPU: Metal captures read in Xcode, `bench --kernel-stats`, `apple-gpu.md`; KERN-05's and KERN-12's questions answered | 2026-09-30 |
+| [KERN-21](#kern-21--few-query-verify-attention-through-the-split-pass-2026-09-30) | Few-query verify attention through the flash-decoding split pass: the 4-row verify batch 25–78 % cheaper from 4K up on Qwen, Gemma, and Muse; checked at depth | 2026-09-30 |
+| [KERN-24](#kern-24--the-register-fragment-verify-matmul-2026-10-01-closed-below-its-target) | The register-fragment small-batch tile and two routings: Qwen's 4-row verify C 16 % cheaper, Gemma 12B QAT's 23 %; closed below its target (the padded 8×8 multiplies are the floor) | 2026-10-01 |
+| [ENGN-19](#engn-19--the-deltanet-replay-tape-2026-10-01) | The DeltaNet replay tape: verify steps the recurrence without writing the state, recovery replays the accepted rows; Qwen's verify C 48–51 ms cheaper at every depth, the 1.25 GB row-slot region gone | 2026-10-01 |
+| [ENGN-20](#engn-20--speculation-re-priced-per-family-the-catalogues-defaults-2026-10-02) | Speculation re-priced per family: Qwen on at draft 7 (short code 20.3–20.9 tok/s), Gemma 12B QAT on at 5, E4B on at 6, Muse at 6, 26B-A4B off; `make spec-matrix`, `bench --draft-p-min`; `agent --print` loads the drafter | 2026-10-02 |
+| [REPO-26](#repo-26--the-readmes-speculative-decoding-results-2026-10-02) | The README states the speculative defaults and their measured rates | 2026-10-02 |
+| [REPO-27](#repo-27--external-review-fixes-the-metal-discard-path-the-kernel-table-the-downloader-parser-property-tests-2026-10-02) | External review fixes: a failed recording is discarded (the destroy-while-recording hang gone), the kernel table derived, `--file` names a support file's weights, other formats' folders skipped, parser property tests | 2026-10-02 |
+| [AGNT-18](#agnt-18--the-agents-decide-tool-dropped-before-it-started-2026-10-02) | The agent's `decide` tool: dropped before it started; decision models are served by `nuclis serve` | 2026-10-02 |
+| [KERN-22](#kern-22--long-context-decode-attention-dropped-before-it-started-2026-10-02) | Long-context decode attention: dropped before it started, a small win at 32K only | 2026-10-02 |
+| [APPS-19](#apps-19--nuclis-serve-the-nuclis-api-decisions-first-batched-across-requests-2026-10-02-two-sessions-in-one) | `nuclis serve`, the nuclis API: decisions over HTTP, TypeSafe's Jev call, batched across requests (1.24–1.30×, the model's packing ceiling); closed below its throughput target | 2026-10-02 |
+| [APPS-20](#apps-20--nuclis-serve-configured-and-logged-the-serve-section-port-8000-the-default-model-at-start-a-line-per-request-2026-10-02) | `nuclis serve` configured and logged: the `serve` section (host, port 8000, log), the default model opened at start, a coloured line per request | 2026-10-02 |
+| [MODL-34](#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one) | clef-flash: Cloudflare's 9B decision model (Qwen3.5 backbone, joint schema head) on both backends, text and images, in `decide` and `serve`; qwen35 reads its shape from the file | 2026-10-02 |
+| [REPO-28](#repo-28--the-readme-presents-clef-flash-beside-laya-2026-10-03) | The README presents clef-flash beside Laya: the decision section renamed, a pull and image example, the trade-off table, a clef request to `serve` | 2026-10-03 |
+| [REPO-29](#repo-29--zig-0170-the-tree-migrated-and-its-features-adopted-2026-10-03-two-sessions) | Zig 0.17.0: eight breakage classes migrated, deprecations cleared, `@divCeil` adopted, the version read from the build root; Qwen 4K decode 10 % below the 0.16 records, cause open | 2026-10-03 |
+| [REPO-30](#repo-30--zig-017-holds-qwens-4k-speed-the-regression-repo-29-left-open-is-not-one-2026-10-03) | Zig 0.17 holds Qwen's 4K speed: `fd09aa4` under 0.16 and the tree under 0.17 measure the same (10.0 tok/s, C 194 ms); REPO-29's 4K loss was not the compiler or the code | 2026-10-03 |
+| [KERN-23](#kern-23--weight-streaming-for-one-row-and-a-few-qwen-decode-14--23-row-verify-batches-612--cheaper-2026-10-03-two-sessions) | Weight streaming for one row and a few: the half magic-number decode (Q4_K, Q5_K), IQ4_XS's table in threadgroup memory, word-outer multi-row bodies routed at 2–3 rows; Qwen decode 512 10.37 → 11.78 tok/s, 2–3-row verify C 6–12 % cheaper; closed below its verify and speculation targets | 2026-10-03 |
+| [REPO-31](#repo-31--ci-installs-zig-0170-2026-10-03) | CI installs Zig 0.17.0: `.github/zig-toolchain` pins the four 0.17.0 tarball digests in place of 0.16.0's; `release` also reads digests from its own revision, so v0.4.0 publishes by dispatch | 2026-10-03 |
+| [AGNT-19](#agnt-19--token-caching-for-the-agent-turn-boundary-snapshots-in-memory-and-on-disk-session-management-2026-10-04-two-sessions) | Token caching for the agent: the primed prefix and turn ends kept in memory and on disk, resume from the last turn, replay causes on the bar; `/list`, `/delete`, `agent rm`, `nuclis cache`; from testing: `bash` spawns again (broken since Zig 0.17), fuzzy `@`, Esc cancels. Task list wall −23 % per task, a 9.8K resume 126.5 → 2.05 s | 2026-10-04 |
+| [AGNT-20](#agnt-20--a-faster-agent-step-the-command-surface-and-model-reading-less-and-the-fixes-from-testing-2026-10-04-two-sessions) | A faster agent step: the command surface and `/model` (one picker, model switch in place), reading less (pages, outlines, grouped `grep` with `.gitignore`, one-line-context diffs, head-and-tail `bash`, repeat pointers; tool-result tokens −28 %), `max_tokens` 8192 and a reasoning cap at every effort; from testing: a reopened thought bounded, cut calls never shown as text, bad arguments named, Enter runs the highlighted command. Faster prefill dropped by the user | 2026-10-04 |
+| [REPO-32](#repo-32--release-publishes-tags-that-pin-their-own-compiler-2026-10-04) | `release` publishes tags that pin their own compiler: the installer takes the first matching digest and comes from the workflow's revision; REPO-31's append listed v0.5.0's 0.17.0 pin twice and failed its release | 2026-10-04 |
+| [REPO-33](#repo-33--ci-speed-release-notes-that-lead-with-the-work-the-readme-gif-at-speculative-speed-the-logo-2026-10-04) | CI 5 m 57 s → 2 m 16 s (docs-only pushes skipped, three parallel jobs, working caches); release notes led by highlights and units by area, every published release rewritten; draft-then-publish and build provenance; the README GIF re-recorded with speculation in real time (36 s task, 21–27 tok/s); the nuclis logo | 2026-10-04 |
+| [REPO-34](#repo-34--nuclisdev-the-website-2026-10-04) | nuclis.dev: a static site in `site/` (the agent replay, the engine strip, the drafter, the measured charts, Decision Dungeons), self-hosted subset fonts, SEO and share card, a strict CSP, `make site-check` holding its figures to the README, served as Workers static assets from `main` | 2026-10-04 |
+| [ENGN-21](#engn-21--the-benchmarks-measured-again-on-macos-27-2026-10-0405-two-sessions) | The benchmarks measured again on macOS 27: all five families on both engines at 512 / 4K / 16K / 32,639, three requests each, the reference replaying the committed arrays; Qwen decodes 1.04–1.15× the reference, the others 0.71–0.84×; E4B's first record; README, bench.md, and nuclis.dev republished at four lengths | 2026-10-05 |
 
 ## Context
 
@@ -2957,7 +2957,7 @@ tiles (bounds 6e-1 / 2e-2 and 5e-2 / 1e-2).
 **Files.** `inference/src/runtime/session.zig`, `inference/src/engine.zig`,
 `inference/{generation-check.zig,src/models/{qwen35,gemma4,muse_glimmer}_{runtime,metal}.zig}`,
 `docs/reference/{session,speculative-decoding}.md`, `docs/architecture.md`,
-`docs/engineering-log.md`, `TODO.md`.
+`docs/worklog.md`, `TODO.md`.
 
 **Remaining.** `Engine.open` still sizes no region (`openExecutor` passes
 `false`): the drafter request that enables it lands with MODL-18, and ENGN-12
@@ -3026,7 +3026,7 @@ unchanged (129 files, 6.1e-5 max abs F32, 2.5e-2 F16).
 `inference/src/engine.zig`, `inference/generation-check.zig`,
 `scripts/compare-generation.py`, `Makefile`,
 `docs/reference/{speculative-decoding,generation,session}.md`,
-`docs/architecture.md`, `docs/engineering-log.md`, `TODO.md`.
+`docs/architecture.md`, `docs/worklog.md`, `TODO.md`.
 
 **Remaining.** The pinned trace has 2 positions, not the plan's 3: the
 reference harness captures one MTP row per prompt token and `Hello,` has two;
@@ -3059,7 +3059,7 @@ resolves unchanged.
 
 **Files.** `src/config.zig`, `src/cli.zig`, `src/help.zig`,
 `docs/development.md`, `docs/reference/generation.md`, `docs/spec.md`,
-`docs/llm-guide.md`, `docs/engineering-log.md`, `TODO.md`.
+`docs/llm-guide.md`, `docs/worklog.md`, `TODO.md`.
 
 ### REPO-06 — DiffusionGemma structured reads and kev research (2026-09-20)
 
@@ -3078,7 +3078,7 @@ PR body/diff/discussion at `ceb8eebf3eed`, and kev README/model at
 local Markdown targets and `git diff --check`. Documentation only; no model
 execution, benchmarks or build/tests performed.
 
-**Files.** `docs/research/typesafe-jev.md`, `docs/engineering-log.md`,
+**Files.** `docs/research/typesafe-jev.md`, `docs/worklog.md`,
 `TODO.md`.
 
 **Remaining.** GGUF inventory and digest verification, CPU/Metal numerical
@@ -3149,7 +3149,7 @@ record's 10.62, within the sequence's own drift.
 `src/agent/{loop,root}.zig`, `scripts/nuclis-speculative.py`, `Makefile`,
 `docs/benchmarks/speculative-2026-09-20/`,
 `docs/reference/{speculative-decoding,generation,bench}.md`,
-`docs/{spec,development,roadmap}.md`, `docs/engineering-log.md`, `TODO.md`.
+`docs/{spec,development,roadmap}.md`, `docs/worklog.md`, `TODO.md`.
 
 **Remaining.** No speedup: every per-batch cost is fixed and too high for
 the tokens a batch advances, and the plan's performance units carry the
@@ -3192,7 +3192,7 @@ on the touched sources (comment edits only).
 `docs/reference/tool-calling.md`, `docs/reference/metal-backend.md`,
 `TODO.md`, `src/catalog.zig`, `inference/src/formats/gguf.zig`,
 `inference/src/models/muse_glimmer_metal.zig`,
-`inference/src/models/gemma4_metal.zig`, `docs/engineering-log.md`.
+`inference/src/models/gemma4_metal.zig`, `docs/worklog.md`.
 
 **Remaining.** None; the ADR template stays as it was.
 
@@ -3248,7 +3248,7 @@ prompt.
 `inference/generation-check.zig`, `src/agent/loop.zig`,
 `src/tui/{status,event}.zig`, `src/bench.zig`,
 `docs/reference/{speculative-decoding,bench}.md`,
-`docs/engineering-log.md`, `TODO.md`.
+`docs/worklog.md`, `TODO.md`.
 
 **Remaining.** The 4K commit is 10.8 ms per batch, above the 512 target: the
 16-row commit still runs its matmuls through the 16×8 tile and its attention
@@ -3308,7 +3308,7 @@ for verify.
 **Files.** `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`, `inference/metal-check.zig`,
 `docs/reference/{metal-backend,speculative-decoding,bench}.md`,
-`docs/engineering-log.md`, `TODO.md`.
+`docs/worklog.md`, `TODO.md`.
 
 **Remaining.** The verify (5 rows) and the commit beyond 2 rows stay on the
 16×8 tile; the ≤ 130 ms verify and ≤ 110 ms 2-row replay targets are unmet.
@@ -5623,7 +5623,7 @@ numerical change.
 `huggingface/src/main.zig`, `huggingface/README.md`, `src/model.zig`,
 `src/discover.zig`, `src/help.zig`, `Makefile`, `README.md`,
 `docs/spec.md`, `docs/development.md`, `docs/reference/artifacts.md`,
-`docs/engineering-log.md`, `TODO.md`.
+`docs/worklog.md`, `TODO.md`.
 
 **Remaining.** Each file of a set is its own package call, so each lists
 the repository again (about 0.7 s per small file). Remote `model inspect`
@@ -5669,7 +5669,7 @@ size, all parse. No Metal tier: nothing in the runtime calls the loader.
 **Files.** `inference/src/formats/safetensors.zig`,
 `inference/src/root.zig`, `src/cli.zig`, `src/inspect.zig`, `src/help.zig`,
 `docs/reference/safetensors.md`, `docs/architecture.md`,
-`THIRD_PARTY_NOTICES.md`, `docs/engineering-log.md`, `TODO.md`.
+`THIRD_PARTY_NOTICES.md`, `docs/worklog.md`, `TODO.md`.
 
 **Remaining.** No family binds a safetensors checkpoint; `config.json` and
 `tokenizer.json` are downloaded but not read. `decode` covers F32, F16,
@@ -5690,7 +5690,7 @@ keep naming the file, as a record of what those units wrote.
 **Evidence.** `git grep` finds no link to the file outside this log.
 
 **Files.** `docs/research/typesafe-jev.md` (deleted), `TODO.md`,
-`docs/reference/safetensors.md`, `docs/engineering-log.md`.
+`docs/reference/safetensors.md`, `docs/worklog.md`.
 
 ## TERM-13 — Exit keeps the transcript (2026-09-27)
 
@@ -5709,7 +5709,7 @@ Metal): `until=ready` then Ctrl-D, the capture `exit-after` shows the whole
 banner and the warm-up notice, then the shell's output on the next line.
 The user confirmed the exit on Ghostty.
 
-**Files.** `src/tui/screen.zig`, `docs/engineering-log.md`.
+**Files.** `src/tui/screen.zig`, `docs/worklog.md`.
 
 **Remaining.** The lease still writes a CRLF after `finish`, which leaves
 one blank line before the shell prompt.
@@ -5755,7 +5755,7 @@ driver execs the shell through `/usr/bin/env` instead.
 
 **Files.** `src/completion.zig` (new), `src/cli.zig`, `src/help.zig`,
 `src/config.zig`, `Makefile`, `README.md`, `docs/spec.md`,
-`docs/development.md`, `docs/architecture.md`, `docs/engineering-log.md`,
+`docs/development.md`, `docs/architecture.md`, `docs/worklog.md`,
 `TODO.md`.
 
 **Remaining.** The fish shim's fallback for fish 3 (`commandline -opc`)
@@ -5785,7 +5785,7 @@ finds no other `= undefined` followed by `&x.?`. Scope of the old bug:
 affected; ReleaseFast builds (the CPU gates' build mode) verified
 repository-id pulls by git blob rather than SHA-256.
 
-**Files.** `huggingface/src/hub.zig`, `docs/engineering-log.md`.
+**Files.** `huggingface/src/hub.zig`, `docs/worklog.md`.
 
 **Remaining.** No unit test catches the pattern: it is undefined
 behaviour the Debug test build does not show.
@@ -5875,7 +5875,7 @@ or family forward changed.
 (`laya-vocabulary`, `laya-cpu`, model `laya`), `docs/reference/laya.md`
 (new), `docs/reference/tokenizer.md`, `docs/reference/artifacts.md`,
 `docs/spec.md`, `docs/architecture.md`, `docs/development.md`,
-`THIRD_PARTY_NOTICES.md`, `TODO.md`, `docs/engineering-log.md`.
+`THIRD_PARTY_NOTICES.md`, `TODO.md`, `docs/worklog.md`.
 
 **Remaining.** CPU only (MODL-31 adds Metal). The multilingual and
 typed-decisions checkpoints are not pinned or checked. The package's
@@ -5910,7 +5910,7 @@ verify-cpu, 1 verify-long), 10 models, valid.
 **Files.** `gates.json`, `Makefile` (the `verify-long` help),
 `docs/development.md` (the tier table), `docs/reference/gemma4.md`,
 `docs/reference/eval.md`, `tests/fixtures/provenance.md`,
-`docs/engineering-log.md`.
+`docs/worklog.md`.
 
 **Remaining.** `workloads.json` still defines `gemma4-12b/prose512` and
 `gemma4-12b/acceptance` on the same file; they are records, run only on
@@ -5995,7 +5995,7 @@ self-tests.
 `src/eval.zig`, `src/help.zig`, `Makefile`, `workloads.json`,
 `AGENTS.md`, `docs/development.md` (§ Gates, § What each gate protects,
 the workload list), `docs/reference/eval.md`, `TODO.md`,
-`docs/engineering-log.md`.
+`docs/worklog.md`.
 
 **Remaining.** The CPU tier was not re-timed: its baseline run was
 stopped when a recompile skewed it, and KERN-19 (the threaded CPU
@@ -6059,7 +6059,7 @@ neither run. `make verify`: 33/33 in 254 s
 `inference/laya-check.zig`, `inference/metal-check.zig`,
 `src/{decide,help,completion}.zig`, `gates.json`,
 `docs/reference/laya.md`, `docs/architecture.md`, `docs/spec.md`,
-`docs/development.md`, `TODO.md`, `docs/engineering-log.md`.
+`docs/development.md`, `TODO.md`, `docs/worklog.md`.
 
 **Remaining.** Attention is the scalar per-(row, head) kernel, 45 % of a
 512-token forward; a kernel sharing key blocks across a tile of queries
@@ -6132,7 +6132,7 @@ named. `make verify`: 36/36 in 258 s (the
 `scripts/laya-reference.py`, `src/{catalog,help}.zig`, `gates.json`,
 `docs/reference/{laya,tokenizer,artifacts}.md`, `docs/spec.md`,
 `docs/development.md`, `THIRD_PARTY_NOTICES.md`, `TODO.md`,
-`docs/engineering-log.md`.
+`docs/worklog.md`.
 
 **Remaining.** No choice of checkpoint by language (the package's
 `Router`): the caller passes `--model laya-multilingual`. Loading parses
@@ -6192,7 +6192,7 @@ writes the same table before and after. `make verify-auto` from
 `profile-alias-check`, `release`, `tokenizer-nfc`, `tui-shot`),
 `Makefile`, `gates.json`, `tests/fixtures/agent-eval/AGENTS.md` (no
 longer names the playground's own generator), `AGENTS.md`,
-`docs/development.md`, `TODO.md`, `docs/engineering-log.md`.
+`docs/development.md`, `TODO.md`, `docs/worklog.md`.
 
 **Remaining.** The pinned agent-eval tables (AGNT-13 onward) were
 measured on `~/Code/playground`, whose `measurements.txt`, extra
@@ -6236,7 +6236,7 @@ the corpus from `.reference/eval`), all passing. Sizes after: 1.5 GB in
 `scripts/reference-split.cpp`, `docs/development.md`,
 `docs/reference/{reference-baseline,bonsai,eval,generation,new-model-guide,prompt-profile,quantization}.md`,
 `tests/fixtures/provenance.md`, `THIRD_PARTY_NOTICES.md`,
-`docs/engineering-log.md`.
+`docs/worklog.md`.
 
 **Remaining.** Another machine sets `.reference/` up once with the
 recipes in `reference-baseline.md` and `development.md`; nothing
@@ -6257,7 +6257,7 @@ correctness and the hand-run cases in a paragraph and leaves the rest to
 correctness and speed, and the manual cases run on both checkpoints on
 2026-09-29 at `0942463` for the answers.
 
-**Files.** `README.md`, `docs/engineering-log.md`.
+**Files.** `README.md`, `docs/worklog.md`.
 
 ## REPO-25 — A gate whose model is absent is skipped, not failed (2026-09-30)
 
@@ -6279,7 +6279,7 @@ names the skip. The self-test adds `test_missing_models_are_listed`;
 `make lint-py` is clean.
 
 **Files.** `scripts/gates.py`, `Makefile`, `docs/development.md`,
-`docs/engineering-log.md`.
+`docs/worklog.md`.
 
 ## KERN-19 — A threaded CPU reference, bit-identical: the CPU tier in 22 minutes (2026-09-30)
 
@@ -6343,7 +6343,7 @@ three reruns passed with identical numbers. `make verify`: 36/36 in
 `inference/src/vision/{gemma4,qwen3vl,muse_glimmer,projector}.zig`,
 `inference/src/engine.zig`, `inference/{generation,metal}-check.zig`,
 `docs/reference/speculative-decoding.md`, `docs/development.md`,
-`AGENTS.md`, `TODO.md`, `docs/engineering-log.md`.
+`AGENTS.md`, `TODO.md`, `docs/worklog.md`.
 
 **Remaining.** `muse-vision-cpu` (447 s) and `qwen38-speculative-cpu`
 (308 s) now bound the tier. They were not profiled; the vision
@@ -6379,7 +6379,7 @@ speculative-decoding literature for hybrid models is summarized in the ADR's *Ex
 evidence*, measured and claimed figures marked apart.
 
 **Files.** `docs/adr/0001-qwen-decode-verifier.md`,
-`docs/engineering-log.md`.
+`docs/worklog.md`.
 
 **Limitations.** Every throughput figure in the ADR is a target or a
 calculation; the Qwen correctness gates it names are not implemented, and

@@ -26,6 +26,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "tildaslashalef/nuclis"
 SKIP = {"CHANGELOG.md"}
+# Files whose `docs/…` strings are test data or a deliberate old path (the
+# changelog reads the log at tags from before its rename).
+NO_REWRITE = {"scripts/docs-check.py", "scripts/changelog.py"}
+# The plan names old paths on purpose; only its Markdown links follow a move.
+LINKS_ONLY = {"TODO.md"}
 LINK = re.compile(r"(!?\[(?:[^\]\[]|\[[^\]]*\])*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
 REF_DEF = re.compile(r"^( {0,3}\[[^\]]+\]:\s+)(\S+)", re.MULTILINE)
 CODE_SPAN = re.compile(r"`+[^`\n]*`+")
@@ -216,6 +221,8 @@ def check(files):
         return None
 
     for path in files:
+        if path in NO_REWRITE:
+            continue
         if is_markdown(path):
             text = (ROOT / path).read_text()
             for start, _, target in links(text):
@@ -241,23 +248,29 @@ def check(files):
 def move(spec):
     moves, anchor_moves = parse_moves(spec)
     files = tracked()
-    for old in moves:
-        if old not in files:
-            raise SystemExit(f"docs-check: {old} is not a tracked file")
     for old, new in moves.items():
-        os.makedirs(ROOT / posixpath.dirname(new), exist_ok=True)
-        subprocess.run(["git", "mv", old, new], cwd=ROOT, check=True)
+        if old in files:
+            os.makedirs(ROOT / posixpath.dirname(new), exist_ok=True)
+            subprocess.run(["git", "mv", old, new], cwd=ROOT, check=True)
+        elif new not in files:
+            raise SystemExit(f"docs-check: {old} is not a tracked file")
+    # An interrupted move is resumed: the files list after the moves, by old path.
+    files = [next((o for o, n in moves.items() if n == p), p) for p in tracked()]
     changed = 0
     for old_path in files:
+        if old_path in NO_REWRITE:
+            continue
         new_path = moves.get(old_path, old_path)
         file = ROOT / new_path
         if is_markdown(old_path):
             text = file.read_text()
             out = rewrite_markdown(text, old_path, new_path, moves, anchor_moves)
-            out = rewrite_paths(out, moves, anchor_moves)
+            if old_path not in LINKS_ONLY:
+                out = rewrite_paths(out, moves, anchor_moves)
         elif is_other_text(old_path):
-            text = file.read_text(errors="strict") if file.suffix != ".png" else None
-            if text is None:
+            try:
+                text = file.read_text()
+            except UnicodeDecodeError:
                 continue
             out = rewrite_paths(text, moves, anchor_moves)
         else:

@@ -9,7 +9,7 @@
 # deliberately: `test-metal`, `compare`, `bench`, and anything that pulls a
 # model. Those need the pinned 16.5 GB artifact and the real M4 Pro; a number
 # measured on a virtualised GPU would be a number nobody should trust, and
-# their evidence belongs in docs/engineering-log.md.
+# their evidence belongs in docs/worklog.md.
 #
 # A push whose commits together touch only documentation or the website
 # (`site/`) does not run it;

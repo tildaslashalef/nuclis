@@ -10,7 +10,7 @@ GPU-resident Metal backend (`-Dmetal=true`), `generate`, `bench`,
 `tokenize`, `config`, `model pull` / `model ls`, and the `nuclis agent`
 surface work; see
 [../TODO.md](../TODO.md) for what is in progress and
-[engineering-log.md](engineering-log.md) for what
+[worklog.md](worklog.md) for what
 closed. Teacher-forced scoring (`eval`) is a future increment.
 
 ```text
@@ -25,7 +25,7 @@ inference/           engine library: runtime, quantization, tokenizer,
                      sampling, backends, profiles
 huggingface/         Hub download library (Xet) and its standalone binary;
                      imported by src/ only
-docs/                spec, architecture, guides, reference, engineering log
+docs/                spec, architecture, guides, reference, worklog
 site/                the nuclis.dev website: static HTML, CSS, JS, no build
 TODO.md              active plan: unfinished units only
 build.zig            build
@@ -124,7 +124,7 @@ make the registry cheaper than the recipes it replaced:
 | --- | --- | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the Metal plan, and the 12B QAT file's CPU gates | the Metal plan | the CPU reference |
 | covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities (`*-perplexity-full`), the Gemma 12B QAT file, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
-| cost | minutes (40 gates in 311 s measured 2026-10-02 with `clef-sequences` and `clef-metal`, MODL-34; 38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; engineering log, REPO-20, MODL-31, MODL-33; then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 25 min (15 gates, 1,523 s measured 2026-10-02 with `clef-cpu`, 368 s; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, KERN-19, MODL-34) |
+| cost | minutes (40 gates in 311 s measured 2026-10-02 with `clef-sequences` and `clef-metal`, MODL-34; 38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; worklog, REPO-20, MODL-31, MODL-33; then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 25 min (15 gates, 1,523 s measured 2026-10-02 with `clef-cpu`, 368 s; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, KERN-19, MODL-34) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same (CPU gates as `verify-cpu`) | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | every unit that touched the inference stack | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
@@ -415,7 +415,7 @@ mode used.
 
 Audited 2026-10-03 against the
 [0.17.0 release notes](https://ziglang.org/download/0.17.0/release-notes.html)
-([REPO-29](engineering-log.md#repo-29--zig-0170-the-tree-migrated-and-its-features-adopted-2026-10-03-two-sessions)); counts are grep results over the
+([REPO-29](worklog.md#repo-29--zig-0170-the-tree-migrated-and-its-features-adopted-2026-10-03-two-sessions)); counts are grep results over the
 tree. 0.16's adoption of the `Io` interface stands, as does the decision to
 skip its concurrency layer.
 
@@ -952,7 +952,7 @@ judged on the pass marks, the habit counts, and the medians rather than
 the means. This is how a change to the system prompt, a tool description,
 or the loop is judged: before and after, on the same list and seeds, and
 the log entry cites the table; the first record is
-[AGNT-13](engineering-log.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22).
+[AGNT-13](worklog.md#agnt-13--the-system-prompt-as-sections-measured-the-playground-task-list-the-guidelines-that-changed-behaviour-the-instructions-file-2026-09-22).
 `scripts/agent-tokens.py <variant> [<variant> …]` says where a variant's
 prefill went: per tool, the calls, the tokens their results added (counted
 by `nuclis tokenize --raw`, the engine's own tokenizer), and each tool's
@@ -1105,7 +1105,7 @@ global cache per commit, restoring the newest. **Not** in CI: `test-metal`,
 `verify`, `bench`, and anything that pulls a model — they need the pinned
 artifacts and the real M4 Pro, and a rate measured on a virtualised GPU is a
 number nobody should trust. Those gates stay local and their evidence stays
-in the engineering log.
+in the worklog.
 
 **`release.yml`** (a `v*` tag) refuses to publish, before it builds anything,
 unless:
@@ -1240,7 +1240,7 @@ build options.
   exists.
 - `CHANGELOG.md` leads with the work, not the commits (`scripts/changelog.py`):
   the highlights; one line per unit the commits name (`AREA-NN`), titled by
-  its engineering-log heading and linked to it at the tag; breaking changes
+  its worklog heading and linked to it at the tag; breaking changes
   (`!` or `BREAKING CHANGE:`); `feat`/`fix`/`perf` commits outside any unit;
   every commit folded into `<details>`; a compare link. `make changelog
   ARGS='vX.Y.Z --dry-run'` previews it, `--range A..B` regenerates a past
@@ -1253,7 +1253,7 @@ build options.
 
 Follow the commit convention in [../AGENTS.md](../AGENTS.md). As coherent
 increments pass their acceptance checks, record the outcome in
-[engineering-log.md](engineering-log.md) and remove the
+[worklog.md](worklog.md) and remove the
 unit from [../TODO.md](../TODO.md); keep tests, relevant documentation, and
 that tracker update in the code commit.
 
@@ -1425,7 +1425,7 @@ license texts on the web. Do not commit license text files.
 
 - Keep product requirements and acceptance criteria in [spec.md](spec.md); the
   the active plan lives in [../TODO.md](../TODO.md) and closed units in
-  [engineering-log.md](engineering-log.md).
+  [worklog.md](worklog.md).
 - Add supporting architecture decisions, benchmark reports, and operating guides
   under `docs/` when there is concrete information to record.
 - Link new documents from [README.md](README.md).

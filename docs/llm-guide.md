@@ -1024,7 +1024,7 @@ from a hunch.
 
 Read: [reference/bench.md](reference/bench.md),
 [development.md § Gates](development.md#gates),
-[engineering-log.md](engineering-log.md).
+[worklog.md](worklog.md).
 
 ---
 

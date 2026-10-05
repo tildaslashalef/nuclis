@@ -3,7 +3,7 @@
 How nuclis turns an image into embedding rows the language model consumes,
 family by family. The shared contract, the preprocessing, each projector's
 tensor facts and provenance, the pinned traces, and the memory. The units
-that built it are in the [engineering log](../engineering-log.md): `MODL-21`
+that built it are in the [worklog](../worklog.md): `MODL-21`
 (Qwen3.8), `AGNT-15` (the chat), `MODL-24` (decode after an image),
 `MODL-22` (Gemma 4), and `MODL-23` (Muse Glimmer).
 

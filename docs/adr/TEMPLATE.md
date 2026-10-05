@@ -34,5 +34,5 @@ benefit. End with the condition that would reopen it: "revisit if ...".
 
 ## Related
 
-- The [engineering log](../engineering-log.md#anchor) entry that produced it.
+- The [engineering log](../worklog.md#anchor) entry that produced it.
 - The document, unit, or ADR this extends or supersedes.

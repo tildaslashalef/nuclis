@@ -16,5 +16,5 @@
 
 ## Optional
 
-- [Engineering log](https://github.com/tildaslashalef/nuclis/blob/main/docs/engineering-log.md): every closed unit of work and its evidence
+- [Worklog](https://github.com/tildaslashalef/nuclis/blob/main/docs/worklog.md): every closed unit of work and its evidence
 - [Decision Dungeons](https://github.com/tildaslashalef/decision-dungeons): a playground where decision models make every call

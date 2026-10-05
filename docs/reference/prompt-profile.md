@@ -131,7 +131,7 @@ newline before `<channel|>`, so trimmed text plus the template's own
 `\n<channel|>` reproduces the model's bytes when it wrote that newline and the
 session's incremental prefill hits; when the model closes the channel with no
 newline the next step replays from the primed prefix instead (measured on
-the first step of the live check in the engineering log). Two assistant
+the first step of the live check in the worklog). Two assistant
 messages in a row continue one `model` turn (contents trimmed and
 concatenated, no marker between them). Assistant content or reasoning
 carrying any control marker (`<|channel>`, `<channel|>`, the six tool

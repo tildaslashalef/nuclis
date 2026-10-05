@@ -3,7 +3,7 @@
 The reference document of the speculative-decoding theme. Its requirements
 are in the [spec](../spec.md#56-speculative-decoding); the units that fill it
 in are planned in [TODO.md](../../TODO.md); closed outcomes are cited from
-the [engineering log](../engineering-log.md).
+the [worklog](../worklog.md).
 
 As of 2026-10-01 every catalogue family with a draft source is measured
 and the defaults follow the record

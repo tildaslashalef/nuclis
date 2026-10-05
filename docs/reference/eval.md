@@ -4,7 +4,7 @@
 ranks a quantization, a cache precision, or a kernel's rounding against the
 reference over thousands of positions, where the trace gates see two or
 three. The unit that built it is `APPS-14` in the
-[engineering log](../engineering-log.md); `MODL-26` is the Gemma 4 `verify`
+[worklog](../worklog.md); `MODL-26` is the Gemma 4 `verify`
 fix it surfaced.
 
 ## The method

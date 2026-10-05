@@ -25,7 +25,7 @@ Two files carry the project's state, and every session starts from them:
 | File | Holds | Changes when |
 | --- | --- | --- |
 | [TODO.md](TODO.md) | the active plan: unfinished units only, with a *Where we are* hand-off note | a plan is written, a session ends, a unit closes |
-| [docs/engineering-log.md](docs/engineering-log.md) | the durable, append-only record of every unit ever closed, with its evidence | a unit closes (entry **and** table row, together) |
+| [docs/worklog.md](docs/worklog.md) | the durable, append-only record of every unit ever closed, with its evidence | a unit closes (entry **and** table row, together) |
 
 **A fresh session is in one of two states.** Read `TODO.md` first; it
 tells you which.
@@ -56,8 +56,10 @@ reference's driver) reads them in its first session and ends that session
 by rewriting its section at that level, committed before any code.
 
 **Closing a unit** happens in one commit: append its outcome, evidence,
-files, and remaining limitations to the engineering log and add its row to
-the log's table; update the documents it changed; delete its section and
+files, and remaining limitations to the worklog and add its row to
+the log's table, its identifier linking the entry's heading
+(`| [AREA-NN](#anchor) |`, checked by `make docs-check`); update the
+documents it changed; delete its section and
 row from `TODO.md`; refresh *Where we are*. When the last unit closes,
 empty `TODO.md` back to its header.
 
@@ -325,7 +327,7 @@ Do not add `Co-Authored-By:` or any other co-author/attribution trailer to
 commits.
 
 [TODO.md](TODO.md) tracks the units in progress and
-[docs/engineering-log.md](docs/engineering-log.md) the
+[docs/worklog.md](docs/worklog.md) the
 units that closed. Update them in the same commit as the work they describe.
 Close a unit only when its acceptance checks pass; record partial work and
 missing prerequisites explicitly in `TODO.md`. Keep requirements in
@@ -356,7 +358,7 @@ save the next reader the most time.
 
 ### Unit identifiers
 
-`TODO.md`, `docs/roadmap.md`, and `docs/engineering-log.md` label
+`TODO.md`, `docs/roadmap.md`, and `docs/worklog.md` label
 units with an `AREA-NN` identifier (`AGNT-07`, `MODL-03`): a frozen
 four-letter area and a zero-padded sequence number within that area.
 
@@ -377,7 +379,7 @@ Numbers are assigned within an area in the order units close, are never
 reused, and a unit that spans sessions keeps one number. The area letters are
 arbitrary; the number carries no meaning beyond sequence.
 
-`docs/engineering-log.md` is append-only and is never emptied, so a
+`docs/worklog.md` is append-only and is never emptied, so a
 closed unit's heading is its identifier's **permanent anchor**. Treat an
 identifier as a *citation*, never as the explanation:
 
