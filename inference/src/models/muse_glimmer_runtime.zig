@@ -1,6 +1,6 @@
 //! CPU execution of the pinned Muse Glimmer 30B schedule: the numerical
 //! reference `muse_glimmer_metal.zig` is compared against, written from the
-//! forward pass recorded in docs/reference/muse-glimmer.md. Immutable weight
+//! forward pass recorded in docs/models/muse-glimmer.md. Immutable weight
 //! views and the binding borrow the loaded model; this runtime owns the
 //! session (one attention cache per layer, F32) and its workspace. A failed
 //! step poisons the session. Text only: no vision.

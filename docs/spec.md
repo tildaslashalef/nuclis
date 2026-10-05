@@ -147,11 +147,11 @@ Requirements:
 - The user root is `~/.nuclis` (`NUCLIS_HOME` overrides it with an absolute
   path); models live under `models/<owner>/<repo>/<file>`.
 
-Read: [reference/artifacts.md](reference/artifacts.md),
+Read: [models/catalogue.md](models/catalogue.md),
 [engine/gguf.md](engine/gguf.md), and the
-family documents [reference/gemma4.md](reference/gemma4.md),
-[reference/muse-glimmer.md](reference/muse-glimmer.md),
-[reference/bonsai.md](reference/bonsai.md).
+family documents [models/gemma4.md](models/gemma4.md),
+[models/muse-glimmer.md](models/muse-glimmer.md),
+[models/bonsai.md](models/bonsai.md).
 
 ## 5. Engine requirements
 
@@ -261,7 +261,7 @@ Shared kernels **may** gain parameters and instantiations; a kernel that
 exists for one family's shape stays explicitly specialized until another
 family shows reuse.
 
-Read: [reference/new-model-guide.md](reference/new-model-guide.md).
+Read: [models](models/README.md).
 
 ### 5.8 Configuration
 
@@ -348,7 +348,7 @@ clef-flash:
   to the processor's grid (at least 65,536 pixels, at most the projector
   plan's 1,024 tokens); Laya, or clef without its projector, refuses them.
 
-Read: [reference/laya.md](reference/laya.md), [reference/clef.md](reference/clef.md).
+Read: [models/laya.md](models/laya.md), [models/clef-flash.md](models/clef-flash.md).
 
 ## 6. Command-line interface
 

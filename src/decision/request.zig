@@ -2,7 +2,7 @@
 //! `state` or `states`) into the questions and states `inference.decide`
 //! answers. Shared by `nuclis decide --request` and the API; knows no HTTP.
 //! A `{"file": path}` state is read only when the caller allows files.
-//! docs/reference/laya.md § nuclis decide.
+//! docs/models/laya.md § nuclis decide.
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../config.zig");

@@ -1,6 +1,6 @@
 //! The activation-side half of a folded Hadamard rotation: a ±1 sign flip
 //! and the normalized Sylvester Walsh-Hadamard transform applied in place
-//! to each block of `block` consecutive elements (docs/reference/bonsai.md).
+//! to each block of `block` consecutive elements (docs/models/bonsai.md).
 //! `H[r][c] = (-1)^popcount(r & c) / sqrt(block)` is symmetric and
 //! orthonormal, so the same butterflies serve the inverse; only the order
 //! of the sign flip differs. Block work happens in F64 scratch, so this is a

@@ -37,8 +37,8 @@ same `--logits`/`--trace-dir` oracle as the CPU backend ([sampling.md](sampling.
 | `backends/metal/dequant.metal` | GGUF block decoders, ported line by line from `quant/decode.zig`. Bit-exact with the CPU decoders. |
 | `backends/metal/kernels.metal` | Compute kernels: generic matvec, specialized matvec for Q3_K/Q4_K/Q5_K/Q6_K/IQ3_S/IQ4_XS/Q4_0, merged projections (plain, SiLU pair, GELU pair) and their forced split-K twins, embed, rmsnorm, l2norm, rope, add, silu·mul, silu, gelu·mul, quick-gelu·mul, scale, add·scale, softcap, delta gates, sigmoid gate, DeltaNet, convolution, three-pass decode attention (templated on the cache type), flash-decoding attention (templated on cache type, heads per group, channels per lane: two instantiation pairs) + merge, argmax (2), partial top-k + exp-sum (3), batched prefill matmul, chunk forms (rope rows, convolution rows + history, copy), causal chunk attention with window, bidirectional span, and value splits (F32 and half instantiations), chunkwise DeltaNet, F16 packing. |
 | `models/qwen35_metal.zig` | `Plan`: the Qwen schedule expressed as encoder calls. Owns the session and activation buffers; borrows weights and the backend. |
-| `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule (MODL-06) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../reference/gemma4.md#metal-plan-modl-06-2026-09-11)). |
-| `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule (MODL-12) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../reference/muse-glimmer.md#metal-plan-modl-12-2026-09-19)). |
+| `models/gemma4_metal.zig` | `Plan`: the Gemma 4 12B schedule (MODL-06) on the same encoders; sliding-window slices, two RoPE tables, the wide global-layer attention ([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11)). |
+| `models/muse_glimmer_metal.zig` | `Plan`: the Muse Glimmer 30B schedule (MODL-12) on the same encoders; adjacent-pair RoPE on sliding layers only, the sigmoid attention gate, the untied scaled head ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19)). |
 | `metal-check.zig` | Explicit GPU checks against pinned fixtures and CPU references; `--matvec-bench` measures the matvec kernels' achieved bandwidth. |
 
 The MSL source is assembled at compile time: the IQ3_S codebook is emitted from
@@ -543,12 +543,12 @@ measured fixture, the exactness of which `make test-metal` holds at 2/4/8
 splits against the F64 CPU reference. The sweep and its reading are in
 [bench.md § Split-K matvec sweep](../reference/bench.md#split-k-matvec-sweep-kern-15-2026-09-21);
 the family-facing note in
-[muse-glimmer.md § Metal plan](../reference/muse-glimmer.md#metal-plan-modl-12-2026-09-19).
+[muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19).
 
 ### Ternary matvecs and tiles (KERN-10, 2026-09-18)
 
 Bonsai 2 27B's PQ2_0 (id 142, 34 B per 128 values) and PTQ1_0 (id 143,
-28 B; [bonsai.md](../reference/bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc))
+28 B; [bonsai.md](../models/bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc))
 got `nu_dequant_pq2_0` / `nu_dequant_ptq1_0` (and `nu_dequant_bf16` for
 the file's `ssm_alpha` / `ssm_beta` rows) in the generic library,
 `nu_matvec_pq2_0` / `nu_matvec_ptq1_0`, and the `nu_tile_*` decoders
@@ -606,7 +606,7 @@ tiles match the set.
 ### The Hadamard transform kernel (KERN-10 session 2, 2026-09-18)
 
 `nu_hadamard` is the activation side of the folded rotation
-(`cpu.hadamard`, [bonsai.md § Rotation](../reference/bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it)):
+(`cpu.hadamard`, [bonsai.md § Rotation](../models/bonsai.md#rotation-prismhadamard-as-the-forks-loader-reads-it)):
 in place over `rows` rows of `width` floats at a stride, per 1,024-block,
 forward `x = H (signs ⊙ x)` or inverse `x = signs ⊙ (H x)`, scale 1/32
 exactly. One 256-thread group per block of one row; each thread owns four
@@ -640,7 +640,7 @@ token, not from this number.
 ### The rotation on the Qwen plan (MODL-17, 2026-09-18)
 
 `qwen35_metal.zig` applies the transform where the CPU reference does
-([bonsai.md § Metal plan](../reference/bonsai.md#metal-plan-modl-17-2026-09-18)): the
+([bonsai.md § Metal plan](../models/bonsai.md#metal-plan-modl-17-2026-09-18)): the
 inverse over the embedding row(s) after the gather, the forward over the
 normed residual before the mixer's projections, over the mixer output
 before `attn_output` / `ssm_out`, over the normed residual before the FFN
@@ -816,7 +816,7 @@ is half the executed one. Larger chunks fill the tiles (the third column
 is `n / (32 · tiles)`), which is why the per-token cost falls with the
 chunk while the GB/s does not move; the adapter's chunk size for this
 family is a memory/latency trade the Metal plan decides (512, measured in
-[gemma4.md § 26B-A4B](../reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)). Against the
+[gemma4.md § 26B-A4B](../models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)). Against the
 alternative of looping the decode kernels over the chunk (2,048 × 3.3 MB
 = 6.8 GB per layer at the decode rate, about 40 ms), the tiles are four
 times faster at 256 tokens and six at 1,024. Follow-ups, not in scope: a
@@ -828,7 +828,7 @@ families.
 **In the adapter** (MODL-09, 2026-09-18). `gemma4_metal.zig` records the
 decode chain after the dense FFN of every 26B-A4B layer and the prefill
 chain over each chunk's rows, both from the same `feedForward` shape as
-the CPU reference ([gemma4.md § 26B-A4B](../reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
+the CPU reference ([gemma4.md § 26B-A4B](../models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)).
 The three expert tensors are wrapped whole (no copy, 14.2 GB resident)
 and the router, an F32 128 × 2,816 matrix, is the first F32 matrix a plan
 dispatches: the generic matvec and the generic F32 tile decode it
@@ -1773,7 +1773,7 @@ separate the half-tile rounding from the chunk schedule: Qwen 2.4e-3 /
 1.1e-4 with the specialized tiles, 2.8e-5 / 1.2e-6 with the F32 tiles;
 F16 cache 5.5e-4 / 2.4e-5 stepped, 2.6e-3 / 1.3e-4 chunked (2026-09-11).
 The second model's numbers are in
-[gemma4.md § Metal plan](../reference/gemma4.md#metal-plan-modl-06-2026-09-11).
+[gemma4.md § Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11).
 
 ## Performance observation
 

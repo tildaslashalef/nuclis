@@ -8,7 +8,7 @@
 // Block sizes in bytes / elements per block:
 //   F32 4/1  F16 2/1  BF16 2/1  Q8_0 34/32  IQ4_NL 18/32  Q4_0 18/32
 //   Q3_K 110/256  Q4_K 144/256  Q5_K 176/256  Q6_K 210/256  IQ3_S 110/256  IQ4_XS 136/256
-//   PQ2_0 34/128  PTQ1_0 28/128 (the PrismML fork's ternary blocks; docs/reference/bonsai.md)
+//   PQ2_0 34/128  PTQ1_0 28/128 (the PrismML fork's ternary blocks; docs/models/bonsai.md)
 
 inline float nu_half(device const uchar * b) {
     ushort bits = ushort(b[0]) | (ushort(b[1]) << 8);

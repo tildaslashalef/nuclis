@@ -2,7 +2,7 @@
 //! These describe on-disk block sizes, not available numerical kernels.
 //! Source: ggml-org/llama.cpp, ggml/src/ggml-common.h (see docs/engine/gguf.md);
 //! ids 142 and 143 are the PrismML fork's group-128 ternary blocks
-//! (docs/reference/bonsai.md).
+//! (docs/models/bonsai.md).
 const std = @import("std");
 
 pub const Layout = struct {

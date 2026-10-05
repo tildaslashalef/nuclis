@@ -50,7 +50,7 @@ inventory was also cross-checked with an independent Python wire-format reader.
 | Declared context | 262,144 tokens |
 
 Stored elements include auxiliary tensors; this is not a count of parameters
-used by the eventual text execution path. The [Qwen adapter](../reference/qwen-validation.md)
+used by the eventual text execution path. The [Qwen adapter](../models/qwen3.8.md)
 validates this tensor mapping and distinguishes 64 decoder layers from the
 auxiliary block; generic inspection does not perform that architecture-specific check.
 

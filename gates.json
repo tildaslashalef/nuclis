@@ -756,7 +756,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/laya.md"
+   "evidence": "docs/models/laya.md"
   },
   {
    "name": "laya-metal",
@@ -784,7 +784,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/laya.md"
+   "evidence": "docs/models/laya.md"
   },
   {
    "name": "laya-multilingual-vocabulary",
@@ -832,7 +832,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/laya.md"
+   "evidence": "docs/models/laya.md"
   },
   {
    "name": "laya-multilingual-metal",
@@ -860,7 +860,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/laya.md"
+   "evidence": "docs/models/laya.md"
   },
   {
    "name": "clef-sequences",
@@ -884,7 +884,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/clef.md"
+   "evidence": "docs/models/clef-flash.md"
   },
   {
    "name": "clef-metal",
@@ -917,7 +917,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/clef.md"
+   "evidence": "docs/models/clef-flash.md"
   },
   {
    "name": "clef-cpu",
@@ -949,7 +949,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/clef.md"
+   "evidence": "docs/models/clef-flash.md"
   },
   {
    "name": "gemma4-qat-trace-cpu",
@@ -1005,7 +1005,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-qat-trace-f32",
@@ -1060,7 +1060,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-qat-trace-f16",
@@ -1115,7 +1115,7 @@
     "max_absolute": 1.0,
     "max_relative_rms": 0.05
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-qat-generation-metal",
@@ -1147,7 +1147,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-26b-a4b-trace-cpu",
@@ -1204,7 +1204,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-26b-a4b-trace-f32",
@@ -1259,7 +1259,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-26b-a4b-trace-f16",
@@ -1314,7 +1314,7 @@
     "max_absolute": 1.0,
     "max_relative_rms": 0.05
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-26b-a4b-generation-metal",
@@ -1346,7 +1346,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-26b-a4b-vision-metal",
@@ -1549,7 +1549,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/muse-glimmer.md"
+   "evidence": "docs/models/muse-glimmer.md"
   },
   {
    "name": "muse-trace-f32",
@@ -1605,7 +1605,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/muse-glimmer.md"
+   "evidence": "docs/models/muse-glimmer.md"
   },
   {
    "name": "muse-trace-f16",
@@ -1661,7 +1661,7 @@
     "max_absolute": 0.1,
     "max_relative_rms": 0.0003
    },
-   "evidence": "docs/reference/muse-glimmer.md"
+   "evidence": "docs/models/muse-glimmer.md"
   },
   {
    "name": "muse-generation-metal",
@@ -1694,7 +1694,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/muse-glimmer.md"
+   "evidence": "docs/models/muse-glimmer.md"
   },
   {
    "name": "muse-draft-trace-metal",
@@ -1916,7 +1916,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/bonsai.md"
+   "evidence": "docs/models/bonsai.md"
   },
   {
    "name": "bonsai-trace-f32",
@@ -1968,7 +1968,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/bonsai.md"
+   "evidence": "docs/models/bonsai.md"
   },
   {
    "name": "bonsai-trace-f16",
@@ -2020,7 +2020,7 @@
     "max_absolute": 0.03,
     "max_relative_rms": 0.0002
    },
-   "evidence": "docs/reference/bonsai.md"
+   "evidence": "docs/models/bonsai.md"
   },
   {
    "name": "bonsai-generation-metal",
@@ -2054,7 +2054,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/bonsai.md"
+   "evidence": "docs/models/bonsai.md"
   },
   {
    "name": "qwen38-perplexity",
@@ -2319,7 +2319,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-e4b-trace-f32",
@@ -2374,7 +2374,7 @@
     "max_absolute": 0.002,
     "max_relative_rms": 0.0001
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-e4b-trace-f16",
@@ -2429,7 +2429,7 @@
     "max_absolute": 0.05,
     "max_relative_rms": 0.002
    },
-   "evidence": "docs/reference/gemma4.md",
+   "evidence": "docs/models/gemma4.md",
    "note": "measured 0.013 / 4.3e-4 at bring-up (MODL-27); the 12B's 1.0 / 0.05 is its unscaled keys' rounding"
   },
   {
@@ -2462,7 +2462,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-e4b-generation-cpu",
@@ -2497,7 +2497,7 @@
     "kind": "exit"
    },
    "note": "about 15 s per token",
-   "evidence": "docs/reference/gemma4.md"
+   "evidence": "docs/models/gemma4.md"
   },
   {
    "name": "gemma4-e4b-vision-metal",

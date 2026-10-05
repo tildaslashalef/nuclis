@@ -337,12 +337,12 @@ script takes the geometry as flags (`--embedding`, `--layers`, `--vocab`;
 the defaults are Qwen3.8's), so the same pair serves Gemma 4
 (`make gate NAME='gemma4-trace-*'` on the K-quant entry, `gemma4-qat-trace-*`
 on the QAT file, each against its own traces;
-[gemma4.md](../reference/gemma4.md#cpu-reference-against-the-oracle-modl-05-2026-09-11)).
+[gemma4.md](../models/gemma4.md#cpu-reference-against-the-oracle-modl-05-2026-09-11)).
 Top-five IDs and reference greedy margin are reported for diagnosis. The
 harness also builds unchanged against the PrismML fork (the include and
 library paths of `.reference/prism-llama.cpp`, output
 `.zig-cache/generation/prism-reference-generation`), which is how the Bonsai
-2 27B traces were captured ([bonsai.md](../reference/bonsai.md#oracle-the-prismml-fork)).
+2 27B traces were captured ([bonsai.md](../models/bonsai.md#oracle-the-prismml-fork)).
 
 The explicit session test runs the real two-token sequence in two independent
 sessions and after reset following injected cancellation in layer 3. Logits must

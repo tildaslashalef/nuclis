@@ -357,7 +357,7 @@ kernel void nu_matvec_q4_0(device const uchar * weights [[buffer(0)]], device co
 }
 
 // ---------------------------------------------------------------------------
-// Ternary blocks of 128 (PQ2_0 34 B, PTQ1_0 28 B; docs/reference/bonsai.md):
+// Ternary blocks of 128 (PQ2_0 34 B, PTQ1_0 28 B; docs/models/bonsai.md):
 // w = d * t with t in {-1, 0, +1}, so per lane Σ d·(t−1)·x = d·(Σt·x − Σx)
 // with the codes 0..2 (or 0..3 for PQ2_0's unused +2) as t. Four lanes per
 // block, eight blocks per iteration (1,024 values), every lane running the
@@ -1771,7 +1771,7 @@ kernel void nu_embed(device const uchar * weights [[buffer(0)]],
 
 // ---------------------------------------------------------------------------
 // The activation side of a folded Hadamard rotation (cpu/hadamard.zig,
-// docs/reference/bonsai.md): per block of 1,024 consecutive elements,
+// docs/models/bonsai.md): per block of 1,024 consecutive elements,
 // forward x = H (s ⊙ x) and inverse x = s ⊙ (H x), H the normalized
 // Sylvester Walsh-Hadamard matrix (scale 1/32 exactly). One 256-thread group
 // per block of one row; each thread owns four consecutive values, does the

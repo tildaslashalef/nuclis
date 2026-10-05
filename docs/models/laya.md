@@ -25,7 +25,7 @@ itself saves nothing. It pays as a **filter**: one question fanned out over
 many states the language model never reads (30 search hits, every log
 section, each diff hunk), where the language model's prefill is the cost
 avoided: nuclis prefills Qwen3.8-27B at 90.45 tok/s at 512 tokens on
-Metal ([bench.md § Acceptance runs](bench.md#acceptance-runs)), so each
+Metal ([bench.md § Acceptance runs](../reference/bench.md#acceptance-runs)), so each
 512-token state it skips saves about 5.7 s of prefill and its context,
 against about 0.2 s for Laya to judge it on Metal, or 2.9 s on the CPU
 while the GPU stays free (below).
@@ -294,13 +294,13 @@ object: `answer_confidence`, `logits`, `temperature`, `bucket`.
 The checkpoint is `--model` or `decide.model` (default `laya`): a registry
 entry of kind `decision` (written by `model pull --register` for a Laya
 layout), the decision catalogue's `laya` or `laya-multilingual`
-([artifacts.md § The catalogue](artifacts.md#the-catalogue)), or a
+([catalogue.md § The catalogue](catalogue.md#the-catalogue)), or a
 directory. Text commands refuse a decision model by name, and `decide`
 refuses a text model.
 
 `nuclis serve` answers the same request over HTTP with the models kept
 open: `POST /v1/decisions` returns these bytes, timings aside, and `POST
-/v1/systemone` is Jev's own call ([api.md](api.md)); a served request's
+/v1/systemone` is Jev's own call ([api.md](../reference/api.md)); a served request's
 `"model"` chooses the checkpoint.
 
 Checked through the fresh binary, 2026-09-29: the 8 fixture requests

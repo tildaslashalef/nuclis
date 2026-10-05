@@ -7,7 +7,7 @@ and `bpe.decode` in [bpe.zig](../../inference/src/tokenizer/bpe.zig), composed
 by `tokenizer.Encoder` with the splitter the vocabulary's `pre` label selects:
 `qwen35` ([pre.zig](../../inference/src/tokenizer/pre.zig)), `llama4`
 ([gpt4o.zig](../../inference/src/tokenizer/gpt4o.zig), Muse Glimmer), and
-Gemma 4's SPM-style `gemma4` ([gemma4.md § Tokenizer](../reference/gemma4.md#tokenizer)).
+Gemma 4's SPM-style `gemma4` ([gemma4.md § Tokenizer](../models/gemma4.md#tokenizer)).
 The explicit artifact check matches all [prompt/token fixtures](prompt-profile.md).
 A Hugging Face `tokenizer.json` (Laya's ModernBERT and mmBERT tokenizers)
 loads into the same `Vocabulary` through [hf_json.zig](../../inference/src/tokenizer/hf_json.zig)
@@ -93,7 +93,7 @@ one and rewrites uppercase as "letter that is not ASCII a–z" and lowercase as
 "letter that is not ASCII A–Z", so `HelloWORLD` splits into `Hello` and
 `WORLD` but `ABCÀÉ` stays whole and `ÀBC` splits into `À` and `BC`; combining
 marks are not letters here (`e\u0301` is `e` then `\u0301`). The rules and
-their evidence are in [muse-glimmer.md § Tokenizer](../reference/muse-glimmer.md#tokenizer).
+their evidence are in [muse-glimmer.md § Tokenizer](../models/muse-glimmer.md#tokenizer).
 No table change was needed: the seam only reads ASCII case.
 
 Category data comes from pinned llama.cpp `unicode-data.cpp`, not the host's

@@ -31,7 +31,7 @@ Both files have the same 58/48 architecture keys where they overlap, the
 same 667 tensor names and shapes, the same vocabulary, and the same chat
 template (SHA-256 `845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b`,
 18,924 bytes). Digests and companions are pinned in
-[artifacts.md](artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11). The
+[catalogue.md](catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11). The
 inventory of the K-quant file is the fixture
 `inference/src/models/fixtures/gemma4-12b.json` (all keys, arrays up to
 64 elements retained, the template as a length/offset/SHA descriptor).
@@ -245,7 +245,7 @@ and `gemma-4-12b-qat` is the QAT file
 and that day one name pointed at whichever file was newest, which made
 `nuclis model pull gemma-4-12b` mean different bytes in different weeks. Since 2026-09-26 (APPS-17) only `gemma-4-12b-qat` is in the
 catalogue; the K-quant file runs through `config init --discover`
-([artifacts.md § The catalogue](artifacts.md#the-catalogue)).
+([catalogue.md § The catalogue](catalogue.md#the-catalogue)).
 A registry entry of the same name still shadows either.
 
 **Exercised.** `nuclis generate --model gemma-4-12b` in both modes (greedy:
@@ -255,7 +255,7 @@ ids as the fixture), and a two-turn `nuclis agent` session under a
 pseudo-terminal (`expect`): thought folded as "Thought for 29.1s", answers
 144 then 145, the second turn a prefix extension of the first (ctx 87 →
 16x tokens), Ctrl-D exit. The acceptance record against the reference
-harness is in [bench.md](bench.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12).
+harness is in [bench.md](../reference/bench.md#gemma-4-12b-acceptance-record-modl-07-2026-09-12).
 
 ## Reference oracle status
 
@@ -488,7 +488,7 @@ against the pinned digests on 2026-09-12 (3.8 s, existing files reused),
 and `model ls` lists the K-quant directory in its second group. The
 profile fixtures apply unchanged (same template digest). The acceptance
 record on the QAT file is in
-[bench.md](bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12).
+[bench.md](../reference/bench.md#gemma-4-12b-acceptance-record-qat-file-modl-08-2026-09-12).
 
 ## Gemma 4 26B-A4B: the expert configuration (MODL-09)
 
@@ -500,7 +500,7 @@ helper of `src/llama-graph.cpp`.
 **Artifact.** `unsloth/gemma-4-26B-A4B-it-qat-GGUF` at commit
 `7b92b5b28818151e8669af2e45e88d6086f490dd`,
 `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf`, 14,249,047,104 B, SHA-256
-`a7c5bc71…` ([artifacts.md](artifacts.md)); `general.name` `Gemma-4 26B-A4B
+`a7c5bc71…` ([catalogue.md](catalogue.md)); `general.name` `Gemma-4 26B-A4B
 IT (smart Q4_0, QAT-lossless)`; 658 tensors, F32 392 and Q4_0 266 (every
 matrix, the expert tensors included). The same vocabulary (262,144), the
 same chat template digest (`845f1ee4…`), and the same sampling hint as
@@ -651,7 +651,7 @@ the expert projections alone through per-token F32 matvecs the gap is
 still 1.1e-1 relative RMS, because the dense tiles' rounding already
 moves the router. The check records the expert configuration's own
 bounds (2e1 / 5e-1) beside the 12B's. The acceptance record
-([bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18))
+([bench.md](../reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18))
 ran the reference's arrays greedy to the token budget at every length,
 which is what a rate record can say about it; per-token agreement on
 real prompts stays the trace comparison's job.
@@ -659,7 +659,7 @@ real prompts stays the trace comparison's job.
 **First-look rates** (`nuclis bench`, Metal, greedy, `--kv f16`, three
 measured runs; Apple M4 Pro 48 GB, macOS 26.6.2, Zig 0.16.0 ReleaseSafe,
 2026-09-18; the acceptance record against the reference harness is in
-[bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)):
+[bench.md](../reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)):
 
 | Workload | Chunk | Prefill tok/s | Decode tok/s | First token |
 | --- | ---: | ---: | ---: | ---: |
@@ -687,7 +687,7 @@ effective rate is roughly 120 GB/s against the 12B's 148. The per-kernel
 profile ranked the follow-ups (the expert down projection at 114 GB/s on
 its 704-wide rows, then the launch-bound norms, then the wide
 flash-decoding kernel at long context;
-[bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+[bench.md](../reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 The Qwen `make bench` is unchanged the same day (40.05 / 10.67 tok/s
 against 40.27 / 10.80).
 
@@ -696,7 +696,7 @@ reference harness on its own arrays: prefill / decode 500.42 / 55.29 at
 512, 346.17 / 49.44 at 4K, 206.44 / 39.55 at 16K, 134.74 / 31.30 at 32,639
 tok/s, the reference at 580.76 / 68.02, 548.41 / 60.82, 459.46 / 50.67,
 343.38 / 44.09; session 6.87 GiB, peak footprint 8.0 GB
-([bench.md](bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
+([bench.md](../reference/bench.md#gemma-4-26b-a4b-acceptance-record-modl-10-2026-09-18)).
 `nuclis agent --model gemma-4-26b-a4b` (Metal, context 8,192, `--think
 medium`, `--print --json`) on "create greeting.txt with hello world, then
 read it back" issued `write_file` then `read_file` and answered from the
@@ -711,7 +711,7 @@ binding).
 
 The on-device checkpoint, QAT file only (`unsloth/gemma-4-E4B-it-qat-GGUF`
 at `8c5a9e4f…`, every matrix Q4_0; digests in
-[artifacts.md](artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11)).
+[catalogue.md](catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11)).
 Main file: `gemma4`, 42 blocks, 666 tensors, width 2560, FFN 10240,
 context 131,072, `Config.config_e4b`. Read from the file and the pinned
 reference (`7620399`):

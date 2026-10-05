@@ -180,7 +180,7 @@ or `models/laya_metal.zig` on Metal, which packs the sequences of a call
 into batches with per-row bounds instead of padding). Every question about
 every state is one sequence. It pays as a filter, one
 question over many states the language model never has to read
-([laya.md](reference/laya.md)).
+([laya.md](models/laya.md)).
 
 The second family, clef-flash, shares the seam and not the shape: a
 Qwen3.5 backbone (the qwen35 adapter at the file's shape, its
@@ -192,7 +192,7 @@ of the two; the family decides how a question is validated
 (`decide.parseQuestion`), so `src/decision/` parses a request only once
 it knows the model, and a `Question` carries the order the model reads
 its options in beside the order it is answered in
-([clef.md](reference/clef.md)).
+([clef-flash.md](models/clef-flash.md)).
 
 ### The API layer
 
@@ -288,10 +288,10 @@ The other families on the same wrapper:
 
 | Family | Layers | Mixers | What is different |
 | --- | --- | --- | --- |
-| Gemma 4 12B | 48 | sliding-window attention (1,024) and global attention with 512-wide heads | tanh GELU, RoPE factors, scaled residuals, capped logits ([reference/gemma4.md](reference/gemma4.md)) |
-| Gemma 4 26B-A4B | 30 | as the 12B | the feed-forward is 128 experts, 8 active per token ([reference/gemma4.md § 26B-A4B](reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)) |
-| Muse Glimmer 30B | 52 | 39 windowed (2,048), 13 global | dense; the `llama4` tokenizer splitter ([reference/muse-glimmer.md](reference/muse-glimmer.md)) |
-| Bonsai 2 27B | 64 | Qwen's | ternary weights in a Hadamard-rotated basis ([reference/bonsai.md](reference/bonsai.md)) |
+| Gemma 4 12B | 48 | sliding-window attention (1,024) and global attention with 512-wide heads | tanh GELU, RoPE factors, scaled residuals, capped logits ([models/gemma4.md](models/gemma4.md)) |
+| Gemma 4 26B-A4B | 30 | as the 12B | the feed-forward is 128 experts, 8 active per token ([models/gemma4.md § 26B-A4B](models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09)) |
+| Muse Glimmer 30B | 52 | 39 windowed (2,048), 13 global | dense; the `llama4` tokenizer splitter ([models/muse-glimmer.md](models/muse-glimmer.md)) |
+| Bonsai 2 27B | 64 | Qwen's | ternary weights in a Hadamard-rotated basis ([models/bonsai.md](models/bonsai.md)) |
 
 **Read:** [engine/cpu-reference.md](engine/cpu-reference.md) (the
 equations and tolerances), `models/qwen35_runtime.zig` (`fullAttention`,
@@ -343,7 +343,7 @@ flowchart LR
   `modernbert_runtime.zig`, Laya's encoder: its F32 forward is the product
   path on the CPU (SIMD, split across `Io` tasks, `backends/cpu/dense.zig`),
   and the oracle's F32 fixtures are its reference
-  ([laya.md](reference/laya.md)).
+  ([laya.md](models/laya.md)).
 - `*_metal.zig` is the **engine**: the same schedule, each line recording
   a dispatch; nothing runs until `commit()`. The files are deliberately
   parallel so they can be read side by side.
@@ -488,11 +488,11 @@ What the families that went through the seam actually needed:
 
 | Case | New | Reference |
 | --- | --- | --- |
-| Gemma 4 12B | `cpu.gelu`, RoPE factors; on the GPU four scalar epilogues, a GELU pair mode, a window parameter on the chunk attention, a wider instantiation of decode attention, a `tanh` clamp | [gemma4.md](reference/gemma4.md) |
-| Gemma 4 26B-A4B | not a second adapter: `gemma4.configs` selects by block count; `cpu.experts` and the gathered kernels; `weights.View.expertMatrix`; a per-plan `preferredChunk` | [gemma4.md § 26B-A4B](reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09) |
-| Q4_0 (the QAT file) | a `quant.row` arm, a generic GPU decoder, a specialized matvec and tile, the adapter's `executableEncoding` claim | [gemma4.md § Q4_0 path](reference/gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12) |
-| Muse Glimmer 30B | a tokenizer splitter, a windowed schedule with global layers, a profile with a reasoning channel and its own tool grammar; no new kernel | [muse-glimmer.md](reference/muse-glimmer.md) |
-| Bonsai 2 27B | two ternary encodings, the Hadamard transform, a rotation contract in the Qwen adapter; the Qwen plan otherwise | [bonsai.md](reference/bonsai.md) |
+| Gemma 4 12B | `cpu.gelu`, RoPE factors; on the GPU four scalar epilogues, a GELU pair mode, a window parameter on the chunk attention, a wider instantiation of decode attention, a `tanh` clamp | [gemma4.md](models/gemma4.md) |
+| Gemma 4 26B-A4B | not a second adapter: `gemma4.configs` selects by block count; `cpu.experts` and the gathered kernels; `weights.View.expertMatrix`; a per-plan `preferredChunk` | [gemma4.md § 26B-A4B](models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09) |
+| Q4_0 (the QAT file) | a `quant.row` arm, a generic GPU decoder, a specialized matvec and tile, the adapter's `executableEncoding` claim | [gemma4.md § Q4_0 path](models/gemma4.md#q4_0-path-and-the-qat-file-modl-08-2026-09-12) |
+| Muse Glimmer 30B | a tokenizer splitter, a windowed schedule with global layers, a profile with a reasoning channel and its own tool grammar; no new kernel | [muse-glimmer.md](models/muse-glimmer.md) |
+| Bonsai 2 27B | two ternary encodings, the Hadamard transform, a rotation contract in the Qwen adapter; the Qwen plan otherwise | [bonsai.md](models/bonsai.md) |
 | draft sources | Qwen's embedded block; `gemma4_assistant.zig`, a second GGUF reading the target's caches; `dflash.zig`, a block drafter | [speculative-decoding.md](engine/speculative-decoding.md) |
 
 Registration is one line: the adapter publishes a `family` namespace
@@ -503,7 +503,7 @@ Profiles register the same way and own everything template-specific: the
 stop set, the reasoning markers, and the tool path in both directions.
 Nothing under `src/` names an adapter or a profile module.
 
-**Read:** [reference/new-model-guide.md](reference/new-model-guide.md)
+**Read:** [models](models/README.md)
 (the order of work), [engine/prompt-profile.md](engine/prompt-profile.md),
 [engine/tool-calling.md](engine/tool-calling.md),
 [llm-guide.md § 24–§ 25](llm-guide.md#24-the-registry-table).

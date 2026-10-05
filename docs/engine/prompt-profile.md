@@ -248,7 +248,7 @@ The committed fixtures
 ([qwen38-text.json](../../inference/src/profiles/fixtures/qwen38-text.json),
 [gemma4-text.json](../../inference/src/profiles/fixtures/gemma4-text.json),
 [muse_glimmer-text.json](../../inference/src/profiles/fixtures/muse_glimmer-text.json),
-described in [muse-glimmer.md](../reference/muse-glimmer.md#chat-template))
+described in [muse-glimmer.md](../models/muse-glimmer.md#chat-template))
 hold prompts the pinned reference server rendered from the artifact's own
 template for seven conversations (a single turn, a system message, later
 system/developer messages, assistant history with reasoning, two assistant
@@ -335,7 +335,7 @@ Captures: Qwen3.8 on 2026-09-07 (re-captured 2026-09-12 with the seven
 conversations, 2026-09-19 with `high`), Gemma 4 on 2026-09-12, Muse
 Glimmer on 2026-09-19, all with llama.cpp
 `7620399f58aebfd2196b74021f9581bcf7218cb9` on the pinned files
-([artifacts.md](../reference/artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11)).
+([catalogue.md](../models/catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11)).
 The templates are adapted, not copied; their origins and licenses are in
 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
 
@@ -364,7 +364,7 @@ server (`--reference-revision 5d80cff0…`; the script reports a template's
 differ**, the `merged_system_*` histories, which that template refuses
 (`System message must be at the beginning.`) where the pinned one merges
 them; every other prompt and token stream is byte-identical
-([bonsai.md § Chat template](../reference/bonsai.md#chat-template)). Not an alias
+([bonsai.md § Chat template](../models/bonsai.md#chat-template)). Not an alias
 either; MODL-17 chooses the entry's profile from that evidence.
 
 ## Completion events (AGNT-01 session 1)

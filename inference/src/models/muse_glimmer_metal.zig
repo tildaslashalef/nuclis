@@ -3,7 +3,7 @@
 //! CPU supplies token ids and reads back logits, a greedy token, or a partial
 //! top-k; every activation, norm, gate, and cache write stays on the GPU.
 //! The schedule is `muse_glimmer_runtime.zig`'s, which remains the CPU
-//! reference these results are compared against (docs/reference/muse-glimmer.md).
+//! reference these results are compared against (docs/models/muse-glimmer.md).
 //!
 //! When the DFlash companion is bound the plan also runs the drafter: the
 //! language model copies the input residual of the five target layers

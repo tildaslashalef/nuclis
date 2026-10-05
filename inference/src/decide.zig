@@ -7,7 +7,7 @@
 //! `parseQuestion` validates a question by the family's rules. `prepare` and
 //! `decideJobs` answer several calls at once (a server batching its
 //! requests). Limits are host constants, never the caller's. Contracts:
-//! docs/reference/laya.md, docs/reference/clef.md.
+//! docs/models/laya.md, docs/models/clef-flash.md.
 const std = @import("std");
 const hf = @import("tokenizer/hf_json.zig");
 const profile = @import("profiles/laya.zig");

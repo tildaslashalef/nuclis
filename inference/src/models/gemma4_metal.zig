@@ -4,7 +4,7 @@
 //! reads back logits, a greedy token, or a partial top-k; every activation,
 //! norm, gate, routing decision, and cache write stays on the GPU. The
 //! schedule is `gemma4_runtime.zig`'s, which remains the CPU reference these
-//! results are compared against (docs/reference/gemma4.md). An image span
+//! results are compared against (docs/models/gemma4.md). An image span
 //! is one prefill chunk whose sliding-layer attention is bidirectional
 //! (`prefillVision`; docs/engine/vision.md).
 //!

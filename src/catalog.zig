@@ -11,7 +11,7 @@
 //! model directory is complete and verified before those units exist.
 //!
 //! Facts here are copied from the Hub as `nuclis model pull` resolved them
-//! (docs/reference/artifacts.md § Pinned commits and digests); the digest
+//! (docs/models/catalogue.md § Pinned commits and digests); the digest
 //! of the main file is also the spec's. Status derivation reads sidecars
 //! only, never hashes a file, so a listing is instant.
 const std = @import("std");

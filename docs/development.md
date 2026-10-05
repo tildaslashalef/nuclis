@@ -52,7 +52,7 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   clean state by `nuclis model pull qwen3.8-27b --all` on 2026-09-11 (MODL-03).
   Its companions `mmproj-BF16.gguf` and `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`
   sit beside it, verified and not executed
-  ([reference/artifacts.md](reference/artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11),
+  ([models/catalogue.md](models/catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11),
   [engine/gguf.md](engine/gguf.md#companion-files-in-modelsqwen-2026-09-08)).
 - Two ignored directories hold local state. `.zig-cache/` is disposable:
   Zig's build cache (`make clean-cache` drops it; it grows with every
@@ -248,12 +248,12 @@ on it. `qwen38-draft-stats` reports acceptance rates and fails only on
 an error.
 
 Adding a family adds its gates to the manifest and nothing to the
-Makefile ([new-model-guide.md](reference/new-model-guide.md)). The
+Makefile ([models](models/README.md)). The
 manifest's numbers are the accepted tolerances the reference documents
 justify (Qwen's F16 bound in [metal-backend.md](engine/metal-backend.md),
-Gemma's in [gemma4.md](reference/gemma4.md), Muse's in
-[muse-glimmer.md](reference/muse-glimmer.md), Bonsai's in
-[bonsai.md](reference/bonsai.md)); the CPU rows and the F32 cache run at
+Gemma's in [gemma4.md](models/gemma4.md), Muse's in
+[muse-glimmer.md](models/muse-glimmer.md), Bonsai's in
+[bonsai.md](models/bonsai.md)); the CPU rows and the F32 cache run at
 the bring-up thresholds (max abs 2e-3, relative RMS 1e-4).
 
 ## The record
@@ -476,7 +476,7 @@ override is an error. Otherwise resolve the root from `HOME`.
 ```text
 ~/.nuclis/
   models/                  model artifacts: <owner>/<repo>/<file> plus a provenance
-                           sidecar <file>.nuclis.json per verified file ([reference/artifacts.md](reference/artifacts.md))
+                           sidecar <file>.nuclis.json per verified file ([models/catalogue.md](models/catalogue.md))
   nuclis.json              engine configuration (APPS-03; `nuclis config init` writes it)
   agent/                   the agent's data root (`paths.agentPath`; TERM-01)
     history.jsonl          submitted prompts across sessions (TERM-01; append-only,
@@ -508,8 +508,8 @@ digest at the pinned commit must equal the catalogue's (`CatalogMismatch`
 otherwise, and no sidecar). `nuclis model pull <owner/repo> [--file <name>]
 [--revision <rev>] [--role main|mmproj|mtp|imatrix]` fetches any other
 artifact by repository id (a GGUF, or a safetensors set with its config
-and tokenizer files, [reference/artifacts.md § Safetensors
-artifacts](reference/artifacts.md#safetensors-artifacts)): the revision (`main` by default; a tag, branch, or
+and tokenizer files, [models/catalogue.md § Safetensors
+artifacts](models/catalogue.md#safetensors-artifacts)): the revision (`main` by default; a tag, branch, or
 commit) is resolved once, printed as the 40-character commit, and that
 commit pins the transfer and is what the sidecar records; a repository
 with several artifacts and no `--file` prints the choices with sizes and fails
@@ -708,7 +708,7 @@ applies to models with no entry, and `--speculative` overrides either.
   and the one `nuclis serve` opens at start and uses for a request naming
   no model or a `jev-…` id:
   a registry entry of kind `decision`, a decision catalogue name
-  ([artifacts.md § The catalogue](reference/artifacts.md#the-catalogue)),
+  ([catalogue.md § The catalogue](models/catalogue.md#the-catalogue)),
   or a directory (under `<root>/models` unless absolute); `--model` takes
   the same forms. A text model's name is refused.
 - `serve.host` (default `127.0.0.1`, an IP literal or `localhost`) and

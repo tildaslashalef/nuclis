@@ -1,7 +1,7 @@
 //! The decision response's wire format: answers into the JSON `nuclis decide
 //! --json` writes, which the API serves byte for byte (timings aside). Each
 //! answer's top level is exactly Jev's; extras sit under `nuclis`. Knows no
-//! HTTP. docs/reference/laya.md § nuclis decide.
+//! HTTP. docs/models/laya.md § nuclis decide.
 const std = @import("std");
 const inference = @import("inference");
 const request_mod = @import("request.zig");

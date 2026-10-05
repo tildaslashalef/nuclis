@@ -4,7 +4,7 @@
 //! `JointSchemaHead.forward` computes them. The BF16 weights are decoded to
 //! F32 once at `open` (about 0.5 GB); the head owns them. Matmuls go
 //! through `cpu.dense` (F32 SIMD lanes, split across `Io` tasks), so results
-//! match an F32 reference to rounding. Contract: docs/reference/clef.md.
+//! match an F32 reference to rounding. Contract: docs/models/clef-flash.md.
 const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const cpu = @import("../backends/cpu/root.zig");

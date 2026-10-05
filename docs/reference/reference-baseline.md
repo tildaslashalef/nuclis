@@ -39,7 +39,7 @@ different startup costs. No system toolchain changes are required for this path.
 
 ## The second oracle: the PrismML fork (MODL-16, 2026-09-18)
 
-Bonsai 2 27B ([bonsai.md](bonsai.md)) is stored in two encodings the
+Bonsai 2 27B ([bonsai.md](../models/bonsai.md)) is stored in two encodings the
 mainline reference rejects, so its oracle is the PrismML fork of llama.cpp
 (`github.com/PrismML-Eng/llama.cpp`, MIT, tracks mainline) at its release
 tag `prism-b10687-5d80cff`, commit
@@ -209,7 +209,7 @@ peak-throughput claim would require a separate experiment.
 | Attention / recurrent state | F16 K/V, F32 recurrent state, flash attention enabled |
 
 The log confirms GPU offload and an auxiliary-block skip consistent with the
-[Qwen adapter](qwen-validation.md). It reports a 2,048 MiB KV buffer, 149.62 MiB
+[Qwen adapter](../models/qwen3.8.md). It reports a 2,048 MiB KV buffer, 149.62 MiB
 recurrent-state buffer, 257.30 MiB Metal compute buffer, and 52.02 MiB CPU compute
 buffer. Mapped model views may overlap; summing their reported sizes is not a
 valid resident-memory calculation.

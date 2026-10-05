@@ -33,7 +33,7 @@ Companions: `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` (629,246,976 B, SHA-256
 `6807ede6…`, pinned under the `mmproj` role) and `…-mmproj-BF16.gguf`
 (931,145,856 B, `e287342d…`, the reference projector, not pinned); the
 repository also lists an F16 language file of 53.8 GB (not pulled). The
-digests are in [artifacts.md](artifacts.md). Stock llama.cpp rejects both
+digests are in [catalogue.md](catalogue.md). Stock llama.cpp rejects both
 language files (ids past its type count); the oracle is the fork
 ([§ Oracle](#oracle-the-prismml-fork)).
 
@@ -212,7 +212,7 @@ fork's server renders it.
 (2026-09-17), pinned by tag since the fork has already retired one format.
 Built as the mainline recipe with `.reference/prism-llama.cpp`
 in place of the mainline checkout
-([reference-baseline.md § The second oracle](reference-baseline.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
+([reference-baseline.md § The second oracle](../reference/reference-baseline.md#the-second-oracle-the-prismml-fork-modl-16-2026-09-18)).
 Two pins, never one moving one: `scripts/quant-fixtures.py` carries
 `PRISM_REVISION` beside `REVISION`, and `profile-alias-check.py` takes
 `--reference-revision`.
@@ -323,7 +323,7 @@ the kernels are at the set's multiply-rate ceiling (§ Ternary matvecs and
 tiles), so the rate the byte count promises needs a different ternary
 arithmetic in the matvec, the follow-up named there. The fork on the same
 machine decodes at 17.0 tok/s at 512 tokens ([bench.md § Bonsai
-acceptance record](bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
+acceptance record](../reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18)).
 
 **PTQ1_0, and the entry's move.** The denser packing on the same plan
 (`--model <PTQ1_0 path>`, 2026-09-18, the same `make bench` protocol, two
@@ -354,4 +354,4 @@ MODL-17 closed the same day: the Metal plan applies the rotation and
 matches the traces in both cache precisions, the profile is the pinned
 Qwen3.8 one through the catalogue entry, and the acceptance record
 against the fork's server, the agent check, and the PTQ1_0 measurement
-are in [bench.md](bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18).
+are in [bench.md](../reference/bench.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18).

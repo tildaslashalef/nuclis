@@ -509,7 +509,7 @@ The second family's rates on the same machine, method, and build as
 above (greedy, context 2,048, three measured runs after one warmup), not
 an acceptance record: the reference harness run on the same token arrays
 is MODL-07's. Both cache precisions, since Gemma's F16 tolerance is its own
-([gemma4.md § Metal plan](gemma4.md#metal-plan-modl-06-2026-09-11)).
+([gemma4.md § Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11)).
 
 | Workload | Prefill tok/s | Decode tok/s | First token |
 | --- | ---: | ---: | ---: |
@@ -573,7 +573,7 @@ value split, MODL-06) is the first thing to profile.
 **Memory.** The session block is 11,274,289,152 bytes (10.5 GiB) at
 32,768 capacity: every one of the 40 sliding layers is allocated for the
 full capacity although it reads only the last 1,024 rows ([gemma4.md §
-Metal plan](gemma4.md#metal-plan-modl-06-2026-09-11)); a ring layout for
+Metal plan](../models/gemma4.md#metal-plan-modl-06-2026-09-11)); a ring layout for
 those layers would cut it to about 0.35 GB and is a session-layout change
 of its own. Peak resident set of the `bench` process was
 10.75 GiB at every length and its peak footprint 11.74–11.80 GB; the
@@ -730,7 +730,7 @@ The reference server's resident set between requests was 15.08–15.62 GB.
 The v0.1 acceptance workload on the catalogue's ternary entry,
 `bonsai-2-27b` (`Ternary-Bonsai-2-27B-PQ2_0.gguf`, SHA-256 `3907dc16…`,
 7.21 GB, Qwen3.8-27B's architecture with every matrix PQ2_0 in a
-Hadamard-rotated basis, [bonsai.md](bonsai.md)). The reference side is the
+Hadamard-rotated basis, [bonsai.md](../models/bonsai.md)). The reference side is the
 **PrismML fork** of llama.cpp at `prism-b10687-5d80cff` (commit
 `5d80cff0…`, the only decoder of the file; stock llama.cpp rejects it),
 its server started with the recipe's flags minus `--lazy-mode` (which its
@@ -810,7 +810,7 @@ same weights (`Ternary-Bonsai-2-27B-PTQ1_0.gguf`, 5.95 GB) measured on the
 same plan the same day by `make bench` (22-token prompt, 64 output tokens,
 context 2,048, two rounds): 13.05 / 13.01 tok/s decode against PQ2_0's
 12.87, prefill 39.3 against 39.1, and it matches the PQ2_0 traces on both
-cache precisions ([bonsai.md](bonsai.md#metal-plan-modl-17-2026-09-18)).
+cache precisions ([bonsai.md](../models/bonsai.md#metal-plan-modl-17-2026-09-18)).
 Not slower at 1.26 GB less, so the catalogue entry moved to it (decided
 2026-09-18); the acceptance workload was not re-run on it.
 
@@ -823,7 +823,7 @@ is MODL-13's. The prompt is raw because the profile does not exist yet;
 the 512-token array is the first 512 ids of `docs/spec.md`'s opening
 6,000 bytes through Muse's tokenizer (the Qwen arrays carry ids above
 its vocabulary). Both cache precisions, since Muse's F16 tolerance is
-its own ([muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19),
+its own ([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19),
 which also holds the per-kernel profile).
 
 | Workload | Prefill tok/s | Decode tok/s | First token |
@@ -881,7 +881,7 @@ Every sample stopped with `token_budget` at exactly the array's count and
 512 and falls with length (87 % at 4K, 84 % at 16K, 77 % at 32K), the
 reference's own rate falling too (95 → 77). The gap is the widest of the
 four families and is spread over the large Q4_K matvecs
-([muse-glimmer.md § Metal plan](muse-glimmer.md#metal-plan-modl-12-2026-09-19)
+([muse-glimmer.md § Metal plan](../models/muse-glimmer.md#metal-plan-modl-12-2026-09-19)
 has the per-kernel profile); the 4K row's decode drifted from 9.14 tok/s
 on its warmup to 8.12 on its third sample within four minutes, which no
 other length showed and which was not investigated (thermal is the

@@ -156,7 +156,7 @@ the full disk ranks first among four logs, the eight cache misses first
 among 50 entries. It also misses some plain calls, such as a scam email
 scored at 0.48. `laya-multilingual` reads other languages and 1,024 tokens
 but is worse on English, so `laya` is the default. Details, measurements,
-and limits: [docs/reference/laya.md](docs/reference/laya.md).
+and limits: [docs/models/laya.md](docs/models/laya.md).
 
 [clef-flash](https://huggingface.co/Cloudflare/clef-flash), Cloudflare's
 9B decision model, is the other end of the trade: a Qwen3.5 backbone (the
@@ -184,7 +184,7 @@ hard ones. Its sequence and head match Cloudflare's own code (the token
 ids exactly, the head within 1.4e-6), CPU and Metal agree within 6e-4,
 and every obvious-answer check picks the obvious option, on text and on
 images. The benchmark scores are Cloudflare's, not re-measured here.
-Details: [docs/reference/clef.md](docs/reference/clef.md).
+Details: [docs/models/clef-flash.md](docs/models/clef-flash.md).
 
 `nuclis serve` keeps the models open behind a local HTTP API that speaks
 TypeSafe's Jev protocol, so a Jev client only changes its base URL; a warm

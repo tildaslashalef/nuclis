@@ -2,7 +2,7 @@
 //! safetensors checkpoint. Pure: the caller reads the config (bounded) and
 //! opens the checkpoint; `bind` returns borrowed tensor refs, validated by
 //! name, shape, and dtype. The forward is modernbert_runtime.zig; the shapes
-//! and the forward's contract are in docs/reference/laya.md.
+//! and the forward's contract are in docs/models/laya.md.
 const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 

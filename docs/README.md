@@ -22,17 +22,17 @@ Detailed engineering documents under [reference/](reference/):
 | Document | Purpose |
 | --- | --- |
 | [agent-concepts.md](reference/agent-concepts.md) | Agent and terminal concepts behind `nuclis agent`, taught as they are implemented here |
-| [artifacts.md](reference/artifacts.md) | Model artifact sources, Unsloth quantization conventions, companion files, the models directory |
+| [catalogue.md](models/catalogue.md) | Model artifact sources, Unsloth quantization conventions, companion files, the models directory |
 | [bench.md](reference/bench.md) | `bench`, `bench --profile`, `make bench-kernels`: timing definitions and methodology |
 | [cpu-reference.md](engine/cpu-reference.md) | CPU linear/vector/attention/recurrent references and numerical precision |
-| [gemma4.md](reference/gemma4.md) | Gemma 4 12B: artifact facts with provenance, forward pass, tokenizer, CPU reference and Metal plan evidence, profile |
+| [gemma4.md](models/gemma4.md) | Gemma 4 12B: artifact facts with provenance, forward pass, tokenizer, CPU reference and Metal plan evidence, profile |
 | [sampling.md](engine/sampling.md) | Native CPU generation, streaming/sampling, full-model traces |
 | [gguf.md](engine/gguf.md) | Inspection commands, artifact inventory, validation boundaries |
 | [metal-backend.md](engine/metal-backend.md) | GPU-resident Metal backend: bridge, kernels, ownership, evidence |
 | [prompt-profile.md](engine/prompt-profile.md) | Prompt profiles (Qwen3.8, Gemma 4): bounded chat renderers, stop sets, reasoning markers, pinned fixtures |
-| [new-model-guide.md](reference/new-model-guide.md) | Bringing a new model family through the seam: order of work, gates, mistakes already made |
+| [models](models/README.md) | Bringing a new model family through the seam: order of work, gates, mistakes already made |
 | [quantization.md](engine/quantization.md) | Row decoders, ownership, pinned numerical fixtures |
-| [qwen-validation.md](reference/qwen-validation.md) | Qwen profile constraints, weight bindings, validation evidence |
+| [qwen3.8.md](models/qwen3.8.md) | Qwen profile constraints, weight bindings, validation evidence |
 | [reference-baseline.md](reference/reference-baseline.md) | Pinned llama.cpp baseline and comparison measurements |
 | [speculative-decoding.md](engine/speculative-decoding.md) | Speculative decoding: recovery and draft contracts, per-family draft sources, measurements |
 | [tokenizer.md](engine/tokenizer.md) | Native qwen35 encoding/decoding and vocabulary ownership |

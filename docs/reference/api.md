@@ -62,7 +62,7 @@ before every state (`422 images_unsupported` from Laya, or from
 that are not an image). The body limit (4 MiB) bounds them. Its answers
 are `systemone`'s own: uncalibrated, `confidence` the top probability. A
 clef decision is a 9B prefill, 2.3 s for a 637-token state
-([clef.md § Time per decision](clef.md#time-per-decision)).
+([clef-flash.md § Time per decision](../models/clef-flash.md#time-per-decision)).
 
 Ctrl-C stops the server gracefully: it accepts no new connections,
 waits up to 10 s for decisions already queued or running, closes the
@@ -340,7 +340,7 @@ known before the model is pulled; `packs`: whether the states of a
 request and the requests waiting together share one GPU pass (Laya),
 or each state is one pass after the other, its cost linear in tokens
 (clef-flash: send one state per request, every question in it, one or two
-requests in flight; [clef.md § Time per decision](clef.md#time-per-decision));
+requests in flight; [clef-flash.md § Time per decision](../models/clef-flash.md#time-per-decision));
 `images`: it reads a request's `images` (clef-flash with its projector
 pulled); `max_len` and `head_max_len`: its sequence and question budgets
 in tokens (`head_max_len` is null for clef-flash, which has no
@@ -424,7 +424,7 @@ At concurrency 16 a pass held 7.9 requests on average (512 in 65 passes,
 `GET /v1/health` counters), about 820 rows. The gain is the model's: one
 request already encodes at 3,020 rows/s (laya, 104 rows in 34.4 ms) and
 7,160 (laya-multilingual, 101 in 14.1 ms), against the packed rates
-[laya.md § Time per call](laya.md#time-per-call) measures, about 3,700
+[laya.md § Time per call](../models/laya.md#time-per-call) measures, about 3,700
 and 8,660, so packing can add about 1.2× here, and does. The planned 2×
 would need a faster Laya encode, not a different server. p99 is about two
 passes (laya 444 ms against 2 × 217 ms, laya-multilingual 172 against

@@ -9,7 +9,7 @@
 //! shares IQ4_NL's 18-byte block and nibble order with a linear code
 //! (`q - 8`) in place of the table. PQ2_0 and PTQ1_0 are the PrismML fork's
 //! group-128 ternary blocks (`w = d * t`, `t` in {-1, 0, +1}), verified against
-//! the fork's own decoder (docs/reference/bonsai.md).
+//! the fork's own decoder (docs/models/bonsai.md).
 const std = @import("std");
 const encoding = @import("../tensor/encoding.zig");
 const iq3_grid = @import("iq3-grid.zig").values;

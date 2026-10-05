@@ -4,7 +4,7 @@
 //! ModernBERT-large); embedding rows are decoded from the checkpoint as ids
 //! need them, so the checkpoint must outlive the Model. Kernels are
 //! backends/cpu/dense.zig; RoPE angles are rounded to F32 before their cosine
-//! and sine, as the reference computes them. Contract: docs/reference/laya.md.
+//! and sine, as the reference computes them. Contract: docs/models/laya.md.
 const std = @import("std");
 const safetensors = @import("../formats/safetensors.zig");
 const dense = @import("../backends/cpu/dense.zig");

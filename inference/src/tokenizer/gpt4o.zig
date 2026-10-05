@@ -3,7 +3,7 @@
 //! regex, not its Unicode original: the reference folds every letter class
 //! into one, so "uppercase" is a letter that is not ASCII a–z, "lowercase" a
 //! letter that is not ASCII A–Z, and combining marks are not letters at all
-//! (docs/reference/muse-glimmer.md § Tokenizer). Splits borrow the input
+//! (docs/models/muse-glimmer.md § Tokenizer). Splits borrow the input
 //! bytes; the category table is pre.zig's.
 const std = @import("std");
 const pre = @import("pre.zig");
@@ -107,7 +107,7 @@ pub const Iterator = struct {
 };
 
 // Expected pieces come from the pinned reference's `unicode_regex_split` run
-// on the same strings (docs/reference/muse-glimmer.md § Tokenizer).
+// on the same strings (docs/models/muse-glimmer.md § Tokenizer).
 test "gpt4o case seams, contractions, digit triples, and trailing slashes" {
     const cases = .{
         .{ "HelloWORLD helloWORLD", &[_][]const u8{ "Hello", "WORLD", " hello", "WORLD" } },

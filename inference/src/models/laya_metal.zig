@@ -6,7 +6,7 @@
 //! wrapped in place (read by the generic F32 matmul tile); vectors are
 //! decoded to F32 buffers. The plan owns its `Backend`, so every device
 //! buffer goes with `destroy`; the checkpoint must outlive it.
-//! Contract: docs/reference/laya.md.
+//! Contract: docs/models/laya.md.
 const std = @import("std");
 const metal = @import("../backends/metal/root.zig");
 const cpu = @import("../backends/cpu/root.zig");

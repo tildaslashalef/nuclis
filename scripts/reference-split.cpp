@@ -10,7 +10,7 @@
 //     -o .reference/split
 //
 // The default regex is the form the reference runs for the `llama4` label
-// (docs/reference/muse-glimmer.md § Tokenizer); pass another as argv[1].
+// (docs/models/muse-glimmer.md § Tokenizer); pass another as argv[1].
 #include "unicode.h"
 #include <iostream>
 #include <iterator>

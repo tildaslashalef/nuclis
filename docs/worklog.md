@@ -878,7 +878,7 @@ standalone binary. `src/model.zig` adds `pull <owner/repo> [--file] [--revision]
 [--role] [--force] [--json]` (resolves the revision once, pins the transfer to
 the 40-character commit, verifies SHA-256, publishes atomically, then writes a
 `<file>.nuclis.json` sidecar) and `ls [--json]`. Docs:
-[development.md § Model download](development.md), [artifacts.md](reference/artifacts.md),
+[development.md § Model download](development.md), [catalogue.md](models/catalogue.md),
 [spec.md](spec.md), [architecture.md](architecture.md).
 
 **Evidence.** `make check` fmt clean, **169 tests**, `test-metal` passed.
@@ -895,7 +895,7 @@ SHA-256 `322e194f…` = spec, `shasum` agrees; second pull verified and reused i
 commit and digest per row.
 
 **Files.** `huggingface/`, `src/model.zig`, `src/main.zig`, `src/paths.zig`,
-`build.zig`, `build.zig.zon`, `docs/development.md`, `docs/reference/artifacts.md`,
+`build.zig`, `build.zig.zon`, `docs/development.md`, `docs/models/catalogue.md`,
 `docs/spec.md`, `docs/architecture.md`.
 
 **Remaining.** No catalogue names yet (that is the models directory/catalogue
@@ -916,7 +916,7 @@ catalogue name or a `models` registry entry with per-model overrides; and
 profile < file < entry < flags with per-key sources; `config show` prints the
 effective value of every key with its source. Detail in
 [development.md § Configuration file](development.md#configuration-file) and
-[artifacts.md](reference/artifacts.md).
+[catalogue.md](models/catalogue.md).
 
 **Evidence.** `make check` fmt clean, **179 tests**, `test-metal` passed. Config
 tests (11) covered registry parse, precedence per model, unknown companion key,
@@ -931,7 +931,7 @@ digest = spec; `make bench` after the move **40.01 / 10.60** prefill / decode
 
 **Files.** `src/catalog.zig`, `src/config.zig`, `src/model.zig`, `src/paths.zig`,
 `inference/src/models/registry.zig`, `inference/src/models/qwen35.zig`,
-`docs/development.md`, `docs/reference/artifacts.md`, `docs/spec.md`.
+`docs/development.md`, `docs/models/catalogue.md`, `docs/spec.md`.
 
 **Remaining.** `model ls` does not annotate registry entries; the chat turn was
 not driven (no TTY); `bench` reads the entry's `ctx_size` and nothing else.
@@ -1009,7 +1009,7 @@ by digest.
 
 **Outcome.** The Gemma 4 12B facts were read from the two pinned files with a
 new independent header reader (`scripts/gguf-inventory.py`) and from the pinned
-llama.cpp `7620399` source, recorded in [gemma4.md](reference/gemma4.md): 48 layers in a
+llama.cpp `7620399` source, recorded in [gemma4.md](models/gemma4.md): 48 layers in a
 period-6 pattern (five sliding, window 1024, head 256, 8 KV heads, RoPE base
 1e4; one global, head 512, one KV head, base 1e6 with `rope_freqs` factors
 rotating 128 of 512 dimensions), no value projection on global layers, four
@@ -1036,7 +1036,7 @@ s**. Gate: `make check` **195 tests** and `test-metal` passed.
 `inference/src/models/gemma4_runtime.zig`,
 `inference/src/models/gemma4_metal.zig`, `inference/src/tokenizer/bpe.zig`,
 `inference/src/tokenizer/encode.zig`, `scripts/gguf-inventory.py`,
-`tests/fixtures/gemma4-hello-comma/`, `docs/reference/gemma4.md`.
+`tests/fixtures/gemma4-hello-comma/`, `docs/models/gemma4.md`.
 
 **Remaining.** The Metal plan (MODL-06), the profile and template fixtures
 (MODL-07), and the Q4_0/QAT path (MODL-08); the `--raw` BOS convention was
@@ -1139,7 +1139,7 @@ GB**
 `inference/src/backends/metal/dequant.metal`,
 `inference/src/backends/metal/kernels.metal`,
 `inference/src/backends/metal/root.zig`, `inference/src/models/gemma4.zig`,
-`src/catalog.zig`, `Makefile`, `docs/reference/gemma4.md`,
+`src/catalog.zig`, `Makefile`, `docs/models/gemma4.md`,
 `docs/reference/bench.md`.
 
 **Remaining.** Gemma performance work (per-kernel profile, windowed-cache ring
@@ -1766,7 +1766,7 @@ incremented).
 `inference/src/profiles/fixtures/gemma4-tools.json`,
 `inference/vocabulary-check.zig`, `scripts/profile-tools-fixtures.py`,
 `docs/engine/prompt-profile.md`, `docs/engine/tool-calling.md`,
-`docs/reference/gemma4.md`, `docs/reference/agent-concepts.md`,
+`docs/models/gemma4.md`, `docs/reference/agent-concepts.md`,
 `docs/architecture.md`, `docs/agent-spec.md`, `docs/spec.md`,
 `THIRD_PARTY_NOTICES.md`.
 
@@ -1796,7 +1796,7 @@ own 26B-A4B section, superseded by the plan in `TODO.md`, was removed.
 
 **Evidence.** Every file pulled and verified by `nuclis model pull --file`
 on 2026-09-17 (digests in
-[artifacts.md](reference/artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11));
+[catalogue.md](models/catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11));
 `nuclis model ls` lists both entries and their companions *present*;
 `nuclis model inspect` says *not runnable: the gemma4 adapter rejects the
 file: UnsupportedConfiguration* for the 26B-A4B and *no adapter for
@@ -1805,7 +1805,7 @@ well-formedness test extended to the new entries, the null profile, and
 the drafter's role). No kernel or engine code changed.
 
 **Files.** `src/catalog.zig`, `src/config.zig`, `README.md`,
-`docs/reference/artifacts.md`, `docs/roadmap.md`, `TODO.md`.
+`docs/models/catalogue.md`, `docs/roadmap.md`, `TODO.md`.
 
 **Remaining.** The entries turn *supported* when MODL-10 and MODL-13 close;
 MODL-13 fills the Muse profile in and may make the profile field required
@@ -1885,7 +1885,7 @@ tool and answered (Metal, context 4096).
 `src/help.zig`, `src/tokenize.zig`, `src/generate.zig`, `src/bench.zig`,
 `src/agent/root.zig`, `src/agent/print.zig`, `docs/spec.md`,
 `docs/development.md`, `docs/engine/prompt-profile.md`,
-`docs/reference/gemma4.md`.
+`docs/models/gemma4.md`.
 
 **Remaining.** A forced profile renders the pinned protocol, so a file
 whose template is a genuinely different protocol produces prompts its
@@ -2148,7 +2148,7 @@ rows. Every expert tensor is wrapped whole and resident (14.2 GB); the
 wide attention kernels index two KV heads without change. The chunk for
 the family is 512 (`Plan.preferredChunk`, an engine override per binding).
 Facts, the forward pass, and the artifact's provenance are in
-[gemma4.md § 26B-A4B](reference/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09).
+[gemma4.md § 26B-A4B](models/gemma4.md#gemma-4-26b-a4b-the-expert-configuration-modl-09).
 
 **Evidence.** Zig 0.16.0, M4 Pro/48 GiB, `make check`, `test-metal`
 (the 16-over-2, width-512 geometry added: chunk 3.0e-6 / 1.9e-4 F16,
@@ -2176,8 +2176,8 @@ rates (`--kv f16`): 22-token prompt 122.6 / 57.9 tok/s; 512-token array
 `inference/src/runtime/weights.zig`, `inference/src/engine.zig`,
 `inference/metal-check.zig`, `inference/generation-check.zig`,
 `tests/fixtures/gemma4-26b-a4b-hello-comma/`, `Makefile`, `README.md`,
-`docs/reference/gemma4.md`, `docs/engine/metal-backend.md`,
-`docs/reference/artifacts.md`, `docs/architecture.md`,
+`docs/models/gemma4.md`, `docs/engine/metal-backend.md`,
+`docs/models/catalogue.md`, `docs/architecture.md`,
 `docs/development.md`.
 
 **Remaining.** The chunked prefill's half-tile rounding on a routed model
@@ -2235,8 +2235,8 @@ runs.
 `tests/fixtures/provenance.md`,
 `docs/benchmarks/reference-2026-09-18-gemma4-26b-a4b.json`,
 `docs/benchmarks/nuclis-2026-09-18-gemma4-26b-a4b.json`,
-`docs/reference/bench.md`, `docs/reference/gemma4.md`,
-`docs/reference/artifacts.md`, `docs/architecture.md`,
+`docs/reference/bench.md`, `docs/models/gemma4.md`,
+`docs/models/catalogue.md`, `docs/architecture.md`,
 `docs/development.md`, `README.md`.
 
 **Remaining.** Decode at 71–81 % and prefill falling to 39 % of the
@@ -2268,7 +2268,7 @@ file (the bring-up packing: a 2-bit unpack of the Q4_0 kernel's shape,
 and the faster prompt processing by Prism's table) with the Q8_0
 projector under `mmproj`; PTQ1_0 (5.95 GB) follows in the same units. The
 facts and the three unit designs (MODL-16, KERN-10, MODL-17) are in
-`TODO.md` until `docs/reference/bonsai.md` records them.
+`TODO.md` until `docs/models/bonsai.md` records them.
 
 **Evidence.** Facts read from the PTQ1_0 header (first 16 MiB parsed
 directly), the model card, the whitepaper, and the fork's `prism-v7`
@@ -2283,7 +2283,7 @@ nuclis does not store*, as intended. The chat template's digest
 build test` with the catalogue assertions; `make fmt-check`.
 
 **Files.** `src/catalog.zig`, `TODO.md`, `docs/roadmap.md`,
-`docs/reference/artifacts.md`, `README.md`.
+`docs/models/catalogue.md`, `README.md`.
 
 **Remaining.** Everything the three units design; `gdn_v_grouped` and the
 fork's exact transform contract are read from its loader in MODL-16, not
@@ -2350,7 +2350,7 @@ oracle. The PrismML llama.cpp fork at release `prism-b10687-5d80cff`
 (`5d80cff0…`, MIT) is the second pinned oracle, built beside mainline
 with the same recipe; two pins, never one moving one
 (`quant-fixtures.py`'s `PRISM_REVISION`, `profile-alias-check.py
---reference-revision`). `docs/reference/bonsai.md` records the artifact,
+--reference-revision`). `docs/models/bonsai.md` records the artifact,
 header, tensors, both block layouts, and the rotation contract as the
 fork's loader implements it: `R = (1/√1024) H S` per 1024-block, explicit
 ±1 signs per input width (5120 / 6144 / 17408), 401 rotated matrices
@@ -2406,7 +2406,7 @@ passed on the first run: 129 files, max abs 2.44e-4, max relative RMS
 `src/catalog.zig`, `src/validate.zig`, `src/model.zig`, `Makefile`,
 `scripts/quant-fixtures.py`, `scripts/gguf-inventory.py`,
 `scripts/profile-alias-check.py`, `tests/fixtures/bonsai-hello-comma/`,
-`tests/fixtures/provenance.md`, `docs/reference/bonsai.md`,
+`tests/fixtures/provenance.md`, `docs/models/bonsai.md`,
 `reference-baseline.md`, `quantization.md`, `cpu-reference.md`,
 `generation.md`, `artifacts.md`, `prompt-profile.md`, `docs/development.md`,
 `docs/llm-guide.md` (§ 49), `README.md`, `THIRD_PARTY_NOTICES.md`.
@@ -2461,7 +2461,7 @@ variant is left to MODL-17's profile. `make check`.
 
 **Files.** `inference/src/backends/metal/dequant.metal`, `kernels.metal`,
 `root.zig`, `inference/metal-check.zig`, `build.zig`, `Makefile`,
-`docs/engine/metal-backend.md`, `docs/reference/bonsai.md`,
+`docs/engine/metal-backend.md`, `docs/models/bonsai.md`,
 `docs/development.md`.
 
 **Remaining.** The Metal plan does not yet dispatch the transform or run
@@ -2531,9 +2531,9 @@ true`, stop `eos`. `make check`: 413 tests and `test-metal`.
 `Makefile`, `scripts/reference-baseline.py`, `scripts/nuclis-baseline.py`,
 `tests/fixtures/run-2026-09-18-bonsai/`, `tests/fixtures/provenance.md`,
 `docs/benchmarks/reference-2026-09-18-bonsai.json`,
-`docs/benchmarks/nuclis-2026-09-18-bonsai.json`, `docs/reference/bonsai.md`,
+`docs/benchmarks/nuclis-2026-09-18-bonsai.json`, `docs/models/bonsai.md`,
 `docs/reference/bench.md`, `docs/engine/metal-backend.md`,
-`docs/reference/artifacts.md`, `docs/reference/reference-baseline.md`,
+`docs/models/catalogue.md`, `docs/reference/reference-baseline.md`,
 `docs/development.md`, `docs/spec.md`, `README.md`.
 
 **Remaining.** Decode is at 80–87 % of the fork and 1.3× the Qwen3.8
@@ -2616,7 +2616,7 @@ called `bash`).
 the CPU. Session 1: the pulled file and its two companions verified
 against their sidecars; the pinned llama.cpp reference rebuilt and shown
 to run the file (plain and `--jinja --single-turn`);
-`docs/reference/muse-glimmer.md` written from the inventory and the
+`docs/models/muse-glimmer.md` written from the inventory and the
 reference source (metadata, 731 tensors, the forward pass in equations,
 the tokenizer, the template facts); the inventory fixture committed; the
 `llama4` splitter (`tokenizer/gpt4o.zig`) written and selected by
@@ -2666,9 +2666,9 @@ within 6.0e-6, greedy token 372 on both sides with identical top-5, in
 `inference/src/backends/cpu/rope.zig`, `scripts/tokenizer-fixtures.py`,
 `scripts/reference-split.cpp`, `tests/fixtures/muse-glimmer-hello-comma/`,
 `tests/fixtures/provenance.md`, `Makefile`, `src/catalog.zig`,
-`docs/reference/muse-glimmer.md`, `docs/engine/tokenizer.md`,
-`docs/reference/new-model-guide.md`, `docs/engine/prompt-profile.md`,
-`docs/reference/artifacts.md`, `docs/architecture.md`,
+`docs/models/muse-glimmer.md`, `docs/engine/tokenizer.md`,
+`docs/models/README.md`, `docs/engine/prompt-profile.md`,
+`docs/models/catalogue.md`, `docs/architecture.md`,
 `docs/development.md`, `THIRD_PARTY_NOTICES.md`.
 
 **Remaining.** The Metal plan (MODL-12: the RoPE kernel's adjacent
@@ -2718,7 +2718,7 @@ The Qwen `make bench` is unchanged (39.75 / 10.44 tok/s). `make check`:
 `inference/src/models/{gemma4_metal,qwen35_metal}.zig`,
 `inference/src/backends/metal/{root.zig,kernels.metal}`,
 `inference/metal-check.zig`, `inference/generation-check.zig`,
-`Makefile`, `docs/reference/muse-glimmer.md`,
+`Makefile`, `docs/models/muse-glimmer.md`,
 `docs/engine/metal-backend.md`, `docs/reference/bench.md`,
 `docs/architecture.md`, `docs/development.md`.
 
@@ -3188,7 +3188,7 @@ on the touched sources (comment edits only).
 
 **Files.** `docs/roadmap.md` (deleted), `AGENTS.md`, `docs/README.md`,
 `docs/agent-spec.md`, `docs/llm-guide.md`, `docs/reference/bench.md`,
-`docs/reference/gemma4.md`, `docs/reference/muse-glimmer.md`,
+`docs/models/gemma4.md`, `docs/models/muse-glimmer.md`,
 `docs/engine/tool-calling.md`, `docs/engine/metal-backend.md`,
 `TODO.md`, `src/catalog.zig`, `inference/src/formats/gguf.zig`,
 `inference/src/models/muse_glimmer_metal.zig`,
@@ -4325,7 +4325,7 @@ tree.
 
 **Files.** `docs/architecture.md`, `docs/llm-guide.md`,
 `docs/agent-spec.md`, `docs/reference/agent-concepts.md`,
-`docs/reference/gemma4.md`, `docs/engine/metal-backend.md`, `TODO.md`,
+`docs/models/gemma4.md`, `docs/engine/metal-backend.md`, `TODO.md`,
 and this log.
 
 **Remaining.** The guide has no section on the tokenizer's Unicode table
@@ -5457,7 +5457,7 @@ through `config set`.
 and `bonsai-2-27b` left it: their files are runnable, not supported, and
 reach the registry through `config init --discover` (Bonsai's template is
 not pinned, so discovery forces the family's `qwen38`, as the entry did).
-Their pins stay in [artifacts.md](reference/artifacts.md#the-catalogue) as
+Their pins stay in [catalogue.md](models/catalogue.md#the-catalogue) as
 the record their traces and acceptance runs cite; their gates keep the
 files by path. The registry is written in name order: the initial file's
 catalogue entries are sorted at compile time, and every edit
@@ -5479,8 +5479,8 @@ name order. A scratch `NUCLIS_HOME` dry run left the directory empty.
 
 **Files.** `src/catalog.zig`, `src/config.zig`, `src/discover.zig`,
 `src/cli.zig`, `gates.json` (the two models' informational `entry` names
-removed), `docs/spec.md`, `docs/reference/artifacts.md`,
-`docs/reference/gemma4.md`, `docs/reference/bonsai.md`.
+removed), `docs/spec.md`, `docs/models/catalogue.md`,
+`docs/models/gemma4.md`, `docs/models/bonsai.md`.
 
 **Remaining.** `model ls` still prints the companions' `loaded_by` text
 ("not loaded yet: the vision unit") though every family's projector and
@@ -5506,7 +5506,7 @@ the E4B's clipped linears (a new `clamp` Metal kernel), optional
 standardization, and the audio encoder skipped. The `gemma4_e` profile
 renders the E4B's template revision. Catalogue entry with speculation off.
 Facts and numbers:
-[gemma4.md § Gemma 4 E4B](reference/gemma4.md#gemma-4-e4b-per-layer-embeddings-and-shared-kv-modl-27-2026-09-26).
+[gemma4.md § Gemma 4 E4B](models/gemma4.md#gemma-4-e4b-per-layer-embeddings-and-shared-kv-modl-27-2026-09-26).
 Side fix: the Gemma CPU runtime allocated the draft head from its arena
 after moving the arena into the result, leaking the head (every Gemma
 draft run, the 12B's included).
@@ -5537,7 +5537,7 @@ vocabulary,perplexity,perplexity-4k}`.
 `gemma4-mtp-e4b/`, `vision/fixtures/gemma4-e4b-mmproj.json`,
 `gemma4v-e4b-synthetic/`, `profiles/fixtures/gemma4_e-text.json`,
 `tests/fixtures/gemma4-e4b-hello-comma/`,
-`tests/fixtures/perplexity/gemma4-e4b-*`; `docs/reference/gemma4.md`,
+`tests/fixtures/perplexity/gemma4-e4b-*`; `docs/models/gemma4.md`,
 `artifacts.md`, `tests/fixtures/provenance.md`.
 
 **Remaining.** Closed by the user on 2026-09-27 without the planned gate
@@ -5622,7 +5622,7 @@ numerical change.
 **Files.** `huggingface/src/hub.zig`, `huggingface/src/root.zig`,
 `huggingface/src/main.zig`, `huggingface/README.md`, `src/model.zig`,
 `src/discover.zig`, `src/help.zig`, `Makefile`, `README.md`,
-`docs/spec.md`, `docs/development.md`, `docs/reference/artifacts.md`,
+`docs/spec.md`, `docs/development.md`, `docs/models/catalogue.md`,
 `docs/worklog.md`, `TODO.md`.
 
 **Remaining.** Each file of a set is its own package call, so each lists
@@ -5794,7 +5794,7 @@ behaviour the Debug test build does not show.
 
 **Outcome.** Laya (`convaiinnovations/laya`, the English root checkpoint,
 commit `55cf4c4e`) runs in nuclis on the CPU behind `nuclis decide`, in
-three sessions ([reference/laya.md](reference/laya.md)):
+three sessions ([models/laya.md](models/laya.md)):
 
 - *The oracle and the tokenizer.* `scripts/laya-reference.py` runs the
   `laya` 0.3.20 package (PyTorch 2.14.0, Transformers 5.17.0, Tokenizers
@@ -5872,8 +5872,8 @@ or family forward changed.
 `inference/src/root.zig`, `inference/vocabulary-check.zig`,
 `inference/laya-check.zig`, `inference/build.zig`, `build.zig`,
 `src/{decide,cli,help,completion,catalog,config,model}.zig`, `gates.json`
-(`laya-vocabulary`, `laya-cpu`, model `laya`), `docs/reference/laya.md`
-(new), `docs/engine/tokenizer.md`, `docs/reference/artifacts.md`,
+(`laya-vocabulary`, `laya-cpu`, model `laya`), `docs/models/laya.md`
+(new), `docs/engine/tokenizer.md`, `docs/models/catalogue.md`,
 `docs/spec.md`, `docs/architecture.md`, `docs/development.md`,
 `THIRD_PARTY_NOTICES.md`, `TODO.md`, `docs/worklog.md`.
 
@@ -5908,7 +5908,7 @@ long-tier ones would. `make gates-validate`: 55 gates (38 verify, 16
 verify-cpu, 1 verify-long), 10 models, valid.
 
 **Files.** `gates.json`, `Makefile` (the `verify-long` help),
-`docs/development.md` (the tier table), `docs/reference/gemma4.md`,
+`docs/development.md` (the tier table), `docs/models/gemma4.md`,
 `docs/reference/eval.md`, `tests/fixtures/provenance.md`,
 `docs/worklog.md`.
 
@@ -6010,7 +6010,7 @@ its fixtures; `engine.zig` has no unit tests.
 
 **Outcome.** Laya runs on Metal behind `nuclis decide --backend
 cpu|metal`, metal by default in a Metal build
-([reference/laya.md § On Metal](reference/laya.md#on-metal)).
+([models/laya.md § On Metal](models/laya.md#on-metal)).
 `models/laya_metal.zig` `Plan` runs the CPU forward's schedule and owns
 its `Backend`: the checkpoint's F16 matrices wrapped in place and read by
 the generic F32 matmul tile, vectors decoded to F32 buffers, no 1.5 GB
@@ -6058,7 +6058,7 @@ neither run. `make verify`: 33/33 in 254 s
 `inference/src/decide.zig`, `inference/src/backends/metal/{root.zig,kernels.metal}`,
 `inference/laya-check.zig`, `inference/metal-check.zig`,
 `src/{decide,help,completion}.zig`, `gates.json`,
-`docs/reference/laya.md`, `docs/architecture.md`, `docs/spec.md`,
+`docs/models/laya.md`, `docs/architecture.md`, `docs/spec.md`,
 `docs/development.md`, `TODO.md`, `docs/worklog.md`.
 
 **Remaining.** Attention is the scalar per-(row, head) kernel, 45 % of a
@@ -6074,7 +6074,7 @@ a language model in one process share the GPU in turn, never at once.
 **Outcome.** `nuclis decide --model laya-multilingual` runs Laya's
 `multilingual/` checkpoint (an mmBERT-base encoder, the same head) on
 the CPU and on Metal, matching the `laya` 0.3.20 package
-([reference/laya.md § The multilingual checkpoint](reference/laya.md#the-multilingual-checkpoint)).
+([models/laya.md § The multilingual checkpoint](models/laya.md#the-multilingual-checkpoint)).
 The model code is unchanged; the work was around it. `hf_json.zig`
 accepts a second `tokenizer.json` shape, Metaspace (Gemma's vocabulary:
 `Replace " " → "▁"`, `Metaspace` with `prepend_scheme: always` and
@@ -6250,10 +6250,10 @@ for `laya` and 3,400–8,700 for `laya-multilingual` on Metal, against 90
 for Qwen3.8-27B's prefill). It states the filter idea as the hypothesis,
 with the agent experiment (AGNT-18, deferred) still to run. It sums up
 correctness and the hand-run cases in a paragraph and leaves the rest to
-`docs/reference/laya.md`.
+`docs/models/laya.md`.
 
 **Evidence.** Every number is taken from a measured record:
-[reference/laya.md](reference/laya.md) (MODL-30, MODL-31, MODL-33) for
+[models/laya.md](models/laya.md) (MODL-30, MODL-31, MODL-33) for
 correctness and speed, and the manual cases run on both checkpoints on
 2026-09-29 at `0942463` for the answers.
 
@@ -7092,7 +7092,7 @@ full tables in [api.md § Measured rates](reference/api.md#measured-rates):
 Why the batching target was missed: at concurrency 16 a pass held 7.9
 requests (about 820 rows), but one request already encodes at 3,020
 rows/s (laya) and 7,160 (laya-multilingual), against packed rates near
-3,700 and 8,660 ([laya.md § Time per call](reference/laya.md#time-per-call));
+3,700 and 8,660 ([laya.md § Time per call](models/laya.md#time-per-call));
 the plan's own figures (2,440 → 3,500 tokens/s from 1 to 50 states)
 implied the ceiling. More would need a faster Laya encode (its attention
 and F32 matmul tile, laya.md § Limits), not a different server.
@@ -7122,7 +7122,7 @@ tier.
 `src/decision/{request,response,catalog,tiny}.zig`, `src/decide.zig`,
 `src/cli.zig`, `src/help.zig`, `src/completion.zig`,
 `inference/src/decide.zig`; `docs/reference/api.md` (new),
-`docs/{architecture,spec,development}.md`, `docs/reference/laya.md`,
+`docs/{architecture,spec,development}.md`, `docs/models/laya.md`,
 `TODO.md`, and this log.
 
 **Remaining.** The OpenAI-compatible service for the language models

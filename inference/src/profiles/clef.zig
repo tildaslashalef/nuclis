@@ -7,7 +7,7 @@
 //! head averages are recorded while the schema is built. Pure: tokenizing
 //! goes through the backbone GGUF's own tokenizer (the same vocabulary as
 //! the repository's `tokenizer.json`), nothing here reads files or runs the
-//! model. Contract: docs/reference/clef.md.
+//! model. Contract: docs/models/clef-flash.md.
 const std = @import("std");
 const Encoder = @import("../tokenizer/encode.zig").Encoder;
 const decision = @import("decision.zig");

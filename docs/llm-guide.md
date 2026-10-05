@@ -199,7 +199,7 @@ the point: 7.2 GB against 16.5, and 12.87 tokens per second where the
 forked reference reaches 17.05.
 
 Read: `inference/src/backends/cpu/hadamard.zig`, `models/qwen35.zig`
-(`Rotation`), [reference/bonsai.md](reference/bonsai.md).
+(`Rotation`), [models/bonsai.md](models/bonsai.md).
 
 ---
 
@@ -776,7 +776,7 @@ every path. `--kv f32` exists for numerical work.
 
 Read: `nu_pack_half`, the `_h` instantiations in `kernels.metal`,
 [engine/session.md](engine/session.md),
-[reference/gemma4.md](reference/gemma4.md).
+[models/gemma4.md](models/gemma4.md).
 
 ### 21. Flash decoding
 
@@ -984,9 +984,9 @@ value heads, on Qwen's schedule. The count that matters is what each did
 not touch: the parser, the sampler, the session, the bridge, the existing
 kernels, the generation loop.
 
-Read: [reference/gemma4.md](reference/gemma4.md),
-[reference/muse-glimmer.md](reference/muse-glimmer.md),
-[reference/new-model-guide.md](reference/new-model-guide.md).
+Read: [models/gemma4.md](models/gemma4.md),
+[models/muse-glimmer.md](models/muse-glimmer.md),
+[models](models/README.md).
 
 ---
 

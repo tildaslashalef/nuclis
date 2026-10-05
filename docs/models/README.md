@@ -33,11 +33,11 @@ the transcript will not survive.
   own on the same architecture.
 - Pull it (`nuclis model pull <owner/repo> --file <name>`) and record the
   commit, size, and SHA-256 from the sidecar in
-  [artifacts.md](artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11).
+  [catalogue.md](catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11).
   The companions (`mmproj`, `mtp`) go into the same table; the catalogue
   entry will need their digests.
 - Confirm the pinned llama.cpp reference (`7620399`,
-  [reference-baseline.md](reference-baseline.md)) loads and runs the file
+  [reference-baseline.md](../reference/reference-baseline.md)) loads and runs the file
   (`llama-completion -ngl 99 -no-cnv`, then `--jinja --single-turn` for a
   chat answer). If it does not, there is no oracle and the unit stops here.
 
@@ -201,13 +201,13 @@ the reference's ids.
   (`scripts/reference-baseline.py --family <family> --output-dir
   .reference/<family>-<date> --prompt-lengths
   512,4096,16384,32639` against the server started with the
-  [reference recipe](reference-baseline.md#run-the-workload) at 32K),
+  [reference recipe](../reference/reference-baseline.md#run-the-workload) at 32K),
   its token arrays committed under `tests/fixtures/run-<date>-<family>/`,
   a `docs/benchmarks/reference-<date>-<family>.json` summary, then
   `scripts/nuclis-baseline.py --run run-<date>-<family>
   --reference-records reference-<date>-<family>.json` (a `make
   baseline-<family>` target) and the table in
-  [bench.md](bench.md#acceptance-runs) with hardware, build, artifact,
+  [bench.md](../reference/bench.md#acceptance-runs) with hardware, build, artifact,
   context, and methodology stated.
 
 ## 8. Close

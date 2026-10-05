@@ -2,7 +2,7 @@
 //! three pinned checkpoints of one architecture, the dense 12B, the 26B-A4B
 //! mixture of experts, and the E4B. The facts this file encodes were read
 //! from the artifacts and the reference and are recorded, with their
-//! provenance, in docs/reference/gemma4.md; nothing here is generic Gemma
+//! provenance, in docs/models/gemma4.md; nothing here is generic Gemma
 //! knowledge. Like the Qwen adapter it is deliberately narrow: a file whose
 //! `gemma4.*` keys differ from a pinned configuration is rejected with
 //! `UnsupportedConfiguration` rather than run with guessed semantics.
@@ -598,7 +598,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
 }
 
 /// The pinned 12B K-quant artifact's directory inventory
-/// (`fixtures/gemma4-12b.json`, docs/reference/gemma4.md) hydrated to a
+/// (`fixtures/gemma4-12b.json`, docs/models/gemma4.md) hydrated to a
 /// Document with no weights.
 pub fn inventoryDocument(gpa: std.mem.Allocator) !gguf.Document {
     return @import("inventory.zig").document(gpa, @embedFile("fixtures/gemma4-12b.json"));

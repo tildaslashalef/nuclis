@@ -87,7 +87,7 @@ bytes, then the scale: digit `n` of a byte is `((byte * 3^n mod 256) * 3)
 >> 8`, the 24 bytes are runs of 16 and 8 emitted digit-major, and the tail
 bytes hold four trits at the leading positions. BF16 (id 30) widens the
 high half of a single. The contracts, the fork's revision, and the
-rotation these files also need are in [bonsai.md](../reference/bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc).
+rotation these files also need are in [bonsai.md](../models/bonsai.md#encodings-from-the-forks-ggml-commonh-and-ggml-quantsc).
 
 The block layouts and equations are facts of the GGML storage formats, learned
 from the pinned llama.cpp

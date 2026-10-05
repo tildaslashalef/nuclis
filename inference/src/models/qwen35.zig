@@ -4,9 +4,9 @@
 //! Bind once at model load: later numerical code uses named tensor references,
 //! never repeated GGUF string lookups. Bindings borrow the Document's storage.
 //! Validation checks the declared profile and storage, not tensor values or
-//! numerical execution. See docs/reference/qwen-validation.md for the pinned references.
+//! numerical execution. See docs/models/qwen3.8.md for the pinned references.
 //! The same adapter binds Bonsai 2 27B, the ternary re-encoding whose weights
-//! sit in a Hadamard-rotated basis (`Rotation`, docs/reference/bonsai.md),
+//! sit in a Hadamard-rotated basis (`Rotation`, docs/models/bonsai.md),
 //! with or without the auxiliary prediction block.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");

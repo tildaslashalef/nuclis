@@ -6,7 +6,7 @@
 //! answer. Pure: tokenizing goes through a borrowed Hugging Face tokenizer,
 //! nothing here reads files or runs the model. Structured values are
 //! rendered as Python's `json.dumps(…, ensure_ascii=False)` renders them,
-//! since the model read that text in training. Contract: docs/reference/laya.md.
+//! since the model read that text in training. Contract: docs/models/laya.md.
 const std = @import("std");
 const hf = @import("../tokenizer/hf_json.zig");
 const decision = @import("decision.zig");

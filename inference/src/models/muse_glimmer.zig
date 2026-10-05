@@ -1,7 +1,7 @@
 //! Muse Glimmer 30B text adapter: metadata validation and named weight
 //! binding for one pinned checkpoint. The facts this file encodes were read
 //! from the artifact and the reference and are recorded, with their
-//! provenance, in docs/reference/muse-glimmer.md; nothing here is generic
+//! provenance, in docs/models/muse-glimmer.md; nothing here is generic
 //! knowledge of the family. Deliberately narrow, like the other adapters:
 //! a file whose `muse-glimmer.*` keys differ from the pinned configuration
 //! is rejected with `UnsupportedConfiguration` rather than run with guessed
@@ -295,7 +295,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
 }
 
 /// The pinned artifact's directory inventory (`fixtures/muse-glimmer-30b.json`,
-/// docs/reference/muse-glimmer.md) hydrated to a Document with no weights.
+/// docs/models/muse-glimmer.md) hydrated to a Document with no weights.
 pub fn inventoryDocument(gpa: std.mem.Allocator) !gguf.Document {
     return @import("inventory.zig").document(gpa, @embedFile("fixtures/muse-glimmer-30b.json"));
 }

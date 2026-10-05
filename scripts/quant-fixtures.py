@@ -4,7 +4,7 @@
 Usage: python3 scripts/quant-fixtures.py [reference-checkout] [--prism-checkout DIR]
 Defaults to .reference/llama.cpp under the repository root, and
 .reference/prism-llama.cpp for the PrismML fork that defines the
-ternary encodings (PQ2_0, PTQ1_0; docs/reference/bonsai.md). Each checkout
+ternary encodings (PQ2_0, PTQ1_0; docs/models/bonsai.md). Each checkout
 must sit at its pinned revision with its Release build; no model or GPU is
 used. Writes fixtures under inference/src/quant/fixtures/ (`ternary.json`
 from the fork, the rest from mainline) and the attributed IQ3_S table in

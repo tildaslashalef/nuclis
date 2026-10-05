@@ -4,7 +4,7 @@
 //! row, two pre-norm transformer layers, and at each option's marker a scorer
 //! giving that option's logit. Sequence building and calibration are the
 //! profile's (profiles/laya.zig). F32 on the CPU; the head's weights are
-//! decoded at open like the encoder's. Contract: docs/reference/laya.md.
+//! decoded at open like the encoder's. Contract: docs/models/laya.md.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const safetensors = @import("../formats/safetensors.zig");

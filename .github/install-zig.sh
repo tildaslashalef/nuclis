@@ -8,7 +8,7 @@
 # keep in step by hand: a Zig upgrade edits the manifest and that file, and
 # this script refuses anything else. Pinning the digest rather than reading it
 # from the download index at run time is the rule the rest of this project
-# follows for every artifact it fetches (docs/reference/artifacts.md).
+# follows for every artifact it fetches (docs/models/catalogue.md).
 #
 # POSIX shell and awk only: no jq, no Python. A workflow step should depend on
 # the two tools that are on every machine, and nothing else.

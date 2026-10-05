@@ -209,7 +209,7 @@ fn lookup(vocab: *const Vocabulary, encoded: []const u8, spans: []const Span, pa
     return vocab.mergeRank(pair[0..size]);
 }
 
-/// SPM-style BPE over one piece (Gemma 4; docs/reference/gemma4.md
+/// SPM-style BPE over one piece (Gemma 4; docs/models/gemma4.md
 /// § Tokenizer): `text` is already in the vocabulary's alphabet (valid UTF-8
 /// with spaces escaped to U+2581 by the caller), symbols are code points,
 /// the merges are the same rank scan, and a merged symbol with no token

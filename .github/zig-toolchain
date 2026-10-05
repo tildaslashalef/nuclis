@@ -1,5 +1,5 @@
 # The compiler CI installs, pinned the way every other artifact this project
-# downloads is pinned (docs/reference/artifacts.md): a version, a target, and
+# downloads is pinned (docs/models/catalogue.md): a version, a target, and
 # the SHA-256 that ziglang.org publishes for that tarball.
 #
 # The version must match `minimum_zig_version` in build.zig.zon and the tested

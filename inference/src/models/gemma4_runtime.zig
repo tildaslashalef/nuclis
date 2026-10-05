@@ -1,7 +1,7 @@
 //! CPU execution of the pinned Gemma 4 text schedules (the dense 12B, the
 //! 26B-A4B mixture of experts, and the E4B): the numerical reference
 //! `gemma4_metal.zig` is compared against, written from the forward pass
-//! recorded in docs/reference/gemma4.md. Immutable weight views and the
+//! recorded in docs/models/gemma4.md. Immutable weight views and the
 //! binding borrow the loaded model; this runtime owns the session (one
 //! attention cache per cache-owning layer, F32) and its workspace. A failed step poisons
 //! the session. With a `gemma4-assistant` companion

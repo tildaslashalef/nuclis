@@ -4,7 +4,7 @@
 //! question inline. One state renders per question; several render ranked
 //! by the first question, the filter shape (one question over many states).
 //! `--json` writes the shared wire format (`decision/response.zig`).
-//! docs/reference/laya.md.
+//! docs/models/laya.md.
 const std = @import("std");
 const inference = @import("inference");
 const style = @import("tui/style.zig");

@@ -229,8 +229,12 @@ def tracked():
     return [p for p in out.splitlines() if (ROOT / p).is_file()]
 
 
+# The one document among the test fixtures; the rest are data.
+FIXTURE_DOCS = {"tests/fixtures/provenance.md"}
+
+
 def is_markdown(path):
-    return path.endswith(".md") and path not in SKIP and "/fixtures/" not in path
+    return path.endswith(".md") and path not in SKIP and ("/fixtures/" not in path or path in FIXTURE_DOCS)
 
 
 def is_other_text(path):

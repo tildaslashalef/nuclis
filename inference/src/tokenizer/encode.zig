@@ -72,7 +72,7 @@ pub const Encoder = struct {
         }
     }
 
-    /// Gemma 4's pre-tokenizer (`[^\n]+|[\n]+`; docs/reference/gemma4.md
+    /// Gemma 4's pre-tokenizer (`[^\n]+|[\n]+`; docs/models/gemma4.md
     /// § Tokenizer): a run of newlines is a piece of its own, emitted whole
     /// when the run is a token; everything else is one piece with spaces
     /// escaped to U+2581 before the merges. No other splitting.

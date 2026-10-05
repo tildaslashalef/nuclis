@@ -16,7 +16,7 @@ Neither card alone defines the complete wire format.
 
 The engine's pinned Gemma artifacts are **12B**, not the requested 26B-A4B.
 The latter's numerical implementation landed as MODL-10 (2026-09-18). The existing
-[artifact record](../reference/artifacts.md#pinned-commits-and-digests-modl-02-2026-09-11)
+[artifact record](../models/catalogue.md#pinned-commits-and-digests-modl-02-2026-09-11)
 and [profile fixtures](prompt-profile.md#evidence-and-reproduction) remain
 authoritative for implemented behavior. A live upstream template is evidence
 for interface design, not permission to replace a pinned profile.
@@ -95,7 +95,7 @@ rendered as their JSON text where the reference reformats floats
 
 ## Muse Glimmer: ATEM calls as their own messages
 
-The pinned template (digest `114f55eb…`, [muse-glimmer.md](../reference/muse-glimmer.md#chat-template))
+The pinned template (digest `114f55eb…`, [muse-glimmer.md](../models/muse-glimmer.md#chat-template))
 puts declarations into every system turn as prose plus JSON lines: after
 the strength line, the template's instructions, `// Tool metadata` with one
 `{"name": NS, "description": ""}` per tool namespace (a name's part before
