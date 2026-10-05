@@ -44,7 +44,12 @@ REQUIRED_FILES = [
     "wrangler.jsonc",
     ".assetsignore",
 ]
-RESULTS_HEADER = "| Model | Decode, 512 | Decode, 32,639 | Prefill, 512 | Prefill, 32,639 |"
+# The prompt lengths of the README's *Results* tables, one table per phase.
+CONTEXTS = ("512", "4096", "16384", "32639")
+RESULTS_HEADERS = {
+    "decode": "| Decode | 512 | 4,096 | 16,384 | 32,639 |",
+    "prefill": "| Prefill | 512 | 4,096 | 16,384 | 32,639 |",
+}
 SPEC_HEADER = "| Model | Draft | 512 | 32,639 |"
 
 
@@ -138,16 +143,18 @@ def table_rows(markdown, header):
 
 
 def readme_results(markdown):
-    """{model: {"decode": {"512": [n, r], ...}, "prefill": {...}}} from the *Results* table."""
-    rows = table_rows(markdown, RESULTS_HEADER)
-    if rows is None:
-        return None
+    """{model: {"decode": {"512": [n, r], ...}, "prefill": {...}}} from the *Results* tables."""
     out = {}
-    for model, d512, d32k, p512, p32k in rows:
-        out[model] = {
-            "decode": {"512": pair(d512), "32639": pair(d32k)},
-            "prefill": {"512": pair(p512), "32639": pair(p32k)},
-        }
+    for phase, header in RESULTS_HEADERS.items():
+        rows = table_rows(markdown, header)
+        if rows is None:
+            return None
+        for model, *cells in rows:
+            if len(cells) != len(CONTEXTS):
+                raise ValueError(f"{phase} row for {model} has {len(cells)} lengths, not {len(CONTEXTS)}")
+            out.setdefault(model, {})[phase] = {ctx: pair(cell) for ctx, cell in zip(CONTEXTS, cells)}
+    if any(set(entry) != set(RESULTS_HEADERS) for entry in out.values()):
+        raise ValueError("the decode and prefill tables list different models")
     return out
 
 
@@ -187,9 +194,9 @@ def compare_bench(bench, results, spec):
         if got is None:
             continue
         for phase in ("decode", "prefill"):
-            for ctx in ("512", "32639"):
-                if got[phase][ctx] != want[phase][ctx]:
-                    problems.append(f"{model} {phase} {ctx}: site {got[phase][ctx]} != README {want[phase][ctx]}")
+            for ctx in CONTEXTS:
+                if got[phase].get(ctx) != want[phase][ctx]:
+                    problems.append(f"{model} {phase} {ctx}: site {got[phase].get(ctx)} != README {want[phase][ctx]}")
     site_spec = {r["model"]: r for r in bench.get("speculative", [])}
     if list(site_spec) != list(spec):
         problems.append(f"bench speculative models {list(site_spec)} != README {list(spec)}")
@@ -354,7 +361,7 @@ def run():
     readme = (ROOT / "README.md").read_text()
     results, spec = readme_results(readme), readme_speculative(readme)
     if results is None or spec is None:
-        problems.append("README.md: the Results or Speculative decoding table header changed; update site-check.py")
+        problems.append("README.md: a Results or Speculative decoding table header changed; update site-check.py")
     else:
         try:
             bench = json.loads(index.data_blocks.get("bench", ""))
@@ -378,9 +385,13 @@ class SelfTest(unittest.TestCase):
         [
             "## Results",
             "",
-            RESULTS_HEADER,
+            RESULTS_HEADERS["decode"],
             "| --- | ---: | ---: | ---: | ---: |",
-            "| A | 10.62 / 9.66 | 7.55 / 6.71 | 90.45 / 89.19 | 49.55 / 67.28 |",
+            "| A | 10.62 / 9.66 | 10.20 / 9.21 | 8.27 / 7.32 | 7.55 / 6.71 |",
+            "",
+            RESULTS_HEADERS["prefill"],
+            "| --- | ---: | ---: | ---: | ---: |",
+            "| A | 90.45 / 89.19 | 83.70 / 89.26 | 62.70 / 74.07 | 49.55 / 67.28 |",
             "",
             SPEC_HEADER,
             "| --- | ---: | ---: | ---: |",
@@ -394,8 +405,18 @@ class SelfTest(unittest.TestCase):
             "results": [
                 {
                     "model": "A",
-                    "decode": {"512": [10.62, 9.66], "32639": [7.55, 6.71]},
-                    "prefill": {"512": [90.45, 89.19], "32639": [49.55, 67.28]},
+                    "decode": {
+                        "512": [10.62, 9.66],
+                        "4096": [10.2, 9.21],
+                        "16384": [8.27, 7.32],
+                        "32639": [7.55, 6.71],
+                    },
+                    "prefill": {
+                        "512": [90.45, 89.19],
+                        "4096": [83.7, 89.26],
+                        "16384": [62.7, 74.07],
+                        "32639": [49.55, 67.28],
+                    },
                 }
             ],
             "speculative": [
@@ -413,6 +434,7 @@ class SelfTest(unittest.TestCase):
         results, spec = readme_results(self.README), readme_speculative(self.README)
         assert results is not None and spec is not None
         self.assertEqual(results["A"]["prefill"]["32639"], [49.55, 67.28])
+        self.assertEqual(results["A"]["decode"]["16384"], [8.27, 7.32])
         self.assertEqual(spec["A"]["ratios"], {"512": "1.51", "32639": "1.26"})
         self.assertEqual(compare_bench(self.bench(), results, spec), [])
 
@@ -429,7 +451,17 @@ class SelfTest(unittest.TestCase):
         self.assertTrue(any("the site shows 1.51×, README 1.52×" in p for p in problems))
 
     def test_a_changed_header_reads_as_missing(self):
-        self.assertIsNone(readme_results(self.README.replace("Decode, 512", "Decode 512")))
+        self.assertIsNone(readme_results(self.README.replace("| Decode | 512", "| Decode | 0.5K")))
+
+    def test_a_missing_length_on_the_site_is_named(self):
+        bench = self.bench()
+        del bench["results"][0]["prefill"]["4096"]
+        problems = compare_bench(bench, readme_results(self.README), readme_speculative(self.README))
+        self.assertEqual(problems, ["A prefill 4096: site None != README [83.7, 89.26]"])
+
+    def test_a_short_row_is_an_error(self):
+        with self.assertRaises(ValueError):
+            readme_results(self.README.replace("| 8.27 / 7.32 ", ""))
 
     def test_page_facts(self):
         page = parse_page(

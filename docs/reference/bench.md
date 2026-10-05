@@ -2578,3 +2578,10 @@ Speedups are the median of the pairs' on/off ratios. Qwen reproduces
 plain decode (8.5 → 11.6 at 512), so its ratio fell from 1.50× to 1.42×
 while its on rate rose (12.6 → 16.1). E4B's 512 ratio, 2.10× on the
 12B's arrays, is 1.75× on its own. The 26B-A4B stays off: 0.67–0.68×.
+
+Short code on Qwen (`--contexts code --drafts 7 --sampling greedy
+--cooldown 90`, 09:52 on 2026-10-05, the binary of the runs above; the
+tree's only change was `scripts/site-check.py`, so the report's revision
+reads `092df76+dirty`): **11.79 → 20.87 tok/s, 1.77×**, C / 50E 0.96
+([qwen38-code.json](../benchmarks/speculative-2026-10-05/qwen38-code.json)).
+The README's "20 tokens/s on short code" holds on macOS 27.0.1 (2026-10-01: 20.26).

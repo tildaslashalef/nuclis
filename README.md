@@ -82,41 +82,54 @@ nuclis config init --discover   # names it, picks its prompt profile, finds its 
 ## Results
 
 Measured on one machine: an Apple M4 Pro (12 CPU, 16 GPU cores), 48 GiB
-of unified memory, macOS 26.6.2, Zig 0.16.0, release builds, against the
-pinned llama.cpp (`7620399`, Metal, flash attention, F16 cache) on the same
-token arrays: 128 greedy output tokens, warm means of three runs. Tokens
-per second, nuclis / llama.cpp:
+of unified memory, macOS 27.0.1, Zig 0.17.0, ReleaseSafe builds, against
+the pinned llama.cpp (`7620399`, Metal, flash attention, F16 cache) run
+the same night on the same token arrays: 128 greedy output tokens, the
+mean of three runs after a warmup, ten minutes idle between families
+(2026-10-04/05). Tokens per second, nuclis / llama.cpp, by prompt length:
 
-| Model | Decode, 512 | Decode, 32,639 | Prefill, 512 | Prefill, 32,639 |
+| Decode | 512 | 4,096 | 16,384 | 32,639 |
 | --- | ---: | ---: | ---: | ---: |
-| Qwen3.8-27B | 10.62 / 9.66 | 7.55 / 6.71 | 90.45 / 89.19 | 49.55 / 67.28 |
-| Gemma 4 12B QAT | 23.96 / 27.69 | 16.24 / 20.94 | 179.45 / 224.46 | 73.04 / 143.72 |
-| Gemma 4 26B-A4B | 55.29 / 68.02 | 31.30 / 44.09 | 500.42 / 580.76 | 134.74 / 343.38 |
-| Muse Glimmer 30B | 9.60 / 13.69 | 6.62 / 9.98 | 93.49 / 95.28 | 59.20 / 76.86 |
+| Qwen3.8-27B | 11.67 / 10.21 | 10.38 / 10.02 | 8.30 / 7.54 | 7.53 / 6.56 |
+| Gemma 4 12B QAT | 25.38 / 30.15 | 23.43 / 28.05 | 17.93 / 22.42 | 15.11 / 19.12 |
+| Gemma 4 E4B QAT | 46.84 / 62.10 | 45.40 / 59.26 | 38.02 / 52.29 | 33.08 / 44.58 |
+| Gemma 4 26B-A4B | 54.02 / 68.14 | 48.64 / 62.37 | 37.93 / 53.31 | 31.23 / 43.36 |
+| Muse Glimmer 30B | 11.62 / 14.24 | 10.09 / 12.25 | 8.08 / 9.63 | 7.19 / 9.38 |
+
+| Prefill | 512 | 4,096 | 16,384 | 32,639 |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.8-27B | 94.21 / 92.03 | 85.35 / 95.49 | 62.69 / 79.31 | 48.91 / 69.30 |
+| Gemma 4 12B QAT | 207.02 / 226.66 | 159.40 / 221.32 | 104.62 / 171.55 | 72.42 / 144.53 |
+| Gemma 4 E4B QAT | 531.03 / 597.96 | 430.80 / 600.85 | 276.77 / 516.49 | 189.30 / 388.42 |
+| Gemma 4 26B-A4B | 521.06 / 584.62 | 358.23 / 559.48 | 206.89 / 456.93 | 136.86 / 325.68 |
+| Muse Glimmer 30B | 96.41 / 96.43 | 84.13 / 95.31 | 68.56 / 78.67 | 59.59 / 75.43 |
 
 Qwen3.8, the first target, decodes faster than the reference at every
-length. The other families run on kernels written for Qwen and have not
-been tuned yet; the per-kernel profiles say where the gap is. Every file
-matches the reference's per-layer traces on the CPU and on Metal before
-its rate is recorded.
+length (1.04–1.15×) and prefills level with it at 512, falling behind as
+the prompt grows. The other families run on kernels written for Qwen and
+have not been tuned yet: their decode is 0.71–0.84× of the reference, and
+prefill is where the gap widens with length. Every file matches the
+reference's per-layer traces on the CPU and on Metal before its rate is
+recorded.
 
 **Speculative decoding** is on by default: a small drafter proposes a
 few tokens and the model checks them in one batch, keeping what it would
 have produced itself. Decode with the switch off → on, greedy, at the
-entry's draft length (same M4 Pro, macOS 27.0; Qwen on 2026-10-03 from a
-cooled chip, the others on 2026-10-01 from one long, warm run):
+entry's draft length (same machine, 2026-10-05, one sitting from a cooled
+chip, the median of three off/on pairs):
 
 | Model | Draft | 512 | 32,639 |
 | --- | ---: | ---: | ---: |
-| Qwen3.8-27B | 7 | 11.5 → 17.4 (1.51×) | 8.9 → 11.2 (1.26×) |
-| Gemma 4 12B QAT | 5 | 24.7 → 44.8 (1.83×) | 16.5 → 16.2 (0.98×) |
-| Gemma 4 E4B QAT | 6 | 46.9 → 98.6 (2.10×) | 33.0 → 38.7 (1.16×) |
-| Muse Glimmer 30B | 6 | 8.5 → 12.6 (1.50×) | 6.9 → 7.6 (1.12×) |
+| Qwen3.8-27B | 7 | 11.6 → 17.4 (1.50×) | 7.9 → 9.8 (1.26×) |
+| Gemma 4 12B QAT | 5 | 25.4 → 46.5 (1.85×) | 15.8 → 15.5 (0.98×) |
+| Gemma 4 E4B QAT | 6 | 46.9 → 81.9 (1.75×) | 33.6 → 37.5 (1.12×) |
+| Muse Glimmer 30B | 6 | 11.6 → 16.1 (1.42×) | 7.3 → 7.8 (1.08×) |
 
-Short code on Qwen3.8 reaches 20 tokens/s, and the agent's task list
-spends 38 % less model time. Gemma 4 26B-A4B stays off: on that mixture
-of experts the batch grows dearer with every drafted token than it saves. Methodology, variance, and every
-record: [docs/reference/bench.md](docs/reference/bench.md).
+Short code on Qwen3.8 reaches 20.9 tokens/s, and on 2026-10-01 the
+agent's task list spent 38 % less model time. Gemma 4 26B-A4B stays off
+(0.67× at 512): on that mixture of experts the batch grows dearer with
+every drafted token than it saves. Methodology, variance, and every
+record: [docs/reference/bench.md](docs/reference/bench.md#the-benchmarks-on-macos-27-engn-21-2026-10-04).
 
 ## Decision models: Laya and clef-flash
 
