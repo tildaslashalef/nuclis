@@ -2480,3 +2480,30 @@ Short-context prefill gained most (+15 % at 512, +11 % at 4K); 32K decode
 lost 7 %, as the reference's did (−8.7 %). The gap to the reference is
 unchanged in shape: decode 0.79–0.84×, prefill halving by 32K. Peak RSS
 10.8 GiB, footprint 11.0 GiB.
+
+### nuclis: Gemma 4 26B-A4B
+
+[nuclis-2026-10-05-gemma4-26b-a4b.json](../benchmarks/nuclis-2026-10-05-gemma4-26b-a4b.json),
+at `781a084`, clean, 01:45–02:08:
+
+| Prompt tokens | Prefill tok/s | Decode tok/s | 2026-09 prefill / decode | Δ decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 521.06 ± 0.70 | 54.02 ± 0.02 | 500.42 / 55.29 | −2.3 % |
+| 4,096 | 358.23 ± 0.07 | 48.64 ± 0.03 | 346.17 / 49.44 | −1.6 % |
+| 16,384 | 206.89 ± 6.33 | 37.93 ± 1.86 | 206.44 / 39.55 | −4.1 % |
+| 32,639 | 136.86 ± 0.83 | 31.23 ± 0.03 | 134.74 / 31.30 | −0.2 % |
+
+Against today's reference:
+
+| Prompt tokens | Decode nuclis / llama.cpp | ratio | Prefill nuclis / llama.cpp | ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 54.02 / 68.14 | 0.79× | 521.06 / 584.62 | 0.89× |
+| 4,096 | 48.64 / 62.37 | 0.78× | 358.23 / 559.48 | 0.64× |
+| 16,384 | 37.93 / 53.31 | 0.71× | 206.89 / 456.93 | 0.45× |
+| 32,639 | 31.23 / 43.36 | 0.72× | 136.86 / 325.68 | 0.42× |
+
+The 16,384 spread is one request (decode 35.79 among 39.15, 39.20; its
+prefill dipped with it); without it the row reads 39.18. Otherwise
+unchanged from 2026-09 within ±2.3 %: the mixture of experts gained
+nothing from the new OS on either engine. Peak RSS 7.3 GiB, footprint
+7.5 GiB.
