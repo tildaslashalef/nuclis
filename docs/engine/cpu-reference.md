@@ -305,12 +305,12 @@ final state to 1e-6; validation failures and the single-token case match
 `delta` exactly. The Metal kernel (`nu_delta_chunk`, stage 2) is checked
 against this function and against the sequential steps.
 
-A checkpoint test demonstrates buffer restoration, not a shipped session or
-rewind API. Session rollback must restore convolution history and DeltaNet
-matrices along with attention KV and token position. The next implementation
-work is computational weight access and model/session composition, followed by
-full-layer and logit comparisons and a minimal token loop. These primitive tests
-do not yet generate text.
+A checkpoint test demonstrates buffer restoration at the primitive level.
+Session rollback must restore convolution history and DeltaNet matrices
+along with attention KV and token position; the session does that
+([session.md § Checkpoint and rewind](session.md#checkpoint-and-rewind-engn-11)),
+and the full model composed from these primitives generates text
+([§ Full-model composition](#full-model-composition)).
 
 ## Mixture-of-experts routing and the gathered FFN
 

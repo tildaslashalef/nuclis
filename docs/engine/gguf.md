@@ -1,8 +1,11 @@
 # GGUF inspection
 
-The first nuclis increment inspects a GGUF file without loading weights for
-execution. It validates the container directory and tensor spans. It does not
-validate Qwen equations, decode quantized values, tokenize, or generate text.
+`nuclis inspect` reads a GGUF file's directory without loading weights for
+execution: it validates the container, the metadata, and every tensor's span
+and encoding, for any architecture. It does not check a model's equations,
+decode quantized values, or tokenize; the adapters bind the tensors
+([models/qwen3.8.md § Structural validation](../models/qwen3.8.md#structural-validation))
+and the backends run them.
 
 ## Run it
 

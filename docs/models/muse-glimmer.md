@@ -440,8 +440,8 @@ decoder, the `high` effort), the catalogue pin, and the acceptance record
 9.60 tok/s decode at 512 tokens, 6.62 at 32,639, against the reference's
 13.69 and 9.98), and AGNT-10 with the ATEM tool protocol
 ([tool-calling.md](../engine/tool-calling.md#muse-glimmer-atem-calls-as-their-own-messages)).
-The family is complete for text; the vision projector is planned (MODL-23
-in [TODO.md](../../TODO.md)). The DFlash drafter closed in MODL-20
+The family is complete for text and images: the vision projector closed in
+MODL-23 ([engine/vision.md](../engine/vision.md)). The DFlash drafter closed in MODL-20
 (2026-09-21): the CPU reference and its pinned trace in session 1, the
 Metal plan and the acceptance record in session 2 — the pair measures
 1.163–1.234× at draft lengths 4, 8, and 15

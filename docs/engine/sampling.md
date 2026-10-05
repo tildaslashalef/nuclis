@@ -1,4 +1,4 @@
-# Native CPU generation bring-up
+# Generation and sampling
 
 The complete 64-layer Qwen text schedule runs natively in Zig: mapped quantized
 weights, embeddings, 48 convolution/DeltaNet layers, 16 gated attention layers,
@@ -7,9 +7,10 @@ There is no llama.cpp dependency in nuclis. The external pinned reference is
 only used for comparisons.
 
 This is the slow correctness backend. `--backend metal` runs the same schedule
-GPU-resident through the [Metal backend](metal-backend.md). Efficient batched prefill, scoring, and production
-performance acceptance remain pending. Default tests
-need neither weights nor GPU access.
+GPU-resident through the [Metal backend](metal-backend.md), with chunked
+prefill, the measured rates of the README's [Results](../../README.md#results),
+and teacher-forced scoring ([guide/eval.md](../guide/eval.md)). Default
+tests need neither weights nor GPU access.
 
 ## Run
 

@@ -355,3 +355,6 @@ matches the traces in both cache precisions, the profile is the pinned
 Qwen3.8 one through the catalogue entry, and the acceptance record
 against the fork's server, the agent check, and the PTQ1_0 measurement
 are in [benchmarks](../benchmarks/history.md#bonsai-2-27b-acceptance-record-modl-17-2026-09-18).
+The catalogue entry left on 2026-09-26 when the catalogue was trimmed to five
+entries ([catalogue.md](catalogue.md)); the file still binds, runs, and keeps
+its gates, pulled by repository and file name.
