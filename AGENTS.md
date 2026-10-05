@@ -280,25 +280,25 @@ stale references. Do not claim build/test execution when no code or build exists
 - The root `build.zig.zon` `.version` is the single source of truth, the
   last released version. The manifests under `inference/` and
   `huggingface/` carry the same version because the Zig package format
-  requires one; release-please updates all three together (the `//
-  x-release-please-version` marker on each line). The executable reports
-  it as `nuclis --version`, fed from the root manifest through build
-  options.
+  requires one; `make version V=X.Y.Z` sets all three. The executable
+  reports it as `nuclis --version`, fed from the root manifest through
+  build options.
 - [Semantic Versioning](https://semver.org/) with the 0.x convention: while
-  `0.y.z`, the **minor** is the breaking axis (`bump-minor-pre-major`).
-- Releases are cut by [release-please](https://github.com/googleapis/release-please)
-  (`release-please-config.json`, `.github/workflows/release-please.yml`):
-  every merge to `main` updates a standing release pull request with the
-  next version and its CHANGELOG section, built from the merged titles.
-  Merging that pull request is the release, and it is the user's call:
-  release-please tags it with a draft release, and `release.yml` builds,
-  attests, uploads, and publishes it. Before it, write the highlights at
-  the top of its CHANGELOG section, and run `make verify-cpu`, `make
-  verify-long`, and `make verify-release` once, since most units skip
-  those tiers.
-- Tag only forward, never retroactively. Benchmarks and test records cite
-  the git revision, and published numbers cite the release tag once one
-  exists.
+  `0.y.z`, the **minor** is the breaking axis; a release with features
+  bumps the minor, one with only fixes the patch.
+- **A release is a version pull request and an annotated tag**, and both
+  are the user's call ([docs/development.md § Versioning](docs/development.md#versioning)).
+  When asked, an agent runs `make verify-cpu`, `make verify-long`, and
+  `make verify-release` on `main`, opens `chore(release): vX.Y.Z` with `make
+  version`, and drafts the highlights in its description. After the merge,
+  the user tags the merge commit (`git tag -a vX.Y.Z`, the message being
+  the highlights) and pushes the tag; `release.yml` builds, attests, writes
+  the notes (the highlights, then GitHub's list of the pull requests merged
+  since the previous release), and publishes. An agent pushes a tag only
+  when the user says so for that release.
+- Tags never move and are never added retroactively (a ruleset refuses
+  updating or deleting a `v*` tag). Benchmarks and test records cite the git
+  revision, and published numbers cite the release tag once one exists.
 - The Zig toolchain is a separate axis: `minimum_zig_version` pins source
   compatibility, the exact compiler used is recorded in every benchmark
   record, and a Zig upgrade is its own unit of work.

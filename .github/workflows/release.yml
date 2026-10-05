@@ -1,24 +1,22 @@
-# Publishes the draft release release-please opened for a tag: the same
-# checks as CI, a ReleaseSafe build with the Metal backend, one binary
-# tarball and one source tarball, a `SHA256SUMS` that covers both, and a
-# build provenance attestation for each tarball (`gh attestation verify`).
-# The assets are attached to the draft and it is published last, so a failed
-# upload never leaves a public release missing files.
+# An annotated `v*` tag publishes a release: the same checks as CI, a
+# ReleaseSafe build with the Metal backend, one binary tarball and one source
+# tarball, a `SHA256SUMS` that covers both, and a build provenance
+# attestation for each tarball (`gh attestation verify`). The release is
+# created as a draft with every asset attached and published last, so a
+# failed upload never leaves a public release missing files.
 #
-# `release-please.yml` calls it when a release PR merges; dispatch re-runs it
-# for an existing tag. `build.zig.zon` is the truth: the job refuses a
-# malformed tag, a tag that disagrees with the manifest, or a tag with no
-# draft release, all before it builds anything. The notes are release-please's
-# CHANGELOG section plus `.github/release-footer.md`.
+# The tag is the trigger and `build.zig.zon` is the truth: the job refuses a
+# malformed tag, a lightweight tag, a tag that disagrees with the manifest,
+# or a tag already published, all before it builds anything. The notes are
+# the tag's message (the release's highlights), GitHub's generated list of
+# the pull requests merged since the previous release, and
+# `.github/release-footer.md`. Dispatch re-runs it for a tag whose release
+# is still a draft.
 name: release
 
 on:
-  workflow_call:
-    inputs:
-      tag:
-        description: The tag release-please created
-        required: true
-        type: string
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -31,7 +29,7 @@ permissions:
   attestations: write
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -40,14 +38,14 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: The tag is semver and the manifest agrees
         id: version
         run: |
-          tag="${{ inputs.tag }}"
+          tag="${{ inputs.tag || github.ref_name }}"
           if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "refusing to publish: $tag is not vMAJOR.MINOR.PATCH[-prerelease]" >&2
             exit 1
@@ -89,17 +87,30 @@ jobs:
           zig fmt --check build.zig build.zig.zon src/ inference/ huggingface/
           zig build test --summary all
 
-      - name: The draft release exists before anything is built
+      - name: The notes exist before anything is built
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ steps.version.outputs.tag }}"
-          draft=$(gh release view "$tag" --json isDraft --jq .isDraft) || {
-            echo "refusing to publish: $tag has no release (release-please opens it as a draft)" >&2
-            exit 1
-          }
-          echo "release $tag, draft $draft"
           mkdir -p dist
+          # The tag object itself, not a lightweight copy of it.
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+          if [ "$(git cat-file -t "refs/tags/$tag")" != tag ]; then
+            echo "refusing to publish: $tag is a lightweight tag; its message is the release's highlights (git tag -a)" >&2
+            exit 1
+          fi
+          git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$tag" > dist/highlights.md
+          if [ -z "$(tr -d '[:space:]' < dist/highlights.md)" ]; then
+            echo "refusing to publish: $tag has an empty message" >&2
+            exit 1
+          fi
+          if [ "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)" = false ]; then
+            echo "refusing to publish: $tag is already published; a tag never moves, the fix is the next version" >&2
+            exit 1
+          fi
+          gh api "repos/${{ github.repository }}/releases/generate-notes" -f tag_name="$tag" --jq .body > dist/generated.md
+          { cat dist/highlights.md; echo; cat dist/generated.md; echo; cat .github/release-footer.md; } > dist/notes.md
+          cat dist/notes.md
 
       - name: Build
         run: zig build -Dmetal=true -Doptimize=ReleaseSafe
@@ -156,15 +167,15 @@ jobs:
             *) kind="--latest" ;;
           esac
           tag="${{ steps.version.outputs.tag }}"
-          gh release upload "$tag" --clobber \
-            dist/"nuclis-$tag-aarch64-macos.tar.gz" \
-            dist/"nuclis-$tag-src.tar.gz" \
-            dist/SHA256SUMS
-          # release-please's notes are the CHANGELOG section; the footer (how
-          # to verify and run the build) is appended once.
-          gh release view "$tag" --json body --jq .body > dist/notes.md
-          grep -q '^### The attached build' dist/notes.md || cat .github/release-footer.md >> dist/notes.md
-          gh release edit "$tag" --title "nuclis $tag" --notes-file dist/notes.md
+          assets_files="dist/nuclis-$tag-aarch64-macos.tar.gz dist/nuclis-$tag-src.tar.gz dist/SHA256SUMS"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            # A dispatch re-run: the draft gets fresh assets and notes.
+            gh release upload "$tag" --clobber $assets_files
+            gh release edit "$tag" --title "nuclis $tag" --notes-file dist/notes.md
+          else
+            gh release create "$tag" --draft --verify-tag \
+              --title "nuclis $tag" --notes-file dist/notes.md $kind $assets_files
+          fi
           assets=$(gh release view "$tag" --json assets --jq '.assets | length')
           [ "$assets" = 3 ] || {
             echo "refusing to publish: the draft has $assets assets, not 3" >&2

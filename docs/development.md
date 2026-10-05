@@ -650,7 +650,7 @@ refuses force pushes and deletion). The pull request's title, a Conventional
 Commit, becomes the squash commit's subject, and its description, the
 record of the work (`.github/pull_request_template.md`), becomes the body.
 
-Three workflows under `.github/workflows/`. The macOS jobs install the
+Two workflows under `.github/workflows/`. The macOS jobs install the
 compiler with `.github/install-zig.sh`: the version comes from
 `minimum_zig_version` in `build.zig.zon` and the SHA-256 from
 `.github/zig-toolchain`, verified before anything is unpacked. No
@@ -679,20 +679,15 @@ artifacts and the real M4 Pro, and a rate measured on a virtualised GPU is
 a number nobody should trust; those gates run locally and their results go
 into the pull request's description.
 
-**`release-please.yml`** (every push to `main`) keeps the standing release
-pull request current ([§ Versioning](#versioning)). When a release pull
-request merges, release-please tags it and opens a **draft** GitHub release
-whose notes are its CHANGELOG section, and this workflow calls
-`release.yml` with the tag. (A tag made with `GITHUB_TOKEN` starts no
-workflow on its own, which is why the call is explicit.)
-
-**`release.yml`** (called with a tag, or dispatched for an existing one)
-refuses to publish, before it builds anything, unless:
+**`release.yml`** (an annotated `v*` tag pushed by the user, or a dispatch
+for a tag whose release is still a draft) refuses to publish, before it
+builds anything, unless:
 
 1. the tag is `vMAJOR.MINOR.PATCH[-prerelease]`;
-2. the tag equals `build.zig.zon`'s `.version`;
-3. the installed `zig version` equals `minimum_zig_version`;
-4. the tag has a release (the draft release-please opened).
+2. the tag is annotated with a non-empty message (the highlights);
+3. the tag equals `build.zig.zon`'s `.version`;
+4. the installed `zig version` equals `minimum_zig_version`;
+5. the tag's release, if one exists, is still a draft.
 
 The Zig version is the tag's, but `install-zig.sh` is the workflow
 revision's and the digests are the tag's `.github/zig-toolchain` plus the
@@ -700,12 +695,15 @@ workflow revision's (the first matching line wins). It runs the same gate,
 builds `-Dmetal=true -Doptimize=ReleaseSafe`, asserts the binary reports
 the tag's version, attests both tarballs
 (`actions/attest-build-provenance`; check one with `gh attestation verify
-<file> -R tildaslashalef/nuclis`), and uploads three assets to the draft:
+<file> -R tildaslashalef/nuclis`), and creates a draft release with three
+assets:
 the binary tarball (`nuclis-vX.Y.Z-aarch64-macos.tar.gz`), a source
 tarball (`nuclis-vX.Y.Z-src.tar.gz`, `git archive` of the tag), and a
-`SHA256SUMS` covering both. It appends `.github/release-footer.md` to the
-notes and publishes only once the asset count checks, so a failed upload
-never leaves a public release missing files.
+`SHA256SUMS` covering both. The notes are the tag's message, GitHub's
+generated list of the pull requests merged since the previous release
+(`releases/generate-notes`), and `.github/release-footer.md`. It publishes
+only once the asset count checks, so a failed upload never leaves a public
+release missing files.
 
 The binary is **unsigned and not notarized** (there is no Apple Developer ID
 for this project), so macOS quarantines it on download; the notes say to run
@@ -778,29 +776,29 @@ Verify behavior using the newly built binary.
 
 The version lives in the root `build.zig.zon`: the last released version.
 The manifests under `inference/` and `huggingface/` mirror it (the Zig
-package format requires a `.version`; the path dependencies ignore it).
-Each `.version` line carries `// x-release-please-version`, so
-release-please rewrites all three in its release pull request. The
-executable reports it as `nuclis --version`, fed from the root manifest
-through build options.
+package format requires a `.version`; the path dependencies ignore it), and
+`make version V=X.Y.Z` sets all three. The executable reports it as `nuclis
+--version`, fed from the root manifest through build options.
 
 - **SemVer with the 0.x convention.** Before 1.0 the minor number is the
-  breaking axis: breaking changes and features bump the minor, fixes the
-  patch (`bump-minor-pre-major` in `release-please-config.json`).
-- **Releasing.** release-please keeps one release pull request open,
-  `chore: release vX.Y.Z`, updated on every merge with the next version and
-  its CHANGELOG section, a line per merged pull request grouped by type
-  (`feat`, `fix`, `perf`, `refactor`, `build`, `docs` shown; `chore`,
-  `test`, `ci`, `style` hidden). To release:
-  1. run `make verify`, `make verify-cpu`, `make verify-long`, and `make
-     verify-release` on `main` (they need the pinned models);
-  2. on the release pull request, write the **highlights** (two to four
-     sentences on what the release changes for a user) at the top of its
-     CHANGELOG section;
-  3. merge it. The tag, the draft, the build, and the publication follow
-     on their own.
-- **A tag that exists on the remote never moves.** The fix is the next
-  number.
+  breaking axis: a release with breaking changes or features bumps the
+  minor, one with only fixes the patch.
+- **Releasing** is two steps, both the user's call:
+  1. **The version pull request.** On `main`, run `make verify`, `make
+     verify-cpu`, `make verify-long`, and `make verify-release` (they need
+     the pinned models; most units skip these tiers). Then a branch with
+     `make version V=X.Y.Z`, and a pull request `chore(release): vX.Y.Z`
+     whose description drafts the **highlights**: two to four sentences on
+     what the release changes for a user. Merge it.
+  2. **The tag.** On the merge commit, `git tag -a vX.Y.Z` with the
+     highlights as its message (`-F <file>`, or the editor), then `git push
+     origin vX.Y.Z`. `release.yml` does the rest. The tag is signed when
+     git signs tags (`tag.gpgSign`), and GitHub marks it verified.
+- **A tag that exists on the remote never moves.** A ruleset refuses
+  updating or deleting a `v*` tag; the fix is the next number.
+- `CHANGELOG.md` keeps the releases up to v0.5.0; from v0.6.0 the
+  [Releases page](https://github.com/tildaslashalef/nuclis/releases) is the
+  changelog.
 - Benchmark records cite the git revision, and the release tag once one
   exists.
 - **The Zig toolchain is a separate axis.** `minimum_zig_version` pins source
