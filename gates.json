@@ -2430,7 +2430,7 @@
     "max_relative_rms": 0.002
    },
    "evidence": "docs/models/gemma4.md",
-   "note": "measured 0.013 / 4.3e-4 at bring-up (MODL-27); the 12B's 1.0 / 0.05 is its unscaled keys' rounding"
+   "note": "measured 0.013 / 4.3e-4 at bring-up (2026-09-26); the 12B's 1.0 / 0.05 is its unscaled keys' rounding"
   },
   {
    "name": "gemma4-e4b-generation-metal",

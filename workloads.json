@@ -289,7 +289,7 @@
       "repeat": 3,
       "pair": true,
       "draft_length": 4,
-      "note": "MODL-19's row at draft 4: 2.256 accepted/step, verify 135.9 ms, 25.40 \u2192 22.83 tok/s, 0.899\u00d7",
+      "note": "the draft pair record's row at draft 4 (2026-09-21): 2.256 accepted/step, verify 135.9 ms, 25.40 \u2192 22.83 tok/s, 0.899\u00d7",
       "evidence": "docs/benchmarks/history.md#the-gemma-4-draft-pair-2026-09-21"
     },
     "gemma4-26b-a4b/prose512": {
@@ -330,7 +330,7 @@
           "min": 1.0
         }
       },
-      "note": "the family whose entry turns speculation on; the bar is the verdict's condition (MODL-20 measured 1.234\u00d7)",
+      "note": "the family whose entry turns speculation on; the bar is the verdict's condition (measured 1.234\u00d7 on 2026-09-21)",
       "evidence": "docs/benchmarks/history.md#the-muse-glimmer-dflash-draft-pair-2026-09-21"
     },
     "bonsai/prose512": {

@@ -1218,7 +1218,7 @@ pub const Plan = struct {
         try self.mmRows(layer.output, self.mixed_out_c, qw, self.projected_c, hidden, count);
     }
 
-    // --- the draft head (MODL-19) --------------------------------------
+    // --- the draft head ------------------------------------------------
 
     /// The target cache a head block reads: that of the target's last
     /// sliding layer for a sliding block, its last (global) layer otherwise,

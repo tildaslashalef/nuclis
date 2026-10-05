@@ -130,7 +130,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
         .{ .rows = 248320, .columns = 5120, .name = "248320x5120 (output)" },
         // Actual down-projection geometry: fewer groups than the tiled cases.
         .{ .rows = 5120, .columns = 17408, .name = "5120x17408 (ffn_down)" },
-        // Muse Glimmer's row-poor shapes (KERN-15); the split sweep is
+        // Muse Glimmer's row-poor shapes; the split sweep is
         // `--matvec-split`.
         .{ .rows = 6656, .columns = 19968, .name = "6656x19968 (muse ffn_down)" },
         .{ .rows = 6656, .columns = 4096, .name = "6656x4096 (muse attn_out)" },
@@ -2753,7 +2753,7 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
         }
-        // 2a. Split-K matvec (KERN-15): a 6,656-row matrix (the Muse row-poor
+        // 2a. Split-K matvec: a 6,656-row matrix (the Muse row-poor
         // geometry) through the row-partial path at 2/4/8 splits, for every
         // encoding with a split body, against the F64 CPU reference at the
         // same bound as the single-pass kernel; the partials are summed in
@@ -2956,7 +2956,7 @@ pub fn main(init: std.process.Init) !void {
                                     }
                                 }
                             }
-                            // The wide 32×8 tile (KERN-14) must land on the
+                            // The wide 32×8 tile must land on the
                             // same rows within the half-tile bound; it is an
                             // experiment, so nothing routes to it.
                             if (Backend.specializedMatmulWide(sample.encoding, weights.offset, stride, mm_tokens) != null) {

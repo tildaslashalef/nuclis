@@ -1069,7 +1069,7 @@ pub const Plan = struct {
         for (out) |v| if (!std.math.isFinite(v)) return error.NonFiniteResult;
     }
 
-    // --- the prediction block (MODL-18) --------------------------------
+    // --- the prediction block ------------------------------------------
 
     /// One row of the block at `position`: pair `token` with `h_prev`,
     /// project, run the full-attention layer over the block's own cache, the

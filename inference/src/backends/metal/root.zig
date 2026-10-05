@@ -524,7 +524,7 @@ pub const Backend = struct {
     /// 1 is the single-pass kernel). Only the specialized encodings with a
     /// split body are served. No production shape routes here: the 2026-09-21
     /// sweep measured the split path behind the single pass on every row
-    /// bucket (KERN-15), so the kernels stay as the measured fixture and the
+    /// bucket, so the kernels stay as the measured fixture and the
     /// single pass is what `matvec` records.
     pub fn matvecSplits(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer, splits: usize) !void {
         if (splits == 0 or splits > split_k_max) return error.InvalidShape;

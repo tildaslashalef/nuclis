@@ -520,7 +520,7 @@ kernel void nu_matvec_three(device const uchar * weights [[buffer(0)]], device c
         nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
 }
 
-// Split-K decode matvec (KERN-15): `splits` threadgroups per 16-row block,
+// Split-K decode matvec: `splits` threadgroups per 16-row block,
 // each summing only its share of the K blocks into a row-major partial
 // buffer `[split][rows]`; `nu_reduce_splits` then sums the splits into the
 // output. The K-range bounds passed to the shared decode body keep its
@@ -1723,7 +1723,7 @@ template [[host_name("nu_matmul_q4_0_8")]] kernel void nu_matmul_split_t<2, half
 template [[host_name("nu_matmul_pq2_0_8")]] kernel void nu_matmul_split_t<142, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0_8")]] kernel void nu_matmul_split_t<143, half>(NU_MATMUL_ARGS);
 // The wide (`_w8`) set: the same 8-token, at most `small_chunk_tokens`-row
-// regime with 32 output rows per group (KERN-14; the production `matmul`
+// regime with 32 output rows per group (the production `matmul`
 // does not route to it, `matmulTile32` measures it).
 template [[host_name("nu_matmul_q3_k_w8")]] kernel void nu_matmul_wide_t<11, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_q4_k_w8")]] kernel void nu_matmul_wide_t<12, half>(NU_MATMUL_ARGS);

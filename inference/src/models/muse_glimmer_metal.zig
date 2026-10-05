@@ -936,7 +936,7 @@ pub const Plan = struct {
         try self.mmRows(layer.output, self.mixed_out_c, q_width, self.projected_c, hidden, count);
     }
 
-    // --- the DFlash drafter (MODL-20) ----------------------------------
+    // --- the DFlash drafter --------------------------------------------
 
     /// Advances the drafter over tokens the main model committed: each token's
     /// five residuals (`tokens.len × dflash.hidden_width`) encode to one
