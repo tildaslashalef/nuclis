@@ -8,6 +8,8 @@ to the worklog at their tag.
 
 ## [0.6.0](https://github.com/tildaslashalef/nuclis/compare/v0.5.0...v0.6.0) (2026-10-05)
 
+v0.6.0 re-measures every model on macOS 27 against llama.cpp at four prompt lengths. Qwen3.8 decodes faster than the reference at every length (1.04–1.15×), Muse Glimmer's decode is up 9–22 %, and Gemma 4 E4B gets its first record. nuclis now has a website, [nuclis.dev](https://nuclis.dev), with the numbers on it. The documentation is reorganised into guides, models, engine, app and benchmarks, every link checked by `make docs-check`. Development moves to pull requests and releases to release-please; the worklog of the units before this release is archived at this tag.
+
 
 ### Features
 
