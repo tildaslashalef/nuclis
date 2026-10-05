@@ -15,20 +15,17 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-ENGN-21 session 1 is done (2026-10-04 20:01 → 10-05 04:54): every
-family measured on both engines at the four lengths, three requests each,
-and the speculation pairs; all records under `docs/benchmarks/`
-(`reference-2026-10-04-*`, `nuclis-2026-10-04.json`,
-`nuclis-2026-10-05-*`, `speculative-2026-10-05/`), every number in
-`bench.md` § The benchmarks on macOS 27 with its caveats (the 4K step on
-the slow dense models drifts as the chip heats; one slow 16K request on
-each Gemma run; Muse's 4K reference re-run). Next: session 2, step 7.
-The site's new numbers section (four lengths, a coloured table grouped
-by phase, E4B, today's numbers) is merged into `main` (`f6caef7`), so
-`make site-check` fails (31 problems) until step 7 gives the README the
-same tables: do not push before then (a push deploys the site). Step 8
-is left with `site-check.py`'s header and parser, its self-test, and the
-page copy.
+ENGN-21: both measurement and publication are nearly done. Session 1
+(2026-10-04 20:01 → 10-05 04:54) measured every family on both engines
+at the four lengths and the speculation pairs; records under
+`docs/benchmarks/`, numbers and caveats in `bench.md` § The benchmarks
+on macOS 27. Session 2 so far (10-05): the site's numbers section merged
+(`f6caef7`), the README's *Results* rewritten as decode and prefill
+tables at four lengths with the new speculation table, `site-check.py`
+reading them (`538c1e2`; `make site-check` green); short code re-measured
+(20.87 tok/s). Next: step 9 (`metal-backend.md` / `architecture.md`
+only where a gap moved: Muse decode +9–22 %), then step 10, the close.
+Not pushed: a push deploys the site, the user's call.
 
 | Unit | What | Sessions |
 | --- | --- | --- |
@@ -143,6 +140,10 @@ open, display sleep off; note the start state (`pmset -g batt`,
 the first record holding a length (`nuclis-baseline.py`
 `reference_rows`), so Muse's 4K re-run replaces that row; records crossing
 midnight are dated 2026-10-05.
+
+*Session 2 delivered* step 7 (the 38 % agent-eval figure kept, dated
+2026-10-01, not re-measured; "20 tokens/s" re-measured: 20.87) and step 8
+but its screenshots (the user looked at the preview themselves).
 
 **Session 2: publish.**
 
