@@ -2554,3 +2554,27 @@ spread is again one request (35.74 after 39.15, 39.17; without it 39.16),
 as on the 26B-A4B: both Gemma runs lost about 9 % on one 16K request,
 with prefill dipping too; not investigated. Peak RSS 2.0 GiB, footprint
 2.2 GiB.
+
+### Speculation pairs
+
+[speculative-2026-10-05/](../benchmarks/speculative-2026-10-05/), at
+`7c34501`, 03:56–04:54, in one sitting after a 10-minute cool-down and
+90 s idle before each cell (`make spec-matrix ARGS='--model <key>
+--contexts 512,32639 --drafts <n> --sampling greedy --cooldown 90'`):
+three off/on pairs per cell, 128 greedy tokens, each family on its
+acceptance arrays (E4B now on its own, not the 12B's), at the catalogue
+draft length.
+
+| Model | Draft | 512: off → on | 32,639: off → on | C / 50E at 512, 32K |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.8-27B | 7 | 11.63 → 17.44 (1.50×) | 7.86 → 9.84 (1.26×) | 1.15, 2.03 |
+| Gemma 4 12B QAT | 5 | 25.38 → 46.47 (1.85×) | 15.77 → 15.48 (0.98×) | 0.43, 1.29 |
+| Gemma 4 E4B QAT | 6 | 46.85 → 81.93 (1.75×) | 33.63 → 37.55 (1.12×) | 0.24, 0.53 |
+| Muse Glimmer 30B | 6 | 11.62 → 16.09 (1.42×) | 7.29 → 7.82 (1.08×) | 1.24, 2.56 |
+| Gemma 4 26B-A4B (off) | 4 | 53.97 → 35.94 (0.67×) | 28.93 → 19.68 (0.68×) | 0.56, 1.02 |
+
+Speedups are the median of the pairs' on/off ratios. Qwen reproduces
+2026-10-03's cooled run (1.51×, 1.26×). Muse's off rate rose with its
+plain decode (8.5 → 11.6 at 512), so its ratio fell from 1.50× to 1.42×
+while its on rate rose (12.6 → 16.1). E4B's 512 ratio, 2.10× on the
+12B's arrays, is 1.75× on its own. The 26B-A4B stays off: 0.67–0.68×.
