@@ -9,11 +9,13 @@
 # deliberately: `test-metal`, `compare`, `bench`, and anything that pulls a
 # model. Those need the pinned 16.5 GB artifact and the real M4 Pro; a number
 # measured on a virtualised GPU would be a number nobody should trust, and
-# their evidence belongs in docs/worklog.md.
+# their evidence belongs in the pull request's description.
 #
-# A push whose commits together touch only documentation or the website
-# (`site/`) does not run it;
-# nothing here reads Markdown. The filter sees the whole push, not each commit.
+# Every push and pull request runs it, and it always reports: `changes`
+# decides whether anything outside `docs/`, `site/`, and Markdown changed,
+# and the macOS jobs run only then; `docs` (the documentation, the site, and
+# the gate manifests, standard library only) runs every time; `ok` passes
+# when every job passed or was skipped, and is the check `main` requires.
 #
 # The compiler is installed by `.github/install-zig.sh`: the version comes from
 # `minimum_zig_version` in build.zig.zon and the SHA-256 from
@@ -26,9 +28,7 @@ name: ci
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "site/**", "**/*.md"]
   pull_request:
-    paths-ignore: ["docs/**", "site/**", "**/*.md"]
   workflow_dispatch:
 
 permissions:
@@ -39,7 +39,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # A dispatch, a new branch, or an unknown base runs everything.
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          code=$(git diff --name-only "$BASE" HEAD | grep -vE '^(docs/|site/)|\.md$' | head -1)
+          echo "code changed: ${code:-nothing}"
+          echo "code=$([ -n "$code" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Documentation, site, and manifests
+        run: make docs-check site-check gates-validate workloads-validate
+
   check:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: ${{ matrix.name }}
     runs-on: macos-15
     strategy:
@@ -55,10 +87,6 @@ jobs:
                 exit 1
               }
               echo "version $version"
-              # The release path runs only on a tag; slice the newest notes now.
-              latest=$(sed -n 's/^## \[\(v[^]]*\)\].*/\1/p' CHANGELOG.md | head -1)
-              ./.github/release-notes.sh "$latest" > /dev/null
-              echo "release notes for $latest"
               zig build test --summary all
           - name: metal
             run: |
@@ -109,3 +137,15 @@ jobs:
       - run: zig version
       - name: ${{ matrix.name }}
         run: ${{ matrix.run }}
+
+  ok:
+    needs: [changes, docs, check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed or was skipped
+        run: |
+          echo '${{ toJSON(needs) }}'
+          case "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" in
+            true) echo "a required job failed or was cancelled" >&2; exit 1 ;;
+          esac

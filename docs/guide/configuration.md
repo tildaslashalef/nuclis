@@ -179,9 +179,9 @@ neither the catalogue nor an existing entry covers:
 ## Changing one setting
 
 ```sh
-nuclis config set engine.model hauhau
+nuclis config set engine.model gemma-4-12b-qat
 nuclis config set generation.sampling.temperature 0.7
-nuclis config set models.hauhau.profile gemma4
+nuclis config set models.gemma-4-12b-qat.ctx_size 32768
 nuclis config set generation.sampling.top_k null     # clear an override
 ```
 
