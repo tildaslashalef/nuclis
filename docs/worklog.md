@@ -626,7 +626,7 @@ tile ceiling.
 sources, `init` (exclusive create), and `show` (text and JSON). `nuclis config
 init | show [--json]`, and `generate`, `bench`, and the chat consume
 `config.Resolved`. Documented in
-[development.md § Configuration file](development.md#configuration-file).
+[guide/configuration.md § Configuration file](guide/configuration.md#configuration-file).
 
 **Evidence.** Missing file → defaults with no write; `init` → `show --json`
 round-trips every key and the written defaults parse back to `Config{}`; unknown
@@ -915,7 +915,7 @@ catalogue name or a `models` registry entry with per-model overrides; and
 `supported`/`runnable`/`not runnable` verdict. Config layering became defaults <
 profile < file < entry < flags with per-key sources; `config show` prints the
 effective value of every key with its source. Detail in
-[development.md § Configuration file](development.md#configuration-file) and
+[guide/configuration.md § Configuration file](guide/configuration.md#configuration-file) and
 [catalogue.md](models/catalogue.md).
 
 **Evidence.** `make check` fmt clean, **179 tests**, `test-metal` passed. Config

@@ -285,7 +285,7 @@ becomes: `"auto"` (the default) is the projector's own maximum (Qwen3.8
 projector's range, and `--image-max-tokens` on `generate` and `agent`
 overrides both.
 
-Read: [development.md § Configuration file](development.md#configuration-file).
+Read: [guide/configuration.md § Configuration file](guide/configuration.md#configuration-file).
 
 ### 5.9 The decision path
 

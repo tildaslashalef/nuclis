@@ -23,7 +23,7 @@ The default model is the catalogue entry `qwen3.8-27b` under `~/.nuclis/models/u
 `NUCLIS_HOME` work as for inspection. Keep the file unchanged while mapped.
 The backend, context, output budget, reasoning effort, and sampling
 overrides come from `~/.nuclis/nuclis.json` when it exists
-([development.md § Configuration file](../development.md#configuration-file));
+([guide/configuration.md § Configuration file](../guide/configuration.md#configuration-file));
 flags override the file per option.
 The default prompt profile renders one user turn with thinking disabled;
 `--think off|low|medium|high|xhigh` selects the reasoning effort the template

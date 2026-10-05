@@ -11,6 +11,7 @@ below.
 | Document | Purpose |
 | --- | --- |
 | [../README.md](../README.md) | What nuclis is, the quick start, the models, the results |
+| [guide/getting-started.md](guide/getting-started.md) | From nothing to a chat with a local model |
 | [architecture.md](architecture.md) | The map: the engine and the app in twelve short sections with diagrams |
 | [spec.md](spec.md) | **The authoritative spec**: requirements, scope, acceptance criteria |
 | [llm-guide.md](llm-guide.md) | The inference stack's concepts, taught as they are implemented here |
@@ -21,6 +22,8 @@ below.
 
 | Document | Purpose |
 | --- | --- |
+| [getting-started.md](guide/getting-started.md) | Install, a first run, where nuclis keeps things, model downloads |
+| [configuration.md](guide/configuration.md) | `nuclis.json`: every setting, its scope, and what overrides it |
 | [api.md](guide/api.md) | `nuclis serve`: the HTTP API for decision models |
 | [eval.md](guide/eval.md) | `nuclis eval`: teacher-forced perplexity on a text |
 
@@ -60,6 +63,7 @@ below.
 | Document | Purpose |
 | --- | --- |
 | [agent.md](app/agent.md) | The agent and terminal concepts behind `nuclis agent` |
+| [terminal.md](app/terminal.md) | How the agent draws: styled output, live region, transcript, renderer, session files |
 
 ## Benchmarks: `benchmarks/`
 

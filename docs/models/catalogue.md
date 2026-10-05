@@ -169,7 +169,7 @@ repository names identically (`mmproj-BF16.gguf`, `MTP/`) never collide:
 
 `nuclis model pull <owner/repo> --file <name>` places files there and
 `nuclis model ls` lists the layout
-([development.md § Model download](../development.md#model-download));
+([guide/getting-started.md § Model download](../guide/getting-started.md#model-download));
 nothing outside `<owner>/<repo>/` is listed, and nuclis never moves user
 files itself.
 
@@ -283,10 +283,10 @@ with its adapter arriving the next day; its verdict is *supported* since
 its acceptance record (MODL-10). `nuclis model inspect`
 judges a remote file from its directory alone and compares the Hub's
 digest against the catalogue (main file or companion) for its verdict
-([development.md § Model download](../development.md#model-download));
+([guide/getting-started.md § Model download](../guide/getting-started.md#model-download));
 the `models` registry in `nuclis.json` names models above the catalogue
 with per-model overrides, pinning no digest
-([development.md § Configuration file](../development.md#configuration-file)).
+([guide/configuration.md § Configuration file](../guide/configuration.md#configuration-file)).
 `gemma-4-e4b-qat` joined on 2026-09-26 (MODL-27). The same day
 (APPS-17) the catalogue was trimmed to five entries — `qwen3.8-27b`,
 `gemma-4-12b-qat`, `gemma-4-26b-a4b`, `gemma-4-e4b-qat`,

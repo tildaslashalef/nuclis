@@ -1,17 +1,35 @@
 # Development guide
 
-Product behavior and acceptance criteria belong in [spec.md](spec.md);
-agent-specific working instructions belong in [../AGENTS.md](../AGENTS.md).
+Working on nuclis: the toolchain, the build and test commands, the gates,
+the record, CI, and releases. Installing and using nuclis is in
+[guide/getting-started.md](guide/getting-started.md); product behavior and
+acceptance criteria belong in [spec.md](spec.md); agent-specific working
+instructions belong in [../AGENTS.md](../AGENTS.md).
+
+- [Current state and layout](#current-state-and-layout)
+- [Environment](#environment)
+- [Gates](#gates)
+- [The record](#the-record)
+- [The speed loop](#the-speed-loop)
+- [Toolchain](#toolchain)
+- [Working on the agent](#working-on-the-agent)
+- [The website](#the-website)
+- [Continuous integration and releases](#continuous-integration-and-releases)
+- [Build and format contract](#build-and-format-contract)
+- [Versioning](#versioning)
+- [Commits, progress, and code explanations](#commits-progress-and-code-explanations)
+- [Testing](#testing)
+- [Measurements and artifacts](#measurements-and-artifacts)
+- [Reference implementations and third-party material](#reference-implementations-and-third-party-material)
+- [Documentation conventions](#documentation-conventions)
 
 ## Current state and layout
 
-Inspection, Qwen structural validation, native CPU generation, the opt-in
-GPU-resident Metal backend (`-Dmetal=true`), `generate`, `bench`,
-`tokenize`, `config`, `model pull` / `model ls`, and the `nuclis agent`
-surface work; see
-[../TODO.md](../TODO.md) for what is in progress and
-[worklog.md](worklog.md) for what
-closed. Teacher-forced scoring (`eval`) is a future increment.
+Every command in `nuclis --help` works: `agent`, `generate`, `bench`,
+`tokenize`, `eval`, `inspect`, `validate`, `model`, `cache`, `decide`,
+`serve`, `config`, and `completion`. The engine runs on the CPU reference
+and, built with `-Dmetal=true`, on the Metal backend. [../TODO.md](../TODO.md) says what is in progress and
+[worklog.md](worklog.md) what closed.
 
 ```text
 src/                 executable: CLI, model commands, config
@@ -25,7 +43,7 @@ inference/           engine library: runtime, quantization, tokenizer,
                      sampling, backends, profiles
 huggingface/         Hub download library (Xet) and its standalone binary;
                      imported by src/ only
-docs/                spec, architecture, guides, reference, worklog
+docs/                the hub README.md: guide/, models/, engine/, app/, benchmarks/
 site/                the nuclis.dev website: static HTML, CSS, JS, no build
 TODO.md              active plan: unfinished units only
 build.zig            build
@@ -41,7 +59,7 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
 
 - Zig 0.17.0 (on the author's machine under `~/.local/opt/zig/stable`, managed
   by `zigup`; any install of that version works); consult its installed std source for API
-  details. Apple M4 Pro, 48 GiB, macOS 26. Metal compiles
+  details. Apple M4 Pro, 48 GiB, macOS 27. Metal compiles
   shaders at runtime from the Command Line Tools; Xcode-only tools are reached
   per process (see [../AGENTS.md § Local toolchain notes](../AGENTS.md#local-toolchain-notes)).
 - Model `~/.nuclis/models/unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf`
@@ -81,13 +99,10 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   --dump` writes from nuclis's backbone.
   The reference oracle itself is committed under `tests/fixtures/`
   ([provenance](../tests/fixtures/provenance.md)); `make gate NAME='qwen38-trace-*'` reads
-  `tests/fixtures/reference-hello-comma`. Accepted reference warm rates
-  (prefill/decode tok/s): 512 in = 89.19/9.66; 4K = 89.26/9.21;
-  16K = 74.07/7.32; 32,639 = 67.28/6.71
-  ([llama-cpp.md](benchmarks/llama-cpp.md)). nuclis on the
-  same token arrays (ENGN-07 record, 2026-09-10): 512 = 90.45/10.62; 4K =
-  83.70/10.20; 16K = 62.70/8.27; 32,639 = 49.55/7.55
-  ([benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs)).
+  `tests/fixtures/reference-hello-comma`. The rates of both engines on the
+  same token arrays are the README's [Results](../README.md#results); the
+  method is [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs),
+  the reference's harness [llama-cpp.md](benchmarks/llama-cpp.md).
 - `make help` lists all tasks. Per-commit: `make check` (fmt-check, unit
   tests, `test-metal`, the gate manifest's validation; about 75 s). Per
   unit: `make verify`, the Metal tier of the gate registry
@@ -386,8 +401,8 @@ The Metal backend additionally needs Apple's SDK/frameworks and the
 Objective-C compiler. The [reference baseline](benchmarks/llama-cpp.md)
 compiles embedded shader source through Metal at runtime using Command Line
 Tools; a standalone `metal` compiler is needed only for an offline shader
-build path. Pin nuclis's tested macOS/SDK requirements during backend
-bring-up. Swift is not a project build requirement.
+build path; nuclis compiles its kernels the same way. Swift is not a
+project build requirement.
 
 Pass allocator and Io dependencies explicitly. Prefer a separate pure function
 for decisions that can be tested without file, network, process, or GPU access.
@@ -403,8 +418,8 @@ Zig's startup supplies `Io.Threaded`. The experimental `Io.Evented` backend
 selects io_uring on Linux and Dispatch on macOS; io_uring does not run on the
 target Mac. Keep the injected default until measurements justify changing it.
 See the installed `lib/std/start.zig`, `lib/std/Io.zig` (`Evented`), and
-`lib/std/Io/Dispatch.zig`.
-GPU scheduling will be a separate Metal backend responsibility.
+`lib/std/Io/Dispatch.zig`. GPU work is scheduled by the Metal backend, not
+by `Io` ([engine/metal-backend.md](engine/metal-backend.md)).
 
 ReleaseSafe is the initial release configuration; ordinary `zig build` uses
 Zig's Debug default. A faster optimization mode is justified only by numerical
@@ -467,410 +482,11 @@ Still deferred (0.17 keeps these calls; none sits in a numerical path):
 The compiler is a separate versioning axis, so the upgrade is its own unit;
 every benchmark record names the exact Zig used.
 
-## User directories
+## Working on the agent
 
-nuclis uses `~/.nuclis` as its user configuration/data root. `NUCLIS_HOME`,
-when set, overrides it and must be an absolute path. An empty or relative
-override is an error. Otherwise resolve the root from `HOME`.
-
-```text
-~/.nuclis/
-  models/                  model artifacts: <owner>/<repo>/<file> plus a provenance
-                           sidecar <file>.nuclis.json per verified file ([models/catalogue.md](models/catalogue.md))
-  nuclis.json              engine configuration (APPS-03; `nuclis config init` writes it)
-  agent/                   the agent's data root (`paths.agentPath`; TERM-01)
-    history.jsonl          submitted prompts across sessions (TERM-01; append-only,
-                           one JSON object per line, tail-read at startup)
-    sessions/<cwd-slug>/   one append-only JSONL file per session
-    exports/               `nuclis agent export` markdown
-                           ([spec.md § Sessions and storage](spec.md#74-sessions-and-storage))
-  cache/                   regenerable runtime data
-    prefix/                the agent's saved model states, one per file: primed prefixes
-                           and the last turn of each recorded session (`nuclis cache`)
-                           (`cache.disk_bytes`; [engine/session.md § The agent's token cache](engine/session.md#the-agents-token-cache-agnt-19))
-```
-
-Create directories only when an operation needs to write them. Inspection/help
-must not create settings or directories. Do not migrate or overwrite existing
-user files implicitly. Credentials remain environment-only (`HF_TOKEN` for
-gated Hub repositories; public ones need none).
-
-### Model download
-
-`nuclis model pull <name> [--with mmproj,mtp | --all]` fetches a catalogue
-entry (`src/catalog.zig`, the only source of "supported": name, repository,
-file, pinned commit, digests, companions with the unit that will load them;
-`qwen3.8-27b` today) into `<root>/models/<owner>/<repo>/<file>` through the
-`huggingface` package ([its README](../huggingface/README.md): native Xet
-reconstruction, SHA-256 verified, atomic publication, verified reuse of a
-file already in place) and writes the sidecar beside each file; the Hub's
-digest at the pinned commit must equal the catalogue's (`CatalogMismatch`
-otherwise, and no sidecar). `nuclis model pull <owner/repo> [--file <name>]
-[--revision <rev>] [--role main|mmproj|mtp|imatrix]` fetches any other
-artifact by repository id (a GGUF, or a safetensors set with its config
-and tokenizer files, [models/catalogue.md § Safetensors
-artifacts](models/catalogue.md#safetensors-artifacts)): the revision (`main` by default; a tag, branch, or
-commit) is resolved once, printed as the 40-character commit, and that
-commit pins the transfer and is what the sidecar records; a repository
-with several artifacts and no `--file` prints the choices with sizes and fails
-with `SelectionRequired`; exact names match in full, subdirectories
-included (`--file MTP/mtp-Qwen3.8-27B-Q4_0.gguf` keeps the subdirectory).
-Both forms take `--force` and `--json` and need the root and nothing from
-`nuclis.json`. A registry entry name (`nuclis model pull gemma`, see
-[§ Configuration file](#configuration-file)) is the one form that reads the
-file: it pulls the entry's `repo`/`file` at its `revision` (`main` when
-unset) with the Hub's digest, `--with mmproj,mtp` or `--all` adding the
-entry's companion names; an entry that names a `path` has nothing to pull
-(`NotPullable`), and a name that is none of the three forms is
-`UnknownModel`. A second pull of the same file hashes it, downloads nothing,
-and rewrites the sidecar. A sidecar recording other content is `ExistingFileMismatch` unless
-`--force` replaces file and sidecar; a differing file nuclis never verified
-is the same error from the package, and `--force` replaces it too. Progress
-is one updating line on stderr (bytes, rate, ETA) on a terminal, phase lines
-otherwise; Ctrl-C cancels through the package's sink, which removes the
-partial file (a second Ctrl-C kills the process the ordinary way and may
-leave the temporary file). `nuclis model ls [--json]` prints the catalogue
-with each entry's local status from its sidecar alone (`present`,
-`absent`, `mismatch`, `unverified`: the file is there without a sidecar)
-and its companions beneath with a "not loaded yet" note, then the other
-model files (GGUF, safetensors weights) in the layout with their sidecar facts (runnable only if their
-architecture has an adapter); files above `<owner>/<repo>/` are counted,
-not listed; every listed file that a registry entry locates (`path`, or
-`repo` and `file`) says `registered as <name>`, with the profile when the
-entry forces one, and entries whose file is absent are listed last (a
-`nuclis.json` that fails to load leaves the listing unannotated with one
-warning line). `make model-ls` wraps it. `nuclis model pull <owner/repo>
---file <name> --register <name> [--profile <p>]` also writes the pull as a
-registry entry (`repo`, `file`, the resolved commit, and the forced
-profile) once every file is verified, so `--model <name>` and `config set
-engine.model <name>` work from then on; a companion role fills the same
-entry's `mmproj`/`mtp`, a name that locates other content is refused, a
-catalogue name is refused before the transfer unless it names the
-catalogue's own file (the registry resolves first, so such an entry would
-shadow the catalogue; the loader rejects one however it got there), and a
-registry-entry pull refuses `--register`. `--model` and `engine.model`
-accept a registry entry, a catalogue name, or a path; a missing file
-fails before anything opens, naming the resolved path.
-
-`nuclis model inspect (<name> | <owner/repo> --file <name>) [--revision <rev>]
-[--json]` answers "will this quantization load" before a download. It lists
-the repository at the resolved commit, fetches the head of the file through
-the package's `readRange` in 8 MiB windows until the GGUF directory parses
-(never past the parser's 64 MiB directory bound; the Qwen directory is
-11.0 MB and Gemma 4 12B's 15.8 MB, two requests and about 4 s each on
-2026-09-11), prints what `inspect` prints for a local file, and ends with
-a verdict: `supported` (the catalogue pins the Hub's digest for the file
-and the adapter binds the directory), `runnable` (an adapter for
-`general.architecture` binds it, but the file is not in the catalogue or
-carries another digest), or `not runnable` naming the first offending
-tensor and its encoding (a layout nuclis does not store, or one outside
-the adapter's executable set), the missing adapter (`gemma4`, `clip`), or
-the adapter's rejection; a catalogue companion (`mmproj-BF16.gguf`) is
-reported as the companion it is. Nothing is written and no weights are
-downloaded; a repository with several GGUFs and no `--file` lists them as
-`pull` does.
-
-### Configuration file
-
-`nuclis.json` is one sectioned document (`engine`, `generation`, `agent`,
-`decide`, and the `models` registry) with a `schema_version`. The sections name a
-*scope*, not a command: `engine` (the artifact and its session) and
-`generation` (how tokens are produced: budget, effort, speculative decoding,
-sampling) are shared by `generate` and `agent`; `agent` holds only the chat
-surface's own settings (`think`, `fold_thinking`, `theme`, `instructions`,
-`thinking_budget`, and was named
-`chat` until 2026-09-11, see
-[spec.md § Configuration](spec.md#58-configuration)); `bench` reads `engine` plus
-its own flags. The section was named `generate` until 2026-09-20, when the
-rename made the scope explicit;
-`src/config.zig` is its schema and the built-in defaults. `nuclis config
-init` writes the defaults with every catalogue model as a registry entry
-(one today), so the file shows the entry shape with the catalogue's facts
-(the entries are optional: a catalogue name resolves without one), then
-prints the effective engine keys, each catalogue model's local status,
-and the `nuclis model pull <name>` to run next (the example below).
-
-`nuclis config init --discover [--dry-run] [--json]` registers what the
-catalogue does not name: it walks `<root>/models` as `model ls` does,
-skips the files a registry entry already locates and the companions
-(sidecar role, or a name carrying `mmproj`, `mtp`, or `dflash`), reads each
-remaining file's GGUF directory and judges it as `model inspect` does (an
-adapter for its architecture, every tensor in the executable set, the
-binding), and writes one entry per runnable file: the name is the
-repository's last path segment lower-cased (`-gguf` dropped; a taken name
-gains the quantization suffix, then a counter; never a catalogue name),
-the entry is `repo` + `file` + `revision` from the sidecar (or `path` when
-there is none), companions beside the file fill `mmproj` and `mtp`,
-`profile` is forced to the family's when the template digest matches no
-profile (the finetune case, otherwise left to the digest), and
-`generation.speculative` / `draft_length` take the catalogue's verdict for
-the same architecture (off when the family drafts from a companion that
-is absent). Every skipped file is reported with its reason, a header that
-fails to parse included; the file is created first when absent and kept
-when present, and `--dry-run` prints the report without writing
-(APPS-15). Discovered on 2026-09-21: the HauhauCS Gemma 4 12B finetune
-with its projector and a forced `gemma4` profile, and the Bonsai 2 PQ2_0
-bring-up file. The example:
-
-```json
-{
-  "schema_version": 1,
-  "engine":   { "model": "qwen3.8-27b", "backend": "metal", "ctx_size": 16384,
-                "kv_precision": "f16" },
-  "generation": { "max_tokens": 8192, "think": "off", "speculative": false, "draft_length": 4,
-                "image_max_tokens": "auto",
-                "sampling": { "temperature": null, "top_k": null, "top_p": null, "min_p": null,
-                              "presence_penalty": null, "repetition_penalty": null } },
-  "agent":    { "think": "low", "fold_thinking": true, "theme": "gruvbox-dark", "instructions": "auto",
-                "thinking_budget": 1024 },
-  "decide":   { "model": "laya" },
-  "serve":    { "host": "127.0.0.1", "port": 8000, "log": true },
-  "cache":    { "memory_bytes": 4294967296, "disk_bytes": 8589934592 },
-  "models":   { "qwen3.8-27b": { "kind": null, "path": null,
-                                 "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
-                                 "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
-                                 "mmproj": "mmproj-BF16.gguf", "mtp": "MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
-                                 "profile": null, "ctx_size": null,
-                                 "generation": { "max_tokens": null, "think": null, "speculative": false, "draft_length": 4, "image_max_tokens": null, "sampling": { "…": null } },
-                                 "agent": { "think": null, "fold_thinking": null } } }
-}
-```
-
-Each entry's `generation.speculative` / `generation.draft_length` is the
-family's measured verdict (`src/catalog.zig`; [benchmarks § Definitions](benchmarks/README.md#definitions)),
-so a fresh file already turns speculation on for the family whose record
-pays and off for the rest; a user's global `generation.speculative` still
-applies to models with no entry, and `--speculative` overrides either.
-
-- Precedence: built-in defaults < the model's sampling profile < the
-  file's global sections < the registry entry the model names < command-line
-  flags. `NUCLIS_HOME` only moves the root; there are no per-key environment
-  overrides and no per-project files. `nuclis config show [--json]` prints
-  the effective value of every key with its source (`default`, `profile`,
-  `file`, `model`, `flag`), one line above the table naming the model, how
-  it resolved (registry entry, catalogue name, path), its profile, and that
-  a `null` sampling key takes the profile's value for the configured
-  `generation.think`; then each registry entry's stated keys. The profile
-  named there is the catalogue entry's (the first profile for a bare path
-  or an unknown registry name), chosen without opening the file; a run
-  samples with the opened file's own profile, selected by its template
-  digest, so a Gemma file reached through a path still gets Gemma's
-  defaults (MODL-07). An entry's `profile` (`qwen38`, `gemma4`) or the
-  `--prompt-profile` flag forces that profile on the file whatever its
-  template digest — the way to run a finetune converted with another
-  revision of the template, which the engine would otherwise refuse as
-  `UnsupportedPromptTemplate`; the agent prints a notice at startup, and
-  the rendering is the pinned protocol's, not necessarily the file's own
-  ([prompt-profile.md § Evidence](engine/prompt-profile.md#evidence-and-reproduction)).
-  `nuclis config set <key> <value>` changes one key by its dotted name
-  (`engine.model hauhau`, `generation.sampling.temperature 0.7`,
-  `models.<name>.profile gemma4`; `null` clears an override): the file's
-  own text is edited so stated keys and their order survive, the result
-  goes through the same loader before it is written (a refused value
-  leaves the file untouched and names the key), `engine.model` must
-  resolve to a file that exists, and a missing file is created as `init`
-  writes it. Entries are created by `model pull --register`, never by
-  `set` (`models.<name>.<key>` on an unknown name says so). The JSON form
-  carries the file as loaded (`config`, the registry as a map), the
-  `effective` view, and the `sources` map. The flag layer is visible in each
-  command's own report (`generate --json`, the `bench` report's `config`
-  and settings fields).
-- `engine.model` is a registry entry name, a catalogue name (`qwen3.8-27b`,
-  the default), or a path, tried in that order; a path resolves under
-  `<root>/models` unless absolute. `--model` takes the same forms, a path
-  being as given. `engine.backend` defaults to `metal` when the build
-  has it, `cpu` otherwise. `engine.kv_precision` (`f16` default, `f32`;
-  flag `--kv`) is the attention cache layout on the GPU: `f16` halves the
-  cache's memory and the bytes attention reads per token (KERN-07); the CPU
-  reference always keeps F32, and every report (`generate --json`, the
-  `bench` header and JSON) states the precision the session actually used
-  beside its `session_bytes`. `bench` takes model, backend, and context
-  (the entry's `ctx_size` included) from the file and keeps its output
-  budget (32), repetitions, and greedy sampling on the command line so runs
-  stay comparable; its report records the file it ran with.
-- The registry: `models` maps a name (1..64 printable characters, no `/`,
-  not ending in `.gguf`) to an entry that locates a model one way, `path`
-  (relative to `<root>/models` unless absolute) or `repo` + `file` (the
-  layout `model pull` writes, `<root>/models/<repo>/<file>`) with an
-  optional `revision`; optional `mmproj` and `mtp` companion file names
-  in the same directory (recorded for the units that will load them, the vision unit
-  and the MTP unit, and used by `model pull <name> --with`); and optional
-  `ctx_size`, `generation` (`max_tokens`, `think`, `speculative`, `draft_length`, `image_max_tokens`, `sampling`), and `agent`
-  (`think`, `fold_thinking`) overrides that apply only while that entry is
-  the model, `null` meaning the global value. Entries pin no digest (a
-  pull by entry name takes the Hub's). A registry name shadows a catalogue
-  name for `--model`/`engine.model`; `model pull` tries the catalogue
-  first, since it needs nothing from the file. An entry with `"kind":
-  "decision"` (written by `model pull --register` for a Laya layout) is a
-  decision checkpoint: `repo` + `file` or `path` name its weights, whose
-  directory `nuclis decide` opens; text commands refuse it by name.
-- `decide.model` (default `laya`) is the checkpoint `nuclis decide` opens,
-  and the one `nuclis serve` opens at start and uses for a request naming
-  no model or a `jev-…` id:
-  a registry entry of kind `decision`, a decision catalogue name
-  ([catalogue.md § The catalogue](models/catalogue.md#the-catalogue)),
-  or a directory (under `<root>/models` unless absolute); `--model` takes
-  the same forms. A text model's name is refused.
-- `serve.host` (default `127.0.0.1`, an IP literal or `localhost`) and
-  `serve.port` (default 8000) are where `nuclis serve` listens; `--host`
-  and `--port` override them for a run. `serve.log` (default `true`)
-  writes a line per request to stdout; `--quiet` turns it off for a run.
-  `serve.timeout` (default 300 seconds, `--timeout` for a run) is how
-  long a decision request may wait for the GPU before `529 timeout`: a
-  Laya request takes milliseconds, a clef-flash one seconds to minutes,
-  and a request waits for every pass ahead of it.
-- Sampling entries are overrides: `null` means the official profile of the
-  reasoning mode ([sampling.md](engine/sampling.md#sampling-profiles-and-the-selection-chain-modl-01)),
-  so the file never freezes a model's recommended settings. The profile is
-  the adapter's (`qwen38` for the one adapter; the catalogue records it per
-  entry so `config show` names it without opening the file; the adapter registry dispatches
-  per architecture).
-- Validation: unknown keys are rejected with their dotted path (registry
-  keys as `models.<name>.<key>`, so an unknown companion such as
-  `imatrix` is named), wrong types and enum values name the key and the
-  accepted form, ranges are the same as for flags (context 1..32768,
-  tokens 1..16384, sampling options through the sampler's rules), an entry
-  must locate its model one way, the file is bounded at 64 KiB, and a
-  `schema_version` other than 1 is an error that states the migration
-  (move the file aside, `config init`, copy settings back). Adding a key
-  with a default does not bump the version (the registry was added to
-  schema 1; a file without it loads with an empty one); renaming or
-  re-typing one does, except the `chat` → `agent` section rename, whose
-  keys and defaults are unchanged: a file with a `chat` section is
-  rejected with a message that says to rename it. Keys arrive with the features that read them
-  (`engine.kv_precision` arrived with KERN-07; an `agent` section comes with
-  the embedded agent).
-
-### Styled output
-
-Every text report (`config show`, `model ls|pull|inspect`, `inspect`,
-`validate`, `tokenize`, `bench`) and the `error:` line on stderr are
-colored with the agent's palette (gruvbox dark by default) when the stream
-is a terminal
-and the environment advertises color (`COLORTERM=truecolor` for 24-bit,
-a `256color` or `direct` `TERM` for the approximations, any other terminal
-for the sixteen ANSI slots). `--json`, a pipe, `NO_COLOR`,
-or an unset or `dumb` `TERM` disable styling completely, so scripts and the tests
-see exactly the same bytes; the tests pin the plain form with
-`style.Style.none`. The renderers take a `style.Style` explicitly and pad
-text before wrapping it in escapes, so alignment never depends on them.
-The palette lives in `src/tui/theme.zig` (TERM-01): named palettes selected by
-`agent.theme`, behind a semantic style enum that a theme cannot change, so
-a theme changes colour and never layout. `src/tui/style.zig` is the same
-palette applied to one-shot reports.
-
-Dim is a colour, not a faded one: the `dim` role paints gruvbox's grey and
-adds the SGR dim attribute only at the plain level, where there is no colour
-to carry the meaning. Stacking both halves an already low-contrast foreground
-and made notices and the help page unreadable on a translucent terminal
-(reported and fixed 2026-09-12).
-
-Glyphs are a separate axis from colour (TERM-01 step 6). Every decoration the
-agent draws — bullets, task boxes, rules, table joints, fold arrows, the
-spinner, the status-bar labels — is named in `theme.Glyphs`, with a Unicode
-table and an ASCII one. The ASCII table is selected when the locale does not
-claim UTF-8 (`LC_ALL`, then `LC_CTYPE`, then `LANG`, none of which contains
-`utf-8`/`utf8`) or when `NUCLIS_ASCII=1` is set, which is also how to check
-the fallback on a UTF-8 terminal. Colour and glyphs never influence each
-other: `NO_COLOR` keeps the Unicode drawing, and an ASCII terminal keeps its
-colours.
-
-### The agent's live region
-
-`src/tui/screen.zig` is the only module that emits a movement escape, and
-its geometry is the contract the rest of the surface is written against: a
-repaint rewrites the live region in place inside synchronized output
-(`CSI ? 2026 h/l`), an insertion above it narrows the scrolling region to
-the rows above (`DECSTBM`, top margin row 1 so scrolled-off rows still
-reach the scrollback) and scrolls only those, and the region's *bottom*
-stays anchored, so a turn that grows the region pushes the transcript up
-and one that shrinks it releases rows above the editor rather than
-leaving blanks beneath it. A resize replays only the last turn at the new
-width; older turns are left as the terminal reflowed them (spec § The agent:
-completed turns are immutable), and the region's bottom follows the new
-last row: a taller terminal adds blank rows under the region that become
-slack above it, a shorter one is taken to have kept its last rows in view,
-as tmux and Ghostty do. `NUCLIS_NO_SCROLL_REGION=1` forces the
-cursor-up rewrite fallback for a terminal that mishandles `DECSTBM`, and a
-`dumb` or unset `TERM` turns both capabilities off. The escape stream of
-every operation is pinned by golden tests that need no TTY.
-
-### The agent's transcript
-
-Between the renderer and the screen sits `src/tui/transcript.zig`, the
-answer to "what is on the screen, and who may rewrite it" (TERM-01 step 7). The
-agent produces typed events (`src/tui/event.zig`: user, thinking, answer,
-tool call, tool result, diff, notice, status, turn end); the transcript turns
-them into blocks and offers three views of those blocks:
-
-- `takeClosed` — rows for everything that closed since the last call, marked
-  written. The agent inserts them above the live region. **Exactly once**:
-  the same rows can never be handed out twice, which is what makes a
-  scrollback both append-only and correct. An answer flushes block by block
-  as its markdown blocks close, so a long answer scrolls away while it is
-  written.
-- `liveRows` — what is still open, tail-clamped under `… N lines above`.
-- `replayRows` — every written block again, for the two events that may
-  rewrite the scrollback (a fold toggle, a resize). The agent skips the
-  rewrite when the turn is taller than the space above the region: those
-  rows are in the scrollback and cannot be reached.
-
-The transcript is pure: no `Io`, no clock (the animated thinking label and
-the running dot's pulse phase are passed in by the agent, which has both),
-and no knowledge of tokens or models. That is what lets its tests drive a
-whole turn — including a byte-by-byte stream — with `std.testing.allocator`
-and no TTY. The rows it produces for a tool call are the dot in the call's
-state colour (`op_running` pulsing against `dim`, then `op_ok`, `op_error`,
-or `op_write`) and `Name(argument)` from `tools.describe`, the tool's
-one-sentence result under `└`, and, where the model's text resumes, the
-dim `ops` row counting the run (`Read 2 files, ran 1 shell command`). The
-repaint cadence comes from the Metal backend's `tick`: `commit` waits on a
-semaphore its completion handler signals and calls back every 100 ms, and
-the surface installs its poll-and-draw there (`installTick`), so a prefill
-chunk repaints ten times a second instead of once. `Screen.paintFrom`
-rewrites only from the first row that differs from the last frame.
-
-An attachment is an `attachment` event after the prompt's `user` event:
-the transcript keeps it as a detail of that user block and renders a dim
-`└ image #1: shot.png (320×240 → 10×8 tokens)` row under the prompt. When
-the event carries a preview (the chat builds one where
-`tui.graphics.enabled` says the terminal draws kitty graphics, never under
-tmux), the block also emits the preview's rows blank and then one raw row
-that climbs over them, places the image with the cursor kept, and comes
-back — the row model stays text, and the goldens never contain a sequence.
-The chat caps the picture to the rows above the live region. A drop and a
-typed path both reach the same `Editor.attachImage`; the
-chat's `dropProbe` is the editor's only view of the file system.
-
-A mutation's diff is a header row (the path, `+N −M`), then rows of a
-`dim` gutter (old and new line numbers, right-aligned), a marker cell
-(`+`, `−`, or a space), and the text on its band — `diff_add` and
-`diff_remove` are the accent on a dark shade of the same hue, the changed
-bytes of a paired line on the brighter `diff_add_change`/`diff_remove_change`
-tint — padded to the width so the band reads as one. Side by side from
-`side_by_side_min_width` (96) columns, the two panes separated by the table
-bar; unified below that. A theme role marked `wide_bg` drops its
-background at sixteen colours, where a dark band cannot be painted, and
-takes its `plain` attributes instead.
-
-Two folds, both applied to whatever is rendered next and replayed over the
-last turn: Tab folds thinking, Ctrl-O cycles the tool view
-(`transcript.ToolView`: `summary`, one result row under each call;
-`output`, the result's text under it as the model received it, dim, cut at
-`max_output_rows`; `folded`, a call keeps its row and loses the detail
-under it, the result rows, and the diff's rows). A `!` line from the editor runs through the `bash` tool and
-shows as the same `Bash(cmd)` block followed by the output as an `info`
-block (40 rows, then `… N more lines`); with `!` the output is also the
-next user message, which the surface does not echo (`quiet_user`).
-
-The answer's markdown is rendered once per closed block: the transcript
-keeps the byte offset up to which the answer has been flushed to the
-scrollback (`Answer.flushed`), hands `markdown.split` only the remainder,
-and renders the closed prefix it returns; the open tail is shown raw. A
-test streams a document byte by byte and counts the renders — one per
-block boundary, never one per token — and a prefix fuzz feeds every byte
-prefix of every fixture through `split` and `render`, asserting no error,
-no control byte, a bounded row count, and no row wider than the width.
+How the agent is looked at and measured while it changes; what it does
+for a user is in [guide/](guide/), how its terminal works in
+[app/terminal.md](app/terminal.md).
 
 ### Looking at the agent without a person at the keyboard
 
@@ -957,52 +573,6 @@ the log entry cites the table; the first record is
 prefill went: per tool, the calls, the tokens their results added (counted
 by `nuclis tokenize --raw`, the engine's own tokenizer), and each tool's
 share, with the variants side by side when given several.
-
-### The agent without a terminal
-
-`nuclis agent -p "<prompt>"` (or `--print --prompt-file <path>`) runs one
-turn with no TTY: the text form streams the answer, `--json` writes every
-event as one object per line, and `--session <path>` is the only way a
-printed turn records anything. It is the scripting entry point today and the
-harness the agent loop will be tested through in phase 2, where a stream of
-JSON lines is something a test can assert on and a terminal is not.
-
-### The agent's session files
-
-`src/agent/session.zig` writes one append-only JSONL file per conversation
-under `~/.nuclis/agent/sessions/<cwd-slug>/<stamp>_<id>.jsonl` (TERM-01 step 8).
-The first line is a header (format `version`, session id, time, working
-directory, the model path and the digest its pull sidecar recorded, effort,
-context size); every later line is an entry carrying `id` and `parent`, so a
-branch or a cancel-rewind is representable later without a migration. The
-file is created at the first entry, so starting the agent and quitting writes
-nothing. On load, a truncated *last* line is dropped — that is where a crash
-lands — while any other unparsable line, or an unknown entry type, is a typed
-error naming the line number; a file from a newer `version` is refused
-outright. `nuclis agent export` derives markdown from the same entries, so there is no
-second transcript format.
-
-### The agent's renderer
-
-`src/tui/markdown.zig` turns a turn's text into pre-styled, pre-wrapped rows.
-Two rules matter when reading it (TERM-01 step 6):
-
-- **Streaming.** `markdown.split(text)` divides a partial turn into the
-  blocks that can no longer change and the one still being written: a blank
-  line ends a block, a heading/rule/quote/list item ends one at its newline,
-  and a paragraph, a table, or an open fence keeps its block open. The agent
-  renders the closed part and shows the open part as raw text, repainting
-  both on every token, so styling appears block by block instead of at the
-  end of the turn. A trailing newline is the end of the last block, not an
-  empty one after it — which is what makes the rendered prefix of a partial
-  turn a prefix of the finished one, a property a test pins byte by byte.
-- **Wrapping.** `view.lines` and `view.wrapStyled` take a `Wrap` mode.
-  Everything a reader reads wraps at the last space that fits (`.word`, the
-  editor's rule since step 3); only rows that are truncated to one line
-  anyway — the status bar, the shortcut hint — use `.character`. A word
-  longer than the row still breaks, and a space that lands past the edge
-  becomes the next break point instead of breaking the row, so a word ending
-  exactly at the last column keeps it.
 
 ## The website
 
