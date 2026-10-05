@@ -175,6 +175,7 @@ never rewritten, and numbers are as measured on the stated workload (see
 | REPO-32 | `release` publishes tags that pin their own compiler: the installer takes the first matching digest and comes from the workflow's revision; REPO-31's append listed v0.5.0's 0.17.0 pin twice and failed its release | 2026-10-04 |
 | REPO-33 | CI 5 m 57 s → 2 m 16 s (docs-only pushes skipped, three parallel jobs, working caches); release notes led by highlights and units by area, every published release rewritten; draft-then-publish and build provenance; the README GIF re-recorded with speculation in real time (36 s task, 21–27 tok/s); the nuclis logo | 2026-10-04 |
 | REPO-34 | nuclis.dev: a static site in `site/` (the agent replay, the engine strip, the drafter, the measured charts, Decision Dungeons), self-hosted subset fonts, SEO and share card, a strict CSP, `make site-check` holding its figures to the README, served as Workers static assets from `main` | 2026-10-04 |
+| ENGN-21 | The benchmarks measured again on macOS 27: all five families on both engines at 512 / 4K / 16K / 32,639, three requests each, the reference replaying the committed arrays; Qwen decodes 1.04–1.15× the reference, the others 0.71–0.84×; E4B's first record; README, bench.md, and nuclis.dev republished at four lengths | 2026-10-05 |
 
 ## Context
 
@@ -8071,3 +8072,93 @@ the checks), this log.
 into `#bench` (the check catches drift, it does not write the copy). The
 benchmark rows are the README's, which predate macOS 27 and Zig 0.17 for
 the nuclis/llama.cpp table. Preview deployments are off.
+
+## ENGN-21 — The benchmarks, measured again on macOS 27 (2026-10-04/05, two sessions)
+
+**Outcome.** Every family re-measured on nuclis and on the pinned
+llama.cpp (`7620399`) the same night on one machine and OS, so the
+README's two columns share a date: Qwen3.8-27B, Gemma 4 12B QAT, Gemma 4
+E4B QAT (its first acceptance record), Gemma 4 26B-A4B, Muse Glimmer 30B,
+at 512, 4,096, 16,384, and 32,639 prompt tokens, 128 greedy outputs,
+context 32,768, F16 KV, one warmup and three measured requests at every
+length on both sides (the 2026-09 records took one at 32,639 for Qwen's
+reference and every nuclis run), ten minutes idle between families, then
+the speculation pairs in one sitting.
+
+Decode, nuclis ÷ llama.cpp at 512 / 4K / 16K / 32K: Qwen 1.14 / 1.04 /
+1.10 / 1.15; 12B QAT 0.84 / 0.84 / 0.80 / 0.79; E4B 0.75 / 0.77 / 0.73 /
+0.74; 26B-A4B 0.79 / 0.78 / 0.71 / 0.72; Muse 0.82 / 0.82 / 0.84 / 0.77.
+Prefill: Qwen 1.02× at 512 falling to 0.71× at 32K, Muse 1.00× → 0.79×,
+the Gemma files 0.89–0.91× → 0.42–0.50×. Against 2026-09 (macOS 26, older
+trees) nuclis decode at 512 rose for Qwen (+9.9 %), 12B QAT (+5.9 %), and
+Muse (+20.9 %, 0.70× → 0.82× of the reference; the OS's share not
+separated from the code's); the 26B-A4B held (±2.3 %). The reference also
+rose at short context and fell at 32K decode (Qwen −2.2 %, 12B −8.7 %).
+Speculation at the catalogue drafts, 512 / 32,639: Qwen 1.50× / 1.26×,
+12B QAT 1.85× / 0.98×, E4B 1.75× / 1.12× (2.10× on the 12B's arrays
+before), Muse 1.42× / 1.08× (its off rate rose with its decode), 26B-A4B
+0.67× / 0.68×, still off; short code on Qwen 20.87 tok/s.
+
+*Harness.* `scripts/reference-baseline.py --replay <runs>` sends the
+committed `prompt-<n>.json` arrays instead of rebuilding them (Muse's
+template carries the server's date, so a rebuild changes its tokens), fails
+unless the server tokenizes the corpus into the fixture's body, and
+records whether the server's own rendering still equals the fixture's
+(true for Qwen and the Gemma files, false for Muse). Family `gemma4-e` in
+both harnesses: E4B's template renders thinking off as a bare
+`<|turn>model\n`, so its arrays (`tests/fixtures/run-2026-10-04-gemma4-e4b/`)
+differ from the 12B's in the template tokens; workload
+`gemma4-e4b/acceptance`. `nuclis-baseline.py`: `--boundary-repetitions`
+3, and the first reference record holding a length supplies it, so a
+re-run listed first replaces that row. The site's numbers section shows
+the four lengths (a toggle per length, a table grouped by phase with
+nuclis and llama.cpp in the chart's colours and the ratio under each
+pair) and the E4B row; `scripts/site-check.py` reads the README's decode
+and prefill tables.
+
+**Evidence.**
+- Machine: Apple M4 Pro (12 CPU, 16 GPU cores), 48 GB, macOS 27.0.1
+  (26A434), AC, battery charged, no thermal or performance warning
+  recorded (`pmset -g therm` before every family), display sleep blocked,
+  an idle background server stopped and `sudo purge` before the first
+  run; GPU 16–23 % at idle (the display). nuclis built at `c55604c`
+  (0.6.0-dev, ReleaseSafe, Zig 0.17.0 = stable); each record names its
+  clean revision (documents and scripts only after `c55604c`).
+- Reference records: `docs/benchmarks/reference-2026-10-04-{qwen38,
+  gemma4-qat,gemma4-26b-a4b,muse-glimmer,muse-glimmer-4k,gemma4-e4b}.json`;
+  nuclis records: `nuclis-2026-10-04.json` (Qwen),
+  `nuclis-2026-10-05-{gemma4-qat,gemma4-26b-a4b,muse-glimmer,gemma4-e4b}.json`
+  (dated by their start after midnight); speculation:
+  `docs/benchmarks/speculative-2026-10-05/` (five families at
+  512 and 32,639, `qwen38-code.json`). Every table with its spread and
+  2026-09 delta: [bench.md § The benchmarks on macOS 27](reference/bench.md#the-benchmarks-on-macos-27-engn-21-2026-10-04).
+- Before any run, `nuclis-baseline.py --prompts-only` on all five
+  families: nuclis tokenizes the corpus into the reference's body tokens
+  at every cut, E4B included.
+- Caveats recorded there: the 4,096 step drifts on the slow dense models
+  (Qwen nuclis 11.22 → 9.71, Muse reference 12.62 → 10.13) while the fast
+  models' rows are flat, read as the chip heating during minute-long
+  requests from a cooled start, on both engines; one slow 16K request on
+  each Gemma run (26B-A4B, E4B), not investigated; Muse's 4K reference
+  re-run alone (decode 12.25 ± 0.75, its spread the reference's own).
+- `make site-check` (9 self-tests), `make lint-py`, `make
+  workloads-validate`, `make verify-auto` (manifests, python, site). No
+  inference tier: the unit changes no numerical behaviour.
+
+**Files.** `scripts/reference-baseline.py`, `scripts/reference-record.py`,
+`scripts/nuclis-baseline.py`, `scripts/site-check.py`, `workloads.json`,
+`tests/fixtures/run-2026-10-04-gemma4-e4b/` (new),
+`tests/fixtures/provenance.md`, `docs/benchmarks/` (the records above),
+`docs/reference/bench.md` (§ The benchmarks on macOS 27; the acceptance
+method's repetitions), `docs/reference/reference-baseline.md` (`--replay`,
+`gemma4-e`), `docs/architecture.md` (§ 11), `README.md` (§ Results, the
+speculation table), `site/index.html`, `site/site.js`, `site/style.css`,
+`TODO.md`, this log.
+
+**Remaining.** The agent task list's 38 % model-time saving is the
+2026-10-01 figure, not re-measured. The two slow 16K Gemma requests and
+the 4K drift were not investigated (a run with `--cooldown` between
+requests would separate heat from the engines). Copies of the 2026-09
+numbers remain in `development.md`, `llm-guide.md`, `laya.md`,
+`reference-baseline.md`, and `bench.md`'s older sections; REPO-35 gives
+each number one home. Lengths beyond 32K are not measured.

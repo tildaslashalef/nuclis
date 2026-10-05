@@ -515,23 +515,25 @@ is about 59 ms, a ceiling near 17 tok/s.
 
 ```mermaid
 flowchart LR
-    m1[sync per-op bridge\n2.3 tok/s] --> m2[one command buffer / token\n5.0] --> m3[specialized matvec\n8.5] --> m3b[no per-layer commits\n9.7] --> m4[Q3_K/IQ3_S kernels,\nmerged projections\n10.6] --> m6[GPU sampling\nsampled = greedy speed] --> p1[chunked prefill matmul\n11 → 51 tok/s at 512] --> p2a[tiled causal attention\n33 → 51 at 4K] --> p2b[chunkwise DeltaNet] --> p3[half tiles\n53 → 84 at 512] --> m5[F16 KV + flash decoding\n32K decode 2.65 → 8.09] --> m7[penalty kernel\ninstruct 8.7 → 10.2] --> s1[speculative decoding\nMuse 1.16–1.23×]
+    m1[sync per-op bridge\n2.3 tok/s] --> m2[one command buffer / token\n5.0] --> m3[specialized matvec\n8.5] --> m3b[no per-layer commits\n9.7] --> m4[Q3_K/IQ3_S kernels,\nmerged projections\n10.6] --> m6[GPU sampling\nsampled = greedy speed] --> p1[chunked prefill matmul\n11 → 51 tok/s at 512] --> p2a[tiled causal attention\n33 → 51 at 4K] --> p2b[chunkwise DeltaNet] --> p3[half tiles\n53 → 84 at 512] --> m5[F16 KV + flash decoding\n32K decode 2.65 → 8.09] --> m7[penalty kernel\ninstruct 8.7 → 10.2] --> s1[speculative decoding on\nQwen 1.50× at 512] --> m8[half magic-number decode\n512 decode 10.4 → 11.8]
 ```
 
-| Record (Qwen3.8-27B, Metal, F16 cache) | decode tok/s | prefill tok/s |
-| --- | ---: | ---: |
-| 512-token context | 10.62 | 90.45 |
-| 4,096-token context | 10.20 | 83.70 |
-| llama.cpp on the same token arrays, 512 | 9.66 | 89.19 |
+Against the pinned llama.cpp on the same tokens (2026-10-04, macOS 27):
+Qwen3.8 decodes 1.04–1.15× the reference at every length and prefills
+level at 512, falling to 0.71× at 32K; the
+other families decode 0.71–0.84× and prefill 0.42–0.91×. The numbers are
+the README's [Results](../README.md#results), the record
+[bench.md § The benchmarks on macOS 27](reference/bench.md#the-benchmarks-on-macos-27-engn-21-2026-10-04).
 
 Levers that were built, measured, and kept out, each with its table in the
 record: a multi-row matvec that wins only at 2–3 rows, a wider small-batch
 tile, a split-K matvec, register-reuse prefill attention (shipped only for
 chunks of 17–64 rows; verify batches of up to 16 take the split pass of
 [few-query verify attention](reference/metal-backend.md#few-query-verify-attention-kern-21-2026-09-30)), fused decode norms (shipped
-for the dispatch count, not for speed), and the speculative switch on
-Qwen and Gemma, where the verifier's row-flat cost outweighs the accepted
-drafts.
+for the dispatch count, not for speed), and speculation on the 26B-A4B,
+whose verify grows with every drafted row (each row routes to its own
+experts) until it costs more than the accepted drafts save. The other
+entries speculate by default.
 
 **Read:** [reference/bench.md](reference/bench.md),
 [reference/metal-backend.md](reference/metal-backend.md),
