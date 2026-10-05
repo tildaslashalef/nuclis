@@ -28,8 +28,9 @@ instructions belong in [../AGENTS.md](../AGENTS.md).
 Every command in `nuclis --help` works: `agent`, `generate`, `bench`,
 `tokenize`, `eval`, `inspect`, `validate`, `model`, `cache`, `decide`,
 `serve`, `config`, and `completion`. The engine runs on the CPU reference
-and, built with `-Dmetal=true`, on the Metal backend. [../TODO.md](../TODO.md) says what is in progress and
-[worklog.md](worklog.md) what closed.
+and, built with `-Dmetal=true`, on the Metal backend. [../TODO.md](../TODO.md) says what is in progress, the
+[merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) what changed and why, and
+[worklog.md](worklog.md) the work before v0.6.0.
 
 ```text
 src/                 executable: CLI, model commands, config
@@ -643,66 +644,68 @@ uploading.
 
 ## Continuous integration and releases
 
-Two workflows under `.github/workflows/`, both on `macos-15` (Apple Silicon),
-both installing the compiler with `.github/install-zig.sh`: the version comes
-from `minimum_zig_version` in `build.zig.zon` and the SHA-256 from
-`.github/zig-toolchain`, verified before anything is unpacked. No marketplace
-action installs the toolchain and no digest is fetched at run time — this
-tree pins a digest for every artifact it downloads, and the compiler is the
-one it cannot do without. A Zig upgrade edits the manifest, that file, and
-the toolchain section above in one unit of work; the script refuses any
-version the two do not agree on. The actions that do run
-(`actions/checkout`, `actions/cache`) are pinned by full commit SHA rather
-than a moving tag, and `persist-credentials` is off, so the checkout cannot
-push back into the repository.
+Work reaches `main` only through pull requests, squash-merged by the user
+(a ruleset on `main` requires a pull request and the `ok` check, and
+refuses force pushes and deletion). The pull request's title, a Conventional
+Commit, becomes the squash commit's subject, and its description, the
+record of the work (`.github/pull_request_template.md`), becomes the body.
 
-Both scripts are POSIX shell and awk. A workflow step should depend on the
-tools that are on every machine and nothing else, which is why neither `jq`
-nor Python appears in CI even though the repository's local tooling
-(`scripts/*.py`) is written in Python.
+Three workflows under `.github/workflows/`. The macOS jobs install the
+compiler with `.github/install-zig.sh`: the version comes from
+`minimum_zig_version` in `build.zig.zon` and the SHA-256 from
+`.github/zig-toolchain`, verified before anything is unpacked. No
+marketplace action installs the toolchain and no digest is fetched at run
+time; the tree pins a digest for every artifact it downloads. A Zig upgrade
+edits the manifest, that file, and the toolchain section above in one unit
+of work. Every action is pinned by full commit SHA rather than a moving
+tag, and checkouts keep `persist-credentials` off.
 
-**`ci.yml`** (push to `main`, pull requests; a push whose commits together
-touch only `docs/`, `site/`, or Markdown does not run it, so one code commit in a
-push runs it for all) has three parallel jobs: `test`
-(`zig fmt --check`, a semver check on `build.zig.zon`'s version, the
-newest `CHANGELOG.md` section sliced by `release-notes.sh`, `zig build
-test`), `metal` (a `-Dmetal=true -Doptimize=ReleaseSafe` build with
-`--version`/`--help` on the result), and `cpu` (a Debug `-Dmetal=false`
-build so the non-Metal path keeps linking). That is `make check` minus the
-GPU. The toolchain cache is keyed on the compiler version and its pins,
-so a release bump keeps it; each job also caches `.zig-cache` and Zig's
+**`ci.yml`** (every push to `main`, every pull request) always reports:
+
+| Job | Runs | What |
+| --- | --- | --- |
+| `changes` | always (ubuntu) | whether anything outside `docs/`, `site/`, and Markdown changed |
+| `docs` | always (ubuntu) | `make docs-check site-check gates-validate workloads-validate`, standard-library Python |
+| `test` | code changed (macOS) | `zig fmt --check`, a semver check on the manifest's version, `zig build test` |
+| `metal` | code changed (macOS) | a `-Dmetal=true -Doptimize=ReleaseSafe` build, `--version` and `--help` on it |
+| `cpu` | code changed (macOS) | a Debug `-Dmetal=false` build, so the non-Metal path keeps linking |
+| `ok` | always | passes when every job passed or was skipped: the check `main` requires |
+
+That is `make check` minus the GPU. The toolchain cache is keyed on the
+compiler version and its pins; each macOS job caches `.zig-cache` and Zig's
 global cache per commit, restoring the newest. **Not** in CI: `test-metal`,
-`verify`, `bench`, and anything that pulls a model — they need the pinned
-artifacts and the real M4 Pro, and a rate measured on a virtualised GPU is a
-number nobody should trust. Those gates stay local and their evidence stays
-in the worklog.
+`verify`, `bench`, and anything that pulls a model. They need the pinned
+artifacts and the real M4 Pro, and a rate measured on a virtualised GPU is
+a number nobody should trust; those gates run locally and their results go
+into the pull request's description.
 
-**`release.yml`** (a `v*` tag) refuses to publish, before it builds anything,
-unless:
+**`release-please.yml`** (every push to `main`) keeps the standing release
+pull request current ([§ Versioning](#versioning)). When a release pull
+request merges, release-please tags it and opens a **draft** GitHub release
+whose notes are its CHANGELOG section, and this workflow calls
+`release.yml` with the tag. (A tag made with `GITHUB_TOKEN` starts no
+workflow on its own, which is why the call is explicit.)
+
+**`release.yml`** (called with a tag, or dispatched for an existing one)
+refuses to publish, before it builds anything, unless:
 
 1. the tag is `vMAJOR.MINOR.PATCH[-prerelease]`;
-2. the tag equals `build.zig.zon`'s `.version` — the check that catches a tag
-   cut before the `-dev` suffix was stripped;
+2. the tag equals `build.zig.zon`'s `.version`;
 3. the installed `zig version` equals `minimum_zig_version`;
-4. `CHANGELOG.md` has a section for the tag.
+4. the tag has a release (the draft release-please opened).
 
 The Zig version is the tag's, but `install-zig.sh` is the workflow
 revision's and the digests are the tag's `.github/zig-toolchain` plus the
-workflow revision's (the first matching line wins, so a pin both carry is
-not a conflict). A tag cut before its compiler was pinned, or with a broken
-installer, is published by dispatching `release` from `main` with the tag
-as input, never by moving the tag.
-
-It then runs the same gate, builds `-Dmetal=true -Doptimize=ReleaseSafe`,
-asserts the binary reports the tag's version, attests both tarballs
+workflow revision's (the first matching line wins). It runs the same gate,
+builds `-Dmetal=true -Doptimize=ReleaseSafe`, asserts the binary reports
+the tag's version, attests both tarballs
 (`actions/attest-build-provenance`; check one with `gh attestation verify
-<file> -R tildaslashalef/nuclis`), and publishes three assets: the binary
-tarball (`nuclis-vX.Y.Z-aarch64-macos.tar.gz`), a source tarball
-(`nuclis-vX.Y.Z-src.tar.gz`, cut with `git archive` from the tag), and a
-`SHA256SUMS` covering both. The release is created as a draft with all
-three attached and made public only once the count checks. The release notes are the tag's own section of
-`CHANGELOG.md` plus a fixed footer, sliced by `.github/release-notes.sh`, so
-notes and changelog cannot drift.
+<file> -R tildaslashalef/nuclis`), and uploads three assets to the draft:
+the binary tarball (`nuclis-vX.Y.Z-aarch64-macos.tar.gz`), a source
+tarball (`nuclis-vX.Y.Z-src.tar.gz`, `git archive` of the tag), and a
+`SHA256SUMS` covering both. It appends `.github/release-footer.md` to the
+notes and publishes only once the asset count checks, so a failed upload
+never leaves a public release missing files.
 
 The binary is **unsigned and not notarized** (there is no Apple Developer ID
 for this project), so macOS quarantines it on download; the notes say to run
@@ -773,59 +776,43 @@ Verify behavior using the newly built binary.
 
 ## Versioning
 
-The version lives in the root `build.zig.zon`, the single source of truth. The
-package manifests under `inference/` and `huggingface/` mirror it (the Zig
-package format requires a `.version`, but the path dependencies ignore it) and
-`make release` bumps all three together, refusing if they disagree. The
-executable exposes `nuclis --version`, fed from the root manifest through
-build options.
+The version lives in the root `build.zig.zon`: the last released version.
+The manifests under `inference/` and `huggingface/` mirror it (the Zig
+package format requires a `.version`; the path dependencies ignore it).
+Each `.version` line carries `// x-release-please-version`, so
+release-please rewrites all three in its release pull request. The
+executable reports it as `nuclis --version`, fed from the root manifest
+through build options.
 
 - **SemVer with the 0.x convention.** Before 1.0 the minor number is the
-  breaking axis: breaking changes bump the minor, compatible additions and
-  fixes bump the patch.
-- **0.1.0** marks the spec's v0.1 acceptance (the 32K context record), measured
-  in [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs).
-  The tree stays on `0.1.0-dev` until that release is tagged, then returns to
-  `0.2.0-dev` in the commit after the tag.
-- **A tag that exists on the remote never moves.** Once a release is published
-  the rule is absolute: the fix is the next number, never a moved tag.
-- **Release recipe.** `make release` runs the mechanical steps; `make release
-  DRY_RUN=1` prints the section it would write without touching anything. The
-  version is derived by stripping `-dev` from `build.zig.zon`, never passed
-  in: the manifest is the source of truth, and `release.yml` rejects a tag
-  that disagrees with it. It first asks for the **highlights**, two to four
-  sentences on what the release changes for a user: `$VISUAL`/`$EDITOR`
-  opens on a template listing the units and breaking changes, or
-  `HIGHLIGHTS=<file>` supplies them; empty text cancels. It then runs `make
-  check`, writes the release's section into `CHANGELOG.md`, commits
-  `chore(release): vX.Y.Z`, creates the annotated tag with the highlights
-  as its message, then commits the next `X.(Y+1).0-dev`. It never pushes.
-  1. `make verify` passes on the tree (needs the pinned models); commit any
-     fix that turns up.
-  2. `make release`.
-  3. Push the branch and the tag to publish. Tags are annotated; sign them
-     (`git tag -s`) where a signing key is configured.
-- Tags move only forward; never add a tag retroactively to an earlier commit.
+  breaking axis: breaking changes and features bump the minor, fixes the
+  patch (`bump-minor-pre-major` in `release-please-config.json`).
+- **Releasing.** release-please keeps one release pull request open,
+  `chore: release vX.Y.Z`, updated on every merge with the next version and
+  its CHANGELOG section, a line per merged pull request grouped by type
+  (`feat`, `fix`, `perf`, `refactor`, `build`, `docs` shown; `chore`,
+  `test`, `ci`, `style` hidden). To release:
+  1. run `make verify`, `make verify-cpu`, `make verify-long`, and `make
+     verify-release` on `main` (they need the pinned models);
+  2. on the release pull request, write the **highlights** (two to four
+     sentences on what the release changes for a user) at the top of its
+     CHANGELOG section;
+  3. merge it. The tag, the draft, the build, and the publication follow
+     on their own.
+- **A tag that exists on the remote never moves.** The fix is the next
+  number.
 - Benchmark records cite the git revision, and the release tag once one
   exists.
-- `CHANGELOG.md` leads with the work, not the commits (`scripts/changelog.py`):
-  the highlights; one line per unit the commits name (`AREA-NN`), titled by
-  its worklog heading and linked to it at the tag; breaking changes
-  (`!` or `BREAKING CHANGE:`); `feat`/`fix`/`perf` commits outside any unit;
-  every commit folded into `<details>`; a compare link. `make changelog
-  ARGS='vX.Y.Z --dry-run'` previews it, `--range A..B` regenerates a past
-  one.
 - **The Zig toolchain is a separate axis.** `minimum_zig_version` pins source
   compatibility, the exact compiler is recorded in benchmark records, and Zig
   upgrades are their own unit of work.
 
 ## Commits, progress, and code explanations
 
-Follow the commit convention in [../AGENTS.md](../AGENTS.md). As coherent
-increments pass their acceptance checks, record the outcome in
-[worklog.md](worklog.md) and remove the
-unit from [../TODO.md](../TODO.md); keep tests, relevant documentation, and
-that tracker update in the code commit.
+Follow the commit, branch, and pull request conventions in
+[../AGENTS.md](../AGENTS.md). A unit's tests, documentation, and its
+[../TODO.md](../TODO.md) update travel in its pull request, whose
+description is the record of the work.
 
 The project is also intended to deepen the user's understanding of Zig. Add
 module-level explanations of data flow and ownership, document public interfaces,
@@ -994,8 +981,8 @@ license texts on the web. Do not commit license text files.
 ## Documentation conventions
 
 - Keep product requirements and acceptance criteria in [spec.md](spec.md); the
-  the active plan lives in [../TODO.md](../TODO.md) and closed units in
-  [worklog.md](worklog.md).
+  the active plan lives in [../TODO.md](../TODO.md) and each finished
+  unit's record in its pull request.
 - Add a document under `docs/` when there is concrete information to record,
   in the folder whose rule it fits, and give it a line in
   [README.md](README.md), the hub.

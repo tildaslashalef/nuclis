@@ -25,7 +25,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT)
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
-        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf changelog release site-check site-serve docs-check
+        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf site-check site-serve docs-check
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -265,13 +265,6 @@ test-hf: ## Offline tests of the huggingface package only (`make test` includes 
 	$(ZIG) build test-hf
 
 # ---- releases --------------------------------------------------------------
-
-changelog: ## Insert the CHANGELOG section since the previous tag (ARGS='vX.Y.Z [--dry-run] [--range A..B]')
-	python3 scripts/changelog.py --self-test
-	python3 scripts/changelog.py $(ARGS)
-
-release: ## Cut a release from the manifest's -dev version: highlights, check, changelog, commit, tag, next-dev bump (DRY_RUN=1 to preview, HIGHLIGHTS=file)
-	python3 scripts/release.py $(if $(DRY_RUN),--dry-run) $(if $(HIGHLIGHTS),--highlights-file $(HIGHLIGHTS))
 
 # ---- housekeeping ----------------------------------------------------------
 

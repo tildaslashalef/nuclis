@@ -1,8 +1,10 @@
 # Changelog
 
-Notable changes, newest first: each release's highlights, the units it
-closed by area (linked to the engineering log), breaking changes, and every
-commit folded underneath.
+Notable changes, newest first. From v0.6.0 on, release-please writes each
+section from the merged pull requests' titles, led by the release's
+highlights; each line links its pull request, whose description is the
+record of the work. Releases up to v0.5.0 list the units they closed, linked
+to the worklog at their tag.
 
 ## [v0.5.0] - 2026-10-04
 

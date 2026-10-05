@@ -16,7 +16,7 @@ below.
 | [spec.md](spec.md) | **The authoritative spec**: requirements, scope, acceptance criteria |
 | [llm-guide.md](llm-guide.md) | The inference stack's concepts, taught as they are implemented here |
 | [development.md](development.md) | Contributing: toolchain, build and test, gates, the record, CI, releases |
-| [worklog.md](worklog.md) | Every closed unit of work with its outcome and evidence; its table links each entry |
+| [worklog.md](worklog.md) | Every unit of work before v0.6.0 with its outcome and evidence; later work is recorded in its pull request |
 
 ## Using nuclis: `guide/`
 
@@ -81,7 +81,7 @@ The JSON records sit beside them in [benchmarks/](benchmarks/), mostly
 
 There is no roadmap and no decision-record folder: what comes next is
 agreed in session and written into [../TODO.md](../TODO.md), a unit's
-outcome goes to the worklog, and a design that outlives its unit goes to
+record is its pull request, and a design that outlives its unit goes to
 the document above that owns it. Agent working instructions:
 [../AGENTS.md](../AGENTS.md). Third-party material:
 [../THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).

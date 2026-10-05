@@ -2,8 +2,8 @@
 
 This is the authoritative statement of what nuclis is, what it must do, and
 the decisions that bound how it does it. It states requirements and
-accepted decisions, not status: what the tree does today is in the
-[worklog](worklog.md), what it does next in
+accepted decisions, not status: what changed and why is in the
+[merged pull requests](https://github.com/tildaslashalef/nuclis/pulls?q=is%3Apr+is%3Amerged) (before v0.6.0, the [worklog](worklog.md)), what it does next in
 [TODO.md](../TODO.md), how it is built and measured in
 [development.md](development.md), how it is structured in
 [architecture.md](architecture.md), and the facts behind each component in
