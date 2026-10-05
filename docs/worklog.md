@@ -6354,7 +6354,7 @@ comparison is to the documented hours.
 
 ## REPO-24 — Qwen decode at 20 tokens/s: evidence and experiment proposal (2026-09-30)
 
-**Outcome.** [ADR 0001](adr/0001-qwen-decode-verifier.md), status
+**Outcome.** ADR 0001 (its durable parts now in [speculative-decoding.md § The Qwen verify budget](reference/speculative-decoding.md#the-qwen-verify-budget)), status
 proposed: amortize Qwen decode through a dedicated small-batch verifier,
 with the correctness gates a candidate must pass and quantitative stop
 rules. Its budget arithmetic (a batch emitting E tokens in C ms reaches

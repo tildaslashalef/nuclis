@@ -152,7 +152,7 @@ and 8/16, with the usual warning.
 Every limiter is at or under 10 %, ALU utilization is 5 %, and occupancy is
 6 % against an 85 % target: 109,056 kernel invocations over 16
 dispatches, about 6,800 threads each (the dispatch is 24 threadgroups per
-value split, one per query head: ADR 0001), cannot hide the latency of
+value split, one per query head: [metal-backend.md § Where a verify batch's cost goes](metal-backend.md#where-a-verify-batchs-cost-goes)), cannot hide the latency of
 walking 4,096 cached rows. What traffic there is, is mostly the thread's own
 stack: 116 GB/s of spill reads and writes against 16 GB/s of buffer
 reads, with the L1 evicting every line. Both point at the design KERN-21

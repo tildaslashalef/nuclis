@@ -1725,7 +1725,7 @@ are missed and the unit closes below its target. Verdict in
 ## The decode-speed baseline (ENGN-18, 2026-09-30)
 
 The opening record of the decode-speed theme
-([ADR 0001](../adr/0001-qwen-decode-verifier.md)), taken with the speed
+([speculative-decoding.md § The Qwen verify budget](speculative-decoding.md#the-qwen-verify-budget)), taken with the speed
 loop's tools ([development.md § The speed loop](../development.md#the-speed-loop)):
 every run restores a saved prefix (the acceptance array less its last
 token) and feeds the last token, so no prefill rate is reported. Apple M4
@@ -2004,7 +2004,7 @@ sampling `thinking` 1.0 / 0.95 / 20, the agent's default; reports under
 
 Geometric means at draft 5 / 7: prose (eight cells) 1.386 / 1.387, the
 worst cell 1.25×; code 1.88 / 1.94×; thinking 1.47 / 1.48×. Short code
-reaches the ADR's 20 tok/s at draft 7: 20.26 greedy and 20.93 instruct
+reaches the 20 tok/s budget at draft 7: 20.26 greedy and 20.93 instruct
 (C / 50E 0.99 and 0.96). Prose 512 runs at 15.9–16.5 tok/s, 4K at
 14.3–16.0, 16K at 11.3–12.8, 32,639 at 10.5–11.0.
 

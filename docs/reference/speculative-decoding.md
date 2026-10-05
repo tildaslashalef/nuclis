@@ -970,7 +970,7 @@ The tables and the rule are in
 - **Qwen3.8-27B, on at draft 7.** Cold, prose runs 1.25–1.57× (15.9–16.5
   tok/s at 512, 10.6–10.9 at 32,639) and the short code prompt 1.92–1.95×,
   20.3 and 20.9 tok/s: the 20 tok/s of
-  [ADR 0001](../adr/0001-qwen-decode-verifier.md) for short code. The
+  [the Qwen verify budget](#the-qwen-verify-budget) for short code. The
   think-on sampling the agent uses reads 1.44–1.53×. Drafts 5–7 tie on
   prose; 7 wins on code.
 - **Gemma 4 12B QAT, on at draft 5; E4B, on at draft 6.** 1.19–2.10× up
@@ -989,3 +989,77 @@ The tables and the rule are in
 A configuration file written before this record keeps its entries'
 `generation.speculative` and `generation.draft_length` (by design: the
 file is the user's); a fresh `nuclis config init` writes the new values.
+
+## The Qwen verify budget
+
+What a speculative batch must cost for Qwen3.8 to reach 20 tokens/s, and
+what was weighed on the way. The full decision record lived in a proposed
+design note (removed 2026-10-05); the rule, its last pricing, and the
+evidence it rested on are kept here.
+
+**The rule.** Rate is total emitted tokens over total decode seconds. A
+batch that emits E tokens on average and costs C milliseconds in all
+(propose, verify, recover, commit, the loop) reaches 20 tokens/s only when
+**C ≤ 50E**. Sum counts and times; never average per-batch rates. The
+verify budget is 50E less the batch's measured non-verify costs.
+`scripts/spec-matrix.py` prints C / 50E for every cell.
+
+**Its last pricing** (2026-10-01, draft 7, cold chip, greedy / instruct,
+real runs on saved prefixes; [bench.md § The re-priced speculative
+verdicts](bench.md#the-re-priced-speculative-verdicts-engn-20-2026-10-01)):
+
+| Context | E | Budget 50E | Measured C | of which verify | C / 50E | tok/s, plain → speculative |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| short code | 3.53 / 3.81 | 176.5 / 190.5 ms | 174.1 / 182.3 ms | 142.2 / 144.6 ms | **0.99 / 0.96** | 10.55 → 20.26 / 10.51 → 20.93 |
+| 512 | 2.70 / 2.63 | 135.0 / 131.5 ms | 164.1 / 166.5 ms | 138.2 / 138.9 ms | 1.21 / 1.27 | 10.47 → 16.47 / 10.42 → 15.86 |
+| 4,096 | 2.82 / 2.56 | 141.0 / 128.0 ms | 178.5 / 181.6 ms | 148.3 / 151.6 ms | 1.26 / 1.42 | 10.12 → 15.81 / 10.08 → 14.26 |
+| 16,384 | 2.70 / 2.49 | 135.0 / 124.5 ms | 217.7 / 222.3 ms | 184.8 / 187.2 ms | 1.61 / 1.79 | 9.20 → 12.41 / 9.16 → 11.26 |
+| 32,639 | 2.95 / 2.84 | 147.5 / 142.0 ms | 270.8 / 269.2 ms | 234.0 / 231.6 ms | 1.83 / 1.89 | 8.26 → 10.91 / 8.24 → 10.60 |
+
+Short code meets the budget (20.87 tok/s on 2026-10-05, C / 50E 0.96).
+Prose misses it by 29–54 ms per batch at 512 and 4K, a third to half of a
+single-row step; from 16K the verify attention is the gap. A batch of
+about 3.7 rows must cost what one row costs, and at 4K and beyond less
+than today's single-row step. The verifier streams the same 16.1 GB as
+that step, so the single-row path's weight streaming and long-context
+attention are on the critical path too. At 20 tokens/s an ordinary
+forward could read at most 13.65 GB at the 273 GB/s peak.
+
+**How to stop.** Drop a candidate whose predicted saving does not appear
+in whole-batch wall time, that only moves cost elsewhere, or that fails a
+numerical gate. Keep incremental gains, record the remaining gap, and
+re-price C and E after each retained change. Stop pursuing 20 tokens/s at
+a context when the measured costs plus a stated optimistic bound on the
+remaining work still cannot fit C ≤ 50E.
+
+**External evidence** (surveyed 2026-09-30; references and oracles, never
+sources to copy; **M** a measurement the source publishes, **C** a claim
+without shown data; the status column is as of that date):
+
+| Technique | Mechanism | Evidence | Our status then |
+| --- | --- | --- | --- |
+| Split-KV few-query attention with GQA packing | One threadgroup per (KV head, key split), rows = 6 query heads × T queries, per-row causal limit, partial merge | MLX [`sdpa_vector_2pass`](https://github.com/ml-explore/mlx/blob/main/mlx/backend/metal/scaled_dot_product_attention.cpp); llama.cpp `flash_attn_ext_vec`; [Open-TQ-Metal](https://arxiv.org/html/2604.16957v1) §3.2 split-K on an M1 Max (M) | Single-row decode only; KERN-21 added it for verify |
+| Register-fragment verify matmul | Decode quantized weights straight into 8×8 fragment elements, K permuted per lane; no threadgroup staging | [metal-flash-attention](https://github.com/philipturner/metal-flash-attention) design (C); [llama.cpp #29110](https://github.com/ggml-org/llama.cpp/pull/29110) 4-row register tile 1.6–1.9× (M, M3 Ultra); MLX `qmv_wide` (C) | Untried then; KERN-24 |
+| Per-token recurrent verify plus replay | Below ~64 tokens the recurrent form beats the chunk (WY) form; verify keeps a frozen state and a per-token tape, commit replays the accepted prefix | [vLLM #58863](https://github.com/vllm-project/vllm/pull/58863) 1.3–2.3 ms/cycle (M, GB10); mlx-lm `gated_delta_step` (C) | Row checkpoints then; the replay tape since (ENGN-19) |
+| Block softmax, contiguous loads in decode attention | Lane owns contiguous `half8` channels; one max/rescale per key block | MLX `sdpa_vector`; metal-flash-attention | Per-key `simd_sum` and rescale |
+| GPU counters by capture | `MTLCaptureManager` `.gputrace`: utilization, limiters, occupancy | [Apple tech talk 111374](https://developer.apple.com/videos/play/tech-talks/111374/) | Unused then; `make capture` since (KERN-20) |
+| Target-trained drafter | DFlash 2 checkpoint for this model | [z-lab/Qwen3.8-27B-DFlash2](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2): τ 9–20 % above MTP (C, H200) | Not adopted |
+| Suffix / prompt-lookup drafts | Free exact drafts from the prompt and history | [SuffixDecoding](https://arxiv.org/abs/2411.04975): 1.8–4.5× on agent traces (M, vLLM) | None |
+| Root-sibling verification | One extra row carrying the head's second candidate | [GDN Tree-Scan](https://arxiv.org/html/2609.23900v1): +27 % at B = 1 (M, GB10) | Chain-only |
+
+Ceiling references on the same class of hardware: MLX runs an M = 1
+forward of a 4-bit Qwen 27B on an M4 Pro in 68 ms and M = 3 at 1.38× that
+([mlx#3553](https://github.com/ml-explore/mlx/issues/3553), M), about 78 %
+of peak bandwidth at an estimated 14.4 GB of weights. Metal 4's tensor API
+lowers to the same ALUs before M5 and gives no gain here (llama.cpp
+#16634, C). Lossy KV and activation sparsity change the target and are
+out of scope.
+
+**Alternatives weighed.** Ordinary matvec tuning alone: its streaming
+floor is above the 50 ms step, so it cannot be the route alone, but the
+verify budgets need it too. Speculation on everywhere regardless of cost:
+ruled out by the prose and 4K regressions of the time. Wider tiles, scalar
+multi-row kernels, or split-K unchanged: earlier sweeps are their negative
+controls. A lighter quantization or a truncated context: changes quality
+or the target, a separate decision. A new drafter first: may raise
+acceptance but keeps an expensive verifier.

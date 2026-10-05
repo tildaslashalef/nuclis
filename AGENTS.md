@@ -35,10 +35,9 @@ tells you which.
 2. **It is empty.** Nothing is in progress. Ask what to work on, agree the
    theme with the user, and write the plan into `TODO.md` in its format
    (where-we-are note, order, unit table, unit designs) before touching
-   code. There is no roadmap file. A theme that changes the architecture
-   and spans several units is recorded as an ADR under `docs/adr/` **when
-   the user asks for one** (never by default), and the plan cites it;
-   ordinary units need no record beyond the plan and the log.
+   code. There is no roadmap file and no decision-record folder: a unit
+   needs no record beyond the plan and the log, and a design that outlives
+   it goes to a reference document.
 
 **Ending a session** leaves `TODO.md` able to restart the next one on
 its own: the current unit's section says what the session delivered and
@@ -69,8 +68,7 @@ the next identifier of its area and log it in the commit that lands it.
 
 **Durable knowledge never lives only in `TODO.md`**: requirements go to
 `docs/spec.md`, environment facts to `docs/development.md`, designs that
-outlive a unit to a reference document, decisions that outlive the plan
-to an ADR when the user asks for one.
+outlive a unit, and the decisions behind them, to a reference document.
 
 ## Session hygiene
 
@@ -390,7 +388,7 @@ identifier as a *citation*, never as the explanation:
 - **Current docs** (architecture, llm-guide, reference) may cite an identifier
   as a link to its log entry, but the sentence must read correctly if the
   identifier is removed.
-- **The log and the live plan** (the log itself, `TODO.md`, the ADRs) keep
+- **The log and the live plan** (the log itself and `TODO.md`) keep
   identifiers as keys. On close, the identifier migrates to the log and its
   anchor becomes permanent; never reuse an identifier for a different unit.
 

@@ -1854,3 +1854,41 @@ prompt, not the acceptance runs (ENGN-07).
 - Shader compiled from source at startup; no binary archive.
 - GPU resource cleanup is exercised by recreating the backend across fixture
   files in `metal-check`; Zig's testing allocator cannot observe Metal objects.
+
+## Where a verify batch's cost goes
+
+A speculative verify runs 3–8 rows through the prefill path, and several
+of that path's choices fit a 512-row chunk better than a 4-row batch.
+Recorded 2026-09-30 while pricing [the Qwen verify
+budget](speculative-decoding.md#the-qwen-verify-budget); what was fixed
+since is named.
+
+- **Attention grid.** `Backend.attentionChunk` dispatches `query_heads ×
+  ceil(count/32) × value_splits` threadgroups, so a small verify ran 24
+  threadgroups per value split, each walking the whole visible cache, in a
+  32-row tile at least 75 % padding. The [prefill attention sweep](bench.md#prefill-attention-sweep-kern-16-2026-09-21)
+  priced it at 8 rows, F16: 0.767 / 6.46 / 25.8 ms per layer at 512 / 4K /
+  16K visible, the same at 1 row as at 8; over Qwen's 16 full-attention
+  layers about 12 / 103 / 413 ms per verify, while single-row flash decoding
+  grew only from 94 to 98 ms per step from 512 to 4K. Verify attention
+  decided every context from 4K up. Since: [few-query verify
+  attention](#few-query-verify-attention-kern-21-2026-09-30) splits the keys
+  for batches of up to 16 rows.
+- **Missed fusions.** `qwen35_metal.zig:recordLayers` runs separate gate and
+  up matmuls and a standalone SiLU multiply, where the single-row `step` uses
+  merged projections with a fused SiLU epilogue and fused residual/norm. More
+  dispatches and intermediate traffic; norm fusion was neutral for Qwen, so
+  this is not a doubling.
+- **Tile geometry.** The small specialized matmul tile has eight token
+  columns; a typical verify has three or four real rows, so half the
+  columns idle. The two-row route exists; scalar bodies degraded past two
+  rows until the multi-row bodies routed at 2–3 rows.
+- **DeltaNet.** `deltaChunk` used its 32-token WY form even for a 4-row
+  verify, and wrote each row's recurrent checkpoint inside the kernel (cost
+  booked to verify, not to recover). Since: the per-token verify with a
+  replay tape (DeltaNet 41 → 6 ms, recover 14 → 2–3 ms per 4-row batch at
+  4K; [bench.md § The DeltaNet replay tape](bench.md#the-deltanet-replay-tape-engn-19-2026-10-01)).
+- **Drafters differ.** Qwen's MTP proposals are serial forwards with a
+  private draft cache; [Muse's DFlash](bench.md#the-muse-glimmer-dflash-draft-pair-modl-20-2026-09-21)
+  proposes differently and has no DeltaNet state to recover, so its
+  economics do not transfer to Qwen.

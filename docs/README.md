@@ -39,12 +39,9 @@ Detailed engineering documents under [reference/](reference/):
 
 ## Decisions
 
-Decisions that change the architecture and span several units are recorded
-in [adr/](adr/), one file per decision (see the [template](adr/TEMPLATE.md)),
-written when the user asks for one; the plan's units cite it. A change
-supersedes rather than edits. Ordinary units need no record beyond the plan
-and the log. There is no roadmap file: what comes next is agreed in session
-and written into the plan.
+There is no roadmap file and no decision-record folder: what comes next is
+agreed in session and written into the plan, a unit's outcome goes to the
+log, and a design that outlives its unit goes to a reference document.
 
 ## Data directories
 
