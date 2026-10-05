@@ -29,7 +29,7 @@ Nothing is pushed yet; a push deploys nuclis.dev.
 
 ## REPO-35: the documents, restructured
 
-Base: (set at the first change)
+Base: `845bad5`
 
 **Why.** nuclis.dev links into `docs/` (`site/index.html` :203 bench,
 :320 "Setup guide" → `development.md`, :348–351; `site/llms.txt`

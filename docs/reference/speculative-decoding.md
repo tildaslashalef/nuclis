@@ -782,7 +782,7 @@ overflowed on a layer whose chunk decay reached `cum = −114`, writing `inf`
 into slots and NaN into the state on restore. And the slot writes are only
 gated by `row_states > 0`: ordinary prefill, decode, and the prompt commit
 pass 0, and the kernels take the same code path as before. The layout and
-the refusals are in [session.md § Row checkpoints](session.md#row-checkpoints-engn-14).
+the refusals are in [session.md § Pending rows and the verify tape](session.md#pending-rows-and-the-verify-tape-engn-19), which replaced them.
 
 ## The device penalty kernel (KERN-13, 2026-09-20)
 

@@ -61,7 +61,7 @@ sees `[0, position + 1)` after its own write, recurrent state is whole.
 
 The agent keeps snapshots at turn boundaries and restores the longest one
 a render starts with, in memory and on disk: see
-[§ The agent's token cache](#the-agents-token-cache).
+[§ The agent's token cache](#the-agents-token-cache-agnt-19).
 
 Why copy instead of rewind: 48 of the 64 layers are recurrent, and their
 matrix after token *n* is a function of every token before it. Truncating a

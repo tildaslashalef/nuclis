@@ -130,6 +130,20 @@
    ]
   },
   {
+   "name": "docs",
+   "command": [
+    "make",
+    "docs-check"
+   ],
+   "paths": [
+    "**/*.md",
+    "site/**",
+    "gates.json",
+    "workloads.json",
+    "scripts/docs-check.py"
+   ]
+  },
+  {
    "name": "site",
    "command": [
     "make",
@@ -376,7 +390,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/vision.md#the-qwen3-vl-projector-modl-21"
+   "evidence": "docs/reference/vision.md#the-qwen3-vl-projector-modl-21-2026-09-22"
   },
   {
    "name": "qwen38-vision-cpu",
@@ -408,7 +422,7 @@
    "comparator": {
     "kind": "exit"
    },
-   "evidence": "docs/reference/vision.md#the-qwen3-vl-projector-modl-21"
+   "evidence": "docs/reference/vision.md#the-qwen3-vl-projector-modl-21-2026-09-22"
   },
   {
    "name": "qwen38-speculative-metal",

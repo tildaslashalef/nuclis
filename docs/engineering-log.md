@@ -378,7 +378,7 @@ legacy and kitty `CSI u` sequences.
 `make test-generation-metal`. A manual pty session on the model prefilled 18
 tokens to position 25 on turn 1 and on turn 2 prefilled only its 20 new tokens
 (prefix reuse); Ctrl-D restored the terminal and echoed both turns. The spec
-note is [agent-spec.md](agent-spec.md#implemented-today-nuclis-chat-apps-02).
+note is `agent-spec.md` (since folded into the spec).
 
 **Files.** `src/chat/root.zig`, `src/chat/terminal.zig`, `src/chat/view.zig`,
 `src/chat/keys.zig`, `src/generate.zig`.
@@ -546,7 +546,7 @@ readback for the presence penalty), thinking profile **10.57** with 0 fallbacks
 `inference/src/engine.zig`, `src/generate.zig`, `src/cli.zig`,
 `docs/reference/generation.md`, `docs/reference/bench.md`.
 
-**Remaining.** A GPU penalty kernel is deferred ([roadmap](roadmap.md#also-deferred));
+**Remaining.** A GPU penalty kernel is deferred (the retired roadmap);
 the chat's per-turn option rebuild was reviewed, not exercised interactively.
 Behavior change: `generate` was greedy by default and now samples with the
 instruct profile (`--temperature 0` restores greedy).
@@ -681,7 +681,7 @@ and 4K. Half activations assume |x| < 65,504, checked only through the
 generation check on real prompts; the pinned fixtures' extreme F16 block scales
 are tamed to 2^-6 in the tiled matrices. A split-K or bandwidth-bound small-M
 design for short prompts (22 tokens take 563 ms where one token through the
-matvec takes 95 ms) is a follow-up ([roadmap](roadmap.md#also-deferred)).
+matvec takes 95 ms) is a follow-up (the retired roadmap).
 
 ### KERN-07 — F16 KV cache as a session layout option (2026-09-10)
 
@@ -992,7 +992,7 @@ the pinned Qwen file unchanged; `make bench` (2 repeats, F16 KV) **40.00 /
 10.66** prefill / decode against the recorded 39.7 / 10.63; `validate` and
 `generate` on the Gemma 4 12B file reported `UnknownArchitecture` naming
 `gemma4` and the known `qwen35` (the pre-tokenizer gap recorded in
-[architecture.md § 9](architecture.md#9-adding-a-model)). `nuclis
+[architecture.md § 9](architecture.md#10-adding-a-model)). `nuclis
 validate` JSON is schema 2 (`layer_kinds` replaces `full_attention_layers` /
 `delta_net_layers`).
 
@@ -1160,7 +1160,7 @@ imports nothing from `inference`. `src/agent/session.zig` is one append-only
 JSONL file per conversation under `~/.nuclis/agent/sessions/<cwd-slug>/`.
 Commands `/new`, `/ctx`, `/think`, `/save`, `/help` are a table that is also the
 help text and completion list, and `nuclis agent -p "<prompt>"` runs one turn
-with no terminal. Details in [agent-spec.md](agent-spec.md).
+with no terminal. Details in `agent-spec.md` (since folded into the spec).
 
 **Evidence.** `make check` **291 tests**, `test-metal` passed; `make compare`
 **6.1e-5 / 0.0250** unchanged; `make bench` **40.24 / 10.81** tok/s, within the
@@ -4188,7 +4188,7 @@ verify 133.9 ms, 25.74 → 23.17 tok/s, 0.90× — MODL-19's row read 2.256 /
 3.385 / 3.256, 135.9 ms, 25.40 → 22.83, 0.899×. The generated table is in
 [bench.md § The Gemma 4 draft pair](reference/bench.md#the-gemma-4-draft-pair-modl-19-2026-09-21)
 between markers, from
-[benchmarks/gemma4-qat-prose512-draft-2026-09-21.json](../benchmarks/gemma4-qat-prose512-draft-2026-09-21.json).
+[benchmarks/gemma4-qat-prose512-draft-2026-09-21.json](benchmarks/gemma4-qat-prose512-draft-2026-09-21.json).
 `--check muse/prose512-draft` on that Gemma report misses its bar (0.900
 against 1.0) and exits 1; `--compare` prints deltas. `make check` green
 (the two manifests' validation and the scripts' self-tests: 6 workload
@@ -7668,7 +7668,7 @@ render starts with, then prefills the rest:
   from.
 
 Design changes from the plan, all recorded in
-[session.md § The agent's token cache](reference/session.md#the-agents-token-cache):
+[session.md § The agent's token cache](reference/session.md#the-agents-token-cache-agnt-19):
 entries match on rendered text, not tokens (a turn's generated tokens need
 not be the canonical encoding of their text); a state holding an image is
 never kept (the placeholder text is the same for every image); the build
