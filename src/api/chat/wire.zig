@@ -6,6 +6,7 @@
 const std = @import("std");
 const inference = @import("inference");
 const data_url = @import("../../data_url.zig");
+const errors = @import("../errors.zig");
 
 const Allocator = std.mem.Allocator;
 const Profile = inference.profiles;
@@ -29,6 +30,10 @@ pub const Request = struct {
     sampling: inference.sampling.Overrides = .{},
     seed: ?u64 = null,
     max_tokens: ?usize = null,
+    /// Server-sent events instead of one JSON body; with `include_usage`,
+    /// a last chunk carries the usage.
+    stream: bool = false,
+    include_usage: bool = false,
 };
 
 /// Why a request was refused: a 400 with this code, message, and field.
@@ -144,16 +149,22 @@ pub fn parse(arena: Allocator, body: []const u8, problem: *Problem) Error!Reques
     const budget = try integer(&r, o, "max_completion_tokens", 1, std.math.maxInt(u32)) orelse
         try integer(&r, o, "max_tokens", 1, std.math.maxInt(u32));
     if (budget) |b| request.max_tokens = @min(b, max_output_tokens);
+    if (o.get("stream")) |v| switch (v) {
+        .null => {},
+        .bool => |b| request.stream = b,
+        else => return r.invalid("stream", "\"stream\" must be a boolean", .{}),
+    };
+    if (o.get("stream_options")) |v| if (v == .object) if (v.object.get("include_usage")) |u| {
+        request.include_usage = u == .bool and u.bool;
+    };
     return request;
 }
 
 /// Fields that would change the result and that nuclis cannot honour.
 /// Fields that are only advice (`user`, `store`, `metadata`,
-/// `prompt_cache_key`, `service_tier`, `parallel_tool_calls`,
-/// `stream_options`) are accepted and ignored.
+/// `prompt_cache_key`, `service_tier`, `parallel_tool_calls`) are accepted
+/// and ignored.
 fn refuseUnsupported(r: *Reader, o: std.json.ObjectMap) Error!void {
-    if (o.get("stream")) |s| if (s == .bool and s.bool)
-        return r.unsupported("stream", "streamed responses are not served yet; send \"stream\": false", .{});
     if (o.get("n")) |n| if (!(n == .null or (n == .integer and n.integer == 1)))
         return r.unsupported("n", "one choice per request (\"n\": 1)", .{});
     if (o.get("logprobs")) |l| if (l == .bool and l.bool)
@@ -488,26 +499,208 @@ pub fn writeResponse(out: *std.Io.Writer, arena: Allocator, collected: *const Co
     try s.endObject();
     try s.endArray();
     try s.objectField("usage");
+    try writeUsage(&s, meta.usage);
+    try s.endObject();
+    try out.writeByte('\n');
+}
+
+/// One streamed completion as server-sent events: `chat.completion.chunk`
+/// objects on `data:` lines, then `data: [DONE]`. Text arrives token by
+/// token, so a code point split across tokens is held back until its last
+/// byte arrives.
+pub const ChunkWriter = struct {
+    id: []const u8,
+    created: i64,
+    model: []const u8,
+    include_usage: bool,
+    calls: usize = 0,
+    reasoning: Carry = .{},
+    content: Carry = .{},
+
+    const Channel = enum { reasoning_content, content };
+
+    /// The first chunk: the assistant's role, before any text.
+    pub fn start(self: *ChunkWriter, out: *std.Io.Writer) !void {
+        var s = try self.begin(out);
+        try s.objectField("role");
+        try s.write("assistant");
+        try s.objectField("content");
+        try s.write("");
+        try end(&s, out, null);
+    }
+
+    /// The chunk an engine event becomes, if any. `call_id` names a
+    /// `tool_call`; `scratch` holds the text for the call only.
+    pub fn event(self: *ChunkWriter, out: *std.Io.Writer, scratch: Allocator, e: inference.events.Event, call_id: []const u8) !void {
+        switch (e) {
+            .thinking => |piece| try self.channelText(out, scratch, .reasoning_content, piece),
+            .answer => |piece| try self.channelText(out, scratch, .content, piece),
+            .tool_call => |call| {
+                var s = try self.begin(out);
+                try s.objectField("tool_calls");
+                try s.beginArray();
+                try s.beginObject();
+                try s.objectField("index");
+                try s.write(self.calls);
+                try s.objectField("id");
+                try s.write(call_id);
+                try s.objectField("type");
+                try s.write("function");
+                try s.objectField("function");
+                try s.beginObject();
+                try s.objectField("name");
+                try s.write(try validUtf8(scratch, call.name));
+                try s.objectField("arguments");
+                try s.write(try validUtf8(scratch, call.arguments));
+                try s.endObject();
+                try s.endObject();
+                try s.endArray();
+                try end(&s, out, null);
+                self.calls += 1;
+            },
+            .tool_progress, .tool_cut, .stop => {},
+        }
+    }
+
+    /// The last chunks: whatever text was held back, the finish reason,
+    /// the usage when asked for, and `[DONE]`.
+    pub fn finish(self: *ChunkWriter, out: *std.Io.Writer, reason: FinishReason, usage: Usage) !void {
+        inline for (.{ Channel.reasoning_content, Channel.content }) |channel| {
+            const carry = if (channel == .reasoning_content) &self.reasoning else &self.content;
+            if (carry.len > 0) {
+                carry.len = 0;
+                try self.delta(out, channel, "\u{FFFD}");
+            }
+        }
+        var s = try self.begin(out);
+        try end(&s, out, reason);
+        if (self.include_usage) {
+            var u: std.json.Stringify = .{ .writer = out };
+            try out.writeAll("data: ");
+            try u.beginObject();
+            try self.header(&u);
+            try u.objectField("choices");
+            try u.beginArray();
+            try u.endArray();
+            try u.objectField("usage");
+            try writeUsage(&u, usage);
+            try u.endObject();
+            try out.writeAll("\n\n");
+        }
+        try out.writeAll("data: [DONE]\n\n");
+    }
+
+    fn channelText(self: *ChunkWriter, out: *std.Io.Writer, scratch: Allocator, channel: Channel, piece: []const u8) !void {
+        const carry = if (channel == .reasoning_content) &self.reasoning else &self.content;
+        const complete = try carry.take(scratch, piece);
+        if (complete.len > 0) try self.delta(out, channel, complete);
+    }
+
+    fn delta(self: *ChunkWriter, out: *std.Io.Writer, channel: Channel, value: []const u8) !void {
+        var s = try self.begin(out);
+        try s.objectField(@tagName(channel));
+        try s.write(value);
+        try end(&s, out, null);
+    }
+
+    fn header(self: *const ChunkWriter, s: *std.json.Stringify) !void {
+        try s.objectField("id");
+        try s.write(self.id);
+        try s.objectField("object");
+        try s.write("chat.completion.chunk");
+        try s.objectField("created");
+        try s.write(self.created);
+        try s.objectField("model");
+        try s.write(self.model);
+    }
+
+    /// Opens a chunk up to its delta object; `end` closes it.
+    fn begin(self: *const ChunkWriter, out: *std.Io.Writer) !std.json.Stringify {
+        var s: std.json.Stringify = .{ .writer = out };
+        try out.writeAll("data: ");
+        try s.beginObject();
+        try self.header(&s);
+        try s.objectField("choices");
+        try s.beginArray();
+        try s.beginObject();
+        try s.objectField("index");
+        try s.write(0);
+        try s.objectField("delta");
+        try s.beginObject();
+        return s;
+    }
+
+    fn end(s: *std.json.Stringify, out: *std.Io.Writer, reason: ?FinishReason) !void {
+        try s.endObject();
+        try s.objectField("logprobs");
+        try s.write(null);
+        try s.objectField("finish_reason");
+        if (reason) |r| try s.write(@tagName(r)) else try s.write(null);
+        try s.endObject();
+        try s.endArray();
+        try s.endObject();
+        try out.writeAll("\n\n");
+    }
+};
+
+/// An error after the stream began: the SDKs raise it from the stream.
+pub fn writeStreamError(out: *std.Io.Writer, err: errors.ApiError) !void {
+    try out.writeAll("data: ");
+    try errors.write(out, err);
+    try out.writeByte('\n');
+}
+
+/// The bytes of a code point not yet complete, held across pieces.
+const Carry = struct {
+    bytes: [3]u8 = undefined,
+    len: usize = 0,
+
+    /// The held bytes and `piece` up to the last complete code point, in
+    /// `scratch`, invalid sequences replaced; the incomplete rest is held.
+    fn take(self: *Carry, scratch: Allocator, piece: []const u8) Allocator.Error![]const u8 {
+        const joined = try std.mem.concat(scratch, u8, &.{ self.bytes[0..self.len], piece });
+        const cut = completeLength(joined);
+        self.len = joined.len - cut;
+        @memcpy(self.bytes[0..self.len], joined[cut..]);
+        return validUtf8(scratch, joined[0..cut]);
+    }
+};
+
+/// Where `bytes` stops being complete: before a trailing lead byte whose
+/// sequence has not all arrived; the whole length otherwise.
+fn completeLength(bytes: []const u8) usize {
+    var i = bytes.len;
+    var back: usize = 0;
+    while (i > 0 and back < 4) {
+        i -= 1;
+        back += 1;
+        const byte = bytes[i];
+        if (byte & 0xC0 == 0x80) continue;
+        const length = std.unicode.utf8ByteSequenceLength(byte) catch return bytes.len;
+        return if (back < length) i else bytes.len;
+    }
+    return bytes.len;
+}
+
+fn writeUsage(s: *std.json.Stringify, usage: Usage) !void {
     try s.beginObject();
     try s.objectField("prompt_tokens");
-    try s.write(meta.usage.prompt);
+    try s.write(usage.prompt);
     try s.objectField("completion_tokens");
-    try s.write(meta.usage.completion);
+    try s.write(usage.completion);
     try s.objectField("total_tokens");
-    try s.write(meta.usage.prompt + meta.usage.completion);
+    try s.write(usage.prompt + usage.completion);
     try s.objectField("prompt_tokens_details");
     try s.beginObject();
     try s.objectField("cached_tokens");
-    try s.write(meta.usage.cached);
+    try s.write(usage.cached);
     try s.endObject();
     try s.objectField("completion_tokens_details");
     try s.beginObject();
     try s.objectField("reasoning_tokens");
-    try s.write(meta.usage.reasoning);
+    try s.write(usage.reasoning);
     try s.endObject();
     try s.endObject();
-    try s.endObject();
-    try out.writeByte('\n');
 }
 
 /// `text` with every invalid UTF-8 sequence replaced by U+FFFD: model text
@@ -599,6 +792,7 @@ test "a conversation as an agent sends it: roles, an image, calls and their resu
     try testing.expectEqual(@as(?f32, 0.6), request.sampling.temperature);
     try testing.expectEqual(@as(?usize, 20), request.sampling.top_k);
     try testing.expectEqual(@as(?u64, 7), request.seed);
+    try testing.expect(!request.stream and request.include_usage);
 }
 
 test "tool_choice none drops the tools; max_tokens is read when max_completion_tokens is absent" {
@@ -619,7 +813,7 @@ test "refusals name their code and field" {
         .{ .body = "[]", .code = "invalid_request", .param = "body" },
         .{ .body = "{\"messages\": []}", .code = "invalid_request", .param = "messages" },
         .{ .body = "{\"messages\": [{\"role\": \"function\", \"content\": \"x\"}]}", .code = "invalid_request", .param = "messages[0]" },
-        .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": \"x\"}], \"stream\": true}", .code = "unsupported_feature", .param = "stream" },
+        .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": \"x\"}], \"stream\": 1}", .code = "invalid_request", .param = "stream" },
         .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": \"x\"}], \"n\": 2}", .code = "unsupported_feature", .param = "n" },
         .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": \"x\"}], \"response_format\": {\"type\": \"json_schema\"}}", .code = "unsupported_feature", .param = "response_format" },
         .{ .body = "{\"messages\": [{\"role\": \"user\", \"content\": \"x\"}], \"tool_choice\": \"required\"}", .code = "unsupported_feature", .param = "tool_choice" },
@@ -700,4 +894,82 @@ test "invalid UTF-8 from the model becomes U+FFFD; ids are the prefix and 24 bas
     const id = try newId(arena, testing.io, "call_");
     try testing.expectEqual(@as(usize, 29), id.len);
     try testing.expect(std.mem.startsWith(u8, id, "call_"));
+}
+
+test "a stream: the role first, deltas per channel, a split code point held whole, a call, the end" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var out: std.Io.Writer.Allocating = .init(arena);
+    var w: ChunkWriter = .{ .id = "chatcmpl-x", .created = 1, .model = "m", .include_usage = true };
+    try w.start(&out.writer);
+    try w.event(&out.writer, arena, .{ .thinking = "Hm" }, "");
+    try w.event(&out.writer, arena, .{ .answer = "caf\xc3" }, "");
+    try w.event(&out.writer, arena, .{ .answer = "\xa9!" }, "");
+    try w.event(&out.writer, arena, .{ .tool_progress = 4 }, "");
+    try w.event(&out.writer, arena, .{ .tool_call = .{ .id = 1, .name = "read", .arguments = "{\"path\":\"x\"}" } }, "call_1");
+    try w.finish(&out.writer, .tool_calls, .{ .prompt = 10, .cached = 4, .completion = 6, .reasoning = 1 });
+
+    var events: std.ArrayList(Value) = .empty;
+    var lines = std.mem.splitSequence(u8, out.written(), "\n\n");
+    var done = false;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        try testing.expect(std.mem.startsWith(u8, line, "data: "));
+        try testing.expect(std.mem.indexOfScalar(u8, line, '\n') == null);
+        const payload = line["data: ".len..];
+        if (std.mem.eql(u8, payload, "[DONE]")) {
+            done = true;
+            continue;
+        }
+        try testing.expect(!done);
+        try events.append(arena, try std.json.parseFromSliceLeaky(Value, arena, payload, .{}));
+    }
+    try testing.expect(done);
+    try testing.expectEqual(@as(usize, 7), events.items.len);
+    const delta = struct {
+        fn of(v: Value) std.json.ObjectMap {
+            return v.object.get("choices").?.array.items[0].object.get("delta").?.object;
+        }
+    }.of;
+    try testing.expectEqualStrings("chat.completion.chunk", events.items[0].object.get("object").?.string);
+    try testing.expectEqualStrings("assistant", delta(events.items[0]).get("role").?.string);
+    try testing.expectEqualStrings("Hm", delta(events.items[1]).get("reasoning_content").?.string);
+    try testing.expectEqualStrings("caf", delta(events.items[2]).get("content").?.string);
+    try testing.expectEqualStrings("\u{e9}!", delta(events.items[3]).get("content").?.string);
+    const call = delta(events.items[4]).get("tool_calls").?.array.items[0].object;
+    try testing.expectEqual(@as(i64, 0), call.get("index").?.integer);
+    try testing.expectEqualStrings("call_1", call.get("id").?.string);
+    try testing.expectEqualStrings("{\"path\":\"x\"}", call.get("function").?.object.get("arguments").?.string);
+    const last = events.items[5].object.get("choices").?.array.items[0].object;
+    try testing.expectEqualStrings("tool_calls", last.get("finish_reason").?.string);
+    try testing.expect(events.items[1].object.get("choices").?.array.items[0].object.get("finish_reason").? == .null);
+    const usage = events.items[6];
+    try testing.expectEqual(@as(usize, 0), usage.object.get("choices").?.array.items.len);
+    try testing.expectEqual(@as(i64, 16), usage.object.get("usage").?.object.get("total_tokens").?.integer);
+}
+
+test "a code point still incomplete at the end becomes U+FFFD; no usage chunk unless asked" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var out: std.Io.Writer.Allocating = .init(arena);
+    var w: ChunkWriter = .{ .id = "c", .created = 1, .model = "m", .include_usage = false };
+    try w.event(&out.writer, arena, .{ .answer = "a\xe2\x82" }, "");
+    try w.finish(&out.writer, .length, .{ .prompt = 1, .cached = 0, .completion = 2, .reasoning = 0 });
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"content\":\"a\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"content\":\"\u{FFFD}\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "\"finish_reason\":\"length\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "usage") == null);
+    try testing.expectEqual(@as(usize, 4), completeLength("ab\xe2\x82\xac"[0..2] ++ "cd"));
+    try testing.expectEqual(@as(usize, 1), completeLength("a\xf0\x9f\x98"));
+    try testing.expectEqual(@as(usize, 2), completeLength("a\xff"));
+}
+
+test "an error inside a stream is one data line" {
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try writeStreamError(&out.writer, .init(.internal_server_error, "model_failed", "x"));
+    try testing.expect(std.mem.startsWith(u8, out.written(), "data: {\"error\":{\"code\":\"model_failed\""));
+    try testing.expect(std.mem.endsWith(u8, out.written(), "}}\n\n"));
 }

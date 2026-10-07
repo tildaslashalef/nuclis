@@ -84,6 +84,27 @@ pub const Executor = struct {
         }
     }
 
+    /// Takes back `item` if it has not started: true when it was queued and
+    /// is now unlinked (the worker will never touch it), false when it runs
+    /// or has finished.
+    pub fn withdraw(self: *Executor, io: std.Io, item: *Item) bool {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        if (item.state != .queued) return false;
+        self.unlink(item);
+        item.state = .abandoned;
+        return true;
+    }
+
+    /// Whether `item` has finished, waiting for it at most until `until`.
+    /// Unlike `wait`, never blocks past `until`: the caller polls, and
+    /// checks its client between polls.
+    pub fn poll(self: *Executor, io: std.Io, item: *Item, until: std.Io.Clock.Timestamp) bool {
+        _ = self;
+        item.done.waitTimeout(io, .{ .deadline = until }) catch {};
+        return item.done.isSet();
+    }
+
     fn unlink(self: *Executor, item: *Item) void {
         var previous: ?*Item = null;
         var cursor = self.head;
@@ -242,4 +263,27 @@ test "an item that runs again goes behind what queued meanwhile" {
     executor.stop(io);
     worker.await(io);
     try std.testing.expectEqualSlices(u32, &.{ 1, 2, 1 }, order.items);
+}
+
+test "a queued item can be withdrawn, a running one cannot; poll returns at its deadline" {
+    const io = std.testing.io;
+    var executor: Executor = .init(4);
+    var order: std.ArrayList(u32) = try .initCapacity(std.testing.allocator, 8);
+    defer order.deinit(std.testing.allocator);
+    var gate: std.Io.Event = .unset;
+    var first: Counting = .{ .order = &order, .id = 1, .gate = &gate };
+    var second: Counting = .{ .order = &order, .id = 2 };
+    try executor.submit(io, &first.item);
+    try executor.submit(io, &second.item);
+    var worker = try io.concurrent(Executor.run, .{ &executor, io });
+    // The first is running (held at its gate) once the queue holds only the second.
+    while (executor.stats(io).queued != 1) try io.sleep(.fromMilliseconds(1), .awake);
+    try std.testing.expect(!executor.poll(io, &first.item, deadlineIn(io, 20)));
+    try std.testing.expect(!executor.withdraw(io, &first.item));
+    try std.testing.expect(executor.withdraw(io, &second.item));
+    gate.set(io);
+    try std.testing.expect(executor.poll(io, &first.item, deadlineIn(io, 5_000)));
+    executor.stop(io);
+    worker.await(io);
+    try std.testing.expectEqualSlices(u32, &.{1}, order.items);
 }

@@ -227,7 +227,11 @@ apart, so each service is a directory and one registration:
   the named model if another is open and completes the conversation
   through the agent's `Completer` (`model.zig`), so a served conversation
   continues or restores the model's state exactly as `nuclis chat` does.
-  Clients resend the whole conversation; no response is stored.
+  A whole response waits for the item; a streamed one drains its chunks
+  from a `pipe.zig` queue. Either way the connection watches its client
+  (`http.Peer`), and one that leaves sets the flag the item's observer
+  turns into a cancellation. Clients resend the whole conversation; no
+  response is stored.
 - `src/decision/` holds the wire format and model names that `nuclis
   decide` and the service share, so the CLI's `--json` and the API's
   body are the same bytes.

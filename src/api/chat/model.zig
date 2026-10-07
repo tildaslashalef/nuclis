@@ -114,11 +114,14 @@ pub const Language = struct {
     pub const Ran = struct {
         reply: completer_mod.Reply,
         effort: Profile.Effort,
+        /// Tool calls the completion decoded.
+        calls: usize,
     };
 
-    /// Completes `request` on the open model, its events into `collected`.
-    /// Everything the request needs lives in `arena`.
-    pub fn run(self: *Language, io: std.Io, arena: Allocator, request: wire.Request, collected: *wire.Collector) !Ran {
+    /// Completes `request` on the open model, its events into `sink`;
+    /// `observer` sees every layer boundary and step (cancellation,
+    /// progress). Everything the request needs lives in `arena`.
+    pub fn run(self: *Language, io: std.Io, arena: Allocator, request: wire.Request, sink: *completer_mod.Sink, observer: ?inference.observer.Observer) !Ran {
         const open = &self.open.?;
         const profile = open.profile();
         const effort = profile.nearestEffort(request.effort orelse self.settings.think);
@@ -149,12 +152,15 @@ pub const Language = struct {
             next += count;
         }
 
-        var sink: completer_mod.Sink = .{ .context = collected, .call = collect };
-        const reply = try m.run(m.context, request.messages, request.tools, images, &sink);
+        var counting: Counting = .{ .inner = sink };
+        var counted: completer_mod.Sink = .{ .context = &counting, .call = Counting.call };
+        self.completer.observer = observer;
+        defer self.completer.observer = null;
+        const reply = try m.run(m.context, request.messages, request.tools, images, &counted);
         // A turn that ends in an answer is a boundary the next request's
         // render starts with; a turn of calls continues the live session.
-        if (reply.outcome.stop == .eos and collected.calls.items.len == 0) _ = m.checkpoint(m.context);
-        return .{ .reply = reply, .effort = effort };
+        if (reply.outcome.stop == .eos and counting.calls == 0) _ = m.checkpoint(m.context);
+        return .{ .reply = reply, .effort = effort, .calls = counting.calls };
     }
 
     /// The tokens the open model's window holds.
@@ -172,9 +178,15 @@ pub const Language = struct {
         std.Io.Dir.cwd().access(io, path, .{}) catch return error.ImagesUnsupported;
         try open.eng.loadVision(path, self.settings.image_max_tokens.count());
     }
+};
 
-    fn collect(context: *anyopaque, event: inference.events.Event) anyerror!void {
-        const collected: *wire.Collector = @ptrCast(@alignCast(context));
-        try collected.send(event);
+const Counting = struct {
+    inner: *completer_mod.Sink,
+    calls: usize = 0,
+
+    fn call(context: *anyopaque, event: inference.events.Event) anyerror!void {
+        const self: *Counting = @ptrCast(@alignCast(context));
+        if (event == .tool_call) self.calls += 1;
+        try self.inner.send(event);
     }
 };

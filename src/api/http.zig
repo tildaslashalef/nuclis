@@ -33,6 +33,8 @@ pub const Request = struct {
     /// After the `?`, empty when there is none.
     query: []const u8,
     body: []const u8,
+    /// The client's socket, when there is one (none in tests).
+    peer: ?Peer = null,
 
     /// The value of `name` in the query (`a=1&b`: `b` is ""), or null.
     pub fn param(self: Request, name: []const u8) ?[]const u8 {
@@ -61,27 +63,52 @@ pub const Response = struct {
     }
 };
 
+/// The client's end of the connection, for a handler that waits long: it
+/// asks whether the client has gone without consuming what it may send.
+pub const Peer = struct {
+    handle: std.posix.socket_t,
+
+    /// True once the client closed or reset the connection.
+    pub fn gone(self: Peer) bool {
+        var byte: [1]u8 = undefined;
+        const n = std.c.recv(self.handle, &byte, 1, std.c.MSG.PEEK | std.c.MSG.DONTWAIT);
+        if (n > 0) return false;
+        if (n == 0) return true;
+        return switch (std.c.errno(n)) {
+            .AGAIN, .INTR => false,
+            else => true,
+        };
+    }
+};
+
 /// A response body written after the head, on the connection's task:
 /// `transfer-encoding: chunked`, or for an HTTP/1.0 client the body until
 /// the connection closes. The head is flushed before `write` runs. `write`
-/// returns false when the stream failed, which closes the connection;
-/// `context` must outlive it.
+/// runs exactly once, even when the head could not be sent (its sends then
+/// fail), so a stream that owns work can always release it. It returns
+/// false when the stream failed, which closes the connection; `context`
+/// must outlive it.
 pub const Stream = struct {
     context: *anyopaque,
     write: *const fn (context: *anyopaque, io: std.Io, body: *Body) bool,
+    /// The log's note once `write` returned, when it says more than the
+    /// response's own.
+    note: ?*const fn (context: *anyopaque) []const u8 = null,
 };
 
 /// What a `Stream` writes through.
 pub const Body = struct {
-    inner: *std.http.BodyWriter,
+    /// Null when the head could not be sent: every send fails.
+    inner: ?*std.http.BodyWriter,
     /// Bytes sent so far, for the log.
     bytes: usize = 0,
 
     /// Writes `bytes` and flushes them to the client: one chunk.
     pub fn send(self: *Body, bytes: []const u8) std.Io.Writer.Error!void {
-        try self.inner.writer.writeAll(bytes);
-        try self.inner.writer.flush();
-        try self.inner.flush();
+        const inner = self.inner orelse return error.WriteFailed;
+        try inner.writer.writeAll(bytes);
+        try inner.writer.flush();
+        try inner.flush();
         self.bytes += bytes.len;
     }
 };
@@ -103,7 +130,7 @@ pub fn noteOf(arena: std.mem.Allocator, err: errors.ApiError) []const u8 {
 /// Serves requests from `in` until the client closes, asks to close, or a
 /// transport failure ends the connection. `in`'s buffer holds the head, so
 /// the head limit is the smaller of `limits.max_head` and that buffer.
-pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.Io.Writer, handler: Handler, limits: Limits, log: ?*log_mod.Log) void {
+pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.Io.Writer, handler: Handler, limits: Limits, log: ?*log_mod.Log, peer: ?Peer) void {
     var server = std.http.Server.init(in, out);
     server.reader.max_head_len = @min(limits.max_head, in.buffer.len);
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -113,12 +140,12 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, in: *std.Io.Reader, out: *std.I
         // what the previous one allocated.
         _ = arena_state.reset(.{ .retain_with_limit = 256 * 1024 });
         const arena = arena_state.allocator();
-        if (!serveOne(arena, io, &server, handler, limits, log)) return;
+        if (!serveOne(arena, io, &server, handler, limits, log, peer)) return;
     }
 }
 
 /// One request and its response; false when the connection is done.
-fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, handler: Handler, limits: Limits, log: ?*log_mod.Log) bool {
+fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, handler: Handler, limits: Limits, log: ?*log_mod.Log, peer: ?Peer) bool {
     var request = server.receiveHead() catch |err| {
         const refusal: ?errors.ApiError = switch (err) {
             error.HttpConnectionClosing, error.HttpRequestTruncated, error.ReadFailed => null,
@@ -141,6 +168,7 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
         .path = target[0 .. question orelse target.len],
         .query = if (question) |q| target[q + 1 ..] else "",
         .body = "",
+        .peer = peer,
     };
     exchange.path = parsed.path;
     if (request.head.transfer_compression != .identity)
@@ -232,18 +260,26 @@ const Exchange = struct {
             var inner = writer;
             var body: Body = .{ .inner = &inner };
             defer bytes = body.bytes;
-            inner.flush() catch break :blk false;
+            inner.flush() catch {
+                body.inner = null;
+                _ = stream.write(stream.context, self.io, &body);
+                break :blk false;
+            };
             if (!stream.write(stream.context, self.io, &body)) break :blk false;
             inner.end() catch break :blk false;
             break :blk true;
-        } else |_| false;
+        } else |_| blk: {
+            var body: Body = .{ .inner = null };
+            _ = stream.write(stream.context, self.io, &body);
+            break :blk false;
+        };
         if (self.log) |l| l.request(self.io, .{
             .method = self.method,
             .path = self.path,
             .status = response.status,
             .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())),
             .bytes_out = bytes,
-            .note = response.note,
+            .note = if (stream.note) |note| note(stream.context) else response.note,
         });
         return sent and keep_alive;
     }
@@ -301,7 +337,7 @@ fn roundTrip(input: []const u8, limits: Limits, echo: *Echo) ![]u8 {
     in.artificial_limit = .limited(7);
     var buffer: [64 * 1024]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buffer);
-    serve(std.testing.allocator, std.testing.io, &in.interface, &out, .{ .context = echo, .handle = Echo.handle, .body_limit = Echo.bodyLimit }, limits, null);
+    serve(std.testing.allocator, std.testing.io, &in.interface, &out, .{ .context = echo, .handle = Echo.handle, .body_limit = Echo.bodyLimit }, limits, null, null);
     return std.testing.allocator.dupe(u8, out.buffered());
 }
 
@@ -402,6 +438,21 @@ test "a route's own body limit replaces the transport's" {
     defer std.testing.allocator.free(output);
     try std.testing.expectEqual(@as(usize, 1), echo.calls);
     try expectContains(output, &.{ "POST /big q= explain=- body=xxx", "413", "payload_too_large" });
+}
+
+test "a peer is gone once the other end closes, not while it is open and quiet" {
+    var fds: [2]std.c.fd_t = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds));
+    defer _ = std.c.close(fds[0]);
+    const peer: Peer = .{ .handle = fds[0] };
+    try std.testing.expect(!peer.gone());
+    _ = std.c.write(fds[1], "x", 1);
+    try std.testing.expect(!peer.gone());
+    _ = std.c.close(fds[1]);
+    // Bytes the client sent before closing hide the end until they are read.
+    var byte: [1]u8 = undefined;
+    _ = std.c.read(fds[0], &byte, 1);
+    try std.testing.expect(peer.gone());
 }
 
 test "query parameters" {

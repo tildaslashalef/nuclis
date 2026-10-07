@@ -213,7 +213,7 @@ const Server = struct {
         var write_buffer: [limits.write_buffer]u8 = undefined;
         var reader = stream.reader(io, &read_buffer);
         var writer = stream.writer(io, &write_buffer);
-        http.serve(self.gpa, io, &reader.interface, &writer.interface, self.router.handler(), limits.transport, self.log);
+        http.serve(self.gpa, io, &reader.interface, &writer.interface, self.router.handler(), limits.transport, self.log, .{ .handle = stream.socket.handle });
     }
 };
 

@@ -15,16 +15,16 @@ it is empty, ask what to work on and write the agreed plan here.
 ## Where we are
 
 The plan below was agreed on 2026-10-07. The completer and the streaming
-transport merged as #7; Chat Completions without streaming is done on
-branch `chat-completions` (its pull request awaiting review):
-`src/api/chat/` (`wire.zig` the request and response, `model.zig` the
-open language model, `service.zig` the route and the listing),
-`make api-check`, and the API guide's § Chat Completions. Next: **Chat
-Completions, streamed**, on a branch cut from `main` once it merges.
+transport merged as #7, Chat Completions as #8; streaming, keepalives,
+and cancellation are done on branch `chat-completions-stream` (its pull
+request awaiting review), with pi 1.1.0 as the accepted client. Next:
+**Responses, stateless**, on a branch cut from `main` once it merges.
+Measured and left open (docs/guide/api.md § Conversations and the
+cache, docs/spec.md §10): a decision waits behind a running generation,
+136.5 s behind 2,000 Qwen3.8 tokens.
 
 | Unit | Branch | What |
 | --- | --- | --- |
-| Chat Completions, streamed | `chat-completions-stream` | `stream: true`, cancellation by disconnect, keepalives, pi as the acceptance client |
 | Responses, stateless | `responses-stateless` | `POST /v1/responses` with `store: false`, over the same core |
 
 ## The theme: an OpenAI-compatible service for the language models
@@ -74,84 +74,6 @@ and [docs/spec.md](docs/spec.md) §6 `serve`; each unit updates them.
   (`invalid_request_error` for 4xx, `server_error` for 5xx) and `param`
   (null or the field), which the SDKs read; decision clients ignore them.
   The SDKs retry 409, 429 and 5xx, so no route answers 409.
-
-## Chat Completions, streamed
-
-Base: set when the branch is cut.
-
-**Why.** Every agent streams; pi always sends `stream: true`. This unit
-delivers the same events as server-sent events and makes a long request
-safe to abandon.
-
-It builds on `src/api/chat/`: `wire.parse` stops refusing `stream`
-(reads `stream_options.include_usage`), `Language.run` takes the sink it
-writes through instead of a `wire.Collector`, and the `Job` carries the
-`Pipe` and a cancel flag its `Observer` reads (`Completer.observer`).
-
-1. **SSE.** `stream: true` answers through `http.Response.stream`
-   (`content-type: text/event-stream`). The GPU item's sink writes
-   `data: {chunk}\n\n` lines into the `pipe.zig` queue; the connection
-   task's `write` drains it to the body writer and flushes per chunk.
-   Chunks: `object: "chat.completion.chunk"`, the first with
-   `delta.role: "assistant"`; `thinking` → `delta.reasoning_content`;
-   `answer` → `delta.content`; each `tool_call` → one chunk with
-   `delta.tool_calls[{index, id, type, function{name, arguments}}]`, the
-   arguments whole (the engine yields them only once parsed); the last
-   with `finish_reason`; with `stream_options.include_usage`, a chunk with
-   empty `choices` and `usage`; then `data: [DONE]`. The last choice
-   chunk always carries a `finish_reason`: pi fails a stream without one
-   ("Stream ended without finish_reason"). A failure after the head is a
-   `data: {"error": {…}}` line and the end of the stream (the SDK throws
-   on it).
-2. **The head at once, then keepalives.** pi's HTTP idle timeout is 300 s
-   for the head and for silence in the body (`http-dispatcher.ts`,
-   `headersTimeout` and `bodyTimeout`); the SDKs' default is 600 s. A
-   request can wait `serve.timeout` (300 s) in the queue and then prefill
-   a 32K prompt for about 11 minutes (48.91 tok/s,
-   docs/benchmarks/README.md). So a validated streamed request sends the
-   200 head and flushes it before it is queued, and an SSE comment
-   (`: queued`, `: prefill 8192/32639`) goes out every 10 s while it waits
-   and while it prefills (`Observer.progress`); every SSE parser ignores
-   comments. A queue timeout after the head is an in-stream error whose
-   text says "timeout", which pi's agent-level retry matches.
-3. **Cancellation.** A failed write, or the consumer gone, abandons the
-   pipe and sets the item's cancel flag; the item's `Observer.check`
-   returns `error.Cancelled`, `engine.complete` ends with `stop =
-   cancelled`, and `Completer.run` resets the session (cause `cancel`).
-   A write into a closed socket can succeed once before it fails, so
-   every request, streamed or not, also watches its socket's read side
-   while it waits; end of stream sets the same flag. Then an SDK's timeout
-   and retry does not leave the abandoned generation running ahead of its
-   own retry. pi's Esc aborts the fetch, which closes the connection
-   (`Agent.abort` → the request's `signal`); its next request drops the
-   aborted message from the history. Process Ctrl-C (`interrupt.zig`) is
-   not used per request.
-4. **Decisions behind a generation.** The executor is one queue, so a
-   decision waits for a running generation. Measure it (a decision request
-   while Qwen3.8 decodes 2,000 tokens) and record it in
-   `docs/guide/api.md`; if the wait matters, the item's `progress` hook may
-   run queued decision items between tokens, without an engine change —
-   a decision for the follow-up list, not this unit's.
-5. **Acceptance with pi.** `~/.pi/agent/models.json` provider `nuclis`
-   (`baseUrl: http://127.0.0.1:8000/v1`, `api: "openai-completions"`, a
-   dummy `apiKey`, which pi requires), and per model: `reasoning: true`
-   (else pi sends no effort and replays no reasoning), `thinkingLevelMap`
-   with `off: "none"` (else thinking off sends nothing and the server's
-   default effort applies) and `xhigh: "xhigh"`, `contextWindow` and
-   `maxTokens` from the model's `ctx_size`, `input: ["text", "image"]` for
-   a model with a projector. pi's unknown-host compat defaults fit
-   (`developer` role, `reasoning_effort`, `max_completion_tokens`,
-   `include_usage`, no `strict`); the entry goes into `docs/guide/api.md`.
-   A
-   multi-step coding task in the agent playground with reasoning and tool
-   calls; Esc mid-generation cancels it (the server log shows `cancelled`);
-   per request, `cached_tokens` against `prompt_tokens`, written into the
-   pull request: every step after the first should continue or restore,
-   and a miss names its cause.
-
-**Gates.** `zig build test` (chunk encoding from a scripted event list,
-the pipe under a slow consumer), `make verify-auto`, `make api-check`
-extended with a streamed request, the pi session above.
 
 ## Responses, stateless
 

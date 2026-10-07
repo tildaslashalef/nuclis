@@ -218,7 +218,8 @@ at a time; a request names it, and tools, images, and the reasoning
 effort map onto the model's own template. The client resends the whole
 conversation, and the server reuses the model's state for what it has
 already seen: a three-request conversation on Qwen3.8 reported 37 of 55,
-then 65 of 86 prompt tokens cached. Streamed responses are not served yet.
+then 65 of 86 prompt tokens cached. Responses stream as server-sent
+events, and a client that leaves stops its request.
 
 ```sh
 nuclis serve --chat-model qwen3.8-27b

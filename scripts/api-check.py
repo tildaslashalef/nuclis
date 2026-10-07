@@ -53,6 +53,37 @@ class Client:
         except urllib.error.HTTPError as error:
             return error.code, cast(Json, json.load(error))
 
+    def stream(self, body: Json) -> tuple[list[Json], list[str]]:
+        """A streamed request's chunks and its SSE comments; asserts the framing."""
+        payload = {"model": self.model, **body} if self.model else body
+        request = urllib.request.Request(
+            self.url + "/chat/completions",
+            json.dumps({**payload, "stream": True}).encode(),
+            {"content-type": "application/json"},
+        )
+        chunks: list[Json] = []
+        comments: list[str] = []
+        done = False
+        with urllib.request.urlopen(request, timeout=1800) as response:
+            check(response.headers.get("content-type") == "text/event-stream", "content-type")
+            for raw in response:
+                line = raw.decode().rstrip("\n")
+                if not line:
+                    continue
+                if line.startswith(":"):
+                    comments.append(line)
+                    continue
+                check(line.startswith("data: ") and not done, f"SSE line {line[:80]!r}")
+                data = line[len("data: ") :]
+                if data == "[DONE]":
+                    done = True
+                    continue
+                chunk = cast(Json, json.loads(data))
+                check("error" not in chunk, f"stream error {chunk}")
+                chunks.append(chunk)
+        check(done, "the stream ends with [DONE]")
+        return chunks, comments
+
     def chat(self, body: Json, model: str | None = None) -> tuple[int, Json]:
         chosen = model or self.model
         return self.call("POST", "/chat/completions", {"model": chosen, **body} if chosen else body)
@@ -142,6 +173,58 @@ def check_tools(client: Client) -> None:
     )
 
 
+def check_stream(client: Client) -> None:
+    chunks, _ = client.stream(
+        {
+            "messages": [{"role": "user", "content": "Count from 1 to 5, comma separated."}],
+            "reasoning_effort": "low",
+            "max_tokens": 400,
+            "stream_options": {"include_usage": True},
+        }
+    )
+    check(all(c.get("object") == "chat.completion.chunk" for c in chunks), "chunk object")
+    check(len({c["id"] for c in chunks}) == 1, "one id across the chunks")
+    choices = [cast(Json, c["choices"][0]) for c in chunks if c["choices"]]
+    check(choices[0]["delta"].get("role") == "assistant", "the first delta carries the role")
+    content = "".join(str(c["delta"].get("content") or "") for c in choices)
+    reasoning = "".join(str(c["delta"].get("reasoning_content") or "") for c in choices)
+    check("5" in content, f"content {content!r}")
+    check(
+        choices[-1]["finish_reason"] == "stop" and all(c["finish_reason"] is None for c in choices[:-1]),
+        "finish_reason on the last choice only",
+    )
+    usage = cast(Json, chunks[-1].get("usage"))
+    check(not chunks[-1]["choices"] and usage["completion_tokens"] > 0, "a last chunk with the usage")
+    print(
+        f"  stream: {len(choices)} chunks, {len(reasoning)} reasoning and {len(content)} answer characters, usage {usage['prompt_tokens']}/{usage['completion_tokens']}"
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+            },
+        }
+    ]
+    chunks, _ = client.stream(
+        {
+            "messages": [{"role": "user", "content": "What is the weather in Cairo? Use the tool."}],
+            "tools": tools,
+            "reasoning_effort": "none",
+            "max_tokens": 400,
+        }
+    )
+    calls = [call for c in chunks for call in cast(list[Json], c["choices"][0]["delta"].get("tool_calls") or [])]
+    check(
+        len(calls) >= 1 and calls[0]["index"] == 0 and str(calls[0]["id"]).startswith("call_"),
+        f"streamed calls {calls}",
+    )
+    check(isinstance(json.loads(calls[0]["function"]["arguments"]), dict), "streamed arguments are whole JSON")
+    check(chunks[-1]["choices"][0]["finish_reason"] == "tool_calls", "finish_reason tool_calls")
+    print(f"  stream: {calls[0]['function']['name']}({calls[0]['function']['arguments']})")
+
+
 def check_image(client: Client, model: str | None) -> None:
     image = base64.b64encode((ROOT / "site/icons/icon-192.png").read_bytes()).decode()
     content = [
@@ -221,6 +304,7 @@ def main() -> int:
         check_models(client)
         check_conversation(client)
         check_tools(client)
+        check_stream(client)
         check_image(client, cast(str | None, args.image_model) or client.model)
         check_refusals(client)
         print("api-check: ok")
