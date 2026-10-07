@@ -786,9 +786,10 @@ bidirectional image spans), and Muse Glimmer's windowed encoder
 `inference/src/vision/` contract, [engine/vision.md](engine/vision.md)).
 Speculation stays off in a conversation once an image is in it.
 PDF attachments are not planned: nothing in the tree extracts their text. Deferred, to be taken through the existing seams as
-concrete requirements arrive: a stateless Responses API on `nuclis
-serve`, constrained decoding (structured output,
-forced tool choice), and additional GPU backends. The server wraps the
+concrete requirements arrive: constrained decoding (structured output,
+forced tool choice) and additional GPU backends. OpenAI's Responses API
+is not planned: `nuclis serve` speaks Chat Completions, which the
+OpenAI-compatible clients it serves use (decided 2026-10-08). The server wraps the
 library; tool execution and permissions stay with the consuming agent. A docs or API lookup tool for the agent was assessed and not
 scheduled: read-only docs roots would be the cheapest form, a bounded
 fetch would reopen the no-permission decision, an embedding index is
