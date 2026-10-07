@@ -763,7 +763,7 @@ pub const CompanionRow = struct {
     status: catalog.Status,
     path: []const u8,
     size: u64,
-    loaded_by: []const u8,
+    used_for: []const u8,
 };
 
 pub const CatalogRow = struct {
@@ -838,7 +838,7 @@ pub const Listing = struct {
                 try column(out, sty.on(statusStyle(c.status)), @tagName(c.status), off, status_w);
                 try column(out, path, c.path, off, path_w);
                 var companion_size: [16]u8 = undefined;
-                try out.print(" {s}{s:>9}{s}  {s}not loaded yet: {s}{s}\n", .{ number, humanSize(&companion_size, c.size), off, sty.on(.dim), c.loaded_by, off });
+                try out.print(" {s}{s:>9}{s}  {s}for {s}{s}\n", .{ number, humanSize(&companion_size, c.size), off, sty.on(.dim), c.used_for, off });
             }
         }
         if (self.other.len > 0) {
@@ -929,7 +929,7 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
         const companions = try arena.alloc(CompanionRow, e.companions.len);
         for (e.companions, companions) |c, *cr| {
             const cpath = try catalog.localPath(arena, models, e, c.file);
-            cr.* = .{ .role = c.role, .status = try catalog.status(arena, io, cpath, c.sha256, c.size), .path = cpath[models.len + 1 ..], .size = c.size, .loaded_by = c.loaded_by };
+            cr.* = .{ .role = c.role, .status = try catalog.status(arena, io, cpath, c.sha256, c.size), .path = cpath[models.len + 1 ..], .size = c.size, .used_for = c.used_for };
         }
         row.* = .{ .name = e.name, .status = try catalog.status(arena, io, path, e.sha256, e.size), .path = path[models.len + 1 ..], .size = e.size, .architecture = e.architecture, .quantization = e.quantization, .revision = e.revision, .sha256 = e.sha256, .companions = companions };
     }
@@ -1250,7 +1250,7 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
             .status = .not_runnable,
             .catalog = pinned.?.entry.name,
             .role = pinned.?.role,
-            .reason = try arena.print("the {s} companion of catalogue entry {s} (loaded by {s}, not by the text engine); architecture \"{s}\" has no adapter", .{ @tagName(pinned.?.role), pinned.?.entry.name, pinned.?.loaded_by.?, architecture }),
+            .reason = try arena.print("the {s} companion of catalogue entry {s} (loaded for {s}, not by the text engine); architecture \"{s}\" has no adapter", .{ @tagName(pinned.?.role), pinned.?.entry.name, pinned.?.used_for.?, architecture }),
         };
         return .{
             .status = .not_runnable,
@@ -1535,7 +1535,7 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     const big = try alloc.print("\n{s}registered as big\n", .{indent});
     defer alloc.free(big);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), big) != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "not loaded yet: the vision unit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "for image input") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "no sidecar") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "main     0123456789ab  322e194f") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "2 model file(s) outside") != null);

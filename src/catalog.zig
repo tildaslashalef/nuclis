@@ -32,8 +32,8 @@ pub const Companion = struct {
     file: []const u8,
     size: u64,
     sha256: []const u8,
-    /// The unit that will consume it (plan ids); informational until then.
-    loaded_by: []const u8,
+    /// What it is loaded for, as `nuclis model ls` says it.
+    used_for: []const u8,
 };
 
 pub const Entry = struct {
@@ -88,8 +88,8 @@ pub const entries = [_]Entry{
         .think = .low,
         .thinking_budget = 1024,
         .companions = &.{
-            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 931_146_432, .sha256 = "83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53", .loaded_by = "the vision unit" },
-            .{ .role = .mtp, .file = "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .size = 1_369_590_656, .sha256 = "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e", .loaded_by = "the MTP unit" },
+            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 931_146_432, .sha256 = "83ee4f4f205fa514161778c41df1ea14144faa0f713510893b63c2395f5c2d53", .used_for = "image input" },
+            .{ .role = .mtp, .file = "MTP/mtp-Qwen3.8-27B-Q4_0.gguf", .size = 1_369_590_656, .sha256 = "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e", .used_for = "speculative decoding" },
         },
     },
     // Gemma 4 12B as Google's quantization-aware-trained checkpoint, whose
@@ -115,8 +115,8 @@ pub const entries = [_]Entry{
         .think = .low,
         .thinking_budget = 1024,
         .companions = &.{
-            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 175_115_840, .sha256 = "dcb8103adad042b1bf99df767aaf34eb37c5a73a4a2f0417e4d7ba557e91664f", .loaded_by = "the vision unit" },
-            .{ .role = .mtp, .file = "mtp-gemma-4-12B-it.gguf", .size = 253_708_800, .sha256 = "fcb35dea42c71333db904cee11baac525c9ef872818ee3753f6cb156f3c6f4f6", .loaded_by = "the MTP unit" },
+            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 175_115_840, .sha256 = "dcb8103adad042b1bf99df767aaf34eb37c5a73a4a2f0417e4d7ba557e91664f", .used_for = "image input" },
+            .{ .role = .mtp, .file = "mtp-gemma-4-12B-it.gguf", .size = 253_708_800, .sha256 = "fcb35dea42c71333db904cee11baac525c9ef872818ee3753f6cb156f3c6f4f6", .used_for = "speculative decoding" },
         },
     },
     // The mixture-of-experts sibling, QAT file only: the K-quant release
@@ -139,8 +139,8 @@ pub const entries = [_]Entry{
         .think = .low,
         .thinking_budget = 1024,
         .companions = &.{
-            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 1_194_828_256, .sha256 = "7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744", .loaded_by = "the vision unit" },
-            .{ .role = .mtp, .file = "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", .size = 251_939_328, .sha256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a", .loaded_by = "the MTP unit" },
+            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 1_194_828_256, .sha256 = "7b06953ccdbe8cf363f47841a7afaacd2b1c2ff9a8d6b426fdec7521a6878744", .used_for = "image input" },
+            .{ .role = .mtp, .file = "MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", .size = 251_939_328, .sha256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a", .used_for = "speculative decoding" },
         },
     },
     // The on-device E4B, QAT file only: per-layer embeddings and shared
@@ -163,8 +163,8 @@ pub const entries = [_]Entry{
         .think = .low,
         .thinking_budget = 1024,
         .companions = &.{
-            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 991_552_320, .sha256 = "7c9bafa27f82d658eda805c1d82ef62bb0368e1ff75f64f77de58ad318beaaf9", .loaded_by = "the vision unit" },
-            .{ .role = .mtp, .file = "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf", .size = 59_678_016, .sha256 = "423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605", .loaded_by = "the MTP unit" },
+            .{ .role = .mmproj, .file = "mmproj-BF16.gguf", .size = 991_552_320, .sha256 = "7c9bafa27f82d658eda805c1d82ef62bb0368e1ff75f64f77de58ad318beaaf9", .used_for = "image input" },
+            .{ .role = .mtp, .file = "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf", .size = 59_678_016, .sha256 = "423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605", .used_for = "speculative decoding" },
         },
     },
     // Meta's dense agentic model. Its draft companion is a DFlash drafter,
@@ -188,8 +188,8 @@ pub const entries = [_]Entry{
         .think = .low,
         .thinking_budget = 1024,
         .companions = &.{
-            .{ .role = .mmproj, .file = "mmproj-kquant.gguf", .size = 1_400_328_928, .sha256 = "f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6", .loaded_by = "the vision unit" },
-            .{ .role = .mtp, .file = "dflash-kquant.gguf", .size = 1_631_205_312, .sha256 = "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc", .loaded_by = "the speculative-decoding unit (a DFlash drafter)" },
+            .{ .role = .mmproj, .file = "mmproj-kquant.gguf", .size = 1_400_328_928, .sha256 = "f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6", .used_for = "image input" },
+            .{ .role = .mtp, .file = "dflash-kquant.gguf", .size = 1_631_205_312, .sha256 = "27d9a805fa29b943cfb6ad4843367cd4eaaaf06bd452d8cc3e00a2cd18a677bc", .used_for = "speculative decoding (a DFlash drafter)" },
         },
     },
 };
@@ -339,15 +339,15 @@ pub const FileMatch = struct {
     entry: *const Entry,
     role: Role,
     sha256: []const u8,
-    /// The companion's consuming unit; null for the main file.
-    loaded_by: ?[]const u8,
+    /// What the companion is loaded for; null for the main file.
+    used_for: ?[]const u8,
 };
 
 pub fn findFile(repo: []const u8, file: []const u8) ?FileMatch {
     for (&entries) |*e| {
         if (!std.mem.eql(u8, e.repo, repo)) continue;
-        if (std.mem.eql(u8, e.file, file)) return .{ .entry = e, .role = .main, .sha256 = e.sha256, .loaded_by = null };
-        for (e.companions) |*c| if (std.mem.eql(u8, c.file, file)) return .{ .entry = e, .role = c.role, .sha256 = c.sha256, .loaded_by = c.loaded_by };
+        if (std.mem.eql(u8, e.file, file)) return .{ .entry = e, .role = .main, .sha256 = e.sha256, .used_for = null };
+        for (e.companions) |*c| if (std.mem.eql(u8, c.file, file)) return .{ .entry = e, .role = c.role, .sha256 = c.sha256, .used_for = c.used_for };
     }
     return null;
 }
@@ -430,10 +430,10 @@ test "the table is well formed: unique names, 40-character commits, 64-character
     try std.testing.expectEqual(Role.mtp, findFile("unsloth/gemma-4-12B-it-qat-GGUF", "mtp-gemma-4-12B-it.gguf").?.role);
     try std.testing.expect(find("qwen") == null);
     try std.testing.expect(find("qwen/Qwen3.8-27B-UD-Q4_K_M.gguf") == null);
-    try std.testing.expectEqualStrings("the MTP unit", find("qwen3.8-27b").?.companion(.mtp).?.loaded_by);
+    try std.testing.expectEqualStrings("speculative decoding", find("qwen3.8-27b").?.companion(.mtp).?.used_for);
     try std.testing.expect(find("qwen3.8-27b").?.companion(.imatrix) == null);
     try std.testing.expectEqual(Role.main, findFile("unsloth/Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-Q4_K_M.gguf").?.role);
-    try std.testing.expectEqualStrings("the vision unit", findFile("unsloth/Qwen3.8-27B-GGUF", "mmproj-BF16.gguf").?.loaded_by.?);
+    try std.testing.expectEqualStrings("image input", findFile("unsloth/Qwen3.8-27B-GGUF", "mmproj-BF16.gguf").?.used_for.?);
     try std.testing.expect(findFile("unsloth/Qwen3.8-27B-GGUF", "other.gguf") == null);
     try std.testing.expect(findFile("other/repo", "Qwen3.8-27B-UD-Q4_K_M.gguf") == null);
 }
