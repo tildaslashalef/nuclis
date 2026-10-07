@@ -385,6 +385,7 @@ fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32),
 test {
     // The streamed routes' worker-to-connection queue, tested on its own.
     _ = @import("pipe.zig");
+    _ = @import("memory.zig");
     _ = chat;
 }
 
