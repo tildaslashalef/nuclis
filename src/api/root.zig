@@ -355,6 +355,11 @@ fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32),
     if (log) |l| l.request(io, .{ .method = null, .path = "-", .status = http.overloaded, .duration_ns = 0, .bytes_out = body.buffered().len, .note = "busy: too many connections" });
 }
 
+test {
+    // The streamed routes' worker-to-connection queue, tested on its own.
+    _ = @import("pipe.zig");
+}
+
 test "serve arguments" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
