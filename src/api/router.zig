@@ -11,6 +11,8 @@ pub const Route = struct {
     method: std.http.Method,
     path: []const u8,
     handler: http.Handler,
+    /// The body limit when it is not the transport's.
+    max_body: ?usize = null,
 };
 
 pub const Router = struct {
@@ -22,14 +24,31 @@ pub const Router = struct {
 
     /// Registers `path` (which starts with `prefix`) for `method`.
     pub fn add(self: *Router, gpa: std.mem.Allocator, method: std.http.Method, path: []const u8, route: http.Handler) !void {
+        return self.addLimited(gpa, method, path, route, null);
+    }
+
+    /// `add` with its own body limit, null for the transport's.
+    pub fn addLimited(self: *Router, gpa: std.mem.Allocator, method: std.http.Method, path: []const u8, route: http.Handler, max_body: ?usize) !void {
         std.debug.assert(std.mem.startsWith(u8, path, prefix));
         for (self.routes.items) |r| std.debug.assert(!(r.method == method and std.mem.eql(u8, r.path, path)));
-        try self.routes.append(gpa, .{ .method = method, .path = path, .handler = route });
+        try self.routes.append(gpa, .{ .method = method, .path = path, .handler = route, .max_body = max_body });
     }
 
     /// The router as the transport's handler; `self` must outlive it.
     pub fn handler(self: *Router) http.Handler {
-        return .{ .context = self, .handle = handle };
+        return .{ .context = self, .handle = handle, .body_limit = bodyLimit };
+    }
+
+    /// The largest limit any route on `path` sets: the method is checked
+    /// after the body is read.
+    fn bodyLimit(context: *anyopaque, path: []const u8) ?usize {
+        const self: *Router = @ptrCast(@alignCast(context));
+        var limit: ?usize = null;
+        for (self.routes.items) |r| {
+            if (!std.mem.eql(u8, r.path, path)) continue;
+            if (r.max_body) |m| limit = @max(limit orelse 0, m);
+        }
+        return limit;
     }
 
     fn handle(context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: http.Request) http.Response {
@@ -81,4 +100,18 @@ test "routes: a match, 404, 405, and HEAD as GET" {
     const missing = h.handle(h.context, arena, io, .{ .method = .GET, .path = "/v1/nope", .query = "", .body = "" });
     try std.testing.expectEqual(std.http.Status.not_found, missing.status);
     try std.testing.expect(std.mem.indexOf(u8, missing.body, "\"code\":\"not_found\"") != null);
+}
+
+test "a route's own body limit, the transport's elsewhere" {
+    const gpa = std.testing.allocator;
+    var router: Router = .{};
+    defer router.deinit(gpa);
+    var unused: u8 = 0;
+    const stub: http.Handler = .{ .context = &unused, .handle = Stub.ok };
+    try router.add(gpa, .POST, "/v1/decisions", stub);
+    try router.addLimited(gpa, .POST, "/v1/big", stub, 32 << 20);
+    const h = router.handler();
+    try std.testing.expectEqual(@as(?usize, 32 << 20), h.body_limit.?(h.context, "/v1/big"));
+    try std.testing.expectEqual(@as(?usize, null), h.body_limit.?(h.context, "/v1/decisions"));
+    try std.testing.expectEqual(@as(?usize, null), h.body_limit.?(h.context, "/v1/nope"));
 }

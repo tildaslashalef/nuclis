@@ -36,6 +36,8 @@ and, built with `-Dmetal=true`, on the Metal backend. [../TODO.md](../TODO.md) s
 src/                 executable: CLI, model commands, config
   src/tui/           terminal surface, engine-free: screen, editor, theme,
                      markdown, keys
+  src/completer.zig  the completion side of a conversation: render, continue
+                     or restore the session, complete (src/completer/cache.zig)
   src/agent/         agent composition: engine, conversation, sessions, tools
   src/decision/      the decision request and response JSON, model names
   src/api/           nuclis serve: HTTP transport, router, GPU executor,

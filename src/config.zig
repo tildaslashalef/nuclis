@@ -179,7 +179,7 @@ pub const Config = struct {
         /// timeout`; a clef-flash request alone can hold it for minutes.
         timeout: u32 = 300,
     };
-    /// The agent's token cache (`agent/cache.zig`): model states kept at
+    /// The agent's token cache (`completer/cache.zig`): model states kept at
     /// turn boundaries so a prefix is restored instead of prefilled again.
     pub const Cache = struct {
         /// Bytes of states kept in the process; 0 keeps none.

@@ -1,7 +1,8 @@
 //! The API's transport: one connection's HTTP/1.1 requests (keep-alive, no
 //! pipelining) over any reader and writer, each request read whole into the
 //! connection's arena, handed to a `Handler`, and answered with
-//! `Content-Length` in one flush. Knows no route and no model; transport
+//! `Content-Length` in one flush, or streamed in chunks when the response
+//! carries a `Stream`. Knows no route and no model; transport
 //! failures answer with the shared error body and close. The arena is reset
 //! after every response, so nothing of a request outlives it. Every
 //! response is logged when a log is given.
@@ -52,9 +53,36 @@ pub const Response = struct {
     close: bool = false,
     /// One line for the log: what was done, or the error.
     note: []const u8 = "",
+    /// Set for a body written as it is produced; `body` is then unused.
+    stream: ?Stream = null,
 
     pub fn fromError(arena: std.mem.Allocator, err: errors.ApiError) Response {
         return .{ .status = err.status, .body = errors.body(arena, err), .note = noteOf(arena, err) };
+    }
+};
+
+/// A response body written after the head, on the connection's task:
+/// `transfer-encoding: chunked`, or for an HTTP/1.0 client the body until
+/// the connection closes. The head is flushed before `write` runs. `write`
+/// returns false when the stream failed, which closes the connection;
+/// `context` must outlive it.
+pub const Stream = struct {
+    context: *anyopaque,
+    write: *const fn (context: *anyopaque, io: std.Io, body: *Body) bool,
+};
+
+/// What a `Stream` writes through.
+pub const Body = struct {
+    inner: *std.http.BodyWriter,
+    /// Bytes sent so far, for the log.
+    bytes: usize = 0,
+
+    /// Writes `bytes` and flushes them to the client: one chunk.
+    pub fn send(self: *Body, bytes: []const u8) std.Io.Writer.Error!void {
+        try self.inner.writer.writeAll(bytes);
+        try self.inner.writer.flush();
+        try self.inner.flush();
+        self.bytes += bytes.len;
     }
 };
 
@@ -63,6 +91,9 @@ pub const Response = struct {
 pub const Handler = struct {
     context: *anyopaque,
     handle: *const fn (context: *anyopaque, arena: std.mem.Allocator, io: std.Io, request: Request) Response,
+    /// The body limit for `path` when it differs from the transport's;
+    /// asked before the body is read.
+    body_limit: ?*const fn (context: *anyopaque, path: []const u8) ?usize = null,
 };
 
 pub fn noteOf(arena: std.mem.Allocator, err: errors.ApiError) []const u8 {
@@ -115,7 +146,8 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
     if (request.head.transfer_compression != .identity)
         return exchange.fail(.init(.unsupported_media_type, "unsupported_encoding", "compressed request bodies are not accepted"));
     if (request.head.method.requestHasBody()) {
-        if (request.head.content_length) |length| if (length > limits.max_body)
+        const max_body = (if (handler.body_limit) |limit| limit(handler.context, parsed.path) else null) orelse limits.max_body;
+        if (request.head.content_length) |length| if (length > max_body)
             return exchange.fail(.init(.payload_too_large, "payload_too_large", "the request body exceeds the limit"));
         // HTTP/1.1: a request with neither length nor chunking has no body.
         if (request.head.transfer_encoding == .none and request.head.content_length == null) request.head.content_length = 0;
@@ -127,7 +159,7 @@ fn serveOne(arena: std.mem.Allocator, io: std.Io, server: *std.http.Server, hand
             },
             error.WriteFailed => false,
         };
-        parsed.body = body_reader.allocRemaining(arena, .limited(limits.max_body)) catch |err| return switch (err) {
+        parsed.body = body_reader.allocRemaining(arena, .limited(max_body)) catch |err| return switch (err) {
             error.StreamTooLong => exchange.fail(.init(.payload_too_large, "payload_too_large", "the request body exceeds the limit")),
             error.OutOfMemory => exchange.fail(.init(.internal_server_error, "internal", "out of memory")),
             error.ReadFailed => false,
@@ -158,6 +190,7 @@ const Exchange = struct {
 
     /// Whether the connection stays open.
     fn respond(self: *Exchange, response: Response) bool {
+        if (response.stream) |stream| return self.respondStream(response, stream);
         const request = self.request;
         const sent = if (request.respond(response.body, .{
             // An HTTP/1.0 client keeps the connection only when told so.
@@ -177,6 +210,43 @@ const Exchange = struct {
         });
         return sent and request.head.keep_alive and !response.close;
     }
+
+    fn respondStream(self: *Exchange, response: Response, stream: Stream) bool {
+        const request = self.request;
+        // HTTP/1.0 has no chunked encoding: the end of the connection ends the body.
+        const http10 = request.head.version == .@"HTTP/1.0";
+        const keep_alive = !response.close and !http10 and request.head.keep_alive;
+        var buffer: [4096]u8 = undefined;
+        var bytes: usize = 0;
+        const sent = if (request.respondStreaming(&buffer, .{ .respond_options = .{
+            .version = request.head.version,
+            .status = response.status,
+            .reason = reason(response.status),
+            .keep_alive = keep_alive,
+            .transfer_encoding = if (http10) .none else null,
+            .extra_headers = &.{
+                .{ .name = "content-type", .value = response.content_type },
+                .{ .name = "cache-control", .value = "no-cache" },
+            },
+        } })) |writer| blk: {
+            var inner = writer;
+            var body: Body = .{ .inner = &inner };
+            defer bytes = body.bytes;
+            inner.flush() catch break :blk false;
+            if (!stream.write(stream.context, self.io, &body)) break :blk false;
+            inner.end() catch break :blk false;
+            break :blk true;
+        } else |_| false;
+        if (self.log) |l| l.request(self.io, .{
+            .method = self.method,
+            .path = self.path,
+            .status = response.status,
+            .duration_ns = @intCast(@max(0, self.started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds())),
+            .bytes_out = bytes,
+            .note = response.note,
+        });
+        return sent and keep_alive;
+    }
 };
 
 /// A whole response with `connection: close`, outside any request: the
@@ -194,8 +264,31 @@ const Echo = struct {
         _ = io;
         const self: *Echo = @ptrCast(@alignCast(context));
         self.calls += 1;
+        if (std.mem.eql(u8, request.path, "/stream"))
+            return .{ .body = "", .content_type = "text/event-stream", .stream = .{ .context = self, .write = writeStream } };
+        if (std.mem.eql(u8, request.path, "/broken"))
+            return .{ .body = "", .content_type = "text/event-stream", .stream = .{ .context = self, .write = writeBroken } };
         const text = arena.print("{s} {s} q={s} explain={s} body={s}", .{ @tagName(request.method), request.path, request.query, request.param("explain") orelse "-", request.body }) catch unreachable;
         return .{ .body = text, .content_type = "text/plain" };
+    }
+
+    fn bodyLimit(context: *anyopaque, path: []const u8) ?usize {
+        _ = context;
+        return if (std.mem.eql(u8, path, "/big")) 1000 else null;
+    }
+
+    fn writeStream(context: *anyopaque, io: std.Io, body: *Body) bool {
+        _ = context;
+        _ = io;
+        for ([_][]const u8{ "data: a\n\n", "data: bc\n\n", "data: def\n\n" }) |piece| body.send(piece) catch return false;
+        return true;
+    }
+
+    fn writeBroken(context: *anyopaque, io: std.Io, body: *Body) bool {
+        _ = context;
+        _ = io;
+        body.send("data: x\n\n") catch return false;
+        return false;
     }
 };
 
@@ -208,7 +301,7 @@ fn roundTrip(input: []const u8, limits: Limits, echo: *Echo) ![]u8 {
     in.artificial_limit = .limited(7);
     var buffer: [64 * 1024]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buffer);
-    serve(std.testing.allocator, std.testing.io, &in.interface, &out, .{ .context = echo, .handle = Echo.handle }, limits, null);
+    serve(std.testing.allocator, std.testing.io, &in.interface, &out, .{ .context = echo, .handle = Echo.handle, .body_limit = Echo.bodyLimit }, limits, null);
     return std.testing.allocator.dupe(u8, out.buffered());
 }
 
@@ -272,6 +365,43 @@ test "a client that closes mid-head or between requests gets nothing more" {
     defer std.testing.allocator.free(truncated);
     try std.testing.expectEqualStrings("", truncated);
     try std.testing.expectEqual(@as(usize, 0), echo.calls);
+}
+
+test "a streamed response goes out in chunks and the connection serves the next request" {
+    var echo: Echo = .{};
+    const output = try roundTrip("POST /stream HTTP/1.1\r\ncontent-length: 2\r\n\r\n{}GET /after HTTP/1.1\r\n\r\n", .{ .max_head = 1024 }, &echo);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqual(@as(usize, 2), echo.calls);
+    try expectContains(output, &.{ "transfer-encoding: chunked", "content-type: text/event-stream", "cache-control: no-cache", "data: a\n\n\r\n", "data: bc\n\n\r\n", "data: def\n\n\r\n", "0\r\n\r\n", "GET /after" });
+    const head = output[0..std.mem.indexOf(u8, output, "\r\n\r\n").?];
+    try std.testing.expect(std.mem.indexOf(u8, head, "content-length") == null);
+}
+
+test "a stream that fails midway ends the connection" {
+    var echo: Echo = .{};
+    const output = try roundTrip("POST /broken HTTP/1.1\r\ncontent-length: 0\r\n\r\nGET /after HTTP/1.1\r\n\r\n", .{ .max_head = 1024 }, &echo);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqual(@as(usize, 1), echo.calls);
+    try expectContains(output, &.{"data: x"});
+    try std.testing.expect(std.mem.indexOf(u8, output, "GET /after") == null);
+}
+
+test "an HTTP/1.0 client gets a stream without chunks, then the connection closes" {
+    var echo: Echo = .{};
+    const output = try roundTrip("POST /stream HTTP/1.0\r\nconnection: keep-alive\r\ncontent-length: 0\r\n\r\nGET /after HTTP/1.0\r\n\r\n", .{ .max_head = 1024 }, &echo);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqual(@as(usize, 1), echo.calls);
+    try std.testing.expect(std.mem.indexOf(u8, output, "transfer-encoding") == null);
+    try std.testing.expect(std.mem.endsWith(u8, output, "data: a\n\ndata: bc\n\ndata: def\n\n"));
+}
+
+test "a route's own body limit replaces the transport's" {
+    var echo: Echo = .{};
+    const body = repeat("x", 500);
+    const output = try roundTrip("POST /big HTTP/1.1\r\ncontent-length: 500\r\n\r\n" ++ body ++ "POST /small HTTP/1.1\r\ncontent-length: 500\r\n\r\n" ++ body, .{ .max_head = 1024, .max_body = 100 }, &echo);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqual(@as(usize, 1), echo.calls);
+    try expectContains(output, &.{ "POST /big q= explain=- body=xxx", "413", "payload_too_large" });
 }
 
 test "query parameters" {

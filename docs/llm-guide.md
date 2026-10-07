@@ -851,7 +851,7 @@ prefill, about eleven seconds for 934 tokens, and it now happens before
 the prompt appears.
 
 Read: `Session.snapshot`, `restore`, `checkpoint`, `rewind`, `truncate` in
-`session.zig`, `src/agent/loop.zig` (`increment`, `Completer.prime`),
+`session.zig`, `src/completer.zig` (`increment`, `Completer.prime`),
 [engine/session.md](engine/session.md).
 
 ---

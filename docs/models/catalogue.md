@@ -143,11 +143,12 @@ projectors). The Qwen repository also lists a `BF16/` directory and
 twenty-four quantizations from `UD-IQ1_S` to `UD-Q8_K_XL` plus `Q4_0`,
 `Q4_1`, `Q8_0`; the Gemma 12B repository twenty-two from `UD-IQ2_M` to
 `BF16`. Companions are only loaded when the configuration names them
-(see [the catalogue](#the-catalogue)); nothing is discovered by scanning a directory. Text
-inference loads neither projector nor draft head today (vision is the vision unit,
-the draft head is the MTP unit), but the catalogue and the download sidecars
-record them from the start so a pulled model directory is complete and
-verified before those units exist.
+(see [the catalogue](#the-catalogue)); nothing is discovered by scanning a directory. The
+projector is loaded for image input ([engine/vision.md](../engine/vision.md))
+and the draft file for speculative decoding
+([engine/speculative-decoding.md](../engine/speculative-decoding.md)); the
+catalogue and the download sidecars record both, so a pulled model directory
+is complete and verified.
 
 ## The models directory
 
@@ -256,8 +257,8 @@ inspect` reads GGUF directories only.
 `models/` is *runnable* when its architecture id has an adapter,
 *supported* only when the catalogue pins it (name, repository, file,
 commit, SHA-256, size, quantization, architecture, sampling profile, and
-companions with the unit that will load them: `mmproj` by the vision unit, `mtp` by
-the MTP unit). Entries are named after the model (`qwen3.8-27b`), not the
+companions with what they are for: `mmproj` for image input, `mtp` for
+speculative decoding). Entries are named after the model (`qwen3.8-27b`), not the
 quantization. `nuclis model pull <name> [--with mmproj,mtp | --all]`
 fetches through it, `--model` and `engine.model` resolve names through it,
 and `model ls` reports every entry's status from sidecars (`present`,

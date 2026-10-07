@@ -202,8 +202,10 @@ layers stay apart so a second service (an OpenAI-compatible one for the
 language models) is a new directory and one registration:
 
 - `http.zig` serves one connection over any reader and writer: each
-  request read whole into the connection's arena, handed to a handler,
-  answered with `Content-Length` in one flush; it knows no route.
+  request read whole into the connection's arena (up to its route's body
+  limit), handed to a handler, answered with `Content-Length` in one flush,
+  or, when the response carries a `Stream`, with the head flushed at once
+  and the body in chunks as it is produced; it knows no route.
   `router.zig` maps method and path to a service's handler; `errors.zig`
   is the one error body; `log.zig` writes the transport's line per
   response (the handler adds a note) under one lock.
@@ -211,7 +213,9 @@ language models) is a new directory and one registration:
   submitted items one at a time in arrival order, so two models never run
   at once and only the worker touches a model. An item lives in its
   submitter's frame; a waiter that times out unlinks an item that never
-  started and otherwise waits for it.
+  started and otherwise waits for it. `pipe.zig` is the bounded byte
+  queue a streamed response crosses from the worker to its connection, so
+  the worker never writes to a socket.
 - `decisions/` validates on the connection's thread, then waits in the
   batcher: one executor item takes the oldest waiting request's model and
   every request waiting for it that fits one pass, and answers them with
