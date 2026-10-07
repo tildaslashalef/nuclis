@@ -125,7 +125,7 @@ pub const Entry = union(enum) {
     notice: struct { text: []const u8 },
 };
 
-/// A saved turn end (`agent/cache.zig`): the rendered text's first `bytes`
+/// A saved turn end (`completer/cache.zig`): the rendered text's first `bytes`
 /// bytes and their digest.
 pub const Boundary = struct { bytes: usize, digest: u64 };
 

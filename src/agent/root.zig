@@ -36,7 +36,6 @@ pub const resume_mod = @import("resume.zig");
 pub const print_mode = @import("print.zig");
 pub const tools = @import("tools/root.zig");
 pub const loop = @import("loop.zig");
-const stream = @import("stream.zig");
 const terminal = tui.terminal;
 const screen = tui.screen;
 const editor = tui.editor;
@@ -2268,5 +2267,4 @@ test {
     _ = tools;
     _ = loop;
     _ = loop.cache;
-    _ = stream;
 }

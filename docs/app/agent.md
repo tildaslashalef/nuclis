@@ -199,7 +199,7 @@ so it is display-only.
 The loop is deliberately the one piece the terminal surface and `--print`
 share, and neither should be able to make it behave differently. So it is
 written against two small seams rather than against an engine and a terminal.
-`Model.run(messages)` is the completion side: the real `Completer` renders
+`Model.run(messages)` is the completion side: the real `Completer` (`src/completer.zig`) renders
 through `inference.engine` and, crucially, keeps the bookkeeping that lets a
 growing conversation prefill only its *new* suffix (`seen`), replaying from an
 empty session when the render no longer starts with what the session consumed.

@@ -12,7 +12,7 @@ const inference = @import("inference");
 const paths = @import("../paths.zig");
 const tui = @import("../tui/root.zig");
 const session = @import("session.zig");
-const cache = @import("cache.zig");
+const cache = @import("../completer/cache.zig");
 const tools = @import("tools/root.zig");
 const style = @import("../tui/style.zig");
 

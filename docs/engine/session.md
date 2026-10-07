@@ -188,8 +188,8 @@ copy); see the [worklog](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/do
 
 The agent re-prefilled tokens it had already computed whenever the session
 could not continue where it stood: every start (the system block and tools),
-a cancelled step, an effort change, compaction. `src/agent/cache.zig` keeps
-snapshots at **boundaries** and `Completer` (`src/agent/loop.zig`) restores
+a cancelled step, an effort change, compaction. `src/completer/cache.zig` keeps
+snapshots at **boundaries** and `Completer` (`src/completer.zig`) restores
 the longest one a render starts with, then prefills the rest. New tokens
 (a tool result, the user's message) are never cached; only re-prefill is
 removed.
