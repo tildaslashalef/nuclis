@@ -36,6 +36,7 @@ pub const resume_mod = @import("resume.zig");
 pub const print_mode = @import("print.zig");
 pub const tools = @import("tools/root.zig");
 pub const loop = @import("loop.zig");
+const Open = @import("../completer.zig").Open;
 const terminal = tui.terminal;
 const screen = tui.screen;
 const editor = tui.editor;
@@ -1803,81 +1804,6 @@ pub const Switching = struct {
 
 /// A `/model` choice waiting for the main loop. `name` is owned.
 const ModelRequest = struct { name: []u8, effort: Profile.Effort, ctx_size: usize };
-
-/// One model's half of the agent: the engine and everything sized by its
-/// vocabulary or keyed by its files. A switch or a context change replaces
-/// it in place, so the pointers the completer and the driver hold into it
-/// stay valid.
-const Open = struct {
-    eng: engine.Engine,
-    settings: config.Resolved,
-    /// Owned: the file, its draft source, and the digest its sidecar
-    /// verified (null without one).
-    model_path: []u8,
-    draft_path: ?[]u8,
-    digest: ?[]u8,
-    logits: []f32,
-    /// Sized for sampling whatever the current temperature: the effort can
-    /// switch profiles mid-session.
-    candidates: []inference.sampling.Candidate,
-    generated: []u32,
-    history: inference.sampling.History,
-    /// False once unloaded: a switch whose fallback also failed leaves
-    /// nothing to free.
-    alive: bool = true,
-
-    fn init(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved) !Open {
-        if (settings.ctx_size == 0 or settings.ctx_size > config.max_context or settings.max_tokens == 0 or settings.max_tokens > config.max_output_tokens) return error.InvalidGenerationBudget;
-        const path = try alloc.dupe(u8, model_path);
-        errdefer alloc.free(path);
-        const draft_path = try engine.draftPath(alloc, path, if (settings.entry) |entry| entry.mtp else null);
-        errdefer if (draft_path) |d| alloc.free(d);
-        const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
-        var eng = try engine.Engine.open(alloc, io, path, settings.backend, settings.ctx_size, settings.kv_precision, settings.forced_profile, draft);
-        errdefer eng.deinit();
-        // The file's own profile from here on: the configuration guessed one
-        // from the catalogue name without opening the file (`config show`).
-        if (eng.profile == null) return error.UnsupportedPromptTemplate;
-        const vocab = eng.vocab.tokens.len;
-        const logits = try alloc.alloc(f32, vocab);
-        errdefer alloc.free(logits);
-        const candidates = try alloc.alloc(inference.sampling.Candidate, vocab);
-        errdefer alloc.free(candidates);
-        const generated = try alloc.alloc(u32, settings.max_tokens);
-        errdefer alloc.free(generated);
-        var history = try inference.sampling.History.init(alloc, vocab);
-        errdefer history.deinit();
-        return .{ .eng = eng, .settings = settings, .model_path = path, .draft_path = draft_path, .digest = try readDigest(alloc, io, path), .logits = logits, .candidates = candidates, .generated = generated, .history = history };
-    }
-
-    fn deinit(self: *Open, alloc: std.mem.Allocator) void {
-        if (!self.alive) return;
-        self.alive = false;
-        self.history.deinit();
-        alloc.free(self.generated);
-        alloc.free(self.candidates);
-        alloc.free(self.logits);
-        self.eng.deinit();
-        if (self.digest) |d| alloc.free(d);
-        if (self.draft_path) |d| alloc.free(d);
-        alloc.free(self.model_path);
-    }
-
-    fn profile(self: *const Open) Profile.Profile {
-        return self.eng.profile.?;
-    }
-};
-
-/// The digest the model's sidecar verified, or null without a readable one.
-fn readDigest(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8) !?[]u8 {
-    // The sidecar's strings live in the arena; only the digest outlives it.
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const sidecar_path = model.sidecarPath(a, model_path) catch return null;
-    const sidecar = model.readSidecar(a, io, .cwd(), sidecar_path) catch return null;
-    return if (sidecar) |record| try alloc.dupe(u8, record.sha256) else null;
-}
 
 /// Points the driver and the completer at `open` (just opened or replaced):
 /// the profile, the effort it supports nearest `effort`, the sampling, the

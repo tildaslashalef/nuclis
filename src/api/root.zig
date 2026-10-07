@@ -1,5 +1,5 @@
 //! `nuclis serve`: the nuclis API. Composes the transport (`http.zig`), the
-//! router, the GPU executor, and the services (decisions now), then accepts
+//! router, the GPU executor, and the services (decisions, chat), then accepts
 //! connections, each its own task, until Ctrl-C or a failed accept; Ctrl-C
 //! drains the queued decisions before the connections close. The
 //! layers stay apart: the transport and the router know no model, a service
@@ -15,6 +15,7 @@ const gpu = @import("gpu.zig");
 const models = @import("models.zig");
 const router_mod = @import("router.zig");
 const decisions = @import("decisions/service.zig");
+const chat = @import("chat/service.zig");
 const log_mod = @import("log.zig");
 const batcher = @import("decisions/batcher.zig");
 const interrupt = @import("../interrupt.zig");
@@ -42,6 +43,8 @@ pub const Options = struct {
     /// others open on first use.
     models: std.ArrayList([]const u8) = .empty,
     backend: ?inference.decide.Backend = null,
+    /// A language model opened at start; otherwise the first chat request opens one.
+    chat_model: ?[]const u8 = null,
 };
 
 /// Parses the words after `serve` over `serve`'s configured `host` and
@@ -56,7 +59,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
             o.log = false;
             continue;
         }
-        const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend", "--timeout" }) |k| {
+        const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend", "--timeout", "--chat-model" }) |k| {
             if (std.mem.eql(u8, flag, k)) break true;
         } else false;
         if (!known) {
@@ -89,6 +92,9 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
             };
         } else if (std.mem.eql(u8, flag, "--model")) {
             try o.models.append(arena, value);
+        } else if (std.mem.eql(u8, flag, "--chat-model")) {
+            if (o.chat_model != null) return error.DuplicateOption;
+            o.chat_model = value;
         } else {
             if (o.backend != null) return error.DuplicateOption;
             o.backend = std.meta.stringToEnum(inference.decide.Backend, value) orelse {
@@ -131,6 +137,7 @@ const Server = struct {
     listing: models.Models = .{},
     executor: gpu.Executor = .init(limits.queued_jobs),
     decisions: decisions.Service,
+    chat: chat.Service,
     backend: inference.decide.Backend,
     version: []const u8,
     active: std.atomic.Value(u32) = .init(0),
@@ -140,6 +147,7 @@ const Server = struct {
 
     fn register(self: *Server) !void {
         try self.decisions.register(self.gpa, &self.router, &self.listing);
+        try self.chat.register(self.gpa, &self.router, &self.listing);
         try self.listing.register(self.gpa, &self.router);
         try self.router.add(self.gpa, .GET, router_mod.prefix ++ "/health", .{ .context = self, .handle = health });
     }
@@ -155,8 +163,9 @@ const Server = struct {
         const stats = self.executor.stats(io);
         const batching = self.decisions.batcher.stats(io);
         const open = self.decisions.pool.openNames(io, arena) catch &.{};
+        const language = self.chat.language.openName(io, arena) catch null;
         var out: std.Io.Writer.Allocating = .init(arena);
-        writeHealth(&out.writer, self.version, self.backend, open, stats, batching, self.active.load(.monotonic)) catch
+        writeHealth(&out.writer, self.version, self.backend, open, language, stats, batching, self.active.load(.monotonic)) catch
             return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         return .{ .body = out.written() };
     }
@@ -208,7 +217,7 @@ const Server = struct {
     }
 };
 
-fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, stats: gpu.Stats, batching: batcher.Stats, connections: u32) !void {
+fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, language: ?[]const u8, stats: gpu.Stats, batching: batcher.Stats, connections: u32) !void {
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("status");
@@ -219,6 +228,8 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.write(@tagName(backend));
     try s.objectField("loaded");
     try s.write(open);
+    try s.objectField("language");
+    try s.write(language);
     try s.objectField("queue");
     try s.beginObject();
     try s.objectField("queued");
@@ -251,6 +262,9 @@ fn noDelay(stream: std.Io.net.Stream) void {
 
 pub const Context = struct {
     root: ?[]const u8,
+    /// The configuration, borrowed for the serve: the chat service resolves
+    /// a language model's settings from it as `nuclis chat` does.
+    loaded: *const config.Loaded,
     registry: config.Models,
     default_model: []const u8,
     version: []const u8,
@@ -266,10 +280,12 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     var server: Server = .{
         .gpa = gpa,
         .decisions = .init(gpa, undefined, backend, context.root, context.registry, context.default_model),
+        .chat = .init(gpa, undefined, context.loaded, context.root, @as(u64, options.timeout) * std.time.ns_per_s),
         .backend = backend,
         .version = context.version,
     };
     server.decisions.executor = &server.executor;
+    server.chat.executor = &server.executor;
     server.decisions.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     server.decisions.bind();
     defer server.deinit();
@@ -280,6 +296,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         server.executor.stop(io);
         worker.await(io);
         server.decisions.deinit(io);
+        server.chat.deinit(io);
     }
 
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -297,6 +314,16 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         };
         const ms = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_ms;
         try out.print("{s}opened{s} {s} {s}({d:.0} ms){s}\n", .{ sty.on(.success), sty.off(), name, sty.on(.dim), ms, sty.off() });
+    }
+
+    if (options.chat_model) |name| {
+        const started = std.Io.Clock.awake.now(io);
+        server.chat.preload(io, name) catch |err| {
+            diag.set("the chat model {s} did not open: {s}", .{ name, @errorName(err) });
+            return err;
+        };
+        const ms = @as(f64, @floatFromInt(started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_ms;
+        try out.print("{s}opened{s} {s} {s}(chat, {d:.0} ms){s}\n", .{ sty.on(.success), sty.off(), name, sty.on(.dim), ms, sty.off() });
     }
 
     var log: log_mod.Log = .init(out, sty, io);
@@ -349,7 +376,7 @@ fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32),
     var writer = stream.writer(io, &buffer);
     var body_buffer: [256]u8 = undefined;
     var body: std.Io.Writer = .fixed(&body_buffer);
-    const refusal: errors.ApiError = .init(http.overloaded, "busy", "too many connections; retry shortly");
+    const refusal: errors.ApiError = .init(http.overloaded, "busy", "overloaded: too many connections; retry shortly");
     errors.write(&body, refusal) catch return;
     http.writeClosing(&writer.interface, http.overloaded, body.buffered()) catch {};
     if (log) |l| l.request(io, .{ .method = null, .path = "-", .status = http.overloaded, .duration_ns = 0, .bytes_out = body.buffered().len, .note = "busy: too many connections" });
@@ -358,6 +385,7 @@ fn refuse(io: std.Io, stream: std.Io.net.Stream, active: *std.atomic.Value(u32),
 test {
     // The streamed routes' worker-to-connection queue, tested on its own.
     _ = @import("pipe.zig");
+    _ = chat;
 }
 
 test "serve arguments" {
@@ -366,7 +394,8 @@ test "serve arguments" {
     const arena = arena_state.allocator();
     var diag: config.Diagnostic = .{};
     const configured: config.Config.Serve = .{};
-    const o = try parseArgs(arena, &.{ "--port", "9000", "--model", "laya", "--model", "laya-multilingual", "--backend", "cpu", "--host", "0.0.0.0", "--quiet" }, configured, &diag);
+    const o = try parseArgs(arena, &.{ "--port", "9000", "--model", "laya", "--model", "laya-multilingual", "--backend", "cpu", "--host", "0.0.0.0", "--quiet", "--chat-model", "qwen3.8-27b" }, configured, &diag);
+    try std.testing.expectEqualStrings("qwen3.8-27b", o.chat_model.?);
     try std.testing.expect(!o.log);
     try std.testing.expectEqual(@as(u16, 9000), o.port);
     try std.testing.expectEqual(@as(usize, 2), o.models.items.len);
@@ -389,6 +418,7 @@ test "serve arguments" {
         .{ &[_][]const u8{ "--timeout", "0" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--timeout", "1.5" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--timeout", "5", "--timeout", "6" }, error.DuplicateOption },
+        .{ &[_][]const u8{ "--chat-model", "a", "--chat-model", "b" }, error.DuplicateOption },
     };
     inline for (cases) |case| try std.testing.expectError(case[1], parseArgs(arena, case[0], configured, &diag));
     try std.testing.expect(isLoopback(try address("localhost", 1, &diag)));
@@ -400,11 +430,12 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, 3);
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, "qwen3.8-27b", .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, 3);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);
     try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("queue").?.object.get("queued").?.integer);
     try std.testing.expectEqualStrings("laya", parsed.value.object.get("loaded").?.array.items[0].string);
+    try std.testing.expectEqualStrings("qwen3.8-27b", parsed.value.object.get("language").?.string);
     try std.testing.expectEqual(@as(i64, 5), parsed.value.object.get("decisions").?.object.get("waiting").?.integer);
 }

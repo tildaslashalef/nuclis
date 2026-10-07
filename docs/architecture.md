@@ -159,7 +159,7 @@ signals, and the network.
 | `src` | arguments, configuration, stdout, Ctrl-C, presentation, downloads | equations |
 | `src/decision` | the decision request and response JSON, resolving a decision model's name | HTTP, terminals |
 | `src/api` transport and router (`http.zig`, `router.zig`) | connections, HTTP/1.1, routes, the error body | models, `inference` |
-| `src/api` services (`decisions/`) | validating a request, waiting for the GPU, rendering the answer | sockets; a model except through the GPU executor |
+| `src/api` services (`decisions/`, `chat/`) | validating a request, waiting for the GPU, rendering the answer | sockets; a model except through the GPU executor |
 | `huggingface` | the Hub API, Xet reconstruction, digests, atomic publication | what a GGUF means |
 
 **Read:** [spec.md § Extension rules](spec.md#57-extension-rules),
@@ -197,9 +197,9 @@ its options in beside the order it is answered in
 ### The API layer
 
 `nuclis serve` (`src/api/`) keeps decision models open behind an HTTP/1.1
-server speaking TypeSafe's Jev protocol ([api.md](guide/api.md)). Its
-layers stay apart so a second service (an OpenAI-compatible one for the
-language models) is a new directory and one registration:
+server speaking TypeSafe's Jev protocol, and one language model behind
+OpenAI's Chat Completions ([api.md](guide/api.md)). Its layers stay
+apart, so each service is a directory and one registration:
 
 - `http.zig` serves one connection over any reader and writer: each
   request read whole into the connection's arena (up to its route's body
@@ -222,6 +222,12 @@ language models) is a new directory and one registration:
   `Decider.decideJobs` (each request prepared in its own arena, one
   `logitsBatch` for all). `pool.zig` keeps two deciders open, opened and
   closed only on the worker.
+- `chat/` reads a request into the profile's shapes on the connection's
+  task (`wire.zig`, pure), then waits for one executor item that opens
+  the named model if another is open and completes the conversation
+  through the agent's `Completer` (`model.zig`), so a served conversation
+  continues or restores the model's state exactly as `nuclis chat` does.
+  Clients resend the whole conversation; no response is stored.
 - `src/decision/` holds the wire format and model names that `nuclis
   decide` and the service share, so the CLI's `--json` and the API's
   body are the same bytes.

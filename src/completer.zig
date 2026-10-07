@@ -9,6 +9,7 @@ const std = @import("std");
 const inference = @import("inference");
 const engine = @import("engine.zig");
 const config = @import("config.zig");
+const model_mod = @import("model.zig");
 pub const cache = @import("completer/cache.zig");
 
 const Allocator = std.mem.Allocator;
@@ -51,12 +52,90 @@ pub fn freeImages(alloc: Allocator, images: []Image) void {
     if (images.len != 0) alloc.free(images);
 }
 
+/// One open model: the engine and everything sized by its vocabulary or
+/// keyed by its files. A switch or a context change replaces it in place, so
+/// the pointers a completer holds into it stay valid.
+pub const Open = struct {
+    eng: engine.Engine,
+    settings: config.Resolved,
+    /// Owned: the file, its draft source, and the digest its sidecar
+    /// verified (null without one).
+    model_path: []u8,
+    draft_path: ?[]u8,
+    digest: ?[]u8,
+    logits: []f32,
+    /// Sized for sampling whatever the current temperature: the effort can
+    /// switch profiles mid-session.
+    candidates: []inference.sampling.Candidate,
+    generated: []u32,
+    history: inference.sampling.History,
+    /// False once unloaded: a switch whose fallback also failed leaves
+    /// nothing to free.
+    alive: bool = true,
+
+    pub fn init(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, settings: config.Resolved) !Open {
+        if (settings.ctx_size == 0 or settings.ctx_size > config.max_context or settings.max_tokens == 0 or settings.max_tokens > config.max_output_tokens) return error.InvalidGenerationBudget;
+        const path = try alloc.dupe(u8, model_path);
+        errdefer alloc.free(path);
+        const draft_path = try engine.draftPath(alloc, path, if (settings.entry) |entry| entry.mtp else null);
+        errdefer if (draft_path) |d| alloc.free(d);
+        const draft: inference.engine.DraftRequest = if (settings.speculative) .{ .preferred = draft_path } else .none;
+        var eng = try engine.Engine.open(alloc, io, path, settings.backend, settings.ctx_size, settings.kv_precision, settings.forced_profile, draft);
+        errdefer eng.deinit();
+        // The file's own profile from here on: the configuration guessed one
+        // from the catalogue name without opening the file (`config show`).
+        if (eng.profile == null) return error.UnsupportedPromptTemplate;
+        const vocab = eng.vocab.tokens.len;
+        const logits = try alloc.alloc(f32, vocab);
+        errdefer alloc.free(logits);
+        const candidates = try alloc.alloc(inference.sampling.Candidate, vocab);
+        errdefer alloc.free(candidates);
+        const generated = try alloc.alloc(u32, settings.max_tokens);
+        errdefer alloc.free(generated);
+        var history = try inference.sampling.History.init(alloc, vocab);
+        errdefer history.deinit();
+        return .{ .eng = eng, .settings = settings, .model_path = path, .draft_path = draft_path, .digest = try readDigest(alloc, io, path), .logits = logits, .candidates = candidates, .generated = generated, .history = history };
+    }
+
+    pub fn deinit(self: *Open, alloc: std.mem.Allocator) void {
+        if (!self.alive) return;
+        self.alive = false;
+        self.history.deinit();
+        alloc.free(self.generated);
+        alloc.free(self.candidates);
+        alloc.free(self.logits);
+        self.eng.deinit();
+        if (self.digest) |d| alloc.free(d);
+        if (self.draft_path) |d| alloc.free(d);
+        alloc.free(self.model_path);
+    }
+
+    pub fn profile(self: *const Open) Profile.Profile {
+        return self.eng.profile.?;
+    }
+};
+
+/// The digest the model's sidecar verified, or null without a readable one.
+fn readDigest(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8) !?[]u8 {
+    // The sidecar's strings live in the arena; only the digest outlives it.
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const sidecar_path = model_mod.sidecarPath(a, model_path) catch return null;
+    const sidecar = model_mod.readSidecar(a, io, .cwd(), sidecar_path) catch return null;
+    return if (sidecar) |record| try alloc.dupe(u8, record.sha256) else null;
+}
+
 /// What one completion step reported. `outcome` is the engine's; `replay`
 /// is set when the conversation could not continue the session where it
 /// stood and was prefilled again from a cached state or from empty.
 pub const Reply = struct {
     outcome: inference.engine.Outcome,
     replay: ?Replay = null,
+    /// The rendered conversation's tokens, and how many of them the session
+    /// already held (continued or restored) rather than prefilled.
+    prompt_tokens: usize = 0,
+    reused_tokens: usize = 0,
 };
 
 /// Why a step re-prefilled the conversation, and how much of it a cached
@@ -466,6 +545,7 @@ pub const Completer = struct {
         const tokens = try self.eng.encode(remainder);
         defer self.alloc.free(tokens);
         const session = self.eng.model.session();
+        const reused = session.position;
         const limit = outputBudget(session.position, tokens.len, self.buffers.generated.len, session.capacity, self.clamp_budget) orelse {
             const output: usize = if (self.clamp_budget) 1 else self.buffers.generated.len;
             self.overflow = .{ .needed = session.position + tokens.len + output, .capacity = session.capacity };
@@ -505,7 +585,7 @@ pub const Completer = struct {
         defer self.alloc.free(fed_text);
         try self.seen.appendSlice(self.alloc, fed_text);
         if (outcome.stop == .cancelled) self.reset(.cancel);
-        return .{ .outcome = outcome, .replay = replay };
+        return .{ .outcome = outcome, .replay = replay, .prompt_tokens = reused + tokens.len, .reused_tokens = reused };
     }
 
     const Prefill = struct {

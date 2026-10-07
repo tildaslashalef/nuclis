@@ -253,6 +253,7 @@ pub const commands = [_]Command{
         .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
         .{ .name = "--port", .value = .number, .summary = "default serve.port, 8000" },
         .{ .name = "--model", .value = .dir, .repeat = true, .summary = "a decision model opened at start" },
+        .{ .name = "--chat-model", .value = .model, .summary = "a language model opened at start" },
         backend,
         .{ .name = "--quiet", .summary = "no line per request" },
     } }} },

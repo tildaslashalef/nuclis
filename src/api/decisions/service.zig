@@ -112,7 +112,7 @@ pub const Service = struct {
             .questions = decision.questions,
         };
         self.batcher.submit(io, &job) catch |err| return switch (err) {
-            error.Busy => fail(arena, http.overloaded, "busy", "too many decision requests wait for the GPU; retry shortly"),
+            error.Busy => fail(arena, http.overloaded, "busy", "overloaded: too many decision requests wait for the GPU; retry shortly"),
             error.Stopped => fail(arena, .service_unavailable, "shutting_down", "the server is stopping"),
         };
         self.batcher.wait(io, &job, deadline) catch

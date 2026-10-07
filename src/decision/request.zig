@@ -4,6 +4,7 @@
 //! A `{"file": path}` state is read only when the caller allows files.
 //! docs/models/laya.md § nuclis decide.
 const std = @import("std");
+const data_url = @import("../data_url.zig");
 const inference = @import("inference");
 const config = @import("../config.zig");
 
@@ -38,30 +39,22 @@ pub fn imagesFromJson(arena: std.mem.Allocator, io: std.Io, value: std.json.Valu
     for (list, out, 0..) |item, *bytes, i| {
         switch (item) {
             .string => |s| {
-                const data = if (std.mem.startsWith(u8, s, "data:")) blk: {
-                    const comma = std.mem.indexOfScalar(u8, s, ',') orelse break :blk null;
-                    if (!std.mem.endsWith(u8, s[0..comma], ";base64")) break :blk null;
-                    break :blk s[comma + 1 ..];
-                } else s;
-                const encoded = data orelse {
+                const encoded = data_url.payload(s) orelse {
                     diag.set("images[{d}]: a data URL must be base64 (data:<type>;base64,…)", .{i});
                     return error.InvalidRequest;
                 };
-                const decoder = std.base64.standard.Decoder;
-                const size = decoder.calcSizeForSlice(encoded) catch {
-                    diag.set("images[{d}]: not base64", .{i});
-                    return error.InvalidRequest;
+                bytes.* = data_url.decode(arena, encoded, decide.max_image_bytes) catch |err| switch (err) {
+                    error.NotBase64 => {
+                        diag.set("images[{d}]: not base64", .{i});
+                        return error.InvalidRequest;
+                    },
+                    error.TooLarge => {
+                        const size = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch 0;
+                        diag.set("images[{d}]: {d} bytes, at most {d}", .{ i, size, decide.max_image_bytes });
+                        return error.RequestTooLarge;
+                    },
+                    error.OutOfMemory => return error.OutOfMemory,
                 };
-                if (size > decide.max_image_bytes) {
-                    diag.set("images[{d}]: {d} bytes, at most {d}", .{ i, size, decide.max_image_bytes });
-                    return error.RequestTooLarge;
-                }
-                const decoded = try arena.alloc(u8, size);
-                decoder.decode(decoded, encoded) catch {
-                    diag.set("images[{d}]: not base64", .{i});
-                    return error.InvalidRequest;
-                };
-                bytes.* = decoded;
             },
             .object => |o| {
                 const path = if (o.count() == 1) if (o.get("file")) |f| if (f == .string) f.string else null else null else null;
