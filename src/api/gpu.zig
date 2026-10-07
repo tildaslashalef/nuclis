@@ -16,6 +16,9 @@ pub const Item = struct {
     done: std.Io.Event = .unset,
     /// Submitted again while it ran: it runs once more.
     rerun: bool = false,
+    /// Short enough to run between the steps of another item (a decision
+    /// pass inside a generation), through `runShort`.
+    short: bool = false,
 
     pub const State = enum { idle, queued, running, finished, abandoned };
     pub const After = enum { done, again };
@@ -139,25 +142,53 @@ pub const Executor = struct {
             self.mutex.unlock(io);
 
             const after = item.run(item, io);
-
             self.mutex.lockUncancelable(io);
             self.running = false;
-            self.completed += 1;
-            if (after == .again or item.rerun) {
-                // Requeued even when full or stopping: it was admitted once.
-                item.rerun = false;
-                item.next = null;
-                item.state = .queued;
-                if (self.tail) |t| t.next = item else self.head = item;
-                self.tail = item;
-                self.queued += 1;
-                self.mutex.unlock(io);
-                continue;
-            }
-            item.state = .finished;
             self.mutex.unlock(io);
-            item.done.set(io);
+            self.settle(io, item, after);
         }
+    }
+
+    /// On the worker, from inside a running item: runs each short item
+    /// queued at this moment, once, in arrival order. A long item calls it
+    /// between its steps so short ones need not wait for it to end.
+    pub fn runShort(self: *Executor, io: std.Io) void {
+        var taken: [16]*Item = undefined;
+        var count: usize = 0;
+        self.mutex.lockUncancelable(io);
+        var cursor = self.head;
+        while (cursor) |c| {
+            cursor = c.next;
+            if (!c.short or count == taken.len) continue;
+            self.unlink(c);
+            c.state = .running;
+            taken[count] = c;
+            count += 1;
+        }
+        self.mutex.unlock(io);
+        for (taken[0..count]) |item| self.settle(io, item, item.run(item, io));
+    }
+
+    /// After `item` ran: queued again at the tail, or finished and its
+    /// waiter woken.
+    fn settle(self: *Executor, io: std.Io, item: *Item, after: Item.After) void {
+        self.mutex.lockUncancelable(io);
+        self.completed += 1;
+        if (after == .again or item.rerun) {
+            // Requeued even when full or stopping: it was admitted once.
+            item.rerun = false;
+            item.next = null;
+            item.state = .queued;
+            if (self.tail) |t| t.next = item else self.head = item;
+            self.tail = item;
+            self.queued += 1;
+            self.ready.signal(io);
+            self.mutex.unlock(io);
+            return;
+        }
+        item.state = .finished;
+        self.mutex.unlock(io);
+        item.done.set(io);
     }
 
     pub fn stop(self: *Executor, io: std.Io) void {
@@ -286,4 +317,48 @@ test "a queued item can be withdrawn, a running one cannot; poll returns at its 
     executor.stop(io);
     worker.await(io);
     try std.testing.expectEqualSlices(u32, &.{1}, order.items);
+}
+
+const Long = struct {
+    item: Item = .{ .run = runLong },
+    executor: *Executor,
+    order: *std.ArrayList(u32),
+    started: std.Io.Event = .unset,
+    gate: std.Io.Event = .unset,
+
+    fn runLong(item: *Item, io: std.Io) Item.After {
+        const self: *Long = @fieldParentPtr("item", item);
+        self.started.set(io);
+        self.gate.waitUncancelable(io);
+        self.order.appendAssumeCapacity(100);
+        // A step boundary: the short items queued meanwhile run here.
+        self.executor.runShort(io);
+        self.order.appendAssumeCapacity(101);
+        return .done;
+    }
+};
+
+test "short items run between a long item's steps; others wait for it" {
+    const io = std.testing.io;
+    var executor: Executor = .init(8);
+    var order: std.ArrayList(u32) = try .initCapacity(std.testing.allocator, 16);
+    defer order.deinit(std.testing.allocator);
+    var long: Long = .{ .executor = &executor, .order = &order };
+    var short: Counting = .{ .order = &order, .id = 1, .repeats = 1 };
+    short.item.short = true;
+    var other: Counting = .{ .order = &order, .id = 2 };
+    try executor.submit(io, &long.item);
+    var worker = try io.concurrent(Executor.run, .{ &executor, io });
+    long.started.waitUncancelable(io);
+    try executor.submit(io, &other.item);
+    try executor.submit(io, &short.item);
+    long.gate.set(io);
+    try executor.wait(io, &long.item, deadlineIn(io, 5_000));
+    try executor.wait(io, &other.item, deadlineIn(io, 5_000));
+    try executor.wait(io, &short.item, deadlineIn(io, 5_000));
+    executor.stop(io);
+    worker.await(io);
+    // The short item ran inside the long one; its `.again` went to the
+    // tail, behind the item that was not short.
+    try std.testing.expectEqualSlices(u32, &.{ 100, 1, 101, 2, 1 }, order.items);
 }
