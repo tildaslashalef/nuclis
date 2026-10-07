@@ -181,7 +181,7 @@ const Job = struct {
             return .done;
         }
         language.ensure(io, self.request.model) catch |err| {
-            self.fail(openFailure(self.arena, self.request.model orelse language.loaded.config.engine.model, err));
+            self.fail(openFailure(self.arena, language, self.request.model orelse language.loaded.config.engine.model, err));
             return .done;
         };
         self.name = self.arena.dupe(u8, language.name.?) catch "";
@@ -412,6 +412,10 @@ fn respond(arena: std.mem.Allocator, io: std.Io, job: *const Job, ran: language_
     return .{ .body = out.written(), .note = job.note };
 }
 
+fn gib(bytes: u64) f64 {
+    return @as(f64, @floatFromInt(bytes)) / (1 << 30);
+}
+
 fn refuse(arena: std.mem.Allocator, status: std.http.Status, code: []const u8, message: []const u8, param: ?[]const u8) http.Response {
     var err: ApiError = .init(status, code, message);
     err.param = param;
@@ -424,11 +428,11 @@ fn apiError(arena: std.mem.Allocator, status: std.http.Status, code: []const u8,
     return err;
 }
 
-fn openFailure(arena: std.mem.Allocator, name: []const u8, err: anyerror) ApiError {
+fn openFailure(arena: std.mem.Allocator, language: *const language_mod.Language, name: []const u8, err: anyerror) ApiError {
     return switch (err) {
         error.ModelNotFound => apiError(arena, .not_found, "model_not_found", "model", "{s} is not a pulled language model (`nuclis model ls` lists them, `GET /v1/models` the runnable ones)", .{name}),
         error.NotALanguageModel => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a decision model; POST /v1/decisions runs it", .{name}),
-        error.ModelTooLarge => apiError(arena, .bad_request, "model_too_large", "model", "{s} needs more memory than the server's budget allows (serve.memory_bytes, --memory)", .{name}),
+        error.ModelTooLarge => apiError(arena, .bad_request, "model_too_large", "model", "{s} needs about {d:.1} GiB (its weights and cache.memory_bytes) and the server's budget is {d:.1} GiB (serve.memory_bytes, --memory)", .{ name, gib(language.needed), gib(if (language.budget) |b| b.limit else 0) }),
         error.Pinned => apiError(arena, .service_unavailable, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{name}),
         else => apiError(arena, .internal_server_error, "model_failed", "model", "{s} did not open: {s}", .{ name, @errorName(err) }),
     };

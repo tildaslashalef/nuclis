@@ -40,6 +40,9 @@ pub const Language = struct {
     budget: ?*memory.Budget = null,
     /// What the open model holds against the budget.
     footprint: u64 = 0,
+    /// What the last model asked for needed before it opened, for the
+    /// message when it does not fit.
+    needed: u64 = 0,
 
     /// What a request asked for that cannot be served, beside engine errors.
     pub const Error = error{ ModelNotFound, NotALanguageModel, ImagesUnsupported, ContextFull, InvalidSamplingOptions };
@@ -68,6 +71,7 @@ pub const Language = struct {
         // Before opening: the weights and the states the cache may keep;
         // once open, the attention cache and the draft file are known.
         var bytes = fileSize(io, path) + settings.cache.memory_bytes;
+        self.needed = bytes;
         if (self.budget) |b| try b.reserve(io, bytes, null);
         self.open = try completer_mod.Open.init(self.gpa, io, path, settings);
         const open = &self.open.?;

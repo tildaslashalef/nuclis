@@ -254,6 +254,7 @@ pub const commands = [_]Command{
         .{ .name = "--port", .value = .number, .summary = "default serve.port, 8000" },
         .{ .name = "--model", .value = .dir, .repeat = true, .summary = "a decision model opened at start" },
         .{ .name = "--chat-model", .value = .model, .summary = "a language model opened at start" },
+        .{ .name = "--memory", .value = .number, .summary = "GiB every open model may hold together" },
         backend,
         .{ .name = "--quiet", .summary = "no line per request" },
     } }} },
