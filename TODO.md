@@ -14,14 +14,9 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-The plan below was agreed on 2026-10-07. The first unit, the completer and
-a streaming transport, is done on branch `serve-streaming-and-completer`
-(pull request #7, awaiting review): `Completer` lives in
-`src/completer.zig` with `clamp_budget`, the transport streams
-(`http.Stream`, `http.Body`) and takes per-route body limits
-(`Router.addLimited`), and `src/api/pipe.zig` carries bytes from the worker
-to a connection. Next: **Chat Completions, whole responses**, on a branch
-cut from `main` once #7 merges.
+The plan below was agreed on 2026-10-07. The completer and the streaming
+transport merged as #7. In progress: **Chat Completions, whole
+responses**, on branch `chat-completions`.
 
 | Unit | Branch | What |
 | --- | --- | --- |
@@ -79,7 +74,7 @@ Shared by every unit below; Chat Completions, whole responses writes it into
 
 ## Chat Completions, whole responses
 
-Base: set when the branch is cut from `main` after #7 merges.
+Base: `69258c8`
 
 **Why.** The route itself, without streaming: everything a request means
 is decided here, and the streamed unit only changes how it is delivered.
