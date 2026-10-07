@@ -55,6 +55,14 @@ fn heading(out: *std.Io.Writer, sty: style.Style, text: []const u8) !void {
 /// One `name  description` row, the name in the keyword colour and padded
 /// before the escapes so colour never moves the column.
 fn row(out: *std.Io.Writer, sty: style.Style, name: []const u8, text: []const u8) !void {
+    // A label wider than the column is never cut: it pushes its text along
+    // the line when both fit in 80 columns, else takes a line of its own.
+    if (name.len > name_column) {
+        if (2 + name.len + 2 + text.len <= 80)
+            return out.print("  {s}{s}{s}  {s}\n", .{ sty.on(.keyword), name, sty.off(), text });
+        try out.print("  {s}{s}{s}\n", .{ sty.on(.keyword), name, sty.off() });
+        return more(out, text);
+    }
     var padded: [name_column]u8 = undefined;
     const width = @min(name.len, padded.len);
     @memcpy(padded[0..width], name[0..width]);
@@ -424,10 +432,10 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
 }
 
 fn serve(out: *std.Io.Writer, sty: style.Style) !void {
-    try title(out, sty, "nuclis serve", "the nuclis API: decision models kept open, over HTTP");
+    try title(out, sty, "nuclis serve", "the nuclis API: decision and language models over HTTP");
     try heading(out, sty, "Usage:");
     try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]…");
-    try code(out, sty, "             [--backend cpu|metal] [--timeout <s>]");
+    try code(out, sty, "             [--chat-model <name>] [--backend cpu|metal] [--timeout <s>]");
 
     try heading(out, sty, "Options:");
     try row(out, sty, "--host <ip>", "the address to listen on; default serve.host,");
@@ -437,6 +445,8 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--model <name|path>", "open a decision model at start, at most 2;");
     try more(out, "default decide.model; others open on first use");
     try more(out, "(2 stay open)");
+    try row(out, sty, "--chat-model <name>", "open a language model at start; otherwise the");
+    try more(out, "first chat request opens one (one stays open)");
     try row(out, sty, "--backend cpu|metal", "default metal");
     try row(out, sty, "--quiet", "no line per request (serve.log false does the same)");
     try row(out, sty, "--timeout <s>", "how long a request may wait for the GPU before");
@@ -447,18 +457,25 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "model); the `decide --json` response; ?explain=1");
     try row(out, sty, "POST /v1/systemone", "TypeSafe's Jev call: one state, Jev's answers;");
     try more(out, "\"jev-latest\" (any jev- id) is decide.model");
-    try row(out, sty, "GET /v1/models", "the decision models, OpenAI's list shape");
+    try row(out, sty, "POST /v1/chat/completions", "OpenAI's Chat Completions for the language");
+    try more(out, "models; a client of an OpenAI-compatible server");
+    try more(out, "connects by changing its base URL");
+    try row(out, sty, "GET /v1/models", "the decision and language models, OpenAI's list");
+    try more(out, "shape");
     try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
 
     try heading(out, sty, "Examples:");
     try example(out, sty, "nuclis serve", "listen on 127.0.0.1:8000, decide.model open");
     try example(out, sty, "curl -s localhost:8000/v1/decisions -d @ticket.json", "one decision request");
+    try example(out, sty, "nuclis serve --chat-model qwen3.8-27b", "a language model open from the start");
 
     try heading(out, sty, "Notes:");
     try plain(out, "Requests run on the GPU one at a time in arrival order; a request waits at");
     try plain(out, "most 300 s to start (then 529 timeout), at most 64 wait (then 529 busy).");
-    try plain(out, "Bodies up to 4 MiB; states are text or JSON, never {\"file\": path}.");
-    try plain(out, "Errors are {\"error\": {\"code\", \"message\"}} with a fitting HTTP status.");
+    try plain(out, "Bodies up to 4 MiB (32 MiB for chat completions); states are text or JSON,");
+    try plain(out, "never {\"file\": path}; a chat request names a model, never a path.");
+    try plain(out, "Errors are {\"error\": {\"code\", \"message\", \"type\", \"param\"}} with a");
+    try plain(out, "fitting HTTP status.");
     try plain(out, "Ctrl-C stops accepting, finishes queued decisions (up to 10 s), and exits;");
     try plain(out, "a second Ctrl-C ends the process at once.");
 }
