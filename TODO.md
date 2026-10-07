@@ -14,22 +14,24 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-The plan below was agreed on 2026-10-07; nothing is built yet. `nuclis
-serve` learns OpenAI's wire formats for the language models, so agents
-and apps written for OpenAI-compatible servers connect by changing a base
-URL. Next: **the completer and a streaming transport**, on branch
-`serve-streaming-and-completer` (created, holding only this plan).
+The plan below was agreed on 2026-10-07. The first unit, the completer and
+a streaming transport, is done on branch `serve-streaming-and-completer`
+(pull request #7, awaiting review): `Completer` lives in
+`src/completer.zig` with `clamp_budget`, the transport streams
+(`http.Stream`, `http.Body`) and takes per-route body limits
+(`Router.addLimited`), and `src/api/pipe.zig` carries bytes from the worker
+to a connection. Next: **Chat Completions, whole responses**, on a branch
+cut from `main` once #7 merges.
 
 | Unit | Branch | What |
 | --- | --- | --- |
-| The completer and a streaming transport | `serve-streaming-and-completer` | `Completer` leaves the agent; the transport streams and takes per-route body limits; no route yet |
 | Chat Completions, whole responses | `chat-completions` | `POST /v1/chat/completions` without streaming, language models in `GET /v1/models`, the API guide and spec |
 | Chat Completions, streamed | `chat-completions-stream` | `stream: true`, cancellation by disconnect, keepalives, pi as the acceptance client |
 | Responses, stateless | `responses-stateless` | `POST /v1/responses` with `store: false`, over the same core |
 
 ## The theme: an OpenAI-compatible service for the language models
 
-Shared by every unit below; unit 2 writes it into
+Shared by every unit below; Chat Completions, whole responses writes it into
 [docs/guide/api.md](docs/guide/api.md) and [docs/spec.md](docs/spec.md)
 (§6 `serve`, §10, which lists the service as deferred).
 
@@ -75,72 +77,9 @@ Shared by every unit below; unit 2 writes it into
   (null or the field), which the SDKs read; decision clients ignore them.
   The SDKs retry 409, 429 and 5xx, so no route answers 409.
 
-## The completer and a streaming transport
-
-Base: `40b69f1`
-
-**Why.** The two prerequisites of a language-model route, landed with no
-route: the completion core the agent owns becomes shared, and the
-transport can stream. Behaviour of `nuclis chat` and of the decision
-routes does not change.
-
-1. **`Completer` leaves the agent.** Move `Completer`, the `Model` seam
-   and what it carries (`Model`, `Reply`, `Replay`, `Image`, `Overflow`,
-   `increment`, `placeholderRuns`) from `src/agent/loop.zig` into a new
-   `src/completer.zig`, and `src/agent/cache.zig` to
-   `src/completer/cache.zig` (its `../tui/style.zig` import serves
-   `nuclis cache ls` and `clear`, `Listing.render`, `ls`, `clear`; the
-   path changes, nothing else). `loop.zig` re-exports the
-   names it uses (`pub const Completer = completer.Completer;` …) so the
-   agent, `print.zig` and `root.zig` compile unchanged. Their tests move
-   with them; the test count does not drop. Update the references in
-   `docs/engine/session.md` § The agent's token cache and
-   `docs/app/agent.md` (`make docs-check`).
-2. **The output budget clamps.** `Completer.run` reserves the whole
-   `buffers.generated` slice and returns `ContextFull` when prompt plus
-   slice exceed the window. Clients size the budget from their own idea
-   of the window (pi sends `min(maxTokens, contextWindow − estimate −
-   4096)`, its defaults 16,384 and 128,000; its llama.cpp provider sets
-   `maxTokens` to the whole window), so a server must cap rather than
-   refuse. Add `clamp_budget: bool = false`:
-   when set and the prompt fits, the limit passed to `engine.complete`
-   (and to `config.thinkingBudget`) is the space left, at least 1;
-   `ContextFull` only when the prompt itself does not fit. The agent
-   keeps `false`. Test with a stub-free unit test on the arithmetic
-   (extract `fn budget(position, prompt, slice, capacity, clamp) ?usize`).
-3. **Streaming responses.** `http.Response` gains
-   `stream: ?Stream = null`, `Stream = struct { context: *anyopaque,
-   write: *const fn (*anyopaque, std.Io, *std.http.BodyWriter) bool }`.
-   `Exchange.respond` calls `request.respondStreaming` (chunked, keep-alive
-   kept) with the status and `content-type`, then `write`; `false` from it,
-   or a failed `end`, closes the connection. The log line records bytes
-   written and the duration to the end of the stream. Tests in
-   `http.zig`'s in-memory style: a stream of three chunks round-trips as
-   chunked, a keep-alive request after it is served, a write that fails
-   midway closes.
-4. **Per-route body limits.** Images arrive base64 in the body, so the
-   chat routes need more than 4 MiB. `Router.add` takes an optional body
-   limit; `http.Handler` gains `body_limit: ?*const fn (*anyopaque, path)
-   usize`, which `serveOne` asks before reading the body. Limits:
-   `limits.transport.max_body` (4 MiB) by default, 32 MiB for the chat
-   routes (8 images at `decide.max_image_bytes`-sized inputs do not fit;
-   the per-image bound stays the decision one, 16 MiB). Test: a 5 MiB body
-   is 413 on `/v1/decisions` and read on a route registered at 32 MiB.
-5. **The cross-thread pipe** the streamed route will need: `src/api/pipe.zig`,
-   a bounded byte queue (mutex, `std.Io.Condition`, 1 MiB) the GPU worker
-   appends to and the connection task drains, with `close` (producer done)
-   and `abandon` (consumer gone: later appends return `error.Abandoned`).
-   The worker never blocks on the socket: an append past the bound waits
-   at most until the consumer drains or abandons. Tests with two tasks.
-
-**Gates.** `zig build test`, `zig fmt --check`, `make docs-check`, `make
-verify-auto` (no inference path changes, so no Metal tier). Exercise:
-`./zig-out/bin/nuclis serve` answers `/v1/decisions` and `/v1/health` as
-before; `nuclis agent --print` runs one turn (the moved `Completer`).
-
 ## Chat Completions, whole responses
 
-Base: set when the branch is cut from `main` after the unit above merges.
+Base: set when the branch is cut from `main` after #7 merges.
 
 **Why.** The route itself, without streaming: everything a request means
 is decided here, and the streamed unit only changes how it is delivered.
