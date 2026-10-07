@@ -14,14 +14,13 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-The plan below was agreed on 2026-10-07. The completer and the streaming
-transport merged as #7, Chat Completions as #8; streaming, keepalives,
-and cancellation are done on branch `chat-completions-stream` (its pull
-request awaiting review), with pi 1.1.0 as the accepted client. Next:
-**Responses, stateless**, on a branch cut from `main` once it merges.
-Measured and left open (docs/guide/api.md § Conversations and the
-cache, docs/spec.md §10): a decision waits behind a running generation,
-136.5 s behind 2,000 Qwen3.8 tokens.
+The plan below was agreed on 2026-10-07; the completer and streaming
+transport (#7), Chat Completions (#8), and their streaming with pi as the
+accepted client (#9) merged. Decisions beside a generation and the
+shared memory budget are done on branch `decisions-beside-generation`
+(its pull request awaiting review). Next: **Responses, stateless**, only
+if a concrete Responses-only client calls for it (the user's call,
+2026-10-08); otherwise the queue is empty once this merges.
 
 | Unit | Branch | What |
 | --- | --- | --- |

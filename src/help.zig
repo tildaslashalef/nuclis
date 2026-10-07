@@ -435,7 +435,8 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis serve", "the nuclis API: decision and language models over HTTP");
     try heading(out, sty, "Usage:");
     try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]…");
-    try code(out, sty, "             [--chat-model <name>] [--backend cpu|metal] [--timeout <s>]");
+    try code(out, sty, "             [--chat-model <name>] [--memory <GiB>] [--backend cpu|metal]");
+    try code(out, sty, "             [--timeout <s>]");
 
     try heading(out, sty, "Options:");
     try row(out, sty, "--host <ip>", "the address to listen on; default serve.host,");
@@ -447,6 +448,8 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try more(out, "(2 stay open)");
     try row(out, sty, "--chat-model <name>", "open a language model at start; otherwise the");
     try more(out, "first chat request opens one (one stays open)");
+    try row(out, sty, "--memory <GiB>", "what every open model may hold together; default");
+    try more(out, "serve.memory_bytes, else physical memory less 16 GiB");
     try row(out, sty, "--backend cpu|metal", "default metal");
     try row(out, sty, "--quiet", "no line per request (serve.log false does the same)");
     try row(out, sty, "--timeout <s>", "how long a request may wait for the GPU before");
@@ -470,8 +473,10 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try example(out, sty, "nuclis serve --chat-model qwen3.8-27b", "a language model open from the start");
 
     try heading(out, sty, "Notes:");
-    try plain(out, "Requests run on the GPU one at a time in arrival order; a request waits at");
-    try plain(out, "most 300 s to start (then 529 timeout), at most 64 wait (then 529 busy).");
+    try plain(out, "Requests run on the GPU one at a time in arrival order, decisions between");
+    try plain(out, "a generation's steps; a request waits at most 300 s to start (then 529");
+    try plain(out, "timeout), at most 64 wait (then 529 busy). Opening a model closes the least");
+    try plain(out, "recently used others, of either kind, until it fits the memory budget.");
     try plain(out, "Bodies up to 4 MiB (32 MiB for chat completions); states are text or JSON,");
     try plain(out, "never {\"file\": path}; a chat request names a model, never a path.");
     try plain(out, "Errors are {\"error\": {\"code\", \"message\", \"type\", \"param\"}} with a");

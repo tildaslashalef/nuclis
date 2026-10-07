@@ -8,7 +8,7 @@ client written for `api.typesafe.ai` switches by changing its base URL.
 client written for an OpenAI-compatible server does the same. This page
 is the reference for client authors; it assumes nothing about the code.
 
-- [Running the server](#running-the-server)
+- [Running the server](#running-the-server), [memory](#memory)
 - [Conventions](#conventions)
 - [Errors](#errors)
 - [Decisions](#decisions): [`POST /v1/systemone`](#post-v1systemone),
@@ -34,6 +34,7 @@ nuclis serve                           # http://127.0.0.1:8000/v1, decide.model 
 | `--port <n>` | default `serve.port`, `8000` |
 | `--model <name>` | a decision model opened before the server listens (at most 2); without one, `decide.model` opens; others open on their first request |
 | `--chat-model <name>` | a language model opened before the server listens; without one, the first chat request opens one |
+| `--memory <GiB>` | what every open model may hold together; default `serve.memory_bytes`, else physical memory less 16 GiB ([memory](#memory)) |
 | `--backend cpu\|metal` | where the models run; default `metal` in a Metal build |
 | `--quiet` | no request log (`serve.log: false` does the same) |
 | `--timeout <s>` | how long a request may wait for the GPU before `529 timeout`; default `serve.timeout`, `300` |
@@ -57,6 +58,28 @@ when a third is asked for; opening takes 0.07 s (`laya`) to 0.15 s
 (`laya-multilingual`) on Metal, and 0.5 s for `clef-flash`, paid by the
 request that asks. Each model validates questions by its own rules:
 `clef-flash` takes questions without `instructions`, Laya does not.
+
+### Memory
+
+Every open model counts against one budget, decision and language alike:
+32 GiB on a 48 GB machine by default (physical memory less 16 GiB, for
+the system and other applications). A model counts its files (a decision
+checkpoint's weights, backbone, and projector; a language model's
+weights, its draft file when speculative decoding is on, and its image
+projector once an image arrives) plus, for a language model, its
+attention cache and the saved states it may keep (`cache.memory_bytes`,
+4 GiB). Qwen3.8 counts 22.0 GiB, `laya-multilingual` 0.6 GiB, clef-flash
+8.4 GiB.
+
+Before a model opens, the least recently used others close until it
+fits, whichever kind they are. A language model is never closed while a
+request runs on it: a decision that would need its memory waits for the
+generation to end. A model larger than the whole budget is refused
+(`model_too_large`). With `--memory 30` and Qwen3.8 open, an idle
+clef-flash decision closed Qwen3.8 (and the older Laya) and answered in
+4.2 s; the next chat request reopened Qwen3.8 in 1.2 s and closed
+clef-flash; a clef-flash decision sent during a generation was answered
+0.95 s after it ended. `GET /v1/health` lists what is resident.
 
 `clef-flash` also reads images: a request's `"images"` is a list of data
 URLs (`data:image/png;base64,…`) or bare base64, at most 8, each read
@@ -142,12 +165,14 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 422 | `options_exceed_budget` | a question's options do not fit the model's budget |
 | 422 | `model_not_found` | `model` names nothing that is pulled |
 | 422 | `not_a_decision_model` | `model` names a language model |
+| 422 | `model_too_large` | the decision model alone needs more than the memory budget ([memory](#memory)) |
 | 400 | `invalid_json`, `invalid_request` | chat: the body is not JSON, or a field is malformed (`param` names it) |
 | 400 | `unsupported_feature` | chat: a field nuclis cannot honour ([what is refused](#what-is-refused)) |
 | 400 | `not_a_language_model` | chat: `model` names a decision model |
 | 400 | `images_unsupported` | chat: an image for a model whose projector is not pulled |
 | 400 | `context_length_exceeded` | chat: the rendered conversation does not fit the model's window |
 | 404 | `model_not_found` | chat: `model` names no pulled language model |
+| 400 | `model_too_large` | chat: the language model alone needs more than the memory budget, with the sizes |
 | 431 | `headers_too_large` | the request line and headers exceed 16 KiB |
 | 500 | `model_failed` | the model could not be opened, or a completion failed on the GPU |
 | 500 | `internal`, `invalid_registry_entry` | a fault on the server's side |
@@ -444,10 +469,16 @@ of 86 tokens cached, and a tool round trip reused 360 of 390. A
 conversation with an image in it is prefilled whole on every request,
 and changing the model empties the cache.
 
-One request runs on the GPU at a time, decisions included, so a decision
-waits for a generation that is running: a `laya-multilingual` decision
-sent 5 s into a 2,000-token Qwen3.8 generation was answered after 136.5 s,
-when the generation ended.
+A decision does not wait for a generation that is running: queued
+decisions run between its steps (after each generated token, after each
+prefill chunk), each model on its own Metal queue. Five
+`laya-multilingual` decisions sent during a 2,000-token Qwen3.8
+generation were answered in 51 to 164 ms (136.5 s before this), and the
+generation took 139.5 s (141.4 s without them). During a long prefill a
+decision waits for the current chunk, 0.45 s on Qwen3.8. Answers are the
+same as on an idle server, logits included. A decision whose model does
+not fit beside the generation in memory waits for it to end
+([memory](#memory)).
 
 ### Agents
 
@@ -557,6 +588,9 @@ A language model's (`owned_by` is `nuclis`):
   "backend": "metal",
   "loaded": ["laya", "laya-multilingual"],
   "language": "qwen3.8-27b",
+  "memory": {"limit": 34359738368, "resident": 24227472014,
+             "models": [{"name": "qwen3.8-27b", "kind": "language", "bytes": 23583635232},
+                        {"name": "laya-multilingual", "kind": "decision", "bytes": 643836782}]},
   "queue": {"queued": 0, "running": false, "completed": 1709},
   "decisions": {"waiting": 0, "batches": 1707, "requests": 3136},
   "connections": 1
@@ -564,7 +598,9 @@ A language model's (`owned_by` is `nuclis`):
 ```
 
 `loaded` lists the open decision models, `language` the open language
-model (null before the first chat request). `queue` is the GPU's
+model (null before the first chat request), `memory` the budget
+(`limit`, `resident`, and each resident model's `name`, `kind`, and
+`bytes`, most recently used first). `queue` is the GPU's
 (`completed` counts GPU items, a batch or a completion being one);
 `decisions.waiting` is decision requests not yet in a pass,
 `batches` and `requests` the passes run and the requests they answered

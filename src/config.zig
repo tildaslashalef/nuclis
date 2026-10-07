@@ -178,6 +178,9 @@ pub const Config = struct {
         /// Seconds a decision request may wait for the GPU before `529
         /// timeout`; a clef-flash request alone can hold it for minutes.
         timeout: u32 = 300,
+        /// The memory every open model may hold together, decision and
+        /// language alike; null is physical memory less 16 GiB.
+        memory_bytes: ?u64 = null,
     };
     /// The agent's token cache (`completer/cache.zig`): model states kept at
     /// turn boundaries so a prefix is restored instead of prefilled again.
@@ -1438,6 +1441,12 @@ test "file values override defaults per key and the source is recorded" {
     try std.testing.expectEqualStrings("0.0.0.0", served.config.serve.host);
     try std.testing.expectEqual(@as(u16, 9000), served.config.serve.port);
     try std.testing.expectEqual(.file, served.source("serve.port"));
+    try std.testing.expect(served.config.serve.memory_bytes == null);
+    var budgeted = try fromText(alloc,
+        \\{ "schema_version": 1, "serve": { "memory_bytes": 21474836480 } }
+    , "budget.json", &diag);
+    defer budgeted.deinit();
+    try std.testing.expectEqual(@as(?u64, 20 << 30), budgeted.config.serve.memory_bytes);
 }
 
 test "registry entries parse by name with their overrides and companions" {

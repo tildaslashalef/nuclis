@@ -213,7 +213,12 @@ apart, so each service is a directory and one registration:
   submitted items one at a time in arrival order, so two models never run
   at once and only the worker touches a model. An item lives in its
   submitter's frame; a waiter that times out unlinks an item that never
-  started and otherwise waits for it. `pipe.zig` is the bounded byte
+  started and otherwise waits for it. A long item (a generation) calls
+  `runShort` between its steps, so short ones (decision batches) run
+  there instead of after it; each model has its own Metal queue and
+  buffers. `memory.zig` is the one budget every open model counts
+  against: before a model opens, the least recently used others close,
+  of either kind, and a model in use is pinned. `pipe.zig` is the bounded byte
   queue a streamed response crosses from the worker to its connection, so
   the worker never writes to a socket.
 - `decisions/` validates on the connection's thread, then waits in the

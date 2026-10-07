@@ -3,7 +3,9 @@
 //! the engine and its buffers (`completer.Open`), the `Completer` that
 //! continues or restores a conversation, and the sampler, set up as the
 //! agent sets them up for the same name, so a served conversation runs as
-//! `nuclis chat` would run it. A request naming another model swaps it.
+//! `nuclis chat` would run it. A request naming another model swaps it. The
+//! model counts against the server's memory budget (`memory.zig`), pinned
+//! while it runs; between requests the budget may close it for another.
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../../config.zig");
@@ -12,6 +14,7 @@ const paths = @import("../../paths.zig");
 const engine = @import("../../engine.zig");
 const completer_mod = @import("../../completer.zig");
 const wire = @import("wire.zig");
+const memory = @import("../memory.zig");
 
 const Allocator = std.mem.Allocator;
 const Profile = inference.profiles;
@@ -33,6 +36,13 @@ pub const Language = struct {
     default_tokens: usize = 0,
     /// Guards `name` for readers on connection tasks (`isOpen`).
     mutex: std.Io.Mutex = .init,
+    /// The server's; null in tests that need no limit.
+    budget: ?*memory.Budget = null,
+    /// What the open model holds against the budget.
+    footprint: u64 = 0,
+    /// What the last model asked for needed before it opened, for the
+    /// message when it does not fit.
+    needed: u64 = 0,
 
     /// What a request asked for that cannot be served, beside engine errors.
     pub const Error = error{ ModelNotFound, NotALanguageModel, ImagesUnsupported, ContextFull, InvalidSamplingOptions };
@@ -58,9 +68,18 @@ pub const Language = struct {
         const default_tokens = settings.max_tokens;
         // Sized for the largest request; each request slices its own budget.
         settings.max_tokens = wire.max_output_tokens;
+        // Before opening: the weights and the states the cache may keep;
+        // once open, the attention cache and the draft file are known.
+        var bytes = fileSize(io, path) + settings.cache.memory_bytes;
+        self.needed = bytes;
+        if (self.budget) |b| try b.reserve(io, bytes, null);
         self.open = try completer_mod.Open.init(self.gpa, io, path, settings);
         const open = &self.open.?;
         errdefer self.close(io);
+        bytes += open.eng.model.session().bytes();
+        if (open.eng.model.drafter() != null) if (open.draft_path) |draft| {
+            bytes += fileSize(io, draft);
+        };
         const profile = open.profile();
         const effort = profile.nearestEffort(settings.think);
         self.sampler = try inference.sampling.Sampler.init(0, profile.samplingOptions(effort, settings.sampling));
@@ -79,13 +98,29 @@ pub const Language = struct {
         self.settings = settings;
         self.default_tokens = default_tokens;
         const owned = try self.gpa.dupe(u8, name);
-        self.mutex.lockUncancelable(io);
-        defer self.mutex.unlock(io);
-        self.name = owned;
+        {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+            self.name = owned;
+        }
+        if (self.budget) |b| {
+            try b.add(io, .language, name, name, 0, .{ .context = self, .close = closeKey });
+            try b.resize(io, name, bytes);
+        }
+        self.footprint = bytes;
+    }
+
+    /// The budget's closer.
+    fn closeKey(context: *anyopaque, io: std.Io, key: []const u8) void {
+        const self: *Language = @ptrCast(@alignCast(context));
+        _ = key;
+        self.close(io);
     }
 
     /// Closes the open model, if any; on the worker, or after it stopped.
     pub fn close(self: *Language, io: std.Io) void {
+        if (self.budget) |b| if (self.name) |n| b.remove(io, n);
+        self.footprint = 0;
         if (self.open) |*open| {
             self.completer.deinit();
             open.deinit(self.gpa);
@@ -123,6 +158,12 @@ pub const Language = struct {
     /// progress). Everything the request needs lives in `arena`.
     pub fn run(self: *Language, io: std.Io, arena: Allocator, request: wire.Request, sink: *completer_mod.Sink, observer: ?inference.observer.Observer) !Ran {
         const open = &self.open.?;
+        // In use: a decision run between its steps may not close it.
+        if (self.budget) |b| {
+            b.touch(io, self.name.?);
+            b.pin(io, self.name.?, true);
+        }
+        defer if (self.budget) |b| b.pin(io, self.name.?, false);
         const profile = open.profile();
         const effort = profile.nearestEffort(request.effort orelse self.settings.think);
         self.completer.effort = effort;
@@ -176,9 +217,17 @@ pub const Language = struct {
         const path = (try engine.visionPath(self.gpa, open.model_path, mmproj)) orelse return error.ImagesUnsupported;
         defer self.gpa.free(path);
         std.Io.Dir.cwd().access(io, path, .{}) catch return error.ImagesUnsupported;
+        const grown = self.footprint + fileSize(io, path);
+        if (self.budget) |b| try b.resize(io, name, grown);
         try open.eng.loadVision(path, self.settings.image_max_tokens.count());
+        self.footprint = grown;
     }
 };
+
+fn fileSize(io: std.Io, path: []const u8) u64 {
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch return 0;
+    return stat.size;
+}
 
 const Counting = struct {
     inner: *completer_mod.Sink,
