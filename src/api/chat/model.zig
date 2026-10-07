@@ -37,11 +37,12 @@ pub const Language = struct {
     /// What a request asked for that cannot be served, beside engine errors.
     pub const Error = error{ ModelNotFound, NotALanguageModel, ImagesUnsupported, ContextFull, InvalidSamplingOptions };
 
-    /// The model a request names (or `engine.model`), opened on this worker
-    /// and the one before it closed when it is another. Only registry and
-    /// catalogue names: the server opens no path a client names.
+    /// The model a request names (none: the open one, else `engine.model`),
+    /// opened on this worker and the one before it closed when it is
+    /// another. Only registry and catalogue names: the server opens no path
+    /// a client names.
     pub fn ensure(self: *Language, io: std.Io, requested: ?[]const u8) !void {
-        const name = requested orelse self.loaded.config.engine.model;
+        const name = requested orelse self.name orelse self.loaded.config.engine.model;
         if (self.name) |current| if (std.mem.eql(u8, current, name)) return;
         const registry = self.loaded.config.models;
         if (registry.find(name)) |entry| {

@@ -25,7 +25,7 @@ METAL    := -Dmetal=true -Doptimize=$(OPT)
 .PHONY: help build debug build-cpu metal install uninstall test test-metal check verify-auto verify verify-release verify-long verify-cpu verify-changed gate gates-list gates-validate \
         fmt fmt-check fmt-py lint-py inspect validate generate bench bench-profile bench-kernels bench-matvec-split bench-matmul bench-matvec-rows bench-hadamard bench-experts bench-attention \
         workload workloads-list workloads-validate speed speed-base spec-matrix \
-        agent agent-eval playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
+        agent agent-eval api-check playground model-ls eval-corpus trace capture clean clean-cache distclean hf-downloader test-hf version release-draft release tag site-check site-serve docs-check
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"} /^[a-zA-Z_-]+:.*##/{printf "  \033[36m%-24s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -215,6 +215,9 @@ agent: metal ## Interactive agent surface on the engine (Metal by default; ARGS=
 
 playground: ## Generate the agent's scratch project under .zig-cache/playground/ (scripts/playground.py) and print its path
 	python3 scripts/playground.py
+
+api-check: metal ## nuclis serve's OpenAI-compatible routes against a real model (not a gate): make api-check ARGS='--model gemma-4-e4b-qat' (scripts/api-check.py --help)
+	python3 scripts/api-check.py --binary $(BIN) $(ARGS)
 
 agent-eval: build ## The agent's task list against the playground: make agent-eval VARIANT=name ARGS='--system-prompt p.txt --seeds 1,2' (scripts/agent-eval.py --help)
 	python3 scripts/agent-eval.py --variant $(VARIANT) $(ARGS)

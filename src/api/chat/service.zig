@@ -107,11 +107,17 @@ const Job = struct {
     request: wire.Request,
     collected: wire.Collector,
     outcome: union(enum) { pending, done: language_mod.Language.Ran, failed: ApiError } = .pending,
+    /// The model that ran, in `arena`.
+    name: []const u8 = "",
 
     fn run(item: *gpu.Item, io: std.Io) gpu.Item.After {
         const self: *Job = @alignCast(@fieldParentPtr("item", item));
         self.language.ensure(io, self.request.model) catch |err| {
             self.outcome = .{ .failed = openFailure(self.arena, self.request.model orelse self.language.loaded.config.engine.model, err) };
+            return .done;
+        };
+        self.name = self.arena.dupe(u8, self.language.name.?) catch {
+            self.outcome = .{ .failed = .init(.internal_server_error, "internal", "out of memory") };
             return .done;
         };
         const ran = self.language.run(io, self.arena, self.request, &self.collected) catch |err| {
@@ -147,7 +153,7 @@ fn respond(arena: std.mem.Allocator, io: std.Io, job: *const Job, ran: language_
     const finish = wire.finishReason(outcome.stop, job.collected.calls.items.len);
     const call_ids = try arena.alloc([]const u8, job.collected.calls.items.len);
     for (call_ids) |*id| id.* = try wire.newId(arena, io, "call_");
-    const name = job.request.model orelse job.language.loaded.config.engine.model;
+    const name = job.name;
     const usage: wire.Usage = .{
         .prompt = reply.prompt_tokens,
         .cached = reply.reused_tokens,
@@ -192,9 +198,9 @@ fn openFailure(arena: std.mem.Allocator, name: []const u8, err: anyerror) ApiErr
 fn runFailure(arena: std.mem.Allocator, language: *language_mod.Language, err: anyerror) ApiError {
     return switch (err) {
         error.ContextFull => if (language.completer.overflow) |o|
-            apiError(arena, .bad_request, "context_length_exceeded", "messages", "context_length_exceeded: the conversation needs {d} tokens and the window holds {d}", .{ o.needed, o.capacity })
+            apiError(arena, .bad_request, "context_length_exceeded", "messages", "the conversation needs {d} tokens and the window holds {d}", .{ o.needed, o.capacity })
         else
-            apiError(arena, .bad_request, "context_length_exceeded", "messages", "context_length_exceeded: the conversation does not fit the window", .{}),
+            apiError(arena, .bad_request, "context_length_exceeded", "messages", "the conversation does not fit the window", .{}),
         error.ImagesUnsupported => apiError(arena, .bad_request, "images_unsupported", "messages", "this model has no image projector pulled; `nuclis model pull <name> --with mmproj` fetches it", .{}),
         error.InvalidSamplingOptions => apiError(arena, .bad_request, "invalid_request", null, "the sampling options are out of range for this model", .{}),
         error.ToolsUnsupported => apiError(arena, .bad_request, "invalid_request", "tools", "this model's prompt profile has no native tool calling", .{}),
