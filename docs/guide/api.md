@@ -1,14 +1,12 @@
 # The nuclis API
 
 `nuclis serve` runs the nuclis API: an HTTP/1.1 server on this machine
-that keeps decision models open and answers typed questions about text
-or JSON. It speaks TypeSafe's Jev protocol, so a client written for
-`api.typesafe.ai` switches by changing its base URL. This page is the
-reference for client authors; it assumes nothing about the code.
-
-Decisions are the first service. An OpenAI-compatible service for the
-language models (`/v1/chat/completions`) is planned beside them on the
-same server and is not served yet.
+with two services. **Decisions** keep decision models open and answer
+typed questions about text or JSON, in TypeSafe's Jev protocol, so a
+client written for `api.typesafe.ai` switches by changing its base URL.
+**Chat Completions** serve the language models in OpenAI's format, so a
+client written for an OpenAI-compatible server does the same. This page
+is the reference for client authors; it assumes nothing about the code.
 
 - [Running the server](#running-the-server)
 - [Conventions](#conventions)
@@ -16,6 +14,9 @@ same server and is not served yet.
 - [Decisions](#decisions): [`POST /v1/systemone`](#post-v1systemone),
   [`POST /v1/decisions`](#post-v1decisions), [questions and
   answers](#questions-and-answers), [batching](#batching)
+- [Chat Completions](#chat-completions): [the request](#the-request),
+  [what is refused](#what-is-refused), [the response](#the-response),
+  [conversations and the cache](#conversations-and-the-cache)
 - [`GET /v1/models`](#get-v1models), [`GET /v1/health`](#get-v1health)
 - [Measured rates](#measured-rates)
 
@@ -31,6 +32,7 @@ nuclis serve                           # http://127.0.0.1:8000/v1, decide.model 
 | `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `serve.host`, `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication. |
 | `--port <n>` | default `serve.port`, `8000` |
 | `--model <name>` | a decision model opened before the server listens (at most 2); without one, `decide.model` opens; others open on their first request |
+| `--chat-model <name>` | a language model opened before the server listens; without one, the first chat request opens one |
 | `--backend cpu\|metal` | where the models run; default `metal` in a Metal build |
 | `--quiet` | no request log (`serve.log: false` does the same) |
 | `--timeout <s>` | how long a request may wait for the GPU before `529 timeout`; default `serve.timeout`, `300` |
@@ -93,7 +95,7 @@ or the error):
 | Limit | Value | Past it |
 | --- | --- | --- |
 | request line and headers | 16 KiB | `431 headers_too_large`, connection closed |
-| request body | 4 MiB | `413 payload_too_large`, connection closed |
+| request body | 4 MiB; 32 MiB for `/v1/chat/completions` | `413 payload_too_large`, connection closed |
 | open connections | 64 | `529 busy`, connection closed |
 | decision requests waiting for the GPU | 64 | `529 busy` |
 | wait before a request starts on the GPU | 300 s (`serve.timeout`) | `529 timeout` (a started pass always finishes) |
@@ -113,13 +115,16 @@ questions alone overflow its 16,384 tokens the same way.
 Every error has the same body, with the HTTP status that fits:
 
 ```json
-{"error": {"code": "model_not_found", "message": "jev-2: not pulled yet (…)"}}
+{"error": {"code": "model_not_found", "message": "jev-2: not pulled yet (…)", "type": "invalid_request_error", "param": "model"}}
 ```
 
-`code` is stable and meant for branching; `message` is for people. The
-statuses follow TypeSafe's: `422` for a body that fails validation, `529`
-when the server is overloaded (retry with backoff, as TypeSafe's SDKs do
-by default).
+`code` is stable and meant for branching; `message` is for people;
+`type` (`invalid_request_error` for a 4xx, `server_error` otherwise) and
+`param` (the request field at fault, or null) are the fields OpenAI's
+SDKs read. The decision routes' statuses follow TypeSafe's: `422` for a
+body that fails validation. The chat route answers `400` instead, which
+OpenAI's SDKs raise as a bad request. Both answer `529` when the server
+is overloaded (retry with backoff, as both families of SDKs do by default).
 
 | Status | Code | When |
 | --- | --- | --- |
@@ -136,11 +141,17 @@ by default).
 | 422 | `options_exceed_budget` | a question's options do not fit the model's budget |
 | 422 | `model_not_found` | `model` names nothing that is pulled |
 | 422 | `not_a_decision_model` | `model` names a language model |
+| 400 | `invalid_json`, `invalid_request` | chat: the body is not JSON, or a field is malformed (`param` names it) |
+| 400 | `unsupported_feature` | chat: a field nuclis cannot honour ([what is refused](#what-is-refused)) |
+| 400 | `not_a_language_model` | chat: `model` names a decision model |
+| 400 | `images_unsupported` | chat: an image for a model whose projector is not pulled |
+| 400 | `context_length_exceeded` | chat: the rendered conversation does not fit the model's window |
+| 404 | `model_not_found` | chat: `model` names no pulled language model |
 | 431 | `headers_too_large` | the request line and headers exceed 16 KiB |
-| 500 | `model_failed` | the model could not be opened |
+| 500 | `model_failed` | the model could not be opened, or a completion failed on the GPU |
 | 500 | `internal`, `invalid_registry_entry` | a fault on the server's side |
 | 503 | `shutting_down` | the server is stopping |
-| 529 | `busy` | 64 decision requests wait already, or 64 connections are open |
+| 529 | `busy` | 64 requests wait already, or 64 connections are open |
 | 529 | `timeout` | the request waited `serve.timeout` (300 s) without reaching the GPU |
 
 ## Decisions
@@ -301,6 +312,107 @@ window, so a lone request starts at once. Requests for another model wait
 at most one pass. A sequence's answer does not depend on what shares its
 pass: batching changes timing, never answers.
 
+## Chat Completions
+
+### `POST /v1/chat/completions`
+
+OpenAI's Chat Completions for the language models `nuclis chat` runs. A
+program written against an OpenAI SDK, or an agent configured for an
+OpenAI-compatible server, works with the base URL
+`http://127.0.0.1:8000/v1` and any API key.
+
+```sh
+curl -s localhost:8000/v1/chat/completions -d '{
+  "model": "qwen3.8-27b",
+  "messages": [{"role": "user", "content": "Name a prime number above 50."}],
+  "reasoning_effort": "none"
+}'
+```
+
+```json
+{
+  "id": "chatcmpl-iteSmCuNOu0Uuhmq6YCwPU8k",
+  "object": "chat.completion",
+  "created": 1791411276,
+  "model": "qwen3.8-27b",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "A prime number above 50 is **53**.\n\nOther examples include 59, 61, 67, and 71."},
+    "logprobs": null,
+    "finish_reason": "stop"
+  }],
+  "usage": {
+    "prompt_tokens": 21, "completion_tokens": 34, "total_tokens": 55,
+    "prompt_tokens_details": {"cached_tokens": 0},
+    "completion_tokens_details": {"reasoning_tokens": 0}
+  }
+}
+```
+
+One language model is open at a time, beside the decision models. A
+request runs with the settings `nuclis chat` resolves for its model
+(context window, attention cache precision, speculative decoding, the
+thinking budget `agent.thinking_budget`), and one request runs on the
+GPU at a time, decisions included.
+
+### The request
+
+| Field | In nuclis |
+| --- | --- |
+| `model` | a registry entry or catalogue name of a language model, never a path. Absent: the open model, else `engine.model`. Another model closes the open one and opens itself; that request pays the load |
+| `messages` | roles `system`, `developer`, `user`, `assistant`, `tool`. `content` is a string, null (an assistant turn of calls only), or parts: `text`, and on user messages `image_url` with a base64 data URL (at most 8 images, 16 MiB each) |
+| assistant `reasoning_content` | the turn's reasoning, given back as it was returned (`reasoning` is read too); the model's template keeps or drops it |
+| assistant `tool_calls`, tool `tool_call_id` | the calls and their results; a result must answer an earlier call |
+| `tools` | `type: "function"` with `name`, `description`, `parameters` (a JSON Schema); at most 64. The model's own template renders them |
+| `tool_choice` | `auto` (the default) or `none`, which renders no tools |
+| `reasoning_effort` | `none` (no reasoning), `minimal` and `low`, `medium`, `high`, `xhigh` (`max` reads as `xhigh`); the model's nearest level. Absent: `agent.think` |
+| `max_completion_tokens`, `max_tokens` | the output budget, reasoning included; absent: the model's `max_tokens` setting. Larger values are capped at 16,384 and at what the window leaves after the prompt |
+| `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty` | each overrides one option of the model's sampling for the effort; `temperature: 0` is greedy |
+| `seed` | the sampler's seed for this request |
+
+Accepted and ignored, because they change nothing here: `user`,
+`store`, `metadata`, `prompt_cache_key`, `service_tier`,
+`parallel_tool_calls`, `stream_options`, and `frequency_penalty: 0`.
+
+### What is refused
+
+`400 unsupported_feature`, with `param` naming the field, for what would
+change the result and cannot be honoured:
+
+| Field | Why |
+| --- | --- |
+| `stream: true` | streamed responses are not served yet |
+| `response_format` other than `text`, `tool_choice: "required"` or a named function | they need the sampler to mask tokens against a grammar, which the engine does not have |
+| `n` above 1, `logprobs`, `top_logprobs` | one choice per request; log probabilities are not returned |
+| `stop`, `logit_bias`, `frequency_penalty` other than 0 | not implemented; the model's own end of turn stops it |
+| `audio`, `modalities` beyond `text`, `prediction`, part types other than `text` and `image_url` | text out, text and images in |
+| an `image_url` that is not a data URL | the server fetches no URL |
+
+### The response
+
+`message.content` is the answer, null when the turn is only calls;
+`message.reasoning_content` the reasoning, when there was any;
+`message.tool_calls` the calls, each with a fresh `call_` id, its
+`arguments` a JSON object as text. `finish_reason` is `tool_calls` when
+the turn made calls, `length` when it reached the output budget or the
+window, `stop` otherwise. `usage.prompt_tokens` is the whole rendered
+conversation, `completion_tokens` everything generated (reasoning
+included, `reasoning_tokens` of it).
+
+### Conversations and the cache
+
+A client sends the whole conversation every request; nothing is stored
+between requests, and no response id carries state. The model's state is
+reused anyway: the server continues the session it holds when the new
+conversation extends what it last consumed, otherwise restores the
+longest earlier state it kept at the end of an answer (in memory, within
+`cache.memory_bytes`, 4 GiB), and prefills only the rest.
+`usage.prompt_tokens_details.cached_tokens` says how much was reused. On
+Qwen3.8, three requests of one conversation reported 0, 37 of 55, and 65
+of 86 tokens cached, and a tool round trip reused 360 of 390. A
+conversation with an image in it is prefilled whole on every request,
+and changing the model empties the cache.
+
 ## `GET /v1/models`
 
 OpenAI's list shape, so an OpenAI client reads the ids; the `nuclis`
@@ -334,7 +446,8 @@ object is for nuclis clients.
 ```
 
 Every decision model of the catalogue and the registry is listed, pulled
-or not:
+or not, then every language model that is present (the ones `/model`
+offers in `nuclis chat`). A decision model's fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -348,6 +461,17 @@ or not:
 | `owned_by` | the repository's owner, `local` for a directory |
 | `created` | always 0 |
 
+A language model's (`owned_by` is `nuclis`):
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `language` |
+| `present`, `loaded`, `default` | as above; `default` is `engine.model` |
+| `context_length` | the window it opens with (`ctx_size`) |
+| `images` | its entry names a projector |
+| `efforts` | the reasoning levels its template renders |
+| `detail` | architecture, quantization, and size, or the file's name |
+
 ## `GET /v1/health`
 
 ```json
@@ -356,13 +480,16 @@ or not:
   "version": "0.4.0-dev",
   "backend": "metal",
   "loaded": ["laya", "laya-multilingual"],
+  "language": "qwen3.8-27b",
   "queue": {"queued": 0, "running": false, "completed": 1709},
   "decisions": {"waiting": 0, "batches": 1707, "requests": 3136},
   "connections": 1
 }
 ```
 
-`queue` is the GPU's (`completed` counts GPU items, a batch being one);
+`loaded` lists the open decision models, `language` the open language
+model (null before the first chat request). `queue` is the GPU's
+(`completed` counts GPU items, a batch or a completion being one);
 `decisions.waiting` is decision requests not yet in a pass,
 `batches` and `requests` the passes run and the requests they answered
 since the start.

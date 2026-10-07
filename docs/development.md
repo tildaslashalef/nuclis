@@ -41,7 +41,7 @@ src/                 executable: CLI, model commands, config
   src/agent/         agent composition: engine, conversation, sessions, tools
   src/decision/      the decision request and response JSON, model names
   src/api/           nuclis serve: HTTP transport, router, GPU executor,
-                     services (decisions/)
+                     services (decisions/, chat/)
 inference/           engine library: runtime, quantization, tokenizer,
                      sampling, backends, profiles
 huggingface/         Hub download library (Xet) and its standalone binary;

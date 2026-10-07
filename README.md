@@ -209,6 +209,23 @@ curl -s localhost:8000/v1/systemone -d '{"model": "clef-flash",
   "questions": {"team": {"type": "choice", "criteria": {"billing": "Payments", "technical": "Outages"}}}}'
 ```
 
+## The language models over HTTP
+
+`nuclis serve` also answers OpenAI's Chat Completions for the language
+models, so a program or an agent written for an OpenAI-compatible server
+changes only its base URL (`http://127.0.0.1:8000/v1`). One model is open
+at a time; a request names it, and tools, images, and the reasoning
+effort map onto the model's own template. The client resends the whole
+conversation, and the server reuses the model's state for what it has
+already seen: a three-request conversation on Qwen3.8 reported 37 of 55,
+then 65 of 86 prompt tokens cached. Streamed responses are not served yet.
+
+```sh
+nuclis serve --chat-model qwen3.8-27b
+curl -s localhost:8000/v1/chat/completions -d '{"model": "qwen3.8-27b",
+  "messages": [{"role": "user", "content": "Name a prime number above 50."}]}'
+```
+
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): how a token flows through
