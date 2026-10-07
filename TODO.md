@@ -15,12 +15,9 @@ it is empty, ask what to work on and write the agreed plan here.
 ## Where we are
 
 The plan below was agreed on 2026-10-07. The completer and the streaming
-transport merged as #7; Chat Completions without streaming is done on
-branch `chat-completions` (its pull request awaiting review):
-`src/api/chat/` (`wire.zig` the request and response, `model.zig` the
-open language model, `service.zig` the route and the listing),
-`make api-check`, and the API guide's § Chat Completions. Next: **Chat
-Completions, streamed**, on a branch cut from `main` once it merges.
+transport merged as #7, Chat Completions without streaming as #8. In
+progress: **Chat Completions, streamed**, on branch
+`chat-completions-stream`.
 
 | Unit | Branch | What |
 | --- | --- | --- |
@@ -77,7 +74,7 @@ and [docs/spec.md](docs/spec.md) §6 `serve`; each unit updates them.
 
 ## Chat Completions, streamed
 
-Base: set when the branch is cut.
+Base: `5abd749`
 
 **Why.** Every agent streams; pi always sends `stream: true`. This unit
 delivers the same events as server-sent events and makes a long request
