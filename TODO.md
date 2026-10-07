@@ -15,20 +15,23 @@ it is empty, ask what to work on and write the agreed plan here.
 ## Where we are
 
 The plan below was agreed on 2026-10-07. The completer and the streaming
-transport merged as #7. In progress: **Chat Completions, whole
-responses**, on branch `chat-completions`.
+transport merged as #7; Chat Completions without streaming is done on
+branch `chat-completions` (its pull request awaiting review):
+`src/api/chat/` (`wire.zig` the request and response, `model.zig` the
+open language model, `service.zig` the route and the listing),
+`make api-check`, and the API guide's § Chat Completions. Next: **Chat
+Completions, streamed**, on a branch cut from `main` once it merges.
 
 | Unit | Branch | What |
 | --- | --- | --- |
-| Chat Completions, whole responses | `chat-completions` | `POST /v1/chat/completions` without streaming, language models in `GET /v1/models`, the API guide and spec |
 | Chat Completions, streamed | `chat-completions-stream` | `stream: true`, cancellation by disconnect, keepalives, pi as the acceptance client |
 | Responses, stateless | `responses-stateless` | `POST /v1/responses` with `store: false`, over the same core |
 
 ## The theme: an OpenAI-compatible service for the language models
 
-Shared by every unit below; Chat Completions, whole responses writes it into
-[docs/guide/api.md](docs/guide/api.md) and [docs/spec.md](docs/spec.md)
-(§6 `serve`, §10, which lists the service as deferred).
+Shared by the units below. What is served is written in
+[docs/guide/api.md § Chat Completions](docs/guide/api.md#chat-completions)
+and [docs/spec.md](docs/spec.md) §6 `serve`; each unit updates them.
 
 **Decisions (user, 2026-10-07).**
 - **The target is clients of OpenAI-compatible local servers.** The
@@ -72,108 +75,6 @@ Shared by every unit below; Chat Completions, whole responses writes it into
   (null or the field), which the SDKs read; decision clients ignore them.
   The SDKs retry 409, 429 and 5xx, so no route answers 409.
 
-## Chat Completions, whole responses
-
-Base: `69258c8`
-
-**Why.** The route itself, without streaming: everything a request means
-is decided here, and the streamed unit only changes how it is delivered.
-
-1. **The service.** `src/api/chat/service.zig`, registered beside the
-   decision service in `src/api/root.zig` `Server.register`: `POST
-   /v1/chat/completions` (32 MiB body). The handler parses and validates
-   on the connection task, submits one `gpu.Item` that runs the
-   conversation, and waits as the decision service does (`serve.timeout`
-   before it starts; a started item is waited for). The item owns no
-   socket.
-2. **The language model on the worker.** `src/api/chat/model.zig`: the
-   open model (`engine.Engine`), its `Completer` with `clamp_budget =
-   true`, the sampler, history and buffers, built as `agent/print.zig`
-   `run` builds them, from `config.Resolved` for the model name
-   (`engine.model` when the request names none). Opened lazily by the first
-   item (or at start with `serve --chat-model <name>`; decide the flag
-   name against `cli.zig`), closed and reopened when a request names
-   another. `cache.Memory` at `cache.memory_bytes`; no disk tier in this
-   unit (`save_turns = false`).
-3. **Request → `Completer.run`.** Per request, on the worker:
-   `completer.effort` from `reasoning_effort` (`none` → `off`, `minimal` →
-   `low`, others by name; absent → the resolved `think`), sampler options
-   from `profile.samplingOptions(effort, overrides)` with the request's
-   `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`,
-   `repetition_penalty`, `seed` (absent → `0`), `buffers.generated`
-   sliced to `max_completion_tokens` or `max_tokens` (absent → the
-   resolved `max_tokens`; at most `config.max_output_tokens`), then
-   `run(messages, definitions, images, sink)`; `checkpoint` after a
-   response that ends in an answer, as the loop does at a turn end.
-   Mapping (`src/api/chat/wire.zig`, pure, unit-tested without a model):
-
-   | Wire | `Profile` |
-   | --- | --- |
-   | `messages[].role` `system`, `developer`, `user`, `assistant`, `tool` | `Role`, one to one |
-   | `content`: a string, or parts `text` and `image_url` (`data:` URL) | `content`, joined; images through `Model.encode_image`, `ImageRef` on the message; a remote URL is `400` |
-   | assistant `reasoning_content` (also read: `reasoning`) | `reasoning_content` |
-   | assistant `tool_calls[{id, type: "function", function{name, arguments}}]` | `tool_calls`, ids mapped to `u32` by first appearance in this request |
-   | tool `tool_call_id` | `tool_call_id` through the same map; an unknown id is `400` |
-   | `tools[{type: "function", function{name, description, parameters}}]` | `ToolDefinition`, `parameters` re-serialized as JSON text |
-   | `tool_choice` `auto` / `none` | definitions passed / none |
-
-   What pi sends that the mapping must take (`openai-completions.ts`
-   `buildParams`, `convertMessages`): the system prompt as role
-   `developer` for a reasoning model; assistant `content: null` when the
-   turn had only calls; `tools: []` when the history has calls but no
-   tools; tool results as plain strings (`(no tool output)` when empty),
-   and a tool's images as a following user message; `store: false`;
-   `max_completion_tokens` (or `max_tokens`); no `tool_choice`, no
-   `parallel_tool_calls`; ids passed through unchanged.
-
-   Bounds: `profiles.Limits` (1,024 messages, 64 tools), 8 images
-   (`decide.max_images`), a model without a projector answers
-   `400 images_unsupported`.
-4. **Events → the response.** The sink accumulates: `thinking` →
-   `message.reasoning_content`; `answer` → `message.content`;
-   `tool_call` → `message.tool_calls[]` with a fresh id
-   (`call_` + 24 random base62 characters, unique across requests, mapped
-   to the engine's `u32` only inside a request); `tool_progress` and
-   `tool_cut` → nothing. `finish_reason`: `tool_calls` when calls were
-   decoded, else `stop` for `eos`, `length` for `token_budget` and
-   `context_limit`; `failure` is `500 model_failed`. `usage`:
-   `prompt_tokens` (rendered prompt), `completion_tokens`,
-   `prompt_tokens_details.cached_tokens` (tokens continued or restored:
-   the `Replay`'s `restored`, or the consumed length when the session
-   continued), `completion_tokens_details.reasoning_tokens`. The object:
-   `id` (`chatcmpl-` + random), `object: "chat.completion"`, `created`,
-   `model`, `choices[0]{index, message, finish_reason}`, `usage`. Model
-   text is UTF-8 checked before it is written.
-5. **`GET /v1/models`.** (pi reads its `models.json` list and never calls
-   this; other clients build their pickers from it.) A `models.Source`
-   for language models: registry
-   and catalogue entries of kind language, `owned_by: "nuclis"`, and in the
-   `nuclis` object `kind: "language"`, `present`, `loaded`,
-   `context_length` (the resolved `ctx_size`), `images` (projector
-   present), `efforts`.
-6. **Errors.** `errors.zig` gains `type` and `param`, written for every
-   route; the decision routes' tests updated for the two new fields.
-   `ContextFull` with the prompt alone over the window is
-   `400 context_length_exceeded` with the counts; pi matches
-   `context_length_exceeded` in the error text and compacts rather than
-   retrying (`packages/ai/src/utils/overflow.ts`). The 529 messages say
-   "overloaded", which pi's agent-level retry matches
-   (`RETRYABLE_PROVIDER_ERROR_PATTERN`).
-7. **Documents.** `docs/guide/api.md` § Chat Completions (the request
-   fields, the mapping, what is refused and why, a `curl` example, the
-   pi `models.json` entry); `docs/spec.md` §6 `serve` row and §10;
-   `nuclis serve --help`.
-
-**Gates.** `zig build test` (the wire mapping and the sink without a
-model), `make docs-check`, `make verify-auto`. Exercise with the built
-binary: a `curl` conversation of three requests against Qwen3.8 (the
-second and third report `cached_tokens` near the previous prompt), one
-tool round trip (`tools` → `tool_calls` → a `tool` message → the answer),
-one image with Gemma 4 12B, a refused `response_format`. A stdlib-only
-check, `scripts/api-check.py` (`make api-check`, not a gate: it needs a
-running server and a model), sends those requests and asserts the shapes
-the OpenAI SDKs parse.
-
 ## Chat Completions, streamed
 
 Base: set when the branch is cut.
@@ -181,6 +82,11 @@ Base: set when the branch is cut.
 **Why.** Every agent streams; pi always sends `stream: true`. This unit
 delivers the same events as server-sent events and makes a long request
 safe to abandon.
+
+It builds on `src/api/chat/`: `wire.parse` stops refusing `stream`
+(reads `stream_options.include_usage`), `Language.run` takes the sink it
+writes through instead of a `wire.Collector`, and the `Job` carries the
+`Pipe` and a cancel flag its `Observer` reads (`Completer.observer`).
 
 1. **SSE.** `stream: true` answers through `http.Response.stream`
    (`content-type: text/event-stream`). The GPU item's sink writes
