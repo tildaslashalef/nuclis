@@ -84,8 +84,10 @@ pub const Peer = struct {
 /// A response body written after the head, on the connection's task:
 /// `transfer-encoding: chunked`, or for an HTTP/1.0 client the body until
 /// the connection closes. The head is flushed before `write` runs. `write`
-/// returns false when the stream failed, which closes the connection;
-/// `context` must outlive it.
+/// runs exactly once, even when the head could not be sent (its sends then
+/// fail), so a stream that owns work can always release it. It returns
+/// false when the stream failed, which closes the connection; `context`
+/// must outlive it.
 pub const Stream = struct {
     context: *anyopaque,
     write: *const fn (context: *anyopaque, io: std.Io, body: *Body) bool,
@@ -96,15 +98,17 @@ pub const Stream = struct {
 
 /// What a `Stream` writes through.
 pub const Body = struct {
-    inner: *std.http.BodyWriter,
+    /// Null when the head could not be sent: every send fails.
+    inner: ?*std.http.BodyWriter,
     /// Bytes sent so far, for the log.
     bytes: usize = 0,
 
     /// Writes `bytes` and flushes them to the client: one chunk.
     pub fn send(self: *Body, bytes: []const u8) std.Io.Writer.Error!void {
-        try self.inner.writer.writeAll(bytes);
-        try self.inner.writer.flush();
-        try self.inner.flush();
+        const inner = self.inner orelse return error.WriteFailed;
+        try inner.writer.writeAll(bytes);
+        try inner.writer.flush();
+        try inner.flush();
         self.bytes += bytes.len;
     }
 };
@@ -256,11 +260,19 @@ const Exchange = struct {
             var inner = writer;
             var body: Body = .{ .inner = &inner };
             defer bytes = body.bytes;
-            inner.flush() catch break :blk false;
+            inner.flush() catch {
+                body.inner = null;
+                _ = stream.write(stream.context, self.io, &body);
+                break :blk false;
+            };
             if (!stream.write(stream.context, self.io, &body)) break :blk false;
             inner.end() catch break :blk false;
             break :blk true;
-        } else |_| false;
+        } else |_| blk: {
+            var body: Body = .{ .inner = null };
+            _ = stream.write(stream.context, self.io, &body);
+            break :blk false;
+        };
         if (self.log) |l| l.request(self.io, .{
             .method = self.method,
             .path = self.path,

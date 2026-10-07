@@ -16,7 +16,8 @@ is the reference for client authors; it assumes nothing about the code.
   answers](#questions-and-answers), [batching](#batching)
 - [Chat Completions](#chat-completions): [the request](#the-request),
   [what is refused](#what-is-refused), [the response](#the-response),
-  [conversations and the cache](#conversations-and-the-cache)
+  [streaming](#streaming), [conversations and the
+  cache](#conversations-and-the-cache), [agents](#agents)
 - [`GET /v1/models`](#get-v1models), [`GET /v1/health`](#get-v1health)
 - [Measured rates](#measured-rates)
 
@@ -369,10 +370,11 @@ GPU at a time, decisions included.
 | `max_completion_tokens`, `max_tokens` | the output budget, reasoning included; absent: the model's `max_tokens` setting. Larger values are capped at 16,384 and at what the window leaves after the prompt |
 | `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repetition_penalty` | each overrides one option of the model's sampling for the effort; `temperature: 0` is greedy |
 | `seed` | the sampler's seed for this request |
+| `stream`, `stream_options.include_usage` | server-sent events instead of one body ([streaming](#streaming)); with `include_usage`, a last chunk carries the usage |
 
 Accepted and ignored, because they change nothing here: `user`,
 `store`, `metadata`, `prompt_cache_key`, `service_tier`,
-`parallel_tool_calls`, `stream_options`, and `frequency_penalty: 0`.
+`parallel_tool_calls`, and `frequency_penalty: 0`.
 
 ### What is refused
 
@@ -381,7 +383,6 @@ change the result and cannot be honoured:
 
 | Field | Why |
 | --- | --- |
-| `stream: true` | streamed responses are not served yet |
 | `response_format` other than `text`, `tool_choice: "required"` or a named function | they need the sampler to mask tokens against a grammar, which the engine does not have |
 | `n` above 1, `logprobs`, `top_logprobs` | one choice per request; log probabilities are not returned |
 | `stop`, `logit_bias`, `frequency_penalty` other than 0 | not implemented; the model's own end of turn stops it |
@@ -399,6 +400,36 @@ window, `stop` otherwise. `usage.prompt_tokens` is the whole rendered
 conversation, `completion_tokens` everything generated (reasoning
 included, `reasoning_tokens` of it).
 
+### Streaming
+
+With `"stream": true` the answer is `text/event-stream`: one `data:` line
+per `chat.completion.chunk`, then `data: [DONE]`. The first chunk carries
+`delta.role`, then each piece of reasoning is a `delta.reasoning_content`
+and each piece of the answer a `delta.content`, as the model writes them
+(a character split across tokens is held until it is whole). Each call is
+one chunk with `delta.tool_calls[{index, id, type, function{name,
+arguments}}]`, the arguments whole: the model's call syntax is decoded
+only once it is complete. The last choice chunk carries the
+`finish_reason`; with `include_usage`, a chunk with no choices carries the
+usage. An error after the stream began (the model fails, or the request
+waited `serve.timeout` without reaching the GPU) is one
+`data: {"error": {…}}` line, and the stream ends.
+
+The status and headers are sent at once, before the request waits for
+the GPU, and a stream that has been silent for 10 s gets an SSE comment
+saying where the request stands (`: queued`, `: prefill 4096/6635`,
+`: generating 812`); clients ignore comments, and their idle timeouts
+(300 s for pi, 600 s for OpenAI's SDKs) do not fire during a long
+prefill. A 6,635-token prompt on Qwen3.8 prefilled for 85 s with a
+comment every 10 s.
+
+A client that closes the connection stops its request, streamed or not:
+the server notices within a second, the model stops at its next step,
+and the log line says `cancelled`. A request still waiting for the GPU is
+taken out of the queue. Cancelling a streamed request after 22 tokens and
+a whole one after 3 s (its client's timeout) both stopped within the
+second.
+
 ### Conversations and the cache
 
 A client sends the whole conversation every request; nothing is stored
@@ -412,6 +443,51 @@ Qwen3.8, three requests of one conversation reported 0, 37 of 55, and 65
 of 86 tokens cached, and a tool round trip reused 360 of 390. A
 conversation with an image in it is prefilled whole on every request,
 and changing the model empties the cache.
+
+One request runs on the GPU at a time, decisions included, so a decision
+waits for a generation that is running: a `laya-multilingual` decision
+sent 5 s into a 2,000-token Qwen3.8 generation was answered after 136.5 s,
+when the generation ended.
+
+### Agents
+
+An agent built for OpenAI-compatible servers connects as a custom
+provider. For pi, `~/.pi/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "nuclis": {
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "nuclis",
+      "models": [{
+        "id": "qwen3.8-27b",
+        "reasoning": true,
+        "thinkingLevelMap": {"off": "none", "xhigh": "xhigh"},
+        "input": ["text", "image"],
+        "contextWindow": 16384,
+        "maxTokens": 8192
+      }]
+    }
+  }
+}
+```
+
+pi wants an API key and accepts any. `reasoning: true` makes it send
+`reasoning_effort` and give the reasoning back each turn; the
+`thinkingLevelMap` sends `none` when thinking is off (otherwise nothing is
+sent and `agent.think` applies) and offers `xhigh`. `contextWindow` is the
+model's `ctx_size`. Its defaults for an unknown server fit nuclis as they
+are (the `developer` role, `max_completion_tokens`, streamed usage).
+
+With this entry, pi 1.1.0 on Qwen3.8 did one of the agent playground's
+tasks (a new module, its export, its tests, and a test run) in five
+requests. The first prefilled pi's 7,297-token system prompt and tools in
+109 s; each later one continued the session, reusing everything the
+previous one had consumed (7,582 of 8,050 tokens, then 8,337 of 9,181,
+10,251 of 10,357, and 10,419 of 10,591). Esc in pi cancelled a request
+in its prefill.
 
 ## `GET /v1/models`
 
