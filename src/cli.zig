@@ -862,7 +862,7 @@ fn runServe(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const options = try api.parseArgs(arena_state.allocator(), words, loaded.config.serve, diag);
-    return api.serve(alloc, io, .{ .root = root, .registry = loaded.config.models, .default_model = loaded.config.decide.model, .version = version }, options, out, sty, diag);
+    return api.serve(alloc, io, .{ .root = root, .loaded = &loaded, .registry = loaded.config.models, .default_model = loaded.config.decide.model, .version = version }, options, out, sty, diag);
 }
 
 const known_architectures = blk: {
