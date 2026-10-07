@@ -14,17 +14,16 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-The plan below was agreed on 2026-10-07. The completer and the streaming
-transport merged as #7, Chat Completions as #8; streaming, keepalives,
-and cancellation are done on branch `chat-completions-stream` (its pull
-request awaiting review), with pi 1.1.0 as the accepted client. Next:
-**Responses, stateless**, on a branch cut from `main` once it merges.
-Measured and left open (docs/guide/api.md § Conversations and the
-cache, docs/spec.md §10): a decision waits behind a running generation,
-136.5 s behind 2,000 Qwen3.8 tokens.
+The plan below was agreed on 2026-10-07; the completer and streaming
+transport (#7), Chat Completions (#8), and their streaming with pi as the
+accepted client (#9) merged. In progress: **decisions beside a
+generation**, on branch `decisions-beside-generation` (agreed 2026-10-08,
+before the Responses API, which waits on a concrete Responses-only
+client).
 
 | Unit | Branch | What |
 | --- | --- | --- |
+| Decisions beside a generation | `decisions-beside-generation` | one memory budget over both kinds of model, evicting the least recently used; queued decisions run between a generation's steps |
 | Responses, stateless | `responses-stateless` | `POST /v1/responses` with `store: false`, over the same core |
 
 ## The theme: an OpenAI-compatible service for the language models
@@ -74,6 +73,72 @@ and [docs/spec.md](docs/spec.md) §6 `serve`; each unit updates them.
   (`invalid_request_error` for 4xx, `server_error` for 5xx) and `param`
   (null or the field), which the SDKs read; decision clients ignore them.
   The SDKs retry 409, 429 and 5xx, so no route answers 409.
+
+## Decisions beside a generation
+
+Base: `31114b3`
+
+**Why.** One executor serves both kinds of model, and a chat item holds
+the worker for its whole prefill and decode: a `laya-multilingual`
+decision sent 5 s into a 2,000-token Qwen3.8 generation was answered
+after 136.5 s, and one behind a long prefill would reach `serve.timeout`
+and fail `529 timeout`. And nothing bounds the two kinds together: one
+language model and two decision models may be resident at once (about
+34 GB in the worst catalogue case), with no limit against the machine.
+Decisions (user, 2026-10-08): a shared budget with eviction across kinds,
+default physical memory minus 16 GiB; decisions interleaved with a
+generation; no engine change.
+
+1. **The budget** (`src/api/memory.zig`, pure, tested with fake models).
+   `Budget{ limit }` holds the resident models: kind, name, bytes, last
+   use, pinned. `reserve(bytes, owner)` closes the least recently used
+   unpinned others (through each entry's `close` callback, on the worker)
+   until `bytes` fit; `ModelTooLarge` when `bytes` exceed the limit alone,
+   `Pinned` when only pinned models stand in the way. `add`, `resize`,
+   `touch`, `remove`, `pin`/`unpin`; a snapshot for `/v1/health` under a
+   lock (the rest is worker-only).
+2. **Footprints.** A decision model: the regular files of its checkpoint
+   directory plus its backbone and projector (`Location`), reserved before
+   `Decider.open` in `Pool.acquire`; the pool's two slots stay, and an
+   evicted slot is closed through the budget. A language model: before
+   `Open.init`, its weights file, its draft file when speculative decoding
+   is on, and `cache.memory_bytes` (the states it may keep); after,
+   `resize` to the same plus `Session.bytes()` (the KV cache), evicting
+   more if the estimate was short; plus the projector's file when
+   `loadVision` runs. `Language.close` removes it.
+3. **The limit.** `serve.memory_bytes` (`config.zig` `Serve`, null = auto:
+   physical memory, `hw.memsize`, minus 16 GiB, at least 4 GiB); flag
+   `--memory <GiB>`. A model alone over the limit is refused: `400
+   model_too_large` (chat), `422 model_too_large` (decisions), naming the
+   bytes and the limit. `/v1/health` gains `memory {limit, resident,
+   models[{name, kind, bytes}]}`.
+4. **Decisions between steps.** `gpu.Item` gains `short: bool` (the
+   decision batcher's drain item and the decision preload set it).
+   `Executor.runShort(io)`, called only on the worker from inside a
+   running item, unlinks the short items queued at that moment and runs
+   each once (`.again` requeues at the tail; `done` finishes it as `run`
+   does). The chat job pins its language model for its run and calls
+   `runShort` from its `Observer.progress` (after each generated token,
+   after each prefill chunk). Each model has its own Metal backend and
+   queue, and decode reports progress after sampling, so a decision pass
+   there touches nothing the generation holds. A batch whose model would
+   need the pinned language model evicted gets `Pinned` from the pool and
+   puts its jobs back (`.again`): it runs after the generation, as today.
+5. **Documents.** `docs/guide/api.md` (§ Running the server: the budget
+   and `--memory`; § Conversations and the cache: the decision wait
+   replaced by the measurement; Errors; `GET /v1/health`),
+   `docs/guide/configuration.md` (`serve.memory_bytes`), `docs/spec.md`
+   §6 and §10, `nuclis serve --help`, `docs/architecture.md` § The API
+   layer.
+
+**Gates.** `zig build test` (the budget's eviction order, pins,
+too-large, resize; `runShort` on queued short items only, `.again`
+requeued), `make verify-auto`, `make api-check`. Measured with the built
+binary and written into the guide: the decision sent 5 s into a
+2,000-token Qwen3.8 generation (target: answered within 0.3 s; the
+generation's slowdown); `--memory 20` with Qwen3.8 open, then a
+clef-flash decision (evicts Qwen3.8 when the generation is not running;
+waits for it when it is); a model over the limit refused.
 
 ## Responses, stateless
 
