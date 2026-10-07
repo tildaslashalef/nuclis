@@ -74,6 +74,19 @@ pub const Budget = struct {
         }
     }
 
+    /// Whether `reserve(bytes)` can succeed: everything unpinned may be
+    /// closed. No side effects, so a caller can ask before closing its own.
+    pub fn canFit(self: *Budget, io: std.Io, bytes: u64) Error!void {
+        if (bytes > self.limit) return error.ModelTooLarge;
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        var pinned: u64 = 0;
+        for (self.entries.items) |e| if (e.pinned) {
+            pinned += e.bytes;
+        };
+        if (pinned + bytes > self.limit) return error.Pinned;
+    }
+
     /// Registers a model that has opened, `bytes` resident.
     pub fn add(self: *Budget, io: std.Io, kind: Kind, key: []const u8, name: []const u8, bytes: u64, closer: Closer) !void {
         const owned_key = try self.gpa.dupe(u8, key);
@@ -144,6 +157,13 @@ pub const Budget = struct {
             m.* = .{ .kind = e.kind, .name = try arena.dupe(u8, e.name), .bytes = e.bytes };
         }
         return out;
+    }
+
+    /// Bytes `key`'s model holds; 0 when it is not registered.
+    pub fn bytesOf(self: *Budget, io: std.Io, key: []const u8) u64 {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        return if (self.findLocked(key)) |e| e.bytes else 0;
     }
 
     /// Bytes held by every registered model; any task.
@@ -251,6 +271,7 @@ test "a pinned model is never closed; too large is refused at once" {
     // 25 more: laya goes, qwen stays, and 70 + 25 fits.
     try budget.reserve(io, 25, null);
     try std.testing.expectEqualStrings("laya", fake.closed.items[0]);
+    try std.testing.expectError(error.Pinned, budget.canFit(io, 40));
     try std.testing.expectError(error.Pinned, budget.reserve(io, 40, null));
     budget.pin(io, "qwen", false);
     try budget.reserve(io, 40, null);

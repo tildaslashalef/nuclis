@@ -68,7 +68,8 @@ pub const Batcher = struct {
     max_waiting: usize,
     /// The drain item is queued or running.
     scheduled: bool = false,
-    item: gpu.Item = .{ .run = drain },
+    /// Short: a batch may run between a generation's steps.
+    item: gpu.Item = .{ .run = drain, .short = true },
     /// The worker's lists for one batch; reset per batch.
     scratch: std.heap.ArenaAllocator,
     max_rows: usize = decide.batch_rows,
@@ -202,6 +203,9 @@ pub const Batcher = struct {
     fn answer(self: *Batcher, io: std.Io, taken: []const *Job) []const *Job {
         const first = taken[0];
         const acquired = self.pool.acquire(io, .{ .directory = first.directory, .backbone = first.backbone, .mmproj = first.mmproj }, first.name) catch |err| {
+            // A generation holds the memory this model needs: the batch
+            // waits for it to end instead of failing.
+            if (err == error.Pinned) return taken;
             for (taken) |job| self.finish(io, job, .{ .failed = openFailure(job.arena, job.name, err) });
             return &.{};
         };
@@ -281,6 +285,7 @@ pub fn failure(arena: std.mem.Allocator, name: []const u8, err: anyerror) ApiErr
 }
 
 pub fn openFailure(arena: std.mem.Allocator, name: []const u8, err: anyerror) ApiError {
+    if (err == error.ModelTooLarge) return .init(.unprocessable_entity, "model_too_large", arena.print("{s} needs more memory than the server's budget allows (serve.memory_bytes, --memory)", .{name}) catch "the model needs more memory than the budget allows");
     if (err == error.MetalNotEnabled) return .init(.internal_server_error, "model_failed", "this build has no Metal backend; serve with --backend cpu");
     return .init(.internal_server_error, "model_failed", arena.print("{s}: not a decision checkpoint nuclis can run ({s})", .{ name, @errorName(err) }) catch "the model failed to open");
 }

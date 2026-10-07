@@ -16,6 +16,7 @@ const models = @import("models.zig");
 const router_mod = @import("router.zig");
 const decisions = @import("decisions/service.zig");
 const chat = @import("chat/service.zig");
+const memory = @import("memory.zig");
 const log_mod = @import("log.zig");
 const batcher = @import("decisions/batcher.zig");
 const interrupt = @import("../interrupt.zig");
@@ -45,13 +46,15 @@ pub const Options = struct {
     backend: ?inference.decide.Backend = null,
     /// A language model opened at start; otherwise the first chat request opens one.
     chat_model: ?[]const u8 = null,
+    /// What every open model may hold together; null is the default.
+    memory_bytes: ?u64 = null,
 };
 
 /// Parses the words after `serve` over `serve`'s configured `host` and
 /// `port`; `arena` owns the list.
 pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured: config.Config.Serve, diag: *config.Diagnostic) !Options {
-    var o: Options = .{ .host = configured.host, .port = configured.port, .log = configured.log, .timeout = configured.timeout };
-    var seen: struct { host: bool = false, port: bool = false, timeout: bool = false } = .{};
+    var o: Options = .{ .host = configured.host, .port = configured.port, .log = configured.log, .timeout = configured.timeout, .memory_bytes = configured.memory_bytes };
+    var seen: struct { host: bool = false, port: bool = false, timeout: bool = false, memory: bool = false } = .{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const flag = args[i];
@@ -59,7 +62,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
             o.log = false;
             continue;
         }
-        const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend", "--timeout", "--chat-model" }) |k| {
+        const known = for ([_][]const u8{ "--host", "--port", "--model", "--backend", "--timeout", "--chat-model", "--memory" }) |k| {
             if (std.mem.eql(u8, flag, k)) break true;
         } else false;
         if (!known) {
@@ -92,6 +95,15 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, configured:
             };
         } else if (std.mem.eql(u8, flag, "--model")) {
             try o.models.append(arena, value);
+        } else if (std.mem.eql(u8, flag, "--memory")) {
+            if (seen.memory) return error.DuplicateOption;
+            seen.memory = true;
+            const gib = std.fmt.parseInt(u64, value, 10) catch 0;
+            if (gib == 0 or gib > 4096) {
+                diag.set("--memory takes whole GiB, 1 to 4096, not {s}", .{value});
+                return error.InvalidOptionValue;
+            }
+            o.memory_bytes = gib << 30;
         } else if (std.mem.eql(u8, flag, "--chat-model")) {
             if (o.chat_model != null) return error.DuplicateOption;
             o.chat_model = value;
@@ -136,6 +148,8 @@ const Server = struct {
     router: router_mod.Router = .{},
     listing: models.Models = .{},
     executor: gpu.Executor = .init(limits.queued_jobs),
+    /// Every open model, decision and language, counts against it.
+    memory: memory.Budget,
     decisions: decisions.Service,
     chat: chat.Service,
     backend: inference.decide.Backend,
@@ -164,8 +178,9 @@ const Server = struct {
         const batching = self.decisions.batcher.stats(io);
         const open = self.decisions.pool.openNames(io, arena) catch &.{};
         const language = self.chat.language.openName(io, arena) catch null;
+        const resident = self.memory.snapshot(io, arena) catch &.{};
         var out: std.Io.Writer.Allocating = .init(arena);
-        writeHealth(&out.writer, self.version, self.backend, open, language, stats, batching, self.active.load(.monotonic)) catch
+        writeHealth(&out.writer, self.version, self.backend, open, language, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.active.load(.monotonic)) catch
             return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         return .{ .body = out.written() };
     }
@@ -217,7 +232,9 @@ const Server = struct {
     }
 };
 
-fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, language: ?[]const u8, stats: gpu.Stats, batching: batcher.Stats, connections: u32) !void {
+const Memory = struct { limit: u64, models: []const memory.Budget.Model };
+
+fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, language: ?[]const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, connections: u32) !void {
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("status");
@@ -230,6 +247,28 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.write(open);
     try s.objectField("language");
     try s.write(language);
+    try s.objectField("memory");
+    try s.beginObject();
+    try s.objectField("limit");
+    try s.write(budget.limit);
+    var resident: u64 = 0;
+    for (budget.models) |m| resident += m.bytes;
+    try s.objectField("resident");
+    try s.write(resident);
+    try s.objectField("models");
+    try s.beginArray();
+    for (budget.models) |m| {
+        try s.beginObject();
+        try s.objectField("name");
+        try s.write(m.name);
+        try s.objectField("kind");
+        try s.write(@tagName(m.kind));
+        try s.objectField("bytes");
+        try s.write(m.bytes);
+        try s.endObject();
+    }
+    try s.endArray();
+    try s.endObject();
     try s.objectField("queue");
     try s.beginObject();
     try s.objectField("queued");
@@ -281,11 +320,14 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         .gpa = gpa,
         .decisions = .init(gpa, undefined, backend, context.root, context.registry, context.default_model),
         .chat = .init(gpa, undefined, context.loaded, context.root, @as(u64, options.timeout) * std.time.ns_per_s),
+        .memory = .init(gpa, options.memory_bytes orelse memory.defaultLimit()),
         .backend = backend,
         .version = context.version,
     };
     server.decisions.executor = &server.executor;
     server.chat.executor = &server.executor;
+    server.decisions.pool.budget = &server.memory;
+    server.chat.language.budget = &server.memory;
     server.decisions.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     server.decisions.bind();
     defer server.deinit();
@@ -297,6 +339,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         worker.await(io);
         server.decisions.deinit(io);
         server.chat.deinit(io);
+        server.memory.deinit();
     }
 
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -336,7 +379,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     defer listener.deinit(io);
     if (!isLoopback(listen_address))
         try out.print("{s}warning:{s} listening beyond this machine ({s}); the API has no authentication\n", .{ sty.on(.warning), sty.off(), options.host });
-    try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default model {s}{s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, if (options.log) "" else ", quiet", sty.off() });
+    try out.print("{s}nuclis serve{s} listening on {s}http://{f}/v1{s} {s}(backend {s}, default model {s}, models within {d:.1} GiB{s}; Ctrl-C stops){s}\n", .{ sty.on(.header), sty.off(), sty.on(.code), listen_address, sty.off(), sty.on(.dim), @tagName(backend), context.default_model, @as(f64, @floatFromInt(server.memory.limit)) / (1 << 30), if (options.log) "" else ", quiet", sty.off() });
     try out.flush();
 
     var group: std.Io.Group = .init;
@@ -397,6 +440,8 @@ test "serve arguments" {
     const configured: config.Config.Serve = .{};
     const o = try parseArgs(arena, &.{ "--port", "9000", "--model", "laya", "--model", "laya-multilingual", "--backend", "cpu", "--host", "0.0.0.0", "--quiet", "--chat-model", "qwen3.8-27b" }, configured, &diag);
     try std.testing.expectEqualStrings("qwen3.8-27b", o.chat_model.?);
+    try std.testing.expectEqual(@as(?u64, 20 << 30), (try parseArgs(arena, &.{ "--memory", "20" }, configured, &diag)).memory_bytes);
+    try std.testing.expectEqual(@as(?u64, 7), (try parseArgs(arena, &.{}, .{ .memory_bytes = 7 }, &diag)).memory_bytes);
     try std.testing.expect(!o.log);
     try std.testing.expectEqual(@as(u16, 9000), o.port);
     try std.testing.expectEqual(@as(usize, 2), o.models.items.len);
@@ -420,6 +465,8 @@ test "serve arguments" {
         .{ &[_][]const u8{ "--timeout", "1.5" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--timeout", "5", "--timeout", "6" }, error.DuplicateOption },
         .{ &[_][]const u8{ "--chat-model", "a", "--chat-model", "b" }, error.DuplicateOption },
+        .{ &[_][]const u8{ "--memory", "0" }, error.InvalidOptionValue },
+        .{ &[_][]const u8{ "--memory", "1.5" }, error.InvalidOptionValue },
     };
     inline for (cases) |case| try std.testing.expectError(case[1], parseArgs(arena, case[0], configured, &diag));
     try std.testing.expect(isLoopback(try address("localhost", 1, &diag)));
@@ -431,12 +478,13 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, "qwen3.8-27b", .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, 3);
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, "qwen3.8-27b", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60 }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, 3);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);
     try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("queue").?.object.get("queued").?.integer);
     try std.testing.expectEqualStrings("laya", parsed.value.object.get("loaded").?.array.items[0].string);
     try std.testing.expectEqualStrings("qwen3.8-27b", parsed.value.object.get("language").?.string);
+    try std.testing.expectEqual(@as(i64, 70), parsed.value.object.get("memory").?.object.get("resident").?.integer);
     try std.testing.expectEqual(@as(i64, 5), parsed.value.object.get("decisions").?.object.get("waiting").?.integer);
 }

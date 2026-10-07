@@ -266,6 +266,10 @@ const Job = struct {
         self.position.store(p.position, .release);
         self.target.store(p.target, .release);
         self.phase.store(@as(u8, @backingInt(p.phase)) + 1, .release);
+        // A step boundary: decisions queued meanwhile run now rather than
+        // after the whole generation. Each model has its own Metal queue
+        // and buffers, so they touch nothing this generation holds.
+        self.service.executor.runShort(self.io);
     }
 
     /// The connection's side of a whole response: wait, looking at the
@@ -424,6 +428,8 @@ fn openFailure(arena: std.mem.Allocator, name: []const u8, err: anyerror) ApiErr
     return switch (err) {
         error.ModelNotFound => apiError(arena, .not_found, "model_not_found", "model", "{s} is not a pulled language model (`nuclis model ls` lists them, `GET /v1/models` the runnable ones)", .{name}),
         error.NotALanguageModel => apiError(arena, .bad_request, "not_a_language_model", "model", "{s} is a decision model; POST /v1/decisions runs it", .{name}),
+        error.ModelTooLarge => apiError(arena, .bad_request, "model_too_large", "model", "{s} needs more memory than the server's budget allows (serve.memory_bytes, --memory)", .{name}),
+        error.Pinned => apiError(arena, .service_unavailable, "busy", "model", "overloaded: {s} needs memory a running request holds; retry shortly", .{name}),
         else => apiError(arena, .internal_server_error, "model_failed", "model", "{s} did not open: {s}", .{ name, @errorName(err) }),
     };
 }
@@ -435,6 +441,7 @@ fn runFailure(arena: std.mem.Allocator, language: *language_mod.Language, err: a
         else
             apiError(arena, .bad_request, "context_length_exceeded", "messages", "the conversation does not fit the window", .{}),
         error.ImagesUnsupported => apiError(arena, .bad_request, "images_unsupported", "messages", "this model has no image projector pulled; `nuclis model pull <name> --with mmproj` fetches it", .{}),
+        error.ModelTooLarge, error.Pinned => apiError(arena, .bad_request, "model_too_large", "messages", "this model and its image projector need more memory than the server's budget allows (serve.memory_bytes, --memory)", .{}),
         error.InvalidSamplingOptions => apiError(arena, .bad_request, "invalid_request", null, "the sampling options are out of range for this model", .{}),
         error.ToolsUnsupported => apiError(arena, .bad_request, "invalid_request", "tools", "this model's prompt profile has no native tool calling", .{}),
         error.InvalidConversation, error.UnsupportedContent, error.LimitExceeded, error.InvalidUtf8 => apiError(arena, .bad_request, "invalid_request", "messages", "the model's template cannot render this conversation ({s})", .{@errorName(err)}),
