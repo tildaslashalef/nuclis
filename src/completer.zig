@@ -175,6 +175,10 @@ pub const Completer = struct {
     /// An image prefill ran in this session: the drafter's cache is stale
     /// from then on, so speculation stays off until `reset`.
     images_fed: bool = false,
+    /// Cap the output budget at the space the prompt leaves instead of
+    /// refusing it: a client sizes `max_tokens` from its own idea of the
+    /// window. The agent keeps the whole budget or reports `ContextFull`.
+    clamp_budget: bool = false,
 
     pub fn model(self: *Completer) Model {
         return .{ .context = self, .run = run, .count = count, .encode_image = encodeImage, .checkpoint = checkpoint };
@@ -462,12 +466,11 @@ pub const Completer = struct {
         const tokens = try self.eng.encode(remainder);
         defer self.alloc.free(tokens);
         const session = self.eng.model.session();
-        if (session.position + tokens.len > session.capacity or
-            self.buffers.generated.len > session.capacity - session.position - tokens.len)
-        {
-            self.overflow = .{ .needed = session.position + tokens.len + self.buffers.generated.len, .capacity = session.capacity };
+        const limit = outputBudget(session.position, tokens.len, self.buffers.generated.len, session.capacity, self.clamp_budget) orelse {
+            const output: usize = if (self.clamp_budget) 1 else self.buffers.generated.len;
+            self.overflow = .{ .needed = session.position + tokens.len + output, .capacity = session.capacity };
             return error.ContextFull;
-        }
+        };
         // The remainder's placeholder runs are the last images rendered:
         // consumed text is a prefix of the render and compaction drops whole
         // earlier turns, so the images still rendered are a suffix.
@@ -478,12 +481,12 @@ pub const Completer = struct {
         // turns): it decides whether the completion opens in reasoning.
         var buffers = self.buffers;
         buffers.effort = self.effort;
-        buffers.thinking_budget = config.thinkingBudget(self.thinking_budget, self.effort, self.buffers.generated.len);
+        buffers.thinking_budget = config.thinkingBudget(self.thinking_budget, self.effort, limit);
         const settings: inference.engine.Speculative = if (self.images_fed) .{ .enabled = false, .draft_length = self.speculative.draft_length } else self.speculative;
         const outcome = try inference.engine.complete(
             self.eng,
             tokens,
-            self.buffers.generated.len,
+            limit,
             self.sampler,
             self.history,
             settings,
@@ -544,6 +547,18 @@ pub const Completer = struct {
     }
 };
 
+/// The tokens a completion may generate after a prompt of `prompt` tokens
+/// fed at `position` in a window of `capacity`, from an output buffer of
+/// `slice`: the whole slice when it fits; with `clamp`, what the window has
+/// left, at least 1; null when it does not fit.
+pub fn outputBudget(position: usize, prompt: usize, slice: usize, capacity: usize, clamp: bool) ?usize {
+    if (position + prompt > capacity) return null;
+    const left = capacity - position - prompt;
+    if (slice <= left) return slice;
+    if (!clamp or left == 0) return null;
+    return left;
+}
+
 /// How many maximal runs of `pad` the tokens hold: one per image span.
 pub fn placeholderRuns(tokens: []const u32, pad: u32) usize {
     var runs: usize = 0;
@@ -571,4 +586,13 @@ test "placeholder runs count image spans, not tokens" {
     try testing.expectEqual(@as(usize, 1), placeholderRuns(&.{ 1, 9, 9, 9, 2 }, 9));
     try testing.expectEqual(@as(usize, 2), placeholderRuns(&.{ 9, 9, 1, 9 }, 9));
     try testing.expectEqual(@as(usize, 1), placeholderRuns(&.{9}, 9));
+}
+
+test "the output budget is the slice when it fits, what is left when clamped, else nothing" {
+    try testing.expectEqual(@as(?usize, 100), outputBudget(0, 900, 100, 1000, false));
+    try testing.expectEqual(@as(?usize, null), outputBudget(0, 901, 100, 1000, false));
+    try testing.expectEqual(@as(?usize, 99), outputBudget(0, 901, 100, 1000, true));
+    try testing.expectEqual(@as(?usize, 1), outputBudget(500, 499, 16384, 1000, true));
+    try testing.expectEqual(@as(?usize, null), outputBudget(500, 500, 16384, 1000, true));
+    try testing.expectEqual(@as(?usize, null), outputBudget(500, 501, 1, 1000, true));
 }
