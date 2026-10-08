@@ -191,6 +191,68 @@ pub fn main(init: std.process.Init) !void {
             try museDraftTrace(alloc, init.io, model_path, draft_model orelse return error.ExpectedDraftModel, use_metal, dir)
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(muse_glimmer_spec, alloc, init.io, &mapped, use_metal, half_tiles_only),
     }
+    // The ordinary run's engine-level addition, backend-independent like
+    // `speculativeLoop`, so the Metal run covers it.
+    const ordinary = !hidden_rows and vision_check == null and draft_trace == null and !draft_stats and !speculative_check and !half_tiles_only;
+    if (ordinary and use_metal) try promptSavesCheck(alloc, init.io, model_path);
+}
+
+/// The engine's states inside a prompt: a run that saves after `k` prompt
+/// tokens (`engine.Saves`) emits what a run fed those `k` then the rest
+/// emits; the saved snapshot restored, and on an attention-only model the
+/// session moved back to `k` after the run (`engine.rewindSession`), emit it
+/// again. Every run feeds the same segments, so each comparison is exact.
+fn promptSavesCheck(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8) !void {
+    const engine = inference.engine;
+    const generated = 8;
+    var eng = try engine.Engine.open(alloc, io, model_path, .metal, 128, .f32, null, .none);
+    defer eng.deinit();
+    const prompt = try eng.encode("The three primary colors are red, yellow, and blue. Mixing two of them gives");
+    defer alloc.free(prompt);
+    const k = prompt.len / 2;
+    const logits = try alloc.alloc(f32, eng.vocab.tokens.len);
+    defer alloc.free(logits);
+    var streams: [2][generated]u32 = undefined;
+    var sampler = try inference.sampling.Sampler.init(0, .{});
+
+    resetForRun(&eng);
+    try eng.model.prefill(prompt[0..k], null, null, null, null, null, null);
+    const reference = try engine.runLoop(&eng, prompt[k..], generated, &sampler, null, .{}, null, logits, &.{}, &streams[0], null, null);
+    const expected = streams[0][0..reference.timing.generated_tokens];
+
+    const Saver = struct {
+        eng: *engine.Engine,
+        alloc: std.mem.Allocator,
+        snap: ?inference.session.Snapshot = null,
+        fn save(context: *anyopaque, _: usize) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.snap = self.eng.model.snapshot(self.alloc) catch null;
+        }
+    };
+    var saver: Saver = .{ .eng = &eng, .alloc = alloc };
+    defer if (saver.snap) |*snap| snap.deinit();
+    resetForRun(&eng);
+    const saves: engine.Saves = .{ .offsets = &.{k}, .context = &saver, .save = Saver.save };
+    const saved = try engine.runLoop(&eng, prompt, generated, &sampler, null, .{}, null, logits, &.{}, &streams[1], null, .{ .context = &saver, .saves = saves });
+    if (saved.timing.prompt_tokens != prompt.len) return error.PromptSavesTimingMismatch;
+    if (!std.mem.eql(u32, expected, streams[1][0..saved.timing.generated_tokens])) return error.PromptSavesStreamMismatch;
+    const snap = &(saver.snap orelse return error.PromptSavesNotSaved);
+    if (snap.position != k) return error.PromptSavesPositionMismatch;
+
+    const recurrent = eng.model.hasRecurrentState();
+    if (recurrent) {
+        if (engine.rewindSession(&eng, k, prompt[k - 1])) |_| return error.RecurrentRewound else |err| if (err != error.RecurrentStateNotRewindable) return err;
+    } else {
+        try engine.rewindSession(&eng, k, prompt[k - 1]);
+        const rewound = try engine.runLoop(&eng, prompt[k..], generated, &sampler, null, .{}, null, logits, &.{}, &streams[1], null, null);
+        if (!std.mem.eql(u32, expected, streams[1][0..rewound.timing.generated_tokens])) return error.RewoundStreamMismatch;
+    }
+
+    resetForRun(&eng);
+    try eng.model.restore(snap);
+    const restored = try engine.runLoop(&eng, prompt[k..], generated, &sampler, null, .{}, null, logits, &.{}, &streams[1], null, null);
+    if (!std.mem.eql(u32, expected, streams[1][0..restored.timing.generated_tokens])) return error.RestoredStreamMismatch;
+    std.debug.print("Prompt saves passed: saving after {d} of {d} prompt tokens, restoring{s} emit the same {d} tokens.\n", .{ k, prompt.len, if (recurrent) " the save" else ", and rewinding to it", expected.len });
 }
 
 /// A decision head's input on both backends: every row's post-`output_norm`
