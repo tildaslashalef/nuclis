@@ -266,6 +266,20 @@ removed.
   bar shows `replayed <cause> <prefilled>, <restored> restored`, and the
   session file records `replay` and `restored_tokens` beside `replayed`.
 
+**Evidence for the save inside a prompt and the rewind** (2026-10-08):
+the generation gates' prompt-saves check (`make gate
+NAME=gemma4-qat-generation-metal`, and the 26B-A4B, E4B, Qwen3.8, and
+Muse Glimmer ones): a run that saves after 8 of 17 prompt tokens emits
+the same 8 greedy tokens as one fed those 8 then the rest; the saved state
+restored, and on the attention-only families the session moved back to it
+after the run, emit them again; Qwen3.8 refuses the rewind. Through
+`nuclis serve` and `nuclis agent` on Gemma 4 12B, E4B, and Qwen3.8 the
+answers at temperature 0 equal the previous build's, and the reuse is the
+table in [api.md § Conversations and the cache](../guide/api.md#conversations-and-the-cache);
+in `nuclis agent` on the 12B (speculation on), turns 2 and 3 prefilled 28
+and 35 tokens where the previous build reported `replayed rewrite 44,
+3183 restored` and `76, 3183 restored`.
+
 **Evidence** (Qwen3.8-27B Q4_K_M, Metal, M4 Pro, 16K window, dirty build of
 2026-10-04 on `9f45bf0`). Start-up warm-up of the 1,333-token prefix at
 `low` (`make shot`, `.zig-cache/tui/c1-start`, `c8-warm-start`, `c6-low`):
