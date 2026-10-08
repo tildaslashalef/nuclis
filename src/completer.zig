@@ -341,6 +341,7 @@ pub const Completer = struct {
             }
         };
         self.dropMark();
+        self.images_fed = false;
         self.eng.model.reset();
         if (self.history) |h| h.reset();
         self.seen.clearRetainingCapacity();
@@ -674,6 +675,8 @@ pub const Completer = struct {
                 if (cause) |c| replay = .{ .cause = c };
                 break :blk rest;
             }
+            // The flag describes the live session, which now starts empty.
+            self.images_fed = false;
             self.eng.model.reset();
             if (self.history) |h| h.reset();
             self.seen.clearRetainingCapacity();
