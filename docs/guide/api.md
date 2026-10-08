@@ -573,11 +573,16 @@ A language model's (`owned_by` is `nuclis`):
 | Field | Meaning |
 | --- | --- |
 | `kind` | `language` |
+| `name` | the model as a person names it: the catalogue's title ("Qwen3.8 27B") for a file the catalogue pins, else the GGUF's `general.name`, else the file's name |
+| `architecture` | the GGUF's `general.architecture` (`qwen35`, `gemma4`, `muse-glimmer`) |
+| `profile` | the prompt template it renders with (`qwen38`, `gemma4`, `gemma4_e`, `muse_glimmer`) |
+| `quantization` | the catalogue's label (`UD-Q4_K_M`, `Q4_0 (QAT)`); for another file, the encoding holding most of its tensor bytes (`Q4_K`); null when the header does not say |
+| `size_bytes` | the main file's size |
 | `present`, `loaded`, `default` | as above; `default` is `engine.model` |
 | `context_length` | the window it opens with (`ctx_size`) |
 | `images` | its entry names a projector |
 | `efforts` | the reasoning levels its template renders |
-| `detail` | architecture, quantization, and size, or the file's name |
+| `detail` | the same in one line for people: architecture, quantization, and size, or the file's name |
 
 ## `GET /v1/health`
 

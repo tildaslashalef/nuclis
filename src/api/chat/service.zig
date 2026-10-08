@@ -10,6 +10,7 @@ const inference = @import("inference");
 const config = @import("../../config.zig");
 const catalog = @import("../../catalog.zig");
 const model_ls = @import("../../model.zig");
+const paths = @import("../../paths.zig");
 const http = @import("../http.zig");
 const errors = @import("../errors.zig");
 const gpu = @import("../gpu.zig");
@@ -112,8 +113,14 @@ pub const Service = struct {
             var efforts: std.json.Array = .init(arena);
             for (profile.efforts()) |e| try efforts.append(.{ .string = @tagName(e) });
             const projector = if (settings.entry) |entry| entry.mmproj != null else if (catalog.find(runnable.name)) |entry| entry.companion(.mmproj) != null else false;
+            const about = describe(arena, io, root, loaded.config.models, runnable.name);
             var details: std.json.ObjectMap = .empty;
             try details.put(arena, "kind", .{ .string = "language" });
+            try details.put(arena, "name", .{ .string = about.name });
+            try details.put(arena, "architecture", if (about.architecture) |a| .{ .string = a } else .null);
+            try details.put(arena, "profile", .{ .string = @tagName(profile) });
+            try details.put(arena, "quantization", if (about.quantization) |q| .{ .string = q } else .null);
+            try details.put(arena, "size_bytes", .{ .integer = @intCast(about.size_bytes) });
             try details.put(arena, "present", .{ .bool = true });
             try details.put(arena, "loaded", .{ .bool = self.language.isOpen(io, runnable.name) });
             try details.put(arena, "default", .{ .bool = std.mem.eql(u8, runnable.name, loaded.config.engine.model) });
@@ -132,6 +139,62 @@ const pipe_capacity = 256 * 1024;
 /// may stay silent before a keepalive comment.
 const poll_ms = 1000;
 const keepalive_ms = 10_000;
+
+/// What a client shows for a language model.
+const About = struct {
+    name: []const u8,
+    architecture: ?[]const u8 = null,
+    quantization: ?[]const u8 = null,
+    size_bytes: u64 = 0,
+};
+
+/// A language model's name, architecture, quantization, and size: the
+/// catalogue's when it pins the file, else its GGUF header's (the
+/// quantization being the encoding that holds the most tensor bytes, the
+/// name `general.name` or the file's).
+fn describe(arena: std.mem.Allocator, io: std.Io, root: []const u8, registry: config.Models, name: []const u8) About {
+    const path = paths.modelPath(arena, name, "", root, registry) catch return .{ .name = name };
+    const size = if (std.Io.Dir.cwd().statFile(io, path, .{})) |stat| stat.size else |_| 0;
+    if (pinned(arena, root, path) orelse catalog.find(name)) |entry| return .{
+        .name = entry.title,
+        .architecture = entry.architecture,
+        .quantization = entry.quantization,
+        .size_bytes = size,
+    };
+    const stem = std.fs.path.stem(path);
+    var doc = inference.gguf.open(arena, io, path, .{}) catch return .{ .name = stem, .size_bytes = size };
+    var best_id: ?u32 = null;
+    var best_bytes: u64 = 0;
+    var totals: std.AutoHashMapUnmanaged(u32, u64) = .empty;
+    for (doc.tensors) |t| {
+        const sum = totals.getOrPutValue(arena, t.encoding_id, 0) catch break;
+        sum.value_ptr.* += t.bytes;
+        if (sum.value_ptr.* > best_bytes) {
+            best_bytes = sum.value_ptr.*;
+            best_id = t.encoding_id;
+        }
+    }
+    // A converter's leftover ("Hf") is no name: shorter than 4 is the file's.
+    const general = doc.string("general.name");
+    return .{
+        .name = if (general) |g| if (g.len >= 4) g else stem else stem,
+        .architecture = doc.string("general.architecture"),
+        .quantization = if (best_id) |id| if (inference.encoding.layout(id)) |l| l.name else null else null,
+        .size_bytes = size,
+    };
+}
+
+/// The catalogue entry whose main file sits at `path`, read as
+/// `<root>/models/<owner>/<repo>/<file>`.
+fn pinned(arena: std.mem.Allocator, root: []const u8, path: []const u8) ?*const catalog.Entry {
+    const dir = std.fs.path.join(arena, &.{ root, "models" }) catch return null;
+    if (!std.mem.startsWith(u8, path, dir) or path.len <= dir.len + 1) return null;
+    const relative = path[dir.len + 1 ..];
+    const owner_end = std.mem.indexOfScalar(u8, relative, '/') orelse return null;
+    const repo_end = owner_end + 1 + (std.mem.indexOfScalar(u8, relative[owner_end + 1 ..], '/') orelse return null);
+    const match = catalog.findFile(relative[0..repo_end], relative[repo_end + 1 ..]) orelse return null;
+    return if (match.role == .main) match.entry else null;
+}
 
 /// One request on the worker: open the model if needed, complete, and
 /// deliver the events whole (`collected`) or as server-sent events
@@ -457,4 +520,17 @@ fn runFailure(arena: std.mem.Allocator, language: *language_mod.Language, err: a
 
 test {
     _ = wire;
+}
+
+test "a file the catalogue pins is found by its place in the models directory" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const qwen = catalog.find("qwen3.8-27b").?;
+    const main = try std.fs.path.join(arena, &.{ "/r/models", qwen.repo, qwen.file });
+    try std.testing.expectEqual(qwen, pinned(arena, "/r", main).?);
+    const companion = try std.fs.path.join(arena, &.{ "/r/models", qwen.repo, qwen.companion(.mmproj).?.file });
+    try std.testing.expect(pinned(arena, "/r", companion) == null);
+    try std.testing.expect(pinned(arena, "/r", "/elsewhere/x.gguf") == null);
+    try std.testing.expect(pinned(arena, "/r", "/r/models/owner/repo/unknown.gguf") == null);
 }
