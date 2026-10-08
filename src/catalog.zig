@@ -38,6 +38,9 @@ pub const Companion = struct {
 
 pub const Entry = struct {
     name: []const u8,
+    /// The checkpoint as a person names it ("Qwen3.8 27B"), for clients
+    /// that list models.
+    title: []const u8,
     repo: []const u8,
     file: []const u8,
     /// The 40-character commit every digest below was read at.
@@ -74,6 +77,7 @@ pub const Entry = struct {
 pub const entries = [_]Entry{
     .{
         .name = "qwen3.8-27b",
+        .title = "Qwen3.8 27B",
         .repo = "unsloth/Qwen3.8-27B-GGUF",
         .file = "Qwen3.8-27B-UD-Q4_K_M.gguf",
         .revision = "4ca720788d1e01f1bff70c033e0d0028fd02e502",
@@ -99,6 +103,7 @@ pub const entries = [_]Entry{
     // file) left the catalogue on 2026-09-26 and runs through discovery.
     .{
         .name = "gemma-4-12b-qat",
+        .title = "Gemma 4 12B QAT",
         .repo = "unsloth/gemma-4-12B-it-qat-GGUF",
         .file = "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
         .revision = "980b060c40a8539ac159e0501a3e0f66a6365af3",
@@ -125,6 +130,7 @@ pub const entries = [_]Entry{
     // expert tensors, supported with its acceptance record.
     .{
         .name = "gemma-4-26b-a4b",
+        .title = "Gemma 4 26B-A4B",
         .repo = "unsloth/gemma-4-26B-A4B-it-qat-GGUF",
         .file = "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
         .revision = "7b92b5b28818151e8669af2e45e88d6086f490dd",
@@ -149,6 +155,7 @@ pub const entries = [_]Entry{
     // Pinned 2026-09-26 by the pull.
     .{
         .name = "gemma-4-e4b-qat",
+        .title = "Gemma 4 E4B QAT",
         .repo = "unsloth/gemma-4-E4B-it-qat-GGUF",
         .file = "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
         .revision = "8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265",
@@ -174,6 +181,7 @@ pub const entries = [_]Entry{
     // profile renders its prompts.
     .{
         .name = "muse-glimmer-30b",
+        .title = "Muse Glimmer 30B",
         .repo = "unsloth/Muse-Glimmer-30B-GGUF",
         .file = "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
         .revision = "faa5b025c584459c13febfa5c59883516710ae39",
@@ -399,6 +407,7 @@ test "decision entries are well formed and never text-model names" {
 }
 
 test "the table is well formed: unique names, 40-character commits, 64-character digests" {
+    for (entries) |e| try std.testing.expect(e.title.len > 0 and !std.mem.eql(u8, e.title, e.name));
     for (&entries, 0..) |e, i| {
         try std.testing.expectEqual(@as(usize, 40), e.revision.len);
         try std.testing.expectEqual(@as(usize, 64), e.sha256.len);
