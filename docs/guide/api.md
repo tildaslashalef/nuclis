@@ -581,7 +581,7 @@ A language model's (`owned_by` is `nuclis`):
 | `present`, `loaded`, `default` | as above; `default` is `engine.model` |
 | `context_length` | the window it opens with (`ctx_size`) |
 | `images` | its entry names a projector |
-| `efforts` | the reasoning levels its template renders |
+| `efforts` | the reasoning levels its template renders, in the profile's names: `off` is the request's `none` (`reasoning_effort` accepts both) |
 | `detail` | the same in one line for people: architecture, quantization, and size, or the file's name |
 
 ## `GET /v1/health`

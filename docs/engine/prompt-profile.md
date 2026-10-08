@@ -16,7 +16,16 @@ fixtures did not verify. Two profiles exist:
 | `gemma4` | [gemma4.zig](../../inference/src/profiles/gemma4.zig) | `845f1ee4…` | `<turn|>`, `<eos>`, `<|tool_response>` | `<|channel>thought\n` … `<channel|>` |
 
 Every module exposes the same surface: `template_sha256`, `render`,
-`samplingDefaults`, `stop_tokens`, `reasoning`, and `stream_markers`. The engine resolves the stop
+`samplingDefaults`, `stop_tokens`, `reasoning`, `stream_markers`,
+`generation_prompts`, and `rewritesTurn`. The last two serve the session
+cache ([session.md § The agent's token cache](session.md#the-agents-token-cache-2026-10-04)):
+`Profile.promptEnd` cuts the generation prompt off a render, leaving the
+bytes the next turn's render starts with, and `rewritesTurn(effort)` says
+whether the history render of a generated answer differs from what its
+generation consumed (Gemma 4: thinking off, the empty thought channel is
+absent from past turns; thinking on, the reasoning gate drops it; the
+E-series only the latter). A test in `profiles/root.zig` pins both per
+profile. The engine resolves the stop
 tokens to ids in the artifact's vocabulary at load (`MissingStopToken` when
 one is absent: a template/tokenizer mismatch is refused, never guessed) and
 ends generation on any of them; without a matching profile it stops on the

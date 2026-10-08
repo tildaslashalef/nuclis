@@ -211,10 +211,10 @@ pub fn increment(seen: []const u8, full: []const u8) ?[]const u8 {
 /// Qwen snapshot (150 MB before its first row) is not worth keeping.
 pub const min_save_tokens = 64;
 
-/// Where a step's prompt ended on an attention-only model whose profile
-/// rewrites its turns (`Profile.rewritesTurn`): the next render starts with
-/// `seen[0..bytes]` and never continues past it, so the session moves back
-/// there (`inference.engine.rewindSession`) instead of replaying. Owns
+/// Where a step's prompt ended on an attention-only model, which can move
+/// back there by position (`inference.engine.rewindSession`) when the next
+/// render shares only that much: always, where the profile rewrites its
+/// turns (`Profile.rewritesTurn`); else on a request sent again. Owns
 /// `history`, the penalty set at that point.
 pub const Mark = struct {
     bytes: usize,
@@ -441,7 +441,7 @@ pub const Completer = struct {
         if (self.images_fed or self.seen.items.len == 0) return null;
         // The next render cannot continue past the prompt's end: go back
         // there first, so the state kept is one it can use.
-        if (self.mark) |m| self.rewindToMark(m) catch return null;
+        if (self.mark) |m| if (self.eng.profile.?.rewritesTurn(self.effort)) self.rewindToMark(m) catch return null;
         const to_disk = self.save_turns and self.disk != null;
         const in_memory = self.cache.budget > 0 and self.cache.exact(self.seen.items) == null;
         if (!to_disk and !in_memory) return null;
@@ -560,12 +560,12 @@ pub const Completer = struct {
         self.mark = null;
     }
 
-    /// Marks where this step's prompt ends (`Mark`) when the profile rewrites
-    /// its turns at this effort and the model can move back by position.
-    /// `tokens` encodes `full` from `seen`, at session position `reused`.
+    /// Marks where this step's prompt ends (`Mark`) when the model can move
+    /// back by position. `tokens` encodes `full` from `seen`, at session
+    /// position `reused`.
     fn markPromptEnd(self: *Completer, full: []const u8, tokens: []const u32, reused: usize) !void {
         const profile = self.eng.profile orelse return;
-        if (!profile.rewritesTurn(self.effort) or self.eng.model.hasRecurrentState()) return;
+        if (self.eng.model.hasRecurrentState()) return;
         const start = self.seen.items.len;
         const end = profile.promptEnd(full);
         if (end <= start) return;
@@ -633,8 +633,8 @@ pub const Completer = struct {
         defer self.alloc.free(full);
         const remainder = blk: {
             var continued: ?[]const u8 = if (self.seen.items.len > 0) increment(self.seen.items, full) else null;
-            // A step not followed by `checkpoint` (an answer cut at its
-            // budget) leaves the session past its mark.
+            // A request sent again, or a step not followed by `checkpoint`
+            // (an answer cut at its budget), finds the session past its mark.
             if (continued == null and self.cause == null) if (self.mark) |m| {
                 if (m.bytes < full.len and std.mem.startsWith(u8, full, self.seen.items[0..m.bytes])) {
                     if (self.rewindToMark(m)) {
