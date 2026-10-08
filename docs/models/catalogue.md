@@ -255,7 +255,7 @@ inspect` reads GGUF directories only.
 
 `src/catalog.zig` is the only source of "supported": a file under
 `models/` is *runnable* when its architecture id has an adapter,
-*supported* only when the catalogue pins it (name, repository, file,
+*supported* only when the catalogue pins it (name, title, repository, file,
 commit, SHA-256, size, quantization, architecture, sampling profile, and
 companions with what they are for: `mmproj` for image input, `mtp` for
 speculative decoding). Entries are named after the model (`qwen3.8-27b`), not the
