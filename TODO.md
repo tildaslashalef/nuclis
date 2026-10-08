@@ -11,3 +11,4 @@ test, and measure in [docs/development.md](docs/development.md).
 Session protocol (also in [AGENTS.md](AGENTS.md)): read this file first. If
 it lists work, summarize *Where we are* and ask the user how to continue. If
 it is empty, ask what to work on and write the agreed plan here.
+

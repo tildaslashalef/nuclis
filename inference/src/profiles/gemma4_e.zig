@@ -20,6 +20,13 @@ pub const stream_markers = gemma4.stream_markers;
 pub const efforts = gemma4.efforts;
 pub const samplingDefaults = gemma4.samplingDefaults;
 pub const prefix = gemma4.prefix;
+pub const generation_prompts = gemma4.generation_prompts;
+
+/// Thinking off opens no thought channel, so only the reasoning gate
+/// rewrites a past answer.
+pub fn rewritesTurn(effort: profiles.Effort) bool {
+    return effort != .off;
+}
 
 pub fn render(alloc: std.mem.Allocator, messages: []const profiles.Message, tools: []const profiles.ToolDefinition, effort: profiles.Effort, limits: profiles.Limits) profiles.Error![]u8 {
     return gemma4.renderWith(alloc, messages, tools, effort, limits, .{ .empty_thought_when_off = false });

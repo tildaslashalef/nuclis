@@ -50,6 +50,16 @@ pub const image_placeholder: ?[]const u8 = "<|image|>";
 /// `medium` because the host caps reasoning there (`agent.thinking_budget`).
 pub const efforts = [_]Effort{ .off, .low, .medium };
 pub const reasoning: profiles.Reasoning = .{ .open = "<|channel>thought\n", .close = "<channel|>" };
+/// The generation prompts a render may end with, longest first: what
+/// `promptEnd` cuts off. After tool results the turn is
+/// still open: only the thought channel, or nothing.
+pub const generation_prompts = [_][]const u8{ "<|turn>model\n<|channel>thought\n<channel|>", "<|turn>model\n", "<|channel>thought\n" };
+/// History never renders a generated answer as consumed: thinking off, the
+/// generation prompt's empty thought channel is absent from past turns;
+/// thinking on, the reasoning gate drops the thought once a user follows.
+pub fn rewritesTurn(_: Effort) bool {
+    return true;
+}
 pub const stream_markers: profiles.StreamMarkers = .{
     .open = "<|channel>",
     .close = "<channel|>",

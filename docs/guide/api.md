@@ -461,13 +461,35 @@ A client sends the whole conversation every request; nothing is stored
 between requests, and no response id carries state. The model's state is
 reused anyway: the server continues the session it holds when the new
 conversation extends what it last consumed, otherwise restores the
-longest earlier state it kept at the end of an answer (in memory, within
-`cache.memory_bytes`, 4 GiB), and prefills only the rest.
+longest earlier state it kept at the end of an answer or of a system
+prompt of 64 tokens or more (in memory, within `cache.memory_bytes`,
+4 GiB), and prefills only the rest.
 `usage.prompt_tokens_details.cached_tokens` says how much was reused. On
 Qwen3.8, three requests of one conversation reported 0, 37 of 55, and 65
-of 86 tokens cached, and a tool round trip reused 360 of 390. A
-conversation with an image in it is prefilled whole on every request,
-and changing the model empties the cache.
+of 86 tokens cached, and a tool round trip reused 360 of 390. Gemma 4's
+template rewrites the model's past turns (an empty thought block with
+reasoning off on the 12B and 26B-A4B, reasoning dropped once a user
+message follows), so there the session goes back to where the last
+prompt ended and continues from it: the answer as rendered and the new
+message are prefilled. A request sent again reuses the same point on
+Gemma 4 and Muse Glimmer. A conversation with an image in it is
+prefilled whole on every request, and changing the model empties the
+cache.
+
+Measured with `nuclis serve` (M4 Pro, temperature 0, 2026-10-08, the
+same answers before and after; `cached_tokens` and request time):
+
+| Request | Before | After |
+| --- | --- | --- |
+| Gemma 4 12B, second turn, reasoning `none` | 0 of 58 | 30 |
+| Gemma 4 12B, second turn, `low` | 0 of 56 | 32 |
+| Gemma 4 E4B, second turn, `low` | 0 of 49 | 32 |
+| Gemma 4 12B, the same request again | 0 of 37 | 30 |
+| a new question under a 500-token system prompt (E4B, 12B, Qwen3.8) | 0 | 486–492; 3.96 → 1.75 s on the 12B, 10.3 → 5.2 s on Qwen3.8 |
+| Gemma 4 12B, third and fourth turns of that conversation | 0 of 573, 0 of 636 (3.9, 4.3 s) | 498, 566 (1.7, 1.8 s) |
+
+The first request under a new system prompt pays for keeping it: 0.25 s
+on the 12B, 0.5 s on Qwen3.8.
 
 A decision does not wait for a generation that is running: queued
 decisions run between its steps (after each generated token, after each
@@ -581,7 +603,7 @@ A language model's (`owned_by` is `nuclis`):
 | `present`, `loaded`, `default` | as above; `default` is `engine.model` |
 | `context_length` | the window it opens with (`ctx_size`) |
 | `images` | its entry names a projector |
-| `efforts` | the reasoning levels its template renders |
+| `efforts` | the reasoning levels its template renders, in the profile's names: `off` is the request's `none` (`reasoning_effort` accepts both) |
 | `detail` | the same in one line for people: architecture, quantization, and size, or the file's name |
 
 ## `GET /v1/health`

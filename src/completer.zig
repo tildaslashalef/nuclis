@@ -1,7 +1,9 @@
 //! The completion side of a conversation: renders messages through the
 //! model's profile, continues the live session when the render extends what
 //! it consumed, else restores the longest cached state (`cache.zig`), else
-//! prefills, then runs `inference.engine.complete`. The agent loop and the
+//! prefills, then runs `inference.engine.complete`. A template that rewrites
+//! the model's past turns never extends what the session consumed: there
+//! the session moves back to the prompt's end (`Mark`). The agent loop and the
 //! API's language-model service drive it through the same `Model` seam; it
 //! owns no conversation, only the session's consumed-text bookkeeping
 //! (docs/engine/session.md § The agent's token cache).
@@ -205,6 +207,23 @@ pub fn increment(seen: []const u8, full: []const u8) ?[]const u8 {
     return full[seen.len..];
 }
 
+/// The fewest tokens a state saved inside a step's prompt holds: below this a
+/// Qwen snapshot (150 MB before its first row) is not worth keeping.
+pub const min_save_tokens = 64;
+
+/// Where a step's prompt ended on an attention-only model, which can move
+/// back there by position (`inference.engine.rewindSession`) when the next
+/// render shares only that much: always, where the profile rewrites its
+/// turns (`Profile.rewritesTurn`); else on a request sent again. Owns
+/// `history`, the penalty set at that point.
+pub const Mark = struct {
+    bytes: usize,
+    position: usize,
+    /// The token fed at `position - 1`, which a drafter is re-fed.
+    last: u32,
+    history: ?std.bit_set.Dynamic,
+};
+
 /// The real `Model`: renders through the artifact's profile and completes one
 /// step, keeping the session's consumed-text bookkeeping so a growing
 /// conversation prefills only its remainder when it can.
@@ -254,6 +273,9 @@ pub const Completer = struct {
     /// An image prefill ran in this session: the drafter's cache is stale
     /// from then on, so speculation stays off until `reset`.
     images_fed: bool = false,
+    /// Where the last step's prompt ended, when the next render cannot
+    /// continue past it (`Mark`).
+    mark: ?Mark = null,
     /// Cap the output budget at the space the prompt leaves instead of
     /// refusing it: a client sizes `max_tokens` from its own idea of the
     /// window. The agent keeps the whole budget or reports `ContextFull`.
@@ -318,6 +340,7 @@ pub const Completer = struct {
                 } else |_| snap.deinit();
             }
         };
+        self.dropMark();
         self.eng.model.reset();
         if (self.history) |h| h.reset();
         self.seen.clearRetainingCapacity();
@@ -350,6 +373,7 @@ pub const Completer = struct {
     /// Restores a disk snapshot of `text` (`tokens`) and keeps it in memory.
     /// The snapshot is consumed on success, the caller's on failure.
     fn restoreSnapshot(self: *Completer, snap: *inference.session.Snapshot, text: []const u8, tokens: []const u32) !void {
+        self.dropMark();
         self.eng.model.reset();
         errdefer self.eng.model.reset();
         try self.eng.model.restore(snap);
@@ -367,8 +391,14 @@ pub const Completer = struct {
     /// Hands `snap`, taken where the session stands, to the memory tier
     /// under `seen` and the current history. Consumes `snap` either way.
     fn keep(self: *Completer, snap: inference.session.Snapshot) void {
+        self.keepAs(snap, self.seen.items);
+    }
+
+    /// `keep` under `consumed`, the text the session has consumed when that
+    /// is not `seen` (a state saved inside a step's prompt).
+    fn keepAs(self: *Completer, snap: inference.session.Snapshot, consumed: []const u8) void {
         var owned = snap;
-        const text = self.alloc.dupe(u8, self.seen.items) catch {
+        const text = self.alloc.dupe(u8, consumed) catch {
             owned.deinit();
             return;
         };
@@ -382,6 +412,7 @@ pub const Completer = struct {
 
     /// Puts the session at `entry`'s state. On failure the session is reset.
     fn restoreEntry(self: *Completer, entry: *const cache.Entry) !void {
+        self.dropMark();
         // A reset first: `restore` needs a ready session, and a cancelled
         // step leaves a failed one.
         self.eng.model.reset();
@@ -402,11 +433,15 @@ pub const Completer = struct {
 
     /// The turn ended in an answer: keep the state under what it consumed,
     /// in memory and, when turns are saved, on disk in place of this
-    /// conversation's previous turn. Skipped when images are in it, since
+    /// conversation's previous turn. With a `Mark`, the session first moves
+    /// back to the prompt's end, the last point the next render shares. Skipped when images are in it, since
     /// their placeholder text does not tell one image from another.
     fn checkpoint(context: *anyopaque) ?cache.Boundary {
         const self: *Completer = @ptrCast(@alignCast(context));
         if (self.images_fed or self.seen.items.len == 0) return null;
+        // The next render cannot continue past the prompt's end: go back
+        // there first, so the state kept is one it can use.
+        if (self.mark) |m| if (self.eng.profile.?.rewritesTurn(self.effort)) self.rewindToMark(m) catch return null;
         const to_disk = self.save_turns and self.disk != null;
         const in_memory = self.cache.budget > 0 and self.cache.exact(self.seen.items) == null;
         if (!to_disk and !in_memory) return null;
@@ -480,6 +515,7 @@ pub const Completer = struct {
     /// turn); null for a new one. The session itself is reset on the next
     /// render.
     pub fn reset(self: *Completer, cause: ?Replay.Cause) void {
+        self.dropMark();
         self.images_fed = false;
         self.seen.clearRetainingCapacity();
         self.primed_len = 0;
@@ -490,10 +526,105 @@ pub const Completer = struct {
     }
 
     pub fn deinit(self: *Completer) void {
+        self.dropMark();
         self.cache.deinit();
         if (self.disk) |*d| d.close();
         self.seen.deinit(self.alloc);
     }
+
+    /// Moves the session back to `m` (`Mark`) and forgets it. On failure the
+    /// session is reset, as after a failed restore.
+    fn rewindToMark(self: *Completer, m: Mark) !void {
+        self.mark = null;
+        var bits = m.history;
+        defer if (bits) |*b| b.deinit(self.alloc);
+        inference.engine.rewindSession(self.eng, m.position, m.last) catch |err| {
+            self.eng.model.reset();
+            if (self.history) |h| h.reset();
+            self.seen.clearRetainingCapacity();
+            self.primed_len = 0;
+            return err;
+        };
+        if (self.history) |h| {
+            h.reset();
+            if (bits) |b| {
+                h.seen.setUnion(b);
+                h.revision += 1;
+            }
+        }
+        self.seen.shrinkRetainingCapacity(m.bytes);
+    }
+
+    fn dropMark(self: *Completer) void {
+        if (self.mark) |*m| if (m.history) |*b| b.deinit(self.alloc);
+        self.mark = null;
+    }
+
+    /// Marks where this step's prompt ends (`Mark`) when the model can move
+    /// back by position. `tokens` encodes `full` from `seen`, at session
+    /// position `reused`.
+    fn markPromptEnd(self: *Completer, full: []const u8, tokens: []const u32, reused: usize) !void {
+        const profile = self.eng.profile orelse return;
+        if (self.eng.model.hasRecurrentState()) return;
+        const start = self.seen.items.len;
+        const end = profile.promptEnd(full);
+        if (end <= start) return;
+        const fed = if (end == full.len) tokens.len else blk: {
+            const head = try self.eng.encode(full[start..end]);
+            defer self.alloc.free(head);
+            // A cut before a control token encodes alike; anything else is
+            // not a mark.
+            if (head.len >= tokens.len or !std.mem.eql(u32, head, tokens[0..head.len])) return;
+            break :blk head.len;
+        };
+        var bits: ?std.bit_set.Dynamic = if (self.history) |h| try h.seen.clone(self.alloc) else null;
+        if (bits) |*b| for (tokens[0..fed]) |token| if (token < b.bit_length) b.set(token);
+        self.mark = .{ .bytes = end, .position = reused + fed, .last = tokens[fed - 1], .history = bits };
+    }
+
+    /// A state kept inside a step's prompt: the system block's end, the
+    /// boundary every conversation under the same system prompt shares
+    /// (the agent primes it; a server request does not). Fed to `complete`
+    /// as `inference.engine.Saves`.
+    const Saving = struct {
+        completer: *Completer,
+        full: []const u8,
+        offset: usize = 0,
+        bytes: usize = 0,
+
+        /// Picks the system block's end when it lies inside the remainder,
+        /// the memory tier would keep it and does not hold it, and the
+        /// state holds `min_save_tokens`.
+        fn plan(self: *Saving, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, tokens: []const u32, reused: usize) !void {
+            const c = self.completer;
+            if (c.cache.budget == 0) return;
+            if (c.observer) |o| if (o.layer != null) return;
+            const start = c.seen.items.len;
+            const system = try c.eng.prefix(messages[0..Profile.leadingSystemCount(messages)], definitions, c.effort);
+            defer c.alloc.free(system);
+            if (system.len <= start or system.len >= self.full.len or !std.mem.startsWith(u8, self.full, system)) return;
+            if (c.cache.exact(system) != null) return;
+            const head = try c.eng.encode(self.full[start..system.len]);
+            defer c.alloc.free(head);
+            if (head.len >= tokens.len or !std.mem.eql(u32, head, tokens[0..head.len])) return;
+            if (reused + head.len < min_save_tokens) return;
+            self.offset = head.len;
+            self.bytes = system.len;
+        }
+
+        fn saves(self: *Saving) ?inference.engine.Saves {
+            if (self.offset == 0) return null;
+            return .{ .offsets = (&self.offset)[0..1], .context = self, .save = save };
+        }
+
+        fn save(context: *anyopaque, _: usize) void {
+            const self: *Saving = @ptrCast(@alignCast(context));
+            const c = self.completer;
+            var snap = c.eng.model.snapshot(c.alloc) catch return;
+            if (snap.span_count != 0) return snap.deinit();
+            c.keepAs(snap, self.full[0..self.bytes]);
+        }
+    };
 
     fn run(context: *anyopaque, messages: []const Profile.Message, definitions: []const Profile.ToolDefinition, images: []const Image, sink: *Sink) anyerror!Reply {
         const self: *Completer = @ptrCast(@alignCast(context));
@@ -502,6 +633,15 @@ pub const Completer = struct {
         defer self.alloc.free(full);
         const remainder = blk: {
             var continued: ?[]const u8 = if (self.seen.items.len > 0) increment(self.seen.items, full) else null;
+            // A request sent again, or a step not followed by `checkpoint`
+            // (an answer cut at its budget), finds the session past its mark.
+            if (continued == null and self.cause == null) if (self.mark) |m| {
+                if (m.bytes < full.len and std.mem.startsWith(u8, full, self.seen.items[0..m.bytes])) {
+                    if (self.rewindToMark(m)) {
+                        continued = full[self.seen.items.len..];
+                    } else |_| {}
+                }
+            };
             // Only a conversation that was in the session counts as a replay.
             const cause: ?Replay.Cause = self.cause orelse if (continued != null or self.seen.items.len == 0)
                 null
@@ -557,11 +697,20 @@ pub const Completer = struct {
         var prefill = try self.imagePrefill(tokens, images);
         defer prefill.deinit(self.alloc);
         if (prefill.value != null) self.images_fed = true;
+        self.dropMark();
+        var saving: Saving = .{ .completer = self, .full = full };
+        if (!self.images_fed) {
+            saving.plan(messages, definitions, tokens, reused) catch {};
+            // Allocation is the only failure: no mark, a replay next turn.
+            self.markPromptEnd(full, tokens, reused) catch {};
+        }
+        errdefer self.dropMark();
         // The effort is the one this render used (Ctrl-T changes it between
         // turns): it decides whether the completion opens in reasoning.
         var buffers = self.buffers;
         buffers.effort = self.effort;
         buffers.thinking_budget = config.thinkingBudget(self.thinking_budget, self.effort, limit);
+        buffers.saves = saving.saves();
         const settings: inference.engine.Speculative = if (self.images_fed) .{ .enabled = false, .draft_length = self.speculative.draft_length } else self.speculative;
         const outcome = try inference.engine.complete(
             self.eng,

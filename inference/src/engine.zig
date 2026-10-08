@@ -307,6 +307,9 @@ pub fn Executor(comptime Family: type) type {
         pub fn truncate(self: *Self, position: usize) !void {
             return self.sessionMut().truncate(position);
         }
+        pub fn rewindTo(self: *Self, position: usize) !void {
+            return self.sessionMut().rewindTo(position);
+        }
         pub fn gpu(self: *const Self) ?*inference.metal.Backend {
             return switch (self.*) {
                 .cpu => null,
@@ -491,6 +494,14 @@ pub const Model = struct {
     pub fn truncate(self: *Model, position: usize) !void {
         switch (self.exec) {
             inline else => |*e| try e.truncate(position),
+        }
+    }
+    /// Moves an attention-only session back to `position` (`Session.rewindTo`);
+    /// a loaded drafter's pending row is left stale: see `rewindSession`.
+    pub fn rewindTo(self: *Model, position: usize) !void {
+        try self.settle();
+        switch (self.exec) {
+            inline else => |*e| try e.rewindTo(position),
         }
     }
     /// Whether the model's state cannot be rewound by position alone.
@@ -1095,6 +1106,20 @@ pub const Hooks = struct {
     /// speculative batch's correction (the one token of a batch not yet in
     /// the session): a token to emit in its place, or null to keep it.
     force: ?*const fn (*anyopaque) ?u32 = null,
+    /// Points inside the prompt where the caller keeps the session's state.
+    saves: ?Saves = null,
+};
+
+/// Prompt offsets at which `runLoop` stops feeding and calls `save(context,
+/// i)` with the session standing after `offsets[i]` prompt tokens, the
+/// penalty history holding exactly those. Offsets ascend inside
+/// `(0, tokens.len)`; refused with images (`InvalidSaves`). A saved segment
+/// is fed by `prefill` (`commitPrompt` when speculating), so the per-step
+/// hooks do not see its steps. A save cannot fail the run: it keeps what it can.
+pub const Saves = struct {
+    offsets: []const usize,
+    context: *anyopaque,
+    save: *const fn (*anyopaque, usize) void,
 };
 
 fn forcedToken(hooks: ?Hooks) ?u32 {
@@ -1114,6 +1139,8 @@ pub const CompletionBuffers = struct {
     /// ends the reasoning itself: the bracket grammar's close token, or the
     /// channel grammar's end of message inside a `to=self` body. Null for no cap.
     thinking_budget: ?usize = null,
+    /// States the caller keeps inside the prompt (`Saves`).
+    saves: ?Saves = null,
 };
 
 /// Completes a rendered prompt as semantic events. `sink.send(Event)` is a
@@ -1167,11 +1194,23 @@ pub fn complete(
     };
     var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, &eng.vocab, buffers.effort), .sink = sink, .budget = buffers.thinking_budget };
     defer bridge.decoder.deinit();
-    var outcome = try runLoop(eng, tokens, limit, sampler, history, settings, images, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token, .force = Bridge.force });
+    var outcome = try runLoop(eng, tokens, limit, sampler, history, settings, images, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token, .force = Bridge.force, .saves = buffers.saves });
     outcome.reasoning_cut = bridge.cut;
     outcome.reasoning_tokens = bridge.reasoning;
     try bridge.decoder.end(outcome, sink);
     return outcome;
+}
+
+/// Returns an attention-only model to the state after `position` tokens,
+/// `last` being the one fed at `position - 1`. A loaded drafter keeps its
+/// pending row outside the session, so the session moves back one more and
+/// `last` is re-fed through `commitPrompt` (one step).
+/// `RecurrentStateNotRewindable` on a recurrent model.
+pub fn rewindSession(eng: *Engine, position: usize, last: u32) !void {
+    if (position == 0) return error.RewindOutOfRange;
+    if (eng.model.drafter() == null) return eng.model.rewindTo(position);
+    try eng.model.rewindTo(position - 1);
+    try commitPrompt(eng, &.{last}, null, null);
 }
 
 /// Commits a prompt to the loaded drafter: the target consumes it in
@@ -1213,7 +1252,7 @@ pub const ImagePrefill = struct { spans: []const inference.vision.Span, features
 
 pub fn runLoop(
     eng: *Engine,
-    tokens: []const u32,
+    prompt: []const u32,
     limit: usize,
     sampler: *inference.sampling.Sampler,
     history: ?*inference.sampling.History,
@@ -1238,7 +1277,7 @@ pub fn runLoop(
     // Greedy acceptance compares the target's argmax without penalties, so a
     // penalized greedy run takes the sampled path (its point masses).
     const greedy_verify = sampler.options.temperature == 0 and !sampler.options.penaltiesActive();
-    var timing: Timing = .{ .prompt_tokens = tokens.len };
+    var timing: Timing = .{ .prompt_tokens = prompt.len };
     const gpu_before = eng.gpuSeconds();
     const prefill_start = std.Io.Clock.awake.now(io);
     // Active penalties are the executor's on the GPU (one `nu_penalize`
@@ -1259,6 +1298,30 @@ pub fn runLoop(
     const gpu_topk = !can_speculate and !gpu_greedy and sampler.gpuEligible() and eng.model.supportsGpuTopK() and
         (penalties == null or eng.model.supportsGpuPenalties()) and !hooks_need_logits(hooks);
     if (gpu_topk) timing.topk_fallbacks = 0;
+    const spec: ?*SpeculativeScratch = if (can_speculate and images == null) &(eng.spec orelse return error.NoSpeculativeScratch) else null;
+    // The saved segments first; the rest is the prompt the paths below feed.
+    var tokens = prompt;
+    if (hooks) |h| if (h.saves) |saves| {
+        if (images != null and saves.offsets.len != 0) return error.InvalidSaves;
+        var start: usize = 0;
+        for (saves.offsets, 0..) |offset, i| {
+            if (offset <= start or offset >= prompt.len) return error.InvalidSaves;
+            const segment = prompt[start..offset];
+            if (history) |hist| for (segment) |token| try hist.observe(token);
+            const fed = if (spec != null) commitPrompt(eng, segment, null, observer) else eng.model.prefill(segment, null, null, null, null, null, observer);
+            fed catch |err| switch (err) {
+                error.Cancelled => {
+                    resetAll(eng, history);
+                    timing.prefill = prefill_start.durationTo(std.Io.Clock.awake.now(io));
+                    return .{ .stop = .cancelled, .timing = timing };
+                },
+                else => return err,
+            };
+            saves.save(saves.context, i);
+            start = offset;
+        }
+        tokens = prompt[start..];
+    };
     // The history is what the penalties read, so it must already hold the
     // whole prompt when the prefill computes the GPU's first selection; on
     // the CPU paths the sampler reads it only after the prefill completes.
@@ -1267,7 +1330,6 @@ pub fn runLoop(
     var top: inference.sampling.TopK = .{ .temperature = sampler.options.temperature };
     const want_logits = !gpu_greedy and !gpu_topk;
     const vocabulary = logits.len;
-    const spec: ?*SpeculativeScratch = if (can_speculate and images == null) &(eng.spec orelse return error.NoSpeculativeScratch) else null;
     if (images) |img| {
         // The vision prefill substitutes the projector's rows for the span's
         // placeholders and gives every row its M-RoPE position; speculation is
