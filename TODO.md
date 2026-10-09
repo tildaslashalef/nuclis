@@ -14,18 +14,11 @@ it is empty, ask what to work on and write the agreed plan here.
 
 ## Where we are
 
-No unit is in progress. **EmbeddingGemma 2** (text, image and audio
-embeddings; branch `embedding-gemma-2`) is complete and waits for review
-in its pull request, which holds the record. **When it merges, release
-0.7.0** (user, 2026-10-09): the release procedure in AGENTS.md
-§ Versioning and releases, with `verify-long` and `verify-release` run
-before the version pull request (`verify-cpu` ran on the branch). Nothing
-else is queued: after the release, ask what to work on next.
-
-Decided at its close (2026-10-09), and recorded in spec §10: nuclis stays
-an engine. A RAG application calls `POST /v1/embeddings` and owns walking
-files, chunking, storage and search; there is no index theme inside
-nuclis.
+Nothing is in progress: v0.7.0 (EmbeddingGemma 2, the OpenAI-compatible
+chat service, decisions beside a generation) is the last release. Ask
+what to work on next. nuclis stays an engine: retrieval, indexing and
+chunking belong to the applications that call `POST /v1/embeddings`
+(spec §10).
 
 ## Deferred
 
