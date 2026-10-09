@@ -87,7 +87,13 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   PrismML fork `5d80cff` (release `prism-b10687-5d80cff`), the only decoder
   of Bonsai 2 27B's ternary encodings, beside it under
   `.reference/prism-llama.cpp` with the same recipe
-  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)).
+  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)),
+  and mainline `06cad0b9e`, the first that runs EmbeddingGemma 2, under
+  `.reference/llama.cpp-embed`
+  ([llama-cpp.md § The third oracle](benchmarks/llama-cpp.md#the-third-oracle-embeddinggemma-2-2026-10-09)).
+  EmbeddingGemma 2's semantic oracle is sentence-transformers 6.1 in a venv
+  at `.reference/venv-embed` (the recipe heads
+  `scripts/embedding-reference.py`), with Google's checkpoint in float32.
   The decision model's oracle is the `laya` 0.3.20 Python package in a venv
   at `.reference/laya-venv` (Python 3.12 through `uv`; the recipe
   heads `scripts/laya-reference.py`; `--subfolder multilingual` for the

@@ -84,6 +84,47 @@ revision recorded as the reference side of
 and read from there by `nuclis-baseline.py` into the nuclis record
 ([benchmarks](history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
 
+## The third oracle: EmbeddingGemma 2 (2026-10-09)
+
+The mainline pin does not know `gemma-embedding2`
+([embeddinggemma.md](../models/embeddinggemma.md)). Upstream added it, with
+its vision and audio encoders, in `4fbc76dec` (#30054, 2026-10-06), so the
+family's oracle is a second mainline checkout at
+`06cad0b9e77315bd2930bd4f70a6d7b37b2a01c1` (master, 2026-10-07). The main
+pin `7620399` does not move. The checkout is cloned from the main one to
+save the fetch, and built with the same recipe, plus the embedding and
+multimodal tools:
+
+```sh
+git clone .reference/llama.cpp .reference/llama.cpp-embed
+git -C .reference/llama.cpp-embed remote set-url origin https://github.com/ggml-org/llama.cpp
+git -C .reference/llama.cpp-embed fetch origin master
+git -C .reference/llama.cpp-embed checkout --detach 06cad0b9e77315bd2930bd4f70a6d7b37b2a01c1
+
+cmake -S .reference/llama.cpp-embed -B .reference/llama.cpp-embed/build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
+  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF \
+  -DLLAMA_USE_PREBUILT_UI=OFF
+
+cmake --build .reference/llama.cpp-embed/build \
+  --target llama-server llama-embedding llama-mtmd-cli llama-completion --parallel 8
+```
+
+A vector from the command line, the check that the files load (both the
+Q8_0 and the BF16 file return unit vectors of width 768):
+
+```sh
+.reference/llama.cpp-embed/build/bin/llama-embedding \
+  -m ~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-Q8_0.gguf \
+  -ngl 99 --pooling mean --embd-normalize 2 --embd-output-format json \
+  -p 'task: search result | query: how does the KV cache work'
+```
+
+`--verbose-prompt` prints the tokens (BOS and EOS are added). For images,
+pass `--image-max-tokens 280`: without it, `clip.cpp` sizes `gemma4v`
+images toward its 1120-token cap, where Google's processor uses 280.
+
 ## Run the workload
 
 Start one reference server in a separate terminal:

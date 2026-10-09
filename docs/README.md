@@ -40,6 +40,7 @@ below.
 | [bonsai.md](models/bonsai.md) | Bonsai 2 27B: the ternary file and its fork |
 | [laya.md](models/laya.md) | Laya: the decision encoder behind `nuclis decide` |
 | [clef-flash.md](models/clef-flash.md) | clef-flash: Cloudflare's decision model |
+| [embeddinggemma.md](models/embeddinggemma.md) | EmbeddingGemma 2: the embedding model, its files, forward pass, prefixes, and encoders |
 
 ## The engine: `engine/` (the `inference/` package)
 
