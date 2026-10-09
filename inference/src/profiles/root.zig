@@ -118,7 +118,7 @@ pub const StreamMarkers = struct {
 
 /// The profiles the tree implements. Each tag names a module with the same
 /// surface: `template_sha256`, `render`, `samplingDefaults`, `stop_tokens`,
-/// `reasoning`, `image_placeholder`. Add a profile by adding its tag and module here; nothing
+/// `reasoning`, `image_placeholder`, `generation_prompts`, `rewritesTurn`. Add a profile by adding its tag and module here; nothing
 /// else in the tree lists them.
 pub const Profile = enum {
     qwen38,
@@ -259,6 +259,29 @@ pub const Profile = enum {
     pub fn reasoning(self: Profile) Reasoning {
         return switch (self) {
             inline else => |p| p.module().reasoning,
+        };
+    }
+
+    /// Where `full`, a render, stops being conversation and becomes the
+    /// generation prompt: the next turn's render starts with `full[0..end]`
+    /// whatever the template does to the model's turn. `full.len` when the
+    /// render ends with none (a turn left open after tool results). Every
+    /// generation prompt begins with a control token, so the two sides of
+    /// the cut encode as the whole does.
+    pub fn promptEnd(self: Profile, full: []const u8) usize {
+        return switch (self) {
+            inline else => |p| for (p.module().generation_prompts) |g| {
+                if (std.mem.endsWith(u8, full, g)) break full.len - g.len;
+            } else full.len,
+        };
+    }
+
+    /// Whether, at this effort, the history render of a generated answer
+    /// differs from the text its generation consumed: then no state saved at
+    /// an answer's end is ever a prefix of the next turn's render.
+    pub fn rewritesTurn(self: Profile, effort: Effort) bool {
+        return switch (self) {
+            inline else => |p| p.module().rewritesTurn(effort),
         };
     }
 };
@@ -478,6 +501,49 @@ test "every profile offers its distinct efforts in order, and the nearest is sup
     try std.testing.expectEqual(Effort.xhigh, Profile.qwen38.nearestEffort(.high));
     try std.testing.expectEqual(Effort.low, Profile.muse_glimmer.nearestEffort(.off));
     try std.testing.expectEqual(Effort.medium, Profile.gemma4.nearestEffort(.xhigh));
+}
+
+test "a next turn starts with the prompt end; with the generated text only when the turn is not rewritten" {
+    const alloc = std.testing.allocator;
+    const system: Message = .{ .role = .system, .content = "Be brief." };
+    const user: Message = .{ .role = .user, .content = "Hi" };
+    const more: Message = .{ .role = .user, .content = "More" };
+    const call_step: Message = .{ .role = .assistant, .content = "", .reasoning_content = "Look.", .tool_calls = &.{read_call} };
+    const result: Message = .{ .role = .tool, .content = "contents", .tool_call_id = read_call.id };
+    // Each answer as the model writes it after the generation prompt, and
+    // the conversation it answers.
+    const Case = struct { profile: Profile, effort: Effort, generated: []const u8, reasoning: []const u8 = "", tools: bool = false };
+    const gemma_thought = "<|channel>thought\nPlan.\n<channel|>Done.";
+    const cases = [_]Case{
+        .{ .profile = .qwen38, .effort = .off, .generated = "Done." },
+        .{ .profile = .qwen38, .effort = .low, .generated = "Plan.\n</think>\n\nDone.", .reasoning = "Plan." },
+        .{ .profile = .gemma4, .effort = .off, .generated = "Done." },
+        .{ .profile = .gemma4, .effort = .medium, .generated = gemma_thought, .reasoning = "Plan." },
+        .{ .profile = .gemma4, .effort = .medium, .generated = "Plan.\n<channel|>Done.", .reasoning = "Plan.", .tools = true },
+        .{ .profile = .gemma4_e, .effort = .off, .generated = "Done." },
+        .{ .profile = .gemma4_e, .effort = .medium, .generated = gemma_thought, .reasoning = "Plan." },
+        .{ .profile = .muse_glimmer, .effort = .low, .generated = " to=self<|message|>Plan.<|eom|><|start|>assistant to=user<|message|>Done.", .reasoning = "Plan." },
+    };
+    for (cases) |case| {
+        const reply: Message = .{ .role = .assistant, .content = "Done.", .reasoning_content = case.reasoning };
+        const asked: []const Message = if (case.tools) &.{ system, user, call_step, result } else &.{ system, user };
+        const next_messages: []const Message = if (case.tools) &.{ system, user, call_step, result, reply, more } else &.{ system, user, reply, more };
+        const first = try case.profile.render(alloc, asked, &.{}, case.effort, .{});
+        defer alloc.free(first);
+        const consumed = try std.mem.concat(alloc, u8, &.{ first, case.generated });
+        defer alloc.free(consumed);
+        const next = try case.profile.render(alloc, next_messages, &.{}, case.effort, .{});
+        defer alloc.free(next);
+        const end = case.profile.promptEnd(first);
+        errdefer std.debug.print("{t} at {t}, tools {}\n", .{ case.profile, case.effort, case.tools });
+        try std.testing.expect(end < first.len);
+        try std.testing.expect(std.mem.startsWith(u8, next, first[0..end]));
+        try std.testing.expectEqual(!case.profile.rewritesTurn(case.effort), std.mem.startsWith(u8, next, consumed));
+    }
+    // Results that leave the turn open with thinking off end with no prompt.
+    const open = try Profile.gemma4.render(alloc, &.{ system, user, call_step, result }, &.{}, .off, .{});
+    defer alloc.free(open);
+    try std.testing.expectEqual(open.len, Profile.gemma4.promptEnd(open));
 }
 
 test "a raw text's BOS is the template's opening token" {

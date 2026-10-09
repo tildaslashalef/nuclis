@@ -45,6 +45,14 @@ pub const image_placeholder: ?[]const u8 = "<|image_pad|>";
 /// `xhigh`.
 pub const efforts = [_]Effort{ .off, .low, .medium, .xhigh };
 pub const reasoning: profiles.Reasoning = .{ .open = "<think>", .close = "</think>" };
+/// The generation prompts a render may end with, longest first: what
+/// `promptEnd` cuts off.
+pub const generation_prompts = [_][]const u8{ "<|im_start|>assistant\n<think>\n\n</think>\n\n", "<|im_start|>assistant\n<think>\n" };
+/// History renders every turn's reasoning, so a generated answer is
+/// re-rendered as the model wrote it.
+pub fn rewritesTurn(_: Effort) bool {
+    return false;
+}
 pub const stream_markers: profiles.StreamMarkers = .{
     .open = "<think>",
     .close = "</think>",

@@ -108,6 +108,7 @@ binding.
 | `checkpoint()` | `SessionNotReady` unless ready; `NoCheckpointRegion` if the session was built without one; else copies the recurrent state into the region and records the position. A no-op copy on attention-only layouts, but the position is still recorded. |
 | `rewind()` | Returns to the recorded checkpoint: restores the recurrent copy and sets the position. `NoCheckpoint` without one; `SessionNotReady` on an updating or failed session. |
 | `truncate(position)` | Moves the position back without touching layer memory. Allowed only when no layer is recurrent (`RecurrentStateNotRewindable`) and only within `[checkpoint_position, position]` (`RewindOutOfRange`). |
+| `rewindTo(position)` | The same move to any earlier position, clearing the checkpoint; refused on a recurrent layout. The token cache's way back to a prompt's end (`engine.rewindSession`, which re-feeds a loaded drafter the last token: its pending row lies outside the session). |
 
 Two state kinds, two rewinds. Attention rows `[0, position)` are
 independent of later rows, so a verify batch writes `[P, P + k + 1)` and
@@ -196,10 +197,28 @@ removed.
 
 - **Boundaries.** The primed prefix, one per effort (the effort is part
   of the system block), and the end of every turn that ends in an answer
-  (`Model.checkpoint`, called by the loop). Both sit before a control token,
-  which BPE never merges across, so the remainder encodes the same alone.
-  A state with an image in it is not kept: the placeholder text is the same
-  for every image.
+  (`Model.checkpoint`, called by the loop and by the server). A step whose
+  remainder holds the system block's end also keeps the state there, of at
+  least 64 tokens, when the memory tier does not hold it: `complete` feeds
+  the prompt in two segments and calls back between them
+  (`engine.Saves`); this is the server's primed prefix, since it never
+  primes. Every boundary sits before a control token, which BPE never
+  merges across, so the remainder encodes the same alone. A state with an
+  image in it is not kept: the placeholder text is the same for every
+  image.
+- **Rewritten turns.** Gemma 4's template never re-renders an answer as
+  the model generated it (`Profile.rewritesTurn`), so neither the session
+  nor an answer-end state is ever a prefix of the next turn. On an
+  attention-only model the step marks where its prompt ended
+  (`Profile.promptEnd`: before `<|turn>model\n`, or before the thought
+  channel a tool result leaves open), with the position and the penalty
+  set there; `checkpoint` moves the session back to the mark
+  (`Session.rewindTo`, no copy) before keeping it, and a step that never
+  reached `checkpoint` (an answer cut at its budget) moves back when the
+  next render starts with the mark. The next turn continues from there,
+  prefilling the answer as rendered and the new message. A recurrent model
+  would need a snapshot at the mark instead; no profile it runs rewrites
+  its turns.
 - **Matching** is on the rendered text the state consumed, not on tokens:
   a turn's generated tokens need not be the canonical encoding of their
   text, so re-encoding the render would miss them. A hit must be a proper
@@ -246,6 +265,20 @@ removed.
   elision, `effort`, `context`, `model`, `failure`) and the tokens restored; the
   bar shows `replayed <cause> <prefilled>, <restored> restored`, and the
   session file records `replay` and `restored_tokens` beside `replayed`.
+
+**Evidence for the save inside a prompt and the rewind** (2026-10-08):
+the generation gates' prompt-saves check (`make gate
+NAME=gemma4-qat-generation-metal`, and the 26B-A4B, E4B, Qwen3.8, and
+Muse Glimmer ones): a run that saves after 8 of 17 prompt tokens emits
+the same 8 greedy tokens as one fed those 8 then the rest; the saved state
+restored, and on the attention-only families the session moved back to it
+after the run, emit them again; Qwen3.8 refuses the rewind. Through
+`nuclis serve` and `nuclis agent` on Gemma 4 12B, E4B, and Qwen3.8 the
+answers at temperature 0 equal the previous build's, and the reuse is the
+table in [api.md § Conversations and the cache](../guide/api.md#conversations-and-the-cache);
+in `nuclis agent` on the 12B (speculation on), turns 2 and 3 prefilled 28
+and 35 tokens where the previous build reported `replayed rewrite 44,
+3183 restored` and `76, 3183 restored`.
 
 **Evidence** (Qwen3.8-27B Q4_K_M, Metal, M4 Pro, 16K window, dirty build of
 2026-10-04 on `9f45bf0`). Start-up warm-up of the 1,333-token prefix at

@@ -51,6 +51,13 @@ pub const image_placeholder: ?[]const u8 = "<|patch|>";
 /// No `off`: the template renders it as `low`.
 pub const efforts = [_]Effort{ .low, .medium, .high, .xhigh };
 pub const reasoning: profiles.Reasoning = .{ .open = "<|start|>assistant to=self<|message|>", .close = "<|eom|>" };
+/// The generation prompts a render may end with, longest first: what
+/// `promptEnd` cuts off.
+pub const generation_prompts = [_][]const u8{"<|start|>assistant"};
+/// History keeps reasoning as its own message, as the model wrote it.
+pub fn rewritesTurn(_: Effort) bool {
+    return false;
+}
 pub const stream_markers: profiles.StreamMarkers = .{
     .open = "<|start|>",
     .close = "<|eom|>",

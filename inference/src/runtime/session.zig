@@ -432,6 +432,19 @@ pub const Session = struct {
         try self.truncateSpans(position);
         self.position = position;
     }
+    /// Moves an attention-only session back to any earlier position: rows
+    /// `[0, position)` do not depend on later ones, so the state is exactly
+    /// the one after `position` tokens. Clears the checkpoint, which may lie
+    /// past it. `RecurrentStateNotRewindable` with a recurrent layer.
+    pub fn rewindTo(self: *Session, position: usize) !void {
+        if (self.status != .ready) return error.SessionNotReady;
+        if (self.pending_rows > 0) return error.ReplayPending;
+        if (self.hasRecurrent()) return error.RecurrentStateNotRewindable;
+        if (position > self.position) return error.RewindOutOfRange;
+        try self.truncateSpans(position);
+        self.position = position;
+        self.checkpoint_position = null;
+    }
     pub fn reset(self: *Session) void {
         @memset(self.memory, 0);
         self.position = 0;
@@ -728,6 +741,32 @@ fn checkpointRoundTrip(a: std.mem.Allocator) !void {
 test "checkpoint copies recurrent state and rewind brings it back" {
     try checkpointRoundTrip(std.testing.allocator);
     try alloc_check.checkAll(std.testing.allocator, checkpointRoundTrip, .{});
+}
+
+test "rewindTo moves an attention-only session back anywhere, never a recurrent one" {
+    const a = std.testing.allocator;
+    const attention = [_]Layout{.{ .attention = .{ .key_row = 2, .value_row = 2 } }};
+    var s = try Session.init(a, &attention, 8, true);
+    defer s.deinit();
+    try s.beginChunk(5);
+    try s.commitChunk(5);
+    try s.checkpoint();
+    try std.testing.expectError(error.RewindOutOfRange, s.rewindTo(6));
+    // Before the checkpoint, where `truncate` refuses.
+    try std.testing.expectError(error.RewindOutOfRange, s.truncate(2));
+    try s.rewindTo(2);
+    try std.testing.expectEqual(@as(usize, 2), s.position);
+    try std.testing.expectEqual(@as(?usize, null), s.checkpoint_position);
+    try s.rewindTo(0);
+    try std.testing.expectEqual(@as(usize, 0), s.position);
+
+    const mixed = [_]Layout{ .{ .attention = .{ .key_row = 2, .value_row = 2 } }, .{ .recurrent = .{ .history = 2, .matrix = 2 } } };
+    var r = try Session.init(a, &mixed, 8, false);
+    defer r.deinit();
+    try r.beginChunk(3);
+    try r.commitChunk(3);
+    try std.testing.expectError(error.RecurrentStateNotRewindable, r.rewindTo(1));
+    try std.testing.expectEqual(@as(usize, 3), r.position);
 }
 
 test "pending rows refuse until settled or rewound" {
