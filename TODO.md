@@ -73,6 +73,10 @@ memory kind, `embedding`, beside `generation`/`language` and `decision`.
 - **No implicit task.** The CLI and the API embed exactly what they are
   given. `task` (and `title` for documents) are opt-in fields that render
   Google's prefixes. Prefixes apply to text parts only.
+- **The goal (user, 2026-10-09): a fast text, audio and image embedding
+  API over the user's own files, for a RAG application built later.**
+  Throughput over a corpus (packed batches on Metal, the API's batcher) is
+  the measure that matters, beside the vectors' agreement with Google's.
 - **The personal index is a later theme.** Searching the user's own docs,
   audio and images is planned after this unit merges. This unit rewords
   spec §10 ("an embedding index is ruled out") to name it as a separate
@@ -220,12 +224,11 @@ reference for this family.
    (today `add_eos` is read nowhere), giving BOS + text + EOS. Check
    against the oracle's token ids: every case's ids, run-length encoded, are
    in `tests/fixtures/embeddinggemma-vectors/st-f32.json`.
-   - **A decision for the user, before coding:** the HF tokenizer turns
-     special-token text in the input (a literal `<bos>`, as in
-     `long-8k.doc`) into the token, and the oracles were recorded that way.
-     The recommendation is to treat user text as literal, so a document
-     cannot inject control tokens. That makes `long-8k.doc` differ by one
-     token on purpose: compare it by cosine, with the reason recorded.
+   - **Text is literal (user, 2026-10-09):** encode text parts with
+     `parse_special = false` (model document § The input contract). The
+     oracles parsed `long-8k.doc`'s literal `<bos>` into token 2, so that
+     one case differs by one token on purpose. Compare it by cosine, with
+     the reason in the test; every other case's ids must match exactly.
 5. **The check tool.** Add `inference/embeddinggemma-check.zig`, modeled
    on `inference/laya-check.zig`, with a build step.
    - It compares the per-layer traces of `tests/fixtures/embeddinggemma-north.raw`

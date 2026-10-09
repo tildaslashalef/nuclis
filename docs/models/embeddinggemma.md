@@ -304,6 +304,14 @@ markers.
 | Image | BOI, the projector rows, EOI | 280 by default (70–1120) |
 | Audio | BOA, the projector rows, EOA | 25 per second (about 327 s alone) |
 
+**Text is literal (decided 2026-10-09).** nuclis tokenizes text parts with
+`parse_special = false`: the spelling of a control token in a document
+(`<bos>`, `<|image|>`) is text, never the token. Media positions come from
+the order of the parts, so no text needs a placeholder, and content cannot
+change an input's framing. Google's pipeline parses such spellings; the
+vectors differ only for inputs that contain one (in the fixture set,
+`long-8k.doc`, by one token).
+
 The card's own example interleaves parts in one input ("Waterproof running
 shoes. `<|image|>` Featuring a breathable mesh upper."); the vector
 represents them together and is comparable with a text-only one.
