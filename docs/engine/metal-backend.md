@@ -36,6 +36,7 @@ a part of it was built or measured, kept as written.
 - [Few-query verify attention (2026-09-30)](#few-query-verify-attention-2026-09-30)
 - [Long-context prefill attention (2026-09-10, closed without a kernel change)](#long-context-prefill-attention-2026-09-10-closed-without-a-kernel-change)
 - [Long-context prefill attention, second attempt (2026-09-21, closed negative)](#long-context-prefill-attention-second-attempt-2026-09-21-closed-negative)
+- [Segments attention with materialized scores (2026-10-09)](#segments-attention-with-materialized-scores-2026-10-09)
 - [Fused decode norms (2026-09-21, closed below its target)](#fused-decode-norms-2026-09-21-closed-below-its-target)
 
 ## Build and run
@@ -172,6 +173,9 @@ Thread counts are the numbers `Backend` passes to `dispatch`.
 | `nu_matvec_rows_*_t<n>` ([KERN-12](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-12--a-multi-row-matvec-for-28-rows-the-2-row-routing-2026-09-20-two-sessions-closed-below-its-target), [KERN-23](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-23--weight-streaming-for-one-row-and-a-few-qwen-decode-14--23-row-verify-batches-612--cheaper-2026-10-03-two-sessions)) | 128 | 32 output rows × up to 8 tokens | 8 rows: each 8-lane group owns 2 and the four walk the same block; one accumulator per (row, token) | `simd_shuffle_xor` across 8 lanes per (row, token) | 64 B IQ4 table (IQ4_XS), one `threadgroup_barrier` |
 | `nu_matmul` (generic) | 128 | 32-row × 32-token output tile | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB F32 weight tile + 8 KB F32 activation tile, `threadgroup_barrier` |
 | `nu_attention_chunk` / `_h` | 128 | (query head, 32-query tile, 256 value columns) | 8 query rows: 4 score blocks, 32 output blocks | `simd_shuffle_xor`, `simd_shuffle`, `simd_any`, matrix MACs | 6 KB (per-group score tile, diagonal, staging); 7.5 KB in the half instantiation (its own probability tile), `simdgroup_barrier` only |
+| `nu_segments_scores` | 128 | (query tile of ≤ 32 rows, head, 32-key block) | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 8 KB Q tile + 8 KB transposed K tile (F32), `threadgroup_barrier` |
+| `nu_segments_softmax` | 256 | (query tile, head) | one strip row at a time | `simd_max`, `simd_sum` | none |
+| `nu_segments_values` | 128 | (query tile, head, 32 value columns) | a 16×16 quarter as 2×2 `simdgroup_float8x8` | matrix loads and MACs | 4 KB P tile + 4 KB V tile (F32), `threadgroup_barrier` |
 | `nu_delta_chunk` | 128 | (value head, 32 value rows), all sub-chunks | an 8-row block of every 32×32 tile; column `tid` in the triangular solve | matrix MACs; no shuffles | 24 KB of 32×32 tiles, `threadgroup_barrier` per phase, `mem_device` per sub-chunk |
 | `nu_attention_decode` / `_h` ([KERN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-08--flash-decoding-attention-2026-09-10)), `_w` / `_wh` ([MODL-06](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-06--gemma-4-12b-metal-plan-2026-09-11)) | 128 | (KV head, group of ≤ 8 query heads — ≤ 4 in the wide pair —, split of the visible rows) | every fourth row of the slice; lane l owns channels l, l+32, … (8 per lane, 16 in the wide pair) with per-head running max, sum, and accumulator in registers | `simd_sum` per (row, head); 3-round merge of the SIMD groups through 8 KB | 8 KB stage, `threadgroup_barrier` |
 | `nu_attention_merge` | 256 | one query head | — (threads stride the value channels, log-sum-exp over ≤ 64 splits) | none | none |
@@ -1680,6 +1684,63 @@ conflicts, staging K/V through shared memory with vectorized cooperative
 loads (the [ENGN-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#engn-08--long-context-prefill-attention-2026-09-10) variant done with double buffering rather than 16
 barriers and scalar copies), and an ablation that removes one phase at a
 time to identify the per-tile limiter rather than guessing at it.
+
+## Segments attention with materialized scores (2026-10-09)
+
+EmbeddingGemma 2's encoder needed what `attentionSegments` (Laya's) lacks:
+grouped-query heads, 512-wide heads, and inputs up to 8192 rows. It
+attends bidirectionally with no cache, so every query of an input sees its
+whole input, or a band of it.
+
+**Contract** (`Backend.attentionSegmentsGrouped`). Packed rows with
+per-row `[begin, end)` bounds and an optional symmetric window, as
+`attentionSegments` masks them, over a list of query tiles. A tile is at
+most 32 rows (a multiple of 8). It carries the key range its rows can see,
+rounded up to 32, and a score strip of `rows · span` floats.
+`attentionTiles` builds the list from the host bounds, and `chunkTiles`
+splits it to fit a score buffer. A row's result depends only on its tile's
+rows and keys, so tiles that never mix inputs make batching invisible in
+the output.
+
+**Kernels.** Three dispatches per chunk, all F32:
+1. `nu_segments_scores`: S = scale · Q·Kᵀ per (tile, head, 32-key block).
+   A 32×32 matmul tile with both operands staged in threadgroup memory, as
+   the generic `nu_matmul` stages them. Invisible keys are written −∞.
+2. `nu_segments_softmax`: the exact two-pass softmax of each strip row.
+3. `nu_segments_values`: O = P·V per (tile, head, 32 value columns), the
+   same tile over the span in 32-key steps.
+
+Key rows past `rows` stage as zeros, so padding never reaches a sum.
+
+**Why not an online softmax.** Two flash-style bodies were built first
+and passed the same checks:
+- the chunk kernel's F32 body, with per-row bounds;
+- a register-reuse variant, with K staged in threadgroup memory and the
+  probability tile published.
+
+Both ran near the ceiling the prefill chunk kernels had shown
+([§ Long-context prefill attention, second attempt](#long-context-prefill-attention-second-attempt-2026-09-21-closed-negative)).
+On EmbeddingGemma 2's batch of 64 inputs of 256 tokens, the 48 attention
+dispatches took 780 ms and 1,029 ms, about 0.7 and 0.55 TFLOP/s. One
+8192-token input spent 5.4 s in attention.
+
+**Measured** (same batch and input, M4 Pro, ReleaseFast, GPU profile):
+
+| Case | Online softmax | Materialized scores |
+| --- | ---: | ---: |
+| 64 inputs of 256 tokens, 48 dispatches | 780 ms | 163 ms (scores 88, values 58, softmax 17) |
+| One 8192-token input | 5.4 s | 0.95 s (scores 2.9 TFLOP/s, values 4.3) |
+
+The score matmul's inner dimension is only the head width (4 or 8
+64-wide steps), which is why it runs below the values'. The F32 tile
+itself is the limit: the half-operand tiles reach about 5 TFLOP/s, and
+the f16 hazard rules them out for this family.
+
+**Accuracy** (`metal-check`, against F64 attention over each row's
+visible keys, unit-variance heads at scale 1, so scores have a standard
+deviation of about 22). Worst |difference|: 5.0e-5 at width 256, 1.4e-4
+at width 512. The cases run from 1 to 8192 rows, packed and windowed, the
+long ones in 8 and 64 chunks.
 
 ## Fused decode norms (2026-09-21, closed below its target)
 

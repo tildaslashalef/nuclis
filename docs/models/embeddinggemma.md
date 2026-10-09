@@ -31,6 +31,7 @@ reference rather than the file, the sentence says so.
 - [The input contract](#the-input-contract)
 - [Reference oracle status](#reference-oracle-status)
 - [CPU reference against the oracles (2026-10-09)](#cpu-reference-against-the-oracles-2026-10-09)
+- [The Metal plan (2026-10-09)](#the-metal-plan-2026-10-09)
 
 ## Artifacts
 
@@ -235,7 +236,11 @@ The card: "Run inference in `bfloat16` or `float32`. Do not use
 silently degraded vector without an error. In our terms: residuals,
 activations and attention stay F32 on every backend, and no matrix path
 whose tiles hold activations in half (the K-quant prefill tiles) may run
-this family. BF16 weights are safe (an 8-bit exponent).
+this family. BF16 weights are safe (an 8-bit exponent). On Metal, the
+Q8_0, BF16 and F32 matrices run on the generic matmul tile, whose
+weight and activation tiles are both F32 (`matmulGeometry`: `half =
+false`); the plan calls `matmulTile` so that no batch size reaches
+another kernel.
 
 ## The mmproj (`clip`, 963 tensors)
 
@@ -439,4 +444,76 @@ reference's own arithmetic rounds:
 **Cost.** 97 texts plus the 8,142-token document take about 130 s
 (ReleaseFast, M4 Pro), most of it in the long document. That is a reference
 rate: the Metal plan is the path that indexes a corpus.
+
+## The Metal plan (2026-10-09)
+
+`inference/src/models/embeddinggemma_metal.zig` runs the CPU forward over
+packed batches of at most 8192 rows; `Embedder` takes it with
+`Backend.metal`, and `embedBatch` packs consecutive inputs.
+
+- **Layout.** Each input starts on an 8-row boundary. The rows that pad it
+  to the boundary are a zero-input segment of their own. Each row's
+  `[begin, end)` is in a bounds buffer, and its rotary row (at its position
+  in its input) in a per-row table.
+- **Kernels.** Norms, GELU and the residual adds are the backend's F32
+  kernels. Matrices are wrapped in place for the generic F32 tile.
+  Attention is `Backend.attentionSegmentsGrouped`, with materialized scores
+  ([metal-backend.md § Segments attention with materialized scores](../engine/metal-backend.md#segments-attention-with-materialized-scores-2026-10-09)).
+  Its query tiles never mix inputs, and each covers only the keys its rows
+  can see: the input on a global layer, the window band on a sliding one.
+- **Host work.** Token rows are decoded, and vectors pooled, with the CPU
+  reference's own functions (`inputRows`, `pool`).
+- **Memory.** About 34 KB of activations per row (277 MB at 8192 rows),
+  plus a 128 MB score buffer. An 8192-row input's global layer runs in 8
+  chunks of it.
+
+**Batching changes timing, never answers.** Every tile, key range and
+summation order of an input is the same wherever it sits in a batch, so its
+vector is identical, bit for bit, alone or packed. The check tool holds
+this on every text case.
+
+**Accuracy.** Two gates of tier `verify` (`embeddinggemma-check MODEL
+vectors|google --backend metal`; 7 s each):
+
+| Gate | File | Against | Measured | Bound |
+| --- | --- | --- | --- | --- |
+| `embeddinggemma-google-metal` | BF16 | Google's float32 vectors, 97 texts | 1 − min cosine 4.2e-12 | cosine ≥ 0.9999999 |
+| `embeddinggemma-vectors-metal` | Q8_0 | llama.cpp's Q8_0 vectors, 97 texts | 1 − min cosine 4.2e-7 | cosine ≥ 0.99999 |
+
+Both also require the packed batches to equal the one-at-a-time vectors.
+Against the CPU traces' references the Metal stages land within the CPU's
+own bounds (`traces --backend metal`: relative RMS ≤ 3.7e-4).
+
+**Rates.** Measured 2026-10-09 on an Apple M4 Pro (48 GB), macOS 27.0.1, Zig 0.17.0,
+ReleaseFast, at `191e26c`, with nothing else running on the GPU.
+`embeddinggemma-check MODEL bench --backend metal` against llama.cpp
+`b11514` on its defaults (Metal, flash attention `auto`, matmul
+activations staged as half), through `scripts/reference-embedding-bench.cpp`
+([llama-cpp.md § The third oracle](../benchmarks/llama-cpp.md#the-third-oracle-embeddinggemma-2-2026-10-09)).
+
+**Method.** Each input is BOS, " the" repeated, EOS (the cost does not
+depend on the text), in batches of at most 8192 rows. One untimed warm-up
+per shape, then the median of 7 timed runs (5 for the single inputs). Each
+run ends when every vector is on the host. The two engines alternate, each
+run after 60 s idle, three rounds. The table gives the median round; rounds
+spread about ±5 %, and a warm GPU runs both engines up to 8 % faster.
+
+| Input | nuclis Q8_0 | llama.cpp Q8_0 | nuclis BF16 | llama.cpp BF16 |
+| --- | ---: | ---: | ---: | ---: |
+| 64 × 256 tokens | 1,671 ms, 38.3 inputs/s | 1,560 ms, 41.0 inputs/s | 1,619 ms, 39.5 inputs/s | 1,606 ms, 39.9 inputs/s |
+| 1 × 512 tokens | 59.2 ms | 50.8 ms | 57.8 ms | 52.9 ms |
+| 1 × 8192 tokens | 1,754 ms | 1,808 ms | 1,731 ms | 1,910 ms |
+
+**Reading.**
+- **Level, at higher precision.** On the corpus batch the two engines are
+  within the run-to-run spread on BF16, with llama.cpp 7 % ahead on Q8_0,
+  though it rounds every matmul's activations to half. We are 3–10 %
+  ahead at 8192 tokens, where attention dominates. On one 512-token input
+  llama.cpp leads by 9–14 %.
+- **GPU-bound.** Host work (decoding token rows, the tables, pooling) is
+  about 25 ms of a 1.64 s batch.
+- **Where the batch goes.** About 80 % is F32 matmul on the generic tile
+  at about 3.7 TFLOP/s, the tile's ceiling. The half-operand tiles reach
+  about 5 TFLOP/s, and they are what the f16 hazard rules out; that
+  trade is the remaining lever. Attention takes about 11 %.
 

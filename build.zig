@@ -90,7 +90,7 @@ pub fn build(b: *std.Build) void {
     b.step("test-clef", "Check clef-flash against the oracle's fixtures (-- sequences|head CLEF_DIR ...)").dependOn(&clef_check.step);
     const embeddinggemma_check = b.addRunArtifact(inference.artifact("embeddinggemma-check"));
     embeddinggemma_check.addPassthruArgs();
-    b.step("test-embeddinggemma", "Check EmbeddingGemma 2's CPU forward against the oracles (-- MODEL traces|vectors)").dependOn(&embeddinggemma_check.step);
+    b.step("test-embeddinggemma", "Check EmbeddingGemma 2 against the oracles, or time it (-- MODEL traces|vectors|google|bench [--backend cpu|metal])").dependOn(&embeddinggemma_check.step);
     const generation_check = b.addRunArtifact(inference.artifact("generation-check"));
     generation_check.addPassthruArgs();
     b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&generation_check.step);

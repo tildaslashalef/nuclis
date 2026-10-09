@@ -177,17 +177,31 @@ fn benchInput(arena: std.mem.Allocator, embedder: *const embed.Embedder, filler:
     return .{ .tokens = ids, .length = tokens };
 }
 
-/// Median wall time in milliseconds of `runs` timed batches, after one untimed.
-fn timeBatch(io: std.Io, embedder: *embed.Embedder, inputs: []const embed.Prepared, outs: []const []f32, runs: usize) !f64 {
-    var times: [16]f64 = undefined;
+const Timing = struct { wall_ms: f64, gpu_ms: f64 };
+
+/// Median wall and GPU milliseconds of `runs` timed batches, after one
+/// untimed; GPU time is the Metal command buffers' (0 on the CPU).
+fn timeBatch(io: std.Io, embedder: *embed.Embedder, inputs: []const embed.Prepared, outs: []const []f32, runs: usize) !Timing {
+    var walls: [16]f64 = undefined;
+    var gpus: [16]f64 = undefined;
     try embedder.embedBatch(inputs, outs);
-    for (times[0..runs]) |*t| {
+    for (walls[0..runs], gpus[0..runs]) |*wall, *gpu| {
+        const gpu_start = gpuSeconds(embedder);
         const start = std.Io.Clock.awake.now(io);
         try embedder.embedBatch(inputs, outs);
-        t.* = @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / 1e6;
+        wall.* = @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / 1e6;
+        gpu.* = (gpuSeconds(embedder) - gpu_start) * 1000;
     }
-    std.mem.sort(f64, times[0..runs], {}, std.sort.asc(f64));
-    return times[runs / 2];
+    std.mem.sort(f64, walls[0..runs], {}, std.sort.asc(f64));
+    std.mem.sort(f64, gpus[0..runs], {}, std.sort.asc(f64));
+    return .{ .wall_ms = walls[runs / 2], .gpu_ms = gpus[runs / 2] };
+}
+
+fn gpuSeconds(embedder: *const embed.Embedder) f64 {
+    return switch (embedder.engine) {
+        .metal => |plan| plan.backend.gpuSeconds(),
+        .cpu => 0,
+    };
 }
 
 fn bench(arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder) !void {
@@ -201,13 +215,13 @@ fn bench(arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder) !void 
         input.* = try benchInput(arena, embedder, filler[0], short);
         out.* = try arena.alloc(f32, embed.dimensions);
     }
-    const batch_ms = try timeBatch(io, embedder, inputs, outs, 7);
-    std.debug.print("{d} inputs of {d} tokens: {d:.1} ms, {d:.1} inputs/s, {d:.0} tokens/s\n", .{ batch, short, batch_ms, batch * 1000 / batch_ms, batch * short * 1000 / batch_ms });
+    const t = try timeBatch(io, embedder, inputs, outs, 7);
+    std.debug.print("{d} inputs of {d} tokens: {d:.1} ms ({d:.1} ms GPU), {d:.1} inputs/s, {d:.0} tokens/s\n", .{ batch, short, t.wall_ms, t.gpu_ms, batch * 1000 / t.wall_ms, batch * short * 1000 / t.wall_ms });
     const long = [_]embed.Prepared{try benchInput(arena, embedder, filler[0], embed.max_tokens)};
     for ([_]usize{ 512, embed.max_tokens }) |tokens| {
         const one = [_]embed.Prepared{try benchInput(arena, embedder, filler[0], tokens)};
-        const ms = try timeBatch(io, embedder, &one, outs[0..1], 5);
-        std.debug.print("one input of {d} tokens: {d:.1} ms, {d:.0} tokens/s\n", .{ tokens, ms, @as(f64, @floatFromInt(tokens)) * 1000 / ms });
+        const one_t = try timeBatch(io, embedder, &one, outs[0..1], 5);
+        std.debug.print("one input of {d} tokens: {d:.1} ms ({d:.1} ms GPU), {d:.0} tokens/s\n", .{ tokens, one_t.wall_ms, one_t.gpu_ms, @as(f64, @floatFromInt(tokens)) * 1000 / one_t.wall_ms });
     }
     // Per kernel and shape, from the GPU's timestamps: the batch, then the long input.
     const plan = switch (embedder.engine) {

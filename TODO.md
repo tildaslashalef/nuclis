@@ -34,18 +34,40 @@ vectors, traces and mel features are committed
 **Session 2 is delivered (2026-10-09).** The binding, the CPU forward, the
 `Embedder` (`inference/src/embed.zig`), and `embeddinggemma-check` with
 three `verify-cpu` gates are committed. On the BF16 file the CPU forward
-matches Google's float32 to `1 − cos` = 4.0e-12. The record is in
-`docs/models/embeddinggemma.md` § CPU reference against the oracles. Side
-fix in this unit: `Engine.open` returned its vocabulary by value while the
-encoder kept a pointer to the local copy; it is now on the heap (commit
-`c2a02a4`). `make verify-auto` passes; the CPU tier as a whole runs in
-Session 8. Next: **Session 3, the text encoder on Metal**.
+matches Google's float32 to `1 − cos` = 4.0e-12. Side fix in this unit:
+`Engine.open` returned its vocabulary by value while the encoder kept a
+pointer to the local copy; it is now on the heap (commit `c2a02a4`).
+
+**Session 3 is delivered (2026-10-09).** The text encoder runs on Metal
+(`inference/src/models/embeddinggemma_metal.zig`, `Embedder` with
+`Backend.metal` and `embedBatch`). Results:
+- **Accuracy.** BF16 against Google's f32: `1 − cos` 4.2e-12. Q8_0
+  against llama.cpp: 4.2e-7. Packed batches give each input's vector bit
+  for bit.
+- **Gates.** `embeddinggemma-vectors-metal` and
+  `embeddinggemma-google-metal`, tier `verify`, 7 s each.
+- **Attention.** `Backend.attentionSegmentsGrouped` materializes the
+  scores. The planned online-softmax kernel was built, twice, and ran near
+  the 0.7 TFLOP/s ceiling the prefill chunk kernels had shown, so the
+  scores and P·V are F32 matmul tiles now.
+- **Rates against llama.cpp** (which stages matmul activations as half).
+  At 64 × 256 tokens: 38.3 inputs/s against 41.0 on Q8_0, level on BF16.
+  Ahead 3–10 % at 8192 tokens, behind 9–14 % on one 512-token input. The
+  record is in `docs/models/embeddinggemma.md` § The Metal plan.
+- **The lever left is the user's call.** The batch is 80 % F32 matmul at
+  the generic tile's ceiling; half-operand tiles would be about 35 %
+  faster and are what the card's f16 warning rules out
+  (`docs/engine/metal-backend.md` § Segments attention with materialized
+  scores).
+
+`make verify-auto` and `make verify` pass. Next: **Session 4, `nuclis
+embed` and the catalogue**.
 
 | Session | What |
 | --- | --- |
 | 1. Facts and oracles (done) | Pull and pin the files, `docs/models/embeddinggemma.md`, inventory fixtures, the second llama.cpp checkout and the sentence-transformers oracle, recorded traces and vectors |
 | 2. Text encoder on the CPU (done) | `gemma-embedding2` adapter, the bidirectional KV-free forward, pooling, projection, normalization, Matryoshka; `Embedder` in `inference/src/embed.zig` |
-| 3. Text encoder on Metal | A grouped-query, 512-wide, online-softmax segments attention kernel; packed batches; F32 activations throughout; measured rates |
+| 3. Text encoder on Metal (done) | Grouped-query segments attention with materialized scores; packed batches, bit-exact; F32 activations throughout; measured rates |
 | 4. `nuclis embed` and the catalogue | `ModelKind.embedding`, the catalogue table, the shared wire types in `src/embedding/`, tasks and titles, `model ls` |
 | 5. `POST /v1/embeddings` | The service, its batcher and pool, `Kind.embedding` in the memory budget, `GET /v1/models` fields, the API guide and spec |
 | 6. Images | The small Gemma 4 vision encoder from this mmproj, rows spliced unscaled, 280 soft tokens by default, `--image` and image parts |
@@ -187,59 +209,6 @@ What our code assumes today (the reasons this is a new family):
   `attention_full_max_rows` = 4096: `nu_attention_segments` keeps every score
   in threadgroup memory.
 - There is no audio code anywhere. `chat/wire.zig` refuses audio.
-
-## Session 3. Text encoder on Metal
-
-**Why.** Indexing a corpus is many passes. Metal is the path users run;
-the CPU stays the oracle.
-
-1. **The attention kernel.** Add `Backend.attentionSegmentsGrouped` and
-   `nu_attention_segments_grouped` in `kernels.metal`:
-   - F32 throughout, online softmax over key blocks, so there is no
-     4096-row score buffer.
-   - KV heads ≤ query heads (GQA), head width ≤ 512.
-   - The per-row `[begin, end)` segment bounds and the symmetric `window`
-     of `attentionSegments`.
-   - It is tested against the CPU attention on random data at widths
-     256 and 512, with 1 and 2 KV heads, 1 to 8192 rows, and packed
-     segments, in `zig build test-metal`.
-   - `attentionSegments` itself is not changed, so Laya is untouched.
-2. **The plan.** Add `inference/src/models/embeddinggemma_metal.zig`
-   `Plan`, modeled on `laya_metal.zig`'s packed batches: several inputs per
-   pass with segment bounds, mean pooling per segment, and the projection
-   and normalization.
-   - Matrices go through the generic `nu_matmul`/matvec for Q8_0, BF16
-     and F32.
-   - Residual, activations and attention are F32. No half anywhere: the
-     card's f16 warning.
-   - `Embedder` uses the Metal plan when `--backend metal`, with
-     `batchRows` as Laya's.
-3. **Gates.** `embeddinggemma-check` gains `--backend metal` (after the
-   mode). Add gates of tier `verify`, the fast Metal tier:
-   - `embeddinggemma-vectors-metal`: Q8_0 against `llama-q8_0`, floor
-     0.99999, as on the CPU;
-   - `embeddinggemma-google-metal`: the BF16 file against `st-f32`. With
-     F32 activations throughout, Metal should land near the CPU's 4e-12, so
-     hold it to 0.999999 and record the measured value.
-   - A packed batch of every text case gives the same vectors as one at a
-     time, bit for bit or within a recorded bound ("batching changes
-     timing, never answers").
-   The cases cover the 2,930- and 8,142-token documents.
-   - Watch the matmul: llama.cpp's Metal batched matmul stages activations
-     as half (bf16 for BF16 weights), which cost it 4.6e-4 to 1.6e-3 of
-     relative RMS per stage. Ours must not (the card's f16 warning):
-     confirm `nu_matmul`'s operand types for Q8_0 and BF16 before relying
-     on it.
-4. **Rates.** Measure and record in the model document:
-   - Inputs per second for 64 inputs of 256 tokens.
-   - The latency of one 512-token input and one 8192-token input.
-   - The same on the llama.cpp checkout.
-
-   Record the hardware, build, file and methodology
-   (`docs/benchmarks/README.md`).
-
-**Gates.** `zig build test-metal`, `make verify-auto`, and `make verify`
-once in this session.
 
 ## Session 4. `nuclis embed` and the catalogue
 

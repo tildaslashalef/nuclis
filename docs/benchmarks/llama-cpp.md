@@ -164,6 +164,19 @@ Its GELU is still an f16 lookup table (`GGML_GELU_FP16`), which with its
 other F32 differences sets the traces' bound
 ([embeddinggemma.md § CPU reference](../models/embeddinggemma.md#cpu-reference-against-the-oracles-2026-10-09)).
 
+The rates beside `embeddinggemma-check MODEL bench` come from
+`scripts/reference-embedding-bench.cpp`, the same inputs and method (64
+inputs of 256 tokens, then one of 512 and one of 8192; BOS, " the"
+repeated, EOS; batches of at most 8192 rows; one untimed warm-up, then the
+median), on the checkout's defaults (Metal, flash attention `auto`):
+
+```sh
+c++ -std=c++17 -O2 -I$R/include -I$R/ggml/include scripts/reference-embedding-bench.cpp \
+  -L$R/build/bin -lllama -lggml -lggml-base -Wl,-rpath,"$PWD/$R/build/bin" \
+  -o .zig-cache/embedding/reference-embedding-bench
+.zig-cache/embedding/reference-embedding-bench $D/embeddinggemma-2-Q8_0.gguf
+```
+
 ## Run the workload
 
 Start one reference server in a separate terminal:

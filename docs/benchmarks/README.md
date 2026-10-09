@@ -419,7 +419,12 @@ rather than hidden:
 - `attributed` can exceed the command-buffer time (4K decode 107.5 against
   105.8 ms; a 4-row verify 399 against 330 ms, 2026-09-30): summed kernel
   intervals are not wall time when consecutive encoders overlap, so read
-  the table as shares of kernel time.
+  the table as shares of kernel time. A short kernel that does not depend
+  on the long one before it can show most of that one's time: in the
+  EmbeddingGemma 2 plan, a 4M-float `scale` appeared to cost as much as
+  the attention dispatched just before it, and fusing two such small
+  kernels changed the command-buffer time by nothing (2026-10-09). Judge a
+  change by the total, not by its row.
 - Matrix kernels are keyed by encoding and shape, so one kernel's time splits
   by tensor; `GB/s` is weight bytes over kernel time. Elementwise kernels
   aggregate by name.

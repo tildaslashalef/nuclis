@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(embeddinggemma_check);
     const run_embeddinggemma = b.addRunArtifact(embeddinggemma_check);
     run_embeddinggemma.addPassthruArgs();
-    b.step("test-embeddinggemma", "Check EmbeddingGemma 2's CPU forward against the oracles (-- MODEL traces|vectors)").dependOn(&run_embeddinggemma.step);
+    b.step("test-embeddinggemma", "Check EmbeddingGemma 2 against the oracles, or time it (-- MODEL traces|vectors|google|bench [--backend cpu|metal])").dependOn(&run_embeddinggemma.step);
     const generation_check = b.addExecutable(.{
         .name = "generation-check",
         .root_module = b.createModule(.{
