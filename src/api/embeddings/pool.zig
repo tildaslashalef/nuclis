@@ -1,7 +1,8 @@
 //! The open embedding model, at most one, keyed by its GGUF file; opening
 //! another closes it. It counts its file against the server's memory budget
-//! (`memory.zig`): the weights are mapped and wrapped in place, and the
-//! projector is not loaded. Only the GPU worker opens, uses, and closes the
+//! (`memory.zig`): the weights are mapped and wrapped in place. The
+//! projector is opened with it when pulled, and its vision encoder, built on
+//! the first image, is added to the budget then (`account`). Only the GPU worker opens, uses, and closes the
 //! embedder (`acquire`); other threads only read which model is open.
 const std = @import("std");
 const inference = @import("inference");
@@ -22,6 +23,9 @@ pub const Pool = struct {
         path: []u8,
         name: []u8,
         embedder: *embed.Embedder,
+        /// The file's bytes, and the media encoders' counted so far.
+        bytes: u64,
+        media: u64 = 0,
     };
 
     pub const Acquired = struct {
@@ -39,10 +43,11 @@ pub const Pool = struct {
         self.close(io);
     }
 
-    /// GPU worker only: the embedder of `path`, opened (closing the open one)
-    /// if it is not open.
-    pub fn acquire(self: *Pool, io: std.Io, path: []const u8, name: []const u8) !Acquired {
-        if (self.slot) |s| if (std.mem.eql(u8, s.path, path)) {
+    /// GPU worker only: the embedder of `path` with its projector `mmproj`
+    /// (null when not pulled), opened (closing the open one) if it is not
+    /// open, or open without the projector that is now pulled.
+    pub fn acquire(self: *Pool, io: std.Io, path: []const u8, mmproj: ?[]const u8, name: []const u8) !Acquired {
+        if (self.slot) |s| if (std.mem.eql(u8, s.path, path) and (mmproj == null or s.embedder.hasVision())) {
             if (self.budget) |b| b.touch(io, path);
             return .{ .embedder = s.embedder, .load_ns = 0 };
         };
@@ -54,7 +59,7 @@ pub const Pool = struct {
             const leaving: ?[]const u8 = if (self.slot) |s| s.path else null;
             try b.reserve(io, bytes -| if (leaving) |key| b.bytesOf(io, key) else 0, leaving);
         }
-        const embedder = try embed.Embedder.open(self.gpa, io, path, self.backend);
+        const embedder = try embed.Embedder.open(self.gpa, io, path, self.backend, .{ .projector = mmproj });
         errdefer embedder.deinit();
         const owned_path = try self.gpa.dupe(u8, path);
         errdefer self.gpa.free(owned_path);
@@ -63,10 +68,20 @@ pub const Pool = struct {
         self.close(io);
         if (self.budget) |b| try b.add(io, .embedding, path, name, bytes, .{ .context = self, .close = closeKey });
         self.mutex.lockUncancelable(io);
-        self.slot = .{ .path = owned_path, .name = owned_name, .embedder = embedder };
+        self.slot = .{ .path = owned_path, .name = owned_name, .embedder = embedder, .bytes = bytes };
         self.mutex.unlock(io);
         const load_ns: u64 = @intCast(@max(0, started.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds()));
         return .{ .embedder = embedder, .load_ns = load_ns };
+    }
+
+    /// GPU worker only, after a pass prepared its inputs: counts the media
+    /// encoders the open model built since.
+    pub fn account(self: *Pool, io: std.Io) !void {
+        const s = if (self.slot) |*s| s else return;
+        const media = s.embedder.mediaBytes();
+        if (media == s.media) return;
+        s.media = media;
+        if (self.budget) |b| try b.resize(io, s.path, s.bytes + media);
     }
 
     /// GPU worker only: closes the open model, if any, and leaves the budget.
@@ -116,7 +131,7 @@ test "a file that is no embedding model leaves the pool empty and the budget unt
     var pool: Pool = .init(gpa, .cpu);
     pool.budget = &budget;
     defer pool.deinit(io);
-    try std.testing.expect(std.meta.isError(pool.acquire(io, path, "x")));
+    try std.testing.expect(std.meta.isError(pool.acquire(io, path, null, "x")));
     try std.testing.expect(!pool.isOpen(io, path));
     try std.testing.expectEqual(@as(u64, 0), budget.resident(io));
     try std.testing.expectError(error.ModelTooLarge, blk: {
@@ -124,6 +139,6 @@ test "a file that is no embedding model leaves the pool empty and the budget unt
         defer small.deinit();
         pool.budget = &small;
         defer pool.budget = &budget;
-        break :blk pool.acquire(io, path, "x");
+        break :blk pool.acquire(io, path, null, "x");
     });
 }

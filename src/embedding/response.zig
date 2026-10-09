@@ -71,6 +71,8 @@ pub fn write(arena: std.mem.Allocator, out: *std.Io.Writer, body: Body) !void {
     try s.write(body.request.dimensions);
     try s.objectField("task");
     try s.write(if (body.request.task) |t| @tagName(t) else null);
+    try s.objectField("image_tokens");
+    try s.write(imageTokens(body.request));
     try s.objectField("tokens");
     try s.write(body.tokens());
     try s.objectField("timings_ms");
@@ -109,8 +111,8 @@ pub fn write(arena: std.mem.Allocator, out: *std.Io.Writer, body: Body) !void {
 
 /// OpenAI's embeddings response on one line: `data` in input order,
 /// `model`, `usage`, then the `nuclis` object (the space, the width, the
-/// task, each input's tokens, the indexes of the inputs that were cut, and
-/// the timings). `base64` writes each vector's little-endian f32 bytes.
+/// task, the image budget, each input's tokens, the indexes of the inputs
+/// that were cut, and the timings). `base64` writes each vector's little-endian f32 bytes.
 pub fn writeOpenAI(out: *std.Io.Writer, arena: std.mem.Allocator, body: Body, encoding: request_mod.Encoding) !void {
     var s: std.json.Stringify = .{ .writer = out };
     try s.beginObject();
@@ -161,6 +163,8 @@ pub fn writeOpenAI(out: *std.Io.Writer, arena: std.mem.Allocator, body: Body, en
     try s.write(body.request.dimensions);
     try s.objectField("task");
     try s.write(if (body.request.task) |t| @tagName(t) else null);
+    try s.objectField("image_tokens");
+    try s.write(imageTokens(body.request));
     try s.objectField("tokens");
     try s.beginArray();
     for (body.vectors) |v| try s.write(v.tokens);
@@ -179,6 +183,12 @@ pub fn writeOpenAI(out: *std.Io.Writer, arena: std.mem.Allocator, body: Body, en
     try s.endObject();
     try s.endObject();
     try out.writeByte('\n');
+}
+
+/// The image budget when a request holds an image (it changes the vector),
+/// else null.
+fn imageTokens(request: request_mod.Request) ?u32 {
+    return if (request.hasImages()) request.image_tokens else null;
 }
 
 pub fn ms(ns: u64) f64 {
@@ -217,6 +227,7 @@ test "OpenAI's body: float and base64 carry the same f32 bits" {
     try std.testing.expectEqual(@as(i64, 8195), f.object.get("usage").?.object.get("total_tokens").?.integer);
     const nuclis = f.object.get("nuclis").?.object;
     try std.testing.expectEqual(@as(i64, 1), nuclis.get("truncated").?.array.items[0].integer);
+    try std.testing.expect(nuclis.get("image_tokens").? == .null);
     try std.testing.expectEqualStrings("e@0123456789ab/128", nuclis.get("space").?.string);
     const encoded = b.object.get("data").?.array.items[0].object.get("embedding").?.string;
     var decoded: [8]u8 = undefined;
@@ -240,11 +251,11 @@ test "the JSON body: one line of values per vector, which read back exactly" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const values = [_]f32{ 0.6, -0.8 };
-    const inputs = [_]request_mod.Input{.{ .parts = &.{.{ .text = "x" }}, .label = "input[0]" }};
+    const inputs = [_]request_mod.Input{.{ .parts = &.{ .{ .text = "x" }, .{ .image = "PNG" } }, .label = "input[0]" }};
     var out: std.Io.Writer.Allocating = .init(arena);
     try write(arena, &out.writer, .{
         .identity = .{ .name = "e", .sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
-        .request = .{ .inputs = &inputs, .task = .search_query, .dimensions = 128 },
+        .request = .{ .inputs = &inputs, .task = .search_query, .dimensions = 128, .image_tokens = 560 },
         .vectors = &.{.{ .values = &values, .tokens = 4, .input_tokens = 9 }},
         .timings = .{ .embed_ns = 1_250_000 },
     });
@@ -252,6 +263,7 @@ test "the JSON body: one line of values per vector, which read back exactly" {
     const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, out.written(), .{});
     try std.testing.expectEqualStrings("e@0123456789ab/128", parsed.object.get("space").?.string);
     try std.testing.expectEqualStrings("search_query", parsed.object.get("task").?.string);
+    try std.testing.expectEqual(@as(i64, 560), parsed.object.get("image_tokens").?.integer);
     const vector = parsed.object.get("vectors").?.array.items[0].object;
     try std.testing.expect(vector.get("truncated").?.bool);
     try std.testing.expectEqual(@as(f32, -0.8), @as(f32, @floatCast(vector.get("values").?.array.items[1].float)));

@@ -33,6 +33,7 @@ reference rather than the file, the sentence says so.
 - [CPU reference against the oracles (2026-10-09)](#cpu-reference-against-the-oracles-2026-10-09)
 - [The Metal plan (2026-10-09)](#the-metal-plan-2026-10-09)
 - [`nuclis embed` (2026-10-09)](#nuclis-embed-2026-10-09)
+- [Images (2026-10-09)](#images-2026-10-09)
 
 ## Artifacts
 
@@ -202,8 +203,11 @@ at each media part. It adds no turn markers.
 
 **Task prefixes.** The model is trained with short instruction prefixes
 on text; the card says they improve quality, and omitting them still
-works. **Prefixes apply to text only**: images, audio and video go without
-one. From the card's best-practices section and
+works. **The prefix opens the input**, before any media part:
+sentence-transformers prepends a prompt as a system message, which the
+template renders first, so an image alone gets one too (checked on the
+pinned revision, 2026-10-09: the logo with the query prompt is `<bos>`, the
+prompt's eight tokens, BOI, …). From the card's best-practices section and
 `config_sentence_transformers.json`:
 
 | Use | Kind | Query | Document |
@@ -280,6 +284,11 @@ width.
   must be run with `--image-max-tokens 280` to match Google's processor.
 - Tokens: BOI 255999, image 258880, EOI 258882. `mtmd` frames an image
   as `<|image>` … `<image|>`.
+- **The FFN activation is `gelu_pytorch_tanh`** (Google's
+  `hidden_activation`). No key in the file says so, and llama.cpp's
+  `clip.cpp` runs every `gemma4v` file with its default, `gelu_quick`.
+  nuclis's chat path follows the reference; the embedder uses Google's
+  (§ Images).
 
 **Audio (`gemma4a`, 752 tensors).** The same tensors, names and shapes as
 Gemma 4 E4B's audio encoder, except `mm.a.input_projection` (1536 → 512
@@ -320,8 +329,8 @@ markers.
 
 | Part | Becomes | Budget |
 | --- | --- | --- |
-| Text | its tokens, after the task prefix if any | 1 per subword |
-| Image | BOI, the projector rows, EOI | 280 by default (70–1120) |
+| Text | its tokens; the task prefix, if any, opens the input | 1 per subword |
+| Image | BOI, the projector rows, EOI | 280 by default; 70, 140, 560 or 1120 |
 | Audio | BOA, the projector rows, EOA | 25 per second (about 327 s alone) |
 
 **Text is literal (decided 2026-10-09).** nuclis tokenizes text parts with
@@ -538,8 +547,8 @@ The command (`src/embed.zig`) and the wire types it shares with the API
 no implicit task, Google's prefixes from `--task` and `--title`, the
 trained widths, truncation reported per input, and every response named
 by its space (`embeddinggemma-2@6f1bd4ac6c5d/768` for the catalogue's Q8_0
-file). With a task, the prefix goes in front of the input's first text
-part.
+file). With a task, the prefix opens the input (§ Tokenizer and task
+prefixes).
 
 **End to end against the oracles.** The fixture's `north` sentence through
 the built binary on Metal, with the Q8_0 file, rendered by `--task`
@@ -555,4 +564,68 @@ the oracles' in each case.
 These are the gates' agreements (§ The Metal plan): the command adds no
 error of its own. The gap to Google's float32 is the Q8_0 file's, about
 5e-5 of cosine on text (§ Reference oracle status).
+
+## Images (2026-10-09)
+
+An image part goes through Google's `Gemma4ImageProcessor` and vision
+tower, not through the chat path's reference pipeline. Each step was read
+from the pinned transformers 5.19.0 and torchvision, and checked on the
+fixture images:
+
+| Step | Google's (what nuclis does for embeddings) | llama.cpp's (the chat path's) |
+| --- | --- | --- |
+| Decode | PIL `convert("RGB")`: alpha dropped, straight values, no colour management | stb_image: the same |
+| Grid | `get_aspect_ratio_preserving_size`: the largest 48-pixel grid of the image's ratio within `budget · 9` patches, floored (`gemma4.googleGrid`) | the smart size on the 48-pixel grid, letterboxed |
+| Resize | torchvision's native uint8 antialiased bicubic: Pillow's separable passes with weights rounded to the most fractional bits that keep the largest in an i16 (`preprocess.resizeWith(…, .torchvision)`) | Pillow's, 22 fractional bits |
+| Patches | F32, `2x − 1` | rounded to F16 (the convolution's im2col) |
+| FFN gate | `gelu_pytorch_tanh` | `gelu_quick` |
+
+- **Decoding.** ImageIO's drawing path premultiplied alpha: on the RGBA
+  logo it changed 12 % of the values, by up to 254. The bridge now copies
+  the stored values of 8-bit RGB layouts (alpha dropped, no colour
+  conversion), as PIL and stb_image do; other layouts are still drawn.
+  Both fixture images then equal PIL's bytes. The chat path decodes
+  through the same bridge.
+- **Resizing.** Pillow's own resize differs from torchvision's by one
+  level in 0.05 % of the logo's values. `resizeWith(…, .torchvision)`
+  equals torchvision on both fixture images at 70, 280 and 1120 tokens,
+  downscaling and upscaling (`preprocess.zig` tests it against two
+  recorded torchvision resizes).
+- **Budgets.** Google's processor takes 70, 140, 280, 560 or 1120 soft
+  tokens and nothing else, so `--image-tokens` and `image_tokens` take
+  those five. The budget changes the vector, and the response records it.
+- **Encoder memory.** The vision encoder is built on the first image. On
+  Metal it then holds 918 MB: its weights, mapped in place, and the plan's
+  buffers, which are sized for 1120 tokens. The server adds that to the
+  model's share of the memory budget.
+
+**Against the oracles** (`zig build test-embeddinggemma -- MODEL images
+--mmproj mmproj-BF16.gguf`, M4 Pro):
+
+| File | Backend | `image.logo` | `image.og` | `mix.logo` |
+| --- | --- | ---: | ---: | ---: |
+| BF16 | Metal | 2.0e-12 | 9.6e-13 | 3.4e-12 |
+| BF16 | CPU | 3.1e-12 | 1.2e-12 | 4.9e-12 |
+| Q8_0 | Metal | 3.3e-5 | 7.1e-5 | 5.3e-5 |
+
+These are `1 − cos` against Google's float32 vectors, with the token ids
+equal to Google's in each case. On the BF16 file, images agree as text
+does, to summation order. The Q8_0 file costs about what it costs on text.
+llama.cpp's own image vectors reach 0.995 to 0.99986 (§ Reference
+oracle status). The mode also runs the vision encoder on llama.cpp's
+pixels with its F16 patches and `gelu_quick` against its projector rows
+(`media-0`), as a localizer: relative RMS 8.3e-3, relative max 2.7e-2.
+That oracle was recorded on Metal, whose matmuls stage activations as
+half, so its bound is loose (1.5e-2 and 5e-2). A packed batch of the
+three gives each its vector alone, bit for bit.
+
+| Gate | Tier | Runs |
+| --- | --- | --- |
+| `embeddinggemma-image-metal` | `verify` | every image case, BF16, floor 0.9999999; packed batch equality |
+| `embeddinggemma-image-cpu` | `verify-cpu` | `mix.logo` only, BF16, floor 0.9999999 (6 minutes: the CPU reference takes about 3 minutes an image) |
+
+**Rates.** On Metal, preparing one image (decode, resize, encode) takes
+about 460 ms at 280 tokens, about 2 images a second. The encoder's
+matmuls dominate, on the generic F32 tile: 2,304 patches through 16
+blocks.
 

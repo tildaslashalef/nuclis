@@ -338,8 +338,11 @@ pub const Plan = struct {
             try b.add(s.x, s.h, n * h);
             try b.rmsNorm(s.x, l.ln2, s.h, rows);
             try self.clippedPair(l, s, n, ffn_padded);
-            // The padding columns were never written: gelu_quick(0)·0 keeps them zero.
-            try b.geluQuickMul(s.gate, s.up, n * ffn_padded);
+            // The padding columns were never written: gelu(0)·0 keeps them zero.
+            switch (self.binding.activation) {
+                .gelu_quick => try b.geluQuickMul(s.gate, s.up, n * ffn_padded),
+                .gelu_tanh => try b.geluMul(s.gate, s.up, n * ffn_padded),
+            }
             try self.clipped(l.down, l.bounds[@backingInt(model.Linear.down)], s.gate, ffn_padded, s.h, h, n);
             try b.rmsNorm(s.h, l.post_ffn_norm, s.h, rows);
             try b.add(s.x, s.h, n * h);

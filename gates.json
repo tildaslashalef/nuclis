@@ -1,5 +1,5 @@
 {
- "$comment": "The gate registry: docs/development.md \u00a7 Gates. Run with scripts/gates.py (make verify-auto, verify, verify-release, verify-cpu, verify-changed, gate).",
+ "$comment": "The gate registry: docs/development.md § Gates. Run with scripts/gates.py (make verify-auto, verify, verify-release, verify-cpu, verify-changed, gate).",
  "build": {
   "metal_optimize": "ReleaseSafe",
   "cpu_optimize": "ReleaseFast",
@@ -66,7 +66,8 @@
    "mmproj": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
   },
   "embeddinggemma_bf16": {
-   "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-BF16.gguf"
+   "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-BF16.gguf",
+   "mmproj": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
   }
  },
  "checks": [
@@ -1063,6 +1064,50 @@
    "evidence": "docs/models/embeddinggemma.md"
   },
   {
+   "name": "embeddinggemma-image-cpu",
+   "family": "embeddinggemma",
+   "tier": "verify-cpu",
+   "model": "embeddinggemma_bf16",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/embeddinggemma-check.zig",
+    "inference/src/embed.zig",
+    "inference/src/models/embeddinggemma*.zig",
+    "inference/src/vision/gemma4*.zig",
+    "inference/src/vision/preprocess.zig",
+    "inference/src/backends/cpu/**",
+    "inference/src/vision/image.zig",
+    "inference/src/vision/image_bridge.m",
+    "inference/src/formats/gguf.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tokenizer/**",
+    "tests/fixtures/embeddinggemma-inputs/**",
+    "tests/fixtures/embeddinggemma-vectors/**",
+    "tests/fixtures/embeddinggemma-image.logo/**",
+    "tests/fixtures/embeddinggemma-mix.logo/**",
+    "docs/branding/nuclis.png",
+    "site/og.png"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-embeddinggemma",
+    "--",
+    "{model}",
+    "images",
+    "--mmproj",
+    "{mmproj}",
+    "--only",
+    "mix.logo"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the vision encoder from llama.cpp's pixels against its projector rows, then text, image, text through Google's pipeline on the BF16 file against Google's float32 vector, cosine >= 0.9999999; about 6 minutes",
+   "evidence": "docs/models/embeddinggemma.md"
+  },
+  {
    "name": "embeddinggemma-vectors-metal",
    "family": "embeddinggemma",
    "tier": "verify",
@@ -1128,6 +1173,50 @@
     "kind": "exit"
    },
    "note": "97 texts on Metal, BF16 file, against Google's float32 vectors, cosine >= 0.9999999; packed batches equal one at a time bit for bit",
+   "evidence": "docs/models/embeddinggemma.md"
+  },
+  {
+   "name": "embeddinggemma-image-metal",
+   "family": "embeddinggemma",
+   "tier": "verify",
+   "model": "embeddinggemma_bf16",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/embeddinggemma-check.zig",
+    "inference/src/embed.zig",
+    "inference/src/models/embeddinggemma*.zig",
+    "inference/src/vision/gemma4*.zig",
+    "inference/src/vision/preprocess.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/vision/image.zig",
+    "inference/src/vision/image_bridge.m",
+    "inference/src/formats/gguf.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tokenizer/**",
+    "tests/fixtures/embeddinggemma-inputs/**",
+    "tests/fixtures/embeddinggemma-vectors/**",
+    "tests/fixtures/embeddinggemma-image.logo/**",
+    "tests/fixtures/embeddinggemma-mix.logo/**",
+    "docs/branding/nuclis.png",
+    "site/og.png"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-embeddinggemma",
+    "--",
+    "{model}",
+    "images",
+    "--backend",
+    "metal",
+    "--mmproj",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the vision encoder on Metal from llama.cpp's pixels against its projector rows, then every image case through Google's pipeline on the BF16 file against Google's float32 vectors, cosine >= 0.9999999; packed batches equal one at a time bit for bit",
    "evidence": "docs/models/embeddinggemma.md"
   },
   {

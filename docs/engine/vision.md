@@ -30,13 +30,19 @@ The package (`inference/src/vision/root.zig`):
 - `image.zig` — `Rgb8` and `decode`: a P6 PPM parser for fixtures and tests
   on every platform, and on macOS an ImageIO bridge (`image_bridge.m`,
   `CGImageSourceCreateWithData` → RGB8; PNG, JPEG, HEIC, WebP, TIFF, GIF,
-  BMP) behind the same C interface the Metal bridge uses. Bounds are host
+  BMP) behind the same C interface the Metal bridge uses. An 8-bit RGB
+  image is copied as stored, alpha dropped unpremultiplied and no colour
+  conversion, as stb_image and PIL's `convert("RGB")` read it; drawing it
+  would premultiply a translucent pixel (it changed 12 % of the RGBA logo's
+  values). Other layouts are drawn into an RGBA8 context. Bounds are host
   constants: image bytes ≤ 32 MiB, decoded pixels ≤ 64 M.
 - `preprocess.zig` — the reference's smart size (`smartSize`: round each side
   to the patch·merge grid, then scale to the pixel bounds), a
   Pillow-compatible separable resize in 22-bit fixed point with the
   **bicubic** or the **Lanczos** filter (`resize`, `resizeBicubic`,
-  `resizeLanczos`; `resizeLetterbox` for the `PAD_CEIL` letterbox), and
+  `resizeLanczos`; `resizeLetterbox` for the `PAD_CEIL` letterbox;
+  `resizeWith(…, .torchvision)` rounds the weights as torchvision's native
+  uint8 resize does, which EmbeddingGemma 2's processor calls), and
   `patches`, the channel-planar `[c][ky][kx]` layout the convolution reads,
   normalized by mean/std and rounded to F16 as the reference's im2col does.
 - `qwen3vl.zig` / `qwen3vl_metal.zig` — the Qwen3-VL adapter (below).
@@ -132,6 +138,9 @@ first greedy tokens. The pinned fixture is a synthetic 96×64 P6 image
 (`inference/src/vision/fixtures/synthetic-96x64.ppm`); its reference-resized
 128×96 pixels, feature rows, and first eight greedy tokens are committed
 under `fixtures/qwen3vl-synthetic/` and `synthetic-96x64-resized.ppm`.
+`synthetic-96x64-torchvision-{down,up}.ppm` are the same image resized by
+torchvision's native uint8 antialiased bicubic to 40×27 and 144×96 (torch
+2.14.1, 2026-10-09), which `resizeWith(…, .torchvision)` must equal.
 
 **The measurement (2026-09-22).**
 
@@ -329,6 +338,10 @@ bidirectional attention at scale **1**; then
 h = rms(x)·ln2. The gate is **`gelu_quick`** (x·σ(1.702x)): the file
 carries no `clip.use_gelu`/`use_silu`, so the reference's default applies
 (its log says `ffn_op: gelu_quick`); `bind` refuses a file that names one.
+Google's configs say `gelu_pytorch_tanh`, so the reference differs from
+the checkpoint here; the binding's `activation` selects either, and
+EmbeddingGemma 2, whose oracle is Google's, sets tanh
+([embeddinggemma.md § Images](../models/embeddinggemma.md#images-2026-10-09)).
 After the blocks: a 3×3 average pool over the patch grid, × √1152,
 `(x − std_bias) ⊙ std_scale`, RMS norm without a weight,
 `mm.input_projection` (BF16 1152×2816). The Metal plan runs the attention

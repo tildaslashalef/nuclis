@@ -379,6 +379,9 @@ def check_embeddings(client: Client) -> None:
     query = embedded(client, {"input": SENTENCES[0], "task": "search_query"})
     check(query["nuclis"]["task"] == "search_query" and query["nuclis"]["tokens"][0] == 25, "a query's prefix")
 
+    if "image" in row["modalities"]:
+        check_images(client)
+
     over = "word " * 9000
     cut = embedded(client, {"input": over, "truncate": True})
     check(cut["nuclis"]["truncated"] == [0] and cut["nuclis"]["tokens"] == [8192], "truncation is reported")
@@ -401,6 +404,64 @@ def check_embeddings(client: Client) -> None:
     check(got == 400 and r["error"]["code"] == "not_a_language_model", f"chat with an embedding model: {got} {r}")
     print(
         f"  embeddings: {rows[0]['id']}, {len(SENTENCES)} inputs bit-identical alone, batched, concurrent, and across passes; {len(cases) + 1} refusals"
+    )
+
+
+LOGO = Path(__file__).resolve().parent.parent / "docs/branding/nuclis.png"
+VECTORS = Path(__file__).resolve().parent.parent / "tests/fixtures/embeddinggemma-vectors/st-f32"
+
+
+def google_vector(case: str) -> list[float]:
+    """Google's float32 vector of a fixture case (the image oracle)."""
+    meta = json.loads(VECTORS.with_suffix(".json").read_text())
+    index = [c["id"] for c in meta["cases"]].index(case)
+    raw = VECTORS.with_suffix(".f32").read_bytes()[index * 768 * 4 : (index + 1) * 768 * 4]
+    return list(struct.unpack("<768f", raw))
+
+
+def check_images(client: Client) -> None:
+    url = "data:image/png;base64," + base64.b64encode(LOGO.read_bytes()).decode()
+    image = [{"type": "image_url", "image_url": {"url": url}}]
+    alone = embedded(client, {"input": [image], "encoding_format": "base64"})
+    check(
+        alone["nuclis"]["image_tokens"] == 280 and alone["nuclis"]["tokens"] == [260],
+        f"the logo's tokens {alone['nuclis']}",
+    )
+    floats = embedded(client, {"input": [image]})
+    google = google_vector("image.logo")
+    cosine = sum(a * b for a, b in zip(floats["data"][0]["embedding"], google))
+    check(cosine >= 0.9999, f"the logo against Google's float32: cosine {cosine}")
+    mixed = embedded(
+        client,
+        {"input": [SENTENCES[2], image, [{"type": "text", "text": "A logo: "}, *image]], "encoding_format": "base64"},
+    )
+    check(vector_bits(mixed["data"][1]) == vector_bits(alone["data"][0]), "an image batched with text equals it alone")
+    check(mixed["nuclis"]["tokens"][2] == 260 + 4, f"text and image in one input {mixed['nuclis']['tokens']}")
+    small = embedded(client, {"input": [image], "image_tokens": 70})
+    check(
+        small["nuclis"]["image_tokens"] == 70 and small["nuclis"]["tokens"] == [4 + 64],
+        f"70 image tokens {small['nuclis']}",
+    )
+    text_only = embedded(client, {"input": "x"})
+    check(text_only["nuclis"]["image_tokens"] is None, "no image budget without images")
+    cases: list[tuple[Json, int, str]] = [
+        (
+            {"input": [[{"type": "image_url", "image_url": {"url": "data:image/png;base64,aGk="}}]]},
+            400,
+            "invalid_image",
+        ),
+        (
+            {"input": [[{"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}]]},
+            400,
+            "unsupported_feature",
+        ),
+        ({"input": [image], "image_tokens": 300}, 400, "invalid_request"),
+    ]
+    for body, status, code in cases:
+        got, r = client.call("POST", "/embeddings", body)
+        check(got == status and r.get("error", {}).get("code") == code, f"{str(body)[:80]}: {got} {r}")
+    print(
+        f"  images: the logo at cosine {cosine:.7f} against Google's float32, alone equals batched; {len(cases)} refusals"
     )
 
 

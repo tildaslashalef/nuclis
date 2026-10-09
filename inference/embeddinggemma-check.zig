@@ -1,7 +1,7 @@
 //! Explicit full-model check of EmbeddingGemma 2's forward against the
 //! recorded oracles (tests/fixtures/provenance.md, `embeddinggemma-*` rows).
 //!
-//!   embeddinggemma-check MODEL.gguf traces|vectors|google|bench [--backend cpu|metal] [FIXTURES_DIR]
+//!   embeddinggemma-check MODEL.gguf traces|vectors|google|images|bench [--backend cpu|metal] [--mmproj MMPROJ.gguf] [--only CASE] [FIXTURES_DIR]
 //!
 //! - `traces` (the Q8_0 file): the traced text cases stage by stage against
 //!   llama.cpp's CPU pass over the same weights in F32, within bounds set by
@@ -10,6 +10,12 @@
 //!   Q8_0 vectors.
 //! - `google` (the BF16 file): every text-only case against Google's float32
 //!   pass on the same weights, the accuracy claim.
+//! - `images` (either file, with `--mmproj`): the vision encoder from
+//!   llama.cpp's pixels (its resize, F16 patches and gelu_quick) against
+//!   its projector rows, then every image case through Google's pipeline
+//!   against Google's float32 vectors (at the `google` floor on the BF16
+//!   file). The rows are checked once per distinct image; `--only` keeps
+//!   one case (the CPU reference takes about 3 minutes an image).
 //! - `bench`: wall-clock rates, no oracle. 64 inputs of 256 tokens embedded
 //!   as one batch, then one input of 512 and one of 8192 tokens; each input
 //!   is BOS, " the" repeated, EOS (the cost does not depend on the text).
@@ -108,6 +114,8 @@ const Trace = struct {
     worst: []const u8 = "",
     failed: bool = false,
     missing: bool = false,
+    /// Stages the directory does not hold are skipped, not missing.
+    partial: bool = false,
 
     fn file(self: *Trace, name: []const u8) ?[]const u8 {
         const path = std.fmt.allocPrint(self.arena, "{s}/{s}.f32", .{ self.directory, name }) catch return null;
@@ -129,7 +137,7 @@ const Trace = struct {
             .projected => .{ "result_embd", self.file("result_embd"), 0, embed.dimensions },
         };
         const bytes = raw orelse {
-            self.missing = true;
+            if (!self.partial) self.missing = true;
             return;
         };
         const columns = rows.len / self.rows;
@@ -250,6 +258,150 @@ fn bench(arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder) !void 
     }
 }
 
+/// Bounds for the vision encoder's rows against llama.cpp's, recorded on
+/// Metal, whose batched matmuls stage activations as half or bf16 through
+/// 16 blocks: measured 2.7e-2 and 8.3e-3. A layout or weight defect is
+/// of order one.
+const max_relative_media = 5e-2;
+const max_relative_rms_media = 1.5e-2;
+/// Google's pipeline on the Q8_0 file against Google's float32 vectors.
+const min_cosine_images_q8 = 0.9999;
+
+const MediaCase = struct { id: []const u8, parts: []const embed.Part };
+
+/// The cases of inputs.json that hold an image, their image parts read
+/// from the paths the file gives (relative to the working directory).
+fn imageCases(arena: std.mem.Allocator, io: std.Io, fixtures: []const u8) ![]MediaCase {
+    const path = try std.fmt.allocPrint(arena, "{s}/embeddinggemma-inputs/inputs.json", .{fixtures});
+    const doc = try std.json.parseFromSliceLeaky(std.json.Value, arena, try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20)), .{});
+    var out: std.ArrayList(MediaCase) = .empty;
+    for (doc.object.get("cases").?.array.items) |c| {
+        const items = c.object.get("parts").?.array.items;
+        var parts: std.ArrayList(embed.Part) = .empty;
+        var has_image = false;
+        for (items) |part| {
+            if (part.object.get("text")) |t| {
+                try parts.append(arena, .{ .text = t.string });
+            } else if (part.object.get("image")) |file| {
+                has_image = true;
+                try parts.append(arena, .{ .image = try std.Io.Dir.cwd().readFileAlloc(io, file.string, arena, .limited(64 << 20)) });
+            } else break;
+        } else if (has_image) try out.append(arena, .{ .id = c.object.get("id").?.string, .parts = parts.items });
+    }
+    return out.items;
+}
+
+fn readF32(arena: std.mem.Allocator, io: std.Io, path: []const u8) ![]f32 {
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(256 << 20));
+    const out = try arena.alloc(f32, bytes.len / 4);
+    for (out, 0..) |*v, i| v.* = @bitCast(std.mem.readInt(u32, bytes[i * 4 ..][0..4], .little));
+    return out;
+}
+
+/// Relative max and relative RMS of `got` against `want`.
+fn relative(got: []const f32, want: []const f32) struct { max: f64, rms: f64 } {
+    var diff2: f64 = 0;
+    var ref2: f64 = 0;
+    var worst: f64 = 0;
+    var largest: f64 = 0;
+    for (got, want) |g, w| {
+        const delta = @as(f64, g) - w;
+        worst = @max(worst, @abs(delta));
+        largest = @max(largest, @abs(@as(f64, w)));
+        diff2 += delta * delta;
+        ref2 += @as(f64, w) * w;
+    }
+    return .{ .max = worst / @max(largest, 1e-30), .rms = @sqrt(diff2 / @max(ref2, 1e-30)) };
+}
+
+fn images(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder, fixtures: []const u8, only: ?[]const u8) !void {
+    const vision = inference.vision;
+    const gemma4v = vision.gemma4;
+    const google = try Vectors.load(arena, io, try std.fmt.allocPrint(arena, "{s}/embeddinggemma-vectors/st-f32", .{fixtures}));
+    var cases = try imageCases(arena, io, fixtures);
+    if (only) |id| cases = for (cases, 0..) |c, i| {
+        if (std.mem.eql(u8, c.id, id)) break cases[i..][0..1];
+    } else return error.UnknownCase;
+    const projector = &embedder.projector.?;
+    var checked: std.ArrayList([]const u8) = .empty;
+    var failures: usize = 0;
+    var vector: [embed.dimensions]f32 = undefined;
+
+    for (cases) |case| {
+        const directory = try std.fmt.allocPrint(arena, "{s}/embeddinggemma-{s}", .{ fixtures, case.id });
+        const want_rows = readF32(arena, io, try std.fmt.allocPrint(arena, "{s}/media-0.f32", .{directory})) catch continue;
+        // The reference's pipeline: its smart size, letterboxed Pillow bicubic, F16 patches, gelu_quick.
+        const bytes = for (case.parts) |p| switch (p) {
+            .image => |b| break b,
+            else => {},
+        } else unreachable;
+        const seen = for (checked.items) |b| {
+            if (std.mem.eql(u8, b, bytes)) break true;
+        } else false;
+        if (seen) continue;
+        try checked.append(arena, bytes);
+        var decoded = try vision.image.decode(gpa, bytes);
+        defer decoded.deinit(gpa);
+        const grid = gemma4v.gridFor(.{ .width = decoded.width, .height = decoded.height }, gemma4v.min_tokens, embed.default_image_tokens);
+        const target = grid.pixels();
+        const resized = try vision.preprocess.resizeLetterbox(gpa, decoded, target);
+        defer gpa.free(resized);
+        var patches = try vision.preprocess.patches(gpa, resized, target, gemma4v.patchOptions(.siglip, projector.binding.mean, projector.binding.std));
+        defer patches.deinit(gpa);
+        const rows = try arena.alloc(f32, grid.tokens() * width);
+        projector.binding.activation = .gelu_quick;
+        try embedder.encodePatches(patches, grid, rows);
+        projector.binding.activation = .gelu_tanh;
+        if (rows.len != want_rows.len) return error.InvalidFixture;
+        const r = relative(rows, want_rows);
+        const rows_ok = r.max <= max_relative_media and r.rms <= max_relative_rms_media;
+        if (!rows_ok) failures += 1;
+        std.debug.print("{s}: projector rows from the reference's pixels, {d} rows: relative max {e:.3}, relative RMS {e:.3} (bounds {e}, {e})\n", .{ case.id, grid.tokens(), r.max, r.rms, max_relative_media, max_relative_rms_media });
+    }
+
+    // Google's pipeline end to end.
+    // Google's float32 on the BF16 file (encoding 30), as the text gate; the Q8_0 file's
+    // own cost (about 5e-5 of cosine on text) on the other.
+    const floor: f64 = if (embedder.binding.token_embedding.encoding_id == 30) min_cosine_google else min_cosine_images_q8;
+    var low: f64 = 1;
+    const prepared_all = try arena.alloc(embed.Prepared, cases.len);
+    const singles = try arena.alloc([embed.dimensions]f32, cases.len);
+    for (cases, prepared_all, singles) |case, *prepared, *single| {
+        const started = std.Io.Clock.awake.now(io);
+        prepared.* = try embedder.prepare(arena, .{ .parts = case.parts }, .{});
+        const prepare_ms = started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
+        if (!std.mem.eql(u32, prepared.tokens, google.ids.get(case.id).?)) {
+            failures += 1;
+            std.debug.print("{s}: token ids differ from Google's\n", .{case.id});
+            continue;
+        }
+        try embedder.embed(prepared.*, &vector, null);
+        single.* = vector;
+        const c = cosine(&vector, google.values.get(case.id).?);
+        low = @min(low, c);
+        if (c < floor) failures += 1;
+        std.debug.print("{s}: {d} tokens, prepared in {d} ms, cosine against Google's f32 {d:.7} (1 - c = {e:.2})\n", .{ case.id, prepared.tokens.len, prepare_ms, c, 1 - c });
+    }
+    std.debug.print("{d} image cases: min cosine against Google's f32 {d:.7} (floor {d}); the vision encoder holds {d} MB\n", .{ cases.len, low, floor, embedder.mediaBytes() / 1_000_000 });
+    if (embedder.engine == .metal and failures == 0) {
+        // Batching changes timing, never answers, with media rows as with text.
+        const outs = try arena.alloc([]f32, cases.len);
+        const batched = try arena.alloc([embed.dimensions]f32, cases.len);
+        for (outs, batched) |*o, *b| o.* = b;
+        try embedder.embedBatch(prepared_all, outs);
+        var differing: usize = 0;
+        for (singles, batched) |a, b| {
+            if (!std.mem.eql(u8, std.mem.asBytes(&a), std.mem.asBytes(&b))) differing += 1;
+        }
+        std.debug.print("{d} image cases in one packed batch: {d} vectors differ from one at a time\n", .{ cases.len, differing });
+        if (differing != 0) failures += 1;
+    }
+    if (failures != 0) {
+        std.debug.print("{d} failures\n", .{failures});
+        std.process.exit(1);
+    }
+}
+
 fn isLiteral(id: []const u8) bool {
     for (literal_special) |l| if (std.mem.eql(u8, l, id)) return true;
     return false;
@@ -260,7 +412,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    const usage = "usage: embeddinggemma-check MODEL.gguf traces|vectors|google|bench [--backend cpu|metal] [FIXTURES_DIR]\n";
+    const usage = "usage: embeddinggemma-check MODEL.gguf traces|vectors|google|images|bench [--backend cpu|metal] [--mmproj MMPROJ.gguf] [--only CASE] [FIXTURES_DIR]\n";
     if (args.len < 3) {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
@@ -275,6 +427,16 @@ pub fn main(init: std.process.Init) !void {
         };
         rest = rest[2..];
     }
+    var mmproj: ?[]const u8 = null;
+    if (rest.len >= 2 and std.mem.eql(u8, rest[0], "--mmproj")) {
+        mmproj = rest[1];
+        rest = rest[2..];
+    }
+    var only: ?[]const u8 = null;
+    if (rest.len >= 2 and std.mem.eql(u8, rest[0], "--only")) {
+        only = rest[1];
+        rest = rest[2..];
+    }
     if (rest.len > 1) {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
@@ -283,10 +445,16 @@ pub fn main(init: std.process.Init) !void {
     const mode = args[2];
     const google_mode = std.mem.eql(u8, mode, "google");
     const bench_mode = std.mem.eql(u8, mode, "bench");
-    if (!google_mode and !bench_mode and !std.mem.eql(u8, mode, "vectors") and !std.mem.eql(u8, mode, "traces")) return error.InvalidArguments;
+    const images_mode = std.mem.eql(u8, mode, "images");
+    if (images_mode and mmproj == null) {
+        std.debug.print("images needs --mmproj\n", .{});
+        return error.InvalidArguments;
+    }
+    if (!google_mode and !bench_mode and !images_mode and !std.mem.eql(u8, mode, "vectors") and !std.mem.eql(u8, mode, "traces")) return error.InvalidArguments;
     const load_start = std.Io.Clock.awake.now(io);
-    var embedder = try embed.Embedder.open(gpa, io, args[1], backend);
+    var embedder = try embed.Embedder.open(gpa, io, args[1], backend, .{ .projector = mmproj });
     defer embedder.deinit();
+    if (images_mode) return images(gpa, arena, io, embedder, fixtures, only);
     if (bench_mode) {
         std.debug.print("open ({s}): {d} ms\n", .{ @tagName(backend), load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
         return bench(arena, io, embedder);

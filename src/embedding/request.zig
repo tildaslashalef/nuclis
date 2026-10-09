@@ -1,12 +1,14 @@
 //! The embedding request: inputs, each an ordered list of parts that gives
 //! one vector, and the options every input shares (`task` and `title`, which
-//! render Google's prefixes onto text parts; the width; truncation). Shared
+//! render Google's prefix at the front of an input; the width; truncation;
+//! the image budget). Shared
 //! by `nuclis embed` and the API; knows no HTTP. Text is embedded exactly as
 //! given unless a task is named (docs/models/embeddinggemma.md § Tokenizer
 //! and task prefixes).
 const std = @import("std");
 const inference = @import("inference");
 const config = @import("../config.zig");
+const data_url = @import("../data_url.zig");
 
 const embed = inference.embed;
 
@@ -14,6 +16,8 @@ const embed = inference.embed;
 pub const max_inputs = 2048;
 /// The most bytes of one input's text, well above what 8192 tokens spell.
 pub const max_text_bytes = 1024 * 1024;
+/// The most bytes of one encoded image (the decoder's own bound).
+pub const max_image_bytes = inference.vision.image.max_bytes;
 
 /// What the vectors are for. A query task puts `task: … | query: ` in front
 /// of an input's text; `document` puts `title: … | text: `.
@@ -27,8 +31,8 @@ pub const Task = enum {
     clustering,
     similarity,
 
-    /// The text in front of an input's first text part. `title` is a
-    /// document's (none renders `none`); other tasks take none.
+    /// The text that opens an input. `title` is a document's (none renders
+    /// `none`); other tasks take none.
     pub fn prefix(self: Task, arena: std.mem.Allocator, title: ?[]const u8) ![]const u8 {
         const query = switch (self) {
             .document => return arena.print("title: {s} | text: ", .{title orelse "none"}),
@@ -67,7 +71,18 @@ pub const Request = struct {
     /// Cut an input over the token limit instead of refusing it; the
     /// response says which were cut.
     truncate: bool = false,
+    /// Soft tokens per image, one of `embed.image_budgets`: it changes the
+    /// vector, so the response records it.
+    image_tokens: u32 = embed.default_image_tokens,
+
+    pub fn hasImages(self: Request) bool {
+        for (self.inputs) |input| for (input.parts) |part| if (part == .image) return true;
+        return false;
+    }
 };
+
+/// The budgets an image may take, as the messages spell them.
+pub const image_budgets_text = "70, 140, 280, 560, or 1120";
 
 pub const Error = error{ InvalidRequest, RequestTooLarge, UnsupportedDimensions, UnsupportedModality };
 
@@ -90,6 +105,10 @@ pub fn check(request: Request, diag: *config.Diagnostic) Error!void {
         diag.set("a title belongs to a document: give task document with it", .{});
         return error.InvalidRequest;
     }
+    if (std.mem.indexOfScalar(u32, &embed.image_budgets, request.image_tokens) == null) {
+        diag.set("image tokens are {s} (the budgets the model's processor takes), not {d}", .{ image_budgets_text, request.image_tokens });
+        return error.InvalidRequest;
+    }
     for (request.inputs) |input| {
         if (input.parts.len == 0) {
             diag.set("{s} has no parts", .{input.label});
@@ -100,24 +119,28 @@ pub fn check(request: Request, diag: *config.Diagnostic) Error!void {
                 diag.set("{s}: {d} bytes of text, at most {d}", .{ input.label, t.len, max_text_bytes });
                 return error.RequestTooLarge;
             },
-            else => {},
+            .image => |bytes| if (bytes.len > max_image_bytes) {
+                diag.set("{s}: an image of {d} bytes, at most {d}", .{ input.label, bytes.len, max_image_bytes });
+                return error.RequestTooLarge;
+            },
+            .audio => {},
         };
     }
 }
 
-/// The input as the engine reads it: the task's prefix in front of its first
-/// text part (an input without text gets none). Image and audio parts are
-/// refused until their encoders exist.
+/// The input as the engine reads it: the task's prefix opens it, before
+/// any media part (as sentence-transformers places a prompt, so an image
+/// alone gets one too), and the engine joins it to a text part that
+/// follows. Audio parts are refused until their encoder exists.
 pub fn render(arena: std.mem.Allocator, request: Request, input: Input, diag: *config.Diagnostic) !embed.Input {
-    const parts = try arena.alloc(embed.Part, input.parts.len);
-    var prefixed = request.task == null;
-    for (input.parts, parts) |part, *out| switch (part) {
-        .text => |t| {
-            out.* = .{ .text = if (prefixed) t else try std.mem.concat(arena, u8, &.{ try request.task.?.prefix(arena, request.title), t }) };
-            prefixed = true;
-        },
-        .image, .audio => {
-            diag.set("{s}: {s} parts are not supported yet; nuclis embeds text", .{ input.label, @tagName(part) });
+    const lead: usize = @intFromBool(request.task != null);
+    const parts = try arena.alloc(embed.Part, input.parts.len + lead);
+    if (request.task) |task| parts[0] = .{ .text = try task.prefix(arena, request.title) };
+    for (input.parts, parts[lead..]) |part, *out| out.* = switch (part) {
+        .text => |t| .{ .text = t },
+        .image => |bytes| .{ .image = bytes },
+        .audio => {
+            diag.set("{s}: audio parts are not supported yet; nuclis embeds text and images", .{input.label});
             return error.UnsupportedModality;
         },
     };
@@ -125,8 +148,8 @@ pub fn render(arena: std.mem.Allocator, request: Request, input: Input, diag: *c
 }
 
 /// One input of a JSON request or a line of an inputs file: a string, or a
-/// list of chat content parts (`{"type":"text","text":…}`, `image_url`,
-/// `input_audio`), in order.
+/// list of chat content parts (`{"type":"text","text":…}`, `image_url` with
+/// a base64 data URL, `input_audio`), in order.
 pub fn inputFromJson(arena: std.mem.Allocator, value: std.json.Value, label: []const u8, diag: *config.Diagnostic) !Input {
     switch (value) {
         .string => |s| {
@@ -149,8 +172,10 @@ pub fn inputFromJson(arena: std.mem.Allocator, value: std.json.Value, label: []c
                         return error.InvalidRequest;
                     }
                     part.* = .{ .text = text.string };
-                } else if (std.mem.eql(u8, kind, "image_url") or std.mem.eql(u8, kind, "input_audio")) {
-                    diag.set("{s}: part {d} is {s}; nuclis embeds text parts only for now", .{ label, i, kind });
+                } else if (std.mem.eql(u8, kind, "image_url")) {
+                    part.* = .{ .image = try imageFromJson(arena, object.get("image_url") orelse .null, label, i, diag) };
+                } else if (std.mem.eql(u8, kind, "input_audio")) {
+                    diag.set("{s}: part {d} is input_audio; nuclis embeds text and image parts for now", .{ label, i });
                     return error.UnsupportedModality;
                 } else {
                     diag.set("{s}: part {d} has type \"{s}\"; a part is text, image_url, or input_audio", .{ label, i, kind });
@@ -164,6 +189,38 @@ pub fn inputFromJson(arena: std.mem.Allocator, value: std.json.Value, label: []c
             return error.InvalidRequest;
         },
     }
+}
+
+/// The bytes of an `image_url` part's value: `{"url": …}` or the URL itself,
+/// a base64 data URL (nuclis fetches no URL) or bare base64.
+fn imageFromJson(arena: std.mem.Allocator, value: std.json.Value, label: []const u8, i: usize, diag: *config.Diagnostic) ![]const u8 {
+    const url = switch (value) {
+        .string => |s| s,
+        .object => |o| if (o.get("url")) |u| if (u == .string) u.string else null else null,
+        else => null,
+    } orelse {
+        diag.set("{s}: part {d} is an image_url part without a \"url\"", .{ label, i });
+        return error.InvalidRequest;
+    };
+    if (std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://")) {
+        diag.set("{s}: part {d}: nuclis fetches no URL; send the image as a base64 data URL", .{ label, i });
+        return error.UnsupportedModality;
+    }
+    const encoded = data_url.payload(url) orelse {
+        diag.set("{s}: part {d}: a data URL must be base64 (data:<type>;base64,…)", .{ label, i });
+        return error.InvalidRequest;
+    };
+    return data_url.decode(arena, encoded, max_image_bytes) catch |err| switch (err) {
+        error.NotBase64 => {
+            diag.set("{s}: part {d}: the image is not base64", .{ label, i });
+            return error.InvalidRequest;
+        },
+        error.TooLarge => {
+            diag.set("{s}: part {d}: an image is at most {d} bytes", .{ label, i, max_image_bytes });
+            return error.RequestTooLarge;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
 }
 
 /// An inputs file: one JSON input per non-blank line (`inputFromJson`),
@@ -210,7 +267,7 @@ pub const Parsed = struct {
 /// Reads OpenAI's embeddings body: `model`, `input` (a string, or a list
 /// whose items are strings or lists of content parts), `dimensions`,
 /// `encoding_format`, `user` (ignored), and the extensions `task`, `title`,
-/// and `truncate`. Token arrays are refused: a client that sends them
+/// `truncate` and `image_tokens`. Token arrays are refused: a client that sends them
 /// tokenized with another model's vocabulary. `Refused` sets `problem`.
 pub fn fromJson(arena: std.mem.Allocator, root: std.json.Value, problem: *Problem) error{ Refused, OutOfMemory }!Parsed {
     const R = struct {
@@ -249,6 +306,7 @@ pub fn fromJson(arena: std.mem.Allocator, root: std.json.Value, problem: *Proble
         input.* = inputFromJson(arena, item, label, &diag) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.UnsupportedModality => return R.refuse(arena, problem, "unsupported_feature", "input", "{s}", .{diag.message()}),
+            error.RequestTooLarge => return R.refuse(arena, problem, "request_too_large", "input", "{s}", .{diag.message()}),
             else => return R.refuse(arena, problem, "invalid_request", "input", "{s}", .{diag.message()}),
         };
     }
@@ -286,6 +344,15 @@ pub fn fromJson(arena: std.mem.Allocator, root: std.json.Value, problem: *Proble
         .bool => |b| parsed.request.truncate = b,
         else => return R.refuse(arena, problem, "invalid_request", "truncate", "\"truncate\" must be true or false", .{}),
     };
+    if (o.get("image_tokens")) |t| switch (t) {
+        .null => {},
+        .integer => |n| {
+            if (n < 0 or n > std.math.maxInt(u32) or std.mem.indexOfScalar(u32, &embed.image_budgets, @intCast(n)) == null)
+                return R.refuse(arena, problem, "invalid_request", "image_tokens", "\"image_tokens\" is {s}, not {d}", .{ image_budgets_text, n });
+            parsed.request.image_tokens = @intCast(n);
+        },
+        else => return R.refuse(arena, problem, "invalid_request", "image_tokens", "\"image_tokens\" must be a whole number", .{}),
+    };
     var diag: config.Diagnostic = .{};
     check(parsed.request, &diag) catch |err| return R.refuse(arena, problem, if (err == error.RequestTooLarge) "request_too_large" else "invalid_request", "input", "{s}", .{diag.message()});
     return parsed;
@@ -313,6 +380,12 @@ test "an OpenAI body: inputs in every accepted shape, the options, and each refu
     const one = try fromJson(arena, try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"input\":\"x\"}", .{}), &problem);
     try testing.expectEqual(@as(usize, 1), one.request.inputs.len);
     try testing.expectEqual(@as(usize, 768), one.request.dimensions);
+    try testing.expectEqual(embed.default_image_tokens, one.request.image_tokens);
+    const image_body = "{\"input\":[[{\"type\":\"text\",\"text\":\"a \"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,aGk=\"}}]],\"image_tokens\":70}";
+    const image = try fromJson(arena, try std.json.parseFromSliceLeaky(std.json.Value, arena, image_body, .{}), &problem);
+    try testing.expectEqualStrings("hi", image.request.inputs[0].parts[1].image);
+    try testing.expectEqual(@as(u32, 70), image.request.image_tokens);
+    try testing.expect(image.request.hasImages() and !one.request.hasImages());
 
     const cases = [_]struct { body: []const u8, code: []const u8, param: []const u8 }{
         .{ .body = "[]", .code = "invalid_request", .param = "body" },
@@ -321,7 +394,11 @@ test "an OpenAI body: inputs in every accepted shape, the options, and each refu
         .{ .body = "{\"input\":[1,2,3]}", .code = "unsupported_feature", .param = "input" },
         .{ .body = "{\"input\":[[1,2],[3]]}", .code = "unsupported_feature", .param = "input" },
         .{ .body = "{\"input\":[{\"type\":\"text\",\"text\":\"x\"}]}", .code = "invalid_request", .param = "input" },
-        .{ .body = "{\"input\":[[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:\"}}]]}", .code = "unsupported_feature", .param = "input" },
+        .{ .body = "{\"input\":[[{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://x/y.png\"}}]]}", .code = "unsupported_feature", .param = "input" },
+        .{ .body = "{\"input\":[[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png,raw\"}}]]}", .code = "invalid_request", .param = "input" },
+        .{ .body = "{\"input\":[[{\"type\":\"input_audio\",\"input_audio\":{}}]]}", .code = "unsupported_feature", .param = "input" },
+        .{ .body = "{\"input\":\"x\",\"image_tokens\":300}", .code = "invalid_request", .param = "image_tokens" },
+        .{ .body = "{\"input\":\"x\",\"image_tokens\":\"280\"}", .code = "invalid_request", .param = "image_tokens" },
         .{ .body = "{\"input\":\"x\",\"dimensions\":300}", .code = "unsupported_feature", .param = "dimensions" },
         .{ .body = "{\"input\":\"x\",\"dimensions\":\"768\"}", .code = "invalid_request", .param = "dimensions" },
         .{ .body = "{\"input\":\"x\",\"encoding_format\":\"int8\"}", .code = "invalid_request", .param = "encoding_format" },
@@ -357,7 +434,7 @@ test "prefixes are Google's, and only a document takes a title" {
     try testing.expectError(error.InvalidRequest, check(.{ .inputs = &.{.{ .parts = &.{}, .label = "input[0]" }} }, &diag));
 }
 
-test "the prefix goes in front of the first text part only; no task leaves text as given" {
+test "the prefix opens the input, before any media; no task leaves the parts as given" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -366,10 +443,15 @@ test "the prefix goes in front of the first text part only; no task leaves text 
     const plain = try render(arena, .{ .inputs = &.{input} }, input, &diag);
     try testing.expectEqualStrings("a", plain.parts[0].text);
     const query = try render(arena, .{ .inputs = &.{input}, .task = .search_query }, input, &diag);
-    try testing.expectEqualStrings("task: search result | query: a", query.parts[0].text);
-    try testing.expectEqualStrings("b", query.parts[1].text);
-    const image: Input = .{ .parts = &.{.{ .image = "PNG" }}, .label = "input[1]" };
-    try testing.expectError(error.UnsupportedModality, render(arena, .{ .inputs = &.{image} }, image, &diag));
+    try testing.expectEqualStrings("task: search result | query: ", query.parts[0].text);
+    try testing.expectEqualStrings("a", query.parts[1].text);
+    try testing.expectEqualStrings("b", query.parts[2].text);
+    const image: Input = .{ .parts = &.{ .{ .image = "PNG" }, .{ .text = "c" } }, .label = "input[1]" };
+    const rendered = try render(arena, .{ .inputs = &.{image}, .task = .document, .title = "T" }, image, &diag);
+    try testing.expectEqualStrings("title: T | text: ", rendered.parts[0].text);
+    try testing.expectEqualStrings("PNG", rendered.parts[1].image);
+    const audio: Input = .{ .parts = &.{.{ .audio = "RIFF" }}, .label = "input[2]" };
+    try testing.expectError(error.UnsupportedModality, render(arena, .{ .inputs = &.{audio} }, audio, &diag));
 }
 
 test "an inputs file: strings and part lists per line, blanks skipped, errors name the line" {
@@ -386,7 +468,9 @@ test "an inputs file: strings and part lists per line, blanks skipped, errors na
     inputs.clearRetainingCapacity();
     try testing.expectError(error.InvalidRequest, inputsFromJsonLines(arena, "\"ok\"\nnot json\n", "in.jsonl", &inputs, &diag));
     try testing.expect(std.mem.indexOf(u8, diag.message(), "in.jsonl:2") != null);
-    try testing.expectError(error.UnsupportedModality, inputsFromJsonLines(arena, "[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:\"}}]", "f", &inputs, &diag));
+    try testing.expectError(error.InvalidRequest, inputsFromJsonLines(arena, "[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:\"}}]", "f", &inputs, &diag));
+    try inputsFromJsonLines(arena, "[{\"type\":\"image_url\",\"image_url\":\"aGk=\"}]", "f", &inputs, &diag);
+    try testing.expectEqualStrings("hi", inputs.items[inputs.items.len - 1].parts[0].image);
     try testing.expectError(error.InvalidRequest, inputsFromJsonLines(arena, "[{\"type\":\"video\"}]", "f", &inputs, &diag));
     try testing.expectError(error.InvalidRequest, inputsFromJsonLines(arena, "42", "f", &inputs, &diag));
 }

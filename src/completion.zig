@@ -249,8 +249,10 @@ pub const commands = [_]Command{
         .{ .name = "--explain", .summary = "the sequences, budgets, and logits" },
         json,
     } }} },
-    .{ .name = "embed", .summary = "text into vectors, by an embedding model", .actions = &.{.{ .flags = &.{
+    .{ .name = "embed", .summary = "text and images into vectors, by an embedding model", .actions = &.{.{ .flags = &.{
         .{ .name = "--input-file", .value = .file, .repeat = true, .summary = "one JSON input per line, - for stdin" },
+        .{ .name = "--image", .value = .file, .repeat = true, .summary = "an image as one input" },
+        .{ .name = "--image-tokens", .value = .{ .choice = &.{ "70", "140", "280", "560", "1120" } }, .summary = "soft tokens per image" },
         .{ .name = "--task", .value = .{ .choice = names(@import("embedding/request.zig").Task) }, .summary = "the prefix for a use" },
         .{ .name = "--title", .value = .text, .summary = "a document's title" },
         .{ .name = "--dimensions", .value = .{ .choice = &.{ "768", "512", "256", "128" } }, .summary = "the vector's width" },

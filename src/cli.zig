@@ -881,7 +881,7 @@ fn runEmbed(alloc: std.mem.Allocator, io: std.Io, root: ?[]const u8, config_path
     defer loaded.deinit();
     const name = options.model orelse loaded.config.embed.model;
     const located = try embedding_catalog.locate(arena, io, root, loaded.config.models, name, diag);
-    return embed.run(alloc, io, located.path, located.identity, options, out, sty, diag);
+    return embed.run(alloc, io, located.path, located.mmproj, located.identity, options, out, sty, diag);
 }
 
 /// `serve`: the API over the decision models the configuration names.

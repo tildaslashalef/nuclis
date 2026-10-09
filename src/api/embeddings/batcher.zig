@@ -26,10 +26,13 @@ pub const Job = struct {
     /// leaves it alone until `wait` returns.
     arena: std.mem.Allocator,
     path: []const u8,
+    /// The model's projector, when pulled.
+    mmproj: ?[]const u8 = null,
     /// The name the request used (the pool remembers the opener's).
     name: []const u8,
     inputs: []const embed.Input,
     truncate: bool,
+    image_tokens: u32 = embed.default_image_tokens,
 
     next: ?*Job = null,
     state: State = .idle,
@@ -207,7 +210,7 @@ pub const Batcher = struct {
         _ = self.scratch.reset(.retain_capacity);
         const scratch = self.scratch.allocator();
         const first = taken[0];
-        const acquired = self.pool.acquire(io, first.path, first.name) catch |err| {
+        const acquired = self.pool.acquire(io, first.path, first.mmproj, first.name) catch |err| {
             // A generation holds the memory this model needs: wait for it.
             if (err == error.Pinned) return taken;
             for (taken) |job| self.finish(io, job, .{ .failed = openFailure(job.arena, job.name, err) });
@@ -229,6 +232,8 @@ pub const Batcher = struct {
                 job.timings.tokenize_ns = lap(io, &clock);
             }
             const prepared = job.prepared.?;
+            // A first image built the vision encoder: the budget counts it.
+            self.pool.account(io) catch {};
             const n = fit(prepared, job.cursor, used, self.max_rows);
             if (n == 0) {
                 rest.appendSlice(scratch, taken[i..]) catch {};
@@ -291,13 +296,24 @@ pub const Batcher = struct {
     }
 };
 
-/// Tokenizes every input of `job` (in its arena) and gives it room for its
-/// vectors. An input over the limit fails the job unless it truncates.
+/// Tokenizes every input of `job` (in its arena), encodes its images, and
+/// gives it room for its vectors. An input over the limit fails the job
+/// unless it truncates; an unreadable image fails it, naming the input.
 fn prepare(embedder: *embed.Embedder, job: *Job) !void {
     const prepared = try job.arena.alloc(embed.Prepared, job.inputs.len);
     for (job.inputs, prepared, 0..) |input, *p, i| {
         // Prepared with truncation always, so a refusal can give the count.
-        p.* = try embedder.prepare(job.arena, input, .{ .truncate = true });
+        p.* = embedder.prepare(job.arena, input, .{ .truncate = true, .image_tokens = job.image_tokens }) catch |err| {
+            switch (err) {
+                error.UnsupportedImageFormat, error.MalformedImage, error.ImageTooLarge => {
+                    var e: ApiError = .init(.bad_request, "invalid_image", job.arena.print("input[{d}]: {s}", .{ i, if (err == error.ImageTooLarge) "the image is too large to decode" else "not an image nuclis can read (PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP)" }) catch "an image could not be read");
+                    e.param = "input";
+                    job.outcome = .{ .failed = e };
+                },
+                else => {},
+            }
+            return err;
+        };
         if (p.truncated() and !job.truncate) {
             job.outcome = .{ .failed = tooLong(job.arena, i, p.length) };
             return error.InputTooLong;
