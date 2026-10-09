@@ -224,6 +224,11 @@ pub const Kernel = enum(u32) {
     matmul_iq4_nl_f2,
     delta_rows,
     delta_replay,
+    segments_scores,
+    segments_softmax,
+    segments_values,
+    audio_attention,
+    glu_conv,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -500,6 +505,16 @@ pub const Backend = struct {
         // Recorded only after the bridge accepted the dispatch, so pending[i]
         // is the i-th dispatch the GPU will time.
         if (self.profile) |*p| try p.pending.append(self.alloc, .{ .key = .{ .kernel = kernel, .encoding = shape.encoding, .rows = shape.rows, .columns = shape.columns }, .bytes = shape.bytes });
+    }
+    /// `dispatch` over a two-dimensional grid of threadgroups.
+    fn dispatch2(self: *Backend, kernel: Kernel, buffers: []const Buffer, params: anytype, groups_x: u32, groups_y: u32, threads: u32) !void {
+        if (!enabled) return error.MetalNotEnabled;
+        if (!self.recording) return error.MetalNotRecording;
+        var bindings: [7]Binding = undefined;
+        if (buffers.len > bindings.len) return error.InvalidShape;
+        for (buffers, bindings[0..buffers.len]) |b, *out| out.* = b.binding();
+        if (nu_metal_dispatch(self.handle, self.pipelines[@backingInt(kernel)], &bindings, @intCast(buffers.len), @ptrCast(&params), @sizeOf(@TypeOf(params)), groups_x, groups_y, threads, 1) != 0) return error.MetalExecutionFailed;
+        if (self.profile) |*p| try p.pending.append(self.alloc, .{ .key = .{ .kernel = kernel, .encoding = null, .rows = 0, .columns = 0 }, .bytes = 0 });
     }
     fn perElement(count: usize) u32 {
         return @intCast((count + 255) / 256);
@@ -1255,6 +1270,123 @@ pub const Backend = struct {
         const p: AttentionSegmentsParams = .{ .heads = @intCast(s.heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = window };
         try self.dispatch(.attention_segments, &.{ queries, keys, values, output, bounds }, p, @intCast(s.rows * s.heads), 256, .{});
     }
+    pub const AttentionGemmParams = extern struct { query_heads: u32, kv_heads: u32, width: u32, rows: u32, q_stride: u32, kv_stride: u32, out_stride: u32, head_stride: u32, scale: f32, window: u32 };
+    pub const AttentionSegmentsGroupedShape = struct {
+        query_heads: usize,
+        /// Query head h reads kv head `h / (query_heads / kv_heads)`.
+        kv_heads: usize,
+        /// Query, key, and value head width: a multiple of 64, at most 512.
+        width: usize,
+        rows: usize,
+        q_stride: usize,
+        kv_stride: usize,
+        out_stride: usize,
+        scale: f32,
+        /// Row i sees key j when |i − j| ≤ window; null sees its whole sequence.
+        window: ?usize = null,
+    };
+    /// One query tile of `attentionSegmentsGrouped`: rows `[first, first +
+    /// rows)` (a multiple of 8, at most `attention_tile_rows`), the keys
+    /// `[key_lo, key_lo + span)` they may see (span a multiple of 32), and
+    /// their score strip of `rows · span` floats at `offset`.
+    pub const AttentionTile = extern struct { first: u32, rows: u32, key_lo: u32, span: u32, offset: u32 };
+    pub const attention_tile_rows = 32;
+    /// One dispatchable run of tiles: `tiles[first ..][0..count]`, whose
+    /// strips take `head_stride` floats per head, `max_span` the widest.
+    pub const AttentionChunk = struct { first: usize, count: usize, head_stride: usize, max_span: usize };
+
+    /// Appends the tiles of rows `[first, first + rows)` (one input with its
+    /// padding, `rows` a multiple of 8) to `tiles` at `count.*`, each with
+    /// the key range its rows see under `bounds` (host u32 pairs) and
+    /// `window`, as the kernels mask them; offsets are left 0 for `chunkTiles`.
+    pub fn attentionTiles(bounds: []const u32, total_rows: usize, window: ?usize, first: usize, rows: usize, tiles: []AttentionTile, count: *usize) !void {
+        if (rows % 8 != 0 or first + rows > total_rows or bounds.len < 2 * total_rows) return error.InvalidShape;
+        var at: usize = 0;
+        while (at < rows) {
+            const n = @min(rows - at, attention_tile_rows);
+            var lo: usize = std.math.maxInt(usize);
+            var hi: usize = 0;
+            for (first + at..first + at + n) |r| {
+                var a: usize = @min(bounds[2 * r], r);
+                var b: usize = std.math.clamp(@as(usize, bounds[2 * r + 1]), r + 1, total_rows);
+                if (window) |w| {
+                    a = @max(a, r -| w);
+                    b = @min(b, r + w + 1);
+                }
+                lo = @min(lo, a);
+                hi = @max(hi, b);
+            }
+            if (count.* >= tiles.len) return error.InvalidShape;
+            tiles[count.*] = .{ .first = @intCast(first + at), .rows = @intCast(n), .key_lo = @intCast(lo), .span = @intCast(std.mem.alignForward(usize, hi - lo, 32)), .offset = 0 };
+            count.* += 1;
+            at += n;
+        }
+    }
+    /// Sets each tile's strip offset and splits `tiles` into chunks whose
+    /// strips fit `capacity` floats over `heads` heads; returns the chunk count.
+    pub fn chunkTiles(tiles: []AttentionTile, heads: usize, capacity: usize, chunks: []AttentionChunk) !usize {
+        var count: usize = 0;
+        var i: usize = 0;
+        while (i < tiles.len) {
+            if (count >= chunks.len) return error.InvalidShape;
+            var chunk: AttentionChunk = .{ .first = i, .count = 0, .head_stride = 0, .max_span = 0 };
+            while (i < tiles.len) : (i += 1) {
+                const strip = @as(usize, tiles[i].rows) * tiles[i].span;
+                if (chunk.count > 0 and heads * (chunk.head_stride + strip) > capacity) break;
+                if (heads * strip > capacity) return error.InvalidShape;
+                tiles[i].offset = @intCast(chunk.head_stride);
+                chunk.head_stride += strip;
+                chunk.max_span = @max(chunk.max_span, tiles[i].span);
+                chunk.count += 1;
+            }
+            chunks[count] = chunk;
+            count += 1;
+        }
+        return count;
+    }
+    /// `attentionSegments` with grouped-query heads, widths to 512, and no
+    /// bound on a sequence's length, over the query tiles of one chunk:
+    /// scores into `scores` (`query_heads · chunk.head_stride` floats),
+    /// their softmax, and P·V into `output`, F32 throughout. `tiles` is the
+    /// chunk's slice of the tile buffer (`attentionTiles`, `chunkTiles`),
+    /// checked here: ascending, disjoint, inside the rows. Queries and output
+    /// hold `attentionChunkRows(rows)` rows, keys and values `rows`, all
+    /// float4-aligned. A row's result depends on its tile's rows and keys
+    /// only. The device clamps the bounds; keeping them true is the caller's job.
+    pub fn attentionSegmentsGrouped(self: *Backend, queries: Buffer, keys: Buffer, values: Buffer, output: Buffer, bounds: Buffer, tiles: Buffer, chunk: AttentionChunk, scores: Buffer, s: AttentionSegmentsGroupedShape) !void {
+        if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.width == 0 or s.width % 64 != 0 or s.width > 512) return error.InvalidShape;
+        if (s.rows == 0 or s.rows >= std.math.maxInt(u32) or !std.math.isFinite(s.scale)) return error.InvalidShape;
+        const q_floats = s.query_heads * s.width;
+        const kv_floats = s.kv_heads * s.width;
+        if (s.q_stride < q_floats or s.q_stride % 4 != 0 or s.kv_stride < kv_floats or s.kv_stride % 4 != 0 or s.out_stride < q_floats or s.out_stride % 4 != 0) return error.InvalidShape;
+        const padded = attentionChunkRows(s.rows);
+        const q_len = ((padded - 1) * s.q_stride + q_floats) * 4;
+        const kv_len = ((s.rows - 1) * s.kv_stride + kv_floats) * 4;
+        const out_len = ((padded - 1) * s.out_stride + q_floats) * 4;
+        if (queries.len < q_len or keys.len < kv_len or values.len < kv_len or output.len < out_len or bounds.len < s.rows * 8 or bounds.offset % 8 != 0) return error.InvalidShape;
+        if (queries.offset % 16 != 0 or keys.offset % 16 != 0 or values.offset % 16 != 0 or output.offset % 16 != 0 or scores.offset % 16 != 0) return error.InvalidShape;
+        const scores_len = s.query_heads * chunk.head_stride * 4;
+        if (chunk.count == 0 or chunk.head_stride == 0 or chunk.head_stride >= std.math.maxInt(u32) or scores.len < scores_len) return error.InvalidShape;
+        if (tiles.len < chunk.count * @sizeOf(AttentionTile) or tiles.offset % 4 != 0) return error.InvalidShape;
+        if (overlaps(output, out_len, queries, q_len) or overlaps(output, out_len, keys, kv_len) or overlaps(output, out_len, values, kv_len) or overlaps(output, out_len, scores, scores_len)) return error.InvalidShape;
+        // Overlapping tiles or strips would race, so the list is checked here.
+        const list: []const AttentionTile = @as([*]const AttentionTile, @ptrCast(@alignCast(tiles.host)))[0..chunk.count];
+        var next_row: usize = 0;
+        var max_span: usize = 0;
+        for (list) |t| {
+            if (t.first < next_row or t.first % 8 != 0 or t.rows == 0 or t.rows % 8 != 0 or t.rows > attention_tile_rows or t.first + t.rows > padded) return error.InvalidShape;
+            if (t.span == 0 or t.span % 32 != 0 or t.key_lo >= s.rows or t.offset % 32 != 0 or @as(usize, t.offset) + @as(usize, t.rows) * t.span > chunk.head_stride) return error.InvalidShape;
+            next_row = t.first + t.rows;
+            max_span = @max(max_span, t.span);
+        }
+        if (max_span != chunk.max_span) return error.InvalidShape;
+        const window: u32 = if (s.window) |w| @intCast(@min(w, std.math.maxInt(u32) - 1)) else std.math.maxInt(u32);
+        const p: AttentionGemmParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .head_stride = @intCast(chunk.head_stride), .scale = s.scale, .window = window };
+        const n: u32 = @intCast(chunk.count);
+        try self.dispatch2(.segments_scores, &.{ queries, keys, bounds, tiles, scores }, p, n, @intCast(s.query_heads * chunk.max_span / 32), 128);
+        try self.dispatch2(.segments_softmax, &.{ tiles, scores }, p, n, @intCast(s.query_heads), 256);
+        try self.dispatch2(.segments_values, &.{ scores, values, tiles, output }, p, n, @intCast(s.query_heads * s.width / 32), 128);
+    }
     pub const NormAddParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32, scale: f32 };
     /// `(destination + norm(input)·w) · factor` over `rows` rows in one
     /// dispatch, where the plans would run `rmsNorm` + `addScale` (`input`
@@ -1458,6 +1590,22 @@ pub const Backend = struct {
     pub fn softcap(self: *Backend, x: Buffer, count: usize, cap: f32) !void {
         if (count == 0 or x.len < count * 4 or !std.math.isFinite(cap) or cap <= 0) return error.InvalidShape;
         try self.dispatch(.softcap, &.{x}, ScaleParams{ .count = @intCast(count), .factor = cap }, perElement(count), 256, .{});
+    }
+    pub const AudioAttentionParams = extern struct { rows: u32, width: u32, key_scale: f32, cap: f32 };
+    /// Gemma 4's chunked audio attention over `rows` rows of 8 heads of 128
+    /// (`gemma4a.attention`): q scaled by `qscale` (128 values), k by
+    /// `key_scale`, each query seeing the 11 rows before it and itself.
+    pub fn audioAttention(self: *Backend, q: Buffer, k: Buffer, v: Buffer, relk: Buffer, qscale: Buffer, output: Buffer, rows: usize, key_scale: f32, cap: f32) !void {
+        const width = 1024;
+        if (rows == 0 or q.len < rows * width * 4 or k.len < rows * width * 4 or v.len < rows * width * 4 or output.len < rows * width * 4 or relk.len < 13 * width * 4 or qscale.len < 128 * 4) return error.InvalidShape;
+        try self.dispatch(.audio_attention, &.{ q, k, v, relk, qscale, output }, AudioAttentionParams{ .rows = @intCast(rows), .width = width, .key_scale = key_scale, .cap = cap }, @intCast(rows * 8), 32, .{});
+    }
+    pub const GluConvParams = extern struct { rows: u32, width: u32 };
+    /// `out[t][c] = Σ_tap dw[c][tap] · glu(start[t − 4 + tap])[c]` over
+    /// `rows` rows of `width`; `start` rows are `2·width` (values, gates).
+    pub fn gluConv(self: *Backend, start: Buffer, dw: Buffer, output: Buffer, rows: usize, width: usize) !void {
+        if (rows == 0 or start.len < rows * 2 * width * 4 or dw.len < width * 5 * 4 or output.len < rows * width * 4) return error.InvalidShape;
+        try self.dispatch(.glu_conv, &.{ start, dw, output }, GluConvParams{ .rows = @intCast(rows), .width = @intCast(width) }, perElement(rows * width), 256, .{});
     }
     pub const ClampParams = extern struct { count: u32, low: f32, high: f32 };
     /// x[i] = min(max(x[i], low), high); either bound may be infinite.

@@ -75,6 +75,7 @@ deferred (§10).
 | Zig owns loading, execution planning, tokenization, sampling, the CLI, and the agent; Objective-C exposes a C-compatible Metal interface behind opaque handles; Metal Shading Language implements kernels. | One language for semantics, one thin bridge for the platform, no framework between them. |
 | The Metal backend is the production backend; the CPU path is a reference, slow by design, never optimized. The one exception is the decision model's encoder, whose F32 CPU forward is threaded and vectorized (§5.9). | A fast CPU backend is not a product need for text generation; an obviously correct oracle is. A decision model is small enough, and useful enough without a GPU, that its CPU path is a product; its oracle is the reference package's F32 run. |
 | Decision checkpoints have their own catalogue table and registry kind; text commands refuse them by name. | They are directories of safetensors, run by another path; nothing that resolves a text model may pick one. |
+| Embedding models have their own catalogue table and registry kind (`embedding`); text and decision commands refuse them by name, and `nuclis embed` refuses theirs. | An embedding model decodes nothing and answers no question; its vectors compare only with vectors of the same file and width. |
 | Weights are memory-mapped, stay quantized, and are never requantized or expanded. | The 27B model fits only at about four bits; the file's arithmetic is what the checkpoint was validated for. |
 | One active session per process; weights are immutable and separate from session state. | Multiple sessions later must not copy weights. |
 | Session state is opaque and never rewound by truncating an attention position alone; rollback is snapshot/restore, and inside a speculative batch checkpoint/rewind. | Recurrent layers keep no history to truncate back to. |
@@ -119,6 +120,14 @@ repository, revision, the weights' SHA-256, and the support files by name.
 | `laya-multilingual` | mmBERT-base encoder, the same head | the same repository's `multilingual/model.safetensors` (F16) and its support files | multilingual; 1,024 tokens per sequence; chosen by the caller, never by language detection |
 | `clef-flash` | Qwen3.5-9B backbone (qwen35), joint schema head, Qwen3-VL projector | `Cloudflare/clef-flash` `joint_head.safetensors` (BF16) and its support files; the backbone `bartowski/Cloudflare_clef-flash-GGUF` `Cloudflare_clef-flash-Q6_K.gguf`; the projector `mmproj-Cloudflare_clef-flash-bf16.gguf` (`--with mmproj`) | every question of a state in one sequence of up to 16,384 tokens; images; a decision entry may name a backbone and a projector in another repository, each pinned and digest-checked |
 
+Embedding models are pinned in a third table (`embedding_entries`):
+repository, revision, the main file's SHA-256, the projector, the trained
+widths, and the modalities the files read.
+
+| Entry | Model | Artifact | Notes |
+| --- | --- | --- | --- |
+| `embeddinggemma-2` | EmbeddingGemma 2 (`gemma-embedding2`), 24-block bidirectional text encoder, Gemma 4 vision and audio encoders | `unsloth/embeddinggemma-2-GGUF` `embeddinggemma-2-Q8_0.gguf`; the projector `mmproj-BF16.gguf` (`--with mmproj`) | 768-dimensional unit vectors, Matryoshka 512/256/128; 8,192 tokens per input; text without the projector, text, images and audio with it; the default `embed.model` |
+
 A file outside the catalogue whose architecture has an adapter is
 *runnable*: `config init --discover` registers it (the profile by template
 digest, the family's forced when none matches). The Gemma 4 12B K-quant
@@ -151,7 +160,8 @@ Read: [models/catalogue.md](models/catalogue.md),
 [engine/gguf.md](engine/gguf.md), and the
 family documents [models/gemma4.md](models/gemma4.md),
 [models/muse-glimmer.md](models/muse-glimmer.md),
-[models/bonsai.md](models/bonsai.md).
+[models/bonsai.md](models/bonsai.md),
+[models/embeddinggemma.md](models/embeddinggemma.md).
 
 ## 5. Engine requirements
 
@@ -270,12 +280,12 @@ One file, `~/.nuclis/nuclis.json`, with sections `engine` (model, backend,
 `speculative`, `draft_length`, `image_max_tokens`, sampling overrides),
 `agent` (`think`,
 `fold_thinking`, `theme`, `instructions`, `thinking_budget`), `decide`
-(`model`), `cache` (`memory_bytes`, `disk_bytes`: the agent's token cache
+(`model`), `embed` (`model`), `cache` (`memory_bytes`, `disk_bytes`: the agent's token cache
 budgets, 0 to turn a tier off), and a `models` registry of named entries that
 locate a file (path, or repository and file with a pinned revision), name
 its companions, force a profile, and override any generation or agent key
 for that model only; an entry of `kind` `decision` is a decision
-checkpoint. Precedence is defaults < profile < file < registry
+checkpoint, one of `kind` `embedding` an embedding model. Precedence is defaults < profile < file < registry
 entry < flags; `null` in the file means the profile's value. An unknown
 key or an out-of-range value is a typed error naming the key. `bench`
 ignores the file's sampling and budget so a measurement is reproducible
@@ -350,6 +360,68 @@ clef-flash:
 
 Read: [models/laya.md](models/laya.md), [models/clef-flash.md](models/clef-flash.md).
 
+### 5.10 The embedding path
+
+`inference.embed.Embedder` opens an embedding-family GGUF file and turns
+inputs into unit vectors, beside `Engine` and `Decider`; it shares the
+tokenizer, the GGUF loader, and the Metal backend with the text path, and
+keeps no session state. The wire types (`src/embedding/`) are shared by
+`nuclis embed` and the API.
+
+- An input is an ordered list of parts and gives one vector: `<bos>`, the
+  parts, `<eos>`, in one bidirectional pass of at most 8,192 tokens. Text
+  is literal: a control token's spelling in it is text, never the token.
+  An input over the limit **must** be refused with its token count unless
+  the request asks to truncate, which cuts its end, keeps `<eos>`, and is
+  reported per input; nothing is cut silently.
+- No implicit task: an input **must** be embedded exactly as given unless
+  the request names a `task`, which renders Google's prefix at the front
+  of the input, before any media part, as sentence-transformers places it
+  (`search_query`, `question_answering`, `fact_checking`,
+  `code_retrieval`, `classification`, `clustering`, `similarity`: `task: …
+  | query: `; `document`: `title: {title|none} | text: `). A `title` is
+  refused without `document`.
+- An image part is `<|image>`, its projector rows, `<image|>`, processed
+  as Google's processor does (its grid, torchvision's resize, F32 patches,
+  `gelu_pytorch_tanh`) at 70, 140, 280 (default), 560 or 1120 soft tokens;
+  the budget is recorded in the response. Its vector on the BF16 file
+  **must** match Google's float32 at cosine ≥ 0.9999999, on the CPU and
+  on Metal (`embeddinggemma-image-cpu`, `embeddinggemma-image-metal`).
+  Truncation drops an image whole rather than split it.
+- An audio part is `<|audio>`, its rows, `<audio|>`: 16 kHz mono (a 16 kHz
+  mono 16-bit WAV read exactly, anything else through AudioToolbox),
+  Google's log-mel frames, the `gemma4a` conformer, 25 rows a second. A
+  clip over 30 s (Google's processor's cut) **must** be refused unless the
+  request truncates, which keeps its first 30 s and reports the cut. Its
+  vector on the BF16 file **must** match Google's float32 at cosine ≥
+  0.9999999 on the CPU and on Metal (`embeddinggemma-audio-cpu`,
+  `embeddinggemma-audio-metal`).
+- Widths are the trained ones, 768, 512, 256, and 128: the leading values
+  renormalized. Any other is refused.
+- Every response names its **space**, `<checkpoint>@<sha256[0:12]>/<width>`:
+  the catalogue's name when the file's digest is the catalogue's, else
+  the caller's; the digest from the pull's sidecar, else computed from the
+  file. Vectors of different spaces are not comparable.
+- The CPU forward on the BF16 file **must** match Google's float32 vectors
+  at cosine ≥ 0.9999999 (`embeddinggemma-google-cpu`), the Q8_0 file
+  llama.cpp's Q8_0 vectors at ≥ 0.99999 (`embeddinggemma-vectors-cpu`),
+  and the stages the reference graph's traces (`embeddinggemma-trace-cpu`).
+  The Metal plan **must** meet the same bounds (`embeddinggemma-google-metal`,
+  `embeddinggemma-vectors-metal`) with F32 activations, and a packed batch
+  **must** give each input exactly its vector alone.
+- Host limits, never the caller's: 2,048 inputs per request, 1 MiB of text
+  per input, 32 MiB per encoded image, 64 MiB per encoded clip (the API's
+  body limit, 32 MiB, comes first). Media are decoded locally, never
+  fetched.
+- The API (`POST /v1/embeddings`) **must** give each input exactly the
+  vector it gets alone, whatever shares its pass: requests for one model
+  share passes of at most 2,048 rows in arrival order, a request larger
+  than a pass continues in the next, and passes run between a
+  generation's steps. Token arrays **must** be refused: an OpenAI client
+  sends them tokenized with another model's vocabulary.
+
+Read: [models/embeddinggemma.md](models/embeddinggemma.md).
+
 ## 6. Command-line interface
 
 ```text
@@ -369,6 +441,7 @@ nuclis model pull (<name> | <owner/repo> --file <f>) [--revision <r>] [--role <r
 nuclis model inspect (<name> | <owner/repo> --file <f>) [--revision <r>] [--json]
 nuclis model ls [--json]
 nuclis decide (--request <file|-> | --questions <file> <states> | <inline questions> <states>) [--model <m>] [--truncate head|tail] [--uncalibrated] [--explain] [--json]
+nuclis embed (<text>... | --image <path>... | --audio <path>... | --input-file <file|->)... [--task <t>] [--title <s>] [--dimensions <n>] [--image-tokens <n>] [--truncate] [--model <m>] [--backend cpu|metal] [--json]
 nuclis serve [--host <ip>] [--port <n>] [--model <m>]... [--backend cpu|metal]
 nuclis config init [--discover [--dry-run]] [--json] | show [--json] | set <key> <value>
 nuclis completion fish|bash|zsh
@@ -385,7 +458,8 @@ nuclis --help | <command> --help | --version
 | `validate` | whether the file binds to its family's adapter, with the layer composition |
 | `model` | pull with digest verification and sidecars, list the artifacts under the root, judge a file at the four levels of §4 |
 | `decide` | typed questions about states through a decision checkpoint (`decide.model`, default `laya`): a Jev-shaped request (`questions`, `state` or `states`), a questions file with states from flags, or questions inline, and images (`--image`, a request's `images`) for clef-flash; one state renders each answer with its distribution, several render ranked by the first question; `--json` is one Jev response per state (answers with exactly Jev's fields, extras under `nuclis`), with load, tokenize, and encode timings |
-| `serve` | the nuclis API over HTTP/1.1 ([guide/api.md](guide/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `POST /v1/chat/completions` is OpenAI's Chat Completions for the language models (one open at a time, opened by name, never by path; the conversation resent whole and the model's state reused by the completer; streamed as server-sent events with keepalive comments; a client that leaves cancels its request; structured output, forced tools, several choices and log probabilities refused with `400 unsupported_feature`), `GET /v1/models` lists the decision and language models in OpenAI's shape, `GET /v1/health` the queue and the open models; `serve.host`, `serve.port` (default 8000), `serve.log`, and `serve.timeout` (the wait for the GPU, default 300 s) in the file, the flags over them; `decide.model` opened at start unless `--model` names others, a language model with `--chat-model`; every open model, decision and language, within one memory budget (`serve.memory_bytes`, `--memory`, default physical memory less 16 GiB), the least recently used closed to make room and a model in use never; decisions run between a generation's steps; a coloured line per response on stdout; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
+| `embed` | inputs into unit vectors through an embedding model (`embed.model`, default `embeddinggemma-2`), §5.10: each argument one text input, `--image` one image input, `--audio` one clip input, `--input-file` one JSON input per line (a string or a list of content parts, images as data URLs, clips as `input_audio`), in the order given; `--task` and `--title` render the model's prefixes, `--dimensions` picks a trained width, `--image-tokens` the image budget, `--truncate` cuts an over-long input instead of refusing it; the text report gives each vector's tokens, norm, and first values and, for several inputs, their cosines; `--json` gives every vector with its token counts, the space, and load, tokenize, and embed timings |
+| `serve` | the nuclis API over HTTP/1.1 ([guide/api.md](guide/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `POST /v1/chat/completions` is OpenAI's Chat Completions for the language models (one open at a time, opened by name, never by path; the conversation resent whole and the model's state reused by the completer; streamed as server-sent events with keepalive comments; a client that leaves cancels its request; structured output, forced tools, several choices and log probabilities refused with `400 unsupported_feature`), `POST /v1/embeddings` is OpenAI's embeddings call for the embedding models (§5.10; by name, never by path; `float` or `base64` vectors; `task`, `title`, `truncate`, and `image_tokens` as in `nuclis embed`; image parts as base64 data URLs and `input_audio` parts; token arrays refused, since they are another model's tokens), `GET /v1/models` lists the decision, language, and embedding models in OpenAI's shape, `GET /v1/health` the queue and the open models; `serve.host`, `serve.port` (default 9000), `serve.log`, and `serve.timeout` (the wait for the GPU, default 300 s) in the file, the flags over them; `decide.model` opened at start unless `--model` names others, a language model with `--chat-model`, the embedding model on its first request; every open model, of any kind, within one memory budget (`serve.memory_bytes`, `--memory`, default physical memory less 16 GiB), the least recently used closed to make room and a model in use never; decision passes and embedding passes (at most 2,048 rows each) run between a generation's steps; a coloured line per response on stdout; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
 | `config` | write the file with every catalogue model registered (`--discover` adds runnable files the catalogue does not name), show effective values with their source layer, set one key |
 | `agent` | §7 |
 | `completion` | a thin script per shell: every Tab runs the hidden `nuclis __complete <words…>`, which answers from one command table (held to the parser and the help pages by tests) and the user's state: registered and catalogue models, the workspace's sessions, config keys and their values; paths go back to the shell; a failure completes nothing |
@@ -793,7 +867,12 @@ OpenAI-compatible clients it serves use (decided 2026-10-08). The server wraps t
 library; tool execution and permissions stay with the consuming agent. A docs or API lookup tool for the agent was assessed and not
 scheduled: read-only docs roots would be the cheapest form, a bounded
 fetch would reopen the no-permission decision, an embedding index is
-ruled out.
+not a tool of the agent. A personal index (walking the user's files,
+chunking, storing vectors, search) is not nuclis's: nuclis stays an
+engine, and an application that wants retrieval calls `POST
+/v1/embeddings` (§5.10) and owns everything around it (decided
+2026-10-09). Video input to the embedding model (frames through the vision
+encoder) is deferred to its own unit.
 
 Non-goals: training, model conversion or quantization tooling, universal
 GGUF support, a general tensor compiler, and matching any external

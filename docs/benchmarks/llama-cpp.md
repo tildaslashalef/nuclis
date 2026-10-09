@@ -84,6 +84,99 @@ revision recorded as the reference side of
 and read from there by `nuclis-baseline.py` into the nuclis record
 ([benchmarks](history.md#bonsai-2-27b-acceptance-record-2026-09-18)).
 
+## The third oracle: EmbeddingGemma 2 (2026-10-09)
+
+The mainline pin does not know `gemma-embedding2`
+([embeddinggemma.md](../models/embeddinggemma.md)). Upstream added it, with
+its vision and audio encoders, in `4fbc76dec` (#30054, 2026-10-06, first in
+build tag `b11452`), so the family's oracle is a second mainline checkout at
+build tag `b11514`, commit `de7fa0a3c6a2e1b4cd9f22eb8d6bf5b12dbdb63b`
+(2026-10-08), the newest build on 2026-10-09. The newest release, `v0.6.0`
+(2026-10-05), predates the model. The main pin `7620399` does not move. The checkout is cloned from the main one to
+save the fetch, and built with the same recipe, plus the embedding and
+multimodal tools:
+
+```sh
+git clone .reference/llama.cpp .reference/llama.cpp-embed
+git -C .reference/llama.cpp-embed remote set-url origin https://github.com/ggml-org/llama.cpp
+git -C .reference/llama.cpp-embed fetch origin master
+git -C .reference/llama.cpp-embed checkout --detach de7fa0a3c6a2e1b4cd9f22eb8d6bf5b12dbdb63b
+
+cmake -S .reference/llama.cpp-embed -B .reference/llama.cpp-embed/build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
+  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_OPENSSL=OFF \
+  -DLLAMA_USE_PREBUILT_UI=OFF
+
+cmake --build .reference/llama.cpp-embed/build \
+  --target llama-server llama-embedding llama-mtmd-cli llama-completion --parallel 8
+```
+
+A vector from the command line, the check that the files load (both the
+Q8_0 and the BF16 file return unit vectors of width 768):
+
+```sh
+.reference/llama.cpp-embed/build/bin/llama-embedding \
+  -m ~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-Q8_0.gguf \
+  -ngl 99 --pooling mean --embd-normalize 2 --embd-output-format json \
+  -p 'task: search result | query: how does the KV cache work'
+```
+
+`--verbose-prompt` prints the tokens (BOS and EOS are added). For images,
+pass `--image-max-tokens 280`: without it, `clip.cpp` sizes `gemma4v`
+images toward its 1120-token cap, where Google's processor uses 280.
+
+The fixture driver `scripts/reference-embedding.cpp` (public C API, the
+mixed `llama_batch_ext`, and `mtmd`) builds against this checkout. It
+writes the vectors and traces of
+[provenance.md](../../tests/fixtures/provenance.md)'s `embeddinggemma-*`
+rows:
+
+```sh
+R=.reference/llama.cpp-embed
+mkdir -p .zig-cache/embedding
+c++ -std=c++17 -O2 -I$R/include -I$R/ggml/include -I$R/tools/mtmd -I$R/vendor \
+  scripts/reference-embedding.cpp -L$R/build/bin -lllama -lggml -lggml-base -lmtmd \
+  -Wl,-rpath,"$PWD/$R/build/bin" -o .zig-cache/embedding/reference-embedding
+D=~/.nuclis/models/unsloth/embeddinggemma-2-GGUF
+.zig-cache/embedding/reference-embedding $D/embeddinggemma-2-Q8_0.gguf $D/mmproj-BF16.gguf \
+  "$PWD/tests/fixtures/embeddinggemma-inputs/inputs.json" \
+  tests/fixtures/embeddinggemma-vectors/llama-q8_0 tests/fixtures
+python3 scripts/compare-embedding.py tests/fixtures/embeddinggemma-vectors/llama-q8_0 \
+  tests/fixtures/embeddinggemma-vectors/st-f32
+```
+
+The two text traces come from a CPU pass instead. On Metal, the batched
+matmul stages activations as half (bf16 for a BF16 matrix), and ggml's CPU
+BF16 matmul rounds them to bf16, so the traced pass runs `--cpu` (no layers
+or ops offloaded) over a copy of the file with every tensor widened to F32:
+
+```sh
+PYTHONPATH=$R/gguf-py .reference/venv-embed/bin/python scripts/gguf-widen-f32.py \
+  $D/embeddinggemma-2-Q8_0.gguf .zig-cache/embedding/embeddinggemma-2-Q8_0-widened.gguf
+.zig-cache/embedding/reference-embedding --cpu --text-only \
+  .zig-cache/embedding/embeddinggemma-2-Q8_0-widened.gguf $D/mmproj-BF16.gguf \
+  "$PWD/tests/fixtures/embeddinggemma-inputs/inputs.json" .zig-cache/embedding/f32cpu/llama-f32-cpu \
+  .zig-cache/embedding/f32cpu
+```
+
+Its GELU is still an f16 lookup table (`GGML_GELU_FP16`), which with its
+other F32 differences sets the traces' bound
+([embeddinggemma.md § CPU reference](../models/embeddinggemma.md#cpu-reference-against-the-oracles-2026-10-09)).
+
+The rates beside `embeddinggemma-check MODEL bench` come from
+`scripts/reference-embedding-bench.cpp`, the same inputs and method (64
+inputs of 256 tokens, then one of 512 and one of 8192; BOS, " the"
+repeated, EOS; batches of at most 8192 rows; one untimed warm-up, then the
+median), on the checkout's defaults (Metal, flash attention `auto`):
+
+```sh
+c++ -std=c++17 -O2 -I$R/include -I$R/ggml/include scripts/reference-embedding-bench.cpp \
+  -L$R/build/bin -lllama -lggml -lggml-base -Wl,-rpath,"$PWD/$R/build/bin" \
+  -o .zig-cache/embedding/reference-embedding-bench
+.zig-cache/embedding/reference-embedding-bench $D/embeddinggemma-2-Q8_0.gguf
+```
+
 ## Run the workload
 
 Start one reference server in a separate terminal:

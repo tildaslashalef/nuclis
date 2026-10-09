@@ -82,7 +82,7 @@ pub const PullOptions = struct {
 /// only be a registry entry: the caller then reads `nuclis.json`, which
 /// the other forms never need (a broken file must not block a download).
 pub fn isRegistryName(name: []const u8) bool {
-    return name.len > 0 and catalog.find(name) == null and catalog.findDecision(name) == null and std.mem.indexOfScalar(u8, name, '/') == null;
+    return name.len > 0 and catalog.find(name) == null and catalog.findDecision(name) == null and catalog.findEmbedding(name) == null and std.mem.indexOfScalar(u8, name, '/') == null;
 }
 
 /// `pull <entry>`: the entry's repository, file, and pinned revision as a
@@ -211,6 +211,16 @@ fn roleFromHeader(alloc: Allocator, io: std.Io, path: []const u8) !?Role {
     return null;
 }
 
+/// Whether the GGUF header names the architecture `nuclis embed` runs.
+fn isEmbeddingFile(alloc: Allocator, io: std.Io, path: []const u8) !bool {
+    var doc = inference.gguf.open(alloc, io, path, .{}) catch |err| switch (err) {
+        error.UnsupportedTensorType, error.InvalidShape, error.Overflow => return false,
+        else => return err,
+    };
+    defer doc.deinit();
+    return std.mem.eql(u8, doc.string("general.architecture") orelse "", inference.embed.architecture);
+}
+
 pub fn modelsDir(alloc: Allocator, root: []const u8) ![]u8 {
     return std.fs.path.join(alloc, &.{ root, "models" });
 }
@@ -329,8 +339,25 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     var request: hf.Request = .{ .repo_id = options.repo, .revision = options.revision orelse "main", .local_dir = models };
     const entry = catalog.find(options.repo);
     const decision = catalog.findDecision(options.repo);
+    const embedding = catalog.findEmbedding(options.repo);
     var pinned: [40]u8 = undefined;
-    if (entry) |e| {
+    if (embedding) |e| {
+        if (options.file != null or options.revision != null) {
+            diag.set("{s} is a catalogue name and pins its file and commit; pull by repository id ({s}) to choose another", .{ e.name, e.repo });
+            return error.ConflictingOptions;
+        }
+        var wanted = options.with.iterator();
+        while (wanted.next()) |role| if (role != .mmproj or e.mmproj == null) {
+            diag.set("{s} has no {s} companion in the catalogue", .{ e.name, @tagName(role) });
+            return error.NoSuchCompanion;
+        };
+        request.repo_id = e.repo;
+        request.revision = e.revision;
+        @memcpy(&pinned, e.revision[0..40]);
+        try jobs.append(arena, .{ .name = e.file, .role = .main, .sha256 = e.sha256, .size = e.size });
+        if (options.all or options.with.contains(.mmproj)) if (e.mmproj) |m|
+            try jobs.append(arena, .{ .name = m.file, .role = .mmproj, .sha256 = m.sha256, .size = m.size });
+    } else if (entry) |e| {
         if (options.file != null or options.revision != null) {
             diag.set("{s} is a catalogue name and pins its file and commit; pull by repository id ({s}) to choose another", .{ e.name, e.repo });
             return error.ConflictingOptions;
@@ -398,7 +425,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     }
     const revision: []const u8 = &pinned;
     request.revision = revision;
-    var decision_kind: ?catalog.ModelKind = null;
+    var model_kind: ?catalog.ModelKind = if (embedding != null) .embedding else null;
     if (options.register) |name| {
         if (options.config_path == null) return error.MissingHome;
         const main_file = for (jobs.items) |job| {
@@ -410,11 +437,11 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
                 diag.set("{s} is a safetensors artifact without rl_agent_config.json beside it; only a Laya decision checkpoint registers (pull it without --register)", .{f});
                 return error.NotRunnable;
             }
-            decision_kind = .decision;
+            model_kind = .decision;
         };
         try config.registrable(name, request.repo_id, main_file, diag);
     }
-    const pinned_name: ?[]const u8 = if (entry) |e| e.name else if (decision) |d| d.name else null;
+    const pinned_name: ?[]const u8 = if (entry) |e| e.name else if (decision) |d| d.name else if (embedding) |e| e.name else null;
     if (!json) try renderHeader(out, sty, pinned_name orelse options.name, request.repo_id, if (pinned_name != null) null else options.revision orelse "main", revision);
     try out.flush();
 
@@ -454,7 +481,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
     //    what it finished.
     var report: std.ArrayList(PulledFile) = .empty;
     // What `--register` records: filled per verified file by its role.
-    var registration: config.Registration = .{ .repo = request.repo_id, .revision = revision, .file = null, .profile = options.profile, .kind = decision_kind };
+    var registration: config.Registration = .{ .repo = request.repo_id, .revision = revision, .file = null, .profile = options.profile, .kind = model_kind };
     var stamp: [20]u8 = undefined;
     const downloaded_at = rfc3339(&stamp, std.Io.Timestamp.now(io, .real).toSeconds());
     // Every job is one file (shard sets and support files were expanded
@@ -483,7 +510,7 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
             // The Hub at the pinned commit must agree with the catalogue;
             // otherwise the table is wrong, and the file stays without a
             // sidecar so it is never taken for verified.
-            if (entry != null and !std.mem.eql(u8, digest, job.sha256.?)) {
+            if ((entry != null or embedding != null) and !std.mem.eql(u8, digest, job.sha256.?)) {
                 diag.set("{s}: the Hub's digest at commit {s} is {s}…, the catalogue pins {s}…; the catalogue entry needs updating", .{ file.path, revision[0..12], digest[0..12], job.sha256.?[0..12] });
                 return error.CatalogMismatch;
             }
@@ -509,6 +536,8 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
                 .git_blob = try hexOrNull(arena, file.remote.git_oid),
             });
             try report.append(arena, .{ .path = try arena.dupe(u8, file.path), .size = file.size, .sha256 = digest, .transport = @tagName(file.transport), .role = role, .sidecar = sidecar });
+            // A repository's GGUF registers as what its header says it is.
+            if (role == .main and options.register != null and model_kind == null and try isEmbeddingFile(gpa, io, file.path)) registration.kind = .embedding;
             switch (role) {
                 .main => registration.file = job.name,
                 .mmproj => registration.mmproj = job.name,
@@ -527,9 +556,14 @@ fn pullOne(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, 
         const text = try config.register(gpa, current, config_path, name, registration, diag);
         defer gpa.free(text);
         try config.write(io, .cwd(), config_path, text);
-        registered = .{ .name = name, .config = config_path, .key = if (decision_kind == .decision) "decide.model" else "engine.model" };
+        const key = switch (registration.kind orelse .generation) {
+            .generation => "engine.model",
+            .decision => "decide.model",
+            .embedding => "embed.model",
+        };
+        registered = .{ .name = name, .config = config_path, .key = key };
     }
-    try renderPull(out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else if (decision) |d| d.revision else "main"), .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
+    try renderPull(out, .{ .name = pinned_name orelse options.name, .repo = request.repo_id, .requested_revision = options.revision orelse (if (entry) |e| e.revision else if (decision) |d| d.revision else if (embedding) |e| e.revision else "main"), .revision = revision, .files = report.items, .registered = registered orelse null }, json, sty);
 }
 
 /// Whether safetensors weights come with Laya's `rl_agent_config.json`
@@ -769,7 +803,8 @@ pub const CompanionRow = struct {
 pub const CatalogRow = struct {
     name: []const u8,
     /// A `decision` row is a Laya checkpoint (`nuclis decide`); its path is
-    /// the weights, its support files sit beside them.
+    /// the weights, its support files sit beside them. An `embedding` row
+    /// runs under `nuclis embed`.
     kind: catalog.ModelKind = .generation,
     status: catalog.Status,
     path: []const u8,
@@ -785,7 +820,7 @@ pub const CatalogRow = struct {
 };
 
 pub const Listing = struct {
-    schema_version: u32 = 4,
+    schema_version: u32 = 5,
     models_dir: []const u8,
     /// Every catalogue entry with its local status, companions beneath.
     catalog: []const CatalogRow,
@@ -827,7 +862,11 @@ pub const Listing = struct {
             try out.writeByte('\n');
             try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
             var size_buffer: [16]u8 = undefined;
-            try out.print("{s}{s:>9}{s}  {s} {s}{s}  commit {s}{s}{s}  sha256 {s}{s}{s}\n", .{ number, humanSize(&size_buffer, row.size), off, row.architecture, row.quantization, if (row.kind == .decision) " (nuclis decide)" else "", hash, row.revision[0..12], off, hash, row.sha256, off });
+            try out.print("{s}{s:>9}{s}  {s} {s}{s}  commit {s}{s}{s}  sha256 {s}{s}{s}\n", .{ number, humanSize(&size_buffer, row.size), off, row.architecture, row.quantization, switch (row.kind) {
+                .generation => "",
+                .decision => " (nuclis decide)",
+                .embedding => " (nuclis embed)",
+            }, hash, row.revision[0..12], off, hash, row.sha256, off });
             if (row.registered) |r| {
                 try out.splatByteAll(' ', 2 + name_w + 1 + status_w + 1);
                 try renderRegistered(out, r, sty);
@@ -919,8 +958,19 @@ pub fn statusStyle(status: catalog.Status) style.Kind {
 /// directory lists the catalogue as absent.
 pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Models) !Listing {
     const models = try modelsDir(arena, root);
-    const rows = try arena.alloc(CatalogRow, catalog.entries.len + catalog.decision_entries.len);
-    for (&catalog.decision_entries, rows[catalog.entries.len..]) |*e, *row| {
+    const rows = try arena.alloc(CatalogRow, catalog.entries.len + catalog.decision_entries.len + catalog.embedding_entries.len);
+    const embedding_rows = rows[catalog.entries.len + catalog.decision_entries.len ..];
+    for (&catalog.embedding_entries, embedding_rows) |*e, *row| {
+        const path = try std.fs.path.join(arena, &.{ models, e.repo, e.file });
+        var companions: []CompanionRow = &.{};
+        if (e.mmproj) |m| {
+            const cpath = try std.fs.path.join(arena, &.{ models, m.repo, m.file });
+            companions = try arena.alloc(CompanionRow, 1);
+            companions[0] = .{ .role = .mmproj, .status = try catalog.status(arena, io, cpath, m.sha256, m.size), .path = cpath[models.len + 1 ..], .size = m.size, .used_for = "image and audio input" };
+        }
+        row.* = .{ .name = e.name, .kind = .embedding, .status = try catalog.status(arena, io, path, e.sha256, e.size), .path = path[models.len + 1 ..], .size = e.size, .architecture = e.architecture, .quantization = e.quantization, .revision = e.revision, .sha256 = e.sha256, .companions = companions };
+    }
+    for (&catalog.decision_entries, rows[catalog.entries.len..][0..catalog.decision_entries.len]) |*e, *row| {
         const path = try std.fs.path.join(arena, &.{ models, e.repo, e.file });
         row.* = .{ .name = e.name, .kind = .decision, .status = try catalog.status(arena, io, path, e.sha256, e.size), .path = path[models.len + 1 ..], .size = e.size, .architecture = e.architecture, .quantization = e.quantization, .revision = e.revision, .sha256 = e.sha256, .companions = &.{} };
     }
@@ -996,12 +1046,12 @@ pub const Runnable = struct {
 
 /// The generation models whose files are present, as `listing` found them:
 /// registry entries in the file's order, then catalogue names no entry
-/// shadows. Decision models, absent files, and catalogue files whose
-/// digest disagrees with the catalogue are left out.
+/// shadows. Decision and embedding models, absent files, and catalogue
+/// files whose digest disagrees with the catalogue are left out.
 pub fn runnableModels(arena: Allocator, listing: Listing, registry: config.Models) ![]const Runnable {
     var out: std.ArrayList(Runnable) = .empty;
     entries: for (registry.entries) |named| {
-        if (named.entry.kind == .decision) continue;
+        if ((named.entry.kind orelse .generation) != .generation) continue;
         for (listing.missing) |m| if (std.mem.eql(u8, m.name, named.name)) continue :entries;
         const e = named.entry;
         const location = e.path orelse if (e.repo != null and e.file != null) try std.fs.path.join(arena, &.{ e.repo.?, e.file.? }) else continue;
@@ -1425,8 +1475,13 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     const arena = arena_state.allocator();
     // Absent directory: the catalogue is absent, nothing else, nothing created.
     const empty = try list(arena, io, root, .{});
-    try std.testing.expectEqual(catalog.entries.len + catalog.decision_entries.len, empty.catalog.len);
+    try std.testing.expectEqual(catalog.entries.len + catalog.decision_entries.len + catalog.embedding_entries.len, empty.catalog.len);
     try std.testing.expectEqual(catalog.Status.absent, empty.catalog[0].status);
+    // The embedding entries come last, their projector beneath them.
+    const vectors = empty.catalog[empty.catalog.len - 1];
+    try std.testing.expectEqual(catalog.ModelKind.embedding, vectors.kind);
+    try std.testing.expectEqualStrings("unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-Q8_0.gguf", vectors.path);
+    try std.testing.expectEqual(Role.mmproj, vectors.companions[0].role);
     try std.testing.expectEqual(@as(usize, 0), empty.other.len);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models", .{}));
     const qwen = catalog.find("qwen3.8-27b").?;
@@ -1483,6 +1538,11 @@ test "ls reports the catalogue from sidecars, then the other files in the layout
     const bare = try runnableModels(arena, try list(arena, io, root, .{}), .{});
     try std.testing.expectEqual(@as(usize, 1), bare.len);
     try std.testing.expectEqualStrings("qwen3.8-27b", bare[0].name);
+    // An embedding entry is never offered to the text engine.
+    const embedding_only = [_]config.NamedModel{.{ .name = "vectors", .entry = .{ .kind = .embedding, .path = "unsloth/Repo-GGUF/Repo-Q4.gguf" } }};
+    const without = try runnableModels(arena, try list(arena, io, root, .{ .entries = &embedding_only }), .{ .entries = &embedding_only });
+    try std.testing.expectEqual(@as(usize, 1), without.len);
+    try std.testing.expectEqualStrings("qwen3.8-27b", without[0].name);
     try std.testing.expectEqualStrings("big", listing.catalog[0].registered.?.name);
     try std.testing.expect(listing.catalog[0].registered.?.profile == null);
     try std.testing.expectEqualStrings("local", listing.other[1].registered.?.name);
@@ -1765,5 +1825,5 @@ test "registry entries translate into repository pulls with their companions" {
     try std.testing.expect(std.mem.indexOf(u8, diag.message(), "no mtp companion") != null);
     try std.testing.expectError(error.NotPullable, fromRegistry(.{ .repo = "local" }, &.{ .path = "/scratch/x.gguf" }, &diag));
     try std.testing.expectError(error.ConflictingOptions, fromRegistry(.{ .repo = "gemma", .file = "other.gguf" }, &gemma, &diag));
-    try std.testing.expect(isRegistryName("gemma") and !isRegistryName("qwen3.8-27b") and !isRegistryName("a/b") and !isRegistryName(""));
+    try std.testing.expect(isRegistryName("gemma") and !isRegistryName("qwen3.8-27b") and !isRegistryName("embeddinggemma-2") and !isRegistryName("a/b") and !isRegistryName(""));
 }

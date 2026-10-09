@@ -1,7 +1,8 @@
 //! `nuclis serve`: the nuclis API. Composes the transport (`http.zig`), the
-//! router, the GPU executor, and the services (decisions, chat), then accepts
-//! connections, each its own task, until Ctrl-C or a failed accept; Ctrl-C
-//! drains the queued decisions before the connections close. The
+//! router, the GPU executor, and the services (decisions, chat, embeddings),
+//! then accepts connections, each its own task, until Ctrl-C or a failed
+//! accept; Ctrl-C drains the queued decisions and embeddings before the
+//! connections close. The
 //! layers stay apart: the transport and the router know no model, a service
 //! never touches a socket, and only the executor's worker runs a model.
 //! docs/guide/api.md.
@@ -16,6 +17,8 @@ const models = @import("models.zig");
 const router_mod = @import("router.zig");
 const decisions = @import("decisions/service.zig");
 const chat = @import("chat/service.zig");
+const embeddings = @import("embeddings/service.zig");
+const embedding_batcher = @import("embeddings/batcher.zig");
 const memory = @import("memory.zig");
 const log_mod = @import("log.zig");
 const batcher = @import("decisions/batcher.zig");
@@ -27,7 +30,8 @@ pub const limits = struct {
     pub const connections = 64;
     pub const queued_jobs = 64;
     pub const write_buffer = 16 * 1024;
-    /// How long Ctrl-C waits for queued decisions before closing connections.
+    /// How long Ctrl-C waits for queued decisions and embeddings before
+    /// closing connections.
     pub const drain_seconds = 10;
 };
 
@@ -152,6 +156,7 @@ const Server = struct {
     memory: memory.Budget,
     decisions: decisions.Service,
     chat: chat.Service,
+    embeddings: embeddings.Service,
     backend: inference.decide.Backend,
     version: []const u8,
     active: std.atomic.Value(u32) = .init(0),
@@ -162,6 +167,7 @@ const Server = struct {
     fn register(self: *Server) !void {
         try self.decisions.register(self.gpa, &self.router, &self.listing);
         try self.chat.register(self.gpa, &self.router, &self.listing);
+        try self.embeddings.register(self.gpa, &self.router, &self.listing);
         try self.listing.register(self.gpa, &self.router);
         try self.router.add(self.gpa, .GET, router_mod.prefix ++ "/health", .{ .context = self, .handle = health });
     }
@@ -178,17 +184,18 @@ const Server = struct {
         const batching = self.decisions.batcher.stats(io);
         const open = self.decisions.pool.openNames(io, arena) catch &.{};
         const language = self.chat.language.openName(io, arena) catch null;
+        const embedding = self.embeddings.pool.openName(io, arena) catch null;
         const resident = self.memory.snapshot(io, arena) catch &.{};
         var out: std.Io.Writer.Allocating = .init(arena);
-        writeHealth(&out.writer, self.version, self.backend, open, language, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.active.load(.monotonic)) catch
+        writeHealth(&out.writer, self.version, self.backend, open, language, embedding, .{ .limit = self.memory.limit, .models = resident }, stats, batching, self.embeddings.batcher.stats(io), self.active.load(.monotonic)) catch
             return .fromError(arena, .init(.internal_server_error, "internal", "out of memory"));
         return .{ .body = out.written() };
     }
 
-    /// Decision work queued or running on the GPU.
+    /// Decision or embedding work queued or running on the GPU.
     fn busy(self: *Server, io: std.Io) bool {
         const queue = self.executor.stats(io);
-        return queue.queued > 0 or queue.running or self.decisions.batcher.stats(io).waiting > 0;
+        return queue.queued > 0 or queue.running or self.decisions.batcher.stats(io).waiting > 0 or self.embeddings.batcher.stats(io).waiting > 0;
     }
 
     /// The accept task: one connection task per accepted stream until the
@@ -234,7 +241,7 @@ const Server = struct {
 
 const Memory = struct { limit: u64, models: []const memory.Budget.Model };
 
-fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, language: ?[]const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, connections: u32) !void {
+fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.decide.Backend, open: []const []const u8, language: ?[]const u8, embedding: ?[]const u8, budget: Memory, stats: gpu.Stats, batching: batcher.Stats, embedding_batching: embedding_batcher.Stats, connections: u32) !void {
     var s: std.json.Stringify = .{ .writer = out, .options = .{ .whitespace = .indent_2 } };
     try s.beginObject();
     try s.objectField("status");
@@ -247,6 +254,8 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.write(open);
     try s.objectField("language");
     try s.write(language);
+    try s.objectField("embedding");
+    try s.write(embedding);
     try s.objectField("memory");
     try s.beginObject();
     try s.objectField("limit");
@@ -287,6 +296,15 @@ fn writeHealth(out: *std.Io.Writer, version: []const u8, backend: inference.deci
     try s.objectField("requests");
     try s.write(batching.jobs);
     try s.endObject();
+    try s.objectField("embeddings");
+    try s.beginObject();
+    try s.objectField("waiting");
+    try s.write(embedding_batching.waiting);
+    try s.objectField("passes");
+    try s.write(embedding_batching.passes);
+    try s.objectField("requests");
+    try s.write(embedding_batching.jobs);
+    try s.endObject();
     try s.objectField("connections");
     try s.write(connections);
     try s.endObject();
@@ -320,16 +338,23 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         .gpa = gpa,
         .decisions = .init(gpa, undefined, backend, context.root, context.registry, context.default_model),
         .chat = .init(gpa, undefined, context.loaded, context.root, @as(u64, options.timeout) * std.time.ns_per_s),
+        .embeddings = .init(gpa, undefined, switch (backend) {
+            .cpu => .cpu,
+            .metal => .metal,
+        }, context.root, context.registry, context.loaded.config.embed.model, @as(u64, options.timeout) * std.time.ns_per_s),
         .memory = .init(gpa, options.memory_bytes orelse memory.defaultLimit()),
         .backend = backend,
         .version = context.version,
     };
     server.decisions.executor = &server.executor;
     server.chat.executor = &server.executor;
+    server.embeddings.executor = &server.executor;
+    server.embeddings.pool.budget = &server.memory;
     server.decisions.pool.budget = &server.memory;
     server.chat.language.budget = &server.memory;
     server.decisions.timeout_ns = @as(u64, options.timeout) * std.time.ns_per_s;
     server.decisions.bind();
+    server.embeddings.bind();
     defer server.deinit();
     try server.register();
 
@@ -339,6 +364,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         worker.await(io);
         server.decisions.deinit(io);
         server.chat.deinit(io);
+        server.embeddings.deinit(io);
         server.memory.deinit();
     }
 
@@ -395,7 +421,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
         else => return err,
     };
 
-    try out.print("{s}stopping:{s} no new connections; finishing queued decisions {s}(up to {d} s; Ctrl-C again ends now){s}\n", .{ sty.on(.warning), sty.off(), sty.on(.dim), limits.drain_seconds, sty.off() });
+    try out.print("{s}stopping:{s} no new connections; finishing queued decisions and embeddings {s}(up to {d} s; Ctrl-C again ends now){s}\n", .{ sty.on(.warning), sty.off(), sty.on(.dim), limits.drain_seconds, sty.off() });
     try out.flush();
     const drain_until = std.Io.Clock.awake.now(io).addDuration(.fromSeconds(limits.drain_seconds));
     while (server.busy(io) and std.Io.Clock.awake.now(io).compare(.lt, drain_until)) {
@@ -405,7 +431,7 @@ pub fn serve(gpa: std.mem.Allocator, io: std.Io, context: Context, options: Opti
     // Wakes idle keep-alive connections; a request already taken by a batch
     // finishes first (the batcher waits through one cancelation).
     group.cancel(io);
-    try out.print("{s}stopped{s}{s}\n", .{ sty.on(.success), sty.off(), if (abandoned) " (queued decisions abandoned after the drain limit)" else "" });
+    try out.print("{s}stopped{s}{s}\n", .{ sty.on(.success), sty.off(), if (abandoned) " (queued work abandoned after the drain limit)" else "" });
     try out.flush();
 }
 
@@ -430,6 +456,9 @@ test {
     _ = @import("pipe.zig");
     _ = @import("memory.zig");
     _ = chat;
+    _ = embeddings;
+    _ = embedding_batcher;
+    _ = @import("embeddings/pool.zig");
 }
 
 test "serve arguments" {
@@ -448,7 +477,7 @@ test "serve arguments" {
     try std.testing.expectEqual(inference.decide.Backend.cpu, o.backend.?);
     try std.testing.expectEqualStrings("0.0.0.0", o.host);
     const defaults = try parseArgs(arena, &.{}, configured, &diag);
-    try std.testing.expectEqual(@as(u16, 8000), defaults.port);
+    try std.testing.expectEqual(@as(u16, 9000), defaults.port);
     try std.testing.expectEqualStrings("127.0.0.1", defaults.host);
     try std.testing.expect(defaults.log);
     try std.testing.expectEqual(@as(u32, 300), defaults.timeout);
@@ -478,7 +507,7 @@ test "serve arguments" {
 test "health reports the queue and the open models" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, "qwen3.8-27b", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60 }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, 3);
+    try writeHealth(&out.writer, "0.1.0-dev", .cpu, &.{"laya"}, "qwen3.8-27b", "embeddinggemma-2", .{ .limit = 100, .models = &.{ .{ .kind = .language, .name = "qwen3.8-27b", .bytes = 60 }, .{ .kind = .decision, .name = "laya", .bytes = 10 } } }, .{ .queued = 2, .running = true, .completed = 7 }, .{ .waiting = 5, .batches = 3, .jobs = 9 }, .{ .waiting = 1, .passes = 4, .jobs = 2 }, 3);
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("cpu", parsed.value.object.get("backend").?.string);
@@ -487,4 +516,6 @@ test "health reports the queue and the open models" {
     try std.testing.expectEqualStrings("qwen3.8-27b", parsed.value.object.get("language").?.string);
     try std.testing.expectEqual(@as(i64, 70), parsed.value.object.get("memory").?.object.get("resident").?.integer);
     try std.testing.expectEqual(@as(i64, 5), parsed.value.object.get("decisions").?.object.get("waiting").?.integer);
+    try std.testing.expectEqualStrings("embeddinggemma-2", parsed.value.object.get("embedding").?.string);
+    try std.testing.expectEqual(@as(i64, 4), parsed.value.object.get("embeddings").?.object.get("passes").?.integer);
 }

@@ -56,9 +56,9 @@ pub const Language = struct {
         if (self.name) |current| if (std.mem.eql(u8, current, name)) return;
         const registry = self.loaded.config.models;
         if (registry.find(name)) |entry| {
-            if (entry.kind == .decision) return error.NotALanguageModel;
+            if ((entry.kind orelse .generation) != .generation) return error.NotALanguageModel;
         } else if (catalog.find(name) == null) {
-            return if (catalog.findDecision(name) != null) error.NotALanguageModel else error.ModelNotFound;
+            return if (catalog.findDecision(name) != null or catalog.findEmbedding(name) != null) error.NotALanguageModel else error.ModelNotFound;
         }
         const path = try paths.modelPath(self.gpa, name, "", self.root, registry);
         defer self.gpa.free(path);

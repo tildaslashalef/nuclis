@@ -106,11 +106,26 @@ pub fn resizeLanczos(alloc: std.mem.Allocator, source: image.Rgb8, target: Size)
     return resize(alloc, source, target, .lanczos);
 }
 
+/// How the normalized F64 weights become fixed point.
+pub const Precision = enum {
+    /// Pillow's: 22 fractional bits.
+    pillow,
+    /// torchvision's native uint8 path (ATen's int16 weights): per pass, the
+    /// most fractional bits under 22 that keep the largest weight in an i16.
+    torchvision,
+};
+
 /// Pillow's `ImagingResample`: weights per output pixel normalized in F64
 /// then rounded to 22-bit fixed point, a horizontal pass into an 8-bit
 /// intermediate, then a vertical pass. A pass whose size is unchanged is
 /// skipped. Caller owns the result.
 pub fn resize(alloc: std.mem.Allocator, source: image.Rgb8, target: Size, filter: Filter) ![]u8 {
+    return resizeWith(alloc, source, target, filter, .pillow);
+}
+
+/// `resize` with the weights rounded as `precision` says; torchvision's
+/// uint8 antialiased resize is the same two passes.
+pub fn resizeWith(alloc: std.mem.Allocator, source: image.Rgb8, target: Size, filter: Filter, precision: Precision) ![]u8 {
     if (target.width == 0 or target.height == 0 or source.width == 0 or source.height == 0) return error.InvalidShape;
     if (source.width == target.width and source.height == target.height) return alloc.dupe(u8, source.pixels);
     var current = source.pixels;
@@ -118,7 +133,7 @@ pub fn resize(alloc: std.mem.Allocator, source: image.Rgb8, target: Size, filter
     defer if (owned) |o| alloc.free(o);
     var width = source.width;
     if (target.width != source.width) {
-        const kernel = try Kernel.init(alloc, source.width, target.width, filter);
+        const kernel = try Kernel.init(alloc, source.width, target.width, filter, precision);
         defer kernel.deinit(alloc);
         const out = try alloc.alloc(u8, @as(usize, target.width) * source.height * 3);
         errdefer alloc.free(out);
@@ -129,11 +144,12 @@ pub fn resize(alloc: std.mem.Allocator, source: image.Rgb8, target: Size, filter
                 const xmin = kernel.bounds[xx * 2];
                 const count = kernel.bounds[xx * 2 + 1];
                 const k = kernel.weights[xx * kernel.size ..][0..count];
-                var sums = [3]i32{ 1 << (precision_bits - 1), 1 << (precision_bits - 1), 1 << (precision_bits - 1) };
+                const half = @as(i32, 1) << (kernel.bits - 1);
+                var sums = [3]i32{ half, half, half };
                 for (k, 0..) |w, x| for (0..3) |c| {
                     sums[c] +%= @as(i32, src_row[(xmin + x) * 3 + c]) *% w;
                 };
-                for (0..3) |c| dst_row[xx * 3 + c] = clip8(sums[c] >> precision_bits);
+                for (0..3) |c| dst_row[xx * 3 + c] = clip8(sums[c] >> kernel.bits);
             }
         }
         owned = out;
@@ -141,7 +157,7 @@ pub fn resize(alloc: std.mem.Allocator, source: image.Rgb8, target: Size, filter
         width = target.width;
     }
     if (target.height != source.height) {
-        const kernel = try Kernel.init(alloc, source.height, target.height, filter);
+        const kernel = try Kernel.init(alloc, source.height, target.height, filter, precision);
         defer kernel.deinit(alloc);
         const row = @as(usize, width) * 3;
         const out = try alloc.alloc(u8, row * target.height);
@@ -151,13 +167,13 @@ pub fn resize(alloc: std.mem.Allocator, source: image.Rgb8, target: Size, filter
         for (0..target.height) |yy| {
             const ymin = kernel.bounds[yy * 2];
             const count = kernel.bounds[yy * 2 + 1];
-            @memset(acc, 1 << (precision_bits - 1));
+            @memset(acc, @as(i32, 1) << (kernel.bits - 1));
             for (0..count) |y| {
                 const src_row = current[(ymin + y) * row ..][0..row];
                 const w = kernel.weights[yy * kernel.size + y];
                 for (acc, src_row) |*a, v| a.* +%= @as(i32, v) *% w;
             }
-            for (out[yy * row ..][0..row], acc) |*d, a| d.* = clip8(a >> precision_bits);
+            for (out[yy * row ..][0..row], acc) |*d, a| d.* = clip8(a >> kernel.bits);
         }
         if (owned) |o| alloc.free(o);
         owned = null;
@@ -174,13 +190,14 @@ fn clip8(v: i32) u8 {
 
 /// One dimension's precomputed filter: `bounds[2i]` the first input pixel
 /// of output pixel i, `bounds[2i + 1]` how many, `weights[i·size ..]` their
-/// fixed-point weights.
+/// fixed-point weights with `bits` fractional bits.
 const Kernel = struct {
     size: usize,
     bounds: []usize,
     weights: []i32,
+    bits: u5,
 
-    fn init(alloc: std.mem.Allocator, in_size: u32, out_size: u32, filter: Filter) !Kernel {
+    fn init(alloc: std.mem.Allocator, in_size: u32, out_size: u32, filter: Filter, precision: Precision) !Kernel {
         const scale: f64 = @as(f64, @floatFromInt(in_size)) / @as(f64, @floatFromInt(out_size));
         const filterscale: f64 = @max(scale, 1.0);
         const support = filter.support() * filterscale;
@@ -189,10 +206,10 @@ const Kernel = struct {
         errdefer alloc.free(bounds);
         const weights = try alloc.alloc(i32, @as(usize, out_size) * size);
         errdefer alloc.free(weights);
-        const pre = try alloc.alloc(f64, size);
-        defer alloc.free(pre);
-        const fxp_scale: f64 = @as(f64, 1 << precision_bits);
+        const normalized = try alloc.alloc(f64, @as(usize, out_size) * size);
+        defer alloc.free(normalized);
         for (0..out_size) |xx| {
+            const pre = normalized[xx * size ..][0..size];
             const center = (@as(f64, @floatFromInt(xx)) + 0.5) * scale;
             const ss = 1.0 / filterscale;
             var xmin: i64 = @intFromFloat(center - support + 0.5);
@@ -212,12 +229,26 @@ const Kernel = struct {
             for (count..size) |x| pre[x] = 0;
             bounds[xx * 2] = @intCast(xmin);
             bounds[xx * 2 + 1] = count;
-            for (0..size) |x| {
-                const rounded = pre[x] * fxp_scale + (if (pre[x] < 0) @as(f64, -0.5) else 0.5);
-                weights[xx * size + x] = @intFromFloat(rounded);
-            }
         }
-        return .{ .size = size, .bounds = bounds, .weights = weights };
+        const bits: u5 = switch (precision) {
+            .pillow => precision_bits,
+            .torchvision => fitted: {
+                var largest: f64 = 0;
+                for (normalized) |w| largest = @max(largest, w);
+                var b: u5 = 0;
+                while (b < precision_bits) : (b += 1) {
+                    if (0.5 + largest * @as(f64, @floatFromInt(@as(u32, 1) << (b + 1))) >= 1 << 15) break;
+                }
+                break :fitted b;
+            },
+        };
+        if (bits == 0) return error.InvalidShape;
+        const fxp_scale: f64 = @floatFromInt(@as(u32, 1) << bits);
+        for (weights, normalized) |*w, v| {
+            const rounded = v * fxp_scale + (if (v < 0) @as(f64, -0.5) else 0.5);
+            w.* = @intFromFloat(rounded);
+        }
+        return .{ .size = size, .bounds = bounds, .weights = weights, .bits = bits };
     }
     fn deinit(self: Kernel, alloc: std.mem.Allocator) void {
         alloc.free(self.bounds);
@@ -336,6 +367,19 @@ test "the letterboxed bicubic resize of the fixture matches the reference's pixe
     defer alloc.free(resized);
     try std.testing.expectEqual(@as(usize, 128 * 96 * 3), resized.len);
     try std.testing.expectEqualSlices(u8, expected.pixels, resized);
+}
+
+test "the torchvision precision reproduces its uint8 bicubic both ways" {
+    const alloc = std.testing.allocator;
+    var source = try image.decodePpm(alloc, @embedFile("fixtures/synthetic-96x64.ppm"));
+    defer source.deinit(alloc);
+    for ([_][]const u8{ @embedFile("fixtures/synthetic-96x64-torchvision-down.ppm"), @embedFile("fixtures/synthetic-96x64-torchvision-up.ppm") }) |bytes| {
+        var expected = try image.decodePpm(alloc, bytes);
+        defer expected.deinit(alloc);
+        const resized = try resizeWith(alloc, source, .{ .width = expected.width, .height = expected.height }, .bicubic, .torchvision);
+        defer alloc.free(resized);
+        try std.testing.expectEqualSlices(u8, expected.pixels, resized);
+    }
 }
 
 test "patches walk merge blocks and normalize channel-planar" {

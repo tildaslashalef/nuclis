@@ -1,0 +1,851 @@
+{
+ "about": "EmbeddingGemma 2 oracle inputs: one entry per case, its parts in order, text parts already rendered with their task prefix. Read by scripts/reference-embedding.cpp and scripts/embedding-reference.py; see tests/fixtures/provenance.md.",
+ "image_tokens": 280,
+ "traced": [
+  "north.raw",
+  "north.query",
+  "image.logo",
+  "mix.logo",
+  "audio.north"
+ ],
+ "cases": [
+  {
+   "id": "north.raw",
+   "parts": [
+    {
+     "text": "The northern lights are caused by charged particles from the sun striking the upper atmosphere."
+    }
+   ]
+  },
+  {
+   "id": "north.query",
+   "parts": [
+    {
+     "text": "task: search result | query: The northern lights are caused by charged particles from the sun striking the upper atmosphere."
+    }
+   ]
+  },
+  {
+   "id": "north.doc",
+   "parts": [
+    {
+     "text": "title: none | text: The northern lights are caused by charged particles from the sun striking the upper atmosphere."
+    }
+   ]
+  },
+  {
+   "id": "north.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: The northern lights are caused by charged particles from the sun striking the upper atmosphere."
+    }
+   ]
+  },
+  {
+   "id": "sourdough.raw",
+   "parts": [
+    {
+     "text": "How do I keep my sourdough starter alive while travelling?"
+    }
+   ]
+  },
+  {
+   "id": "sourdough.query",
+   "parts": [
+    {
+     "text": "task: search result | query: How do I keep my sourdough starter alive while travelling?"
+    }
+   ]
+  },
+  {
+   "id": "sourdough.doc",
+   "parts": [
+    {
+     "text": "title: none | text: How do I keep my sourdough starter alive while travelling?"
+    }
+   ]
+  },
+  {
+   "id": "sourdough.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: How do I keep my sourdough starter alive while travelling?"
+    }
+   ]
+  },
+  {
+   "id": "cat.raw",
+   "parts": [
+    {
+     "text": "A cat is sleeping on a warm windowsill in the afternoon sun."
+    }
+   ]
+  },
+  {
+   "id": "cat.query",
+   "parts": [
+    {
+     "text": "task: search result | query: A cat is sleeping on a warm windowsill in the afternoon sun."
+    }
+   ]
+  },
+  {
+   "id": "cat.doc",
+   "parts": [
+    {
+     "text": "title: none | text: A cat is sleeping on a warm windowsill in the afternoon sun."
+    }
+   ]
+  },
+  {
+   "id": "cat.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: A cat is sleeping on a warm windowsill in the afternoon sun."
+    }
+   ]
+  },
+  {
+   "id": "kitten.raw",
+   "parts": [
+    {
+     "text": "The kitten dozes in a patch of sunlight by the window."
+    }
+   ]
+  },
+  {
+   "id": "kitten.query",
+   "parts": [
+    {
+     "text": "task: search result | query: The kitten dozes in a patch of sunlight by the window."
+    }
+   ]
+  },
+  {
+   "id": "kitten.doc",
+   "parts": [
+    {
+     "text": "title: none | text: The kitten dozes in a patch of sunlight by the window."
+    }
+   ]
+  },
+  {
+   "id": "kitten.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: The kitten dozes in a patch of sunlight by the window."
+    }
+   ]
+  },
+  {
+   "id": "revenue.raw",
+   "parts": [
+    {
+     "text": "Quarterly revenue rose eight percent on stronger cloud sales."
+    }
+   ]
+  },
+  {
+   "id": "revenue.query",
+   "parts": [
+    {
+     "text": "task: search result | query: Quarterly revenue rose eight percent on stronger cloud sales."
+    }
+   ]
+  },
+  {
+   "id": "revenue.doc",
+   "parts": [
+    {
+     "text": "title: none | text: Quarterly revenue rose eight percent on stronger cloud sales."
+    }
+   ]
+  },
+  {
+   "id": "revenue.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: Quarterly revenue rose eight percent on stronger cloud sales."
+    }
+   ]
+  },
+  {
+   "id": "train.raw",
+   "parts": [
+    {
+     "text": "The train to Lisbon leaves from platform four at seven in the morning."
+    }
+   ]
+  },
+  {
+   "id": "train.query",
+   "parts": [
+    {
+     "text": "task: search result | query: The train to Lisbon leaves from platform four at seven in the morning."
+    }
+   ]
+  },
+  {
+   "id": "train.doc",
+   "parts": [
+    {
+     "text": "title: none | text: The train to Lisbon leaves from platform four at seven in the morning."
+    }
+   ]
+  },
+  {
+   "id": "train.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: The train to Lisbon leaves from platform four at seven in the morning."
+    }
+   ]
+  },
+  {
+   "id": "memory.raw",
+   "parts": [
+    {
+     "text": "Unified memory lets the GPU read model weights without copying them."
+    }
+   ]
+  },
+  {
+   "id": "memory.query",
+   "parts": [
+    {
+     "text": "task: search result | query: Unified memory lets the GPU read model weights without copying them."
+    }
+   ]
+  },
+  {
+   "id": "memory.doc",
+   "parts": [
+    {
+     "text": "title: none | text: Unified memory lets the GPU read model weights without copying them."
+    }
+   ]
+  },
+  {
+   "id": "memory.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: Unified memory lets the GPU read model weights without copying them."
+    }
+   ]
+  },
+  {
+   "id": "mutex.raw",
+   "parts": [
+    {
+     "text": "What is the difference between a mutex and a semaphore?"
+    }
+   ]
+  },
+  {
+   "id": "mutex.query",
+   "parts": [
+    {
+     "text": "task: search result | query: What is the difference between a mutex and a semaphore?"
+    }
+   ]
+  },
+  {
+   "id": "mutex.doc",
+   "parts": [
+    {
+     "text": "title: none | text: What is the difference between a mutex and a semaphore?"
+    }
+   ]
+  },
+  {
+   "id": "mutex.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: What is the difference between a mutex and a semaphore?"
+    }
+   ]
+  },
+  {
+   "id": "hello.raw",
+   "parts": [
+    {
+     "text": "hello"
+    }
+   ]
+  },
+  {
+   "id": "hello.query",
+   "parts": [
+    {
+     "text": "task: search result | query: hello"
+    }
+   ]
+  },
+  {
+   "id": "hello.doc",
+   "parts": [
+    {
+     "text": "title: none | text: hello"
+    }
+   ]
+  },
+  {
+   "id": "hello.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: hello"
+    }
+   ]
+  },
+  {
+   "id": "cafe.raw",
+   "parts": [
+    {
+     "text": "Café au lait ☕ costs 3,50 € at the corner bakery."
+    }
+   ]
+  },
+  {
+   "id": "cafe.query",
+   "parts": [
+    {
+     "text": "task: search result | query: Café au lait ☕ costs 3,50 € at the corner bakery."
+    }
+   ]
+  },
+  {
+   "id": "cafe.doc",
+   "parts": [
+    {
+     "text": "title: none | text: Café au lait ☕ costs 3,50 € at the corner bakery."
+    }
+   ]
+  },
+  {
+   "id": "cafe.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: Café au lait ☕ costs 3,50 € at the corner bakery."
+    }
+   ]
+  },
+  {
+   "id": "de.raw",
+   "parts": [
+    {
+     "text": "Der Zug nach Berlin hat heute zwanzig Minuten Verspätung."
+    }
+   ]
+  },
+  {
+   "id": "de.query",
+   "parts": [
+    {
+     "text": "task: search result | query: Der Zug nach Berlin hat heute zwanzig Minuten Verspätung."
+    }
+   ]
+  },
+  {
+   "id": "de.doc",
+   "parts": [
+    {
+     "text": "title: none | text: Der Zug nach Berlin hat heute zwanzig Minuten Verspätung."
+    }
+   ]
+  },
+  {
+   "id": "de.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: Der Zug nach Berlin hat heute zwanzig Minuten Verspätung."
+    }
+   ]
+  },
+  {
+   "id": "fr.raw",
+   "parts": [
+    {
+     "text": "Le chat dort sur le rebord de la fenêtre au soleil."
+    }
+   ]
+  },
+  {
+   "id": "fr.query",
+   "parts": [
+    {
+     "text": "task: search result | query: Le chat dort sur le rebord de la fenêtre au soleil."
+    }
+   ]
+  },
+  {
+   "id": "fr.doc",
+   "parts": [
+    {
+     "text": "title: none | text: Le chat dort sur le rebord de la fenêtre au soleil."
+    }
+   ]
+  },
+  {
+   "id": "fr.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: Le chat dort sur le rebord de la fenêtre au soleil."
+    }
+   ]
+  },
+  {
+   "id": "es.raw",
+   "parts": [
+    {
+     "text": "¿Dónde puedo comprar pan fresco cerca de aquí?"
+    }
+   ]
+  },
+  {
+   "id": "es.query",
+   "parts": [
+    {
+     "text": "task: search result | query: ¿Dónde puedo comprar pan fresco cerca de aquí?"
+    }
+   ]
+  },
+  {
+   "id": "es.doc",
+   "parts": [
+    {
+     "text": "title: none | text: ¿Dónde puedo comprar pan fresco cerca de aquí?"
+    }
+   ]
+  },
+  {
+   "id": "es.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: ¿Dónde puedo comprar pan fresco cerca de aquí?"
+    }
+   ]
+  },
+  {
+   "id": "ar.raw",
+   "parts": [
+    {
+     "text": "القطط تحب النوم في الشمس."
+    }
+   ]
+  },
+  {
+   "id": "ar.query",
+   "parts": [
+    {
+     "text": "task: search result | query: القطط تحب النوم في الشمس."
+    }
+   ]
+  },
+  {
+   "id": "ar.doc",
+   "parts": [
+    {
+     "text": "title: none | text: القطط تحب النوم في الشمس."
+    }
+   ]
+  },
+  {
+   "id": "ar.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: القطط تحب النوم في الشمس."
+    }
+   ]
+  },
+  {
+   "id": "ja.raw",
+   "parts": [
+    {
+     "text": "東京の天気は明日晴れるでしょう。"
+    }
+   ]
+  },
+  {
+   "id": "ja.query",
+   "parts": [
+    {
+     "text": "task: search result | query: 東京の天気は明日晴れるでしょう。"
+    }
+   ]
+  },
+  {
+   "id": "ja.doc",
+   "parts": [
+    {
+     "text": "title: none | text: 東京の天気は明日晴れるでしょう。"
+    }
+   ]
+  },
+  {
+   "id": "ja.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: 東京の天気は明日晴れるでしょう。"
+    }
+   ]
+  },
+  {
+   "id": "zh.raw",
+   "parts": [
+    {
+     "text": "量化会降低模型的精度吗？"
+    }
+   ]
+  },
+  {
+   "id": "zh.query",
+   "parts": [
+    {
+     "text": "task: search result | query: 量化会降低模型的精度吗？"
+    }
+   ]
+  },
+  {
+   "id": "zh.doc",
+   "parts": [
+    {
+     "text": "title: none | text: 量化会降低模型的精度吗？"
+    }
+   ]
+  },
+  {
+   "id": "zh.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: 量化会降低模型的精度吗？"
+    }
+   ]
+  },
+  {
+   "id": "doc-components.raw",
+   "parts": [
+    {
+     "text": "nuclis has two components: the engine library under `inference/`, and the executable under `src/`, which embeds the `generate`/`bench` CLI and the `nuclis agent` surface on top of the engine. This guide follows the engine; the agent appears where it touches the same interfaces."
+    }
+   ]
+  },
+  {
+   "id": "doc-components.query",
+   "parts": [
+    {
+     "text": "task: search result | query: nuclis has two components: the engine library under `inference/`, and the executable under `src/`, which embeds the `generate`/`bench` CLI and the `nuclis agent` surface on top of the engine. This guide follows the engine; the agent appears where it touches the same interfaces."
+    }
+   ]
+  },
+  {
+   "id": "doc-components.doc",
+   "parts": [
+    {
+     "text": "title: none | text: nuclis has two components: the engine library under `inference/`, and the executable under `src/`, which embeds the `generate`/`bench` CLI and the `nuclis agent` surface on top of the engine. This guide follows the engine; the agent appears where it touches the same interfaces."
+    }
+   ]
+  },
+  {
+   "id": "doc-components.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: nuclis has two components: the engine library under `inference/`, and the executable under `src/`, which embeds the `generate`/`bench` CLI and the `nuclis agent` surface on top of the engine. This guide follows the engine; the agent appears where it touches the same interfaces."
+    }
+   ]
+  },
+  {
+   "id": "doc-cache.raw",
+   "parts": [
+    {
+     "text": "The cache is not a module. It is a storage contract in the session, written by each adapter's two schedules, read by the attention kernels. Keep immutable weights separate from mutable session state. Recurrent state cannot be reset or rewound merely by truncating an attention KV cache."
+    }
+   ]
+  },
+  {
+   "id": "doc-cache.query",
+   "parts": [
+    {
+     "text": "task: search result | query: The cache is not a module. It is a storage contract in the session, written by each adapter's two schedules, read by the attention kernels. Keep immutable weights separate from mutable session state. Recurrent state cannot be reset or rewound merely by truncating an attention KV cache."
+    }
+   ]
+  },
+  {
+   "id": "doc-cache.doc",
+   "parts": [
+    {
+     "text": "title: none | text: The cache is not a module. It is a storage contract in the session, written by each adapter's two schedules, read by the attention kernels. Keep immutable weights separate from mutable session state. Recurrent state cannot be reset or rewound merely by truncating an attention KV cache."
+    }
+   ]
+  },
+  {
+   "id": "doc-cache.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: The cache is not a module. It is a storage contract in the session, written by each adapter's two schedules, read by the attention kernels. Keep immutable weights separate from mutable session state. Recurrent state cannot be reset or rewound merely by truncating an attention KV cache."
+    }
+   ]
+  },
+  {
+   "id": "doc-filter.raw",
+   "parts": [
+    {
+     "text": "Every question re-reads its state (the encoder is bidirectional, so nothing is shared between questions), and a language model must spend decode tokens writing each question, so delegating one decision the language model could make itself saves nothing. It pays as a filter: one question fanned out over many states the language model never reads (30 search hits, every log section, each diff hunk), where the language model's prefill is the cost avoided."
+    }
+   ]
+  },
+  {
+   "id": "doc-filter.query",
+   "parts": [
+    {
+     "text": "task: search result | query: Every question re-reads its state (the encoder is bidirectional, so nothing is shared between questions), and a language model must spend decode tokens writing each question, so delegating one decision the language model could make itself saves nothing. It pays as a filter: one question fanned out over many states the language model never reads (30 search hits, every log section, each diff hunk), where the language model's prefill is the cost avoided."
+    }
+   ]
+  },
+  {
+   "id": "doc-filter.doc",
+   "parts": [
+    {
+     "text": "title: none | text: Every question re-reads its state (the encoder is bidirectional, so nothing is shared between questions), and a language model must spend decode tokens writing each question, so delegating one decision the language model could make itself saves nothing. It pays as a filter: one question fanned out over many states the language model never reads (30 search hits, every log section, each diff hunk), where the language model's prefill is the cost avoided."
+    }
+   ]
+  },
+  {
+   "id": "doc-filter.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: Every question re-reads its state (the encoder is bidirectional, so nothing is shared between questions), and a language model must spend decode tokens writing each question, so delegating one decision the language model could make itself saves nothing. It pays as a filter: one question fanned out over many states the language model never reads (30 search hits, every log section, each diff hunk), where the language model's prefill is the cost avoided."
+    }
+   ]
+  },
+  {
+   "id": "zig-rmsnorm.raw",
+   "parts": [
+    {
+     "text": "/// x / sqrt(mean(x*x) + epsilon), without learned weights or a bias.\n/// Epsilon must be finite and positive; input must be finite and nonempty.\n/// Model adapters own any subsequent learned scaling or gating convention.\npub fn rmsNorm(input: []const f32, output: []f32, epsilon: f32) Error!void {\n    try shape(input, output);\n    if (!std.math.isFinite(epsilon) or epsilon <= 0) return error.InvalidEpsilon;\n    var squares: f64 = 0;\n    for (input) |x| {\n        if (!std.math.isFinite(x)) return error.NonFiniteInput;\n        squares += @as(f64, x) * @as(f64, x);\n    }\n    // F64 can square even the largest finite F32 without overflowing.\n    const denominator = @sqrt(squares / @as(f64, @floatFromInt(input.len)) + epsilon);\n    for (input, output) |x, *y| y.* = @floatCast(@as(f64, x) / denominator);\n}"
+    }
+   ]
+  },
+  {
+   "id": "zig-rmsnorm.query",
+   "parts": [
+    {
+     "text": "task: search result | query: /// x / sqrt(mean(x*x) + epsilon), without learned weights or a bias.\n/// Epsilon must be finite and positive; input must be finite and nonempty.\n/// Model adapters own any subsequent learned scaling or gating convention.\npub fn rmsNorm(input: []const f32, output: []f32, epsilon: f32) Error!void {\n    try shape(input, output);\n    if (!std.math.isFinite(epsilon) or epsilon <= 0) return error.InvalidEpsilon;\n    var squares: f64 = 0;\n    for (input) |x| {\n        if (!std.math.isFinite(x)) return error.NonFiniteInput;\n        squares += @as(f64, x) * @as(f64, x);\n    }\n    // F64 can square even the largest finite F32 without overflowing.\n    const denominator = @sqrt(squares / @as(f64, @floatFromInt(input.len)) + epsilon);\n    for (input, output) |x, *y| y.* = @floatCast(@as(f64, x) / denominator);\n}"
+    }
+   ]
+  },
+  {
+   "id": "zig-rmsnorm.doc",
+   "parts": [
+    {
+     "text": "title: none | text: /// x / sqrt(mean(x*x) + epsilon), without learned weights or a bias.\n/// Epsilon must be finite and positive; input must be finite and nonempty.\n/// Model adapters own any subsequent learned scaling or gating convention.\npub fn rmsNorm(input: []const f32, output: []f32, epsilon: f32) Error!void {\n    try shape(input, output);\n    if (!std.math.isFinite(epsilon) or epsilon <= 0) return error.InvalidEpsilon;\n    var squares: f64 = 0;\n    for (input) |x| {\n        if (!std.math.isFinite(x)) return error.NonFiniteInput;\n        squares += @as(f64, x) * @as(f64, x);\n    }\n    // F64 can square even the largest finite F32 without overflowing.\n    const denominator = @sqrt(squares / @as(f64, @floatFromInt(input.len)) + epsilon);\n    for (input, output) |x, *y| y.* = @floatCast(@as(f64, x) / denominator);\n}"
+    }
+   ]
+  },
+  {
+   "id": "zig-rmsnorm.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: /// x / sqrt(mean(x*x) + epsilon), without learned weights or a bias.\n/// Epsilon must be finite and positive; input must be finite and nonempty.\n/// Model adapters own any subsequent learned scaling or gating convention.\npub fn rmsNorm(input: []const f32, output: []f32, epsilon: f32) Error!void {\n    try shape(input, output);\n    if (!std.math.isFinite(epsilon) or epsilon <= 0) return error.InvalidEpsilon;\n    var squares: f64 = 0;\n    for (input) |x| {\n        if (!std.math.isFinite(x)) return error.NonFiniteInput;\n        squares += @as(f64, x) * @as(f64, x);\n    }\n    // F64 can square even the largest finite F32 without overflowing.\n    const denominator = @sqrt(squares / @as(f64, @floatFromInt(input.len)) + epsilon);\n    for (input, output) |x, *y| y.* = @floatCast(@as(f64, x) / denominator);\n}"
+    }
+   ]
+  },
+  {
+   "id": "q-cache.raw",
+   "parts": [
+    {
+     "text": "where does the KV cache live and who writes it"
+    }
+   ]
+  },
+  {
+   "id": "q-cache.query",
+   "parts": [
+    {
+     "text": "task: search result | query: where does the KV cache live and who writes it"
+    }
+   ]
+  },
+  {
+   "id": "q-cache.doc",
+   "parts": [
+    {
+     "text": "title: none | text: where does the KV cache live and who writes it"
+    }
+   ]
+  },
+  {
+   "id": "q-cache.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: where does the KV cache live and who writes it"
+    }
+   ]
+  },
+  {
+   "id": "q-components.raw",
+   "parts": [
+    {
+     "text": "which parts make up the inference engine and the command line tool"
+    }
+   ]
+  },
+  {
+   "id": "q-components.query",
+   "parts": [
+    {
+     "text": "task: search result | query: which parts make up the inference engine and the command line tool"
+    }
+   ]
+  },
+  {
+   "id": "q-components.doc",
+   "parts": [
+    {
+     "text": "title: none | text: which parts make up the inference engine and the command line tool"
+    }
+   ]
+  },
+  {
+   "id": "q-components.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: which parts make up the inference engine and the command line tool"
+    }
+   ]
+  },
+  {
+   "id": "q-rmsnorm.raw",
+   "parts": [
+    {
+     "text": "function that divides a vector by its root mean square"
+    }
+   ]
+  },
+  {
+   "id": "q-rmsnorm.query",
+   "parts": [
+    {
+     "text": "task: search result | query: function that divides a vector by its root mean square"
+    }
+   ]
+  },
+  {
+   "id": "q-rmsnorm.doc",
+   "parts": [
+    {
+     "text": "title: none | text: function that divides a vector by its root mean square"
+    }
+   ]
+  },
+  {
+   "id": "q-rmsnorm.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: function that divides a vector by its root mean square"
+    }
+   ]
+  },
+  {
+   "id": "q-filter.raw",
+   "parts": [
+    {
+     "text": "when is a small decision model cheaper than asking the language model"
+    }
+   ]
+  },
+  {
+   "id": "q-filter.query",
+   "parts": [
+    {
+     "text": "task: search result | query: when is a small decision model cheaper than asking the language model"
+    }
+   ]
+  },
+  {
+   "id": "q-filter.doc",
+   "parts": [
+    {
+     "text": "title: none | text: when is a small decision model cheaper than asking the language model"
+    }
+   ]
+  },
+  {
+   "id": "q-filter.code",
+   "parts": [
+    {
+     "text": "task: code retrieval | query: when is a small decision model cheaper than asking the language model"
+    }
+   ]
+  },
+  {
+   "id": "long-3k.doc",
+   "parts": [
+    {
+     "text": "title: none | text: # Building an inference engine: the nuclis guide\n\nThis is the companion to the inference stack: what it took to make a 27\nbillion parameter model answer on one laptop, told in the order the ideas\nmatter rather than the order they were built. Every technique in it is\nimplemented in this tree, and every number is a measurement from it. It is\nwritten to be read end to end in an evening and to be revisited one section\nat a time; each section ends with the files to read next.\n\nIt is not about the agent or the terminal (that is\n[app/agent.md](app/agent.md)), not the map of\nthe code ([architecture.md](architecture.md)), and not the requirements\n([spec.md](spec.md)). It is about the ideas, and about the moments where an\nidea turned out to be wrong and a measurement said so.\n\nA note on the hardware, because it is a character in the story: an Apple\nM4 Pro with 48 GB of unified memory and a 273 GB/s memory bus. The models\nare Qwen3.8-27B (the pinned target: 64 layers, 16 of them attention and 48\nrecurrent), Gemma 4 in a dense 12B, a sparse 26B, and a small E4B, Muse\nGlimmer 30B, and\nBonsai 2, which is Qwen3.8 again at 1.58 bits per weight.\n\n**Contents.**\n\n- **Part One — The problem**: [1. The numbers that decide everything](#1-the-numbers-that-decide-everything), [2. What an engine is](#2-what-an-engine-is)\n- **Part Two — The file**: [3. A directory you can trust](#3-a-directory-you-can-trust), [4. Eleven ways to store a weight](#4-eleven-ways-to-store-a-weight), [5. The rotated basis](#5-the-rotated-basis)\n- **Part Three — Text**: [6. Tokens are bytes with a history](#6-tokens-are-bytes-with-a-history), [7. The prompt profile is a contract](#7-the-prompt-profile-is-a-contract)\n- **Part Four — One token on the CPU**: [8. Slow on purpose](#8-slow-on-purpose), [9. Attention reads, DeltaNet writes](#9-attention-reads-deltanet-writes), [10. A layer, a token, a session](#10-a-layer-a-token-a-session)\n- **Part Five — The GPU**: [11. Crossing the bridge](#11-crossing-the-bridge), [12. Lanes, SIMD groups, and where they live](#12-lanes-simd-groups-and-where-they-live), [13. The matvec that reads 16 GB](#13-the-matvec-that-reads-16-gb), [14. Fewer dispatches, same math](#14-fewer-dispatches-same-math), [15. Sampling on the device](#15-sampling-on-the-device)\n- **Part Six — Prefill is a different problem**: [16. Arithmetic intensity flips](#16-arithmetic-intensity-flips), [17. Attention in tiles: online softmax](#17-attention-in-tiles-online-softmax), [18. DeltaNet in chunks: the triangular solve](#18-deltanet-in-chunks-the-triangular-solve), [19. Experts: sparsity's gift and bill](#19-experts-sparsitys-gift-and-bill)\n- **Part Seven — Long context**: [20. Half the bytes: the F16 cache](#20-half-the-bytes-the-f16-cache), [21. Flash decoding](#21-flash-decoding), [22. Checkpoints, not rewinds](#22-checkpoints-not-rewinds)\n- **Part Eight — Speculation**: [23. Guessing ahead, and paying to check](#23-guessing-ahead-and-paying-to-check)\n- **Part Nine — Families**: [24. The registry table](#24-the-registry-table), [25. What a second architecture costs](#25-what-a-second-architecture-costs)\n- **Part Ten — Honesty**: [26. Measuring, and what counts as knowing](#26-measuring-and-what-counts-as-knowing), [27. What it took](#27-what-it-took)\n\n---\n\n## Part One — The problem\n\n### 1. The numbers that decide everything\n\nStart with a division. The Qwen file is 16.1 GB of weights. To produce one\ntoken, a dense model reads every weight once. At 273 GB/s that read takes\n59 ms, so the fastest this machine can ever decode this model is about 17\ntokens per second, whatever the code looks like. llama.cpp, a mature\nengine with years of Metal work in it, reaches 10.2 on the same file after\na 512-token prompt; nuclis reaches 11.7 (both measured 2026-10-04; every\nfamily and length is in the README's [Results](../README.md#results)).\nThe gap between 12 and 17 is the entire subject of Part Five.\n\nThe second number is the prompt. Reading the prompt (*prefill*) is a\ndifferent problem from producing the answer (*decode*): the same 16 GB of\nweights can be multiplied against 512 prompt tokens at once, so the bytes\nare amortized and the arithmetic units become the limit. The reference\nprefills at 92 tokens per second and decodes at 10.2; both numbers come\nfrom the same weights on the same bus, and the ratio is Part Six.\n\nThe third is memory. 27 billion parameters at two bytes each would be 54\nGB, more than the machine has, so the weights are stored at about four bits\non average and never expanded. The conversation's memory, the cache of\nkeys and values every attention layer keeps, is 64 KiB per token at F32 on\nthis model: a 32K-token context is 4 GiB of state beside the weights, or 2\nat F16. That is Part Seven.\n\nEverything else follows from those three: bytes per token, tokens per\nweight read, and bytes per token of context.\n\n### 2. What an engine is\n\nA trained model is a set of numbers. An engine is everything that makes\nthem do something:\n\n```text\nmodel file        → validated weights and architecture facts\nmessages          → the prompt template → the tokenizer → token ids\nids + weights + session state → the layer schedule → logits\nlogits            → the sampler → the next id → text\n                    ↳ feed the id back and repeat\n```\n\nThree kinds of memory live in that loop, with different owners and\nlifetimes, and getting them apart is most of the design. **Weights** are\nimmutable and memory-mapped from the file; no floating-point copy of them\never exists. **Session state** is per conversation and mutable: the\nattention cache rows and the recurrent matrices, carved out of one\npage-aligned block so the GPU can address it without a copy. **Activations**\nare scratch, overwritten every token. When a later section says \"session\"\nit means the middle kind, and when it says a layer \"writes its row\" it\nmeans into that block.\n\nRead: `inference/src/engine.zig` (`runLoop` is the whole loop),\n[architecture.md § 3](architecture.md#3-three-kinds-of-memory).\n\n---\n\n## Part Two — The file\n\n### 3. A directory you can trust\n\nA GGUF file is a directory followed by weights: a magic number, counts, the\nmetadata (architecture facts, the vocabulary, the chat template), then one\ndescriptor per tensor with its name, shape, storage encoding, and offset.\nThe directory says everything an engine needs to decide whether it can run\nthe file, and none of it needs the weights. Qwen's directory is 11 MB; the\nvocabulary lives in it.\n\nThe parser's job is refusal. It checks dimensions, encoding sizes,\nduplicate names, offsets, alignment, overlap, and file bounds before it\nlets anyone read a byte of weight, and it bounds its own allocations\nagainst a file that lies about its counts. `nuclis model inspect` runs the\nsame parser over the head of a file fetched in 8 MiB windows from the Hub,\nwith the real file size for the bounds checks, and stops when the parser\nstops asking for more. Four seconds decide whether a 16 GB download is\nworth starting.\n\nThat decision has four levels, and the code base once blurred them.\n*Storable*: the parser knows the encoding's block size. *Executable*: the\nadapter has kernels for it. *Bindable*: every tensor the architecture\nexpects is present with its shape and nothing unexpected is. *Supported*:\nall of that, and the catalogue pins the Hub's digest for the file. The\nverdict names the first offender by tensor name, because \"unsupported\" with\nno noun costs an afternoon.\n\nRead: `inference/src/formats/gguf.zig`, `src/model.zig` (`inspect`),\n[engine/gguf.md](engine/gguf.md).\n\n### 4. Eleven ways to store a weight\n\nQuantization is the reason the model fits. A block encoding groups values\n(32 or 256 of them) under shared metadata, and its decoding equations say\nwhat the bytes mean. The Qwen file mixes nine encodings; the tree decodes\neleven, and each one taught something about the difference between\ncounting bits and knowing a format.\n\n**A scale and a code.** Q8_0 is the simplest: an F16 scale and 32 signed\nbytes. IQ4_NL keeps four-bit indices into a fixed table of sixteen\nnon-uniform values, then scales. Even here packing order is part of\ncorrectness: the two nibbles of one byte are values 16 positions apart,\nand reading them as neighbours produces plausible numbers in the wrong\nplaces, which is worse than a crash.\n\n**Scales that are themselves quantized.** Q4_K and Q5_K store 256 values as\neight groups, each with a six-bit scale and a six-bit offset that are\ninterpreted through two shared F16 coefficients: `(d·scale)·q − (dmin·min)`.\nAn offset means a zero code can be a negative weight. Q5_K's fifth bit\nlives in a separate array, a *bit plane*, and restoring each weight's five\nbits from two places is the whole decoder.\n\n**Signs are a representation choice.** Q3_K's two low bits go negative when\na separate mask bit is clear; Q6_K adds a bias of 32 to an unsigned code.\nBoth scales differ too. Two encodings of the same size, 110 bytes per 256\nvalues, can describe different arithmetic: IQ3_S spends a nine-bit index on\na *codebook* of 512 four-value patterns plus signs, so one code is a small\nvector, not a number.\n\n**Q4_0** is 32 values, an F16 scale, and sixteen bytes of nibbles with the\nvalue `d·(q − 8)`: IQ4_NL's block with the table replaced by a subtraction.\nIt matters because Google's quantization-aware-trained Gemma is stored in\nit, and that file is only meaningful if the engine reproduces exactly the\narithmetic its training simulated. The loader never requantizes, which is\nwhat makes the choice of file mean something.\n\n**Ternary.** Bonsai 2 stores each weight as one of `{−1, 0, +1}` times a\nscale per 128. PQ2_0 spends two bits per trit. PTQ1_0 packs five trits in a\nbyte in base 3, because 3⁵ = 243 fits in 256: the byte is pre-scaled so the\nleading digit is `(byte·3) >> 8`, and multiplying by 3 modulo 256 promotes\nthe next. Five multiplies, no division, and the values come out\ndigit-major, so element `j` is not in byte `j/5`. The fixture feeds the\ndecoder arbitrary bytes on purpose: matching on codes a valid file never\ncontains proves the arithmetic, not just the packing.\n\nOne file in the download directory is none of these: the importance\nmatrix, 992 F32 tensors of activation statistics used *by the quantizer*\nto decide which channels deserve precision. It is not a layer to run and\ndoes not restore anything when loaded beside the weights it shaped."
+    }
+   ]
+  },
+  {
+   "id": "long-8k.doc",
+   "parts": [
+    {
+     "text": "title: none | text: # Building an inference engine: the nuclis guide\n\nThis is the companion to the inference stack: what it took to make a 27\nbillion parameter model answer on one laptop, told in the order the ideas\nmatter rather than the order they were built. Every technique in it is\nimplemented in this tree, and every number is a measurement from it. It is\nwritten to be read end to end in an evening and to be revisited one section\nat a time; each section ends with the files to read next.\n\nIt is not about the agent or the terminal (that is\n[app/agent.md](app/agent.md)), not the map of\nthe code ([architecture.md](architecture.md)), and not the requirements\n([spec.md](spec.md)). It is about the ideas, and about the moments where an\nidea turned out to be wrong and a measurement said so.\n\nA note on the hardware, because it is a character in the story: an Apple\nM4 Pro with 48 GB of unified memory and a 273 GB/s memory bus. The models\nare Qwen3.8-27B (the pinned target: 64 layers, 16 of them attention and 48\nrecurrent), Gemma 4 in a dense 12B, a sparse 26B, and a small E4B, Muse\nGlimmer 30B, and\nBonsai 2, which is Qwen3.8 again at 1.58 bits per weight.\n\n**Contents.**\n\n- **Part One — The problem**: [1. The numbers that decide everything](#1-the-numbers-that-decide-everything), [2. What an engine is](#2-what-an-engine-is)\n- **Part Two — The file**: [3. A directory you can trust](#3-a-directory-you-can-trust), [4. Eleven ways to store a weight](#4-eleven-ways-to-store-a-weight), [5. The rotated basis](#5-the-rotated-basis)\n- **Part Three — Text**: [6. Tokens are bytes with a history](#6-tokens-are-bytes-with-a-history), [7. The prompt profile is a contract](#7-the-prompt-profile-is-a-contract)\n- **Part Four — One token on the CPU**: [8. Slow on purpose](#8-slow-on-purpose), [9. Attention reads, DeltaNet writes](#9-attention-reads-deltanet-writes), [10. A layer, a token, a session](#10-a-layer-a-token-a-session)\n- **Part Five — The GPU**: [11. Crossing the bridge](#11-crossing-the-bridge), [12. Lanes, SIMD groups, and where they live](#12-lanes-simd-groups-and-where-they-live), [13. The matvec that reads 16 GB](#13-the-matvec-that-reads-16-gb), [14. Fewer dispatches, same math](#14-fewer-dispatches-same-math), [15. Sampling on the device](#15-sampling-on-the-device)\n- **Part Six — Prefill is a different problem**: [16. Arithmetic intensity flips](#16-arithmetic-intensity-flips), [17. Attention in tiles: online softmax](#17-attention-in-tiles-online-softmax), [18. DeltaNet in chunks: the triangular solve](#18-deltanet-in-chunks-the-triangular-solve), [19. Experts: sparsity's gift and bill](#19-experts-sparsitys-gift-and-bill)\n- **Part Seven — Long context**: [20. Half the bytes: the F16 cache](#20-half-the-bytes-the-f16-cache), [21. Flash decoding](#21-flash-decoding), [22. Checkpoints, not rewinds](#22-checkpoints-not-rewinds)\n- **Part Eight — Speculation**: [23. Guessing ahead, and paying to check](#23-guessing-ahead-and-paying-to-check)\n- **Part Nine — Families**: [24. The registry table](#24-the-registry-table), [25. What a second architecture costs](#25-what-a-second-architecture-costs)\n- **Part Ten — Honesty**: [26. Measuring, and what counts as knowing](#26-measuring-and-what-counts-as-knowing), [27. What it took](#27-what-it-took)\n\n---\n\n## Part One — The problem\n\n### 1. The numbers that decide everything\n\nStart with a division. The Qwen file is 16.1 GB of weights. To produce one\ntoken, a dense model reads every weight once. At 273 GB/s that read takes\n59 ms, so the fastest this machine can ever decode this model is about 17\ntokens per second, whatever the code looks like. llama.cpp, a mature\nengine with years of Metal work in it, reaches 10.2 on the same file after\na 512-token prompt; nuclis reaches 11.7 (both measured 2026-10-04; every\nfamily and length is in the README's [Results](../README.md#results)).\nThe gap between 12 and 17 is the entire subject of Part Five.\n\nThe second number is the prompt. Reading the prompt (*prefill*) is a\ndifferent problem from producing the answer (*decode*): the same 16 GB of\nweights can be multiplied against 512 prompt tokens at once, so the bytes\nare amortized and the arithmetic units become the limit. The reference\nprefills at 92 tokens per second and decodes at 10.2; both numbers come\nfrom the same weights on the same bus, and the ratio is Part Six.\n\nThe third is memory. 27 billion parameters at two bytes each would be 54\nGB, more than the machine has, so the weights are stored at about four bits\non average and never expanded. The conversation's memory, the cache of\nkeys and values every attention layer keeps, is 64 KiB per token at F32 on\nthis model: a 32K-token context is 4 GiB of state beside the weights, or 2\nat F16. That is Part Seven.\n\nEverything else follows from those three: bytes per token, tokens per\nweight read, and bytes per token of context.\n\n### 2. What an engine is\n\nA trained model is a set of numbers. An engine is everything that makes\nthem do something:\n\n```text\nmodel file        → validated weights and architecture facts\nmessages          → the prompt template → the tokenizer → token ids\nids + weights + session state → the layer schedule → logits\nlogits            → the sampler → the next id → text\n                    ↳ feed the id back and repeat\n```\n\nThree kinds of memory live in that loop, with different owners and\nlifetimes, and getting them apart is most of the design. **Weights** are\nimmutable and memory-mapped from the file; no floating-point copy of them\never exists. **Session state** is per conversation and mutable: the\nattention cache rows and the recurrent matrices, carved out of one\npage-aligned block so the GPU can address it without a copy. **Activations**\nare scratch, overwritten every token. When a later section says \"session\"\nit means the middle kind, and when it says a layer \"writes its row\" it\nmeans into that block.\n\nRead: `inference/src/engine.zig` (`runLoop` is the whole loop),\n[architecture.md § 3](architecture.md#3-three-kinds-of-memory).\n\n---\n\n## Part Two — The file\n\n### 3. A directory you can trust\n\nA GGUF file is a directory followed by weights: a magic number, counts, the\nmetadata (architecture facts, the vocabulary, the chat template), then one\ndescriptor per tensor with its name, shape, storage encoding, and offset.\nThe directory says everything an engine needs to decide whether it can run\nthe file, and none of it needs the weights. Qwen's directory is 11 MB; the\nvocabulary lives in it.\n\nThe parser's job is refusal. It checks dimensions, encoding sizes,\nduplicate names, offsets, alignment, overlap, and file bounds before it\nlets anyone read a byte of weight, and it bounds its own allocations\nagainst a file that lies about its counts. `nuclis model inspect` runs the\nsame parser over the head of a file fetched in 8 MiB windows from the Hub,\nwith the real file size for the bounds checks, and stops when the parser\nstops asking for more. Four seconds decide whether a 16 GB download is\nworth starting.\n\nThat decision has four levels, and the code base once blurred them.\n*Storable*: the parser knows the encoding's block size. *Executable*: the\nadapter has kernels for it. *Bindable*: every tensor the architecture\nexpects is present with its shape and nothing unexpected is. *Supported*:\nall of that, and the catalogue pins the Hub's digest for the file. The\nverdict names the first offender by tensor name, because \"unsupported\" with\nno noun costs an afternoon.\n\nRead: `inference/src/formats/gguf.zig`, `src/model.zig` (`inspect`),\n[engine/gguf.md](engine/gguf.md).\n\n### 4. Eleven ways to store a weight\n\nQuantization is the reason the model fits. A block encoding groups values\n(32 or 256 of them) under shared metadata, and its decoding equations say\nwhat the bytes mean. The Qwen file mixes nine encodings; the tree decodes\neleven, and each one taught something about the difference between\ncounting bits and knowing a format.\n\n**A scale and a code.** Q8_0 is the simplest: an F16 scale and 32 signed\nbytes. IQ4_NL keeps four-bit indices into a fixed table of sixteen\nnon-uniform values, then scales. Even here packing order is part of\ncorrectness: the two nibbles of one byte are values 16 positions apart,\nand reading them as neighbours produces plausible numbers in the wrong\nplaces, which is worse than a crash.\n\n**Scales that are themselves quantized.** Q4_K and Q5_K store 256 values as\neight groups, each with a six-bit scale and a six-bit offset that are\ninterpreted through two shared F16 coefficients: `(d·scale)·q − (dmin·min)`.\nAn offset means a zero code can be a negative weight. Q5_K's fifth bit\nlives in a separate array, a *bit plane*, and restoring each weight's five\nbits from two places is the whole decoder.\n\n**Signs are a representation choice.** Q3_K's two low bits go negative when\na separate mask bit is clear; Q6_K adds a bias of 32 to an unsigned code.\nBoth scales differ too. Two encodings of the same size, 110 bytes per 256\nvalues, can describe different arithmetic: IQ3_S spends a nine-bit index on\na *codebook* of 512 four-value patterns plus signs, so one code is a small\nvector, not a number.\n\n**Q4_0** is 32 values, an F16 scale, and sixteen bytes of nibbles with the\nvalue `d·(q − 8)`: IQ4_NL's block with the table replaced by a subtraction.\nIt matters because Google's quantization-aware-trained Gemma is stored in\nit, and that file is only meaningful if the engine reproduces exactly the\narithmetic its training simulated. The loader never requantizes, which is\nwhat makes the choice of file mean something.\n\n**Ternary.** Bonsai 2 stores each weight as one of `{−1, 0, +1}` times a\nscale per 128. PQ2_0 spends two bits per trit. PTQ1_0 packs five trits in a\nbyte in base 3, because 3⁵ = 243 fits in 256: the byte is pre-scaled so the\nleading digit is `(byte·3) >> 8`, and multiplying by 3 modulo 256 promotes\nthe next. Five multiplies, no division, and the values come out\ndigit-major, so element `j` is not in byte `j/5`. The fixture feeds the\ndecoder arbitrary bytes on purpose: matching on codes a valid file never\ncontains proves the arithmetic, not just the packing.\n\nOne file in the download directory is none of these: the importance\nmatrix, 992 F32 tensors of activation statistics used *by the quantizer*\nto decide which channels deserve precision. It is not a layer to run and\ndoes not restore anything when loaded beside the weights it shaped.\n\nThree rules survived all eleven. The CPU decoder is the truth, pinned\nagainst the reference implementation's own C decoders through fixtures.\nEvery GPU decoder is bit-identical to it, because they index the same bytes\nwith the same equations. And a specialized kernel folds the scale out of\nthe sum (`Σ(d·s·q − dmin·m)·x = d·s·Σq·x − dmin·m·Σx`) as algebra, never\nas approximation, so a one-hot input reproduces the decoder's expression\nexactly and the fixture columns stay exact on the GPU.\n\nRead: `inference/src/quant/decode.zig`, `inference/src/tensor/encoding.zig`,\n[engine/quantization.md](engine/quantization.md).\n\n### 5. The rotated basis\n\nRounding to three levels is brutal on a matrix whose columns have a few\nlarge entries and many small ones: the scale follows the outliers and the\nrest round to zero. Activations have the same shape. Bonsai's remedy, the\none QuaRot and SpinQuant use, is a change of basis. For any orthogonal\n`R`, `W·x = (W·Rᵀ)·(R·x)`: rotate the weight's input axis once at\nconversion time, rotate the activation the same way at every token, and\nthe product is unchanged while both operands look Gaussian.\n\nThe rotation is `(1/√1024)·H·S` on each block of 1024 elements: `S` a\ndiagonal of random signs shipped in the file header, `H` the Sylvester\nWalsh-Hadamard matrix, `H[r][c] = (−1)^popcount(r & c)`. `H` needs no\nstorage and costs ten butterfly stages of additions, and the random signs\nare what stop a structured input from being an eigenvector of a known\nmatrix. Because `H` is its own inverse, the embedding table can be stored\nrotated and undone after lookup by the same transform.\n\nFour activations per layer meet rotated weights; the transform is\nmemoized per activation. Two projections, the DeltaNet gates, are stored\nunrotated at BF16 because a rounding error there compounds through the\nrecurrence, and the adapter pins the list of *which* inputs rotate rather\nthan trusting the file. On the GPU the transform costs 1.66 ms of a 78 ms\ntoken: at batch one, a small kernel's cost is its launch and its\ndependency, not its arithmetic, and this is 258 more of them. The bytes are\nthe point: 7.2 GB against 16.5, and 12.87 tokens per second where the\nforked reference reaches 17.05.\n\nRead: `inference/src/backends/cpu/hadamard.zig`, `models/qwen35.zig`\n(`Rotation`), [models/bonsai.md](models/bonsai.md).\n\n---\n\n## Part Three — Text\n\n### 6. Tokens are bytes with a history\n\nA tokenizer is not a dictionary. Byte-pair encoding starts from bytes, each\nmapped to a reversible symbol, and repeatedly merges adjacent pairs in the\norder the training assigned them: `abc` becomes `a` + `bc` if the pair\n`bc` outranks `ab`, even when a token `abc` exists. Merge rank is the\nalgorithm; the vocabulary's order is the model's meaning, so nothing is\never sorted.\n\nBefore any merge runs, the *pre-tokenizer* decides where merges are legal.\nQwen's rules split every Unicode number into its own piece, so `1` and `2`\ncan never merge across that boundary however the ranks fall; combining\nmarks stay with their letters. Those rules need Unicode categories, and\nusing the host's Unicode tables would let a system update move a boundary,\nso the category table is pinned data like the vocabulary. Special markers\nare claimed first, longer types before shorter, and a claimed span is\nnever split.\n\nThree families meant three splitters and two vocabulary models. Gemma's is\nSentencePiece-style: symbols are code points, spaces become `▁`, the only\npre-split is around newline runs, and an unknown symbol falls back to\n`<0xNN>` byte tokens. Muse uses the gpt-4o pattern as the reference\nrealizes it. The rank-ordered merge loop is one function with three\ncallers.\n\nDecoding is the reverse, with one trap: a token may hold the first byte of\na multibyte character, valid tokenizer output that is not valid text. The\nstream keeps up to one incomplete scalar between tokens and flushes\ncomplete text; the ids stay exact. And the way you know a tokenizer is\nright is not that the words look right: nuclis reproduces the reference's\ntoken arrays on an 83,384-token corpus at every cut the benchmarks use,\nincluding a 32,620-token one.\n\nRead: `inference/src/tokenizer/encode.zig`, `bpe.zig`, `stream.zig`,\n[engine/tokenizer.md](engine/tokenizer.md).\n\n### 7. The prompt profile is a contract\n\nThe same weights are useless without the exact text the checkpoint was\ntrained to see: role markers, separators, the reasoning switch, the\nassistant prefix. nuclis calls that the *prompt profile*, keeps it apart\nfrom the architecture, and selects it by the SHA-256 of the chat template,\nnever by the architecture name. Two files of one family can ship different\ntemplates; the K-quant and QAT Gemma files share one.\n\nA Jinja template is a small program, and the reference runs it with an\ninterpreter. nuclis does not: the profile is a Zig function that renders\nthe subset of conversations the agent produces, and the evidence that it\nrenders them correctly is a fixture the reference server produced from\nthe artifact's own template. Reading Gemma's 19 KB template for that\nsubset reduced it to a dozen clauses, several of which the model card\ngets wrong: reasoning is rendered only after the last user message,\n`developer` is sent as `system`, two assistant messages continue one turn.\n\nThe second family found two Qwen facts hiding outside the profile. The\nengine stopped on `eos or bos`, which on Gemma would have stopped at the\nfirst `<bos>` and never at `<turn|>`; and the chat split every turn on the\nliteral `</think>`. Both moved into the profile: a stop set of texts\nresolved to ids at load (a template whose end marker the vocabulary lacks\nrefuses to load), and a pair of reasoning markers the surface splits on.\nWhen the template defines tool calling, the profile owns that too, in\nboth directions: it renders the tool definitions and results into the\ntemplate's own grammar and decodes the model's output into typed calls at\ntoken boundaries. Qwen's XML-like calls, Gemma's `call:NAME{…}`, Muse's\nATEM grammar: three wire formats, and nothing outside `profiles/` names\nany of them.\n\nOne more collapse is deliberate. The shared effort enum has four levels\nbecause Qwen has four; Gemma's template has a switch. A profile maps what\nit cannot express (`off` is off, everything else is on) rather than\npushing a per-profile type into every caller.\n\nRead: `inference/src/profiles/root.zig`, `profiles/gemma4.zig` (the\nmodule comment is the contract),\n[engine/prompt-profile.md](engine/prompt-profile.md),\n[engine/tool-calling.md](engine/tool-calling.md).\n\n---\n\n## Part Four — One token on the CPU\n\n### 8. Slow on purpose\n\nEvery operation the GPU runs exists first as a plain function in\n`backends/cpu/` with F64 accumulation and its own tests, and the CPU\nschedule that composes them takes about eighteen seconds per token. That\nis not a prototype; it is the oracle, and its value is being obviously\ncorrect. When the GPU and the CPU disagree, the CPU is presumed right until\nproven otherwise, and the trace comparison says at which layer.\n\nThe matvec decodes a row into scratch and sums products in F64; the test\n`16777216 + 1 − 16777216` keeps the `1` where F32 loses it at the first\naddition. RMSNorm puts epsilon inside the square root; L2 normalization\nbounds the denominator instead. Softmax subtracts the maximum before\nexponentiating and refuses an all-masked vector rather than returning\nzeros. Softplus uses `log1p` so `1 + tiny` does not round the tiny away.\nRoPE rotates pairs at split-half stride with F64 frequencies, and the\ntests separate mathematical invariants (rotations preserve length; opposite\npositions cancel) from agreement with another implementation, because the\nreference's repeated F32 updates drift at large positions and a tolerance\nagainst it is evidence about that case only.\n\nThe habit this layer sets for the whole tree: validate every shape and\nevery finite value first, then write. A failure leaves the caller's buffers\nuntouched, and tests assert that.\n\nRead: `inference/src/backends/cpu/vector.zig`, `rope.zig`,\n[engine/cpu-reference.md](engine/cpu-reference.md).\n\n### 9. Attention reads, DeltaNet writes\n\nAttention is a lookup over everything seen so far. For one query, score\nevery stored key, softmax the scores, and combine the values by those\nweights; keys decide relevance, values carry content. Two structural\nfacts shape every kernel later. *Grouped-query attention*: 24 query heads\nshare 4 key/value heads on Qwen, so a cache row is read by six queries.\n*Causality*: a query sees the visible prefix and nothing after it, and a\nmasked key is excluded from the softmax, not given a zero score.\n\nQwen's other 48 layers are Gated DeltaNet, and they do the opposite. Each\nhead keeps a 128 × 128 matrix, an associative memory: applying a key\npredicts a value, the delta rule writes back the prediction error scaled\nby a learning rate, a decay gate decides how much of the old memory\nsurvives, and the query reads the updated matrix.\n\n```text\nS ← a·S\nS ← S + β·(v − S·k)·kᵀ\nout = scale·S·q\n```\n\nA short causal convolution over the last four inputs sits in front of it.\nThe consequence that shapes the session design: this state is a function\nof every token ever fed. Attention forgets the last token by setting a\nlength. DeltaNet has already mixed it in, and no arithmetic undoes that\nafter rounding. The spec forbids rewinding a hybrid model by truncating the\ncache, and Part Seven and Part Eight are largely about what to do instead.\n\nRead: `inference/src/backends/cpu/attention.zig`, `recurrent.zig`,\n[architecture.md § 4](architecture.md#4-one-qwen-layer).\n\n### 10. A layer, a token, a session\n\nA layer is norm, mixer, residual, norm, feed-forward, residual, and the\nschedule is that 64 times, then a final norm and the vocabulary\nprojection. The first working CPU run agreed with the reference's\nper-layer traces on the first try in one respect and taught wiring in\nanother: the query-and-gate packing and the DeltaNet head mapping (16\nkey heads broadcast to 48 value heads by `h % 16`, unlike attention's\nconsecutive groups) are the kind of fact no isolated operator test can\ncatch. Traces catch them.\n\nThree families, three layer menus. Gemma alternates sliding-window layers\nthat see the last 1,024 positions with global layers whose heads are 512\nwide, applies a tanh GELU, scales its residual stream, and in the 26B\nreplaces the feed-forward with 128 experts of which 8 fire. Muse is dense,\n30B, with windowed layers and 13 global ones. Bonsai is Qwen's schedule on\nrotated weights. What did not change across them is the point of Part Nine.\n\nThe session is where a token becomes durable. It is one page-aligned block\nwith typed views per layer: `Rows` of keys and values for attention (F32\nor F16), `[]f32` for recurrent state, and a tiny state machine: `ready →\nupdating → ready`, or `failed` until `reset`, because a step that fails\nhalfway has already mutated some recurrent layers and half-updated\nmatrices are not a state anyone should keep. `snapshot` copies the used\nextent (the recurrent state whole, 64 KiB per token of cache) behind a\ndigest of the layout and capacity, so F16 bytes cannot land in an F32\nsession. The proof is bitwise: checkpoint after token one, compute token\ntwo, restore, compute it again, identical logits on both backends.\n\nRead: `models/qwen35_runtime.zig` (`fullAttention`, `linearAttention`),\n`inference/src/runtime/session.zig`,\n[engine/session.md](engine/session.md).\n\n---\n\n## Part Five — The GPU\n\n### 11. Crossing the bridge\n\nA GPU does not run Zig. Kernels are written in Metal Shading Language,\ncompiled by the driver into pipeline states, and work is described into a\ncommand buffer: an encoder records \"bind these buffers, run this pipeline\nover this many threads\", `commit` hands the buffer over, and nothing has\nexecuted until then. The bridge in `bridge.m` keeps every Metal object\nbehind one opaque handle; Zig sees a dozen C functions and never a Metal\ntype. It is compiled without automatic reference counting so every retain\nand release is a line you can read.\n\nUnified memory is the gift of this hardware: the GPU addresses the same\nRAM the CPU mapped the file into. `newBufferWithBytesNoCopy` wraps a\npage-aligned range with no copy, which is why weights are never copied and\nwhy the session is one page-aligned block. The obligation that comes with\nit is lifetime: the mapping must outlive the backend, and the CPU may\ntouch session memory only after the command buffer that writes it has\ncompleted.\n\nThe first bridge was correct and slow: a command buffer and a wait per\noperation, several hundred per token, 2.3 tokens per second. Recording a\nwhole token into one buffer gave 5.0 with the same kernels. Later the\nprofiler found the CLI's layer observer quietly committing 64 buffers per\ntoken on every run for the sake of Ctrl-C, and splitting it into a\nvalues-free `check` took decode from 8.5 to 9.7 with no kernel change.\nSynchronization is a cost like bandwidth, and it hides because it is\nnobody's kernel.\n\nThe wait has one refinement, added for the agent: `commit` waits on a\nsemaphore the buffer's completion handler signals, with a 100 ms timeout\nthat calls back into whoever installed a `tick`. A 95 ms decode step never\npays for it; a three-second prefill chunk lets the terminal repaint thirty\ntimes.\n\nRead: `inference/src/backends/metal/bridge.m` (200 lines), `root.zig`\n(`Backend.commit`), [architecture.md § 7](architecture.md#7-metal-for-a-zig-programmer).\n\n### 12. Lanes, SIMD groups, and where they live\n\nA dispatch makes a grid of threadgroups; each threadgroup runs as SIMD\ngroups of 32 lanes that execute the same instruction on different data.\nFour levels: grid, threadgroup, SIMD group, lane. Zig chooses the grid and\nthe thread count and holds the constants the kernels assume (rows per SIMD\ngroup, tile padding); the bridge forwards the geometry; only\n`kernels.metal` ever names a lane. The contract between the layers is a\nhandful of numbers that must agree, and a comment on each side says so.\n\nA SIMD group can do three things a plain thread cannot, and the kernel\nshapes in the tree are built from exactly those. It can reduce across\nlanes without memory: `simd_sum` finishes a dot product in a few cycles,\nwhich is why the decode matvec gives one output row to one SIMD group. It\ncan exchange values between named lanes: `simd_shuffle_xor` combines the\nfour lanes that own one query row in the attention kernel. And it can\nmultiply 8 × 8 matrices held across the group: `simdgroup_float8x8`, 64\nfloats spread two per lane in an undocumented layout, which is why\nrow-wise work like a softmax goes through threadgroup memory to plain\nthreads and the matrix unit only ever multiplies.\n\nThe rule for geometry: put in one SIMD group the work that wants to be\nreduced or exchanged, in one threadgroup the work that wants to share a\ntile of memory, and leave the rest to the grid. Two barriers exist because\nlanes in one SIMD group are already in lockstep (`simdgroup_barrier` is\nnearly free) and SIMD groups sharing a tile are not\n(`threadgroup_barrier` stops the group). The CPU reference uses none of\nthis and no Zig vector types either; it is scalar F64 loops so that it\nstays the plain statement of the math.\n\nRead: `kernels.metal` starting with `nu_add` and `nu_rmsnorm`,\n[engine/metal-backend.md § Kernel geometry](engine/metal-backend.md#kernel-geometry).\n\n### 13. The matvec that reads 16 GB\n\nDecode is \"read every weight once per token\", so the kernel that turns\nquantized bytes into a dot product decides everything. The first version,\none SIMD group per row, sixteen values per lane by byte loads and a\nruntime switch on the encoding, reached about 100 GB/s of the bus's 273.\nThe specialized kernels reach 150 to 250, and four ideas did the work.\n\n**Vector loads that match the block.** In Q4_K the sixteen bytes at\n`16 + 32·pair + 16·half` hold the low nibbles of one 32-value group and the\nhigh nibbles of the next; a lane that loads them as one `uint4` owns 32\nvalues from one instruction. Which lane owns which slice is chosen per\nencoding so that aligned loads yield whole value sets, and alignment is a\nfact of the format: 144- and 176-byte blocks allow 16-byte loads, 110-byte\nblocks only 2-byte ones, and the Zig side refuses a specialized kernel\nwhen the row offset disagrees. **Factor the scale out.** Accumulate `Σq·x`\nand `Σx` and apply the group scale once. **Work in the packed byte\ndomain.** Assemble four codes with word-wide masks and convert with one\n`uchar4 → float4` cast; that alone took Q5_K from 113 to 210 GB/s.\n**Select, never branch.** Half the lanes in a Q4_K SIMD group decode\nscales one way and half the other; an `if` makes every lane execute both\npaths, a `?:` computes both once and picks.\n\nThen the profiler said the question was wrong. A dispatch cannot be timed\nfrom the CPU, so profile mode gives every dispatch its own encoder and lets\nthe GPU stamp encoder boundaries; the stamps turned out to be nanoseconds\non the command buffer's own timeline, established by a probe after a first\nguess made kernels sum to 23 times their buffer. With real numbers the\nencodings that differed by GB/s all cost 0.81 to 0.91 ns per 256-value\nblock. Q4_K was not slow; it had fewer bytes per block to show for the same\ninstruction work. The limiter was per-block work, and the bandwidth floor\nsat at about 0.5 ns per block.\n\nSo five variants attacked the per-block work, and none reached the 5 %\nbar. The one with strictly fewer instructions, decoding each group on one\nlane and sharing by shuffle, was 12 % slower. Processing two blocks per\niteration to hide load latency was 35 % slower: every live value costs a\nregister, the register file is divided among the threadgroups a core keeps\nresident, and resident *other* groups are how this GPU already hides\nlatency. Staging the input in threadgroup memory cost 7 to 9 %. Fast math\nchanged nothing and made Q5_K worse. Every one of those is written down\nwith its number so nobody measures it twice, and the kernels shipped\nunchanged. The lesson is not that the kernel is optimal. It is that a\nsource-level count of operations does not predict the time, and the next\nlever is a different geometry, not a shorter loop.\n\nRead: `kernels.metal` (`nu_matvec_q4_k` and its neighbours),\n`Backend.specializedMatvec`,\n[engine/metal-backend.md § Per-block cost research (2026-09-08, closed without a kernel change)](engine/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change).\n\n### 14. Fewer dispatches, same math\n\nSeveral projections in a layer read the same normalized vector, and each\nwas its own dispatch. A segment table now describes their row ranges,\nencodings, and offsets in one dispatch; a threadgroup selects its segment\nand runs the standalone kernel's body. All lanes of a SIMD group pick the\nsame encoding, so there is a uniform branch and no divergence. The\nfeed-forward pair has a dependency, `silu(gate)·up`, and the version that\ncomputed both projections in one SIMD group measured slower than the plain\nmerge; the kept version gives each projection its own SIMD groups and\nexchanges sixteen floats through threadgroup memory at a barrier.\n\nThe same idea run past its limit is instructive. Fusing the residual add\nwith the norm that follows it, and the query and key norms with their\nRoPE, removed 96 to 192 dispatches per decode step across the three\nfamilies. The speed bars were missed by all three: decode at 512 moved\nby 0.0 to 0.5 %. The profile had said each small dispatch cost about 13 µs,\nand that was true, but it was kernel work, not a launch floor, so merging\ntwo memory-bound passes saved only the launch. The fused kernels shipped\nfor the dispatch count with the pairs kept behind a switch, and the record\nsays where the real win would be: the norm inside the kernel that produces\nits input, an epilogue, not a merge.\n\nRead: `Backend.matvecSegments`, `rmsNormAdd` and `rmsNormRope` in\n`root.zig`, [benchmarks § Fused norm sweep](benchmarks/history.md#fused-norm-sweep-2026-09-21).\n\n### 15. Sampling on the device"
+    }
+   ]
+  },
+  {
+   "id": "image.logo",
+   "parts": [
+    {
+     "image": "docs/branding/nuclis.png"
+    }
+   ]
+  },
+  {
+   "id": "image.og",
+   "parts": [
+    {
+     "image": "site/og.png"
+    }
+   ]
+  },
+  {
+   "id": "mix.logo",
+   "parts": [
+    {
+     "text": "The logo of a local inference engine: "
+    },
+    {
+     "image": "docs/branding/nuclis.png"
+    },
+    {
+     "text": " It is drawn in a single colour."
+    }
+   ]
+  },
+  {
+   "id": "audio.north",
+   "parts": [
+    {
+     "audio": "tests/fixtures/embeddinggemma-inputs/speech-1.wav"
+    }
+   ]
+  },
+  {
+   "id": "audio.sourdough",
+   "parts": [
+    {
+     "audio": "tests/fixtures/embeddinggemma-inputs/speech-2.wav"
+    }
+   ]
+  },
+  {
+   "id": "audio.tone",
+   "parts": [
+    {
+     "audio": "tests/fixtures/embeddinggemma-inputs/tone-1khz.wav"
+    }
+   ]
+  }
+ ]
+}

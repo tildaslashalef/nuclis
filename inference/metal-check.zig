@@ -17,6 +17,65 @@ const DeltaCase = struct { query: []const f32, key: []const f32, value: []const 
 const ConvCase = struct { input: []const f32, weights: []const f32, history: []const f32, kernel: usize, output: []const f32, next_history: []const f32 };
 const RecurrentFixture = struct { revision: []const u8, delta: []const DeltaCase, convolution: []const ConvCase };
 
+/// Gemma 4's audio attention and light convolution against the CPU
+/// reference's (`audio.gemma4a`), on random rows: 40 rows span four chunks,
+/// so a query's window crosses chunk edges and the clip's start.
+fn checkAudioKernels(alloc: std.mem.Allocator, b: *Backend) !void {
+    const a = inference.audio.gemma4a;
+    const rows: usize = 40;
+    var prng = std.Random.DefaultPrng.init(0xa0d1);
+    const random = prng.random();
+    const q = try alloc.alloc(f32, rows * a.hidden);
+    defer alloc.free(q);
+    const k = try alloc.alloc(f32, rows * a.hidden);
+    defer alloc.free(k);
+    const v = try alloc.alloc(f32, rows * a.hidden);
+    defer alloc.free(v);
+    const relk = try alloc.alloc(f32, a.relative * a.hidden);
+    defer alloc.free(relk);
+    var pds: [a.head_dim]f32 = undefined;
+    for ([_][]f32{ q, k, v, relk }) |values| for (values) |*x| {
+        x.* = random.floatNorm(f32) * 2;
+    };
+    for (&pds) |*x| x.* = 0.05 + random.float(f32);
+    var scale: [a.head_dim]f32 = undefined;
+    a.queryScale(&pds, &scale);
+    // The CPU reference scales its copies; the kernel scales as it reads.
+    const qs = try alloc.dupe(f32, q);
+    defer alloc.free(qs);
+    for (0..rows * a.heads) |r| for (qs[r * a.head_dim ..][0..a.head_dim], scale) |*x, s| {
+        x.* *= s;
+    };
+    const ks = try alloc.dupe(f32, k);
+    defer alloc.free(ks);
+    for (ks) |*x| x.* *= a.key_scale;
+    const want = try alloc.alloc(f32, rows * a.hidden);
+    defer alloc.free(want);
+    a.attention(qs, ks, v, relk, rows, want);
+    const out = try b.create(rows * a.hidden * 4);
+    try b.begin();
+    try b.audioAttention(try upload(b, q), try upload(b, k), try upload(b, v), try upload(b, relk), try upload(b, &scale), out, rows, a.key_scale, a.logit_cap);
+    try b.commit();
+    var worst: f32 = 0;
+    for (out.floats()[0 .. rows * a.hidden], want) |got, w| worst = @max(worst, @abs(got - w) / @max(1, @abs(w)));
+    if (worst > 2e-5) {
+        std.debug.print("audio_attention: worst relative difference {e}\n", .{worst});
+        return error.MetalMismatch;
+    }
+    const start = try alloc.alloc(f32, rows * 2 * a.hidden);
+    defer alloc.free(start);
+    for (start) |*x| x.* = random.floatNorm(f32) * 3;
+    const dw = try alloc.alloc(f32, a.hidden * a.conv_kernel);
+    defer alloc.free(dw);
+    for (dw) |*x| x.* = random.floatNorm(f32);
+    a.gluConv(start, dw, rows, want);
+    try b.begin();
+    try b.gluConv(try upload(b, start), try upload(b, dw), out, rows, a.hidden);
+    try b.commit();
+    for (out.floats()[0 .. rows * a.hidden], want) |got, w| try expectClose("glu_conv", got, w, 1e-5 * @max(1, @abs(w)));
+    std.debug.print("audio attention (40 rows across four chunks) and the GLU depthwise convolution vs the CPU reference: attention worst relative {e:.2} (bound 2e-5)\n", .{worst});
+}
+
 fn openBackend(alloc: std.mem.Allocator) !Backend {
     var diagnostic: [8192]u8 = @splat(0);
     return Backend.init(alloc, &diagnostic) catch |err| {
@@ -1785,6 +1844,147 @@ fn checkSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     if (b.attentionSegments(qkv, qkv, qkv, out, bounds.slice(0, 8), .{ .heads = heads, .width = width, .rows = rows, .q_stride = stride, .kv_stride = stride, .out_stride = row_floats, .scale = scale })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
 }
 
+/// Grouped-query segments attention against F64 attention over each row's
+/// visible keys: EmbeddingGemma 2's geometries (4 query heads; 2 KV heads of 256
+/// within window 512, or 1 KV head of 512 over everything) at scale 1, from
+/// one row to 8192, and packed batches. Key rows past the batch and query
+/// rows in the padding are NaN, so an out-of-range read shows in the output.
+/// The bound is F32 score rounding: unit-variance 512-wide heads at scale 1
+/// give scores of standard deviation about 22.
+fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
+    const Geometry = struct { kv_heads: usize, width: usize, window: ?usize };
+    const sliding: Geometry = .{ .kv_heads = 2, .width = 256, .window = 512 };
+    const global: Geometry = .{ .kv_heads = 1, .width = 512, .window = null };
+    const Case = struct { geometry: Geometry, lengths: []const usize };
+    const cases = [_]Case{
+        .{ .geometry = sliding, .lengths = &.{1} },
+        .{ .geometry = global, .lengths = &.{1} },
+        .{ .geometry = sliding, .lengths = &.{ 1, 37, 300, 513, 1100 } },
+        .{ .geometry = global, .lengths = &.{ 5, 256, 256, 1, 700 } },
+        .{ .geometry = sliding, .lengths = &.{8192} },
+        .{ .geometry = global, .lengths = &.{8192} },
+    };
+    const heads = 4;
+    var prng = std.Random.DefaultPrng.init(0x6a5e);
+    const random = prng.random();
+    for (cases) |case| {
+        const g = case.geometry;
+        // Each sequence padded to 8 rows by a segment of its own, as the plan packs them.
+        var rows: usize = 0;
+        for (case.lengths) |len| rows += std.mem.alignForward(usize, len, 8);
+        const padded = Backend.attentionChunkRows(rows);
+        const q_floats = heads * g.width;
+        const kv_floats = g.kv_heads * g.width;
+        const q = try alloc.alloc(f32, padded * q_floats);
+        defer alloc.free(q);
+        const k = try alloc.alloc(f32, (rows + 8) * kv_floats);
+        defer alloc.free(k);
+        const v = try alloc.alloc(f32, (rows + 8) * kv_floats);
+        defer alloc.free(v);
+        for (q, 0..) |*x, i| x.* = if (i / q_floats < rows) random.floatNorm(f32) else std.math.nan(f32);
+        for (k, v, 0..) |*x, *y, i| {
+            x.* = if (i / kv_floats < rows) random.floatNorm(f32) else std.math.nan(f32);
+            y.* = if (i / kv_floats < rows) random.floatNorm(f32) else std.math.nan(f32);
+        }
+        const qb = try upload(b, q);
+        const kb = try upload(b, k);
+        const vb = try upload(b, v);
+        const out = try b.create(padded * q_floats * 4);
+        const bounds = try b.create(rows * 8);
+        const pairs: []u32 = @as([*]u32, @ptrCast(@alignCast(bounds.host)))[0 .. 2 * rows];
+        var begin: usize = 0;
+        for (case.lengths) |len| {
+            const end = begin + std.mem.alignForward(usize, len, 8);
+            for (begin..end) |r| {
+                pairs[2 * r] = @intCast(if (r < begin + len) begin else begin + len);
+                pairs[2 * r + 1] = @intCast(if (r < begin + len) begin + len else end);
+            }
+            begin = end;
+        }
+        const tiles = try b.create(rows / 8 * @sizeOf(Backend.AttentionTile));
+        const list: []Backend.AttentionTile = @as([*]Backend.AttentionTile, @ptrCast(@alignCast(tiles.host)))[0 .. rows / 8];
+        var tile_count: usize = 0;
+        begin = 0;
+        for (case.lengths) |len| {
+            const end = begin + std.mem.alignForward(usize, len, 8);
+            try Backend.attentionTiles(pairs, rows, g.window, begin, end - begin, list, &tile_count);
+            begin = end;
+        }
+        // A small score buffer on the long cases, so they run in several chunks.
+        const capacity: usize = if (rows > 2048) 4 << 20 else 64 << 20;
+        var chunks: [256]Backend.AttentionChunk = undefined;
+        const chunk_count = try Backend.chunkTiles(list[0..tile_count], heads, capacity, &chunks);
+        const strips = try b.create(capacity * 4);
+        try b.begin();
+        for (chunks[0..chunk_count]) |chunk| try b.attentionSegmentsGrouped(qb, kb, vb, out, bounds, tiles.slice(chunk.first * @sizeOf(Backend.AttentionTile), chunk.count * @sizeOf(Backend.AttentionTile)), chunk, strips, .{ .query_heads = heads, .kv_heads = g.kv_heads, .width = g.width, .rows = rows, .q_stride = q_floats, .kv_stride = kv_floats, .out_stride = q_floats, .scale = 1, .window = g.window });
+        try b.commit();
+        // F64 over every row of a short batch, every 61st row of a long one.
+        const step: usize = if (rows > 2048) 61 else 1;
+        const scores = try alloc.alloc(f64, rows);
+        defer alloc.free(scores);
+        var worst: f64 = 0;
+        var seq_begin: usize = 0;
+        var seq_end: usize = case.lengths[0];
+        var seq: usize = 0;
+        var i: usize = 0;
+        while (i < rows) : (i += step) {
+            while (i >= std.mem.alignForward(usize, seq_end, 8) and seq + 1 < case.lengths.len) {
+                seq_begin = std.mem.alignForward(usize, seq_end, 8);
+                seq += 1;
+                seq_end = seq_begin + case.lengths[seq];
+            }
+            if (i >= seq_end) continue; // padding rows
+            const lo = if (g.window) |w| @max(seq_begin, i -| w) else seq_begin;
+            const hi = if (g.window) |w| @min(seq_end, i + w + 1) else seq_end;
+            for (0..heads) |h| {
+                const kvh = h / (heads / g.kv_heads);
+                const qi = q[i * q_floats + h * g.width ..][0..g.width];
+                var max: f64 = -std.math.inf(f64);
+                for (lo..hi) |j| {
+                    var dot: f64 = 0;
+                    for (qi, k[j * kv_floats + kvh * g.width ..][0..g.width]) |x, y| dot += @as(f64, x) * y;
+                    scores[j] = dot;
+                    max = @max(max, dot);
+                }
+                var sum: f64 = 0;
+                for (scores[lo..hi]) |*x| {
+                    x.* = @exp(x.* - max);
+                    sum += x.*;
+                }
+                for (out.floats()[i * q_floats + h * g.width ..][0..g.width], 0..) |got, d| {
+                    var want: f64 = 0;
+                    for (lo..hi) |j| want += scores[j] * v[j * kv_floats + kvh * g.width + d];
+                    worst = @max(worst, @abs(want / sum - got));
+                }
+            }
+        }
+        if (!(worst <= 2e-4)) {
+            std.debug.print("grouped segment attention ({d} KV heads of {d}, lengths {any}): worst |difference| {e:.3}\n", .{ g.kv_heads, g.width, case.lengths, worst });
+            return error.MetalMismatch;
+        }
+        std.debug.print("grouped segment attention, {d} KV heads of {d}, window {?d}, lengths {any}, {d} chunks, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4)\n", .{ g.kv_heads, g.width, g.window, case.lengths, chunk_count, step, worst });
+        for ([_]Buffer{ qb, kb, vb, out, bounds, tiles, strips }) |buffer| try b.release(buffer);
+    }
+    // Bad shapes and a tile list whose tiles overlap are refused.
+    const small = try b.create(64 * 1024);
+    defer b.release(small) catch {};
+    var bad_tiles = [_]Backend.AttentionTile{ .{ .first = 0, .rows = 16, .key_lo = 0, .span = 32, .offset = 0 }, .{ .first = 8, .rows = 8, .key_lo = 0, .span = 32, .offset = 512 } };
+    const t = try b.create(@sizeOf(@TypeOf(bad_tiles)));
+    @memcpy(t.host[0..@sizeOf(@TypeOf(bad_tiles))], std.mem.asBytes(&bad_tiles));
+    const qkv = try b.create(16 * 64 * 4);
+    const o = try b.create(16 * 64 * 4);
+    const chunk: Backend.AttentionChunk = .{ .first = 0, .count = 2, .head_stride = 768, .max_span = 32 };
+    const ok: Backend.AttentionSegmentsGroupedShape = .{ .query_heads = 1, .kv_heads = 1, .width = 64, .rows = 16, .q_stride = 64, .kv_stride = 64, .out_stride = 64, .scale = 1 };
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, ok));
+    var odd = ok;
+    odd.kv_heads = 3;
+    odd.query_heads = 4;
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, odd));
+    var wide = ok;
+    wide.width = 576;
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, wide));
+}
+
 /// The exact-GELU gate over the two halves of strided fused rows against
 /// `cpu.geluErf(a) · g`, tails included.
 fn checkGeluErfRows(alloc: std.mem.Allocator, b: *Backend) !void {
@@ -3550,10 +3750,12 @@ pub fn main(init: std.process.Init) !void {
     try checkAttentionVerify(alloc, b);
     try checkWindowAttention(alloc, b);
     try checkSegmentAttention(alloc, b);
+    try checkGroupedSegmentAttention(alloc, b);
     try checkGeluErfRows(alloc, b);
     try checkFusedNorms(alloc, b);
     try checkDenseEncodings(alloc, io, b);
     try checkVisionNorms(alloc, b);
+    try checkAudioKernels(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
     // 32, 32, and 6) on the model shape (16 Q/K heads broadcast to 48 value
@@ -4270,5 +4472,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, and per-dispatch profiling with capacity overflow.\n", .{});
 }

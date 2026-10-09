@@ -202,8 +202,8 @@ pub const entries = [_]Entry{
     },
 };
 
-/// What runs an artifact: the text engine, or `nuclis decide`.
-pub const ModelKind = enum { generation, decision };
+/// What runs an artifact: the text engine, `nuclis decide`, or `nuclis embed`.
+pub const ModelKind = enum { generation, decision, embedding };
 
 /// A decision checkpoint (Laya, clef): safetensors weights and the support
 /// files beside them, one directory `nuclis decide` opens, and for clef a
@@ -300,6 +300,70 @@ pub const decision_entries = [_]DecisionEntry{
     },
 };
 
+/// What an embedding input's parts may be.
+pub const Modality = enum { text, image, audio };
+
+/// An embedding model (EmbeddingGemma 2): a GGUF the `Embedder` opens, and
+/// the projector its image and audio parts need. Separate from `entries`
+/// so nothing that resolves a text model can pick one.
+pub const EmbeddingEntry = struct {
+    name: []const u8,
+    title: []const u8,
+    repo: []const u8,
+    file: []const u8,
+    revision: []const u8,
+    sha256: []const u8,
+    size: u64,
+    architecture: []const u8,
+    quantization: []const u8,
+    /// The vision and audio encoders (`--with mmproj`), in `repo` at
+    /// `revision`; text needs only the main file.
+    mmproj: ?Artifact = null,
+    /// The vector widths it is trained for, widest first.
+    dimensions: []const usize,
+    /// Every part kind the entry reads with all its files; image and audio
+    /// need the projector.
+    modalities: []const Modality,
+};
+
+pub const embedding_entries = [_]EmbeddingEntry{
+    // Google's EmbeddingGemma 2 as unsloth's Q8_0 conversion with the BF16
+    // projector (docs/models/embeddinggemma.md § Artifacts); pinned
+    // 2026-10-08 by the pull.
+    .{
+        .name = "embeddinggemma-2",
+        .title = "EmbeddingGemma 2",
+        .repo = "unsloth/embeddinggemma-2-GGUF",
+        .file = "embeddinggemma-2-Q8_0.gguf",
+        .revision = "031f0d4b35536f69ab3509d4893c923264fcf253",
+        .sha256 = "6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc",
+        .size = 309_855_520,
+        .architecture = inference.embed.architecture,
+        .quantization = "Q8_0",
+        .mmproj = .{
+            .repo = "unsloth/embeddinggemma-2-GGUF",
+            .file = "mmproj-BF16.gguf",
+            .revision = "031f0d4b35536f69ab3509d4893c923264fcf253",
+            .sha256 = "995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032",
+            .size = 982_074_880,
+        },
+        .dimensions = &inference.embed.widths,
+        .modalities = &.{ .text, .image, .audio },
+    },
+};
+
+pub fn findEmbedding(name: []const u8) ?*const EmbeddingEntry {
+    for (&embedding_entries) |*e| if (std.mem.eql(u8, e.name, name)) return e;
+    return null;
+}
+
+/// The embedding entry whose main file has this digest, so a vector's space
+/// names the checkpoint however the caller reached its file.
+pub fn embeddingByDigest(sha256: []const u8) ?*const EmbeddingEntry {
+    for (&embedding_entries) |*e| if (std.mem.eql(u8, e.sha256, sha256)) return e;
+    return null;
+}
+
 pub fn findDecision(name: []const u8) ?*const DecisionEntry {
     for (&decision_entries) |*e| if (std.mem.eql(u8, e.name, name)) return e;
     return null;
@@ -320,6 +384,7 @@ pub const name_width = blk: {
     var widest: usize = 0;
     for (&entries) |entry| widest = @max(widest, entry.name.len);
     for (&decision_entries) |entry| widest = @max(widest, entry.name.len);
+    for (&embedding_entries) |entry| widest = @max(widest, entry.name.len);
     break :blk widest + 1;
 };
 
@@ -404,6 +469,21 @@ test "decision entries are well formed and never text-model names" {
     defer std.testing.allocator.free(multilingual);
     try std.testing.expectEqualStrings("/m/convaiinnovations/laya/multilingual", multilingual);
     try std.testing.expect(findDecision("qwen3.8-27b") == null);
+}
+
+test "embedding entries are well formed and share no name with another kind" {
+    for (&embedding_entries) |e| {
+        try std.testing.expectEqual(@as(usize, 40), e.revision.len);
+        try std.testing.expectEqual(@as(usize, 64), e.sha256.len);
+        try std.testing.expect(find(e.name) == null and findDecision(e.name) == null);
+        try std.testing.expect(std.mem.endsWith(u8, e.file, ".gguf") and e.title.len > 0);
+        try std.testing.expectEqual(Modality.text, e.modalities[0]);
+        // The pull fetches the projector from the entry's own repository.
+        if (e.mmproj) |m| try std.testing.expect(std.mem.eql(u8, m.repo, e.repo) and std.mem.eql(u8, m.revision, e.revision) and m.sha256.len == 64);
+        try std.testing.expect(embeddingByDigest(e.sha256) == findEmbedding(e.name));
+    }
+    try std.testing.expectEqualStrings("gemma-embedding2", findEmbedding("embeddinggemma-2").?.architecture);
+    try std.testing.expect(findEmbedding("qwen3.8-27b") == null and findEmbedding("laya") == null);
 }
 
 test "the table is well formed: unique names, 40-character commits, 64-character digests" {

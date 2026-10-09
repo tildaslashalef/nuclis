@@ -70,6 +70,9 @@ values [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/workl
 | | | `Ternary-Bonsai-2-27B-PTQ1_0.gguf` | 5,946,648,928 | `53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3` |
 | | | `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` | 629,246,976 | `6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903` |
 | | | `Ternary-Bonsai-2-27B-mmproj-BF16.gguf` | 931,145,856 | `e287342d92332fa3577ed1d42e921dac9370c08da58ba9337fa450f6cc76cfd7` |
+| `unsloth/embeddinggemma-2-GGUF` | `031f0d4b35536f69ab3509d4893c923264fcf253` | `embeddinggemma-2-Q8_0.gguf` | 309,855,520 | `6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc` |
+| | | `embeddinggemma-2-BF16.gguf` | 557,950,240 | `f315cbbb30dd487e44d501c8902abe88808755e43753a96beed1964f0a48aa4f` |
+| | | `mmproj-BF16.gguf` | 982,074,880 | `995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032` |
 
 The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
 the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,
@@ -314,7 +317,7 @@ with the same four support files under `multilingual/`, which lands in
 pull laya` (or `laya-multilingual`) fetches the set at that commit and refuses it if the Hub's weights digest
 or a named support file differs; `model ls` lists it after the text
 models, marked `(nuclis decide)`, and its JSON rows carry `kind`
-(listing schema 4). `decide.model` defaults to `laya`; the name is not a
+(listing schema 5 since the `embedding` kind joined it). `decide.model` defaults to `laya`; the name is not a
 text model's, so `generate --model laya` is refused by name.
 
 `clef-flash` ([MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) spans two repositories: its head
@@ -336,3 +339,22 @@ mmproj` adds the projector. Each file lands under its own repository's
 directory, and a backbone or projector whose pulled digest is not the
 catalogue's fails the pull (`CatalogMismatch`). `nuclis decide` finds the
 backbone and, when it is pulled, the projector from the entry.
+
+A third table, `embedding_entries`, pins embedding models, which only
+`nuclis embed` opens (2026-10-09): `embeddinggemma-2`,
+`unsloth/embeddinggemma-2-GGUF` at commit
+`031f0d4b35536f69ab3509d4893c923264fcf253`, the text model
+`embeddinggemma-2-Q8_0.gguf` (309,855,520 B, SHA-256
+`6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc`) and
+the projector `mmproj-BF16.gguf` (982,074,880 B, SHA-256
+`995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032`),
+which `--with mmproj` adds (the vision and audio encoders; text needs only
+the main file). The entry also carries the trained widths (768, 512, 256,
+128) and the modalities its files read. Why Q8_0 with a BF16 projector is
+in [embeddinggemma.md § Artifacts](embeddinggemma.md#artifacts). `model
+ls` marks the row `(nuclis embed)` with the projector beneath it;
+`embed.model` defaults to `embeddinggemma-2`, and text and decision
+commands refuse the name. `model pull <owner/repo> --register <name>`
+records a GGUF whose header says `gemma-embedding2` as `"kind":
+"embedding"` and names `embed.model` as the key that makes it the
+default.

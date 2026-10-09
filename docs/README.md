@@ -40,6 +40,7 @@ below.
 | [bonsai.md](models/bonsai.md) | Bonsai 2 27B: the ternary file and its fork |
 | [laya.md](models/laya.md) | Laya: the decision encoder behind `nuclis decide` |
 | [clef-flash.md](models/clef-flash.md) | clef-flash: Cloudflare's decision model |
+| [embeddinggemma.md](models/embeddinggemma.md) | EmbeddingGemma 2: the embedding model, its files, forward pass, prefixes, and encoders |
 
 ## The engine: `engine/` (the `inference/` package)
 
@@ -58,6 +59,7 @@ below.
 | [prompt-profile.md](engine/prompt-profile.md) | Prompt profiles: chat renderers, stop sets, reasoning markers |
 | [tool-calling.md](engine/tool-calling.md) | Tool calling: each family's format and the engine seam |
 | [vision.md](engine/vision.md) | Vision through the companion projectors |
+| [audio.md](engine/audio.md) | Audio through the companion encoders: decoding, the log-mel front end, Gemma 4's conformer |
 
 ## The app: `app/` (the `src/` package)
 

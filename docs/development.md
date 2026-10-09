@@ -87,7 +87,13 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   PrismML fork `5d80cff` (release `prism-b10687-5d80cff`), the only decoder
   of Bonsai 2 27B's ternary encodings, beside it under
   `.reference/prism-llama.cpp` with the same recipe
-  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)).
+  ([llama-cpp.md § The second oracle](benchmarks/llama-cpp.md#the-second-oracle-the-prismml-fork-2026-09-18)),
+  and mainline build `b11514` (`de7fa0a3c`), which runs EmbeddingGemma 2, under
+  `.reference/llama.cpp-embed`
+  ([llama-cpp.md § The third oracle](benchmarks/llama-cpp.md#the-third-oracle-embeddinggemma-2-2026-10-09)).
+  EmbeddingGemma 2's semantic oracle is sentence-transformers 6.1 in a venv
+  at `.reference/venv-embed` (the recipe heads
+  `scripts/embedding-reference.py`), with Google's checkpoint in float32.
   The decision model's oracle is the `laya` 0.3.20 Python package in a venv
   at `.reference/laya-venv` (Python 3.12 through `uv`; the recipe
   heads `scripts/laya-reference.py`; `--subfolder multilingual` for the
@@ -142,7 +148,7 @@ make the registry cheaper than the recipes it replaced:
 | --- | --- | --- | --- | --- |
 | executor | the Metal plan (and the tokenizer) | the Metal plan, and the 12B QAT file's CPU gates | the Metal plan | the CPU reference |
 | covers | one representative file per family and the paths only a variant has (§ What each gate protects) | whole-file acceptance: the 8-window perplexities (`*-perplexity-full`), the Gemma 12B QAT file, `qwen38-draft-stats` | positions past 512 and the sliding windows | the CPU reference of every family, projector, and draft source |
-| cost | minutes (40 gates in 311 s measured 2026-10-02 with `clef-sequences` and `clef-metal`, [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one); 38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; worklog, [REPO-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-20--fast-verification-gates-re-derived-from-code-paths-a-release-tier-make-verify-auto-2026-09-29), [MODL-31](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-31--laya-on-metal-packed-batches-bidirectional-windowed-attention-over-sequence-bounds-2026-09-29), [MODL-33](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-33--laya-multilingual-the-metaspace-tokenizer-the-checkpoints-own-special-tokens-checked-on-both-backends-2026-09-29); then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 25 min (15 gates, 1,523 s measured 2026-10-02 with `clef-cpu`, 368 s; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, [KERN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-19--a-threaded-cpu-reference-bit-identical-the-cpu-tier-in-22-minutes-2026-09-30), [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) |
+| cost | minutes (40 gates in 311 s measured 2026-10-02 with `clef-sequences` and `clef-metal`, [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one); 38 gates; 258 s measured 2026-09-29 for 36 with the three `laya-multilingual-*`, 254 s for the 33 before them, down from 38 gates in 704 s; worklog, [REPO-20](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#repo-20--fast-verification-gates-re-derived-from-code-paths-a-release-tier-make-verify-auto-2026-09-29), [MODL-31](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-31--laya-on-metal-packed-batches-bidirectional-windowed-attention-over-sequence-bounds-2026-09-29), [MODL-33](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-33--laya-multilingual-the-metaspace-tokenizer-the-checkpoints-own-special-tokens-checked-on-both-backends-2026-09-29); then `qwen38-verify-depth-512` and `-4k`, 3–4 s each from saved prefixes) | minutes of Metal (8 gates, 156 s) and the 12B QAT file's two CPU gates (tens of minutes) | minutes (3 gates: `gemma4-e4b-perplexity-4k` 53 s; `qwen38-verify-depth-16k` and `-32k`, 4–6 s each from the saved prefixes under `.zig-cache/speed/prefix/`, which a missing file costs one prefill: about 3 and 11 min; the other families wait for their references) | 30 min (18 gates: 1,523 s for 15 measured 2026-10-02 with `clef-cpu`, 368 s, then `embeddinggemma-google-cpu` 134 s, `-vectors-cpu` 128 s and `-trace-cpu` 0.5 s on 2026-10-09; 14 gates in 1,327 s on 2026-09-30 with the reference's `matvec` on every core, from hours; `muse-vision-cpu` 447 s and `qwen38-speculative-cpu` 308 s the longest; engineering log, [KERN-19](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#kern-19--a-threaded-cpu-reference-bit-identical-the-cpu-tier-in-22-minutes-2026-09-30), [MODL-34](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-34--clef-flash-cloudflares-9b-decision-model-text-and-vision-on-both-backends-2026-10-02-four-planned-sessions-in-one)) |
 | build | `ReleaseSafe`, `./zig-out/bin/nuclis` | the same (CPU gates as `verify-cpu`) | the same | `ReleaseFast` into `.zig-cache/gates/cpu/` (the reference exists to be exact, not safe; the Gemma QAT CPU trace measured 29.4 s against 34.7 s at ReleaseSafe with identical numbers, 2026-09-21) |
 | when | every unit that touched the inference stack | once before a release | when a unit changes attention, the KV cache, or a windowed schedule (what only positions past 512 and past the 1,024/2,048-token windows exercise), and once before a release | when a unit changes what the CPU reference computes (an existing CPU kernel's or decoder's arithmetic, a family's `*_runtime.zig` forward, a projector's CPU `Runtime`), when a family or a draft source is brought up, to tell a wrong kernel from wrong model semantics after a Metal trace fails, and once before a release; not for additions nothing calls, refactors a unit test pins, the check tool, or Metal code |
 
@@ -869,7 +875,7 @@ data and private source snippets must not become test or benchmark fixtures.
 
 ### Measuring the API
 
-`nuclis serve` listens on `127.0.0.1:8000` by default (`serve.port`,
+`nuclis serve` listens on `127.0.0.1:9000` by default (`serve.port`,
 `--port`); start it with the models measured open (`--model laya --model
 laya-multilingual`) so no request pays an open, and with `--quiet`: the
 request log writes and flushes a line per response. Rates come from ApacheBench (`/usr/sbin/ab`,
@@ -878,7 +884,7 @@ fractions of a millisecond where the summary rounds to whole ones:
 
 ```sh
 ab -k -n 512 -c 16 -p request.json -T application/json -e out.csv \
-  http://127.0.0.1:8000/v1/decisions
+  http://127.0.0.1:9000/v1/decisions
 ```
 
 `ab` speaks HTTP/1.0: with `-k` it keeps a connection only when the reply

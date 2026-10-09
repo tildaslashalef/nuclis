@@ -66,7 +66,9 @@ decoding, switched on where it measured faster.
 
 Decision models, which answer typed questions instead of writing text,
 have their own entries: `laya`, `laya-multilingual`, and `clef-flash`
-([below](#decision-models-laya-and-clef-flash)).
+([below](#decision-models-laya-and-clef-flash)). So does the embedding
+model, `embeddinggemma-2`, which turns text, images and audio into vectors
+([below](#embeddings-embeddinggemma-2)).
 
 **Anything else** runs when its architecture has an adapter (Qwen3.8,
 Gemma 4, Muse Glimmer): finetunes, other quantizations, Gemma 4's K-quant
@@ -195,7 +197,7 @@ errors, and rates: [docs/guide/api.md](docs/guide/api.md).
 
 ```sh
 nuclis serve
-curl -s localhost:8000/v1/systemone -d '{"model": "jev-latest",
+curl -s localhost:9000/v1/systemone -d '{"model": "jev-latest",
   "state": "Help! My payouts have been failing for 3 days.",
   "questions": {"is_urgent": {"type": "noul", "instructions": "Does this convey urgency?"}}}'
 ```
@@ -204,7 +206,7 @@ curl -s localhost:8000/v1/systemone -d '{"model": "jev-latest",
 still names it, since the default model stays `decide.model`:
 
 ```sh
-curl -s localhost:8000/v1/systemone -d '{"model": "clef-flash",
+curl -s localhost:9000/v1/systemone -d '{"model": "clef-flash",
   "state": "Our checkout returns errors and orders are blocked.",
   "questions": {"team": {"type": "choice", "criteria": {"billing": "Payments", "technical": "Outages"}}}}'
 ```
@@ -213,7 +215,7 @@ curl -s localhost:8000/v1/systemone -d '{"model": "clef-flash",
 
 `nuclis serve` also answers OpenAI's Chat Completions for the language
 models, so a program or an agent written for an OpenAI-compatible server
-changes only its base URL (`http://127.0.0.1:8000/v1`). One model is open
+changes only its base URL (`http://127.0.0.1:9000/v1`). One model is open
 at a time; a request names it, and tools, images, and the reasoning
 effort map onto the model's own template. The client resends the whole
 conversation, and the server reuses the model's state for what it has
@@ -223,8 +225,40 @@ events, and a client that leaves stops its request.
 
 ```sh
 nuclis serve --chat-model qwen3.8-27b
-curl -s localhost:8000/v1/chat/completions -d '{"model": "qwen3.8-27b",
+curl -s localhost:9000/v1/chat/completions -d '{"model": "qwen3.8-27b",
   "messages": [{"role": "user", "content": "Name a prime number above 50."}]}'
+```
+
+## Embeddings: EmbeddingGemma 2
+
+`nuclis embed` and `POST /v1/embeddings` run Google's
+[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2). It maps
+a sentence, an image, a spoken clip, or any mix of them in one input, to a
+768-number unit vector. Things that mean the same land close together,
+whatever they are made of, so one cosine compares anything with anything.
+The vectors are for search, clustering and retrieval; nuclis embeds, and
+the application that searches keeps the index.
+
+```sh
+nuclis model pull embeddinggemma-2 --with mmproj            # 310 MB, and 982 MB of image and audio encoders
+nuclis embed --task search_query "how do auroras form?"
+nuclis embed --image photo.jpg --audio memo.m4a "the shopping list"   # three vectors, crossed
+```
+
+The vectors match Google's own. On the BF16 file, every text, image and
+clip of the fixture set agrees with Google's float32 pipeline to
+`1 − cos` ≤ 5e-11, on the CPU and on Metal. The pinned Q8_0 file costs
+about 5e-5. Images go through Google's processor (its grid,
+torchvision's resize), and audio through Google's log-mel front end and
+the Gemma 4 conformer. On an M4 Pro, 64 inputs of 256 tokens embed at 38
+a second; an image takes about 0.46 s and 4.8 s of speech 0.13 s. The API
+speaks OpenAI's embeddings format, packs requests into shared GPU passes,
+and gives every input the same vector alone or batched. Details:
+[docs/models/embeddinggemma.md](docs/models/embeddinggemma.md) and
+[docs/guide/api.md](docs/guide/api.md#embeddings).
+
+```sh
+curl -s localhost:9000/v1/embeddings -d '{"input": ["a cat", "a kitten"], "task": "similarity"}'
 ```
 
 ## Documentation

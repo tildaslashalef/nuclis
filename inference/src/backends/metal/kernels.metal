@@ -3277,3 +3277,218 @@ kernel void nu_attention_segments(device const float * queries [[buffer(0)]],
                        values + ulong(head) * p.width, output + ulong(row) * p.out_stride + ulong(head) * p.width,
                        p.width, p.kv_stride, p.scale, lo, hi, scores, partial, acc, tid, lane, sg);
 }
+
+// Grouped-query attention over packed sequences with materialized scores:
+// the masking contract of nu_attention_segments (row i sees the keys of
+// `bounds[i]` within `window`), F32 throughout, in three dispatches over a
+// list of query tiles. A tile is at most 32 rows (a multiple of 8) with the
+// key range [key_lo, key_lo + span) its rows can see (span a multiple of
+// 32) and its score strip at `offset` (`rows × span` floats; head h's strips
+// start at h · head_stride). The two products are F32 matmul tiles with
+// both operands staged in threadgroup memory, so the matrix unit is fed the
+// way the projections' tiles feed it; the softmax between them is the exact
+// two-pass one. A tile's arithmetic depends on its rows and keys only.
+struct AttentionTile { uint first; uint rows; uint key_lo; uint span; uint offset; };
+struct AttentionGemmParams { uint query_heads; uint kv_heads; uint width; uint rows; uint q_stride; uint kv_stride; uint out_stride; uint head_stride; float scale; uint window; };
+
+// Scores: one threadgroup per (tile, head × 32-key block), S[32][32] =
+// scale · Q · Kᵀ over the head width in 64-wide steps; four SIMD groups own a
+// 16 × 16 quarter each. Invisible keys are written −∞, key rows past `rows`
+// stage as zeros.
+kernel void nu_segments_scores(device const float * queries [[buffer(0)]],
+                                device const float * keys [[buffer(1)]],
+                                device const uint2 * bounds [[buffer(2)]],
+                                device const AttentionTile * tiles [[buffer(3)]],
+                                device float * scores [[buffer(4)]],
+                                constant AttentionGemmParams & p [[buffer(7)]],
+                                uint2 group [[threadgroup_position_in_grid]],
+                                uint2 local [[thread_position_in_threadgroup]],
+                                uint sg [[simdgroup_index_in_threadgroup]]) {
+    const uint tid = local.x;
+    threadgroup float qs[32 * 64];   // [row][d]; reused for the 32 × 32 result
+    threadgroup float kt[64 * 32];   // [d][key]
+    threadgroup uint lo[32], hi[32];
+    const AttentionTile t = tiles[group.x];
+    const uint head = group.y % p.query_heads, block = group.y / p.query_heads;
+    if (block * 32 >= t.span) return; // uniform over the threadgroup
+    const uint kv = head / (p.query_heads / p.kv_heads);
+    const uint key0 = t.key_lo + block * 32;
+    if (tid < 32) {
+        const uint r = t.first + tid;
+        uint a = 0, b = 0;
+        if (tid < t.rows && r < p.rows) {
+            const uint2 bb = bounds[r];
+            a = min(bb.x, r);
+            b = clamp(bb.y, r + 1, p.rows);
+            if (p.window != ~0u) {
+                a = max(a, r - min(p.window, r));
+                b = min(b, r + min(p.window, p.rows) + 1);
+            }
+        }
+        lo[tid] = a;
+        hi[tid] = b;
+    }
+    const uint r = tid >> 2, seg = tid & 3;
+    const bool q_ok = r < t.rows, k_ok = key0 + r < p.rows;
+    device const float * qrow = queries + ulong(t.first + r) * p.q_stride + ulong(head) * p.width;
+    device const float * krow = keys + ulong(key0 + r) * p.kv_stride + ulong(kv) * p.width;
+    const uint sub_row = (sg & 1) * 16, sub_key = (sg >> 1) * 16;
+    simdgroup_float8x8 acc[2][2];
+    for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j) acc[i][j] = simdgroup_float8x8(0.0f);
+    for (uint d0 = 0; d0 < p.width; d0 += 64) {
+        for (uint c = 0; c < 4; ++c) {
+            const float4 x = q_ok ? ((device const float4 *)(qrow + d0 + seg * 16))[c] : float4(0.0f);
+            ((threadgroup float4 *)(qs + r * 64 + seg * 16))[c] = x;
+            const float4 y = k_ok ? ((device const float4 *)(krow + d0 + seg * 16))[c] : float4(0.0f);
+            threadgroup float * column = kt + (seg * 16 + 4 * c) * 32 + r;
+            column[0] = y.x; column[32] = y.y; column[64] = y.z; column[96] = y.w;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint k8 = 0; k8 < 64; k8 += 8) {
+            simdgroup_float8x8 a[2], b[2];
+            for (uint i = 0; i < 2; ++i) simdgroup_load(a[i], qs + (sub_row + 8 * i) * 64 + k8, 64);
+            for (uint j = 0; j < 2; ++j) simdgroup_load(b[j], kt + k8 * 32 + sub_key + 8 * j, 32);
+            for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j) simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    threadgroup float * result = qs; // [row][key], free after the last barrier
+    for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j)
+        simdgroup_store(acc[i][j], result + (sub_row + 8 * i) * 32 + sub_key + 8 * j, 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    device float * strip = scores + ulong(head) * p.head_stride + t.offset + block * 32;
+    for (uint e = tid; e < t.rows * 32; e += 128) {
+        const uint row = e >> 5, col = e & 31, key = key0 + col;
+        strip[ulong(row) * t.span + col] = (key >= lo[row] && key < hi[row]) ? result[e] * p.scale : -INFINITY;
+    }
+}
+
+// Softmax of each strip row in place: one SIMD group per row, eight rows at a
+// time; one threadgroup per (tile, head).
+kernel void nu_segments_softmax(device const AttentionTile * tiles [[buffer(0)]],
+                                 device float * scores [[buffer(1)]],
+                                 constant AttentionGemmParams & p [[buffer(7)]],
+                                 uint2 group [[threadgroup_position_in_grid]],
+                                 uint sg [[simdgroup_index_in_threadgroup]],
+                                 uint lane [[thread_index_in_simdgroup]]) {
+    const AttentionTile t = tiles[group.x];
+    device float * strip = scores + ulong(group.y) * p.head_stride + t.offset;
+    for (uint row = sg; row < t.rows; row += 8) {
+        device float * x = strip + ulong(row) * t.span;
+        float m = -INFINITY;
+        for (uint i = lane; i < t.span; i += 32) m = max(m, x[i]);
+        m = simd_max(m);
+        float sum = 0.0f;
+        for (uint i = lane; i < t.span; i += 32) { const float e = exp(x[i] - m); x[i] = e; sum += e; }
+        const float inv = 1.0f / simd_sum(sum);
+        for (uint i = lane; i < t.span; i += 32) x[i] *= inv;
+    }
+}
+
+// Values: one threadgroup per (tile, head × 32 value columns), O[32][32] =
+// P · V over the span in 32-key steps; key rows past `rows` stage as zeros
+// (their weights are 0, and padding rows may hold anything).
+kernel void nu_segments_values(device const float * scores [[buffer(0)]],
+                                device const float * values [[buffer(1)]],
+                                device const AttentionTile * tiles [[buffer(2)]],
+                                device float * output [[buffer(3)]],
+                                constant AttentionGemmParams & p [[buffer(7)]],
+                                uint2 group [[threadgroup_position_in_grid]],
+                                uint2 local [[thread_position_in_threadgroup]],
+                                uint sg [[simdgroup_index_in_threadgroup]]) {
+    const uint tid = local.x;
+    threadgroup float ps[32 * 32]; // [row][key]
+    threadgroup float vs[32 * 32]; // [key][column]
+    const AttentionTile t = tiles[group.x];
+    const uint head = group.y % p.query_heads, cb = group.y / p.query_heads;
+    const uint kv = head / (p.query_heads / p.kv_heads);
+    const uint c0 = cb * 32;
+    const uint r = tid >> 2, part = (tid & 3) * 8;
+    const bool p_ok = r < t.rows;
+    device const float * prow = scores + ulong(head) * p.head_stride + t.offset + ulong(r) * t.span + part;
+    device const float * vbase = values + ulong(kv) * p.width + c0 + part;
+    const uint sub_row = (sg & 1) * 16, sub_col = (sg >> 1) * 16;
+    simdgroup_float8x8 acc[2][2];
+    for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j) acc[i][j] = simdgroup_float8x8(0.0f);
+    for (uint k0 = 0; k0 < t.span; k0 += 32) {
+        const uint key = t.key_lo + k0 + r;
+        for (uint c = 0; c < 2; ++c) {
+            ((threadgroup float4 *)(ps + r * 32 + part))[c] = p_ok ? ((device const float4 *)(prow + k0))[c] : float4(0.0f);
+            ((threadgroup float4 *)(vs + r * 32 + part))[c] = key < p.rows ? ((device const float4 *)(vbase + ulong(key) * p.kv_stride))[c] : float4(0.0f);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint k8 = 0; k8 < 32; k8 += 8) {
+            simdgroup_float8x8 a[2], b[2];
+            for (uint i = 0; i < 2; ++i) simdgroup_load(a[i], ps + (sub_row + 8 * i) * 32 + k8, 32);
+            for (uint j = 0; j < 2; ++j) simdgroup_load(b[j], vs + k8 * 32 + sub_col + 8 * j, 32);
+            for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j) simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    device float * out = output + ulong(t.first) * p.out_stride + ulong(head) * p.width + c0;
+    for (uint i = 0; i < 2; ++i) {
+        if (sub_row + 8 * i >= t.rows) continue;
+        for (uint j = 0; j < 2; ++j) simdgroup_store(acc[i][j], out + ulong(sub_row + 8 * i) * p.out_stride + sub_col + 8 * j, p.out_stride);
+    }
+}
+
+// Gemma 4's audio attention (audio/gemma4a.zig `attention`): one SIMD group
+// per (row, head), 4 of the 128 dimensions a lane. Query i sees keys
+// i − 11 … i of its clip, scored q·k + q·relk[12 − (i − j)] on scaled q and
+// k, capped by tanh, softmaxed. relk is the block's 13 × width relative keys.
+struct AudioAttentionParams { uint rows; uint width; float key_scale; float cap; };
+kernel void nu_audio_attention(device const float * q [[buffer(0)]],
+                               device const float * k [[buffer(1)]],
+                               device const float * v [[buffer(2)]],
+                               device const float * relk [[buffer(3)]],
+                               device const float * qscale [[buffer(4)]],
+                               device float * out [[buffer(5)]],
+                               constant AudioAttentionParams & p [[buffer(7)]],
+                               uint group [[threadgroup_position_in_grid]],
+                               uint lane [[thread_index_in_simdgroup]]) {
+    const uint i = group / 8, head = group % 8;
+    if (i >= p.rows) return;
+    const uint base = head * 128 + lane * 4;
+    const float4 s = ((device const float4 *)(qscale + lane * 4))[0];
+    const float4 qi = ((device const float4 *)(q + ulong(i) * p.width + base))[0] * s;
+    const uint lowest = i >= 11 ? i - 11 : 0;
+    float scores[12];
+    float top = -INFINITY;
+    for (uint j = lowest; j <= i; ++j) {
+        const float4 kj = ((device const float4 *)(k + ulong(j) * p.width + base))[0] * p.key_scale;
+        const float4 rj = ((device const float4 *)(relk + ulong(12 - (i - j)) * p.width + base))[0];
+        const float raw = simd_sum(dot(qi, kj) + dot(qi, rj));
+        const float capped = p.cap * nu_tanh(raw / p.cap);
+        scores[j - lowest] = capped;
+        top = max(top, capped);
+    }
+    float total = 0.0f;
+    float4 acc = float4(0.0f);
+    for (uint j = lowest; j <= i; ++j) {
+        const float w = exp(scores[j - lowest] - top);
+        total += w;
+        acc += w * ((device const float4 *)(v + ulong(j) * p.width + base))[0];
+    }
+    ((device float4 *)(out + ulong(i) * p.width + base))[0] = acc / total;
+}
+
+// The light convolution's middle (audio/gemma4a.zig `gluConv`): the GLU of a
+// `2·width` row (values, then gates) through a causal depthwise convolution
+// of 5 taps; dw is `[width][5]`.
+struct GluConvParams { uint rows; uint width; };
+kernel void nu_glu_conv(device const float * start [[buffer(0)]],
+                        device const float * dw [[buffer(1)]],
+                        device float * out [[buffer(2)]],
+                        constant GluConvParams & p [[buffer(7)]],
+                        uint id [[thread_position_in_grid]]) {
+    if (id >= p.rows * p.width) return;
+    const uint t = id / p.width, c = id % p.width;
+    float acc = 0.0f;
+    for (uint tap = 0; tap < 5; ++tap) {
+        if (t + tap < 4) continue;
+        device const float * r = start + ulong(t + tap - 4) * 2 * p.width;
+        const float glu = r[c] / (1.0f + exp(-r[p.width + c]));
+        acc = fma(dw[c * 5 + tap], glu, acc);
+    }
+    out[id] = acc;
+}

@@ -20,6 +20,9 @@ pub fn build(b: *std.Build) void {
         mod.addCSourceFile(.{ .file = b.path("src/vision/image_bridge.m"), .flags = &.{"-fno-objc-arc"} });
         mod.linkFramework("CoreGraphics", .{});
         mod.linkFramework("ImageIO", .{});
+        // And the audio decoder (audio/audio.zig).
+        mod.addCSourceFile(.{ .file = b.path("src/audio/audio_bridge.m"), .flags = &.{"-fno-objc-arc"} });
+        mod.linkFramework("AudioToolbox", .{});
         mod.link_libc = true;
     }
     const tests = b.addTest(.{ .root_module = mod });
@@ -64,6 +67,19 @@ pub fn build(b: *std.Build) void {
     const run_clef = b.addRunArtifact(clef_check);
     run_clef.addPassthruArgs();
     b.step("test-clef", "Check clef-flash against the oracle's fixtures (-- sequences|head CLEF_DIR ...)").dependOn(&run_clef.step);
+    const embeddinggemma_check = b.addExecutable(.{
+        .name = "embeddinggemma-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("embeddinggemma-check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "inference", .module = mod }},
+        }),
+    });
+    b.installArtifact(embeddinggemma_check);
+    const run_embeddinggemma = b.addRunArtifact(embeddinggemma_check);
+    run_embeddinggemma.addPassthruArgs();
+    b.step("test-embeddinggemma", "Check EmbeddingGemma 2 against the oracles, or time it (-- MODEL traces|vectors|google|bench [--backend cpu|metal])").dependOn(&run_embeddinggemma.step);
     const generation_check = b.addExecutable(.{
         .name = "generation-check",
         .root_module = b.createModule(.{

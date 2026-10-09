@@ -14,7 +14,7 @@ const std = @import("std");
 const style = @import("tui/style.zig");
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, serve, completion };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, serve, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -29,6 +29,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .model => model(out, sty),
         .cache => cache(out, sty),
         .decide => decide(out, sty),
+        .embed => embed(out, sty),
         .serve => serve(out, sty),
         .completion => completion(out, sty),
     };
@@ -138,6 +139,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "model", "pull, list, and judge Hugging Face Hub artifacts");
     try row(out, sty, "cache", "list or clear the agent's saved model states");
     try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
+    try row(out, sty, "embed", "text, images, audio into vectors, by EmbeddingGemma 2");
     try row(out, sty, "serve", "the nuclis API over HTTP: decisions, models kept open");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
     try row(out, sty, "completion", "the shell completion script for fish, bash, or zsh");
@@ -431,8 +433,64 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
     try out.writeByte('\n');
 }
 
+fn embed(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis embed", "text, images and audio into unit vectors, by an embedding model");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis embed <text>… [options]");
+    try code(out, sty, "nuclis embed --image <file>… --audio <file>… [options]");
+    try code(out, sty, "nuclis embed --input-file <file|-> [options]");
+    try code(out, sty, "  each argument is one input: quote a sentence");
+
+    try heading(out, sty, "Inputs:");
+    try row(out, sty, "<text>", "an input, repeatable; after --, words that start");
+    try more(out, "with - are text too");
+    try row(out, sty, "--image <file>", "an image as one input, repeatable (PNG, JPEG,");
+    try more(out, "HEIC, WebP, TIFF, GIF, BMP); needs the projector");
+    try more(out, "(nuclis model pull embeddinggemma-2 --with mmproj)");
+    try row(out, sty, "--audio <file>", "a clip as one input, repeatable (WAV, AIFF, MP3,");
+    try more(out, "M4A, FLAC, CAF), at most 30 s; needs the projector");
+    try row(out, sty, "--input-file <file|->", "one input per line: a JSON string, or a list of");
+    try more(out, "content parts ({\"type\": \"text\", \"text\": …},");
+    try more(out, "{\"type\": \"image_url\", \"image_url\": {\"url\": \"data:…\"}},");
+    try more(out, "{\"type\": \"input_audio\", \"input_audio\": {\"data\": …,");
+    try more(out, "\"format\": \"wav\"}})");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "--task <task>", "open each input with the model's prefix:");
+    try more(out, "search_query, document, question_answering,");
+    try more(out, "fact_checking, code_retrieval, classification,");
+    try more(out, "clustering, similarity; default none (as given)");
+    try row(out, sty, "--title <text>", "with --task document: the document's title");
+    try row(out, sty, "--dimensions <n>", "768, 512, 256, or 128 (the leading values,");
+    try more(out, "renormalized); default 768");
+    try row(out, sty, "--image-tokens <n>", "soft tokens per image: 70, 140, 280, 560, or");
+    try more(out, "1120; default 280 (more is finer, and slower)");
+    try row(out, sty, "--truncate", "cut an input over 8,192 tokens instead of refusing");
+    try more(out, "it, and a clip over 30 s to its first 30 s");
+    try row(out, sty, "--model <name|path>", "an embedding entry or GGUF file; default");
+    try more(out, "embed.model (embeddinggemma-2)");
+    try row(out, sty, "--backend cpu|metal", "default metal");
+    try row(out, sty, "--json", "every vector with its tokens, space, and timings");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis embed --task search_query \"how do auroras form?\"", "a query vector");
+    try example(out, sty, "nuclis embed \"a cat\" \"a kitten\" \"a tax form\"", "three vectors and their cosines");
+    try example(out, sty, "nuclis embed --image cat.jpg \"a photo of a cat\"", "an image and a caption, crossed");
+    try example(out, sty, "nuclis embed --audio memo.m4a \"the shopping list\"", "a voice memo against a text");
+    try example(out, sty, "nuclis embed --task document --input-file docs.jsonl --json", "document vectors, for an index");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "Text is embedded exactly as given unless --task names a use: queries and");
+    try plain(out, "documents are embedded with different prefixes, and only vectors of one");
+    try plain(out, "space compare (the file's digest and the width, printed as `space`).");
+    try plain(out, "Text, images and audio share the space; the image budget changes the");
+    try plain(out, "vector. Audio is resampled to 16 kHz mono (16 kHz mono WAV is read as is).");
+    try plain(out, "Inputs are packed into batches on Metal; batching never changes a vector.");
+    try out.writeByte('\n');
+}
+
 fn serve(out: *std.Io.Writer, sty: style.Style) !void {
-    try title(out, sty, "nuclis serve", "the nuclis API: decision and language models over HTTP");
+    try title(out, sty, "nuclis serve", "the nuclis API: decision, language, embedding models");
     try heading(out, sty, "Usage:");
     try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]…");
     try code(out, sty, "             [--chat-model <name>] [--memory <GiB>] [--backend cpu|metal]");
@@ -442,7 +500,7 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--host <ip>", "the address to listen on; default serve.host,");
     try more(out, "127.0.0.1 (any other prints a warning: there is no");
     try more(out, "authentication)");
-    try row(out, sty, "--port <n>", "default serve.port, 8000");
+    try row(out, sty, "--port <n>", "default serve.port, 9000");
     try row(out, sty, "--model <name|path>", "open a decision model at start, at most 2;");
     try more(out, "default decide.model; others open on first use");
     try more(out, "(2 stay open)");
@@ -463,26 +521,31 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "POST /v1/chat/completions", "OpenAI's Chat Completions for the language");
     try more(out, "models; a client of an OpenAI-compatible server");
     try more(out, "connects by changing its base URL");
-    try row(out, sty, "GET /v1/models", "the decision and language models, OpenAI's list");
+    try row(out, sty, "POST /v1/embeddings", "OpenAI's embeddings for the embedding models;");
+    try more(out, "\"task\", \"title\", \"truncate\", \"image_tokens\" as in");
+    try more(out, "nuclis embed; image_url parts as base64 data URLs,");
+    try more(out, "input_audio parts as base64 with a format");
+    try row(out, sty, "GET /v1/models", "every model of the three kinds, OpenAI's list");
     try more(out, "shape");
     try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis serve", "listen on 127.0.0.1:8000, decide.model open");
-    try example(out, sty, "curl -s localhost:8000/v1/decisions -d @ticket.json", "one decision request");
+    try example(out, sty, "nuclis serve", "listen on 127.0.0.1:9000, decide.model open");
+    try example(out, sty, "curl -s localhost:9000/v1/decisions -d @ticket.json", "one decision request");
     try example(out, sty, "nuclis serve --chat-model qwen3.8-27b", "a language model open from the start");
 
     try heading(out, sty, "Notes:");
-    try plain(out, "Requests run on the GPU one at a time in arrival order, decisions between");
-    try plain(out, "a generation's steps; a request waits at most 300 s to start (then 529");
-    try plain(out, "timeout), at most 64 wait (then 529 busy). Opening a model closes the least");
-    try plain(out, "recently used others, of either kind, until it fits the memory budget.");
-    try plain(out, "Bodies up to 4 MiB (32 MiB for chat completions); states are text or JSON,");
-    try plain(out, "never {\"file\": path}; a chat request names a model, never a path.");
+    try plain(out, "Requests run on the GPU one at a time in arrival order, decision and");
+    try plain(out, "embedding passes between a generation's steps; a request waits at most");
+    try plain(out, "300 s to start (then 529 timeout), at most 64 wait (then 529 busy).");
+    try plain(out, "Opening a model closes the least recently used others, of any kind, until");
+    try plain(out, "it fits the memory budget. Bodies up to 4 MiB (32 MiB for chat and");
+    try plain(out, "embeddings); states are text or JSON, never {\"file\": path}; a chat or");
+    try plain(out, "embedding request names a model, never a path.");
     try plain(out, "Errors are {\"error\": {\"code\", \"message\", \"type\", \"param\"}} with a");
     try plain(out, "fitting HTTP status.");
-    try plain(out, "Ctrl-C stops accepting, finishes queued decisions (up to 10 s), and exits;");
-    try plain(out, "a second Ctrl-C ends the process at once.");
+    try plain(out, "Ctrl-C stops accepting, finishes queued decisions and embeddings (up to");
+    try plain(out, "10 s), and exits; a second Ctrl-C ends the process at once.");
 }
 fn inspect(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis inspect", "what an artifact is");

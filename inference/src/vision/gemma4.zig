@@ -110,6 +110,36 @@ pub fn gridFor(size: preprocess.Size, min: u32, max: u32) Grid {
     return .{ .width_tokens = target.width / token_side, .height_tokens = target.height / token_side };
 }
 
+/// The soft-token budgets Google's `Gemma4ImageProcessor` accepts.
+pub const google_budgets = [_]u32{ 70, 140, 280, 560, 1120 };
+
+/// The token grid Google's processor gives an image under `budget` soft
+/// tokens (`get_aspect_ratio_preserving_size`): the largest 48-pixel grid
+/// of the image's aspect ratio within `budget · 9` patches, floored, in
+/// F64. A side that floors to zero becomes one token. `budget` must be one
+/// of `google_budgets`.
+pub fn googleGrid(size: preprocess.Size, budget: u32) !Grid {
+    if (std.mem.indexOfScalar(u32, &google_budgets, budget) == null) return error.UnsupportedImageTokens;
+    if (size.width == 0 or size.height == 0) return error.InvalidShape;
+    const height: f64 = @floatFromInt(size.height);
+    const width: f64 = @floatFromInt(size.width);
+    const target_px: f64 = @floatFromInt(@as(u64, budget) * siglip.pool * siglip.pool * siglip.patch * siglip.patch);
+    const factor = @sqrt(target_px / (height * width));
+    var h_tokens: u64 = @intFromFloat(@floor(factor * height / token_side));
+    var w_tokens: u64 = @intFromFloat(@floor(factor * width / token_side));
+    if (h_tokens == 0 and w_tokens == 0) return error.InvalidShape;
+    const max_side: u64 = budget;
+    if (h_tokens == 0) {
+        h_tokens = 1;
+        w_tokens = @min(@as(u64, @intFromFloat(@floor(width / height))), max_side);
+    } else if (w_tokens == 0) {
+        w_tokens = 1;
+        h_tokens = @min(@as(u64, @intFromFloat(@floor(height / width))), max_side);
+    }
+    if (w_tokens * h_tokens > budget or w_tokens == 0 or h_tokens == 0) return error.InvalidShape;
+    return .{ .width_tokens = @intCast(w_tokens), .height_tokens = @intCast(h_tokens) };
+}
+
 /// The patch rows each projector reads from an image already resized to
 /// `grid.pixels()`: F32 48-pixel patches for the unified embedder, F16
 /// 16-pixel patches of `2x − 1` for SigLIP (its convolution's im2col).
@@ -211,9 +241,15 @@ pub const SiglipBinding = struct {
     }
 };
 
+/// The SigLIP FFN's gate activation. No key in the file names it: `bind`
+/// sets the reference's default for these files, and a family whose own
+/// config says otherwise sets its own (EmbeddingGemma 2's is tanh).
+pub const Activation = enum { gelu_quick, gelu_tanh };
+
 pub const Binding = struct {
     kind: Kind,
     net: union(Kind) { unified: UnifiedBinding, siglip: SiglipBinding },
+    activation: Activation = .gelu_quick,
     /// The language model width the projection writes.
     output_width: usize,
     mean: [3]f32,
@@ -275,6 +311,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     }
     var result: Binding = undefined;
     result.kind = kind;
+    result.activation = .gelu_quick;
     result.mean = try qwen3vl.floatTriple(doc, "clip.vision.image_mean");
     result.std = try qwen3vl.floatTriple(doc, "clip.vision.image_std");
     for (result.std) |s| if (!(s > 0)) return error.UnsupportedConfiguration;
@@ -611,7 +648,14 @@ pub const Runtime = struct {
                 try rmsNorm(xt, nt, ln2);
                 try self.clipped(wg, bounds[@backingInt(Linear.gate)], nt, gate, scratch, staged);
                 try self.clipped(wu, bounds[@backingInt(Linear.up)], nt, up, scratch, staged);
-                for (gate, up) |*gv, u| gv.* = cpu.geluQuick(gv.*) * u;
+                switch (self.binding.activation) {
+                    .gelu_quick => for (gate, up) |*gv, u| {
+                        gv.* = cpu.geluQuick(gv.*) * u;
+                    },
+                    .gelu_tanh => for (gate, up) |*gv, u| {
+                        gv.* = cpu.gelu(gv.*) * u;
+                    },
+                }
                 try self.clipped(wd, bounds[@backingInt(Linear.down)], gate, row, scratch, staged);
                 try rmsNorm(row, row, post_ffn);
                 for (xt, row) |*o, r| o.* += r;
@@ -748,6 +792,32 @@ test "the grid follows the reference's bounds on the 48-pixel grid" {
     try std.testing.expect(gridFor(.{ .width = 9000, .height = 9000 }, min_tokens, max_tokens).tokens() <= max_tokens);
     const capped = gridFor(.{ .width = 3840, .height = 2160 }, min_tokens, 280);
     try std.testing.expect(capped.tokens() <= 280 and capped.tokens() > 200);
+}
+
+test "the EmbeddingGemma 2 projector binds as the small encoder without clamps" {
+    const alloc = std.testing.allocator;
+    var doc = try inventory.document(alloc, @embedFile("fixtures/embeddinggemma-2-mmproj.json"));
+    defer doc.storage.deinit();
+    const b = try bind(alloc, &doc);
+    try std.testing.expectEqual(Kind.siglip, b.kind);
+    try std.testing.expectEqual(&siglip.small, b.net.siglip.geometry);
+    try std.testing.expectEqual(@as(usize, 512), b.output_width);
+    try std.testing.expectEqual(Activation.gelu_quick, b.activation);
+    try std.testing.expect(b.net.siglip.std_bias == null);
+    for (b.net.siglip.active()) |layer| for (layer.clamps) |c| try std.testing.expect(c.input_min == null and c.output_max == null);
+    // 16 blocks of 13 tensors, the patch kernel, the position table, the projection.
+    try std.testing.expectEqual(@as(u32, 16 * 13 + 3), b.tensors);
+}
+
+test "Google's grid follows the aspect ratio inside the budget" {
+    // The fixtures' oracle grids (docs/models/embeddinggemma.md).
+    try std.testing.expectEqual(Grid{ .width_tokens = 16, .height_tokens = 16 }, try googleGrid(.{ .width = 1254, .height = 1254 }, 280));
+    try std.testing.expectEqual(Grid{ .width_tokens = 23, .height_tokens = 12 }, try googleGrid(.{ .width = 1200, .height = 630 }, 280));
+    try std.testing.expectEqual(Grid{ .width_tokens = 11, .height_tokens = 6 }, try googleGrid(.{ .width = 1200, .height = 630 }, 70));
+    try std.testing.expectEqual(Grid{ .width_tokens = 46, .height_tokens = 24 }, try googleGrid(.{ .width = 1200, .height = 630 }, 1120));
+    // A strip too thin for one token row keeps one, its width capped at the budget.
+    try std.testing.expectEqual(Grid{ .width_tokens = 70, .height_tokens = 1 }, try googleGrid(.{ .width = 9000, .height = 10 }, 70));
+    try std.testing.expectError(error.UnsupportedImageTokens, googleGrid(.{ .width = 100, .height = 100 }, 300));
 }
 
 test "the rope tables turn the first half with x and the second with y" {
