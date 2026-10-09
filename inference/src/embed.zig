@@ -12,6 +12,7 @@ const vocabulary = @import("tokenizer/vocabulary.zig");
 const Encoder = @import("tokenizer/encode.zig").Encoder;
 const model = @import("models/embeddinggemma.zig");
 const runtime = @import("models/embeddinggemma_runtime.zig");
+const metal_plan = @import("models/embeddinggemma_metal.zig");
 
 pub const max_tokens = model.max_tokens;
 /// The vector width the model writes.
@@ -20,6 +21,9 @@ pub const dimensions = model.config.embedding_out;
 pub const widths = [_]usize{ 768, 512, 256, 128 };
 
 pub const Stage = runtime.Stage;
+/// Where the forward runs: the F32 CPU reference, or the Metal plan (packed
+/// batches, F32 activations; embeddinggemma_metal.zig).
+pub const Backend = enum { cpu, metal };
 pub const Observer = runtime.Observer;
 
 pub const Part = union(enum) {
@@ -55,13 +59,18 @@ pub const Embedder = struct {
     binding: model.Binding,
     vocab: vocabulary.Vocabulary,
     encoder: Encoder,
-    runtime: runtime.Runtime,
+    engine: union(Backend) {
+        cpu: runtime.Runtime,
+        /// Owns its Metal backend and every device buffer; `gpa`'s.
+        metal: *metal_plan.Plan,
+    },
     bos: ?u32,
     eos: ?u32,
 
-    /// Opens an EmbeddingGemma 2 file. A file of another architecture is
-    /// `NotAnEmbeddingModel`. Caller owns the result; `deinit` frees it.
-    pub fn open(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !*Embedder {
+    /// Opens an EmbeddingGemma 2 file for `backend`. A file of another
+    /// architecture is `NotAnEmbeddingModel`. Caller owns the result;
+    /// `deinit` frees it.
+    pub fn open(gpa: std.mem.Allocator, io: std.Io, path: []const u8, backend: Backend) !*Embedder {
         const self = try gpa.create(Embedder);
         errdefer gpa.destroy(self);
         self.gpa = gpa;
@@ -77,13 +86,19 @@ pub const Embedder = struct {
         errdefer self.encoder.deinit();
         self.bos = try added(doc, "tokenizer.ggml.add_bos_token", self.vocab.bos);
         self.eos = try added(doc, "tokenizer.ggml.add_eos_token", self.vocab.eos);
-        self.runtime = try .init(gpa, io, self.mapped.view(), &self.binding);
+        self.engine = switch (backend) {
+            .cpu => .{ .cpu = try .init(gpa, io, self.mapped.view(), &self.binding) },
+            .metal => .{ .metal = try metal_plan.Plan.create(gpa, self.mapped.view(), &self.binding) },
+        };
         return self;
     }
 
     pub fn deinit(self: *Embedder) void {
         const gpa = self.gpa;
-        self.runtime.deinit();
+        switch (self.engine) {
+            .cpu => |*r| r.deinit(),
+            .metal => |plan| plan.destroy(),
+        }
         self.encoder.deinit();
         self.vocab.deinit();
         self.mapped.deinit(self.io);
@@ -104,9 +119,39 @@ pub const Embedder = struct {
         return frame(alloc, body, self.bos, self.eos, options);
     }
 
-    /// Writes the unit vector (`dimensions` values) of a prepared input.
+    /// Writes the unit vector (`dimensions` values) of a prepared input;
+    /// `observer` sees each stage's rows.
     pub fn embed(self: *Embedder, prepared: Prepared, vector: []f32, observer: ?Observer) !void {
-        try self.runtime.embed(.{ .tokens = prepared.tokens }, vector, observer);
+        switch (self.engine) {
+            .cpu => |*r| try r.embed(.{ .tokens = prepared.tokens }, vector, observer),
+            .metal => |plan| try plan.run(&.{.{ .tokens = prepared.tokens }}, &.{vector}, observer),
+        }
+    }
+
+    /// `embed` of every input, `vectors[i]` for `inputs[i]`. The Metal plan
+    /// packs consecutive inputs into batches of at most `metal_plan.max_rows`
+    /// rows (`batchRows` each), which changes no vector; the CPU runs them
+    /// one at a time.
+    pub fn embedBatch(self: *Embedder, inputs: []const Prepared, vectors: []const []f32) !void {
+        if (inputs.len != vectors.len) return error.InvalidShape;
+        switch (self.engine) {
+            .cpu => |*r| for (inputs, vectors) |p, v| try r.embed(.{ .tokens = p.tokens }, v, null),
+            .metal => |plan| {
+                const rows = try self.gpa.alloc(runtime.Input, inputs.len);
+                defer self.gpa.free(rows);
+                for (rows, inputs) |*r, p| r.* = .{ .tokens = p.tokens };
+                var first: usize = 0;
+                while (first < inputs.len) {
+                    var last = first;
+                    var used: usize = 0;
+                    while (last < inputs.len and used + metal_plan.batchRows(inputs[last].tokens.len) <= metal_plan.max_rows) : (last += 1)
+                        used += metal_plan.batchRows(inputs[last].tokens.len);
+                    if (last == first) return error.InputTooLong;
+                    try plan.run(rows[first..last], vectors[first..last], null);
+                    first = last;
+                }
+            },
+        }
     }
 };
 

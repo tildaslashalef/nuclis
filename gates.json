@@ -1063,6 +1063,74 @@
    "evidence": "docs/models/embeddinggemma.md"
   },
   {
+   "name": "embeddinggemma-vectors-metal",
+   "family": "embeddinggemma",
+   "tier": "verify",
+   "model": "embeddinggemma",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/embeddinggemma-check.zig",
+    "inference/src/embed.zig",
+    "inference/src/models/embeddinggemma*.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/gguf.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tokenizer/**",
+    "tests/fixtures/embeddinggemma-inputs/**",
+    "tests/fixtures/embeddinggemma-vectors/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-embeddinggemma",
+    "--",
+    "{model}",
+    "vectors",
+    "--backend",
+    "metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "97 texts on Metal against llama.cpp's Q8_0 vectors, cosine >= 0.99999; packed batches equal one at a time bit for bit",
+   "evidence": "docs/models/embeddinggemma.md"
+  },
+  {
+   "name": "embeddinggemma-google-metal",
+   "family": "embeddinggemma",
+   "tier": "verify",
+   "model": "embeddinggemma_bf16",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/embeddinggemma-check.zig",
+    "inference/src/embed.zig",
+    "inference/src/models/embeddinggemma*.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/gguf.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tokenizer/**",
+    "tests/fixtures/embeddinggemma-inputs/**",
+    "tests/fixtures/embeddinggemma-vectors/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-embeddinggemma",
+    "--",
+    "{model}",
+    "google",
+    "--backend",
+    "metal"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "97 texts on Metal, BF16 file, against Google's float32 vectors, cosine >= 0.9999999; packed batches equal one at a time bit for bit",
+   "evidence": "docs/models/embeddinggemma.md"
+  },
+  {
    "name": "gemma4-qat-trace-cpu",
    "family": "gemma4",
    "tier": "verify-release",

@@ -120,7 +120,7 @@ pub const Runtime = struct {
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         defer arena.deinit();
         var ws = try Workspace.init(arena.allocator(), rows);
-        try self.inputRows(input, ws.x0);
+        try inputRows(self.view, self.binding, input, ws.x0);
         @memcpy(ws.x, ws.x0);
         if (observer) |o| o.record(o.context, .input, ws.x0);
         for (self.binding.layers, self.layers, 0..) |layer, constants, il| {
@@ -134,47 +134,7 @@ pub const Runtime = struct {
         if (observer) |o| o.record(o.context, .final_norm, ws.h);
         try self.linear(self.binding.output, ws.h, rows, ws.projected);
         if (observer) |o| o.record(o.context, .projected, ws.projected);
-        // Mean over every row, then unit length, as sentence-transformers'
-        // Pooling (`include_prompt`) and Normalize modules do.
-        var sum: [out_width]f64 = @splat(0);
-        for (0..rows) |r| for (&sum, ws.projected[r * out_width ..][0..out_width]) |*s, v| {
-            s.* += v;
-        };
-        var norm: f64 = 0;
-        for (&sum) |*s| {
-            s.* /= @floatFromInt(rows);
-            norm += s.* * s.*;
-        }
-        norm = @sqrt(norm);
-        if (!(norm > 0) or !std.math.isFinite(norm)) return error.NonFiniteOutput;
-        for (vector, sum) |*v, s| v.* = @floatCast(s / norm);
-    }
-
-    /// x0: each token row decoded from `token_embd` and scaled by √d; each
-    /// span row copied from `features` unscaled.
-    fn inputRows(self: *Runtime, input: Input, x0: []f32) !void {
-        const scale: f32 = @sqrt(@as(f32, d));
-        var span: usize = 0;
-        var feature: usize = 0;
-        var i: usize = 0;
-        while (i < input.tokens.len) {
-            if (span < input.spans.len and input.spans[span].start == i) {
-                const s = input.spans[span];
-                if (s.count == 0 or i + s.count > input.tokens.len or (feature + s.count) * d > input.features.len) return error.InvalidShape;
-                @memcpy(x0[i * d ..][0 .. s.count * d], input.features[feature * d ..][0 .. s.count * d]);
-                i += s.count;
-                feature += s.count;
-                span += 1;
-                continue;
-            }
-            const token = input.tokens[i];
-            if (token >= model.vocabulary) return error.InvalidToken;
-            const row = x0[i * d ..][0..d];
-            try self.view.row(self.binding.token_embedding, token, row);
-            for (row) |*v| v.* *= scale;
-            i += 1;
-        }
-        if (span != input.spans.len or feature * d != input.features.len) return error.InvalidShape;
+        try pool(ws.projected, rows, vector);
     }
 
     fn attention(self: *Runtime, ws: *Workspace, layer: model.Layer, constants: LayerConstants) !void {
@@ -260,6 +220,53 @@ pub const Runtime = struct {
         try dense.matmul(self.io, .{ .rows = rows, .inner = m.columns, .outputs = count, .x = x[0 .. rows * m.columns], .w = decoded }, y[0 .. rows * count]);
     }
 };
+
+/// x0 (`input.tokens.len` rows of `d`): each token row decoded from
+/// `token_embd` and scaled by √d, each span row copied from `features`
+/// unscaled. Shared with the Metal plan.
+pub fn inputRows(view: weights.View, binding: *const model.Binding, input: Input, x0: []f32) !void {
+    const scale: f32 = @sqrt(@as(f32, d));
+    var span: usize = 0;
+    var feature: usize = 0;
+    var i: usize = 0;
+    while (i < input.tokens.len) {
+        if (span < input.spans.len and input.spans[span].start == i) {
+            const s = input.spans[span];
+            if (s.count == 0 or i + s.count > input.tokens.len or (feature + s.count) * d > input.features.len) return error.InvalidShape;
+            @memcpy(x0[i * d ..][0 .. s.count * d], input.features[feature * d ..][0 .. s.count * d]);
+            i += s.count;
+            feature += s.count;
+            span += 1;
+            continue;
+        }
+        const token = input.tokens[i];
+        if (token >= model.vocabulary) return error.InvalidToken;
+        const row = x0[i * d ..][0..d];
+        try view.row(binding.token_embedding, token, row);
+        for (row) |*v| v.* *= scale;
+        i += 1;
+    }
+    if (span != input.spans.len or feature * d != input.features.len) return error.InvalidShape;
+}
+
+/// The unit vector of `rows` projected rows (`embedding_out` wide): the mean
+/// over every row, then unit length, as sentence-transformers' Pooling
+/// (`include_prompt`) and Normalize modules do. Shared with the Metal plan.
+pub fn pool(projected: []const f32, rows: usize, vector: []f32) !void {
+    if (rows == 0 or projected.len < rows * out_width or vector.len != out_width) return error.InvalidShape;
+    var sum: [out_width]f64 = @splat(0);
+    for (0..rows) |r| for (&sum, projected[r * out_width ..][0..out_width]) |*s, v| {
+        s.* += v;
+    };
+    var norm: f64 = 0;
+    for (&sum) |*s| {
+        s.* /= @floatFromInt(rows);
+        norm += s.* * s.*;
+    }
+    norm = @sqrt(norm);
+    if (!(norm > 0) or !std.math.isFinite(norm)) return error.NonFiniteOutput;
+    for (vector, sum) |*v, s| v.* = @floatCast(s / norm);
+}
 
 /// Every buffer one pass needs, sized for its rows.
 const Workspace = struct {

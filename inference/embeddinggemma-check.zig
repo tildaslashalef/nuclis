@@ -1,7 +1,7 @@
-//! Explicit full-model check of EmbeddingGemma 2's CPU forward against the
+//! Explicit full-model check of EmbeddingGemma 2's forward against the
 //! recorded oracles (tests/fixtures/provenance.md, `embeddinggemma-*` rows).
 //!
-//!   embeddinggemma-check MODEL.gguf traces|vectors|google [FIXTURES_DIR]
+//!   embeddinggemma-check MODEL.gguf traces|vectors|google|bench [--backend cpu|metal] [FIXTURES_DIR]
 //!
 //! - `traces` (the Q8_0 file): the traced text cases stage by stage against
 //!   llama.cpp's CPU pass over the same weights in F32, within bounds set by
@@ -10,9 +10,15 @@
 //!   Q8_0 vectors.
 //! - `google` (the BF16 file): every text-only case against Google's float32
 //!   pass on the same weights, the accuracy claim.
+//! - `bench`: wall-clock rates, no oracle. 64 inputs of 256 tokens embedded
+//!   as one batch, then one input of 512 and one of 8192 tokens; each input
+//!   is BOS, " the" repeated, EOS (the cost does not depend on the text).
+//!   One untimed warm-up of each shape, then the median of the timed runs.
 //!
 //! Token ids must equal the oracle's, except in the `literal_special` cases,
-//! where they must differ and, tokenized the oracle's way, must match.
+//! where they must differ and, tokenized the oracle's way, must match. On
+//! Metal, `vectors` and `google` also embed every text case in packed
+//! batches, which must give the one-at-a-time vectors bit for bit.
 //! FIXTURES_DIR defaults to `tests/fixtures`, read at run time.
 const std = @import("std");
 const inference = @import("inference");
@@ -162,6 +168,74 @@ const Trace = struct {
     }
 };
 
+/// An input of `tokens` rows: BOS, `filler` repeated, EOS.
+fn benchInput(arena: std.mem.Allocator, embedder: *const embed.Embedder, filler: u32, tokens: usize) !embed.Prepared {
+    const ids = try arena.alloc(u32, tokens);
+    @memset(ids, filler);
+    ids[0] = embedder.bos.?;
+    ids[tokens - 1] = embedder.eos.?;
+    return .{ .tokens = ids, .length = tokens };
+}
+
+/// Median wall time in milliseconds of `runs` timed batches, after one untimed.
+fn timeBatch(io: std.Io, embedder: *embed.Embedder, inputs: []const embed.Prepared, outs: []const []f32, runs: usize) !f64 {
+    var times: [16]f64 = undefined;
+    try embedder.embedBatch(inputs, outs);
+    for (times[0..runs]) |*t| {
+        const start = std.Io.Clock.awake.now(io);
+        try embedder.embedBatch(inputs, outs);
+        t.* = @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / 1e6;
+    }
+    std.mem.sort(f64, times[0..runs], {}, std.sort.asc(f64));
+    return times[runs / 2];
+}
+
+fn bench(arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder) !void {
+    const filler = try embedder.encoder.encode(arena, " the", false, .{});
+    if (filler.len != 1) return error.InvalidFixture;
+    const batch = 64;
+    const short = 256;
+    const inputs = try arena.alloc(embed.Prepared, batch);
+    const outs = try arena.alloc([]f32, batch);
+    for (inputs, outs) |*input, *out| {
+        input.* = try benchInput(arena, embedder, filler[0], short);
+        out.* = try arena.alloc(f32, embed.dimensions);
+    }
+    const batch_ms = try timeBatch(io, embedder, inputs, outs, 7);
+    std.debug.print("{d} inputs of {d} tokens: {d:.1} ms, {d:.1} inputs/s, {d:.0} tokens/s\n", .{ batch, short, batch_ms, batch * 1000 / batch_ms, batch * short * 1000 / batch_ms });
+    const long = [_]embed.Prepared{try benchInput(arena, embedder, filler[0], embed.max_tokens)};
+    for ([_]usize{ 512, embed.max_tokens }) |tokens| {
+        const one = [_]embed.Prepared{try benchInput(arena, embedder, filler[0], tokens)};
+        const ms = try timeBatch(io, embedder, &one, outs[0..1], 5);
+        std.debug.print("one input of {d} tokens: {d:.1} ms, {d:.0} tokens/s\n", .{ tokens, ms, @as(f64, @floatFromInt(tokens)) * 1000 / ms });
+    }
+    // Per kernel and shape, from the GPU's timestamps: the batch, then the long input.
+    const plan = switch (embedder.engine) {
+        .metal => |plan| plan,
+        .cpu => return,
+    };
+    var diagnostic: [512]u8 = @splat(0);
+    try plan.backend.enableProfiling(4096, &diagnostic);
+    for ([_][]const embed.Prepared{ inputs, &long }) |set| {
+        plan.backend.profile.?.clear();
+        try embedder.embedBatch(set, outs[0..set.len]);
+        const profile = &plan.backend.profile.?;
+        const Row = struct { key: inference.metal.Profile.Key, total: inference.metal.Profile.Total };
+        var rows: std.ArrayList(Row) = .empty;
+        var it = profile.totals.iterator();
+        while (it.next()) |e| try rows.append(arena, .{ .key = e.key_ptr.*, .total = e.value_ptr.* });
+        std.mem.sort(Row, rows.items, {}, struct {
+            fn more(_: void, a: Row, b: Row) bool {
+                return a.total.seconds > b.total.seconds;
+            }
+        }.more);
+        var sum: f64 = 0;
+        for (rows.items) |r| sum += r.total.seconds;
+        std.debug.print("profile, {d} inputs: {d:.1} ms of dispatches, {d:.1} ms GPU\n", .{ set.len, sum * 1000, profile.gpu_seconds * 1000 });
+        for (rows.items[0..@min(rows.items.len, 14)]) |r| std.debug.print("  {s:<28} {d:>5}x{d:<5} enc {?d:<3} {d:>4} calls {d:>8.1} ms\n", .{ @tagName(r.key.kernel), r.key.rows, r.key.columns, r.key.encoding, r.total.dispatches, r.total.seconds * 1000 });
+    }
+}
+
 fn isLiteral(id: []const u8) bool {
     for (literal_special) |l| if (std.mem.eql(u8, l, id)) return true;
     return false;
@@ -172,16 +246,37 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len < 3 or args.len > 4) {
-        std.debug.print("usage: embeddinggemma-check MODEL.gguf traces|vectors|google [FIXTURES_DIR]\n", .{});
+    const usage = "usage: embeddinggemma-check MODEL.gguf traces|vectors|google|bench [--backend cpu|metal] [FIXTURES_DIR]\n";
+    if (args.len < 3) {
+        std.debug.print(usage, .{});
         return error.InvalidArguments;
     }
-    const fixtures = if (args.len == 4) args[3] else "tests/fixtures";
+    var backend: embed.Backend = .cpu;
+    var fixtures: []const u8 = "tests/fixtures";
+    var rest = args[3..];
+    if (rest.len >= 2 and std.mem.eql(u8, rest[0], "--backend")) {
+        backend = std.meta.stringToEnum(embed.Backend, rest[1]) orelse {
+            std.debug.print(usage, .{});
+            return error.InvalidArguments;
+        };
+        rest = rest[2..];
+    }
+    if (rest.len > 1) {
+        std.debug.print(usage, .{});
+        return error.InvalidArguments;
+    }
+    if (rest.len == 1) fixtures = rest[0];
     const mode = args[2];
     const google_mode = std.mem.eql(u8, mode, "google");
-    if (!google_mode and !std.mem.eql(u8, mode, "vectors") and !std.mem.eql(u8, mode, "traces")) return error.InvalidArguments;
-    var embedder = try embed.Embedder.open(gpa, io, args[1]);
+    const bench_mode = std.mem.eql(u8, mode, "bench");
+    if (!google_mode and !bench_mode and !std.mem.eql(u8, mode, "vectors") and !std.mem.eql(u8, mode, "traces")) return error.InvalidArguments;
+    const load_start = std.Io.Clock.awake.now(io);
+    var embedder = try embed.Embedder.open(gpa, io, args[1], backend);
     defer embedder.deinit();
+    if (bench_mode) {
+        std.debug.print("open ({s}): {d} ms\n", .{ @tagName(backend), load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
+        return bench(arena, io, embedder);
+    }
     const reference = try Vectors.load(arena, io, try std.fmt.allocPrint(arena, "{s}/embeddinggemma-vectors/{s}", .{ fixtures, if (google_mode) "st-f32" else "llama-q8_0" }));
     const floor: f64 = if (google_mode) min_cosine_google else min_cosine_llama;
     const cases = try textCases(arena, io, fixtures);
@@ -207,9 +302,13 @@ pub fn main(init: std.process.Init) !void {
         var low: f64 = 1;
         var sum: f64 = 0;
         var counted: usize = 0;
-        for (cases) |case| {
-            var prepared = try embedder.prepare(gpa, .{ .parts = &.{.{ .text = case.text }} }, .{});
-            defer prepared.deinit(gpa);
+        // Each case's prepared input and its one-at-a-time vector, for the batch check.
+        const prepared_all = try arena.alloc(embed.Prepared, cases.len);
+        const singles = try arena.alloc([embed.dimensions]f32, cases.len);
+        @memset(singles, @splat(0));
+        for (cases, prepared_all, singles) |case, *kept, *single| {
+            const prepared = try embedder.prepare(arena, .{ .parts = &.{.{ .text = case.text }} }, .{});
+            kept.* = prepared;
             const want_ids = reference.ids.get(case.id).?;
             const want = reference.values.get(case.id).?;
             if (isLiteral(case.id)) {
@@ -226,6 +325,7 @@ pub fn main(init: std.process.Init) !void {
                 try embedder.embed(.{ .tokens = oracle_way, .length = oracle_way.len }, &vector, null);
                 const parsed_cosine = cosine(&vector, want);
                 try embedder.embed(prepared, &vector, null);
+                single.* = vector;
                 std.debug.print("{s}: {d} literal tokens, cosine {d:.7}; specials parsed as the oracle does, {d} tokens, cosine {d:.7}\n", .{ case.id, prepared.tokens.len, cosine(&vector, want), oracle_way.len, parsed_cosine });
                 if (parsed_cosine < floor) failures += 1;
                 continue;
@@ -236,6 +336,7 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             }
             try embedder.embed(prepared, &vector, null);
+            single.* = vector;
             const c = cosine(&vector, want);
             low = @min(low, c);
             sum += c;
@@ -245,7 +346,22 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("{s}: cosine {d:.7} ({d} tokens)\n", .{ case.id, c, prepared.tokens.len });
             }
         }
-        std.debug.print("{d} text cases with the oracle's ids: cosine against {s} min {d:.7} (1 - min = {e:.2}), mean {d:.7} (floor {d})\n", .{ counted, if (google_mode) "Google f32" else "llama.cpp Q8_0", low, 1 - low, sum / @as(f64, @floatFromInt(counted)), floor });
+        std.debug.print("{d} text cases with the oracle's ids ({s}): cosine against {s} min {d:.7} (1 - min = {e:.2}), mean {d:.7} (floor {d})\n", .{ counted, @tagName(backend), if (google_mode) "Google f32" else "llama.cpp Q8_0", low, 1 - low, sum / @as(f64, @floatFromInt(counted)), floor });
+        if (backend == .metal) {
+            // Batching changes timing, never answers.
+            const batched = try arena.alloc([embed.dimensions]f32, cases.len);
+            const outs = try arena.alloc([]f32, cases.len);
+            for (outs, batched) |*o, *b| o.* = b;
+            try embedder.embedBatch(prepared_all, outs);
+            var differing: usize = 0;
+            var worst: f32 = 0;
+            for (singles, batched) |a, b| {
+                if (!std.mem.eql(u8, std.mem.asBytes(&a), std.mem.asBytes(&b))) differing += 1;
+                for (a, b) |x, y| worst = @max(worst, @abs(x - y));
+            }
+            std.debug.print("{d} cases in packed batches: {d} vectors differ from one at a time, worst |difference| {e:.3}\n", .{ cases.len, differing, worst });
+            if (differing != 0) failures += 1;
+        }
     }
     if (failures != 0) {
         std.debug.print("{d} failures\n", .{failures});
