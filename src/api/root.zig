@@ -448,7 +448,7 @@ test "serve arguments" {
     try std.testing.expectEqual(inference.decide.Backend.cpu, o.backend.?);
     try std.testing.expectEqualStrings("0.0.0.0", o.host);
     const defaults = try parseArgs(arena, &.{}, configured, &diag);
-    try std.testing.expectEqual(@as(u16, 8000), defaults.port);
+    try std.testing.expectEqual(@as(u16, 9000), defaults.port);
     try std.testing.expectEqualStrings("127.0.0.1", defaults.host);
     try std.testing.expect(defaults.log);
     try std.testing.expectEqual(@as(u32, 300), defaults.timeout);

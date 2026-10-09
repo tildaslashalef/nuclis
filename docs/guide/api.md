@@ -25,13 +25,13 @@ is the reference for client authors; it assumes nothing about the code.
 
 ```sh
 nuclis model pull laya                 # once: the default decision model
-nuclis serve                           # http://127.0.0.1:8000/v1, decide.model open
+nuclis serve                           # http://127.0.0.1:9000/v1, decide.model open
 ```
 
 | Option | Meaning |
 | --- | --- |
 | `--host <ip>` | the address to listen on: an IP literal (`127.0.0.1`, `::1`, `0.0.0.0`) or `localhost`; default `serve.host`, `127.0.0.1`. Any address beyond loopback prints a warning: there is no authentication. |
-| `--port <n>` | default `serve.port`, `8000` |
+| `--port <n>` | default `serve.port`, `9000` |
 | `--model <name>` | a decision model opened before the server listens (at most 2); without one, `decide.model` opens; others open on their first request |
 | `--chat-model <name>` | a language model opened before the server listens; without one, the first chat request opens one |
 | `--memory <GiB>` | what every open model may hold together; default `serve.memory_bytes`, else physical memory less 16 GiB ([memory](#memory)) |
@@ -43,7 +43,7 @@ The configuration file (`~/.nuclis/nuclis.json`) holds the defaults:
 
 ```json
 "decide": { "model": "laya" },
-"serve":  { "host": "127.0.0.1", "port": 8000, "log": true, "timeout": 300 }
+"serve":  { "host": "127.0.0.1", "port": 9000, "log": true, "timeout": 300 }
 ```
 
 `nuclis config set serve.port 9000` changes one; the flags override them
@@ -194,7 +194,7 @@ TypeSafe's Jev call: one state, Jev's answers. A Jev client needs no
 change beyond the base URL.
 
 ```sh
-curl -s localhost:8000/v1/systemone -d '{
+curl -s localhost:9000/v1/systemone -d '{
   "model": "jev-latest",
   "state": "Help! My payouts have been failing for 3 days.",
   "questions": {
@@ -246,7 +246,7 @@ The body is what `nuclis decide --request` reads; the response is
 byte for byte what `nuclis decide --json` writes for it, timings aside.
 
 ```sh
-curl -s 'localhost:8000/v1/decisions?explain=1' -d '{
+curl -s 'localhost:9000/v1/decisions?explain=1' -d '{
   "model": "laya-multilingual",
   "questions": {
     "team": {"type": "choice", "instructions": "Which team should handle this?",
@@ -345,10 +345,10 @@ pass: batching changes timing, never answers.
 OpenAI's Chat Completions for the language models `nuclis chat` runs. A
 program written against an OpenAI SDK, or an agent configured for an
 OpenAI-compatible server, works with the base URL
-`http://127.0.0.1:8000/v1` and any API key.
+`http://127.0.0.1:9000/v1` and any API key.
 
 ```sh
-curl -s localhost:8000/v1/chat/completions -d '{
+curl -s localhost:9000/v1/chat/completions -d '{
   "model": "qwen3.8-27b",
   "messages": [{"role": "user", "content": "Name a prime number above 50."}],
   "reasoning_effort": "none"
@@ -511,7 +511,7 @@ provider. For pi, `~/.pi/agent/models.json`:
 {
   "providers": {
     "nuclis": {
-      "baseUrl": "http://127.0.0.1:8000/v1",
+      "baseUrl": "http://127.0.0.1:9000/v1",
       "api": "openai-completions",
       "apiKey": "nuclis",
       "models": [{

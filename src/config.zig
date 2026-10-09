@@ -179,7 +179,7 @@ pub const Config = struct {
         /// `localhost`. Beyond loopback the API is reachable from the
         /// network, with no authentication.
         host: []const u8 = "127.0.0.1",
-        port: u16 = 8000,
+        port: u16 = 9000,
         /// A line per request on stdout; `--quiet` turns it off for a run.
         log: bool = true,
         /// Seconds a decision request may wait for the GPU before `529
@@ -1444,7 +1444,7 @@ test "file values override defaults per key and the source is recorded" {
     try std.testing.expectEqual(.file, loaded.source("agent.theme"));
     try std.testing.expect(!@hasField(ModelEntry.Agent, "theme"));
     try std.testing.expectEqualStrings("127.0.0.1", loaded.config.serve.host);
-    try std.testing.expectEqual(@as(u16, 8000), loaded.config.serve.port);
+    try std.testing.expectEqual(@as(u16, 9000), loaded.config.serve.port);
 
     var served = try fromText(alloc,
         \\{ "schema_version": 1, "serve": { "host": "0.0.0.0", "port": 9000 } }

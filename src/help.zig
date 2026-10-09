@@ -484,7 +484,7 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "--host <ip>", "the address to listen on; default serve.host,");
     try more(out, "127.0.0.1 (any other prints a warning: there is no");
     try more(out, "authentication)");
-    try row(out, sty, "--port <n>", "default serve.port, 8000");
+    try row(out, sty, "--port <n>", "default serve.port, 9000");
     try row(out, sty, "--model <name|path>", "open a decision model at start, at most 2;");
     try more(out, "default decide.model; others open on first use");
     try more(out, "(2 stay open)");
@@ -510,8 +510,8 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
 
     try heading(out, sty, "Examples:");
-    try example(out, sty, "nuclis serve", "listen on 127.0.0.1:8000, decide.model open");
-    try example(out, sty, "curl -s localhost:8000/v1/decisions -d @ticket.json", "one decision request");
+    try example(out, sty, "nuclis serve", "listen on 127.0.0.1:9000, decide.model open");
+    try example(out, sty, "curl -s localhost:9000/v1/decisions -d @ticket.json", "one decision request");
     try example(out, sty, "nuclis serve --chat-model qwen3.8-27b", "a language model open from the start");
 
     try heading(out, sty, "Notes:");

@@ -195,7 +195,7 @@ errors, and rates: [docs/guide/api.md](docs/guide/api.md).
 
 ```sh
 nuclis serve
-curl -s localhost:8000/v1/systemone -d '{"model": "jev-latest",
+curl -s localhost:9000/v1/systemone -d '{"model": "jev-latest",
   "state": "Help! My payouts have been failing for 3 days.",
   "questions": {"is_urgent": {"type": "noul", "instructions": "Does this convey urgency?"}}}'
 ```
@@ -204,7 +204,7 @@ curl -s localhost:8000/v1/systemone -d '{"model": "jev-latest",
 still names it, since the default model stays `decide.model`:
 
 ```sh
-curl -s localhost:8000/v1/systemone -d '{"model": "clef-flash",
+curl -s localhost:9000/v1/systemone -d '{"model": "clef-flash",
   "state": "Our checkout returns errors and orders are blocked.",
   "questions": {"team": {"type": "choice", "criteria": {"billing": "Payments", "technical": "Outages"}}}}'
 ```
@@ -213,7 +213,7 @@ curl -s localhost:8000/v1/systemone -d '{"model": "clef-flash",
 
 `nuclis serve` also answers OpenAI's Chat Completions for the language
 models, so a program or an agent written for an OpenAI-compatible server
-changes only its base URL (`http://127.0.0.1:8000/v1`). One model is open
+changes only its base URL (`http://127.0.0.1:9000/v1`). One model is open
 at a time; a request names it, and tools, images, and the reasoning
 effort map onto the model's own template. The client resends the whole
 conversation, and the server reuses the model's state for what it has
@@ -223,7 +223,7 @@ events, and a client that leaves stops its request.
 
 ```sh
 nuclis serve --chat-model qwen3.8-27b
-curl -s localhost:8000/v1/chat/completions -d '{"model": "qwen3.8-27b",
+curl -s localhost:9000/v1/chat/completions -d '{"model": "qwen3.8-27b",
   "messages": [{"role": "user", "content": "Name a prime number above 50."}]}'
 ```
 

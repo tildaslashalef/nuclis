@@ -6,7 +6,7 @@ refusals. Not a gate: it needs a model and a GPU.
 
     make api-check                              # starts ./zig-out/bin/nuclis serve
     make api-check ARGS='--model gemma-4-e4b-qat --image-model gemma-4-12b-qat'
-    python3 scripts/api-check.py --url http://127.0.0.1:8000/v1   # a running server
+    python3 scripts/api-check.py --url http://127.0.0.1:9000/v1   # a running server
 
 Standard library only, so it runs without the SDKs installed; it asserts
 the fields they read instead.

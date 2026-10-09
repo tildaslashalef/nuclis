@@ -875,7 +875,7 @@ data and private source snippets must not become test or benchmark fixtures.
 
 ### Measuring the API
 
-`nuclis serve` listens on `127.0.0.1:8000` by default (`serve.port`,
+`nuclis serve` listens on `127.0.0.1:9000` by default (`serve.port`,
 `--port`); start it with the models measured open (`--model laya --model
 laya-multilingual`) so no request pays an open, and with `--quiet`: the
 request log writes and flushes a line per response. Rates come from ApacheBench (`/usr/sbin/ab`,
@@ -884,7 +884,7 @@ fractions of a millisecond where the summary rounds to whole ones:
 
 ```sh
 ab -k -n 512 -c 16 -p request.json -T application/json -e out.csv \
-  http://127.0.0.1:8000/v1/decisions
+  http://127.0.0.1:9000/v1/decisions
 ```
 
 `ab` speaks HTTP/1.0: with `-k` it keeps a connection only when the reply

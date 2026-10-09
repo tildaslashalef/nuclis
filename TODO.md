@@ -77,6 +77,9 @@ help and completion are committed; spec §3, §4, §5.8, a new §5.10, §6 and
   it is. `model pull <owner/repo> --register` records a `gemma-embedding2`
   GGUF as `"kind": "embedding"` (key `embed.model`). The `model ls`
   listing is schema 5.
+- **`serve.port` defaults to 9000 (user, 2026-10-09)**, not 8000, which
+  `make site-serve` keeps. Code, help, completion, `api-check.py`, the
+  README and the guides changed with it (its own commit).
 
 What Session 5 inherits:
 - `request.inputFromJson` already parses one API input (a string or chat

@@ -45,7 +45,7 @@ A file as `init` writes it:
                 "thinking_budget": 1024 },
   "decide":   { "model": "laya" },
   "embed":    { "model": "embeddinggemma-2" },
-  "serve":    { "host": "127.0.0.1", "port": 8000, "log": true },
+  "serve":    { "host": "127.0.0.1", "port": 9000, "log": true },
   "cache":    { "memory_bytes": 4294967296, "disk_bytes": 8589934592 },
   "models":   { "qwen3.8-27b": { "kind": null, "path": null,
                                  "repo": "unsloth/Qwen3.8-27B-GGUF", "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
@@ -119,7 +119,7 @@ global `generation.speculative` applies to models without an entry.
 | `decide.model` | `laya` | the decision model `nuclis decide` opens, and `nuclis serve` opens at start: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
 | `embed.model` | `embeddinggemma-2` | the embedding model `nuclis embed` opens: a registry entry of kind `embedding`, an embedding catalogue name, or a GGUF path. Another kind's name is refused |
 | `serve.host` | `127.0.0.1` | an IP literal or `localhost`; beyond loopback the API is reachable from the network with no authentication. Flag `--host` |
-| `serve.port` | `8000` | flag `--port` |
+| `serve.port` | `9000` | flag `--port` |
 | `serve.log` | `true` | a line per request on stdout; `--quiet` turns it off |
 | `serve.timeout` | `300` | seconds a request may wait for the GPU before `529 timeout` (a clef-flash request can hold it for minutes); flag `--timeout` |
 | `serve.memory_bytes` | `null` | what every model `nuclis serve` keeps open may hold together, decision and language alike; null is physical memory less 16 GiB. Flag `--memory <GiB>` ([api.md § Memory](api.md#memory)) |
