@@ -112,6 +112,13 @@ memory kind, `embedding`, beside `generation`/`language` and `decision`.
   audio and images is planned after this unit merges. This unit rewords
   spec §10 ("an embedding index is ruled out") to name it as a separate
   theme, not ruled out.
+- **F32 only on Metal (user, 2026-10-09).** Half-operand matmul tiles
+  would make a batch about 20–25 % faster. They are not built: f16 may
+  overflow (the feed-forward down input is not normalized), and bf16 gives
+  up the agreement with Google's vectors. Session 8 measures the
+  activation ranges. A bf16 opt-in is revisited only if indexing speed
+  matters once the API exists, accepted only at cosine ≥ 0.99999 against
+  Google's vectors and unchanged retrieval top-5.
 - **One branch, no push until complete** (see *Where we are*).
 - **A catalogue and registry entry, the README at the close (user,
   2026-10-09).** Session 1 pulled the files without `--register`: until
@@ -432,6 +439,13 @@ and `make verify`.
      f32.
    - Write a dated, revision-cited table into the model document. If Q8_0
      loses measurably, raise it with the user before closing.
+   - **Activation ranges** (the f16 question, decided 2026-10-09). Over
+     the fixture set, record the largest |value| at each matmul's input
+     (per stage, the worst case and layer), from the CPU runtime's
+     observer or a temporary probe. Write a short table and its reading
+     into `docs/models/embeddinggemma.md` § The f16 hazard: whether any
+     input exceeds f16's 65504, or comes within 2⁸ of it. This is a fact
+     for a later decision, not a change: the plan stays F32.
 2. **The rates.** Text from Session 3, plus one image and 10 s of audio,
    end to end through `nuclis serve`. Record them in the model document
    and in `docs/guide/api.md` § Measured rates.

@@ -242,6 +242,19 @@ weight and activation tiles are both F32 (`matmulGeometry`: `half =
 false`); the plan calls `matmulTile` so that no batch size reaches
 another kernel.
 
+**Decided 2026-10-09: F32 only.** Half-operand tiles would make a Metal
+batch about 20–25 % faster (§ The Metal plan, rates), but they are not
+built for this family:
+- In f16, the feed-forward down projection's input (gelu(gate) · up) is
+  not normalized and may overflow.
+- In bf16, the vectors would give up their agreement with Google's float32
+  pass (llama.cpp's bf16-staged run reaches a cosine of 0.999995 against
+  ours at 1 − 4e-12).
+- Vectors from two precisions are not exactly comparable in one index.
+
+A bf16 mode would be an opt-in, measured against Google's vectors and a
+retrieval check, and only once indexing speed is shown to matter.
+
 ## The mmproj (`clip`, 963 tensors)
 
 One file carries both encoders: `clip.has_vision_encoder` and
