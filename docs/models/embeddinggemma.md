@@ -323,9 +323,22 @@ here, 1536 → 2560 there):
 - **Google's processor cuts a clip at 30 s** (`max_length` 480,000
   samples).
 
-**Video** (not in this unit) reuses the vision encoder: frames sampled at
-1 fps, at most 32 frames, 140 soft tokens per frame, token `<|video|>`
-258884.
+**Video** (deferred to its own unit, 2026-10-09) reuses the vision
+encoder. From Google's `EmbeddingGemma2VideoProcessor` and
+`EmbeddingGemma2Processor` at the pinned revision:
+- **Sampling:** frames at 1 fps, at most 32; a longer video is
+  resampled uniformly (`overflow_strategy = "uniform"`).
+- **Frames:** each is resized as an image is, under a 140-soft-token
+  budget, and framed as BOI (255999), its rows as `<|video|>` (258884)
+  placeholders, EOI. There are no timestamps (`add_timestamps` false), so
+  32 frames take about 4,500 tokens.
+- **The soundtrack is not embedded:** a video's audio would be a separate
+  audio part.
+- **What the unit would add:** an AVFoundation frame decoder beside the
+  image and audio bridges, Google's sampling, oracle fixtures from a short
+  generated video, gates, `--video`, and a video part in the API. Parity
+  with Google is exact only up to the decoded pixels, as with resampled
+  audio.
 
 ## The input contract
 

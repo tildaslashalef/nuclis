@@ -867,10 +867,12 @@ OpenAI-compatible clients it serves use (decided 2026-10-08). The server wraps t
 library; tool execution and permissions stay with the consuming agent. A docs or API lookup tool for the agent was assessed and not
 scheduled: read-only docs roots would be the cheapest form, a bounded
 fetch would reopen the no-permission decision, an embedding index is
-not a tool of the agent. A personal index (search over the user's own
-documents, audio, and images through the embedding path, §5.10) is a later
-theme of its own, after the embedding API. Video input to the embedding
-model (frames through the vision encoder) is deferred to its own unit.
+not a tool of the agent. A personal index (walking the user's files,
+chunking, storing vectors, search) is not nuclis's: nuclis stays an
+engine, and an application that wants retrieval calls `POST
+/v1/embeddings` (§5.10) and owns everything around it (decided
+2026-10-09). Video input to the embedding model (frames through the vision
+encoder) is deferred to its own unit.
 
 Non-goals: training, model conversion or quantization tooling, universal
 GGUF support, a general tensor compiler, and matching any external

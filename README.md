@@ -66,7 +66,9 @@ decoding, switched on where it measured faster.
 
 Decision models, which answer typed questions instead of writing text,
 have their own entries: `laya`, `laya-multilingual`, and `clef-flash`
-([below](#decision-models-laya-and-clef-flash)).
+([below](#decision-models-laya-and-clef-flash)). So does the embedding
+model, `embeddinggemma-2`, which turns text, images and audio into vectors
+([below](#embeddings-embeddinggemma-2)).
 
 **Anything else** runs when its architecture has an adapter (Qwen3.8,
 Gemma 4, Muse Glimmer): finetunes, other quantizations, Gemma 4's K-quant
@@ -225,6 +227,38 @@ events, and a client that leaves stops its request.
 nuclis serve --chat-model qwen3.8-27b
 curl -s localhost:9000/v1/chat/completions -d '{"model": "qwen3.8-27b",
   "messages": [{"role": "user", "content": "Name a prime number above 50."}]}'
+```
+
+## Embeddings: EmbeddingGemma 2
+
+`nuclis embed` and `POST /v1/embeddings` run Google's
+[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2). It maps
+a sentence, an image, a spoken clip, or any mix of them in one input, to a
+768-number unit vector. Things that mean the same land close together,
+whatever they are made of, so one cosine compares anything with anything.
+The vectors are for search, clustering and retrieval; nuclis embeds, and
+the application that searches keeps the index.
+
+```sh
+nuclis model pull embeddinggemma-2 --with mmproj            # 310 MB, and 982 MB of image and audio encoders
+nuclis embed --task search_query "how do auroras form?"
+nuclis embed --image photo.jpg --audio memo.m4a "the shopping list"   # three vectors, crossed
+```
+
+The vectors match Google's own. On the BF16 file, every text, image and
+clip of the fixture set agrees with Google's float32 pipeline to
+`1 − cos` ≤ 5e-11, on the CPU and on Metal. The pinned Q8_0 file costs
+about 5e-5. Images go through Google's processor (its grid,
+torchvision's resize), and audio through Google's log-mel front end and
+the Gemma 4 conformer. On an M4 Pro, 64 inputs of 256 tokens embed at 38
+a second; an image takes about 0.46 s and 4.8 s of speech 0.13 s. The API
+speaks OpenAI's embeddings format, packs requests into shared GPU passes,
+and gives every input the same vector alone or batched. Details:
+[docs/models/embeddinggemma.md](docs/models/embeddinggemma.md) and
+[docs/guide/api.md](docs/guide/api.md#embeddings).
+
+```sh
+curl -s localhost:9000/v1/embeddings -d '{"input": ["a cat", "a kitten"], "task": "similarity"}'
 ```
 
 ## Documentation

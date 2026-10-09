@@ -116,6 +116,10 @@ flowchart TB
     api --> wire
     wire --> dec
     api --> dec
+    api --> emb
+    cli --> emb
+    emb --> media
+    emb --> metal
     dec --> tok
     dec --> st
     dec --> cpu
@@ -195,6 +199,23 @@ of the two; the family decides how a question is validated
 it knows the model, and a `Question` carries the order the model reads
 its options in beside the order it is answered in
 ([clef-flash.md](models/clef-flash.md)).
+
+### The embedding path
+
+`nuclis embed` and `POST /v1/embeddings` do not go through `Engine`
+either. `inference.embed.Embedder` opens an EmbeddingGemma 2 file and,
+optionally, its mmproj. It turns an input's ordered parts into rows: text
+tokens, and for each image or clip its begin marker, the projector's rows
+(`vision/gemma4.zig` with Google's activation, `audio/gemma4a.zig` after
+`audio/mel.zig`), and its end marker. Then one bidirectional pass of the
+24-block encoder (`models/embeddinggemma*.zig`), a mean over every row,
+and a unit vector. There is no cache and no session, and on Metal inputs
+are packed back to back with per-row bounds, as Laya's are. The media
+encoders are built on first use. Images and audio follow Google's
+processor, not the chat path's reference pipeline, because the oracle is
+Google's float32 vectors ([embeddinggemma.md](models/embeddinggemma.md),
+[audio.md](engine/audio.md)). nuclis stops at the vector: indexing and
+search belong to the application that calls it.
 
 ### The API layer
 
