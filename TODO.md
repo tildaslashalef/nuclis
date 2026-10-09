@@ -246,6 +246,29 @@ reference for this family.
      8192 tokens.
    - The inventory fixture binding with no weights.
 
+**Read before coding (2026-10-09), settling the open points:**
+- Matrices go through `cpu.dense.matmul` (F32 SIMD lanes, split across
+  `Io` tasks). Each matrix is decoded from its Q8_0/BF16 rows
+  (`quant.row`) into one reused F32 scratch, at most 2048 × 512, right
+  before its matmul. Nothing is decoded at `open`: an F32 copy would be
+  about 1.1 GB, half of it `token_embd`, whose rows are gathered one by
+  one. The matvec reference (F64 per row) would take minutes on an
+  8142-token input.
+- Attention is `cpu.dense.attention`, which already has the symmetric
+  window (`|i − j| ≤ window`). It gains grouped-query attention: a
+  `kv_heads` count and a `kv_stride`, both defaulting to the query's, so
+  Laya's calls are unchanged.
+- `ple` is computed per layer from the kept `x0` (rows `l·512 …` of
+  `per_layer_model_proj`), not as one rows × 12288 buffer: that buffer
+  would be 400 MB at 8192 rows.
+- Inputs use Gemma 4's shape: placeholder `tokens`, `vision.Span` runs, and
+  the projector `features` rows. The runtime owns the whole numerical path
+  to the unit vector (`output_norm`, `output`, mean, L2); `embed.zig` owns
+  files, tokenization and framing, limits, and Matryoshka truncation.
+- The check tool reads fixtures at run time from `tests/fixtures/`.
+  `@embedFile` cannot reach outside `inference/`. The gate model
+  `embeddinggemma` is the Q8_0 path with no `entry` until Session 4.
+
 **Gates.** `zig build test`, `make verify-auto`, and the new CPU gates.
 
 ## Session 3. Text encoder on Metal
