@@ -741,7 +741,9 @@ pub const Engine = struct {
     io: std.Io,
     backend: Backend,
     mapped: inference.weights.Mapped,
-    vocab: inference.vocabulary.Vocabulary,
+    /// On the heap: `encoder` keeps its address, which must survive the
+    /// Engine being returned and moved by value.
+    vocab: *inference.vocabulary.Vocabulary,
     encoder: inference.tokenizer.Encoder,
     model: Model,
     /// The profile pinned to the artifact's chat template, or null when no
@@ -786,7 +788,9 @@ pub const Engine = struct {
         var draft_mapped: ?inference.weights.Mapped = null;
         errdefer if (draft_mapped) |*m| m.deinit(io);
         const adapter = try models.select(mapped.document.string("general.architecture") orelse "");
-        var vocab = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
+        const vocab = try alloc.create(inference.vocabulary.Vocabulary);
+        errdefer alloc.destroy(vocab);
+        vocab.* = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
         errdefer vocab.deinit();
         const detected = profiles.forDocument(mapped.document);
         const profile = forced orelse detected;
@@ -850,7 +854,7 @@ pub const Engine = struct {
         var spec: ?SpeculativeScratch = null;
         errdefer if (spec) |*s| s.deinit(alloc);
         if (model.drafter()) |drafter| spec = try SpeculativeScratch.init(alloc, vocab.tokens.len, drafter.hidden, drafter.max_proposals);
-        var encoder = try inference.tokenizer.Encoder.init(alloc, &vocab);
+        var encoder = try inference.tokenizer.Encoder.init(alloc, vocab);
         errdefer encoder.deinit();
         return .{
             .alloc = alloc,
@@ -880,6 +884,7 @@ pub const Engine = struct {
         if (self.draft_mapped) |*m| m.deinit(self.io);
         self.encoder.deinit();
         self.vocab.deinit();
+        self.alloc.destroy(self.vocab);
         self.mapped.deinit(self.io);
         self.* = undefined;
     }
@@ -1175,7 +1180,7 @@ pub fn complete(
             const self: *@This() = @ptrCast(@alignCast(context));
             if (self.eng.isStop(id)) return;
             if (self.decoder.thinking and !self.decoder.in_header) self.reasoning += 1;
-            const piece = try inference.bpe.decode(self.eng.alloc, &self.eng.vocab, &.{id}, true, .{});
+            const piece = try inference.bpe.decode(self.eng.alloc, self.eng.vocab, &.{id}, true, .{});
             defer self.eng.alloc.free(piece);
             try self.decoder.feed(id, piece, self.sink);
         }
@@ -1192,7 +1197,7 @@ pub fn complete(
             return close;
         }
     };
-    var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, &eng.vocab, buffers.effort), .sink = sink, .budget = buffers.thinking_budget };
+    var bridge: Bridge = .{ .eng = eng, .decoder = try profile.decoder(eng.alloc, eng.vocab, buffers.effort), .sink = sink, .budget = buffers.thinking_budget };
     defer bridge.decoder.deinit();
     var outcome = try runLoop(eng, tokens, limit, sampler, history, settings, images, buffers.logits, buffers.candidates, buffers.generated, observer, .{ .context = &bridge, .token = Bridge.token, .force = Bridge.force, .saves = buffers.saves });
     outcome.reasoning_cut = bridge.cut;

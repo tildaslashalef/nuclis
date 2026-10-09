@@ -733,7 +733,7 @@ pub const Completer = struct {
         self.seen_effort = self.effort;
         const timing = outcome.timing;
         const fed = if (timing.generated_tokens > 0) self.buffers.generated[0 .. timing.generated_tokens - 1] else self.buffers.generated[0..0];
-        const fed_text = try inference.bpe.decode(self.alloc, &self.eng.vocab, fed, true, .{});
+        const fed_text = try inference.bpe.decode(self.alloc, self.eng.vocab, fed, true, .{});
         defer self.alloc.free(fed_text);
         try self.seen.appendSlice(self.alloc, fed_text);
         if (outcome.stop == .cancelled) self.reset(.cancel);

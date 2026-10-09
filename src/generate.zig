@@ -149,7 +149,7 @@ const Presenter = struct {
     fn token(context: *anyopaque, id: u32) !void {
         const self: *Presenter = @ptrCast(@alignCast(context));
         if (!self.enabled or self.eng.isStop(id)) return;
-        const piece = try inference.bpe.decode(self.eng.alloc, &self.eng.vocab, &.{id}, false, .{});
+        const piece = try inference.bpe.decode(self.eng.alloc, self.eng.vocab, &.{id}, false, .{});
         defer self.eng.alloc.free(piece);
         try self.stream.write(piece, self.writer);
         try self.writer.flush();
@@ -258,7 +258,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
     var presenter: Presenter = .{ .eng = &eng, .writer = writer, .enabled = !json, .logits_path = options.logits_path };
     const outcome = try runLoop(&eng, tokens, limit, &sampler, &history, .{ .enabled = settings.speculative, .draft_length = settings.draft_length }, image_prefill, logits, candidates, generated, &trace, .{ .context = &presenter, .prefill = if (options.logits_path != null) Presenter.prefill else null, .token = Presenter.token });
     const count = outcome.timing.generated_tokens;
-    const decoded = try inference.bpe.decode(alloc, &eng.vocab, generated[0..count], false, .{});
+    const decoded = try inference.bpe.decode(alloc, eng.vocab, generated[0..count], false, .{});
     defer alloc.free(decoded);
     var presentation: std.Io.Writer.Allocating = .init(alloc);
     defer presentation.deinit();
