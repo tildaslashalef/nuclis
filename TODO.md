@@ -69,6 +69,11 @@ memory kind, `embedding`, beside `generation`/`language` and `decision`.
   spec §10 ("an embedding index is ruled out") to name it as a separate
   theme, not ruled out.
 - **One branch, no push until complete** (see *Where we are*).
+- **A catalogue and registry entry, the README at the close (user,
+  2026-10-09).** Session 1 pulls the files without `--register`: until
+  `ModelKind.embedding` exists, a registered entry would be a generation
+  model. Session 4 adds the catalogue row and the registry kind; Session 8
+  updates the README.
 
 **Facts read during planning (2026-10-08), to be recorded in Session 1.**
 
