@@ -154,7 +154,30 @@ What Session 7 inherits:
 - `embed.Part` has `text` and `image`; `request.render` and
   `inputFromJson` refuse audio with `UnsupportedModality`.
 
-Next: **Session 7, Audio**.
+**Session 7 is delivered (2026-10-09, `02ba1f8`).** Audio parts go
+through AudioToolbox (16 kHz mono; a 16 kHz mono 16-bit WAV read
+exactly), Google's log-mel front end (`audio/mel.zig`, 4.8e-7 from the
+extractor), and the `gemma4a` conformer on the CPU (`audio/gemma4a.zig`)
+and Metal (`audio/gemma4a_metal.zig`, kernels `audio_attention` and
+`glu_conv`, tested in `test-metal`). On the BF16 file, `1 − cos` against
+Google's float32 is under 5e-11 on all three clips; on Q8_0 5e-5 to
+1.5e-4 (the tone). Gates `embeddinggemma-audio-metal` (`verify`) and
+`embeddinggemma-audio-cpu` (`verify-cpu`, 6 s). `docs/engine/audio.md` is
+new; `scripts/audio-trace.py` dumps Google's stages for the check's
+stage-by-stage trace. Decisions and findings:
+- **30 s per clip** (Google's extractor cuts there): longer is refused
+  unless `truncate`, which keeps the first 30 s and reports the cut
+  (`Prepared.clipped`).
+- The file's light-conv norms are swapped against Google's names, and
+  the mask keeps 11 rows back (`audio.md` § What the file does not say).
+- `--audio`, `input_audio` (`wav`, `mp3`, `aiff`, `flac`, `m4a`),
+  `invalid_audio`; `/v1/models` lists `audio` with the projector.
+- Each spoken sentence ranks its own text first among 24 (0.90 and 0.76).
+- `make verify-auto` and every `verify`-tier gate pass. The tiers it
+  names as required, `verify-cpu` (`dense.zig`, Session 2) and
+  `verify-long` (`kernels.metal`, Session 3), are Session 8's.
+
+Next: **Session 8, Acceptance and close**.
 
 | Session | What |
 | --- | --- |
@@ -164,7 +187,7 @@ Next: **Session 7, Audio**.
 | 4. `nuclis embed` and the catalogue (done) | `ModelKind.embedding`, the catalogue table, the shared wire types in `src/embedding/`, tasks and titles, `model ls` |
 | 5. `POST /v1/embeddings` (done) | The service, its batcher and pool, `Kind.embedding` in the memory budget, `GET /v1/models` fields, the API guide and spec |
 | 6. Images (done) | The small Gemma 4 vision encoder from this mmproj, rows spliced unscaled, 280 soft tokens by default, `--image` and image parts |
-| 7. Audio | AudioToolbox decode to 16 kHz mono, the log-mel front end, the `gemma4a` conformer on CPU then Metal, `--audio` and `input_audio` parts |
+| 7. Audio (done) | AudioToolbox decode to 16 kHz mono, the log-mel front end, the `gemma4a` conformer on CPU then Metal, `--audio` and `input_audio` parts |
 | 8. Acceptance and close | Q8_0 against BF16 against Google's f32 vectors, a retrieval check, the rates, the documents, the pull request |
 
 ## The theme: EmbeddingGemma 2, a third kind of model
@@ -309,60 +332,6 @@ What our code assumes today (the reasons this is a new family):
   `attention_full_max_rows` = 4096: `nu_attention_segments` keeps every score
   in threadgroup memory.
 - There is no audio code anywhere. `chat/wire.zig` refuses audio.
-
-## Session 7. Audio
-
-**Why.** The largest new piece: nuclis has no audio at all. The
-conformer is the same one Gemma 4 E4B carries, so this also prepares audio
-input for chat (not in this unit).
-
-1. **Decoding.** Add `inference/src/audio/audio_bridge.m`, beside
-   `image_bridge.m`: AudioToolbox `ExtAudioFile` decodes
-   WAV/AIFF/MP3/M4A/FLAC and converts to 16 kHz mono f32, behind a C
-   interface and an opaque handle.
-   - Bound duration by the token budget: 8192 tokens is about 327 s, and
-     the input size is bounded.
-   - The failure is typed, not a panic.
-2. **The front end.** Add `inference/src/audio/mel.zig`, pure Zig with no
-   I/O: frame 320, hop 160, FFT 512, a 128-bin mel filterbank over
-   0–8000 Hz, log with `mel_floor` 1e-3, and right padding.
-   - Test it against the `Gemma4AudioFeatureExtractor` features in
-     `tests/fixtures/embeddinggemma-audio-features/` (frames × 128, padding
-     dropped). The HF processor is the oracle for the features.
-   - Record the filterbank construction in `docs/engine/audio.md`. If any
-     constant is format-defining, record it in `THIRD_PARTY_NOTICES.md`.
-3. **The encoder on the CPU.** Add `inference/src/audio/gemma4a.zig`
-   (binding of `a.*`, `mm.a.*`) and its CPU `Runtime`:
-   - The two conv2d layers, then 12 conformer blocks.
-   - Each block: the clipped linears, the chunked local attention with
-     relative positions and logit cap, and the conv module.
-   - Then `pre_encode.out` and the 1536 → 512 projection.
-   - Write the derivation from the HF config and llama.cpp's
-     `tools/mtmd/models/gemma4a.cpp` and `mtmd_audio_preprocessor_gemma4a`
-     (read as references only) into `docs/engine/audio.md`.
-   - Trace it against `tests/fixtures/embeddinggemma-audio.north/media-0.f32`.
-   - Read the norm epsilon from `clip.audio.attention.layer_norm_epsilon`
-     (1e-6 here, 1e-5 in E4B's mmproj).
-4. **The encoder on Metal.** Add `inference/src/audio/gemma4a_metal.zig`
-   with existing kernels where they fit. Any new kernel (the depthwise
-   conv, the chunked relative attention) is tested against the CPU in
-   `test-metal`.
-5. **Splicing and surfaces.**
-   - Splice BOA 256000, the rows, EOA 258883, and bind `a.*` lazily.
-   - `nuclis embed --audio F`. The API's `input_audio` takes wav and mp3
-     as OpenAI's format names, plus aiff, flac and m4a.
-   - Chat keeps refusing audio (`chat/wire.zig`).
-6. **Checks.**
-   - Add gates `embeddinggemma-audio-cpu` (`verify-cpu`) and
-     `embeddinggemma-audio-metal` (`verify`).
-   - Cross-modal sanity: a spoken sentence's vector ranks its own text
-     above the other fixture texts, recorded, not gated.
-7. **Documents.** Add `docs/engine/audio.md` (new; listed in
-   `docs/README.md`) and an architecture map line in
-   `docs/architecture.md`.
-
-**Gates.** `zig build test`, `zig build test-metal`, `make verify-auto`,
-and `make verify`.
 
 ## Session 8. Acceptance and close
 
