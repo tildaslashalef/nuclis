@@ -22,6 +22,9 @@ pub const dimensions = model.config.embedding_out;
 /// The Matryoshka widths the model is trained for, widest first.
 pub const widths = [_]usize{ 768, 512, 256, 128 };
 
+/// Rows an input of `tokens` tokens takes in a packed batch.
+pub const batchRows = metal_plan.batchRows;
+
 pub const Stage = runtime.Stage;
 /// Where the forward runs: the F32 CPU reference, or the Metal plan (packed
 /// batches, F32 activations; embeddinggemma_metal.zig).

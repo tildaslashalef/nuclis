@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Checks `nuclis serve`'s OpenAI-compatible routes against a real model: the
+"""Checks `nuclis serve`'s OpenAI-compatible routes against real models: the
 shapes the OpenAI SDKs parse, a conversation whose later requests reuse the
-earlier ones (`cached_tokens`), a tool round trip, an image, and the
-refusals. Not a gate: it needs a model and a GPU.
+earlier ones (`cached_tokens`), a tool round trip, an image, embeddings
+(float and base64 alike, batches equal to single calls bit for bit), and
+the refusals. Not a gate: it needs the models and a GPU.
 
     make api-check                              # starts ./zig-out/bin/nuclis serve
     make api-check ARGS='--model gemma-4-e4b-qat --image-model gemma-4-12b-qat'
+    make api-check ARGS='--only embeddings'     # no language model needed
     python3 scripts/api-check.py --url http://127.0.0.1:9000/v1   # a running server
 
 Standard library only, so it runs without the SDKs installed; it asserts
@@ -17,9 +19,12 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import socket
+import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -40,9 +45,10 @@ def check(condition: bool, what: str) -> None:
 
 
 class Client:
-    def __init__(self, url: str, model: str | None) -> None:
+    def __init__(self, url: str, model: str | None, embedding_model: str | None = None) -> None:
         self.url = url.rstrip("/")
         self.model = model
+        self.embedding_model = embedding_model
 
     def call(self, method: str, path: str, body: Json | None = None) -> tuple[int, Json]:
         data = json.dumps(body).encode() if body is not None else None
@@ -265,6 +271,139 @@ def check_refusals(client: Client) -> None:
     print(f"  refusals: {len(cases)} answered with their code and field")
 
 
+def embed(client: Client, body: Json) -> tuple[int, Json]:
+    model = client.embedding_model
+    return client.call("POST", "/embeddings", {"model": model, **body} if model else body)
+
+
+def vector_bits(item: Json) -> bytes:
+    """A vector's f32 bytes, from either encoding."""
+    value = item["embedding"]
+    if isinstance(value, str):
+        return base64.b64decode(value)
+    return struct.pack(f"<{len(value)}f", *value)
+
+
+def embedded(client: Client, body: Json) -> Json:
+    status, r = embed(client, body)
+    check(status == 200, f"embeddings {str(body)[:80]}: {status} {r}")
+    check(r.get("object") == "list" and isinstance(r.get("model"), str), "object, model")
+    data = cast(list[Json], r["data"])
+    check([d["index"] for d in data] == list(range(len(data))), "data in input order")
+    check(all(d.get("object") == "embedding" for d in data), "data objects")
+    usage = cast(Json, r["usage"])
+    check(usage["prompt_tokens"] == usage["total_tokens"] == sum(r["nuclis"]["tokens"]), "usage totals")
+    return r
+
+
+SENTENCES = [
+    "The northern lights are caused by charged particles from the sun striking the upper atmosphere.",
+    "How do I keep my sourdough starter alive while travelling?",
+    "A kitten sleeps in a cardboard box.",
+    "Quarterly tax forms are due at the end of the month.",
+    "def add(a, b):\n    return a + b",
+]
+
+
+def check_embeddings(client: Client) -> None:
+    status, r = client.call("GET", "/models")
+    rows = [m for m in cast(list[Json], r["data"]) if m.get("nuclis", {}).get("kind") == "embedding"]
+    check(status == 200 and len(rows) > 0, "no embedding model listed")
+    row = cast(Json, rows[0]["nuclis"])
+    for field in (
+        "name",
+        "architecture",
+        "size_bytes",
+        "present",
+        "loaded",
+        "default",
+        "dimensions",
+        "modalities",
+        "max_tokens",
+        "tasks",
+        "repo",
+        "revision",
+    ):
+        check(field in row, f"/v1/models embedding field {field}")
+    check(row["dimensions"] == [768, 512, 256, 128] and row["max_tokens"] == 8192, "widths and token limit")
+
+    floats = embedded(client, {"input": SENTENCES, "encoding_format": "float"})
+    packed = embedded(client, {"input": SENTENCES, "encoding_format": "base64"})
+    check(
+        [vector_bits(d) for d in floats["data"]] == [vector_bits(d) for d in packed["data"]],
+        "float and base64 carry the same f32 bits",
+    )
+    width = len(cast(list[float], floats["data"][0]["embedding"]))
+    check(width == 768, f"width {width}")
+    norms = [math.sqrt(sum(x * x for x in d["embedding"])) for d in floats["data"]]
+    check(all(abs(n - 1) < 1e-5 for n in norms), f"unit vectors {norms}")
+    space = cast(str, floats["nuclis"]["space"])
+    check(space.endswith("/768") and "@" in space, f"space {space}")
+
+    # Batching changes timing, never answers: each alone, all together, and
+    # several requests at once all give the same bits.
+    batch = [vector_bits(d) for d in packed["data"]]
+    alone = [
+        vector_bits(embedded(client, {"input": text, "encoding_format": "base64"})["data"][0]) for text in SENTENCES
+    ]
+    check(alone == batch, "a batch equals its inputs one call at a time")
+    together: list[bytes | None] = [None] * len(SENTENCES)
+
+    def one(i: int) -> None:
+        together[i] = vector_bits(embedded(client, {"input": [SENTENCES[i]], "encoding_format": "base64"})["data"][0])
+
+    threads = [threading.Thread(target=one, args=(i,)) for i in range(len(SENTENCES))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    check(together == alone, "concurrent requests equal single ones")
+    # A request larger than one pass (2,048 rows) continues pass by pass.
+    long = [f"{SENTENCES[i % len(SENTENCES)]} " * 40 for i in range(12)]
+    big = embedded(client, {"input": long, "encoding_format": "base64"})
+    check(sum(big["nuclis"]["tokens"]) > 2048, "the large request spans passes")
+    check(
+        [vector_bits(d) for d in big["data"][:2]]
+        == [vector_bits(embedded(client, {"input": t, "encoding_format": "base64"})["data"][0]) for t in long[:2]],
+        "a request across passes equals single calls",
+    )
+
+    narrow = embedded(client, {"input": SENTENCES[0], "dimensions": 256})
+    head = cast(list[float], floats["data"][0]["embedding"])[:256]
+    scale = math.sqrt(sum(x * x for x in head))
+    check(
+        all(abs(a - b / scale) < 1e-6 for a, b in zip(narrow["data"][0]["embedding"], head)),
+        "256 is the renormalized head",
+    )
+    check(narrow["nuclis"]["space"].endswith("/256"), "the narrow space")
+    query = embedded(client, {"input": SENTENCES[0], "task": "search_query"})
+    check(query["nuclis"]["task"] == "search_query" and query["nuclis"]["tokens"][0] == 25, "a query's prefix")
+
+    over = "word " * 9000
+    cut = embedded(client, {"input": over, "truncate": True})
+    check(cut["nuclis"]["truncated"] == [0] and cut["nuclis"]["tokens"] == [8192], "truncation is reported")
+    cases: list[tuple[Json, int, str, str | None]] = [
+        ({"input": over}, 400, "input_too_long", "input"),
+        ({"input": "x", "dimensions": 300}, 400, "unsupported_feature", "dimensions"),
+        ({"input": [[1, 2, 3]]}, 400, "unsupported_feature", "input"),
+        ({"input": "x", "encoding_format": "int8"}, 400, "invalid_request", "encoding_format"),
+        ({"input": "x", "title": "t"}, 400, "invalid_request", "title"),
+        ({"input": "x", "model": "laya"}, 400, "not_an_embedding_model", "model"),
+        ({"input": "x", "model": "no-such-model"}, 404, "model_not_found", "model"),
+    ]
+    for body, status, code, param in cases:
+        got, r = client.call("POST", "/embeddings", body)
+        error = cast(Json, r.get("error", {}))
+        check(got == status and error.get("code") == code and error.get("param") == param, f"{body!r:.80}: {got} {r}")
+    got, r = client.call(
+        "POST", "/chat/completions", {"model": rows[0]["id"], "messages": [{"role": "user", "content": "x"}]}
+    )
+    check(got == 400 and r["error"]["code"] == "not_a_language_model", f"chat with an embedding model: {got} {r}")
+    print(
+        f"  embeddings: {rows[0]['id']}, {len(SENTENCES)} inputs bit-identical alone, batched, concurrent, and across passes; {len(cases) + 1} refusals"
+    )
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -276,6 +415,8 @@ def main() -> int:
     parser.add_argument("--url", help="a running server's /v1 URL; without it, one is started")
     parser.add_argument("--model", help="the language model (default: the server's engine.model)")
     parser.add_argument("--image-model", help="the model the image check uses (default: --model)")
+    parser.add_argument("--embedding-model", help="the embedding model (default: the server's embed.model)")
+    parser.add_argument("--only", choices=("all", "chat", "embeddings"), default="all", help="which routes to check")
     parser.add_argument("--binary", default=str(ROOT / "zig-out/bin/nuclis"))
     args = parser.parse_args()
 
@@ -298,15 +439,19 @@ def main() -> int:
                     print(f"serve did not start: {server.stderr.read().decode() if server.stderr else ''}")
                     return 1
                 time.sleep(0.5)
-    client = Client(url, cast(str | None, args.model))
+    client = Client(url, cast(str | None, args.model), cast(str | None, args.embedding_model))
+    only = cast(str, args.only)
     try:
         print(f"api-check against {url}")
-        check_models(client)
-        check_conversation(client)
-        check_tools(client)
-        check_stream(client)
-        check_image(client, cast(str | None, args.image_model) or client.model)
-        check_refusals(client)
+        if only in ("all", "chat"):
+            check_models(client)
+            check_conversation(client)
+            check_tools(client)
+            check_stream(client)
+            check_image(client, cast(str | None, args.image_model) or client.model)
+            check_refusals(client)
+        if only in ("all", "embeddings"):
+            check_embeddings(client)
         print("api-check: ok")
         return 0
     except Failure as failure:

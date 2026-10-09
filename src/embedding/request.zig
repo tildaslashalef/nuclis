@@ -188,7 +188,155 @@ pub fn inputsFromJsonLines(arena: std.mem.Allocator, bytes: []const u8, name: []
     }
 }
 
+/// Why an API request was refused: a 400 with this code, message, and
+/// field.
+pub const Problem = struct {
+    code: []const u8 = "invalid_request",
+    message: []const u8 = "",
+    param: ?[]const u8 = null,
+};
+
+/// How the API writes a vector: JSON numbers, or base64 of its
+/// little-endian f32 bytes (what OpenAI's Python SDK asks for by default).
+pub const Encoding = enum { float, base64 };
+
+/// An OpenAI embeddings request with nuclis's extensions.
+pub const Parsed = struct {
+    request: Request,
+    model: ?[]const u8 = null,
+    encoding: Encoding = .float,
+};
+
+/// Reads OpenAI's embeddings body: `model`, `input` (a string, or a list
+/// whose items are strings or lists of content parts), `dimensions`,
+/// `encoding_format`, `user` (ignored), and the extensions `task`, `title`,
+/// and `truncate`. Token arrays are refused: a client that sends them
+/// tokenized with another model's vocabulary. `Refused` sets `problem`.
+pub fn fromJson(arena: std.mem.Allocator, root: std.json.Value, problem: *Problem) error{ Refused, OutOfMemory }!Parsed {
+    const R = struct {
+        fn refuse(arena_: std.mem.Allocator, p: *Problem, code: []const u8, param: ?[]const u8, comptime format: []const u8, args: anytype) error{ Refused, OutOfMemory } {
+            p.* = .{ .code = code, .param = param, .message = try arena_.print(format, args) };
+            return error.Refused;
+        }
+    };
+    if (root != .object) return R.refuse(arena, problem, "invalid_request", "body", "the request body must be a JSON object", .{});
+    const o = root.object;
+    var parsed: Parsed = .{ .request = .{ .inputs = &.{} } };
+    if (o.get("model")) |m| switch (m) {
+        .string => |name| parsed.model = name,
+        .null => {},
+        else => return R.refuse(arena, problem, "invalid_request", "model", "\"model\" must be a string", .{}),
+    };
+    const token_hint = "token arrays are refused: they are another model's tokens (LangChain's OpenAIEmbeddings sends them unless check_embedding_ctx_length=False); send text";
+    const input_value = o.get("input") orelse return R.refuse(arena, problem, "invalid_request", "input", "\"input\" is required", .{});
+    const items: []const std.json.Value = switch (input_value) {
+        .string => (&input_value)[0..1],
+        .array => |a| a.items,
+        else => return R.refuse(arena, problem, "invalid_request", "input", "\"input\" is a string or a list", .{}),
+    };
+    if (items.len == 0) return R.refuse(arena, problem, "invalid_request", "input", "\"input\" is empty", .{});
+    if (items.len > max_inputs) return R.refuse(arena, problem, "request_too_large", "input", "at most {d} inputs per request; this one has {d}", .{ max_inputs, items.len });
+    const inputs = try arena.alloc(Input, items.len);
+    for (items, inputs, 0..) |item, *input, i| {
+        const label = try arena.print("input[{d}]", .{i});
+        switch (item) {
+            .integer => return R.refuse(arena, problem, "unsupported_feature", "input", "{s}", .{token_hint}),
+            .array => |a| if (a.items.len > 0 and a.items[0] == .integer) return R.refuse(arena, problem, "unsupported_feature", "input", "{s}", .{token_hint}),
+            .string => {},
+            else => return R.refuse(arena, problem, "invalid_request", "input", "{s}: an input is a string or a list of content parts", .{label}),
+        }
+        var diag: config.Diagnostic = .{};
+        input.* = inputFromJson(arena, item, label, &diag) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.UnsupportedModality => return R.refuse(arena, problem, "unsupported_feature", "input", "{s}", .{diag.message()}),
+            else => return R.refuse(arena, problem, "invalid_request", "input", "{s}", .{diag.message()}),
+        };
+    }
+    parsed.request.inputs = inputs;
+    if (o.get("dimensions")) |d| switch (d) {
+        .null => {},
+        .integer => |n| {
+            if (n < 0 or std.mem.indexOfScalar(usize, &embed.widths, @intCast(n)) == null)
+                return R.refuse(arena, problem, "unsupported_feature", "dimensions", "dimensions are 768, 512, 256, or 128 (the widths the model is trained for), not {d}", .{n});
+            parsed.request.dimensions = @intCast(n);
+        },
+        else => return R.refuse(arena, problem, "invalid_request", "dimensions", "\"dimensions\" must be a whole number", .{}),
+    };
+    if (o.get("encoding_format")) |f| switch (f) {
+        .null => {},
+        .string => |name| parsed.encoding = std.meta.stringToEnum(Encoding, name) orelse
+            return R.refuse(arena, problem, "invalid_request", "encoding_format", "\"encoding_format\" is \"float\" or \"base64\", not \"{s}\"", .{name}),
+        else => return R.refuse(arena, problem, "invalid_request", "encoding_format", "\"encoding_format\" must be a string", .{}),
+    };
+    if (o.get("task")) |t| switch (t) {
+        .null => {},
+        .string => |name| parsed.request.task = std.meta.stringToEnum(Task, name) orelse
+            return R.refuse(arena, problem, "invalid_request", "task", "\"task\" is search_query, document, question_answering, fact_checking, code_retrieval, classification, clustering, or similarity, not \"{s}\"", .{name}),
+        else => return R.refuse(arena, problem, "invalid_request", "task", "\"task\" must be a string", .{}),
+    };
+    if (o.get("title")) |t| switch (t) {
+        .null => {},
+        .string => |title| parsed.request.title = title,
+        else => return R.refuse(arena, problem, "invalid_request", "title", "\"title\" must be a string", .{}),
+    };
+    if (parsed.request.title != null and parsed.request.task != .document)
+        return R.refuse(arena, problem, "invalid_request", "title", "a title belongs to a document: send \"task\": \"document\" with it", .{});
+    if (o.get("truncate")) |t| switch (t) {
+        .null => {},
+        .bool => |b| parsed.request.truncate = b,
+        else => return R.refuse(arena, problem, "invalid_request", "truncate", "\"truncate\" must be true or false", .{}),
+    };
+    var diag: config.Diagnostic = .{};
+    check(parsed.request, &diag) catch |err| return R.refuse(arena, problem, if (err == error.RequestTooLarge) "request_too_large" else "invalid_request", "input", "{s}", .{diag.message()});
+    return parsed;
+}
+
 const testing = std.testing;
+
+test "an OpenAI body: inputs in every accepted shape, the options, and each refusal with its field" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var problem: Problem = .{};
+    const body =
+        \\{"model":"e","input":["a",[{"type":"text","text":"b"},{"type":"text","text":"c"}]],"dimensions":256,
+        \\ "encoding_format":"base64","user":"u","task":"document","title":"T","truncate":true}
+    ;
+    const parsed = try fromJson(arena, try std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{}), &problem);
+    try testing.expectEqualStrings("e", parsed.model.?);
+    try testing.expectEqual(@as(usize, 2), parsed.request.inputs.len);
+    try testing.expectEqualStrings("c", parsed.request.inputs[1].parts[1].text);
+    try testing.expectEqualStrings("input[1]", parsed.request.inputs[1].label);
+    try testing.expectEqual(Encoding.base64, parsed.encoding);
+    try testing.expectEqual(@as(usize, 256), parsed.request.dimensions);
+    try testing.expect(parsed.request.truncate and parsed.request.task.? == .document);
+    const one = try fromJson(arena, try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"input\":\"x\"}", .{}), &problem);
+    try testing.expectEqual(@as(usize, 1), one.request.inputs.len);
+    try testing.expectEqual(@as(usize, 768), one.request.dimensions);
+
+    const cases = [_]struct { body: []const u8, code: []const u8, param: []const u8 }{
+        .{ .body = "[]", .code = "invalid_request", .param = "body" },
+        .{ .body = "{}", .code = "invalid_request", .param = "input" },
+        .{ .body = "{\"input\":[]}", .code = "invalid_request", .param = "input" },
+        .{ .body = "{\"input\":[1,2,3]}", .code = "unsupported_feature", .param = "input" },
+        .{ .body = "{\"input\":[[1,2],[3]]}", .code = "unsupported_feature", .param = "input" },
+        .{ .body = "{\"input\":[{\"type\":\"text\",\"text\":\"x\"}]}", .code = "invalid_request", .param = "input" },
+        .{ .body = "{\"input\":[[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:\"}}]]}", .code = "unsupported_feature", .param = "input" },
+        .{ .body = "{\"input\":\"x\",\"dimensions\":300}", .code = "unsupported_feature", .param = "dimensions" },
+        .{ .body = "{\"input\":\"x\",\"dimensions\":\"768\"}", .code = "invalid_request", .param = "dimensions" },
+        .{ .body = "{\"input\":\"x\",\"encoding_format\":\"int8\"}", .code = "invalid_request", .param = "encoding_format" },
+        .{ .body = "{\"input\":\"x\",\"task\":\"query\"}", .code = "invalid_request", .param = "task" },
+        .{ .body = "{\"input\":\"x\",\"title\":\"t\"}", .code = "invalid_request", .param = "title" },
+        .{ .body = "{\"input\":\"x\",\"truncate\":1}", .code = "invalid_request", .param = "truncate" },
+        .{ .body = "{\"input\":\"x\",\"model\":3}", .code = "invalid_request", .param = "model" },
+    };
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.body});
+        try testing.expectError(error.Refused, fromJson(arena, try std.json.parseFromSliceLeaky(std.json.Value, arena, case.body, .{}), &problem));
+        try testing.expectEqualStrings(case.code, problem.code);
+        try testing.expectEqualStrings(case.param, problem.param.?);
+    }
+}
 
 test "prefixes are Google's, and only a document takes a title" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);

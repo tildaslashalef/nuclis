@@ -474,7 +474,7 @@ fn embed(out: *std.Io.Writer, sty: style.Style) !void {
 }
 
 fn serve(out: *std.Io.Writer, sty: style.Style) !void {
-    try title(out, sty, "nuclis serve", "the nuclis API: decision and language models over HTTP");
+    try title(out, sty, "nuclis serve", "the nuclis API: decision, language, embedding models");
     try heading(out, sty, "Usage:");
     try code(out, sty, "nuclis serve [--host <ip>] [--port <n>] [--model <name>]…");
     try code(out, sty, "             [--chat-model <name>] [--memory <GiB>] [--backend cpu|metal]");
@@ -505,7 +505,9 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try row(out, sty, "POST /v1/chat/completions", "OpenAI's Chat Completions for the language");
     try more(out, "models; a client of an OpenAI-compatible server");
     try more(out, "connects by changing its base URL");
-    try row(out, sty, "GET /v1/models", "the decision and language models, OpenAI's list");
+    try row(out, sty, "POST /v1/embeddings", "OpenAI's embeddings for the embedding models;");
+    try more(out, "\"task\", \"title\", \"truncate\" as in nuclis embed");
+    try row(out, sty, "GET /v1/models", "every model of the three kinds, OpenAI's list");
     try more(out, "shape");
     try row(out, sty, "GET /v1/health", "version, backend, open models, queue depth");
 
@@ -515,16 +517,17 @@ fn serve(out: *std.Io.Writer, sty: style.Style) !void {
     try example(out, sty, "nuclis serve --chat-model qwen3.8-27b", "a language model open from the start");
 
     try heading(out, sty, "Notes:");
-    try plain(out, "Requests run on the GPU one at a time in arrival order, decisions between");
-    try plain(out, "a generation's steps; a request waits at most 300 s to start (then 529");
-    try plain(out, "timeout), at most 64 wait (then 529 busy). Opening a model closes the least");
-    try plain(out, "recently used others, of either kind, until it fits the memory budget.");
-    try plain(out, "Bodies up to 4 MiB (32 MiB for chat completions); states are text or JSON,");
-    try plain(out, "never {\"file\": path}; a chat request names a model, never a path.");
+    try plain(out, "Requests run on the GPU one at a time in arrival order, decision and");
+    try plain(out, "embedding passes between a generation's steps; a request waits at most");
+    try plain(out, "300 s to start (then 529 timeout), at most 64 wait (then 529 busy).");
+    try plain(out, "Opening a model closes the least recently used others, of any kind, until");
+    try plain(out, "it fits the memory budget. Bodies up to 4 MiB (32 MiB for chat and");
+    try plain(out, "embeddings); states are text or JSON, never {\"file\": path}; a chat or");
+    try plain(out, "embedding request names a model, never a path.");
     try plain(out, "Errors are {\"error\": {\"code\", \"message\", \"type\", \"param\"}} with a");
     try plain(out, "fitting HTTP status.");
-    try plain(out, "Ctrl-C stops accepting, finishes queued decisions (up to 10 s), and exits;");
-    try plain(out, "a second Ctrl-C ends the process at once.");
+    try plain(out, "Ctrl-C stops accepting, finishes queued decisions and embeddings (up to");
+    try plain(out, "10 s), and exits; a second Ctrl-C ends the process at once.");
 }
 fn inspect(out: *std.Io.Writer, sty: style.Style) !void {
     try title(out, sty, "nuclis inspect", "what an artifact is");

@@ -107,6 +107,80 @@ pub fn write(arena: std.mem.Allocator, out: *std.Io.Writer, body: Body) !void {
     try out.writeByte('\n');
 }
 
+/// OpenAI's embeddings response on one line: `data` in input order,
+/// `model`, `usage`, then the `nuclis` object (the space, the width, the
+/// task, each input's tokens, the indexes of the inputs that were cut, and
+/// the timings). `base64` writes each vector's little-endian f32 bytes.
+pub fn writeOpenAI(out: *std.Io.Writer, arena: std.mem.Allocator, body: Body, encoding: request_mod.Encoding) !void {
+    var s: std.json.Stringify = .{ .writer = out };
+    try s.beginObject();
+    try s.objectField("object");
+    try s.write("list");
+    try s.objectField("data");
+    try s.beginArray();
+    for (body.vectors, 0..) |v, i| {
+        try s.beginObject();
+        try s.objectField("object");
+        try s.write("embedding");
+        try s.objectField("index");
+        try s.write(i);
+        try s.objectField("embedding");
+        try s.beginWriteRaw();
+        switch (encoding) {
+            .float => {
+                try out.writeByte('[');
+                for (v.values, 0..) |x, j| try out.print("{s}{}", .{ if (j > 0) "," else "", x });
+                try out.writeByte(']');
+            },
+            .base64 => {
+                var bytes = try arena.alloc(u8, v.values.len * 4);
+                for (v.values, 0..) |x, j| std.mem.writeInt(u32, bytes[j * 4 ..][0..4], @bitCast(x), .little);
+                try out.writeByte('"');
+                try std.base64.standard.Encoder.encodeWriter(out, bytes);
+                try out.writeByte('"');
+            },
+        }
+        s.endWriteRaw();
+        try s.endObject();
+    }
+    try s.endArray();
+    try s.objectField("model");
+    try s.write(body.identity.name);
+    try s.objectField("usage");
+    try s.beginObject();
+    try s.objectField("prompt_tokens");
+    try s.write(body.tokens());
+    try s.objectField("total_tokens");
+    try s.write(body.tokens());
+    try s.endObject();
+    try s.objectField("nuclis");
+    try s.beginObject();
+    try s.objectField("space");
+    try s.write(try space(arena, body.identity, body.request.dimensions));
+    try s.objectField("dimensions");
+    try s.write(body.request.dimensions);
+    try s.objectField("task");
+    try s.write(if (body.request.task) |t| @tagName(t) else null);
+    try s.objectField("tokens");
+    try s.beginArray();
+    for (body.vectors) |v| try s.write(v.tokens);
+    try s.endArray();
+    try s.objectField("truncated");
+    try s.beginArray();
+    for (body.vectors, 0..) |v, i| if (v.truncated()) try s.write(i);
+    try s.endArray();
+    try s.objectField("timings_ms");
+    try s.beginObject();
+    inline for (.{ .{ "load", body.timings.load_ns }, .{ "tokenize", body.timings.tokenize_ns }, .{ "embed", body.timings.embed_ns } }) |field| {
+        try s.objectField(field[0]);
+        try s.write(@round(ms(field[1]) * 10) / 10);
+    }
+    try s.endObject();
+    try s.endObject();
+    try s.endObject();
+    try out.writeByte('\n');
+}
+
 pub fn ms(ns: u64) f64 {
     return @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
 }
@@ -116,6 +190,40 @@ pub fn cosine(a: []const f32, b: []const f32) f64 {
     var dot: f64 = 0;
     for (a, b) |x, y| dot += @as(f64, x) * y;
     return dot;
+}
+
+test "OpenAI's body: float and base64 carry the same f32 bits" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const values = [_]f32{ 0.6, -0.8 };
+    const inputs = [_]request_mod.Input{ .{ .parts = &.{.{ .text = "x" }}, .label = "input[0]" }, .{ .parts = &.{.{ .text = "y" }}, .label = "input[1]" } };
+    const body: Body = .{
+        .identity = .{ .name = "e", .sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
+        .request = .{ .inputs = &inputs, .dimensions = 128 },
+        .vectors = &.{ .{ .values = &values, .tokens = 3, .input_tokens = 3 }, .{ .values = &values, .tokens = 8192, .input_tokens = 9000 } },
+        .timings = .{},
+    };
+    var float: std.Io.Writer.Allocating = .init(arena);
+    try writeOpenAI(&float.writer, arena, body, .float);
+    var b64: std.Io.Writer.Allocating = .init(arena);
+    try writeOpenAI(&b64.writer, arena, body, .base64);
+    const f = try std.json.parseFromSliceLeaky(std.json.Value, arena, float.written(), .{});
+    const b = try std.json.parseFromSliceLeaky(std.json.Value, arena, b64.written(), .{});
+    try std.testing.expectEqualStrings("list", f.object.get("object").?.string);
+    const first = f.object.get("data").?.array.items[1].object;
+    try std.testing.expectEqualStrings("embedding", first.get("object").?.string);
+    try std.testing.expectEqual(@as(i64, 1), first.get("index").?.integer);
+    try std.testing.expectEqual(@as(i64, 8195), f.object.get("usage").?.object.get("total_tokens").?.integer);
+    const nuclis = f.object.get("nuclis").?.object;
+    try std.testing.expectEqual(@as(i64, 1), nuclis.get("truncated").?.array.items[0].integer);
+    try std.testing.expectEqualStrings("e@0123456789ab/128", nuclis.get("space").?.string);
+    const encoded = b.object.get("data").?.array.items[0].object.get("embedding").?.string;
+    var decoded: [8]u8 = undefined;
+    try std.base64.standard.Decoder.decode(&decoded, encoded);
+    for (values, 0..) |x, j| try std.testing.expectEqual(@as(u32, @bitCast(x)), std.mem.readInt(u32, decoded[j * 4 ..][0..4], .little));
+    const numbers = first.get("embedding").?.array.items;
+    try std.testing.expectEqual(values[1], @as(f32, @floatCast(numbers[1].float)));
 }
 
 test "the space names the catalogue checkpoint by digest, else the caller's name" {

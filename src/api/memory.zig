@@ -1,12 +1,12 @@
-//! One memory budget over every model `nuclis serve` keeps open, decision
-//! and language alike. Before a model opens, `reserve` closes the least
+//! One memory budget over every model `nuclis serve` keeps open, decision,
+//! language, and embedding alike. Before a model opens, `reserve` closes the least
 //! recently used others (through their own `close`) until it fits; a model
 //! in use by a running request is pinned and never closed. Every change
 //! happens on the GPU worker, which owns the models; `snapshot` may be
 //! called from any task. docs/guide/api.md § Running the server.
 const std = @import("std");
 
-pub const Kind = enum { decision, language };
+pub const Kind = enum { decision, language, embedding };
 
 /// Closes the model registered under `key`; it calls `Budget.remove`.
 pub const Closer = struct {
@@ -32,7 +32,7 @@ pub const Budget = struct {
     const Entry = struct {
         kind: Kind,
         /// Owned: the owner's key (a decision checkpoint's directory, a
-        /// language model's name) and the name a person reads.
+        /// language model's name, an embedding model's file) and the name a person reads.
         key: []u8,
         name: []u8,
         bytes: u64,

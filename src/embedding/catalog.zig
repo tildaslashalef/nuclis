@@ -24,7 +24,7 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
     if (registry.find(name)) |entry| {
         const kind = entry.kind orelse .generation;
         if (kind != .embedding) {
-            diag.set("{s} is a registry entry of a {s} model; `nuclis embed` opens an embedding model (an entry with \"kind\": \"embedding\")", .{ name, kindName(kind) });
+            diag.set("{s} is a registry entry of a {s} model, not an embedding model (an entry with \"kind\": \"embedding\")", .{ name, kindName(kind) });
             return error.NotAnEmbeddingModel;
         }
         const located = if (entry.path) |p| p else if (entry.repo != null and entry.file != null) try std.fs.path.join(arena, &.{ entry.repo.?, entry.file.? }) else {
@@ -45,7 +45,7 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
     }
     const other: ?catalog.ModelKind = if (catalog.find(name) != null) .generation else if (catalog.findDecision(name) != null) .decision else null;
     if (other) |kind| {
-        diag.set("{s} is a {s} model of the catalogue; `nuclis embed` opens an embedding model ({s})", .{ name, kindName(kind), catalog.embedding_entries[0].name });
+        diag.set("{s} is a {s} model of the catalogue, not an embedding model ({s} is one)", .{ name, kindName(kind), catalog.embedding_entries[0].name });
         return error.NotAnEmbeddingModel;
     }
     return .{ .path = try models(arena, root, name) };
