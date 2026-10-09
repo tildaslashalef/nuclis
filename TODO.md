@@ -29,13 +29,22 @@ document wins. The inventory fixtures, the llama.cpp oracle at build
 `b11514` (`.reference/llama.cpp-embed`), the sentence-transformers oracle
 (`.reference/venv-embed`), the 104-case input set, and the recorded
 vectors, traces and mel features are committed
-(`tests/fixtures/provenance.md`, `embeddinggemma-*` rows). Next:
-**Session 2, the text encoder on the CPU**.
+(`tests/fixtures/provenance.md`, `embeddinggemma-*` rows).
+
+**Session 2 is delivered (2026-10-09).** The binding, the CPU forward, the
+`Embedder` (`inference/src/embed.zig`), and `embeddinggemma-check` with
+three `verify-cpu` gates are committed. On the BF16 file the CPU forward
+matches Google's float32 to `1 − cos` = 4.0e-12. The record is in
+`docs/models/embeddinggemma.md` § CPU reference against the oracles. Side
+fix in this unit: `Engine.open` returned its vocabulary by value while the
+encoder kept a pointer to the local copy; it is now on the heap (commit
+`c2a02a4`). `make verify-auto` passes; the CPU tier as a whole runs in
+Session 8. Next: **Session 3, the text encoder on Metal**.
 
 | Session | What |
 | --- | --- |
 | 1. Facts and oracles (done) | Pull and pin the files, `docs/models/embeddinggemma.md`, inventory fixtures, the second llama.cpp checkout and the sentence-transformers oracle, recorded traces and vectors |
-| 2. Text encoder on the CPU | `gemma-embedding2` adapter, the bidirectional KV-free forward, pooling, projection, normalization, Matryoshka; `Embedder` in `inference/src/embed.zig` |
+| 2. Text encoder on the CPU (done) | `gemma-embedding2` adapter, the bidirectional KV-free forward, pooling, projection, normalization, Matryoshka; `Embedder` in `inference/src/embed.zig` |
 | 3. Text encoder on Metal | A grouped-query, 512-wide, online-softmax segments attention kernel; packed batches; F32 activations throughout; measured rates |
 | 4. `nuclis embed` and the catalogue | `ModelKind.embedding`, the catalogue table, the shared wire types in `src/embedding/`, tasks and titles, `model ls` |
 | 5. `POST /v1/embeddings` | The service, its batcher and pool, `Kind.embedding` in the memory budget, `GET /v1/models` fields, the API guide and spec |
@@ -179,98 +188,6 @@ What our code assumes today (the reasons this is a new family):
   in threadgroup memory.
 - There is no audio code anywhere. `chat/wire.zig` refuses audio.
 
-## Session 2. Text encoder on the CPU
-
-**Why.** The numerical contract, before any kernel. It is the CPU tier's
-reference for this family.
-
-1. **The binding.** Add `inference/src/models/embeddinggemma.zig` with
-   `Config` and `bind`:
-   - Validate `gemma-embedding2.*` and refuse unknown keys, the way
-     `gemma4.zig`'s `validateMetadata` does.
-   - Layer kinds come from `attention.sliding_window_pattern`. Per-layer
-     KV heads and widths come from `head_count_kv`, `key_length` and
-     `key_length_swa`.
-   - Window half-width = `sliding_window / 2`.
-   - `embedding_length_out` gives the output width, and `pooling_type`
-     must be 1 (mean).
-   - Executable encodings are **F32, BF16, Q8_0 only**. Anything else is
-     `UnsupportedEncoding`, which keeps the half-operand K-quant tiles out
-     of this family by construction.
-   - Refuse `causal = true`.
-   - Share helpers with `gemma4.zig` where one already exists (norm and
-     GELU), but do not widen `gemma4.zig`'s accepted metadata.
-   - It is **not** an entry in the generation adapter `table`
-     (`models/root.zig`). It decodes nothing, like Laya.
-2. **The forward.** Add `inference/src/models/embeddinggemma_runtime.zig`
-   `Runtime.encode(rows) -> [rows][512]`:
-   - One full-sequence pass in F32, with no KV cache.
-   - Attention is per query over the visible keys: symmetric |i − j| ≤ 512
-     on sliding layers, everything on global layers, with GQA.
-   - Inputs are row sources: a token id (gathered, then × √512) or a
-     projector row (taken as is, not scaled).
-   - `ple` comes from `P · x0 / √512` for every row, image rows included.
-3. **Pooling and the vector.** Add `inference/src/embed.zig`:
-   - `Embedder` has `open(dir or files)`, `prepare(input) -> Prepared`
-     (tokens and modality spans, bounded by `max_tokens` 8192),
-     `embed(prepared) -> Vector`, and later `embedJobs` for batches.
-   - The vector is computed as `output_norm` → `output.weight` → mean over
-     every row → L2 normalize.
-   - `truncate(vector, dims)` keeps the first `dims` ∈ {768, 512, 256,
-     128} and renormalizes. Other widths are `error.UnsupportedDimensions`.
-   - Ownership: the vector is caller-owned, and `Prepared` borrows nothing
-     from the request.
-4. **Tokenizer.** Add EOS when `add_eos_token` is true for this family
-   (today `add_eos` is read nowhere), giving BOS + text + EOS. Check
-   against the oracle's token ids: every case's ids, run-length encoded, are
-   in `tests/fixtures/embeddinggemma-vectors/st-f32.json`.
-   - **Text is literal (user, 2026-10-09):** encode text parts with
-     `parse_special = false` (model document § The input contract). The
-     oracles parsed `long-8k.doc`'s literal `<bos>` into token 2, so that
-     one case differs by one token on purpose. Compare it by cosine, with
-     the reason in the test; every other case's ids must match exactly.
-5. **The check tool.** Add `inference/embeddinggemma-check.zig`, modeled
-   on `inference/laya-check.zig`, with a build step.
-   - It compares the per-layer traces of `tests/fixtures/embeddinggemma-north.raw`
-     and `-north.query` (ggml order, see their `shapes.json`) and the pooled
-     vectors against `embeddinggemma-vectors/llama-q8_0`: cosine ≥ 0.9999,
-     and the trace bounds of `compare-generation.py` (2e-3 max abs, 1e-4
-     relative RMS). It reads vectors in the `.json`/`.f32` layout of
-     `scripts/compare-embedding.py`.
-   - Add gates `embeddinggemma-trace-cpu` and `embeddinggemma-vectors-cpu`
-     to `gates.json` (tier `verify-cpu`), with the paths that select them.
-6. **Tests.** Unit tests for:
-   - The symmetric mask edges: 512 visible, 513 not.
-   - Matryoshka truncation and renormalization.
-   - Refusal of a K-quant matrix, of `causal = true`, and of input over
-     8192 tokens.
-   - The inventory fixture binding with no weights.
-
-**Read before coding (2026-10-09), settling the open points:**
-- Matrices go through `cpu.dense.matmul` (F32 SIMD lanes, split across
-  `Io` tasks). Each matrix is decoded from its Q8_0/BF16 rows
-  (`quant.row`) into one reused F32 scratch, at most 2048 × 512, right
-  before its matmul. Nothing is decoded at `open`: an F32 copy would be
-  about 1.1 GB, half of it `token_embd`, whose rows are gathered one by
-  one. The matvec reference (F64 per row) would take minutes on an
-  8142-token input.
-- Attention is `cpu.dense.attention`, which already has the symmetric
-  window (`|i − j| ≤ window`). It gains grouped-query attention: a
-  `kv_heads` count and a `kv_stride`, both defaulting to the query's, so
-  Laya's calls are unchanged.
-- `ple` is computed per layer from the kept `x0` (rows `l·512 …` of
-  `per_layer_model_proj`), not as one rows × 12288 buffer: that buffer
-  would be 400 MB at 8192 rows.
-- Inputs use Gemma 4's shape: placeholder `tokens`, `vision.Span` runs, and
-  the projector `features` rows. The runtime owns the whole numerical path
-  to the unit vector (`output_norm`, `output`, mean, L2); `embed.zig` owns
-  files, tokenization and framing, limits, and Matryoshka truncation.
-- The check tool reads fixtures at run time from `tests/fixtures/`.
-  `@embedFile` cannot reach outside `inference/`. The gate model
-  `embeddinggemma` is the Q8_0 path with no `entry` until Session 4.
-
-**Gates.** `zig build test`, `make verify-auto`, and the new CPU gates.
-
 ## Session 3. Text encoder on Metal
 
 **Why.** Indexing a corpus is many passes. Metal is the path users run;
@@ -297,9 +214,22 @@ the CPU stays the oracle.
      card's f16 warning.
    - `Embedder` uses the Metal plan when `--backend metal`, with
      `batchRows` as Laya's.
-3. **Gates.** Add `embeddinggemma-vectors-metal` (tier `verify`, the fast
-   Metal tier) with cosine ≥ 0.9999 against the CPU vectors and the
-   llama.cpp vectors, covering the long-text and near-8192 cases.
+3. **Gates.** `embeddinggemma-check` gains `--backend metal` (after the
+   mode). Add gates of tier `verify`, the fast Metal tier:
+   - `embeddinggemma-vectors-metal`: Q8_0 against `llama-q8_0`, floor
+     0.99999, as on the CPU;
+   - `embeddinggemma-google-metal`: the BF16 file against `st-f32`. With
+     F32 activations throughout, Metal should land near the CPU's 4e-12, so
+     hold it to 0.999999 and record the measured value.
+   - A packed batch of every text case gives the same vectors as one at a
+     time, bit for bit or within a recorded bound ("batching changes
+     timing, never answers").
+   The cases cover the 2,930- and 8,142-token documents.
+   - Watch the matmul: llama.cpp's Metal batched matmul stages activations
+     as half (bf16 for BF16 weights), which cost it 4.6e-4 to 1.6e-3 of
+     relative RMS per stage. Ours must not (the card's f16 warning):
+     confirm `nu_matmul`'s operand types for Q8_0 and BF16 before relying
+     on it.
 4. **Rates.** Measure and record in the model document:
    - Inputs per second for 64 inputs of 256 tokens.
    - The latency of one 512-token input and one 8192-token input.
