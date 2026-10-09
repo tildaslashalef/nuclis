@@ -1810,8 +1810,9 @@ fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     const random = prng.random();
     for (cases) |case| {
         const g = case.geometry;
+        // Each sequence padded to 8 rows by a segment of its own, as the plan packs them.
         var rows: usize = 0;
-        for (case.lengths) |len| rows += len;
+        for (case.lengths) |len| rows += std.mem.alignForward(usize, len, 8);
         const padded = Backend.attentionChunkRows(rows);
         const q_floats = heads * g.width;
         const kv_floats = g.kv_heads * g.width;
@@ -1834,14 +1835,29 @@ fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
         const pairs: []u32 = @as([*]u32, @ptrCast(@alignCast(bounds.host)))[0 .. 2 * rows];
         var begin: usize = 0;
         for (case.lengths) |len| {
-            for (begin..begin + len) |r| {
-                pairs[2 * r] = @intCast(begin);
-                pairs[2 * r + 1] = @intCast(begin + len);
+            const end = begin + std.mem.alignForward(usize, len, 8);
+            for (begin..end) |r| {
+                pairs[2 * r] = @intCast(if (r < begin + len) begin else begin + len);
+                pairs[2 * r + 1] = @intCast(if (r < begin + len) begin + len else end);
             }
-            begin += len;
+            begin = end;
         }
+        const tiles = try b.create(rows / 8 * @sizeOf(Backend.AttentionTile));
+        const list: []Backend.AttentionTile = @as([*]Backend.AttentionTile, @ptrCast(@alignCast(tiles.host)))[0 .. rows / 8];
+        var tile_count: usize = 0;
+        begin = 0;
+        for (case.lengths) |len| {
+            const end = begin + std.mem.alignForward(usize, len, 8);
+            try Backend.attentionTiles(pairs, rows, g.window, begin, end - begin, list, &tile_count);
+            begin = end;
+        }
+        // A small score buffer on the long cases, so they run in several chunks.
+        const capacity: usize = if (rows > 2048) 4 << 20 else 64 << 20;
+        var chunks: [256]Backend.AttentionChunk = undefined;
+        const chunk_count = try Backend.chunkTiles(list[0..tile_count], heads, capacity, &chunks);
+        const strips = try b.create(capacity * 4);
         try b.begin();
-        try b.attentionSegmentsGrouped(qb, kb, vb, out, bounds, .{ .query_heads = heads, .kv_heads = g.kv_heads, .width = g.width, .rows = rows, .q_stride = q_floats, .kv_stride = kv_floats, .out_stride = q_floats, .scale = 1, .window = g.window });
+        for (chunks[0..chunk_count]) |chunk| try b.attentionSegmentsGrouped(qb, kb, vb, out, bounds, tiles.slice(chunk.first * @sizeOf(Backend.AttentionTile), chunk.count * @sizeOf(Backend.AttentionTile)), chunk, strips, .{ .query_heads = heads, .kv_heads = g.kv_heads, .width = g.width, .rows = rows, .q_stride = q_floats, .kv_stride = kv_floats, .out_stride = q_floats, .scale = 1, .window = g.window });
         try b.commit();
         // F64 over every row of a short batch, every 61st row of a long one.
         const step: usize = if (rows > 2048) 61 else 1;
@@ -1853,11 +1869,12 @@ fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
         var seq: usize = 0;
         var i: usize = 0;
         while (i < rows) : (i += step) {
-            while (i >= seq_end) {
+            while (i >= std.mem.alignForward(usize, seq_end, 8) and seq + 1 < case.lengths.len) {
+                seq_begin = std.mem.alignForward(usize, seq_end, 8);
                 seq += 1;
-                seq_begin = seq_end;
-                seq_end += case.lengths[seq];
+                seq_end = seq_begin + case.lengths[seq];
             }
+            if (i >= seq_end) continue; // padding rows
             const lo = if (g.window) |w| @max(seq_begin, i -| w) else seq_begin;
             const hi = if (g.window) |w| @min(seq_end, i + w + 1) else seq_end;
             for (0..heads) |h| {
@@ -1886,17 +1903,27 @@ fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
             std.debug.print("grouped segment attention ({d} KV heads of {d}, lengths {any}): worst |difference| {e:.3}\n", .{ g.kv_heads, g.width, case.lengths, worst });
             return error.MetalMismatch;
         }
-        std.debug.print("grouped segment attention, {d} KV heads of {d}, window {?d}, lengths {any}, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4)\n", .{ g.kv_heads, g.width, g.window, case.lengths, step, worst });
-        for ([_]Buffer{ qb, kb, vb, out, bounds }) |buffer| try b.release(buffer);
+        std.debug.print("grouped segment attention, {d} KV heads of {d}, window {?d}, lengths {any}, {d} chunks, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4)\n", .{ g.kv_heads, g.width, g.window, case.lengths, chunk_count, step, worst });
+        for ([_]Buffer{ qb, kb, vb, out, bounds, tiles, strips }) |buffer| try b.release(buffer);
     }
+    // Bad shapes and a tile list whose tiles overlap are refused.
     const small = try b.create(64 * 1024);
     defer b.release(small) catch {};
-    const shape: Backend.AttentionSegmentsGroupedShape = .{ .query_heads = 4, .kv_heads = 3, .width = 8, .rows = 1, .q_stride = 32, .kv_stride = 24, .out_stride = 32, .scale = 1 };
-    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(small, small, small, small, small, shape));
-    var wide = shape;
-    wide.kv_heads = 1;
-    wide.width = 520;
-    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(small, small, small, small, small, wide));
+    var bad_tiles = [_]Backend.AttentionTile{ .{ .first = 0, .rows = 16, .key_lo = 0, .span = 32, .offset = 0 }, .{ .first = 8, .rows = 8, .key_lo = 0, .span = 32, .offset = 512 } };
+    const t = try b.create(@sizeOf(@TypeOf(bad_tiles)));
+    @memcpy(t.host[0..@sizeOf(@TypeOf(bad_tiles))], std.mem.asBytes(&bad_tiles));
+    const qkv = try b.create(16 * 64 * 4);
+    const o = try b.create(16 * 64 * 4);
+    const chunk: Backend.AttentionChunk = .{ .first = 0, .count = 2, .head_stride = 768, .max_span = 32 };
+    const ok: Backend.AttentionSegmentsGroupedShape = .{ .query_heads = 1, .kv_heads = 1, .width = 64, .rows = 16, .q_stride = 64, .kv_stride = 64, .out_stride = 64, .scale = 1 };
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, ok));
+    var odd = ok;
+    odd.kv_heads = 3;
+    odd.query_heads = 4;
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, odd));
+    var wide = ok;
+    wide.width = 576;
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(qkv, qkv, qkv, o, small, t, chunk, small, wide));
 }
 
 /// The exact-GELU gate over the two halves of strided fused rows against

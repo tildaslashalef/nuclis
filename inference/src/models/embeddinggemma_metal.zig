@@ -2,8 +2,8 @@
 //! packed batches. Inputs sit back to back, each starting on an 8-row
 //! boundary; the rows that pad one to the boundary are a zero-input segment
 //! of their own. Attention reads each row's `[begin, end)` from a bounds
-//! buffer and RoPE a per-row table at the row's position in its input. With
-//! every SIMD group inside one input, an input's vector does not depend on
+//! buffer, and its query tiles never mix inputs; RoPE reads a per-row table at the
+//! row's position in its input. So an input's vector does not depend on
 //! what it is packed with, bit for bit.
 //!
 //! Matrices are the mapping's Q8_0, BF16 or F32 bytes wrapped in place and
@@ -24,14 +24,18 @@ const Backend = metal.Backend;
 const Buffer = metal.Buffer;
 
 /// Rows one batch holds, padding included: one input of `max_tokens`.
-/// Activations cost about 34 KB a row.
+/// Activations cost about 34 KB a row, plus 128 MB of attention scores.
 pub const max_rows = model.max_tokens;
 /// Rows an input of `tokens` rows takes in a batch.
 pub fn batchRows(tokens: usize) usize {
     return std.mem.alignForward(usize, tokens, segment_alignment);
 }
-/// The SIMD-group height of the attention kernel.
+/// The row granularity of the attention's query tiles.
 const segment_alignment = 8;
+/// Floats of score strips one attention dispatch may use (128 MB): an
+/// 8192-row input's global layer runs in 8 chunks.
+const score_capacity = 32 << 20;
+const max_chunks = 64;
 
 const d = model.config.embedding;
 const w = model.config.per_layer_input;
@@ -90,6 +94,13 @@ pub const Plan = struct {
     projected: Buffer,
     /// Per row: `[begin, end)` of its segment, as u32 pairs.
     bounds: Buffer,
+    /// The attention's query tiles, none mixing inputs, and their chunks:
+    /// global layers see the whole input, sliding ones a window of it.
+    tiles: [2]Buffer,
+    chunks: [2][max_chunks]Backend.AttentionChunk,
+    chunk_count: [2]usize,
+    /// Score strips of one chunk, `score_capacity` floats.
+    scores: Buffer,
     /// Per row, (cos, sin) pairs at its position: global and sliding bases.
     rope_global: Buffer,
     rope_sliding: Buffer,
@@ -156,6 +167,9 @@ pub const Plan = struct {
         self.pe = try self.created(rows * w);
         self.projected = try self.created(rows * out_width);
         self.bounds = try self.created(max_rows * 2);
+        for (&self.tiles) |*t| t.* = try self.backend.create(max_rows / 8 * @sizeOf(Backend.AttentionTile));
+        self.chunk_count = .{ 0, 0 };
+        self.scores = try self.created(score_capacity);
         self.rope_global = try self.created(max_rows * global);
         self.rope_sliding = try self.created(max_rows * sliding);
         self.table_global = try self.created(max_rows * global);
@@ -219,6 +233,18 @@ pub const Plan = struct {
             }
             begin += len + pad;
         }
+        const pairs: []const u32 = @as([*]const u32, @ptrCast(@alignCast(self.bounds.host)))[0 .. 2 * n];
+        for (self.tiles, &self.chunks, &self.chunk_count, [_]model.Kind{ .global, .sliding }) |buffer, *chunks, *chunk_count, kind| {
+            const list: []Backend.AttentionTile = @as([*]Backend.AttentionTile, @ptrCast(@alignCast(buffer.host)))[0 .. max_rows / 8];
+            const window: ?usize = if (kind == .sliding) model.config.half_window else null;
+            var count: usize = 0;
+            begin = 0;
+            for (inputs) |input| {
+                try Backend.attentionTiles(pairs, n, window, begin, batchRows(input.tokens.len), list, &count);
+                begin += batchRows(input.tokens.len);
+            }
+            chunk_count.* = try Backend.chunkTiles(list[0..count], heads, score_capacity, chunks);
+        }
 
         const b = &self.backend;
         const norm: Backend.Norm = .{ .rows = n, .width = d, .in_stride = d, .out_stride = d, .eps = eps };
@@ -242,17 +268,21 @@ pub const Plan = struct {
             try b.rmsNorm(self.v, self.ones, self.v, .{ .rows = n * kvh, .width = hd, .in_stride = hd, .out_stride = hd, .eps = eps });
             try b.ropeRows(self.q, rope, heads, hd, hd, 0, n, qw, .split_half);
             try b.ropeRows(self.k, rope, kvh, hd, hd, 0, n, kvw, .split_half);
-            try b.attentionSegmentsGrouped(self.q, self.k, self.v, self.attended, self.bounds, .{
-                .query_heads = heads,
-                .kv_heads = kvh,
-                .width = hd,
-                .rows = n,
-                .q_stride = qw,
-                .kv_stride = kvw,
-                .out_stride = qw,
-                .scale = 1,
-                .window = if (l.kind == .sliding) model.config.half_window else null,
-            });
+            const kind = @intFromBool(l.kind == .sliding);
+            for (self.chunks[kind][0..self.chunk_count[kind]]) |chunk| {
+                const tiles = self.tiles[kind].slice(chunk.first * @sizeOf(Backend.AttentionTile), chunk.count * @sizeOf(Backend.AttentionTile));
+                try b.attentionSegmentsGrouped(self.q, self.k, self.v, self.attended, self.bounds, tiles, chunk, self.scores, .{
+                    .query_heads = heads,
+                    .kv_heads = kvh,
+                    .width = hd,
+                    .rows = n,
+                    .q_stride = qw,
+                    .kv_stride = kvw,
+                    .out_stride = qw,
+                    .scale = 1,
+                    .window = if (l.kind == .sliding) model.config.half_window else null,
+                });
+            }
             try b.matmulTile(l.output.buffer, l.output.matrix, self.attended, qw, self.h, d, n);
             try b.rmsNormAdd(self.x, self.h, l.post_attention_norm, 1, norm);
             // Feed-forward: the gate in `q`, the up projection in `attended`.
