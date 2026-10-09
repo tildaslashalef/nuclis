@@ -1785,6 +1785,120 @@ fn checkSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
     if (b.attentionSegments(qkv, qkv, qkv, out, bounds.slice(0, 8), .{ .heads = heads, .width = width, .rows = rows, .q_stride = stride, .kv_stride = stride, .out_stride = row_floats, .scale = scale })) |_| return error.ExpectedInvalidShape else |err| if (err != error.InvalidShape) return err;
 }
 
+/// Grouped-query segments attention against F64 attention over each row's
+/// visible keys: EmbeddingGemma 2's geometries (4 query heads; 2 KV heads of 256
+/// within window 512, or 1 KV head of 512 over everything) at scale 1, from
+/// one row to 8192, and packed batches. Key rows past the batch and query
+/// rows in the padding are NaN, so an out-of-range read shows in the output.
+/// The bound is F32 score rounding: unit-variance 512-wide heads at scale 1
+/// give scores of standard deviation about 22.
+fn checkGroupedSegmentAttention(alloc: std.mem.Allocator, b: *Backend) !void {
+    const Geometry = struct { kv_heads: usize, width: usize, window: ?usize };
+    const sliding: Geometry = .{ .kv_heads = 2, .width = 256, .window = 512 };
+    const global: Geometry = .{ .kv_heads = 1, .width = 512, .window = null };
+    const Case = struct { geometry: Geometry, lengths: []const usize };
+    const cases = [_]Case{
+        .{ .geometry = sliding, .lengths = &.{1} },
+        .{ .geometry = global, .lengths = &.{1} },
+        .{ .geometry = sliding, .lengths = &.{ 1, 37, 300, 513, 1100 } },
+        .{ .geometry = global, .lengths = &.{ 5, 256, 256, 1, 700 } },
+        .{ .geometry = sliding, .lengths = &.{8192} },
+        .{ .geometry = global, .lengths = &.{8192} },
+    };
+    const heads = 4;
+    var prng = std.Random.DefaultPrng.init(0x6a5e);
+    const random = prng.random();
+    for (cases) |case| {
+        const g = case.geometry;
+        var rows: usize = 0;
+        for (case.lengths) |len| rows += len;
+        const padded = Backend.attentionChunkRows(rows);
+        const q_floats = heads * g.width;
+        const kv_floats = g.kv_heads * g.width;
+        const q = try alloc.alloc(f32, padded * q_floats);
+        defer alloc.free(q);
+        const k = try alloc.alloc(f32, (rows + 8) * kv_floats);
+        defer alloc.free(k);
+        const v = try alloc.alloc(f32, (rows + 8) * kv_floats);
+        defer alloc.free(v);
+        for (q, 0..) |*x, i| x.* = if (i / q_floats < rows) random.floatNorm(f32) else std.math.nan(f32);
+        for (k, v, 0..) |*x, *y, i| {
+            x.* = if (i / kv_floats < rows) random.floatNorm(f32) else std.math.nan(f32);
+            y.* = if (i / kv_floats < rows) random.floatNorm(f32) else std.math.nan(f32);
+        }
+        const qb = try upload(b, q);
+        const kb = try upload(b, k);
+        const vb = try upload(b, v);
+        const out = try b.create(padded * q_floats * 4);
+        const bounds = try b.create(rows * 8);
+        const pairs: []u32 = @as([*]u32, @ptrCast(@alignCast(bounds.host)))[0 .. 2 * rows];
+        var begin: usize = 0;
+        for (case.lengths) |len| {
+            for (begin..begin + len) |r| {
+                pairs[2 * r] = @intCast(begin);
+                pairs[2 * r + 1] = @intCast(begin + len);
+            }
+            begin += len;
+        }
+        try b.begin();
+        try b.attentionSegmentsGrouped(qb, kb, vb, out, bounds, .{ .query_heads = heads, .kv_heads = g.kv_heads, .width = g.width, .rows = rows, .q_stride = q_floats, .kv_stride = kv_floats, .out_stride = q_floats, .scale = 1, .window = g.window });
+        try b.commit();
+        // F64 over every row of a short batch, every 61st row of a long one.
+        const step: usize = if (rows > 2048) 61 else 1;
+        const scores = try alloc.alloc(f64, rows);
+        defer alloc.free(scores);
+        var worst: f64 = 0;
+        var seq_begin: usize = 0;
+        var seq_end: usize = case.lengths[0];
+        var seq: usize = 0;
+        var i: usize = 0;
+        while (i < rows) : (i += step) {
+            while (i >= seq_end) {
+                seq += 1;
+                seq_begin = seq_end;
+                seq_end += case.lengths[seq];
+            }
+            const lo = if (g.window) |w| @max(seq_begin, i -| w) else seq_begin;
+            const hi = if (g.window) |w| @min(seq_end, i + w + 1) else seq_end;
+            for (0..heads) |h| {
+                const kvh = h / (heads / g.kv_heads);
+                const qi = q[i * q_floats + h * g.width ..][0..g.width];
+                var max: f64 = -std.math.inf(f64);
+                for (lo..hi) |j| {
+                    var dot: f64 = 0;
+                    for (qi, k[j * kv_floats + kvh * g.width ..][0..g.width]) |x, y| dot += @as(f64, x) * y;
+                    scores[j] = dot;
+                    max = @max(max, dot);
+                }
+                var sum: f64 = 0;
+                for (scores[lo..hi]) |*x| {
+                    x.* = @exp(x.* - max);
+                    sum += x.*;
+                }
+                for (out.floats()[i * q_floats + h * g.width ..][0..g.width], 0..) |got, d| {
+                    var want: f64 = 0;
+                    for (lo..hi) |j| want += scores[j] * v[j * kv_floats + kvh * g.width + d];
+                    worst = @max(worst, @abs(want / sum - got));
+                }
+            }
+        }
+        if (!(worst <= 2e-4)) {
+            std.debug.print("grouped segment attention ({d} KV heads of {d}, lengths {any}): worst |difference| {e:.3}\n", .{ g.kv_heads, g.width, case.lengths, worst });
+            return error.MetalMismatch;
+        }
+        std.debug.print("grouped segment attention, {d} KV heads of {d}, window {?d}, lengths {any}, vs F64 (every {d}th row): worst |difference| {e:.3} (bound 2e-4)\n", .{ g.kv_heads, g.width, g.window, case.lengths, step, worst });
+        for ([_]Buffer{ qb, kb, vb, out, bounds }) |buffer| try b.release(buffer);
+    }
+    const small = try b.create(64 * 1024);
+    defer b.release(small) catch {};
+    const shape: Backend.AttentionSegmentsGroupedShape = .{ .query_heads = 4, .kv_heads = 3, .width = 8, .rows = 1, .q_stride = 32, .kv_stride = 24, .out_stride = 32, .scale = 1 };
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(small, small, small, small, small, shape));
+    var wide = shape;
+    wide.kv_heads = 1;
+    wide.width = 520;
+    try std.testing.expectError(error.InvalidShape, b.attentionSegmentsGrouped(small, small, small, small, small, wide));
+}
+
 /// The exact-GELU gate over the two halves of strided fused rows against
 /// `cpu.geluErf(a) · g`, tails included.
 fn checkGeluErfRows(alloc: std.mem.Allocator, b: *Backend) !void {
@@ -3550,6 +3664,7 @@ pub fn main(init: std.process.Init) !void {
     try checkAttentionVerify(alloc, b);
     try checkWindowAttention(alloc, b);
     try checkSegmentAttention(alloc, b);
+    try checkGroupedSegmentAttention(alloc, b);
     try checkGeluErfRows(alloc, b);
     try checkFusedNorms(alloc, b);
     try checkDenseEncodings(alloc, io, b);

@@ -224,6 +224,7 @@ pub const Kernel = enum(u32) {
     matmul_iq4_nl_f2,
     delta_rows,
     delta_replay,
+    attention_segments_grouped,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -1254,6 +1255,47 @@ pub const Backend = struct {
         const window: u32 = if (s.window) |w| @intCast(@min(w, std.math.maxInt(u32) - 1)) else std.math.maxInt(u32);
         const p: AttentionSegmentsParams = .{ .heads = @intCast(s.heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = window };
         try self.dispatch(.attention_segments, &.{ queries, keys, values, output, bounds }, p, @intCast(s.rows * s.heads), 256, .{});
+    }
+    pub const AttentionSegmentsGroupedParams = extern struct { query_heads: u32, kv_heads: u32, width: u32, rows: u32, q_stride: u32, kv_stride: u32, out_stride: u32, scale: f32, window: u32 };
+    pub const AttentionSegmentsGroupedShape = struct {
+        query_heads: usize,
+        /// Query head h reads kv head `h / (query_heads / kv_heads)`.
+        kv_heads: usize,
+        /// Query, key, and value head width: a multiple of 8, at most 512.
+        width: usize,
+        rows: usize,
+        q_stride: usize,
+        kv_stride: usize,
+        out_stride: usize,
+        scale: f32,
+        /// Row i sees key j when |i − j| ≤ window; null sees its whole sequence.
+        window: ?usize = null,
+    };
+    /// The most rows one grouped segments dispatch covers.
+    pub const attention_segments_grouped_max_rows = 1 << 20;
+    /// `attentionSegments` with grouped-query heads, widths to 512, and no
+    /// bound on a sequence's length: an online softmax over key tiles, F32
+    /// throughout. `queries` and `output` hold `attentionChunkRows(rows)`
+    /// rows (the last tile computes on the padding); keys and values
+    /// `rows`. The device clamps the bounds; keeping them true is the
+    /// caller's job.
+    pub fn attentionSegmentsGrouped(self: *Backend, queries: Buffer, keys: Buffer, values: Buffer, output: Buffer, bounds: Buffer, s: AttentionSegmentsGroupedShape) !void {
+        if (s.query_heads == 0 or s.kv_heads == 0 or s.query_heads % s.kv_heads != 0 or s.width == 0 or s.width % 8 != 0 or s.width > 512) return error.InvalidShape;
+        if (s.rows == 0 or s.rows > attention_segments_grouped_max_rows or !std.math.isFinite(s.scale)) return error.InvalidShape;
+        const q_floats = s.query_heads * s.width;
+        const kv_floats = s.kv_heads * s.width;
+        if (s.q_stride < q_floats or s.kv_stride < kv_floats or s.out_stride < q_floats) return error.InvalidShape;
+        const padded = attentionChunkRows(s.rows);
+        const q_len = ((padded - 1) * s.q_stride + q_floats) * 4;
+        const kv_len = ((s.rows - 1) * s.kv_stride + kv_floats) * 4;
+        const out_len = ((padded - 1) * s.out_stride + q_floats) * 4;
+        if (queries.len < q_len or keys.len < kv_len or values.len < kv_len or output.len < out_len or bounds.len < s.rows * 8 or bounds.offset % 8 != 0) return error.InvalidShape;
+        if (queries.offset % 4 != 0 or keys.offset % 4 != 0 or values.offset % 4 != 0 or output.offset % 4 != 0) return error.InvalidShape;
+        if (overlaps(output, out_len, queries, q_len) or overlaps(output, out_len, keys, kv_len) or overlaps(output, out_len, values, kv_len) or overlaps(output, out_len, bounds, s.rows * 8)) return error.InvalidShape;
+        const window: u32 = if (s.window) |w| @intCast(@min(w, std.math.maxInt(u32) - 1)) else std.math.maxInt(u32);
+        const p: AttentionSegmentsGroupedParams = .{ .query_heads = @intCast(s.query_heads), .kv_heads = @intCast(s.kv_heads), .width = @intCast(s.width), .rows = @intCast(s.rows), .q_stride = @intCast(s.q_stride), .kv_stride = @intCast(s.kv_stride), .out_stride = @intCast(s.out_stride), .scale = s.scale, .window = window };
+        const groups = s.query_heads * @divCeil(s.rows, 32) * @divCeil(s.width, 256);
+        try self.dispatch(.attention_segments_grouped, &.{ queries, keys, values, output, bounds }, p, @intCast(groups), 128, .{});
     }
     pub const NormAddParams = extern struct { width: u32, in_stride: u32, out_stride: u32, eps: f32, scale: f32 };
     /// `(destination + norm(input)·w) · factor` over `rows` rows in one

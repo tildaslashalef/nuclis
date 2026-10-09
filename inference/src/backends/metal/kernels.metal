@@ -3277,3 +3277,126 @@ kernel void nu_attention_segments(device const float * queries [[buffer(0)]],
                        values + ulong(head) * p.width, output + ulong(row) * p.out_stride + ulong(head) * p.width,
                        p.width, p.kv_stride, p.scale, lo, hi, scores, partial, acc, tid, lane, sg);
 }
+
+// Grouped-query attention over packed sequences without a score buffer: the
+// masking contract of nu_attention_segments (row i sees the keys of
+// `bounds[i]` within `window`) on the tiling of nu_attention_chunk_t's F32
+// body. One threadgroup per (query head, 32-row tile, 256 value columns);
+// each SIMD group owns 8 query rows and walks the key tiles from its rows'
+// lowest visible key to past their highest with an online softmax. Masked
+// keys score −∞ (weight exactly 0) and key rows past `rows` load as zeros.
+// Query rows past `rows` (the caller's padding to 8) attend to the last row
+// alone, so they stay finite. Operands, scores and accumulators are F32.
+struct AttentionSegmentsGroupedParams { uint query_heads; uint kv_heads; uint width; uint rows; uint q_stride; uint kv_stride; uint out_stride; float scale; uint window; };
+kernel void nu_attention_segments_grouped(device const float * queries [[buffer(0)]],
+                                          device const float * keys [[buffer(1)]],
+                                          device const float * values [[buffer(2)]],
+                                          device float * output [[buffer(3)]],
+                                          device const uint2 * bounds [[buffer(4)]],
+                                          constant AttentionSegmentsGroupedParams & p [[buffer(7)]],
+                                          uint group [[threadgroup_position_in_grid]],
+                                          uint sg [[simdgroup_index_in_threadgroup]],
+                                          uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float scratch[4][8 * NU_ATTN_KEYS + 64 + 64];
+    threadgroup float * s = scratch[sg];              // score, then probability, tile [8][NU_ATTN_KEYS]
+    threadgroup float * diag = s + 8 * NU_ATTN_KEYS;  // diagonal rescale matrix [8][8]
+    threadgroup float * stage = diag + 64;            // masked-load staging [8][8]
+    const uint vsplits = (p.width + 255) / 256;
+    const uint head = group % p.query_heads, rest = group / p.query_heads;
+    const uint vs = rest % vsplits, tile = rest / vsplits;
+    const uint q0 = tile * 32 + sg * 8;
+    if (q0 >= p.rows) return; // only SIMD-group barriers follow
+    const uint kv = head / (p.query_heads / p.kv_heads);
+    const uint row = lane >> 2, col0 = (lane & 3) * 8;
+    // This lane's query row and its visible keys [row_lo, row_hi).
+    const uint r = q0 + row;
+    uint row_lo = p.rows - 1, row_hi = p.rows;
+    if (r < p.rows) {
+        const uint2 b = bounds[r];
+        row_lo = min(b.x, r);
+        row_hi = clamp(b.y, r + 1, p.rows);
+        if (p.window != ~0u) {
+            row_lo = max(row_lo, r - min(p.window, r));
+            row_hi = min(row_hi, r + min(p.window, p.rows) + 1);
+        }
+    }
+    const uint k_begin = simd_min(row_lo), limit = simd_max(row_hi);
+    const uint v0 = vs * 256;
+    const uint vblocks = min(p.width - v0, 256u) / 8;
+    device const float * q = queries + ulong(q0) * p.q_stride + ulong(head) * p.width;
+    device const float * k = keys + ulong(kv) * p.width;
+    device const float * v = values + ulong(kv) * p.width + v0;
+    const ulong ks = p.kv_stride;
+    float m = -INFINITY, l = 0.0f;
+    simdgroup_float8x8 o[32];
+    for (uint j = 0; j < 32; ++j) o[j] = simdgroup_float8x8(0.0f);
+    for (uint k0 = k_begin; k0 < limit; k0 += NU_ATTN_KEYS) {
+        simdgroup_float8x8 acc[4];
+        for (uint b = 0; b < 4; ++b) acc[b] = simdgroup_float8x8(0.0f);
+        for (uint d = 0; d < p.width; d += 8) {
+            simdgroup_float8x8 a, kb;
+            simdgroup_load(a, q + d, p.q_stride);
+            for (uint b = 0; b < 4; ++b) {
+                const uint key = k0 + b * 8;
+                if (key >= limit) continue;
+                if (key + 8 <= limit) simdgroup_load(kb, k + key * ks + d, ks, ulong2(0, 0), true);
+                else nu_load_rows_masked(kb, k + key * ks + d, ks, limit - key, stage, lane, true);
+                simdgroup_multiply_accumulate(acc[b], a, kb, acc[b]);
+            }
+        }
+        for (uint b = 0; b < 4; ++b) if (k0 + b * 8 < limit) simdgroup_store(acc[b], s + b * 8, NU_ATTN_KEYS);
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        float local[8];
+        float tile_max = -INFINITY;
+        for (uint c = 0; c < 8; ++c) {
+            const uint key = k0 + col0 + c;
+            local[c] = (key >= row_lo && key < row_hi) ? s[row * NU_ATTN_KEYS + col0 + c] * p.scale : -INFINITY;
+            tile_max = max(tile_max, local[c]);
+        }
+        tile_max = max(tile_max, simd_shuffle_xor(tile_max, 1));
+        tile_max = max(tile_max, simd_shuffle_xor(tile_max, 2));
+        // −∞ while a row has seen none of its keys yet: nothing to rescale or add.
+        const float m_new = max(m, tile_max);
+        const bool empty = m_new == -INFINITY;
+        const float alpha = empty ? 1.0f : exp(m - m_new);
+        float sum = 0.0f;
+        for (uint c = 0; c < 8; ++c) { const float e = empty ? 0.0f : exp(local[c] - m_new); s[row * NU_ATTN_KEYS + col0 + c] = e; sum += e; }
+        sum += simd_shuffle_xor(sum, 1);
+        sum += simd_shuffle_xor(sum, 2);
+        l = l * alpha + sum;
+        m = m_new;
+        if (simd_any(alpha != 1.0f)) {
+            for (uint i = lane; i < 64; i += 32) diag[i] = ((i >> 3) == (i & 7)) ? simd_shuffle(alpha, (i >> 3) * 4) : 0.0f;
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            simdgroup_float8x8 dm;
+            simdgroup_load(dm, diag, 8);
+            for (uint j = 0; j < 32; ++j) if (j < vblocks) { simdgroup_float8x8 t; simdgroup_multiply(t, dm, o[j]); o[j] = t; }
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint b = 0; b < 4; ++b) {
+            const uint key = k0 + b * 8;
+            if (key >= limit) continue;
+            simdgroup_float8x8 pm;
+            simdgroup_load(pm, s + b * 8, NU_ATTN_KEYS);
+            for (uint j = 0; j < 32; ++j) {
+                if (j >= vblocks) continue;
+                simdgroup_float8x8 vb;
+                if (key + 8 <= limit) simdgroup_load(vb, v + key * ks + j * 8, ks);
+                else nu_load_rows_masked(vb, v + key * ks + j * 8, ks, limit - key, stage, lane, false);
+                simdgroup_multiply_accumulate(o[j], pm, vb, o[j]);
+            }
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for (uint i = lane; i < 64; i += 32) diag[i] = ((i >> 3) == (i & 7)) ? simd_shuffle(1.0f / l, (i >> 3) * 4) : 0.0f;
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_float8x8 dm;
+    simdgroup_load(dm, diag, 8);
+    device float * out = output + ulong(q0) * p.out_stride + ulong(head) * p.width + v0;
+    for (uint j = 0; j < 32; ++j) {
+        if (j >= vblocks) continue;
+        simdgroup_float8x8 t;
+        simdgroup_multiply(t, dm, o[j]);
+        simdgroup_store(t, out + j * 8, p.out_stride);
+    }
+}
