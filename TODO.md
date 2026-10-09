@@ -127,7 +127,34 @@ What Session 6 inherits:
   is pulled and bound. The pool counts only the main file; the
   projector's half is added with `Budget.resize` when it binds.
 
-Next: **Session 6, Images**.
+**Session 6 is delivered (2026-10-09, `3b105e4`).** Image parts go through
+Google's processor and vision tower (`docs/models/embeddinggemma.md`
+§ Images): Google's grid at 70/140/280/560/1120 soft tokens,
+torchvision's uint8 bicubic (`preprocess.resizeWith(…, .torchvision)`),
+F32 patches, and `gelu_pytorch_tanh` (llama.cpp and the chat path use
+`gelu_quick`; `gemma4.Binding.activation`). On the BF16 file, `1 − cos`
+against Google's float32 is about 1e-12 on the CPU and on Metal; on Q8_0
+it is 3–7e-5. Gates `embeddinggemma-image-metal` (`verify`) and
+`embeddinggemma-image-cpu` (`verify-cpu`, `mix.logo` only, 6 min). Also:
+- `--image`, `--image-tokens`, `image_url` data URLs, `image_tokens` in
+  the API; the response records the budget; `invalid_image`.
+- **Prefix placement changed:** the task prefix opens the input, before
+  any media (sentence-transformers puts it first, so an image alone gets
+  one too), not in front of the first text part.
+- **Side fix:** ImageIO premultiplied alpha; 8-bit RGB layouts are now
+  copied as stored (chat decodes through the same bridge; its vision gates
+  pass).
+- Rates: about 460 ms an image on Metal at 280 tokens; the vision encoder
+  holds 918 MB once built, added to the memory budget.
+
+What Session 7 inherits:
+- Google's feature extractor truncates audio at **30 s** (`max_length`
+  480,000 samples), so 750 soft tokens is the most an audio part gives in
+  Google's pipeline, not the 327 s the plan assumed.
+- `embed.Part` has `text` and `image`; `request.render` and
+  `inputFromJson` refuse audio with `UnsupportedModality`.
+
+Next: **Session 7, Audio**.
 
 | Session | What |
 | --- | --- |
@@ -136,7 +163,7 @@ Next: **Session 6, Images**.
 | 3. Text encoder on Metal (done) | Grouped-query segments attention with materialized scores; packed batches, bit-exact; F32 activations throughout; measured rates |
 | 4. `nuclis embed` and the catalogue (done) | `ModelKind.embedding`, the catalogue table, the shared wire types in `src/embedding/`, tasks and titles, `model ls` |
 | 5. `POST /v1/embeddings` (done) | The service, its batcher and pool, `Kind.embedding` in the memory budget, `GET /v1/models` fields, the API guide and spec |
-| 6. Images | The small Gemma 4 vision encoder from this mmproj, rows spliced unscaled, 280 soft tokens by default, `--image` and image parts |
+| 6. Images (done) | The small Gemma 4 vision encoder from this mmproj, rows spliced unscaled, 280 soft tokens by default, `--image` and image parts |
 | 7. Audio | AudioToolbox decode to 16 kHz mono, the log-mel front end, the `gemma4a` conformer on CPU then Metal, `--audio` and `input_audio` parts |
 | 8. Acceptance and close | Q8_0 against BF16 against Google's f32 vectors, a retrieval check, the rates, the documents, the pull request |
 
@@ -282,48 +309,6 @@ What our code assumes today (the reasons this is a new family):
   `attention_full_max_rows` = 4096: `nu_attention_segments` keeps every score
   in threadgroup memory.
 - There is no audio code anywhere. `chat/wire.zig` refuses audio.
-
-## Session 6. Images
-
-**Why.** Photos and screenshots of documents are half of the personal
-corpus.
-
-1. **The encoder.** Make `vision/gemma4.zig` accept this mmproj:
-   - It is `siglip.small` (16 blocks, 768, 12 heads) with no clamp
-     tensors, which `ClampBounds` already treats as optional, and
-     `projection_dim` 512.
-   - Load only `v.*` and `mm.input_projection`, lazily on the first
-     image (`isAudio` already leaves `a.*` unbound).
-   - The projector's output width must equal the text width, 512.
-2. **The budget.** Default to 280 soft tokens for this family (Google's
-   `max_soft_tokens`), not chat's 1120. The soft-token count follows the
-   aspect ratio inside the budget (the 1254 × 1254 logo gives 256, the
-   1200 × 630 card 276). **The resize must be Google's, not llama.cpp's**:
-   `clip.cpp`'s bicubic costs 0.5 % of cosine on `image.og` against
-   PIL's antialiased bicubic. Before reusing the
-   `preprocess.smartSize` letterbox, check its size and resampling against
-   `Gemma4ImageProcessor`. `nuclis.png` is RGBA: drop alpha as PIL's
-   `convert("RGB")` does. `--image-tokens 70..1120` on the CLI
-   and `nuclis.image_tokens` in the API raise or lower it, and it is
-   recorded in the response, since it changes the vector.
-3. **Splicing.** BOI 255999, the projector rows, EOI 258882, at each
-   `<|image|>` or in part order.
-   - The rows enter as `x0` unscaled, and their `ple` comes from
-     `P · x0 / √512`.
-   - The whole input is one bidirectional pass.
-   - Confirm the exact framing (BOI/EOI present, image-token count)
-     against the oracle's token dump before coding it.
-4. **Checks.**
-   - Add gates `embeddinggemma-image-cpu` and `embeddinggemma-image-metal`
-     against `embeddinggemma-image.logo` and `-mix.logo`: projector rows
-     (`media-0.f32`) by trace bounds. These test the encoder from
-     llama.cpp's pixels. The vectors are compared by cosine against
-     `st-f32`, the image oracle (llama.cpp's own image vectors are 0.995
-     to 0.99986 of it).
-   - Run `nuclis embed --image` and send an `image_url` part.
-
-**Gates.** `zig build test`, `zig build test-metal`, `make verify-auto`,
-and `make verify` (shared vision code changed).
 
 ## Session 7. Audio
 
