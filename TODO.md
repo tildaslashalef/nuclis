@@ -16,16 +16,25 @@ it is empty, ask what to work on and write the agreed plan here.
 
 The plan below was agreed on 2026-10-08. It is **one unit over several
 sessions on one branch, `embedding-gemma-2`**, cut from `main` at
-`5e69b80` and last merged with `main` at `b0297c2`. **The user's rule for this unit: commit on the branch, do not
-push and do not open the pull request until the whole unit is
-implemented** (this overrides the usual "push and draft a pull request at
-the end of each session"). Nothing is implemented yet; the planning session
-only read the facts recorded below. Next: **Session 1, the facts and the
-oracles**.
+`5e69b80` and last merged with `main` at `b0297c2`; Base: `b0297c2`.
+**The user's rule for this unit: commit on the branch, do not push and do
+not open the pull request until the whole unit is implemented** (this
+overrides the usual "push and draft a pull request at the end of each
+session").
+
+**Session 1 is delivered (2026-10-09).** The three files are pulled and
+pinned. The facts are in `docs/models/embeddinggemma.md`, which is now the
+reference for everything in *The theme* below; where the two disagree, the
+document wins. The inventory fixtures, the llama.cpp oracle at build
+`b11514` (`.reference/llama.cpp-embed`), the sentence-transformers oracle
+(`.reference/venv-embed`), the 104-case input set, and the recorded
+vectors, traces and mel features are committed
+(`tests/fixtures/provenance.md`, `embeddinggemma-*` rows). Next:
+**Session 2, the text encoder on the CPU**.
 
 | Session | What |
 | --- | --- |
-| 1. Facts and oracles | Pull and pin the files, `docs/models/embeddinggemma.md`, inventory fixtures, the second llama.cpp checkout and the sentence-transformers oracle, recorded traces and vectors |
+| 1. Facts and oracles (done) | Pull and pin the files, `docs/models/embeddinggemma.md`, inventory fixtures, the second llama.cpp checkout and the sentence-transformers oracle, recorded traces and vectors |
 | 2. Text encoder on the CPU | `gemma-embedding2` adapter, the bidirectional KV-free forward, pooling, projection, normalization, Matryoshka; `Embedder` in `inference/src/embed.zig` |
 | 3. Text encoder on Metal | A grouped-query, 512-wide, online-softmax segments attention kernel; packed batches; F32 activations throughout; measured rates |
 | 4. `nuclis embed` and the catalogue | `ModelKind.embedding`, the catalogue table, the shared wire types in `src/embedding/`, tasks and titles, `model ls` |
@@ -45,7 +54,7 @@ memory kind, `embedding`, beside `generation`/`language` and `decision`.
 **Decisions (user, 2026-10-08).**
 - **Files: `embeddinggemma-2-Q8_0.gguf` with `mmproj-BF16.gguf`** from
   `unsloth/embeddinggemma-2-GGUF`. The reasons, written into the model
-  document in Session 1:
+  document:
   - Embedding is a single prefill-only pass over a 130M transformer, so
     weight bandwidth barely matters. Half of the file is `token_embd`
     (262144 × 512), which is gathered, not multiplied.
@@ -70,12 +79,12 @@ memory kind, `embedding`, beside `generation`/`language` and `decision`.
   theme, not ruled out.
 - **One branch, no push until complete** (see *Where we are*).
 - **A catalogue and registry entry, the README at the close (user,
-  2026-10-09).** Session 1 pulls the files without `--register`: until
+  2026-10-09).** Session 1 pulled the files without `--register`: until
   `ModelKind.embedding` exists, a registered entry would be a generation
   model. Session 4 adds the catalogue row and the registry kind; Session 8
   updates the README.
 
-**Facts read during planning (2026-10-08), to be recorded in Session 1.**
+**Facts read during planning (2026-10-08), now recorded in `docs/models/embeddinggemma.md`.**
 
 Repos:
 - `unsloth/embeddinggemma-2-GGUF` at `031f0d4b35536f69ab3509d4893c923264fcf253`:
@@ -147,12 +156,10 @@ mmproj (`clip`, 963 tensors):
   - 40 ms per token (25 per second). Tokens: BOA 256000, audio 258881,
     EOA 258883.
 
-Oracles:
-- Our pin `7620399` does not know `gemma-embedding2`.
-- Upstream llama.cpp added it, with vision and audio, in `4fbc76dec`
-  (#30054, 2026-10-06). The upstream master read on 2026-10-08 is
-  `06cad0b9e`, and it also carries typed multimodal input for
-  `/v1/embeddings` (#29556).
+Oracles: see `docs/models/embeddinggemma.md` § Reference oracle status.
+llama.cpp is build `b11514` (`de7fa0a3c`, the newest build on 2026-10-09;
+release `v0.6.0` predates the model), and the main pin `7620399` does not
+move.
 
 What our code assumes today (the reasons this is a new family):
 - `models/gemma4.zig` accepts only `architecture = "gemma4"` and picks a
@@ -167,84 +174,6 @@ What our code assumes today (the reasons this is a new family):
   `attention_full_max_rows` = 4096: `nu_attention_segments` keeps every score
   in threadgroup memory.
 - There is no audio code anywhere. `chat/wire.zig` refuses audio.
-
-## Session 1. Facts and oracles
-
-Base: `b0297c2`.
-
-**Why.** Every later session compares against recorded numbers. This one
-pins the files, writes the model document, and records the oracle outputs
-before any engine code.
-
-1. **Pull and pin.** Download the three files above into
-   `~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/` with their provenance
-   sidecars. Use `huggingface/`'s downloader, either with a temporary
-   catalogue row or `make hf-downloader`. Check every sha256 against the
-   table.
-2. **`docs/models/embeddinggemma.md`.** Follow `docs/models/README.md`
-   §§ 0–1:
-   - Artifacts (repo, revision, sizes, digests, and the quantization
-     decision with its reasons).
-   - Metadata (`gemma-embedding2.*`, `clip.*`).
-   - Tensors.
-   - The forward pass as written in *The theme*.
-   - Tokenizer, and prompt prefixes: the full table from Google's
-     `config_sentence_transformers.json` and the card's best-practices
-     section, `title: {title} | text: {content}`, `title: none`.
-   - Matryoshka (128/256/512/768, renormalize).
-   - The f16 hazard.
-   - The input contract per modality, and the oracle status.
-
-   Add its line to `docs/README.md` and `docs/models/README.md`.
-3. **Inventory fixtures.** Run `scripts/gguf-inventory.py` on the Q8_0 file
-   to produce `inference/src/models/fixtures/embeddinggemma-2-q8_0.json`,
-   and on the mmproj to produce
-   `inference/src/vision/fixtures/embeddinggemma-2-mmproj.json`.
-4. **The second llama.cpp checkout.** Create `.reference/llama.cpp-embed`
-   at upstream `06cad0b9e` (or the newest master that still holds
-   `src/models/gemma-embedding2.cpp`), built with the recipe of
-   `docs/development.md`. The main pin `7620399` does not move.
-   - Record the checkout beside the Prism one in `docs/development.md`
-     (the bullet naming the reference checkouts) and in
-     `docs/benchmarks/llama-cpp.md` § The second oracle.
-   - Check it loads the Q8_0 and BF16 files with `--embeddings --pooling
-     mean` and returns unit vectors.
-5. **The trace and vector driver.** Add `scripts/reference-embedding.cpp`,
-   modeled on `scripts/reference-generation.cpp`'s eval callback, built
-   against the new checkout.
-   - For a token list it dumps `inp_scaled`, `inp_per_layer`, `l_out`
-     per layer, `result_norm`, `result_embd`, and the pooled, normalized
-     vector.
-   - For an image or audio file it goes through `mtmd` and also dumps the
-     projector rows.
-   - Fixtures go in `tests/fixtures/embeddinggemma-<case>/`, compared by
-     `scripts/compare-generation.py` (2e-3 max abs, 1e-4 relative RMS),
-     or by a small `compare-embedding.py` if the shapes do not fit.
-6. **The semantic oracle.** Add `scripts/embedding-reference.py`, run in a
-   venv under `.reference/venv-embed` (sentence-transformers ≥ 6.1,
-   transformers 5.18.dev as the card pins). It embeds the fixture set
-   with `google/embeddinggemma-2` at the pinned revision in **float32**
-   and writes `tests/fixtures/embeddinggemma-vectors/st-f32.json`.
-   This is the end-to-end truth for the input processing too (prefixes,
-   image resize, mel features).
-   - Add it to `make lint-py`.
-   - It needs a network and about 1.5 GB, so it is a recorded fixture,
-     not a test.
-7. **The fixture set.** It must be small and attributable, our own
-   material only:
-   - About 24 texts: sentences written for the purpose, three paragraphs
-     of `docs/`, one Zig function from `inference/`, and some multilingual
-     lines. Each is rendered raw, as `search result` query, as `title:
-     none` document, and as `code retrieval` query.
-   - One long text of about 3000 tokens, to cross the 512 window, and one
-     near 8192 tokens.
-   - Images: `docs/branding/nuclis.png` and one captured site screenshot.
-   - Audio: `say -o` clips (AIFF, then WAV) of two sentences from the text
-     set, plus a generated 1 kHz tone, for a cross-modal check.
-   - One interleaved case: text, `<|image|>`, text.
-
-**Gates.** `make docs-check`, `make lint-py`, the fixtures committed, and
-each oracle's vectors unit length.
 
 ## Session 2. Text encoder on the CPU
 
@@ -289,12 +218,22 @@ reference for this family.
      from the request.
 4. **Tokenizer.** Add EOS when `add_eos_token` is true for this family
    (today `add_eos` is read nowhere), giving BOS + text + EOS. Check
-   against the oracle's token ids.
+   against the oracle's token ids: every case's ids, run-length encoded, are
+   in `tests/fixtures/embeddinggemma-vectors/st-f32.json`.
+   - **A decision for the user, before coding:** the HF tokenizer turns
+     special-token text in the input (a literal `<bos>`, as in
+     `long-8k.doc`) into the token, and the oracles were recorded that way.
+     The recommendation is to treat user text as literal, so a document
+     cannot inject control tokens. That makes `long-8k.doc` differ by one
+     token on purpose: compare it by cosine, with the reason recorded.
 5. **The check tool.** Add `inference/embeddinggemma-check.zig`, modeled
    on `inference/laya-check.zig`, with a build step.
-   - It compares the per-layer traces of Session 1 and the pooled vectors
-     against llama.cpp: cosine ≥ 0.9999 on Q8_0, and the trace bounds of
-     `compare-generation.py`.
+   - It compares the per-layer traces of `tests/fixtures/embeddinggemma-north.raw`
+     and `-north.query` (ggml order, see their `shapes.json`) and the pooled
+     vectors against `embeddinggemma-vectors/llama-q8_0`: cosine ≥ 0.9999,
+     and the trace bounds of `compare-generation.py` (2e-3 max abs, 1e-4
+     relative RMS). It reads vectors in the `.json`/`.f32` layout of
+     `scripts/compare-embedding.py`.
    - Add gates `embeddinggemma-trace-cpu` and `embeddinggemma-vectors-cpu`
      to `gates.json` (tier `verify-cpu`), with the paths that select them.
 6. **Tests.** Unit tests for:
@@ -474,8 +413,14 @@ corpus.
      image (`isAudio` already leaves `a.*` unbound).
    - The projector's output width must equal the text width, 512.
 2. **The budget.** Default to 280 soft tokens for this family (Google's
-   `max_soft_tokens`), not chat's 1120. Keep the
-   `preprocess.smartSize` letterbox. `--image-tokens 70..1120` on the CLI
+   `max_soft_tokens`), not chat's 1120. The soft-token count follows the
+   aspect ratio inside the budget (the 1254 × 1254 logo gives 256, the
+   1200 × 630 card 276). **The resize must be Google's, not llama.cpp's**:
+   `clip.cpp`'s bicubic costs 0.5 % of cosine on `image.og` against
+   PIL's antialiased bicubic. Before reusing the
+   `preprocess.smartSize` letterbox, check its size and resampling against
+   `Gemma4ImageProcessor`. `nuclis.png` is RGBA: drop alpha as PIL's
+   `convert("RGB")` does. `--image-tokens 70..1120` on the CLI
    and `nuclis.image_tokens` in the API raise or lower it, and it is
    recorded in the response, since it changes the vector.
 3. **Splicing.** BOI 255999, the projector rows, EOI 258882, at each
@@ -487,9 +432,11 @@ corpus.
      against the oracle's token dump before coding it.
 4. **Checks.**
    - Add gates `embeddinggemma-image-cpu` and `embeddinggemma-image-metal`
-     against the Session 1 image and interleaved fixtures: projector rows
-     by trace bounds, vectors by cosine against llama.cpp, and against
-     sentence-transformers f32 recorded as a measured number.
+     against `embeddinggemma-image.logo` and `-mix.logo`: projector rows
+     (`media-0.f32`) by trace bounds. These test the encoder from
+     llama.cpp's pixels. The vectors are compared by cosine against
+     `st-f32`, the image oracle (llama.cpp's own image vectors are 0.995
+     to 0.99986 of it).
    - Run `nuclis embed --image` and send an `image_url` part.
 
 **Gates.** `zig build test`, `zig build test-metal`, `make verify-auto`,
@@ -511,8 +458,9 @@ input for chat (not in this unit).
 2. **The front end.** Add `inference/src/audio/mel.zig`, pure Zig with no
    I/O: frame 320, hop 160, FFT 512, a 128-bin mel filterbank over
    0–8000 Hz, log with `mel_floor` 1e-3, and right padding.
-   - Test it against `Gemma4AudioFeatureExtractor` features recorded in
-     Session 1 (the HF processor is the oracle for the features).
+   - Test it against the `Gemma4AudioFeatureExtractor` features in
+     `tests/fixtures/embeddinggemma-audio-features/` (frames × 128, padding
+     dropped). The HF processor is the oracle for the features.
    - Record the filterbank construction in `docs/engine/audio.md`. If any
      constant is format-defining, record it in `THIRD_PARTY_NOTICES.md`.
 3. **The encoder on the CPU.** Add `inference/src/audio/gemma4a.zig`
@@ -524,7 +472,9 @@ input for chat (not in this unit).
    - Write the derivation from the HF config and llama.cpp's
      `tools/mtmd/models/gemma4a.cpp` and `mtmd_audio_preprocessor_gemma4a`
      (read as references only) into `docs/engine/audio.md`.
-   - Trace it against `reference-embedding.cpp`'s audio dump.
+   - Trace it against `tests/fixtures/embeddinggemma-audio.north/media-0.f32`.
+   - Read the norm epsilon from `clip.audio.attention.layer_norm_epsilon`
+     (1e-6 here, 1e-5 in E4B's mmproj).
 4. **The encoder on Metal.** Add `inference/src/audio/gemma4a_metal.zig`
    with existing kernels where they fit. Any new kernel (the depthwise
    conv, the chunked relative attention) is tested against the CPU in
