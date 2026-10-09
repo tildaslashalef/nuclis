@@ -98,7 +98,36 @@ What Session 5 inherits:
   Session 6 checks that placement against sentence-transformers on
   `mix.logo` before images ship.
 
-Next: **Session 5, `POST /v1/embeddings`**.
+**Session 5 is delivered (2026-10-09).** `POST /v1/embeddings`
+(`src/api/embeddings/`: service, batcher, pool), the `embedding` memory
+kind, embedding rows in `GET /v1/models` and `/v1/health`, the
+`docs/guide/api.md` § Embeddings section with § Measured rates, and spec
+§5.10 and §6 are committed. `scripts/api-check.py --only embeddings`
+passes: float and base64 vectors are bit-identical, and a batch,
+concurrent requests and a request across passes equal single calls bit
+for bit. Decisions taken in the session:
+- **Token arrays are refused** (`400 unsupported_feature`), not accepted
+  as the plan said: OpenAI clients send them tokenized with OpenAI's
+  vocabulary (LangChain's `OpenAIEmbeddings` by default), which would
+  give noise vectors silently. The message names LangChain's setting.
+- **One pass per GPU item.** A request larger than a 2,048-row pass
+  continues in the next, so passes run between a generation's steps.
+  2,048 against 8,192 rows: 38.0 against 38.3 inputs/s at 64 × 256
+  tokens, within the spread, while a pass holds the GPU 0.2 s instead of
+  1.7 s.
+- `/v1/models` lists `modalities: ["text"]` whatever the projector:
+  what the server embeds, not what the model could.
+
+What Session 6 inherits:
+- `request.fromJson` and `inputFromJson` refuse `image_url` and
+  `input_audio` parts, and `embed.parseArgs` `--image`/`--audio`, with
+  `UnsupportedModality`; lift them, and add the flags to the help page
+  and the completion table.
+- The service's `list` adds `image` to `modalities` once the projector
+  is pulled and bound. The pool counts only the main file; the
+  projector's half is added with `Budget.resize` when it binds.
+
+Next: **Session 6, Images**.
 
 | Session | What |
 | --- | --- |
@@ -106,7 +135,7 @@ Next: **Session 5, `POST /v1/embeddings`**.
 | 2. Text encoder on the CPU (done) | `gemma-embedding2` adapter, the bidirectional KV-free forward, pooling, projection, normalization, Matryoshka; `Embedder` in `inference/src/embed.zig` |
 | 3. Text encoder on Metal (done) | Grouped-query segments attention with materialized scores; packed batches, bit-exact; F32 activations throughout; measured rates |
 | 4. `nuclis embed` and the catalogue (done) | `ModelKind.embedding`, the catalogue table, the shared wire types in `src/embedding/`, tasks and titles, `model ls` |
-| 5. `POST /v1/embeddings` | The service, its batcher and pool, `Kind.embedding` in the memory budget, `GET /v1/models` fields, the API guide and spec |
+| 5. `POST /v1/embeddings` (done) | The service, its batcher and pool, `Kind.embedding` in the memory budget, `GET /v1/models` fields, the API guide and spec |
 | 6. Images | The small Gemma 4 vision encoder from this mmproj, rows spliced unscaled, 280 soft tokens by default, `--image` and image parts |
 | 7. Audio | AudioToolbox decode to 16 kHz mono, the log-mel front end, the `gemma4a` conformer on CPU then Metal, `--audio` and `input_audio` parts |
 | 8. Acceptance and close | Q8_0 against BF16 against Google's f32 vectors, a retrieval check, the rates, the documents, the pull request |
@@ -253,63 +282,6 @@ What our code assumes today (the reasons this is a new family):
   `attention_full_max_rows` = 4096: `nu_attention_segments` keeps every score
   in threadgroup memory.
 - There is no audio code anywhere. `chat/wire.zig` refuses audio.
-
-## Session 5. `POST /v1/embeddings`
-
-**Why.** The API the later index theme and outside clients build on, in
-the shape of the decisions and chat services.
-
-1. **The service.** Add `src/api/embeddings/service.zig`, registered in
-   `src/api/root.zig` `Server.register`, for `POST /v1/embeddings` with a
-   32 MiB body.
-   - The request follows OpenAI's shape, extended:
-     - `model` resolves to a registry or catalogue `embedding` name, and
-       defaults to `embed.model`.
-     - `input` is a string, an array of strings, token arrays, or an array
-       of **content-part arrays**: chat's `text` / `image_url` (data URLs
-       only) / `input_audio` (`{data, format}`). One input gives one
-       vector.
-     - `dimensions` ∈ {768, 512, 256, 128}, or 400 `unsupported_feature`
-       with `param`.
-     - `encoding_format` `float` | `base64` (little-endian f32; the
-       OpenAI Python SDK sends `base64` by default).
-     - `user` is accepted and ignored.
-     - Top-level extensions `task`, `title` and `truncate`, named as in
-       the CLI.
-   - The response is OpenAI's `{object:"list", data:[{object:"embedding",
-     index, embedding}], model, usage:{prompt_tokens, total_tokens}}`
-     plus `nuclis:{space, dimensions, task, truncated}`.
-   - Status codes follow chat (400, 404 `model_not_found`, 529, 503).
-   - `not_an_embedding_model` names the kind. Generation routes answer
-     `not_a_language_model` for an embedding name.
-2. **Batching and the pool.**
-   - `src/api/embeddings/batcher.zig` takes every waiting embedding job
-     for the oldest job's model, in arrival order, while the rows fit
-     one pass (2048 rows; a single longer input runs alone). It runs on
-     `gpu.zig`'s one executor, between a generation's steps as decisions
-     do.
-   - `pool.zig`, with capacity 1.
-   - `src/api/memory.zig` `Kind` gains `embedding`. A model counts its
-     files: the mmproj halves are counted only once bound (Session 6/7
-     bind them lazily).
-3. **`GET /v1/models`.** Embedding rows carry `kind:"embedding"`, `name`,
-   `architecture`, `quantization`, `size_bytes`, `present`, `loaded`,
-   `default`, `dimensions:[768,512,256,128]`, `modalities` (text, plus
-   image/audio when the mmproj is present), `max_tokens:8192`, `tasks`,
-   `repo` and `revision`.
-4. **Checks.**
-   - Extend `scripts/api-check.py` with embeddings: float and base64 are
-     identical, a batch of 3 equals 3 single calls bit for bit ("batching
-     changes timing, never answers"), and the dimensions and errors
-     behave as specified.
-   - Check the OpenAI Python SDK's `client.embeddings.create` once by
-     hand.
-5. **Documents.** Add a `docs/guide/api.md` `## Embeddings` section
-   (request, response, refusals, batching, memory), the `/v1/models`
-   fields and § Measured rates, and update the spec §6 `serve` row.
-
-**Gates.** `zig build test`, `make verify-auto`, `make docs-check`, and
-`api-check.py` against `./zig-out/bin/nuclis serve`.
 
 ## Session 6. Images
 

@@ -1,11 +1,12 @@
 # The nuclis API
 
 `nuclis serve` runs the nuclis API: an HTTP/1.1 server on this machine
-with two services. **Decisions** keep decision models open and answer
+with three services. **Decisions** keep decision models open and answer
 typed questions about text or JSON, in TypeSafe's Jev protocol, so a
 client written for `api.typesafe.ai` switches by changing its base URL.
 **Chat Completions** serve the language models in OpenAI's format, so a
-client written for an OpenAI-compatible server does the same. This page
+client written for an OpenAI-compatible server does the same.
+**Embeddings** turn text into vectors in OpenAI's embeddings format. This page
 is the reference for client authors; it assumes nothing about the code.
 
 - [Running the server](#running-the-server), [memory](#memory)
@@ -18,6 +19,10 @@ is the reference for client authors; it assumes nothing about the code.
   [what is refused](#what-is-refused), [the response](#the-response),
   [streaming](#streaming), [conversations and the
   cache](#conversations-and-the-cache), [agents](#agents)
+- [Embeddings](#embeddings): [`POST /v1/embeddings`](#post-v1embeddings),
+  [the request](#the-embeddings-request), [the
+  response](#the-embeddings-response), [passes and
+  memory](#passes-and-memory)
 - [`GET /v1/models`](#get-v1models), [`GET /v1/health`](#get-v1health)
 - [Measured rates](#measured-rates)
 
@@ -61,13 +66,13 @@ request that asks. Each model validates questions by its own rules:
 
 ### Memory
 
-Every open model counts against one budget, decision and language alike:
+Every open model counts against one budget, whatever its kind:
 32 GiB on a 48 GB machine by default (physical memory less 16 GiB, for
 the system and other applications). A model counts its files (a decision
 checkpoint's weights, backbone, and projector; a language model's
 weights, its draft file when speculative decoding is on, and its image
-projector once an image arrives) plus, for a language model, its
-attention cache and the saved states it may keep (`cache.memory_bytes`,
+projector once an image arrives; an embedding model's file) plus, for a
+language model, its attention cache and the saved states it may keep (`cache.memory_bytes`,
 4 GiB). Qwen3.8 counts 22.0 GiB, `laya-multilingual` 0.6 GiB, clef-flash
 8.4 GiB.
 
@@ -119,9 +124,12 @@ or the error):
 | Limit | Value | Past it |
 | --- | --- | --- |
 | request line and headers | 16 KiB | `431 headers_too_large`, connection closed |
-| request body | 4 MiB; 32 MiB for `/v1/chat/completions` | `413 payload_too_large`, connection closed |
+| request body | 4 MiB; 32 MiB for `/v1/chat/completions` and `/v1/embeddings` | `413 payload_too_large`, connection closed |
 | open connections | 64 | `529 busy`, connection closed |
 | decision requests waiting for the GPU | 64 | `529 busy` |
+| embedding requests waiting for the GPU | 64 | `529 busy` |
+| inputs per embedding request | 2,048 | `400 request_too_large` |
+| text per embedding input | 1 MiB | `400 request_too_large` |
 | wait before a request starts on the GPU | 300 s (`serve.timeout`) | `529 timeout` (a started pass always finishes) |
 | states per request | 64 | `422 request_too_large` |
 | questions per request | 32 | `422 request_too_large` |
@@ -155,7 +163,7 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 400 | `bad_request` | not HTTP: a malformed request line or header, an unknown method; the connection closes |
 | 404 | `not_found` | no route at that path |
 | 405 | `method_not_allowed` | the path exists, the method does not (`HEAD` is answered as `GET`) |
-| 413 | `payload_too_large` | the body exceeds 4 MiB |
+| 413 | `payload_too_large` | the body exceeds 4 MiB (32 MiB for chat and embeddings) |
 | 415 | `unsupported_encoding` | a compressed body (`content-encoding`) |
 | 417 | `bad_request` | an `expect` other than `100-continue` |
 | 422 | `invalid_json` | the body is not JSON |
@@ -168,11 +176,18 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 422 | `model_too_large` | the decision model alone needs more than the memory budget ([memory](#memory)) |
 | 400 | `invalid_json`, `invalid_request` | chat: the body is not JSON, or a field is malformed (`param` names it) |
 | 400 | `unsupported_feature` | chat: a field nuclis cannot honour ([what is refused](#what-is-refused)) |
-| 400 | `not_a_language_model` | chat: `model` names a decision model |
+| 400 | `not_a_language_model` | chat: `model` names a decision or embedding model |
 | 400 | `images_unsupported` | chat: an image for a model whose projector is not pulled |
 | 400 | `context_length_exceeded` | chat: the rendered conversation does not fit the model's window |
 | 404 | `model_not_found` | chat: `model` names no pulled language model |
 | 400 | `model_too_large` | chat: the language model alone needs more than the memory budget, with the sizes |
+| 400 | `invalid_json`, `invalid_request` | embeddings: the body is not JSON, or a field is malformed (`param` names it) |
+| 400 | `unsupported_feature` | embeddings: token arrays, image or audio parts, a width other than 768, 512, 256, or 128 ([what is refused](#what-an-embedding-request-may-not-carry)) |
+| 400 | `input_too_long` | embeddings: an input over 8,192 tokens without `"truncate": true`; the message gives its index and count |
+| 400 | `request_too_large` | embeddings: over 2,048 inputs, or over 1 MiB of text in one |
+| 400 | `not_an_embedding_model` | embeddings: `model` names a language or decision model |
+| 404 | `model_not_found` | embeddings: `model` names no pulled embedding model |
+| 400 | `model_too_large` | embeddings: the model alone needs more than the memory budget |
 | 431 | `headers_too_large` | the request line and headers exceed 16 KiB |
 | 500 | `model_failed` | the model could not be opened, or a completion failed on the GPU |
 | 500 | `internal`, `invalid_registry_entry` | a fault on the server's side |
@@ -542,6 +557,95 @@ previous one had consumed (7,582 of 8,050 tokens, then 8,337 of 9,181,
 10,251 of 10,357, and 10,419 of 10,591). Esc in pi cancelled a request
 in its prefill.
 
+## Embeddings
+
+### `POST /v1/embeddings`
+
+OpenAI's embeddings call for the embedding models `nuclis embed` runs
+(`embeddinggemma-2`, [embeddinggemma.md](../models/embeddinggemma.md)):
+one unit vector per input, in input order. OpenAI's SDKs work unchanged:
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:9000/v1", api_key="none")
+r = client.embeddings.create(model="embeddinggemma-2", input=["a cat", "a kitten"])
+q = client.embeddings.create(model="embeddinggemma-2", input="how do auroras form?",
+                             extra_body={"task": "search_query"})
+```
+
+```sh
+curl -s localhost:9000/v1/embeddings -d '{"input": "how do auroras form?", "task": "search_query"}'
+```
+
+### The embeddings request
+
+| Field | Meaning |
+| --- | --- |
+| `model` | a registry entry of kind `embedding` or an embedding catalogue name; default `embed.model` (`embeddinggemma-2`). Never a path |
+| `input` | a string (one input), or a list whose items are strings or lists of content parts (`{"type": "text", "text": "…"}`), at most 2,048. Each item is one input and gives one vector; an input's parts are read in order as one text |
+| `dimensions` | `768` (default), `512`, `256`, or `128`: the vector's leading values, renormalized (the widths the model is trained for) |
+| `encoding_format` | `float` (default) or `base64`: the vector's little-endian f32 bytes, which OpenAI's Python SDK asks for and decodes |
+| `user` | accepted and ignored |
+| `task` | nuclis's: the use the vectors are for. Text is embedded exactly as given unless a task is named; `search_query`, `question_answering`, `fact_checking`, `code_retrieval`, `classification`, `clustering`, and `similarity` put the model's `task: … \| query: ` prefix in front of an input's first text part, `document` puts `title: {title or none} \| text: ` there ([embeddinggemma.md § Tokenizer and task prefixes](../models/embeddinggemma.md#tokenizer-and-task-prefixes)) |
+| `title` | nuclis's: a document's title, with `"task": "document"` only |
+| `truncate` | nuclis's: `true` cuts an input over 8,192 tokens at its end instead of refusing it; the response lists the inputs cut |
+
+For retrieval, embed the corpus with `"task": "document"` and the queries
+with `"task": "search_query"`: the two are trained to meet.
+
+#### What an embedding request may not carry
+
+- **Token arrays** (`[1, 2, 3]` or `[[1, 2], [3]]`): a client that sends
+  them tokenized with another model's vocabulary, so the vectors would be
+  noise. LangChain's `OpenAIEmbeddings` does this by default; set
+  `check_embedding_ctx_length=False` and it sends text.
+- **Image and audio parts** (`image_url`, `input_audio`): the model reads
+  them; this server does not yet.
+- **Other widths**, and an input over 8,192 tokens without `truncate`
+  (`input_too_long`, with the input's index and token count).
+
+### The embeddings response
+
+OpenAI's shape on one line, then the `nuclis` object:
+
+```json
+{"object": "list",
+ "data": [{"object": "embedding", "index": 0, "embedding": [0.014093, -0.0013, …]}],
+ "model": "embeddinggemma-2",
+ "usage": {"prompt_tokens": 25, "total_tokens": 25},
+ "nuclis": {"space": "embeddinggemma-2@6f1bd4ac6c5d/768", "dimensions": 768, "task": "search_query",
+            "tokens": [25], "truncated": [], "timings_ms": {"load": 0.0, "tokenize": 0.3, "embed": 58.9}}}
+```
+
+- A `float` value is the shortest decimal that reads back to the same
+  f32; `base64` carries those bits exactly. Read as f32, the two are
+  identical.
+- `usage` counts every token the model read, the `<bos>` and `<eos>` each
+  input is framed with included.
+- `space` names where the vectors live: the checkpoint, the first 12 hex
+  digits of its file's SHA-256, and the width. Vectors compare only within
+  one space; an index should store it beside them.
+- `tokens` is each input's token count, `truncated` the indexes of the
+  inputs that were cut, `timings_ms` the request's open (when it opened
+  the model), tokenizing, and the passes it was in.
+
+### Passes and memory
+
+Embedding requests share GPU passes of at most 2,048 rows (an input's
+tokens, aligned to 8). When the GPU frees, the server takes the oldest
+waiting request's model and fills a pass with the inputs of every request
+waiting for that model, in arrival order; a request whose inputs do not
+fit continues in the next pass, ahead of later ones, and an input longer
+than a pass runs alone. A pass runs between a chat generation's steps
+(about 0.2 s at 2,048 rows), so a generation and an indexing job share
+the GPU. An input's vector does not depend on what shares its pass:
+batching changes timing, never vectors (`scripts/api-check.py --only
+embeddings` checks it bit for bit).
+
+One embedding model is open at a time; it opens on its first request
+(0.7 s) and counts its file against the [memory](#memory) budget (310 MB
+for the Q8_0 file).
+
 ## `GET /v1/models`
 
 OpenAI's list shape, so an OpenAI client reads the ids; the `nuclis`
@@ -576,7 +680,8 @@ object is for nuclis clients.
 
 Every decision model of the catalogue and the registry is listed, pulled
 or not, then every language model that is present (the ones `/model`
-offers in `nuclis chat`). A decision model's fields:
+offers in `nuclis chat`), then every embedding model of the catalogue and
+the registry, pulled or not. A decision model's fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -606,6 +711,22 @@ A language model's (`owned_by` is `nuclis`):
 | `efforts` | the reasoning levels its template renders, in the profile's names: `off` is the request's `none` (`reasoning_effort` accepts both) |
 | `detail` | the same in one line for people: architecture, quantization, and size, or the file's name |
 
+An embedding model's (`owned_by` is the repository's owner, `local`
+without one):
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `embedding` |
+| `name` | the catalogue's title ("EmbeddingGemma 2"), else the entry's name |
+| `architecture`, `quantization` | `gemma-embedding2`; the catalogue's label (`Q8_0`), null for another file |
+| `size_bytes` | the file's size |
+| `present`, `loaded`, `default` | as above; `default` is `embed.model` |
+| `dimensions` | the widths it is trained for, `[768, 512, 256, 128]` |
+| `modalities` | what this server embeds with it: `["text"]` |
+| `max_tokens` | tokens per input, 8,192 |
+| `tasks` | the `task` values it takes |
+| `repo`, `revision` | where its file came from |
+
 ## `GET /v1/health`
 
 ```json
@@ -615,11 +736,13 @@ A language model's (`owned_by` is `nuclis`):
   "backend": "metal",
   "loaded": ["laya", "laya-multilingual"],
   "language": "qwen3.8-27b",
+  "embedding": "embeddinggemma-2",
   "memory": {"limit": 34359738368, "resident": 24227472014,
              "models": [{"name": "qwen3.8-27b", "kind": "language", "bytes": 23583635232},
                         {"name": "laya-multilingual", "kind": "decision", "bytes": 643836782}]},
   "queue": {"queued": 0, "running": false, "completed": 1709},
   "decisions": {"waiting": 0, "batches": 1707, "requests": 3136},
+  "embeddings": {"waiting": 0, "passes": 42, "requests": 37},
   "connections": 1
 }
 ```
@@ -631,7 +754,9 @@ model (null before the first chat request), `memory` the budget
 (`completed` counts GPU items, a batch or a completion being one);
 `decisions.waiting` is decision requests not yet in a pass,
 `batches` and `requests` the passes run and the requests they answered
-since the start.
+since the start. `embedding` is the open embedding model (null before the
+first embedding request), and `embeddings` counts its waiting requests,
+passes, and answered requests the same way.
 
 ## Measured rates
 
@@ -702,3 +827,28 @@ different questions (2 states each, choice, noul, and score questions)
 returned the same bytes as each sent alone, timings aside, on both
 checkpoints on Metal (16 in 3 and in 4 passes), and the unit test
 asserts the same on the CPU.
+
+### Embeddings, 2026-10-09
+
+Apple M4 Pro (48 GB), ReleaseSafe (`make metal`), Zig 0.17.0, macOS 27.0;
+`nuclis serve` on Metal with `embeddinggemma-2` (the Q8_0 file and
+`unsloth/embeddinggemma-2-GGUF` at `031f0d4b`), commit `7d37e93`. Each input is `<bos>`,
+" the" repeated, `<eos>` (the cost does not depend on the text), sent as
+one request with `encoding_format: base64`; one warm-up, then the median
+of 7, from Python's `urllib` on loopback. `embed` is the response's
+`timings_ms.embed`, the passes alone.
+
+| Request | Tokens | Wall ms | `embed` ms | Inputs/s |
+| --- | ---: | ---: | ---: | ---: |
+| 64 inputs × 256 tokens | 16,384 | 1,686 | 1,674 | 38.0 |
+| 1 input × 512 tokens | 512 | 60 | 59 | 16.8 |
+| 1 input × 8,192 tokens | 8,192 | 1,756 | 1,748 | 0.6 |
+
+The server adds about 12 ms to the 64-input request (parsing, the queue,
+and 64 base64 vectors), and the batch runs at the rate the encoder has
+alone (1,671 ms for the same inputs in
+[embeddinggemma.md § The Metal plan](../models/embeddinggemma.md#the-metal-plan-2026-10-09)).
+Passes of 2,048 rows cost no throughput: the same server with 8,192-row
+passes gave 1,669 ms and 38.3 inputs/s, within the spread, while a
+2,048-row pass holds the GPU for about 0.2 s instead of 1.7 s.
+
