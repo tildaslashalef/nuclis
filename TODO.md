@@ -16,7 +16,7 @@ it is empty, ask what to work on and write the agreed plan here.
 
 The plan below was agreed on 2026-10-08. It is **one unit over several
 sessions on one branch, `embedding-gemma-2`**, cut from `main` at
-`5e69b80`. **The user's rule for this unit: commit on the branch, do not
+`5e69b80` and last merged with `main` at `b0297c2`. **The user's rule for this unit: commit on the branch, do not
 push and do not open the pull request until the whole unit is
 implemented** (this overrides the usual "push and draft a pull request at
 the end of each session"). Nothing is implemented yet; the planning session
@@ -165,7 +165,7 @@ What our code assumes today (the reasons this is a new family):
 
 ## Session 1. Facts and oracles
 
-Base: `5e69b80`.
+Base: `b0297c2`.
 
 **Why.** Every later session compares against recorded numbers. This one
 pins the files, writes the model document, and records the oracle outputs
