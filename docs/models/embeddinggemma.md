@@ -13,7 +13,7 @@ Everything here was read on 2026-10-08 and 2026-10-09 from these sources:
 the pinned files, through `scripts/gguf-inventory.py`; Google's repository
 at the pinned revision (`config.json`, `config_sentence_transformers.json`,
 `processor_config.json`, the card); and the second llama.cpp checkout
-`06cad0b9e` (`src/models/gemma-embedding2.cpp`, `conversion/gemma.py`,
+`b11514` (`de7fa0a3c`; `src/models/gemma-embedding2.cpp`, `conversion/gemma.py`,
 `src/llama-hparams.h`, `tools/mtmd/`). The llama.cpp checkout is read for
 semantics and used as an oracle, never copied. Where a fact comes from a
 reference rather than the file, the sentence says so.
@@ -312,14 +312,61 @@ represents them together and is comparable with a text-only one.
 
 - **llama.cpp.** The main pin `7620399` does not know `gemma-embedding2`.
   Upstream added it, with vision and audio, in `4fbc76dec` (#30054,
-  2026-10-06). The second checkout `.reference/llama.cpp-embed` at
-  `06cad0b9e77315bd2930bd4f70a6d7b37b2a01c1` (2026-10-07) builds with the
+  2026-10-06); the newest release, `v0.6.0` (2026-10-05), predates it. The
+  second checkout `.reference/llama.cpp-embed` is at build tag `b11514`,
+  `de7fa0a3c6a2e1b4cd9f22eb8d6bf5b12dbdb63b` (2026-10-08), built with the
   usual recipe ([llama-cpp.md § The third oracle](../benchmarks/llama-cpp.md#the-third-oracle-embeddinggemma-2-2026-10-09)).
-  On 2026-10-09 its `llama-embedding -ngl 99 --pooling mean
-  --embd-normalize 2` loaded the Q8_0 and BF16 files and returned
-  768-wide vectors of norm 1.0000000.
+  Its `llama-embedding --pooling mean` loads the Q8_0 and BF16 files and
+  returns unit vectors. The fixture driver is `scripts/reference-embedding.cpp`;
+  it runs each input as **one mixed batch** of token rows and projector rows
+  (`llama_batch_ext`), because separate decode calls on a cache-less model
+  would not attend to each other.
 - **sentence-transformers.** `google/embeddinggemma-2` at the pinned
-  revision, in float32, through sentence-transformers 6.1.0 and
-  transformers 5.19.0 (the card was written against 5.18.0.dev0) in
-  `.reference/venv-embed`. It is the end-to-end truth for input
-  processing too (prefixes, image resizing, mel features).
+  revision, in float32 on the CPU, through sentence-transformers 6.1.0,
+  transformers 5.19.0 (the card was written against 5.18.0.dev0) and torch
+  2.14.1, in `.reference/venv-embed`, driven by `scripts/embedding-reference.py`.
+  It is the end-to-end truth, input processing included (prefixes, image
+  resizing, mel features).
+
+Both read one input set, `tests/fixtures/embeddinggemma-inputs/inputs.json`
+(104 cases; [provenance](../../tests/fixtures/provenance.md)).
+
+**The oracles against each other (2026-10-09).** Cosines per case from
+`scripts/compare-embedding.py`, minimum and mean per group; the token ids
+are identical in every case:
+
+| Group (cases) | llama.cpp Q8_0 / ST f32 | llama.cpp BF16 / ST f32 | Q8_0 / BF16 |
+| --- | --- | --- | --- |
+| Text (96) | 0.999888 / 0.999947 | 0.999995 / 0.999998 | 0.999885 / 0.999945 |
+| 2,930-token document | 0.999905 | 0.999999 | 0.999905 |
+| 8,142-token document | 0.999897 | 1.000000 | 0.999897 |
+| Images (2) | 0.995162 / 0.997510 | 0.995319 / 0.997609 | 0.999931 / 0.999948 |
+| Text, image, text (1) | 0.999874 | 0.999924 | 0.999946 |
+| Audio (3) | 0.998446 / 0.999429 | 0.998670 / 0.999547 | 0.999866 / 0.999912 |
+
+On text, BF16 matches Google's float32 to six digits, so the reference
+graph is right and the Q8_0 file's cost is about 5e-5 of cosine. The gap
+on images is the reference's resampling, not the model: `image.og`
+(1200 × 630) is at 0.9952, and the same picture pre-resized to its patch
+grid (1104 × 576, so neither side resamples) agrees at 0.99980.
+`clip.cpp`'s bicubic is not Google's (PIL's antialiased bicubic), so for
+images **sentence-transformers is the oracle** and llama.cpp checks the
+encoder from given pixels.
+
+**Facts the oracles settled.**
+
+- **Special-token text is parsed.** The HF tokenizer turns special-token
+  text in the input (a literal `<bos>`, as in `long-8k.txt`) into the
+  token; llama.cpp does the same only with `parse_special`, which the
+  driver sets.
+- **Framing.** An image is `<bos>` BOI (255999), its soft tokens, EOI
+  (258882), `<eos>`; an audio clip the same with BOA (256000) and EOA
+  (258883). Text around a media part keeps its whitespace: "engine: "
+  ends in its own space token (236743) before BOI.
+- **Soft tokens follow the aspect ratio inside the budget.** At 280, the
+  1254 × 1254 logo becomes a 48 × 48 patch grid, 16 × 16 = 256 soft tokens;
+  the 1200 × 630 card a 36 × 69 grid, 12 × 23 = 276.
+- **Audio** is 25 tokens per second: 4.8 s gives 479 mel frames and 120
+  soft tokens.
+- **The 8192 limit is ours to enforce.** sentence-transformers'
+  `max_seq_length` is unbounded, and it truncates nothing.

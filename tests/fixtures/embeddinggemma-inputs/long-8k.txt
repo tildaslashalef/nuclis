@@ -1,0 +1,547 @@
+# Building an inference engine: the nuclis guide
+
+This is the companion to the inference stack: what it took to make a 27
+billion parameter model answer on one laptop, told in the order the ideas
+matter rather than the order they were built. Every technique in it is
+implemented in this tree, and every number is a measurement from it. It is
+written to be read end to end in an evening and to be revisited one section
+at a time; each section ends with the files to read next.
+
+It is not about the agent or the terminal (that is
+[app/agent.md](app/agent.md)), not the map of
+the code ([architecture.md](architecture.md)), and not the requirements
+([spec.md](spec.md)). It is about the ideas, and about the moments where an
+idea turned out to be wrong and a measurement said so.
+
+A note on the hardware, because it is a character in the story: an Apple
+M4 Pro with 48 GB of unified memory and a 273 GB/s memory bus. The models
+are Qwen3.8-27B (the pinned target: 64 layers, 16 of them attention and 48
+recurrent), Gemma 4 in a dense 12B, a sparse 26B, and a small E4B, Muse
+Glimmer 30B, and
+Bonsai 2, which is Qwen3.8 again at 1.58 bits per weight.
+
+**Contents.**
+
+- **Part One — The problem**: [1. The numbers that decide everything](#1-the-numbers-that-decide-everything), [2. What an engine is](#2-what-an-engine-is)
+- **Part Two — The file**: [3. A directory you can trust](#3-a-directory-you-can-trust), [4. Eleven ways to store a weight](#4-eleven-ways-to-store-a-weight), [5. The rotated basis](#5-the-rotated-basis)
+- **Part Three — Text**: [6. Tokens are bytes with a history](#6-tokens-are-bytes-with-a-history), [7. The prompt profile is a contract](#7-the-prompt-profile-is-a-contract)
+- **Part Four — One token on the CPU**: [8. Slow on purpose](#8-slow-on-purpose), [9. Attention reads, DeltaNet writes](#9-attention-reads-deltanet-writes), [10. A layer, a token, a session](#10-a-layer-a-token-a-session)
+- **Part Five — The GPU**: [11. Crossing the bridge](#11-crossing-the-bridge), [12. Lanes, SIMD groups, and where they live](#12-lanes-simd-groups-and-where-they-live), [13. The matvec that reads 16 GB](#13-the-matvec-that-reads-16-gb), [14. Fewer dispatches, same math](#14-fewer-dispatches-same-math), [15. Sampling on the device](#15-sampling-on-the-device)
+- **Part Six — Prefill is a different problem**: [16. Arithmetic intensity flips](#16-arithmetic-intensity-flips), [17. Attention in tiles: online softmax](#17-attention-in-tiles-online-softmax), [18. DeltaNet in chunks: the triangular solve](#18-deltanet-in-chunks-the-triangular-solve), [19. Experts: sparsity's gift and bill](#19-experts-sparsitys-gift-and-bill)
+- **Part Seven — Long context**: [20. Half the bytes: the F16 cache](#20-half-the-bytes-the-f16-cache), [21. Flash decoding](#21-flash-decoding), [22. Checkpoints, not rewinds](#22-checkpoints-not-rewinds)
+- **Part Eight — Speculation**: [23. Guessing ahead, and paying to check](#23-guessing-ahead-and-paying-to-check)
+- **Part Nine — Families**: [24. The registry table](#24-the-registry-table), [25. What a second architecture costs](#25-what-a-second-architecture-costs)
+- **Part Ten — Honesty**: [26. Measuring, and what counts as knowing](#26-measuring-and-what-counts-as-knowing), [27. What it took](#27-what-it-took)
+
+---
+
+## Part One — The problem
+
+### 1. The numbers that decide everything
+
+Start with a division. The Qwen file is 16.1 GB of weights. To produce one
+token, a dense model reads every weight once. At 273 GB/s that read takes
+59 ms, so the fastest this machine can ever decode this model is about 17
+tokens per second, whatever the code looks like. llama.cpp, a mature
+engine with years of Metal work in it, reaches 10.2 on the same file after
+a 512-token prompt; nuclis reaches 11.7 (both measured 2026-10-04; every
+family and length is in the README's [Results](../README.md#results)).
+The gap between 12 and 17 is the entire subject of Part Five.
+
+The second number is the prompt. Reading the prompt (*prefill*) is a
+different problem from producing the answer (*decode*): the same 16 GB of
+weights can be multiplied against 512 prompt tokens at once, so the bytes
+are amortized and the arithmetic units become the limit. The reference
+prefills at 92 tokens per second and decodes at 10.2; both numbers come
+from the same weights on the same bus, and the ratio is Part Six.
+
+The third is memory. 27 billion parameters at two bytes each would be 54
+GB, more than the machine has, so the weights are stored at about four bits
+on average and never expanded. The conversation's memory, the cache of
+keys and values every attention layer keeps, is 64 KiB per token at F32 on
+this model: a 32K-token context is 4 GiB of state beside the weights, or 2
+at F16. That is Part Seven.
+
+Everything else follows from those three: bytes per token, tokens per
+weight read, and bytes per token of context.
+
+### 2. What an engine is
+
+A trained model is a set of numbers. An engine is everything that makes
+them do something:
+
+```text
+model file        → validated weights and architecture facts
+messages          → the prompt template → the tokenizer → token ids
+ids + weights + session state → the layer schedule → logits
+logits            → the sampler → the next id → text
+                    ↳ feed the id back and repeat
+```
+
+Three kinds of memory live in that loop, with different owners and
+lifetimes, and getting them apart is most of the design. **Weights** are
+immutable and memory-mapped from the file; no floating-point copy of them
+ever exists. **Session state** is per conversation and mutable: the
+attention cache rows and the recurrent matrices, carved out of one
+page-aligned block so the GPU can address it without a copy. **Activations**
+are scratch, overwritten every token. When a later section says "session"
+it means the middle kind, and when it says a layer "writes its row" it
+means into that block.
+
+Read: `inference/src/engine.zig` (`runLoop` is the whole loop),
+[architecture.md § 3](architecture.md#3-three-kinds-of-memory).
+
+---
+
+## Part Two — The file
+
+### 3. A directory you can trust
+
+A GGUF file is a directory followed by weights: a magic number, counts, the
+metadata (architecture facts, the vocabulary, the chat template), then one
+descriptor per tensor with its name, shape, storage encoding, and offset.
+The directory says everything an engine needs to decide whether it can run
+the file, and none of it needs the weights. Qwen's directory is 11 MB; the
+vocabulary lives in it.
+
+The parser's job is refusal. It checks dimensions, encoding sizes,
+duplicate names, offsets, alignment, overlap, and file bounds before it
+lets anyone read a byte of weight, and it bounds its own allocations
+against a file that lies about its counts. `nuclis model inspect` runs the
+same parser over the head of a file fetched in 8 MiB windows from the Hub,
+with the real file size for the bounds checks, and stops when the parser
+stops asking for more. Four seconds decide whether a 16 GB download is
+worth starting.
+
+That decision has four levels, and the code base once blurred them.
+*Storable*: the parser knows the encoding's block size. *Executable*: the
+adapter has kernels for it. *Bindable*: every tensor the architecture
+expects is present with its shape and nothing unexpected is. *Supported*:
+all of that, and the catalogue pins the Hub's digest for the file. The
+verdict names the first offender by tensor name, because "unsupported" with
+no noun costs an afternoon.
+
+Read: `inference/src/formats/gguf.zig`, `src/model.zig` (`inspect`),
+[engine/gguf.md](engine/gguf.md).
+
+### 4. Eleven ways to store a weight
+
+Quantization is the reason the model fits. A block encoding groups values
+(32 or 256 of them) under shared metadata, and its decoding equations say
+what the bytes mean. The Qwen file mixes nine encodings; the tree decodes
+eleven, and each one taught something about the difference between
+counting bits and knowing a format.
+
+**A scale and a code.** Q8_0 is the simplest: an F16 scale and 32 signed
+bytes. IQ4_NL keeps four-bit indices into a fixed table of sixteen
+non-uniform values, then scales. Even here packing order is part of
+correctness: the two nibbles of one byte are values 16 positions apart,
+and reading them as neighbours produces plausible numbers in the wrong
+places, which is worse than a crash.
+
+**Scales that are themselves quantized.** Q4_K and Q5_K store 256 values as
+eight groups, each with a six-bit scale and a six-bit offset that are
+interpreted through two shared F16 coefficients: `(d·scale)·q − (dmin·min)`.
+An offset means a zero code can be a negative weight. Q5_K's fifth bit
+lives in a separate array, a *bit plane*, and restoring each weight's five
+bits from two places is the whole decoder.
+
+**Signs are a representation choice.** Q3_K's two low bits go negative when
+a separate mask bit is clear; Q6_K adds a bias of 32 to an unsigned code.
+Both scales differ too. Two encodings of the same size, 110 bytes per 256
+values, can describe different arithmetic: IQ3_S spends a nine-bit index on
+a *codebook* of 512 four-value patterns plus signs, so one code is a small
+vector, not a number.
+
+**Q4_0** is 32 values, an F16 scale, and sixteen bytes of nibbles with the
+value `d·(q − 8)`: IQ4_NL's block with the table replaced by a subtraction.
+It matters because Google's quantization-aware-trained Gemma is stored in
+it, and that file is only meaningful if the engine reproduces exactly the
+arithmetic its training simulated. The loader never requantizes, which is
+what makes the choice of file mean something.
+
+**Ternary.** Bonsai 2 stores each weight as one of `{−1, 0, +1}` times a
+scale per 128. PQ2_0 spends two bits per trit. PTQ1_0 packs five trits in a
+byte in base 3, because 3⁵ = 243 fits in 256: the byte is pre-scaled so the
+leading digit is `(byte·3) >> 8`, and multiplying by 3 modulo 256 promotes
+the next. Five multiplies, no division, and the values come out
+digit-major, so element `j` is not in byte `j/5`. The fixture feeds the
+decoder arbitrary bytes on purpose: matching on codes a valid file never
+contains proves the arithmetic, not just the packing.
+
+One file in the download directory is none of these: the importance
+matrix, 992 F32 tensors of activation statistics used *by the quantizer*
+to decide which channels deserve precision. It is not a layer to run and
+does not restore anything when loaded beside the weights it shaped.
+
+Three rules survived all eleven. The CPU decoder is the truth, pinned
+against the reference implementation's own C decoders through fixtures.
+Every GPU decoder is bit-identical to it, because they index the same bytes
+with the same equations. And a specialized kernel folds the scale out of
+the sum (`Σ(d·s·q − dmin·m)·x = d·s·Σq·x − dmin·m·Σx`) as algebra, never
+as approximation, so a one-hot input reproduces the decoder's expression
+exactly and the fixture columns stay exact on the GPU.
+
+Read: `inference/src/quant/decode.zig`, `inference/src/tensor/encoding.zig`,
+[engine/quantization.md](engine/quantization.md).
+
+### 5. The rotated basis
+
+Rounding to three levels is brutal on a matrix whose columns have a few
+large entries and many small ones: the scale follows the outliers and the
+rest round to zero. Activations have the same shape. Bonsai's remedy, the
+one QuaRot and SpinQuant use, is a change of basis. For any orthogonal
+`R`, `W·x = (W·Rᵀ)·(R·x)`: rotate the weight's input axis once at
+conversion time, rotate the activation the same way at every token, and
+the product is unchanged while both operands look Gaussian.
+
+The rotation is `(1/√1024)·H·S` on each block of 1024 elements: `S` a
+diagonal of random signs shipped in the file header, `H` the Sylvester
+Walsh-Hadamard matrix, `H[r][c] = (−1)^popcount(r & c)`. `H` needs no
+storage and costs ten butterfly stages of additions, and the random signs
+are what stop a structured input from being an eigenvector of a known
+matrix. Because `H` is its own inverse, the embedding table can be stored
+rotated and undone after lookup by the same transform.
+
+Four activations per layer meet rotated weights; the transform is
+memoized per activation. Two projections, the DeltaNet gates, are stored
+unrotated at BF16 because a rounding error there compounds through the
+recurrence, and the adapter pins the list of *which* inputs rotate rather
+than trusting the file. On the GPU the transform costs 1.66 ms of a 78 ms
+token: at batch one, a small kernel's cost is its launch and its
+dependency, not its arithmetic, and this is 258 more of them. The bytes are
+the point: 7.2 GB against 16.5, and 12.87 tokens per second where the
+forked reference reaches 17.05.
+
+Read: `inference/src/backends/cpu/hadamard.zig`, `models/qwen35.zig`
+(`Rotation`), [models/bonsai.md](models/bonsai.md).
+
+---
+
+## Part Three — Text
+
+### 6. Tokens are bytes with a history
+
+A tokenizer is not a dictionary. Byte-pair encoding starts from bytes, each
+mapped to a reversible symbol, and repeatedly merges adjacent pairs in the
+order the training assigned them: `abc` becomes `a` + `bc` if the pair
+`bc` outranks `ab`, even when a token `abc` exists. Merge rank is the
+algorithm; the vocabulary's order is the model's meaning, so nothing is
+ever sorted.
+
+Before any merge runs, the *pre-tokenizer* decides where merges are legal.
+Qwen's rules split every Unicode number into its own piece, so `1` and `2`
+can never merge across that boundary however the ranks fall; combining
+marks stay with their letters. Those rules need Unicode categories, and
+using the host's Unicode tables would let a system update move a boundary,
+so the category table is pinned data like the vocabulary. Special markers
+are claimed first, longer types before shorter, and a claimed span is
+never split.
+
+Three families meant three splitters and two vocabulary models. Gemma's is
+SentencePiece-style: symbols are code points, spaces become `▁`, the only
+pre-split is around newline runs, and an unknown symbol falls back to
+`<0xNN>` byte tokens. Muse uses the gpt-4o pattern as the reference
+realizes it. The rank-ordered merge loop is one function with three
+callers.
+
+Decoding is the reverse, with one trap: a token may hold the first byte of
+a multibyte character, valid tokenizer output that is not valid text. The
+stream keeps up to one incomplete scalar between tokens and flushes
+complete text; the ids stay exact. And the way you know a tokenizer is
+right is not that the words look right: nuclis reproduces the reference's
+token arrays on an 83,384-token corpus at every cut the benchmarks use,
+including a 32,620-token one.
+
+Read: `inference/src/tokenizer/encode.zig`, `bpe.zig`, `stream.zig`,
+[engine/tokenizer.md](engine/tokenizer.md).
+
+### 7. The prompt profile is a contract
+
+The same weights are useless without the exact text the checkpoint was
+trained to see: role markers, separators, the reasoning switch, the
+assistant prefix. nuclis calls that the *prompt profile*, keeps it apart
+from the architecture, and selects it by the SHA-256 of the chat template,
+never by the architecture name. Two files of one family can ship different
+templates; the K-quant and QAT Gemma files share one.
+
+A Jinja template is a small program, and the reference runs it with an
+interpreter. nuclis does not: the profile is a Zig function that renders
+the subset of conversations the agent produces, and the evidence that it
+renders them correctly is a fixture the reference server produced from
+the artifact's own template. Reading Gemma's 19 KB template for that
+subset reduced it to a dozen clauses, several of which the model card
+gets wrong: reasoning is rendered only after the last user message,
+`developer` is sent as `system`, two assistant messages continue one turn.
+
+The second family found two Qwen facts hiding outside the profile. The
+engine stopped on `eos or bos`, which on Gemma would have stopped at the
+first `<bos>` and never at `<turn|>`; and the chat split every turn on the
+literal `</think>`. Both moved into the profile: a stop set of texts
+resolved to ids at load (a template whose end marker the vocabulary lacks
+refuses to load), and a pair of reasoning markers the surface splits on.
+When the template defines tool calling, the profile owns that too, in
+both directions: it renders the tool definitions and results into the
+template's own grammar and decodes the model's output into typed calls at
+token boundaries. Qwen's XML-like calls, Gemma's `call:NAME{…}`, Muse's
+ATEM grammar: three wire formats, and nothing outside `profiles/` names
+any of them.
+
+One more collapse is deliberate. The shared effort enum has four levels
+because Qwen has four; Gemma's template has a switch. A profile maps what
+it cannot express (`off` is off, everything else is on) rather than
+pushing a per-profile type into every caller.
+
+Read: `inference/src/profiles/root.zig`, `profiles/gemma4.zig` (the
+module comment is the contract),
+[engine/prompt-profile.md](engine/prompt-profile.md),
+[engine/tool-calling.md](engine/tool-calling.md).
+
+---
+
+## Part Four — One token on the CPU
+
+### 8. Slow on purpose
+
+Every operation the GPU runs exists first as a plain function in
+`backends/cpu/` with F64 accumulation and its own tests, and the CPU
+schedule that composes them takes about eighteen seconds per token. That
+is not a prototype; it is the oracle, and its value is being obviously
+correct. When the GPU and the CPU disagree, the CPU is presumed right until
+proven otherwise, and the trace comparison says at which layer.
+
+The matvec decodes a row into scratch and sums products in F64; the test
+`16777216 + 1 − 16777216` keeps the `1` where F32 loses it at the first
+addition. RMSNorm puts epsilon inside the square root; L2 normalization
+bounds the denominator instead. Softmax subtracts the maximum before
+exponentiating and refuses an all-masked vector rather than returning
+zeros. Softplus uses `log1p` so `1 + tiny` does not round the tiny away.
+RoPE rotates pairs at split-half stride with F64 frequencies, and the
+tests separate mathematical invariants (rotations preserve length; opposite
+positions cancel) from agreement with another implementation, because the
+reference's repeated F32 updates drift at large positions and a tolerance
+against it is evidence about that case only.
+
+The habit this layer sets for the whole tree: validate every shape and
+every finite value first, then write. A failure leaves the caller's buffers
+untouched, and tests assert that.
+
+Read: `inference/src/backends/cpu/vector.zig`, `rope.zig`,
+[engine/cpu-reference.md](engine/cpu-reference.md).
+
+### 9. Attention reads, DeltaNet writes
+
+Attention is a lookup over everything seen so far. For one query, score
+every stored key, softmax the scores, and combine the values by those
+weights; keys decide relevance, values carry content. Two structural
+facts shape every kernel later. *Grouped-query attention*: 24 query heads
+share 4 key/value heads on Qwen, so a cache row is read by six queries.
+*Causality*: a query sees the visible prefix and nothing after it, and a
+masked key is excluded from the softmax, not given a zero score.
+
+Qwen's other 48 layers are Gated DeltaNet, and they do the opposite. Each
+head keeps a 128 × 128 matrix, an associative memory: applying a key
+predicts a value, the delta rule writes back the prediction error scaled
+by a learning rate, a decay gate decides how much of the old memory
+survives, and the query reads the updated matrix.
+
+```text
+S ← a·S
+S ← S + β·(v − S·k)·kᵀ
+out = scale·S·q
+```
+
+A short causal convolution over the last four inputs sits in front of it.
+The consequence that shapes the session design: this state is a function
+of every token ever fed. Attention forgets the last token by setting a
+length. DeltaNet has already mixed it in, and no arithmetic undoes that
+after rounding. The spec forbids rewinding a hybrid model by truncating the
+cache, and Part Seven and Part Eight are largely about what to do instead.
+
+Read: `inference/src/backends/cpu/attention.zig`, `recurrent.zig`,
+[architecture.md § 4](architecture.md#4-one-qwen-layer).
+
+### 10. A layer, a token, a session
+
+A layer is norm, mixer, residual, norm, feed-forward, residual, and the
+schedule is that 64 times, then a final norm and the vocabulary
+projection. The first working CPU run agreed with the reference's
+per-layer traces on the first try in one respect and taught wiring in
+another: the query-and-gate packing and the DeltaNet head mapping (16
+key heads broadcast to 48 value heads by `h % 16`, unlike attention's
+consecutive groups) are the kind of fact no isolated operator test can
+catch. Traces catch them.
+
+Three families, three layer menus. Gemma alternates sliding-window layers
+that see the last 1,024 positions with global layers whose heads are 512
+wide, applies a tanh GELU, scales its residual stream, and in the 26B
+replaces the feed-forward with 128 experts of which 8 fire. Muse is dense,
+30B, with windowed layers and 13 global ones. Bonsai is Qwen's schedule on
+rotated weights. What did not change across them is the point of Part Nine.
+
+The session is where a token becomes durable. It is one page-aligned block
+with typed views per layer: `Rows` of keys and values for attention (F32
+or F16), `[]f32` for recurrent state, and a tiny state machine: `ready →
+updating → ready`, or `failed` until `reset`, because a step that fails
+halfway has already mutated some recurrent layers and half-updated
+matrices are not a state anyone should keep. `snapshot` copies the used
+extent (the recurrent state whole, 64 KiB per token of cache) behind a
+digest of the layout and capacity, so F16 bytes cannot land in an F32
+session. The proof is bitwise: checkpoint after token one, compute token
+two, restore, compute it again, identical logits on both backends.
+
+Read: `models/qwen35_runtime.zig` (`fullAttention`, `linearAttention`),
+`inference/src/runtime/session.zig`,
+[engine/session.md](engine/session.md).
+
+---
+
+## Part Five — The GPU
+
+### 11. Crossing the bridge
+
+A GPU does not run Zig. Kernels are written in Metal Shading Language,
+compiled by the driver into pipeline states, and work is described into a
+command buffer: an encoder records "bind these buffers, run this pipeline
+over this many threads", `commit` hands the buffer over, and nothing has
+executed until then. The bridge in `bridge.m` keeps every Metal object
+behind one opaque handle; Zig sees a dozen C functions and never a Metal
+type. It is compiled without automatic reference counting so every retain
+and release is a line you can read.
+
+Unified memory is the gift of this hardware: the GPU addresses the same
+RAM the CPU mapped the file into. `newBufferWithBytesNoCopy` wraps a
+page-aligned range with no copy, which is why weights are never copied and
+why the session is one page-aligned block. The obligation that comes with
+it is lifetime: the mapping must outlive the backend, and the CPU may
+touch session memory only after the command buffer that writes it has
+completed.
+
+The first bridge was correct and slow: a command buffer and a wait per
+operation, several hundred per token, 2.3 tokens per second. Recording a
+whole token into one buffer gave 5.0 with the same kernels. Later the
+profiler found the CLI's layer observer quietly committing 64 buffers per
+token on every run for the sake of Ctrl-C, and splitting it into a
+values-free `check` took decode from 8.5 to 9.7 with no kernel change.
+Synchronization is a cost like bandwidth, and it hides because it is
+nobody's kernel.
+
+The wait has one refinement, added for the agent: `commit` waits on a
+semaphore the buffer's completion handler signals, with a 100 ms timeout
+that calls back into whoever installed a `tick`. A 95 ms decode step never
+pays for it; a three-second prefill chunk lets the terminal repaint thirty
+times.
+
+Read: `inference/src/backends/metal/bridge.m` (200 lines), `root.zig`
+(`Backend.commit`), [architecture.md § 7](architecture.md#7-metal-for-a-zig-programmer).
+
+### 12. Lanes, SIMD groups, and where they live
+
+A dispatch makes a grid of threadgroups; each threadgroup runs as SIMD
+groups of 32 lanes that execute the same instruction on different data.
+Four levels: grid, threadgroup, SIMD group, lane. Zig chooses the grid and
+the thread count and holds the constants the kernels assume (rows per SIMD
+group, tile padding); the bridge forwards the geometry; only
+`kernels.metal` ever names a lane. The contract between the layers is a
+handful of numbers that must agree, and a comment on each side says so.
+
+A SIMD group can do three things a plain thread cannot, and the kernel
+shapes in the tree are built from exactly those. It can reduce across
+lanes without memory: `simd_sum` finishes a dot product in a few cycles,
+which is why the decode matvec gives one output row to one SIMD group. It
+can exchange values between named lanes: `simd_shuffle_xor` combines the
+four lanes that own one query row in the attention kernel. And it can
+multiply 8 × 8 matrices held across the group: `simdgroup_float8x8`, 64
+floats spread two per lane in an undocumented layout, which is why
+row-wise work like a softmax goes through threadgroup memory to plain
+threads and the matrix unit only ever multiplies.
+
+The rule for geometry: put in one SIMD group the work that wants to be
+reduced or exchanged, in one threadgroup the work that wants to share a
+tile of memory, and leave the rest to the grid. Two barriers exist because
+lanes in one SIMD group are already in lockstep (`simdgroup_barrier` is
+nearly free) and SIMD groups sharing a tile are not
+(`threadgroup_barrier` stops the group). The CPU reference uses none of
+this and no Zig vector types either; it is scalar F64 loops so that it
+stays the plain statement of the math.
+
+Read: `kernels.metal` starting with `nu_add` and `nu_rmsnorm`,
+[engine/metal-backend.md § Kernel geometry](engine/metal-backend.md#kernel-geometry).
+
+### 13. The matvec that reads 16 GB
+
+Decode is "read every weight once per token", so the kernel that turns
+quantized bytes into a dot product decides everything. The first version,
+one SIMD group per row, sixteen values per lane by byte loads and a
+runtime switch on the encoding, reached about 100 GB/s of the bus's 273.
+The specialized kernels reach 150 to 250, and four ideas did the work.
+
+**Vector loads that match the block.** In Q4_K the sixteen bytes at
+`16 + 32·pair + 16·half` hold the low nibbles of one 32-value group and the
+high nibbles of the next; a lane that loads them as one `uint4` owns 32
+values from one instruction. Which lane owns which slice is chosen per
+encoding so that aligned loads yield whole value sets, and alignment is a
+fact of the format: 144- and 176-byte blocks allow 16-byte loads, 110-byte
+blocks only 2-byte ones, and the Zig side refuses a specialized kernel
+when the row offset disagrees. **Factor the scale out.** Accumulate `Σq·x`
+and `Σx` and apply the group scale once. **Work in the packed byte
+domain.** Assemble four codes with word-wide masks and convert with one
+`uchar4 → float4` cast; that alone took Q5_K from 113 to 210 GB/s.
+**Select, never branch.** Half the lanes in a Q4_K SIMD group decode
+scales one way and half the other; an `if` makes every lane execute both
+paths, a `?:` computes both once and picks.
+
+Then the profiler said the question was wrong. A dispatch cannot be timed
+from the CPU, so profile mode gives every dispatch its own encoder and lets
+the GPU stamp encoder boundaries; the stamps turned out to be nanoseconds
+on the command buffer's own timeline, established by a probe after a first
+guess made kernels sum to 23 times their buffer. With real numbers the
+encodings that differed by GB/s all cost 0.81 to 0.91 ns per 256-value
+block. Q4_K was not slow; it had fewer bytes per block to show for the same
+instruction work. The limiter was per-block work, and the bandwidth floor
+sat at about 0.5 ns per block.
+
+So five variants attacked the per-block work, and none reached the 5 %
+bar. The one with strictly fewer instructions, decoding each group on one
+lane and sharing by shuffle, was 12 % slower. Processing two blocks per
+iteration to hide load latency was 35 % slower: every live value costs a
+register, the register file is divided among the threadgroups a core keeps
+resident, and resident *other* groups are how this GPU already hides
+latency. Staging the input in threadgroup memory cost 7 to 9 %. Fast math
+changed nothing and made Q5_K worse. Every one of those is written down
+with its number so nobody measures it twice, and the kernels shipped
+unchanged. The lesson is not that the kernel is optimal. It is that a
+source-level count of operations does not predict the time, and the next
+lever is a different geometry, not a shorter loop.
+
+Read: `kernels.metal` (`nu_matvec_q4_k` and its neighbours),
+`Backend.specializedMatvec`,
+[engine/metal-backend.md § Per-block cost research (2026-09-08, closed without a kernel change)](engine/metal-backend.md#per-block-cost-research-2026-09-08-closed-without-a-kernel-change).
+
+### 14. Fewer dispatches, same math
+
+Several projections in a layer read the same normalized vector, and each
+was its own dispatch. A segment table now describes their row ranges,
+encodings, and offsets in one dispatch; a threadgroup selects its segment
+and runs the standalone kernel's body. All lanes of a SIMD group pick the
+same encoding, so there is a uniform branch and no divergence. The
+feed-forward pair has a dependency, `silu(gate)·up`, and the version that
+computed both projections in one SIMD group measured slower than the plain
+merge; the kept version gives each projection its own SIMD groups and
+exchanges sixteen floats through threadgroup memory at a barrier.
+
+The same idea run past its limit is instructive. Fusing the residual add
+with the norm that follows it, and the query and key norms with their
+RoPE, removed 96 to 192 dispatches per decode step across the three
+families. The speed bars were missed by all three: decode at 512 moved
+by 0.0 to 0.5 %. The profile had said each small dispatch cost about 13 µs,
+and that was true, but it was kernel work, not a launch floor, so merging
+two memory-bound passes saved only the launch. The fused kernels shipped
+for the dispatch count with the pairs kept behind a switch, and the record
+says where the real win would be: the norm inside the kernel that produces
+its input, an epilogue, not a merge.
+
+Read: `Backend.matvecSegments`, `rmsNormAdd` and `rmsNormRope` in
+`root.zig`, [benchmarks § Fused norm sweep](benchmarks/history.md#fused-norm-sweep-2026-09-21).
+
+### 15. Sampling on the device
