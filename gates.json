@@ -1108,6 +1108,44 @@
    "evidence": "docs/models/embeddinggemma.md"
   },
   {
+   "name": "embeddinggemma-audio-cpu",
+   "family": "embeddinggemma",
+   "tier": "verify-cpu",
+   "model": "embeddinggemma_bf16",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/embeddinggemma-check.zig",
+    "inference/src/embed.zig",
+    "inference/src/models/embeddinggemma*.zig",
+    "inference/src/audio/**",
+    "inference/src/backends/cpu/**",
+    "inference/src/vision/gemma4.zig",
+    "inference/src/formats/gguf.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tokenizer/**",
+    "tests/fixtures/embeddinggemma-inputs/**",
+    "tests/fixtures/embeddinggemma-vectors/**",
+    "tests/fixtures/embeddinggemma-audio-features/**",
+    "tests/fixtures/embeddinggemma-audio.north/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-embeddinggemma",
+    "--",
+    "{model}",
+    "audio",
+    "--mmproj",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "each clip's log-mel frames against Google's extractor (1e-4), the encoder against llama.cpp's projector rows, then every clip through Google's pipeline on the BF16 file against Google's float32 vectors, cosine >= 0.9999999",
+   "evidence": "docs/models/embeddinggemma.md"
+  },
+  {
    "name": "embeddinggemma-vectors-metal",
    "family": "embeddinggemma",
    "tier": "verify",
@@ -1217,6 +1255,46 @@
     "kind": "exit"
    },
    "note": "the vision encoder on Metal from llama.cpp's pixels against its projector rows, then every image case through Google's pipeline on the BF16 file against Google's float32 vectors, cosine >= 0.9999999; packed batches equal one at a time bit for bit",
+   "evidence": "docs/models/embeddinggemma.md"
+  },
+  {
+   "name": "embeddinggemma-audio-metal",
+   "family": "embeddinggemma",
+   "tier": "verify",
+   "model": "embeddinggemma_bf16",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/embeddinggemma-check.zig",
+    "inference/src/embed.zig",
+    "inference/src/models/embeddinggemma*.zig",
+    "inference/src/audio/**",
+    "inference/src/backends/metal/**",
+    "inference/src/vision/gemma4.zig",
+    "inference/src/formats/gguf.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tokenizer/**",
+    "tests/fixtures/embeddinggemma-inputs/**",
+    "tests/fixtures/embeddinggemma-vectors/**",
+    "tests/fixtures/embeddinggemma-audio-features/**",
+    "tests/fixtures/embeddinggemma-audio.north/**"
+   ],
+   "command": [
+    "{zig-metal}",
+    "test-embeddinggemma",
+    "--",
+    "{model}",
+    "audio",
+    "--backend",
+    "metal",
+    "--mmproj",
+    "{mmproj}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "the audio encoder on Metal: log-mel frames, the encoder against llama.cpp's projector rows, every clip on the BF16 file against Google's float32 vectors, cosine >= 0.9999999; packed batches equal one at a time bit for bit",
    "evidence": "docs/models/embeddinggemma.md"
   },
   {

@@ -34,6 +34,7 @@ reference rather than the file, the sentence says so.
 - [The Metal plan (2026-10-09)](#the-metal-plan-2026-10-09)
 - [`nuclis embed` (2026-10-09)](#nuclis-embed-2026-10-09)
 - [Images (2026-10-09)](#images-2026-10-09)
+- [Audio (2026-10-09)](#audio-2026-10-09)
 
 ## Artifacts
 
@@ -315,6 +316,12 @@ here, 1536 → 2560 there):
   preemphasis, no dither, no per-bin normalization; right padding.
 - 40 ms per token (25 per second). Tokens: BOA 256000, audio 258881, EOA
   258883. `mtmd` frames audio as `<|audio>` … `<audio|>`.
+- **Three facts the names do not give** (§ Audio): the light
+  convolution's two norms are swapped in the file, `per_dim_scale` is
+  stored after its softplus, and the attention mask keeps 11 rows back,
+  not 12.
+- **Google's processor cuts a clip at 30 s** (`max_length` 480,000
+  samples).
 
 **Video** (not in this unit) reuses the vision encoder: frames sampled at
 1 fps, at most 32 frames, 140 soft tokens per frame, token `<|video|>`
@@ -331,7 +338,7 @@ markers.
 | --- | --- | --- |
 | Text | its tokens; the task prefix, if any, opens the input | 1 per subword |
 | Image | BOI, the projector rows, EOI | 280 by default; 70, 140, 560 or 1120 |
-| Audio | BOA, the projector rows, EOA | 25 per second (about 327 s alone) |
+| Audio | BOA, the projector rows, EOA | 25 per second, at most 30 s (750) |
 
 **Text is literal (decided 2026-10-09).** nuclis tokenizes text parts with
 `parse_special = false`: the spelling of a control token in a document
@@ -628,4 +635,66 @@ three gives each its vector alone, bit for bit.
 about 460 ms at 280 tokens, about 2 images a second. The encoder's
 matmuls dominate, on the generic F32 tile: 2,304 patches through 16
 blocks.
+
+## Audio (2026-10-09)
+
+An audio part is decoded to 16 kHz mono, turned into Google's log-mel
+frames, and encoded by the `gemma4a` conformer. The derivation, the
+decoder, and the three facts the file's names do not give are in
+[audio.md](../engine/audio.md).
+
+- **Front end.** The frames equal `Gemma4AudioFeatureExtractor`'s to
+  4.8e-7 on all three clips.
+- **The 30 s bound.** Google's extractor truncates at 30 s, so an audio
+  part is at most 750 rows. A longer clip is refused (`input_too_long`,
+  naming the 30 s) unless the request truncates, which keeps the first
+  30 s and reports the input as cut.
+- **Encoder memory.** The audio encoder is built on the first clip. On
+  Metal it then holds 658 MB: its BF16 weights (300M parameters, 604 MB,
+  mapped in place) and buffers for 750 rows.
+
+**Against the oracles** (`zig build test-embeddinggemma -- MODEL audio
+--mmproj mmproj-BF16.gguf`, M4 Pro):
+
+| File | Backend | `audio.north` | `audio.sourdough` | `audio.tone` |
+| --- | --- | ---: | ---: | ---: |
+| BF16 | CPU | 6.0e-13 | 4.2e-13 | 2.4e-11 |
+| BF16 | Metal | 6.7e-13 | 7.5e-13 | 4.8e-11 |
+| Q8_0 | Metal | 5.0e-5 | 7.4e-5 | 1.5e-4 |
+
+These are `1 − cos` against Google's float32 vectors, with the token ids
+equal to Google's. On the BF16 file audio agrees as text and images do.
+The Q8_0 file's cost is largest on the tone, a sound unlike speech
+(llama.cpp's Q8_0 and BF16 vectors also differ by 1.3e-4 on audio).
+
+Two more measurements back these up:
+- **Google's own stages.** Every stage of the CPU reference matched a hook
+  dump of Google's tower (subsampling, block 0's three sub-stages, each
+  block, the output and the projection) to relative RMS ≤ 1.8e-6.
+- **llama.cpp's rows** (`media-0`) are a localizer only: relative RMS
+  1.4e-2 and relative max 8.2e-2, from its own front end and half-staged
+  matmuls. The swapped norms alone gave 0.72.
+
+A packed batch of the three clips gives each its vector alone, bit for
+bit.
+
+| Gate | Tier | Runs |
+| --- | --- | --- |
+| `embeddinggemma-audio-metal` | `verify` | every clip, BF16, floor 0.9999999; packed batch equality |
+| `embeddinggemma-audio-cpu` | `verify-cpu` | every clip, BF16, floor 0.9999999 (6 s) |
+
+**Across modalities** (recorded, not gated; Q8_0, Metal). Each spoken
+sentence ranks its own text first among the 24 raw text cases:
+
+| Clip | Its text | Next |
+| --- | ---: | ---: |
+| `speech-1.wav` (`north`) | 0.902 | 0.660 (`ar.raw`) |
+| `speech-2.wav` (`sourdough`) | 0.763 | 0.654 (`hello.raw`) |
+
+**Rates.** On Metal, preparing a clip (decode, mel, encode) takes 130 ms
+for 4.8 s and 45 ms for 2 s.
+
+**Other formats.** A 16 kHz mono 16-bit WAV is read exactly. Anything else
+goes through AudioToolbox's resampler: a 44.1 kHz stereo copy of the
+`north` clip gives cosine 0.9999 to the original, an AAC copy 0.998.
 

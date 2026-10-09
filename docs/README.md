@@ -59,6 +59,7 @@ below.
 | [prompt-profile.md](engine/prompt-profile.md) | Prompt profiles: chat renderers, stop sets, reasoning markers |
 | [tool-calling.md](engine/tool-calling.md) | Tool calling: each family's format and the engine seam |
 | [vision.md](engine/vision.md) | Vision through the companion projectors |
+| [audio.md](engine/audio.md) | Audio through the companion encoders: decoding, the log-mel front end, Gemma 4's conformer |
 
 ## The app: `app/` (the `src/` package)
 

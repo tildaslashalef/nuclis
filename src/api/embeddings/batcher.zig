@@ -296,26 +296,30 @@ pub const Batcher = struct {
     }
 };
 
-/// Tokenizes every input of `job` (in its arena), encodes its images, and
-/// gives it room for its vectors. An input over the limit fails the job
-/// unless it truncates; an unreadable image fails it, naming the input.
+/// Tokenizes every input of `job` (in its arena), encodes its images and
+/// clips, and gives it room for its vectors. An input over the limit fails
+/// the job unless it truncates; unreadable media fail it, naming the input.
 fn prepare(embedder: *embed.Embedder, job: *Job) !void {
     const prepared = try job.arena.alloc(embed.Prepared, job.inputs.len);
     for (job.inputs, prepared, 0..) |input, *p, i| {
         // Prepared with truncation always, so a refusal can give the count.
         p.* = embedder.prepare(job.arena, input, .{ .truncate = true, .image_tokens = job.image_tokens }) catch |err| {
-            switch (err) {
-                error.UnsupportedImageFormat, error.MalformedImage, error.ImageTooLarge => {
-                    var e: ApiError = .init(.bad_request, "invalid_image", job.arena.print("input[{d}]: {s}", .{ i, if (err == error.ImageTooLarge) "the image is too large to decode" else "not an image nuclis can read (PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP)" }) catch "an image could not be read");
-                    e.param = "input";
-                    job.outcome = .{ .failed = e };
-                },
-                else => {},
+            const refused: ?ApiError = switch (err) {
+                error.UnsupportedImageFormat, error.MalformedImage => .init(.bad_request, "invalid_image", job.arena.print("input[{d}]: not an image nuclis can read (PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP)", .{i}) catch "an image could not be read"),
+                error.ImageTooLarge => .init(.bad_request, "invalid_image", job.arena.print("input[{d}]: the image is too large to decode", .{i}) catch "an image is too large"),
+                error.UnsupportedAudioFormat => .init(.bad_request, "invalid_audio", job.arena.print("input[{d}]: not audio nuclis can read (WAV, AIFF, MP3, M4A, FLAC, CAF)", .{i}) catch "a clip could not be read"),
+                error.AudioTooShort => .init(.bad_request, "invalid_audio", job.arena.print("input[{d}]: the clip is shorter than 10 ms", .{i}) catch "a clip is too short"),
+                else => null,
+            };
+            if (refused) |r| {
+                var e = r;
+                e.param = "input";
+                job.outcome = .{ .failed = e };
             }
             return err;
         };
         if (p.truncated() and !job.truncate) {
-            job.outcome = .{ .failed = tooLong(job.arena, i, p.length) };
+            job.outcome = .{ .failed = if (p.clipped) clipTooLong(job.arena, i) else tooLong(job.arena, i, p.length) };
             return error.InputTooLong;
         }
     }
@@ -349,6 +353,12 @@ fn lap(io: std.Io, clock: *std.Io.Timestamp) u64 {
     const elapsed: u64 = @intCast(@max(0, clock.durationTo(now).toNanoseconds()));
     clock.* = now;
     return elapsed;
+}
+
+fn clipTooLong(arena: std.mem.Allocator, index: usize) ApiError {
+    var err: ApiError = .init(.bad_request, "input_too_long", arena.print("input[{d}]: a clip is at most {d} s (Google's processor's bound); \"truncate\": true keeps its first {d} s", .{ index, embed.max_audio_seconds, embed.max_audio_seconds }) catch "a clip is too long");
+    err.param = "input";
+    return err;
 }
 
 fn tooLong(arena: std.mem.Allocator, index: usize, tokens: usize) ApiError {

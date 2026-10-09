@@ -17,6 +17,65 @@ const DeltaCase = struct { query: []const f32, key: []const f32, value: []const 
 const ConvCase = struct { input: []const f32, weights: []const f32, history: []const f32, kernel: usize, output: []const f32, next_history: []const f32 };
 const RecurrentFixture = struct { revision: []const u8, delta: []const DeltaCase, convolution: []const ConvCase };
 
+/// Gemma 4's audio attention and light convolution against the CPU
+/// reference's (`audio.gemma4a`), on random rows: 40 rows span four chunks,
+/// so a query's window crosses chunk edges and the clip's start.
+fn checkAudioKernels(alloc: std.mem.Allocator, b: *Backend) !void {
+    const a = inference.audio.gemma4a;
+    const rows: usize = 40;
+    var prng = std.Random.DefaultPrng.init(0xa0d1);
+    const random = prng.random();
+    const q = try alloc.alloc(f32, rows * a.hidden);
+    defer alloc.free(q);
+    const k = try alloc.alloc(f32, rows * a.hidden);
+    defer alloc.free(k);
+    const v = try alloc.alloc(f32, rows * a.hidden);
+    defer alloc.free(v);
+    const relk = try alloc.alloc(f32, a.relative * a.hidden);
+    defer alloc.free(relk);
+    var pds: [a.head_dim]f32 = undefined;
+    for ([_][]f32{ q, k, v, relk }) |values| for (values) |*x| {
+        x.* = random.floatNorm(f32) * 2;
+    };
+    for (&pds) |*x| x.* = 0.05 + random.float(f32);
+    var scale: [a.head_dim]f32 = undefined;
+    a.queryScale(&pds, &scale);
+    // The CPU reference scales its copies; the kernel scales as it reads.
+    const qs = try alloc.dupe(f32, q);
+    defer alloc.free(qs);
+    for (0..rows * a.heads) |r| for (qs[r * a.head_dim ..][0..a.head_dim], scale) |*x, s| {
+        x.* *= s;
+    };
+    const ks = try alloc.dupe(f32, k);
+    defer alloc.free(ks);
+    for (ks) |*x| x.* *= a.key_scale;
+    const want = try alloc.alloc(f32, rows * a.hidden);
+    defer alloc.free(want);
+    a.attention(qs, ks, v, relk, rows, want);
+    const out = try b.create(rows * a.hidden * 4);
+    try b.begin();
+    try b.audioAttention(try upload(b, q), try upload(b, k), try upload(b, v), try upload(b, relk), try upload(b, &scale), out, rows, a.key_scale, a.logit_cap);
+    try b.commit();
+    var worst: f32 = 0;
+    for (out.floats()[0 .. rows * a.hidden], want) |got, w| worst = @max(worst, @abs(got - w) / @max(1, @abs(w)));
+    if (worst > 2e-5) {
+        std.debug.print("audio_attention: worst relative difference {e}\n", .{worst});
+        return error.MetalMismatch;
+    }
+    const start = try alloc.alloc(f32, rows * 2 * a.hidden);
+    defer alloc.free(start);
+    for (start) |*x| x.* = random.floatNorm(f32) * 3;
+    const dw = try alloc.alloc(f32, a.hidden * a.conv_kernel);
+    defer alloc.free(dw);
+    for (dw) |*x| x.* = random.floatNorm(f32);
+    a.gluConv(start, dw, rows, want);
+    try b.begin();
+    try b.gluConv(try upload(b, start), try upload(b, dw), out, rows, a.hidden);
+    try b.commit();
+    for (out.floats()[0 .. rows * a.hidden], want) |got, w| try expectClose("glu_conv", got, w, 1e-5 * @max(1, @abs(w)));
+    std.debug.print("audio attention (40 rows across four chunks) and the GLU depthwise convolution vs the CPU reference: attention worst relative {e:.2} (bound 2e-5)\n", .{worst});
+}
+
 fn openBackend(alloc: std.mem.Allocator) !Backend {
     var diagnostic: [8192]u8 = @splat(0);
     return Backend.init(alloc, &diagnostic) catch |err| {
@@ -3696,6 +3755,7 @@ pub fn main(init: std.process.Init) !void {
     try checkFusedNorms(alloc, b);
     try checkDenseEncodings(alloc, io, b);
     try checkVisionNorms(alloc, b);
+    try checkAudioKernels(alloc, b);
 
     // 8c. Chunkwise DeltaNet: a 70-token layer chunk (sub-chunks of
     // 32, 32, and 6) on the model shape (16 Q/K heads broadcast to 48 value
@@ -4412,5 +4472,5 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, and per-dispatch profiling with capacity overflow.\n", .{});
+    std.debug.print("Metal fixtures passed: exact quantized decode for all encodings, randomized 1,280/5,120/17,408-column rows through specialized and generic matvec kernels with alignment fallback, subnormal Q4_K, dense F32/F16/BF16 through matvec and every matmul tile, LayerNorm and per-row bias, pinned DeltaNet/convolution steps, multihead state, pinned and long attention, causal chunk attention against F64 per row with poisoned future rows, the F16 KV cache (exact half packing, half decode and chunk attention against the CPU over the rounded operands), flash-decoding attention on the pinned fixtures and up to 32,000 visible rows in both precisions, chunkwise DeltaNet against the F64 chunk reference and sequential steps with NaN past the chunk, the verify rows and their tape replay bit-identical to decode steps, the convolution history after every prefix, windowed and wide chunk attention with the wide decode instantiation and bidirectional image spans up to 9,900 rows, the windowed image attention on a slice with NaN outside it, attention over packed sequences with and without windows, norms, RoPE at 32767 with and without factors and in both pairings, activations (the quick GELU gate, the exact erf GELU, and its gate over fused rows among them) and the epilogues, buffer release, gates, argmax, partial top-k with exp-sum, the history penalties on the device against the CPU sampler for every logit sign, the split-K matvec at 6,656 rows and the four-segment merge at 2/4/8 splits against the F64 reference, batched matmul tiles for every encoding (half tiles against the generic F32 tile), chunk kernels equal to their sequential forms, the expert router with ties, the gathered expert matvec on both paths with NaN in the unselected experts and the decode chain against the F64 reference, the prefill lists and gathered tiles over a skewed chunk against the F64 reference and the decode path, repeated bridge lifetimes, the signed Hadamard transform and its inverse against the CPU on the rotated widths, Gemma 4's audio attention and light convolution against the CPU, and per-dispatch profiling with capacity overflow.\n", .{});
 }

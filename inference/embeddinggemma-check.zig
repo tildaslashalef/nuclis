@@ -1,7 +1,7 @@
 //! Explicit full-model check of EmbeddingGemma 2's forward against the
 //! recorded oracles (tests/fixtures/provenance.md, `embeddinggemma-*` rows).
 //!
-//!   embeddinggemma-check MODEL.gguf traces|vectors|google|images|bench [--backend cpu|metal] [--mmproj MMPROJ.gguf] [--only CASE] [FIXTURES_DIR]
+//!   embeddinggemma-check MODEL.gguf traces|vectors|google|images|audio|bench [--backend cpu|metal] [--mmproj MMPROJ.gguf] [--only CASE] [FIXTURES_DIR]
 //!
 //! - `traces` (the Q8_0 file): the traced text cases stage by stage against
 //!   llama.cpp's CPU pass over the same weights in F32, within bounds set by
@@ -16,6 +16,10 @@
 //!   against Google's float32 vectors (at the `google` floor on the BF16
 //!   file). The rows are checked once per distinct image; `--only` keeps
 //!   one case (the CPU reference takes about 3 minutes an image).
+//! - `audio` (either file, with `--mmproj`): each clip's log-mel frames
+//!   against Google's feature extractor's, the encoder's rows for the traced
+//!   clip against llama.cpp's projector rows, then every audio case through
+//!   Google's pipeline against Google's float32 vectors, as `images`.
 //! - `bench`: wall-clock rates, no oracle. 64 inputs of 256 tokens embedded
 //!   as one batch, then one input of 512 and one of 8192 tokens; each input
 //!   is BOS, " the" repeated, EOS (the cost does not depend on the text).
@@ -264,14 +268,19 @@ fn bench(arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder) !void 
 /// of order one.
 const max_relative_media = 5e-2;
 const max_relative_rms_media = 1.5e-2;
-/// Google's pipeline on the Q8_0 file against Google's float32 vectors.
-const min_cosine_images_q8 = 0.9999;
+/// Google's pipeline on the Q8_0 file against Google's float32 vectors:
+/// the file's own cost, up to 7e-5 on the images and 1.5e-4 on the tone.
+const min_cosine_images_q8 = 0.9998;
 
 const MediaCase = struct { id: []const u8, parts: []const embed.Part };
 
-/// The cases of inputs.json that hold an image, their image parts read
-/// from the paths the file gives (relative to the working directory).
+/// The cases of inputs.json that hold an image (or a clip, with `audio`),
+/// their media parts read from the paths the file gives (relative to the
+/// working directory).
 fn imageCases(arena: std.mem.Allocator, io: std.Io, fixtures: []const u8) ![]MediaCase {
+    return mediaCases(arena, io, fixtures, "image");
+}
+fn mediaCases(arena: std.mem.Allocator, io: std.Io, fixtures: []const u8, comptime kind: []const u8) ![]MediaCase {
     const path = try std.fmt.allocPrint(arena, "{s}/embeddinggemma-inputs/inputs.json", .{fixtures});
     const doc = try std.json.parseFromSliceLeaky(std.json.Value, arena, try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20)), .{});
     var out: std.ArrayList(MediaCase) = .empty;
@@ -282,9 +291,10 @@ fn imageCases(arena: std.mem.Allocator, io: std.Io, fixtures: []const u8) ![]Med
         for (items) |part| {
             if (part.object.get("text")) |t| {
                 try parts.append(arena, .{ .text = t.string });
-            } else if (part.object.get("image")) |file| {
+            } else if (part.object.get(kind)) |file| {
                 has_image = true;
-                try parts.append(arena, .{ .image = try std.Io.Dir.cwd().readFileAlloc(io, file.string, arena, .limited(64 << 20)) });
+                const bytes = try std.Io.Dir.cwd().readFileAlloc(io, file.string, arena, .limited(64 << 20));
+                try parts.append(arena, @unionInit(embed.Part, kind, bytes));
             } else break;
         } else if (has_image) try out.append(arena, .{ .id = c.object.get("id").?.string, .parts = parts.items });
     }
@@ -402,6 +412,128 @@ fn images(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder
     }
 }
 
+/// The log-mel frames against Google's extractor's, F32 rounding apart.
+const max_feature_difference = 1e-4;
+/// The encoder's rows against llama.cpp's, which come from its own mel
+/// front end and half-staged Metal matmuls through 12 blocks: measured
+/// 8.2e-2 and 1.4e-2. A localizer: the swapped light-conv norms alone gave
+/// 0.72.
+const max_relative_audio = 0.15;
+const max_relative_rms_audio = 3e-2;
+
+fn clips(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder, fixtures: []const u8, only: ?[]const u8) !void {
+    const audio = inference.audio;
+    const google = try Vectors.load(arena, io, try std.fmt.allocPrint(arena, "{s}/embeddinggemma-vectors/st-f32", .{fixtures}));
+    var cases = try mediaCases(arena, io, fixtures, "audio");
+    if (only) |id| cases = for (cases, 0..) |c, i| {
+        if (std.mem.eql(u8, c.id, id)) break cases[i..][0..1];
+    } else return error.UnknownCase;
+    var failures: usize = 0;
+    var vector: [embed.dimensions]f32 = undefined;
+    const bank = try arena.create(audio.mel.Bank);
+    bank.init();
+
+    for (cases) |case| {
+        const bytes = for (case.parts) |p| switch (p) {
+            .audio => |b| break b,
+            else => {},
+        } else unreachable;
+        var pcm = try audio.audio.decode(gpa, bytes, std.math.maxInt(u32));
+        defer pcm.deinit(gpa);
+        const frames = audio.mel.frameCount(pcm.samples.len);
+        const features = try arena.alloc(f32, frames * audio.mel.filters);
+        try bank.features(pcm.samples, features);
+        const want = try readF32(arena, io, try std.fmt.allocPrint(arena, "{s}/embeddinggemma-audio-features/{s}.f32", .{ fixtures, case.id }));
+        if (want.len != features.len) {
+            failures += 1;
+            std.debug.print("{s}: {d} mel frames, Google's {d}\n", .{ case.id, frames, want.len / audio.mel.filters });
+            continue;
+        }
+        var worst: f32 = 0;
+        for (features, want) |a, b| worst = @max(worst, @abs(a - b));
+        if (worst > max_feature_difference) failures += 1;
+        std.debug.print("{s}: {d} mel frames, max |difference| against Google's {e:.3} (bound {e})\n", .{ case.id, frames, worst, max_feature_difference });
+
+        const directory = try std.fmt.allocPrint(arena, "{s}/embeddinggemma-{s}", .{ fixtures, case.id });
+        const want_rows = readF32(arena, io, try std.fmt.allocPrint(arena, "{s}/media-0.f32", .{directory})) catch continue;
+        const rows = try arena.alloc(f32, inference.audio.gemma4a.tokensFor(frames) * width);
+        try embedder.encodeFeatures(features, frames, rows);
+        if (rows.len != want_rows.len) return error.InvalidFixture;
+        const r = relative(rows, want_rows);
+        if (r.max > max_relative_audio or r.rms > max_relative_rms_audio) failures += 1;
+        // A dump of Google's stages (a debugging aid, not a fixture) is traced against.
+        if (std.Io.Dir.cwd().access(io, ".zig-cache/audio-trace/subsample.f32", .{})) |_| try traceAudio(gpa, arena, io, embedder, features, frames) else |_| {}
+        std.debug.print("{s}: projector rows, {d} rows: relative max {e:.3}, relative RMS {e:.3} (bounds {e}, {e})\n", .{ case.id, rows.len / width, r.max, r.rms, max_relative_audio, max_relative_rms_audio });
+    }
+
+    const floor: f64 = if (embedder.binding.token_embedding.encoding_id == 30) min_cosine_google else min_cosine_images_q8;
+    var low: f64 = 1;
+    const prepared_all = try arena.alloc(embed.Prepared, cases.len);
+    const singles = try arena.alloc([embed.dimensions]f32, cases.len);
+    for (cases, prepared_all, singles) |case, *prepared, *single| {
+        const started = std.Io.Clock.awake.now(io);
+        prepared.* = try embedder.prepare(arena, .{ .parts = case.parts }, .{});
+        const prepare_ms = started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
+        if (!std.mem.eql(u32, prepared.tokens, google.ids.get(case.id).?)) {
+            failures += 1;
+            std.debug.print("{s}: token ids differ from Google's ({d} against {d})\n", .{ case.id, prepared.tokens.len, google.ids.get(case.id).?.len });
+            continue;
+        }
+        try embedder.embed(prepared.*, &vector, null);
+        single.* = vector;
+        const c = cosine(&vector, google.values.get(case.id).?);
+        low = @min(low, c);
+        if (c < floor) failures += 1;
+        std.debug.print("{s}: {d} tokens, prepared in {d} ms, cosine against Google's f32 {d:.7} (1 - c = {e:.2})\n", .{ case.id, prepared.tokens.len, prepare_ms, c, 1 - c });
+    }
+    std.debug.print("{d} audio cases: min cosine against Google's f32 {d:.7} (floor {d}); the media encoders hold {d} MB\n", .{ cases.len, low, floor, embedder.mediaBytes() / 1_000_000 });
+    if (embedder.engine == .metal and failures == 0) {
+        const outs = try arena.alloc([]f32, cases.len);
+        const batched = try arena.alloc([embed.dimensions]f32, cases.len);
+        for (outs, batched) |*o, *b| o.* = b;
+        try embedder.embedBatch(prepared_all, outs);
+        var differing: usize = 0;
+        for (singles, batched) |a, b| {
+            if (!std.mem.eql(u8, std.mem.asBytes(&a), std.mem.asBytes(&b))) differing += 1;
+        }
+        std.debug.print("{d} audio cases in one packed batch: {d} vectors differ from one at a time\n", .{ cases.len, differing });
+        if (differing != 0) failures += 1;
+    }
+    if (failures != 0) {
+        std.debug.print("{d} failures\n", .{failures});
+        std.process.exit(1);
+    }
+}
+
+/// Each stage of the CPU reference against Google's, dumped by a hook
+/// script into `.zig-cache/audio-trace/<stage>.f32`.
+fn traceAudio(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, embedder: *embed.Embedder, features: []const f32, frames: usize) !void {
+    const a = inference.audio.gemma4a;
+    const projector = &embedder.projector.?;
+    var runtime = try a.Runtime.init(gpa, io, projector.mapped.view(), &projector.audio.?);
+    defer runtime.deinit();
+    const Seen = struct {
+        arena: std.mem.Allocator,
+        io: std.Io,
+        fn record(context: *anyopaque, stage: []const u8, rows: []const f32) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const want = readF32(self.arena, self.io, std.fmt.allocPrint(self.arena, ".zig-cache/audio-trace/{s}.f32", .{stage}) catch return) catch {
+                std.debug.print("  {s}: no trace\n", .{stage});
+                return;
+            };
+            if (want.len != rows.len) {
+                std.debug.print("  {s}: {d} values, Google's {d}\n", .{ stage, rows.len, want.len });
+                return;
+            }
+            const r = relative(rows, want);
+            std.debug.print("  {s}: relative max {e:.3}, relative RMS {e:.3}\n", .{ stage, r.max, r.rms });
+        }
+    };
+    var seen: Seen = .{ .arena = arena, .io = io };
+    const out = try arena.alloc(f32, a.tokensFor(frames) * width);
+    try runtime.encodeObserved(features, frames, out, .{ .context = &seen, .record = Seen.record });
+}
+
 fn isLiteral(id: []const u8) bool {
     for (literal_special) |l| if (std.mem.eql(u8, l, id)) return true;
     return false;
@@ -412,7 +544,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    const usage = "usage: embeddinggemma-check MODEL.gguf traces|vectors|google|images|bench [--backend cpu|metal] [--mmproj MMPROJ.gguf] [--only CASE] [FIXTURES_DIR]\n";
+    const usage = "usage: embeddinggemma-check MODEL.gguf traces|vectors|google|images|audio|bench [--backend cpu|metal] [--mmproj MMPROJ.gguf] [--only CASE] [FIXTURES_DIR]\n";
     if (args.len < 3) {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
@@ -446,15 +578,17 @@ pub fn main(init: std.process.Init) !void {
     const google_mode = std.mem.eql(u8, mode, "google");
     const bench_mode = std.mem.eql(u8, mode, "bench");
     const images_mode = std.mem.eql(u8, mode, "images");
-    if (images_mode and mmproj == null) {
-        std.debug.print("images needs --mmproj\n", .{});
+    const audio_mode = std.mem.eql(u8, mode, "audio");
+    if ((images_mode or audio_mode) and mmproj == null) {
+        std.debug.print("{s} needs --mmproj\n", .{mode});
         return error.InvalidArguments;
     }
-    if (!google_mode and !bench_mode and !images_mode and !std.mem.eql(u8, mode, "vectors") and !std.mem.eql(u8, mode, "traces")) return error.InvalidArguments;
+    if (!google_mode and !bench_mode and !images_mode and !audio_mode and !std.mem.eql(u8, mode, "vectors") and !std.mem.eql(u8, mode, "traces")) return error.InvalidArguments;
     const load_start = std.Io.Clock.awake.now(io);
     var embedder = try embed.Embedder.open(gpa, io, args[1], backend, .{ .projector = mmproj });
     defer embedder.deinit();
     if (images_mode) return images(gpa, arena, io, embedder, fixtures, only);
+    if (audio_mode) return clips(gpa, arena, io, embedder, fixtures, only);
     if (bench_mode) {
         std.debug.print("open ({s}): {d} ms\n", .{ @tagName(backend), load_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() });
         return bench(arena, io, embedder);

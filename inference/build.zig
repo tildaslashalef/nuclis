@@ -20,6 +20,9 @@ pub fn build(b: *std.Build) void {
         mod.addCSourceFile(.{ .file = b.path("src/vision/image_bridge.m"), .flags = &.{"-fno-objc-arc"} });
         mod.linkFramework("CoreGraphics", .{});
         mod.linkFramework("ImageIO", .{});
+        // And the audio decoder (audio/audio.zig).
+        mod.addCSourceFile(.{ .file = b.path("src/audio/audio_bridge.m"), .flags = &.{"-fno-objc-arc"} });
+        mod.linkFramework("AudioToolbox", .{});
         mod.link_libc = true;
     }
     const tests = b.addTest(.{ .root_module = mod });

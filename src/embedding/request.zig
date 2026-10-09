@@ -18,6 +18,11 @@ pub const max_inputs = 2048;
 pub const max_text_bytes = 1024 * 1024;
 /// The most bytes of one encoded image (the decoder's own bound).
 pub const max_image_bytes = inference.vision.image.max_bytes;
+/// The most bytes of one encoded clip (the decoder's own bound).
+pub const max_audio_bytes = inference.audio.audio.max_bytes;
+/// The `input_audio` formats taken: OpenAI's two, and what AudioToolbox
+/// also reads. The decoder sniffs the bytes; the name is checked, not trusted.
+pub const audio_formats = [_][]const u8{ "wav", "mp3", "aiff", "flac", "m4a" };
 
 /// What the vectors are for. A query task puts `task: … | query: ` in front
 /// of an input's text; `document` puts `title: … | text: `.
@@ -76,7 +81,13 @@ pub const Request = struct {
     image_tokens: u32 = embed.default_image_tokens,
 
     pub fn hasImages(self: Request) bool {
-        for (self.inputs) |input| for (input.parts) |part| if (part == .image) return true;
+        return self.has(.image);
+    }
+    pub fn hasAudio(self: Request) bool {
+        return self.has(.audio);
+    }
+    fn has(self: Request, kind: std.meta.Tag(Part)) bool {
+        for (self.inputs) |input| for (input.parts) |part| if (part == kind) return true;
         return false;
     }
 };
@@ -123,33 +134,34 @@ pub fn check(request: Request, diag: *config.Diagnostic) Error!void {
                 diag.set("{s}: an image of {d} bytes, at most {d}", .{ input.label, bytes.len, max_image_bytes });
                 return error.RequestTooLarge;
             },
-            .audio => {},
+            .audio => |bytes| if (bytes.len > max_audio_bytes) {
+                diag.set("{s}: a clip of {d} bytes, at most {d}", .{ input.label, bytes.len, max_audio_bytes });
+                return error.RequestTooLarge;
+            },
         };
     }
 }
 
 /// The input as the engine reads it: the task's prefix opens it, before
 /// any media part (as sentence-transformers places a prompt, so an image
-/// alone gets one too), and the engine joins it to a text part that
-/// follows. Audio parts are refused until their encoder exists.
-pub fn render(arena: std.mem.Allocator, request: Request, input: Input, diag: *config.Diagnostic) !embed.Input {
+/// or a clip alone gets one too), and the engine joins it to a text part
+/// that follows.
+pub fn render(arena: std.mem.Allocator, request: Request, input: Input) !embed.Input {
     const lead: usize = @intFromBool(request.task != null);
     const parts = try arena.alloc(embed.Part, input.parts.len + lead);
     if (request.task) |task| parts[0] = .{ .text = try task.prefix(arena, request.title) };
     for (input.parts, parts[lead..]) |part, *out| out.* = switch (part) {
         .text => |t| .{ .text = t },
         .image => |bytes| .{ .image = bytes },
-        .audio => {
-            diag.set("{s}: audio parts are not supported yet; nuclis embeds text and images", .{input.label});
-            return error.UnsupportedModality;
-        },
+        .audio => |bytes| .{ .audio = bytes },
     };
     return .{ .parts = parts };
 }
 
 /// One input of a JSON request or a line of an inputs file: a string, or a
 /// list of chat content parts (`{"type":"text","text":…}`, `image_url` with
-/// a base64 data URL, `input_audio`), in order.
+/// a base64 data URL, `input_audio` with base64 `data` and a `format`), in
+/// order.
 pub fn inputFromJson(arena: std.mem.Allocator, value: std.json.Value, label: []const u8, diag: *config.Diagnostic) !Input {
     switch (value) {
         .string => |s| {
@@ -175,8 +187,7 @@ pub fn inputFromJson(arena: std.mem.Allocator, value: std.json.Value, label: []c
                 } else if (std.mem.eql(u8, kind, "image_url")) {
                     part.* = .{ .image = try imageFromJson(arena, object.get("image_url") orelse .null, label, i, diag) };
                 } else if (std.mem.eql(u8, kind, "input_audio")) {
-                    diag.set("{s}: part {d} is input_audio; nuclis embeds text and image parts for now", .{ label, i });
-                    return error.UnsupportedModality;
+                    part.* = .{ .audio = try audioFromJson(arena, object.get("input_audio") orelse .null, label, i, diag) };
                 } else {
                     diag.set("{s}: part {d} has type \"{s}\"; a part is text, image_url, or input_audio", .{ label, i, kind });
                     return error.InvalidRequest;
@@ -217,6 +228,42 @@ fn imageFromJson(arena: std.mem.Allocator, value: std.json.Value, label: []const
         },
         error.TooLarge => {
             diag.set("{s}: part {d}: an image is at most {d} bytes", .{ label, i, max_image_bytes });
+            return error.RequestTooLarge;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+}
+
+/// The bytes of an `input_audio` part's value: `{"data": base64, "format":
+/// one of audio_formats}`, as OpenAI's chat parts carry audio.
+fn audioFromJson(arena: std.mem.Allocator, value: std.json.Value, label: []const u8, i: usize, diag: *config.Diagnostic) ![]const u8 {
+    const object = if (value == .object) value.object else {
+        diag.set("{s}: part {d} is an input_audio part without {{\"data\": …, \"format\": …}}", .{ label, i });
+        return error.InvalidRequest;
+    };
+    const data = if (object.get("data")) |d| if (d == .string) d.string else null else null;
+    const format = if (object.get("format")) |f| if (f == .string) f.string else null else null;
+    if (data == null or format == null) {
+        diag.set("{s}: part {d}: input_audio needs \"data\" (base64) and \"format\"", .{ label, i });
+        return error.InvalidRequest;
+    }
+    for (audio_formats) |name| {
+        if (std.mem.eql(u8, name, format.?)) break;
+    } else {
+        diag.set("{s}: part {d}: an audio format is wav, mp3, aiff, flac, or m4a, not \"{s}\"", .{ label, i, format.? });
+        return error.UnsupportedModality;
+    }
+    const encoded = data_url.payload(data.?) orelse {
+        diag.set("{s}: part {d}: a data URL must be base64 (data:<type>;base64,…)", .{ label, i });
+        return error.InvalidRequest;
+    };
+    return data_url.decode(arena, encoded, max_audio_bytes) catch |err| switch (err) {
+        error.NotBase64 => {
+            diag.set("{s}: part {d}: the audio is not base64", .{ label, i });
+            return error.InvalidRequest;
+        },
+        error.TooLarge => {
+            diag.set("{s}: part {d}: a clip is at most {d} bytes", .{ label, i, max_audio_bytes });
             return error.RequestTooLarge;
         },
         error.OutOfMemory => return error.OutOfMemory,
@@ -385,7 +432,11 @@ test "an OpenAI body: inputs in every accepted shape, the options, and each refu
     const image = try fromJson(arena, try std.json.parseFromSliceLeaky(std.json.Value, arena, image_body, .{}), &problem);
     try testing.expectEqualStrings("hi", image.request.inputs[0].parts[1].image);
     try testing.expectEqual(@as(u32, 70), image.request.image_tokens);
-    try testing.expect(image.request.hasImages() and !one.request.hasImages());
+    try testing.expect(image.request.hasImages() and !one.request.hasImages() and !image.request.hasAudio());
+    const clip_body = "{\"input\":[[{\"type\":\"input_audio\",\"input_audio\":{\"data\":\"aGk=\",\"format\":\"wav\"}}]]}";
+    const clip = try fromJson(arena, try std.json.parseFromSliceLeaky(std.json.Value, arena, clip_body, .{}), &problem);
+    try testing.expectEqualStrings("hi", clip.request.inputs[0].parts[0].audio);
+    try testing.expect(clip.request.hasAudio());
 
     const cases = [_]struct { body: []const u8, code: []const u8, param: []const u8 }{
         .{ .body = "[]", .code = "invalid_request", .param = "body" },
@@ -396,7 +447,8 @@ test "an OpenAI body: inputs in every accepted shape, the options, and each refu
         .{ .body = "{\"input\":[{\"type\":\"text\",\"text\":\"x\"}]}", .code = "invalid_request", .param = "input" },
         .{ .body = "{\"input\":[[{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://x/y.png\"}}]]}", .code = "unsupported_feature", .param = "input" },
         .{ .body = "{\"input\":[[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png,raw\"}}]]}", .code = "invalid_request", .param = "input" },
-        .{ .body = "{\"input\":[[{\"type\":\"input_audio\",\"input_audio\":{}}]]}", .code = "unsupported_feature", .param = "input" },
+        .{ .body = "{\"input\":[[{\"type\":\"input_audio\",\"input_audio\":{}}]]}", .code = "invalid_request", .param = "input" },
+        .{ .body = "{\"input\":[[{\"type\":\"input_audio\",\"input_audio\":{\"data\":\"aGk=\",\"format\":\"ogg\"}}]]}", .code = "unsupported_feature", .param = "input" },
         .{ .body = "{\"input\":\"x\",\"image_tokens\":300}", .code = "invalid_request", .param = "image_tokens" },
         .{ .body = "{\"input\":\"x\",\"image_tokens\":\"280\"}", .code = "invalid_request", .param = "image_tokens" },
         .{ .body = "{\"input\":\"x\",\"dimensions\":300}", .code = "unsupported_feature", .param = "dimensions" },
@@ -438,20 +490,20 @@ test "the prefix opens the input, before any media; no task leaves the parts as 
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    var diag: config.Diagnostic = .{};
     const input: Input = .{ .parts = &.{ .{ .text = "a" }, .{ .text = "b" } }, .label = "input[0]" };
-    const plain = try render(arena, .{ .inputs = &.{input} }, input, &diag);
+    const plain = try render(arena, .{ .inputs = &.{input} }, input);
     try testing.expectEqualStrings("a", plain.parts[0].text);
-    const query = try render(arena, .{ .inputs = &.{input}, .task = .search_query }, input, &diag);
+    const query = try render(arena, .{ .inputs = &.{input}, .task = .search_query }, input);
     try testing.expectEqualStrings("task: search result | query: ", query.parts[0].text);
     try testing.expectEqualStrings("a", query.parts[1].text);
     try testing.expectEqualStrings("b", query.parts[2].text);
     const image: Input = .{ .parts = &.{ .{ .image = "PNG" }, .{ .text = "c" } }, .label = "input[1]" };
-    const rendered = try render(arena, .{ .inputs = &.{image}, .task = .document, .title = "T" }, image, &diag);
+    const rendered = try render(arena, .{ .inputs = &.{image}, .task = .document, .title = "T" }, image);
     try testing.expectEqualStrings("title: T | text: ", rendered.parts[0].text);
     try testing.expectEqualStrings("PNG", rendered.parts[1].image);
     const audio: Input = .{ .parts = &.{.{ .audio = "RIFF" }}, .label = "input[2]" };
-    try testing.expectError(error.UnsupportedModality, render(arena, .{ .inputs = &.{audio} }, audio, &diag));
+    const heard = try render(arena, .{ .inputs = &.{audio}, .task = .search_query }, audio);
+    try testing.expectEqualStrings("RIFF", heard.parts[1].audio);
 }
 
 test "an inputs file: strings and part lists per line, blanks skipped, errors name the line" {

@@ -48,7 +48,7 @@ API.
 
 ### Embeddings
 
-`nuclis embed` turns text and images into vectors for search and
+`nuclis embed` turns text, images and audio into vectors for search and
 similarity, with EmbeddingGemma 2 (310 MB; `--with mmproj` adds the image
 and audio encoders, 982 MB):
 
@@ -56,6 +56,7 @@ and audio encoders, 982 MB):
 nuclis model pull embeddinggemma-2 --with mmproj
 nuclis embed "a cat" "a kitten" "a tax form"                  # three vectors and their cosines
 nuclis embed --image cat.jpg "a photo of a cat"               # an image and a caption, one space
+nuclis embed --audio memo.m4a "the shopping list"             # a voice memo against a text
 nuclis embed --task search_query "how do auroras form?"       # a query, with the model's prefix
 nuclis embed --task document --input-file docs.jsonl --json   # one JSON string per line, every vector
 ```
@@ -111,7 +112,7 @@ to an exact commit and SHA-256 digest:
 | `muse-glimmer-30b` | Muse Glimmer 30B (15.9 GB) |
 | `laya`, `laya-multilingual` | decision encoders for `nuclis decide` |
 | `clef-flash` | Cloudflare's decision model for `nuclis decide` |
-| `embeddinggemma-2` | EmbeddingGemma 2, text and images into vectors for `nuclis embed` (310 MB) |
+| `embeddinggemma-2` | EmbeddingGemma 2, text, images and audio into vectors for `nuclis embed` (310 MB) |
 
 ```sh
 nuclis model pull qwen3.8-27b             # the model alone

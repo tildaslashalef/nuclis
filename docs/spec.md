@@ -126,7 +126,7 @@ widths, and the modalities the files read.
 
 | Entry | Model | Artifact | Notes |
 | --- | --- | --- | --- |
-| `embeddinggemma-2` | EmbeddingGemma 2 (`gemma-embedding2`), 24-block bidirectional text encoder, Gemma 4 vision and audio encoders | `unsloth/embeddinggemma-2-GGUF` `embeddinggemma-2-Q8_0.gguf`; the projector `mmproj-BF16.gguf` (`--with mmproj`) | 768-dimensional unit vectors, Matryoshka 512/256/128; 8,192 tokens per input; text without the projector, text and images with it; the default `embed.model` |
+| `embeddinggemma-2` | EmbeddingGemma 2 (`gemma-embedding2`), 24-block bidirectional text encoder, Gemma 4 vision and audio encoders | `unsloth/embeddinggemma-2-GGUF` `embeddinggemma-2-Q8_0.gguf`; the projector `mmproj-BF16.gguf` (`--with mmproj`) | 768-dimensional unit vectors, Matryoshka 512/256/128; 8,192 tokens per input; text without the projector, text, images and audio with it; the default `embed.model` |
 
 A file outside the catalogue whose architecture has an adapter is
 *runnable*: `config init --discover` registers it (the profile by template
@@ -388,6 +388,14 @@ keeps no session state. The wire types (`src/embedding/`) are shared by
   **must** match Google's float32 at cosine ≥ 0.9999999, on the CPU and
   on Metal (`embeddinggemma-image-cpu`, `embeddinggemma-image-metal`).
   Truncation drops an image whole rather than split it.
+- An audio part is `<|audio>`, its rows, `<audio|>`: 16 kHz mono (a 16 kHz
+  mono 16-bit WAV read exactly, anything else through AudioToolbox),
+  Google's log-mel frames, the `gemma4a` conformer, 25 rows a second. A
+  clip over 30 s (Google's processor's cut) **must** be refused unless the
+  request truncates, which keeps its first 30 s and reports the cut. Its
+  vector on the BF16 file **must** match Google's float32 at cosine ≥
+  0.9999999 on the CPU and on Metal (`embeddinggemma-audio-cpu`,
+  `embeddinggemma-audio-metal`).
 - Widths are the trained ones, 768, 512, 256, and 128: the leading values
   renormalized. Any other is refused.
 - Every response names its **space**, `<checkpoint>@<sha256[0:12]>/<width>`:
@@ -402,9 +410,9 @@ keeps no session state. The wire types (`src/embedding/`) are shared by
   `embeddinggemma-vectors-metal`) with F32 activations, and a packed batch
   **must** give each input exactly its vector alone.
 - Host limits, never the caller's: 2,048 inputs per request, 1 MiB of text
-  per input, 32 MiB per encoded image. Images are decoded locally, never
-  fetched. Audio parts are refused with a typed error until its encoder
-  lands.
+  per input, 32 MiB per encoded image, 64 MiB per encoded clip (the API's
+  body limit, 32 MiB, comes first). Media are decoded locally, never
+  fetched.
 - The API (`POST /v1/embeddings`) **must** give each input exactly the
   vector it gets alone, whatever shares its pass: requests for one model
   share passes of at most 2,048 rows in arrival order, a request larger
@@ -433,7 +441,7 @@ nuclis model pull (<name> | <owner/repo> --file <f>) [--revision <r>] [--role <r
 nuclis model inspect (<name> | <owner/repo> --file <f>) [--revision <r>] [--json]
 nuclis model ls [--json]
 nuclis decide (--request <file|-> | --questions <file> <states> | <inline questions> <states>) [--model <m>] [--truncate head|tail] [--uncalibrated] [--explain] [--json]
-nuclis embed (<text>... | --image <path>... | --input-file <file|->)... [--task <t>] [--title <s>] [--dimensions <n>] [--image-tokens <n>] [--truncate] [--model <m>] [--backend cpu|metal] [--json]
+nuclis embed (<text>... | --image <path>... | --audio <path>... | --input-file <file|->)... [--task <t>] [--title <s>] [--dimensions <n>] [--image-tokens <n>] [--truncate] [--model <m>] [--backend cpu|metal] [--json]
 nuclis serve [--host <ip>] [--port <n>] [--model <m>]... [--backend cpu|metal]
 nuclis config init [--discover [--dry-run]] [--json] | show [--json] | set <key> <value>
 nuclis completion fish|bash|zsh
@@ -450,8 +458,8 @@ nuclis --help | <command> --help | --version
 | `validate` | whether the file binds to its family's adapter, with the layer composition |
 | `model` | pull with digest verification and sidecars, list the artifacts under the root, judge a file at the four levels of §4 |
 | `decide` | typed questions about states through a decision checkpoint (`decide.model`, default `laya`): a Jev-shaped request (`questions`, `state` or `states`), a questions file with states from flags, or questions inline, and images (`--image`, a request's `images`) for clef-flash; one state renders each answer with its distribution, several render ranked by the first question; `--json` is one Jev response per state (answers with exactly Jev's fields, extras under `nuclis`), with load, tokenize, and encode timings |
-| `embed` | inputs into unit vectors through an embedding model (`embed.model`, default `embeddinggemma-2`), §5.10: each argument one text input, `--image` one image input, `--input-file` one JSON input per line (a string or a list of content parts, images as data URLs), in the order given; `--task` and `--title` render the model's prefixes, `--dimensions` picks a trained width, `--image-tokens` the image budget, `--truncate` cuts an over-long input instead of refusing it; the text report gives each vector's tokens, norm, and first values and, for several inputs, their cosines; `--json` gives every vector with its token counts, the space, and load, tokenize, and embed timings |
-| `serve` | the nuclis API over HTTP/1.1 ([guide/api.md](guide/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `POST /v1/chat/completions` is OpenAI's Chat Completions for the language models (one open at a time, opened by name, never by path; the conversation resent whole and the model's state reused by the completer; streamed as server-sent events with keepalive comments; a client that leaves cancels its request; structured output, forced tools, several choices and log probabilities refused with `400 unsupported_feature`), `POST /v1/embeddings` is OpenAI's embeddings call for the embedding models (§5.10; by name, never by path; `float` or `base64` vectors; `task`, `title`, `truncate`, and `image_tokens` as in `nuclis embed`; image parts as base64 data URLs; token arrays refused, since they are another model's tokens), `GET /v1/models` lists the decision, language, and embedding models in OpenAI's shape, `GET /v1/health` the queue and the open models; `serve.host`, `serve.port` (default 9000), `serve.log`, and `serve.timeout` (the wait for the GPU, default 300 s) in the file, the flags over them; `decide.model` opened at start unless `--model` names others, a language model with `--chat-model`, the embedding model on its first request; every open model, of any kind, within one memory budget (`serve.memory_bytes`, `--memory`, default physical memory less 16 GiB), the least recently used closed to make room and a model in use never; decision passes and embedding passes (at most 2,048 rows each) run between a generation's steps; a coloured line per response on stdout; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
+| `embed` | inputs into unit vectors through an embedding model (`embed.model`, default `embeddinggemma-2`), §5.10: each argument one text input, `--image` one image input, `--audio` one clip input, `--input-file` one JSON input per line (a string or a list of content parts, images as data URLs, clips as `input_audio`), in the order given; `--task` and `--title` render the model's prefixes, `--dimensions` picks a trained width, `--image-tokens` the image budget, `--truncate` cuts an over-long input instead of refusing it; the text report gives each vector's tokens, norm, and first values and, for several inputs, their cosines; `--json` gives every vector with its token counts, the space, and load, tokenize, and embed timings |
+| `serve` | the nuclis API over HTTP/1.1 ([guide/api.md](guide/api.md)), loopback by default (another address warns: no authentication): `POST /v1/systemone` is TypeSafe's Jev call (status codes, answer fields, and `jev-…` model ids as Jev clients expect), `POST /v1/decisions` takes the `decide --request` body and returns the `decide --json` bytes, timings aside, `POST /v1/chat/completions` is OpenAI's Chat Completions for the language models (one open at a time, opened by name, never by path; the conversation resent whole and the model's state reused by the completer; streamed as server-sent events with keepalive comments; a client that leaves cancels its request; structured output, forced tools, several choices and log probabilities refused with `400 unsupported_feature`), `POST /v1/embeddings` is OpenAI's embeddings call for the embedding models (§5.10; by name, never by path; `float` or `base64` vectors; `task`, `title`, `truncate`, and `image_tokens` as in `nuclis embed`; image parts as base64 data URLs and `input_audio` parts; token arrays refused, since they are another model's tokens), `GET /v1/models` lists the decision, language, and embedding models in OpenAI's shape, `GET /v1/health` the queue and the open models; `serve.host`, `serve.port` (default 9000), `serve.log`, and `serve.timeout` (the wait for the GPU, default 300 s) in the file, the flags over them; `decide.model` opened at start unless `--model` names others, a language model with `--chat-model`, the embedding model on its first request; every open model, of any kind, within one memory budget (`serve.memory_bytes`, `--memory`, default physical memory less 16 GiB), the least recently used closed to make room and a model in use never; decision passes and embedding passes (at most 2,048 rows each) run between a generation's steps; a coloured line per response on stdout; at most 2 models open, one GPU pass at a time, requests waiting for one model batched into a pass; host limits on head, body, connections, waiting requests, and waiting time, each refusal a typed error body |
 | `config` | write the file with every catalogue model registered (`--discover` adds runnable files the catalogue does not name), show effective values with their source layer, set one key |
 | `agent` | §7 |
 | `completion` | a thin script per shell: every Tab runs the hidden `nuclis __complete <words…>`, which answers from one command table (held to the parser and the help pages by tests) and the user's state: registered and catalogue models, the workspace's sessions, config keys and their values; paths go back to the shell; a failure completes nothing |

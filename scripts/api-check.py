@@ -381,6 +381,8 @@ def check_embeddings(client: Client) -> None:
 
     if "image" in row["modalities"]:
         check_images(client)
+    if "audio" in row["modalities"]:
+        check_audio(client)
 
     over = "word " * 9000
     cut = embedded(client, {"input": over, "truncate": True})
@@ -462,6 +464,45 @@ def check_images(client: Client) -> None:
         check(got == status and r.get("error", {}).get("code") == code, f"{str(body)[:80]}: {got} {r}")
     print(
         f"  images: the logo at cosine {cosine:.7f} against Google's float32, alone equals batched; {len(cases)} refusals"
+    )
+
+
+SPEECH = Path(__file__).resolve().parent.parent / "tests/fixtures/embeddinggemma-inputs/speech-1.wav"
+
+
+def check_audio(client: Client) -> None:
+    clip = [
+        {
+            "type": "input_audio",
+            "input_audio": {"data": base64.b64encode(SPEECH.read_bytes()).decode(), "format": "wav"},
+        }
+    ]
+    alone = embedded(client, {"input": [clip], "encoding_format": "base64"})
+    check(alone["nuclis"]["tokens"] == [124], f"the clip's tokens {alone['nuclis']}")
+    floats = embedded(client, {"input": [clip]})
+    google = google_vector("audio.north")
+    cosine = sum(a * b for a, b in zip(floats["data"][0]["embedding"], google))
+    check(cosine >= 0.9998, f"the clip against Google's float32: cosine {cosine}")
+    mixed = embedded(client, {"input": [SENTENCES[0], clip], "encoding_format": "base64"})
+    check(vector_bits(mixed["data"][1]) == vector_bits(alone["data"][0]), "a clip batched with text equals it alone")
+    cases: list[tuple[Json, int, str]] = [
+        (
+            {"input": [[{"type": "input_audio", "input_audio": {"data": "aGk=", "format": "wav"}}]]},
+            400,
+            "invalid_audio",
+        ),
+        (
+            {"input": [[{"type": "input_audio", "input_audio": {"data": "aGk=", "format": "ogg"}}]]},
+            400,
+            "unsupported_feature",
+        ),
+        ({"input": [[{"type": "input_audio", "input_audio": {"data": "aGk="}}]]}, 400, "invalid_request"),
+    ]
+    for body, status, code in cases:
+        got, r = client.call("POST", "/embeddings", body)
+        check(got == status and r.get("error", {}).get("code") == code, f"{str(body)[:80]}: {got} {r}")
+    print(
+        f"  audio: the clip at cosine {cosine:.7f} against Google's float32, alone equals batched; {len(cases)} refusals"
     )
 
 

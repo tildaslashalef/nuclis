@@ -27,8 +27,10 @@ pub const engine = @import("engine.zig");
 pub const decide = @import("decide.zig");
 pub const embed = @import("embed.zig");
 pub const vision = @import("vision/root.zig");
+pub const audio = @import("audio/root.zig");
 
 test {
+    _ = audio;
     _ = gguf;
     _ = safetensors;
     _ = encoding;

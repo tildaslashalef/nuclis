@@ -1,5 +1,6 @@
 //! The embedding service: `POST /v1/embeddings` (OpenAI's embeddings call,
-//! with nuclis's `task`, `title`, `truncate` and `image_tokens`) and the embedding models
+//! with nuclis's `task`, `title`, `truncate` and `image_tokens`, and
+//! `input_audio` parts) and the embedding models
 //! for `GET /v1/models`. A handler parses and validates on its connection's
 //! task, then waits in the batcher, whose GPU item opens the model if needed
 //! and embeds every waiting request for it, pass by pass; a handler never
@@ -113,12 +114,9 @@ pub const Service = struct {
 
         const request = parsed.request;
         const inputs = arena.alloc(embed.Input, request.inputs.len) catch return internal(arena);
-        for (request.inputs, inputs) |input, *out| out.* = wire.render(arena, request, input, &diag) catch |err| return switch (err) {
-            error.UnsupportedModality => refuse(arena, .bad_request, "unsupported_feature", "input", "{s}", .{diag.message()}),
-            else => internal(arena),
-        };
-        if (request.hasImages() and located.mmproj == null)
-            return refuse(arena, .bad_request, "unsupported_feature", "input", "{s}: images need the model's projector, which is not pulled (`nuclis model pull {s} --with mmproj`)", .{ name, name });
+        for (request.inputs, inputs) |input, *out| out.* = wire.render(arena, request, input) catch return internal(arena);
+        if ((request.hasImages() or request.hasAudio()) and located.mmproj == null)
+            return refuse(arena, .bad_request, "unsupported_feature", "input", "{s}: images and audio need the model's projector, which is not pulled (`nuclis model pull {s} --with mmproj`)", .{ name, name });
         var job: batcher_mod.Job = .{ .arena = arena, .path = located.path, .mmproj = located.mmproj, .name = name, .inputs = inputs, .truncate = request.truncate, .image_tokens = request.image_tokens };
         self.batcher.submit(io, &job) catch |err| return switch (err) {
             error.Busy => refuse(arena, http.overloaded, "busy", null, "overloaded: too many embedding requests wait for the GPU; retry shortly", .{}),
@@ -212,10 +210,13 @@ pub const Service = struct {
             try details.put(arena, "loaded", .{ .bool = self.pool.isOpen(io, resolved.path) });
             try details.put(arena, "default", .{ .bool = std.mem.eql(u8, name, self.default_model) });
             try details.put(arena, "dimensions", .{ .array = widths });
-            // What this server embeds: text, and images once the projector is pulled.
+            // What this server embeds: text, and images and audio once the projector is pulled.
             var modalities: std.json.Array = .init(arena);
             try modalities.append(.{ .string = "text" });
-            if (resolved.mmproj) |m| if (std.Io.Dir.cwd().access(io, m, .{})) |_| try modalities.append(.{ .string = "image" }) else |_| {};
+            if (resolved.mmproj) |m| if (std.Io.Dir.cwd().access(io, m, .{})) |_| {
+                try modalities.append(.{ .string = "image" });
+                try modalities.append(.{ .string = "audio" });
+            } else |_| {};
             try details.put(arena, "modalities", .{ .array = modalities });
             try details.put(arena, "max_tokens", .{ .integer = embed.max_tokens });
             try details.put(arena, "tasks", .{ .array = tasks });

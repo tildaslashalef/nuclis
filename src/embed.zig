@@ -1,7 +1,7 @@
 //! `nuclis embed`: inputs into unit vectors through an embedding model
 //! (`inference.embed`). Inputs come from the words on the command line, from
-//! image files, and from inputs files (one JSON input per line), in the
-//! order given; each gives one vector. The text report shows each vector's head and, for
+//! image and audio files, and from inputs files (one JSON input per line),
+//! in the order given; each gives one vector. The text report shows each vector's head and, for
 //! several inputs, their cosines; `--json` writes the shared response
 //! (`embedding/response.zig`). docs/models/embeddinggemma.md.
 const std = @import("std");
@@ -19,7 +19,7 @@ const max_file_bytes = 64 * 1024 * 1024;
 /// The most inputs the text report crosses in a cosine matrix.
 const max_matrix = 12;
 
-const Source = union(enum) { text: []const u8, file: []const u8, image: []const u8 };
+const Source = union(enum) { text: []const u8, file: []const u8, image: []const u8, audio: []const u8 };
 
 pub const Options = struct {
     sources: std.ArrayList(Source) = .empty,
@@ -81,8 +81,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
             }
             o.image_tokens = n;
         } else if (std.mem.eql(u8, word, "--audio")) {
-            diag.set("{s}: audio input is not supported yet; nuclis embeds text and images", .{value});
-            return error.UnsupportedModality;
+            try o.sources.append(arena, .{ .audio = value });
         } else if (std.mem.eql(u8, word, "--task")) {
             if (o.task != null) return error.DuplicateOption;
             o.task = std.meta.stringToEnum(wire.Task, value) orelse {
@@ -110,7 +109,7 @@ pub fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, diag: *conf
         }
     }
     if (o.sources.items.len == 0) {
-        diag.set("give the text to embed (each argument is one input: quote a sentence), --image <file>, or --input-file <file>", .{});
+        diag.set("give the text to embed (each argument is one input: quote a sentence), --image <file>, --audio <file>, or --input-file <file>", .{});
         return error.MissingInput;
     }
     return o;
@@ -133,6 +132,11 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
             parts[0] = .{ .image = try files.readBounded(arena, io, path, wire.max_image_bytes, diag) };
             try inputs.append(arena, .{ .parts = parts, .label = path });
         },
+        .audio => |path| {
+            const parts = try arena.alloc(wire.Part, 1);
+            parts[0] = .{ .audio = try files.readBounded(arena, io, path, wire.max_audio_bytes, diag) };
+            try inputs.append(arena, .{ .parts = parts, .label = path });
+        },
     };
     const request: wire.Request = .{
         .inputs = inputs.items,
@@ -147,7 +151,7 @@ fn buildRequest(arena: std.mem.Allocator, io: std.Io, o: Options, diag: *config.
 }
 
 /// Embeds every input of `o` with the model at `path` (and its projector
-/// `mmproj` for images, null when not pulled), and reports.
+/// `mmproj` for images and audio, null when not pulled), and reports.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]const u8, identity_in: response.Identity, o: Options, out: *std.Io.Writer, sty: style.Style, diag: *config.Diagnostic) !void {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
@@ -160,12 +164,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
     var timings: response.Timings = .{};
     var started = std.Io.Clock.awake.now(io);
     const backend = o.backend orelse if (inference.metal.enabled) embed.Backend.metal else .cpu;
-    const images = request.hasImages();
-    if (images and mmproj == null) {
-        diag.set("{s}: images need the model's projector, which is not pulled (`nuclis model pull {s} --with mmproj`)", .{ identity.name, identity.name });
+    const media = request.hasImages() or request.hasAudio();
+    if (media and mmproj == null) {
+        diag.set("{s}: images and audio need the model's projector, which is not pulled (`nuclis model pull {s} --with mmproj`)", .{ identity.name, identity.name });
         return error.NoProjector;
     }
-    const embedder = embed.Embedder.open(gpa, io, path, backend, .{ .projector = if (images) mmproj else null }) catch |err| {
+    const embedder = embed.Embedder.open(gpa, io, path, backend, .{ .projector = if (media) mmproj else null }) catch |err| {
         if (err == error.MetalNotEnabled)
             diag.set("this build has no Metal backend; run with --backend cpu", .{})
         else if (err == error.NotAnEmbeddingModel)
@@ -179,18 +183,25 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, path: []const u8, mmproj: ?[]cons
 
     const prepared = try arena.alloc(embed.Prepared, request.inputs.len);
     for (request.inputs, prepared) |input, *p| {
-        const rendered = try wire.render(arena, request, input, diag);
+        const rendered = try wire.render(arena, request, input);
         // Prepared with truncation always, so a refusal can give the count.
         p.* = embedder.prepare(arena, rendered, .{ .truncate = true, .image_tokens = request.image_tokens }) catch |err| {
             switch (err) {
                 error.UnsupportedImageFormat, error.MalformedImage => diag.set("{s}: not an image nuclis can read (PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP)", .{input.label}),
                 error.ImageTooLarge => diag.set("{s}: the image is too large to decode", .{input.label}),
+                error.UnsupportedAudioFormat => diag.set("{s}: not audio nuclis can read (WAV, AIFF, MP3, M4A, FLAC, CAF)", .{input.label}),
+                error.AudioTooShort => diag.set("{s}: the clip is shorter than 10 ms", .{input.label}),
+                error.AudioTooLong => diag.set("{s}: a clip is at most {d} s (Google's processor's bound); --truncate keeps its first {d} s", .{ input.label, embed.max_audio_seconds, embed.max_audio_seconds }),
+                error.NoAudioEncoder => diag.set("{s}: the projector has no audio encoder", .{input.label}),
                 else => {},
             }
             return err;
         };
         if (p.truncated() and !request.truncate) {
-            diag.set("{s} is {d} tokens; the model reads at most {d} (--truncate cuts the end)", .{ input.label, p.length, embed.max_tokens });
+            if (p.clipped)
+                diag.set("{s}: a clip is at most {d} s (Google's processor's bound); --truncate keeps its first {d} s", .{ input.label, embed.max_audio_seconds, embed.max_audio_seconds })
+            else
+                diag.set("{s} is {d} tokens; the model reads at most {d} (--truncate cuts the end)", .{ input.label, p.length, embed.max_tokens });
             return error.InputTooLong;
         }
     }
@@ -240,7 +251,7 @@ fn writeText(arena: std.mem.Allocator, out: *std.Io.Writer, sty: style.Style, bo
         try out.print("     {d} tokens · {d} values · norm {d:.4} · ", .{ v.tokens, v.values.len, @sqrt(response.cosine(v.values, v.values)) });
         for (v.values[0..@min(head_values, v.values.len)]) |x| try out.print("{s}{d: >7.4}{s} ", .{ sty.on(.number), x, off });
         try out.writeAll("…\n");
-        if (v.truncated()) try out.print("     {s}cut from {d} tokens to the model's {d}{s}\n", .{ sty.on(.warning), v.input_tokens, v.tokens, off });
+        if (v.truncated()) try out.print("     {s}cut from {d} tokens to {d}{s}\n", .{ sty.on(.warning), v.input_tokens, v.tokens, off });
     }
     if (n == 2) {
         try out.print("\n{s}cosine{s} {s}{d:.4}{s}\n", .{ sty.on(.label), off, sty.on(.number), response.cosine(body.vectors[0].values, body.vectors[1].values), off });
@@ -298,6 +309,9 @@ test "arguments: words are inputs, options take values, -- ends options" {
     try std.testing.expectEqualStrings("a.png", pictures.sources.items[0].image);
     try std.testing.expectEqualStrings("caption", pictures.sources.items[1].text);
     try std.testing.expectEqual(@as(u32, 560), pictures.image_tokens.?);
+    const heard = try parseArgs(arena, &.{ "--audio", "a.wav", "--image", "b.png" }, &diag);
+    try std.testing.expectEqualStrings("a.wav", heard.sources.items[0].audio);
+    try std.testing.expectEqualStrings("b.png", heard.sources.items[1].image);
     const cases = .{
         .{ &[_][]const u8{"--json"}, error.MissingInput },
         .{ &[_][]const u8{ "x", "--task", "search" }, error.InvalidOptionValue },
@@ -306,7 +320,6 @@ test "arguments: words are inputs, options take values, -- ends options" {
         .{ &[_][]const u8{ "x", "--wat" }, error.UnknownOption },
         .{ &[_][]const u8{ "x", "--truncate", "--truncate" }, error.DuplicateOption },
         .{ &[_][]const u8{ "x", "--model" }, error.MissingOptionValue },
-        .{ &[_][]const u8{ "--audio", "a.wav" }, error.UnsupportedModality },
         .{ &[_][]const u8{ "--image", "a.png", "--image-tokens", "300" }, error.InvalidOptionValue },
         .{ &[_][]const u8{ "--image", "a.png", "--image-tokens", "70", "--image-tokens", "70" }, error.DuplicateOption },
     };

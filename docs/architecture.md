@@ -99,6 +99,8 @@ flowchart TB
         sess[runtime/session.zig  weights.zig  draft.zig]
         eng[engine.zig  Engine, Model, runLoop]
         dec[decide.zig  Decider: Laya or clef over profiles/* + models/*]
+        emb[embed.zig  Embedder: EmbeddingGemma 2 over models/* + vision/* + audio/*]
+        media[vision/*  audio/*  companion encoders: images and clips into rows]
         samp[sampling/root.zig]
         cpu[backends/cpu/*  reference math; dense.zig for encoders]
         metal[backends/metal/*  bridge + kernels]

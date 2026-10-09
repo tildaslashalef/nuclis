@@ -1,14 +1,13 @@
 //! Embeddings: one input in, one unit vector out. `Embedder` opens an
 //! embedding-family GGUF file (today EmbeddingGemma 2) and, optionally, its
 //! mmproj; it turns an input's ordered parts into rows (tokenization,
-//! BOS/EOS framing, each image's BOI, projector rows and EOI, the
-//! `max_tokens` limit) and runs the model's forward. Text is literal: a
-//! control token's spelling in a part is text, never the token
-//! (docs/models/embeddinggemma.md § The input contract). Images are
-//! processed as Google's processor does (its grid, torchvision's resize,
-//! F32 patches, its activation), not as the chat path's reference does. The
-//! Embedder lives on the heap because its encoder and runtimes hold pointers
-//! into it.
+//! BOS/EOS framing, each medium's begin marker, projector rows and end
+//! marker, the `max_tokens` limit) and runs the model's forward. Text is
+//! literal: a control token's spelling in a part is text, never the token
+//! (docs/models/embeddinggemma.md § The input contract). Images and audio
+//! are processed as Google's processor does, not as the chat path's
+//! reference does. The Embedder lives on the heap because its encoder and
+//! runtimes hold pointers into it.
 const std = @import("std");
 const gguf = @import("formats/gguf.zig");
 const weights = @import("runtime/weights.zig");
@@ -20,6 +19,9 @@ const metal_plan = @import("models/embeddinggemma_metal.zig");
 const vision = @import("vision/root.zig");
 const gemma4v = vision.gemma4;
 const preprocess = vision.preprocess;
+const audio = @import("audio/root.zig");
+const gemma4a = audio.gemma4a;
+const mel = audio.mel;
 
 /// `general.architecture` of the files an `Embedder` opens.
 pub const architecture = model.architecture;
@@ -31,6 +33,10 @@ pub const widths = [_]usize{ 768, 512, 256, 128 };
 /// Soft tokens per image: Google's default, and the budgets its processor accepts.
 pub const default_image_tokens: u32 = 280;
 pub const image_budgets = gemma4v.google_budgets;
+/// The longest audio part: Google's feature extractor cuts a clip at 30 s
+/// (750 rows).
+pub const max_audio_seconds = 30;
+const max_audio_samples = max_audio_seconds * mel.sample_rate;
 
 /// Rows an input of `tokens` tokens takes in a packed batch.
 pub const batchRows = metal_plan.batchRows;
@@ -46,20 +52,24 @@ pub const Part = union(enum) {
     text: []const u8,
     /// An encoded image (any format `vision.image.decode` reads), borrowed.
     image: []const u8,
+    /// An encoded clip (any format `audio.audio.decode` reads), borrowed.
+    audio: []const u8,
 };
 pub const Input = struct { parts: []const Part };
 
 pub const Options = struct {
     /// Cut an input over `max_tokens` to fit, keeping its final EOS, instead
-    /// of refusing it. A media part that would be cut is dropped whole.
+    /// of refusing it. A media part that would be cut is dropped whole; an
+    /// audio part over `max_audio_seconds` keeps its beginning, as Google's
+    /// processor does, instead of being refused.
     truncate: bool = false,
     /// Soft tokens per image, one of `image_budgets`.
     image_tokens: u32 = default_image_tokens,
 };
 
 pub const OpenOptions = struct {
-    /// The mmproj file whose encoders turn image parts into rows; without
-    /// one an image part is `NoProjector`.
+    /// The mmproj file whose encoders turn image and audio parts into rows;
+    /// without one such a part is `NoProjector`.
     projector: ?[]const u8 = null,
 };
 
@@ -73,6 +83,8 @@ pub const Prepared = struct {
     spans: []Span = &.{},
     /// Each span's rows in span order, `model.config.embedding` wide.
     features: []f32 = &.{},
+    /// A clip over `max_audio_seconds` was cut (part of `length − tokens.len`).
+    clipped: bool = false,
 
     pub fn truncated(self: Prepared) bool {
         return self.length != self.tokens.len;
@@ -91,7 +103,8 @@ pub const Prepared = struct {
 /// The framing tokens of an image, looked up by their text.
 const Markers = struct { begin: u32, placeholder: u32, end: u32 };
 
-/// The mmproj and its vision encoder, built on the first image.
+/// The mmproj, its vision encoder built on the first image, and its audio
+/// encoder (when the file has one) built on the first clip.
 const Projector = struct {
     mapped: weights.Mapped,
     binding: gemma4v.Binding,
@@ -99,6 +112,17 @@ const Projector = struct {
         cpu: gemma4v.Runtime,
         metal: gemma4v.Plan,
     } = null,
+    audio: ?gemma4a.Binding,
+    listener: ?Listener = null,
+};
+
+/// The audio encoder and its mel bank, owned by the projector.
+const Listener = struct {
+    bank: *mel.Bank,
+    engine: union(Backend) {
+        cpu: gemma4a.Runtime,
+        metal: gemma4a.Plan,
+    },
 };
 
 pub const Embedder = struct {
@@ -116,6 +140,7 @@ pub const Embedder = struct {
     bos: ?u32,
     eos: ?u32,
     image_markers: Markers,
+    audio_markers: Markers,
     projector: ?Projector,
 
     /// Opens an EmbeddingGemma 2 file for `backend`, with `options.projector`
@@ -144,6 +169,11 @@ pub const Embedder = struct {
             .placeholder = self.vocab.tokenId("<|image|>") orelse return error.MissingSpecialToken,
             .end = self.vocab.tokenId("<image|>") orelse return error.MissingSpecialToken,
         };
+        self.audio_markers = .{
+            .begin = self.vocab.tokenId("<|audio>") orelse return error.MissingSpecialToken,
+            .placeholder = self.vocab.tokenId("<|audio|>") orelse return error.MissingSpecialToken,
+            .end = self.vocab.tokenId("<audio|>") orelse return error.MissingSpecialToken,
+        };
         if (options.projector) |projector_path| {
             var mapped = try weights.Mapped.open(gpa, io, projector_path);
             errdefer mapped.deinit(io);
@@ -152,7 +182,12 @@ pub const Embedder = struct {
             if (binding.output_width != model.config.embedding) return error.UnsupportedProjector;
             // Google's vision config, which the file does not record.
             binding.activation = .gelu_tanh;
-            self.projector = .{ .mapped = mapped, .binding = binding };
+            var heard: ?gemma4a.Binding = null;
+            if (gemma4a.present(&mapped.document)) {
+                heard = try gemma4a.bind(gpa, &mapped.document);
+                if (heard.?.output_width != model.config.embedding) return error.UnsupportedProjector;
+            }
+            self.projector = .{ .mapped = mapped, .binding = binding, .audio = heard };
         }
         errdefer if (self.projector) |*p| p.mapped.deinit(io);
         self.engine = switch (backend) {
@@ -168,6 +203,12 @@ pub const Embedder = struct {
             if (p.engine) |*e| switch (e.*) {
                 inline else => |*x| x.deinit(),
             };
+            if (p.listener) |*l| {
+                switch (l.engine) {
+                    inline else => |*x| x.deinit(),
+                }
+                gpa.destroy(l.bank);
+            }
             p.mapped.deinit(self.io);
         }
         switch (self.engine) {
@@ -185,15 +226,26 @@ pub const Embedder = struct {
         return self.projector != null;
     }
 
-    /// Bytes the vision encoder holds once the first image built it: its
-    /// weights, and on Metal the buffers its plan created; 0 before.
+    /// Whether audio parts can be embedded (the projector has an audio encoder).
+    pub fn hasAudio(self: *const Embedder) bool {
+        return if (self.projector) |p| p.audio != null else false;
+    }
+
+    /// Bytes the media encoders hold once built (the vision encoder by the
+    /// first image, the audio encoder by the first clip): their weights,
+    /// and on Metal the buffers their plans created; 0 before.
     pub fn mediaBytes(self: *const Embedder) u64 {
         const projector = if (self.projector) |*p| p else return 0;
-        const engine = projector.engine orelse return 0;
-        return projector.binding.bytes + switch (engine) {
+        var total: u64 = 0;
+        if (projector.engine) |engine| total += projector.binding.bytes + switch (engine) {
             .cpu => 0,
             .metal => |plan| plan.created_bytes,
         };
+        if (projector.listener) |l| total += projector.audio.?.bytes + switch (l.engine) {
+            .cpu => 0,
+            .metal => |plan| plan.created_bytes,
+        };
+        return total;
     }
 
     /// The input's rows, framed: BOS, each run of adjacent text parts
@@ -210,6 +262,8 @@ pub const Embedder = struct {
         defer features.deinit(alloc);
         var text: std.ArrayList(u8) = .empty;
         defer text.deinit(alloc);
+        // Rows of audio past `max_audio_seconds` that truncation dropped.
+        var cut: usize = 0;
         if (self.bos) |b| try tokens.append(alloc, b);
         for (input.parts) |part| switch (part) {
             .text => |t| try text.appendSlice(alloc, t),
@@ -224,9 +278,24 @@ pub const Embedder = struct {
                 try tokens.append(alloc, self.image_markers.end);
                 try features.appendSlice(alloc, rows);
             },
+            .audio => |bytes| {
+                try self.flushText(alloc, &text, &tokens);
+                const heard = try self.encodeAudio(alloc, bytes, options.truncate);
+                defer alloc.free(heard.rows);
+                cut += heard.cut;
+                const count = heard.rows.len / model.config.embedding;
+                try tokens.append(alloc, self.audio_markers.begin);
+                try spans.append(alloc, .{ .start = tokens.items.len, .count = count, .width_tokens = 0, .height_tokens = 0 });
+                try tokens.appendNTimes(alloc, self.audio_markers.placeholder, count);
+                try tokens.append(alloc, self.audio_markers.end);
+                try features.appendSlice(alloc, heard.rows);
+            },
         };
         try self.flushText(alloc, &text, &tokens);
-        return finish(alloc, tokens.items, spans.items, features.items, self.eos, options);
+        var prepared = try finish(alloc, tokens.items, spans.items, features.items, self.eos, options);
+        prepared.length += cut;
+        prepared.clipped = cut != 0;
+        return prepared;
     }
 
     fn flushText(self: *Embedder, alloc: std.mem.Allocator, text: *std.ArrayList(u8), tokens: *std.ArrayList(u32)) !void {
@@ -257,6 +326,57 @@ pub const Embedder = struct {
         errdefer alloc.free(rows);
         try self.encodePatches(patches, grid, rows);
         return rows;
+    }
+
+    pub const Heard = struct {
+        /// `model.config.embedding` wide, owned by the caller.
+        rows: []f32,
+        /// Rows the clip would have given past `max_audio_seconds`.
+        cut: usize,
+    };
+
+    /// The projector rows of one encoded clip: 16 kHz mono samples, the
+    /// log-mel frames, the audio encoder. A clip over `max_audio_seconds` is
+    /// `AudioTooLong` unless `truncate`, which keeps its beginning.
+    pub fn encodeAudio(self: *Embedder, alloc: std.mem.Allocator, bytes: []const u8, cut_long: bool) !Heard {
+        const ear = try self.listener();
+        var pcm = try audio.audio.decode(alloc, bytes, max_audio_samples);
+        defer pcm.deinit(alloc);
+        if (pcm.total > pcm.samples.len and !cut_long) return error.AudioTooLong;
+        const frames = mel.frameCount(pcm.samples.len);
+        if (frames == 0) return error.AudioTooShort;
+        const features = try alloc.alloc(f32, frames * mel.filters);
+        defer alloc.free(features);
+        try ear.bank.features(pcm.samples, features);
+        const count = gemma4a.tokensFor(frames);
+        const rows = try alloc.alloc(f32, count * model.config.embedding);
+        errdefer alloc.free(rows);
+        try self.encodeFeatures(features, frames, rows);
+        const whole = gemma4a.tokensFor(mel.frameCount(@intCast(@min(pcm.total, std.math.maxInt(usize)))));
+        return .{ .rows = rows, .cut = whole -| count };
+    }
+
+    /// Runs the audio encoder (built on first use) over log-mel frames.
+    pub fn encodeFeatures(self: *Embedder, features: []const f32, frames: usize, rows: []f32) !void {
+        const ear = try self.listener();
+        switch (ear.engine) {
+            inline else => |*e| try e.encode(features, frames, rows),
+        }
+    }
+
+    /// The audio encoder, built on first use.
+    fn listener(self: *Embedder) !*Listener {
+        const projector = if (self.projector) |*p| p else return error.NoProjector;
+        const binding = if (projector.audio) |*b| b else return error.NoAudioEncoder;
+        if (projector.listener) |*l| return l;
+        const bank = try self.gpa.create(mel.Bank);
+        errdefer self.gpa.destroy(bank);
+        bank.init();
+        projector.listener = .{ .bank = bank, .engine = switch (self.engine) {
+            .cpu => .{ .cpu = try .init(self.gpa, self.io, projector.mapped.view(), binding) },
+            .metal => |plan| .{ .metal = try .init(self.gpa, self.io, &plan.backend, projector.mapped.view(), binding) },
+        } };
+        return &projector.listener.?;
     }
 
     /// Runs the vision encoder (built on first use) over prepared patches.

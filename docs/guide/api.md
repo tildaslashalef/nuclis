@@ -6,7 +6,7 @@ typed questions about text or JSON, in TypeSafe's Jev protocol, so a
 client written for `api.typesafe.ai` switches by changing its base URL.
 **Chat Completions** serve the language models in OpenAI's format, so a
 client written for an OpenAI-compatible server does the same.
-**Embeddings** turn text and images into vectors in OpenAI's embeddings format. This page
+**Embeddings** turn text, images and audio into vectors in OpenAI's embeddings format. This page
 is the reference for client authors; it assumes nothing about the code.
 
 - [Running the server](#running-the-server), [memory](#memory)
@@ -182,10 +182,10 @@ is overloaded (retry with backoff, as both families of SDKs do by default).
 | 404 | `model_not_found` | chat: `model` names no pulled language model |
 | 400 | `model_too_large` | chat: the language model alone needs more than the memory budget, with the sizes |
 | 400 | `invalid_json`, `invalid_request` | embeddings: the body is not JSON, or a field is malformed (`param` names it) |
-| 400 | `unsupported_feature` | embeddings: token arrays, audio parts, an image by URL or without the projector pulled, a width other than 768, 512, 256, or 128 ([what is refused](#what-an-embedding-request-may-not-carry)) |
-| 400 | `invalid_image` | embeddings: an image part that does not decode; the message names the input |
-| 400 | `input_too_long` | embeddings: an input over 8,192 tokens without `"truncate": true`; the message gives its index and count |
-| 400 | `request_too_large` | embeddings: over 2,048 inputs, over 1 MiB of text in one, or an image over 32 MiB |
+| 400 | `unsupported_feature` | embeddings: token arrays, an image by URL, an audio format nuclis does not name, media without the projector pulled, a width other than 768, 512, 256, or 128 ([what is refused](#what-an-embedding-request-may-not-carry)) |
+| 400 | `invalid_image`, `invalid_audio` | embeddings: an image or audio part that does not decode (or a clip under 10 ms); the message names the input |
+| 400 | `input_too_long` | embeddings: an input over 8,192 tokens, or a clip over 30 s, without `"truncate": true`; the message gives its index and count |
+| 400 | `request_too_large` | embeddings: over 2,048 inputs, or over 1 MiB of text in one |
 | 400 | `not_an_embedding_model` | embeddings: `model` names a language or decision model |
 | 404 | `model_not_found` | embeddings: `model` names no pulled embedding model |
 | 400 | `model_too_large` | embeddings: the model alone needs more than the memory budget |
@@ -583,13 +583,13 @@ curl -s localhost:9000/v1/embeddings -d '{"input": "how do auroras form?", "task
 | Field | Meaning |
 | --- | --- |
 | `model` | a registry entry of kind `embedding` or an embedding catalogue name; default `embed.model` (`embeddinggemma-2`). Never a path |
-| `input` | a string (one input), or a list whose items are strings or lists of content parts, at most 2,048. A part is `{"type": "text", "text": "…"}` or `{"type": "image_url", "image_url": {"url": "data:image/png;base64,…"}}` (a base64 data URL or bare base64, at most 32 MiB; PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP). Each item is one input and gives one vector; its parts are read in order, in one pass |
+| `input` | a string (one input), or a list whose items are strings or lists of content parts, at most 2,048. A part is `{"type": "text", "text": "…"}`, `{"type": "image_url", "image_url": {"url": "data:image/png;base64,…"}}` (a base64 data URL or bare base64; PNG, JPEG, HEIC, WebP, TIFF, GIF, BMP), or `{"type": "input_audio", "input_audio": {"data": "<base64>", "format": "wav"}}` (`wav`, `mp3`, `aiff`, `flac`, or `m4a`; at most 30 s). Each item is one input and gives one vector; its parts are read in order, in one pass. The body limit (32 MiB) bounds the media |
 | `dimensions` | `768` (default), `512`, `256`, or `128`: the vector's leading values, renormalized (the widths the model is trained for) |
 | `encoding_format` | `float` (default) or `base64`: the vector's little-endian f32 bytes, which OpenAI's Python SDK asks for and decodes |
 | `user` | accepted and ignored |
-| `task` | nuclis's: the use the vectors are for. Text is embedded exactly as given unless a task is named; `search_query`, `question_answering`, `fact_checking`, `code_retrieval`, `classification`, `clustering`, and `similarity` open each input with the model's `task: … \| query: ` prefix, before any image, `document` with `title: {title or none} \| text: ` ([embeddinggemma.md § Tokenizer and task prefixes](../models/embeddinggemma.md#tokenizer-and-task-prefixes)) |
+| `task` | nuclis's: the use the vectors are for. Text is embedded exactly as given unless a task is named; `search_query`, `question_answering`, `fact_checking`, `code_retrieval`, `classification`, `clustering`, and `similarity` open each input with the model's `task: … \| query: ` prefix, before any image or clip, `document` with `title: {title or none} \| text: ` ([embeddinggemma.md § Tokenizer and task prefixes](../models/embeddinggemma.md#tokenizer-and-task-prefixes)) |
 | `title` | nuclis's: a document's title, with `"task": "document"` only |
-| `truncate` | nuclis's: `true` cuts an input over 8,192 tokens at its end instead of refusing it; the response lists the inputs cut. An image the cut would split is dropped whole |
+| `truncate` | nuclis's: `true` cuts an input over 8,192 tokens at its end instead of refusing it, and a clip over 30 s to its first 30 s (Google's processor's cut); the response lists the inputs cut. An image or clip the cut would split is dropped whole |
 | `image_tokens` | nuclis's: soft tokens per image, `70`, `140`, `280` (default), `560`, or `1120`, Google's processor's budgets. More is finer and slower; it changes the vector, and the response records it |
 
 For retrieval, embed the corpus with `"task": "document"` and the queries
@@ -601,13 +601,14 @@ with `"task": "search_query"`: the two are trained to meet.
   them tokenized with another model's vocabulary, so the vectors would be
   noise. LangChain's `OpenAIEmbeddings` does this by default; set
   `check_embedding_ctx_length=False` and it sends text.
-- **Audio parts** (`input_audio`): the model reads them; this server does
-  not yet.
 - **An image by URL** (`https://…`): the server fetches nothing; send a
-  data URL. An image that does not decode is `invalid_image`, naming the
-  input.
-- **Images without the projector**: `nuclis model pull embeddinggemma-2
-  --with mmproj` fetches it (`unsupported_feature` until then).
+  data URL. An image that does not decode is `invalid_image`, a clip
+  `invalid_audio`, each naming the input. An audio format other than the
+  five is `unsupported_feature`.
+- **A clip over 30 s** without `truncate` (`input_too_long`).
+- **Images and audio without the projector**: `nuclis model pull
+  embeddinggemma-2 --with mmproj` fetches it (`unsupported_feature` until
+  then).
 - **Other widths**, and an input over 8,192 tokens without `truncate`
   (`input_too_long`, with the input's index and token count).
 
@@ -655,9 +656,10 @@ embeddings` checks it bit for bit).
 One embedding model is open at a time; it opens on its first request
 (0.7 s) and counts its file against the [memory](#memory) budget (310 MB
 for the Q8_0 file). Its projector is opened with it when pulled; the
-vision encoder is built on the first image (918 MB on Metal), which the
-budget then adds to the model's share. Images are encoded one at a time
-on the GPU before their pass, about 460 ms each at 280 tokens.
+vision encoder is built on the first image (918 MB on Metal) and the audio
+encoder on the first clip (658 MB), and the budget then adds each to the
+model's share. Media are encoded one at a time on the GPU before their
+pass: about 460 ms an image at 280 tokens, 130 ms for 4.8 s of speech.
 
 ## `GET /v1/models`
 
@@ -735,7 +737,7 @@ without one):
 | `size_bytes` | the file's size |
 | `present`, `loaded`, `default` | as above; `default` is `embed.model` |
 | `dimensions` | the widths it is trained for, `[768, 512, 256, 128]` |
-| `modalities` | what this server embeds with it: `["text"]`, and `"image"` once the projector is pulled |
+| `modalities` | what this server embeds with it: `["text"]`, and `"image"` and `"audio"` once the projector is pulled |
 | `max_tokens` | tokens per input, 8,192 |
 | `tasks` | the `task` values it takes |
 | `repo`, `revision` | where its file came from |
