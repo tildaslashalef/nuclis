@@ -5,7 +5,12 @@
 // mixed batch (token rows and projector rows together): the model has no KV
 // cache, so separate decode calls would not attend to each other.
 //
-//   reference-embedding MODEL MMPROJ INPUTS VECTORS_PREFIX [TRACE_ROOT]
+//   reference-embedding [--cpu] [--text-only] MODEL MMPROJ INPUTS VECTORS_PREFIX [TRACE_ROOT]
+//
+// --cpu keeps every operation on ggml's CPU backend (no layers or ops
+// offloaded): on an F32 file its matmuls keep F32 activations, where Metal's
+// batched matmul stages them as half (bf16 for BF16 weights). --text-only
+// skips the cases with media.
 //
 // Writes VECTORS_PREFIX.f32 (768 unit-normalized F32 per case, case order) and
 // VECTORS_PREFIX.json (per case its ids run-length encoded, a media chunk's
@@ -78,8 +83,16 @@ static void push_run(json & runs, llama_token id, size_t count) {
 }
 
 int main(int argc, char ** argv) {
+    bool cpu = false, text_only = false;
+    while (argc > 1 && std::strncmp(argv[1], "--", 2) == 0) {
+        if (std::strcmp(argv[1], "--cpu") == 0) cpu = true;
+        else if (std::strcmp(argv[1], "--text-only") == 0) text_only = true;
+        else return 2;
+        ++argv;
+        --argc;
+    }
     if (argc < 5 || argc > 6) {
-        std::fprintf(stderr, "usage: %s MODEL MMPROJ INPUTS VECTORS_PREFIX [TRACE_ROOT]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--cpu] [--text-only] MODEL MMPROJ INPUTS VECTORS_PREFIX [TRACE_ROOT]\n", argv[0]);
         return 2;
     }
     const std::string model_path = argv[1], mmproj_path = argv[2], inputs_path = argv[3], prefix = argv[4];
@@ -91,7 +104,7 @@ int main(int argc, char ** argv) {
 
     llama_backend_init();
     auto mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 99;
+    mparams.n_gpu_layers = cpu ? 0 : 99;
     llama_model * model = llama_model_load_from_file(model_path.c_str(), mparams);
     if (!model) return 1;
 
@@ -103,13 +116,14 @@ int main(int argc, char ** argv) {
     cparams.embeddings = true;
     cparams.pooling_type = LLAMA_POOLING_TYPE_MEAN;
     cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    cparams.op_offload = !cpu;
     cparams.cb_eval = observe;
     cparams.cb_eval_user_data = &trace;
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return 1;
 
     auto vparams = mtmd_context_params_default();
-    vparams.use_gpu = true;
+    vparams.use_gpu = !cpu;
     vparams.print_timings = false;
     vparams.warmup = false;
     // Google's processor budget; clip.cpp otherwise sizes toward its 1120 cap.
@@ -126,6 +140,9 @@ int main(int argc, char ** argv) {
 
     for (const auto & c : spec["cases"]) {
         const std::string id = c["id"];
+        bool has_media = false;
+        for (const auto & p : c["parts"]) has_media = has_media || !p.contains("text");
+        if (text_only && has_media) continue;
         trace.directory.clear();
         trace.shapes = json::object();
         trace.media = false;

@@ -88,13 +88,16 @@ pub fn build(b: *std.Build) void {
     const clef_check = b.addRunArtifact(inference.artifact("clef-check"));
     clef_check.addPassthruArgs();
     b.step("test-clef", "Check clef-flash against the oracle's fixtures (-- sequences|head CLEF_DIR ...)").dependOn(&clef_check.step);
+    const embeddinggemma_check = b.addRunArtifact(inference.artifact("embeddinggemma-check"));
+    embeddinggemma_check.addPassthruArgs();
+    b.step("test-embeddinggemma", "Check EmbeddingGemma 2's CPU forward against the oracles (-- MODEL traces|vectors)").dependOn(&embeddinggemma_check.step);
     const generation_check = b.addRunArtifact(inference.artifact("generation-check"));
     generation_check.addPassthruArgs();
     b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&generation_check.step);
     // Compiles the three check tools without running them, so the gate runner
     // can time the build apart from the checks.
-    const check_tools = b.step("check-tools", "Install the vocabulary, Laya, and generation check tools");
-    for ([_][]const u8{ "vocabulary-check", "laya-check", "clef-check", "generation-check" }) |name|
+    const check_tools = b.step("check-tools", "Install the vocabulary, Laya, clef, EmbeddingGemma, and generation check tools");
+    for ([_][]const u8{ "vocabulary-check", "laya-check", "clef-check", "embeddinggemma-check", "generation-check" }) |name|
         check_tools.dependOn(&b.addInstallArtifact(inference.artifact(name), .{}).step);
     b.step("test-metal", "Explicit Metal fixture checks (-Dmetal=true)").dependOn(&b.addRunArtifact(inference.artifact("metal-check")).step);
     const matvec_bench = b.addRunArtifact(inference.artifact("metal-check"));

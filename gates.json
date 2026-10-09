@@ -60,6 +60,13 @@
    "path": "~/.nuclis/models/Cloudflare/clef-flash",
    "entry": "clef-flash",
    "mmproj": "~/.nuclis/models/bartowski/Cloudflare_clef-flash-GGUF/mmproj-Cloudflare_clef-flash-bf16.gguf"
+  },
+  "embeddinggemma": {
+   "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-Q8_0.gguf",
+   "mmproj": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/mmproj-BF16.gguf"
+  },
+  "embeddinggemma_bf16": {
+   "path": "~/.nuclis/models/unsloth/embeddinggemma-2-GGUF/embeddinggemma-2-BF16.gguf"
   }
  },
  "checks": [
@@ -950,6 +957,110 @@
     "kind": "exit"
    },
    "evidence": "docs/models/clef-flash.md"
+  },
+  {
+   "name": "embeddinggemma-trace-cpu",
+   "family": "embeddinggemma",
+   "tier": "verify-cpu",
+   "model": "embeddinggemma",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/embeddinggemma-check.zig",
+    "inference/src/embed.zig",
+    "inference/src/models/embeddinggemma*.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/gguf.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tokenizer/**",
+    "tests/fixtures/embeddinggemma-inputs/**",
+    "tests/fixtures/embeddinggemma-vectors/**",
+    "tests/fixtures/embeddinggemma-north.raw/**",
+    "tests/fixtures/embeddinggemma-north.query/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-embeddinggemma",
+    "--",
+    "{model}",
+    "traces"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "every stage of two texts against llama.cpp's CPU pass over the same weights in F32",
+   "evidence": "docs/models/embeddinggemma.md"
+  },
+  {
+   "name": "embeddinggemma-vectors-cpu",
+   "family": "embeddinggemma",
+   "tier": "verify-cpu",
+   "model": "embeddinggemma",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/embeddinggemma-check.zig",
+    "inference/src/embed.zig",
+    "inference/src/models/embeddinggemma*.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/gguf.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tokenizer/**",
+    "tests/fixtures/embeddinggemma-inputs/**",
+    "tests/fixtures/embeddinggemma-vectors/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-embeddinggemma",
+    "--",
+    "{model}",
+    "vectors"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "97 texts against llama.cpp's Q8_0 vectors, cosine >= 0.99999",
+   "evidence": "docs/models/embeddinggemma.md"
+  },
+  {
+   "name": "embeddinggemma-google-cpu",
+   "family": "embeddinggemma",
+   "tier": "verify-cpu",
+   "model": "embeddinggemma_bf16",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/embeddinggemma-check.zig",
+    "inference/src/embed.zig",
+    "inference/src/models/embeddinggemma*.zig",
+    "inference/src/backends/cpu/dense.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/gguf.zig",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tokenizer/**",
+    "tests/fixtures/embeddinggemma-inputs/**",
+    "tests/fixtures/embeddinggemma-vectors/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-embeddinggemma",
+    "--",
+    "{model}",
+    "google"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "note": "97 texts on the BF16 file against Google's float32 vectors, cosine >= 0.9999999",
+   "evidence": "docs/models/embeddinggemma.md"
   },
   {
    "name": "gemma4-qat-trace-cpu",

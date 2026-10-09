@@ -109,6 +109,11 @@ pub const Attention = struct {
     /// Row `t` of q, k, and v starts at `t · stride`: [heads][head_dim] each,
     /// so they may be three column ranges of one fused projection.
     stride: usize,
+    /// Grouped-query attention: k and v carry `kv_heads` heads, query head h
+    /// reading kv head `h / (heads / kv_heads)`, their row `t` at
+    /// `t · kv_stride`. Zero means `heads` and `stride`.
+    kv_heads: usize = 0,
+    kv_stride: usize = 0,
     q: []const f32,
     k: []const f32,
     v: []const f32,
@@ -121,8 +126,12 @@ pub fn attention(io: std.Io, a: Attention, out: []f32, scratch: []f32) Error!voi
     const width = a.heads * a.head_dim;
     if (a.tokens == 0 or a.heads == 0 or a.head_dim == 0 or a.head_dim % lanes != 0 or a.stride < width or
         out.len != a.tokens * width or scratch.len < a.heads * a.tokens) return error.InvalidShape;
+    const kv_heads = if (a.kv_heads == 0) a.heads else a.kv_heads;
+    const kv_stride = if (a.kv_stride == 0) a.stride else a.kv_stride;
+    if (a.heads % kv_heads != 0 or kv_stride < kv_heads * a.head_dim) return error.InvalidShape;
     const span = (a.tokens - 1) * a.stride + width;
-    if (a.q.len < span or a.k.len < span or a.v.len < span) return error.InvalidShape;
+    const kv_span = (a.tokens - 1) * kv_stride + kv_heads * a.head_dim;
+    if (a.q.len < span or a.k.len < kv_span or a.v.len < kv_span) return error.InvalidShape;
     const tasks = taskCount(a.heads);
     var group: std.Io.Group = .init;
     for (0..tasks) |t| {
@@ -135,7 +144,10 @@ pub fn attention(io: std.Io, a: Attention, out: []f32, scratch: []f32) Error!voi
 
 fn attentionHeads(a: Attention, out: []f32, scratch: []f32, first: usize, last: usize) void {
     const width = a.heads * a.head_dim;
+    const group = a.heads / (if (a.kv_heads == 0) a.heads else a.kv_heads);
+    const kv_stride = if (a.kv_stride == 0) a.stride else a.kv_stride;
     for (first..last) |h| {
+        const kv = h / group * a.head_dim;
         const scores = scratch[h * a.tokens ..][0..a.tokens];
         for (0..a.tokens) |i| {
             const lo = if (a.window) |w| i -| w else 0;
@@ -143,7 +155,7 @@ fn attentionHeads(a: Attention, out: []f32, scratch: []f32, first: usize, last: 
             const q = a.q[i * a.stride + h * a.head_dim ..][0..a.head_dim];
             var max: f32 = -std.math.inf(f32);
             for (lo..hi) |j| {
-                const k = a.k[j * a.stride + h * a.head_dim ..][0..a.head_dim];
+                const k = a.k[j * kv_stride + kv ..][0..a.head_dim];
                 var acc: V = @splat(0);
                 var c: usize = 0;
                 while (c < a.head_dim) : (c += lanes) acc += load(q, c) * load(k, c);
@@ -159,7 +171,7 @@ fn attentionHeads(a: Attention, out: []f32, scratch: []f32, first: usize, last: 
             @memset(o, 0);
             for (lo..hi) |j| {
                 const p = scores[j] / total;
-                const v = a.v[j * a.stride + h * a.head_dim ..][0..a.head_dim];
+                const v = a.v[j * kv_stride + kv ..][0..a.head_dim];
                 var c: usize = 0;
                 while (c < a.head_dim) : (c += lanes) o[c..][0..lanes].* = load(o, c) + @as(V, @splat(p)) * load(v, c);
             }
@@ -263,4 +275,48 @@ test "windowed attention equals the single-query reference over each window" {
             for (out[i * width ..][0..width], want) |g, e| try std.testing.expectApproxEqAbs(e, g, 1e-5);
         }
     }
+}
+
+test "grouped-query attention equals the reference, with keys and values in their own rows" {
+    const io = std.testing.io;
+    const reference = @import("attention.zig");
+    const tokens = 9;
+    const heads = 4;
+    const dim = 16;
+    const width = heads * dim;
+    var q: [tokens * width]f32 = undefined;
+    fill(&q, 7);
+    var out: [tokens * width]f32 = undefined;
+    var scratch: [heads * tokens]f32 = undefined;
+    var f64_scratch: [tokens]f64 = undefined;
+    for ([_]usize{ 2, 1 }) |kv_heads| {
+        const kv_width = kv_heads * dim;
+        var k: [tokens * 2 * dim]f32 = undefined;
+        var v: [tokens * 2 * dim]f32 = undefined;
+        fill(k[0 .. tokens * kv_width], 8);
+        fill(v[0 .. tokens * kv_width], 9);
+        for ([_]?usize{ null, 2 }) |window| {
+            try attention(io, .{ .tokens = tokens, .heads = heads, .head_dim = dim, .window = window, .scale = 1, .stride = width, .kv_heads = kv_heads, .kv_stride = kv_width, .q = &q, .k = k[0 .. tokens * kv_width], .v = v[0 .. tokens * kv_width] }, &out, &scratch);
+            for (0..tokens) |i| {
+                const lo: usize = if (window) |w| i -| w else 0;
+                const hi: usize = if (window) |w| @min(tokens, i + w + 1) else tokens;
+                var want: [width]f32 = undefined;
+                try reference.apply(.{
+                    .query_heads = heads,
+                    .kv_heads = kv_heads,
+                    .key_width = dim,
+                    .value_width = dim,
+                    .tokens = hi - lo,
+                    .visible_tokens = hi - lo,
+                    .scale = 1,
+                    .queries = q[i * width ..][0..width],
+                    .keys = k[lo * kv_width .. hi * kv_width],
+                    .values = v[lo * kv_width .. hi * kv_width],
+                }, &want, &f64_scratch);
+                for (out[i * width ..][0..width], want) |g, e| try std.testing.expectApproxEqAbs(e, g, 1e-5);
+            }
+        }
+    }
+    // A kv head count that does not divide the query heads is refused.
+    try std.testing.expectError(error.InvalidShape, attention(io, .{ .tokens = tokens, .heads = heads, .head_dim = dim, .scale = 1, .stride = width, .kv_heads = 3, .kv_stride = 3 * dim, .q = &q, .k = &q, .v = &q }, &out, &scratch));
 }

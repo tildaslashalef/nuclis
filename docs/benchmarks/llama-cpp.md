@@ -146,6 +146,24 @@ python3 scripts/compare-embedding.py tests/fixtures/embeddinggemma-vectors/llama
   tests/fixtures/embeddinggemma-vectors/st-f32
 ```
 
+The two text traces come from a CPU pass instead. On Metal, the batched
+matmul stages activations as half (bf16 for a BF16 matrix), and ggml's CPU
+BF16 matmul rounds them to bf16, so the traced pass runs `--cpu` (no layers
+or ops offloaded) over a copy of the file with every tensor widened to F32:
+
+```sh
+PYTHONPATH=$R/gguf-py .reference/venv-embed/bin/python scripts/gguf-widen-f32.py \
+  $D/embeddinggemma-2-Q8_0.gguf .zig-cache/embedding/embeddinggemma-2-Q8_0-widened.gguf
+.zig-cache/embedding/reference-embedding --cpu --text-only \
+  .zig-cache/embedding/embeddinggemma-2-Q8_0-widened.gguf $D/mmproj-BF16.gguf \
+  "$PWD/tests/fixtures/embeddinggemma-inputs/inputs.json" .zig-cache/embedding/f32cpu/llama-f32-cpu \
+  .zig-cache/embedding/f32cpu
+```
+
+Its GELU is still an f16 lookup table (`GGML_GELU_FP16`), which with its
+other F32 differences sets the traces' bound
+([embeddinggemma.md § CPU reference](../models/embeddinggemma.md#cpu-reference-against-the-oracles-2026-10-09)).
+
 ## Run the workload
 
 Start one reference server in a separate terminal:

@@ -30,6 +30,7 @@ reference rather than the file, the sentence says so.
 - [The mmproj (`clip`, 963 tensors)](#the-mmproj-clip-963-tensors)
 - [The input contract](#the-input-contract)
 - [Reference oracle status](#reference-oracle-status)
+- [CPU reference against the oracles (2026-10-09)](#cpu-reference-against-the-oracles-2026-10-09)
 
 ## Artifacts
 
@@ -308,9 +309,14 @@ markers.
 `parse_special = false`: the spelling of a control token in a document
 (`<bos>`, `<|image|>`) is text, never the token. Media positions come from
 the order of the parts, so no text needs a placeholder, and content cannot
-change an input's framing. Google's pipeline parses such spellings; the
-vectors differ only for inputs that contain one (in the fixture set,
-`long-8k.doc`, by one token).
+change an input's framing. Every framing token (`<bos>`, `<eos>`, the image
+and audio markers, `<|video|>`) is a **control** token in this vocabulary,
+which literal encoding never matches; its 7 user-defined tokens (tool-call
+and channel markers) still match, as in the reference, and frame nothing.
+Google's pipeline parses such spellings; the vectors differ only for inputs
+that contain one. In the fixture set that is `long-8k.doc`: one token, and
+a cosine of 0.99979 against Google's vector, which becomes 1.0000000 when
+the spelling is parsed the oracle's way.
 
 The card's own example interleaves parts in one input ("Waterproof running
 shoes. `<|image|>` Featuring a breathable mesh upper."); the vector
@@ -378,3 +384,59 @@ encoder from given pixels.
   soft tokens.
 - **The 8192 limit is ours to enforce.** sentence-transformers'
   `max_seq_length` is unbounded, and it truncates nothing.
+
+## CPU reference against the oracles (2026-10-09)
+
+The CPU reference is `inference/src/models/embeddinggemma.zig` (the
+binding), `embeddinggemma_runtime.zig` (the forward), and
+`inference/src/embed.zig` (the `Embedder`: files, tokens, framing, limits,
+Matryoshka). One input is one F32 pass with no cache. Each matrix is
+decoded from its encoded rows into one reused scratch right before its
+`cpu.dense.matmul`, so nothing is resident in F32. `token_embd` rows are
+gathered one at a time. `ple` is computed per layer from the kept `x0`.
+Attention is `cpu.dense.attention`, which gained grouped-query heads
+(`kv_heads`, `kv_stride`) for this family. Its window was already symmetric:
+on a sliding layer, `|i − j| ≤ 512`.
+
+`inference/embeddinggemma-check.zig` (`zig build test-embeddinggemma --
+MODEL traces|vectors|google`) checks it in three ways, each a gate of
+tier `verify-cpu`:
+
+| Gate | File | Against | Measured | Bound |
+| --- | --- | --- | --- | --- |
+| `embeddinggemma-google-cpu` | BF16 | Google's float32 vectors, 97 texts | 1 − min cosine 4.0e-12 | cosine ≥ 0.9999999 |
+| `embeddinggemma-vectors-cpu` | Q8_0 | llama.cpp's Q8_0 vectors (Metal), 97 texts | 1 − min cosine 4.2e-7 | cosine ≥ 0.99999 |
+| `embeddinggemma-trace-cpu` | Q8_0 | llama.cpp's CPU pass over the same weights in F32, every stage of `north.raw` and `north.query` | relative RMS ≤ 3.7e-4, relative max ≤ 3.1e-4 | 5e-4 and 2e-3 |
+
+Token ids equal the oracle's in all 97 cases. In `long-8k.doc` they must
+differ, and parsed the oracle's way they must match (the input contract).
+
+**The accuracy claim is the BF16 line.** On the same weights, our F32 pass
+and PyTorch's agree to `1 − cos ≈ ½δ²` with δ ≈ 3e-6, the size of
+summation-order rounding. llama.cpp's BF16 run reaches only 0.999995 against
+the same vectors (§ Reference oracle status).
+
+**Why the traces are bounded at 5e-4, not the decode traces' 1e-4.** The
+reference's own arithmetic rounds:
+
+- On Metal, the batched matmul stages activations in threadgroup memory as
+  half, or as bf16 for a BF16 matrix. The recorded Metal traces differ from
+  ours by 4.6e-4 (`l_out`) and 1.6e-3 (`inp_per_layer`, the BF16
+  `per_layer_model_proj`) relative RMS.
+- On the CPU, a BF16 matrix rounds its activations to bf16 too, and
+  `llama-quantize … F32` keeps `per_layer_model_proj` in BF16. So the
+  traced reference runs on a copy with every tensor widened to F32
+  (`scripts/gguf-widen-f32.py`), and `inp_scaled` and `inp_per_layer` then
+  match.
+- ggml's CPU GELU is an f16 lookup table (`GGML_GELU_FP16`, unconditional
+  in `ggml-cpu/vec.h`): input and output rounded to f16. Emulating the table
+  in our runtime brought layers 0–2 under 1e-4, but the later layers stay
+  near 2e-4 from further F32 differences in the reference, such as its
+  angle stepping. The vector gates, not the traces, carry the accuracy
+  claim. The traces localize a defect to a stage, and any real defect
+  exceeds 5e-4 by orders of magnitude.
+
+**Cost.** 97 texts plus the 8,142-token document take about 130 s
+(ReleaseFast, M4 Pro), most of it in the long document. That is a reference
+rate: the Metal plan is the path that indexes a corpus.
+

@@ -31,6 +31,9 @@ pub const modernbert_runtime = @import("modernbert_runtime.zig");
 pub const laya = @import("laya.zig");
 pub const laya_metal = @import("laya_metal.zig");
 pub const clef = @import("clef.zig");
+/// EmbeddingGemma 2, the embedding model. Not a registry family: it decodes nothing.
+pub const embeddinggemma = @import("embeddinggemma.zig");
+pub const embeddinggemma_runtime = @import("embeddinggemma_runtime.zig");
 
 /// The registered families, in lookup order. Each registers itself through
 /// its `family` declaration.
@@ -110,5 +113,7 @@ test {
     _ = laya;
     _ = laya_metal;
     _ = clef;
+    _ = embeddinggemma;
+    _ = embeddinggemma_runtime;
     _ = dflash;
 }
