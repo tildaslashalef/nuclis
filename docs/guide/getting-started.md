@@ -42,8 +42,28 @@ nuclis config init --discover          # ~/.nuclis/nuclis.json, every model foun
 nuclis agent                           # the chat, with tools, in this directory
 ```
 
-`nuclis generate`, `bench`, `eval`, `decide`, and `serve` cover the rest:
-[eval.md](eval.md) for perplexity, [api.md](api.md) for the HTTP API.
+`nuclis generate`, `bench`, `eval`, `decide`, `embed`, and `serve` cover
+the rest: [eval.md](eval.md) for perplexity, [api.md](api.md) for the HTTP
+API.
+
+### Embeddings
+
+`nuclis embed` turns text into vectors for search and similarity, with
+EmbeddingGemma 2 (310 MB; `--with mmproj` adds the image and audio
+encoders, used once those inputs land):
+
+```sh
+nuclis model pull embeddinggemma-2
+nuclis embed "a cat" "a kitten" "a tax form"                  # three vectors and their cosines
+nuclis embed --task search_query "how do auroras form?"       # a query, with the model's prefix
+nuclis embed --task document --input-file docs.jsonl --json   # one JSON string per line, every vector
+```
+
+Each argument is one input, embedded exactly as given unless `--task`
+names a use: queries and documents get different prefixes, and only
+vectors of one **space** compare. The report prints it,
+`embeddinggemma-2@6f1bd4ac6c5d/768`: the model, its file's digest, and the
+width (`--dimensions` 512, 256, or 128 keeps the leading values).
 
 ## User directories
 
@@ -90,6 +110,7 @@ to an exact commit and SHA-256 digest:
 | `muse-glimmer-30b` | Muse Glimmer 30B (15.9 GB) |
 | `laya`, `laya-multilingual` | decision encoders for `nuclis decide` |
 | `clef-flash` | Cloudflare's decision model for `nuclis decide` |
+| `embeddinggemma-2` | EmbeddingGemma 2, text into vectors for `nuclis embed` (310 MB) |
 
 ```sh
 nuclis model pull qwen3.8-27b             # the model alone

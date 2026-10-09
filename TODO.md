@@ -16,7 +16,10 @@ it is empty, ask what to work on and write the agreed plan here.
 
 The plan below was agreed on 2026-10-08. It is **one unit over several
 sessions on one branch, `embedding-gemma-2`**, cut from `main` at
-`5e69b80` and last merged with `main` at `b0297c2`; Base: `b0297c2`.
+`5e69b80` and last merged with `main` at `b0297c2`.
+
+Base: `b0297c2`
+
 **The user's rule for this unit: commit on the branch, do not push and do
 not open the pull request until the whole unit is implemented** (this
 overrides the usual "push and draft a pull request at the end of each
@@ -60,15 +63,46 @@ pointer to the local copy; it is now on the heap (commit `c2a02a4`).
   (`docs/engine/metal-backend.md` § Segments attention with materialized
   scores).
 
-`make verify-auto` and `make verify` pass. Next: **Session 4, `nuclis
-embed` and the catalogue**.
+`make verify-auto` and `make verify` pass.
+
+**Session 4 is delivered (2026-10-09).** The `embedding` kind, the
+`embeddinggemma-2` catalogue entry (`embedding_entries`, pulled with
+`--with mmproj`), `embed.model`, the wire types in `src/embedding/`
+(`catalog.zig`, `request.zig`, `response.zig`), and `nuclis embed` with
+help and completion are committed; spec §3, §4, §5.8, a new §5.10, §6 and
+§10 say so. The CLI's vectors agree with the oracles as the gates do
+(`docs/models/embeddinggemma.md` § `nuclis embed`). Also in this session:
+- **Kind checks.** Text commands, the chat API (`api/chat/model.zig`) and
+  `decision/catalog.zig` refuse an embedding name, each saying which kind
+  it is. `model pull <owner/repo> --register` records a `gemma-embedding2`
+  GGUF as `"kind": "embedding"` (key `embed.model`). The `model ls`
+  listing is schema 5.
+
+What Session 5 inherits:
+- `request.inputFromJson` already parses one API input (a string or chat
+  content parts); `image_url` and `input_audio` parts are refused there,
+  and `--image`/`--audio` in `embed.parseArgs`, with
+  `UnsupportedModality`. Sessions 6 and 7 lift those refusals and add the
+  two flags to the help page and the completion table, which list neither
+  yet.
+- `response.Body` is the data both writers need; the API adds OpenAI's
+  writer beside `response.write`. `request.max_inputs` (2048) is the
+  per-request bound for both surfaces.
+- A file without a sidecar has its SHA-256 computed per command
+  (`embedding/catalog.digest`, about 1 s for the Q8_0 file); the server
+  should compute it once per open model.
+- With a task, the prefix goes in front of an input's first text part.
+  Session 6 checks that placement against sentence-transformers on
+  `mix.logo` before images ship.
+
+Next: **Session 5, `POST /v1/embeddings`**.
 
 | Session | What |
 | --- | --- |
 | 1. Facts and oracles (done) | Pull and pin the files, `docs/models/embeddinggemma.md`, inventory fixtures, the second llama.cpp checkout and the sentence-transformers oracle, recorded traces and vectors |
 | 2. Text encoder on the CPU (done) | `gemma-embedding2` adapter, the bidirectional KV-free forward, pooling, projection, normalization, Matryoshka; `Embedder` in `inference/src/embed.zig` |
 | 3. Text encoder on Metal (done) | Grouped-query segments attention with materialized scores; packed batches, bit-exact; F32 activations throughout; measured rates |
-| 4. `nuclis embed` and the catalogue | `ModelKind.embedding`, the catalogue table, the shared wire types in `src/embedding/`, tasks and titles, `model ls` |
+| 4. `nuclis embed` and the catalogue (done) | `ModelKind.embedding`, the catalogue table, the shared wire types in `src/embedding/`, tasks and titles, `model ls` |
 | 5. `POST /v1/embeddings` | The service, its batcher and pool, `Kind.embedding` in the memory budget, `GET /v1/models` fields, the API guide and spec |
 | 6. Images | The small Gemma 4 vision encoder from this mmproj, rows spliced unscaled, 280 soft tokens by default, `--image` and image parts |
 | 7. Audio | AudioToolbox decode to 16 kHz mono, the log-mel front end, the `gemma4a` conformer on CPU then Metal, `--audio` and `input_audio` parts |
@@ -216,64 +250,6 @@ What our code assumes today (the reasons this is a new family):
   `attention_full_max_rows` = 4096: `nu_attention_segments` keeps every score
   in threadgroup memory.
 - There is no audio code anywhere. `chat/wire.zig` refuses audio.
-
-## Session 4. `nuclis embed` and the catalogue
-
-**Why.** The first surface, and the wire types the API will return
-byte-for-byte, as `decide --json` is to `/v1/decisions`.
-
-1. **Kind and catalogue.**
-   - Add `embedding` to `src/catalog.zig` `ModelKind`.
-   - Add an `embedding_entries` table with `EmbeddingEntry` (name, title,
-     repo, file, revision, sha256, size, architecture, quantization,
-     `mmproj: ?Artifact`, `dimensions`, `modalities`).
-   - The entry is `embeddinggemma-2`, from the facts table. Its mmproj is
-     pulled with `--with mmproj`; text works without it.
-   - Registry `ModelEntry.kind = .embedding`.
-   - `model ls` marks these rows `(nuclis embed)`, and the listing schema
-     carries the kind.
-   - Text commands (`generate`, `chat`, `decide`) refuse an embedding
-     model by name, as they refuse decision models.
-   - Add `embed.model` to the config (default `embeddinggemma-2`).
-2. **Wire types.** Add `src/embedding/request.zig` and `response.zig`,
-   one source for the human and JSON output.
-   - Request: `inputs: []Input`. An input is text or an ordered list of
-     parts (`text`, `image`, `audio`). Plus `task: ?Task`, `title`,
-     `dimensions` (default 768), and `truncate` (default false).
-   - `Task` is `search_query`, `document`, `question_answering`,
-     `fact_checking`, `code_retrieval`, `classification`, `clustering`,
-     `similarity`. Each renders Google's prefix onto **text parts only**:
-     a query task gives `task: … | query: `, `document` gives
-     `title: {title|none} | text: `.
-   - Response: `vectors` (index, values), `dimensions`, `tokens` per
-     input and in total, and `space`.
-     - `space` is `<entry>@<sha256[0:12]>/<dims>`, so an index can
-       detect vectors that are not comparable (another file or another
-       width).
-   - Over-long input is `input_too_long` with the count, unless
-     `truncate`. Truncation is reported in the response, never silent.
-3. **The command.** Add `src/embed.zig` and dispatch it from `cli.zig`:
-   `nuclis embed [text…] [--task T] [--title S] [--dimensions N] [--image
-   F] [--audio F] [--input-file inputs.jsonl] [--json] [--model M]
-   [--backend B]`.
-   - Human output: per input, the tokens, the dimension, the norm and the
-     first values. With two or more inputs, a cosine matrix.
-   - `--json` is the response type.
-   - `--image` and `--audio` stay refused with a typed message until
-     Sessions 6 and 7.
-   - Add help and completion.
-4. **Documents.**
-   - `docs/spec.md`: §3, the kind, its catalogue table and registry
-     refusal; a new §5 "The embedding path" contract, after "The decision
-     path"; the §6 `embed` row; the §10 rewording (the personal index is
-     a later theme, and video is deferred).
-   - `docs/models/catalogue.md` § The catalogue.
-   - `docs/guide/getting-started.md`, a short "Embeddings" paragraph.
-
-**Gates.** `zig build test`, `make verify-auto`, `make docs-check`, and
-`./zig-out/bin/nuclis model pull embeddinggemma-2 --with mmproj` followed
-by `./zig-out/bin/nuclis embed --task search_query "…" ` against the
-oracle vector.
 
 ## Session 5. `POST /v1/embeddings`
 

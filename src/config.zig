@@ -111,6 +111,7 @@ pub const Config = struct {
     generation: Generation = .{},
     agent: Agent = .{},
     decide: Decide = .{},
+    embed: Embed = .{},
     serve: Serve = .{},
     cache: Cache = .{},
     models: Models = .{},
@@ -167,6 +168,12 @@ pub const Config = struct {
         /// (relative to `<root>/models` unless absolute).
         model: []const u8 = "laya",
     };
+    pub const Embed = struct {
+        /// The embedding model `nuclis embed` opens: a registry entry of
+        /// kind `embedding`, an embedding catalogue name, or a GGUF path
+        /// (relative to `<root>/models` unless absolute).
+        model: []const u8 = "embeddinggemma-2",
+    };
     pub const Serve = struct {
         /// The address `nuclis serve` listens on: an IP literal or
         /// `localhost`. Beyond loopback the API is reachable from the
@@ -208,7 +215,7 @@ pub const default_thinking_budget: usize = 1024;
 pub const ModelEntry = struct {
     /// Null is `generation`; `decision` entries are Laya checkpoints, which
     /// only `nuclis decide` opens (their `file` is the weights, their
-    /// directory the checkpoint).
+    /// directory the checkpoint); `embedding` entries only `nuclis embed`.
     kind: ?catalog.ModelKind = null,
     path: ?[]const u8 = null,
     repo: ?[]const u8 = null,
@@ -1226,6 +1233,7 @@ pub const Effective = struct {
     generation: struct { max_tokens: usize, think: Effort, speculative: bool, draft_length: usize, image_max_tokens: ImageMaxTokens, sampling: inference.sampling.Options },
     agent: struct { think: Effort, fold_thinking: bool, theme: ThemeName, instructions: []const u8, thinking_budget: usize },
     decide: Config.Decide,
+    embed: Config.Embed,
     serve: Config.Serve,
     cache: Config.Cache,
     origin: Origin,
@@ -1243,6 +1251,7 @@ pub const Effective = struct {
             .generation = .{ .max_tokens = gen.max_tokens, .think = gen.think, .speculative = gen.speculative, .draft_length = gen.draft_length, .image_max_tokens = gen.image_max_tokens, .sampling = gen.samplingOptions() },
             .agent = .{ .think = agent.think, .fold_thinking = agent.fold_thinking, .theme = agent.theme, .instructions = agent.instructions, .thinking_budget = agent.thinking_budget },
             .decide = loaded.config.decide,
+            .embed = loaded.config.embed,
             .serve = loaded.config.serve,
             .cache = loaded.config.cache,
             .origin = origin,
@@ -1290,6 +1299,8 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
         try s.write(view.agent);
         try s.objectField("decide");
         try s.write(view.decide);
+        try s.objectField("embed");
+        try s.write(view.embed);
         try s.objectField("serve");
         try s.write(view.serve);
         try s.objectField("cache");
@@ -1350,6 +1361,7 @@ pub fn show(loaded: *const Loaded, out: *std.Io.Writer, json: bool, sty: style.S
     try walk(@TypeOf(view.generation), view.generation, "generation.", &rows);
     try walk(@TypeOf(view.agent), view.agent, "agent.", &rows);
     try walk(@TypeOf(view.decide), view.decide, "decide.", &rows);
+    try walk(@TypeOf(view.embed), view.embed, "embed.", &rows);
     try walk(@TypeOf(view.serve), view.serve, "serve.", &rows);
     try walk(@TypeOf(view.cache), view.cache, "cache.", &rows);
     for (loaded.config.models.entries) |named| {

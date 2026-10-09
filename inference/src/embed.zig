@@ -14,6 +14,8 @@ const model = @import("models/embeddinggemma.zig");
 const runtime = @import("models/embeddinggemma_runtime.zig");
 const metal_plan = @import("models/embeddinggemma_metal.zig");
 
+/// `general.architecture` of the files an `Embedder` opens.
+pub const architecture = model.architecture;
 pub const max_tokens = model.max_tokens;
 /// The vector width the model writes.
 pub const dimensions = model.config.embedding_out;

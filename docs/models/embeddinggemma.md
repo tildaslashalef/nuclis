@@ -32,6 +32,7 @@ reference rather than the file, the sentence says so.
 - [Reference oracle status](#reference-oracle-status)
 - [CPU reference against the oracles (2026-10-09)](#cpu-reference-against-the-oracles-2026-10-09)
 - [The Metal plan (2026-10-09)](#the-metal-plan-2026-10-09)
+- [`nuclis embed` (2026-10-09)](#nuclis-embed-2026-10-09)
 
 ## Artifacts
 
@@ -529,4 +530,29 @@ spread about ±5 %, and a warm GPU runs both engines up to 8 % faster.
   at about 3.7 TFLOP/s, the tile's ceiling. The half-operand tiles reach
   about 5 TFLOP/s, and they are what the f16 hazard rules out; that
   trade is the remaining lever. Attention takes about 11 %.
+
+## `nuclis embed` (2026-10-09)
+
+The command (`src/embed.zig`) and the wire types it shares with the API
+(`src/embedding/`) follow [spec §5.10](../spec.md#510-the-embedding-path):
+no implicit task, Google's prefixes from `--task` and `--title`, the
+trained widths, truncation reported per input, and every response named
+by its space (`embeddinggemma-2@6f1bd4ac6c5d/768` for the catalogue's Q8_0
+file). With a task, the prefix goes in front of the input's first text
+part.
+
+**End to end against the oracles.** The fixture's `north` sentence through
+the built binary on Metal, with the Q8_0 file, rendered by `--task`
+rather than pre-rendered as in the fixture set. The token counts equal
+the oracles' in each case.
+
+| `--task` | Fixture case | Tokens | 1 − cos, llama.cpp Q8_0 | 1 − cos, Google's f32 |
+| --- | --- | ---: | ---: | ---: |
+| `search_query` | `north.query` | 25 | 1.8e-7 | 4.5e-5 |
+| `document` | `north.doc` | 24 | 3.8e-7 | 5.7e-5 |
+| `code_retrieval` | `north.code` | 25 | 3.6e-7 | 6.4e-5 |
+
+These are the gates' agreements (§ The Metal plan): the command adds no
+error of its own. The gap to Google's float32 is the Q8_0 file's, about
+5e-5 of cosine on text (§ Reference oracle status).
 

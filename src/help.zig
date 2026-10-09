@@ -14,7 +14,7 @@ const std = @import("std");
 const style = @import("tui/style.zig");
 
 /// The commands with a page of their own; `null` is the overview.
-pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, serve, completion };
+pub const Topic = enum { inspect, validate, generate, bench, tokenize, eval, agent, config, model, cache, decide, embed, serve, completion };
 
 pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []const u8) !void {
     if (topic) |value| return switch (value) {
@@ -29,6 +29,7 @@ pub fn write(out: *std.Io.Writer, sty: style.Style, topic: ?Topic, version: []co
         .model => model(out, sty),
         .cache => cache(out, sty),
         .decide => decide(out, sty),
+        .embed => embed(out, sty),
         .serve => serve(out, sty),
         .completion => completion(out, sty),
     };
@@ -138,6 +139,7 @@ fn overview(out: *std.Io.Writer, sty: style.Style, version: []const u8) !void {
     try row(out, sty, "model", "pull, list, and judge Hugging Face Hub artifacts");
     try row(out, sty, "cache", "list or clear the agent's saved model states");
     try row(out, sty, "decide", "typed questions about text or JSON, answered by Laya");
+    try row(out, sty, "embed", "text into vectors for search, by EmbeddingGemma 2");
     try row(out, sty, "serve", "the nuclis API over HTTP: decisions, models kept open");
     try row(out, sty, "config", "write, show, or set a key of ~/.nuclis/nuclis.json");
     try row(out, sty, "completion", "the shell completion script for fish, bash, or zsh");
@@ -428,6 +430,46 @@ fn decide(out: *std.Io.Writer, sty: style.Style) !void {
     try plain(out, "reads a state and every question in one pass of up to 16,384 tokens, its");
     try plain(out, "answers uncalibrated (a softmax per question), its images from --image or");
     try plain(out, "a request's \"images\" (data URLs, base64, or {\"file\": path}).");
+    try out.writeByte('\n');
+}
+
+fn embed(out: *std.Io.Writer, sty: style.Style) !void {
+    try title(out, sty, "nuclis embed", "text into unit vectors, by an embedding model");
+    try heading(out, sty, "Usage:");
+    try code(out, sty, "nuclis embed <text>… [options]");
+    try code(out, sty, "nuclis embed --input-file <file|-> [options]");
+    try code(out, sty, "  each argument is one input: quote a sentence");
+
+    try heading(out, sty, "Inputs:");
+    try row(out, sty, "<text>", "an input, repeatable; after --, words that start");
+    try more(out, "with - are text too");
+    try row(out, sty, "--input-file <file|->", "one input per line: a JSON string, or a list of");
+    try more(out, "content parts ({\"type\": \"text\", \"text\": …})");
+
+    try heading(out, sty, "Options:");
+    try row(out, sty, "--task <task>", "render the model's prefix onto the text:");
+    try more(out, "search_query, document, question_answering,");
+    try more(out, "fact_checking, code_retrieval, classification,");
+    try more(out, "clustering, similarity; default none (as given)");
+    try row(out, sty, "--title <text>", "with --task document: the document's title");
+    try row(out, sty, "--dimensions <n>", "768, 512, 256, or 128 (the leading values,");
+    try more(out, "renormalized); default 768");
+    try row(out, sty, "--truncate", "cut an input over 8,192 tokens instead of refusing");
+    try row(out, sty, "--model <name|path>", "an embedding entry or GGUF file; default");
+    try more(out, "embed.model (embeddinggemma-2)");
+    try row(out, sty, "--backend cpu|metal", "default metal");
+    try row(out, sty, "--json", "every vector with its tokens, space, and timings");
+
+    try heading(out, sty, "Examples:");
+    try example(out, sty, "nuclis embed --task search_query \"how do auroras form?\"", "a query vector");
+    try example(out, sty, "nuclis embed \"a cat\" \"a kitten\" \"a tax form\"", "three vectors and their cosines");
+    try example(out, sty, "nuclis embed --task document --input-file docs.jsonl --json", "document vectors, for an index");
+
+    try heading(out, sty, "Notes:");
+    try plain(out, "Text is embedded exactly as given unless --task names a use: queries and");
+    try plain(out, "documents are embedded with different prefixes, and only vectors of one");
+    try plain(out, "space compare (the file's digest and the width, printed as `space`).");
+    try plain(out, "Inputs are packed into batches on Metal; batching never changes a vector.");
     try out.writeByte('\n');
 }
 

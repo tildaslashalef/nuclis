@@ -249,6 +249,16 @@ pub const commands = [_]Command{
         .{ .name = "--explain", .summary = "the sequences, budgets, and logits" },
         json,
     } }} },
+    .{ .name = "embed", .summary = "text into vectors, by an embedding model", .actions = &.{.{ .flags = &.{
+        .{ .name = "--input-file", .value = .file, .repeat = true, .summary = "one JSON input per line, - for stdin" },
+        .{ .name = "--task", .value = .{ .choice = names(@import("embedding/request.zig").Task) }, .summary = "the prefix for a use" },
+        .{ .name = "--title", .value = .text, .summary = "a document's title" },
+        .{ .name = "--dimensions", .value = .{ .choice = &.{ "768", "512", "256", "128" } }, .summary = "the vector's width" },
+        .{ .name = "--truncate", .summary = "cut a long input instead of refusing it" },
+        .{ .name = "--model", .value = .text, .summary = "an embedding entry or GGUF file" },
+        backend,
+        json,
+    } }} },
     .{ .name = "serve", .summary = "the nuclis API over HTTP", .actions = &.{.{ .flags = &.{
         .{ .name = "--host", .value = .text, .summary = "the address to listen on" },
         .{ .name = "--port", .value = .number, .summary = "default serve.port, 8000" },
