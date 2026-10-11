@@ -153,7 +153,7 @@ reuses the same values so the replay looks like the terminal.
 
 ### Website fonts
 
-`site/fonts/` serves two fonts to nuclis.dev, taken from
+`site/fonts/` serves two fonts to engine.nuclis.dev, taken from
 [google/fonts at `9710da1`](https://github.com/google/fonts/tree/9710da1eacb3be272583c3224dcb70f9da6eadbb/ofl)
 and modified only by `fonttools`: the variable axes narrowed to the range
 the site uses (`varLib.instancer`) and the glyphs subset to the characters

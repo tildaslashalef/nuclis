@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the nuclis.dev site in site/ before it deploys; needs no model or network.
+"""Check the engine.nuclis.dev site in site/ before it deploys; needs no model or network.
 
 Every local `href`/`src` resolves and every `#fragment` names an id on its
 page; nothing is loaded from another origin (links out go only to GitHub);
@@ -27,9 +27,9 @@ import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
-ORIGIN = "https://nuclis.dev"
+ORIGIN = "https://engine.nuclis.dev"
 # Links out may go here; nothing may be *loaded* from anywhere but the site.
-LINK_HOSTS = {"github.com", "nuclis.dev"}
+LINK_HOSTS = {"github.com", "engine.nuclis.dev"}
 REQUIRED_FILES = [
     "index.html",
     "404.html",
@@ -465,13 +465,13 @@ class SelfTest(unittest.TestCase):
 
     def test_page_facts(self):
         page = parse_page(
-            '<html lang="en"><head><title>t</title><link rel="canonical" href="https://nuclis.dev/">'
+            '<html lang="en"><head><title>t</title><link rel="canonical" href="https://engine.nuclis.dev/">'
             '<script type="application/json" id="bench">{"x": 1}</script></head>'
             '<body><a href="#top">x</a><div id="top" style="color:red"></div>'
             "<small data-release-tag>v1.2.3</small><script>alert(1)</script></body></html>"
         )
-        self.assertEqual(page.links["canonical"], "https://nuclis.dev/")
-        self.assertIn(("link canonical", "href", "https://nuclis.dev/"), page.refs)
+        self.assertEqual(page.links["canonical"], "https://engine.nuclis.dev/")
+        self.assertIn(("link canonical", "href", "https://engine.nuclis.dev/"), page.refs)
         self.assertEqual(json.loads(page.data_blocks["bench"]), {"x": 1})
         self.assertEqual(page.inline_styles, 1)
         self.assertIn((None, None), page.scripts)
@@ -491,7 +491,7 @@ class SelfTest(unittest.TestCase):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Check the nuclis.dev site in site/ before it deploys.")
+    parser = argparse.ArgumentParser(description="Check the engine.nuclis.dev site in site/ before it deploys.")
     parser.add_argument("--self-test", action="store_true", help="run the parser and comparison tests")
     args = parser.parse_args()
     if args.self_test:

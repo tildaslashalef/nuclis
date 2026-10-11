@@ -47,7 +47,7 @@ inference/           engine library: runtime, quantization, tokenizer,
 huggingface/         Hub download library (Xet) and its standalone binary;
                      imported by src/ only
 docs/                the hub README.md: guide/, models/, engine/, app/, benchmarks/
-site/                the nuclis.dev website: static HTML, CSS, JS, no build
+site/                the engine.nuclis.dev website: static HTML, CSS, JS, no build
 TODO.md              active plan: unfinished units only
 build.zig            build
 build.zig.zon        manifest; single source of the version
@@ -585,7 +585,7 @@ share, with the variants side by side when given several.
 
 ## The website
 
-`site/` is nuclis.dev: one page (`index.html`, `style.css`, `site.js`), a
+`site/` is engine.nuclis.dev: one page (`index.html`, `style.css`, `site.js`), a
 `404.html`, and the files crawlers and Cloudflare read. There is no build
 step and no dependency; what is in the folder is what is served.
 
@@ -595,7 +595,7 @@ step and no dependency; what is in the folder is what is served.
 | `site.js` | the agent replay, the engine strip, the drafter, the charts, the Decision Dungeons rooms, and the latest-release lookup |
 | `fonts/` | Archivo and JetBrains Mono, subset WOFF2 ([THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md#website-fonts)); a new subset gets a new file name, since `_headers` caches the folder as immutable |
 | `_headers` | Cloudflare's response headers: the CSP (no inline script or style anywhere), security headers, caching |
-| `wrangler.jsonc`, `.assetsignore` | the Worker that serves the folder: its name, the 404 page, the `nuclis.dev` route |
+| `wrangler.jsonc`, `.assetsignore` | the Worker that serves the folder: its name, the 404 page, the `engine.nuclis.dev` route |
 | `og.png` | the 1200×630 share card, rendered from `scripts/site-og.html` |
 | `robots.txt`, `sitemap.xml`, `site.webmanifest`, `llms.txt` | crawlers, installs, and language-model readers |
 
@@ -638,10 +638,11 @@ code (`site/wrangler.jsonc`; `.assetsignore` keeps the config itself from
 being served), connected to this repository through Workers Builds: root
 directory `site`, no build command, deploy command `npx wrangler deploy`,
 production branch `main`, builds only when a push touches `site/*`. The
-config routes the apex `nuclis.dev` as a custom domain (the zone is on the
+config routes the subdomain `engine.nuclis.dev` as a custom domain (the zone is on the
 same account, so the deploy writes its DNS record and Cloudflare issues the
 certificate) and turns `workers.dev` and preview URLs off, so the site has
-one address. The app was created in the dashboard (Workers & Pages →
+one address. The apex `nuclis.dev` is left for a separate site; this
+Worker never routes it. The app was created in the dashboard (Workers & Pages →
 Create → Continue with GitHub), which also mints the build token; the
 watch path was narrowed with `cf builds triggers update <trigger>
 --path-includes 'site/*'`, and `cf workers list` and `cf builds triggers
