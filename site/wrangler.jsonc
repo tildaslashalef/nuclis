@@ -9,8 +9,8 @@
     "not_found_handling": "404-page",
     "html_handling": "auto-trailing-slash"
   },
-  // Served only on the apex; no workers.dev copy to keep out of search results.
+  // Served only on engine.nuclis.dev; no workers.dev copy to keep out of search results.
   "workers_dev": false,
   "preview_urls": false,
-  "routes": [{ "pattern": "nuclis.dev", "custom_domain": true }]
+  "routes": [{ "pattern": "engine.nuclis.dev", "custom_domain": true }]
 }

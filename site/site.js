@@ -1,4 +1,4 @@
-// nuclis.dev: the agent replay, the engine strip, the drafter, and the charts.
+// engine.nuclis.dev: the agent replay, the engine strip, the drafter, and the charts.
 // Every measured figure is copied from README.md; the engine strip and the
 // drafter are illustrations and say so on the page.
 (() => {

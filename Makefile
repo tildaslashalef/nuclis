@@ -155,11 +155,11 @@ docs-check: ## Every documentation link and anchor resolves: Markdown, the docs/
 	python3 scripts/docs-check.py --self-test
 	python3 scripts/docs-check.py $(ARGS)
 
-site-check: ## Check the nuclis.dev site in site/: references, head tags, CSP fit, versions, and the README's figures (no model, no network)
+site-check: ## Check the engine.nuclis.dev site in site/: references, head tags, CSP fit, versions, and the README's figures (no model, no network)
 	python3 scripts/site-check.py --self-test
 	python3 scripts/site-check.py
 
-site-serve: ## Preview the nuclis.dev site at http://localhost:8000 (Cloudflare's _headers are not applied)
+site-serve: ## Preview the engine.nuclis.dev site at http://localhost:8000 (Cloudflare's _headers are not applied)
 	python3 -m http.server 8000 --directory site
 
 lint-py: ## Lint, format-check, and type-check the Python scripts (ruff, basedpyright)
