@@ -406,7 +406,7 @@ p code, dd code, li code { background: var(--paper-2); padding: .08em .35em; bor
   .tools li:nth-child(n + 4) { border-top: 1px solid var(--mist); }
 }
 @media (max-width: 900px) {
-  .hero-sub, .spec, .decide, .start-grid, .open-grid { grid-template-columns: 1fr; }
+  .hero-sub, .spec, .decide, .start-grid, .open-grid { grid-template-columns: minmax(0, 1fr); }
   .shelf { grid-template-columns: 1fr 1fr; }
   .checks, .engine-key { grid-template-columns: 1fr; gap: 24px; }
   .top nav a:not(.nav-dl):not(.nav-icon) { display: none; }
