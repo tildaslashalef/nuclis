@@ -73,6 +73,11 @@ values [MODL-03](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/workl
 | `unsloth/embeddinggemma-2-GGUF` | `031f0d4b35536f69ab3509d4893c923264fcf253` | `embeddinggemma-2-Q8_0.gguf` | 309,855,520 | `6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc` |
 | | | `embeddinggemma-2-BF16.gguf` | 557,950,240 | `f315cbbb30dd487e44d501c8902abe88808755e43753a96beed1964f0a48aa4f` |
 | | | `mmproj-BF16.gguf` | 982,074,880 | `995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032` |
+| `ConwayResearch/Underdog-Saluki-27B-1.0` | `4f60eba09f4b6db63c72915d328d97e1d93edb8c` | `Underdog-Saluki-27B-1.0-IQ2-mix.gguf` | 7,898,369,152 | `4a673518b11b1c4445f9b9a9d3c40356f5ba39f6a6260dcb25f3fbfd475d9efb` |
+| | | `mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf` | 629,246,976 | `2e0b88b680a45a58eea666b9776a89601b16f4ef575b871a686d82ee65938756` |
+
+The Saluki rows were pulled and verified on 2026-10-14; the file is not a
+catalogue entry ([saluki.md](saluki.md)).
 
 The 26B-A4B and Muse rows were verified by pulls on 2026-09-17 and entered
 the catalogue the same day as `gemma-4-26b-a4b` and `muse-glimmer-30b`,

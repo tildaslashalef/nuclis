@@ -143,12 +143,17 @@ stale guidance instead of maintaining competing sources of truth.
 - Validate untrusted input and bound allocations, output, and execution time.
 - Use typed errors/results for expected failures; do not panic on bad input.
 - Human-readable and machine-readable output derive from the same result types.
-- External implementations (llama.cpp, ds4, ...) are references and validation
-  oracles, never sources to copy. Implement from the format or mathematical
-  contract and from our own CPU references; prove equivalence with pinned
-  fixtures and traces. Format-defining constants and any third-party material
-  that must exist in the tree are recorded in `THIRD_PARTY_NOTICES.md`, which
-  links license texts on the web. Do not add per-directory license files.
+- nuclis is its own reference (since 2026-10-14). Implement from the format
+  or mathematical contract; validate new work against nuclis's
+  already-validated paths: the CPU reference, Metal against it, and the same
+  model in an encoding already validated (the cross-encoding check,
+  [docs/models/README.md § 4](docs/models/README.md#4-validate-against-nuclis-itself)).
+  External implementations (llama.cpp, ds4, ...) are never sources to copy
+  and no longer oracles; read one only as the definition of a format that
+  has no other. Fixtures and traces already pinned from them stay.
+  Format-defining constants and any third-party material that must exist in
+  the tree are recorded in `THIRD_PARTY_NOTICES.md`, which links license
+  texts on the web. Do not add per-directory license files.
 
 ## Inference engine rules
 
@@ -164,7 +169,8 @@ stale guidance instead of maintaining competing sources of truth.
 - Validate GGUF metadata, dimensions, offsets, and actual tensor encodings.
   Reject unsupported combinations explicitly; do not silently requantize.
 - Numerical correctness precedes optimization. Measure prefill and decode
-  separately against an equivalent, pinned reference configuration.
+  separately against nuclis's own previous record on the same machine and
+  method.
 - GPU resources must outlive submitted work. Test synchronization, cancellation,
   and cleanup separately from Zig allocator leak checks.
 - Benchmarks must identify hardware, build, artifact, context, and methodology.

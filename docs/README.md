@@ -38,6 +38,7 @@ below.
 | [gemma4.md](models/gemma4.md) | Gemma 4 (12B, 26B-A4B, E4B): artifact facts, forward pass, plans, profile |
 | [muse-glimmer.md](models/muse-glimmer.md) | Muse Glimmer 30B: artifact facts against the reference |
 | [bonsai.md](models/bonsai.md) | Bonsai 2 27B: the ternary file and its fork |
+| [saluki.md](models/saluki.md) | Underdog Saluki 27B: Qwen3.8-27B in seven 2-bit encodings, its lineage, memory, and the last llama.cpp record |
 | [laya.md](models/laya.md) | Laya: the decision encoder behind `nuclis decide` |
 | [clef-flash.md](models/clef-flash.md) | clef-flash: Cloudflare's decision model |
 | [embeddinggemma.md](models/embeddinggemma.md) | EmbeddingGemma 2: the embedding model, its files, forward pass, prefixes, and encoders |

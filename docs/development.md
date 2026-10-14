@@ -91,6 +91,9 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   and mainline build `b11514` (`de7fa0a3c`), which runs EmbeddingGemma 2, under
   `.reference/llama.cpp-embed`
   ([llama-cpp.md § The third oracle](benchmarks/llama-cpp.md#the-third-oracle-embeddinggemma-2-2026-10-09)).
+  Master `529ac893e` (2026-10-14), under `.reference/llama.cpp-latest`,
+  took the last external record ([saluki.md](models/saluki.md#the-llamacpp-record-2026-10-14));
+  since then nuclis is its own reference and no new oracle is built.
   EmbeddingGemma 2's semantic oracle is sentence-transformers 6.1 in a venv
   at `.reference/venv-embed` (the recipe heads
   `scripts/embedding-reference.py`), with Google's checkpoint in float32.
