@@ -805,7 +805,7 @@
    "id": "image.og",
    "parts": [
     {
-     "image": "site/og.png"
+     "image": "tests/fixtures/embeddinggemma-inputs/og.png"
     }
    ]
   },

@@ -1091,8 +1091,7 @@
     "tests/fixtures/embeddinggemma-vectors/**",
     "tests/fixtures/embeddinggemma-image.logo/**",
     "tests/fixtures/embeddinggemma-mix.logo/**",
-    "docs/branding/nuclis.png",
-    "site/og.png"
+    "docs/branding/nuclis.png"
    ],
    "command": [
     "{zig-cpu}",
@@ -1241,8 +1240,7 @@
     "tests/fixtures/embeddinggemma-vectors/**",
     "tests/fixtures/embeddinggemma-image.logo/**",
     "tests/fixtures/embeddinggemma-mix.logo/**",
-    "docs/branding/nuclis.png",
-    "site/og.png"
+    "docs/branding/nuclis.png"
    ],
    "command": [
     "{zig-metal}",
