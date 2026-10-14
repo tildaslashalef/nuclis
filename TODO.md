@@ -44,7 +44,7 @@ Next: **Saluki: the 2-bit matvecs at the north star**.
 
 ## Saluki: the 2-bit matvecs at the north star
 
-Base: the bring-up's merge commit on `main`. The seven encodings decode
+Base: `2fe0752`. The seven encodings decode
 through the generic kernels (`nu_segment` in
 `backends/metal/dequant.metal`: 16 values per call through a switch), at
 43–83 GB/s (`zig build bench-kernels -Dmetal=true -- <ENC>`; the table in

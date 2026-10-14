@@ -40,7 +40,8 @@ kernel void nu_matvec(device const uchar * weights [[buffer(0)]],
 // ---------------------------------------------------------------------------
 // Specialized matrix-vector kernels for Q4_K, Q5_K, Q6_K, and IQ4_XS: the four
 // encodings holding 96 % of Qwen's bytes, so these decide decode speed; then
-// Q3_K, IQ3_S, and Q4_0 (the QAT Gemma checkpoint's only weight encoding).
+// Q3_K, Q4_0 (the QAT Gemma checkpoint's only weight encoding), the ternary
+// blocks, and the codebook encodings further down (Saluki's).
 //
 // Geometry: 128-thread groups of four SIMD groups. Each SIMD group owns ROWS
 // consecutive output rows and walks their 256-value blocks four at a time,
@@ -458,15 +459,15 @@ kernel void nu_matvec_ptq1_0(device const uchar * weights [[buffer(0)]], device 
         nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
 }
 
-// Q3_K and IQ3_S both have 110-byte blocks: never assume more than
-// two-byte alignment. Each lane owns one consecutive group of 32 values;
-// its input is reused across ROWS output rows.
+// Q3_K: 110-byte blocks, so never more than two-byte alignment. Each lane
+// owns one consecutive group of 32 values; its input is reused across ROWS
+// output rows.
 inline float nu_q3_scale(device const uchar * s, uint group) {
     uint nibble = (s[group & 7] >> (group < 8 ? 0 : 4)) & 15u;
     uint upper = (s[8 + group % 4] >> (2 * (group / 4))) & 3u;
     return float(int(nibble | (upper << 4)) - 32);
 }
-template <uint ROWS, bool IQ>
+template <uint ROWS>
 inline void nu_matvec_three_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
     uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
     if (row0 >= p.rows) return;
@@ -478,47 +479,357 @@ inline void nu_matvec_three_body(device const uchar * weights, device const floa
         for (uint r = 0; r < ROWS; ++r) {
             device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 110;
             float sa = 0, sb = 0;
-            if (IQ) {
-                packed_ushort4 indices = *(device const packed_ushort4 *)(b + 2 + g * 8);
-                uint high = b[66 + g];
-                uint signs = uint(*(device const ushort *)(b + 74 + g * 4)) | (uint(*(device const ushort *)(b + 76 + g * 4)) << 16);
-                for (uint j = 0; j < 8; ++j) {
-                    uint index = nu_byte(nu_word(indices, j / 4), j % 4) | (((high >> j) & 1u) << 8);
-                    float4 magnitude = nu_bytes(nu_iq3_grid[index]);
-                    uint bits = signs >> (4 * j);
-                    float4 value = magnitude * float4((bits & 1) ? -1 : 1, (bits & 2) ? -1 : 1, (bits & 4) ? -1 : 1, (bits & 8) ? -1 : 1);
-                    if (j < 4) sa = nu_dot(value, xa.v[j], sa);
-                    else sb = nu_dot(value, xb.v[j - 4], sb);
+            for (uint j = 0; j < 4; ++j) {
+                packed_ushort4 q = *(device const packed_ushort4 *)(b + 32 + (g / 4) * 32 + j * 8);
+                packed_ushort4 h = *(device const packed_ushort4 *)(b + j * 8);
+                for (uint k = 0; k < 2; ++k) {
+                    uint codes = ((nu_word(q, k) >> (2 * (g % 4))) & 0x03030303u) | (((nu_word(h, k) >> g) & 0x01010101u) << 2);
+                    uint v = j * 2 + k;
+                    if (v < 4) sa = nu_dot(nu_bytes(codes), xa.v[v], sa);
+                    else sb = nu_dot(nu_bytes(codes), xb.v[v - 4], sb);
                 }
-                float scale = float(1 + 2 * ((b[106 + g / 2] >> (4 * (g % 2))) & 15));
-                acc[r] += (nu_half(b) * scale) * (sa + sb);
-            } else {
-                for (uint j = 0; j < 4; ++j) {
-                    packed_ushort4 q = *(device const packed_ushort4 *)(b + 32 + (g / 4) * 32 + j * 8);
-                    packed_ushort4 h = *(device const packed_ushort4 *)(b + j * 8);
-                    for (uint k = 0; k < 2; ++k) {
-                        uint codes = ((nu_word(q, k) >> (2 * (g % 4))) & 0x03030303u) | (((nu_word(h, k) >> g) & 0x01010101u) << 2);
-                        uint v = j * 2 + k;
-                        if (v < 4) sa = nu_dot(nu_bytes(codes), xa.v[v], sa);
-                        else sb = nu_dot(nu_bytes(codes), xb.v[v - 4], sb);
-                    }
-                }
-                float d = nu_half(b + 108);
-                acc[r] += (d * nu_q3_scale(b + 96, 2 * g)) * fma(-4.0f, xa.sum, sa)
-                        + (d * nu_q3_scale(b + 96, 2 * g + 1)) * fma(-4.0f, xb.sum, sb);
             }
+            float d = nu_half(b + 108);
+            acc[r] += (d * nu_q3_scale(b + 96, 2 * g)) * fma(-4.0f, xa.sum, sa)
+                    + (d * nu_q3_scale(b + 96, 2 * g + 1)) * fma(-4.0f, xb.sum, sb);
         }
     }
 }
-template <uint ROWS, bool IQ>
+template <uint ROWS>
 kernel void nu_matvec_three(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
                             constant MatvecBlockParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
                             uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
     float acc[ROWS];
-    nu_matvec_three_body<ROWS, IQ>(weights, input, p, group_index, sg, lane, acc);
+    nu_matvec_three_body<ROWS>(weights, input, p, group_index, sg, lane, acc);
     if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
         nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
 }
+
+// ---------------------------------------------------------------------------
+// The codebook encodings (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS; block layouts in
+// dequant.metal). A grid entry holds eight magnitudes below 64, one per byte.
+// Two bytes masked into the low bits of a half pair are the F16 subnormals
+// q·2^-24, exact, and the signs are XOR'd into the half sign bits; the 2^24
+// joins the block scale. No integer-to-float conversion or integer multiply
+// per value: those share the integer and complex pipe, the one that bounds
+// these kernels (docs/engine/apple-gpu.md). An octet's values pair as (0,2),
+// (1,3) from its low word and (4,6), (5,7) from its high word;
+// `nu_octet_dot` pairs the inputs the same way. With a one-hot input the sum
+// is ±q·2^-24 exactly, so the result is the CPU decoder's multiplier · q.
+struct NuOctet { half2 v02, v13, v46, v57; };
+inline half2 nu_signed_pair(uint bits, uint mask) { return as_type<half2>(bits ^ (mask & 0x80008000u)); }
+// Bit j of `signs` negates value j. `u` holds bits j and j+2 sixteen apart,
+// so one shift puts a pair's two signs on bits 15 and 31.
+inline NuOctet nu_signed_octet(ulong entry, uint signs) {
+    uint lo = uint(entry), hi = uint(entry >> 32), u = signs | (signs << 14);
+    NuOctet o;
+    o.v02 = nu_signed_pair(lo & 0x00ff00ffu, u << 15);
+    o.v13 = nu_signed_pair((lo >> 8) & 0x00ff00ffu, u << 14);
+    o.v46 = nu_signed_pair(hi & 0x00ff00ffu, u << 11);
+    o.v57 = nu_signed_pair((hi >> 8) & 0x00ff00ffu, u << 10);
+    return o;
+}
+// The octet dotted with eight consecutive inputs `xa`, `xb`.
+inline float nu_octet_dot(NuOctet o, float4 xa, float4 xb, float sum) {
+    sum = fma(float(o.v02.x), xa.x, fma(float(o.v13.x), xa.y, fma(float(o.v02.y), xa.z, fma(float(o.v13.y), xa.w, sum))));
+    return fma(float(o.v46.x), xb.x, fma(float(o.v57.x), xb.y, fma(float(o.v46.y), xb.z, fma(float(o.v57.y), xb.w, sum))));
+}
+
+// IQ2_XXS. Lane slice: one 32-value group `g`, the eight bytes at 2 + 8g:
+// four grid indices, then a word of four 7-bit sign indices with the
+// four-bit scale on top. 66-byte blocks: two-byte alignment. The grid stays
+// in `constant` memory: a threadgroup copy measured no faster.
+template <uint ROWS>
+inline void nu_matvec_iq2_xxs_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    uint g = lane & 7;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint kb = lane >> 3; kb < p.blocks; kb += 4) {
+        device const float4 * x = (device const float4 *)(input + kb * 256 + g * 32);
+        float4 xv[8] = { x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] };
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 66;
+            packed_ushort4 q = *(device const packed_ushort4 *)(b + 2 + g * 8);
+            uint indices = nu_word(q, 0), word = nu_word(q, 1);
+            float sum = 0.0f;
+            for (uint l = 0; l < 4; ++l)
+                sum = nu_octet_dot(nu_signed_octet(nu_iq2_xxs_grid[(indices >> (8 * l)) & 255u], nu_signs7(word >> (7 * l))), xv[2 * l], xv[2 * l + 1], sum);
+            float d = float(as_type<half>(*(device const ushort *)b));
+            acc[r] += ((d * ((0.5f + float(word >> 28)) * 0.25f)) * 16777216.0f) * sum;
+        }
+    }
+}
+// IQ2_XS. Lane slice: group `g`: four 16-bit codes at 2 + 8g (a 9-bit grid
+// index under a 7-bit sign index), and a scale byte at 66 + g whose low
+// nibble scales octets 0-1 and high nibble octets 2-3. 74-byte blocks.
+template <uint ROWS, typename Grid>
+inline void nu_matvec_iq2_xs_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc, Grid grid) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    uint g = lane & 7;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint kb = lane >> 3; kb < p.blocks; kb += 4) {
+        device const float4 * x = (device const float4 *)(input + kb * 256 + g * 32);
+        float4 xv[8] = { x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] };
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 74;
+            packed_ushort4 q = *(device const packed_ushort4 *)(b + 2 + g * 8);
+            float sums[2] = { 0.0f, 0.0f };
+            for (uint l = 0; l < 4; ++l) {
+                uint code = uint(q[l]);
+                sums[l / 2] = nu_octet_dot(nu_signed_octet(grid[code & 511u], nu_signs7(code >> 9)), xv[2 * l], xv[2 * l + 1], sums[l / 2]);
+            }
+            float d = float(as_type<half>(*(device const ushort *)b)) * 16777216.0f;
+            uint scales = b[66 + g];
+            acc[r] += (d * ((0.5f + float(scales & 15u)) * 0.25f)) * sums[0] + (d * ((0.5f + float(scales >> 4)) * 0.25f)) * sums[1];
+        }
+    }
+}
+
+// IQ2_S. Lane slice: group `g`: four index bytes at 2 + 4g completed by two
+// bits each from byte 66 + g, a full sign byte per octet at 34 + 4g, and a
+// scale byte at 74 + g split as IQ2_XS's. 82-byte blocks.
+template <uint ROWS, typename Grid>
+inline void nu_matvec_iq2_s_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc, Grid grid) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    uint g = lane & 7;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint kb = lane >> 3; kb < p.blocks; kb += 4) {
+        device const float4 * x = (device const float4 *)(input + kb * 256 + g * 32);
+        float4 xv[8] = { x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] };
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 82;
+            packed_ushort2 qi = *(device const packed_ushort2 *)(b + 2 + g * 4);
+            packed_ushort2 qs = *(device const packed_ushort2 *)(b + 34 + g * 4);
+            uint indices = uint(qi.x) | (uint(qi.y) << 16), signs = uint(qs.x) | (uint(qs.y) << 16), high = b[66 + g];
+            float sums[2] = { 0.0f, 0.0f };
+            for (uint l = 0; l < 4; ++l) {
+                uint index = ((indices >> (8 * l)) & 255u) | (((high >> (2 * l)) & 3u) << 8);
+                sums[l / 2] = nu_octet_dot(nu_signed_octet(grid[index], (signs >> (8 * l)) & 255u), xv[2 * l], xv[2 * l + 1], sums[l / 2]);
+            }
+            float d = float(as_type<half>(*(device const ushort *)b)) * 16777216.0f;
+            uint scales = b[74 + g];
+            acc[r] += (d * ((0.5f + float(scales & 15u)) * 0.25f)) * sums[0] + (d * ((0.5f + float(scales >> 4)) * 0.25f)) * sums[1];
+        }
+    }
+}
+
+// IQ3_XXS. Lane slice: group `g`: eight index bytes at 2 + 8g, two
+// four-magnitude entries per octet, and the word at 66 + 4g of four 7-bit
+// sign indices under the scale: d·(0.5 + s)/2. 98-byte blocks.
+template <uint ROWS>
+inline void nu_matvec_iq3_xxs_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    uint g = lane & 7;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint kb = lane >> 3; kb < p.blocks; kb += 4) {
+        device const float4 * x = (device const float4 *)(input + kb * 256 + g * 32);
+        float4 xv[8] = { x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] };
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 98;
+            packed_ushort4 q = *(device const packed_ushort4 *)(b + 2 + g * 8);
+            packed_ushort2 w = *(device const packed_ushort2 *)(b + 66 + g * 4);
+            uint word = uint(w.x) | (uint(w.y) << 16);
+            float sum = 0.0f;
+            for (uint l = 0; l < 4; ++l) {
+                uint pair = uint(q[l]);
+                ulong entry = ulong(nu_iq3_xxs_grid[pair & 255u]) | (ulong(nu_iq3_xxs_grid[pair >> 8]) << 32);
+                sum = nu_octet_dot(nu_signed_octet(entry, nu_signs7(word >> (7 * l))), xv[2 * l], xv[2 * l + 1], sum);
+            }
+            float d = float(as_type<half>(*(device const ushort *)b));
+            acc[r] += ((d * ((0.5f + float(word >> 28)) * 0.5f)) * 16777216.0f) * sum;
+        }
+    }
+}
+
+// IQ3_S. Lane slice: group `g`: eight index bytes at 2 + 8g completed by a
+// ninth bit each from byte 66 + g, two four-magnitude entries per octet, a
+// full sign byte per octet at 74 + 4g, and the odd scale 1 + 2s from the
+// nibble of byte 106 + g/2. 110-byte blocks.
+template <uint ROWS>
+inline void nu_matvec_iq3_s_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    uint g = lane & 7;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint kb = lane >> 3; kb < p.blocks; kb += 4) {
+        device const float4 * x = (device const float4 *)(input + kb * 256 + g * 32);
+        float4 xv[8] = { x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] };
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 110;
+            packed_ushort4 q = *(device const packed_ushort4 *)(b + 2 + g * 8);
+            packed_ushort2 sw = *(device const packed_ushort2 *)(b + 74 + g * 4);
+            uint signs = uint(sw.x) | (uint(sw.y) << 16), high = b[66 + g];
+            float sum = 0.0f;
+            for (uint l = 0; l < 4; ++l) {
+                uint pair = uint(q[l]), h = high >> (2 * l);
+                ulong entry = ulong(nu_iq3_grid[(pair & 255u) | ((h & 1u) << 8)]) | (ulong(nu_iq3_grid[(pair >> 8) | ((h & 2u) << 7)]) << 32);
+                sum = nu_octet_dot(nu_signed_octet(entry, (signs >> (8 * l)) & 255u), xv[2 * l], xv[2 * l + 1], sum);
+            }
+            float d = float(as_type<half>(*(device const ushort *)b));
+            acc[r] += ((d * float(1 + 2 * ((b[106 + g / 2] >> (4 * (g & 1))) & 15u))) * 16777216.0f) * sum;
+        }
+    }
+}
+
+// Q2_K. Lane slice: half `H` (values 128H..) and byte columns 8c..8c+7 of
+// its 32 code bytes at 16 + 32H, whose four bit pairs are the four 32-value
+// runs `s` (values 128H + 32s + 8c ..); each run's eight values lie in one
+// 16-value group with a scale (low nibble) and a minimum (high nibble) at
+// byte 8H + 2s + c/2. Codes decode as subnormal pairs like the codebook
+// encodings: Σ(d·sc·q − dmin·m)·x = d·sc·Σq·x − dmin·m·Σx. 84-byte blocks,
+// four-byte alignment.
+template <uint ROWS>
+inline void nu_matvec_q2_k_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    uint half_index = (lane & 7) >> 2, c = lane & 3;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint kb = lane >> 3; kb < p.blocks; kb += 4) {
+        device const float4 * x = (device const float4 *)(input + kb * 256 + half_index * 128 + c * 8);
+        float4 xv[8] = { x[0], x[1], x[8], x[9], x[16], x[17], x[24], x[25] };
+        float sx[4] = { nu_sum4(xv[0] + xv[1]), nu_sum4(xv[2] + xv[3]), nu_sum4(xv[4] + xv[5]), nu_sum4(xv[6] + xv[7]) };
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 84;
+            uint w0 = *(device const uint *)(b + 16 + half_index * 32 + c * 8), w1 = *(device const uint *)(b + 20 + half_index * 32 + c * 8);
+            uint sc0 = *(device const uint *)(b + half_index * 8), sc1 = *(device const uint *)(b + half_index * 8 + 4);
+            uint dd = *(device const uint *)(b + 80);
+            float d = nu_half_low(dd) * 16777216.0f, dmin = nu_half_high(dd);
+            float total = 0.0f;
+            for (uint s = 0; s < 4; ++s) {
+                half2 q02 = as_type<half2>((w0 >> (2 * s)) & 0x00030003u), q13 = as_type<half2>((w0 >> (2 * s + 8)) & 0x00030003u);
+                half2 q46 = as_type<half2>((w1 >> (2 * s)) & 0x00030003u), q57 = as_type<half2>((w1 >> (2 * s + 8)) & 0x00030003u);
+                float4 xa = xv[2 * s], xb = xv[2 * s + 1];
+                float sum = fma(float(q02.x), xa.x, fma(float(q13.x), xa.y, fma(float(q02.y), xa.z, float(q13.y) * xa.w)));
+                sum = fma(float(q46.x), xb.x, fma(float(q57.x), xb.y, fma(float(q46.y), xb.z, fma(float(q57.y), xb.w, sum))));
+                uint scale = nu_byte(s < 2 ? sc0 : sc1, 2 * (s & 1) + (c >> 1));
+                total += (d * float(scale & 15u)) * sum - (dmin * float(scale >> 4)) * sx[s];
+            }
+            acc[r] += total;
+        }
+    }
+}
+
+// The IQ1 grid as 2-bit codes, component + 1 at bits 2j (`nu_iq1_codes`, a
+// quarter of the byte table). `e` holds codes j and j+1 sixteen bits apart,
+// so one shift and mask gives a subnormal pair; the +1 is taken back
+// through the input sum by the caller.
+inline float nu_ternary_octet_dot(uint codes, float4 xa, float4 xb, float sum) {
+    uint e = codes | (codes << 14);
+    half2 v01 = as_type<half2>(e & 0x00030003u), v23 = as_type<half2>((e >> 4) & 0x00030003u);
+    half2 v45 = as_type<half2>((e >> 8) & 0x00030003u), v67 = as_type<half2>((e >> 12) & 0x00030003u);
+    sum = fma(float(v01.x), xa.x, fma(float(v01.y), xa.y, fma(float(v23.x), xa.z, fma(float(v23.y), xa.w, sum))));
+    return fma(float(v45.x), xb.x, fma(float(v45.y), xb.y, fma(float(v67.x), xb.z, fma(float(v67.y), xb.w, sum))));
+}
+
+// IQ1_S. Lane slice: group `g`: four index bytes at 2 + 4g, and the word at
+// 34 + 2g of four 3-bit high index parts, a 3-bit scale, and the shift's
+// sign. Each value is m·(t + δ) = m·((t + 1) + (δ − 1)), so the shift and
+// the code bias fold into the group's input sum. 50-byte blocks.
+template <uint ROWS>
+inline void nu_matvec_iq1_s_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    uint g = lane & 7;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint kb = lane >> 3; kb < p.blocks; kb += 4) {
+        device const float4 * x = (device const float4 *)(input + kb * 256 + g * 32);
+        float4 xv[8] = { x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] };
+        float sx = nu_sum4(((xv[0] + xv[1]) + (xv[2] + xv[3])) + ((xv[4] + xv[5]) + (xv[6] + xv[7])));
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 50;
+            packed_ushort2 qi = *(device const packed_ushort2 *)(b + 2 + g * 4);
+            uint indices = uint(qi.x) | (uint(qi.y) << 16), word = *(device const ushort *)(b + 34 + g * 2);
+            float sum = 0.0f;
+            for (uint l = 0; l < 4; ++l)
+                sum = nu_ternary_octet_dot(nu_iq1_codes[((indices >> (8 * l)) & 255u) | (((word >> (3 * l)) & 7u) << 8)], xv[2 * l], xv[2 * l + 1], sum);
+            float m = float(as_type<half>(*(device const ushort *)b)) * float(2 * ((word >> 12) & 7u) + 1);
+            acc[r] += m * fma((word & 0x8000u) ? -1.125f : -0.875f, sx, sum * 16777216.0f);
+        }
+    }
+}
+
+// IQ1_M. Lane slice: group `g`: four index bytes at 4g, two bytes at 32 + 2g
+// whose nibble l holds octet l's three high index bits and its shift's sign,
+// and the four scale words at 48, which carry each 16 values' 3-bit scale and
+// the F16 block scale in their top nibbles. 56-byte blocks, eight-byte
+// alignment.
+template <uint ROWS>
+inline void nu_matvec_iq1_m_body(device const uchar * weights, device const float * input, MatvecBlockParams p, uint group_index, uint sg, uint lane, thread float * acc) {
+    uint row0 = (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS;
+    if (row0 >= p.rows) return;
+    uint g = lane & 7;
+    for (uint r = 0; r < ROWS; ++r) acc[r] = 0;
+    for (uint kb = lane >> 3; kb < p.blocks; kb += 4) {
+        device const float4 * x = (device const float4 *)(input + kb * 256 + g * 32);
+        float4 xv[8] = { x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7] };
+        float sx[4] = { nu_sum4(xv[0] + xv[1]), nu_sum4(xv[2] + xv[3]), nu_sum4(xv[4] + xv[5]), nu_sum4(xv[6] + xv[7]) };
+        for (uint r = 0; r < ROWS; ++r) {
+            device const uchar * b = weights + ulong(min(row0 + r, p.rows - 1)) * p.stride + kb * 56;
+            uint indices = *(device const uint *)(b + g * 4), high = *(device const ushort *)(b + 32 + g * 2);
+            uint2 words = *(device const uint2 *)(b + 48);
+            uint bits = ((words.x >> 12) & 0x000fu) | ((words.x >> 24) & 0x00f0u) | ((words.y >> 4) & 0x0f00u) | ((words.y >> 16) & 0xf000u);
+            float d = float(as_type<half>(ushort(bits)));
+            uint word = ((g < 4 ? words.x : words.y) >> (16 * ((g >> 1) & 1))) >> (6 * (g & 1));
+            float sums[2] = { 0.0f, 0.0f };
+            for (uint l = 0; l < 4; ++l) {
+                uint nibble = (high >> (4 * l)) & 15u;
+                float s = nu_ternary_octet_dot(nu_iq1_codes[((indices >> (8 * l)) & 255u) | ((nibble & 7u) << 8)], xv[2 * l], xv[2 * l + 1], 0.0f);
+                sums[l / 2] = fma((nibble & 8u) ? -1.125f : -0.875f, sx[l], fma(s, 16777216.0f, sums[l / 2]));
+            }
+            acc[r] += (d * float(2 * (word & 7u) + 1)) * sums[0] + (d * float(2 * ((word >> 3) & 7u) + 1)) * sums[1];
+        }
+    }
+}
+
+// Copies a codebook into threadgroup memory; every thread of the group must
+// reach it (it holds a barrier).
+template <uint N>
+inline void nu_codebook_copy(threadgroup ulong * tg, constant ulong * table, uint sg, uint lane) {
+    for (uint i = sg * 32 + lane; i < N; i += 32 * NU_MATVEC_SIMDGROUPS) tg[i] = table[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+}
+
+// The standalone kernels of the bodies above.
+#define NU_MATVEC_KERNEL(NAME) \
+template <uint ROWS> \
+kernel void nu_matvec_##NAME(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]], \
+                             constant MatvecBlockParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]], \
+                             uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) { \
+    float acc[ROWS]; \
+    nu_matvec_##NAME##_body<ROWS>(weights, input, p, group_index, sg, lane, acc); \
+    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows) \
+        nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane); \
+}
+NU_MATVEC_KERNEL(iq2_xxs)
+template <uint ROWS>
+kernel void nu_matvec_iq2_xs(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
+                             constant MatvecBlockParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
+                             uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    float acc[ROWS];
+    nu_matvec_iq2_xs_body<ROWS, constant ulong *>(weights, input, p, group_index, sg, lane, acc, nu_iq2_xs_grid);
+    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
+        nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
+}
+template <uint ROWS>
+kernel void nu_matvec_iq2_s(device const uchar * weights [[buffer(0)]], device const float * input [[buffer(1)]], device float * output [[buffer(2)]],
+                             constant MatvecBlockParams & p [[buffer(7)]], uint group_index [[threadgroup_position_in_grid]],
+                             uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup ulong grid[1024];
+    nu_codebook_copy<1024>(grid, nu_iq2_s_grid, sg, lane);
+    float acc[ROWS];
+    nu_matvec_iq2_s_body<ROWS, threadgroup const ulong *>(weights, input, p, group_index, sg, lane, acc, grid);
+    if ((group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS < p.rows)
+        nu_store_rows<ROWS>(acc, output, (group_index * NU_MATVEC_SIMDGROUPS + sg) * ROWS, p.rows, lane);
+}
+NU_MATVEC_KERNEL(iq3_xxs)
+NU_MATVEC_KERNEL(iq3_s)
+NU_MATVEC_KERNEL(q2_k)
+NU_MATVEC_KERNEL(iq1_s)
+NU_MATVEC_KERNEL(iq1_m)
 
 // Split-K decode matvec: `splits` threadgroups per 16-row block,
 // each summing only its share of the K blocks into a row-major partial
@@ -582,12 +893,19 @@ inline void nu_segment_sums(device const uchar * w, device const float * x, Matv
     // refuses to force a split for them).
     switch (encoding) {
         case 2: nu_matvec_q4_0_body<4>(w, x, p, group, sg, lane, acc); return;
-        case 11: nu_matvec_three_body<4, false>(w, x, p, group, sg, lane, acc); return;
+        case 11: nu_matvec_three_body<4>(w, x, p, group, sg, lane, acc); return;
         case 12: nu_matvec_k_body<4, false>(w, x, p, group, sg, lane, acc, first, last); return;
         case 13: nu_matvec_k_body<4, true>(w, x, p, group, sg, lane, acc, first, last); return;
         case 14: nu_matvec_q6_k_body<4>(w, x, p, group, sg, lane, acc); return;
-        case 21: nu_matvec_three_body<4, true>(w, x, p, group, sg, lane, acc); return;
+        case 21: nu_matvec_iq3_s_body<4>(w, x, p, group, sg, lane, acc); return;
         case 23: nu_matvec_iq4_xs_body<4>(w, x, p, group, sg, lane, acc, iq4); return;
+        case 16: nu_matvec_iq2_xxs_body<4>(w, x, p, group, sg, lane, acc); return;
+        case 17: nu_matvec_iq2_xs_body<4, constant ulong *>(w, x, p, group, sg, lane, acc, nu_iq2_xs_grid); return;
+        case 18: nu_matvec_iq3_xxs_body<4>(w, x, p, group, sg, lane, acc); return;
+        case 22: nu_matvec_iq2_s_body<4, constant ulong *>(w, x, p, group, sg, lane, acc, nu_iq2_s_grid); return;
+        case 10: nu_matvec_q2_k_body<4>(w, x, p, group, sg, lane, acc); return;
+        case 19: nu_matvec_iq1_s_body<4>(w, x, p, group, sg, lane, acc); return;
+        case 29: nu_matvec_iq1_m_body<4>(w, x, p, group, sg, lane, acc); return;
         case 142: nu_matvec_pq2_0_body<4>(w, x, p, group, sg, lane, acc); return;
         case 143: nu_matvec_ptq1_0_body<4>(w, x, p, group, sg, lane, acc); return;
         default:
@@ -698,12 +1016,19 @@ kernel void nu_segment_reduce_splits(
 
 // Host-visible instantiations. ROWS must match `rows_per_simdgroup` in root.zig.
 #define NU_MATVEC_ARGS device const uchar *, device const float *, device float *, constant MatvecBlockParams &, uint, uint, uint
-template [[host_name("nu_matvec_q3_k")]] kernel void nu_matvec_three<4, false>(NU_MATVEC_ARGS);
-template [[host_name("nu_matvec_iq3_s")]] kernel void nu_matvec_three<4, true>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_q3_k")]] kernel void nu_matvec_three<4>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_iq3_s")]] kernel void nu_matvec_iq3_s<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_q4_k")]] kernel void nu_matvec_q4_k<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_q5_k")]] kernel void nu_matvec_q5_k<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_q6_k")]] kernel void nu_matvec_q6_k<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_iq4_xs")]] kernel void nu_matvec_iq4_xs<4>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_iq2_xxs")]] kernel void nu_matvec_iq2_xxs<2>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_iq2_xs")]] kernel void nu_matvec_iq2_xs<2>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_iq2_s")]] kernel void nu_matvec_iq2_s<2>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_iq3_xxs")]] kernel void nu_matvec_iq3_xxs<4>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_q2_k")]] kernel void nu_matvec_q2_k<2>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_iq1_s")]] kernel void nu_matvec_iq1_s<4>(NU_MATVEC_ARGS);
+template [[host_name("nu_matvec_iq1_m")]] kernel void nu_matvec_iq1_m<2>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_q4_0")]] kernel void nu_matvec_q4_0<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_pq2_0")]] kernel void nu_matvec_pq2_0<4>(NU_MATVEC_ARGS);
 template [[host_name("nu_matvec_ptq1_0")]] kernel void nu_matvec_ptq1_0<4>(NU_MATVEC_ARGS);
@@ -1322,6 +1647,83 @@ inline void nu_tile_ptq1_0(device const uchar * b, uint first, thread float4 * q
     }
     for (uint i = 0; i < 4; ++i) q[i] = d * (q[i] - 1.0f);
 }
+// The codebook segments: two octets, each `multiplier * magnitude` negated
+// by its sign bits, as the generic decoders compute them.
+inline void nu_tile_octet(ulong grid, uint signs, float multiplier, thread float4 * q) {
+    float4 lo = multiplier * nu_bytes(uint(grid)), hi = multiplier * nu_bytes(uint(grid >> 32));
+    q[0] = select(lo, -lo, bool4(signs & 1u, signs & 2u, signs & 4u, signs & 8u));
+    q[1] = select(hi, -hi, bool4(signs & 16u, signs & 32u, signs & 64u, signs & 128u));
+}
+inline void nu_tile_iq2_xxs(device const uchar * b, uint first, thread float4 * q) {
+    uint group = first / 32, l = (first % 32) / 8;
+    device const uchar * data = b + 2 + group * 8;
+    uint word = uint(*(device const ushort *)(data + 4)) | (uint(*(device const ushort *)(data + 6)) << 16);
+    float multiplier = nu_half(b) * ((0.5f + float(word >> 28)) * 0.25f);
+    nu_tile_octet(nu_iq2_xxs_grid[data[l]], nu_signs7(word >> (7 * l)), multiplier, q);
+    nu_tile_octet(nu_iq2_xxs_grid[data[l + 1]], nu_signs7(word >> (7 * l + 7)), multiplier, q + 2);
+}
+inline void nu_tile_iq2_xs(device const uchar * b, uint first, thread float4 * q) {
+    uint group = first / 32, half16 = (first % 32) / 16;
+    uint scale = half16 == 0 ? (b[66 + group] & 15u) : (b[66 + group] >> 4);
+    float multiplier = nu_half(b) * ((0.5f + float(scale)) * 0.25f);
+    device const ushort * codes = (device const ushort *)(b + 2 + 8 * group + 4 * half16);
+    uint c0 = codes[0], c1 = codes[1];
+    nu_tile_octet(nu_iq2_xs_grid[c0 & 511u], nu_signs7(c0 >> 9), multiplier, q);
+    nu_tile_octet(nu_iq2_xs_grid[c1 & 511u], nu_signs7(c1 >> 9), multiplier, q + 2);
+}
+inline void nu_tile_iq2_s(device const uchar * b, uint first, thread float4 * q) {
+    uint group = first / 32, l = (first % 32) / 8;
+    uint scale = l < 2 ? (b[74 + group] & 15u) : (b[74 + group] >> 4);
+    float multiplier = nu_half(b) * ((0.5f + float(scale)) * 0.25f);
+    uint high = b[66 + group];
+    for (uint h = 0; h < 2; ++h) {
+        uint index = uint(b[2 + group * 4 + l + h]) | (((high >> (2 * (l + h))) & 3u) << 8);
+        nu_tile_octet(nu_iq2_s_grid[index], b[34 + group * 4 + l + h], multiplier, q + 2 * h);
+    }
+}
+inline void nu_tile_iq3_xxs(device const uchar * b, uint first, thread float4 * q) {
+    uint group = first / 32, l = (first % 32) / 8;
+    uint word = uint(*(device const ushort *)(b + 66 + group * 4)) | (uint(*(device const ushort *)(b + 68 + group * 4)) << 16);
+    float multiplier = nu_half(b) * ((0.5f + float(word >> 28)) * 0.5f);
+    for (uint h = 0; h < 2; ++h) {
+        device const uchar * pair = b + 2 + group * 8 + 2 * (l + h);
+        nu_tile_octet(ulong(nu_iq3_xxs_grid[pair[0]]) | (ulong(nu_iq3_xxs_grid[pair[1]]) << 32), nu_signs7(word >> (7 * (l + h))), multiplier, q + 2 * h);
+    }
+}
+// Q2_K segment: sixteen code bytes at the same shift (four-byte aligned).
+inline void nu_tile_q2_k(device const uchar * b, uint first, thread float4 * q) {
+    uint group = first / 16, shift = 2 * ((first % 128) / 32);
+    float multiplier = nu_half(b + 80) * float(b[group] & 15u), offset = nu_half(b + 82) * float(b[group] >> 4);
+    device const uint * w = (device const uint *)(b + 16 + (first / 128) * 32 + first % 32);
+    for (uint i = 0; i < 4; ++i) q[i] = multiplier * nu_bytes((w[i] >> shift) & 0x03030303u) - offset;
+}
+// IQ1 segments: two shifted ternary octets, `multiplier * (t + delta)`.
+inline void nu_tile_shifted(uint index, bool negative, float multiplier, thread float4 * q) {
+    ulong grid = nu_iq1_s_grid[index];
+    float delta = negative ? -0.125f : 0.125f;
+    q[0] = multiplier * (float4(as_type<char4>(uint(grid))) + delta);
+    q[1] = multiplier * (float4(as_type<char4>(uint(grid >> 32))) + delta);
+}
+inline void nu_tile_iq1_s(device const uchar * b, uint first, thread float4 * q) {
+    uint group = first / 32, l = (first % 32) / 8;
+    uint word = *(device const ushort *)(b + 34 + 2 * group);
+    float multiplier = nu_half(b) * float(2 * ((word >> 12) & 7u) + 1);
+    for (uint h = 0; h < 2; ++h)
+        nu_tile_shifted(uint(b[2 + group * 4 + l + h]) | (((word >> (3 * (l + h))) & 7u) << 8), (word & 0x8000u) != 0, multiplier, q + 2 * h);
+}
+inline void nu_tile_iq1_m(device const uchar * b, uint first, thread float4 * q) {
+    device const ushort * w = (device const ushort *)(b + 48);
+    uint w0 = w[0], w1 = w[1], w2 = w[2], w3 = w[3];
+    float d = float(as_type<half>(ushort((w0 >> 12) | ((w1 >> 8) & 0x00f0u) | ((w2 >> 4) & 0x0f00u) | (w3 & 0xf000u))));
+    uint group = first / 32, half16 = (first % 32) / 16;
+    uint word = group < 2 ? w0 : group < 4 ? w1 : group < 6 ? w2 : w3;
+    float multiplier = d * float(2 * ((word >> (6 * (group % 2) + 3 * half16)) & 7u) + 1);
+    for (uint h = 0; h < 2; ++h) {
+        uint l = half16 * 2 + h;
+        uint nibble = (b[32 + group * 2 + l / 2] >> (4 * (l % 2))) & 15u;
+        nu_tile_shifted(uint(b[group * 4 + l]) | ((nibble & 7u) << 8), (nibble & 8u) != 0, multiplier, q + 2 * h);
+    }
+}
 // Sixteen decoded values of `segment` of an encoded row, as four float4.
 template <uint ENC>
 inline void nu_tile_segment(device const uchar * row, uint encoding, uint segment, thread float4 * q) {
@@ -1333,7 +1735,8 @@ inline void nu_tile_segment(device const uchar * row, uint encoding, uint segmen
     }
     // 256-value blocks hold sixteen segments; Q4_0's and IQ4_NL's 32-value block two; the
     // ternary 128-value blocks eight.
-    const uint block_bytes = (ENC == 2 || ENC == 20) ? 18 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28 : 110;
+    const uint block_bytes = (ENC == 2 || ENC == 20) ? 18 : ENC == 12 ? 144 : ENC == 13 ? 176 : ENC == 14 ? 210 : ENC == 23 ? 136 : ENC == 142 ? 34 : ENC == 143 ? 28
+        : ENC == 10 ? 84 : ENC == 16 ? 66 : ENC == 17 ? 74 : ENC == 18 ? 98 : ENC == 19 ? 50 : ENC == 22 ? 82 : ENC == 29 ? 56 : 110;
     const uint segments_per_block = (ENC == 2 || ENC == 20) ? 2 : (ENC == 142 || ENC == 143) ? 8 : 16;
     device const uchar * b = row + ulong(segment / segments_per_block) * block_bytes;
     uint first = (segment % segments_per_block) * 16;
@@ -1347,6 +1750,13 @@ inline void nu_tile_segment(device const uchar * row, uint encoding, uint segmen
         case 21: nu_tile_iq3_s(b, first, q); break;
         case 142: nu_tile_pq2_0(b, first, q); break;
         case 143: nu_tile_ptq1_0(b, first, q); break;
+        case 10: nu_tile_q2_k(b, first, q); break;
+        case 16: nu_tile_iq2_xxs(b, first, q); break;
+        case 17: nu_tile_iq2_xs(b, first, q); break;
+        case 18: nu_tile_iq3_xxs(b, first, q); break;
+        case 19: nu_tile_iq1_s(b, first, q); break;
+        case 22: nu_tile_iq2_s(b, first, q); break;
+        case 29: nu_tile_iq1_m(b, first, q); break;
         default: nu_tile_iq4_xs(b, first, q); break;
     }
 }
@@ -1710,6 +2120,20 @@ template [[host_name("nu_matmul_pq2_0")]] kernel void nu_matmul_t<142, 64, 64, h
 template [[host_name("nu_matmul_ptq1_0")]] kernel void nu_matmul_t<143, 64, 64, half, half, true>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_pq2_0_32")]] kernel void nu_matmul_t<142, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0_32")]] kernel void nu_matmul_t<143, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q2_k")]] kernel void nu_matmul_t<10, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q2_k_32")]] kernel void nu_matmul_t<10, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_xxs")]] kernel void nu_matmul_t<16, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_xxs_32")]] kernel void nu_matmul_t<16, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_xs")]] kernel void nu_matmul_t<17, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_xs_32")]] kernel void nu_matmul_t<17, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq3_xxs")]] kernel void nu_matmul_t<18, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq3_xxs_32")]] kernel void nu_matmul_t<18, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq1_s")]] kernel void nu_matmul_t<19, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq1_s_32")]] kernel void nu_matmul_t<19, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_s")]] kernel void nu_matmul_t<22, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_s_32")]] kernel void nu_matmul_t<22, 32, 32, half, float, false>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq1_m")]] kernel void nu_matmul_t<29, 64, 64, half, half, true>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq1_m_32")]] kernel void nu_matmul_t<29, 32, 32, half, float, false>(NU_MATMUL_ARGS);
 // The `_8` set (16 rows × 8 tokens) serves chunks of at most
 // `small_chunk_tokens` tokens, where even the 32-row tile leaves too few
 // threadgroups.
@@ -1722,6 +2146,13 @@ template [[host_name("nu_matmul_iq4_xs_8")]] kernel void nu_matmul_split_t<23, h
 template [[host_name("nu_matmul_q4_0_8")]] kernel void nu_matmul_split_t<2, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_pq2_0_8")]] kernel void nu_matmul_split_t<142, half>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0_8")]] kernel void nu_matmul_split_t<143, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q2_k_8")]] kernel void nu_matmul_split_t<10, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_xxs_8")]] kernel void nu_matmul_split_t<16, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_xs_8")]] kernel void nu_matmul_split_t<17, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq3_xxs_8")]] kernel void nu_matmul_split_t<18, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq1_s_8")]] kernel void nu_matmul_split_t<19, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_s_8")]] kernel void nu_matmul_split_t<22, half>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq1_m_8")]] kernel void nu_matmul_split_t<29, half>(NU_MATMUL_ARGS);
 // The wide (`_w8`) set: the same 8-token, at most `small_chunk_tokens`-row
 // regime with 32 output rows per group (the production `matmul`
 // does not route to it, `matmulTile32` measures it).
@@ -1749,6 +2180,13 @@ template [[host_name("nu_matmul_q4_0_f2")]] kernel void nu_matmul_frag_t<2, 2, h
 template [[host_name("nu_matmul_pq2_0_f2")]] kernel void nu_matmul_frag_t<142, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_ptq1_0_f2")]] kernel void nu_matmul_frag_t<143, 2, half, float>(NU_MATMUL_ARGS);
 template [[host_name("nu_matmul_iq4_nl_f2")]] kernel void nu_matmul_frag_t<20, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_q2_k_f2")]] kernel void nu_matmul_frag_t<10, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_xxs_f2")]] kernel void nu_matmul_frag_t<16, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_xs_f2")]] kernel void nu_matmul_frag_t<17, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq3_xxs_f2")]] kernel void nu_matmul_frag_t<18, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq1_s_f2")]] kernel void nu_matmul_frag_t<19, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq2_s_f2")]] kernel void nu_matmul_frag_t<22, 2, half, float>(NU_MATMUL_ARGS);
+template [[host_name("nu_matmul_iq1_m_f2")]] kernel void nu_matmul_frag_t<29, 2, half, float>(NU_MATMUL_ARGS);
 // Gathered expert tiles: 64 rows × 32 slot rows with half operands for Q4_0
 // (an expert averages k · chunk / experts slot rows per chunk, 16 on the
 // 26B-A4B at 256 tokens, so one token tile covers most experts), and the

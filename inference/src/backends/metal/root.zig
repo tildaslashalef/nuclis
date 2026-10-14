@@ -50,13 +50,47 @@ fn codebookSource(comptime msl_type: []const u8, comptime suffix: []const u8, co
     }
     return text ++ "};\n";
 }
+/// An IQ2 grid as 2-bit codes: magnitude 8, 25, 43 of component j as 0, 1, 2 at bits 2j.
+fn iq2Codes(comptime grid: anytype) [grid.len]u16 {
+    @setEvalBranchQuota(20_000_000);
+    var codes: [grid.len]u16 = undefined;
+    for (&codes, grid) |*code, entry| {
+        code.* = 0;
+        for (0..8) |j| {
+            const magnitude: u8 = @truncate(entry >> @intCast(8 * j));
+            const c: u16 = switch (magnitude) {
+                8 => 0,
+                25 => 1,
+                43 => 2,
+                else => @compileError("IQ2 magnitude outside {8, 25, 43}"),
+            };
+            code.* |= c << @intCast(2 * j);
+        }
+    }
+    return codes;
+}
+/// The IQ1 grid as 2-bit codes: component j + 1 (0, 1, 2) at bits 2j.
+fn iq1Codes() [2048]u16 {
+    @setEvalBranchQuota(20_000_000);
+    var codes: [2048]u16 = undefined;
+    for (&codes, codebooks.iq1_s) |*code, entry| {
+        code.* = 0;
+        for (0..8) |j| {
+            const component: i8 = @bitCast(@as(u8, @truncate(entry >> @intCast(8 * j))));
+            code.* |= @as(u16, @intCast(component + 1)) << @intCast(2 * j);
+        }
+    }
+    return codes;
+}
 const codebooks = @import("../../quant/iq-codebooks.zig");
 const codebook_source = codebookSource("uint", "u", "nu_iq3_grid", @import("../../quant/iq3-grid.zig").values) ++
     codebookSource("ulong", "ul", "nu_iq2_xxs_grid", codebooks.iq2_xxs) ++
     codebookSource("ulong", "ul", "nu_iq2_xs_grid", codebooks.iq2_xs) ++
     codebookSource("ulong", "ul", "nu_iq2_s_grid", codebooks.iq2_s) ++
     codebookSource("uint", "u", "nu_iq3_xxs_grid", codebooks.iq3_xxs) ++
-    codebookSource("ulong", "ul", "nu_iq1_s_grid", codebooks.iq1_s);
+    codebookSource("ulong", "ul", "nu_iq1_s_grid", codebooks.iq1_s) ++
+    codebookSource("ushort", "", "nu_iq1_codes", iq1Codes()) ++
+    codebookSource("ushort", "", "nu_iq2_s_codes", iq2Codes(codebooks.iq2_s));
 const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ codebook_source ++ @embedFile("dequant.metal") ++ "\n" ++ @embedFile("kernels.metal");
 
 /// Each `Kernel` names its MSL entry point as `nu_` plus the tag; pipelines
@@ -235,6 +269,41 @@ pub const Kernel = enum(u32) {
     segments_values,
     audio_attention,
     glu_conv,
+    matvec_iq2_xxs,
+    matvec_iq2_xs,
+    matvec_iq2_s,
+    matvec_iq3_xxs,
+    matvec_q2_k,
+    matvec_iq1_s,
+    matvec_iq1_m,
+    matmul_q2_k,
+    matmul_q2_k_32,
+    matmul_q2_k_8,
+    matmul_q2_k_f2,
+    matmul_iq2_xxs,
+    matmul_iq2_xxs_32,
+    matmul_iq2_xxs_8,
+    matmul_iq2_xxs_f2,
+    matmul_iq2_xs,
+    matmul_iq2_xs_32,
+    matmul_iq2_xs_8,
+    matmul_iq2_xs_f2,
+    matmul_iq3_xxs,
+    matmul_iq3_xxs_32,
+    matmul_iq3_xxs_8,
+    matmul_iq3_xxs_f2,
+    matmul_iq1_s,
+    matmul_iq1_s_32,
+    matmul_iq1_s_8,
+    matmul_iq1_s_f2,
+    matmul_iq2_s,
+    matmul_iq2_s_32,
+    matmul_iq2_s_8,
+    matmul_iq2_s_f2,
+    matmul_iq1_m,
+    matmul_iq1_m_32,
+    matmul_iq1_m_8,
+    matmul_iq1_m_f2,
 };
 
 /// A GPU-visible byte range. `slice` derives sub-ranges without new bindings.
@@ -535,9 +604,9 @@ pub const Backend = struct {
     pub const rows_per_simdgroup = 4;
     const simdgroups_per_matvec_group = 4;
     /// output[r] = sum_c weights[r,c] * input[c]; weights are an encoded matrix
-    /// with `stride` bytes per row. Input/output are F32 vectors. Q4_K, Q5_K,
-    /// Q3_K, Q6_K, IQ3_S, IQ4_XS, and Q4_0 use the specialized block kernels when the weight range
-    /// and input are aligned for their vector loads (see `specializedMatvec`).
+    /// with `stride` bytes per row. Input/output are F32 vectors. Every
+    /// encoding `specializedMatvec` names uses its block kernel when the
+    /// weight range and input are aligned for its vector loads.
     pub fn matvec(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer) !void {
         return self.matvecImpl(weights, matrix, input, output, 1);
     }
@@ -550,6 +619,14 @@ pub const Backend = struct {
     pub fn matvecSplits(self: *Backend, weights: Buffer, matrix: cpu.Matrix, input: Buffer, output: Buffer, splits: usize) !void {
         if (splits == 0 or splits > split_k_max) return error.InvalidShape;
         return self.matvecImpl(weights, matrix, input, output, splits);
+    }
+    /// Rows per SIMD group of a standalone specialized matvec: the template
+    /// argument of its instantiation in kernels.metal.
+    pub fn matvecRowsPerSimdgroup(kernel: Kernel) usize {
+        return switch (kernel) {
+            .matvec_iq2_xxs, .matvec_iq2_xs, .matvec_iq2_s, .matvec_q2_k, .matvec_iq1_m => 2,
+            else => rows_per_simdgroup,
+        };
     }
     /// Most splits the row-partial scratch holds.
     pub const split_k_max = 8;
@@ -594,7 +671,8 @@ pub const Backend = struct {
                 return;
             }
             const p: MatvecBlockParams = .{ .columns = @intCast(matrix.columns), .stride = @intCast(stride), .rows = @intCast(matrix.rows), .blocks = @intCast(matrix.columns / 256) };
-            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(@divCeil(matrix.rows, rows_per_group)), 32 * simdgroups_per_matvec_group, shape);
+            const group_rows = matvecRowsPerSimdgroup(kernel) * simdgroups_per_matvec_group;
+            try self.dispatch(kernel, &.{ weights, input, output }, p, @intCast(@divCeil(matrix.rows, group_rows)), 32 * simdgroups_per_matvec_group, shape);
             return;
         };
         if (splits > 1) return error.InvalidShape;
@@ -700,9 +778,12 @@ pub const Backend = struct {
         return switch (kernel) {
             .matmul => .{ .rows = 32, .tokens = 32, .half = false },
             .matmul_q3_k, .matmul_q4_k, .matmul_q5_k, .matmul_q6_k, .matmul_iq3_s, .matmul_iq4_xs, .matmul_q4_0, .matmul_pq2_0, .matmul_ptq1_0 => .{ .rows = 64, .tokens = 64, .half = true },
+            .matmul_q2_k, .matmul_iq2_xxs, .matmul_iq2_xs, .matmul_iq3_xxs, .matmul_iq1_s, .matmul_iq2_s, .matmul_iq1_m => .{ .rows = 64, .tokens = 64, .half = true },
             .matmul_q3_k_8, .matmul_q4_k_8, .matmul_q5_k_8, .matmul_q6_k_8, .matmul_iq3_s_8, .matmul_iq4_xs_8, .matmul_q4_0_8, .matmul_pq2_0_8, .matmul_ptq1_0_8 => .{ .rows = 16, .tokens = 8, .half = true },
+            .matmul_q2_k_8, .matmul_iq2_xxs_8, .matmul_iq2_xs_8, .matmul_iq3_xxs_8, .matmul_iq1_s_8, .matmul_iq2_s_8, .matmul_iq1_m_8 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q3_k_w8, .matmul_q4_k_w8, .matmul_q5_k_w8, .matmul_q6_k_w8, .matmul_iq3_s_w8, .matmul_iq4_xs_w8, .matmul_q4_0_w8, .matmul_pq2_0_w8, .matmul_ptq1_0_w8 => .{ .rows = 32, .tokens = 8, .half = true },
             .matmul_q4_k_f2, .matmul_q4_k_f2hh, .matmul_q5_k_f2, .matmul_q6_k_f2, .matmul_iq4_xs_f2, .matmul_q3_k_f2, .matmul_iq3_s_f2, .matmul_q4_0_f2, .matmul_pq2_0_f2, .matmul_ptq1_0_f2, .matmul_iq4_nl_f2 => .{ .rows = 16, .tokens = 8, .half = true },
+            .matmul_q2_k_f2, .matmul_iq2_xxs_f2, .matmul_iq2_xs_f2, .matmul_iq3_xxs_f2, .matmul_iq1_s_f2, .matmul_iq2_s_f2, .matmul_iq1_m_f2 => .{ .rows = 16, .tokens = 8, .half = true },
             .matmul_q4_k_f4 => .{ .rows = 32, .tokens = 8, .half = true },
             else => .{ .rows = 32, .tokens = 32, .half = true },
         };
@@ -778,14 +859,15 @@ pub const Backend = struct {
     }
     /// Whether the row start (buffer offset) and the row stride are multiples
     /// of the vector-load width the encoding's block size allows (Q4_K/Q5_K
-    /// 16, IQ4_XS 8, Q3_K/Q6_K/IQ3_S/Q4_0 2). False for encodings without a
-    /// specialized kernel.
+    /// 16, IQ4_XS 8, Q3_K/Q6_K/IQ3_S/Q4_0/IQ2_XXS 2). False for encodings
+    /// without a specialized matvec; an encoding may have a matvec and no
+    /// matmul tile, so each picker below answers null for its own gaps.
     fn blockAligned(encoding: u32, weight_offset: usize, stride: usize) bool {
         const alignment: usize = switch (encoding) {
             12, 13 => 16,
-            23 => 8,
-            143 => 4,
-            2, 11, 14, 21, 142 => 2,
+            23, 29 => 8,
+            10, 143 => 4,
+            2, 11, 14, 16, 17, 18, 19, 21, 22, 142 => 2,
             else => return false,
         };
         return weight_offset % alignment == 0 and stride % alignment == 0;
@@ -808,6 +890,13 @@ pub const Backend = struct {
             13 => .matvec_q5_k,
             14 => .matvec_q6_k,
             23 => .matvec_iq4_xs,
+            16 => .matvec_iq2_xxs,
+            17 => .matvec_iq2_xs,
+            22 => .matvec_iq2_s,
+            18 => .matvec_iq3_xxs,
+            10 => .matvec_q2_k,
+            19 => .matvec_iq1_s,
+            29 => .matvec_iq1_m,
             else => unreachable,
         };
     }
@@ -853,6 +942,13 @@ pub const Backend = struct {
             2 => .matmul_q4_0_f2,
             142 => .matmul_pq2_0_f2,
             143 => .matmul_ptq1_0_f2,
+            10 => .matmul_q2_k_f2,
+            16 => .matmul_iq2_xxs_f2,
+            17 => .matmul_iq2_xs_f2,
+            18 => .matmul_iq3_xxs_f2,
+            19 => .matmul_iq1_s_f2,
+            22 => .matmul_iq2_s_f2,
+            29 => .matmul_iq1_m_f2,
             else => null,
         };
     }
@@ -879,7 +975,14 @@ pub const Backend = struct {
             13 => .matmul_q5_k_8,
             14 => .matmul_q6_k_8,
             23 => .matmul_iq4_xs_8,
-            else => unreachable,
+            10 => .matmul_q2_k_8,
+            16 => .matmul_iq2_xxs_8,
+            17 => .matmul_iq2_xs_8,
+            18 => .matmul_iq3_xxs_8,
+            19 => .matmul_iq1_s_8,
+            22 => .matmul_iq2_s_8,
+            29 => .matmul_iq1_m_8,
+            else => null,
         };
         if (tokens <= 32) return switch (encoding) {
             2 => .matmul_q4_0_32,
@@ -891,7 +994,14 @@ pub const Backend = struct {
             13 => .matmul_q5_k_32,
             14 => .matmul_q6_k_32,
             23 => .matmul_iq4_xs_32,
-            else => unreachable,
+            10 => .matmul_q2_k_32,
+            16 => .matmul_iq2_xxs_32,
+            17 => .matmul_iq2_xs_32,
+            18 => .matmul_iq3_xxs_32,
+            19 => .matmul_iq1_s_32,
+            22 => .matmul_iq2_s_32,
+            29 => .matmul_iq1_m_32,
+            else => null,
         };
         return switch (encoding) {
             2 => .matmul_q4_0,
@@ -903,7 +1013,14 @@ pub const Backend = struct {
             13 => .matmul_q5_k,
             14 => .matmul_q6_k,
             23 => .matmul_iq4_xs,
-            else => unreachable,
+            10 => .matmul_q2_k,
+            16 => .matmul_iq2_xxs,
+            17 => .matmul_iq2_xs,
+            18 => .matmul_iq3_xxs,
+            19 => .matmul_iq1_s,
+            22 => .matmul_iq2_s,
+            29 => .matmul_iq1_m,
+            else => null,
         };
     }
     /// Borrowed projection descriptors. All projections read the same input.

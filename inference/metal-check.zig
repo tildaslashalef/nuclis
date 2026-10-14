@@ -173,6 +173,38 @@ fn tameScales(region: []u8, encoding: u32) void {
     }
 }
 
+/// Whether `randomCodebookBlocks` serves the encoding: Q2_K and the
+/// grid encodings (IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S).
+fn randomizable(encoding: u32) bool {
+    return switch (encoding) {
+        10, 16, 17, 18, 19, 21, 22, 29 => true,
+        else => false,
+    };
+}
+/// Fills a region of codebook-encoded blocks (see `randomizable`) with
+/// seeded random bytes and F16 scales of 2^-6: every index is
+/// in range, and the codebook reads spread over the table as a real
+/// tensor's do, where the two tiled fixture blocks would reuse a few
+/// entries and flatter a `constant` table. IQ1_M spreads its scale over the
+/// top nibbles of the words at 48..55.
+fn randomCodebookBlocks(region: []u8, encoding: u32) void {
+    var prng: std.Random.DefaultPrng = .init(encoding);
+    prng.random().bytes(region);
+    const layout = inference.encoding.layout(encoding) orelse return;
+    var offset: usize = 0;
+    while (offset + layout.bytes_per_block <= region.len) : (offset += layout.bytes_per_block) {
+        const block = region[offset..][0..layout.bytes_per_block];
+        switch (encoding) {
+            10 => for ([_]usize{ 80, 82 }) |at| std.mem.writeInt(u16, block[at..][0..2], 0x2400, .little),
+            29 => for (0..4) |k| {
+                const nibble: u8 = @truncate((@as(u16, 0x2400) >> @intCast(4 * k)) & 0xf);
+                block[49 + 2 * k] = (block[49 + 2 * k] & 0x0f) | (nibble << 4);
+            },
+            else => std.mem.writeInt(u16, block[0..2], 0x2400, .little),
+        }
+    }
+}
+
 /// `--matvec-bench [ENCODING]`: achieved weight bandwidth of the matvec kernels on
 /// model-shaped matrices (GPU busy time per dispatch, one dispatch per command
 /// buffer with `repeats` dispatches; best and mean over `rounds`), one encoding
@@ -244,6 +276,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
                 const repeats: usize = if (shape.rows < 8192) 64 else 8;
                 const region = try tiledMatrixRows(alloc, bytes, enc.id, shape.rows, shape.columns);
                 defer alloc.free(region);
+                if (randomizable(enc.id)) randomCodebookBlocks(region, enc.id);
                 @memcpy(weights.host[0..region.len], region);
                 const matrix: inference.cpu.Matrix = .{ .rows = shape.rows, .columns = shape.columns, .encoding = enc.id, .bytes = region };
                 for ([_]bool{ false, true }) |generic| {
@@ -436,6 +469,13 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
         .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
+        .{ .id = 10, .fixture = "codebook", .name = "Q2_K" },
+        .{ .id = 16, .fixture = "codebook", .name = "IQ2_XXS" },
+        .{ .id = 17, .fixture = "codebook", .name = "IQ2_XS" },
+        .{ .id = 22, .fixture = "codebook", .name = "IQ2_S" },
+        .{ .id = 18, .fixture = "codebook", .name = "IQ3_XXS" },
+        .{ .id = 19, .fixture = "codebook", .name = "IQ1_S" },
+        .{ .id = 29, .fixture = "codebook", .name = "IQ1_M" },
     };
     const rounds = 5;
     // Back-to-back dispatches per command buffer keep the clock where a token
@@ -466,6 +506,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
             for (shapes) |shape| for ([_]bool{ true, false }) |generic| {
                 const region = try tiledMatrix(alloc, bytes, enc.id, shape.rows, shape.columns);
                 defer alloc.free(region);
+                if (randomizable(enc.id)) randomCodebookBlocks(region, enc.id);
                 @memcpy(weights.host[0..region.len], region);
                 const matrix: inference.cpu.Matrix = .{ .rows = shape.rows, .columns = shape.columns, .encoding = enc.id, .bytes = region };
                 b.generic_only = generic;
@@ -2841,6 +2882,61 @@ fn captureCase(b: *Backend, label: []const u8) !void {
     std.debug.print("capturing {s}\n", .{path});
 }
 
+/// Section 2's wide rows (see `main`): fixture blocks tiled into 35-row
+/// matrices against the F64 CPU reference through the specialized and the
+/// generic kernel. `only` restricts it to one encoding id
+/// (`--wide-rows ID`, for kernel work).
+fn checkWideRows(alloc: std.mem.Allocator, io: std.Io, b: *Backend, random: std.Random, only: ?u32) !void {
+    const rows: usize = 35;
+    const expected = try alloc.alloc(f32, rows);
+    defer alloc.free(expected);
+    const actual = try alloc.alloc(f32, rows);
+    defer alloc.free(actual);
+    for ([_]usize{ 704, 1280, 5120, 17408 }) |columns| {
+        const input = try alloc.alloc(f32, columns);
+        defer alloc.free(input);
+        for (input) |*x| x.* = random.float(f32) * 2 - 1;
+        const decoded = try alloc.alloc(f32, columns);
+        defer alloc.free(decoded);
+        inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
+            const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
+            defer fixtures.deinit();
+            var seen: [256]bool = @splat(false);
+            for (fixtures.value.rows) |sample| {
+                if (sample.encoding >= seen.len or seen[sample.encoding]) continue;
+                if (only) |id| if (sample.encoding != id) continue;
+                if (columns % 256 != 0 and sample.encoding != 2) continue; // 704: Q4_0 alone
+                seen[sample.encoding] = true;
+                if (columns % 256 != 0 and Backend.specializedMatvec(sample.encoding, 0, columns / 32 * 18, 0) == null) return error.SpecializedPathNotSelected;
+                // Codebook encodings run a second pass on seeded random
+                // blocks: two fixture blocks reach few grid entries and
+                // sign patterns.
+                const passes: usize = if (comptime std.mem.eql(u8, name, "codebook")) 2 else 1;
+                for (0..passes) |pass| {
+                    const region = try tiledMatrix(alloc, sample.bytes, sample.encoding, rows, columns);
+                    defer alloc.free(region);
+                    if (pass == 1) randomCodebookBlocks(region, sample.encoding);
+                    const stride = region.len / rows;
+                    const matrix: inference.cpu.Matrix = .{ .rows = rows, .columns = columns, .encoding = sample.encoding, .bytes = region };
+                    try inference.cpu.matvec(io, matrix, input, expected, decoded);
+                    const weights = try uploadBytes(b, region);
+                    for ([_]bool{ false, true }) |generic| {
+                        b.generic_only = generic;
+                        try matvecOnce(b, matrix, weights, input, actual);
+                        for (0..rows) |r| {
+                            try inference.quant.row(sample.encoding, region[r * stride ..][0..stride], decoded);
+                            var mass: f64 = 0;
+                            for (decoded, input) |w, x| mass += @abs(@as(f64, w) * x);
+                            try expectClose(if (generic) "wide row (generic)" else "wide row", actual[r], expected[r], @floatCast(mass * 4e-6 + 1e-6));
+                        }
+                    }
+                    b.generic_only = false;
+                }
+            }
+        }
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     const alloc = init.gpa;
     const io = init.io;
@@ -2858,6 +2954,12 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--hadamard-bench")) return hadamardBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--attention-bench")) return attentionBench(alloc);
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--experts-bench")) return expertsBench(alloc, if (args.len > 2) try std.fmt.parseInt(usize, args[2], 10) else 256);
+    if (args.len >= 3 and std.mem.eql(u8, args[1], "--wide-rows")) {
+        var backend = try openBackend(alloc);
+        defer backend.deinit();
+        var prng = std.Random.DefaultPrng.init(0x5eed);
+        return checkWideRows(alloc, io, &backend, prng.random(), try std.fmt.parseInt(u32, args[2], 10));
+    }
     if (args.len != 1) return error.UnknownOption;
     try checkFragmentLayout(alloc);
     try checkDiscard(alloc);
@@ -2925,41 +3027,7 @@ pub fn main(init: std.process.Init) !void {
         defer alloc.free(expected);
         const actual = try alloc.alloc(f32, rows);
         defer alloc.free(actual);
-        for ([_]usize{ 704, 1280, 5120, 17408 }) |columns| {
-            const input = try alloc.alloc(f32, columns);
-            defer alloc.free(input);
-            for (input) |*x| x.* = random.float(f32) * 2 - 1;
-            const decoded = try alloc.alloc(f32, columns);
-            defer alloc.free(decoded);
-            inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
-                const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
-                defer fixtures.deinit();
-                var seen: [256]bool = @splat(false);
-                for (fixtures.value.rows) |sample| {
-                    if (sample.encoding >= seen.len or seen[sample.encoding]) continue;
-                    if (columns % 256 != 0 and sample.encoding != 2) continue; // 704: Q4_0 alone
-                    seen[sample.encoding] = true;
-                    if (columns % 256 != 0 and Backend.specializedMatvec(sample.encoding, 0, columns / 32 * 18, 0) == null) return error.SpecializedPathNotSelected;
-                    const region = try tiledMatrix(alloc, sample.bytes, sample.encoding, rows, columns);
-                    defer alloc.free(region);
-                    const stride = region.len / rows;
-                    const matrix: inference.cpu.Matrix = .{ .rows = rows, .columns = columns, .encoding = sample.encoding, .bytes = region };
-                    try inference.cpu.matvec(io, matrix, input, expected, decoded);
-                    const weights = try uploadBytes(b, region);
-                    for ([_]bool{ false, true }) |generic| {
-                        b.generic_only = generic;
-                        try matvecOnce(b, matrix, weights, input, actual);
-                        for (0..rows) |r| {
-                            try inference.quant.row(sample.encoding, region[r * stride ..][0..stride], decoded);
-                            var mass: f64 = 0;
-                            for (decoded, input) |w, x| mass += @abs(@as(f64, w) * x);
-                            try expectClose(if (generic) "wide row (generic)" else "wide row", actual[r], expected[r], @floatCast(mass * 4e-6 + 1e-6));
-                        }
-                    }
-                    b.generic_only = false;
-                }
-            }
-        }
+        try checkWideRows(alloc, io, b, random, null);
         // 2a. Split-K matvec: a 6,656-row matrix (the Muse row-poor
         // geometry) through the row-partial path at 2/4/8 splits, for every
         // encoding with a split body, against the F64 CPU reference at the
