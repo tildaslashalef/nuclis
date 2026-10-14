@@ -73,10 +73,11 @@ pub const max_draft_proposals = 7;
 /// Whether a weight matrix of this encoding can be bound: the storage
 /// layouts the CPU reference and the Metal kernels execute. Layout support
 /// in `formats/gguf` (which also stores Q4_0) is not this claim. BF16 and the
-/// ternary PQ2_0 / PTQ1_0 are the Bonsai file's encodings.
+/// ternary PQ2_0 / PTQ1_0 are the Bonsai file's encodings; Q2_K, IQ1_S,
+/// IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, and IQ3_XXS are Saluki's.
 pub fn executableEncoding(encoding_id: u32) bool {
     return switch (encoding_id) {
-        0, 8, 11, 12, 13, 14, 20, 21, 23, 30, 142, 143 => true,
+        0, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 30, 142, 143 => true,
         else => false,
     };
 }

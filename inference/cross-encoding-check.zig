@@ -9,6 +9,9 @@
 //! ENC=x` fails the run when that encoding's mean cosine (over tensors, of
 //! each tensor's worst sampled row) is below x; thresholds sit between the
 //! correct decoder and a deliberately broken one (docs/models/saluki.md).
+//! `--fixture OUT FILE` instead writes real blocks of FILE's codebook
+//! encodings with the CPU decoder's values, the rows metal-check holds the
+//! GPU decoders to.
 const std = @import("std");
 const inference = @import("inference");
 
@@ -28,6 +31,7 @@ const Worst = struct { name: []const u8, new: u32, validated: u32, cosine: f64 }
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
+    if (args.len == 4 and std.mem.eql(u8, args[1], "--fixture")) return writeFixture(init, args[2], args[3]);
     if (args.len < 3) {
         std.debug.print(usage, .{});
         return error.InvalidArguments;
@@ -129,6 +133,44 @@ fn encodingId(text: []const u8) ?u32 {
         if (std.mem.eql(u8, l.name, text)) return @intCast(id);
     };
     return null;
+}
+
+/// The encodings whose decoders were validated by this check, not by
+/// llama.cpp fixtures.
+const fixture_encodings = [_]u32{ 10, 16, 17, 18, 19, 22, 29 };
+
+/// Two samples per encoding: the first two blocks of row 0 of the first and
+/// of the last matrix stored in it.
+fn writeFixture(init: std.process.Init, out_path: []const u8, model_path: []const u8) !void {
+    const arena = init.arena.allocator();
+    var model = try inference.weights.Mapped.open(init.gpa, init.io, model_path);
+    defer model.deinit(init.io);
+    const view = model.view();
+    const Row = struct { encoding: u32, source: []const u8, bytes: []const u8, values: []const f32 };
+    var rows: std.ArrayList(Row) = .empty;
+    for (fixture_encodings) |id| {
+        var first: ?*const inference.gguf.Tensor = null;
+        var last: ?*const inference.gguf.Tensor = null;
+        for (model.document.tensors) |*t| if (t.encoding_id == id and t.dimensions.len == 2) {
+            if (first == null) first = t;
+            last = t;
+        };
+        for ([_]?*const inference.gguf.Tensor{ first, last }) |maybe| {
+            const t = maybe orelse return error.EncodingNotInFile;
+            const layout = inference.encoding.layout(id).?;
+            const bytes = (try view.bytes(t))[0 .. 2 * layout.bytes_per_block];
+            const values = try arena.alloc(f32, 2 * layout.elements_per_block);
+            try inference.quant.row(id, bytes, values);
+            try rows.append(arena, .{ .encoding = id, .source = t.name, .bytes = bytes, .values = values });
+        }
+    }
+    const Fixture = struct { revision: []const u8, rows: []const Row };
+    const fixture: Fixture = .{ .revision = "nuclis CPU decoders; blocks from ConwayResearch/Underdog-Saluki-27B-1.0 4f60eba0", .rows = rows.items };
+    var buffer: std.Io.Writer.Allocating = .init(arena);
+    try std.json.Stringify.value(fixture, .{}, &buffer.writer);
+    try buffer.writer.writeByte('\n');
+    try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = out_path, .data = buffer.written() });
+    std.debug.print("wrote {d} rows to {s}\n", .{ rows.items.len, out_path });
 }
 
 fn name(id: u32) []const u8 {

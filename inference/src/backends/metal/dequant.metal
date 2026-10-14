@@ -3,11 +3,13 @@
 // values starting at element `first` (a multiple of 16) of one block, indexing
 // individual little-endian bytes exactly like the Zig code, so the two can be
 // compared bit for bit. Block layouts are facts of the GGML storage formats;
-// see THIRD_PARTY_NOTICES.md for the provenance of the two lookup tables.
+// see THIRD_PARTY_NOTICES.md for the provenance of the lookup tables.
 //
 // Block sizes in bytes / elements per block:
 //   F32 4/1  F16 2/1  BF16 2/1  Q8_0 34/32  IQ4_NL 18/32  Q4_0 18/32
 //   Q3_K 110/256  Q4_K 144/256  Q5_K 176/256  Q6_K 210/256  IQ3_S 110/256  IQ4_XS 136/256
+//   Q2_K 84/256  IQ2_XXS 66/256  IQ2_XS 74/256  IQ2_S 82/256  IQ3_XXS 98/256
+//   IQ1_S 50/256  IQ1_M 56/256 (codebooks: quant/iq-codebooks.zig)
 //   PQ2_0 34/128  PTQ1_0 28/128 (the PrismML fork's ternary blocks; docs/models/bonsai.md)
 
 inline float nu_half(device const uchar * b) {
@@ -190,6 +192,136 @@ inline void nu_dequant_iq3_s(device const uchar * b, uint first, thread float * 
     }
 }
 
+// Q2_K: sixteen four-bit scale/minimum pairs, then four bit planes of 32 bytes
+// per 128-value half, then d and dmin. Mirrors decode.zig's q2Block.
+inline void nu_dequant_q2_k(device const uchar * b, uint first, thread float * out) {
+    float d = nu_half(b + 80), dmin = nu_half(b + 82);
+    uint group = first / 16;
+    float multiplier = d * float(b[group] & 15);
+    float offset = dmin * float(b[group] >> 4);
+    for (uint j = 0; j < 16; ++j) {
+        uint i = first + j;
+        uint code = (b[16 + (i / 128) * 32 + i % 32] >> (2 * ((i % 128) / 32))) & 3;
+        out[j] = multiplier * float(code) - offset;
+    }
+}
+
+// The IQ2/IQ3_XXS sign byte: a 7-bit index whose eighth sign is its parity.
+inline uint nu_signs7(uint index) {
+    uint low = index & 127;
+    return low | ((popcount(low) & 1) << 7);
+}
+
+// Eight grid magnitudes (low byte first) times a scale, negated by `signs`.
+inline void nu_signed_octet(ulong grid, uint signs, float multiplier, thread float * out) {
+    for (uint j = 0; j < 8; ++j) {
+        float value = multiplier * float(uint(grid >> (8 * j)) & 255);
+        out[j] = ((signs >> j) & 1) ? -value : value;
+    }
+}
+
+inline uint nu_u16(device const uchar * b) { return uint(b[0]) | (uint(b[1]) << 8); }
+inline uint nu_u32(device const uchar * b) { return nu_u16(b) | (nu_u16(b + 2) << 16); }
+
+// IQ2_XXS: per 32 values four grid bytes, then a word of four 7-bit sign
+// indices with a four-bit scale on top: d * (0.5 + s) / 4.
+inline void nu_dequant_iq2_xxs(device const uchar * b, uint first, thread float * out) {
+    float d = nu_half(b);
+    uint group = first / 32;
+    device const uchar * data = b + 2 + group * 8;
+    uint word = nu_u32(data + 4);
+    float multiplier = d * ((0.5f + float(word >> 28)) * 0.25f);
+    for (uint h = 0; h < 2; ++h) {
+        uint l = (first % 32) / 8 + h;
+        nu_signed_octet(nu_iq2_xxs_grid[data[l]], nu_signs7(word >> (7 * l)), multiplier, out + 8 * h);
+    }
+}
+
+// IQ2_XS: 16-bit codes (9-bit grid index, 7-bit sign index); one scale
+// nibble per 16 values, low nibble first.
+inline void nu_dequant_iq2_xs(device const uchar * b, uint first, thread float * out) {
+    float d = nu_half(b);
+    uint group = first / 32;
+    uint half16 = (first % 32) / 16;
+    uint scale = half16 == 0 ? (b[66 + group] & 15) : (b[66 + group] >> 4);
+    float multiplier = d * ((0.5f + float(scale)) * 0.25f);
+    for (uint h = 0; h < 2; ++h) {
+        uint l = half16 * 2 + h;
+        uint code = nu_u16(b + 2 + 2 * (group * 4 + l));
+        nu_signed_octet(nu_iq2_xs_grid[code & 511], nu_signs7(code >> 9), multiplier, out + 8 * h);
+    }
+}
+
+// IQ2_S: a 10-bit index (a low byte plus two bits per octet in qh) and a full
+// sign byte per octet; scales as IQ2_XS.
+inline void nu_dequant_iq2_s(device const uchar * b, uint first, thread float * out) {
+    float d = nu_half(b);
+    uint group = first / 32;
+    uint half16 = (first % 32) / 16;
+    uint scale = half16 == 0 ? (b[74 + group] & 15) : (b[74 + group] >> 4);
+    float multiplier = d * ((0.5f + float(scale)) * 0.25f);
+    for (uint h = 0; h < 2; ++h) {
+        uint l = half16 * 2 + h;
+        uint index = uint(b[2 + group * 4 + l]) | (((b[66 + group] >> (2 * l)) & 3) << 8);
+        nu_signed_octet(nu_iq2_s_grid[index], b[34 + group * 4 + l], multiplier, out + 8 * h);
+    }
+}
+
+// IQ3_XXS: two four-magnitude entries per octet, then per 32 values a word of
+// four 7-bit sign indices and a scale: d * (0.5 + s) / 2.
+inline void nu_dequant_iq3_xxs(device const uchar * b, uint first, thread float * out) {
+    float d = nu_half(b);
+    uint group = first / 32;
+    uint word = nu_u32(b + 66 + group * 4);
+    float multiplier = d * ((0.5f + float(word >> 28)) * 0.5f);
+    for (uint h = 0; h < 2; ++h) {
+        uint l = (first % 32) / 8 + h;
+        ulong grid = ulong(nu_iq3_xxs_grid[b[2 + group * 8 + 2 * l]]) | (ulong(nu_iq3_xxs_grid[b[2 + group * 8 + 2 * l + 1]]) << 32);
+        nu_signed_octet(grid, nu_signs7(word >> (7 * l)), multiplier, out + 8 * h);
+    }
+}
+
+// IQ1: a ternary grid entry shifted by +-1/8, times an odd multiple of d.
+inline void nu_shifted_octet(uint index, bool negative_shift, float multiplier, thread float * out) {
+    ulong grid = nu_iq1_s_grid[index];
+    float delta = negative_shift ? -0.125f : 0.125f;
+    for (uint j = 0; j < 8; ++j) out[j] = multiplier * (float(char(uchar(grid >> (8 * j)))) + delta);
+}
+
+// IQ1_S: per 32 values a 16-bit word: four 3-bit high index parts, a 3-bit
+// scale (bits 12-14), and the shift's sign (bit 15).
+inline void nu_dequant_iq1_s(device const uchar * b, uint first, thread float * out) {
+    float d = nu_half(b);
+    uint group = first / 32;
+    uint word = nu_u16(b + 34 + 2 * group);
+    float multiplier = d * float(2 * ((word >> 12) & 7) + 1);
+    for (uint h = 0; h < 2; ++h) {
+        uint l = (first % 32) / 8 + h;
+        uint index = uint(b[2 + group * 4 + l]) | (((word >> (3 * l)) & 7) << 8);
+        nu_shifted_octet(index, (word & 0x8000) != 0, multiplier, out + 8 * h);
+    }
+}
+
+// IQ1_M: no header; the f16 scale is spread over the top nibbles of the four
+// scale words, each 16 values have a 3-bit scale, and each qh nibble holds an
+// index's three high bits and its shift's sign.
+inline void nu_dequant_iq1_m(device const uchar * b, uint first, thread float * out) {
+    uint w0 = nu_u16(b + 48), w1 = nu_u16(b + 50), w2 = nu_u16(b + 52), w3 = nu_u16(b + 54);
+    ushort bits = ushort((w0 >> 12) | ((w1 >> 8) & 0x00f0) | ((w2 >> 4) & 0x0f00) | (w3 & 0xf000));
+    float d = float(as_type<half>(bits));
+    uint group = first / 32;
+    uint half16 = (first % 32) / 16;
+    uint words[4] = { w0, w1, w2, w3 };
+    uint scale = (words[group / 2] >> (6 * (group % 2) + 3 * half16)) & 7;
+    float multiplier = d * float(2 * scale + 1);
+    for (uint h = 0; h < 2; ++h) {
+        uint l = half16 * 2 + h;
+        uint nibble = (b[32 + group * 2 + l / 2] >> (4 * (l % 2))) & 15;
+        uint index = uint(b[group * 4 + l]) | ((nibble & 7) << 8);
+        nu_shifted_octet(index, (nibble & 8) != 0, multiplier, out + 8 * h);
+    }
+}
+
 // Block geometry per encoding id: (bytes per block, elements per block).
 inline uint2 nu_block_geometry(uint encoding) {
     switch (encoding) {
@@ -197,13 +329,20 @@ inline uint2 nu_block_geometry(uint encoding) {
         case 1: return uint2(2, 1);
         case 2: return uint2(18, 32);
         case 8: return uint2(34, 32);
+        case 10: return uint2(84, 256);
         case 11: return uint2(110, 256);
         case 12: return uint2(144, 256);
         case 13: return uint2(176, 256);
         case 14: return uint2(210, 256);
+        case 16: return uint2(66, 256);
+        case 17: return uint2(74, 256);
+        case 18: return uint2(98, 256);
+        case 19: return uint2(50, 256);
         case 20: return uint2(18, 32);
         case 21: return uint2(110, 256);
+        case 22: return uint2(82, 256);
         case 23: return uint2(136, 256);
+        case 29: return uint2(56, 256);
         case 142: return uint2(34, 128);
         case 143: return uint2(28, 128);
         default: return uint2(0, 0);
@@ -222,13 +361,20 @@ inline void nu_segment(device const uchar * row, uint encoding, uint segment, th
     switch (encoding) {
         case 2: nu_dequant_q4_0(block, first, out); break;
         case 8: nu_dequant_q8_0(block, first, out); break;
+        case 10: nu_dequant_q2_k(block, first, out); break;
         case 11: nu_dequant_q3_k(block, first, out); break;
         case 12: nu_dequant_q4_k(block, first, out); break;
         case 13: nu_dequant_q5_k(block, first, out); break;
         case 14: nu_dequant_q6_k(block, first, out); break;
+        case 16: nu_dequant_iq2_xxs(block, first, out); break;
+        case 17: nu_dequant_iq2_xs(block, first, out); break;
+        case 18: nu_dequant_iq3_xxs(block, first, out); break;
+        case 19: nu_dequant_iq1_s(block, first, out); break;
         case 20: nu_dequant_iq4_nl(block, first, out); break;
         case 21: nu_dequant_iq3_s(block, first, out); break;
+        case 22: nu_dequant_iq2_s(block, first, out); break;
         case 23: nu_dequant_iq4_xs(block, first, out); break;
+        case 29: nu_dequant_iq1_m(block, first, out); break;
         case 142: nu_dequant_pq2_0(block, first, out); break;
         case 143: nu_dequant_ptq1_0(block, first, out); break;
         default: for (uint j = 0; j < 16; ++j) out[j] = 0; break;

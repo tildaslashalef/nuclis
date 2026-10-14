@@ -508,6 +508,10 @@ test "packed rows match pinned llama.cpp CPU decoder fixtures exactly" {
     try checkFixture(@embedFile("fixtures/iq.json"), mainline_revision);
 }
 
+test "codebook rows keep the values the cross-encoding-validated decoders gave" {
+    try checkFixture(@embedFile("fixtures/codebook.json"), "nuclis CPU decoders; blocks from ConwayResearch/Underdog-Saluki-27B-1.0 4f60eba0");
+}
+
 test "ternary rows match the PrismML fork's decoder fixtures exactly" {
     try checkFixture(@embedFile("fixtures/ternary.json"), prism_revision);
 }
@@ -618,7 +622,7 @@ fn checkFixture(json: []const u8, revision: []const u8) !void {
         rows: []const struct { encoding: u32, bytes: []const u8, values: []const f32 },
     };
     const alloc = std.testing.allocator;
-    const fixture = try std.json.parseFromSlice(Fixture, alloc, json, .{});
+    const fixture = try std.json.parseFromSlice(Fixture, alloc, json, .{ .ignore_unknown_fields = true });
     defer fixture.deinit();
     try std.testing.expectEqualStrings(revision, fixture.value.revision);
     for (fixture.value.rows) |sample| {

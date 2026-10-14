@@ -206,6 +206,13 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
         .{ .id = 2, .fixture = "simple", .name = "Q4_0" },
         .{ .id = 142, .fixture = "ternary", .name = "PQ2_0" },
         .{ .id = 143, .fixture = "ternary", .name = "PTQ1_0" },
+        .{ .id = 10, .fixture = "codebook", .name = "Q2_K" },
+        .{ .id = 16, .fixture = "codebook", .name = "IQ2_XXS" },
+        .{ .id = 17, .fixture = "codebook", .name = "IQ2_XS" },
+        .{ .id = 22, .fixture = "codebook", .name = "IQ2_S" },
+        .{ .id = 18, .fixture = "codebook", .name = "IQ3_XXS" },
+        .{ .id = 19, .fixture = "codebook", .name = "IQ1_S" },
+        .{ .id = 29, .fixture = "codebook", .name = "IQ1_M" },
     };
     const rounds = 5; // measured command buffers
     // One weight buffer for every case: fresh multi-GB buffers made timings swing
@@ -220,7 +227,7 @@ fn matvecBench(alloc: std.mem.Allocator, only: ?[]const u8) !void {
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(248320 * 4);
     std.debug.print("{s:<8} {s:<26} {s:>9} {s:>8} {s:>9} {s:>9}  rounds (GB/s)\n", .{ "encoding", "shape", "MB", "path", "best", "mean" });
-    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary" }) |fixture_name| {
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         for (encodings) |enc| {
@@ -445,7 +452,7 @@ fn matmulBench(alloc: std.mem.Allocator, tokens: usize) !void {
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(tokens) * 17408 * 4);
     std.debug.print("{s:<8} {s:<24} {s:<11} {s:>8} {s:>9} {s:>10} {s:>8} {s:>8}  rounds (ms), {d} tokens, {d}/round\n", .{ "encoding", "shape", "tile", "MB", "best ms", "GFLOP/s", "tok/s*", "GB/s", tokens, repeats });
-    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary" }) |fixture_name| {
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         for (encodings) |enc| {
@@ -548,7 +555,7 @@ fn matvecRowsBench(alloc: std.mem.Allocator, max_rows: usize, with_head: bool) !
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 13)) / 13 - 0.5;
     const output = try b.create(Backend.matmulPadded(max_rows) * (if (with_head) head_shape.rows else 17408) * 4);
     std.debug.print("{s:<8} {s:<13} {s:>5} {s:>10} {s:>8} {s:>10} {s:>8} {s:>10} {s:>8}  ms/dispatch, GB/s ({d} rounds, {d}/round)\n", .{ "encoding", "shape", "rows", "16x8 ms", "16x8 GB/s", "32x8 ms", "32x8 GB/s", "rows ms", "rows GB/s", rounds, repeats });
-    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary" }) |fixture_name| {
+    inline for (.{ "k-affine", "k-signed", "iq", "simple", "ternary", "codebook" }) |fixture_name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ fixture_name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         for (encodings) |enc| {
@@ -1453,10 +1460,10 @@ fn checkSegments(alloc: std.mem.Allocator) !void {
     const rows = 48;
     const input = try b.create(columns * 4);
     for (input.floats(), 0..) |*x, i| x.* = @as(f32, @floatFromInt(i % 23)) / 23 - 0.5;
-    const packed_output = try b.create(12 * rows * 4);
+    const packed_output = try b.create(24 * rows * 4); // one slice per fixture encoding
     var list: std.ArrayList(Backend.Segment) = .empty;
     defer list.deinit(alloc);
-    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
+    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
         defer fixtures.deinit();
         var seen: [256]bool = @splat(false);
@@ -2861,7 +2868,7 @@ pub fn main(init: std.process.Init) !void {
 
     // 1. Every quantized fixture column through the GPU matvec, exact. The
     // backend is recreated per fixture file to exercise object cleanup.
-    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
+    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
         var backend = try openBackend(alloc);
         defer backend.deinit();
         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
@@ -2924,7 +2931,7 @@ pub fn main(init: std.process.Init) !void {
             for (input) |*x| x.* = random.float(f32) * 2 - 1;
             const decoded = try alloc.alloc(f32, columns);
             defer alloc.free(decoded);
-            inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
+            inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
                 const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
                 defer fixtures.deinit();
                 var seen: [256]bool = @splat(false);
@@ -3073,7 +3080,7 @@ pub fn main(init: std.process.Init) !void {
                 const generic_out = try b.create(padded * mm_rows * 4);
                 const decoded = try alloc.alloc(f32, columns);
                 defer alloc.free(decoded);
-                inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
+                inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
                     const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
                     defer fixtures.deinit();
                     var seen: [256]bool = @splat(false);
@@ -3263,7 +3270,7 @@ pub fn main(init: std.process.Init) !void {
                     for (activations.floats()) |*x| x.* = random.float(f32) * 2 - 1;
                     const decoded = try alloc.alloc(f32, columns);
                     defer alloc.free(decoded);
-                    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary" }) |name| {
+                    inline for (.{ "simple", "k-affine", "k-signed", "iq", "ternary", "codebook" }) |name| {
                         const fixtures = try std.json.parseFromSlice(QuantFixture, alloc, @embedFile("src/quant/fixtures/" ++ name ++ ".json"), .{ .ignore_unknown_fields = true });
                         defer fixtures.deinit();
                         var seen: [256]bool = @splat(false);
