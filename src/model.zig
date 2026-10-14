@@ -1765,10 +1765,10 @@ test "inspect judges the pinned directory supported, runnable, or not, from the 
     try std.testing.expect(std.mem.indexOf(u8, stored.verdict.reason, "outside the qwen35 adapter's executable set") != null);
     try std.testing.expect(stored.directory != null);
     // An encoding nuclis does not store: rejected by the parser, named anyway.
-    const unknown = try inspectFixture(arena, gpa, .{ .encoding = .{ .tensor = "blk.0.ffn_up.weight", .id = 16 } }, entry.sha256, 1 << 20);
+    const unknown = try inspectFixture(arena, gpa, .{ .encoding = .{ .tensor = "blk.0.ffn_up.weight", .id = 24 } }, entry.sha256, 1 << 20);
     try std.testing.expectEqual(.not_runnable, unknown.verdict.status);
     try std.testing.expectEqualStrings("blk.0.ffn_up.weight", unknown.verdict.tensor.?);
-    try std.testing.expectEqualStrings("id 16", unknown.verdict.encoding.?);
+    try std.testing.expectEqualStrings("id 24", unknown.verdict.encoding.?);
     try std.testing.expect(std.mem.indexOf(u8, unknown.verdict.reason, "does not store") != null);
     try std.testing.expect(unknown.directory == null);
     // An architecture without an adapter.

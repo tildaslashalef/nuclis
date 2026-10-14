@@ -150,10 +150,49 @@ projector. A smoke test, not a benchmark.
 
 ## Validation without an external reference
 
-To be filled by this unit: the cross-encoding check against the pinned
-Q4_K_M (per-encoding cosine and relative RMS, with the negative control),
-Metal against the CPU reference, and perplexity against the Q4_K_M on
-nuclis.
+**Decoders.** Unit tests in `quant/decode.zig` pin every field of the
+seven blocks on hand-built data. Then the cross-encoding check (gate
+`saluki-cross-encoding`; `zig build test-cross-encoding -- <saluki>
+<qwen3.8 Q4_K_M> --rows 16`): every matrix both files hold, 16 rows each,
+decoded from Saluki by the new decoders and from the Q4_K_M by decoders
+pinned to llama.cpp's fixtures before 2026-10-14. 2026-10-14, per Saluki
+encoding: the mean over tensors of each tensor's worst-row cosine, the
+worst tensor, the largest relative RMS, and the control (the largest
+|cosine| of a row against a distant row of the other file):
+
+| Encoding | Tensors | Mean cosine | Min | Max rel. RMS | Control |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| IQ1_S | 36 | 0.840 | 0.752 | 0.860 | 0.109 |
+| IQ1_M | 31 | 0.850 | 0.770 | 0.817 | 0.135 |
+| Q2_K | 46 | 0.924 | 0.834 | 0.615 | 0.384 |
+| IQ2_XXS | 119 | 0.916 | 0.857 | 0.609 | 0.383 |
+| IQ2_XS | 39 | 0.942 | 0.930 | 0.421 | 0.211 |
+| IQ2_S | 46 | 0.954 | 0.925 | 0.407 | 0.177 |
+| IQ3_XXS | 30 | 0.967 | 0.931 | 0.367 | 0.349 |
+| IQ3_S | 44 | 0.977 | 0.946 | 0.329 | 0.442 |
+| IQ4_XS | 7 | 0.991 | 0.983 | 0.275 | 0.302 |
+| Q4_K | 4 | 0.989 | 0.983 | 0.185 | 0.119 |
+| Q8_0 | 96 | 0.999 | 0.994 | 0.105 | 0.848 |
+
+Agreement rises with bits per weight, as it must (the Q4_K_M side carries
+its own error, so even Q8_0 stops short of 1). The worst tensors are
+`attn_gate` at IQ1. The control is high only where neighbouring rows of
+small matrices correlate (`ssm_alpha`, `ssm_beta` in Q8_0).
+
+The margin, by breaking one detail at a time (mean cosine, correct →
+broken):
+
+| Broken detail | Encodings | Correct → broken |
+| --- | --- | --- |
+| the eighth sign (parity) dropped | IQ2_XXS, IQ2_XS, IQ3_XXS | 0.916 → 0.790, 0.942 → 0.808, 0.967 → 0.829 |
+| the IQ1 shift's sign inverted (±1/8) | IQ1_S, IQ1_M | 0.840 → 0.779, 0.850 → 0.772 |
+| IQ2_S's high index bits in reverse order | IQ2_S | 0.954 → 0.698 |
+| Q2_K's scale and minimum nibbles swapped | Q2_K | 0.924 → 0.464 |
+| IQ1_M's two per-16 scales swapped | IQ1_M | 0.850 → 0.756 |
+
+The gate's thresholds sit between: IQ1_S and IQ1_M 0.81, Q2_K 0.85,
+IQ2_XXS 0.87, IQ2_XS and IQ2_S 0.88, IQ3_XXS 0.91. They hold for this pair
+of files only.
 
 ## Status
 

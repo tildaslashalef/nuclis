@@ -94,10 +94,13 @@ pub fn build(b: *std.Build) void {
     const generation_check = b.addRunArtifact(inference.artifact("generation-check"));
     generation_check.addPassthruArgs();
     b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&generation_check.step);
-    // Compiles the three check tools without running them, so the gate runner
+    const cross_encoding_check = b.addRunArtifact(inference.artifact("cross-encoding-check"));
+    cross_encoding_check.addPassthruArgs();
+    b.step("test-cross-encoding", "Compare one model's matrices across two files' encodings (-- NEW VALIDATED [--rows n] [--min-cosine x])").dependOn(&cross_encoding_check.step);
+    // Compiles the check tools without running them, so the gate runner
     // can time the build apart from the checks.
-    const check_tools = b.step("check-tools", "Install the vocabulary, Laya, clef, EmbeddingGemma, and generation check tools");
-    for ([_][]const u8{ "vocabulary-check", "laya-check", "clef-check", "embeddinggemma-check", "generation-check" }) |name|
+    const check_tools = b.step("check-tools", "Install the vocabulary, Laya, clef, EmbeddingGemma, generation, and cross-encoding check tools");
+    for ([_][]const u8{ "vocabulary-check", "laya-check", "clef-check", "embeddinggemma-check", "generation-check", "cross-encoding-check" }) |name|
         check_tools.dependOn(&b.addInstallArtifact(inference.artifact(name), .{}).step);
     b.step("test-metal", "Explicit Metal fixture checks (-Dmetal=true)").dependOn(&b.addRunArtifact(inference.artifact("metal-check")).step);
     const matvec_bench = b.addRunArtifact(inference.artifact("metal-check"));

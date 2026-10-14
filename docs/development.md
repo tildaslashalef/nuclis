@@ -135,12 +135,13 @@ Every model-specific numerical check is a *gate* in [`gates.json`](../gates.json
 run by `scripts/gates.py`; bounds, model paths, and evidence anchors live
 there and nowhere else. A gate is one command (an argv with the
 placeholders `{nuclis}`, `{nuclis-cpu}`, `{zig-metal}`, `{zig-cpu}`,
-`{model}`, `{mtp}`, `{trace}`) and a comparator: `exit` (the command's
+`{model}`, `{mtp}`, `{baseline}`, `{mmproj}`, `{trace}`) and a comparator: `exit` (the command's
 status decides: the generation checks, the speculative checks, the Gemma
 and Muse draft checks that compare their own rows, `draft-stats`, the
-vocabulary checks, the perplexity checks) or `trace` (the `{trace}` directory goes through
+vocabulary checks, the perplexity checks, the cross-encoding check against
+its `baseline` file) or `trace` (the `{trace}` directory goes through
 `scripts/compare-generation.py` against the gate's `bounds`). A gate whose
-model files (`model`, `mtp`, or the `mmproj` its command names) are not on
+model files (`model`, `mtp`, `baseline`, or the `mmproj` its command names) are not on
 this machine is skipped, not failed: `SKIP <gate> no model: <path>`, a
 separate count in the summary, `skipped` in `--json`. A skip is not a
 pass; `--strict` turns it into a failure, and `make verify-release` (so

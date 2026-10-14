@@ -93,6 +93,19 @@ pub fn build(b: *std.Build) void {
     const run_generation = b.addRunArtifact(generation_check);
     run_generation.addPassthruArgs();
     b.step("test-generation", "Check CPU full-model session isolation/reset (-- MODEL_PATH)").dependOn(&run_generation.step);
+    const cross_encoding_check = b.addExecutable(.{
+        .name = "cross-encoding-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("cross-encoding-check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "inference", .module = mod }},
+        }),
+    });
+    b.installArtifact(cross_encoding_check);
+    const run_cross_encoding = b.addRunArtifact(cross_encoding_check);
+    run_cross_encoding.addPassthruArgs();
+    b.step("test-cross-encoding", "Compare one model's matrices across two files' encodings (-- NEW VALIDATED [--rows n] [--min-cosine x])").dependOn(&run_cross_encoding.step);
     const metal_check = b.addExecutable(.{
         .name = "metal-check",
         .root_module = b.createModule(.{

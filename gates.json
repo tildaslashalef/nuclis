@@ -39,6 +39,10 @@
   "bonsai": {
    "path": "~/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf"
   },
+  "saluki": {
+   "path": "~/.nuclis/models/ConwayResearch/Underdog-Saluki-27B-1.0/Underdog-Saluki-27B-1.0-IQ2-mix.gguf",
+   "mmproj": "~/.nuclis/models/ConwayResearch/Underdog-Saluki-27B-1.0/mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf"
+  },
   "gemma4_e4b": {
    "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
    "entry": "gemma-4-e4b-qat",
@@ -2401,6 +2405,49 @@
     "kind": "exit"
    },
    "evidence": "docs/models/bonsai.md"
+  },
+  {
+   "name": "saluki-cross-encoding",
+   "family": "saluki",
+   "tier": "verify",
+   "model": "saluki",
+   "baseline": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/cross-encoding-check.zig",
+    "inference/src/formats/**",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-cross-encoding",
+    "--",
+    "{model}",
+    "{baseline}",
+    "--rows",
+    "16",
+    "--min-mean",
+    "IQ1_S=0.81",
+    "--min-mean",
+    "IQ1_M=0.81",
+    "--min-mean",
+    "IQ2_XXS=0.87",
+    "--min-mean",
+    "IQ2_XS=0.88",
+    "--min-mean",
+    "IQ2_S=0.88",
+    "--min-mean",
+    "IQ3_XXS=0.91",
+    "--min-mean",
+    "Q2_K=0.85"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/models/saluki.md"
   },
   {
    "name": "qwen38-perplexity",
