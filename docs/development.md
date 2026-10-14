@@ -243,7 +243,7 @@ What can break independently, and what protects it. *Model-free* means
 
 | Axis | Model-free | Gates that alone cover it |
 | --- | --- | --- |
-| matvec, matmul tiles, embed gather, per encoding | every quant fixture encoding (Q4_0, Q8_0, IQ4_NL, Q3–Q6_K, IQ3_S, IQ4_XS, PQ2_0, PTQ1_0) against the CPU, the CPU decoders against llama.cpp's blocks, and F32/F16/BF16 matvec and matmul tiles on random weights (`checkDenseEncodings`) | — |
+| matvec, matmul tiles, embed gather, per encoding | every quant fixture encoding (Q4_0, Q8_0, IQ4_NL, Q3–Q6_K, IQ3_S, IQ4_XS, PQ2_0, PTQ1_0, and the codebook fixture's Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS) against the CPU, the CPU decoders against llama.cpp's blocks (the codebook encodings against the cross-encoding check instead), and F32/F16/BF16 matvec and matmul tiles on random weights (`checkDenseEncodings`) | — |
 | attention: decode, chunk, windowed, F16 cache | fixtures to 16K keys, and Gemma's geometries (16 heads of 512 over one or two KV heads, 16 of 256 over 8) | — |
 | DeltaNet, Hadamard, RoPE, norms, softcap, sampling kernels | fixtures | — |
 | Metal `layerNorm`, `addBiasRows` | strided rows against the CPU (`checkVisionNorms`) | — |

@@ -32,14 +32,16 @@ guides worth reading before touching an artifact:
   Every tensor's actual encoding is enumerated by `nuclis inspect`
   ([gguf.md](../engine/gguf.md)) and the loader rejects
   unimplemented encodings explicitly; it never requantizes. Implemented
-  (checked 2026-09-09 against `quant/decode.zig` and the Qwen binder, Q4_0
-  added 2026-09-12 by [MODL-08](https://github.com/tildaslashalef/nuclis/blob/v0.6.0/docs/worklog.md#modl-08--q4_0-path-and-the-qat-catalogue-entry-2026-09-12)): F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL,
-  IQ3_S, IQ4_XS, and Q4_0 for matrices (F16 decodes on the CPU but the
+  (checked 2026-10-14 against `quant/decode.zig` and the adapters'
+  `executableEncoding`): F32, Q8_0, Q3_K, Q4_K, Q5_K, Q6_K, IQ4_NL, IQ3_S,
+  IQ4_XS, Q4_0, BF16, the ternary PQ2_0 and PTQ1_0, and since 2026-10-14
+  Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, and IQ3_XXS
+  ([saluki.md](saluki.md)) for matrices (F16 decodes on the CPU but the
   adapters do not accept it for a matrix; the Qwen adapter's executable
   set does not list Q4_0, the Gemma adapter's does); specialized Metal
   matvec and matmul kernels exist for Q3_K, Q4_K, Q5_K, Q6_K, IQ3_S,
-  IQ4_XS, and Q4_0, the generic kernels serve the rest. Not implemented:
-  Q4_1, Q2_K, BF16, Q8_K, IQ1_*, IQ2_*, IQ3_XXS, MXFP4. A repository file is *runnable* when every tensor is in the
+  IQ4_XS, Q4_0, PQ2_0, and PTQ1_0, the generic kernels serve the rest.
+  Not implemented: Q4_1, Q8_K, MXFP4. A repository file is *runnable* when every tensor is in the
   implemented set (only `inspect` can tell; the filename cannot) and
   *supported* only when the catalogue pins it (see [the catalogue](#the-catalogue)). Every
   correctness fixture and benchmark record cites the pinned file.

@@ -194,7 +194,87 @@ The gate's thresholds sit between: IQ1_S and IQ1_M 0.81, Q2_K 0.85,
 IQ2_XXS 0.87, IQ2_XS and IQ2_S 0.88, IQ3_XXS 0.91. They hold for this pair
 of files only.
 
+**GPU decoders.** `dequant.metal` decodes the seven encodings with the
+CPU's operation order (the shaders compile in safe math mode), from the
+same codebooks emitted into the shader source. `metal-check` holds them to
+the [codebook fixture](../../inference/src/quant/fixtures/codebook.json)
+(two real blocks of each, the CPU decoders' values): the embedding gather
+bit-identical, the matvec, merged-segment, multi-row, and matmul paths
+within their usual bounds.
+
+**The forward.** It is the Qwen3.8 schedule, unchanged. nuclis's CPU
+reference recorded `tests/fixtures/saluki-hello-comma` (`Hello,`, greedy
+token 353); the gates hold Metal to it:
+
+| Gate | Max abs | Rel. RMS | Bound |
+| --- | ---: | ---: | --- |
+| `saluki-trace-cpu` | 0 | 0 | 2e-3 / 1e-4 (a regression pin) |
+| `saluki-trace-f32` | 1.68e-4 | 8.5e-7 | 2e-3 / 1e-4 |
+| `saluki-trace-f16` | 2.42e-2 | 2.63e-4 | 3e-2 / 4e-4 |
+
+The F16 bound is wider than Qwen3.8's 2e-4, and the deviation is the
+cache's: the F16 and F32 runs are equal through layers 0–2 (DeltaNet),
+part at layer 3, the first attention layer (relative RMS 9.5e-6), and
+grow to 1.6e-4 by layer 63; the logits stay within 3.7e-5 with the same
+greedy token. The F16 attention kernels themselves are checked against the
+CPU on rounded operands by `metal-check`.
+
+**Quality.** `nuclis eval --file wiki.test.raw --chunks 8 --prompt-profile
+qwen38` (8 windows of 512, the last 255 tokens of each scored), Metal, F16
+cache, 2026-10-14: Saluki **7.996 ± 0.455**, the Qwen3.8 Q4_K_M 6.670 ±
+0.363 (+19.9 %).
+
+**In use.** Registered as `saluki-27b` with its projector and the Qwen3.8
+profile (`nuclis model pull … --register saluki-27b --profile qwen38`; the
+template is not an alias of the pinned profile, as for Bonsai 2). Through
+`nuclis serve`, the four requests sent to llama-server above: a chat
+answer, the arithmetic question (141), three parallel tool calls with
+correct arguments, and the logo described, "on a black background": the
+PNG is transparent and the preprocessor drops alpha unpremultiplied
+([vision.md](../engine/vision.md)). The requests' llama.cpp switch
+`chat_template_kwargs.enable_thinking` is not read by nuclis, which takes
+OpenAI's `reasoning_effort: "none"` ([api.md](../guide/api.md)), so they
+reasoned first.
+
+## Speed
+
+`nuclis bench --model saluki-27b --prompt-tokens <array> --max-tokens 128
+--ctx-size 32768 --kv f16` with the pinned arrays
+(`tests/fixtures/run-2026-09-06/prompt-<n>.json`,
+`boundary-2026-09-06/prompt-32639.json`), Metal, ReleaseSafe, generic
+kernels (no specialized kernel for the seven encodings yet), 2026-10-14.
+At 512 one warmup and three runs; at the longer prompts one run (a
+baseline, not a record). Tokens per second, nuclis / the llama.cpp record:
+
+| | 512 | 4,096 | 16,384 | 32,639 |
+| --- | ---: | ---: | ---: | ---: |
+| Decode | 7.22 / 12.46 | 6.92 / 12.21 | 6.28 / 11.47 | 6.15 / 9.54 |
+| Prefill | 66.96 / 97.19 | 62.67 / 96.58 | 50.35 / 84.40 | 42.11 / 78.87 |
+
+The matvecs alone (`zig build bench-kernels -Dmetal=true -- <ENC>`, GPU
+busy time, best of five rounds, GB/s of weights read), on the generic
+kernel, against Q4_K's specialized and generic kernels the same day:
+
+| Encoding | 69632×5120 | 20480×17408 | 5120×17408 |
+| --- | ---: | ---: | ---: |
+| IQ1_S | 45.2 | 45.2 | 43.8 |
+| IQ1_M | 44.3 | 44.2 | 43.1 |
+| Q2_K | 46.2 | 46.0 | 45.0 |
+| IQ2_XXS | 53.8 | 53.8 | 51.2 |
+| IQ2_XS | 65.3 | 65.3 | 61.9 |
+| IQ2_S | 73.9 | 73.9 | 71.4 |
+| IQ3_XXS | 82.9 | 81.9 | 78.2 |
+| Q4_K, specialized | 197.9 | 178.8 | 177.4 |
+| Q4_K, generic | 102.9 | 106.2 | 102.7 |
+
+The generic path decodes 16 values per call through a switch on the
+encoding; at two bits the decode, not the read, is the cost. The goal
+needs the seven at Q4_K's specialized rate.
+
 ## Status
 
-In bring-up (2026-10-14): the file is pinned and inventoried; nuclis
-rejects it until the seven encodings land.
+Bring-up (2026-10-14): the file validates and binds, the seven encodings
+decode on the CPU and on Metal, Metal matches the CPU reference's traces,
+and the model chats, calls tools, and reads images through `nuclis
+serve`. Speed is the generic kernels'; the specialized 2-bit matvecs and
+the goal above are the next unit.

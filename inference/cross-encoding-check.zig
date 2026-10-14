@@ -77,7 +77,7 @@ pub fn main(init: std.process.Init) !void {
         var tensor_control: f64 = 0;
         const count = @min(sample_rows, rows);
         for (0..count) |k| {
-            const r = k * (rows - 1) / (count - 1);
+            const r = if (count > 1) k * (rows - 1) / (count - 1) else 0;
             try new_view.row(tensor, r, a);
             try validated_view.row(other, r, b);
             try validated_view.row(other, (r + rows / 2) % rows, distant);
