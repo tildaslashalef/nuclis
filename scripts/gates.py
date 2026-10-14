@@ -34,7 +34,17 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "gates.json"
 TIERS = ("verify", "verify-release", "verify-long", "verify-cpu")
 COMPARATORS = ("exit", "trace")
-PLACEHOLDERS = ("{nuclis}", "{nuclis-cpu}", "{zig-metal}", "{zig-cpu}", "{model}", "{mtp}", "{mmproj}", "{trace}")
+PLACEHOLDERS = (
+    "{nuclis}",
+    "{nuclis-cpu}",
+    "{zig-metal}",
+    "{zig-cpu}",
+    "{model}",
+    "{mtp}",
+    "{baseline}",
+    "{mmproj}",
+    "{trace}",
+)
 TRACE_ROOT = ".zig-cache/gates/trace"
 CPU_PREFIX = ".zig-cache/gates/cpu"
 TIMES = ROOT / ".zig-cache/gates/times.json"
@@ -67,7 +77,7 @@ def validate(doc):
         seen.add(name)
         if gate.get("tier") not in TIERS:
             problems.append(f"{name}: tier must be one of {TIERS}")
-        for key in ("model", "mtp"):
+        for key in ("model", "mtp", "baseline"):
             if key in gate and gate[key] not in models:
                 problems.append(f'{name}: {key} names an unknown model "{gate[key]}"')
         if "model" not in gate:
@@ -85,6 +95,8 @@ def validate(doc):
                         problems.append(f"{name}: unknown placeholder {token}")
             if "{mtp}" in " ".join(command) and "mtp" not in gate:
                 problems.append(f"{name}: command uses {{mtp}} but the gate names no mtp")
+            if "{baseline}" in " ".join(command) and "baseline" not in gate:
+                problems.append(f"{name}: command uses {{baseline}} but the gate names no baseline")
             if "{mmproj}" in " ".join(command) and "mmproj" not in models.get(gate.get("model"), {}):
                 problems.append(f'{name}: command uses {{mmproj}} but model "{gate.get("model")}" names no mmproj')
         comparator = gate.get("comparator", {})
@@ -204,7 +216,7 @@ def expand(argv, gate, doc, env=None):
         "{zig-cpu}": ["zig", "build"] + zig_flags(doc, "cpu"),
     }
     scalars = {"{trace}": f"{TRACE_ROOT}/{gate['name']}"}
-    for key in ("model", "mtp"):
+    for key in ("model", "mtp", "baseline"):
         if key in gate:
             scalars["{" + key + "}"] = model_path(doc, gate[key], env)
     entry = doc["models"].get(gate.get("model"), {})
@@ -241,9 +253,9 @@ def model_path(doc, key, env=None):
 
 
 def missing_files(gate, doc, env=None):
-    """The model files a gate reads (`model`, `mtp`, and the entry's `mmproj`
-    when its command names it) that are not on this machine."""
-    paths = [model_path(doc, gate[key], env) for key in ("model", "mtp") if key in gate]
+    """The model files a gate reads (`model`, `mtp`, `baseline`, and the
+    entry's `mmproj` when its command names it) that are not on this machine."""
+    paths = [model_path(doc, gate[key], env) for key in ("model", "mtp", "baseline") if key in gate]
     entry = doc["models"].get(gate.get("model"), {})
     if "mmproj" in entry and any("{mmproj}" in arg for arg in gate["command"]):
         paths.append(os.path.expanduser(entry["mmproj"]))

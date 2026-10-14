@@ -91,6 +91,9 @@ Facts every unit depends on; keep them here, not in `TODO.md`.
   and mainline build `b11514` (`de7fa0a3c`), which runs EmbeddingGemma 2, under
   `.reference/llama.cpp-embed`
   ([llama-cpp.md § The third oracle](benchmarks/llama-cpp.md#the-third-oracle-embeddinggemma-2-2026-10-09)).
+  Master `529ac893e` (2026-10-14), under `.reference/llama.cpp-latest`,
+  took the last external record ([saluki.md](models/saluki.md#the-llamacpp-record-2026-10-14));
+  since then nuclis is its own reference and no new oracle is built.
   EmbeddingGemma 2's semantic oracle is sentence-transformers 6.1 in a venv
   at `.reference/venv-embed` (the recipe heads
   `scripts/embedding-reference.py`), with Google's checkpoint in float32.
@@ -132,12 +135,13 @@ Every model-specific numerical check is a *gate* in [`gates.json`](../gates.json
 run by `scripts/gates.py`; bounds, model paths, and evidence anchors live
 there and nowhere else. A gate is one command (an argv with the
 placeholders `{nuclis}`, `{nuclis-cpu}`, `{zig-metal}`, `{zig-cpu}`,
-`{model}`, `{mtp}`, `{trace}`) and a comparator: `exit` (the command's
+`{model}`, `{mtp}`, `{baseline}`, `{mmproj}`, `{trace}`) and a comparator: `exit` (the command's
 status decides: the generation checks, the speculative checks, the Gemma
 and Muse draft checks that compare their own rows, `draft-stats`, the
-vocabulary checks, the perplexity checks) or `trace` (the `{trace}` directory goes through
+vocabulary checks, the perplexity checks, the cross-encoding check against
+its `baseline` file) or `trace` (the `{trace}` directory goes through
 `scripts/compare-generation.py` against the gate's `bounds`). A gate whose
-model files (`model`, `mtp`, or the `mmproj` its command names) are not on
+model files (`model`, `mtp`, `baseline`, or the `mmproj` its command names) are not on
 this machine is skipped, not failed: `SKIP <gate> no model: <path>`, a
 separate count in the summary, `skipped` in `--json`. A skip is not a
 pass; `--strict` turns it into a failure, and `make verify-release` (so
@@ -239,7 +243,7 @@ What can break independently, and what protects it. *Model-free* means
 
 | Axis | Model-free | Gates that alone cover it |
 | --- | --- | --- |
-| matvec, matmul tiles, embed gather, per encoding | every quant fixture encoding (Q4_0, Q8_0, IQ4_NL, Q3–Q6_K, IQ3_S, IQ4_XS, PQ2_0, PTQ1_0) against the CPU, the CPU decoders against llama.cpp's blocks, and F32/F16/BF16 matvec and matmul tiles on random weights (`checkDenseEncodings`) | — |
+| matvec, matmul tiles, embed gather, per encoding | every quant fixture encoding (Q4_0, Q8_0, IQ4_NL, Q3–Q6_K, IQ3_S, IQ4_XS, PQ2_0, PTQ1_0, and the codebook fixture's Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS) against the CPU, the CPU decoders against llama.cpp's blocks (the codebook encodings against the cross-encoding check instead), and F32/F16/BF16 matvec and matmul tiles on random weights (`checkDenseEncodings`) | — |
 | attention: decode, chunk, windowed, F16 cache | fixtures to 16K keys, and Gemma's geometries (16 heads of 512 over one or two KV heads, 16 of 256 over 8) | — |
 | DeltaNet, Hadamard, RoPE, norms, softcap, sampling kernels | fixtures | — |
 | Metal `layerNorm`, `addBiasRows` | strided rows against the CPU (`checkVisionNorms`) | — |

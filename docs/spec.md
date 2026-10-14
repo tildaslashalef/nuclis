@@ -83,7 +83,7 @@ deferred (§10).
 | Adapters and profiles register through tables; the enum, the executor union, and the known-architecture list derive from them. | A family costs its own files and one line, and two lists cannot disagree. |
 | A profile is selected by the chat template's SHA-256, never by architecture; the profile owns the stop set, the reasoning markers, and tool rendering and decoding in both directions. | Two files of one family can ship different templates; nothing outside `profiles/` may name a template's tokens. |
 | Every adapter writes its schedule twice, CPU and Metal; no shared op list. | Three families showed the variation is in kernel parameters and instantiations, not operation order. |
-| External implementations are references and oracles, never sources to copy. | The engine is implemented from the format and the mathematics; equivalence is proved by fixtures and traces. |
+| nuclis is its own reference: new work is validated against its already-validated paths, not an external implementation. External code is never a source to copy and is read only as the definition of a format that has no other. | The engine is implemented from the format and the mathematics. Its CPU reference, its Metal plans, and its files already matched to llama.cpp's traces are a mature base (decided 2026-10-14); the fixtures and traces pinned from llama.cpp before then stay as committed data. |
 | Speculative decoding is exact by construction, switched per family by its measured verdict, and off changes nothing in the ordinary path. | A speedup claim needs a true baseline in the same process; the ordinary loop must not pay for a feature it does not use. |
 | The catalogue pins repository, file, revision, digest, profile, and companions per entry. | A supported model is a specific file, not a name. |
 | Configuration is one JSON file whose schema is a Zig struct; precedence is defaults < profile < file < registry entry < flags. | The file, the loader, the validator, and the printer cannot disagree about which keys exist. |
@@ -179,9 +179,11 @@ profiles, kernels, and stop tokens are resolved at load.
 Parsing **must** be bounds-checked against the file size and the
 parser's own limits before any weight byte is read, with overflow-checked
 arithmetic on sizes. A malformed or truncated file is a typed error, never
-a panic. Tensor encodings **must** be decoded by CPU reference decoders
-pinned against the reference implementation's fixtures; every GPU decoder
-**must** be bit-identical to its CPU decoder.
+a panic. Tensor encodings **must** be decoded by CPU reference decoders whose
+fields are pinned by unit tests on hand-built blocks and whose rows agree
+with the same model's weights in an already-validated encoding (the
+cross-encoding check, [models/README.md § 4](models/README.md#4-validate-against-nuclis-itself));
+every GPU decoder **must** be bit-identical to its CPU decoder.
 
 ### 5.3 Memory model
 
@@ -800,9 +802,10 @@ API lookup tool, and a second product surface.
   [benchmarks § Acceptance runs](benchmarks/README.md#acceptance-runs).
 - Weights stay quantized on the GPU path; prefill is chunked with planned
   scratch.
-- Claims are made against the pinned llama.cpp build on the exact token
-  arrays, with equivalent context, cache precision, sampling, and output
-  budget, and each record names chip, OS, compiler, revision, artifact
+- Claims are made against nuclis's own previous record on the same
+  machine and method (the pinned llama.cpp build for records before
+  2026-10-14), with equivalent context, cache precision, sampling, and
+  output budget, and each record names chip, OS, compiler, revision, artifact
   hash, power mode, warm-up policy, and memory use. Prefill and decode are
   reported separately; no absolute throughput target is set by this
   document.

@@ -142,6 +142,20 @@ code order within bytes and the +2 code, PTQ1_0's digit-major runs and
 four-trit tail from a canonical packing, and BF16's widening of a subnormal,
 signed zero, infinity, and NaN.
 
+Q2_K, IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, and IQ3_XXS (2026-10-14) were
+validated without an external decoder: hand-calculated tests pin every field
+of each block (scale and minimum nibbles, grid indices and their high bits,
+the 7-bit sign indices with parity as the eighth sign, the IQ1 shift of ±1/8
+and its sign, IQ1_M's scale rebuilt from four nibbles), and the
+cross-encoding check compares whole models' rows with an already-validated
+encoding of the same weights ([saluki.md § Validation](../models/saluki.md#validation-without-an-external-reference)).
+Their codebooks come from `scripts/iq-codebooks.py`. The
+[codebook fixture](../../inference/src/quant/fixtures/codebook.json) holds
+two real blocks of each from Saluki 27B, written by `zig build
+test-cross-encoding -- --fixture <out> <saluki.gguf>` with the CPU
+decoders' values: a regression pin for the CPU and the rows `metal-check`
+holds the GPU decoders to, bit for bit.
+
 Default tests consume only the committed fixtures and need no external checkout or model:
 
 ```sh

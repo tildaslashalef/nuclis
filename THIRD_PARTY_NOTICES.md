@@ -68,18 +68,24 @@ failures, the head in F32 rather than the release's BF16, images at most
 
 #### GGML storage-format constants — MIT (ggml authors)
 
-Two lookup tables define GGML quantization formats and exist nowhere but the
-ggml/llama.cpp sources; any decoder of these formats must contain the same
-numbers. They were extracted from llama.cpp revision
+These lookup tables define GGML quantization formats and exist nowhere but
+the ggml/llama.cpp sources; any decoder of these formats must contain the
+same numbers. They were extracted from llama.cpp revision
 `7620399f58aebfd2196b74021f9581bcf7218cb9`, `ggml/src/ggml-common.h`:
 
 - the 512-entry IQ3_S codebook, `inference/src/quant/iq3-grid.zig`
   (also emitted into the Metal shader source at compile time);
+- the IQ2_XXS (256), IQ2_XS (512), IQ2_S (1,024), IQ3_XXS (256), and
+  IQ1_S (2,048; IQ1_M shares it) codebooks,
+  `inference/src/quant/iq-codebooks.zig`, written by
+  `scripts/iq-codebooks.py` (the IQ2 sign table is computed, not copied);
 - the 16-entry IQ4_NL value table in `inference/src/quant/decode.zig` and
   `inference/src/backends/metal/dequant.metal`.
 
 The decoders themselves (Zig and MSL) are independent implementations of the
-documented block layouts, verified against pinned fixtures. The tables are
+documented block layouts, verified against pinned fixtures or, for the
+codebook encodings above, against the same model in a validated encoding
+(docs/models/saluki.md). The tables are
 retained with the ggml copyright notice as a conservative attribution:
 Copyright (c) 2023-2026 The ggml authors, MIT License,
 [llama.cpp LICENSE](https://github.com/ggml-org/llama.cpp/blob/master/LICENSE).

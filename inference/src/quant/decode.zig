@@ -9,10 +9,14 @@
 //! shares IQ4_NL's 18-byte block and nibble order with a linear code
 //! (`q - 8`) in place of the table. PQ2_0 and PTQ1_0 are the PrismML fork's
 //! group-128 ternary blocks (`w = d * t`, `t` in {-1, 0, +1}), verified against
-//! the fork's own decoder (docs/models/bonsai.md).
+//! the fork's own decoder (docs/models/bonsai.md). Q2_K, IQ1_S, IQ1_M,
+//! IQ2_XXS, IQ2_XS, IQ2_S, and IQ3_XXS index the codebooks in
+//! `iq-codebooks.zig`; their rows are validated against the same model in a
+//! validated encoding (docs/models/saluki.md).
 const std = @import("std");
 const encoding = @import("../tensor/encoding.zig");
 const iq3_grid = @import("iq3-grid.zig").values;
+const codebooks = @import("iq-codebooks.zig");
 
 pub const Error = error{ UnsupportedEncoding, InvalidRowLength, InvalidByteLength };
 
@@ -54,10 +58,15 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
                     output[out + j] = scale * @as(f32, @floatFromInt(signed));
                 }
             },
+            10 => q2Block(block, output[out..][0..256]),
             11 => q3Block(block, output[out..][0..256]),
             12 => kBlock(false, block, output[out..][0..256]),
             13 => kBlock(true, block, output[out..][0..256]),
             14 => q6Block(block, output[out..][0..256]),
+            16 => iq2XxsBlock(block, output[out..][0..256]),
+            17 => iq2XsBlock(block, output[out..][0..256]),
+            18 => iq3XxsBlock(block, output[out..][0..256]),
+            19 => iq1SBlock(block, output[out..][0..256]),
             20 => {
                 const scale = half(block[0..2]);
                 // Low nibbles are the first half-row, high nibbles the second;
@@ -68,7 +77,9 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
                 }
             },
             21 => iq3Block(block, output[out..][0..256]),
+            22 => iq2SBlock(block, output[out..][0..256]),
             23 => iq4XsBlock(block, output[out..][0..256]),
+            29 => iq1MBlock(block, output[out..][0..256]),
             // BF16 is the high half of an IEEE single: widen, never round.
             30 => output[out] = @bitCast(@as(u32, std.mem.readInt(u16, block[0..2], .little)) << 16),
             142 => {
@@ -93,7 +104,7 @@ pub fn row(id: u32, bytes: []const u8, output: []f32) Error!void {
 /// block-size rules remain centralized in the quantization module.
 pub fn validateRow(id: u32, byte_count: usize, element_count: usize) Error!void {
     switch (id) {
-        0, 1, 2, 8, 11, 12, 13, 14, 20, 21, 23, 30, 142, 143 => {},
+        0, 1, 2, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 29, 30, 142, 143 => {},
         else => return error.UnsupportedEncoding,
     }
     const layout = encoding.layout(id).?;
@@ -214,6 +225,151 @@ fn iq3Block(block: []const u8, output: []f32) void {
                 const value = multiplier * @as(f32, @floatFromInt(magnitude));
                 output[i] = if (negative != 0) -value else value;
             }
+        }
+    }
+}
+
+/// Q2_K: sixteen groups of 16 two-bit codes, each with a four-bit scale (low
+/// nibble) and a four-bit minimum (high nibble) under two block scales. Each
+/// 128-value half packs four bit planes of 32 bytes.
+fn q2Block(block: []const u8, output: []f32) void {
+    const d = half(block[80..82]);
+    const dmin = half(block[82..84]);
+    for (0..16) |group| {
+        const multiplier = d * @as(f32, @floatFromInt(block[group] & 15));
+        const offset = dmin * @as(f32, @floatFromInt(block[group] >> 4));
+        for (0..16) |column| {
+            const i = group * 16 + column;
+            const shift: u3 = @intCast(2 * ((i % 128) / 32));
+            const code = (block[16 + (i / 128) * 32 + i % 32] >> shift) & 3;
+            output[i] = multiplier * @as(f32, @floatFromInt(code)) - offset;
+        }
+    }
+}
+
+/// IQ2 and IQ3_XXS signs: a 7-bit index whose eighth sign is its parity, so
+/// every group of eight carries an even number of negatives.
+fn signs7(index: u32) u8 {
+    const low: u8 = @intCast(index & 127);
+    return low | (@as(u8, @popCount(low) & 1) << 7);
+}
+
+/// Eight grid magnitudes times a scale, each negated by its bit in `signs`.
+fn signedOctet(grid: u64, signs: u8, multiplier: f32, output: *[8]f32) void {
+    for (output, 0..) |*result, j| {
+        const shift: u6 = @intCast(8 * j);
+        const value = multiplier * @as(f32, @floatFromInt((grid >> shift) & 255));
+        const bit: u3 = @intCast(j);
+        result.* = if ((signs >> bit) & 1 != 0) -value else value;
+    }
+}
+
+/// IQ2_XXS: per 32 values, four grid bytes then a word holding four 7-bit
+/// sign indices and a four-bit scale `s` in its top bits: `d * (0.5 + s) / 4`.
+fn iq2XxsBlock(block: []const u8, output: []f32) void {
+    const d = half(block[0..2]);
+    for (0..8) |group| {
+        const data = block[2 + group * 8 ..][0..8];
+        const word = std.mem.readInt(u32, data[4..8], .little);
+        const multiplier = d * ((0.5 + @as(f32, @floatFromInt(word >> 28))) * 0.25);
+        for (0..4) |l| {
+            const shift: u5 = @intCast(7 * l);
+            signedOctet(codebooks.iq2_xxs[data[l]], signs7(word >> shift), multiplier, output[group * 32 + l * 8 ..][0..8]);
+        }
+    }
+}
+
+/// IQ2_XS: 16-bit codes (9-bit grid index, 7-bit sign index); one scale
+/// nibble per 16 values, low nibble first.
+fn iq2XsBlock(block: []const u8, output: []f32) void {
+    const d = half(block[0..2]);
+    for (0..8) |group| {
+        const scales = block[66 + group];
+        for (0..4) |l| {
+            const code = std.mem.readInt(u16, block[2 + 2 * (group * 4 + l) ..][0..2], .little);
+            const scale = if (l < 2) scales & 15 else scales >> 4;
+            const multiplier = d * ((0.5 + @as(f32, @floatFromInt(scale))) * 0.25);
+            signedOctet(codebooks.iq2_xs[code & 511], signs7(code >> 9), multiplier, output[group * 32 + l * 8 ..][0..8]);
+        }
+    }
+}
+
+/// IQ2_S: a 10-bit grid index (a low byte, two high bits per octet in `qh`)
+/// and a full sign byte per octet; scales as IQ2_XS.
+fn iq2SBlock(block: []const u8, output: []f32) void {
+    const d = half(block[0..2]);
+    for (0..8) |group| {
+        const scales = block[74 + group];
+        const high = block[66 + group];
+        for (0..4) |l| {
+            const shift: u3 = @intCast(2 * l);
+            const index = @as(u16, block[2 + group * 4 + l]) | (@as(u16, (high >> shift) & 3) << 8);
+            const scale = if (l < 2) scales & 15 else scales >> 4;
+            const multiplier = d * ((0.5 + @as(f32, @floatFromInt(scale))) * 0.25);
+            signedOctet(codebooks.iq2_s[index], block[34 + group * 4 + l], multiplier, output[group * 32 + l * 8 ..][0..8]);
+        }
+    }
+}
+
+/// IQ3_XXS: two 4-magnitude grid entries per octet (64 index bytes), then per
+/// 32 values a word of four 7-bit sign indices and a scale: `d * (0.5 + s) / 2`.
+fn iq3XxsBlock(block: []const u8, output: []f32) void {
+    const d = half(block[0..2]);
+    for (0..8) |group| {
+        const word = std.mem.readInt(u32, block[66 + group * 4 ..][0..4], .little);
+        const multiplier = d * ((0.5 + @as(f32, @floatFromInt(word >> 28))) * 0.5);
+        for (0..4) |l| {
+            const shift: u5 = @intCast(7 * l);
+            const first: u64 = codebooks.iq3_xxs[block[2 + group * 8 + 2 * l]];
+            const second: u64 = codebooks.iq3_xxs[block[2 + group * 8 + 2 * l + 1]];
+            signedOctet(first | (second << 32), signs7(word >> shift), multiplier, output[group * 32 + l * 8 ..][0..8]);
+        }
+    }
+}
+
+/// IQ1 values: a ternary grid entry shifted by ±1/8, times an odd multiple of d.
+fn shiftedOctet(index: u16, negative_shift: bool, multiplier: f32, output: *[8]f32) void {
+    const grid = codebooks.iq1_s[index];
+    const delta: f32 = if (negative_shift) -0.125 else 0.125;
+    for (output, 0..) |*result, j| {
+        const shift: u6 = @intCast(8 * j);
+        const component: i8 = @bitCast(@as(u8, @truncate(grid >> shift)));
+        result.* = multiplier * (@as(f32, @floatFromInt(component)) + delta);
+    }
+}
+
+/// IQ1_S: per 32 values a 16-bit word with four 3-bit high index parts, a
+/// 3-bit scale (bits 12-14), and the shift's sign (bit 15).
+fn iq1SBlock(block: []const u8, output: []f32) void {
+    const d = half(block[0..2]);
+    for (0..8) |group| {
+        const word = std.mem.readInt(u16, block[34 + 2 * group ..][0..2], .little);
+        const multiplier = d * @as(f32, @floatFromInt(2 * ((word >> 12) & 7) + 1));
+        for (0..4) |l| {
+            const shift: u4 = @intCast(3 * l);
+            const index = @as(u16, block[2 + group * 4 + l]) | (((word >> shift) & 7) << 8);
+            shiftedOctet(index, word & 0x8000 != 0, multiplier, output[group * 32 + l * 8 ..][0..8]);
+        }
+    }
+}
+
+/// IQ1_M: no block header; the f16 scale is spread over the top nibbles of
+/// the four scale words, and each 16 values have their own 3-bit scale. Each
+/// `qh` nibble holds an index's three high bits and its shift's sign.
+fn iq1MBlock(block: []const u8, output: []f32) void {
+    var words: [4]u16 = undefined;
+    for (&words, 0..) |*word, k| word.* = std.mem.readInt(u16, block[48 + 2 * k ..][0..2], .little);
+    const bits = (words[0] >> 12) | ((words[1] >> 8) & 0x00f0) | ((words[2] >> 4) & 0x0f00) | (words[3] & 0xf000);
+    const d: f32 = @floatCast(@as(f16, @bitCast(bits)));
+    for (0..8) |group| {
+        const base: u4 = @intCast(6 * (group % 2));
+        for (0..4) |l| {
+            const nibble_shift: u3 = @intCast(4 * (l % 2));
+            const nibble = (block[32 + group * 2 + l / 2] >> nibble_shift) & 15;
+            const scale = (words[group / 2] >> (base + @as(u4, if (l < 2) 0 else 3))) & 7;
+            const multiplier = d * @as(f32, @floatFromInt(2 * scale + 1));
+            const index = @as(u16, block[group * 4 + l]) | (@as(u16, nibble & 7) << 8);
+            shiftedOctet(index, nibble & 8 != 0, multiplier, output[group * 32 + l * 8 ..][0..8]);
         }
     }
 }
@@ -352,6 +508,10 @@ test "packed rows match pinned llama.cpp CPU decoder fixtures exactly" {
     try checkFixture(@embedFile("fixtures/iq.json"), mainline_revision);
 }
 
+test "codebook rows keep the values the cross-encoding-validated decoders gave" {
+    try checkFixture(@embedFile("fixtures/codebook.json"), "nuclis CPU decoders; blocks from ConwayResearch/Underdog-Saluki-27B-1.0 4f60eba0");
+}
+
 test "ternary rows match the PrismML fork's decoder fixtures exactly" {
     try checkFixture(@embedFile("fixtures/ternary.json"), prism_revision);
 }
@@ -462,7 +622,7 @@ fn checkFixture(json: []const u8, revision: []const u8) !void {
         rows: []const struct { encoding: u32, bytes: []const u8, values: []const f32 },
     };
     const alloc = std.testing.allocator;
-    const fixture = try std.json.parseFromSlice(Fixture, alloc, json, .{});
+    const fixture = try std.json.parseFromSlice(Fixture, alloc, json, .{ .ignore_unknown_fields = true });
     defer fixture.deinit();
     try std.testing.expectEqualStrings(revision, fixture.value.revision);
     for (fixture.value.rows) |sample| {
@@ -529,4 +689,127 @@ test "Q5_K high-bit plane selects the correct group and column" {
         const base: f32 = if (group % 2 == 0) 3 else 10;
         try std.testing.expectEqual(base + @as(f32, if (i % 8 == group) 16 else 0), value);
     }
+}
+
+fn putHalf(bytes: []u8, value: f16) void {
+    std.mem.writeInt(u16, bytes[0..2], @bitCast(value), .little);
+}
+
+test "IQ2 sign indices carry their parity as the eighth sign" {
+    try std.testing.expectEqual(@as(u8, 0), signs7(0));
+    try std.testing.expectEqual(@as(u8, 129), signs7(1));
+    try std.testing.expectEqual(@as(u8, 3), signs7(3));
+    try std.testing.expectEqual(@as(u8, 255), signs7(127));
+    // Bits above the seventh belong to the next index and are ignored.
+    try std.testing.expectEqual(@as(u8, 129), signs7(0x81));
+}
+
+test "Q2_K bit planes, scale and minimum nibbles, and the second half" {
+    var block: [84]u8 = @splat(0);
+    putHalf(block[80..82], 1.0);
+    putHalf(block[82..84], 0.5);
+    block[0] = 0x21; // values 0-15: scale 1, minimum 2
+    block[2] = 0x13; // values 32-47 (plane 1): scale 3, minimum 1
+    block[8] = 0x02; // values 128-143: scale 2, minimum 0
+    block[16] = 0b11_10_01_11; // value 0 code 3, value 32 code 1, 64 code 2, 96 code 3
+    block[48] = 0b00_00_00_10; // value 128 code 2
+    var out: [256]f32 = undefined;
+    try row(10, &block, &out);
+    try std.testing.expectEqual(@as(f32, 1 * 3 - 0.5 * 2), out[0]);
+    try std.testing.expectEqual(@as(f32, -1.0), out[1]); // code 0 keeps the minimum
+    try std.testing.expectEqual(@as(f32, 3 * 1 - 0.5 * 1), out[32]);
+    try std.testing.expectEqual(@as(f32, 0), out[64]); // group 4: scale and minimum 0
+    try std.testing.expectEqual(@as(f32, 2 * 2), out[128]);
+}
+
+test "IQ2_XXS grid bytes, packed sign indices, and the top-nibble scale" {
+    var block: [66]u8 = @splat(0);
+    putHalf(block[0..2], 1.0);
+    block[2] = 1; // octet 0: entry 1 = 43 then seven 8s
+    std.mem.writeInt(u32, block[6..10], (3 << 28) | (1 << 0) | (2 << 7), .little);
+    var out: [256]f32 = undefined;
+    try row(16, &block, &out);
+    const m: f32 = 3.5 * 0.25;
+    try std.testing.expectEqual(-43 * m, out[0]); // sign index 1: bits 0 and 7
+    try std.testing.expectEqual(8 * m, out[1]);
+    try std.testing.expectEqual(-8 * m, out[7]);
+    try std.testing.expectEqual(-8 * m, out[9]); // octet 1, sign index 2: bits 1 and 7
+    try std.testing.expectEqual(-8 * m, out[15]);
+    try std.testing.expectEqual(8 * m, out[8]);
+    try std.testing.expectEqual(@as(f32, 8 * 0.125), out[32]); // group 1: scale 0
+}
+
+test "IQ2_XS nine-bit index, sign index above it, and scale nibbles per 16" {
+    var block: [74]u8 = @splat(0);
+    putHalf(block[0..2], 2.0);
+    std.mem.writeInt(u16, block[2..4], 1 | (1 << 9), .little); // entry 1, signs 129
+    std.mem.writeInt(u16, block[6..8], 0, .little); // octet 2: high nibble scale
+    block[66] = 0x51; // octets 0-1 scale 1, octets 2-3 scale 5
+    var out: [256]f32 = undefined;
+    try row(17, &block, &out);
+    try std.testing.expectEqual(@as(f32, -43 * 2 * 1.5 * 0.25), out[0]);
+    try std.testing.expectEqual(@as(f32, 8 * 2 * 1.5 * 0.25), out[1]);
+    try std.testing.expectEqual(@as(f32, 8 * 2 * 5.5 * 0.25), out[16]);
+}
+
+test "IQ2_S high index bits in qh and a full sign byte per octet" {
+    var block: [82]u8 = @splat(0);
+    putHalf(block[0..2], 1.0);
+    block[2 + 1] = 1; // octet 1 low byte 1 ...
+    block[66] = 0b0000_0100; // ... plus high bits 1 << 8: entry 257
+    block[34 + 1] = 0b0000_0110; // octet 1 signs: values 9 and 10 negative
+    block[74] = 0x20;
+    var out: [256]f32 = undefined;
+    try row(22, &block, &out);
+    var expected: [8]f32 = undefined;
+    signedOctet(codebooks.iq2_s[257], 0b110, 0.5 * 0.25, &expected);
+    try std.testing.expectEqualSlices(f32, &expected, out[8..16]);
+    try std.testing.expect(out[9] < 0 and out[10] < 0 and out[8] > 0);
+    try std.testing.expectEqual(@as(f32, 8 * 2.5 * 0.25), out[16]); // octets 2-3: high nibble
+}
+
+test "IQ3_XXS pairs grid entries per octet and halves the scale step" {
+    var block: [98]u8 = @splat(0);
+    putHalf(block[0..2], 1.0);
+    block[2] = 1; // first half of octet 0: entry 1 = 20, 4, 4, 4
+    block[3] = 0; // second half: 4, 4, 4, 4
+    std.mem.writeInt(u32, block[66..70], (2 << 28) | 1, .little);
+    var out: [256]f32 = undefined;
+    try row(18, &block, &out);
+    try std.testing.expectEqual(@as(f32, -20 * 2.5 * 0.5), out[0]);
+    try std.testing.expectEqual(@as(f32, 4 * 2.5 * 0.5), out[4]);
+    try std.testing.expectEqual(@as(f32, -4 * 2.5 * 0.5), out[7]);
+}
+
+test "IQ1_S ternary grid, high index bits, odd scale, and the shift sign" {
+    var block: [50]u8 = @splat(0);
+    putHalf(block[0..2], 0.5);
+    block[2] = 1; // octet 0: entry 1 = +1 then seven -1
+    std.mem.writeInt(u16, block[34..36], (2 << 12) | 0x8000, .little); // scale 5, shift -1/8
+    std.mem.writeInt(u16, block[36..38], (1 << 3), .little); // group 1, octet 1: entry 256
+    var out: [256]f32 = undefined;
+    try row(19, &block, &out);
+    try std.testing.expectEqual(@as(f32, 0.5 * 5 * (1 - 0.125)), out[0]);
+    try std.testing.expectEqual(@as(f32, 0.5 * 5 * (-1 - 0.125)), out[1]);
+    var expected: [8]f32 = undefined;
+    shiftedOctet(256, false, 0.5, &expected);
+    try std.testing.expectEqualSlices(f32, &expected, out[40..48]);
+}
+
+test "IQ1_M rebuilds its f16 scale from four nibbles; per-16 scales and shifts" {
+    var block: [56]u8 = @splat(0);
+    // d = 0.5 is f16 0x3800: nibbles 0, 0, 8, 3 from the four words' tops.
+    var words = [4]u16{ 0, 0, 0x8000, 0x3000 };
+    words[0] |= (1 << 0) | (3 << 3); // group 0: first 16 scale 1, second 16 scale 3
+    for (words, 0..) |word, k| std.mem.writeInt(u16, block[48 + 2 * k ..][0..2], word, .little);
+    block[0] = 1;
+    block[32] = 0x80; // octet 1's nibble: negative shift
+    block[33] = 0x01; // octet 2's nibble: index high bits 1 (entry 256)
+    var out: [256]f32 = undefined;
+    try row(29, &block, &out);
+    try std.testing.expectEqual(@as(f32, 0.5 * 3 * (1 + 0.125)), out[0]);
+    try std.testing.expectEqual(@as(f32, 0.5 * 3 * (-1 - 0.125)), out[8]);
+    var expected: [8]f32 = undefined;
+    shiftedOctet(256, false, 0.5 * 7, &expected);
+    try std.testing.expectEqualSlices(f32, &expected, out[16..24]);
 }

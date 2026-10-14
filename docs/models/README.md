@@ -36,10 +36,13 @@ the transcript will not survive.
   [catalogue.md](catalogue.md#pinned-commits-and-digests-2026-09-11).
   The companions (`mmproj`, `mtp`) go into the same table; the catalogue
   entry will need their digests.
-- Confirm the pinned llama.cpp reference (`7620399`,
-  [llama-cpp.md](../benchmarks/llama-cpp.md)) loads and runs the file
-  (`llama-completion -ngl 99 -no-cnv`, then `--jinja --single-turn` for a
-  chat answer). If it does not, there is no oracle and the unit stops here.
+- Since 2026-10-14 nuclis is its own reference ([spec § 3](../spec.md#3-decisions)): a new
+  file or encoding of a family nuclis already runs is validated by § 4
+  against nuclis's own paths, with no external oracle. The steps below that
+  name the pinned llama.cpp reference (`7620399`,
+  [llama-cpp.md](../benchmarks/llama-cpp.md)) are how the families before
+  that date were brought up; how a genuinely new architecture is validated
+  without one is not yet decided.
 
 ## 1. Facts with provenance (`docs/models/<family>.md`)
 
@@ -106,7 +109,27 @@ it writes `<bos>` as text (raw prompts and the profile alike).
   session layout per layer (`session.Layout`): what state each layer has,
   at what width and precision.
 
-## 4. Pin the oracle and compare
+## 4. Validate against nuclis itself
+
+For a new file or encoding of a family nuclis already runs
+([saluki.md](saluki.md) is the first):
+
+1. **Decoders.** Unit tests on hand-built blocks pin every field of each
+   new encoding (scales, indices, signs, offsets). Then the
+   **cross-encoding check**, `zig build test-cross-encoding -- <new.gguf>
+   <validated.gguf>`: the same model's tensors decoded from both files
+   agree to the precision of the coarser encoding, and a negative control
+   (a mismatched row) shows the margin. A wrong codebook or bit order
+   lands near the control, not near the threshold.
+2. **The forward.** It is the family's, already validated; record a CPU
+   trace fixture for the new file with nuclis's CPU reference
+   (`nuclis generate --backend cpu … --trace-dir`, as below) and gate
+   Metal against it (`<file>-trace-f32`, `<file>-trace-f16`).
+3. **Quality.** `nuclis eval` perplexity of the new file next to the
+   validated file's, both on nuclis.
+
+The trace procedure the earlier families used against llama.cpp, kept
+for them:
 
 `scripts/reference-generation.cpp` (built as in
 [sampling.md § Numerical traces](../engine/sampling.md#numerical-traces))
@@ -156,8 +179,8 @@ chunked-versus-stepped comparison; it also exercises snapshot/restore,
 cancellation, and isolation, and it found a backend bug on the first run
 (`Backend.unwrap`).
 
-Take first-look rates with `nuclis bench` and `llama-bench` on the same
-file and record them as first look, not as the acceptance record.
+Take first-look rates with `nuclis bench` and record them as first look,
+not as the acceptance record.
 
 ## 6. The prompt profile
 

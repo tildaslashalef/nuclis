@@ -39,6 +39,10 @@
   "bonsai": {
    "path": "~/.nuclis/models/prism-ml/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PTQ1_0.gguf"
   },
+  "saluki": {
+   "path": "~/.nuclis/models/ConwayResearch/Underdog-Saluki-27B-1.0/Underdog-Saluki-27B-1.0-IQ2-mix.gguf",
+   "mmproj": "~/.nuclis/models/ConwayResearch/Underdog-Saluki-27B-1.0/mmproj-Underdog-Saluki-27B-1.0-Q8_0.gguf"
+  },
   "gemma4_e4b": {
    "path": "~/.nuclis/models/unsloth/gemma-4-E4B-it-qat-GGUF/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
    "entry": "gemma-4-e4b-qat",
@@ -1087,8 +1091,7 @@
     "tests/fixtures/embeddinggemma-vectors/**",
     "tests/fixtures/embeddinggemma-image.logo/**",
     "tests/fixtures/embeddinggemma-mix.logo/**",
-    "docs/branding/nuclis.png",
-    "site/og.png"
+    "docs/branding/nuclis.png"
    ],
    "command": [
     "{zig-cpu}",
@@ -1237,8 +1240,7 @@
     "tests/fixtures/embeddinggemma-vectors/**",
     "tests/fixtures/embeddinggemma-image.logo/**",
     "tests/fixtures/embeddinggemma-mix.logo/**",
-    "docs/branding/nuclis.png",
-    "site/og.png"
+    "docs/branding/nuclis.png"
    ],
    "command": [
     "{zig-metal}",
@@ -2401,6 +2403,204 @@
     "kind": "exit"
    },
    "evidence": "docs/models/bonsai.md"
+  },
+  {
+   "name": "saluki-cross-encoding",
+   "family": "saluki",
+   "tier": "verify",
+   "model": "saluki",
+   "baseline": "qwen38",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/cross-encoding-check.zig",
+    "inference/src/formats/**",
+    "inference/src/quant/**",
+    "inference/src/runtime/weights.zig",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{zig-cpu}",
+    "test-cross-encoding",
+    "--",
+    "{model}",
+    "{baseline}",
+    "--rows",
+    "16",
+    "--min-mean",
+    "IQ1_S=0.81",
+    "--min-mean",
+    "IQ1_M=0.81",
+    "--min-mean",
+    "IQ2_XXS=0.87",
+    "--min-mean",
+    "IQ2_XS=0.88",
+    "--min-mean",
+    "IQ2_S=0.88",
+    "--min-mean",
+    "IQ3_XXS=0.91",
+    "--min-mean",
+    "Q2_K=0.85"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/models/saluki.md"
+  },
+  {
+   "name": "saluki-trace-cpu",
+   "family": "saluki",
+   "tier": "verify-cpu",
+   "model": "saluki",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/cpu/attention.zig",
+    "inference/src/backends/cpu/recurrent.zig",
+    "inference/src/backends/cpu/root.zig",
+    "inference/src/backends/cpu/rope.zig",
+    "inference/src/backends/cpu/vector.zig",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis-cpu}",
+    "generate",
+    "--backend",
+    "cpu",
+    "--model",
+    "{model}",
+    "--raw",
+    "--prompt",
+    "Hello,",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/saluki-hello-comma",
+    "positions": 2
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/models/saluki.md"
+  },
+  {
+   "name": "saluki-trace-f32",
+   "family": "saluki",
+   "tier": "verify",
+   "model": "saluki",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f32",
+    "--raw",
+    "--prompt",
+    "Hello,",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/saluki-hello-comma",
+    "positions": 2
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/models/saluki.md"
+  },
+  {
+   "name": "saluki-trace-f16",
+   "family": "saluki",
+   "tier": "verify",
+   "model": "saluki",
+   "paths": [
+    "build.zig",
+    "inference/build.zig",
+    "inference/src/backends/metal/**",
+    "inference/src/formats/**",
+    "inference/src/models/inventory.zig",
+    "inference/src/models/qwen35*.zig",
+    "inference/src/models/registry.zig",
+    "inference/src/models/root.zig",
+    "inference/src/quant/**",
+    "inference/src/root.zig",
+    "inference/src/runtime/**",
+    "inference/src/tensor/**"
+   ],
+   "command": [
+    "{nuclis}",
+    "generate",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--kv",
+    "f16",
+    "--raw",
+    "--prompt",
+    "Hello,",
+    "--max-tokens",
+    "1",
+    "--ctx-size",
+    "8",
+    "--logits",
+    "{trace}/logits.f32",
+    "--trace-dir",
+    "{trace}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/saluki-hello-comma",
+    "positions": 2
+   },
+   "bounds": {
+    "max_absolute": 0.03,
+    "max_relative_rms": 0.0004
+   },
+   "evidence": "docs/models/saluki.md"
   },
   {
    "name": "qwen38-perplexity",

@@ -39,19 +39,25 @@ extern fn nu_metal_profile_enable(*anyopaque, u32, [*]u8, usize) c_int;
 extern fn nu_metal_profile_read(*anyopaque, [*]f64, u32) u32;
 extern fn nu_metal_capture_next(*anyopaque, [*:0]const u8, [*]u8, usize) c_int;
 
-/// The IQ3_S codebook is emitted into the shader source at compile time from
-/// the single Zig definition, so the CPU and GPU decoders share one table.
-const iq3_grid_source = blk: {
-    @setEvalBranchQuota(2_000_000);
-    const grid = @import("../../quant/iq3-grid.zig").values;
-    var text: []const u8 = "constant uint nu_iq3_grid[512] = {\n";
-    for (grid, 0..) |value, i| {
-        text = text ++ std.fmt.comptimePrint("{d}u,", .{value});
+/// The IQ codebooks are emitted into the shader source at compile time from
+/// their single Zig definitions, so the CPU and GPU decoders share one table.
+fn codebookSource(comptime msl_type: []const u8, comptime suffix: []const u8, comptime name: []const u8, comptime values: anytype) []const u8 {
+    @setEvalBranchQuota(20_000_000);
+    var text: []const u8 = std.fmt.comptimePrint("constant {s} {s}[{d}] = {{\n", .{ msl_type, name, values.len });
+    for (values, 0..) |value, i| {
+        text = text ++ std.fmt.comptimePrint("0x{x}{s},", .{ value, suffix });
         if (i % 16 == 15) text = text ++ "\n";
     }
-    break :blk text ++ "};\n";
-};
-const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ iq3_grid_source ++ @embedFile("dequant.metal") ++ "\n" ++ @embedFile("kernels.metal");
+    return text ++ "};\n";
+}
+const codebooks = @import("../../quant/iq-codebooks.zig");
+const codebook_source = codebookSource("uint", "u", "nu_iq3_grid", @import("../../quant/iq3-grid.zig").values) ++
+    codebookSource("ulong", "ul", "nu_iq2_xxs_grid", codebooks.iq2_xxs) ++
+    codebookSource("ulong", "ul", "nu_iq2_xs_grid", codebooks.iq2_xs) ++
+    codebookSource("ulong", "ul", "nu_iq2_s_grid", codebooks.iq2_s) ++
+    codebookSource("uint", "u", "nu_iq3_xxs_grid", codebooks.iq3_xxs) ++
+    codebookSource("ulong", "ul", "nu_iq1_s_grid", codebooks.iq1_s);
+const source = "#include <metal_stdlib>\nusing namespace metal;\n" ++ codebook_source ++ @embedFile("dequant.metal") ++ "\n" ++ @embedFile("kernels.metal");
 
 /// Each `Kernel` names its MSL entry point as `nu_` plus the tag; pipelines
 /// are indexed by the tag's value, so the two cannot drift apart.
